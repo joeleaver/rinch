@@ -6232,7 +6232,7 @@ impl RinchDocument {
                 let mut min = measure(this, taffy::AvailableSpace::MinContent);
                 for _ in 0..8 {
                     let inner = this.tree.atomic_min_requests.borrow_mut().split_off(asked);
-                    if inner.is_empty() {
+                    if !inner.iter().any(|&r| this.wants_min_content(r)) {
                         break;
                     }
                     this.measure_atomic_min_contents(inner, false);
@@ -6764,9 +6764,15 @@ impl RinchDocument {
     /// (`resolve_root_width_keyword`), which is laying it out anyway.
     fn measure_atomic_min_contents(&mut self, ids: Vec<usize>, around: bool) -> bool {
         let mut stack = ids;
-        let mut retried: std::collections::HashSet<usize> = std::collections::HashSet::new();
         let mut changed = false;
+        // Every round measures a box or puts strictly deeper ones ahead of
+        // it, so this ends; the count is a guard, not a budget.
+        let mut rounds_left = 100_000u32;
         while let Some(id) = stack.pop() {
+            rounds_left -= 1;
+            if rounds_left == 0 {
+                break;
+            }
             if self.tree.atomic_min_content.contains_key(&id) {
                 continue;
             }
@@ -6794,17 +6800,13 @@ impl RinchDocument {
                     .iter()
                     .chain(asked.iter())
                     .copied()
-                    .filter(|&r| {
-                        r != id
-                            && !self.tree.atomic_min_content.contains_key(&r)
-                            && self.is_inside(r, id)
-                    })
+                    .filter(|&r| r != id && self.wants_min_content(r) && self.is_inside(r, id))
                     .collect();
                 inside.sort_unstable();
                 inside.dedup();
                 inside
             };
-            if !inside.is_empty() && retried.insert(id) {
+            if !inside.is_empty() {
                 stack.push(id);
                 stack.extend(inside);
                 continue;
@@ -6839,10 +6841,14 @@ impl RinchDocument {
             let min = self.tree.taffy.unrounded_layout(taffy_id).size.width;
             let _ = self.tree.taffy.mark_dirty(taffy_id);
             self.measure_inline_blocks(&[(taffy_id, None)]);
-            // The boxes inside first, then this one again — once: a box
-            // that cannot be measured (it left the document) is not asked
-            // for twice.
-            if !inner.is_empty() && retried.insert(id) {
+            // The boxes inside that it asked for first, then this one
+            // again. Only the ones that will be measured: one that cannot
+            // be would be asked for again by every compute of this box.
+            let inner: Vec<usize> = inner
+                .into_iter()
+                .filter(|&r| r != id && self.wants_min_content(r) && self.is_inside(r, id))
+                .collect();
+            if !inner.is_empty() {
                 stack.push(id);
                 stack.extend(inner);
                 continue;
@@ -6872,6 +6878,20 @@ impl RinchDocument {
             self.remeasure_dirty_atomic_inlines();
         }
         changed
+    }
+
+    /// Whether `id` is a box [`Self::measure_atomic_min_contents`] measures
+    /// and has not measured yet: a connected atomic inline in an IFC whose
+    /// width is plain shrink-to-fit.
+    fn wants_min_content(&self, id: usize) -> bool {
+        !self.tree.atomic_min_content.contains_key(&id)
+            && self.tree.nodes.get(id).is_some_and(|n| {
+                n.ifc_root.is_some()
+                    && n.taffy_id.is_some()
+                    && n.display_mode.is_atomic_inline()
+                    && plain_shrink_to_fit_margins(&n.computed_style).is_some()
+            })
+            && self.depth_if_connected(id).is_some()
     }
 
     /// Whether `node` is a descendant of `ancestor`.
