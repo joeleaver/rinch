@@ -1845,6 +1845,12 @@ impl DomDocument for WebDocument {
         result
     }
 
+    fn is_text_node(&self, node: NodeId) -> bool {
+        self.nodes
+            .get(&node.0)
+            .is_some_and(|n| n.node_type() == web_sys::Node::TEXT_NODE)
+    }
+
     fn get_children(&self, node: NodeId) -> Vec<NodeId> {
         let mut result = Vec::new();
         if let Some(n) = self.nodes.get(&node.0) {

@@ -921,8 +921,9 @@ pub struct UpdateBatch {
 pub enum DomUpdate {
     /// [`DomDocument::set_text_content`]. On an **element** that replaces its
     /// children with one text node, as `NodeHandle::set_text` does — the one
-    /// write here that can change a child list, and neither route tells a
-    /// removal observer (issue #1440). Target a text node.
+    /// write here that can change a child list. `NodeHandle::set_text` tells a
+    /// removal observer the children left; this route does not (issue #1440,
+    /// see [`UpdateBatch::apply`]). Target a text node.
     SetText { node: NodeId, text: String },
     /// [`DomDocument::set_attribute`]: the literal write.
     SetAttribute {
@@ -966,6 +967,13 @@ impl UpdateBatch {
     /// - **No pending effect is flushed first.** Inside an event handler a
     ///   `NodeHandle` call runs the effects queued so far before it touches
     ///   the document; this takes the document as the caller borrowed it.
+    /// - **`SetText` over an element's children tells no removal observer**
+    ///   ([`on_child_removed`](super::on_child_removed), issue #1440), where
+    ///   `NodeHandle::set_text` does. It cannot: an observer edits the tree
+    ///   through `NodeHandle`s, each of which borrows the document this
+    ///   function is holding mutably for its caller. A container that counts
+    ///   positions (`Stepper`) is therefore not re-derived; write over an
+    ///   element's children with `NodeHandle::set_text`.
     pub fn apply(self, doc: &mut dyn DomDocument) {
         for update in self.updates {
             match update {

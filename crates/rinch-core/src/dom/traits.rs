@@ -440,6 +440,17 @@ pub trait DomDocument {
     /// Get the children of a node.
     fn get_children(&self, node: NodeId) -> Vec<NodeId>;
 
+    /// Whether `node` is a **text node** — a node that has no child list.
+    ///
+    /// Asked by [`NodeHandle::set_text`](super::NodeHandle::set_text) ahead of
+    /// [`get_children`](Self::get_children) while a removal observer is
+    /// registered, so the write every reactive `{|| text}` makes reads no
+    /// child list (issue #1440). `false` is always a safe answer: it only
+    /// costs that read. Defaulted to `false`.
+    fn is_text_node(&self, _node: NodeId) -> bool {
+        false
+    }
+
     /// Insert a child at a specific index.
     fn insert_child(&mut self, parent: NodeId, child: NodeId, index: usize);
 

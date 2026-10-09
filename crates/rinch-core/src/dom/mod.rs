@@ -402,7 +402,11 @@ impl NodeHandle {
     /// Set the text content of this node.
     ///
     /// For text nodes, this updates the text directly.
-    /// For element nodes, this replaces all children with a single text node.
+    /// For element nodes, this replaces all children with a single text node:
+    /// the children are detached as [`remove`](Self::remove) detaches one (a
+    /// handle to one still re-inserts), and an
+    /// [`on_child_removed`] observer above this node is told they left
+    /// (issue #1440).
     #[doc(hidden)]
     pub fn set_text(&self, text: &str) {
         if let Some(doc) = self.accessed_doc() {
@@ -412,7 +416,13 @@ impl NodeHandle {
                 text.len()
             );
             release_focus_within(&doc, self.node_id, true, |_| true);
+            // On an element the text replaces the child list, and a container
+            // above that counts its children has to hear they left (issue
+            // #1440). `None` — and no read — unless a removal observer is
+            // registered and this node has children.
+            let at_stake = late_child::children_at_stake(self);
             doc.borrow_mut().set_text_content(self.node_id, text);
+            late_child::notify_children_replaced(self, at_stake);
         } else {
             tracing::warn!(
                 "NodeHandle::set_text FAILED - doc Weak reference is dead (node={})",
@@ -1094,13 +1104,29 @@ impl NodeHandle {
     /// This atomically removes all existing children and replaces them with
     /// the DOM tree produced by parsing `html`. The underlying document
     /// implementation handles parsing and insertion.
+    ///
+    /// The existing children are **gone for good**, as after
+    /// [`discard`](Self::discard). An [`on_child_removed`] observer above this
+    /// node is told they left, and observers registered on them are dropped
+    /// (issue #1440); the parsed nodes are not reported to
+    /// [`on_child_inserted`].
     pub fn set_inner_html(&self, html: &str) {
         // The replaced children are gone from the backend's point of view; so
         // are their ownership records (issue #732).
         render_scope::purge_descendants(self);
         if let Some(doc) = self.accessed_doc() {
             release_focus_within(&doc, self.node_id, true, |_| true);
+            // Read before the write frees them: the children that are about to
+            // leave, and any observer registered on one (issue #1440).
+            let at_stake = late_child::children_at_stake(self);
+            late_child::forget_descendants(self);
             doc.borrow_mut().set_inner_html(self.node_id, html);
+            // Not compared with the list afterwards, as `set_text` does: the
+            // children there were are freed, and `rinch-dom` hands their ids
+            // straight to the nodes it parses.
+            if at_stake.is_some() {
+                late_child::notify_removed(self);
+            }
         }
     }
 

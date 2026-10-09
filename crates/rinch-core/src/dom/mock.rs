@@ -170,7 +170,10 @@ impl MockDomDocument {
             MockNodeKind::Text | MockNodeKind::Comment => Some(n.text.clone()),
             MockNodeKind::Element(_) => {
                 // Concatenate descendant text (depth-first), matching the real DOM.
-                let mut out = String::new();
+                // Text written over the element itself (`set_text_content`)
+                // comes first: it replaced the children there were, and
+                // anything listed now was appended after it.
+                let mut out = n.text.clone();
                 for &child in &n.children {
                     if let Some(t) = self.text_of(child) {
                         out.push_str(&t);
@@ -470,8 +473,28 @@ impl DomDocument for MockDomDocument {
 
     fn set_text_content(&mut self, node: NodeId, text: &str) {
         self.count(|ops| ops.text_writes += 1);
-        if let Some(n) = self.nodes.get_mut(&node) {
-            n.text = text.to_string();
+        // On an element the text *replaces* the child list, as it does on both
+        // real backends (issue #1440): every child is orphaned — detached, not
+        // retired, so a handle to one still re-inserts, which is what
+        // `rinch-dom` (`parent = None`, slab entry kept) and the browser
+        // (`textContent = …`, the old nodes still in `rinch-web`'s table) leave.
+        // The text itself is kept on the element and read back ahead of any
+        // child appended later (`text_of`); it has no node id, as the browser's
+        // new text node has none (`rinch-dom` mints one).
+        let orphans = match self.nodes.get_mut(&node) {
+            Some(n) => {
+                n.text = text.to_string();
+                match n.kind {
+                    MockNodeKind::Element(_) => std::mem::take(&mut n.children),
+                    MockNodeKind::Text | MockNodeKind::Comment => Vec::new(),
+                }
+            }
+            None => Vec::new(),
+        };
+        for orphan in orphans {
+            if let Some(o) = self.nodes.get_mut(&orphan) {
+                o.parent = None;
+            }
         }
         self.mark_dirty(node);
     }
@@ -614,6 +637,13 @@ impl DomDocument for MockDomDocument {
         Vec::new()
     }
 
+    fn is_text_node(&self, node: NodeId) -> bool {
+        matches!(
+            self.nodes.get(&node).map(|n| &n.kind),
+            Some(MockNodeKind::Text)
+        )
+    }
+
     fn get_children(&self, node: NodeId) -> Vec<NodeId> {
         self.get_children_calls
             .set(self.get_children_calls.get() + 1);
@@ -673,8 +703,23 @@ impl DomDocument for MockDomDocument {
         // Mock implementation - does nothing
     }
 
-    fn set_inner_html(&mut self, _node: NodeId, _html: &str) {
-        // Mock implementation - no-op for tests
+    /// Retires every existing child and parses **nothing**: the mock has no
+    /// HTML parser, so the element is left with no children at all. The first
+    /// half is what both real backends do to the children there were (issue
+    /// #184: `rinch-dom` frees them, `rinch-web` forgets them), and it is the
+    /// half a test of what the replaced children leave behind needs (#1440).
+    fn set_inner_html(&mut self, node: NodeId, _html: &str) {
+        let children = match self.nodes.get_mut(&node) {
+            Some(n) => {
+                n.text.clear();
+                std::mem::take(&mut n.children)
+            }
+            None => return,
+        };
+        for child in children {
+            self.forget_subtree(child);
+        }
+        self.mark_dirty(node);
     }
 
     fn query_caret_position(&self, _node_id: u64, _byte_offset: usize) -> Option<(f32, f32)> {

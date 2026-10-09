@@ -443,16 +443,34 @@ closure (a `NodeHandle` is `!Send`) and `rinch-web` drains it nowhere.
 that take a node **out** of a tree (`remove_child`, `remove`, `discard`, and
 `replace_with` for the node it displaces) plus the implicit detach an insertion
 verb performs when handed a node that already has a parent — which is the only
-thing that tells a container a child *moved away*. Nothing else moves a node:
+thing that tells a container a child *moved away*. No batch moves a node:
 `UpdateBatch` / `DomUpdate` (both in the prelude) carry **property writes only**
 (`SetText`, `SetAttribute`, `RemoveAttribute`, `SetStyle`) since #756, which
 removed their `AppendChild` / `InsertBefore` / `RemoveChild` / `ReplaceNode`
 variants — `apply` takes a `&mut dyn DomDocument` and could not notify, so a
 node moved through a batch reached no observer. `apply` is still the literal
 backend call per arm: `SetAttribute` is not `write_attribute` (no boolean
-rule), and no pending effect is flushed first. Not notified, and open: text
-written over an element's children (`NodeHandle::set_text`, `SetText`) orphans
-them with no removal callback (#1440). The two halves are separate
+rule), and no pending effect is flushed first. **A write that replaces a child
+list fires the removal half too** (#1440): `NodeHandle::set_text` on an
+**element** (it orphans every child; told only when the list changed — an
+element whose only child is a text node loses none on any backend: `rinch-dom`
+writes that node in place, where it used to orphan it and mint another per
+write, and the mock and a browser list no child for it) and
+`NodeHandle::set_inner_html` (it frees them; it also drops the
+observers registered on the freed nodes, whose ids `rinch-dom` re-issues to the
+markup it parses). Each fires once, with the node whose children went, and
+neither fires the insertion half for what arrives. While no removal observer is
+registered on the thread `set_text` pays one `Cell` read; with one, a text node
+(every reactive `{|| text}`) pays a kind check (`DomDocument::is_text_node`,
+default `false`; one JS getter on the web) and no child-list read, an element
+one read, two when it had children. `MockDomDocument` orphans / retires the
+children as the backends do. Not notified: a batched `DomUpdate::SetText` over
+an element's children — `apply` holds the document mutably borrowed, and an
+observer edits the tree through `NodeHandle`s that borrow it again — so write
+over an element's children with `NodeHandle::set_text`. Pins:
+`late_child::tests::*_written_over_an_elements_children_*`,
+`rinch-dom/tests/child_list_replaced_1440_tests.rs`,
+`rinch-components/tests/stepper_text_over_children_1440.rs`. The two halves are separate
 registrations: `Stepper` takes both, `List` and `RadioGroup` only the first,
 since neither of their defaults can be changed by a row going away.
 
