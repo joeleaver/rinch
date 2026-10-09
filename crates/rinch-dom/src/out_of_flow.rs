@@ -158,7 +158,8 @@
 //! - the inline walk notes each out-of-flow box it passes
 //!   (`IfcText::note_out_of_flow`; a direct child standing inside an
 //!   anonymous box's run is not one of the run's members, and is noted from
-//!   `Node::run_out_of_flow`), and once the lines are broken each note is
+//!   `Node::run_out_of_flow` — one before the run's first member too, when
+//!   no block stands between), and once the lines are broken each note is
 //!   turned into two positions (`ifc::resolve_out_of_flow_marks`, kept as
 //!   `InlineLayout::out_of_flow`): in the line where the content before the
 //!   box ends, at the line box's top — an inline-level box's place — and at
@@ -168,8 +169,10 @@
 //!   (`ComputedStyle::inline_level_before_blockify`, Stylo's
 //!   `original_display`), read when the box is placed;
 //! - `Node::static_ifc_root` names the root whose lines hold the box's
-//!   place, so a box with none — every box outside inline content — costs
-//!   one flag read and keeps Taffy's answer;
+//!   place and the index of its note there, so a box with none — every box
+//!   outside inline content — costs one flag read and keeps Taffy's answer,
+//!   and one with a place costs one indexed look, not a search of its
+//!   paragraph's notes (`abs_static_lookup_steps`);
 //! - the lines are built after the read-back, so
 //!   [`place_static_after_lines`] places each noted box again when they are
 //!   (and when an anonymous box holding them is read back somewhere else):
@@ -1473,9 +1476,12 @@ fn layout_parent(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
 /// an out-of-flow box among inline content is laid out in ([`inline_host`]).
 fn inline_static_position(tree: &NodeTree, node_id: RawNodeId) -> Option<(f32, f32)> {
     let node = tree.get(node_id)?;
-    let root_id = node.static_ifc_root?;
+    let (root_id, index) = node.static_ifc_root?;
     let inline = tree.get(root_id)?.text_layout.as_ref()?;
-    let mark = inline.out_of_flow.iter().find(|m| m.id == node_id)?;
+    // By index, not by search: a paragraph of N such boxes is looked at N
+    // times per layout (`abs_static_lookup_steps`).
+    tree.perf.bump(crate::perf::Counter::AbsStaticLookupSteps);
+    let mark = inline.out_of_flow.get(index).filter(|m| m.id == node_id)?;
     let (_, (ox, oy)) = inline_host(tree, root_id)?;
     let (x, y) = if node.computed_style.inline_level_before_blockify {
         mark.inline
@@ -1521,6 +1527,11 @@ fn static_location_among_lines(
     node_id: RawNodeId,
     kind: Option<OutOfFlowKind>,
 ) -> Option<(f32, f32)> {
+    // A box with an inset on each axis has no use for it.
+    let (horizontal, vertical) = static_axes(&tree.nodes[node_id].computed_style);
+    if !horizontal && !vertical {
+        return None;
+    }
     let (x, y) = inline_static_position(tree, node_id)?;
     // Percentage margins are of the containing block's width, on both axes.
     let basis = match kind {

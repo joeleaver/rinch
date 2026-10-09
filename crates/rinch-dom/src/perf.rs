@@ -281,6 +281,10 @@ define_counters! {
     /// clusters, and each span's own clusters on its first and last line.
     /// Linear in the context for any number of sibling spans in it.
     AbsInlineMeasureSteps = "abs_inline_measure_steps",
+    /// The notes looked at to find an out-of-flow box's static position in
+    /// its lines (`InlineLayout::out_of_flow`, #632): one per look, however
+    /// many boxes the lines hold — the box carries its note's index.
+    AbsStaticLookupSteps = "abs_static_lookup_steps",
 
     // ── Paint ──────────────────────────────────────────────────────────
     /// Frames actually painted (a scene or pixel buffer rebuilt).

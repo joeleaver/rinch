@@ -76,9 +76,8 @@ impl Component for ContextMenu {
             root.append_child(target);
         }
 
-        // Portal — appended to body so position:fixed works correctly.
-        // Taffy treats fixed as absolute, so the portal must be a direct child
-        // of body for top:0/left:0 to mean viewport origin.
+        // Portal — appended to body, outside every clip and stacking
+        // context of the trigger.
         let body = __scope.body_handle();
         let portal = rinch_macros::rsx! { div { class: "rinch-context-menu__portal" } };
 

@@ -3334,18 +3334,23 @@ on the line the content before it is on (a space hung there is not counted);
 after a forced break it starts the next line. Its own margins are added.
 The mechanism: `walk_inline_children` notes each out-of-flow box it passes
 (`IfcText::note_out_of_flow`; a direct child standing inside an anonymous box's
-run joins no run, #406, so it is noted from `Node::run_out_of_flow`, recorded
-where the runs are grouped); `ifc::resolve_out_of_flow_marks` turns each note
+run — or before its first member, with no block between: an inline-level box
+there starts the first line, which `text-align` moves — joins no run, #406, so
+it is noted from `Node::run_out_of_flow`, recorded where the runs are
+grouped); `ifc::resolve_out_of_flow_marks` turns each note
 into both positions once the lines are broken (`InlineLayout::out_of_flow`; an
-ellipsis rebuild carries them over); `Node::static_ifc_root` names the root on
-the box, so `out_of_flow::static_location` costs one flag read for a box outside
-inline content; and which position is the box's is
+ellipsis rebuild carries them over); `Node::static_ifc_root` names the root and
+the note's index on the box, so `out_of_flow::static_location` costs one flag
+read for a box outside inline content and one indexed look for one inside
+(`abs_static_lookup_steps`: N looks for N boxes in one paragraph, pinned at two
+sizes by `perf_regression_scenarios::static_boxes_in_one_paragraph_are_looked_up_by_index`
+— a search per box was quadratic, 8000 boxes 1.9 → 10.4 ms per relayout); and which position is the box's is
 `ComputedStyle::inline_level_before_blockify` (Stylo's `original_display`),
-read at placement — a change of it alone moves no Taffy value, so the cascade
-sets `layout_dirty` for it. The lines are built after the read-back, so
+read at placement — a change of it alone moves no Taffy value, and neither
+does `absolute` ↔ `fixed`, so the cascade sets `layout_dirty` for either on an
+out-of-flow box. The lines are built after the read-back, so
 `shape_ifc_root_paint_layout` calls `out_of_flow::place_static_after_lines` for
-each box its new lines hold (and for one its old lines held and these do not),
-and so does `read_layout_results_for_box` when an anonymous box moved: that
+each box its new lines hold, and so does `read_layout_results_for_box` when an anonymous box moved: that
 writes an absolute box whose layout parent is its containing block directly —
 it is in no list — and sets `abs_late_moves` for the rest. **A new writer of an
 IFC root's position that runs after the read-back owes the same call.** The
@@ -4593,8 +4598,12 @@ so normal flow content clears it automatically; a `position: fixed` element does
 rinch-web). Full-height overlays must therefore opt in:
 
 ```rust
-div { style: "position: fixed; top: var(--rinch-window-top-inset, 0px); bottom: 0;" }
+div { style: "position: fixed; top: var(--rinch-window-top-inset, 0px); bottom: 0; left: 0; right: 0;" }
 ```
+
+The `left: 0; right: 0` is not decoration: a fixed box with both insets of an
+axis `auto` keeps its static position on that axis (#633), so `top`/`bottom`
+alone leaves its x wherever its parent put it.
 
 `Drawer`, `Modal`, and the top-anchored `Notification` positions already do this.
 `DropdownMenu`'s and `Select`'s click-catching backdrops, and the DOM menu

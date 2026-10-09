@@ -635,9 +635,10 @@ pub struct InlineLayout {
         std::collections::HashMap<RawNodeId, Option<crate::out_of_flow::SpanFragments>>,
     /// Where each out-of-flow box met among this content would have sat in
     /// these lines — its static position (#632, #634). In the order the walk
-    /// met them, and read first-match: a box hoisted out of an inline element
-    /// inside an anonymous box's run is met in the element and again after
-    /// it. Empty for nearly every layout.
+    /// met them. A box hoisted out of an inline element inside an anonymous
+    /// box's run is met in the element and again after it; the first note is
+    /// its place, and the one its `Node::static_ifc_root` indexes. Empty for
+    /// nearly every layout.
     pub(crate) out_of_flow: Vec<OutOfFlowMark>,
 }
 
@@ -1121,18 +1122,22 @@ pub struct Node {
     /// containers and inlines that need it, and nothing else.
     pub hosts_hoisted_out_of_flow: bool,
     /// On an **out-of-flow box**: the inline formatting context root whose
-    /// lines hold its static position (`InlineLayout::out_of_flow`), as of
-    /// the last time those lines were built with the box among their content
-    /// (#632). A hint, checked where it is read (`out_of_flow::static_position`):
-    /// the root must still hold a mark for this box.
-    pub(crate) static_ifc_root: Option<RawNodeId>,
+    /// lines hold its static position, and the index of its note among
+    /// theirs (`InlineLayout::out_of_flow`), as of the last time those lines
+    /// were built with the box among their content (#632). A hint, checked
+    /// where it is read (`out_of_flow::static_location`): the root must
+    /// still hold this box's note there. The index is what keeps a look at
+    /// one box from walking the notes of every other box in its paragraph.
+    pub(crate) static_ifc_root: Option<(RawNodeId, usize)>,
     /// On an **anonymous block box**: the out-of-flow boxes that sit inside
-    /// its run — after at least one of its members — each with the index of
-    /// the member it comes right before (`run_members.len()` for one after
-    /// the last). An out-of-flow box joins no run (#406), so the run's own
-    /// list does not say where it was; its static position needs that
-    /// (#632). One before the run's first member is not here: Taffy's sibling
-    /// order already puts it at the box's top.
+    /// its run, each with the index of the member it comes right before (0
+    /// for one before the first, `run_members.len()` for one after the
+    /// last). An out-of-flow box joins no run (#406), so the run's own list
+    /// does not say where it was; its static position needs that (#632). A
+    /// box before the first member is here too: Taffy's sibling order puts
+    /// it at the run's top, but an inline-level one starts the first *line*,
+    /// wherever `text-align` puts that. One with an in-flow block between it
+    /// and the run is not: it belongs to no line.
     pub(crate) run_out_of_flow: Vec<(usize, RawNodeId)>,
     /// Whether this box lies strictly between an absolute box and the
     /// containing block that box was placed against at the last layout — a

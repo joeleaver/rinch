@@ -1917,8 +1917,13 @@ fn position_and_inset_changes_return_to_the_static_position() {
     let mut c = Case::new(&format!("text{}tail", boxed("absolute", "span", "", "")));
     assert_at(c.rel("abs"), [39.328, 7.0], "absolute");
     c.set_style("abs", &format!("position: fixed; {BOX}"));
-    c.relayout();
+    // At the same viewport: only the layout the restyle itself owes runs
+    // (`layout` means a viewport position now, with no Taffy value moved).
+    c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
     assert_at(c.rel("abs"), [39.328, 7.0], "fixed");
+    c.set_style("abs", &format!("position: absolute; {BOX}"));
+    c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    assert_at(c.rel("abs"), [39.328, 7.0], "absolute again");
     c.set_style(
         "abs",
         &format!("position: absolute; {BOX} left: 5px; top: 3px;"),

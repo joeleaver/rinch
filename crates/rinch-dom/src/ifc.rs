@@ -2183,11 +2183,16 @@ impl RinchDocument {
         let marked: Vec<usize> = inline_layout.out_of_flow.iter().map(|m| m.id).collect();
 
         self.tree.nodes[root_id].text_layout = Some(Box::new(inline_layout));
-        for id in marked {
+        // Each box is told where its note is, last to first: a box noted
+        // twice (hoisted out of an inline element in an anonymous box's run)
+        // keeps the first, its real place.
+        for (index, &id) in marked.iter().enumerate().rev() {
             if let Some(node) = self.tree.nodes.get_mut(id) {
-                node.static_ifc_root = Some(root_id);
-                crate::out_of_flow::place_static_after_lines(&mut self.tree, id);
+                node.static_ifc_root = Some((root_id, index));
             }
+        }
+        for id in marked {
+            crate::out_of_flow::place_static_after_lines(&mut self.tree, id);
         }
         // New glyphs are a paint change whether or not the root's box
         // moved: a span that left the line (`display: none`) or changed
@@ -2858,18 +2863,19 @@ impl RinchDocument {
                     // end the run the same wrong way.
                     //
                     // Where it stood in the run is kept, for its static
-                    // position (#632) — once the run has content: before
-                    // that, Taffy's sibling order already puts the box at
-                    // the top of the run's box.
+                    // position (#632) — before the run's first member too:
+                    // Taffy's sibling order puts such a box at the top of
+                    // the run's box, but an inline-level one starts the
+                    // first line, which `text-align` moves. A block that
+                    // arrives while the run is still empty takes the boxes
+                    // before it out again: they stand in no line.
                     InlineFlowRole::OutOfFlow => {
                         // (A box hoisted out of an inline element (#591)
                         // is a unit right after that element, so it is kept
                         // here too; the walk of the element meets it first,
                         // in its real place, and the first note is the one
                         // read.)
-                        if !current_run.is_empty() {
-                            current_out_of_flow.push((current_run.len(), child_id));
-                        }
+                        current_out_of_flow.push((current_run.len(), child_id));
                         continue;
                     }
                     InlineFlowRole::Comment | InlineFlowRole::NoBox => {
@@ -2888,6 +2894,8 @@ impl RinchDocument {
                                 std::mem::take(&mut current_run),
                                 std::mem::take(&mut current_out_of_flow),
                             ));
+                        } else {
+                            current_out_of_flow.clear();
                         }
                     }
                 }

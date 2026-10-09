@@ -1052,6 +1052,7 @@ impl RinchDocument {
             let was_inline_level = self.tree.nodes[node_id]
                 .computed_style
                 .inline_level_before_blockify;
+            let old_position = self.tree.nodes[node_id].computed_style.position;
             // …and whether it was a containing block for absolute descendants.
             let was_abs_containing_block =
                 self.tree.nodes[node_id].establishes_abs_containing_block();
@@ -1424,7 +1425,8 @@ impl RinchDocument {
             // the same box. The read-back places it; ask for one.
             {
                 let node = &self.tree.nodes[node_id];
-                if was_inline_level != node.computed_style.inline_level_before_blockify
+                if (was_inline_level != node.computed_style.inline_level_before_blockify
+                    || old_position != node.computed_style.position)
                     && node.is_out_of_flow()
                 {
                     self.tree.layout_dirty = true;

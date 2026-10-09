@@ -284,7 +284,7 @@ so a `top: 0` overlay slides underneath the bar. The bar publishes its height as
 `--rinch-window-top-inset`, and full-height overlays should offset by it:
 
 ```rust
-div { style: "position: fixed; top: var(--rinch-window-top-inset, 0px); bottom: 0;" }
+div { style: "position: fixed; top: var(--rinch-window-top-inset, 0px); bottom: 0; left: 0; right: 0;" }
 ```
 
 `Drawer`, `Modal`, and top-anchored `Notification`s already handle this. See

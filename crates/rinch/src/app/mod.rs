@@ -187,6 +187,8 @@ mod repaint_old_rect_tests;
 mod review_1429_pimble_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod review_1481_probe_tests;
+#[cfg(all(test, software_shell))]
+mod review_1494_tests;
 #[cfg(test)]
 mod right_press_click_1093_tests;
 #[cfg(test)]
