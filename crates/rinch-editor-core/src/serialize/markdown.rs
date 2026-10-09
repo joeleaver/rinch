@@ -2592,6 +2592,30 @@ mod tests {
         assert!(md.contains("![logo](a.png)"), "{md}");
     }
 
+    /// Markdown has nowhere to put an image's `board` or `width`: the image
+    /// is written as one without them.
+    #[test]
+    fn an_images_board_and_width_are_not_written() {
+        let schema = s();
+        let img = schema
+            .create_node(
+                "image",
+                Attrs::from_iter([
+                    ("src", AttrValue::from("a.png")),
+                    ("alt", AttrValue::from("logo")),
+                    ("board", AttrValue::from("b1")),
+                    ("width", AttrValue::Int(320)),
+                ]),
+                Fragment::empty(),
+            )
+            .unwrap();
+        let para = schema
+            .branch("paragraph", Fragment::from_node(img))
+            .unwrap();
+        let doc = schema.branch("doc", Fragment::from_node(para)).unwrap();
+        assert_eq!(doc_to_markdown(&doc), "![logo](a.png)");
+    }
+
     #[test]
     fn empty_input_is_one_empty_paragraph() {
         let schema = s();

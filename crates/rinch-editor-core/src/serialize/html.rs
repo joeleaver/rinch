@@ -206,18 +206,39 @@ fn align_style_attr(node: &Node) -> String {
 }
 
 /// A void/self-closing element (hr, img, br) with its declared string attrs.
+/// An image's `board` is written as `data-board` (it is no HTML attribute)
+/// and its `width`, when positive, as `width`.
 fn void_element(node: &Node) -> String {
     let tag = primary_tag(node.node_type());
+    let image = node.type_name() == "image";
     let mut s = format!("<{tag}");
     for (k, v) in node.attrs().iter() {
-        if let Some(val) = v.as_str()
+        if image && k == "width" {
+            if let Some(width) = v.as_int().filter(|w| *w > 0) {
+                s.push_str(&format!(" width=\"{width}\""));
+            }
+        } else if let Some(val) = v.as_str()
             && !val.is_empty()
         {
-            s.push_str(&format!(" {k}=\"{}\"", escape_attr(val)));
+            let name = if image && k == "board" {
+                IMAGE_BOARD
+            } else {
+                k
+            };
+            s.push_str(&format!(" {name}=\"{}\"", escape_attr(val)));
         }
     }
     s.push('>');
     s
+}
+
+/// The HTML attribute an image's `board` is written to and read from.
+pub(super) const IMAGE_BOARD: &str = "data-board";
+
+/// An `<img width>` the import keeps: a whole number of CSS pixels, 1 or more
+/// (`"320"`, not `"320px"` or `"50%"`, which HTML does not mean either).
+fn image_width(value: &str) -> Option<i64> {
+    value.trim().parse::<i64>().ok().filter(|w| *w > 0)
 }
 
 /// The DOM element tag name a **non-text** node renders to — the schema's
@@ -1549,6 +1570,12 @@ impl<'a> HtmlParser<'a> {
                 if let Some(title) = attr(attributes, "title").filter(|v| !v.is_empty()) {
                     pairs.push(("title", AttrValue::from(title)));
                 }
+                if let Some(board) = attr(attributes, IMAGE_BOARD).filter(|v| !v.is_empty()) {
+                    pairs.push(("board", AttrValue::from(board)));
+                }
+                if let Some(width) = attr(attributes, "width").and_then(image_width) {
+                    pairs.push(("width", AttrValue::Int(width)));
+                }
                 let img = self.make_node(nt, Attrs::from_iter(pairs), Fragment::empty())?;
                 Ok(Some(if active.is_empty() {
                     img
@@ -2003,7 +2030,8 @@ pub(crate) enum DroppedAttr {
 
 /// The first attribute in `html` that [`slice_from_html`] would not carry into
 /// the document, for the tags a table block may hold: `href`/`title`/`target`
-/// (`rel` is the writer's own) on `<a>`, `src`/`alt`/`title` on `<img>`,
+/// (`rel` is the writer's own) on `<a>`, `src`/`alt`/`title`/`data-board` and
+/// a whole-pixel `width` on `<img>`,
 /// `colspan`/`rowspan` in range on a cell, `style` holding only `text-align` on
 /// a paragraph or heading, `start` on `<ol>`, and a `style` of safe colours on
 /// `<span>` (`color`, `background-color`) and `<mark>` (`background-color`).
@@ -2030,9 +2058,9 @@ pub(crate) fn dropped_table_attr(html: &str) -> Option<DroppedAttr> {
                 ("img", "src") if !is_safe_url(value, true) => {
                     return Some(DroppedAttr::UnsafeImage);
                 }
-                ("a", "href" | "title" | "target" | "rel") | ("img", "src" | "alt" | "title") => {
-                    true
-                }
+                ("a", "href" | "title" | "target" | "rel")
+                | ("img", "src" | "alt" | "title" | IMAGE_BOARD) => true,
+                ("img", "width") => image_width(value).is_some(),
                 ("td" | "th", "colspan") => value
                     .trim()
                     .parse::<u32>()
@@ -2477,6 +2505,69 @@ mod tests {
             ]),
         );
         assert_eq!(node_to_html(&para), r#"<p><img src="a.png"><br></p>"#);
+    }
+
+    /// An image's `board` and `width` survive copy and paste, which is HTML:
+    /// `board` as `data-board`, `width` as HTML's own whole-pixel `width`.
+    #[test]
+    fn an_images_board_and_width_round_trip_through_html() {
+        let schema = s();
+        let img = schema
+            .create_node(
+                "image",
+                Attrs::from_iter([
+                    ("src", AttrValue::from("a.png")),
+                    ("alt", AttrValue::from("a cat")),
+                    ("board", AttrValue::from("3f9c\"<b>")),
+                    ("width", AttrValue::Int(320)),
+                ]),
+                Fragment::empty(),
+            )
+            .unwrap();
+        let para = schema
+            .branch("paragraph", Fragment::from_node(img.clone()))
+            .unwrap();
+        let html = node_to_html(&para);
+        assert!(
+            html.contains(r#"data-board="3f9c&quot;&lt;b&gt;""#),
+            "{html}"
+        );
+        assert!(html.contains(r#"width="320""#), "{html}");
+        assert!(!html.contains(" board="), "{html}");
+        let slice = slice_from_html(&schema, &html).unwrap();
+        let back = slice.content.child(0).child(0);
+        assert_eq!(back.attrs(), img.attrs(), "{html}");
+
+        // Without them the markup is what it always was.
+        let plain = schema
+            .create_node(
+                "image",
+                Attrs::from_iter([("src", AttrValue::from("a.png"))]),
+                Fragment::empty(),
+            )
+            .unwrap();
+        let para = schema
+            .branch("paragraph", Fragment::from_node(plain))
+            .unwrap();
+        assert_eq!(node_to_html(&para), r#"<p><img src="a.png"></p>"#);
+    }
+
+    #[test]
+    fn an_img_width_is_kept_only_as_whole_pixels() {
+        let schema = s();
+        let width = |w: &str| {
+            let html = format!(r#"<p><img src="a.png" width="{w}"></p>"#);
+            let slice = slice_from_html(&schema, &html).unwrap();
+            slice.content.child(0).child(0).attrs().get_int("width")
+        };
+        assert_eq!(width("320"), Some(320));
+        assert_eq!(width(" 64 "), Some(64));
+        for dropped in ["0", "-5", "50%", "320px", "1.5", ""] {
+            assert_eq!(width(dropped), None, "{dropped:?}");
+        }
+        // And an empty `data-board` is no board.
+        let slice = slice_from_html(&schema, r#"<p><img src="a.png" data-board=""></p>"#).unwrap();
+        assert_eq!(slice.content.child(0).child(0).attrs().get("board"), None);
     }
 
     #[test]

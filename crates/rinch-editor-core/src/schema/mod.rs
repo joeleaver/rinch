@@ -215,6 +215,14 @@ impl Schema {
             spec.attrs.insert("src".into(), AttrSpec::required());
             spec.attrs.insert("alt".into(), AttrSpec::optional(""));
             spec.attrs.insert("title".into(), AttrSpec::optional(""));
+            // Two attributes the editor keeps and merges but does not interpret
+            // beyond showing them. `board` is an app's id for something drawn
+            // over the picture (written to the host element and to HTML as
+            // `data-board`); `width` is the width the picture is shown at, in
+            // CSS pixels (absent or not positive: its natural width, capped by
+            // the stylesheet). Markdown carries neither.
+            spec.attrs.insert("board".into(), AttrSpec::optional(""));
+            spec.attrs.insert("width".into(), AttrSpec::optional(0i64));
             spec.parse_html_tags = vec!["img".into()];
             spec
         });
@@ -785,6 +793,8 @@ mod tests {
         let image = schema.node("image").unwrap();
         assert!(image.attrs["src"].required);
         assert!(!image.attrs["alt"].required);
+        assert!(!image.attrs["board"].required);
+        assert_eq!(image.attrs["width"].default, Some(AttrValue::Int(0)));
     }
 
     #[test]
