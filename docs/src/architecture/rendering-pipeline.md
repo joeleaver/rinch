@@ -149,7 +149,8 @@ narrower than the box, so the cap can bind. The min-content size is measured
 only when a line narrower than the box asks for it, after the compute that
 asked (a measure cannot start a compute), and the compute then runs again,
 followed by the pass once more: a pass that found such a request is looked at
-again after its compute, up to four passes, and one that found none is
+again after its compute (until no measure asks any more;
+`ifc::MAX_INLINE_ROUNDS` only guards against a cycle), and one that found none is
 followed by a single compute as before. A component
 that declares `display: inline-flex` —
 `Badge`, `Button` and the rest of the list in CLAUDE.md — is one of these

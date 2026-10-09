@@ -671,8 +671,10 @@ differs, each with its issue:
   wraps in what that gives. Two things in this corner are not a browser's
   yet. A box whose own `min-width` or `max-width` is a **percentage**, or
   whose `width` is `fit-content` or a percentage, still contributes the
-  size it currently has to such a container, as before, so it can come out
-  wider than a browser's there.
+  size it currently has to such a container, as before, so it is not a
+  browser's there: a `width: fit-content` box keeps its full width, and a
+  `max-width: 80%` box comes out narrower than a browser's and narrower
+  again on each relayout (older than #1476).
   And an absolute box with only `left` (or only `right`) set is shrunk to
   fit its parent's whole width, not that width less the inset (#1404).
   A box that fits within a pixel of its containing block is left unwrapped

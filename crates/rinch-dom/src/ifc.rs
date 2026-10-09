@@ -343,11 +343,10 @@ pub(crate) fn break_lines_hanging_spaces(
 
 /// How many times `resolve_layout` runs `resolve_percentage_inline_blocks`
 /// and the root compute after it, at most (#1476). A pass is followed by
-/// another only when it found a min-content request, and a box is asked for
-/// once per layout per level of content-sized container around it, so the
-/// number of rounds follows the nesting depth of such containers (two per
-/// level, measured); the limit is a guard against a cycle, not a budget. A
-/// layout that stops at it is not a fixpoint: the next one carries on.
+/// another only when it found a min-content request, so the rounds end when
+/// no measure asks any more; the limit is a guard against a cycle, not a
+/// budget. A layout that stops at it is not a fixpoint: the next one
+/// carries on.
 pub(crate) const MAX_INLINE_ROUNDS: u32 = 64;
 
 /// Whether an atomic inline whose max-content width is `max` fits a line

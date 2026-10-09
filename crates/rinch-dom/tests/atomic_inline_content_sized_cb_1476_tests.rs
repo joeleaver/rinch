@@ -303,7 +303,7 @@ const GAPS: &[(&str, &str, &str, &str, &str)] = &[
         r##"<div style="width:400px;display:flex"><div data-m="f"><span data-m="t" style="display:inline-block;max-width:80%">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
         "f=278.0x60.0 t=278.0x60.0",
         "f=400.0x40.0 t=320.0x40.0",
-        "a percentage `max-width` is not plain shrink-to-fit: the box is lined up at the size it has, which its own cyclic percentage shrinks (the #1293 class)",
+        "a percentage `max-width` is not plain shrink-to-fit: the box is lined up at the size it has, which its own cyclic percentage shrinks on every layout (the #1293 class; this is the first layout's answer, and main's)",
     ),
     (
         "d04_fit_content_in_flex_item",
@@ -437,7 +437,9 @@ fn a_history_of_resizes_and_edits_equals_a_fresh_layout() {
             doc.resolve_layout(800.0, 600.0 + tick);
             let again = dump(doc);
             if again != inc {
-                bad.push(format!("{name} {what}: first[{inc}] laid out again[{again}]"));
+                bad.push(format!(
+                    "{name} {what}: first[{inc}] laid out again[{again}]"
+                ));
             }
         };
         for width in [600, 300, 700, 60, 400, 545, 543, 400] {
@@ -625,7 +627,33 @@ fn a_box_in_a_flex_item_in_an_ancestor_resolved_absolute_is_capped_at_once() {
     );
     let mut doc = lay_out(&html);
     let first = dump(&doc);
-    assert!(close("f=400.0x100.0 t=400.0x40.0 u=400.0x100.0", &first), "{first}");
+    assert!(
+        close("f=400.0x100.0 t=400.0x40.0 u=400.0x100.0", &first),
+        "{first}"
+    );
+    doc.resolve_layout(800.0, 601.0);
+    assert_eq!(dump(&doc), first);
+}
+
+/// The same alternation, needed **twice** at that site: an absolute box
+/// inside the capped box itself, resolved against it through a static
+/// parent. Capping the box changes the absolute box's containing block, so
+/// its size is baked again and the box re-measured as `auto` — which drops
+/// its min-content width, since something inside it changed — and the
+/// compute after that asks for it again: one pass to measure it, one more
+/// to cap the box. With one pass there the box is left at its max-content
+/// width and the absolute fixpoint never settles. Chrome 153: 300 x 40 all.
+#[test]
+fn a_box_holding_an_ancestor_resolved_absolute_is_capped_in_a_flex_item() {
+    let html = format!(
+        r#"<div style="width:300px;display:flex"><div data-m="u"><span data-m="o" style="display:inline-block;position:relative">{L}<div><div data-m="a" style="position:absolute;inset:0"></div></div></span></div></div>"#
+    );
+    let mut doc = lay_out(&html);
+    let first = dump(&doc);
+    assert!(
+        close("o=300.0x40.0 u=300.0x40.0 a=300.0x40.0", &first),
+        "{first}"
+    );
     doc.resolve_layout(800.0, 601.0);
     assert_eq!(dump(&doc), first);
 }
