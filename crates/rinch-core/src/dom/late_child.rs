@@ -72,13 +72,28 @@
 //! - **`rinch/src/app/select_widget.rs`'s popup teardown**, which `remove_node`s
 //!   a panel and a backdrop it mounted into `<body>` itself. Same reason.
 //!
-//! - **Text written over an element's children** — `NodeHandle::set_text` and
-//!   a batched `DomUpdate::SetText` both reach `set_text_content`, which on
-//!   `rinch-dom` orphans every child of an element, and neither fires the
-//!   removal half. This one *can* take children out of a registered container
-//!   (issue #1440; measured on `rinch-dom`, and `MockDomDocument` keeps the
-//!   children, so no test here shows it). `set_inner_html` replaces a child
-//!   list the same way.
+//! - **A batched `DomUpdate::SetText` on an element with children**
+//!   ([`UpdateBatch::apply`](super::UpdateBatch::apply)). `set_text_content`
+//!   on an element replaces its child list with the text, so this one *can*
+//!   take children out of a registered container, and it tells nobody: `apply`
+//!   is handed the document already mutably borrowed, and an observer edits
+//!   the tree through `NodeHandle`s, which borrow it again. Use
+//!   [`NodeHandle::set_text`], which does tell (below).
+//!
+//! # Writes that replace a child list
+//!
+//! [`NodeHandle::set_text`] on an **element** and
+//! [`NodeHandle::set_inner_html`] replace every child the node has, and fire
+//! the removal half for it when it had any (issue #1440): once, with the node
+//! itself, which is the parent the children left. `set_text` asks the document
+//! afterwards whether the list changed (`rinch-dom` declines a write of the
+//! text the element's one text child already holds); `set_inner_html` frees
+//! the children and always tells. Neither fires the **insertion** half for
+//! what arrives: the text has no node of its own in a browser, and markup
+//! parsed by `set_inner_html` is not reported — a container whose items are
+//! written as an HTML string does not give them its default.
+//! `set_inner_html` also drops the observers registered on the nodes it
+//! frees, as a discard drops its node's.
 //!
 //! [`UpdateBatch`](super::UpdateBatch) used to be on this list for four
 //! structural `DomUpdate` variants that took arbitrary ids; #756 removed them,
@@ -362,6 +377,64 @@ pub(super) fn notify_vacated(vacated: Option<&NodeHandle>, landed_in: &NodeHandl
         && vacated.node_id() != landed_in.node_id()
     {
         notify_removed(vacated);
+    }
+}
+
+/// The children `node` has now, when a write that **replaces its child list**
+/// (`NodeHandle::set_text` on an element, `NodeHandle::set_inner_html`) could
+/// take them out from under a removal observer — issue #1440.
+///
+/// `None` when nothing on the thread watches for removals, during a dispatch,
+/// and for a node with no children (a text node, which is what every reactive
+/// `{|| …}` in `rsx!` writes to). So a write nobody could be told about costs
+/// the `Cell` read and no child list.
+pub(super) fn children_at_stake(node: &NodeHandle) -> Option<Vec<NodeId>> {
+    if count_of(Half::Removed) == 0 || DISPATCHING.with(|d| d.get()) {
+        return None;
+    }
+    let children = node.doc_upgrade()?.borrow().get_children(node.node_id());
+    (!children.is_empty()).then_some(children)
+}
+
+/// Tell the observers above `node` that children left it, after a text write
+/// that had `before` ([`children_at_stake`]) to lose.
+///
+/// Asked of the document rather than assumed, because a backend may decline
+/// the write: `rinch-dom` returns early when the element's one text child
+/// already holds this text, and the child list is then the one it was.
+pub(super) fn notify_children_replaced(node: &NodeHandle, before: Option<Vec<NodeId>>) {
+    let Some(before) = before else {
+        return;
+    };
+    let Some(doc) = node.doc_upgrade() else {
+        return;
+    };
+    let after = doc.borrow().get_children(node.node_id());
+    if after != before {
+        notify_removed(node);
+    }
+}
+
+/// Drop the observers registered on any node **beneath** `node`, before a
+/// write that frees those nodes (`NodeHandle::set_inner_html`).
+///
+/// The same reason [`forget_node`] exists: `rinch-dom` hands a freed slab id
+/// to the next node it mints — the very markup the write parses — and an
+/// observer left under that id would answer for a node that is not its
+/// container.
+pub(super) fn forget_descendants(node: &NodeHandle) {
+    if count_of(Half::Inserted) == 0 && count_of(Half::Removed) == 0 {
+        return;
+    }
+    let Some(doc) = node.doc_upgrade() else {
+        return;
+    };
+    let doc_key = node.doc_key();
+    let mut stack = doc.borrow().get_children(node.node_id());
+    while let Some(id) = stack.pop() {
+        forget((doc_key, id), Half::Inserted);
+        forget((doc_key, id), Half::Removed);
+        stack.extend(doc.borrow().get_children(id));
     }
 }
 
