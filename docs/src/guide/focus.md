@@ -789,9 +789,17 @@ is blurred, with the document free, and then the node goes. So:
 - a verb the browser refuses (an `insert_before` whose reference is not a child
   of the parent, a node appended into itself) moves nothing and keeps the
   focus;
-- **a moved node loses the focus**, as it does in a browser. Desktop keeps the
-  focus across a move. Call `focus()` on it again after the move if it should
-  keep the keyboard on the web too.
+- **a node moved inside the document keeps the focus** where the browser has
+  `Node.moveBefore` (Chrome 133 and later; check your other target browsers),
+  as it always has on desktop. `append_child`, `insert_before` and
+  `insert_after` of a node that is already in the document — a keyed `for`
+  moving a row — are then that call: no focus event fires, an open `Select` in
+  the row stays open, an `<iframe>` in it is not reloaded and a scroller in it
+  keeps its offset (measured in Chrome 153). In a browser without the method
+  the move is a removal and an insertion, **the moved node loses the focus**
+  and the list above applies; call `focus()` on it again after the move if it
+  must keep the keyboard there. A move into or out of a detached subtree, and
+  `replace_with`, take that path in every browser.
 
 Three attribute writes can cost the focused element its focus in place:
 `hidden` on it, and removing the `tabindex` or `contenteditable` that made it

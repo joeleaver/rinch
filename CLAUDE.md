@@ -2143,8 +2143,22 @@ A modified field's `onchange` runs from that blur only while its handler is
 alive: a field the hidden branch built has had it freed first (#141 order). The listeners see the node still in place and
 not yet retired, the mutation and the document's maps stay one synchronous
 step, and Firefox, which fires nothing for a removed node, gets the same
-`focusout`. A moved node loses the focus on the web, as in a browser (desktop
-keeps it). Chrome also blurs inside three attribute writes on the focused
+`focusout`. **A move inside the document keeps the focus where the browser has
+`Node.moveBefore`** (#1483), as desktop always has (its focus is the arbiter's
+own state, keyed by node): `WebDocument::append_child` / `insert_before` /
+`insert_child` call it through `insert_or_move` when `moves_in_place` holds
+(the method exists, looked up once per page; child and parent both connected,
+one document; the parent an element, the child an element or character data),
+and the `NodeHandle` insertion verbs ask the same predicate through
+`DomDocument::moves_keeping_focus` (default `false`) and release nothing — the
+two must stay one predicate, or the old call runs listeners under the borrow.
+Measured in Chrome 153: no `blur`/`focusout`, selection kept, an open
+`Select`'s list and key entry live, an `<iframe>` not reloaded, `scrollTop`
+kept. A browser without the method, a move into or out of a detached subtree,
+`replace_with`'s replacement and a refused `moveBefore` take the blur-first
+`insertBefore`, where the moved node loses the focus. Cost: one `isConnected`
+read per insertion. Pins: `rinch-web/tests/move_keeps_focus_1483.rs` (branches
+on the feature, not the engine). Chrome also blurs inside three attribute writes on the focused
 element itself — `hidden`, and `tabindex` / `contenteditable` removed from an
 element focusable only through it (measured in 153; `disabled`, `inert`,
 `display: none` and any of them on an ancestor fire nothing inside the write)
