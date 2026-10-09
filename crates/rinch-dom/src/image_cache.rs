@@ -604,21 +604,33 @@ pub fn decode_data_uri(src: &str) -> Option<Vec<u8>> {
 mod reload_queue_tests {
     //! The reload queue's own contract (issue #1473), on document keys no
     //! `RinchDocument` has: other tests' documents are live in this binary.
+    //! A reload reaches every live document, so these run one at a time and
+    //! each reads back only the sources it named (`q<n>:`).
     use super::*;
 
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
     /// A key registered as live for the test, and purged when it ends.
-    struct Live(u64);
+    struct Live(u64, &'static str);
     impl Live {
-        fn new(n: u64) -> Self {
+        fn new(n: u64, mine: &'static str) -> Self {
             let key = u64::MAX - 0x1473_0000 - n;
             register_document(key);
-            Live(key)
+            Live(key, mine)
         }
         fn taken(&self) -> Vec<String> {
             take_pending_reloads(self.0)
                 .iter()
+                .filter(|s| s.starts_with(self.1))
                 .map(|s| s.to_string())
                 .collect()
+        }
+        fn queued(&self) -> usize {
+            let reloads = PENDING_RELOADS.lock().unwrap_or_else(|e| e.into_inner());
+            reloads.get(&self.0).map_or(0, |queue| {
+                assert_eq!(queue.order.len(), queue.queued.len(), "in step");
+                queue.order.iter().filter(|s| s.starts_with(self.1)).count()
+            })
         }
     }
     impl Drop for Live {
@@ -629,12 +641,13 @@ mod reload_queue_tests {
 
     #[test]
     fn sources_are_taken_in_the_order_first_named_each_once() {
-        let doc = Live::new(1);
-        for src in ["q:c", "q:a", "q:c", "q:b", "q:a", "q:c"] {
+        let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        let doc = Live::new(1, "q1:");
+        for src in ["q1:c", "q1:a", "q1:c", "q1:b", "q1:a", "q1:c"] {
             reload_image(src);
         }
-        assert_eq!(pending_reload_count(doc.0), 3);
-        assert_eq!(doc.taken(), ["q:c", "q:a", "q:b"]);
+        assert_eq!(doc.queued(), 3);
+        assert_eq!(doc.taken(), ["q1:c", "q1:a", "q1:b"]);
         assert!(!has_pending(doc.0), "the take empties it");
         assert_eq!(doc.taken(), Vec::<String>::new());
     }
@@ -643,27 +656,30 @@ mod reload_queue_tests {
     /// again is queued again, not mistaken for still queued.
     #[test]
     fn a_source_named_again_after_a_drain_is_queued_again() {
-        let doc = Live::new(2);
-        reload_image("q:a");
-        reload_image("q:b");
-        assert_eq!(doc.taken(), ["q:a", "q:b"]);
-        reload_image("q:b");
+        let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        let doc = Live::new(2, "q2:");
+        reload_image("q2:a");
+        reload_image("q2:b");
+        assert_eq!(doc.taken(), ["q2:a", "q2:b"]);
+        reload_image("q2:b");
         assert!(has_pending(doc.0));
-        assert_eq!(doc.taken(), ["q:b"]);
+        assert_eq!(doc.taken(), ["q2:b"]);
     }
 
     #[test]
     fn each_document_holds_and_gives_up_its_own() {
-        let a = Live::new(3);
-        let b = Live::new(4);
-        reload_image("q:x");
+        let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        let a = Live::new(3, "q3:");
+        let b = Live::new(4, "q3:");
+        reload_image("q3:x");
+        assert_eq!(b.queued(), 1, "control: it was queued for both");
         let gone = b.0;
         drop(b);
         assert_eq!(pending_reload_count(gone), 0, "purged with the document");
         assert!(!has_pending(gone));
-        reload_image("q:y");
+        reload_image("q3:y");
         assert_eq!(pending_reload_count(gone), 0, "and never queued for again");
-        assert_eq!(a.taken(), ["q:x", "q:y"]);
+        assert_eq!(a.taken(), ["q3:x", "q3:y"]);
     }
 }
 
