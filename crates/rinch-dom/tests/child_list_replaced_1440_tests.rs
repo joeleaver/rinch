@@ -165,3 +165,30 @@ fn html_written_over_an_elements_children_tells_the_removal_observer() {
         "the observers registered on the freed child went with it"
     );
 }
+
+/// The list read back after `set_inner_html` cannot say whether a child left:
+/// `rinch-dom` frees the old child and hands its id to the node it parses, so
+/// one child replaced by one element reads back as the very same id list.
+#[test]
+fn html_that_re_issues_the_same_child_ids_still_tells_the_removal_observer() {
+    let f = fixture();
+    f.kids[1].remove();
+    let before: Vec<_> = f.wrapper.children().iter().map(|c| c.node_id()).collect();
+    assert_eq!(before, vec![f.kids[0].node_id()], "precondition: one child");
+    let seen = watch(&f.root);
+
+    f.wrapper.set_inner_html("<i></i>");
+
+    let after: Vec<_> = f.wrapper.children().iter().map(|c| c.node_id()).collect();
+    assert_eq!(
+        after, before,
+        "the fixture is only a test of this while the parsed <i> takes the \
+         freed span's id"
+    );
+    assert_eq!(f.wrapper.children()[0].tag_name().as_deref(), Some("i"));
+    assert_eq!(
+        *seen.borrow(),
+        vec![f.wrapper.node_id()],
+        "the span left, whatever the ids say"
+    );
+}
