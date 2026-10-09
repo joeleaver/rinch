@@ -2494,3 +2494,216 @@ fn spans_in_one_paragraph_are_measured_in_one_linear_walk() {
         ],
     );
 }
+
+/// A row of a list, as an app writes one: a flex row holding a chip in a
+/// cell, a label, and a second chip in a cell. The chips are atomic inlines
+/// on the lines of **flex items**, whose automatic minimum size is a
+/// min-content measure — so each chip is asked for its min-content width
+/// (#1476), once.
+fn chip_rows() -> (RinchDocument, NodeId, NodeId) {
+    let mut doc = doc_with(
+        ".list { width: 380px; } .row { display: flex; } .row.hot { color: rgb(200, 10, 10); } \
+         .chip { display: inline-flex; padding: 0 4px; } .tag { display: inline-block; }",
+    );
+    let body = doc.body();
+    let list = el(&mut doc, body, "div", "list");
+    let mut first = None;
+    for _ in 0..10 {
+        let row = el(&mut doc, list, "div", "row");
+        let cell = el(&mut doc, row, "div", "");
+        let chip = el(&mut doc, cell, "span", "chip");
+        let chip_text = text(&mut doc, chip, "Needs review");
+        let label = el(&mut doc, row, "div", "");
+        text(&mut doc, label, "a label");
+        let cell = el(&mut doc, row, "div", "");
+        let tag = el(&mut doc, cell, "span", "tag");
+        text(&mut doc, tag, "two words");
+        first.get_or_insert((row, chip_text));
+    }
+    let (row, chip_text) = first.unwrap();
+    (doc, row, chip_text)
+}
+
+/// The first layout of ten such rows: each of the twenty chips is measured,
+/// then measured at min-content and as `auto` again when its flex item asks
+/// (three computes a chip where main has one), and the root is computed a
+/// second time with the real widths. main: `inline_block_computes` 20,
+/// `taffy_root_computes` 1, `shape_atomic_inline` 50, `shape_measure_ifc` 90,
+/// `taffy_measure_calls` 120.
+#[test]
+fn chips_in_flex_items_first_layout() {
+    let (mut doc, _, _) = chip_rows();
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "chips in flex items, first layout",
+        &s,
+        &[
+            (StyleResolves, 62),
+            (ElementsCascaded, 63),
+            (StyleNodesVisited, 2966),
+            (FullStyleWalks, 62),
+            (TaffyStyleSyncs, 63),
+            (TaffyStyleChanges, 62),
+            (ShapeMeasureIfc, 150),
+            (ShapeIfcBuild, 40),
+            (ShapeAtomicInline, 100),
+            (IfcMeasureCacheHits, 50),
+            (IfcMeasureInvalidations, 131),
+            (IfcSignatureChanges, 40),
+            (IfcPhantomRebreaks, 40),
+            (LayoutResolves, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 2),
+            (TaffyMeasureCalls, 200),
+            (InlineBlockComputes, 60),
+        ],
+    );
+}
+
+/// A colour-only hover of one row costs what it costs with no chip in a
+/// flex item: the chips are measured again (their glyphs are new), their
+/// min-content widths stand, and nothing asks for them — no min-content
+/// compute, no second root compute.
+#[test]
+fn a_colour_hover_on_a_row_of_chips_in_flex_items() {
+    let (mut doc, row, _) = chip_rows();
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.tree.perf.reset();
+    doc.set_attribute(row, "class", "row hot");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "colour hover on a row of chips in flex items",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 6),
+            (StyleNodesVisited, 6),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 6),
+            (ShapeIfcBuild, 4),
+            (IfcMeasureInvalidations, 6),
+            (LayoutResolves, 1),
+            (LayoutSkippedTextOnly, 1),
+        ],
+    );
+}
+
+/// The same hover in a frame that also lays out (the list is resized by a
+/// pixel): the row's two chips are measured again, once each, as on main.
+/// Their min-content widths stand, since a colour re-wraps nothing — dropped,
+/// each chip paid the min-content compute and the `auto` measure after it
+/// (6 computes) and the root was computed twice (review of #1488).
+#[test]
+fn a_colour_hover_with_a_relayout_on_a_row_of_chips_in_flex_items() {
+    let (mut doc, row, _) = chip_rows();
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.tree.perf.reset();
+    doc.set_attribute(row, "class", "row hot");
+    let list = doc.tree.get(row.0).unwrap().parent.unwrap();
+    doc.set_style(NodeId(list), "width", "379px");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "colour hover with a relayout on a row of chips in flex items",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 7),
+            (StyleNodesVisited, 16),
+            (StyleInvalidations, 2),
+            (TaffyStyleSyncs, 7),
+            (TaffyStyleChanges, 1),
+            (ShapeMeasureIfc, 9),
+            (ShapeIfcBuild, 4),
+            (ShapeAtomicInline, 5),
+            (IfcMeasureCacheHits, 57),
+            (IfcMeasureInvalidations, 6),
+            (IfcPhantomRebreaks, 2),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 66),
+            (InlineBlockComputes, 2),
+        ],
+    );
+}
+
+/// A text edit in one chip: its min-content width is measured again (the
+/// compute, and the `auto` measure after it), and the root computed twice.
+/// main: `inline_block_computes` 1, `taffy_root_computes` 1,
+/// `shape_atomic_inline` 4, `shape_measure_ifc` 3, `taffy_measure_calls` 4.
+#[test]
+fn a_text_edit_in_a_chip_in_a_flex_item() {
+    let (mut doc, _, chip_text) = chip_rows();
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.tree.perf.reset();
+    doc.set_text_content(chip_text, "Was reviewed");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "text edit in a chip in a flex item",
+        &s,
+        &[
+            (ShapeMeasureIfc, 6),
+            (ShapeIfcBuild, 1),
+            (ShapeAtomicInline, 7),
+            (IfcMeasureCacheHits, 2),
+            (IfcMeasureInvalidations, 6),
+            (IfcPhantomRebreaks, 2),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 2),
+            (TaffyMeasureCalls, 8),
+            (InlineBlockComputes, 3),
+        ],
+    );
+}
+
+/// A one-pixel resize of the list while every chip is **capped** (the list
+/// is narrower than a row's content, so each cell is narrower than its
+/// chip): each chip is resolved against a cell that moved, which is one
+/// layout at the new width (its min- and max-content widths are remembered;
+/// it was two computes until the max-content probe was skipped for a box
+/// still resolved) and a second root compute — a cost per chip per pixel,
+/// where main (whose chips are never capped, so the layout is not Chrome's)
+/// measures and shapes nothing: `inline_block_computes` 0,
+/// `taffy_root_computes` 1, no shape.
+#[test]
+fn a_one_pixel_resize_with_every_chip_capped() {
+    let (mut doc, row, _) = chip_rows();
+    let list = NodeId(doc.tree.get(row.0).unwrap().parent.unwrap());
+    doc.set_style(list, "width", "150px");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.tree.perf.reset();
+    doc.set_style(list, "width", "149px");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "one-pixel resize with every chip capped",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 11),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (ShapeMeasureIfc, 50),
+            (ShapeIfcBuild, 10),
+            (ShapeAtomicInline, 30),
+            (IfcMeasureCacheHits, 50),
+            (IfcMeasureInvalidations, 10),
+            (IfcPhantomRebreaks, 10),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 2),
+            (TaffyMeasureCalls, 100),
+            (InlineBlockComputes, 20),
+        ],
+    );
+}

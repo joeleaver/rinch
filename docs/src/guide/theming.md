@@ -662,13 +662,28 @@ differs, each with its issue:
   container is not capped by it (#1277).
 - An `inline-block` (or `inline-flex`, `inline-grid`) whose width is
   **`auto`** is shrink-to-fit since #658, as in a browser: capped at its
-  containing block, so wider content wraps there — when that block's width
-  does not itself depend on the box. Inside a **flex item**, a **grid item
-  with an `auto` track**, a **shrink-to-fit absolute box** or **another
-  `auto` atomic inline**, it is not capped yet: that container is sized from
-  the box at its full width, so neither wraps (#1476). `min-width: 0` on
-  the flex item, or `left: 0; right: 0` on the absolute box, gives the
-  container a width of its own and the browser's answer.
+  containing block, so wider content wraps there. That holds where the
+  block's own width comes from the box too (#1476): inside a **flex item**,
+  a **grid item in an `auto` track**, a **`fit-content` or `min-content`
+  block**, a **shrink-to-fit absolute box** or **another `auto` atomic
+  inline**, the container is sized from the box's min-content and
+  max-content widths (its longest word, its one-line width), and the box
+  wraps in what that gives. Two things in this corner are not a browser's
+  yet. A box whose own `min-width` or `max-width` is a **percentage**, or
+  whose `width` is `fit-content` or a percentage, still contributes the
+  size it currently has to such a container, as before, so it is not a
+  browser's there: a `width: fit-content` box keeps its full width, and a
+  `max-width: 80%` box comes out narrower than a browser's and narrower
+  again on each relayout (older than #1476). A box whose **`width`** is a
+  percentage, in a flex item or an `auto` grid track, is the same cycle:
+  its container is sized from the box and the box from its container, so
+  the first layout is not where it settles — it drifts over the next few
+  layouts, and since #1476 an `auto` box in a neighbouring item or track
+  moves with it (up to seven layouts, measured).
+  And an absolute box with only `left` (or only `right`) set is shrunk to
+  fit its parent's whole width, not that width less the inset (#1404).
+  A box that fits within a pixel of its containing block is left unwrapped
+  (a 380.9px line in a 380px block overflows by that pixel).
 
 For `min-*`/`max-*` rinch prints one line on stderr per property and keyword
 per process, so the substitution is visible rather than silent:

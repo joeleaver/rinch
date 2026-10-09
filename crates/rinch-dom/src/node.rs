@@ -876,6 +876,22 @@ pub struct Node {
     pub taffy_id: Option<taffy::NodeId>,
     /// Computed layout result.
     pub layout: LayoutResult,
+    /// For an atomic inline with an entry in
+    /// `NodeTree::keyword_inline_cb_width`: the size it had before
+    /// `resolve_percentage_inline_blocks` first resolved it against a
+    /// containing block — measured as `auto`, under max-content space, which
+    /// for an `auto`-width box is its **max-content contribution** (#1476).
+    /// `layout` is the size it has now, which that pass may have capped; an
+    /// inline formatting context asked how wide the box *could* be must line
+    /// it up at this one, or a container sized from that answer stays as
+    /// narrow as the cap made it. Not meaningful without the entry: the box
+    /// then has its natural size.
+    pub(crate) natural_inline_size: (f32, f32),
+    /// The unrounded max-content width the last shrink-to-fit resolution of
+    /// this atomic inline measured — current under the same condition as
+    /// `natural_inline_size`, and what lets a still-resolved box be resolved
+    /// against another width without measuring it again.
+    pub(crate) natural_max_width: f32,
     /// The box this node was last **painted** in, for dirty-region
     /// computation: where its old pixels are, and so what a frame that moves it
     /// has to clear.
@@ -1457,6 +1473,8 @@ impl Node {
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
             layout: LayoutResult::default(),
+            natural_inline_size: (0.0, 0.0),
+            natural_max_width: 0.0,
             prev_layout: LayoutResult::default(),
             painted: None,
             display_mode: DisplayMode::Block,
@@ -1529,6 +1547,8 @@ impl Node {
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
             layout: LayoutResult::default(),
+            natural_inline_size: (0.0, 0.0),
+            natural_max_width: 0.0,
             prev_layout: LayoutResult::default(),
             painted: None,
             display_mode,
@@ -1600,6 +1620,8 @@ impl Node {
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
             layout: LayoutResult::default(),
+            natural_inline_size: (0.0, 0.0),
+            natural_max_width: 0.0,
             prev_layout: LayoutResult::default(),
             painted: None,
             display_mode: DisplayMode::Inline,
@@ -1669,6 +1691,8 @@ impl Node {
             scroll_offset: (0.0, 0.0),
             taffy_id: None,
             layout: LayoutResult::default(),
+            natural_inline_size: (0.0, 0.0),
+            natural_max_width: 0.0,
             prev_layout: LayoutResult::default(),
             painted: None,
             display_mode: DisplayMode::Inline,
@@ -2916,6 +2940,33 @@ pub struct NodeTree {
     /// `resolve_percentage_inline_blocks` otherwise leaves alone — has to be
     /// laid out again at the width it has.
     pub(crate) auto_inline_percent_content: HashSet<RawNodeId>,
+    /// The **min-content** width (unrounded) of
+    /// an `auto`-width atomic inline, measured the first time an inline
+    /// formatting context was asked for a width the box does not fit in
+    /// (#1476) — its min-content contribution, and the floor of its
+    /// shrink-to-fit width. Absent until asked for: a box that fits every
+    /// width it is lined up in never pays the compute. Dropped when anything
+    /// inside the box changes ([`RinchDocument::mark_atomic_inline_dirty`],
+    /// and the passes that measure a changed box).
+    pub(crate) atomic_min_content: HashMap<RawNodeId, f32>,
+    /// The boxes whose `atomic_min_content` entry a change inside them
+    /// dropped and that have not been measured again yet (review 2 of
+    /// #1488). Measured again at the size it had, such a box still
+    /// contributes something else to a line narrower than it, so the line
+    /// around it has to be measured again whether or not the box moved.
+    pub(crate) atomic_min_dropped: HashSet<RawNodeId>,
+    /// The boxes a measure function wanted an `atomic_min_content` entry
+    /// for and did not find. A measure runs inside a Taffy compute and
+    /// cannot start another, so it lines the box up at its max-content size
+    /// and asks here; `resolve_percentage_inline_blocks` measures them after
+    /// the compute and has it run again.
+    pub(crate) atomic_min_requests: std::cell::RefCell<Vec<RawNodeId>>,
+    /// Whether the last `resolve_percentage_inline_blocks` found a box in
+    /// `atomic_min_requests`: a measure before it lined that box up at a
+    /// stand-in size, so the compute after it can size a container
+    /// differently, and the pass has to look at the boxes once more after
+    /// that compute.
+    pub(crate) atomic_contributions_changed: bool,
     /// The nodes whose `Node::styled_unrendered` is set, for `resolve_layout`
     /// to clear after the frame's style pass.
     pub styled_unrendered: Vec<RawNodeId>,
@@ -3147,6 +3198,10 @@ impl NodeTree {
             dirty_atomic_inlines: BTreeSet::new(),
             keyword_inline_cb_width: HashMap::new(),
             auto_inline_percent_content: HashSet::new(),
+            atomic_min_content: HashMap::new(),
+            atomic_min_dropped: HashSet::new(),
+            atomic_min_requests: std::cell::RefCell::new(Vec::new()),
+            atomic_contributions_changed: false,
             styled_unrendered: Vec::new(),
             ifc_measure_cache: Default::default(),
             atomic_leaf_layouts: HashMap::new(),
@@ -3441,6 +3496,25 @@ impl NodeTree {
         }
     }
 
+    /// Test access to [`Self::atomic_min_content`] (#1476): the fixtures that
+    /// pin where an entry is dropped have to see, and plant, one.
+    #[doc(hidden)]
+    pub fn atomic_min_content_for_tests(&mut self) -> &mut HashMap<RawNodeId, f32> {
+        &mut self.atomic_min_content
+    }
+
+    /// Test access to [`Self::atomic_min_dropped`].
+    #[doc(hidden)]
+    pub fn atomic_min_dropped_for_tests(&mut self) -> &mut HashSet<RawNodeId> {
+        &mut self.atomic_min_dropped
+    }
+
+    /// Test access: have the next layout run the whole-document IFC pass.
+    #[doc(hidden)]
+    pub fn request_full_ifc_for_tests(&mut self) {
+        self.ifc_dirty = true;
+    }
+
     /// Remove a node and all its descendants from the slab.
     pub fn remove_subtree(&mut self, id: RawNodeId) {
         self.hit_cache.invalidate();
@@ -3455,6 +3529,20 @@ impl NodeTree {
             self.ifc_measure_cache.remove(node_id);
             // Nor a freshness flag meant for a now-gone `<select>` (#757).
             self.select_value_fresh.remove(node_id);
+            // Nor what was recorded about a now-gone atomic inline (#1476;
+            // the first two leaked until then, review of #1477).
+            if !self.keyword_inline_cb_width.is_empty() {
+                self.keyword_inline_cb_width.remove(node_id);
+            }
+            if !self.auto_inline_percent_content.is_empty() {
+                self.auto_inline_percent_content.remove(node_id);
+            }
+            if !self.atomic_min_content.is_empty() {
+                self.atomic_min_content.remove(node_id);
+            }
+            if !self.atomic_min_dropped.is_empty() {
+                self.atomic_min_dropped.remove(node_id);
+            }
         }
         for node_id in to_remove {
             self.nodes.remove(node_id);

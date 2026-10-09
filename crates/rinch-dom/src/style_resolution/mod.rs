@@ -1482,7 +1482,10 @@ impl RinchDocument {
             // an_inline_layout_is_built_from` is the only pin on the predicate's
             // contents.
             if text_layout_stale || animated_text_measure {
-                self.invalidate_text_measure_for_node(node_id);
+                self.invalidate_text_layout_for_node(
+                    node_id,
+                    measured_size_stale || animated_text_measure,
+                );
             }
 
             // A typography change that re-wraps the text has to re-run Taffy,
