@@ -3983,6 +3983,11 @@ one. **A failed load is cached by source** (`ImageState::Failed`) and never retr
 its own: `rinch::image::reload_image(src)` (any thread; `RinchDocument::reload_image`
 for a host holding the document) queues the source for every live document, counted by
 `image_cache::has_pending` so idle hosts wake, and `drain_pending_images` restarts it.
+The queue is per document, each with the set of what it holds, so a call costs one
+lookup per live document however many sources a document has not drained (#1473: it
+scanned the whole queue; `tests/reload_queue_cost_1473_tests.rs` pins the count,
+`image_cache::reload_queue_steps`). A document that never lays out still keeps one
+entry per distinct source reloaded, until it drains or drops.
 A failed source goes back to loading, a decoded one keeps its pixels until the new
 answer lands (and if that fails), and one whose load is in flight has that answer
 dropped and is asked for once more (`ImageCache::begin_reload` / `take_retries`), so a

@@ -8,6 +8,9 @@ use rinch_web::{EditorHandle, RootHandle, create_editor};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
 
+#[path = "support/clipboard.rs"]
+mod clipboard;
+
 wasm_bindgen_test_configure!(run_in_browser);
 
 fn document() -> web_sys::Document {
@@ -284,15 +287,41 @@ fn menu_cycle_leaves_the_editor_owning_the_keyboard() {
         before,
         "the editor still takes a key after the cycle"
     );
-    // A paste chosen from the menu while the cycle is live.
+    // Where the `q` went is where the caret is: right after it.
+    let typed_at = before
+        .bytes()
+        .zip(f.text().bytes())
+        .position(|(was, is)| was != is)
+        .expect("the q is inside the paragraph");
+    // A paste chosen from the menu after the cycle: the browser fires `paste`
+    // at the focused capture textarea, and the editor takes it.
     let before = f.text();
+    assert!(!before.contains("ZZ"), "control: nothing pasted yet");
     let dt = web_sys::DataTransfer::new().unwrap();
     dt.set_data("text/plain", "ZZ").unwrap();
-    let ci = web_sys::ClipboardEventInit::new();
-    ci.set_bubbles(true);
-    ci.set_cancelable(true);
-    ci.set_clipboard_data(Some(&dt));
-    let _ = before;
+    let paste = clipboard::clipboard_event("paste", &dt);
+    let not_cancelled = f.capture().dispatch_event(&paste).unwrap();
+    assert!(
+        !not_cancelled,
+        "the editor owns the paste: the browser's own insertion is prevented"
+    );
+    assert_eq!(
+        &before[typed_at..=typed_at],
+        "q",
+        "control: the caret's place"
+    );
+    let mut pasted = before.clone();
+    pasted.insert_str(typed_at + 1, "ZZ");
+    assert_eq!(
+        f.text(),
+        pasted,
+        "the pasted text lands at the caret, after the key typed there"
+    );
+    assert_eq!(
+        f.capture().value(),
+        pasted,
+        "the capture textarea mirrors the block: the paste is in it once"
+    );
     f.teardown();
 }
 
