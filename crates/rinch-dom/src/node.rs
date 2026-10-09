@@ -840,14 +840,16 @@ pub struct Node {
     pub taffy_id: Option<taffy::NodeId>,
     /// Computed layout result.
     pub layout: LayoutResult,
-    /// For an atomic inline: the size it had the last time it was measured
-    /// with no containing-block width — as `auto`, under max-content space —
-    /// which for an `auto`-width box is its **max-content contribution**
-    /// (#1476). `layout` is the size it has now, which
-    /// `resolve_percentage_inline_blocks` may since have capped at its
-    /// containing block; an inline formatting context asked how wide it
-    /// *could* be must line the box up at this one, or a container sized
-    /// from that answer stays as narrow as the cap made it.
+    /// For an atomic inline with an entry in
+    /// `NodeTree::keyword_inline_cb_width`: the size it had before
+    /// `resolve_percentage_inline_blocks` first resolved it against a
+    /// containing block — measured as `auto`, under max-content space, which
+    /// for an `auto`-width box is its **max-content contribution** (#1476).
+    /// `layout` is the size it has now, which that pass may have capped; an
+    /// inline formatting context asked how wide the box *could* be must line
+    /// it up at this one, or a container sized from that answer stays as
+    /// narrow as the cap made it. Not meaningful without the entry: the box
+    /// then has its natural size.
     pub(crate) natural_inline_size: (f32, f32),
     /// The box this node was last **painted** in, for dirty-region
     /// computation: where its old pixels are, and so what a frame that moves it

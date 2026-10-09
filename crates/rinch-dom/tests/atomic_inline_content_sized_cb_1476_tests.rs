@@ -503,3 +503,23 @@ fn the_min_content_size_is_measured_once_and_only_when_a_line_asks() {
     doc.resolve_layout(800.0, 601.0);
     assert_eq!(computes(&doc) - first, 2);
 }
+
+/// A flex item that becomes an atomic inline because its parent's `display`
+/// changed has never been measured as one, so it has no recorded natural
+/// size: it is lined up at the size it was laid out at. (Found by the scoped
+/// IFC oracle, seed 1129: the box around it came out empty, 2 x 2.)
+#[test]
+fn a_box_that_becomes_an_atomic_inline_by_a_restyle_is_lined_up_at_its_size() {
+    let html = |outer: &str| {
+        format!(
+            r#"<div style="width:110px"><section data-m="o" style="{outer}"><span data-m="t" style="display:inline-flex">Wavy</span></section></div>"#
+        )
+    };
+    let mut doc = lay_out(&html("display:inline-flex"));
+    let o = id(&doc, "o");
+    doc.set_attribute(o, "style", "display:inline-block; padding:1px");
+    doc.resolve_layout(800.0, 601.0);
+    let fresh = dump(&lay_out(&html("display:inline-block; padding:1px")));
+    assert_eq!(dump(&doc), fresh);
+    assert!(close("o=43.7x22.0 t=41.7x20.0", &fresh), "{fresh}");
+}

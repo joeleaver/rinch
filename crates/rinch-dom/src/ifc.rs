@@ -418,7 +418,20 @@ impl AtomicContributions<'_> {
     /// The size to line atomic inline `id` up at.
     fn size(&self, id: usize, node: &Node) -> (f32, f32) {
         let layout = (node.layout.width, node.layout.height);
-        let natural = node.natural_inline_size;
+        // Where the box was last resolved, if it has been since it was last
+        // measured as `auto`. Only then can it have another size than its
+        // natural one, and only then is the recorded one current: a box
+        // that became an atomic inline by a restyle has never been measured
+        // as one, and the size it was laid out at stands.
+        let resolved_at = if self.resolved_at.is_empty() {
+            None
+        } else {
+            self.resolved_at.get(&id).copied()
+        };
+        let natural = match resolved_at {
+            Some(_) => node.natural_inline_size,
+            None => layout,
+        };
         // A box that has the width asked for is lined up as it is: its
         // height is then the real one (a box laid out again around a capped
         // one inside it keeps its width and grows).
@@ -442,12 +455,7 @@ impl AtomicContributions<'_> {
         };
         // Resolved against exactly this width: the size it has is the answer
         // (and the one the paint layout will use).
-        if !self.resolved_at.is_empty()
-            && self
-                .resolved_at
-                .get(&id)
-                .is_some_and(|&w| (w - wrap).abs() < 0.01)
-        {
+        if resolved_at.is_some_and(|w| (w - wrap).abs() < 0.01) {
             // Capped: its margin box, as below.
             return match plain_shrink_to_fit_margins(&node.computed_style) {
                 Some(margins) if layout.0 + 0.5 < natural.0 => (layout.0 + margins, layout.1),
@@ -6095,11 +6103,6 @@ impl RinchDocument {
                 {
                     node.layout.width = layout_size.width;
                     node.layout.height = layout_size.height;
-                    // Measured as `auto`: this is the size it has before
-                    // any containing block is taken into account (#1476).
-                    if available_width.is_none() {
-                        node.natural_inline_size = (layout_size.width, layout_size.height);
-                    }
                 }
             }
 
@@ -6569,6 +6572,11 @@ impl RinchDocument {
             // measured these under MaxContent, so mark them dirty to force a
             // real re-measure.
             let _ = self.tree.taffy.mark_dirty(taffy_id);
+            // Not resolved since it was last measured as `auto`: the size
+            // it has is its natural one (#1476, `Node::natural_inline_size`).
+            if keyword_only && !self.tree.keyword_inline_cb_width.contains_key(&id) {
+                self.tree.nodes[id].natural_inline_size = before;
+            }
             self.measure_inline_blocks(&[(taffy_id, Some(available))]);
             if keyword_only {
                 self.tree.keyword_inline_cb_width.insert(id, available);
@@ -6791,7 +6799,7 @@ impl RinchDocument {
                 continue;
             }
             self.tree.atomic_min_content.insert(id, min);
-            let natural = self.tree.nodes[id].natural_inline_size.0;
+            let natural = self.tree.nodes[id].layout.width;
             let resized = self.atomic_inline_resized(id, root_id, before);
             if !resized && min.0 + 1.0 >= natural {
                 continue;
