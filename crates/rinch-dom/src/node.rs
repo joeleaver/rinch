@@ -2873,7 +2873,7 @@ pub struct NodeTree {
     /// `resolve_percentage_inline_blocks` otherwise leaves alone — has to be
     /// laid out again at the width it has.
     pub(crate) auto_inline_percent_content: HashSet<RawNodeId>,
-    /// The **min-content** size (unrounded width, height at that width) of
+    /// The **min-content** width (unrounded) of
     /// an `auto`-width atomic inline, measured the first time an inline
     /// formatting context was asked for a width the box does not fit in
     /// (#1476) — its min-content contribution, and the floor of its
@@ -2881,7 +2881,7 @@ pub struct NodeTree {
     /// width it is lined up in never pays the compute. Dropped when anything
     /// inside the box changes ([`RinchDocument::mark_atomic_inline_dirty`],
     /// and the passes that measure a changed box).
-    pub(crate) atomic_min_content: HashMap<RawNodeId, (f32, f32)>,
+    pub(crate) atomic_min_content: HashMap<RawNodeId, f32>,
     /// The boxes a measure function wanted an `atomic_min_content` entry
     /// for and did not find. A measure runs inside a Taffy compute and
     /// cannot start another, so it lines the box up at its max-content size

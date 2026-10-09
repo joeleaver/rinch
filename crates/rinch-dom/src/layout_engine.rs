@@ -410,7 +410,7 @@ impl RinchDocument {
         // it, and the pass after caps the box in it.
         // A pass that measured no such size is followed by one compute and
         // no further pass, as before.
-        let mut inline_rounds_left = 4;
+        let mut inline_rounds_left = crate::ifc::MAX_INLINE_ROUNDS;
         while inline_rounds_left > 0 && self.resolve_percentage_inline_blocks() {
             text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
             inline_rounds_left -= 1;
@@ -493,7 +493,7 @@ impl RinchDocument {
                     // The re-measure above sized a percentage atomic inline with no
                     // containing block, as the pass before the first compute does.
                     if absolutes {
-                        let mut inline_rounds_left = 4;
+                        let mut inline_rounds_left = crate::ifc::MAX_INLINE_ROUNDS;
                         while inline_rounds_left > 0 && self.resolve_percentage_inline_blocks() {
                             text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
                             inline_rounds_left -= 1;
@@ -2379,11 +2379,19 @@ impl RinchDocument {
     /// rather than work; so a property listed one predicate too wide costs a
     /// spare re-shape, and one listed too narrow leaves a box frozen.
     pub(crate) fn invalidate_text_measure_for_node(&mut self, node_id: usize) {
+        self.invalidate_text_layout_for_node(node_id, true);
+    }
+
+    /// [`Self::invalidate_text_measure_for_node`], saying whether the change
+    /// can move a size (`ComputedStyle::same_measured_text_inputs` failed) or
+    /// only re-shapes glyphs in place (a colour): see
+    /// [`Self::mark_atomic_inline_dirty_for`].
+    pub(crate) fn invalidate_text_layout_for_node(&mut self, node_id: usize, sizes: bool) {
         if !self.tree.nodes.contains(node_id) {
             return;
         }
         self.invalidate_ifc_for_node(node_id);
-        self.mark_atomic_inline_dirty(node_id);
+        self.mark_atomic_inline_dirty_for(node_id, sizes);
         for child in self.tree.nodes[node_id].children.clone() {
             let Some(child_node) = self.tree.nodes.get(child) else {
                 continue;
