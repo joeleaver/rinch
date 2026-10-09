@@ -2152,9 +2152,10 @@ one document; the parent an element, the child an element or character data),
 and the `NodeHandle` insertion verbs ask the same predicate through
 `DomDocument::moves_keeping_focus` (default `false`) and release nothing — the
 two must stay one predicate, or the old call runs listeners under the borrow.
-Measured in Chrome 153: no `blur`/`focusout`, selection kept, an open
-`Select`'s list and key entry live, an `<iframe>` not reloaded, `scrollTop`
-kept. A browser without the method, a move into or out of a detached subtree,
+Measured in Chrome 153, and in CI's Firefox 157: no `blur`/`focusout`,
+selection kept, an open `Select`'s list and key entry live, an `<iframe>` not
+reloaded; a moved scroller's `scrollTop` is kept in Chrome and reset in
+Firefox 157. A browser without the method, a move into or out of a detached subtree,
 `replace_with`'s replacement and a refused `moveBefore` take the blur-first
 `insertBefore`, where the moved node loses the focus. Cost: one `isConnected`
 read per insertion. Pins: `rinch-web/tests/move_keeps_focus_1483.rs` (branches

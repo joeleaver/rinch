@@ -794,8 +794,9 @@ is blurred, with the document free, and then the node goes. So:
   as it always has on desktop. `append_child`, `insert_before` and
   `insert_after` of a node that is already in the document — a keyed `for`
   moving a row — are then that call: no focus event fires, an open `Select` in
-  the row stays open, an `<iframe>` in it is not reloaded and a scroller in it
-  keeps its offset (measured in Chrome 153). In a browser without the method
+  the row stays open and an `<iframe>` in it is not reloaded (measured in
+  Chrome 153 and Firefox 157); a scroller in it keeps its offset in Chrome and
+  is reset to the top in Firefox 157. In a browser without the method
   the move is a removal and an insertion, **the moved node loses the focus**
   and the list above applies; call `focus()` on it again after the move if it
   must keep the keyboard there. A move into or out of a detached subtree, and

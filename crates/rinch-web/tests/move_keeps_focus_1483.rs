@@ -27,7 +27,9 @@
 //! answers are Chrome 153's, measured here; the method is specified to keep
 //! the focus, so an engine that has it is held to the same answers, and one
 //! that lacks it is held to #1478's (the focus goes, and its listeners hear
-//! it). The iframe and scroll fixtures state what was measured beside each.
+//! it). Firefox 157 (CI) has the method and gives Chrome's answers for the
+//! focus, the events, the selection and the `<iframe>`; it does **not** keep a
+//! moved scroller's offset, which the scroll fixture states.
 //!
 //! ```text
 //! CHROMEDRIVER=/path/to/chromedriver \
@@ -45,6 +47,9 @@ use rinch_core::for_each_dom_typed;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_test::*;
+
+#[path = "support/engine.rs"]
+mod engine;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -693,7 +698,9 @@ fn an_open_modal_in_a_moved_row_keeps_focus_and_restores_it_on_close() {
 /// Measured in Chrome 153, plain page: after `insertBefore` of the row the
 /// frame's window is a new one (a mark on the old window is gone) and
 /// `scrollTop` is 0; after `moveBefore` the mark is still there and
-/// `scrollTop` is unchanged.
+/// `scrollTop` is unchanged. Firefox 157 (CI) keeps the frame's window and
+/// resets `scrollTop` to 0, so the offset is asserted outside Gecko only and
+/// Gecko's is left unpinned (it is the browser's to change).
 #[wasm_bindgen_test]
 fn a_moved_row_keeps_its_iframe_and_its_scroll_offset() {
     let host = host();
@@ -743,11 +750,13 @@ fn a_moved_row_keeps_its_iframe_and_its_scroll_offset() {
     );
     if has_move_before() {
         assert!(mark(), "the iframe was not reloaded");
-        assert_eq!(
-            by_id("st-scroll").scroll_top(),
-            120,
-            "the scroll offset held"
-        );
+        if !engine::is_gecko() {
+            assert_eq!(
+                by_id("st-scroll").scroll_top(),
+                120,
+                "the scroll offset held"
+            );
+        }
     } else {
         assert!(!mark(), "no moveBefore: the iframe's window is a new one");
     }
