@@ -6546,6 +6546,26 @@ impl RinchDocument {
         let mut around: std::collections::BTreeSet<(usize, usize)> =
             std::collections::BTreeSet::new();
         let mut changed = false;
+        // A measure that lined a box up at a stand-in size (#1476, see the
+        // end of this function) left that answer in Taffy's cache and the
+        // IFC's own. A box resolved below is sized by computes that would be
+        // served it — the min-content width of a box around the asked one
+        // came out as wide as the stand-in — so those answers go first; the
+        // measures that replace them ask again, and are answered there.
+        let asked: Vec<usize> = self.tree.atomic_min_requests.borrow().clone();
+        for id in asked {
+            if self.tree.atomic_min_content.contains_key(&id) {
+                continue;
+            }
+            let Some(root_id) = self.tree.nodes.get(id).and_then(|n| n.ifc_root) else {
+                continue;
+            };
+            if let Some(root_taffy) = self.tree.nodes.get(root_id).and_then(|n| n.taffy_id) {
+                let _ = self.tree.taffy.mark_dirty(root_taffy);
+            }
+            self.mark_ifc_measure_dirty(root_id);
+            self.tree.forget_ifc_measures(root_id);
+        }
         while let Some((depth, id)) = pending.pop_first() {
             let Some(node) = self.tree.nodes.get(id) else {
                 continue;
