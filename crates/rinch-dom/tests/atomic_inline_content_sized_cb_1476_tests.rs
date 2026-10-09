@@ -508,11 +508,12 @@ fn the_min_content_size_is_measured_once_and_only_when_a_line_asks() {
     let mut doc = lay_out(&shape(SHAPES[1].1, 400, L));
     let first = computes(&doc);
     assert_eq!(first, 5);
-    // Narrower: the min-content size is known. One probe, one layout.
+    // Narrower: its min-content and max-content widths are known. One
+    // layout, at the new width.
     let c = id(&doc, "c");
     doc.set_style(c, "width", "300px");
     doc.resolve_layout(800.0, 601.0);
-    assert_eq!(computes(&doc) - first, 2);
+    assert_eq!(computes(&doc) - first, 1);
 }
 
 /// A flex item that becomes an atomic inline because its parent's `display`

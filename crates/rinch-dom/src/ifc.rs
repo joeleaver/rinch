@@ -6236,7 +6236,25 @@ impl RinchDocument {
             // Taffy keeps the answer — made with a stand-in — for the
             // min-content compute below, which then asks nothing.
             let mut asked = this.tree.atomic_min_requests.borrow().len();
-            let max = measure(this, taffy::AvailableSpace::MaxContent);
+            // A box still resolved (it has not been measured as `auto`
+            // since, so nothing inside it changed) whose min-content width
+            // is known needs neither probe: its max-content width is the
+            // one the last resolution measured. This is a capped chip whose
+            // container was resized — one compute a pixel, not two.
+            let remembered = node_id.filter(|n| {
+                auto && this.tree.keyword_inline_cb_width.contains_key(n)
+                    && this.tree.atomic_min_content.contains_key(n)
+            });
+            let max = match remembered {
+                Some(n) => this.tree.nodes[n].natural_max_width,
+                None => {
+                    let max = measure(this, taffy::AvailableSpace::MaxContent);
+                    if auto && let Some(n) = node_id {
+                        this.tree.nodes[n].natural_max_width = max;
+                    }
+                    max
+                }
+            };
             this_max.set(max + 0.01);
             if atomic_inline_fits(max, stretch) {
                 return max + 0.01;

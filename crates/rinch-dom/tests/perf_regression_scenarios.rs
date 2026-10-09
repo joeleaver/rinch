@@ -2666,10 +2666,13 @@ fn a_text_edit_in_a_chip_in_a_flex_item() {
 
 /// A one-pixel resize of the list while every chip is **capped** (the list
 /// is narrower than a row's content, so each cell is narrower than its
-/// chip): each chip is resolved against a cell that moved, which is a
-/// max-content probe and a layout at the new width — a cost per chip per
-/// pixel, where main (whose chips are never capped here) measures none.
-/// main: `inline_block_computes` 0, `taffy_root_computes` 1.
+/// chip): each chip is resolved against a cell that moved, which is one
+/// layout at the new width (its min- and max-content widths are remembered;
+/// it was two computes until the max-content probe was skipped for a box
+/// still resolved) and a second root compute — a cost per chip per pixel,
+/// where main (whose chips are never capped, so the layout is not Chrome's)
+/// measures and shapes nothing: `inline_block_computes` 0,
+/// `taffy_root_computes` 1, no shape.
 #[test]
 fn a_one_pixel_resize_with_every_chip_capped() {
     let (mut doc, row, _) = chip_rows();
@@ -2693,14 +2696,14 @@ fn a_one_pixel_resize_with_every_chip_capped() {
             (TaffyStyleChanges, 1),
             (ShapeMeasureIfc, 50),
             (ShapeIfcBuild, 10),
-            (ShapeAtomicInline, 50),
+            (ShapeAtomicInline, 30),
             (IfcMeasureCacheHits, 50),
             (IfcMeasureInvalidations, 10),
             (IfcPhantomRebreaks, 10),
             (LayoutResolves, 1),
             (TaffyRootComputes, 2),
             (TaffyMeasureCalls, 100),
-            (InlineBlockComputes, 40),
+            (InlineBlockComputes, 20),
         ],
     );
 }

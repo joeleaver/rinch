@@ -851,6 +851,11 @@ pub struct Node {
     /// narrow as the cap made it. Not meaningful without the entry: the box
     /// then has its natural size.
     pub(crate) natural_inline_size: (f32, f32),
+    /// The unrounded max-content width the last shrink-to-fit resolution of
+    /// this atomic inline measured — current under the same condition as
+    /// `natural_inline_size`, and what lets a still-resolved box be resolved
+    /// against another width without measuring it again.
+    pub(crate) natural_max_width: f32,
     /// The box this node was last **painted** in, for dirty-region
     /// computation: where its old pixels are, and so what a frame that moves it
     /// has to clear.
@@ -1419,6 +1424,7 @@ impl Node {
             taffy_id: None,
             layout: LayoutResult::default(),
             natural_inline_size: (0.0, 0.0),
+            natural_max_width: 0.0,
             prev_layout: LayoutResult::default(),
             painted: None,
             display_mode: DisplayMode::Block,
@@ -1490,6 +1496,7 @@ impl Node {
             taffy_id: None,
             layout: LayoutResult::default(),
             natural_inline_size: (0.0, 0.0),
+            natural_max_width: 0.0,
             prev_layout: LayoutResult::default(),
             painted: None,
             display_mode,
@@ -1560,6 +1567,7 @@ impl Node {
             taffy_id: None,
             layout: LayoutResult::default(),
             natural_inline_size: (0.0, 0.0),
+            natural_max_width: 0.0,
             prev_layout: LayoutResult::default(),
             painted: None,
             display_mode: DisplayMode::Inline,
@@ -1628,6 +1636,7 @@ impl Node {
             taffy_id: None,
             layout: LayoutResult::default(),
             natural_inline_size: (0.0, 0.0),
+            natural_max_width: 0.0,
             prev_layout: LayoutResult::default(),
             painted: None,
             display_mode: DisplayMode::Inline,
