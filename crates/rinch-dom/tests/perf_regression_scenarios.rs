@@ -2527,7 +2527,9 @@ fn chip_rows() -> (RinchDocument, NodeId, NodeId) {
 /// The first layout of ten such rows: each of the twenty chips is measured,
 /// then measured at min-content and as `auto` again when its flex item asks
 /// (three computes a chip where main has one), and the root is computed a
-/// second time with the real widths.
+/// second time with the real widths. main: `inline_block_computes` 20,
+/// `taffy_root_computes` 1, `shape_atomic_inline` 50, `shape_measure_ifc` 90,
+/// `taffy_measure_calls` 120.
 #[test]
 fn chips_in_flex_items_first_layout() {
     let (mut doc, _, _) = chip_rows();
@@ -2591,8 +2593,50 @@ fn a_colour_hover_on_a_row_of_chips_in_flex_items() {
     );
 }
 
+/// The same hover in a frame that also lays out (the list is resized by a
+/// pixel): the row's two chips are measured again, once each, as on main.
+/// Their min-content widths stand, since a colour re-wraps nothing — dropped,
+/// each chip paid the min-content compute and the `auto` measure after it
+/// (6 computes) and the root was computed twice (review of #1488).
+#[test]
+fn a_colour_hover_with_a_relayout_on_a_row_of_chips_in_flex_items() {
+    let (mut doc, row, _) = chip_rows();
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.tree.perf.reset();
+    doc.set_attribute(row, "class", "row hot");
+    let list = doc.tree.get(row.0).unwrap().parent.unwrap();
+    doc.set_style(NodeId(list), "width", "379px");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "colour hover with a relayout on a row of chips in flex items",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 7),
+            (StyleNodesVisited, 16),
+            (StyleInvalidations, 2),
+            (TaffyStyleSyncs, 7),
+            (TaffyStyleChanges, 1),
+            (ShapeMeasureIfc, 9),
+            (ShapeIfcBuild, 4),
+            (ShapeAtomicInline, 5),
+            (IfcMeasureCacheHits, 57),
+            (IfcMeasureInvalidations, 6),
+            (IfcPhantomRebreaks, 2),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 66),
+            (InlineBlockComputes, 2),
+        ],
+    );
+}
+
 /// A text edit in one chip: its min-content width is measured again (the
 /// compute, and the `auto` measure after it), and the root computed twice.
+/// main: `inline_block_computes` 1, `taffy_root_computes` 1,
+/// `shape_atomic_inline` 4, `shape_measure_ifc` 3, `taffy_measure_calls` 4.
 #[test]
 fn a_text_edit_in_a_chip_in_a_flex_item() {
     let (mut doc, _, chip_text) = chip_rows();
