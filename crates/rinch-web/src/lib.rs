@@ -202,6 +202,10 @@ impl RootHandle {
                 Ok(cell) => cell.into_inner().dispose(),
                 Err(shared) => shared.borrow_mut().dispose_in_place(),
             }
+            // Before the borrow: a browser runs its focus listeners inside
+            // the removal of a focused node, and a key entry that outlives
+            // this root still reads the document from one (issue #1478).
+            r.root.release_focus_before_detach();
             r.web_doc.borrow_mut().remove_node(r.root.node_id());
         }
     }

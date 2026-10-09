@@ -63,6 +63,8 @@ mod drawer_open_animation_tests;
 #[cfg(test)]
 mod drawer_scroll_overflow_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_blur_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_caret_affinity_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_decoration_tests;
@@ -183,6 +185,8 @@ mod popover_dropdown_transform_hit_test_tests;
 mod repaint_old_rect_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod review_1429_pimble_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod review_1481_probe_tests;
 #[cfg(test)]
 mod right_press_click_1093_tests;
 #[cfg(test)]
@@ -3851,8 +3855,8 @@ impl RinchApp {
     /// Called with no outstanding borrow of `self.doc`: everything below can run
     /// user code through the arbiter's teardown.
     ///
-    /// A consumer that *cannot* promise a fresh layout must call
-    /// [`Self::apply_or_repark_focus_request`] instead.
+    /// Consumers go through [`Self::drain_focus_requests`], which also says
+    /// what a consumer that *cannot* promise a fresh layout does.
     pub(crate) fn apply_focus_request(&mut self, request: rinch_core::FocusRequest) {
         match request {
             rinch_core::FocusRequest::Node(node_id) => self.try_focus_input(node_id),
@@ -3863,34 +3867,44 @@ impl RinchApp {
         }
     }
 
-    /// Apply a parked request from a consumer that has **not** run a layout —
-    /// the two synchronous drains that sit directly after `dispatch_event`.
+    /// Drain and apply the focus work parked for this document — the parked
+    /// [`FocusRequest`](rinch_core::FocusRequest) and every release
+    /// (`EditorHandle::blur`, [`rinch_core::post_release_request`]) — one after
+    /// another **in the order they were posted**, so a `focus()` and a
+    /// `blur()` from the same handler or effect end the way the later one
+    /// says. Returns whether anything was applied.
     ///
-    /// A request that needs a layout is **put back**, not answered: resolving an
-    /// `Into` against the pre-open tree finds every child still boxless, focuses
+    /// `layout_is_fresh: false` is for the two synchronous drains that sit
+    /// directly after `dispatch_event` and have **not** run a layout. A request
+    /// that needs one is then left parked, not answered: resolving an `Into`
+    /// against the pre-open tree finds every child still boxless, focuses
     /// nothing, and — because the slot has been emptied — the post-layout turn
     /// that follows finds nothing to do. The move is lost for good rather than
     /// delayed, which is what happened to every overlay opened by a **mouse
     /// click** (`click_handling`) or by **Enter/Space** (`activate_focused_node`),
-    /// i.e. essentially all of them. The `AboutToWait` arm runs every loop
-    /// iteration, so a re-parked request is always picked up.
+    /// i.e. essentially all of them (issue #695). The releases posted around it
+    /// wait with it, so the order holds. The `AboutToWait` arm runs every loop
+    /// iteration, so parked work is always picked up.
     ///
-    /// `Node` is applied as before: it is the pre-#695 `request_focus`, whose
-    /// target is a node the handler already has in hand, and deferring it would
-    /// change behaviour that predates this.
-    pub(crate) fn apply_or_repark_focus_request(&mut self, request: rinch_core::FocusRequest) {
-        if request.needs_layout() {
-            rinch_core::post_focus_request(self.doc_key(), request);
-        } else {
-            self.apply_focus_request(request);
+    /// `Node` is applied at once either way: it is the pre-#695
+    /// `request_focus`, whose target is a node the handler already has in hand,
+    /// and deferring it would change behaviour that predates this.
+    pub(crate) fn drain_focus_requests(&mut self, layout_is_fresh: bool) -> bool {
+        let steps = rinch_core::take_pending_focus_steps(self.doc_key(), layout_is_fresh);
+        let any = !steps.is_empty();
+        for step in steps {
+            match step {
+                rinch_core::FocusStep::Request(request) => self.apply_focus_request(request),
+                rinch_core::FocusStep::Release(node_id) => self.blur_node(node_id),
+            }
         }
+        any
     }
 
     /// Drain and apply every pending [`NodeHandle::set_selection_range`]/
     /// `select()` request (issue #552), at the same points
-    /// [`take_pending_focus_request`](rinch_core::take_pending_focus_request)
-    /// is drained — including, when both were posted from the same effect
-    /// (`focus()` then `set_selection_range()`, the "open a rename box,
+    /// [`Self::drain_focus_requests`] runs — including, when both were posted
+    /// from the same effect (`focus()` then `set_selection_range()`, the "open a rename box,
     /// focused and with its name selected" shape), **after** that drain, so
     /// a request for a node this very turn just focused lands on the live
     /// `EditableState` rather than finding it not-yet-focused and being
@@ -4090,7 +4104,9 @@ impl RinchApp {
             || (Self::node_takes_text_focus(node) && node.attributes.contains_key("data-oninput"))
     }
 
-    /// Release the keyboard from `node_id`, if it still holds it.
+    /// Release the keyboard from `node_id`, if it still holds it — an
+    /// overlay's close handing nothing back, and a parked release
+    /// (`EditorHandle::blur`, [`Self::drain_focus_requests`]).
     ///
     /// The `holds` re-check is not ceremony: this runs a layout after the close
     /// that asked for it, and focus can move in between by a route that never
@@ -4288,9 +4304,7 @@ impl RinchApp {
                 // that focuses an input) — honor it like the pointer path does.
                 // No layout has run since, so an overlay request is re-parked
                 // rather than resolved against the pre-open tree (issue #695).
-                if let Some(request) = rinch_core::take_pending_focus_request(self.doc_key()) {
-                    self.apply_or_repark_focus_request(request);
-                }
+                self.drain_focus_requests(false);
                 // And any pending set_selection_range()/select() (issue #552),
                 // drained after the focus request above for the same reason.
                 self.drain_pending_text_selection();

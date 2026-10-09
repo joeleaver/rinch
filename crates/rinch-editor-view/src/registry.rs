@@ -55,6 +55,8 @@ thread_local! {
         const { RefCell::new(Vec::new()) };
     /// See [`set_focus_handler`].
     static FOCUS_HANDLER: Cell<Option<fn(usize)>> = const { Cell::new(None) };
+    /// See [`set_blur_handler`].
+    static BLUR_HANDLER: Cell<Option<fn(usize)>> = const { Cell::new(None) };
     /// See [`set_unregister_listener`].
     static UNREGISTER_LISTENER: Cell<Option<UnregisterListener>> = const { Cell::new(None) };
     /// The `doc_key`s of documents with an editor that is owed an overlay pass
@@ -76,6 +78,18 @@ pub fn set_focus_handler(focus: fn(usize)) {
     FOCUS_HANDLER.with(|slot| slot.set(Some(focus)));
 }
 
+/// Tell [`EditorHandle::blur`] how this platform takes the keyboard away from
+/// an editor, given its container id — [`set_focus_handler`]'s other half. The
+/// web registers one (it blurs its capture textarea at once, if that editor
+/// holds it); desktop registers none, and the handle posts a release
+/// ([`rinch_core::post_release_request`]) that the runtime applies through its
+/// focus arbiter, in order with any focus request.
+///
+/// Per thread, like the rest of this registry; setting it again replaces it.
+pub fn set_blur_handler(blur: fn(usize)) {
+    BLUR_HANDLER.with(|slot| slot.set(Some(blur)));
+}
+
 /// What [`set_unregister_listener`] takes: `(doc_key, container id)`.
 pub type UnregisterListener = fn(u64, usize);
 
@@ -94,6 +108,11 @@ pub fn set_unregister_listener(listener: UnregisterListener) {
 /// The registered [`set_focus_handler`], if any.
 pub(crate) fn focus_handler() -> Option<fn(usize)> {
     FOCUS_HANDLER.with(|slot| slot.get())
+}
+
+/// The registered [`set_blur_handler`], if any.
+pub(crate) fn blur_handler() -> Option<fn(usize)> {
+    BLUR_HANDLER.with(|slot| slot.get())
 }
 
 /// Note that an editor in document `doc_key` is owed an overlay pass

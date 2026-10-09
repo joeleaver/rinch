@@ -7,10 +7,13 @@
 //! document's `focusin` tells every key entry (an open `Select` list) that
 //! focus moved, which asks its owner for `active_element()` and flushes pending
 //! effects (a modal's scroll lock). Run under the `borrow_mut` the handle method
-//! held, each panicked with "RefCell already borrowed" and left the document
-//! borrowed for good (wasm does not unwind). The browser work now runs once the
-//! borrow is released (`DomDocument::take_after_borrow`), before the handle
-//! method returns.
+//! held, each panicked with "RefCell already borrowed" inside the listener,
+//! which aborted it (a key entry's `on_focus_leave`, the editor's caret repaint)
+//! and left whatever that listener itself held (the editor's core) borrowed for
+//! good, since wasm does not unwind. The document itself was released normally
+//! by the frame that borrowed it. The browser work now runs once the borrow is
+//! released (`DomDocument::take_after_borrow`), before the handle method
+//! returns.
 //!
 //! ```text
 //! CHROMEDRIVER=/path/to/chromedriver \
@@ -122,7 +125,10 @@ struct KeyEntry {
 
 /// A focused `#trigger` owning a live key entry (the `Select` shape, bare), a
 /// plain `#other` button, and a closed `trap_focus` modal.
-fn key_entry() -> KeyEntry {
+///
+/// `n` keeps the ids unique per test: a failing test never reaches its
+/// `unmount`, and the next one must not find its stale nodes.
+fn key_entry(n: &'static str) -> KeyEntry {
     let host = host();
     let open = Signal::new(false);
     let left = Rc::new(Cell::new(0u32));
@@ -132,13 +138,13 @@ fn key_entry() -> KeyEntry {
     let root = rinch_web::mount_into(&host, ThemeProviderProps::default(), move |s| {
         let page = s.create_element("div");
         let trigger = s.create_element("button");
-        trigger.set_attribute("id", "trigger");
+        trigger.set_attribute("id", &format!("trigger-{n}"));
         page.append_child(&trigger);
         let b = s.create_element("button");
-        b.set_attribute("id", "other");
+        b.set_attribute("id", &format!("other-{n}"));
         page.append_child(&b);
         *o.borrow_mut() = Some(b);
-        page.append_child(&modal(s, open, "in-modal-entry"));
+        page.append_child(&modal(s, open, &format!("in-modal-{n}")));
         let l = l.clone();
         k.borrow_mut().push(rinch_core::push_key_handler(
             &trigger,
@@ -148,12 +154,12 @@ fn key_entry() -> KeyEntry {
         page
     });
     let trigger: web_sys::HtmlElement = document()
-        .get_element_by_id("trigger")
+        .get_element_by_id(&format!("trigger-{n}"))
         .unwrap()
         .dyn_into()
         .unwrap();
     trigger.focus().unwrap();
-    assert_eq!(active_id(), "trigger", "positive control");
+    assert_eq!(active_id(), format!("trigger-{n}"), "positive control");
     assert_eq!(left.get(), 0);
     let other = other.borrow_mut().take().unwrap();
     KeyEntry {
@@ -170,12 +176,16 @@ fn key_entry() -> KeyEntry {
 /// moves fire `focusin`, whose listener reads the document.
 #[wasm_bindgen_test]
 fn a_modal_opening_and_closing_over_a_live_key_entry_moves_focus_both_ways() {
-    let f = key_entry();
+    let f = key_entry("both");
     f.open.set(true);
-    assert_eq!(active_id(), "in-modal-entry", "the modal took the keyboard");
+    assert_eq!(active_id(), "in-modal-both", "the modal took the keyboard");
     assert_eq!(f.left.get(), 1, "the entry heard focus leave its owner");
     f.open.set(false);
-    assert_eq!(active_id(), "trigger", "closing handed the keyboard back");
+    assert_eq!(
+        active_id(),
+        "trigger-both",
+        "closing handed the keyboard back"
+    );
     f.root.unmount();
     f.host.remove();
 }
@@ -183,11 +193,11 @@ fn a_modal_opening_and_closing_over_a_live_key_entry_moves_focus_both_ways() {
 /// The plain verb, `NodeHandle::focus`, from app code.
 #[wasm_bindgen_test]
 fn a_handle_focus_over_a_live_key_entry_moves_focus() {
-    let f = key_entry();
+    let f = key_entry("plain");
     f.other.focus();
     assert_eq!(
         active_id(),
-        "other",
+        "other-plain",
         "focus moved before `focus()` returned"
     );
     assert_eq!(f.left.get(), 1, "the entry heard focus leave its owner");
@@ -197,8 +207,12 @@ fn a_handle_focus_over_a_live_key_entry_moves_focus() {
     f.host.remove();
 }
 
-/// A modified `<input>` fires `change` when the modal's `focus_into` blurs it:
-/// the app's `onchange` writes a signal whose effect writes the document.
+/// A modified `<input>` fires `change` when the modal's `focus_into` blurs it.
+/// The app's `onchange` is handler code: it writes the document through a
+/// `NodeHandle`, which borrows it inside that `change`, and a signal whose
+/// effect writes it too. (The signal alone does not re-enter the document:
+/// inside the modal's effect its write is queued, and the test passed with the
+/// fix taken out.)
 #[wasm_bindgen_test]
 fn a_modal_opening_over_a_modified_input_runs_onchange() {
     let host = host();
@@ -209,12 +223,22 @@ fn a_modal_opening_over_a_modified_input_runs_onchange() {
         ThemeProviderProps::default(),
         move |__scope: &mut RenderScope| {
             let m = modal(__scope, open, "in-modal-change");
+            let mark = __scope.create_element("p");
+            mark.set_attribute("id", "mark");
+            let w = mark.clone();
             let page = rsx! {
                 div {
-                    input { id: "field", onchange: move |v: String| committed.set(v) }
+                    input {
+                        id: "field",
+                        onchange: move |v: String| {
+                            w.set_attribute("data-v", &v);
+                            committed.set(v);
+                        },
+                    }
                     p { id: "echo", {|| committed.get()} }
                 }
             };
+            page.append_child(&mark);
             page.append_child(&m);
             page
         },
@@ -246,6 +270,15 @@ fn a_modal_opening_over_a_modified_input_runs_onchange() {
         "the modal took the keyboard"
     );
     assert_eq!(
+        document()
+            .get_element_by_id("mark")
+            .unwrap()
+            .get_attribute("data-v")
+            .as_deref(),
+        Some("typed"),
+        "onchange's own handle write landed"
+    );
+    assert_eq!(
         committed.get(),
         "typed",
         "onchange ran with the field's value"
@@ -259,6 +292,48 @@ fn a_modal_opening_over_a_modified_input_runs_onchange() {
         Some("typed"),
         "and its effect wrote the document"
     );
+    root.unmount();
+    host.remove();
+}
+
+/// A focus listener that moves the focus again: a key entry's `on_focus_leave`
+/// calls `z.focus()` inside the `focusin` that `a.focus()` raised. The nested
+/// verb queues and drains its own browser work, and its redirect wins, as a
+/// listener's does in a browser.
+#[wasm_bindgen_test]
+fn a_focus_listener_that_focuses_again_wins() {
+    let host = host();
+    let keep: Rc<RefCell<Vec<rinch_core::DismissHandle>>> = Default::default();
+    let slot: Rc<RefCell<Option<NodeHandle>>> = Default::default();
+    let (k, sl) = (keep.clone(), slot.clone());
+    let root = rinch_web::mount_into(&host, ThemeProviderProps::default(), move |s| {
+        let page = s.create_element("div");
+        let mut mk = |id: &str| {
+            let b = s.create_element("button");
+            b.set_attribute("id", id);
+            page.append_child(&b);
+            b
+        };
+        let (t, a, z) = (mk("trigger-again"), mk("a-again"), mk("z-again"));
+        k.borrow_mut().push(rinch_core::push_key_handler(
+            &t,
+            |_| false,
+            move || z.focus(),
+        ));
+        *sl.borrow_mut() = Some(a);
+        page
+    });
+    let a = slot.borrow_mut().take().unwrap();
+    document()
+        .get_element_by_id("trigger-again")
+        .unwrap()
+        .dyn_into::<web_sys::HtmlElement>()
+        .unwrap()
+        .focus()
+        .unwrap();
+    assert_eq!(active_id(), "trigger-again", "positive control");
+    a.focus();
+    assert_eq!(active_id(), "z-again", "the listener's redirect wins");
     root.unmount();
     host.remove();
 }

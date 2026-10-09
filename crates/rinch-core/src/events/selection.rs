@@ -259,10 +259,24 @@ impl FocusRequest {
 }
 
 thread_local! {
-    /// `(doc_key, request)` — the document key scopes the request so a runtime
+    /// `(doc_key, request, seq)` — the document key scopes the request so a runtime
     /// driving one document never consumes (and misapplies) a focus request
-    /// posted by another document on the same thread (issue #134).
-    static PENDING_FOCUS_REQUEST: Cell<Option<(u64, FocusRequest)>> = const { Cell::new(None) };
+    /// posted by another document on the same thread (issue #134). `seq` orders
+    /// it against the parked releases ([`post_release_request`]).
+    static PENDING_FOCUS_REQUEST: Cell<Option<(u64, FocusRequest, u64)>> = const { Cell::new(None) };
+    /// `(doc_key, node_id, seq)` for every parked release, in posting order.
+    static PENDING_RELEASES: RefCell<Vec<(u64, usize, u64)>> = const { RefCell::new(Vec::new()) };
+    /// The posting order shared by [`PENDING_FOCUS_REQUEST`] and
+    /// [`PENDING_RELEASES`].
+    static FOCUS_SEQ: Cell<u64> = const { Cell::new(0) };
+}
+
+fn next_focus_seq() -> u64 {
+    FOCUS_SEQ.with(|c| {
+        let seq = c.get().wrapping_add(1);
+        c.set(seq);
+        seq
+    })
 }
 
 /// Request that a specific element be focused, identified by its document's
@@ -273,22 +287,102 @@ pub fn request_focus(doc_key: u64, node_id: usize) {
 }
 
 /// Park any [`FocusRequest`] for `doc_key`, replacing whatever was parked.
+///
+/// Replaces only the parked *request*: a release parked before it
+/// ([`post_release_request`]) stays, and is applied first.
 pub fn post_focus_request(doc_key: u64, request: FocusRequest) {
-    PENDING_FOCUS_REQUEST.with(|c| c.set(Some((doc_key, request))));
+    let seq = next_focus_seq();
+    PENDING_FOCUS_REQUEST.with(|c| c.set(Some((doc_key, request, seq))));
 }
 
 /// Consume the pending focus request **if it targets the given document**.
 /// Called by the runtime during event processing with its own document's key;
 /// a request posted by a different document is left in place for that
 /// document's runtime to pick up.
+///
+/// Takes the request alone. A runtime that also honours releases
+/// ([`post_release_request`]) drains both, in posting order, with
+/// [`take_pending_focus_steps`].
 pub fn take_pending_focus_request(doc_key: u64) -> Option<FocusRequest> {
     PENDING_FOCUS_REQUEST.with(|c| match c.get() {
-        Some((key, request)) if key == doc_key => {
+        Some((key, request, _)) if key == doc_key => {
             c.set(None);
             Some(request)
         }
         _ => None,
     })
+}
+
+/// Ask the runtime to take the keyboard away from `node_id` **if it holds it**
+/// when the request is applied, leaving nothing focused — what a press on
+/// page content that takes no focus does. If something else holds the
+/// keyboard by then, nothing happens. `EditorHandle::blur` posts one for its
+/// container.
+///
+/// Applied at the same points as a [`FocusRequest`], and **in posting order
+/// with it**: a `focus()` then a release of the same node in one turn leaves
+/// nothing focused, and a release then a `focus()` leaves the node focused.
+/// A release does not take the request slot, so it never discards a parked
+/// request, and a later request never discards it. Releases accumulate: two
+/// editors released in one turn are both released.
+pub fn post_release_request(doc_key: u64, node_id: usize) {
+    let seq = next_focus_seq();
+    PENDING_RELEASES.with(|r| r.borrow_mut().push((doc_key, node_id, seq)));
+}
+
+/// One parked piece of focus work, as [`take_pending_focus_steps`] hands it out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusStep {
+    /// The parked [`FocusRequest`].
+    Request(FocusRequest),
+    /// Release the keyboard from this node if it holds it
+    /// ([`post_release_request`]).
+    Release(usize),
+}
+
+/// Consume the focus work parked for `doc_key` — its [`FocusRequest`], if the
+/// slot holds one for this document, and every release posted for it — **in
+/// posting order**, for the runtime to apply one after another.
+///
+/// `layout_is_fresh: false` is for a consumer that has not run a layout since
+/// the code that posted (the drains right after an event handler): if the
+/// parked request [needs a layout](FocusRequest::needs_layout), **nothing** is
+/// taken, so the request and the releases around it wait together for a
+/// consumer that has laid out and keep their order. (Taking the releases
+/// alone would apply one posted *after* the request before it.)
+pub fn take_pending_focus_steps(doc_key: u64, layout_is_fresh: bool) -> Vec<FocusStep> {
+    let request = PENDING_FOCUS_REQUEST.with(|c| match c.get() {
+        Some((key, request, seq)) if key == doc_key => Some((request, seq)),
+        _ => None,
+    });
+    if let Some((request, _)) = request
+        && !layout_is_fresh
+        && request.needs_layout()
+    {
+        return Vec::new();
+    }
+    if request.is_some() {
+        PENDING_FOCUS_REQUEST.with(|c| c.set(None));
+    }
+    let mut steps: Vec<(u64, FocusStep)> = PENDING_RELEASES.with(|r| {
+        let mut r = r.borrow_mut();
+        let mut mine = Vec::new();
+        r.retain(|&(key, node, seq)| {
+            if key == doc_key {
+                mine.push((seq, FocusStep::Release(node)));
+                false
+            } else {
+                true
+            }
+        });
+        mine
+    });
+    if let Some((request, seq)) = request {
+        steps.push((seq, FocusStep::Request(request)));
+    }
+    // Sequence numbers wrap only after 2^64 posts; a plain sort is the order.
+    steps.sort_by_key(|&(seq, _)| seq);
+    steps.into_iter().map(|(_, step)| step).collect()
 }
 
 // --- Text selection request mechanism (issue #552) ---
@@ -754,5 +848,110 @@ mod tests {
         fire_selection_sync();
         assert!(replaced.get(), "the replacement ran on the next fire");
         clear_selection_sync_callback();
+    }
+
+    // ── Releases and the focus request, in posting order ──────────────────
+
+    const DOC: u64 = 0xF0C5;
+    const ROOT: usize = 90;
+
+    fn drain_all() {
+        let _ = take_pending_focus_steps(DOC, true);
+        let _ = take_pending_focus_steps(DOC + 1, true);
+    }
+
+    #[test]
+    fn a_focus_then_a_release_come_out_in_that_order() {
+        drain_all();
+        post_focus_request(DOC, FocusRequest::Node(7));
+        post_release_request(DOC, 7);
+        assert_eq!(
+            take_pending_focus_steps(DOC, true),
+            vec![
+                FocusStep::Request(FocusRequest::Node(7)),
+                FocusStep::Release(7)
+            ]
+        );
+        assert!(take_pending_focus_steps(DOC, true).is_empty(), "consumed");
+    }
+
+    #[test]
+    fn a_release_then_a_focus_come_out_in_that_order() {
+        drain_all();
+        post_release_request(DOC, 7);
+        post_focus_request(DOC, FocusRequest::Node(7));
+        assert_eq!(
+            take_pending_focus_steps(DOC, true),
+            vec![
+                FocusStep::Release(7),
+                FocusStep::Request(FocusRequest::Node(7))
+            ]
+        );
+    }
+
+    #[test]
+    fn releases_accumulate_and_a_later_request_replaces_only_the_request() {
+        drain_all();
+        post_focus_request(DOC, FocusRequest::Node(1));
+        post_release_request(DOC, 2);
+        post_release_request(DOC, 3);
+        post_focus_request(DOC, FocusRequest::Node(4));
+        assert_eq!(
+            take_pending_focus_steps(DOC, true),
+            vec![
+                FocusStep::Release(2),
+                FocusStep::Release(3),
+                FocusStep::Request(FocusRequest::Node(4))
+            ],
+            "the first request is replaced, as before; neither release is"
+        );
+    }
+
+    #[test]
+    fn another_documents_work_is_left_for_it() {
+        drain_all();
+        post_release_request(DOC + 1, 5);
+        post_focus_request(DOC + 1, FocusRequest::Node(6));
+        assert!(take_pending_focus_steps(DOC, true).is_empty());
+        assert_eq!(
+            take_pending_focus_steps(DOC + 1, true),
+            vec![
+                FocusStep::Release(5),
+                FocusStep::Request(FocusRequest::Node(6))
+            ]
+        );
+    }
+
+    #[test]
+    fn a_request_that_needs_layout_holds_back_the_releases_around_it() {
+        drain_all();
+        let into = FocusRequest::Into(ROOT, crate::dom::FocusIntoPolicy::FirstFocusable);
+        post_release_request(DOC, 1);
+        post_focus_request(DOC, into);
+        post_release_request(DOC, 2);
+        assert!(
+            take_pending_focus_steps(DOC, false).is_empty(),
+            "no layout yet: nothing is taken"
+        );
+        assert_eq!(
+            take_pending_focus_steps(DOC, true),
+            vec![
+                FocusStep::Release(1),
+                FocusStep::Request(into),
+                FocusStep::Release(2)
+            ]
+        );
+    }
+
+    #[test]
+    fn take_pending_focus_request_leaves_the_releases() {
+        drain_all();
+        post_release_request(DOC, 1);
+        post_focus_request(DOC, FocusRequest::Node(2));
+        assert_eq!(take_pending_focus_request(DOC), Some(FocusRequest::Node(2)));
+        assert_eq!(
+            take_pending_focus_steps(DOC, true),
+            vec![FocusStep::Release(1)]
+        );
     }
 }
