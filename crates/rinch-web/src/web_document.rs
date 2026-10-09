@@ -1357,6 +1357,86 @@ fn restore_focus_now(
 }
 
 thread_local! {
+    /// `Element.prototype.moveBefore`, looked up once per page; `None` in a
+    /// browser that does not have it (issue #1483).
+    static MOVE_BEFORE: Option<js_sys::Function> = web_sys::window()
+        .and_then(|w| js_sys::Reflect::get(&w, &"Element".into()).ok())
+        .and_then(|ctor| js_sys::Reflect::get(&ctor, &"prototype".into()).ok())
+        .and_then(|proto| js_sys::Reflect::get(&proto, &"moveBefore".into()).ok())
+        .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+        .filter(refuses_a_disconnected_node);
+}
+
+/// Whether `move_before` is the state-preserving move and not a polyfill over
+/// `insertBefore` (review of #1486): the real one throws for a node that is in
+/// no document, a polyfill inserts it. Two scratch elements, attached to
+/// nothing, so the probe has no effect on the page either way. A polyfill
+/// would fire `blur` / `focusout` inside the call, under the caller's borrow,
+/// after `moves_keeping_focus` had told the verb to release nothing.
+fn refuses_a_disconnected_node(move_before: &js_sys::Function) -> bool {
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return false;
+    };
+    match (doc.create_element("div"), doc.create_element("div")) {
+        (Ok(p), Ok(c)) => move_before
+            .call2(&p, &c, &wasm_bindgen::JsValue::NULL)
+            .is_err(),
+        _ => false,
+    }
+}
+
+/// Whether putting `c` under `p` is a move `p.moveBefore(c, …)` makes: the
+/// browser has the method, `c` is in the document already (asked first: a
+/// mount inserts nodes that are in none, and pays this one getter), `p` is an
+/// element of the same document, and `c` is a node kind the method takes (an
+/// element or character data).
+///
+/// `moveBefore` moves a node without removing it: the focus inside it stays
+/// and no `blur` / `focusout` fires, an `<iframe>` is not reloaded and a
+/// scroller keeps its offset, where `insertBefore` of a connected node is a
+/// removal and an insertion that drops all three (measured in Chrome 153). It
+/// throws for a node of another document or of none, so those take the old
+/// call. A parent that is inside `c`, or a reference that is not `p`'s child,
+/// throws in both calls and moves nothing.
+fn moves_in_place(p: &web_sys::Node, c: &web_sys::Node) -> bool {
+    use web_sys::Node;
+    MOVE_BEFORE.with(Option::is_some)
+        && c.is_connected()
+        && p.is_connected()
+        && p.node_type() == Node::ELEMENT_NODE
+        && matches!(
+            c.node_type(),
+            Node::ELEMENT_NODE
+                | Node::TEXT_NODE
+                | Node::COMMENT_NODE
+                | Node::CDATA_SECTION_NODE
+                | Node::PROCESSING_INSTRUCTION_NODE
+        )
+        && match (p.owner_document(), c.owner_document()) {
+            (Some(a), Some(b)) => a.is_same_node(Some(&b)),
+            _ => false,
+        }
+}
+
+/// Put `c` under `p` before `reference` (at the end for `None`): as a move in
+/// place where that applies ([`moves_in_place`]), and otherwise, or if the
+/// browser refuses the move, with `insertBefore` (issue #1483).
+///
+/// [`WebDocument::moves_keeping_focus`] gives the same answer to the
+/// `NodeHandle` verb, which then releases no focus first; the two must stay
+/// one predicate.
+fn insert_or_move(p: &web_sys::Node, c: &web_sys::Node, reference: Option<&web_sys::Node>) {
+    if moves_in_place(p, c) {
+        let before = reference.map_or(wasm_bindgen::JsValue::NULL, |r| r.into());
+        let moved = MOVE_BEFORE.with(|f| f.as_ref().map(|f| f.call2(p, c, &before).is_ok()));
+        if moved == Some(true) {
+            return;
+        }
+    }
+    p.insert_before(c, reference).ok();
+}
+
+thread_local! {
     /// Whether an element other than `<body>` may hold the page's focus
     /// (issue #1478). `true` until [`watch_focus`] has looked.
     ///
@@ -1463,7 +1543,7 @@ impl DomDocument for WebDocument {
 
     fn append_child(&mut self, parent: NodeId, child: NodeId) {
         if let (Some(p), Some(c)) = (self.nodes.get(&parent.0), self.nodes.get(&child.0)) {
-            p.append_child(c).ok();
+            insert_or_move(p, c, None);
         }
     }
 
@@ -1479,7 +1559,7 @@ impl DomDocument for WebDocument {
             self.nodes.get(&child.0),
             self.nodes.get(&reference.0),
         ) {
-            p.insert_before(c, Some(r)).ok();
+            insert_or_move(p, c, Some(r));
         }
     }
 
@@ -1807,16 +1887,9 @@ impl DomDocument for WebDocument {
 
     fn insert_child(&mut self, parent: NodeId, child: NodeId, index: usize) {
         if let (Some(p), Some(c)) = (self.nodes.get(&parent.0), self.nodes.get(&child.0)) {
-            let children = p.child_nodes();
-            if index < children.length() as usize {
-                if let Some(ref_node) = children.item(index as u32) {
-                    p.insert_before(c, Some(&ref_node)).ok();
-                } else {
-                    p.append_child(c).ok();
-                }
-            } else {
-                p.append_child(c).ok();
-            }
+            // `item` past the end is `None`, which appends.
+            let reference = p.child_nodes().item(index as u32);
+            insert_or_move(p, c, reference.as_ref());
         }
     }
 
@@ -2146,6 +2219,16 @@ impl DomDocument for WebDocument {
                 job();
             }
         }))
+    }
+
+    /// [`moves_in_place`] for the two nodes: the question
+    /// `append_child` / `insert_before` / `insert_child` ask themselves
+    /// (issue #1483).
+    fn moves_keeping_focus(&self, parent: NodeId, child: NodeId) -> bool {
+        match (self.nodes.get(&parent.0), self.nodes.get(&child.0)) {
+            (Some(p), Some(c)) => moves_in_place(p, c),
+            _ => false,
+        }
     }
 
     /// The focused element, when it is inside the part of `node` that is about
