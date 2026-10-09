@@ -6215,6 +6215,11 @@ impl RinchDocument {
         let this_max = std::cell::Cell::new(f32::INFINITY);
         let node_id = self.tree.taffy_map.get(&taffy_id).copied();
         let fit_content = |this: &mut Self, stretch: f32| -> f32 {
+            // From before the max-content compute: a flex item inside the
+            // box is asked for its min-content size by that compute too, and
+            // Taffy keeps the answer — made with a stand-in — for the
+            // min-content compute below, which then asks nothing.
+            let mut asked = this.tree.atomic_min_requests.borrow().len();
             let max = measure(this, taffy::AvailableSpace::MaxContent);
             this_max.set(max + 0.01);
             if atomic_inline_fits(max, stretch) {
@@ -6225,7 +6230,6 @@ impl RinchDocument {
                 .and_then(|n| this.tree.atomic_min_content.get(&n))
                 .copied();
             let min = known.unwrap_or_else(|| {
-                let mut asked = this.tree.atomic_min_requests.borrow().len();
                 let mut min = measure(this, taffy::AvailableSpace::MinContent);
                 for _ in 0..8 {
                     let inner = this.tree.atomic_min_requests.borrow_mut().split_off(asked);
@@ -6781,6 +6785,31 @@ impl RinchDocument {
             let Some(depth) = self.depth_if_connected(id) else {
                 continue;
             };
+            // The boxes inside this one that some measure has asked for
+            // come first: Taffy holds answers made with their stand-ins (a
+            // flex item's min-content size, from any compute of this box),
+            // and the compute below would be served them and ask nothing.
+            let inside: Vec<usize> = {
+                let asked = self.tree.atomic_min_requests.borrow();
+                let mut inside: Vec<usize> = stack
+                    .iter()
+                    .chain(asked.iter())
+                    .copied()
+                    .filter(|&r| {
+                        r != id
+                            && !self.tree.atomic_min_content.contains_key(&r)
+                            && self.is_inside(r, id)
+                    })
+                    .collect();
+                inside.sort_unstable();
+                inside.dedup();
+                inside
+            };
+            if !inside.is_empty() && retried.insert(id) {
+                stack.push(id);
+                stack.extend(inside);
+                continue;
+            }
             // A box inside that is lined up at the size it was resolved to
             // (a percentage width, a `fit-content` one) is measured as
             // `auto` first, as phase 1 of `resolve_percentage_inline_blocks`
@@ -6844,6 +6873,18 @@ impl RinchDocument {
             self.remeasure_dirty_atomic_inlines();
         }
         changed
+    }
+
+    /// Whether `node` is a descendant of `ancestor`.
+    fn is_inside(&self, node: usize, ancestor: usize) -> bool {
+        let mut cur = self.tree.nodes.get(node).and_then(|n| n.parent);
+        while let Some(p) = cur {
+            if p == ancestor {
+                return true;
+            }
+            cur = self.tree.nodes.get(p).and_then(|n| n.parent);
+        }
+        false
     }
 
     /// Queue every atomic inline above `id` for phase 2 of
