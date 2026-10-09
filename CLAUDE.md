@@ -2161,8 +2161,35 @@ A modified field's `onchange` runs from that blur only while its handler is
 alive: a field the hidden branch built has had it freed first (#141 order). The listeners see the node still in place and
 not yet retired, the mutation and the document's maps stay one synchronous
 step, and Firefox, which fires nothing for a removed node, gets the same
-`focusout`. A moved node loses the focus on the web, as in a browser (desktop
-keeps it). Chrome also blurs inside three attribute writes on the focused
+`focusout`. **A move inside the document keeps the focus where the browser has
+`Node.moveBefore`** (#1483), as desktop always has (its focus is the arbiter's
+own state, keyed by node): `WebDocument::append_child` / `insert_before` /
+`insert_child` call it through `insert_or_move` when `moves_in_place` holds
+(the method exists, looked up once per page; child and parent both connected,
+one document; the parent an element, the child an element or character data),
+and the `NodeHandle` insertion verbs ask the same predicate through
+`DomDocument::moves_keeping_focus` (default `false`) and release nothing — the
+two must stay one predicate, or the old call runs listeners under the borrow.
+Measured in Chrome 153, and in CI's Firefox 157: no `blur`/`focusout`,
+selection kept, an open `Select`'s list and key entry live, an `<iframe>` not
+reloaded; a moved scroller's `scrollTop` is kept in Chrome and reset in
+Firefox 157. A browser without the method, a move into or out of a detached subtree,
+`replace_with`'s replacement and a refused `moveBefore` take the blur-first
+`insertBefore`, where the moved node loses the focus. The looked-up method is
+accepted only if it throws for two detached scratch elements
+(`refuses_a_disconnected_node`): a page's polyfill over `insertBefore` does
+not, and used as a move it fired `blur` under the borrow with nothing
+released. Also kept across the move in Chrome 153: a running CSS animation or
+transition, and an IME composition. Not kept: a node moved under a parent
+where it cannot be focused (`display: none`, `hidden`, `inert`, …) is blurred
+by the browser after the call, outside the borrow. Cost: one `isConnected`
+read per insertion of a node that is in no document (a mount); a move reads 7
+(`isConnected`, `nodeType` and `ownerDocument` twice each, `isSameNode`), and
+7 more from the verb's ask when the focus is inside the moved node. Pins: `rinch-web/tests/move_keeps_focus_1483.rs` (branches
+on the feature, not the engine), `review_1486_polyfill.rs`, and
+`review_1486_no_move_before.rs`, which deletes the method before the first
+lookup: CI's Chrome and Firefox both have it, so no other file runs the old
+path. Chrome also blurs inside three attribute writes on the focused
 element itself — `hidden`, and `tabindex` / `contenteditable` removed from an
 element focusable only through it (measured in 153; `disabled`, `inert`,
 `display: none` and any of them on an ancestor fire nothing inside the write)

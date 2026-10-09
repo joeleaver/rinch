@@ -21,8 +21,15 @@
 //! (`DomDocument::before_attribute_write`).
 //!
 //! Firefox fires nothing when a focused node is removed. Because the release
-//! is rinch's own `blur()`, which fires `focusout` in every engine, none of
-//! these fixtures depends on which engine it runs in.
+//! is rinch's own `blur()`, which fires `focusout` in every engine, the
+//! removal fixtures do not depend on which engine they run in.
+//!
+//! A **move** of a connected node is different since #1483: where the browser
+//! has `moveBefore` rinch-web moves with it, the focus stays and nothing is
+//! released; where it does not, the move is the blur-first `insertBefore`
+//! described above. The three move fixtures state both answers and branch on
+//! the feature (`engine::has_move_before`); `move_keeps_focus_1483.rs` has the
+//! rest.
 //!
 //! ```text
 //! CHROMEDRIVER=/path/to/chromedriver \
@@ -310,8 +317,9 @@ fn replacing_another_node_with_the_focused_owner() {
     f.done();
 }
 
-/// A move: `append_child` of a node that is already in the document. A browser
-/// drops the focus of a node it moves.
+/// A move: `append_child` of a node that is already in the document. With
+/// `insertBefore` a browser drops the focus of a node it moves; with
+/// `moveBefore` (#1483) it keeps it and no listener runs.
 #[wasm_bindgen_test]
 fn appending_the_focused_owner_somewhere_else() {
     let f = fixture("button", "mv");
@@ -322,8 +330,13 @@ fn appending_the_focused_owner_somewhere_else() {
         .last_element_child()
         .unwrap();
     assert_eq!(last.id(), "wrap-mv", "it moved to the end");
-    assert_ne!(active_id(), "trigger-mv", "a moved node loses the focus");
-    f.assert_left_once();
+    if engine::has_move_before() {
+        assert_eq!(active_id(), "trigger-mv", "moved in place: focus kept");
+        assert_eq!(f.seen.left.get(), 0, "and the entry heard nothing");
+    } else {
+        assert_ne!(active_id(), "trigger-mv", "a moved node loses the focus");
+        f.assert_left_once();
+    }
     f.assert_usable();
     f.done();
 }
@@ -338,7 +351,13 @@ fn inserting_the_focused_owner_before_and_after_a_sibling() {
         by_id("other-ins").next_element_sibling().unwrap().id(),
         "wrap-ins"
     );
-    f.assert_left_once();
+    let in_place = engine::has_move_before();
+    if in_place {
+        assert_eq!(active_id(), "trigger-ins", "moved in place: focus kept");
+        assert_eq!(f.seen.left.get(), 0, "and the entry heard nothing");
+    } else {
+        f.assert_left_once();
+    }
     // Focus it again and move it back: [wrap, other].
     by_id("trigger-ins").focus().unwrap();
     assert_eq!(
@@ -351,7 +370,12 @@ fn inserting_the_focused_owner_before_and_after_a_sibling() {
         by_id("wrap-ins").next_element_sibling().unwrap().id(),
         "other-ins"
     );
-    assert_eq!(f.seen.left.get(), 2, "the second move was heard too");
+    if in_place {
+        assert_eq!(active_id(), "trigger-ins", "kept across the second move");
+        assert_eq!(f.seen.left.get(), 0);
+    } else {
+        assert_eq!(f.seen.left.get(), 2, "the second move was heard too");
+    }
     f.assert_usable();
     f.done();
 }
@@ -827,10 +851,19 @@ fn a_move_that_cannot_happen_keeps_the_focus() {
         "wrap-refused",
         "and nothing moved"
     );
-    // Positive control: the same verb, when it can run, does take the focus.
+    // Positive control: the same verb, when it can run, moves the node, and
+    // takes the focus unless the browser moves it in place (#1483).
     f.page.insert_before(&f.wrap, &f.other);
     f.page.append_child(&f.wrap);
-    assert_ne!(active_id(), "trigger-refused");
+    assert!(
+        by_id("wrap-refused").next_element_sibling().is_none(),
+        "it moved to the end"
+    );
+    if engine::has_move_before() {
+        assert_eq!(active_id(), "trigger-refused");
+    } else {
+        assert_ne!(active_id(), "trigger-refused");
+    }
     f.done();
 }
 

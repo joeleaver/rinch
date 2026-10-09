@@ -789,9 +789,26 @@ is blurred, with the document free, and then the node goes. So:
 - a verb the browser refuses (an `insert_before` whose reference is not a child
   of the parent, a node appended into itself) moves nothing and keeps the
   focus;
-- **a moved node loses the focus**, as it does in a browser. Desktop keeps the
-  focus across a move. Call `focus()` on it again after the move if it should
-  keep the keyboard on the web too.
+- **a node moved inside the document keeps the focus** where the browser has
+  `Node.moveBefore` (Chrome 133 and later; check your other target browsers),
+  as it always has on desktop. `append_child`, `insert_before` and
+  `insert_after` of a node that is already in the document — a keyed `for`
+  moving a row — are then that call: no focus event fires, an open `Select` in
+  the row stays open and an `<iframe>` in it is not reloaded (measured in
+  Chrome 153 and Firefox 157); a scroller in it keeps its offset in Chrome and
+  is reset to the top in Firefox 157. A running CSS animation or transition
+  in the row carries on and an IME composition in its `<input>` is not ended
+  (measured in Chrome 153). One exception to "keeps the focus": a node moved
+  under a parent where it cannot be focused (`display: none`, `hidden`,
+  `inert`, `visibility: hidden`, a disabled `<fieldset>`, a closed
+  `<details>` or `<dialog>`) keeps it through the move and the browser blurs
+  it afterwards, so a key entry's `on_focus_leave` runs then, once. A page's
+  own `moveBefore` polyfill written over `insertBefore` is recognised and not
+  used. In a browser without the method
+  the move is a removal and an insertion, **the moved node loses the focus**
+  and the list above applies; call `focus()` on it again after the move if it
+  must keep the keyboard there. A move into or out of a detached subtree, and
+  `replace_with`, take that path in every browser.
 
 Three attribute writes can cost the focused element its focus in place:
 `hidden` on it, and removing the `tabindex` or `contenteditable` that made it

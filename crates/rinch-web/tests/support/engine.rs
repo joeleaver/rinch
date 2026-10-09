@@ -14,3 +14,15 @@ pub fn is_gecko() -> bool {
         .and_then(|w| w.navigator().user_agent().ok())
         .is_some_and(|ua| ua.contains("Gecko/"))
 }
+
+/// Whether this browser has `Node.moveBefore`, the move that keeps a node's
+/// state (issue #1483). rinch-web moves a connected node with it where it
+/// exists, and such a move keeps the focus and fires no focus event
+/// (measured in Chrome 153); elsewhere a moved node loses the focus.
+#[allow(dead_code)]
+pub fn has_move_before() -> bool {
+    js_sys::eval("typeof Element.prototype.moveBefore === 'function'")
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
