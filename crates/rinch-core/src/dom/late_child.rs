@@ -72,13 +72,30 @@
 //! - **`rinch/src/app/select_widget.rs`'s popup teardown**, which `remove_node`s
 //!   a panel and a backdrop it mounted into `<body>` itself. Same reason.
 //!
-//! - **Text written over an element's children** — `NodeHandle::set_text` and
-//!   a batched `DomUpdate::SetText` both reach `set_text_content`, which on
-//!   `rinch-dom` orphans every child of an element, and neither fires the
-//!   removal half. This one *can* take children out of a registered container
-//!   (issue #1440; measured on `rinch-dom`, and `MockDomDocument` keeps the
-//!   children, so no test here shows it). `set_inner_html` replaces a child
-//!   list the same way.
+//! - **A batched `DomUpdate::SetText` on an element with children**
+//!   ([`UpdateBatch::apply`](super::UpdateBatch::apply)). `set_text_content`
+//!   on an element replaces its child list with the text, so this one *can*
+//!   take children out of a registered container, and it tells nobody: `apply`
+//!   is handed the document already mutably borrowed, and an observer edits
+//!   the tree through `NodeHandle`s, which borrow it again. Use
+//!   [`NodeHandle::set_text`], which does tell (below).
+//!
+//! # Writes that replace a child list
+//!
+//! [`NodeHandle::set_text`] on an **element** and
+//! [`NodeHandle::set_inner_html`] replace every child the node has, and fire
+//! the removal half for it when it had any (issue #1440): once, with the node
+//! itself, which is the parent the children left. `set_text` asks the document
+//! afterwards whether the list changed — an element whose only child is a
+//! text node keeps that node on `rinch-dom` (it is written in place), has no
+//! listed child on the mock or in a browser, and so tells nobody on any
+//! backend; `set_inner_html` frees
+//! the children and always tells. Neither fires the **insertion** half for
+//! what arrives: the text has no node of its own in a browser, and markup
+//! parsed by `set_inner_html` is not reported — a container whose items are
+//! written as an HTML string does not give them its default.
+//! `set_inner_html` also drops the observers registered on the nodes it
+//! frees, as a discard drops its node's.
 //!
 //! [`UpdateBatch`](super::UpdateBatch) used to be on this list for four
 //! structural `DomUpdate` variants that took arbitrary ids; #756 removed them,
@@ -362,6 +379,72 @@ pub(super) fn notify_vacated(vacated: Option<&NodeHandle>, landed_in: &NodeHandl
         && vacated.node_id() != landed_in.node_id()
     {
         notify_removed(vacated);
+    }
+}
+
+/// The children `node` has now, when a write that **replaces its child list**
+/// (`NodeHandle::set_text` on an element, `NodeHandle::set_inner_html`) could
+/// take them out from under a removal observer — issue #1440.
+///
+/// `None` when nothing on the thread watches for removals, during a dispatch,
+/// for a text node (what every reactive `{|| …}` in `rsx!` writes to — asked
+/// through [`DomDocument::is_text_node`](super::traits::DomDocument::is_text_node),
+/// with no child list read), and for an element with no children. So a write
+/// nobody could be told about costs the `Cell` read and no document call.
+pub(super) fn children_at_stake(node: &NodeHandle) -> Option<Vec<NodeId>> {
+    if count_of(Half::Removed) == 0 || DISPATCHING.with(|d| d.get()) {
+        return None;
+    }
+    let doc = node.doc_upgrade()?;
+    let doc = doc.borrow();
+    // A text node has no child list to read: this is the write of every
+    // reactive text, and it stays one kind check with an observer registered.
+    if doc.is_text_node(node.node_id()) {
+        return None;
+    }
+    let children = doc.get_children(node.node_id());
+    (!children.is_empty()).then_some(children)
+}
+
+/// Tell the observers above `node` that children left it, after a text write
+/// that had `before` ([`children_at_stake`]) to lose.
+///
+/// Asked of the document rather than assumed, because a backend may keep the
+/// list: `rinch-dom` writes an element's lone text child in place, and the
+/// child list is then the one it was.
+pub(super) fn notify_children_replaced(node: &NodeHandle, before: Option<Vec<NodeId>>) {
+    let Some(before) = before else {
+        return;
+    };
+    let Some(doc) = node.doc_upgrade() else {
+        return;
+    };
+    let after = doc.borrow().get_children(node.node_id());
+    if after != before {
+        notify_removed(node);
+    }
+}
+
+/// Drop the observers registered on any node **beneath** `node`, before a
+/// write that frees those nodes (`NodeHandle::set_inner_html`).
+///
+/// The same reason [`forget_node`] exists: `rinch-dom` hands a freed slab id
+/// to the next node it mints — the very markup the write parses — and an
+/// observer left under that id would answer for a node that is not its
+/// container.
+pub(super) fn forget_descendants(node: &NodeHandle) {
+    if count_of(Half::Inserted) == 0 && count_of(Half::Removed) == 0 {
+        return;
+    }
+    let Some(doc) = node.doc_upgrade() else {
+        return;
+    };
+    let doc_key = node.doc_key();
+    let mut stack = doc.borrow().get_children(node.node_id());
+    while let Some(id) = stack.pop() {
+        forget((doc_key, id), Half::Inserted);
+        forget((doc_key, id), Half::Removed);
+        stack.extend(doc.borrow().get_children(id));
     }
 }
 
@@ -667,6 +750,237 @@ mod tests {
             );
             forget((root.doc_key(), root.node_id()), Half::Removed);
         }
+    }
+
+    // ------------------------- a write that replaces a child list (issue #1440)
+
+    fn text(doc: &Rc<RefCell<MockDomDocument>>, content: &str) -> NodeHandle {
+        let id = doc.borrow_mut().create_text(content);
+        let weak: std::rc::Weak<RefCell<dyn super::super::traits::DomDocument>> =
+            Rc::downgrade(doc) as _;
+        NodeHandle::new(id, weak)
+    }
+
+    /// `set_text` on an element replaces its children with the text, so each
+    /// of them left — and the container is told, once, with the element whose
+    /// children went (the former parent), nearest first.
+    #[test]
+    fn text_written_over_an_elements_children_tells_the_removal_observer() {
+        let (d, body) = doc();
+        let root = element(&d, "div");
+        body.append_child(&root);
+        let wrapper = element(&d, "section");
+        root.append_child(&wrapper);
+        let (a, b) = (element(&d, "span"), element(&d, "span"));
+        wrapper.append_child(&a);
+        wrapper.append_child(&b);
+
+        let seen = watch_removals(&root);
+        let landed = {
+            let (seen, sink) = recorder();
+            on_child_inserted(&root, move |node| sink.borrow_mut().push(node.node_id()));
+            seen
+        };
+
+        wrapper.set_text("gone");
+
+        assert_eq!(
+            (
+                a.parent_node().map(|p| p.node_id()),
+                wrapper.children().len()
+            ),
+            (None, 0),
+            "precondition: the write orphaned the children"
+        );
+        assert_eq!(
+            *seen.borrow(),
+            vec![wrapper.node_id()],
+            "#1440: two children left `wrapper`, and the container above it is \
+             told once, with the node they left"
+        );
+        assert!(
+            landed.borrow().is_empty(),
+            "the text that replaced them is not reported as an insertion: it \
+             has no node of its own on the mock or in a browser"
+        );
+        // Detached, not retired: an orphan goes back in like a removed node.
+        root.append_child(&a);
+        assert_eq!(a.parent_node().map(|p| p.node_id()), Some(root.node_id()));
+        forget((root.doc_key(), root.node_id()), Half::Removed);
+        forget((root.doc_key(), root.node_id()), Half::Inserted);
+    }
+
+    /// The writes that take no child out say nothing: text on a text node (what
+    /// every reactive `{|| …}` in `rsx!` is), and text on an element that has
+    /// no children to lose.
+    #[test]
+    fn text_written_where_no_child_leaves_tells_nobody() {
+        let (d, body) = doc();
+        let root = element(&d, "div");
+        body.append_child(&root);
+        let label = text(&d, "one");
+        root.append_child(&label);
+        let empty = element(&d, "p");
+        root.append_child(&empty);
+
+        let seen = watch_removals(&root);
+
+        label.set_text("two");
+        empty.set_text("first");
+        empty.set_text("second");
+
+        assert!(
+            seen.borrow().is_empty(),
+            "no child left anything, so there is nothing to re-derive: {:?}",
+            seen.borrow()
+        );
+        // Positive control: the observer is live.
+        label.remove();
+        assert_eq!(*seen.borrow(), vec![root.node_id()]);
+        forget((root.doc_key(), root.node_id()), Half::Removed);
+    }
+
+    /// With nothing registered for removals, `set_text` asks the document
+    /// nothing it did not ask before — the cost rule of the module, for the
+    /// verb every reactive text effect runs.
+    #[test]
+    fn set_text_reads_no_child_list_while_nobody_watches_removals() {
+        let (d, body) = doc();
+        let root = element(&d, "div");
+        body.append_child(&root);
+        let child = element(&d, "span");
+        root.append_child(&child);
+        // An insertion observer alone must not turn the read on.
+        on_child_inserted(&root, |_| {});
+
+        let before = d.borrow().__get_children_calls();
+        root.set_text("x");
+        assert_eq!(
+            d.borrow().__get_children_calls(),
+            before,
+            "no removal observer on the thread: one `Cell` read, no child list"
+        );
+        forget((root.doc_key(), root.node_id()), Half::Inserted);
+    }
+
+    /// With a removal observer on the thread — in **another** document, as a
+    /// mounted `Stepper` beside any reactive text is — a write to a text node
+    /// still reads no child list: 10,000 of them, zero `get_children`. An
+    /// element is asked once when it has no children and twice when it had.
+    #[test]
+    fn a_text_node_write_reads_no_child_list_with_an_observer_on_the_thread() {
+        let (d, body) = doc();
+        let label = text(&d, "0");
+        body.append_child(&label);
+        let (d2, body2) = doc();
+        let other = element(&d2, "div");
+        body2.append_child(&other);
+        on_child_removed(&other, |_| {});
+
+        let base = d.borrow().__get_children_calls();
+        for i in 0..10_000 {
+            label.set_text(&i.to_string());
+        }
+        assert_eq!(d.borrow().__get_children_calls() - base, 0);
+
+        // The counter does see an element: empty, then with a child to lose.
+        let host = element(&d, "p");
+        body.append_child(&host);
+        let base = d.borrow().__get_children_calls();
+        host.set_text("a");
+        assert_eq!(d.borrow().__get_children_calls() - base, 1);
+        host.append_child(&element(&d, "i"));
+        let base = d.borrow().__get_children_calls();
+        host.set_text("b");
+        assert_eq!(d.borrow().__get_children_calls() - base, 2);
+        forget((other.doc_key(), other.node_id()), Half::Removed);
+    }
+
+    /// Rewriting an element's own text loses no child on the mock: the text
+    /// lives on the element, as a browser's has no rinch id (`rinch-dom`
+    /// writes its text node in place — `child_list_replaced_1440_tests`).
+    #[test]
+    fn rewriting_an_elements_own_text_tells_nobody() {
+        let (d, body) = doc();
+        let root = element(&d, "div");
+        body.append_child(&root);
+        let label = element(&d, "p");
+        root.append_child(&label);
+        label.set_text("0");
+        let seen = watch_removals(&root);
+        for i in 1..=10 {
+            label.set_text(&i.to_string());
+        }
+        assert!(seen.borrow().is_empty());
+        forget((root.doc_key(), root.node_id()), Half::Removed);
+    }
+
+    /// `set_inner_html` replaces a child list as well; the children it frees
+    /// left, and an observer registered **on** one of them goes with it — the
+    /// backend may hand a freed id to the next node it mints (`rinch-dom`'s
+    /// slab does), exactly as after a discard.
+    #[test]
+    fn html_written_over_an_elements_children_tells_the_removal_observer() {
+        let (d, body) = doc();
+        let root = element(&d, "div");
+        body.append_child(&root);
+        let wrapper = element(&d, "section");
+        root.append_child(&wrapper);
+        let inner = element(&d, "div");
+        wrapper.append_child(&inner);
+        inner.append_child(&element(&d, "span"));
+
+        let seen = watch_removals(&root);
+        let stale = watch_removals(&inner);
+        on_child_inserted(&inner, |_| {});
+        assert_eq!((count_of(Half::Removed), count_of(Half::Inserted)), (2, 1));
+
+        wrapper.set_inner_html("<b>new</b>");
+
+        assert_eq!(
+            *seen.borrow(),
+            vec![wrapper.node_id()],
+            "#1440: the replaced children left `wrapper`"
+        );
+        assert!(stale.borrow().is_empty());
+        assert_eq!(
+            (count_of(Half::Removed), count_of(Half::Inserted)),
+            (1, 0),
+            "both observers on the freed `inner` are dropped with it"
+        );
+
+        // An element with no children loses none.
+        let empty = element(&d, "p");
+        root.append_child(&empty);
+        seen.borrow_mut().clear();
+        empty.set_inner_html("<i>x</i>");
+        assert!(seen.borrow().is_empty());
+        forget((root.doc_key(), root.node_id()), Half::Removed);
+    }
+
+    /// A container's own `set_text` over children, made from inside its
+    /// callback, does not call it back (the re-entrancy rule).
+    #[test]
+    fn a_callbacks_own_text_write_over_children_does_not_call_it_back() {
+        let (d, body) = doc();
+        let root = element(&d, "div");
+        body.append_child(&root);
+        let scratch = element(&d, "p");
+        root.append_child(&scratch);
+        let doomed = element(&d, "span");
+        root.append_child(&doomed);
+
+        let calls = Rc::new(Cell::new(0));
+        let (count, target, doc2) = (calls.clone(), scratch.clone(), d.clone());
+        on_child_removed(&root, move |_| {
+            count.set(count.get() + 1);
+            target.append_child(&element(&doc2, "i"));
+            target.set_text("patched");
+        });
+
+        doomed.remove();
+        assert_eq!(calls.get(), 1);
+        forget((root.doc_key(), root.node_id()), Half::Removed);
     }
 
     #[test]

@@ -754,7 +754,9 @@ the size the next one should have. It is fired by the four verbs that take a
 node out of a tree (`remove_child`, `remove`, `discard`, and `replace_with` for
 the node it displaces) and by the implicit detach an insertion verb performs when
 handed a node that already has a parent, which is what tells the container a
-child **moved away**.
+child **moved away**. `set_text` on an element that has children and
+`set_inner_html` replace the whole child list, and fire it as well (issue
+#1440). A batched `DomUpdate::SetText` (`UpdateBatch::apply`) does not.
 
 Because of that, a step's `state`, `step` and `disabled` are read when the step
 arrives or moves, not on every change to the list: change them through the
