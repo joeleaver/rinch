@@ -185,7 +185,11 @@ fn build(seed: u64) -> Built {
         scrollers: vec![],
         containers: vec![],
     };
-    let c = b.el("div", &c_style(seed % 2 == 0, 0, (seed % 3) as usize), "c");
+    let c = b.el(
+        "div",
+        &c_style(seed.is_multiple_of(2), 0, (seed % 3) as usize),
+        "c",
+    );
     b.c = c;
     b.containers.push(c);
     b.fill(c, &mut rng, 0);
@@ -211,12 +215,12 @@ enum Op {
 fn gen_op(b: &Built, rng: &mut Rng, seed: u64) -> Op {
     loop {
         match rng.below(12) {
-            0 | 1 | 2 if !b.texts.is_empty() => {
+            0..=2 if !b.texts.is_empty() => {
                 return Op::Text(rng.below(b.texts.len()), words(rng));
             }
             3 => {
                 return Op::CStyle(
-                    seed % 2 == 0 || rng.below(3) == 0,
+                    seed.is_multiple_of(2) || rng.below(3) == 0,
                     rng.below(4),
                     (seed % 3) as usize,
                 );
@@ -328,8 +332,8 @@ fn snapshot(b: &Built) -> Vec<(String, [f32; 4])> {
         if !b.doc.is_connected(*id) {
             continue;
         }
-        let n = b.doc.tree.get(id.0 as usize).unwrap();
-        let (x, y) = rinch_dom::paint::compute_absolute_position(&b.doc.tree, id.0 as usize, 1.0);
+        let n = b.doc.tree.get(id.0).unwrap();
+        let (x, y) = rinch_dom::paint::compute_absolute_position(&b.doc.tree, id.0, 1.0);
         out.push((
             name.clone(),
             [x as f32, y as f32, n.layout.width, n.layout.height],
@@ -345,7 +349,7 @@ fn scroll_state(b: &Built) -> Vec<(f64, f64)> {
         .map(|s| {
             b.doc
                 .tree
-                .get(s.0 as usize)
+                .get(s.0)
                 .map(|n| n.scroll_offset)
                 .unwrap_or((0.0, 0.0))
         })
