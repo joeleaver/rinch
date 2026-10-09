@@ -258,6 +258,71 @@ pub(crate) fn purge_descendants(root: &NodeHandle) {
     }
 }
 
+/// The children of `node` that the render which built `node` also built — the
+/// ones a text write over `node` takes out for good (issue #1487) — and the
+/// scope that minted `node`, which is the owner they are judged against.
+///
+/// A child is one of them when it has a minting record and its minting scope
+/// is `node`'s or descended from it: the same question a hide asks of a
+/// branch's content ([`sweep_for_discard`]), asked of the element the text is
+/// written to. A child minted by any other scope was handed to that render
+/// (a captured handle, a cache scope's node), and one with no record at all
+/// was minted by raw backend access; the write says nothing about either and
+/// they are only detached. So is everything when `node` itself has no record.
+///
+/// `None` — after one kind check and no child list read — for a text node,
+/// which is what every reactive `{|| text}` writes to.
+pub(crate) fn children_built_with(
+    node: &NodeHandle,
+    doc: &Rc<RefCell<dyn DomDocument>>,
+) -> Option<(ScopeId, Vec<NodeId>)> {
+    let doc = doc.borrow();
+    if doc.is_text_node(node.node_id()) {
+        return None;
+    }
+    let table = ancestry_for(doc.doc_key())?;
+    let table = table.borrow();
+    let owner = *table.minted_by.get(&node.node_id())?;
+    let mut built = doc.get_children(node.node_id());
+    built.retain(|child| {
+        table
+            .minted_by
+            .get(child)
+            .is_some_and(|&scope| table.descends_from(scope, owner))
+    });
+    (!built.is_empty()).then_some((owner, built))
+}
+
+/// Discard what [`children_built_with`] found, after the text write that
+/// orphaned them (issue #1487).
+///
+/// Nothing can show these nodes again: they are under no root, so the hide of
+/// the branch that built them never walks to them, and they would stay in the
+/// backend's node table and in the minting table for the life of the
+/// document. A node the write left where it was is not touched — `rinch-dom`
+/// writes an element's lone text child in place. A captured handle nested
+/// inside one is detached first and kept, as on a hide.
+pub(crate) fn discard_orphans(node: &NodeHandle, built: Option<(ScopeId, Vec<NodeId>)>) {
+    let Some((owner, built)) = built else {
+        return;
+    };
+    let Some(doc) = node.doc.upgrade() else {
+        return;
+    };
+    for id in built {
+        if doc.borrow().parent_node(id).is_some() {
+            continue;
+        }
+        let orphan = NodeHandle::new(id, node.doc.clone());
+        let mut captured = Vec::new();
+        sweep_for_discard(&orphan, Some(owner), &mut captured);
+        for kept in captured {
+            kept.remove();
+        }
+        orphan.discard_swept();
+    }
+}
+
 /// **Test-only.** How many nodes the ancestry tables of every document with a
 /// live `RenderScope` on this thread currently record a minting scope for.
 #[doc(hidden)]

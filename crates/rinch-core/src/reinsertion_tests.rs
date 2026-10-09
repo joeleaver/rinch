@@ -2635,7 +2635,10 @@ mod text_over_children_1487 {
             visible.set(true);
             visible.set(false);
         }
-        (node_count(doc) - base.0, __minted_by_len() as isize - base.1)
+        (
+            node_count(doc) - base.0,
+            __minted_by_len() as isize - base.1,
+        )
     }
 
     /// The issue's table, row two: `div > (span > text, span)` built by the
@@ -2748,7 +2751,11 @@ mod text_over_children_1487 {
                 !d.is_retired(panel.node_id()) && !d.is_retired(panel_text.node_id()),
                 "the captured panel and its text are still the caller's"
             );
-            assert_eq!(d.parent_node(panel.node_id()), None, "detached by the write");
+            assert_eq!(
+                d.parent_node(panel.node_id()),
+                None,
+                "detached by the write"
+            );
             assert_eq!(d.get_children(panel.node_id()), vec![panel_text.node_id()]);
         }
         body.append_child(&panel);
@@ -2761,7 +2768,11 @@ mod text_over_children_1487 {
         panel.remove();
 
         let grown = cycle_growth(&doc, visible, 200);
-        assert_eq!(grown, (0, 0), "with the panel kept, nothing else accumulates");
+        assert_eq!(
+            grown,
+            (0, 0),
+            "with the panel kept, nothing else accumulates"
+        );
         assert!(!doc.borrow().is_retired(panel.node_id()));
     }
 
@@ -2814,7 +2825,10 @@ mod text_over_children_1487 {
         wrap.set_text("over");
 
         let d = doc.borrow();
-        assert!(d.is_retired(from_row.node_id()), "a descendant scope's node");
+        assert!(
+            d.is_retired(from_row.node_id()),
+            "a descendant scope's node"
+        );
         assert!(!d.is_retired(cached.node_id()), "a cache scope's node");
     }
 
@@ -2834,6 +2848,9 @@ mod text_over_children_1487 {
         wrap.set_text("over");
         assert!(!doc.borrow().is_retired(raw.node_id()));
         body.append_child(&raw);
-        assert_eq!(doc.borrow().parent_node(raw.node_id()), Some(body.node_id()));
+        assert_eq!(
+            doc.borrow().parent_node(raw.node_id()),
+            Some(body.node_id())
+        );
     }
 }

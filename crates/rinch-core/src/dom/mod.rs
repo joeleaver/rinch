@@ -402,11 +402,21 @@ impl NodeHandle {
     /// Set the text content of this node.
     ///
     /// For text nodes, this updates the text directly.
-    /// For element nodes, this replaces all children with a single text node:
-    /// the children are detached as [`remove`](Self::remove) detaches one (a
-    /// handle to one still re-inserts), and an
-    /// [`on_child_removed`] observer above this node is told they left
-    /// (issue #1440).
+    /// For element nodes, this replaces all children with a single text node,
+    /// and an [`on_child_removed`] observer above this node is told they left
+    /// (issue #1440). What becomes of each child follows who built it
+    /// (issue #1487), the rule a branch's hide uses:
+    ///
+    /// - a child **built by the same render as this element** — minted by the
+    ///   [`RenderScope`] that minted this element, or by a scope descended
+    ///   from it — is gone for good, as after [`discard`](Self::discard), with
+    ///   its subtree. Do not re-append a handle to one; build a fresh node;
+    /// - a child that render was **handed** — a captured handle, a
+    ///   [`cache_scope`](RenderScope::cache_scope)'s node — is detached as
+    ///   [`remove`](Self::remove) detaches one, wherever it sits under the
+    ///   children that go, and re-inserts;
+    /// - so is every child when this element, or the child, was minted by raw
+    ///   backend access and has no owner on record.
     #[doc(hidden)]
     pub fn set_text(&self, text: &str) {
         if let Some(doc) = self.accessed_doc() {
@@ -421,7 +431,12 @@ impl NodeHandle {
             // #1440). `None` — and no read — unless a removal observer is
             // registered and this node has children.
             let at_stake = late_child::children_at_stake(self);
+            // The children this element's own render built: once the text
+            // has orphaned them nothing can show them again, and no hide will
+            // ever walk to them (issue #1487).
+            let built = render_scope::children_built_with(self, &doc);
             doc.borrow_mut().set_text_content(self.node_id, text);
+            render_scope::discard_orphans(self, built);
             late_child::notify_children_replaced(self, at_stake);
         } else {
             tracing::warn!(
