@@ -355,3 +355,51 @@ pub(crate) fn offer_ime(doc_key: u64, node_id: usize, ime: &ImeEvent) -> bool {
         None => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::mock::MockDomDocument;
+    use rinch_core::reactive::Scope;
+    use std::cell::RefCell;
+    use std::rc::Weak;
+
+    /// Issue #1490: a registration's scope cleanup releases that registration,
+    /// not whatever is registered at `(doc_key, node_id)` when it runs. On
+    /// `rinch-dom` a freed node id is handed to the next node minted, so the
+    /// "second" registration there is another component's; a second
+    /// registration on the same node reaches the same cleanup without needing
+    /// the id re-issued.
+    #[test]
+    fn a_replaced_target_survives_the_first_scopes_cleanup() {
+        let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(MockDomDocument::new()));
+        let weak: Weak<RefCell<dyn DomDocument>> = Rc::downgrade(&doc);
+        let id = doc.borrow_mut().create_element("div");
+        let node = NodeHandle::new(id, weak);
+        let (doc_key, node_id) = (node.doc_key(), node.node_id().0);
+
+        let first = Scope::new();
+        first.run(|| register_focus_target(&node, FocusEntry::new()));
+        assert!(!wants_key_routing(doc_key, node_id), "control: no on_key yet");
+        let second = Scope::new();
+        second.run(|| register_focus_target(&node, FocusEntry::new().on_key(|_| true)));
+        assert!(
+            wants_key_routing(doc_key, node_id),
+            "control: the second registration replaced the first"
+        );
+
+        first.dispose();
+        assert!(
+            wants_key_routing(doc_key, node_id),
+            "the first scope's cleanup must not take the registration that \
+             replaced its own"
+        );
+
+        second.dispose();
+        assert!(
+            !is_registered(doc_key, node_id),
+            "the second scope's own cleanup does release it"
+        );
+    }
+}
