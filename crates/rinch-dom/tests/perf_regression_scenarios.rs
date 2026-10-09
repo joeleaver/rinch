@@ -2495,6 +2495,68 @@ fn spans_in_one_paragraph_are_measured_in_one_linear_walk() {
     );
 }
 
+/// `n` words in one paragraph, each followed by an out-of-flow span with no
+/// insets — a box at its static position in the line (#634). The paragraph
+/// is unpositioned, so each box is placed against the initial containing
+/// block: read back, and looked up in the lines, every layout.
+fn static_boxes_in_one_paragraph(n: usize) -> RinchDocument {
+    let mut doc = doc_with(
+        ".p { width: 380px; }
+         .s { position: absolute; width: 4px; height: 4px; }",
+    );
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    for _ in 0..n {
+        text(&mut doc, p, "w ");
+        el(&mut doc, p, "span", "s");
+    }
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc
+}
+
+/// Finding a box's static position in its lines is **one look per box**,
+/// however many boxes the paragraph holds (review of #1494, F6: it was a
+/// search of the paragraph's notes per box, so 8000 boxes cost 10.4 ms a
+/// relayout where 1.9 was owed). The box carries the index of its note
+/// (`Node::static_ifc_root`); `abs_static_lookup_steps` doubles when the
+/// paragraph does. A relayout that rebuilds no line: each box is read back
+/// once.
+#[test]
+fn static_boxes_in_one_paragraph_are_looked_up_by_index() {
+    let frame = |n: usize| {
+        let mut doc = static_boxes_in_one_paragraph(n);
+        doc.tree.perf.reset();
+        doc.resolve_layout(VP.0, VP.1 + 40.0);
+        doc.tree.perf.end_frame()
+    };
+    let (small, large) = (frame(50), frame(100));
+    expect(
+        "50 static boxes in one paragraph, laid out again",
+        &small,
+        &[
+            (StyleResolves, 1),
+            (TaffyStyleSyncs, 50),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (AbsBoxesVisited, 50),
+            (AbsStaticLookupSteps, 50),
+        ],
+    );
+    expect(
+        "100 static boxes in one paragraph, laid out again",
+        &large,
+        &[
+            (StyleResolves, 1),
+            (TaffyStyleSyncs, 100),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (AbsBoxesVisited, 100),
+            (AbsStaticLookupSteps, 100),
+        ],
+    );
+}
+
 /// A row of a list, as an app writes one: a flex row holding a chip in a
 /// cell, a label, and a second chip in a cell. The chips are atomic inlines
 /// on the lines of **flex items**, whose automatic minimum size is a

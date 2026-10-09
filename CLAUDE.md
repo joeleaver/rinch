@@ -3207,7 +3207,7 @@ right box) plus a **position** written as a *parent-relative* value
 (`out_of_flow::place_absolute`), so `LayoutResult` keeps its meaning and no
 coordinate consumer — paint, stacking, hit testing, `ClickContext`, the MCP
 `absolute` contract — needs an exception. An axis with both insets `auto` keeps
-Taffy's static position, which is what CSS asks for.
+the box's static position (below).
 
 **An ancestor's size is not known before the compute**, so that case is a
 fixpoint in `resolve_layout`, sharing `calc_layout`'s loop and its cap of 8:
@@ -3317,6 +3317,57 @@ an `inline-block` along its line there — so it calls `replace_all` too, after
 its `build_ifc_layouts`; `replace_all` consumes the flag
 (`review2_1409_tests::c1_*`, `c3_*`); **a new writer of a box's position
 or scroll offset that runs after `read_layout_results` must set it too.**
+
+**The static position** (#633, #632, #634; CSS 2.1 §10.3.7, §10.6.4). An axis
+with both insets `auto` keeps the box where it would have been in the flow —
+for `absolute` and for `fixed` (which went to the viewport's origin until #633).
+Taffy's answer, after the preceding in-flow sibling in the layout parent, is
+that place except among **inline content**, which Taffy sees as one leaf. There
+the lines answer (Chrome 153, pinned with the bundled Inter in
+`tests/static_position_tests.rs`): a **block-level** box goes at the content
+box's left edge (whatever the `text-align`) below the line holding the content
+before it, or at the first line's top when nothing precedes it; a box that was
+**inline-level before `position` blockified it** — a `<span style="position:
+absolute">`, an `inline-block` one — sits in its line where that content ends,
+at the line box's top, and moves with `text-align`. At a soft wrap the box stays
+on the line the content before it is on (a space hung there is not counted);
+after a forced break it starts the next line. Its own margins are added.
+The mechanism: `walk_inline_children` notes each out-of-flow box it passes
+(`IfcText::note_out_of_flow`; a direct child standing inside an anonymous box's
+run — or before its first member, with no block between: an inline-level box
+there starts the first line, which `text-align` moves — joins no run, #406, so
+it is noted from `Node::run_out_of_flow`, recorded where the runs are
+grouped); `ifc::resolve_out_of_flow_marks` turns each note
+into both positions once the lines are broken (`InlineLayout::out_of_flow`; an
+ellipsis rebuild carries them over); `Node::static_ifc_root` names the root and
+the note's index on the box, so `out_of_flow::static_location` costs one flag
+read for a box outside inline content and one indexed look for one inside
+(`abs_static_lookup_steps`: N looks for N boxes in one paragraph, pinned at two
+sizes by `perf_regression_scenarios::static_boxes_in_one_paragraph_are_looked_up_by_index`
+— a search per box was quadratic, 8000 boxes 1.9 → 10.4 ms per relayout); and which position is the box's is
+`ComputedStyle::inline_level_before_blockify` (Stylo's `original_display`),
+read at placement — a change of it alone moves no Taffy value, and neither
+does `absolute` ↔ `fixed`, so the cascade sets `layout_dirty` for either on an
+out-of-flow box. The lines are built after the read-back, so
+`shape_ifc_root_paint_layout` calls `out_of_flow::place_static_after_lines` for
+each box its new lines hold, and so does `read_layout_results_for_box` when an anonymous box moved: that
+writes an absolute box whose layout parent is its containing block directly —
+it is in no list — and sets `abs_late_moves` for the rest. **A new writer of an
+IFC root's position that runs after the read-back owes the same call.** The
+position is measured with nothing scrolled (a box shown in a scroller already
+at `scrollTop = 40` sits where it would at 0): for a fixed box, whose `layout`
+is a viewport position, that is the sum of the layouts above it
+(`out_of_flow::place_fixed_static`; the sum ends at a fixed ancestor and takes
+the baked scroll back off an absolute one), and no scroll moves it afterwards. A
+fixed box with a static axis is pushed to `placed_absolutes` (one
+`abs_boxes_visited` per layout); one with insets on both axes, and an absolute
+box placed by Taffy, static or not, are in no pass. Not Chrome's, each pinned in
+`known_differences_from_chrome`: the static position in a **flex** container
+is Taffy's (the cross axis ignores `align-items`; **#1492**); it
+follows rinch's line boxes, so below a line holding a 26px `inline-block` and
+text it is 4px high (rinch's line is 26px, Chrome's 30 — #663); a fixed box with no
+insets and no size still fills the viewport where Chrome shrinks it to its
+content (**#893**).
 
 **A positioned inline span is a containing block too** (#631, CSS 2.1 §10.1):
 `out_of_flow_kind` answers `AncestorAbsolute(span)` for a `position: relative`
@@ -4547,8 +4598,12 @@ so normal flow content clears it automatically; a `position: fixed` element does
 rinch-web). Full-height overlays must therefore opt in:
 
 ```rust
-div { style: "position: fixed; top: var(--rinch-window-top-inset, 0px); bottom: 0;" }
+div { style: "position: fixed; top: var(--rinch-window-top-inset, 0px); bottom: 0; left: 0; right: 0;" }
 ```
+
+The `left: 0; right: 0` is not decoration: a fixed box with both insets of an
+axis `auto` keeps its static position on that axis (#633), so `top`/`bottom`
+alone leaves its x wherever its parent put it.
 
 `Drawer`, `Modal`, and the top-anchored `Notification` positions already do this.
 `DropdownMenu`'s and `Select`'s click-catching backdrops, and the DOM menu

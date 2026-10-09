@@ -1049,6 +1049,10 @@ impl RinchDocument {
             // Capture old display before transitions overwrite computed_style
             let old_display = self.tree.nodes[node_id].computed_style.display;
             let old_table_part = self.tree.nodes[node_id].computed_style.table_part;
+            let was_inline_level = self.tree.nodes[node_id]
+                .computed_style
+                .inline_level_before_blockify;
+            let old_position = self.tree.nodes[node_id].computed_style.position;
             // …and whether it was a containing block for absolute descendants.
             let was_abs_containing_block =
                 self.tree.nodes[node_id].establishes_abs_containing_block();
@@ -1415,6 +1419,20 @@ impl RinchDocument {
             // (`note_table_children_changed`), and a restyle of the container
             // alone derives it in the sync below from children that did not
             // move.
+            // An out-of-flow box that was inline-level keeps its static
+            // position in its line, a block-level one below it (#634) — and
+            // which it was is no Taffy value: `position` blockified both to
+            // the same box. The read-back places it; ask for one.
+            {
+                let node = &self.tree.nodes[node_id];
+                if (was_inline_level != node.computed_style.inline_level_before_blockify
+                    || old_position != node.computed_style.position)
+                    && node.is_out_of_flow()
+                {
+                    self.tree.layout_dirty = true;
+                }
+            }
+
             {
                 let new = &self.tree.nodes[node_id].computed_style;
                 let contents = crate::computed_style::DisplayValue::Contents;

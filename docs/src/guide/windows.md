@@ -203,8 +203,15 @@ or modal renders *underneath* your titlebar and covers its close button.
 `--rinch-window-top-inset` for this. Offset full-height overlays by it:
 
 ```rust
-div { style: "position: fixed; top: var(--rinch-window-top-inset, 0px); bottom: 0;" }
+div { style: "position: fixed; top: var(--rinch-window-top-inset, 0px); bottom: 0; left: 0; right: 0;" }
 ```
+
+Give a fixed overlay an inset on **both** axes. An axis with neither inset
+(`left` and `right` both `auto`, or `top` and `bottom`) keeps the box where it
+stands in the flow on that axis — its *static position*, as in a browser — so
+`top: 0; bottom: 0` alone starts wherever the element's parent put it
+horizontally, not at the window's left edge. (Before #633 such a box went to
+the window's origin on the desktop backend.)
 
 If you hand-roll the titlebar shown above, publish the variable yourself on a
 wrapper around your content so overlays inside it inherit the value:
