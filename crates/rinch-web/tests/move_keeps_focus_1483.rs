@@ -770,6 +770,18 @@ fn a_moved_row_keeps_its_iframe_and_its_scroll_offset() {
 /// a connected node. Counted by wrapping the prototypes' methods.
 #[wasm_bindgen_test]
 fn only_a_move_of_a_connected_node_uses_move_before() {
+    // The product's one look at the method (at the page's first insertion)
+    // calls it once on two scratch nodes, to tell a polyfill apart. Have that
+    // happen before the counters are read, whichever test runs first.
+    let warm = host();
+    rinch_web::mount_into(&warm, ThemeProviderProps::default(), |s| {
+        let d = s.create_element("div");
+        let c = s.create_element("span");
+        d.append_child(&c);
+        d
+    })
+    .unmount();
+    warm.remove();
     let host = host();
     reset_counters();
     let rows = Signal::new(vec![1u32, 2, 3]);

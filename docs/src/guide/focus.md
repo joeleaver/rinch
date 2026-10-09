@@ -796,7 +796,15 @@ is blurred, with the document free, and then the node goes. So:
   moving a row — are then that call: no focus event fires, an open `Select` in
   the row stays open and an `<iframe>` in it is not reloaded (measured in
   Chrome 153 and Firefox 157); a scroller in it keeps its offset in Chrome and
-  is reset to the top in Firefox 157. In a browser without the method
+  is reset to the top in Firefox 157. A running CSS animation or transition
+  in the row carries on and an IME composition in its `<input>` is not ended
+  (measured in Chrome 153). One exception to "keeps the focus": a node moved
+  under a parent where it cannot be focused (`display: none`, `hidden`,
+  `inert`, `visibility: hidden`, a disabled `<fieldset>`, a closed
+  `<details>` or `<dialog>`) keeps it through the move and the browser blurs
+  it afterwards, so a key entry's `on_focus_leave` runs then, once. A page's
+  own `moveBefore` polyfill written over `insertBefore` is recognised and not
+  used. In a browser without the method
   the move is a removal and an insertion, **the moved node loses the focus**
   and the list above applies; call `focus()` on it again after the move if it
   must keep the keyboard there. A move into or out of a detached subtree, and

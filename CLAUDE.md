@@ -2175,9 +2175,21 @@ selection kept, an open `Select`'s list and key entry live, an `<iframe>` not
 reloaded; a moved scroller's `scrollTop` is kept in Chrome and reset in
 Firefox 157. A browser without the method, a move into or out of a detached subtree,
 `replace_with`'s replacement and a refused `moveBefore` take the blur-first
-`insertBefore`, where the moved node loses the focus. Cost: one `isConnected`
-read per insertion. Pins: `rinch-web/tests/move_keeps_focus_1483.rs` (branches
-on the feature, not the engine). Chrome also blurs inside three attribute writes on the focused
+`insertBefore`, where the moved node loses the focus. The looked-up method is
+accepted only if it throws for two detached scratch elements
+(`refuses_a_disconnected_node`): a page's polyfill over `insertBefore` does
+not, and used as a move it fired `blur` under the borrow with nothing
+released. Also kept across the move in Chrome 153: a running CSS animation or
+transition, and an IME composition. Not kept: a node moved under a parent
+where it cannot be focused (`display: none`, `hidden`, `inert`, …) is blurred
+by the browser after the call, outside the borrow. Cost: one `isConnected`
+read per insertion of a node that is in no document (a mount); a move reads 7
+(`isConnected`, `nodeType` and `ownerDocument` twice each, `isSameNode`), and
+7 more from the verb's ask when the focus is inside the moved node. Pins: `rinch-web/tests/move_keeps_focus_1483.rs` (branches
+on the feature, not the engine), `review_1486_polyfill.rs`, and
+`review_1486_no_move_before.rs`, which deletes the method before the first
+lookup: CI's Chrome and Firefox both have it, so no other file runs the old
+path. Chrome also blurs inside three attribute writes on the focused
 element itself — `hidden`, and `tabindex` / `contenteditable` removed from an
 element focusable only through it (measured in 153; `disabled`, `inert`,
 `display: none` and any of them on an ancestor fire nothing inside the write)

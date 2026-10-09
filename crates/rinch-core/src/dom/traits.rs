@@ -789,12 +789,15 @@ pub trait DomDocument {
     /// keyboard focus included, and no focus event is dispatched (issue #1483).
     ///
     /// The insertion verbs of [`NodeHandle`](super::NodeHandle)
-    /// (`append_child`, `insert_before`, `insert_after`) ask this before they
-    /// ask [`release_focus_within`](Self::release_focus_within), and skip the
-    /// release when it answers `true`: there is no focus to let go of.
+    /// (`append_child`, `insert_before`, `insert_after`) ask this once
+    /// [`release_focus_within`](Self::release_focus_within) has answered that
+    /// there is a focus to release (so not at all while nothing in the moved
+    /// part is focused), and do not run that release when it answers `true`:
+    /// the move leaves the focus where it is.
     ///
-    /// `rinch-web` answers `true` when the browser has `Node.moveBefore` and
-    /// both nodes are connected, in one document; its insertion methods then
+    /// `rinch-web` answers `true` when the browser has `Node.moveBefore` (the
+    /// real one: a page's polyfill over `insertBefore` is told apart and not
+    /// used) and both nodes are connected, in one document; its insertion methods then
     /// make that call where they made `insertBefore` / `appendChild`, which is
     /// a removal and an insertion and drops the focus (measured in Chrome 153:
     /// `moveBefore` of a row holding the focused `<input>` leaves

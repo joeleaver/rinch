@@ -1363,7 +1363,26 @@ thread_local! {
         .and_then(|w| js_sys::Reflect::get(&w, &"Element".into()).ok())
         .and_then(|ctor| js_sys::Reflect::get(&ctor, &"prototype".into()).ok())
         .and_then(|proto| js_sys::Reflect::get(&proto, &"moveBefore".into()).ok())
-        .and_then(|f| f.dyn_into::<js_sys::Function>().ok());
+        .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+        .filter(refuses_a_disconnected_node);
+}
+
+/// Whether `move_before` is the state-preserving move and not a polyfill over
+/// `insertBefore` (review of #1486): the real one throws for a node that is in
+/// no document, a polyfill inserts it. Two scratch elements, attached to
+/// nothing, so the probe has no effect on the page either way. A polyfill
+/// would fire `blur` / `focusout` inside the call, under the caller's borrow,
+/// after `moves_keeping_focus` had told the verb to release nothing.
+fn refuses_a_disconnected_node(move_before: &js_sys::Function) -> bool {
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return false;
+    };
+    match (doc.create_element("div"), doc.create_element("div")) {
+        (Ok(p), Ok(c)) => move_before
+            .call2(&p, &c, &wasm_bindgen::JsValue::NULL)
+            .is_err(),
+        _ => false,
+    }
 }
 
 /// Whether putting `c` under `p` is a move `p.moveBefore(c, …)` makes: the
