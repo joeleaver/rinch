@@ -633,6 +633,42 @@ pub struct InlineLayout {
     /// is about exactly these lines.
     pub(crate) span_fragments:
         std::collections::HashMap<RawNodeId, Option<crate::out_of_flow::SpanFragments>>,
+    /// Where each out-of-flow box met among this content would have sat in
+    /// these lines — its static position (#632, #634). In the order the walk
+    /// met them, and read first-match: a box hoisted out of an inline element
+    /// inside an anonymous box's run is met in the element and again after
+    /// it. Empty for nearly every layout.
+    pub(crate) out_of_flow: Vec<OutOfFlowMark>,
+}
+
+/// An out-of-flow box (`position: absolute` or `fixed`) met in an inline
+/// formatting context's content, and where its box would have been had it
+/// stayed in the flow — its **static position** (CSS 2.1 §10.3.7, §10.6.4).
+/// The box takes no room in the lines; this only remembers its place.
+///
+/// Positions are in the lines' own coordinates (the root's content box), and
+/// both answers are kept because which one applies is the box's own style
+/// (`ComputedStyle::inline_level_before_blockify`), which can change with no
+/// rebuild of these lines.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct OutOfFlowMark {
+    /// The out-of-flow box.
+    pub id: RawNodeId,
+    /// The flat-text byte the box sits at: everything before it was pushed
+    /// before the box was met.
+    pub flat: usize,
+    /// The last atomic inline pushed before the box and the flat byte it was
+    /// pushed at. It is the content right before the box when the two bytes
+    /// are the same (an inline box takes no byte of the text).
+    pub after_box: Option<(RawNodeId, usize)>,
+    /// For a box that was inline-level: where the content before it ends on
+    /// its line, and that line's top (Chrome 153: the line box's top,
+    /// whatever makes the line tall).
+    pub inline: (f32, f32),
+    /// For a block-level box: below the line holding the content before it,
+    /// or the first line's top when nothing precedes it. Its x is the content
+    /// box's left edge whatever the `text-align`.
+    pub block_y: f32,
 }
 
 impl InlineLayout {
@@ -1068,6 +1104,20 @@ pub struct Node {
     /// `box_tree_children` down its unit-collecting path for exactly the
     /// containers and inlines that need it, and nothing else.
     pub hosts_hoisted_out_of_flow: bool,
+    /// On an **out-of-flow box**: the inline formatting context root whose
+    /// lines hold its static position (`InlineLayout::out_of_flow`), as of
+    /// the last time those lines were built with the box among their content
+    /// (#632). A hint, checked where it is read (`out_of_flow::static_position`):
+    /// the root must still hold a mark for this box.
+    pub(crate) static_ifc_root: Option<RawNodeId>,
+    /// On an **anonymous block box**: the out-of-flow boxes that sit inside
+    /// its run — after at least one of its members — each with the index of
+    /// the member it comes right before (`run_members.len()` for one after
+    /// the last). An out-of-flow box joins no run (#406), so the run's own
+    /// list does not say where it was; its static position needs that
+    /// (#632). One before the run's first member is not here: Taffy's sibling
+    /// order already puts it at the box's top.
+    pub(crate) run_out_of_flow: Vec<(usize, RawNodeId)>,
     /// Whether this box lies strictly between an absolute box and the
     /// containing block that box was placed against at the last layout — a
     /// non-parent ancestor or the initial containing block (#386) — so that
@@ -1425,6 +1475,8 @@ impl Node {
             contributes_in_flow_block: false,
             hoisted_out_of_flow_to: None,
             hosts_hoisted_out_of_flow: false,
+            static_ifc_root: None,
+            run_out_of_flow: Vec::new(),
             on_abs_chain: false,
             abs_ancestor_recorded: false,
             abs_ancestor_baked: false,
@@ -1495,6 +1547,8 @@ impl Node {
             contributes_in_flow_block: false,
             hoisted_out_of_flow_to: None,
             hosts_hoisted_out_of_flow: false,
+            static_ifc_root: None,
+            run_out_of_flow: Vec::new(),
             on_abs_chain: false,
             abs_ancestor_recorded: false,
             abs_ancestor_baked: false,
@@ -1564,6 +1618,8 @@ impl Node {
             contributes_in_flow_block: false,
             hoisted_out_of_flow_to: None,
             hosts_hoisted_out_of_flow: false,
+            static_ifc_root: None,
+            run_out_of_flow: Vec::new(),
             on_abs_chain: false,
             abs_ancestor_recorded: false,
             abs_ancestor_baked: false,
@@ -1631,6 +1687,8 @@ impl Node {
             contributes_in_flow_block: false,
             hoisted_out_of_flow_to: None,
             hosts_hoisted_out_of_flow: false,
+            static_ifc_root: None,
+            run_out_of_flow: Vec::new(),
             on_abs_chain: false,
             abs_ancestor_recorded: false,
             abs_ancestor_baked: false,

@@ -32,20 +32,17 @@
 //! declaration (`line-height: 20px`, a `40x30` box, an inset), never a glyph
 //! measurement.
 //!
-//! Three divergences from Chrome are **pre-existing and hold for the unwrapped
-//! twin too**, so they are stated in the fixture that meets them and not
-//! pocketed: an absolute that is the *first* child takes its static position
-//! after the line (Chrome: before it — the measure leaf goes in at index 0,
-//! `ifc_out_of_flow_tests`); a `position: fixed` box with auto insets goes to
-//! the viewport origin (Chrome: its static position —
-//! `read_layout_results`' fixed arm); an inline-level absolute (`<span
-//! style="position: absolute">`) takes a block's static position (Chrome: in the
-//! line — Stylo blockifies it). Each is filed — #632 (static
-//! position after the line block), #633 (`fixed` auto insets), #634
-//! (inline-level absolute); see the fixture docs. The one shape with no
-//! wrapper-free twin — a `position: relative` inline, which is the absolute's
-//! containing block per CSS 2.1 §10.1 — was a fourth until #631, and is
-//! pinned in `abs_inline_containing_block_tests`.
+//! Three divergences from Chrome held for the unwrapped twin too when these
+//! fixtures were written, all in the **static position**: an absolute that is
+//! the *first* child took it after the line, one in a run of several lines
+//! after the whole run (#632); a `position: fixed` box with auto insets went
+//! to the viewport origin (#633); an inline-level absolute (`<span
+//! style="position: absolute">`) took a block's place (#634). All three are
+//! fixed, and Chrome 153's numbers for them are pinned with the bundled Inter
+//! in `static_position_tests`; what the fixtures here pin is still twin
+//! identity. The one shape with no wrapper-free twin — a `position: relative`
+//! inline, which is the absolute's containing block per CSS 2.1 §10.1 — was a
+//! fourth until #631, and is pinned in `abs_inline_containing_block_tests`.
 //!
 //! # Fixed points these fixtures step off
 //!
@@ -421,12 +418,10 @@ fn an_out_of_flow_child_of_an_inline_is_laid_out_where_its_twin_is() {
     }
 }
 
-/// Both ends of the run. Chrome places an absolute that is the **first** child at
-/// `y = 0` — before the line — and rinch's leaf-first canonicalization puts it
-/// after it, at `y = 20`, **for the unwrapped twin as well**
-/// (`ifc_out_of_flow_tests::an_auto_inset_absolute_child_keeps_its_below_the_line_static_position`
-/// documents the choice). Twin identity is what this pins; the divergence is
-/// pre-existing and filed as #632.
+/// Both ends of the run. An absolute that is the **first** child goes at
+/// `y = 0`, before the line (it went after it, at `y = 20`, until #632 —
+/// for the unwrapped twin as well). Twin identity is what this pins; the
+/// position is `static_position_tests`'.
 #[test]
 fn an_absolute_first_or_last_in_the_inline_lands_where_its_twin_does() {
     assert_twin("first", "span");
@@ -617,10 +612,9 @@ fn under_an_anonymous_box_root_the_icb_case_resolves_against_the_viewport() {
     assert_consistent(&wd, "icb mixed");
 }
 
-/// `position: fixed` inside the inline. Both twins go to the viewport origin
-/// (`read_layout_results`' fixed arm sends auto insets to 0); Chrome uses the
-/// static position `(0, 20)`. Pre-existing for the direct child, filed as #633; what this
-/// pins is that the fixed box is laid out at all and agrees with its twin.
+/// `position: fixed` inside the inline. Both twins take the static position
+/// `(0, 20)` (the viewport origin until #633); what this pins is that the
+/// fixed box is laid out at all and agrees with its twin.
 #[test]
 fn a_fixed_child_of_an_inline_agrees_with_its_twin() {
     let (w, _) = assert_twin("fixed", "span");
@@ -628,9 +622,9 @@ fn a_fixed_child_of_an_inline_agrees_with_its_twin() {
 }
 
 /// An **inline-level** absolute (`<span style="position: absolute">`). Stylo
-/// blockifies it, so both twins give it a block's static position below the
-/// line; Chrome keeps it in the line after `text`. Pre-existing, filed as #634; the hoist
-/// is by role, not by tag, which is what this pins.
+/// blockifies it; its static position is in the line after `text` all the
+/// same (#634 — both twins gave it a block's place below the line until
+/// then). The hoist is by role, not by tag, which is what this pins.
 #[test]
 fn an_inline_level_absolute_agrees_with_its_twin() {
     assert_twin("inline_level", "span");
@@ -652,10 +646,9 @@ fn an_absolute_in_an_inline_with_no_positioned_ancestor_resolves_against_the_icb
     );
 }
 
-/// A three-line run. Chrome's static position is after the line containing the
-/// preceding content (`y = 20`); rinch's is after the whole run (`y = 60`), for
-/// the unwrapped twin as well — the measure leaf is one Taffy child. Twin
-/// identity is pinned; the divergence is filed with the abs-first one, #632.
+/// A three-line run. The static position is after the line containing the
+/// preceding content (`y = 20`) — it was after the whole run (`y = 60`) until
+/// #632, for the unwrapped twin as well. Twin identity is pinned here.
 #[test]
 fn an_absolute_in_a_multi_line_run_agrees_with_its_twin() {
     let (w, _) = assert_twin("multiline", "span");

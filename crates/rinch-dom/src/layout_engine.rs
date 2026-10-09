@@ -1190,6 +1190,17 @@ impl RinchDocument {
             // Read back after the element walk placed the absolute boxes
             // (`out_of_flow::replace_all`).
             self.tree.abs_late_moves = true;
+            // The out-of-flow boxes whose static position is in this box's
+            // lines (#632) were read with it where it was. One of them is in
+            // no list `replace_all` walks: an absolute box whose layout
+            // parent is its containing block.
+            let held: Vec<usize> = match &self.tree.nodes[anon_id].text_layout {
+                Some(inline) => inline.out_of_flow.iter().map(|m| m.id).collect(),
+                None => Vec::new(),
+            };
+            for id in held {
+                crate::out_of_flow::place_static_after_lines(&mut self.tree, id);
+            }
         }
     }
 
@@ -1370,15 +1381,42 @@ impl RinchDocument {
             //   - display is none (element itself is hidden)
             //   - Taffy computed 0x0 size (ancestor has display:none — the node's
             //     own display may be Block but it's inside a hidden subtree)
+            //
+            // An axis with both insets `auto` keeps the box's **static
+            // position** — where it would have been in the flow (issue #633;
+            // it used to go to the viewport's origin). `layout` holds a
+            // viewport position for a fixed box, so that is the sum of the
+            // boxes above it with nothing scrolled
+            // (`out_of_flow::place_fixed_static`); such a box is recorded
+            // like a placed absolute one, since the late position writes
+            // move it the same way.
             {
-                let node = &self.tree.nodes[node_id];
-                if node.computed_style.position == crate::computed_style::PositionValue::Fixed
-                    && !matches!(
-                        node.computed_style.display,
-                        crate::computed_style::DisplayValue::None
+                let is_fixed = {
+                    let node = &self.tree.nodes[node_id];
+                    node.computed_style.position == crate::computed_style::PositionValue::Fixed
+                        && !matches!(
+                            node.computed_style.display,
+                            crate::computed_style::DisplayValue::None
+                        )
+                        && (new_layout.width > 0.0 || new_layout.height > 0.0)
+                };
+                let (static_x, static_y) = if is_fixed {
+                    crate::out_of_flow::place_fixed_static(
+                        &mut self.tree,
+                        node_id,
+                        (new_layout.x, new_layout.y),
                     )
-                    && (new_layout.width > 0.0 || new_layout.height > 0.0)
-                {
+                } else {
+                    (None, None)
+                };
+                if static_x.is_some() || static_y.is_some() {
+                    self.tree
+                        .placed_absolutes
+                        .push((node_id, crate::out_of_flow::OutOfFlowKind::Fixed));
+                    self.tree.perf.bump(crate::perf::Counter::AbsBoxesVisited);
+                }
+                let node = &self.tree.nodes[node_id];
+                if is_fixed {
                     let vw = self.tree.viewport.width;
                     let vh = self.tree.viewport.height;
                     let style = &node.computed_style;
@@ -1414,7 +1452,7 @@ impl RinchDocument {
                     } else if let Some(r) = right {
                         new_layout.x = (vw - new_layout.width - r).max(0.0);
                     } else {
-                        new_layout.x = 0.0;
+                        new_layout.x = static_x.unwrap_or(0.0);
                     }
 
                     // Vertical positioning
@@ -1440,7 +1478,7 @@ impl RinchDocument {
                         }
                         new_layout.y = (vh - new_layout.height - b).max(0.0);
                     } else {
-                        new_layout.y = 0.0;
+                        new_layout.y = static_y.unwrap_or(0.0);
                     }
                 }
             }
@@ -1488,15 +1526,43 @@ impl RinchDocument {
                 {
                     self.tree.placed_absolutes.push((node_id, kind));
                     self.tree.perf.bump(crate::perf::Counter::AbsBoxesVisited);
+                    // Its static position: Taffy's, or its place in a line
+                    // (#632).
+                    let location = crate::out_of_flow::static_location(
+                        &self.tree,
+                        node_id,
+                        Some(kind),
+                        (new_layout.x, new_layout.y),
+                    );
                     if let Some((x, y)) = crate::out_of_flow::place_absolute(
                         &mut self.tree,
                         node_id,
                         kind,
-                        (new_layout.x, new_layout.y),
+                        location,
                         (new_layout.width, new_layout.height),
                         true,
                     ) {
                         new_layout.x = x;
+                        new_layout.y = y;
+                    }
+                } else if kind.is_none() && self.tree.nodes[node_id].static_ifc_root.is_some() {
+                    // Taffy's own answer — the layout parent is the
+                    // containing block — except on an axis with no inset,
+                    // when the box sits among inline content: its static
+                    // position is its place in the lines (#632), which Taffy
+                    // does not see.
+                    let (x, y) = crate::out_of_flow::static_location(
+                        &self.tree,
+                        node_id,
+                        None,
+                        (new_layout.x, new_layout.y),
+                    );
+                    let (horizontal, vertical) =
+                        crate::out_of_flow::static_axes(&self.tree.nodes[node_id].computed_style);
+                    if horizontal {
+                        new_layout.x = x;
+                    }
+                    if vertical {
                         new_layout.y = y;
                     }
                 }

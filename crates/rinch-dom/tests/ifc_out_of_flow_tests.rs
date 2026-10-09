@@ -336,8 +336,7 @@ fn a_text_plus_absolute_container_gets_its_line_height() {
 ///
 /// Kills: copying the context instead of moving it (the container assertion —
 /// and the validator panics in-setup in debug builds); appending the leaf
-/// instead of inserting at 0 (the index assertion, behaviorally pinned by the
-/// static-position test below); dropping the leaf from
+/// instead of inserting at 0 (the index assertion); dropping the leaf from
 /// `ifc_leaf_invariant_violations`' walk is killed separately below.
 #[test]
 fn the_measure_child_carries_the_moved_context() {
@@ -460,12 +459,13 @@ fn an_absolute_child_lays_out_and_paints_at_container_relative_insets() {
 }
 
 /// An absolute child with **auto** insets keeps its static position — below
-/// the text line, where its flow position would be — because the measure leaf
-/// goes in at index 0, ahead of it.
+/// the text line, where its flow position would be.
 ///
-/// Kills: appending the leaf instead of inserting it at index 0, which would
-/// silently move every auto-inset absolute child to content-top (y = 0 — the
-/// natural identity value; the 20px line above it is what samples off it).
+/// Since #632 that place is read from the lines (`static_position_tests`),
+/// so this no longer tells where the measure leaf went in: appending it
+/// instead of inserting it at index 0 moved the box to content-top (y = 0)
+/// when Taffy's sibling order was the whole answer. The leaf's index is
+/// pinned by `the_measure_child_carries_the_moved_context` above.
 #[test]
 fn an_auto_inset_absolute_child_keeps_its_below_the_line_static_position() {
     let mut doc = RinchDocument::new();

@@ -23,6 +23,14 @@ pub struct ComputedStyle {
     /// Which part of a CSS table this box is (#1083): `display` maps every
     /// table part to a flex or block container and cannot say.
     pub table_part: TablePart,
+    /// Whether the box was **inline-level before `position` blockified it**
+    /// (Stylo's `original_display`): a `<span style="position: absolute">`,
+    /// an `inline-block` one. `display` cannot say — an out-of-flow box
+    /// computes to a block-level one — and CSS 2.1 §10.3.7 puts such a box's
+    /// static position in its line, where the inline box would have been
+    /// (issue #634; `out_of_flow::static_position`). Read for nothing else.
+    #[serde(skip)]
+    pub inline_level_before_blockify: bool,
     pub position: PositionValue,
     /// `vertical-align` (#724): non-inherited, not carried to an anonymous
     /// box (see [`ComputedStyle::for_anonymous_box`]).
@@ -250,6 +258,7 @@ impl Default for ComputedStyle {
         Self {
             display: DisplayValue::default(),
             table_part: TablePart::None,
+            inline_level_before_blockify: false,
             position: PositionValue::default(),
             vertical_align: VerticalAlignValue::default(),
             overflow_x: OverflowValue::default(),

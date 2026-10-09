@@ -560,6 +560,11 @@ pub(crate) struct IfcText<'a> {
     /// Flat offsets (in [`Self::len`]'s terms) of the held spaces removed,
     /// ascending.
     dropped: Vec<usize>,
+    /// The last atomic inline pushed and the flat offset it was pushed at.
+    last_box: Option<(usize, usize)>,
+    /// The out-of-flow boxes met ([`Self::note_out_of_flow`]), their offsets
+    /// in [`Self::len`]'s terms and no position yet.
+    out_of_flow: Vec<crate::node::OutOfFlowMark>,
 }
 
 /// Start a new stretch of a DOM↔flat `offset_map` at `(flat, dom)` when the
@@ -689,6 +694,8 @@ impl<'a> IfcText<'a> {
             prev_space: false,
             pending: None,
             dropped: Vec::new(),
+            last_box: None,
+            out_of_flow: Vec::new(),
         }
     }
 
@@ -718,7 +725,36 @@ impl<'a> IfcText<'a> {
         self.pending = None;
         self.line_start = false;
         self.prev_space = false;
+        self.last_box = Some((inline_box.id as usize, self.len));
         self.ops.push(IfcOp::InlineBox(inline_box));
+    }
+
+    /// An out-of-flow box stands here in the content. It is not content — a
+    /// held space before it is neither confirmed nor dropped, and it takes
+    /// no room — but its static position is where it would have been
+    /// (#632): remember the place.
+    pub(crate) fn note_out_of_flow(&mut self, id: usize) {
+        self.out_of_flow.push(crate::node::OutOfFlowMark {
+            id,
+            flat: self.len,
+            after_box: self.last_box,
+            inline: (0.0, 0.0),
+            block_y: 0.0,
+        });
+    }
+
+    /// The out-of-flow boxes met, with their offsets in the final text
+    /// (after [`Self::finish`]) and no position yet
+    /// ([`resolve_out_of_flow_marks`]).
+    pub(crate) fn out_of_flow_marks(&self) -> Vec<crate::node::OutOfFlowMark> {
+        self.out_of_flow
+            .iter()
+            .map(|mark| crate::node::OutOfFlowMark {
+                flat: self.remap(mark.flat),
+                after_box: mark.after_box.map(|(b, f)| (b, self.remap(f))),
+                ..*mark
+            })
+            .collect()
     }
 
     /// A `<br>`: one `"\n"`, a forced break. The held space before it ends
@@ -945,6 +981,109 @@ impl<'a> IfcText<'a> {
     /// The final length, after [`Self::finish`].
     pub(crate) fn final_len(&self) -> usize {
         self.len - self.dropped.len()
+    }
+}
+
+/// Find, in `layout`'s lines, where each out-of-flow box of `marks` would
+/// have sat — its static position (CSS 2.1 §10.3.7, §10.6.4; issues #632 and
+/// #634). `text` is the flat text and `scale` what the layout was built at.
+///
+/// Measured in Chrome 153 (`tests/static_position_tests.rs`):
+///
+/// - a box that was **inline-level** sits where the content before it ends
+///   on its line, at the line box's top — whatever makes that line tall. At
+///   a soft wrap it stays on the line the content before it is on, at the end
+///   of that line's content (a space hung there is not counted); after a
+///   forced break it starts the next line; with nothing before it, it starts
+///   the first line. `text-align` moves it with its line;
+/// - a **block-level** box goes at the content box's left edge, below the
+///   line holding the content before it — or at the first line's top when
+///   nothing precedes it. (After a forced break that is the next line's top:
+///   the same number.)
+///
+/// "The content before it" is the last atomic inline pushed before the box
+/// when no text followed that one ([`crate::node::OutOfFlowMark::after_box`]),
+/// else the cluster of the byte before it.
+pub(crate) fn resolve_out_of_flow_marks(
+    layout: &parley::Layout<Brush>,
+    text: &str,
+    scale: f32,
+    marks: &mut [crate::node::OutOfFlowMark],
+) {
+    use parley::layout::{Cluster, PositionedLayoutItem};
+    if marks.is_empty() {
+        return;
+    }
+    let after_box = |m: &crate::node::OutOfFlowMark| {
+        m.after_box
+            .filter(|&(_, at)| at == m.flat)
+            .map(|(id, _)| id)
+    };
+    // The atomic inlines some box stands right after: line and right edge.
+    let mut boxes: HashMap<usize, (usize, f32)> = HashMap::new();
+    if marks.iter().any(|m| after_box(m).is_some()) {
+        for (index, line) in layout.lines().enumerate() {
+            for item in line.items() {
+                if let PositionedLayoutItem::InlineBox(b) = item {
+                    boxes.insert(b.id as usize, (index, b.x + b.width));
+                }
+            }
+        }
+    }
+    // Each line box's top: the lines stack by their line heights. (Not
+    // `block_min_coord`, which leaves a negative half-leading out — the top
+    // of the glyphs' own box, above the line box's when a 32px run stands in
+    // a 20px line.)
+    let mut tops: Vec<f32> = Vec::with_capacity(layout.len() + 1);
+    let mut y = 0.0;
+    for line in layout.lines() {
+        tops.push(y);
+        y += line.metrics().line_height;
+    }
+    tops.push(y);
+    let top = |index: usize| tops.get(index).copied().unwrap_or(y);
+    for mark in marks.iter_mut() {
+        // (x, the line's top, the line's bottom): the end of the content
+        // before the box, or — with the two the same — the start of a line
+        // nothing precedes it on.
+        let at_line_start = |index: usize| {
+            layout
+                .get(index)
+                .map(|line| (line.metrics().offset, top(index), top(index)))
+        };
+        let found = if let Some(&(index, right)) = after_box(mark).and_then(|id| boxes.get(&id)) {
+            Some((right, top(index), top(index + 1)))
+        } else if mark.flat == 0 {
+            at_line_start(0)
+        } else {
+            Cluster::from_byte_index(layout, mark.flat - 1).map(|cluster| {
+                let index = cluster.path().line_index();
+                let line = cluster.line();
+                let m = line.metrics();
+                if text.as_bytes().get(mark.flat - 1) == Some(&b'\n') {
+                    // A forced break: the box starts the next line. A text-
+                    // final break has none (`phantom_last_line`); the box
+                    // still goes below this one.
+                    return at_line_start(index + 1).unwrap_or((
+                        m.offset,
+                        top(index + 1),
+                        top(index + 1),
+                    ));
+                }
+                let start = cluster.visual_offset().unwrap_or(m.offset);
+                let x = if cluster.is_rtl() {
+                    start
+                } else {
+                    // Not past the line's content: a space hung at a soft
+                    // wrap takes no room there.
+                    (start + cluster.advance()).min(m.offset + m.advance - m.trailing_whitespace)
+                };
+                (x, top(index), top(index + 1))
+            })
+        };
+        let (x, top, bottom) = found.unwrap_or((0.0, 0.0, 0.0));
+        mark.inline = (x / scale, top / scale);
+        mark.block_y = bottom / scale;
     }
 }
 
@@ -1858,11 +1997,15 @@ impl RinchDocument {
                         &mut self.font_cx,
                         paint_layout_cx,
                     );
-                    if let Some((layout, shapes)) = built {
+                    if let Some((mut layout, shapes)) = built {
                         self.tree.perf.bump(crate::perf::Counter::EllipsisBuilds);
                         self.tree
                             .perf
                             .add(crate::perf::Counter::EllipsisShapes, shapes);
+                        // The flat rebuild cuts lines, it does not move
+                        // them: a static position found in the lines it
+                        // replaces still stands (#632).
+                        layout.out_of_flow = std::mem::take(&mut inline_layout.out_of_flow);
                         inline_layout = layout;
                     }
                 }
@@ -1873,7 +2016,18 @@ impl RinchDocument {
         // Walk the layout lines to find positioned inline boxes and text runs
         self.write_inline_positions(root_id, &inline_layout);
 
+        // The out-of-flow boxes whose static position these lines hold
+        // (#632). Each is placed again from them: it was read back before
+        // they existed.
+        let marked: Vec<usize> = inline_layout.out_of_flow.iter().map(|m| m.id).collect();
+
         self.tree.nodes[root_id].text_layout = Some(Box::new(inline_layout));
+        for id in marked {
+            if let Some(node) = self.tree.nodes.get_mut(id) {
+                node.static_ifc_root = Some(root_id);
+                crate::out_of_flow::place_static_after_lines(&mut self.tree, id);
+            }
+        }
         // New glyphs are a paint change whether or not the root's box
         // moved: a span that left the line (`display: none`) or changed
         // its text reaches the screen only through this root. Paint-only:
@@ -2432,7 +2586,10 @@ impl RinchDocument {
     /// block boxes. These boxes become IFC roots for text layout.
     fn create_anonymous_block_boxes(&mut self, scope: Option<&crate::ifc_scope::IfcScope>) {
         // Phase 1: Detect mixed-content block containers
-        let mut containers: Vec<(usize, Vec<Vec<usize>>)> = Vec::new();
+        // Each run with the out-of-flow boxes standing inside it
+        // (`Node::run_out_of_flow`).
+        type Run = (Vec<usize>, Vec<(usize, usize)>);
+        let mut containers: Vec<(usize, Vec<Run>)> = Vec::new();
         // Reused across containers so the per-node walk allocates once.
         let mut effective: Vec<usize> = Vec::new();
 
@@ -2525,8 +2682,9 @@ impl RinchDocument {
             }
 
             // Group consecutive inline children into runs
-            let mut runs: Vec<Vec<usize>> = Vec::new();
+            let mut runs: Vec<Run> = Vec::new();
             let mut current_run: Vec<usize> = Vec::new();
+            let mut current_out_of_flow: Vec<(usize, usize)> = Vec::new();
 
             for &child_id in &effective {
                 match role_of(child_id) {
@@ -2537,7 +2695,23 @@ impl RinchDocument {
                     // cannot prevent when a real block sibling is present. A
                     // `display: none` child is boxless too (#366) and used to
                     // end the run the same wrong way.
-                    InlineFlowRole::Comment | InlineFlowRole::NoBox | InlineFlowRole::OutOfFlow => {
+                    //
+                    // Where it stood in the run is kept, for its static
+                    // position (#632) — once the run has content: before
+                    // that, Taffy's sibling order already puts the box at
+                    // the top of the run's box.
+                    InlineFlowRole::OutOfFlow => {
+                        // (A box hoisted out of an inline element (#591)
+                        // is a unit right after that element, so it is kept
+                        // here too; the walk of the element meets it first,
+                        // in its real place, and the first note is the one
+                        // read.)
+                        if !current_run.is_empty() {
+                            current_out_of_flow.push((current_run.len(), child_id));
+                        }
+                        continue;
+                    }
+                    InlineFlowRole::Comment | InlineFlowRole::NoBox => {
                         continue;
                     }
                     // A wrapper never reaches here: `collect_run_units`
@@ -2549,13 +2723,16 @@ impl RinchDocument {
                     // disagree about a node (#518).
                     InlineFlowRole::InFlowBlock => {
                         if !current_run.is_empty() {
-                            runs.push(std::mem::take(&mut current_run));
+                            runs.push((
+                                std::mem::take(&mut current_run),
+                                std::mem::take(&mut current_out_of_flow),
+                            ));
                         }
                     }
                 }
             }
             if !current_run.is_empty() {
-                runs.push(current_run);
+                runs.push((current_run, current_out_of_flow));
             }
 
             if !runs.is_empty() {
@@ -2581,7 +2758,7 @@ impl RinchDocument {
         for (parent_id, runs) in containers {
             let guard = self.tree.guard.clone();
 
-            for run in runs {
+            for (run, run_out_of_flow) in runs {
                 // Create anonymous block box DOM node
                 let anon_id = self.tree.nodes.vacant_key();
                 let mut anon_node = Node::element(anon_id, "div", guard.clone());
@@ -2625,6 +2802,7 @@ impl RinchDocument {
                 // construction rather than by enumeration.
                 anon_node.parent = Some(parent_id);
                 anon_node.run_members = run.clone();
+                anon_node.run_out_of_flow = run_out_of_flow;
                 // Inherited properties only (CSS 2.1 §9.2.1.1). Cloning the
                 // parent's whole style gave the anonymous box a box model its
                 // Taffy style (below) does not have, and paint double-counted
@@ -6696,6 +6874,7 @@ impl RinchDocument {
             v.end = ifc_text.remap(v.end);
         }
         let flat_len = ifc_text.final_len();
+        let mut out_of_flow = ifc_text.out_of_flow_marks();
 
         // The IFC root's own wavy underline covers everything the walk produced.
         // (An inline element's covers its own range and is pushed by the walk.)
@@ -6757,6 +6936,7 @@ impl RinchDocument {
         // Apply text-align from computed style
         let alignment = root_computed.text_align.to_parley();
         text_layout.align(alignment, parley::layout::AlignmentOptions::default());
+        resolve_out_of_flow_marks(&text_layout, &text_content, scale, &mut out_of_flow);
 
         (
             InlineLayout {
@@ -6772,6 +6952,7 @@ impl RinchDocument {
                 preserves_spaces,
                 hang,
                 span_fragments: Default::default(),
+                out_of_flow,
             },
             font_family_resolves.get(),
         )
@@ -7036,6 +7217,8 @@ impl RinchDocument {
                 preserves_spaces: false,
                 hang: HangStats::default(),
                 span_fragments: Default::default(),
+                // The caller carries the marks of the layout this replaces.
+                out_of_flow: Vec::new(),
             },
             shapes,
         ))
@@ -7509,8 +7692,20 @@ impl RinchDocument {
         let container = nodes[parent_id].parent;
         let bridging = nodes[parent_id].is_anonymous_block_box;
         let mut open: Vec<(usize, usize)> = Vec::new();
+        // An out-of-flow box that is a child of the container itself joins
+        // no run (#406), so an anonymous box's member list does not hold it.
+        // The ones standing inside this run are met here, each before the
+        // member it precedes (`Node::run_out_of_flow`, #632).
+        let between: &[(usize, usize)] = if bridging {
+            &nodes[parent_id].run_out_of_flow
+        } else {
+            &[]
+        };
 
-        for child_id in children {
+        for (member_index, child_id) in children.into_iter().enumerate() {
+            for &(_, id) in between.iter().filter(|(at, _)| *at == member_index) {
+                builder.note_out_of_flow(id);
+            }
             let child = match nodes.get(child_id) {
                 Some(c) => c,
                 None => continue,
@@ -7812,6 +8007,12 @@ impl RinchDocument {
                     // position — and it `break`s below, matching where the
                     // marking pass stops. Walking past it instead would flow
                     // text the mark left attached — a double draw.
+                    //
+                    // Its place in the content is remembered, though: that
+                    // is its static position (#632).
+                    if role == InlineFlowRole::OutOfFlow {
+                        builder.note_out_of_flow(child_id);
+                    }
                 }
                 NodeKind::Comment(_) => {
                     // Skip comments in inline layout
@@ -7846,6 +8047,13 @@ impl RinchDocument {
             if bridged {
                 builder.pop_span();
             }
+        }
+
+        // (Not reached when the walk stopped at a block above; a run holds
+        // none.)
+        let members = nodes[parent_id].ifc_children().len();
+        for &(_, id) in between.iter().filter(|(at, _)| *at >= members) {
+            builder.note_out_of_flow(id);
         }
 
         // Close whatever is still open at the end of the run.
@@ -7932,7 +8140,9 @@ impl RinchDocument {
     /// its text, its tag, its `display` mode, its `position`, whether it is
     /// generated content — and, for an atomic inline, the size
     /// `compute_inline_block_layouts` just gave it, which the line breaks
-    /// around. The root's own `estimated_height` (a virtualized, collapsed
+    /// around. An **out-of-flow box** among those children is hashed the
+    /// same way though it is no member: the lines keep its static position
+    /// (#632), so they are built again when one comes, goes or moves. The root's own `estimated_height` (a virtualized, collapsed
     /// block) is folded in too.
     ///
     /// Typography is deliberately **not** in it: the cascade compares each
@@ -7979,12 +8189,43 @@ impl RinchDocument {
             let Some(parent) = nodes.get(parent_id) else {
                 continue;
             };
-            for (index, &child_id) in parent.ifc_children().iter().enumerate() {
+            let children = parent.ifc_children();
+            // The root of the nearest member before the child at hand, and
+            // (found once, when asked) of the first member at all.
+            let mut near: Option<usize> = None;
+            let mut first: Option<Option<usize>> = None;
+            for (index, &child_id) in children.iter().enumerate() {
                 let Some(child) = nodes.get(child_id) else {
                     continue;
                 };
-                let Some(root) = child.ifc_root else {
-                    continue;
+                let root = match child.ifc_root {
+                    Some(root) => {
+                        near = Some(root);
+                        root
+                    }
+                    // An out-of-flow box is no member, but the lines hold
+                    // its static position (#632): one that appears among a
+                    // root's content, leaves it or moves in it changes what
+                    // those lines must remember. Signed with the root of
+                    // the member before it (the first one, when none is).
+                    // (`is_out_of_flow` first: it is one compare, and this
+                    // arm is asked of every block child of every parent.)
+                    None if child.is_out_of_flow()
+                        && child.inline_flow_role() == InlineFlowRole::OutOfFlow =>
+                    {
+                        let found = near.or_else(|| {
+                            *first.get_or_insert_with(|| {
+                                children
+                                    .iter()
+                                    .find_map(|&c| nodes.get(c).and_then(|n| n.ifc_root))
+                            })
+                        });
+                        match found {
+                            Some(root) => root,
+                            None => continue,
+                        }
+                    }
+                    None => continue,
                 };
                 if roots.as_ref().is_some_and(|r| !r.contains(&root)) {
                     continue;
