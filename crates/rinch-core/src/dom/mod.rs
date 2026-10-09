@@ -270,10 +270,12 @@ const FOCUS_RELEASE_ROUNDS: usize = 4;
 /// reactive runtime's flush guard set, so later signal writes stopped reaching
 /// the DOM.
 ///
-/// `will_run` says whether the mutation is one the backend will carry out. It
-/// is asked only once the backend has something to release (so not at all on
-/// desktop, and on the web only with the focus in the part named): an
-/// insertion a browser refuses moves nothing and must not cost the focus.
+/// `will_run` says whether the mutation is one the backend will carry out
+/// **and that takes the focus with it**. It is asked only once the backend has
+/// something to release (so not at all on desktop, and on the web only with
+/// the focus in the part named): an insertion a browser refuses moves nothing
+/// and must not cost the focus, and neither must a move the backend makes in
+/// place ([`moves_in`], issue #1483).
 fn release_focus_within(
     doc: &Rc<RefCell<dyn DomDocument>>,
     node: NodeId,
@@ -295,6 +297,15 @@ fn release_focus_within(
             None => return,
         }
     }
+}
+
+/// Whether putting `child` under `parent` displaces the focus inside `child`:
+/// the backend will carry the insertion out ([`can_take`]) and does not make
+/// it as a move in place, which keeps the focus where it is and dispatches
+/// nothing ([`DomDocument::moves_keeping_focus`]: the web's `moveBefore`,
+/// issue #1483).
+fn moves_in(doc: &dyn DomDocument, parent: NodeId, child: NodeId) -> bool {
+    can_take(doc, parent, child) && !doc.moves_keeping_focus(parent, child)
 }
 
 /// Whether `parent` can take `child` as a child: it is still a node of the
@@ -506,7 +517,7 @@ impl NodeHandle {
         let vacated = late_child::vacated_parent(child);
         if let Some(doc) = self.accessed_doc() {
             let (parent, moved) = (self.node_id, child.node_id);
-            release_focus_within(&doc, moved, false, |d| can_take(d, parent, moved));
+            release_focus_within(&doc, moved, false, |d| moves_in(d, parent, moved));
             doc.borrow_mut().append_child(self.node_id, child.node_id);
         }
         late_child::notify_vacated(vacated.as_ref(), self);
@@ -531,7 +542,7 @@ impl NodeHandle {
         if let Some(doc) = self.accessed_doc() {
             let (parent, moved, before) = (self.node_id, child.node_id, reference.node_id);
             release_focus_within(&doc, moved, false, |d| {
-                can_take(d, parent, moved) && d.parent_node(before) == Some(parent)
+                d.parent_node(before) == Some(parent) && moves_in(d, parent, moved)
             });
             doc.borrow_mut()
                 .insert_before(self.node_id, child.node_id, reference.node_id);
@@ -807,7 +818,7 @@ impl NodeHandle {
             let parent_id = doc.borrow().parent_node(self.node_id);
             if let Some(parent_id) = parent_id {
                 let moved = new_node.node_id;
-                release_focus_within(&doc, moved, false, |d| can_take(d, parent_id, moved));
+                release_focus_within(&doc, moved, false, |d| moves_in(d, parent_id, moved));
                 let mut next = doc.borrow().next_sibling(self.node_id);
                 // Already right after `self`: the anchor is then `new_node`'s
                 // own next sibling — the DOM's `insertBefore` rule ("if child

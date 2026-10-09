@@ -773,6 +773,36 @@ pub trait DomDocument {
         None
     }
 
+    /// Whether inserting `child` under `parent` is a **move the backend makes
+    /// in place**: the child and everything in it keep their state, the
+    /// keyboard focus included, and no focus event is dispatched (issue #1483).
+    ///
+    /// The insertion verbs of [`NodeHandle`](super::NodeHandle)
+    /// (`append_child`, `insert_before`, `insert_after`) ask this before they
+    /// ask [`release_focus_within`](Self::release_focus_within), and skip the
+    /// release when it answers `true`: there is no focus to let go of.
+    ///
+    /// `rinch-web` answers `true` when the browser has `Node.moveBefore` and
+    /// both nodes are connected, in one document; its insertion methods then
+    /// make that call where they made `insertBefore` / `appendChild`, which is
+    /// a removal and an insertion and drops the focus (measured in Chrome 153:
+    /// `moveBefore` of a row holding the focused `<input>` leaves
+    /// `activeElement` on it and fires neither `blur` nor `focusout`). A keyed
+    /// `for` reorder is that move. Everything else answers `false` and takes
+    /// the release: a browser without the method, a node that is in no
+    /// document yet, a move into or out of a detached subtree. **The answer
+    /// and the method must agree**: a backend that answers `true` and then
+    /// moves the node the old way runs the browser's focus listeners under the
+    /// caller's borrow.
+    ///
+    /// Defaulted to `false`, which costs nothing where
+    /// `release_focus_within` is `None` anyway: desktop's focus is the
+    /// runtime's own state, keyed by node, and a move never touched it. So the
+    /// two backends agree wherever the browser has the method.
+    fn moves_keeping_focus(&self, _parent: NodeId, _child: NodeId) -> bool {
+        false
+    }
+
     /// Work to run **before** writing (`Some(value)`) or removing (`None`) the
     /// attribute `name` on `node`, with no borrow of this document held, or
     /// `None` (issue #1478). Asked only for a name
