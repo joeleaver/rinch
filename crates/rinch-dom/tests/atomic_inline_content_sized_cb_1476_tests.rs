@@ -614,6 +614,14 @@ fn a_removed_box_leaves_no_min_content_width_behind() {
         dump(&doc),
         dump(&lay_out(&html("Wavy WWW mmm Wavymillilitersunbroken")))
     );
+
+    // Nor the note that its width was dropped by an edit not yet laid out.
+    let (f, t) = (id(&doc, "f"), id(&doc, "t"));
+    let text_node = rinch_core::dom::NodeId(doc.tree.get(t.0).unwrap().children[0]);
+    doc.set_text_content(text_node, "Wavy");
+    assert!(doc.tree.atomic_min_dropped_for_tests().contains(&t.0));
+    doc.set_inner_html(f, "");
+    assert!(doc.tree.atomic_min_dropped_for_tests().is_empty());
 }
 
 /// The pass and the compute alternate after the **absolute** fixpoint's

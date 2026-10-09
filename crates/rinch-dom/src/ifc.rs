@@ -5518,6 +5518,13 @@ impl RinchDocument {
         }
         // Every box is measured again: none of the min-content sizes stands.
         self.tree.atomic_min_content.clear();
+        // And the line around a box that lost one is measured again, as
+        // `remeasure_dirty_atomic_inlines` has it for the boxes it measures.
+        for id in std::mem::take(&mut self.tree.atomic_min_dropped) {
+            if let Some(root_id) = self.tree.nodes.get(id).and_then(|n| n.ifc_root) {
+                self.invalidate_ifc_of_atomic_inline(root_id);
+            }
+        }
         let ib_taffy_ids: Vec<(taffy::NodeId, Option<f32>)> = self
             .inline_block_measure_roots()
             .into_iter()
@@ -5603,8 +5610,11 @@ impl RinchDocument {
                     self.tree.dirty_atomic_inlines.insert(id);
                 }
                 // Its min-content size is no longer what was measured (#1476).
-                if sizes && !self.tree.atomic_min_content.is_empty() {
-                    self.tree.atomic_min_content.remove(&id);
+                if sizes
+                    && !self.tree.atomic_min_content.is_empty()
+                    && self.tree.atomic_min_content.remove(&id).is_some()
+                {
+                    self.tree.atomic_min_dropped.insert(id);
                 }
             }
             cur = node.parent;
@@ -5701,7 +5711,14 @@ impl RinchDocument {
                 let n = &self.tree.nodes[id];
                 (n.layout.width, n.layout.height)
             };
-            if (now.0 - before.0).abs() <= 0.5 && (now.1 - before.1).abs() <= 0.5 {
+            // A box whose min-content width was dropped contributes
+            // something else to a narrower line even at the size it had
+            // (review 2 of #1488): a text edit that kept the box's size left
+            // the flex item around it at its old width for good, Taffy
+            // serving the item's min-content answer made from the old text.
+            let dropped = !self.tree.atomic_min_dropped.is_empty()
+                && self.tree.atomic_min_dropped.remove(&id);
+            if !dropped && (now.0 - before.0).abs() <= 0.5 && (now.1 - before.1).abs() <= 0.5 {
                 continue;
             }
             // An IFC root that line-broke against the stale box has to break

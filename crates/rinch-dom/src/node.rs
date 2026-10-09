@@ -2882,6 +2882,12 @@ pub struct NodeTree {
     /// inside the box changes ([`RinchDocument::mark_atomic_inline_dirty`],
     /// and the passes that measure a changed box).
     pub(crate) atomic_min_content: HashMap<RawNodeId, f32>,
+    /// The boxes whose `atomic_min_content` entry a change inside them
+    /// dropped and that have not been measured again yet (review 2 of
+    /// #1488). Measured again at the size it had, such a box still
+    /// contributes something else to a line narrower than it, so the line
+    /// around it has to be measured again whether or not the box moved.
+    pub(crate) atomic_min_dropped: HashSet<RawNodeId>,
     /// The boxes a measure function wanted an `atomic_min_content` entry
     /// for and did not find. A measure runs inside a Taffy compute and
     /// cannot start another, so it lines the box up at its max-content size
@@ -3126,6 +3132,7 @@ impl NodeTree {
             keyword_inline_cb_width: HashMap::new(),
             auto_inline_percent_content: HashSet::new(),
             atomic_min_content: HashMap::new(),
+            atomic_min_dropped: HashSet::new(),
             atomic_min_requests: std::cell::RefCell::new(Vec::new()),
             atomic_contributions_changed: false,
             styled_unrendered: Vec::new(),
@@ -3429,6 +3436,12 @@ impl NodeTree {
         &mut self.atomic_min_content
     }
 
+    /// Test access to [`Self::atomic_min_dropped`].
+    #[doc(hidden)]
+    pub fn atomic_min_dropped_for_tests(&mut self) -> &mut HashSet<RawNodeId> {
+        &mut self.atomic_min_dropped
+    }
+
     /// Test access: have the next layout run the whole-document IFC pass.
     #[doc(hidden)]
     pub fn request_full_ifc_for_tests(&mut self) {
@@ -3459,6 +3472,9 @@ impl NodeTree {
             }
             if !self.atomic_min_content.is_empty() {
                 self.atomic_min_content.remove(node_id);
+            }
+            if !self.atomic_min_dropped.is_empty() {
+                self.atomic_min_dropped.remove(node_id);
             }
         }
         for node_id in to_remove {

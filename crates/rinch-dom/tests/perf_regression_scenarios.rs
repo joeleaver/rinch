@@ -2663,3 +2663,44 @@ fn a_text_edit_in_a_chip_in_a_flex_item() {
         ],
     );
 }
+
+/// A one-pixel resize of the list while every chip is **capped** (the list
+/// is narrower than a row's content, so each cell is narrower than its
+/// chip): each chip is resolved against a cell that moved, which is a
+/// max-content probe and a layout at the new width — a cost per chip per
+/// pixel, where main (whose chips are never capped here) measures none.
+/// main: `inline_block_computes` 0, `taffy_root_computes` 1.
+#[test]
+fn a_one_pixel_resize_with_every_chip_capped() {
+    let (mut doc, row, _) = chip_rows();
+    let list = NodeId(doc.tree.get(row.0).unwrap().parent.unwrap());
+    doc.set_style(list, "width", "150px");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.tree.perf.reset();
+    doc.set_style(list, "width", "149px");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "one-pixel resize with every chip capped",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 11),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (ShapeMeasureIfc, 50),
+            (ShapeIfcBuild, 10),
+            (ShapeAtomicInline, 50),
+            (IfcMeasureCacheHits, 50),
+            (IfcMeasureInvalidations, 10),
+            (IfcPhantomRebreaks, 10),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 2),
+            (TaffyMeasureCalls, 100),
+            (InlineBlockComputes, 40),
+        ],
+    );
+}

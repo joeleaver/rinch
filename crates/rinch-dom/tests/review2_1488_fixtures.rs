@@ -84,7 +84,9 @@ fn r2f1_an_edit_that_moves_only_the_min_content_width_reaches_the_container() {
         fresh.resolve_layout(800.0, 600.0);
         let fresh = dump(&fresh);
         if inc != fresh || again != fresh {
-            bad.push(format!("{name}: incremental[{inc}] again[{again}] fresh[{fresh}]"));
+            bad.push(format!(
+                "{name}: incremental[{inc}] again[{again}] fresh[{fresh}]"
+            ));
         }
     }
     assert!(bad.is_empty(), "{bad:#?}");
@@ -96,7 +98,11 @@ fn r2f1b_seed_218() {
     let html = |t0: &str, t1: &str, extra: bool| {
         format!(
             r#"<div data-m="c" style="width:400px;display:flex"><div data-m="f" style="padding:0 5px">ab <span data-m="t" style="display:inline-block;max-width:170px">{t0}</span></div><div data-m="f" style="min-width:0">ab <span data-m="t" style="display:inline-block;margin:0 13px">{t1}{}</span></div><div data-m="f" style="min-width:0"><span data-m="t" style="display:inline-block;white-space:nowrap">{SHORT}</span></div></div>"#,
-            if extra { r#"<b data-x="1">Wavymillilitersunbrokenlonger zz</b>"# } else { "" }
+            if extra {
+                r#"<b data-x="1">Wavymillilitersunbrokenlonger zz</b>"#
+            } else {
+                ""
+            }
         )
     };
     let boxes = |doc: &RinchDocument| -> Vec<usize> { query_selector(&doc.tree, "[data-m=t]") };
@@ -128,7 +134,9 @@ fn r2f1b_seed_218() {
         fresh.resolve_layout(800.0, 600.0);
         let fresh = dump(&fresh);
         if inc != fresh || again != fresh {
-            bad.push(format!("{variant}: incremental[{inc}] again[{again}] fresh[{fresh}]"));
+            bad.push(format!(
+                "{variant}: incremental[{inc}] again[{again}] fresh[{fresh}]"
+            ));
         }
     }
     assert!(bad.is_empty(), "{bad:#?}");
