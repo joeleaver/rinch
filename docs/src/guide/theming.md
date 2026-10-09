@@ -674,7 +674,12 @@ differs, each with its issue:
   size it currently has to such a container, as before, so it is not a
   browser's there: a `width: fit-content` box keeps its full width, and a
   `max-width: 80%` box comes out narrower than a browser's and narrower
-  again on each relayout (older than #1476).
+  again on each relayout (older than #1476). A box whose **`width`** is a
+  percentage, in a flex item or an `auto` grid track, is the same cycle:
+  its container is sized from the box and the box from its container, so
+  the first layout is not where it settles — it drifts over the next few
+  layouts, and since #1476 an `auto` box in a neighbouring item or track
+  moves with it (up to seven layouts, measured).
   And an absolute box with only `left` (or only `right`) set is shrunk to
   fit its parent's whole width, not that width less the inset (#1404).
   A box that fits within a pixel of its containing block is left unwrapped
