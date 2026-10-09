@@ -220,6 +220,8 @@ mod stacking_flip_damage_1384_tests;
 mod stepper_state_709_tests;
 #[cfg(test)]
 mod surface_key_fallthrough_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod surface_pointer_tests;
 #[cfg(test)]
 mod tab_order_tests;
 #[cfg(test)]
@@ -813,6 +815,11 @@ pub struct RinchApp {
     /// The render surface currently under the mouse cursor (for enter/leave events).
     /// Stores (surface_id, dom_node_id) so we can compute local coords during drags.
     pub(crate) hovered_surface: Option<(usize, usize)>,
+    /// The render surfaces holding a press, as `(pointer id, surface id, its
+    /// DOM node)`: from a press on a surface until that pointer's release,
+    /// its moves and its release go to that surface wherever they are. One
+    /// per pointer, so two fingers can each hold one.
+    pub(crate) surface_captures: Vec<(u64, usize, usize)>,
     /// State for read-only text selection (non-contenteditable).
     pub(crate) text_selection: Option<TextSelection>,
     /// Whether we're currently mouse-drag selecting text (read-only, non-CE).
@@ -920,6 +927,7 @@ impl RinchApp {
             #[cfg(feature = "desktop")]
             editor_goal_x: None,
             hovered_surface: None,
+            surface_captures: Vec::new(),
             text_selection: None,
             text_selecting: false,
             file_hover_target: None,

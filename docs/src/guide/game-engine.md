@@ -175,6 +175,32 @@ Events are dispatched to the handler set via `set_event_handler()`. Coordinates 
 | `FocusGained` | — | Surface received keyboard focus |
 | `FocusLost` | — | Surface lost keyboard focus |
 
+**A press keeps the pointer.** From a press on the surface until its release, every move
+and the release go to the surface wherever the pointer is (coordinates then fall outside
+the surface's size), and it hears no `MouseLeave` until the release; a `MouseLeave` follows
+a release off the surface. The browser backend does this with `setPointerCapture`; desktop
+does the same.
+
+**Pen, touch and pinch: pointer events (opt-in).** A drawing surface wants to know which
+device pressed and how hard. `surface.set_pointer_events(true)` replaces `MouseDown` /
+`MouseMove` / `MouseUp` with these (every other surface hears exactly what it did before):
+
+| Event | Fields | Description |
+|-------|--------|-------------|
+| `PointerDown` | `x, y, button, pointer` | A button, pen tip or finger went down |
+| `PointerMove` | `x, y, pointer` | It moved (or its pressure changed) |
+| `PointerUp` | `x, y, button, pointer` | The press ended |
+| `PointerCancel` | `pointer` | The platform took the pointer away mid-press; no `PointerUp` follows |
+| `Pinch` | `x, y, scale` | Two touches spreading or closing, a trackpad pinch, or Ctrl+wheel; `scale` multiplies the zoom (above 1 is in), relative to the last `Pinch` |
+
+`SurfacePointer` is `{ id, kind, pressure, primary }`: `kind` is `Mouse`, `Pen`, `Eraser`,
+`Touch` or `Unknown`; `pressure` is `0.0..=1.0`, and a device that cannot measure it
+reports `0.5` while down and `0` otherwise (the Pointer Events rule); `id` tells two
+fingers apart. In the browser these come from Pointer Events (`pointerType`, `pressure`,
+`pointerId`, `isPrimary`, the eraser button); on desktop from winit (a tablet tool's force,
+a touch's force where measured; a trackpad pinch on macOS, iOS and Wayland). Desktop hands
+over one move per pointer per frame, as the browser does without `getCoalescedEvents`.
+
 `SurfaceKeyData` contains `key`, `code`, `ctrl`, `shift`, `alt`, `meta`. `key` is spelled like the browser's `KeyboardEvent.key` on both backends, so the space bar is `key == " "` and `code == "Space"`.
 
 **A focused surface only swallows the keys it claims (issue #482).** `set_event_handler`

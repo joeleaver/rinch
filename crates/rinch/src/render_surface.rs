@@ -46,11 +46,8 @@
 //! so creating a GPU context first prevents it from being claimed. Events, layout
 //! size, and resize observation work regardless of context type.
 
-// `Cell` is used by the render-callback guard (desktop) and the `requestAnimation
-// Frame` flag (wasm), and by nothing in between — so a host build with neither,
-// which is the configuration `rinch-web` resolves `rinch` to and which CI now
-// checks, warned on the import.
-#[cfg(any(feature = "desktop", target_arch = "wasm32"))]
+// `Cell` is used in every configuration since the handle's pointer-events flag;
+// before that a host build with neither `desktop` nor wasm warned on it.
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -133,6 +130,22 @@ fn next_surface_id() -> usize {
 /// Events dispatched to a render surface's event handler.
 ///
 /// Coordinates are in logical pixels relative to the surface's top-left corner.
+///
+/// **A press keeps the pointer.** From a press on the surface until its
+/// release, every move and the release go to the surface, wherever the
+/// pointer is (coordinates then fall outside `0..width`, `0..height`), and
+/// the surface hears no `MouseLeave`/`MouseEnter` until the release: the
+/// browser's pointer capture, which the web backend takes on every press, and
+/// the desktop runtime's equivalent.
+///
+/// **Pointer events are opt-in.** A surface that calls
+/// [`RenderSurfaceHandle::set_pointer_events`] hears presses, moves and
+/// releases as [`PointerDown`](Self::PointerDown) /
+/// [`PointerMove`](Self::PointerMove) / [`PointerUp`](Self::PointerUp) /
+/// [`PointerCancel`](Self::PointerCancel), which say which device and how
+/// hard ([`SurfacePointer`]), **instead of** `MouseDown` / `MouseMove` /
+/// `MouseUp`, plus [`Pinch`](Self::Pinch). Every other surface hears exactly
+/// what it always did, whatever the device.
 #[derive(Debug, Clone)]
 pub enum SurfaceEvent {
     /// Mouse button pressed inside the surface.
@@ -182,6 +195,43 @@ pub enum SurfaceEvent {
     DragLeave,
     /// A drag was dropped on the surface.
     Drop { x: f32, y: f32 },
+
+    // ── Pointer events (opt-in: `RenderSurfaceHandle::set_pointer_events`) ──
+    /// A mouse button, pen tip or finger went down on the surface.
+    PointerDown {
+        x: f32,
+        y: f32,
+        /// The button; a pen tip or a finger is `Left`, a pen's barrel
+        /// button `Right`.
+        button: SurfaceMouseButton,
+        pointer: SurfacePointer,
+    },
+    /// A pointer moved over the surface, or anywhere while it holds a press
+    /// that started on it (see the capture note above). Also sent when only
+    /// the pressure changed.
+    PointerMove {
+        x: f32,
+        y: f32,
+        pointer: SurfacePointer,
+    },
+    /// A press that started on the surface ended.
+    PointerUp {
+        x: f32,
+        y: f32,
+        button: SurfaceMouseButton,
+        pointer: SurfacePointer,
+    },
+    /// The platform took a pressed pointer away (a touch the system
+    /// cancelled, a palm rejected): end what the press was doing, as if it
+    /// had not happened if that is possible. No `PointerUp` follows.
+    PointerCancel { pointer: SurfacePointer },
+    /// A zoom gesture, about `(x, y)`: two touches spreading or closing, a
+    /// trackpad pinch, or Ctrl+wheel (what a browser turns a trackpad pinch
+    /// into). `scale` multiplies the zoom: above 1 is in, below 1 is out, one
+    /// event's factor relative to the last. A two-touch pinch still sends
+    /// each touch's `PointerMove`; an app that pinches ignores them while
+    /// two touches are down.
+    Pinch { x: f32, y: f32, scale: f32 },
 }
 
 /// Mouse button identifier.
@@ -201,6 +251,136 @@ impl SurfaceMouseButton {
             rinch_platform::MouseButton::Right => Self::Right,
             rinch_platform::MouseButton::Middle => Self::Middle,
         }
+    }
+}
+
+// ── Pointer events (opt-in) ──────────────────────────────────────────────────
+
+/// What kind of device a pointer event came from — see
+/// [`RenderSurfaceHandle::set_pointer_events`].
+///
+/// `#[non_exhaustive]`: a kind can be added without breaking an app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SurfacePointerKind {
+    /// A mouse, or a touchpad driving the cursor.
+    Mouse,
+    /// A pen or stylus tip (a tablet tool on desktop, `pointerType == "pen"`
+    /// in the browser).
+    Pen,
+    /// A pen held the other way round (the eraser end), where the platform
+    /// says so: a tablet tool of kind eraser on desktop, a pen whose
+    /// `buttons` has the eraser bit (32) in the browser.
+    Eraser,
+    /// A finger on a touch screen.
+    Touch,
+    /// A pointer the platform did not describe.
+    Unknown,
+}
+
+/// The pointer a [`SurfaceEvent::PointerDown`] / `PointerMove` / `PointerUp`
+/// / `PointerCancel` came from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfacePointer {
+    /// Which pointer: stable from its down to its up, unique among the
+    /// pointers down at once (two fingers are two ids). A mouse is `1`.
+    pub id: u64,
+    /// The device.
+    pub kind: SurfacePointerKind,
+    /// How hard it presses, `0.0..=1.0`. A device that cannot tell reports
+    /// `0.5` while a button or contact is down and `0.0` otherwise, the
+    /// Pointer Events rule (a mouse always, a touch screen without force
+    /// sensing).
+    pub pressure: f32,
+    /// The pointer a single-pointer app follows: the mouse, the first finger
+    /// down, a pen.
+    pub primary: bool,
+}
+
+impl SurfacePointer {
+    /// The mouse, with `pressure` per the Pointer Events rule for a button
+    /// down (`0.5`) or up (`0.0`).
+    pub const fn mouse(down: bool) -> Self {
+        Self {
+            id: 1,
+            kind: SurfacePointerKind::Mouse,
+            pressure: if down { 0.5 } else { 0.0 },
+            primary: true,
+        }
+    }
+}
+
+/// Where a pointer is in its press, for [`dispatch_surface_pointer`].
+#[cfg(any(
+    feature = "desktop",
+    feature = "android",
+    feature = "embed",
+    target_arch = "wasm32"
+))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PointerPhase {
+    Down(SurfaceMouseButton),
+    Move,
+    Up(SurfaceMouseButton),
+}
+
+/// Two touches on one surface turned into a scale factor: the distance
+/// between them now over the distance at the last report.
+#[cfg(any(
+    feature = "desktop",
+    feature = "android",
+    feature = "embed",
+    target_arch = "wasm32"
+))]
+#[derive(Debug, Default)]
+pub(crate) struct PinchTracker {
+    /// The touches down, `(pointer id, x, y)`, in the order they came down.
+    touches: Vec<(u64, f32, f32)>,
+    /// The distance between the first two at the last report (or when the
+    /// second came down).
+    last: Option<f32>,
+}
+
+#[cfg(any(
+    feature = "desktop",
+    feature = "android",
+    feature = "embed",
+    target_arch = "wasm32"
+))]
+impl PinchTracker {
+    fn spread(&self) -> Option<(f32, f32, f32)> {
+        let [(_, ax, ay), (_, bx, by), ..] = self.touches[..] else {
+            return None;
+        };
+        let d = ((bx - ax).powi(2) + (by - ay).powi(2)).sqrt();
+        Some(((ax + bx) / 2.0, (ay + by) / 2.0, d))
+    }
+
+    /// A touch came down at `(x, y)`.
+    pub(crate) fn down(&mut self, id: u64, x: f32, y: f32) {
+        self.touches.retain(|t| t.0 != id);
+        self.touches.push((id, x, y));
+        self.last = self.spread().map(|s| s.2);
+    }
+
+    /// A touch was lifted or cancelled.
+    pub(crate) fn up(&mut self, id: u64) {
+        self.touches.retain(|t| t.0 != id);
+        self.last = self.spread().map(|s| s.2);
+    }
+
+    /// A touch moved: the pinch it makes, as `(centre x, centre y, scale)`,
+    /// when it is one of the first two touches down and the distance between
+    /// them changed.
+    pub(crate) fn moved(&mut self, id: u64, x: f32, y: f32) -> Option<(f32, f32, f32)> {
+        let i = self.touches.iter().position(|t| t.0 == id)?;
+        self.touches[i] = (id, x, y);
+        if i > 1 {
+            return None;
+        }
+        let (cx, cy, d) = self.spread()?;
+        let last = self.last.replace(d)?;
+        (last > 0.0 && d > 0.0 && d != last).then(|| (cx, cy, d / last))
     }
 }
 
@@ -332,6 +512,9 @@ pub struct RenderSurfaceHandle {
     /// whether the key should stop at the surface.
     #[allow(clippy::type_complexity)]
     pub(crate) key_handler: std::rc::Rc<RefCell<Option<Box<dyn Fn(&SurfaceKeyData) -> bool>>>>,
+    /// Whether presses, moves and releases arrive as pointer events — see
+    /// [`set_pointer_events`](RenderSurfaceHandle::set_pointer_events).
+    pub(crate) pointer_events: std::rc::Rc<Cell<bool>>,
     /// Viewport name for hole-punch compositing.
     pub(crate) viewport_name: String,
     /// Whether this surface carries decoded **video** frames.
@@ -431,6 +614,30 @@ impl RenderSurfaceHandle {
     /// it.
     pub fn set_key_handler(&self, handler: impl Fn(&SurfaceKeyData) -> bool + 'static) {
         *self.key_handler.borrow_mut() = Some(Box::new(handler));
+    }
+
+    /// Hear presses, moves and releases as [`SurfaceEvent::PointerDown`] /
+    /// `PointerMove` / `PointerUp` / `PointerCancel`, which say which device
+    /// (mouse, pen, eraser, touch) and how hard it presses, instead of
+    /// `MouseDown` / `MouseMove` / `MouseUp`; and zoom gestures (two touches,
+    /// a trackpad pinch, Ctrl+wheel) as [`SurfaceEvent::Pinch`] instead of a
+    /// `MouseWheel`. Off by default, so a surface that never asks hears what
+    /// it always has. `MouseEnter`, `MouseLeave`, a plain `MouseWheel`, keys
+    /// and drag-and-drop are the same either way.
+    ///
+    /// What each platform reports: in the browser, Pointer Events
+    /// (`pointerType`, `pressure`, `pointerId`, `isPrimary`); on desktop,
+    /// winit's pointer source (a tablet tool's force, a touch's force where
+    /// the platform measures one, else `0.5` while down). Desktop delivers
+    /// one move per pointer per frame, as the browser does without
+    /// `getCoalescedEvents`.
+    pub fn set_pointer_events(&self, on: bool) {
+        self.pointer_events.set(on);
+    }
+
+    /// Whether [`set_pointer_events`](Self::set_pointer_events) is on.
+    pub fn pointer_events(&self) -> bool {
+        self.pointer_events.get()
     }
 
     /// Get the unique surface ID.
@@ -670,6 +877,7 @@ fn new_surface_handle(id: usize, viewport_name: String, is_video: bool) -> Rende
         needs_redraw: Arc::new(AtomicBool::new(false)),
         event_handler: std::rc::Rc::new(RefCell::new(None)),
         key_handler: std::rc::Rc::new(RefCell::new(None)),
+        pointer_events: std::rc::Rc::new(Cell::new(false)),
         viewport_name,
         is_video,
         layout_size: Arc::new(Mutex::new((0, 0))),
@@ -838,6 +1046,14 @@ pub fn unregister_render_surface(id: usize) {
             *f = None;
         }
     });
+    // Its touches go with it.
+    #[cfg(any(
+        feature = "desktop",
+        feature = "android",
+        feature = "embed",
+        target_arch = "wasm32"
+    ))]
+    let _ = PINCHES.try_with(|p| p.borrow_mut().retain(|(s, _)| *s != id));
 }
 
 /// Check if any surface has a new frame waiting.
@@ -1452,6 +1668,183 @@ pub fn dispatch_surface_event(id: usize, event: SurfaceEvent) {
     });
 }
 
+#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+thread_local! {
+    /// The pointer the desktop runtime is handing the app an event for; see
+    /// [`set_current_pointer`].
+    static CURRENT_POINTER: Cell<Option<SurfacePointer>> = const { Cell::new(None) };
+}
+
+#[cfg(any(
+    feature = "desktop",
+    feature = "android",
+    feature = "embed",
+    target_arch = "wasm32"
+))]
+thread_local! {
+    /// Each surface's touches, for [`SurfaceEvent::Pinch`].
+    static PINCHES: RefCell<Vec<(usize, PinchTracker)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The desktop runtime says which pointer the mouse events it hands the app
+/// next come from (winit reports a pen, a finger and the mouse on one
+/// stream). `None`: the mouse, which is also what an event injected without
+/// one (a test, the debug server) is.
+#[cfg(feature = "desktop")]
+pub(crate) fn set_current_pointer(pointer: Option<SurfacePointer>) {
+    CURRENT_POINTER.with(|c| c.set(pointer));
+}
+
+/// The pointer the event being handled comes from: what the runtime said,
+/// else the mouse, with `down` deciding the mouse's pressure.
+#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+pub(crate) fn current_pointer(down: bool) -> SurfacePointer {
+    CURRENT_POINTER
+        .with(Cell::get)
+        .unwrap_or(SurfacePointer::mouse(down))
+}
+
+/// Whether surface `id` asked for pointer events
+/// ([`RenderSurfaceHandle::set_pointer_events`]).
+#[cfg(any(
+    feature = "desktop",
+    feature = "android",
+    feature = "embed",
+    target_arch = "wasm32"
+))]
+fn wants_pointer_events(id: usize) -> bool {
+    SURFACE_REGISTRY.with(|reg| {
+        reg.borrow()
+            .iter()
+            .any(|s| s.id == id && s.pointer_events.get())
+    })
+}
+
+/// Deliver a press, move or release of `pointer` at `(x, y)` (surface-local)
+/// to surface `id`: as `PointerDown`/`PointerMove`/`PointerUp` to a surface
+/// that asked for pointer events, followed by a `Pinch` when it moved one
+/// of two touches; as `MouseDown`/`MouseMove`/`MouseUp` to any other.
+#[cfg(any(
+    feature = "desktop",
+    feature = "android",
+    feature = "embed",
+    target_arch = "wasm32"
+))]
+pub(crate) fn dispatch_surface_pointer(
+    id: usize,
+    phase: PointerPhase,
+    x: f32,
+    y: f32,
+    pointer: SurfacePointer,
+) {
+    if !wants_pointer_events(id) {
+        let event = match phase {
+            PointerPhase::Down(button) => SurfaceEvent::MouseDown { x, y, button },
+            PointerPhase::Move => SurfaceEvent::MouseMove { x, y },
+            PointerPhase::Up(button) => SurfaceEvent::MouseUp { x, y, button },
+        };
+        dispatch_surface_event(id, event);
+        return;
+    }
+    let event = match phase {
+        PointerPhase::Down(button) => SurfaceEvent::PointerDown {
+            x,
+            y,
+            button,
+            pointer,
+        },
+        PointerPhase::Move => SurfaceEvent::PointerMove { x, y, pointer },
+        PointerPhase::Up(button) => SurfaceEvent::PointerUp {
+            x,
+            y,
+            button,
+            pointer,
+        },
+    };
+    dispatch_surface_event(id, event);
+    if pointer.kind != SurfacePointerKind::Touch {
+        return;
+    }
+    let pinch = with_pinch(id, |t| match phase {
+        PointerPhase::Down(_) => {
+            t.down(pointer.id, x, y);
+            None
+        }
+        PointerPhase::Move => t.moved(pointer.id, x, y),
+        PointerPhase::Up(_) => {
+            t.up(pointer.id);
+            None
+        }
+    });
+    if let Some((x, y, scale)) = pinch {
+        dispatch_surface_event(id, SurfaceEvent::Pinch { x, y, scale });
+    }
+}
+
+/// The platform took `pointer` away mid-press (a touch the system
+/// cancelled): `PointerCancel` to a surface that asked for pointer events, a
+/// `MouseUp` at `(x, y)` to any other, so it is not left mid-drag.
+#[cfg(any(feature = "desktop", target_arch = "wasm32"))]
+pub(crate) fn dispatch_surface_pointer_cancel(id: usize, x: f32, y: f32, pointer: SurfacePointer) {
+    if !wants_pointer_events(id) {
+        let button = SurfaceMouseButton::Left;
+        dispatch_surface_event(id, SurfaceEvent::MouseUp { x, y, button });
+        return;
+    }
+    dispatch_surface_event(id, SurfaceEvent::PointerCancel { pointer });
+    with_pinch(id, |t| t.up(pointer.id));
+}
+
+/// A zoom gesture over surface `id` at `(x, y)`: a trackpad pinch, or
+/// Ctrl+wheel (what a browser turns a trackpad pinch into). Delivered as a
+/// `Pinch` to a surface that asked for pointer events; answers whether it
+/// was, so the caller delivers a wheel event as it always has otherwise.
+#[cfg(any(
+    feature = "desktop",
+    feature = "android",
+    feature = "embed",
+    target_arch = "wasm32"
+))]
+pub(crate) fn dispatch_surface_zoom(id: usize, x: f32, y: f32, scale: f32) -> bool {
+    if !wants_pointer_events(id) || !scale.is_finite() || scale <= 0.0 {
+        return false;
+    }
+    dispatch_surface_event(id, SurfaceEvent::Pinch { x, y, scale });
+    true
+}
+
+/// The scale a wheel turn of `delta_y` logical pixels zooms by: 100 px of
+/// wheel is a factor of e, the curve browsers and most canvas apps use.
+#[cfg(any(
+    feature = "desktop",
+    feature = "android",
+    feature = "embed",
+    target_arch = "wasm32"
+))]
+pub(crate) fn wheel_zoom_scale(delta_y: f32) -> f32 {
+    (-delta_y / 100.0).exp()
+}
+
+#[cfg(any(
+    feature = "desktop",
+    feature = "android",
+    feature = "embed",
+    target_arch = "wasm32"
+))]
+fn with_pinch<R>(id: usize, f: impl FnOnce(&mut PinchTracker) -> R) -> R {
+    PINCHES.with(|p| {
+        let mut p = p.borrow_mut();
+        let i = match p.iter().position(|(s, _)| *s == id) {
+            Some(i) => i,
+            None => {
+                p.push((id, PinchTracker::default()));
+                p.len() - 1
+            }
+        };
+        f(&mut p[i].1)
+    })
+}
+
 /// Asks the surface's [`RenderSurfaceHandle::set_key_handler`] whether `key`
 /// is claimed (issue #482). This is independent of, and runs in addition to,
 /// the normal [`dispatch_surface_event`] delivery of `KeyDown`/`KeyUp` — call
@@ -1798,6 +2191,25 @@ fn schedule_canvas_init(surface: RenderSurfaceHandle) {
 }
 
 #[cfg(target_arch = "wasm32")]
+fn pointer_of(event: &web_sys::PointerEvent) -> SurfacePointer {
+    let kind = match event.pointer_type().as_str() {
+        "mouse" => SurfacePointerKind::Mouse,
+        // The eraser end of a pen sets `buttons` bit 5 (Pointer Events §
+        // "The button property": 32 is the eraser button).
+        "pen" if event.buttons() & 32 != 0 => SurfacePointerKind::Eraser,
+        "pen" => SurfacePointerKind::Pen,
+        "touch" => SurfacePointerKind::Touch,
+        _ => SurfacePointerKind::Unknown,
+    };
+    SurfacePointer {
+        id: event.pointer_id() as u32 as u64,
+        kind,
+        pressure: event.pressure().clamp(0.0, 1.0),
+        primary: event.is_primary(),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 fn mouse_button_from_i16(button: i16) -> SurfaceMouseButton {
     match button {
         0 => SurfaceMouseButton::Left,
@@ -1849,7 +2261,13 @@ fn setup_canvas_events(
             let button = mouse_button_from_i16(event.button());
             set_focused_surface(Some(surface_id));
             let _ = canvas.set_pointer_capture(event.pointer_id());
-            dispatch_surface_event(surface_id, SurfaceEvent::MouseDown { x, y, button });
+            dispatch_surface_pointer(
+                surface_id,
+                PointerPhase::Down(button),
+                x,
+                y,
+                pointer_of(&event),
+            );
         }) as Box<dyn FnMut(_)>);
         target
             .add_event_listener_with_callback("pointerdown", closure.as_ref().unchecked_ref())
@@ -1865,7 +2283,13 @@ fn setup_canvas_events(
             let y = event.offset_y() as f32;
             let button = mouse_button_from_i16(event.button());
             let _ = canvas.release_pointer_capture(event.pointer_id());
-            dispatch_surface_event(surface_id, SurfaceEvent::MouseUp { x, y, button });
+            dispatch_surface_pointer(
+                surface_id,
+                PointerPhase::Up(button),
+                x,
+                y,
+                pointer_of(&event),
+            );
         }) as Box<dyn FnMut(_)>);
         target
             .add_event_listener_with_callback("pointerup", closure.as_ref().unchecked_ref())
@@ -1874,15 +2298,15 @@ fn setup_canvas_events(
     }
 
     // pointercancel — the browser took the pointer away; release capture and end
-    // the interaction like an up (so the surface isn't left mid-drag).
+    // the interaction (a `PointerCancel`, or like an up for a surface without
+    // pointer events, so it isn't left mid-drag).
     {
         let canvas = canvas.clone();
         let closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
             let x = event.offset_x() as f32;
             let y = event.offset_y() as f32;
-            let button = mouse_button_from_i16(event.button());
             let _ = canvas.release_pointer_capture(event.pointer_id());
-            dispatch_surface_event(surface_id, SurfaceEvent::MouseUp { x, y, button });
+            dispatch_surface_pointer_cancel(surface_id, x, y, pointer_of(&event));
         }) as Box<dyn FnMut(_)>);
         target
             .add_event_listener_with_callback("pointercancel", closure.as_ref().unchecked_ref())
@@ -1895,7 +2319,7 @@ fn setup_canvas_events(
         let closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
             let x = event.offset_x() as f32;
             let y = event.offset_y() as f32;
-            dispatch_surface_event(surface_id, SurfaceEvent::MouseMove { x, y });
+            dispatch_surface_pointer(surface_id, PointerPhase::Move, x, y, pointer_of(&event));
         }) as Box<dyn FnMut(_)>);
         target
             .add_event_listener_with_callback("pointermove", closure.as_ref().unchecked_ref())
@@ -1937,6 +2361,19 @@ fn setup_canvas_events(
             let y = mouse.offset_y() as f32;
             let delta_x = event.delta_x() as f32;
             let delta_y = event.delta_y() as f32;
+            // Ctrl+wheel is how the browser reports a trackpad pinch (and a
+            // mouse's zoom chord): a `Pinch` to a surface with pointer events.
+            if mouse.ctrl_key() {
+                // Lines (Firefox's mouse wheel) as the desktop counts them.
+                let px = if event.delta_mode() == web_sys::WheelEvent::DOM_DELTA_LINE {
+                    delta_y * 40.0
+                } else {
+                    delta_y
+                };
+                if dispatch_surface_zoom(surface_id, x, y, wheel_zoom_scale(px)) {
+                    return;
+                }
+            }
             dispatch_surface_event(
                 surface_id,
                 SurfaceEvent::MouseWheel {

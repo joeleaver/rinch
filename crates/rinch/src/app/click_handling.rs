@@ -71,22 +71,29 @@ impl RinchApp {
             let surface_hit = {
                 let d = doc.borrow();
                 if let Some(hit_id) = self.shared_hit(&d, x, y) {
-                    Self::find_render_surface_at(&d.tree, hit_id, x, y)
+                    Self::find_render_surface_at_full(&d.tree, hit_id, x, y)
                 } else {
                     None
                 }
             };
 
-            if let Some((surface_id, local_x, local_y)) = surface_hit {
-                // Dispatch MouseDown to the surface (every click, regardless of
-                // whether focus changes).
-                crate::render_surface::dispatch_surface_event(
+            if let Some((surface_id, surface_node, local_x, local_y)) = surface_hit {
+                // Dispatch the press to the surface (every click, regardless of
+                // whether focus changes), and give it the pointer until the
+                // release: its moves and its release go to this surface
+                // wherever they happen (`SurfaceEvent`'s capture note).
+                let pointer = crate::render_surface::current_pointer(true);
+                self.surface_captures.retain(|(id, _, _)| *id != pointer.id);
+                self.surface_captures
+                    .push((pointer.id, surface_id, surface_node));
+                crate::render_surface::dispatch_surface_pointer(
                     surface_id,
-                    crate::render_surface::SurfaceEvent::MouseDown {
-                        x: local_x,
-                        y: local_y,
-                        button: crate::render_surface::SurfaceMouseButton::from_platform(button),
-                    },
+                    crate::render_surface::PointerPhase::Down(
+                        crate::render_surface::SurfaceMouseButton::from_platform(button),
+                    ),
+                    local_x,
+                    local_y,
+                    pointer,
                 );
 
                 // Take keyboard focus through the arbiter: it tears down whatever
