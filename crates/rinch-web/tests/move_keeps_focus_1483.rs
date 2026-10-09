@@ -245,7 +245,10 @@ fn a_keyed_for_reorder_keeps_the_focused_row_focused() {
             assert_eq!(active(), id, "row {k}: the moved row kept the keyboard");
             assert_eq!(events.count(), 0, "row {k}: and no focus event fired");
             assert_eq!(
-                (input.selection_start().unwrap(), input.selection_end().unwrap()),
+                (
+                    input.selection_start().unwrap(),
+                    input.selection_end().unwrap()
+                ),
                 (Some(2), Some(4)),
                 "row {k}: with its selection"
             );
@@ -307,7 +310,11 @@ fn verbs(n: &'static str) -> Verbs {
     });
     let (page, wrap, other, detached, keep) = slots.borrow_mut().take().unwrap();
     by_id(&format!("trigger-{n}")).focus().unwrap();
-    assert_eq!(active(), format!("trigger-{n}"), "positive control: focused");
+    assert_eq!(
+        active(),
+        format!("trigger-{n}"),
+        "positive control: focused"
+    );
     Verbs {
         root,
         host,
@@ -578,7 +585,11 @@ fn an_editor_in_a_moved_row_keeps_the_keyboard() {
         let events = FocusEvents::watch();
         rows.set(vec![3, 2, 1]);
         assert_eq!(order("ed-list"), "3,2,1", "positive control: reversed");
-        assert_eq!(active(), "TEXTAREA", "editor {k}: the capture field kept the focus");
+        assert_eq!(
+            active(),
+            "TEXTAREA",
+            "editor {k}: the capture field kept the focus"
+        );
         assert_eq!(events.count(), 0, "editor {k}: no focus event");
         assert!(h.insert_text("Z"), "editor {k}: and typing still lands");
         let typed = by_id("ed-list").text_content().unwrap_or_default();
@@ -635,9 +646,17 @@ fn an_open_modal_in_a_moved_row_keeps_focus_and_restores_it_on_close() {
     });
     assert_eq!(order("mo-list"), "1,2,3", "positive control: rendered");
     by_id("mo-btn-2").focus().unwrap();
-    assert_eq!(active(), "mo-btn-2", "positive control: the opener is focused");
+    assert_eq!(
+        active(),
+        "mo-btn-2",
+        "positive control: the opener is focused"
+    );
     open.set(true);
-    assert_eq!(active(), "mo-inside", "positive control: the modal took the focus");
+    assert_eq!(
+        active(),
+        "mo-inside",
+        "positive control: the modal took the focus"
+    );
 
     // [1,2,3] -> [3,2,1]: the reconcile keeps one row and moves two, so the
     // modal's row or the opener's (or both) move; do it both ways round.
@@ -724,7 +743,11 @@ fn a_moved_row_keeps_its_iframe_and_its_scroll_offset() {
     );
     if has_move_before() {
         assert!(mark(), "the iframe was not reloaded");
-        assert_eq!(by_id("st-scroll").scroll_top(), 120, "the scroll offset held");
+        assert_eq!(
+            by_id("st-scroll").scroll_top(),
+            120,
+            "the scroll offset held"
+        );
     } else {
         assert!(!mark(), "no moveBefore: the iframe's window is a new one");
     }
