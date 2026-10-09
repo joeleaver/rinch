@@ -480,6 +480,19 @@ impl DomDocument for RinchDocument {
             }
             _ => {}
         }
+        // An element whose only child is a text node keeps that node: the new
+        // text is written into it, by the text-node path below — the one every
+        // reactive `{|| text}` takes, so it re-shapes and repaints as that does.
+        // Orphaning it and minting another changed the element's child list on
+        // every text rewrite (a removal observer above was told a child left
+        // each time, #1440) and left one orphaned slab entry and Taffy leaf
+        // behind per write.
+        if self.tree.nodes[n].is_element()
+            && let [only] = self.tree.nodes[n].children[..]
+            && matches!(self.tree.nodes[only].kind, NodeKind::Text(_))
+        {
+            return self.set_text_content(NodeId(only), text);
+        }
         // Past the no-op return: an identical write moves nothing, and must
         // not leave the next pointer move with a cold hit cache.
         self.tree.hit_cache.invalidate();
@@ -891,6 +904,13 @@ impl DomDocument for RinchDocument {
         let mut results = Vec::new();
         self.query_all_recursive(self.tree.root_id, selector, &mut results);
         results.into_iter().map(NodeId).collect()
+    }
+
+    fn is_text_node(&self, node: NodeId) -> bool {
+        self.tree
+            .nodes
+            .get(node.0)
+            .is_some_and(|n| matches!(n.kind, NodeKind::Text(_)))
     }
 
     fn get_children(&self, node: NodeId) -> Vec<NodeId> {

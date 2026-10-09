@@ -95,29 +95,100 @@ fn text_written_over_an_elements_children_tells_the_removal_observer() {
     );
 }
 
+/// An element that holds nothing but its own text keeps its text node when the
+/// text is rewritten: no child left, on this backend as on the mock and in a
+/// browser (whose text has no rinch id at all). It used to orphan the node and
+/// mint another per write, so an observer above was told a child left every
+/// time (100 of 100).
 #[test]
-fn text_that_replaces_nothing_tells_nobody() {
+fn rewriting_an_elements_own_text_tells_nobody() {
     let f = fixture();
-    f.wrapper.set_text("first");
+    f.wrapper.set_text("0");
+    let text = f.wrapper.children().remove(0);
     let seen = watch(&f.root);
 
-    // `rinch-dom` returns before replacing anything when the element's one
-    // text child already says this; the child list is the one it was.
-    f.wrapper.set_text("first");
+    for i in 1..=100 {
+        f.wrapper.set_text(&i.to_string());
+    }
+    // An identical write, and text on the text node itself.
+    f.wrapper.set_text("100");
+    text.set_text("101");
+
     assert!(
         seen.borrow().is_empty(),
-        "an identical write moved no child"
+        "the element's child list never changed, told {} times",
+        seen.borrow().len()
     );
+    let now: Vec<_> = f.wrapper.children().iter().map(|c| c.node_id()).collect();
+    assert_eq!(
+        now,
+        vec![text.node_id()],
+        "the same text node, written in place"
+    );
+    assert_eq!(f.wrapper.text_content().as_deref(), Some("101"));
 
-    // A different text replaces the text child with a new one: a child left.
-    f.wrapper.set_text("second");
+    // Positive control: the observer is live, and text over an element child
+    // (not a lone text node) is still a child leaving.
+    f.wrapper.append_child(&f.element("b"));
+    f.wrapper.set_text("over");
     assert_eq!(*seen.borrow(), vec![f.wrapper.node_id()]);
+    assert!(text.parent_node().is_none(), "both children were replaced");
+}
 
-    // Text on a text node has no child list at all.
-    seen.borrow_mut().clear();
-    let text = f.wrapper.children().remove(0);
-    text.set_text("third");
-    assert!(seen.borrow().is_empty());
+/// The in-place write is a text edit like any other: the block is measured and
+/// shaped again. Compared with a fresh document holding the final text, in a
+/// block and in an atomic inline (sized by its own pass, #661), growing and
+/// shrinking.
+#[test]
+fn an_elements_text_written_in_place_is_laid_out_again() {
+    const CSS: &str = "
+        .w { width: 100px; font-family: sans-serif; font-size: 16px; line-height: 20px; }
+        .chip { display: inline-block; font-size: 16px; line-height: 20px; }
+    ";
+    const LONG: &str = "several words that wrap onto more lines than one";
+    fn build(class: &str, text: &str) -> (RinchDocument, NodeId) {
+        let mut doc = RinchDocument::new();
+        doc.load_css(CSS);
+        let body = doc.body();
+        let outer = doc.create_element("div");
+        doc.set_attribute(outer, "class", "w");
+        doc.append_child(body, outer);
+        let el = doc.create_element("div");
+        doc.set_attribute(el, "class", class);
+        doc.append_child(outer, el);
+        doc.set_text_content(el, text);
+        doc.resolve_layout(800.0, 600.0);
+        (doc, el)
+    }
+    fn size(doc: &RinchDocument, id: NodeId) -> (f32, f32) {
+        let l = &doc.tree.get(id.0).expect("live").layout;
+        (l.width, l.height)
+    }
+
+    for class in ["plain", "chip"] {
+        let (short_doc, short_el) = build(class, "a");
+        let (long_doc, long_el) = build(class, LONG);
+        let (short, long) = (size(&short_doc, short_el), size(&long_doc, long_el));
+        assert_ne!(
+            short, long,
+            "{class}: counter-oracle, the two texts differ in size"
+        );
+
+        let (mut doc, el) = build(class, "a");
+        let before = doc.get_children(el);
+        doc.set_text_content(el, LONG);
+        doc.resolve_layout(800.0, 600.0);
+        assert_eq!(doc.get_children(el), before, "{class}: written in place");
+        assert_eq!(
+            size(&doc, el),
+            long,
+            "{class}: grown text is measured again"
+        );
+
+        doc.set_text_content(el, "a");
+        doc.resolve_layout(800.0, 600.0);
+        assert_eq!(size(&doc, el), short, "{class}: and shrunk text");
+    }
 }
 
 #[test]
@@ -191,4 +262,92 @@ fn html_that_re_issues_the_same_child_ids_still_tells_the_removal_observer() {
         vec![f.wrapper.node_id()],
         "the span left, whatever the ids say"
     );
+}
+
+// ---------------------------------------------------------------- review of #1489
+
+fn find(f: &Fixture, from: NodeId, want: NodeId) -> Option<NodeHandle> {
+    let kids = f.doc.borrow().get_children(from);
+    for k in kids {
+        if k == want {
+            return Some(f.handle(k));
+        }
+        if let Some(found) = find(f, k, want) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// The observed node is a **grandchild** of the node written over: every freed
+/// node's observers go, not only the direct children's.
+#[test]
+fn an_observer_two_levels_below_the_write_is_dropped_too() {
+    let f = fixture();
+    let old = f.element("section");
+    f.kids[0].append_child(&old);
+    let calls = Rc::new(RefCell::new(0usize));
+    let c = calls.clone();
+    on_child_removed(&old, move |_| *c.borrow_mut() += 1);
+
+    f.wrapper
+        .set_inner_html("<a><b><i></i></b></a><u><s></s></u>");
+
+    let heir = find(&f, f.wrapper.node_id(), old.node_id())
+        .expect("the fixture needs the freed id re-issued to a parsed node");
+    let probe = f.element("span");
+    heir.append_child(&probe);
+    probe.remove();
+    assert_eq!(
+        *calls.borrow(),
+        0,
+        "a stale observer answered for the node that inherited its id"
+    );
+}
+
+/// Only an **insertion** observer exists on the thread (an app whose one
+/// container is a `List`): the freed node's observer is dropped all the same.
+#[test]
+fn a_freed_insertion_only_observer_is_dropped_with_no_removal_observer_on_the_thread() {
+    let f = fixture();
+    let calls = Rc::new(RefCell::new(0usize));
+    let c = calls.clone();
+    on_child_inserted(&f.kids[0], move |_| *c.borrow_mut() += 1);
+
+    f.wrapper.set_inner_html("<article></article><p></p>");
+
+    let heir = find(&f, f.wrapper.node_id(), f.kids[0].node_id()).expect("re-issued");
+    heir.append_child(&f.element("span"));
+    assert_eq!(
+        *calls.borrow(),
+        0,
+        "the freed node's observer patched an unrelated node"
+    );
+}
+
+/// Markup or text written over the **container itself** tells its own removal
+/// observer and leaves both of its registrations alive: only what is beneath
+/// the written node is forgotten.
+#[test]
+fn a_write_over_the_container_itself_keeps_and_tells_its_own_observers() {
+    let f = fixture();
+    let (removed, inserted) = (Rc::new(RefCell::new(0usize)), Rc::new(RefCell::new(0usize)));
+    let (r, i) = (removed.clone(), inserted.clone());
+    on_child_removed(&f.wrapper, move |_| *r.borrow_mut() += 1);
+    on_child_inserted(&f.wrapper, move |_| *i.borrow_mut() += 1);
+
+    f.wrapper.set_inner_html("<b></b>");
+    assert_eq!(*removed.borrow(), 1, "told its own children went");
+
+    let probe = f.element("i");
+    f.wrapper.append_child(&probe);
+    probe.remove();
+    assert_eq!(
+        (*inserted.borrow(), *removed.borrow()),
+        (1, 2),
+        "its registrations survived the write"
+    );
+
+    f.wrapper.set_text("t");
+    assert_eq!(*removed.borrow(), 3, "and the same through `set_text`");
 }

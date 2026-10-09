@@ -86,8 +86,10 @@
 //! [`NodeHandle::set_inner_html`] replace every child the node has, and fire
 //! the removal half for it when it had any (issue #1440): once, with the node
 //! itself, which is the parent the children left. `set_text` asks the document
-//! afterwards whether the list changed (`rinch-dom` declines a write of the
-//! text the element's one text child already holds); `set_inner_html` frees
+//! afterwards whether the list changed — an element whose only child is a
+//! text node keeps that node on `rinch-dom` (it is written in place), has no
+//! listed child on the mock or in a browser, and so tells nobody on any
+//! backend; `set_inner_html` frees
 //! the children and always tells. Neither fires the **insertion** half for
 //! what arrives: the text has no node of its own in a browser, and markup
 //! parsed by `set_inner_html` is not reported — a container whose items are
@@ -385,23 +387,31 @@ pub(super) fn notify_vacated(vacated: Option<&NodeHandle>, landed_in: &NodeHandl
 /// take them out from under a removal observer — issue #1440.
 ///
 /// `None` when nothing on the thread watches for removals, during a dispatch,
-/// and for a node with no children (a text node, which is what every reactive
-/// `{|| …}` in `rsx!` writes to). So a write nobody could be told about costs
-/// the `Cell` read and no child list.
+/// for a text node (what every reactive `{|| …}` in `rsx!` writes to — asked
+/// through [`DomDocument::is_text_node`](super::traits::DomDocument::is_text_node),
+/// with no child list read), and for an element with no children. So a write
+/// nobody could be told about costs the `Cell` read and no document call.
 pub(super) fn children_at_stake(node: &NodeHandle) -> Option<Vec<NodeId>> {
     if count_of(Half::Removed) == 0 || DISPATCHING.with(|d| d.get()) {
         return None;
     }
-    let children = node.doc_upgrade()?.borrow().get_children(node.node_id());
+    let doc = node.doc_upgrade()?;
+    let doc = doc.borrow();
+    // A text node has no child list to read: this is the write of every
+    // reactive text, and it stays one kind check with an observer registered.
+    if doc.is_text_node(node.node_id()) {
+        return None;
+    }
+    let children = doc.get_children(node.node_id());
     (!children.is_empty()).then_some(children)
 }
 
 /// Tell the observers above `node` that children left it, after a text write
 /// that had `before` ([`children_at_stake`]) to lose.
 ///
-/// Asked of the document rather than assumed, because a backend may decline
-/// the write: `rinch-dom` returns early when the element's one text child
-/// already holds this text, and the child list is then the one it was.
+/// Asked of the document rather than assumed, because a backend may keep the
+/// list: `rinch-dom` writes an element's lone text child in place, and the
+/// child list is then the one it was.
 pub(super) fn notify_children_replaced(node: &NodeHandle, before: Option<Vec<NodeId>>) {
     let Some(before) = before else {
         return;
@@ -851,6 +861,58 @@ mod tests {
             "no removal observer on the thread: one `Cell` read, no child list"
         );
         forget((root.doc_key(), root.node_id()), Half::Inserted);
+    }
+
+    /// With a removal observer on the thread — in **another** document, as a
+    /// mounted `Stepper` beside any reactive text is — a write to a text node
+    /// still reads no child list: 10,000 of them, zero `get_children`. An
+    /// element is asked once when it has no children and twice when it had.
+    #[test]
+    fn a_text_node_write_reads_no_child_list_with_an_observer_on_the_thread() {
+        let (d, body) = doc();
+        let label = text(&d, "0");
+        body.append_child(&label);
+        let (d2, body2) = doc();
+        let other = element(&d2, "div");
+        body2.append_child(&other);
+        on_child_removed(&other, |_| {});
+
+        let base = d.borrow().__get_children_calls();
+        for i in 0..10_000 {
+            label.set_text(&i.to_string());
+        }
+        assert_eq!(d.borrow().__get_children_calls() - base, 0);
+
+        // The counter does see an element: empty, then with a child to lose.
+        let host = element(&d, "p");
+        body.append_child(&host);
+        let base = d.borrow().__get_children_calls();
+        host.set_text("a");
+        assert_eq!(d.borrow().__get_children_calls() - base, 1);
+        host.append_child(&element(&d, "i"));
+        let base = d.borrow().__get_children_calls();
+        host.set_text("b");
+        assert_eq!(d.borrow().__get_children_calls() - base, 2);
+        forget((other.doc_key(), other.node_id()), Half::Removed);
+    }
+
+    /// Rewriting an element's own text loses no child on the mock: the text
+    /// lives on the element, as a browser's has no rinch id (`rinch-dom`
+    /// writes its text node in place — `child_list_replaced_1440_tests`).
+    #[test]
+    fn rewriting_an_elements_own_text_tells_nobody() {
+        let (d, body) = doc();
+        let root = element(&d, "div");
+        body.append_child(&root);
+        let label = element(&d, "p");
+        root.append_child(&label);
+        label.set_text("0");
+        let seen = watch_removals(&root);
+        for i in 1..=10 {
+            label.set_text(&i.to_string());
+        }
+        assert!(seen.borrow().is_empty());
+        forget((root.doc_key(), root.node_id()), Half::Removed);
     }
 
     /// `set_inner_html` replaces a child list as well; the children it frees

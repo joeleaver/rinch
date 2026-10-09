@@ -637,6 +637,13 @@ impl DomDocument for MockDomDocument {
         Vec::new()
     }
 
+    fn is_text_node(&self, node: NodeId) -> bool {
+        matches!(
+            self.nodes.get(&node).map(|n| &n.kind),
+            Some(MockNodeKind::Text)
+        )
+    }
+
     fn get_children(&self, node: NodeId) -> Vec<NodeId> {
         self.get_children_calls
             .set(self.get_children_calls.get() + 1);
