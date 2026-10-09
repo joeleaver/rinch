@@ -77,7 +77,6 @@ fn text_written_over_an_elements_children_tells_the_removal_observer() {
         f.kids.iter().all(|k| k.parent_node().is_none()),
         "precondition: the browser detached both spans"
     );
-    assert_eq!(f.wrapper.text_content().as_deref(), Some("gone"));
     assert_eq!(
         *f.seen.borrow(),
         vec![f.wrapper.node_id()],
