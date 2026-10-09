@@ -680,6 +680,11 @@ impl RinchApp {
                     if crate::editor::link_hover_wanted() {
                         self.update_editor_link_hover(hovered, x, y);
                     }
+                    // Image hover likewise, from the same hit.
+                    #[cfg(feature = "desktop")]
+                    if crate::editor::image_hover_wanted() {
+                        self.update_editor_image_hover(hovered);
+                    }
                 }
             }
             PlatformEvent::MouseDown {
@@ -4440,6 +4445,60 @@ impl RinchApp {
                     (handle, crate::editor::LinkHover { link, rect })
                 });
         crate::editor::set_link_hover(self.input_doc(), hovered);
+    }
+
+    /// Report the image under the pointer to [`crate::editor::set_image_hover`],
+    /// which fires the editors' `on_image_hover` callbacks on a change. `hit`
+    /// is the pointer move's shared hit test; the caller has checked
+    /// [`crate::editor::image_hover_wanted`].
+    pub(crate) fn update_editor_image_hover(&self, hit: Option<usize>) {
+        let hovered = hit.and_then(|hit| self.editor_image_at_hit(hit));
+        crate::editor::set_image_hover(self.input_doc(), hovered);
+    }
+
+    /// The editor image whose `<img>` is `hit` or holds it, with its editor:
+    /// the walk [`Self::editor_leaf_at`] makes, for images only, and the box
+    /// the `<img>` was painted in (logical window pixels, through the composed
+    /// transform, as `bounds_signal` reports it).
+    fn editor_image_at_hit(
+        &self,
+        hit: usize,
+    ) -> Option<(crate::editor::EditorHandle, crate::editor::ImageHover)> {
+        let doc = self.doc.clone()?;
+        let (container, image, rect) = {
+            let d = doc.borrow();
+            let mut image = None;
+            let mut cur = Some(hit);
+            let container = loop {
+                let id = cur?;
+                let node = d.tree.get(id)?;
+                if image.is_none()
+                    && node.attributes.get("data-pm-type").map(String::as_str) == Some("image")
+                {
+                    image = Some(id);
+                }
+                if node.attributes.get("data-pm-editor").map(String::as_str) == Some("true") {
+                    break id;
+                }
+                cur = node.parent;
+            };
+            let image = image?;
+            let (x, y, width, height) =
+                crate::app::hit_testing::painted_element_box(&d.tree, image);
+            (
+                container,
+                image,
+                rinch_core::ElementBounds {
+                    x,
+                    y,
+                    width,
+                    height,
+                },
+            )
+        };
+        let handle = crate::editor::editor_for_doc(self.doc_key(), container)?;
+        let (pos, attrs) = handle.image_at_host(image)?;
+        Some((handle, crate::editor::ImageHover { pos, attrs, rect }))
     }
 
     /// Focus the new editor under a pointer click at logical `(x, y)` and set the
