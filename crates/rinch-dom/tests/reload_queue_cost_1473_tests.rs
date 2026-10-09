@@ -93,7 +93,11 @@ fn a_reload_with_no_live_document_queues_nothing_and_costs_nothing() {
     let _alone = alone();
     let doc = RinchDocument::new();
     let key = doc.doc_key();
-    assert_eq!(steps_for("live", 10), 10, "control: a live document is reached");
+    assert_eq!(
+        steps_for("live", 10),
+        10,
+        "control: a live document is reached"
+    );
     drop(doc);
     assert_eq!(steps_for("none", 1_000), 0);
     assert_eq!(pending_reload_count(key), 0);
