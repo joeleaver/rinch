@@ -203,8 +203,24 @@ impl FocusEntry {
     }
 }
 
+/// One registered focus target.
+struct Registered {
+    doc_key: u64,
+    node_id: usize,
+    /// Names the `register_focus_target` call that made this entry
+    /// (issue #1490).
+    token: u64,
+    entry: Rc<FocusEntry>,
+}
+
+impl Registered {
+    fn is_at(&self, doc_key: u64, node_id: usize) -> bool {
+        self.doc_key == doc_key && self.node_id == node_id
+    }
+}
+
 thread_local! {
-    /// `(doc_key, node id, token, entry)` for every registered focus target.
+    /// Every registered focus target.
     ///
     /// Keyed by `(doc_key, node_id)` exactly like the mounted-editor registry:
     /// node ids are per-document slab indices, so two documents on one thread
@@ -216,7 +232,7 @@ thread_local! {
     /// it is still the one registered, since `rinch-dom` re-issues a freed node
     /// id and a cleanup that forgot by id would drop another component's
     /// target.
-    static TARGETS: RefCell<Vec<(u64, usize, u64, Rc<FocusEntry>)>> = const { RefCell::new(Vec::new()) };
+    static TARGETS: RefCell<Vec<Registered>> = const { RefCell::new(Vec::new()) };
 
     /// The next registration token. Never reused.
     static NEXT_TOKEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -246,8 +262,13 @@ pub fn register_focus_target(node: &NodeHandle, entry: FocusEntry) {
     });
     TARGETS.with(|t| {
         let mut t = t.borrow_mut();
-        t.retain(|(dk, id, _, _)| !(*dk == doc_key && *id == node_id));
-        t.push((doc_key, node_id, token, Rc::new(entry)));
+        t.retain(|r| !r.is_at(doc_key, node_id));
+        t.push(Registered {
+            doc_key,
+            node_id,
+            token,
+            entry: Rc::new(entry),
+        });
     });
     // Tie the registration to the component that made it. The *ambient owner*,
     // not `RenderScope::on_cleanup`: an `if`/`for` branch renders into a child
@@ -262,7 +283,7 @@ pub fn register_focus_target(node: &NodeHandle, entry: FocusEntry) {
 fn unregister_focus_target(doc_key: u64, node_id: usize, token: u64) {
     TARGETS.with(|t| {
         t.borrow_mut()
-            .retain(|(dk, id, tok, _)| !(*dk == doc_key && *id == node_id && *tok == token))
+            .retain(|r| !(r.is_at(doc_key, node_id) && r.token == token))
     });
 }
 
@@ -273,8 +294,8 @@ fn entry_for(doc_key: u64, node_id: usize) -> Option<Rc<FocusEntry>> {
     TARGETS.with(|t| {
         t.borrow()
             .iter()
-            .find(|(dk, id, _, _)| *dk == doc_key && *id == node_id)
-            .map(|(_, _, _, e)| e.clone())
+            .find(|r| r.is_at(doc_key, node_id))
+            .map(|r| r.entry.clone())
     })
 }
 
@@ -285,11 +306,7 @@ fn entry_for(doc_key: u64, node_id: usize) -> Option<Rc<FocusEntry>> {
 /// rather than the attribute probe `node_target_is_live` falls back to — so the
 /// recycled-slab-slot window (#304) is closed for registered targets.
 pub(crate) fn is_registered(doc_key: u64, node_id: usize) -> bool {
-    TARGETS.with(|t| {
-        t.borrow()
-            .iter()
-            .any(|(dk, id, _, _)| *dk == doc_key && *id == node_id)
-    })
+    TARGETS.with(|t| t.borrow().iter().any(|r| r.is_at(doc_key, node_id)))
 }
 
 /// Whether the target at `(doc_key, node_id)` registered [`FocusEntry::on_key`]

@@ -496,7 +496,14 @@ The pieces that follow from it:
   watches recurses without bound (measured: stack overflow).
 - **An observer is released by the ambient scope's `on_cleanup`**, the #147
   discipline, and by `NodeHandle::discard` on the container — a discarded id may
-  be reissued.
+  be reissued. The cleanup releases **its own registration**, by a token, not
+  whatever stands under the node's id when it runs (#1490): `rinch-dom` hands a
+  freed id to the next node it mints, and a cleanup that forgot by
+  `(doc, id)` dropped the observers of the container now holding the id (a
+  second `on_child_*` call on one node was dropped the same way by the first
+  call's scope). `register_focus_target` releases by token too. The editor
+  registry (`unregister_editor`, and its blink clock) still releases by
+  `(doc_key, container id)` (#1498).
 - **A child moved between containers re-resolves**, because a container marks
   what it supplied (`data-list-icon`) and never touches what the child asked for
   itself.
