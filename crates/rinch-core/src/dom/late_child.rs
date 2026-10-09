@@ -119,6 +119,13 @@
 //! observer. A container rendered outside any scope — from `main`, or straight
 //! onto a `MockDomDocument` in a test — has no owner and keeps app lifetime,
 //! which is the same answer every other rinch registry gives.
+//!
+//! The cleanup releases **the registration it was made for**, by a token, not
+//! whatever stands under the node's id when it runs (issue #1490). The two
+//! differ when the registration has been replaced meanwhile — by a second
+//! `on_child_*` call on the node, or, on `rinch-dom`, by another container
+//! altogether: that backend hands a freed node id to the next node it mints,
+//! and a cleanup that forgot by id then dropped the new container's observer.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -132,6 +139,11 @@ use super::{NodeHandle, NodeId};
 /// Handed the subtree that landed, for an insertion; the parent it left, for a
 /// removal. See the module docs for why those differ.
 type Observer = Rc<dyn Fn(&NodeHandle)>;
+
+/// One registered observer and the token of the `on_child_*` call that
+/// registered it (issue #1490). The token is what that call's scope cleanup
+/// names, so it can only release its own registration.
+type Registered = (u64, Observer);
 
 /// Which half of the contract a notification is.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -179,12 +191,12 @@ impl Hasher for IdHasher {
 /// is written once and a discarded id releases both halves in one lookup.
 #[derive(Default)]
 struct Entry {
-    inserted: Option<Observer>,
-    removed: Option<Observer>,
+    inserted: Option<Registered>,
+    removed: Option<Registered>,
 }
 
 impl Entry {
-    fn slot(&mut self, half: Half) -> &mut Option<Observer> {
+    fn slot(&mut self, half: Half) -> &mut Option<Registered> {
         match half {
             Half::Inserted => &mut self.inserted,
             Half::Removed => &mut self.removed,
@@ -196,6 +208,7 @@ impl Entry {
             Half::Inserted => self.inserted.as_ref(),
             Half::Removed => self.removed.as_ref(),
         }
+        .map(|(_, observer)| observer)
     }
 }
 
@@ -220,6 +233,9 @@ thread_local! {
 
     /// Set while a callback runs. See the re-entrancy note above.
     static DISPATCHING: Cell<bool> = const { Cell::new(false) };
+
+    /// The next registration token (issue #1490). Never reused.
+    static NEXT_TOKEN: Cell<u64> = const { Cell::new(0) };
 }
 
 /// The live count for one half.
@@ -278,39 +294,62 @@ pub fn on_child_removed(root: &NodeHandle, f: impl Fn(&NodeHandle) + 'static) {
 fn register(root: &NodeHandle, half: Half, f: impl Fn(&NodeHandle) + 'static) {
     let key = (root.doc_key(), root.node_id());
     let observer: Observer = Rc::new(f);
+    let token = NEXT_TOKEN.with(|next| {
+        let token = next.get();
+        next.set(token + 1);
+        token
+    });
     OBSERVERS.with(|map| {
         if map
             .borrow_mut()
             .entry(key)
             .or_default()
             .slot(half)
-            .replace(observer)
+            .replace((token, observer))
             .is_none()
         {
             bump(half, 1);
         }
     });
-    crate::reactive::on_cleanup(move || forget(key, half));
+    // By token: by the time the scope goes, the node may have been discarded
+    // or freed and its id handed to another container, whose registration
+    // under the same key is not this scope's to release (issue #1490).
+    crate::reactive::on_cleanup(move || release(key, half, Some(token)));
 }
 
-/// Drop one half of the registration for `key`, if it is there.
+/// Drop one half of the registration for `key`, if it is there — and, given
+/// `only`, if it is still the registration that token was issued for.
+///
+/// `only` is the scope-cleanup route (issue #1490): the registration may have
+/// been replaced since, and the replacement belongs to somebody else. `None`
+/// is the node itself going away, which takes whatever is registered on it.
 ///
 /// Only that half: the two are registered independently — possibly from two
 /// scopes with different lifetimes — so one being released must not take the
 /// other with it. The entry goes when nothing is left in it.
-fn forget(key: (u64, NodeId), half: Half) {
+fn release(key: (u64, NodeId), half: Half, only: Option<u64>) {
     OBSERVERS.with(|map| {
         let mut map = map.borrow_mut();
         let Some(entry) = map.get_mut(&key) else {
             return;
         };
-        if entry.slot(half).take().is_some() {
+        let slot = entry.slot(half);
+        if slot
+            .as_ref()
+            .is_some_and(|(token, _)| only.is_none_or(|only| only == *token))
+        {
+            *slot = None;
             bump(half, -1);
         }
         if entry.inserted.is_none() && entry.removed.is_none() {
             map.remove(&key);
         }
     });
+}
+
+/// Drop whatever is registered for one half of `key`: the node is going away.
+fn forget(key: (u64, NodeId), half: Half) {
+    release(key, half, None);
 }
 
 /// Drop **both** observers registered on `node`, if any — called when a node is

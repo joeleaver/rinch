@@ -204,13 +204,22 @@ impl FocusEntry {
 }
 
 thread_local! {
-    /// `(doc_key, node id, entry)` for every registered focus target.
+    /// `(doc_key, node id, token, entry)` for every registered focus target.
     ///
     /// Keyed by `(doc_key, node_id)` exactly like the mounted-editor registry:
     /// node ids are per-document slab indices, so two documents on one thread
     /// (two embedded `RinchContext`s, two desktop windows) can both hold a
     /// target at the same node id (issue #134).
-    static TARGETS: RefCell<Vec<(u64, usize, Rc<FocusEntry>)>> = const { RefCell::new(Vec::new()) };
+    ///
+    /// The token names the `register_focus_target` call that made the entry
+    /// (issue #1490): that call's scope cleanup releases the entry only while
+    /// it is still the one registered, since `rinch-dom` re-issues a freed node
+    /// id and a cleanup that forgot by id would drop another component's
+    /// target.
+    static TARGETS: RefCell<Vec<(u64, usize, u64, Rc<FocusEntry>)>> = const { RefCell::new(Vec::new()) };
+
+    /// The next registration token. Never reused.
+    static NEXT_TOKEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Register `node` as a focus target, so the component behind it hears about
@@ -219,7 +228,10 @@ thread_local! {
 /// Replaces any prior registration for **this** node in **this** document;
 /// another document's target at a colliding node id is left alone. The
 /// registration is dropped when the ambient render scope is disposed — see the
-/// module docs for why that is silent.
+/// module docs for why that is silent. That disposal drops **this**
+/// registration only: one that has replaced it since (a second call for the
+/// node, or another component's on a node id the document re-issued) stays
+/// (issue #1490).
 ///
 /// Called outside a render (no ambient owner — `main()`, a timer, a detached
 /// callback) the entry is still registered, but nothing will ever deregister
@@ -227,24 +239,30 @@ thread_local! {
 pub fn register_focus_target(node: &NodeHandle, entry: FocusEntry) {
     let doc_key = node.doc_key();
     let node_id = node.node_id().0;
+    let token = NEXT_TOKEN.with(|next| {
+        let token = next.get();
+        next.set(token + 1);
+        token
+    });
     TARGETS.with(|t| {
         let mut t = t.borrow_mut();
-        t.retain(|(dk, id, _)| !(*dk == doc_key && *id == node_id));
-        t.push((doc_key, node_id, Rc::new(entry)));
+        t.retain(|(dk, id, _, _)| !(*dk == doc_key && *id == node_id));
+        t.push((doc_key, node_id, token, Rc::new(entry)));
     });
     // Tie the registration to the component that made it. The *ambient owner*,
     // not `RenderScope::on_cleanup`: an `if`/`for` branch renders into a child
     // scope that is never installed as the thread-local render scope, but it
     // does push itself as the owner — so this is the hook that follows a
     // conditionally-mounted widget (issue #141 PR4).
-    rinch_core::reactive::on_cleanup(move || unregister_focus_target(doc_key, node_id));
+    rinch_core::reactive::on_cleanup(move || unregister_focus_target(doc_key, node_id, token));
 }
 
-/// Forget the target registered at `(doc_key, node_id)`.
-pub(crate) fn unregister_focus_target(doc_key: u64, node_id: usize) {
+/// Forget the target `token` registered at `(doc_key, node_id)`, if it is
+/// still the one registered there (issue #1490).
+fn unregister_focus_target(doc_key: u64, node_id: usize, token: u64) {
     TARGETS.with(|t| {
         t.borrow_mut()
-            .retain(|(dk, id, _)| !(*dk == doc_key && *id == node_id))
+            .retain(|(dk, id, tok, _)| !(*dk == doc_key && *id == node_id && *tok == token))
     });
 }
 
@@ -255,8 +273,8 @@ fn entry_for(doc_key: u64, node_id: usize) -> Option<Rc<FocusEntry>> {
     TARGETS.with(|t| {
         t.borrow()
             .iter()
-            .find(|(dk, id, _)| *dk == doc_key && *id == node_id)
-            .map(|(_, _, e)| e.clone())
+            .find(|(dk, id, _, _)| *dk == doc_key && *id == node_id)
+            .map(|(_, _, _, e)| e.clone())
     })
 }
 
@@ -270,7 +288,7 @@ pub(crate) fn is_registered(doc_key: u64, node_id: usize) -> bool {
     TARGETS.with(|t| {
         t.borrow()
             .iter()
-            .any(|(dk, id, _)| *dk == doc_key && *id == node_id)
+            .any(|(dk, id, _, _)| *dk == doc_key && *id == node_id)
     })
 }
 
@@ -381,7 +399,10 @@ mod tests {
 
         let first = Scope::new();
         first.run(|| register_focus_target(&node, FocusEntry::new()));
-        assert!(!wants_key_routing(doc_key, node_id), "control: no on_key yet");
+        assert!(
+            !wants_key_routing(doc_key, node_id),
+            "control: no on_key yet"
+        );
         let second = Scope::new();
         second.run(|| register_focus_target(&node, FocusEntry::new().on_key(|_| true)));
         assert!(

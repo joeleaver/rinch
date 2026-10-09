@@ -10,8 +10,8 @@
 //! (`dom::late_child::tests::a_replaced_registration_survives_the_first_scopes_cleanup`)
 //! reaches the same cleanup by registering twice on one node.
 
-use rinch_core::reactive::Scope;
 use rinch_core::dom::{DomDocument, NodeHandle, on_child_inserted, on_child_removed};
+use rinch_core::reactive::Scope;
 use rinch_dom::RinchDocument;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
