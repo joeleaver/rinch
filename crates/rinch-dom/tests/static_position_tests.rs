@@ -1868,6 +1868,57 @@ fn a_box_moved_out_of_the_lines_forgets_its_place() {
     }
 }
 
+/// The lines a box left may still hold **another** box's place, at the
+/// index the first one's was: the moved box must not take it.
+#[test]
+fn a_box_moved_out_does_not_take_a_siblings_place() {
+    let other = r#"<div data-m="other" style="position: relative; margin-left: 70px"><div style="height: 25px"></div>"#;
+    let stay =
+        r#"<span data-m="stay" style="position: absolute; width: 40px; height: 30px;"></span>"#;
+    let b = boxed("absolute", "span", "", "");
+    let mut c = Case::build(
+        C,
+        "",
+        &format!("text{b}more{stay}tail"),
+        &format!("{other}</div>"),
+    );
+    let (abs, to) = (c.id("abs"), c.id("other"));
+    c.doc.append_child(NodeId(to), NodeId(abs));
+    c.relayout();
+    let fresh = Case::build(
+        C,
+        "",
+        &format!("textmore{stay}tail"),
+        &format!("{other}{b}</div>"),
+    );
+    assert_eq!(c.rel("abs"), fresh.rel("abs"), "the moved box");
+    assert_eq!(c.rel("stay"), fresh.rel("stay"), "the one that stayed");
+    assert_ne!(c.rel("abs"), c.rel("stay"), "two places");
+}
+
+/// A box inside an inline element that stands in an anonymous box's run
+/// (text beside a block) is met twice by the walk — in the element, and
+/// after it as the container's own unit. Its place is the first: where it
+/// stands in the element's text, as in the same line with no block beside it.
+#[test]
+fn a_box_in_an_inline_element_beside_a_block_keeps_its_place_in_the_element() {
+    for position in ["absolute", "fixed"] {
+        let line = format!(
+            "lead <span>te{}xt tail</span>",
+            boxed(position, "span", "", "")
+        );
+        let alone = Case::new(&line);
+        let beside = Case::new(&format!(r#"<div style="height: 25px"></div>{line}"#));
+        let (a, b) = (alone.rel("abs"), beside.rel("abs"));
+        assert_eq!([b[0], b[1] - 25.0], a, "{position}");
+        // `lead te` is 49.9px: Chrome's `il_in_span` row less `xt`.
+        assert!(
+            (a[0] - 11.0 - 50.0).abs() <= 1.0 && a[1] == 7.0,
+            "{position}: {a:?}"
+        );
+    }
+}
+
 /// The text before the box goes: the box is first on its line, at the top.
 #[test]
 fn removing_the_content_before_the_box_moves_it_up() {
