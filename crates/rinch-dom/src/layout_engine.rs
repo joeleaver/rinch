@@ -402,8 +402,21 @@ impl RinchDocument {
         // has run. Re-measure those inline-blocks against that width now, and if any
         // changed size, re-run the compute so the enclosing IFCs line-break against the
         // corrected boxes. Costs nothing when no percentage inline-block exists.
-        if self.resolve_percentage_inline_blocks() {
+        //
+        // More than once only for #1476: a compute that met an `auto` box
+        // too wide for a line, in a container sized from its content, lined
+        // it up at its max-content width for want of its min-content one;
+        // the pass measures that, the next compute sizes the container from
+        // it, and the pass after caps the box in it.
+        // A pass that measured no such size is followed by one compute and
+        // no further pass, as before.
+        let mut inline_rounds_left = crate::ifc::MAX_INLINE_ROUNDS;
+        while inline_rounds_left > 0 && self.resolve_percentage_inline_blocks() {
             text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
+            inline_rounds_left -= 1;
+            if !self.tree.atomic_contributions_changed {
+                break;
+            }
         }
 
         // #386: an absolute box whose containing block is an ancestor that is
@@ -479,8 +492,15 @@ impl RinchDocument {
                     text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
                     // The re-measure above sized a percentage atomic inline with no
                     // containing block, as the pass before the first compute does.
-                    if absolutes && self.resolve_percentage_inline_blocks() {
-                        text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
+                    if absolutes {
+                        let mut inline_rounds_left = crate::ifc::MAX_INLINE_ROUNDS;
+                        while inline_rounds_left > 0 && self.resolve_percentage_inline_blocks() {
+                            text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
+                            inline_rounds_left -= 1;
+                            if !self.tree.atomic_contributions_changed {
+                                break;
+                            }
+                        }
                     }
                     fixpoint_passes += 1;
                     if fixpoint_passes >= 8 {
@@ -702,6 +722,11 @@ impl RinchDocument {
         let font_cx = &mut self.font_cx;
         let layout_cx = &mut self.layout_cx;
         let nodes = &self.tree.nodes;
+        let (min_content, resolved_at, min_requests) = (
+            &self.tree.atomic_min_content,
+            &self.tree.keyword_inline_cb_width,
+            &self.tree.atomic_min_requests,
+        );
         // A root in `dirty_ifc_text_roots` must not be answered from a size
         // measured before it went dirty. That used to be spelled as a bypass —
         // every measure of a dirty root shaped, however many times Taffy asked
@@ -933,8 +958,20 @@ impl RinchDocument {
 
                                     // Full Parley rebuild (text changed or cache miss)
                                     shape_ifc.set(shape_ifc.get() + 1);
+                                    let atomic = crate::ifc::AtomicContributions {
+                                        wrap_width: max_width,
+                                        min_content,
+                                        resolved_at,
+                                        requests: min_requests,
+                                    };
                                     let (inline_layout, resolved) = Self::build_inline_layout(
-                                        nodes, root_id, max_width, 1.0, font_cx, layout_cx,
+                                        nodes,
+                                        root_id,
+                                        max_width,
+                                        1.0,
+                                        font_cx,
+                                        layout_cx,
+                                        Some(&atomic),
                                     );
                                     font_family_resolves.set(font_family_resolves.get() + resolved);
                                     let mut h = hang.get();
@@ -2342,11 +2379,19 @@ impl RinchDocument {
     /// rather than work; so a property listed one predicate too wide costs a
     /// spare re-shape, and one listed too narrow leaves a box frozen.
     pub(crate) fn invalidate_text_measure_for_node(&mut self, node_id: usize) {
+        self.invalidate_text_layout_for_node(node_id, true);
+    }
+
+    /// [`Self::invalidate_text_measure_for_node`], saying whether the change
+    /// can move a size (`ComputedStyle::same_measured_text_inputs` failed) or
+    /// only re-shapes glyphs in place (a colour): see
+    /// [`Self::mark_atomic_inline_dirty_for`].
+    pub(crate) fn invalidate_text_layout_for_node(&mut self, node_id: usize, sizes: bool) {
         if !self.tree.nodes.contains(node_id) {
             return;
         }
         self.invalidate_ifc_for_node(node_id);
-        self.mark_atomic_inline_dirty(node_id);
+        self.mark_atomic_inline_dirty_for(node_id, sizes);
         for child in self.tree.nodes[node_id].children.clone() {
             let Some(child_node) = self.tree.nodes.get(child) else {
                 continue;
