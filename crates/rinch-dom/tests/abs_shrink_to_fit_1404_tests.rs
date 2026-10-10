@@ -372,7 +372,35 @@ const CHROME: &[(&str, &str, &str)] = &[
 /// (name, rinch's answer, why) — rows of `CHROME` that are not Chrome's yet,
 /// each for a reason that is not this issue's. Pinned so that a fix has to
 /// come here and take the row out.
-const KNOWN: &[(&str, &str, &str)] = &[];
+const KNOWN: &[(&str, &str, &str)] = &[
+    (
+        "a11_static_in_flex_center",
+        "p=45,8,200,200 a=-31,8,352,40 t=-31,8,352,40",
+        "a box centred by its flex container from its static position: rinch gives it the room after the container's content edge and centres it there (Chrome: twice the shorter distance from the centre to a containing-block edge, and placed at that edge)",
+    ),
+    (
+        "a11b_static_in_flex_end",
+        "p=45,8,200,200 a=-107,8,352,40 t=-107,8,352,40",
+        "as a11, for `justify-content: flex-end`",
+    ),
+    (
+        "a12_static_in_grid",
+        "p=45,8,200,200 a=45,8,352,40 t=45,8,352,40",
+        "the static position in a grid container that is not the containing block is its padding edge in rinch and its content edge in Chrome",
+    ),
+    (
+        "g01_boxes_direct_left",
+        "a=23,8,260,40",
+        "#1276: content that wraps answers its widest line, not the available width",
+    ),
+    (
+        "g02_boxes_issue_example",
+        "p=45,8,200,200 a=3,3,390,40",
+        "#1276 (the issue's own example: 130x80 before this fix)",
+    ),
+    ("g03_text_direct_left", "a=23,8,328,40", "#1276"),
+    ("g04_text_anc_left", "p=45,8,200,200 a=23,8,328,40", "#1276"),
+];
 
 fn document() -> RinchDocument {
     use parley::fontique::{Blob, FontInfoOverride};
@@ -490,4 +518,145 @@ fn known_gaps_pin_rinchs_current_answer() {
         })
         .collect();
     assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// Every row, laid out a second time with nothing changed (a new viewport
+/// height, so the pass is not skipped): nothing moves.
+#[test]
+fn a_second_layout_moves_nothing() {
+    let bad: Vec<_> = CHROME
+        .iter()
+        .filter_map(|(n, h, want)| {
+            let mut doc = lay_out(h);
+            let first = dump(&doc, want);
+            doc.resolve_layout(VIEWPORT.0, VIEWPORT.1 + 40.0);
+            let second = dump(&doc, want);
+            (first != second).then(|| format!("{n}: [{first}] then [{second}]"))
+        })
+        .collect();
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// `(name, html before, html after, a change to make)`: each history ends in
+/// the same layout as a fresh one of the final markup.
+fn histories() -> Vec<(&'static str, String, String)> {
+    let t = r##"<span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span>"##;
+    let r = |inner: &str, cw: u32| {
+        format!(
+            r##"<div data-m="c" style="position:relative;width:{cw}px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;">{inner}</div>"##
+        )
+    };
+    let wrapped = |ml: u32, abs: &str| {
+        format!(
+            r##"<div data-m="p" style="width:200px;height:200px;margin-left:{ml}px"><div data-m="a" style="position:absolute;{abs}">{t}</div></div>"##
+        )
+    };
+    let direct =
+        |abs: &str| format!(r##"<div data-m="a" style="position:absolute;{abs}">{t}</div>"##);
+    vec![
+        // The static position moves: the wrapper's margin.
+        (
+            "static_moves",
+            r(&wrapped(30, ""), 400),
+            r(&wrapped(130, ""), 400),
+        ),
+        // The containing block is resized under an ancestor-resolved box.
+        (
+            "cb_resized",
+            r(&wrapped(30, "left:20px"), 400),
+            r(&wrapped(30, "left:20px"), 300),
+        ),
+        // ... under a box Taffy resolves itself, from its static position.
+        ("parent_resized", r(&direct(""), 400), r(&direct(""), 300)),
+        // An inset is written.
+        (
+            "inset_written",
+            r(&direct("left:20px"), 400),
+            r(&direct("left:60px"), 400),
+        ),
+        // The box stops being static.
+        (
+            "goes_static",
+            r(&wrapped(30, "left:20px"), 400),
+            r(&wrapped(30, ""), 400),
+        ),
+        // The wrapper starts generating no box.
+        (
+            "contents",
+            r(&wrapped(30, ""), 400),
+            r(
+                &wrapped(30, "").replacen("width:200px", "display:contents;width:200px", 1),
+                400,
+            ),
+        ),
+    ]
+}
+
+#[test]
+fn incremental_layout_equals_a_fresh_one() {
+    let bad: Vec<_> = histories()
+        .into_iter()
+        .filter_map(|(n, before, after)| {
+            let mut doc = lay_out(&before);
+            // Replace the container's markup in place: the wrapper div the
+            // fixture mounted holds it.
+            let c = one(&doc, "[data-m=c]");
+            let wrap = doc.tree.get(c).unwrap().parent.unwrap();
+            doc.set_inner_html(rinch_core::dom::NodeId(wrap), &after);
+            doc.resolve_layout(VIEWPORT.0, VIEWPORT.1 + 40.0);
+            let fresh = lay_out(&after);
+            let want = "a=0,0,0,0 t=0,0,0,0";
+            let (got, exp) = (dump(&doc, want), dump(&fresh, want));
+            (got != exp).then(|| format!("{n}: incremental[{got}] fresh[{exp}]"))
+        })
+        .collect();
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// What it costs, in root computes: a box shrunk to fit from a static
+/// position away from its containing block's edge pays one more on its first
+/// layout (the position is known only after it) and none on a relayout that
+/// moves nothing. A box whose static position is at the edge, and one with
+/// an inset, pay nothing extra.
+#[test]
+fn a_static_offset_costs_one_compute_on_first_layout_only() {
+    use rinch_dom::perf::Counter;
+    let computes = |h: &str| {
+        let mut doc = mount(h);
+        doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+        let first = doc.tree.perf.get(Counter::TaffyRootComputes);
+        doc.tree.perf.end_frame();
+        doc.resolve_layout(VIEWPORT.0, VIEWPORT.1 + 40.0);
+        (first, doc.tree.perf.get(Counter::TaffyRootComputes))
+    };
+    // Short content, so no #1476 min-content round blurs the count.
+    let row = |n: &str| {
+        CHROME.iter().find(|r| r.0 == n).unwrap().1.replace(
+            "Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters",
+            "Wavy",
+        )
+    };
+    // At the edge: the plain cost.
+    let (base, again) = computes(&row("d11_both_insets"));
+    assert_eq!(again, 1, "a relayout is one compute");
+    assert_eq!(
+        computes(&row("d01_left")),
+        (base, 1),
+        "an inset: the keyword"
+    );
+    assert_eq!(
+        computes(&row("d13_static")),
+        (base + 1, 1),
+        "a static offset: one more, once"
+    );
+    assert_eq!(
+        computes(&row("a02_left")),
+        (base + 1, 1),
+        "an ancestor-resolved box, as #386 has it"
+    );
+    assert_eq!(
+        computes(&row("a05_static")),
+        (base + 2, 1),
+        "both: one each"
+    );
 }

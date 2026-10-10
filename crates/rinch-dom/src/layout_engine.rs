@@ -1580,7 +1580,7 @@ impl RinchDocument {
                     if crate::out_of_flow::fits_from_static_position(
                         &self.tree.nodes[node_id].computed_style,
                     ) {
-                        self.tree.abs_static_fits.push((node_id, kind));
+                        self.tree.abs_static_fits.push((node_id, Some(kind)));
                     }
                     // Its static position: Taffy's, or its place in a line
                     // (#632).
@@ -1601,7 +1601,20 @@ impl RinchDocument {
                         new_layout.x = x;
                         new_layout.y = y;
                     }
-                } else if kind.is_none() && self.tree.nodes[node_id].static_ifc_root.is_some() {
+                } else if kind.is_none()
+                    && crate::out_of_flow::fits_in_layout_parent_later(&self.tree, node_id)
+                    && crate::out_of_flow::is_laid_out(
+                        &self.tree,
+                        node_id,
+                        (new_layout.width, new_layout.height),
+                    )
+                {
+                    // Shrunk to fit in its parent from its static position,
+                    // or in a grid: sized from the parent's last layout,
+                    // which is checked once the lines are built (#1404).
+                    self.tree.abs_static_fits.push((node_id, None));
+                }
+                if kind.is_none() && self.tree.nodes[node_id].static_ifc_root.is_some() {
                     // Taffy's own answer — the layout parent is the
                     // containing block — except on an axis with no inset,
                     // when the box sits among inline content: its static

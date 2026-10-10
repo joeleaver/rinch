@@ -2659,7 +2659,7 @@ pub struct NodeTree {
     /// `RinchDocument::resolve_static_shrink_to_fit` iterates once the lines
     /// are built; rebuilt by every layout read-back, and empty in a document
     /// with no such box.
-    pub(crate) abs_static_fits: Vec<(RawNodeId, crate::out_of_flow::OutOfFlowKind)>,
+    pub(crate) abs_static_fits: Vec<(RawNodeId, Option<crate::out_of_flow::OutOfFlowKind>)>,
     /// The nodes carrying [`Node::on_abs_chain`], so the next read-back can
     /// clear them without walking the slab.
     pub(crate) abs_chain_marked: Vec<RawNodeId>,
