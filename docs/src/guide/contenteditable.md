@@ -1488,20 +1488,31 @@ A table you make yourself whose merged cells span far more rows and columns than
 has cells (thousands of them) is refused before it is shared, and the session reports
 it as not syncing until you remove it.
 
-Three concurrent edits to images can still be lost, and both editors still end up
-with the same document when they are. **Two identical images side by side**
-(same `src`, same `alt`, …) whose attributes two people change at the same
-moment: the CRDT sees them as one formatted run, and one change can overwrite the
-other (#860). And **splitting a block anywhere before an image in it** (Enter in the
-text before the image, not only right before it) while someone else changes that
-image's attributes loses the change — a split moves content, and this is true of any
-mark change on moved text, not only images (#861). Enter after the image keeps it.
-And **two people changing different attributes of one image** at the same moment
-(one its `alt`, the other its `title` or `src`): an image's attributes merge as one
-value, so the image ends up exactly as one of them left it and the other's change is
-lost. Changing an image's attributes while someone else types beside it, makes the
-line bold, turns it into a heading or deletes a neighbouring character keeps the
-change; if they delete the image, it is deleted.
+An image's attributes merge one by one: two people changing different attributes of
+one image at the same moment (one its `alt`, the other its `title` or an app's
+`board`) both keep their change, and two changing the same attribute end up with one
+of the two values. An image is known by its type and its `src`: changing its `src`
+makes it a new image, and a change someone else makes to the old one at that moment is
+dropped. A change to an image's attributes is kept while someone else types beside it,
+presses Enter or Backspace anywhere in its line, drags it, inserts or deletes another
+image next to it (an identical one included), copies it elsewhere, makes the line bold
+or turns it into a heading; if they delete the image, it is deleted. Such a change
+never shows on another image; pasting a picture **with the same `src`** over it counts
+as the same image, so the change shows on the pasted one. Some cases lose it, and both
+editors still end up with the same document when they do: **changing the image's
+`src`**, or **pasting a picture with another `src` over it**, at that moment (the
+editor cannot tell the two apart, and a change dropped is better than a change shown
+on the wrong picture); **moving the image into or out of a table cell**; **cutting the
+image and pasting it back**, or **deleting it and undoing the delete** (the image comes
+back as a new one: only a move made in one step, such as a drag, keeps it);
+**dragging an image after copying it within the editor**, until either copy is changed
+(the two are one image to the editor, so which one moved cannot be told); and
+**loading a document** over it. Two people moving one image at the same moment (both
+pressing Enter before it) end up with two copies of it.
+
+Every person sharing a document must run a version with per-attribute image merging
+before any of them changes an image's attributes or moves an image: an older version
+refuses such an image and stops syncing until it rejoins on a newer one.
 
 Typing right after a link while someone else changes that link at the same moment
 keeps their change — a new `href`, removing the link, or extending it over the text

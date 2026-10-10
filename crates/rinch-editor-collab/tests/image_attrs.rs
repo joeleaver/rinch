@@ -1,22 +1,23 @@
 //! An `image`'s own attributes (`src`, `alt`, `title`) through the projection and
 //! through a merge.
 //!
-//! An inline atom is one U+FFFC char carrying one formatting attribute, `@atom`,
-//! whose value is the atom's **whole** attribute map (`projection.rs`). So the three
-//! attrs travel together, and yrs resolves two concurrent writes of one formatting
-//! attribute over one char by keeping one of them. These tests say what that means
-//! for an app that edits an image's `alt` or `title` while a peer does too:
+//! An inline atom is one U+FFFC char carrying the formatting attribute `@atom`, whose
+//! value is the atom's attrs as its char was written; every change of one attr since is
+//! an entry of its own in the `atoms` root map, keyed by the atom's identity and the
+//! attr (`src/atoms.rs`). These tests say what that means for an app that edits an
+//! image's `alt` or `title` while a peer does too:
 //!
 //! - every attr round-trips, through a snapshot and through a live update;
-//! - two concurrent changes of the **same** attr converge on one of the two values;
-//! - two concurrent changes of **different** attrs of one image also converge, and
-//!   **one of the two is lost**: the image ends up exactly as one of the peers left
-//!   it, never with both changes. It is last-writer-wins on the image, not on the
-//!   attribute. Which peer wins follows the client-id order.
+//! - two concurrent changes of the **same** attr converge on one of the two values
+//!   (the higher client id's);
+//! - two concurrent changes of **different** attrs of one image both survive: the
+//!   merge is per attribute, under any client ids and histories;
+//! - a change survives a peer's typing, marks, retype and deletions around the image,
+//!   and a peer's Enter anywhere in the image's line, before it included (the atom
+//!   keeps its identity when a split moves it to a new block).
 //!
-//! The last is a limitation, pinned here so that a change to it is a decision.
-//! Merging per attribute needs each attr to be a formatting attribute of its own
-//! (`@atom.alt`, …), which is a change of the wire shape and a coordinated upgrade.
+//! Until #1431's follow-up these were pinned the other way: the attrs travelled as one
+//! value, and of two concurrent changes to different attrs one peer's image won whole.
 
 use std::rc::Rc;
 
@@ -227,46 +228,37 @@ fn two_peers_changing_alt_at_once_converge_on_one_of_the_two() {
     }
 }
 
-/// **The limitation, pinned.** One peer changes `alt` while the other changes
-/// `title`. The peers converge, and the image is exactly what **one** of them made
-/// it: the other's change is gone, although the two never touched the same
-/// attribute. Under yrs's tie-break the peer with the higher client id wins.
-///
-/// If this test starts failing because both changes survive, the encoding has
-/// become per-attribute: update the module docs and `projection.rs`, and keep the
-/// stronger assertion.
+/// One peer changes `alt` while the other changes `title`: both changes survive, in
+/// both client-id orders.
 #[test]
-fn concurrent_changes_of_alt_and_title_keep_one_peers_image_and_lose_the_others_change() {
+fn concurrent_changes_of_alt_and_title_both_survive() {
     for ids in ID_ORDERS {
         let schema = Rc::new(Schema::starter_kit());
         let (mut a, mut b) = two_peers(&schema, line(&schema, SRC, "old alt", "old title"), ids);
         a.set("alt", "new alt");
         b.set("title", "new title");
         sync(&mut a, &mut b);
-        let (src, alt, title) = converged(&a, &b, &schema);
-        assert_eq!(src, SRC, "ids {ids:?}: nobody touched the src");
-
-        let as_a_left_it = ("new alt", "old title");
-        let as_b_left_it = ("old alt", "new title");
-        let expected = if ids.0 > ids.1 {
-            as_a_left_it
-        } else {
-            as_b_left_it
-        };
         assert_eq!(
-            (alt.as_str(), title.as_str()),
-            expected,
-            "ids {ids:?}: the image is the higher client id's, whole"
+            converged(&a, &b, &schema),
+            (
+                SRC.to_string(),
+                "new alt".to_string(),
+                "new title".to_string()
+            ),
+            "ids {ids:?}"
         );
     }
 }
 
-/// The same shape with the attribute an app is least likely to expect it on: a
-/// peer replacing the picture (`src`) while another edits its description. The
-/// description edit is lost when the `src` writer wins, and the **old picture
-/// comes back** when the `alt` writer wins.
+/// A peer replacing the picture (`src`) while another edits its description: the
+/// `src` change makes a new picture, and the concurrent `alt` change, made to the old
+/// one, is lost (the new `src` is kept, with the `alt` the image had). Chosen by Joe
+/// (2026-10-09): a wrong attribution is worse than a lost one — the projection cannot
+/// tell a `src` change from a picture pasted over another, and keeping the identity
+/// through it showed a peer's board markup on the pasted picture. Pimble never
+/// changes `src` on a live picture, so this costs it nothing.
 #[test]
-fn a_concurrent_src_change_and_alt_change_keep_only_one() {
+fn a_src_change_drops_a_concurrent_alt_change() {
     for ids in ID_ORDERS {
         let schema = Rc::new(Schema::starter_kit());
         let (mut a, mut b) = two_peers(&schema, line(&schema, SRC, "old alt", ""), ids);
@@ -274,12 +266,11 @@ fn a_concurrent_src_change_and_alt_change_keep_only_one() {
         b.set("alt", "new alt");
         sync(&mut a, &mut b);
         let (src, alt, _) = converged(&a, &b, &schema);
-        let expected = if ids.0 > ids.1 {
-            ("pimble-blob:other/blob", "old alt")
-        } else {
-            (SRC, "new alt")
-        };
-        assert_eq!((src.as_str(), alt.as_str()), expected, "ids {ids:?}");
+        assert_eq!(
+            (src.as_str(), alt.as_str()),
+            ("pimble-blob:other/blob", "old alt"),
+            "ids {ids:?}"
+        );
     }
 }
 
@@ -347,6 +338,18 @@ fn images(doc: &Node) -> Vec<(String, String, String)> {
     out
 }
 
+/// The model position of the first image in the document.
+fn image_pos(doc: &Node) -> usize {
+    let mut at = None;
+    doc.nodes_between(0, doc.content_size(), &mut |n, pos, _| {
+        if n.type_name() == "image" && at.is_none() {
+            at = Some(pos);
+        }
+        true
+    });
+    at.expect("an image")
+}
+
 fn random_id(rng: &mut Rng) -> u64 {
     match rng.below(4) {
         0 => 1 + rng.below(1000) as u64,
@@ -356,14 +359,15 @@ fn random_id(rng: &mut Rng) -> u64 {
     }
 }
 
-/// "The higher client id's write is kept": random id pairs (small, 32-bit, up
-/// to 2^53, larger), and a history before the concurrent edits that differs
-/// between the peers. The image is always exactly one peer's.
+/// Random id pairs (small, 32-bit, up to 2^53, larger), and a history before the
+/// concurrent edits that differs between the peers: both peers' changes to different
+/// attrs always survive, and of two concurrent changes to the **same** attr the higher
+/// client id's is kept.
 #[test]
-fn the_higher_client_id_wins_under_random_ids_and_histories() {
+fn both_changes_survive_under_random_ids_and_histories() {
     let mut rng = Rng(0x1431_1431_1431);
-    let (mut higher, mut lower, mut trials) = (0usize, 0usize, 0usize);
-    let mut shapes = [[0usize; 2]; 6];
+    let mut trials = 0usize;
+    let mut shapes = [0usize; 6];
     for trial in 0..240 {
         let (ia, ib) = (random_id(&mut rng), random_id(&mut rng));
         if ia == ib {
@@ -437,27 +441,33 @@ fn the_higher_client_id_wins_under_random_ids_and_histories() {
         sync(&mut a, &mut b);
         let (_, alt, title) = converged(&a, &b, &schema);
         trials += 1;
-        let a_won = (alt.as_str(), title.as_str()) == ("new alt", title0.as_str());
-        let b_won = (alt.as_str(), title.as_str()) == (alt0.as_str(), "new title");
-        assert!(
-            a_won ^ b_won,
-            "trial {trial} ids ({ia},{ib}) shape {shape}: neither peer's image: {alt:?} {title:?}"
+        assert_eq!(
+            (alt.as_str(), title.as_str()),
+            ("new alt", "new title"),
+            "trial {trial} ids ({ia},{ib}) shape {shape}: a change was lost \
+             (before: {alt0:?} {title0:?})"
         );
-        let higher_won = a_won == (ia > ib);
-        if higher_won {
-            higher += 1;
-            shapes[shape][0] += 1;
-        } else {
-            lower += 1;
-            shapes[shape][1] += 1;
+        shapes[shape] += 1;
+
+        // And the same attr, changed by both at once: one value, the higher id's.
+        for (peer, value) in [(&mut a, "alt from A"), (&mut b, "alt from B")] {
+            let at = image_pos(&peer.state.doc);
+            peer.local(|tr| {
+                tr.step(Box::new(SetNodeAttrStep::new(
+                    at,
+                    "alt",
+                    AttrValue::from(value),
+                )))
+                .unwrap();
+            });
         }
+        sync(&mut a, &mut b);
+        let (_, alt, _) = converged(&a, &b, &schema);
+        let expected = if ia > ib { "alt from A" } else { "alt from B" };
+        assert_eq!(alt, expected, "trial {trial} ids ({ia},{ib}) shape {shape}");
     }
     assert!(trials > 200, "{trials}");
-    assert_eq!(
-        (higher, lower),
-        (trials, 0),
-        "by shape [higher, lower] {shapes:?}"
-    );
+    assert!(shapes.iter().all(|&n| n > 20), "by shape {shapes:?}");
 }
 
 /// An `alt` change beside a peer's other concurrent edits to the same line:
@@ -541,15 +551,15 @@ fn an_alt_change_beside_a_peers_other_edits_to_the_line() {
     }
 }
 
-/// A known loss, pinned (#861's mechanism): Enter anywhere **before** the image
-/// in its own paragraph (inside the text before it as well as right before it)
-/// moves the image to a new block, a delete and an insert, so a peer's
-/// concurrent `alt` change is lost in both id orders. Enter after it keeps the
-/// change. A fix flips the first two.
+/// Enter anywhere in the image's line (inside the text before it, right before it,
+/// right after it) while a peer changes its `alt`: the change is kept in both id
+/// orders. A split before the image moves it to a new block, a delete and an insert,
+/// and the new char carries the image's identity, under which the peer's change is
+/// written (#861's mechanism, which lost it until then).
 #[test]
-fn enter_before_the_image_in_its_line_loses_a_concurrent_alt_change() {
+fn enter_anywhere_in_the_images_line_keeps_a_concurrent_alt_change() {
     for ids in ID_ORDERS {
-        for (at, expected) in [(2, "old alt"), (3, "old alt"), (5, "new alt")] {
+        for at in [2, 3, 4, 5] {
             let schema = Rc::new(Schema::starter_kit());
             let (mut a, mut b) = two_peers(&schema, line(&schema, SRC, "old alt", "t"), ids);
             a.set("alt", "new alt");
@@ -558,15 +568,21 @@ fn enter_before_the_image_in_its_line_loses_a_concurrent_alt_change() {
             });
             sync(&mut a, &mut b);
             assert_eq!(a.state.doc, b.state.doc, "ids {ids:?}, Enter at {at}");
+            for peer in [&a, &b] {
+                assert_eq!(peer.state.doc, peer.session.projected_doc(&schema).unwrap());
+            }
             let imgs = images(&a.state.doc);
-            assert_eq!(imgs.len(), 1, "ids {ids:?}, Enter at {at}");
-            assert_eq!(imgs[0].1, expected, "ids {ids:?}, Enter at {at}");
+            assert_eq!(
+                imgs,
+                vec![(SRC.to_string(), "new alt".to_string(), "t".to_string())],
+                "ids {ids:?}, Enter at {at}"
+            );
         }
     }
 }
 
 // An app's own attributes on an image: `board` (an id an app keeps for what it
-// draws over the picture) and `width`. They ride in the same `@atom` value as
+// draws over the picture) and `width`. They merge per attribute like
 // `src`/`alt`/`title`, so everything above holds for them too.
 
 impl Peer {
@@ -645,14 +661,12 @@ fn a_board_written_beside_a_peers_typing_is_kept() {
     }
 }
 
-/// **The same limitation as `alt` and `title`, pinned for `board`:** a peer's
-/// concurrent change to another attribute of the same image (here `alt`) and
-/// a first mark-up converge on one peer's image, whole. An app that mints a
-/// board id must expect the id it wrote to be lost this way (and the same for
-/// Enter before the image in its line, above), and so must not count on the
-/// attribute being there because it wrote it.
+/// A first mark-up (`board`) and a peer's concurrent change of another attribute
+/// of the same image (here `alt`) are both kept: an image's attrs merge per
+/// attribute (#1503). Before that they merged as one value, and one peer's image was
+/// kept whole.
 #[test]
-fn a_board_and_a_concurrent_alt_change_keep_one_peers_image() {
+fn a_board_and_a_concurrent_alt_change_both_survive() {
     for ids in ID_ORDERS {
         let schema = Rc::new(Schema::starter_kit());
         let (mut a, mut b) = two_peers(&schema, line(&schema, SRC, "old alt", ""), ids);
@@ -661,12 +675,11 @@ fn a_board_and_a_concurrent_alt_change_keep_one_peers_image() {
         sync(&mut a, &mut b);
         let (_, alt, _) = converged(&a, &b, &schema);
         let (board, _) = a.board_and_width();
-        let expected = if ids.0 > ids.1 {
-            ("b1", "old alt")
-        } else {
-            ("", "new alt")
-        };
-        assert_eq!((board.as_str(), alt.as_str()), expected, "ids {ids:?}");
+        assert_eq!(
+            (board.as_str(), alt.as_str()),
+            ("b1", "new alt"),
+            "ids {ids:?}"
+        );
     }
 }
 

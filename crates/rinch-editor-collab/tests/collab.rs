@@ -2259,15 +2259,14 @@ fn a_char_typed_after_a_link_reaches_the_peer_unlinked() {
 }
 
 #[test]
-fn two_adjacent_identical_images_edited_concurrently_converge() {
-    // **A known limitation, pinned for convergence only.** Two identical images side by
-    // side are, at the CRDT level, one `@atom` formatting range with one value. Each
-    // peer changing *one* of them writes a formatting marker at the boundary between
-    // the two chars, and yrs orders two concurrent markers at one boundary by client id
-    // — so one peer's edit can be overwritten by the other's restore of the neighbour
-    // it did not touch. The replicas still converge (asserted), but one of the two
-    // changes may be lost; which one depends on the client-id order. This is yrs/Yjs
-    // concurrent-formatting semantics and cannot be fixed inside a formatting encoding.
+fn two_adjacent_identical_images_edited_concurrently_keep_both_changes() {
+    // Two identical images side by side are one `@atom` formatting range with one
+    // value at the CRDT level. When a change of an image's attrs rewrote that value,
+    // each peer changing *one* of them wrote a formatting marker at the boundary
+    // between the two chars, yrs ordered the two by client id, and one peer's change
+    // could be overwritten by the other's restore of the neighbour it did not touch.
+    // A change is now an entry under the changed image's own identity (its char's yrs
+    // id, `src/atoms.rs`), and the range is never rewritten: both changes survive.
     for ids in ID_ORDERS {
         let schema = Rc::new(Schema::starter_kit());
         let line = para_of(
@@ -2285,7 +2284,11 @@ fn two_adjacent_identical_images_edited_concurrently_converge() {
         set_src(&mut b, s + 3, "two.png");
         sync(&mut a, &mut b);
         assert_converged(&a, &b, &schema);
-        assert_eq!(image_srcs(&a.state.doc).len(), 2, "both images survive");
+        assert_eq!(
+            image_srcs(&a.state.doc),
+            vec!["one.png".to_string(), "two.png".to_string()],
+            "{ids:?}: both changes survive"
+        );
     }
 }
 
