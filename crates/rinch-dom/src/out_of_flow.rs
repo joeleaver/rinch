@@ -191,7 +191,29 @@
 //! (`NodeTree::placed_absolutes`), because the late position writes move it
 //! the same way; one with insets on both axes is in no list.
 //!
-//! ## What is not corrected
+//! ## The shrink-to-fit width
+//!
+//! An absolute box with an `auto` (or `fit-content`) width is shrunk to fit
+//! (CSS 2.1 §10.3.7) in what its **containing block** leaves it: the block's
+//! padding-box width less the insets and margins, and — with both inline
+//! insets `auto` — less the distance from the block's padding edge to the
+//! static position (issue #1404). Taffy measures it in the whole width of
+//! the box it lays it out in. Three routes give it the room instead:
+//!
+//! - a box whose layout parent is its containing block is handed the
+//!   `fit-content` keyword ([`fit_in_layout_parent`]), which Taffy measures
+//!   at the block less the insets and margins — only when one of those takes
+//!   room, so a plain box keeps `auto` and costs one measure;
+//! - a box resolved against the ICB or a non-parent ancestor is baked
+//!   `fit-content(<px>)` with the room ([`apply_out_of_flow_size_overrides`]);
+//! - the static offset is known only once the lines are built, so it is
+//!   measured then ([`RinchDocument::resolve_static_shrink_to_fit`]), kept on
+//!   the node (`Node::abs_static_offset`) for every bake to read, and the
+//!   layout goes round once when it moved. A grid container (whose keyword
+//!   measure ignores insets) and a static offset in a box's own parent take
+//!   a length from the parent's last layout, checked by the same pass.
+//!
+//! //! ## What is not corrected
 //!
 //! - The static position in a **flex** container is Taffy's: the main axis
 //!   follows `justify-content`, the cross axis does not follow `align-items`
@@ -225,10 +247,11 @@
 //!   box tree, never meets the span, and ends the box's clip chain at the
 //!   next positioned *box*. Layout, the scroll range and damage do see the
 //!   span.
-//! - The shrink-to-fit *available* width of an auto-width absolute is still
-//!   the Taffy parent's (Chrome: a box of four 130px inline-blocks under a
-//!   200px parent in a 400px containing block is 400x40; rinch: 130x80 —
-//!   issue #1404).
+//! - An auto-width box shrunk to fit (see *The shrink-to-fit width*) whose
+//!   content wraps is as wide as its widest line, not the room it has
+//!   (issue #1276); and a box placed from its static position by a flex
+//!   container's `justify-content` is given the room after the container's
+//!   content edge, wherever it is then put.
 //! - `position: fixed` takes none of the margin, padding or min/max rules
 //!   below, and a transformed ancestor does not contain it (#1372).
 
