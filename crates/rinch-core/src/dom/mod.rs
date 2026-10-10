@@ -411,10 +411,13 @@ impl NodeHandle {
     /// [`RenderScope`] that minted this element, or by one descended from it —
     /// is filed under that scope (or, if it is gone, its nearest live
     /// ancestor) and discarded when that scope goes, if it is still detached
-    /// then (issue #1487): nothing else could ever reclaim it. One put back or
-    /// adopted elsewhere first is left alone, and so is any child the render
-    /// was handed (another scope's, a [`cache_scope`](RenderScope::cache_scope)'s)
-    /// or that has no owner on record.
+    /// then (issue #1487): nothing else could ever reclaim it. Putting it into
+    /// a tree again with any insertion verb (`append_child`, `insert_before`,
+    /// `insert_after`, `replace_with`) unfiles it, so from then on it is like
+    /// any other node — kept at the scope's end even if it has been
+    /// `remove()`d again. A child the render was handed (another scope's, a
+    /// [`cache_scope`](RenderScope::cache_scope)'s), or with no owner on
+    /// record, is never filed.
     #[doc(hidden)]
     pub fn set_text(&self, text: &str) {
         if let Some(doc) = self.accessed_doc() {
@@ -543,6 +546,7 @@ impl NodeHandle {
             release_focus_within(&doc, moved, false, |d| moves_in(d, parent, moved));
             doc.borrow_mut().append_child(self.node_id, child.node_id);
         }
+        render_scope::unfile(child);
         late_child::notify_vacated(vacated.as_ref(), self);
         late_child::notify_inserted(self, child);
     }
@@ -573,6 +577,7 @@ impl NodeHandle {
         // A keyed `for` reorder relocates a row with this verb, and the row's
         // parent does not change; `notify_vacated` declines that case, so a
         // reorder still fires one notification and not two (issue #745).
+        render_scope::unfile(child);
         late_child::notify_vacated(vacated.as_ref(), self);
         late_child::notify_inserted(self, child);
     }
@@ -600,6 +605,7 @@ impl NodeHandle {
             // replacement may have come from somewhere else (issue #745).
             late_child::notify_removed(&parent);
             late_child::notify_vacated(vacated.as_ref(), &parent);
+            render_scope::unfile(replacement);
             late_child::notify_inserted(&parent, replacement);
         }
     }
@@ -865,6 +871,7 @@ impl NodeHandle {
         if let Some(parent_id) = inserted_into {
             let parent = NodeHandle::new(parent_id, self.doc.clone());
             late_child::notify_vacated(vacated.as_ref(), &parent);
+            render_scope::unfile(new_node);
             late_child::notify_inserted(&parent, new_node);
         }
     }

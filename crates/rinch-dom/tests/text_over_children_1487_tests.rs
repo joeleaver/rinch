@@ -76,7 +76,8 @@ fn an_elements_lone_text_child_written_in_place_keeps_its_record() {
 
 /// An orphan whose id was freed and handed to another node before its scope
 /// goes is not that orphan any more: the scope's end leaves the newcomer
-/// alone. `rinch-dom` frees an id through `set_inner_html` and re-issues it to
+/// alone. Only reachable when the orphan was put back without a `NodeHandle`
+/// insertion verb, which would have unfiled it. `rinch-dom` frees an id through `set_inner_html` and re-issues it to
 /// the next node minted.
 #[test]
 fn a_reissued_orphan_id_is_not_discarded_with_the_old_scope() {
@@ -88,10 +89,13 @@ fn a_reissued_orphan_id_is_not_discarded_with_the_old_scope() {
     host.append_child(&child);
     host.set_text("over");
 
-    // The orphan goes back somewhere and is freed with that element's markup.
+    // The orphan goes back somewhere through the backend itself — a
+    // `NodeHandle` insertion verb would unfile it — and is freed with that
+    // element's markup.
     let elsewhere = scope.create_element("section");
     body.append_child(&elsewhere);
-    elsewhere.append_child(&child);
+    doc.borrow_mut()
+        .append_child(elsewhere.node_id(), child.node_id());
     elsewhere.set_inner_html("");
 
     // Another scope mints a node on the freed id and keeps it detached.

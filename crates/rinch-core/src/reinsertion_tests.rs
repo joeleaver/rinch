@@ -2737,6 +2737,91 @@ mod text_over_children_1487 {
         assert_eq!(__minted_by_len(), base.1 + 3);
     }
 
+    /// Round 2 of the review of #1507, F1. A host toggling text over the
+    /// same kept child files it once, not once per write.
+    #[test]
+    fn toggling_text_over_a_kept_child_files_it_once() {
+        let doc = doc();
+        let mut sc = scope(&doc);
+        let body = body_handle(&doc);
+        let host = sc.create_element("div");
+        body.append_child(&host);
+        let label = sc.create_element("span");
+        let base = crate::dom::__filed_orphans();
+        for _ in 0..1_000 {
+            host.append_child(&label);
+            host.set_text("loading");
+        }
+        assert_eq!(crate::dom::__filed_orphans() - base, 1);
+        drop(sc);
+        assert_eq!(crate::dom::__filed_orphans(), base);
+        assert!(
+            doc.borrow().is_retired(label.node_id()),
+            "and it goes with the scope"
+        );
+    }
+
+    /// Round 2 of the review of #1507, F2. An orphan put back by an insertion
+    /// verb is an ordinary node from then on: `remove()`d again before its
+    /// scope goes, it is kept, as a node with no text write in its history is.
+    #[test]
+    fn an_orphan_put_back_then_removed_is_kept_like_any_removed_node() {
+        let doc = doc();
+        let _table = scope(&doc);
+        let mut sc = scope(&doc);
+        let body = body_handle(&doc);
+        let host = sc.create_element("div");
+        body.append_child(&host);
+        let label = sc.create_element("span");
+        host.append_child(&label);
+        host.set_text("x");
+        body.append_child(&label);
+        label.remove();
+        let twin = sc.create_element("span");
+        body.append_child(&twin);
+        twin.remove();
+        drop(sc);
+        let d = doc.borrow();
+        assert_eq!(
+            (d.is_retired(label.node_id()), d.is_retired(twin.node_id())),
+            (false, false),
+            "the orphan's fate does not depend on its history"
+        );
+    }
+
+    /// Each insertion verb unfiles: the scope's end leaves a node put back by
+    /// any of them, then detached again, alone.
+    #[test]
+    fn every_insertion_verb_unfiles_an_orphan() {
+        for verb in [
+            "append_child",
+            "insert_before",
+            "insert_after",
+            "replace_with",
+        ] {
+            let doc = doc();
+            let _table = scope(&doc);
+            let mut sc = scope(&doc);
+            let body = body_handle(&doc);
+            let host = sc.create_element("div");
+            body.append_child(&host);
+            let anchor = sc.create_element("hr");
+            body.append_child(&anchor);
+            let label = sc.create_element("span");
+            host.append_child(&label);
+            host.set_text("x");
+            match verb {
+                "append_child" => body.append_child(&label),
+                "insert_before" => body.insert_before(&label, &anchor),
+                "insert_after" => anchor.insert_after(&label),
+                _ => anchor.replace_with(&label),
+            }
+            label.remove();
+            drop(sc);
+            assert!(!doc.borrow().is_retired(label.node_id()), "{verb}");
+        }
+    }
+
     /// A handle the same render keeps comes back after a text write, as
     /// `remove` would leave it.
     #[test]

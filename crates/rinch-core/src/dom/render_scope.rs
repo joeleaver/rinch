@@ -117,14 +117,22 @@ pub(crate) struct Ancestry {
     doc_key: u64,
     minted_by: IdMap<NodeId, Minted>,
     scopes: IdMap<ScopeId, ScopeEntry>,
-    /// Text-write orphans by the live scope they go with (issue #1487).
-    orphans: IdMap<ScopeId, Vec<Orphan>>,
+    /// Text-write orphans by the live scope they go with (issue #1487), as
+    /// sets: a node filed again is one entry.
+    orphans: IdMap<ScopeId, IdMap<NodeId, ()>>,
+    /// The same orphans by node, with the scope each is filed under — what an
+    /// insertion verb looks up to unfile one it puts back.
+    filed: IdMap<NodeId, (ScopeId, Orphan)>,
 }
 
 type AncestryRef = Rc<RefCell<Ancestry>>;
 
 thread_local! {
     static NEXT_SCOPE_ID: Cell<u64> = const { Cell::new(0) };
+
+    /// Text-write orphans filed in every document on this thread (issue
+    /// #1487), so an insertion verb pays one `Cell` read while there are none.
+    static FILED: Cell<usize> = const { Cell::new(0) };
 
     /// Each document's tables, held weakly: the strong references live on the
     /// document's `RenderScope`s, and the slot is removed when the tables drop.
@@ -134,6 +142,10 @@ thread_local! {
 
 impl Drop for Ancestry {
     fn drop(&mut self) {
+        let filed = self.filed.len();
+        if filed > 0 {
+            let _ = FILED.try_with(|c| c.set(c.get().saturating_sub(filed)));
+        }
         let key = self.doc_key;
         let _ = DOC_ANCESTRY.try_with(|slots| {
             if let Ok(mut slots) = slots.try_borrow_mut()
@@ -198,6 +210,7 @@ fn ancestry_for_or_new(doc_key: u64) -> AncestryRef {
             minted_by: IdMap::default(),
             scopes: IdMap::default(),
             orphans: IdMap::default(),
+            filed: IdMap::default(),
         }));
         slots.insert(doc_key, Rc::downgrade(&table));
         table
@@ -369,18 +382,51 @@ pub(crate) fn file_orphans(node: &NodeHandle, at_stake: Option<(ScopeId, Vec<Orp
     let Some(table) = ancestry_for(doc.borrow().doc_key()) else {
         return;
     };
-    table
-        .borrow_mut()
-        .orphans
-        .entry(keeper)
-        .or_default()
-        .extend(built);
+    let mut table = table.borrow_mut();
+    for orphan in built {
+        let node = orphan.node;
+        match table.filed.insert(node, (keeper, orphan)) {
+            Some((old, _)) if old == keeper => {}
+            Some((old, _)) => {
+                if let Some(set) = table.orphans.get_mut(&old) {
+                    set.remove(&node);
+                }
+                table.orphans.entry(keeper).or_default().insert(node, ());
+            }
+            None => {
+                FILED.with(|c| c.set(c.get() + 1));
+                table.orphans.entry(keeper).or_default().insert(node, ());
+            }
+        }
+    }
+}
+
+/// Take `node` off the orphans a text write filed, because an insertion verb
+/// is putting it into a tree (issue #1487): from then on it is wherever it was
+/// put, like any node, and the scope's end does not reach for it. One `Cell`
+/// read while nothing is filed on the thread.
+pub(crate) fn unfile(node: &NodeHandle) {
+    if FILED.with(Cell::get) == 0 {
+        return;
+    }
+    let Some(table) = ancestry_for(node.doc_key()) else {
+        return;
+    };
+    let mut table = table.borrow_mut();
+    if let Some((keeper, _)) = table.filed.remove(&node.node_id()) {
+        FILED.with(|c| c.set(c.get().saturating_sub(1)));
+        if let Some(set) = table.orphans.get_mut(&keeper) {
+            set.remove(&node.node_id());
+        }
+    }
 }
 
 /// Discard the text-write orphans filed under `scope` that are still what
 /// they were: detached, not retired, and with the minting record they had
-/// (issue #1487). One that was put back, adopted elsewhere, discarded, or
-/// whose id was freed and re-issued is left alone.
+/// (issue #1487). One put back through a `NodeHandle` insertion verb was
+/// unfiled then ([`unfile`]); the checks here catch what bypassed those
+/// verbs — a raw backend insertion, after which the node may have been
+/// discarded, freed, or had its id re-issued.
 ///
 /// Nothing can show the rest again: they are under no root, so no hide walks
 /// to them. A captured handle nested inside one is detached first and kept,
@@ -389,8 +435,16 @@ pub(crate) fn file_orphans(node: &NodeHandle, at_stake: Option<(ScopeId, Vec<Orp
 fn discard_filed_orphans(
     doc: &Weak<RefCell<dyn DomDocument>>,
     ancestry: &AncestryRef,
-    orphans: Vec<Orphan>,
+    nodes: IdMap<NodeId, ()>,
 ) {
+    let orphans: Vec<Orphan> = {
+        let mut table = ancestry.borrow_mut();
+        nodes
+            .into_keys()
+            .filter_map(|n| table.filed.remove(&n).map(|(_, o)| o))
+            .collect()
+    };
+    FILED.with(|c| c.set(c.get().saturating_sub(orphans.len())));
     let Some(live) = doc.upgrade() else {
         return;
     };
@@ -427,6 +481,13 @@ pub fn __minted_by_len() -> usize {
             .map(|t| t.borrow().minted_by.len())
             .sum()
     })
+}
+
+/// **Test-only.** How many text-write orphans (issue #1487) are filed on this
+/// thread, waiting for their scopes to go.
+#[doc(hidden)]
+pub fn __filed_orphans() -> usize {
+    FILED.with(Cell::get)
 }
 
 /// **Test-only.** How many scope entries those tables hold — live scopes, and
