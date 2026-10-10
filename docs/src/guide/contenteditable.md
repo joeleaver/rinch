@@ -1500,8 +1500,10 @@ on another image. Some cases lose it, and both editors still end up with the sam
 document when they do: **changing the image's `src`**, or **pasting another picture
 over it**, at that moment (the editor cannot tell the two apart, and a change dropped
 is better than a change shown on the wrong picture); **moving the image into or out of
-a table cell**; and **loading a document** over it. Two people moving one image at the same moment (both
-pressing Enter before it) end up with two copies of it.
+a table cell**; **cutting the image and pasting it back**, or **deleting it and
+undoing the delete** (the image comes back as a new one: only a move made in one step,
+such as a drag, keeps it); and **loading a document** over it. Two people moving one
+image at the same moment (both pressing Enter before it) end up with two copies of it.
 
 Every person sharing a document must run a version with per-attribute image merging
 before any of them changes an image's attributes or moves an image: an older version

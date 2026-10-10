@@ -66,7 +66,7 @@ impl CollabDoc {
     pub fn project_change(&mut self, before: &Node, after: &Node) -> Result<()> {
         // The `atoms` map is read at most once for the whole change (review of #1503,
         // F4).
-        let _overlay = overlay_scope();
+        let _overlay = overlay_scope(&self.overlay);
         // A CRDT holding zero blocks is a legitimate converged state (issue #192: two
         // peers deleting *different* blocks concurrently deletes every block), and the
         // model cannot mirror it — the schema requires at least one block, so `to_doc`

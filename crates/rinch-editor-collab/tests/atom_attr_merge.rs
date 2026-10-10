@@ -630,7 +630,7 @@ fn raw_atom_entries(bytes: &[u8]) -> Vec<(String, yrs::Any)> {
 /// document whose images were only inserted. A change of one attr is one `atoms`
 /// entry and leaves that value alone; it marks the char with `@entries`, so a build
 /// from before refuses the document loudly instead of silently missing the entry; a
-/// move carries `@id` and the moved image's merged attrs.
+/// move carries `@id` (and `@for`, the char it is for) beside the value as written.
 #[test]
 fn the_wire_a_new_image_a_changed_attr_and_a_moved_image() {
     let s = schema(true);
@@ -670,7 +670,13 @@ fn the_wire_a_new_image_a_changed_attr_and_a_moved_image() {
         value.get("@id"),
         Some(&yrs::Any::String(Arc::from(id.as_str())))
     );
-    assert_eq!(value.get("board"), Some(&yrs::Any::String(Arc::from("b1"))));
+    // The value as written (its attrs before any change: those are entries), and the
+    // char it was written for, so a copy of it that leaks onto a neighbour is inert.
+    assert_eq!(value.get("board"), None, "{value:?}");
+    assert!(
+        matches!(value.get("@for"), Some(yrs::Any::String(_))),
+        "{value:?}"
+    );
     assert_eq!(attr(&images(&a.state.doc)[0], "board"), "b1");
     assert_eq!(attr(&images(&a.state.doc)[0], "alt"), "second");
 }

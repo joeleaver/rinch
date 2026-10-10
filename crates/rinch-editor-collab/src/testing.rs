@@ -78,6 +78,13 @@ pub fn overlay_entry_reads() -> u64 {
     crate::atoms::overlay_entry_reads()
 }
 
+/// How many block texts (a block's characters and formatting) this **thread** has
+/// scanned so far. Take the difference across an operation: a local keystroke scans
+/// the blocks it changed, never every block of the document.
+pub fn text_scans() -> u64 {
+    crate::atoms::text_scans()
+}
+
 /// yrs client ids are **53-bit** (`ClientID::new` debug-asserts it, and a release build
 /// would silently fold the high bits into the mask instead), so two ids that differ only
 /// above bit 52 would collide — the corruption this module exists to warn about. Reject

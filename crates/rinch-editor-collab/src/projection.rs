@@ -247,7 +247,8 @@ use yrs::{
 use rinch_editor_core::{AttrValue, Attrs, Fragment, Mark, Node, NodeType, Schema};
 
 use crate::atoms::{
-    AtomChar, ModelAtom, merged_atoms, overlay_scope, scan_text, write_atom_change,
+    ATOMS, AtomChar, ModelAtom, OverlayCache, invalidate, merged_atoms, overlay_scope, scan_text,
+    write_atom_change,
 };
 use crate::error::{CollabError, Result};
 use crate::table::{
@@ -526,6 +527,11 @@ pub struct CollabDoc {
     /// Keeps the update observer alive — dropping the subscription unsubscribes it, and
     /// the outbox would silently stop filling.
     _updates: Subscription,
+    /// The last read of the `atoms` map (`crate::atoms::overlay_scope`), dropped by an
+    /// observer on the map whenever it changes.
+    pub(crate) overlay: OverlayCache,
+    /// Keeps that observer alive.
+    _atoms_changed: Subscription,
 }
 
 // `Subscription` is not `Debug`, and neither is the observer closure behind it, so the
@@ -561,7 +567,9 @@ impl CollabDoc {
     /// produce colliding block ids and corrupt the shared document. Only the test-only
     /// [`crate::testing`] seam passes `Some`, and only so a fuzz trial replays
     /// bit-for-bit (issue #214).
-    fn blank(client_id: Option<ClientID>) -> (Doc, Outbox, Subscription) {
+    fn blank(
+        client_id: Option<ClientID>,
+    ) -> (Doc, Outbox, Subscription, OverlayCache, Subscription) {
         let mut options = Options {
             offset_kind: OffsetKind::Utf16,
             ..Default::default()
@@ -583,7 +591,14 @@ impl CollabDoc {
                 }
             })
             .expect("a freshly built document has no live transaction to conflict with");
-        (doc, outbox, updates)
+        // The `atoms` map's read is kept between operations and dropped by any change of
+        // the map, local or remote. Resolving the root writes nothing to the document.
+        let overlay: OverlayCache = Arc::new(Mutex::new(None));
+        let stale = overlay.clone();
+        let atoms_changed = yrs::Observable::observe(&doc.get_or_insert_map(ATOMS), move |_, _| {
+            invalidate(&stale)
+        });
+        (doc, outbox, updates, overlay, atoms_changed)
     }
 
     /// Build a fresh projection from a model document. Fails loud
@@ -605,7 +620,7 @@ impl CollabDoc {
             nodes.push(read_node(doc.child(i))?);
         }
 
-        let (ydoc, outbox, updates) = CollabDoc::blank(client_id);
+        let (ydoc, outbox, updates, overlay, atoms_changed) = CollabDoc::blank(client_id);
         // Both roots are resolved before the write transaction opens: resolving one takes
         // exclusive store access and panics if a transaction is already live.
         let content = ydoc.get_or_insert_array(CONTENT);
@@ -633,6 +648,8 @@ impl CollabDoc {
             // same way on write.
             oversized: Mutex::new(Vec::new()),
             _updates: updates,
+            overlay,
+            _atoms_changed: atoms_changed,
         })
     }
 
@@ -674,7 +691,7 @@ impl CollabDoc {
         client_id: Option<ClientID>,
     ) -> Result<CollabDoc> {
         let update = Update::decode_v1(bytes)?;
-        let (ydoc, outbox, updates) = CollabDoc::blank(client_id);
+        let (ydoc, outbox, updates, overlay, atoms_changed) = CollabDoc::blank(client_id);
         {
             let mut txn = ydoc.transact_mut_with(Origin::from(ENGINE_APPLY_ORIGIN));
             txn.apply_update(update)?;
@@ -709,6 +726,8 @@ impl CollabDoc {
             top_void,
             oversized: Mutex::new(oversized),
             _updates: updates,
+            overlay,
+            _atoms_changed: atoms_changed,
         })
     }
 
@@ -739,7 +758,7 @@ impl CollabDoc {
             // (and in the join gate, nowhere else), and the tables read so are what
             // [`CollabDoc::oversized_tables`] answers from now on.
             let placeholders = placeholder_reads();
-            let _overlay = overlay_scope();
+            let _overlay = overlay_scope(&self.overlay);
             let txn = self.doc.transact();
             let mut blocks = Vec::new();
             for (_, nd) in read_children(&txn, &self.content)? {
@@ -3136,7 +3155,7 @@ mod tests {
 
     /// Encode a whole foreign document as an update, for the `load` guard cases.
     fn foreign_update(build: impl FnOnce(&Doc)) -> Vec<u8> {
-        let (doc, _outbox, _sub) = CollabDoc::blank(None);
+        let (doc, _outbox, _sub, _overlay, _atoms) = CollabDoc::blank(None);
         build(&doc);
         doc.transact()
             .encode_state_as_update_v1(&StateVector::default())
