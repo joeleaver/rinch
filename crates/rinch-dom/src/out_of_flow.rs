@@ -191,11 +191,13 @@
 //! (`NodeTree::placed_absolutes`), because the late position writes move it
 //! the same way; one with insets on both axes is in no list.
 //!
+//! In a **flex** container Taffy places the box as the container's sole flex
+//! item (css-flexbox-1 §4.1): `justify-content` on the main axis, its own
+//! `align-self` or the container's `align-items` on the cross — `stretch`,
+//! `normal` and `baseline` as the start (issue #1492).
+//!
 //! ## What is not corrected
 //!
-//! - The static position in a **flex** container is Taffy's: the main axis
-//!   follows `justify-content`, the cross axis does not follow `align-items`
-//!   (Chrome follows both; issue #1492).
 //! - A static position follows rinch's **line boxes**, which are not always
 //!   Chrome's: a line holding a 26px `inline-block` and text is 26px tall
 //!   here and 30 there (issue #663), so a block-level box below it is 4px
