@@ -43,10 +43,10 @@ use super::links::{LinkClick, LinkHover, LinkSpan};
 use super::registry;
 use super::view::RinchDomEditorView;
 
-/// An [`EditorHandle::on_link_click`] callback.
-type LinkClickFn = Rc<dyn Fn(&LinkClick) -> bool>;
-/// An [`EditorHandle::on_link_hover`] callback.
-type LinkHoverFn = Rc<dyn Fn(Option<&LinkHover>)>;
+/// An [`EditorHandle::on_link_click`] callback, with its owner (see [`Hook`]).
+type LinkClickHook = Hook<dyn Fn(&LinkClick) -> bool>;
+/// An [`EditorHandle::on_link_hover`] callback, with its owner (see [`Hook`]).
+type LinkHoverHook = Hook<dyn Fn(Option<&LinkHover>)>;
 /// An [`EditorHandle::on_image_hover`] callback, with its owner (see [`Hook`]).
 type ImageHoverHook = Hook<dyn Fn(Option<&ImageHover>)>;
 
@@ -99,11 +99,11 @@ struct EditorCore {
     on_change: Option<Hook<dyn Fn()>>,
     /// See [`EditorHandle::on_link_click`]. An `Rc` for the same reason as
     /// `on_change`: it is cloned out and called with no borrow held.
-    on_link_click: Option<LinkClickFn>,
+    on_link_click: Option<LinkClickHook>,
     /// See [`EditorHandle::on_link_hover`]. While it is `Some` this editor is
     /// counted in [`registry::link_hover_wanted`], which is what lets a
     /// runtime skip link hover entirely on a pointer move when no editor asked.
-    on_link_hover: Option<LinkHoverFn>,
+    on_link_hover: Option<LinkHoverHook>,
     /// See [`EditorHandle::on_image_hover`]; counted in
     /// [`registry::image_hover_wanted`] while `Some`, as `on_link_hover` is.
     /// Carries its owner, like `on_change`: a callback whose component has
@@ -206,6 +206,12 @@ impl<F: ?Sized> Hook<F> {
             cb,
             owner: current_owner(),
         }
+    }
+
+    /// Whether the callback can still run: registered outside any render, or
+    /// its owner not yet disposed.
+    fn is_live(&self) -> bool {
+        self.owner.as_ref().is_none_or(Owner::is_alive)
     }
 
     /// Run `call` on the callback inside its owner — or not at all, answering
@@ -1351,8 +1357,14 @@ impl EditorHandle {
     ///
     /// The callback runs with no internal borrow held, so it may re-enter the
     /// handle (read [`doc`](Self::doc), load another document).
+    ///
+    /// The callback belongs to the component rendering when it was registered,
+    /// as [`on_change`](Self::on_change)'s does: once that component unmounts it
+    /// is not called any more (a press is then not claimed, and the editor
+    /// counts as having no callback), a live one runs inside it, and one
+    /// registered outside any render keeps app lifetime.
     pub fn on_link_click(&self, cb: impl Fn(&LinkClick) -> bool + 'static) {
-        self.core_mut().on_link_click = Some(Rc::new(cb));
+        self.core_mut().on_link_click = Some(Hook::new(Rc::new(cb)));
     }
 
     /// Offer a press on a link to the [`on_link_click`](Self::on_link_click)
@@ -1360,17 +1372,23 @@ impl EditorHandle {
     /// callback registered. The platform runtime calls this; the callback runs
     /// with no internal borrow held.
     pub fn dispatch_link_click(&self, click: &LinkClick) -> bool {
-        let cb = self.core().on_link_click.clone();
-        // Untracked, like the hooks (#931).
-        cb.is_some_and(|cb| untracked_handler(|| cb(click)))
+        let hook = self.core().on_link_click.clone();
+        // Untracked, inside its owner, and not at all once that owner is
+        // disposed (#931, #1504).
+        hook.and_then(|hook| hook.invoke(|cb| cb(click)))
+            .unwrap_or(false)
     }
 
     /// Whether an [`on_link_click`](Self::on_link_click) callback is
     /// registered. The browser runtime asks it to decide whether a click on an
     /// editor link keeps its native navigation: a read-only editor with no
-    /// callback leaves links to the browser.
+    /// callback leaves links to the browser. A callback whose component has
+    /// unmounted does not count.
     pub fn has_link_click_callback(&self) -> bool {
-        self.core().on_link_click.is_some()
+        self.core()
+            .on_link_click
+            .as_ref()
+            .is_some_and(Hook::is_live)
     }
 
     /// Register a callback for the pointer **entering and leaving links**.
@@ -1398,20 +1416,25 @@ impl EditorHandle {
     /// A pointer move costs the runtime nothing extra while no mounted or
     /// unmounted editor on the thread has a hover callback. The callback runs
     /// with no internal borrow held, so it may re-enter the handle.
+    ///
+    /// The callback belongs to the component rendering when it was registered,
+    /// as [`on_change`](Self::on_change)'s does: once that component unmounts it
+    /// is not called any more (a handle can outlive it), a live one runs inside
+    /// it, and one registered outside any render keeps app lifetime.
     pub fn on_link_hover(&self, cb: impl Fn(Option<&LinkHover>) + 'static) {
         let mut core = self.core_mut();
         if core.on_link_hover.is_none() {
             registry::link_hover_listener_added();
         }
-        core.on_link_hover = Some(Rc::new(cb));
+        core.on_link_hover = Some(Hook::new(Rc::new(cb)));
     }
 
-    /// Invoke the hover callback, if any, with no borrow held.
+    /// Invoke the hover callback, if any, with no borrow held: inside its
+    /// owner, untracked, and not at all once that owner is disposed.
     pub(crate) fn notify_link_hover(&self, hover: Option<&LinkHover>) {
-        let cb = self.core().on_link_hover.clone();
-        if let Some(cb) = cb {
-            // Untracked, like the hooks (#931).
-            untracked_handler(|| cb(hover));
+        let hook = self.core().on_link_hover.clone();
+        if let Some(hook) = hook {
+            hook.invoke(|cb| cb(hover));
         }
     }
 

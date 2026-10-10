@@ -282,7 +282,11 @@ mod tests {
             set_link_hover(Some(1504), None);
             set_link_hover(Some(1504), Some((h.clone(), hover(&h, 13))));
             set_link_hover(Some(1504), None);
-            assert_eq!(fired.get(), 1, "a disposed component's callback must not run");
+            assert_eq!(
+                fired.get(),
+                1,
+                "a disposed component's callback must not run"
+            );
         }
 
         #[test]
@@ -301,7 +305,10 @@ mod tests {
                 });
             });
             assert!(h.has_link_click_callback(), "control: registered");
-            assert!(h.dispatch_link_click(&click(link.clone(), true)), "control: live, claimed");
+            assert!(
+                h.dispatch_link_click(&click(link.clone(), true)),
+                "control: live, claimed"
+            );
             scope.dispose();
             assert!(
                 !h.dispatch_link_click(&click(link, true)),
@@ -333,8 +340,16 @@ mod tests {
             h.dispatch_link_click(&click(link.clone(), true));
             set_link_hover(Some(1505), Some((h.clone(), hover(&h, 4))));
             set_link_hover(Some(1505), None);
-            assert_eq!(in_owner.get(), Some(true), "the click runs inside its owner");
-            assert_eq!(hover_in_owner.get(), Some(true), "the hover runs inside its owner");
+            assert_eq!(
+                in_owner.get(),
+                Some(true),
+                "the click runs inside its owner"
+            );
+            assert_eq!(
+                hover_in_owner.get(),
+                Some(true),
+                "the hover runs inside its owner"
+            );
 
             // Registered outside any render: app lifetime, run unowned.
             let ran = Rc::new(Cell::new(None::<bool>));
@@ -346,7 +361,10 @@ mod tests {
                 });
             }
             scope.dispose();
-            assert!(h.dispatch_link_click(&click(link, true)), "an ownerless callback keeps running");
+            assert!(
+                h.dispatch_link_click(&click(link, true)),
+                "an ownerless callback keeps running"
+            );
             assert_eq!(ran.get(), Some(false), "unowned");
         }
     }
