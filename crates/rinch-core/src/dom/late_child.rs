@@ -365,6 +365,21 @@ pub(super) fn forget_node(node: &NodeHandle) {
 
 crate::reactive::restore::restore_slot!(DispatchingSlot: bool = DISPATCHING);
 
+/// Run `f` with no child observer told of what it does — for a caller taking
+/// nodes out of a subtree that is about to be retired, whose observers could
+/// only patch what is being thrown away (issue #1487).
+pub(super) fn without_notifications<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let was = self.0;
+            DISPATCHING.with(|d| d.set(was));
+        }
+    }
+    let _restore = Restore(DISPATCHING.with(|d| d.replace(true)));
+    f()
+}
+
 /// Tell every registered ancestor of `parent` that `inserted` landed.
 ///
 /// Called from the four [`NodeHandle`] methods that put a node into a tree.

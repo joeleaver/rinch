@@ -404,9 +404,20 @@ impl NodeHandle {
     /// For text nodes, this updates the text directly.
     /// For element nodes, this replaces all children with a single text node:
     /// the children are detached as [`remove`](Self::remove) detaches one (a
-    /// handle to one still re-inserts), and an
-    /// [`on_child_removed`] observer above this node is told they left
-    /// (issue #1440).
+    /// handle to one still re-inserts), and an [`on_child_removed`] observer
+    /// above this node is told they left (issue #1440).
+    ///
+    /// A child **this element's own render built** — minted by the
+    /// [`RenderScope`] that minted this element, or by one descended from it —
+    /// is filed under that scope (or, if it is gone, its nearest live
+    /// ancestor) and discarded when that scope goes, if it is still detached
+    /// then (issue #1487): nothing else could ever reclaim it. Putting it into
+    /// a tree again with any insertion verb (`append_child`, `insert_before`,
+    /// `insert_after`, `replace_with`) unfiles it, so from then on it is like
+    /// any other node — kept at the scope's end even if it has been
+    /// `remove()`d again. A child the render was handed (another scope's, a
+    /// [`cache_scope`](RenderScope::cache_scope)'s), or with no owner on
+    /// record, is never filed.
     #[doc(hidden)]
     pub fn set_text(&self, text: &str) {
         if let Some(doc) = self.accessed_doc() {
@@ -421,7 +432,12 @@ impl NodeHandle {
             // #1440). `None` — and no read — unless a removal observer is
             // registered and this node has children.
             let at_stake = late_child::children_at_stake(self);
+            // The children this element's own render built: once the text
+            // has orphaned them nothing can show them again, and no hide will
+            // ever walk to them (issue #1487).
+            let built = render_scope::orphans_at_stake(self, &doc);
             doc.borrow_mut().set_text_content(self.node_id, text);
+            render_scope::file_orphans(self, built);
             late_child::notify_children_replaced(self, at_stake);
         } else {
             tracing::warn!(
@@ -530,6 +546,7 @@ impl NodeHandle {
             release_focus_within(&doc, moved, false, |d| moves_in(d, parent, moved));
             doc.borrow_mut().append_child(self.node_id, child.node_id);
         }
+        render_scope::unfile(child);
         late_child::notify_vacated(vacated.as_ref(), self);
         late_child::notify_inserted(self, child);
     }
@@ -560,6 +577,7 @@ impl NodeHandle {
         // A keyed `for` reorder relocates a row with this verb, and the row's
         // parent does not change; `notify_vacated` declines that case, so a
         // reorder still fires one notification and not two (issue #745).
+        render_scope::unfile(child);
         late_child::notify_vacated(vacated.as_ref(), self);
         late_child::notify_inserted(self, child);
     }
@@ -587,6 +605,7 @@ impl NodeHandle {
             // replacement may have come from somewhere else (issue #745).
             late_child::notify_removed(&parent);
             late_child::notify_vacated(vacated.as_ref(), &parent);
+            render_scope::unfile(replacement);
             late_child::notify_inserted(&parent, replacement);
         }
     }
@@ -852,6 +871,7 @@ impl NodeHandle {
         if let Some(parent_id) = inserted_into {
             let parent = NodeHandle::new(parent_id, self.doc.clone());
             late_child::notify_vacated(vacated.as_ref(), &parent);
+            render_scope::unfile(new_node);
             late_child::notify_inserted(&parent, new_node);
         }
     }

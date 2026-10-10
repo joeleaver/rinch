@@ -452,7 +452,9 @@ node moved through a batch reached no observer. `apply` is still the literal
 backend call per arm: `SetAttribute` is not `write_attribute` (no boolean
 rule), and no pending effect is flushed first. **A write that replaces a child
 list fires the removal half too** (#1440): `NodeHandle::set_text` on an
-**element** (it orphans every child; told only when the list changed — an
+**element** (it orphans every child — the ones the element's own render built
+are discarded when its scope goes, #1487 below; told only when the list
+changed — an
 element whose only child is a text node loses none on any backend: `rinch-dom`
 writes that node in place, where it used to orphan it and mint another per
 write, and the mock and a browser list no child for it) and
@@ -5141,7 +5143,36 @@ by that document's `RenderScope`s and dropped with the last one, slot included.
 A scope's entry outlives the scope while a node it minted is recorded or a child
 entry names it, so a throwaway scope's nodes (a late patch, a spacer) still
 chain to its parent. A record goes when its node is discarded or replaced by
-`NodeHandle::set_inner_html`; a node that is only detached keeps it. Cost: one
+`NodeHandle::set_inner_html`; a node that is only detached keeps it.
+**`NodeHandle::set_text` over an element's children still only detaches them,
+and collects later** (#1487). The children the element's own render built —
+minted by the scope that minted the element, or one descended from it — are
+filed under that scope (`Ancestry::orphans`; under its nearest live ancestor if
+it is gone, and not at all if none is), and when that scope drops, after its
+cleanups, each one still detached, not retired and with an unchanged minting
+record is discarded (`render_scope::discard_filed_orphans`; a captured handle
+inside is taken out first, with no child observer told,
+`late_child::without_notifications`). Orphans are filed per node (`filed`,
+with a per-scope set), so a host toggling text over one kept child holds one
+entry, and any `NodeHandle` insertion verb (`append_child`, `insert_before`,
+`insert_after`, `replace_with`) unfiles the node it puts back
+(`render_scope::unfile`, one `Cell` read while nothing is filed): from then on
+it is an ordinary node, kept at the scope's end even if `remove()`d again. The
+record check matters only for a node put back through the backend directly,
+whose id `rinch-dom` may free and re-issue. So every handle re-inserts while its
+scope lives — a static component's handed children share its caller's scope,
+and a component may keep a handle to its own child — and a branch's orphans go
+with the branch. Before, every orphan stayed in the node and minting tables for
+the life of the document: +300 / +300 per 100 show/hide cycles of
+`div > (span > text, span)` set over with text, in Chrome 155 and on the mock.
+A child the render was handed, or with no record, is only detached. A long-lived
+scope's orphans live as long as it does. A minting record carries a text bit
+(`Minted`), so a write to a scope-minted text node — every reactive `{|| text}`
+— asks the backend nothing. `child.remove()` with the handle dropped is #1508.
+Pins: `reinsertion_tests::text_over_children_1487`,
+`rinch-macros/tests/text_over_handed_children_1487.rs`,
+`rinch-dom/tests/text_over_children_1487_tests.rs`,
+`rinch-web/tests/text_over_children_1487.rs`. Cost: one
 hash insert per minted node, and the sweep per hide — and every plain
 `NodeHandle::discard()` sweeps its subtree too (`sweep_for_discard(self, None,
 ..)`), including the editor's `ViewDesc` discards; on web each `get_children`

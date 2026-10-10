@@ -48,6 +48,8 @@ pub struct MockDomDocument {
     /// rather than only the discarded subtree's: a bounded walk's count does
     /// not move when an unrelated sibling subtree grows.
     get_children_calls: std::cell::Cell<usize>,
+    /// Calls to `is_text_node` (issue #1487): on the web each is a JS call.
+    is_text_node_calls: std::cell::Cell<usize>,
     /// **Test-only.** Calls counted by kind since the document was made
     /// (issue #748) — see [`MockOpCounts`].
     ops: std::cell::Cell<MockOpCounts>,
@@ -152,6 +154,13 @@ impl MockDomDocument {
         self.get_children_calls.get()
     }
 
+    /// **Test-only.** How many times `is_text_node` has been called (issue
+    /// #1487).
+    #[doc(hidden)]
+    pub fn __is_text_node_calls(&self) -> usize {
+        self.is_text_node_calls.get()
+    }
+
     /// **Test-only.** The calls served so far, by kind (issue #748).
     #[doc(hidden)]
     pub fn __op_counts(&self) -> MockOpCounts {
@@ -239,6 +248,7 @@ impl MockDomDocument {
             focused: None,
             selection_range: None,
             get_children_calls: std::cell::Cell::new(0),
+            is_text_node_calls: std::cell::Cell::new(0),
             ops: std::cell::Cell::new(MockOpCounts::default()),
         };
 
@@ -638,6 +648,8 @@ impl DomDocument for MockDomDocument {
     }
 
     fn is_text_node(&self, node: NodeId) -> bool {
+        self.is_text_node_calls
+            .set(self.is_text_node_calls.get() + 1);
         matches!(
             self.nodes.get(&node).map(|n| &n.kind),
             Some(MockNodeKind::Text)
