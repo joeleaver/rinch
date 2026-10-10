@@ -799,7 +799,10 @@ inside a link (it selects the image), and hover during a drag-select or a
 drag-and-drop. A callback runs with no internal borrow held, so it may re-enter the
 handle — load another document, read the selection. It also runs untracked: a
 signal it reads never becomes a dependency of an effect that happened to call
-`dispatch_link_click` (issue #931). A pointer move pays nothing for
+`dispatch_link_click` (issue #931). Like `on_change`, each belongs to the component
+rendering when it was registered: once that component unmounts the callback is not
+called any more (a press is not claimed, and the editor counts as having no click
+callback), and one registered outside any render keeps app lifetime. A pointer move pays nothing for
 hover while no editor on the thread has an `on_link_hover` callback; with one it
 reuses the move's own hit test on desktop.
 
