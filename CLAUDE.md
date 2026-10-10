@@ -496,7 +496,14 @@ The pieces that follow from it:
   watches recurses without bound (measured: stack overflow).
 - **An observer is released by the ambient scope's `on_cleanup`**, the #147
   discipline, and by `NodeHandle::discard` on the container — a discarded id may
-  be reissued.
+  be reissued. The cleanup releases **its own registration**, by a token, not
+  whatever stands under the node's id when it runs (#1490): `rinch-dom` hands a
+  freed id to the next node it mints, and a cleanup that forgot by
+  `(doc, id)` dropped the observers of the container now holding the id (a
+  second `on_child_*` call on one node was dropped the same way by the first
+  call's scope). `register_focus_target` releases by token too. The editor
+  registry (`unregister_editor`, and its blink clock) still releases by
+  `(doc_key, container id)` (#1498).
 - **A child moved between containers re-resolves**, because a container marks
   what it supplied (`data-list-icon`) and never touches what the child asked for
   itself.
@@ -2255,7 +2262,12 @@ register_focus_target(
   the ambient scope's `on_cleanup`**, so unmounting is **silent** —
   `on_focus_lost` never fires after disposal (that would read freed signals and
   panic, #141 PR4). The registry is the arbiter's liveness authority for
-  registered nodes, which closes the recycled-slot window (#304) for them.
+  registered nodes, which closes the recycled-slot window (#304) for them
+  only while each node outlives the scope that registered it: a node freed
+  while that scope is alive (`set_inner_html` over it) leaves its entry under
+  the freed id, and a node minted on that id answers as registered until the
+  scope goes (#1509). The scope's cleanup itself releases by token, so it
+  never drops a later registration on a re-issued id (#1490).
 - Both focus callbacks run **after** the transition completes (deferred through
   the same `PendingFocusWork` mechanism as a blurred input's `data-onchange`),
   so they may re-enter the runtime freely.
@@ -3364,9 +3376,13 @@ is a viewport position, that is the sum of the layouts above it
 the baked scroll back off an absolute one), and no scroll moves it afterwards. A
 fixed box with a static axis is pushed to `placed_absolutes` (one
 `abs_boxes_visited` per layout); one with insets on both axes, and an absolute
-box placed by Taffy, static or not, are in no pass. Not Chrome's, each pinned in
-`known_differences_from_chrome`: the static position in a **flex** container
-is Taffy's (the cross axis ignores `align-items`; **#1492**); it
+box placed by Taffy, static or not, are in no pass. In a **flex** container
+the static position is the box as its sole flex item: `justify-content` on the
+main axis and `align-self`, else `align-items`, on the cross (`stretch` as the
+start; #1492 — `to_taffy_style` used to force `align-self: flex-start` on every
+out-of-flow box, so the cross axis ignored `align-items`; pins:
+`static_position_flex_1492_tests.rs`, Chrome 153). Not Chrome's, each pinned in
+`known_differences_from_chrome`: the static position
 follows rinch's line boxes, so below a line holding a 26px `inline-block` and
 text it is 4px high (rinch's line is 26px, Chrome's 30 — #663); a fixed box with no
 insets and no size still fills the viewport where Chrome shrinks it to its

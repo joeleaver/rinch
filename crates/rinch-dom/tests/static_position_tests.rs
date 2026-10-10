@@ -1541,6 +1541,29 @@ fn a_static_fixed_box_inside_a_fixed_box_is_measured_from_it() {
     }
 }
 
+/// In a flex container the static position is the box as the sole flex
+/// item: `justify-content` on the main axis, `align-items` on the cross
+/// (#1492; it used to stay at the cross start). Chrome 153: (185.5, 28.5)
+/// centred, (360, 50) at the end — for `position: fixed` as well.
+/// `static_position_flex_1492_tests.rs` has the rest of the table.
+#[test]
+fn a_flex_containers_static_position_follows_align_items() {
+    let item = r#"<div style="width: 50px; height: 20px"></div>"#;
+    for pos in ["absolute", "fixed"] {
+        for (align, want) in [("center", [185.5, 28.5]), ("flex-end", [360.0, 50.0])] {
+            let c = Case::build(
+                C,
+                &format!(
+                    "display: flex; justify-content: {align}; align-items: {align}; height: 80px;"
+                ),
+                &format!("{item}{}{item}", boxed(pos, "div", "", "")),
+                "",
+            );
+            assert_at(c.rel("abs"), want, &format!("flex, {pos}, {align}"));
+        }
+    }
+}
+
 /// In a grid container the static position is the padding box's corner, for
 /// both kinds: Chrome's `(0, 0)`, and Taffy's.
 #[test]
@@ -2122,22 +2145,6 @@ fn known_differences_from_chrome() {
         [11.0, 33.0],
         "below a line with a tall inline-block"
     );
-
-    // A flex container's static position is Taffy's: the main axis follows
-    // `justify-content`, the cross axis does not follow `align-items`.
-    // Chrome: (185.5, 28.5) centred, (360, 50) at the end. Issue #1492.
-    let item = r#"<div style="width: 50px; height: 20px"></div>"#;
-    for (align, got) in [("center", [186.0, 7.0]), ("flex-end", [360.0, 7.0])] {
-        let c = Case::build(
-            C,
-            &format!(
-                "display: flex; justify-content: {align}; align-items: {align}; height: 80px;"
-            ),
-            &format!("{item}{}{item}", boxed("absolute", "div", "", "")),
-            "",
-        );
-        assert_eq!(c.rel("abs"), got, "flex, {align}");
-    }
 
     // A fixed box with no insets and no size fills the viewport; Chrome
     // shrinks it to its content, 27.766 x 20. Issue #893.
