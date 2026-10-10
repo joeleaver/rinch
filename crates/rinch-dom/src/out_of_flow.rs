@@ -951,6 +951,8 @@ pub(crate) fn bake_at_style_site(
             apply_out_of_flow_size_overrides(node, kind, (cb.width, cb.height), taffy_style);
             baked_against_ancestor = ancestor;
         }
+    } else if node.box_position() == PositionValue::Absolute {
+        fit_in_layout_parent(tree, node, taffy_style);
     }
     // The style handed in was built from the computed values, so a box that
     // is not ancestor-resolved now carries no ancestor's size. The set is
@@ -980,7 +982,22 @@ pub(crate) fn rebake_after_inset_write(
     let Some(node) = tree.nodes.get(node_id) else {
         return;
     };
-    let Some(kind @ OutOfFlowKind::AncestorAbsolute(cb)) = out_of_flow_kind(tree, node_id) else {
+    let kind = match out_of_flow_kind(tree, node_id) {
+        Some(kind @ OutOfFlowKind::AncestorAbsolute(_)) => kind,
+        Some(_) => return,
+        // Taffy's own containing block: whether the width is shrunk to fit
+        // by keyword depends on the insets ([`fit_in_layout_parent`]).
+        None => {
+            if node.box_position() == PositionValue::Absolute
+                && matches!(node.computed_style.width, DimensionValue::Auto)
+            {
+                taffy_style.size.width = taffy::Dimension::auto();
+                fit_in_layout_parent(tree, node, taffy_style);
+            }
+            return;
+        }
+    };
+    let OutOfFlowKind::AncestorAbsolute(cb) = kind else {
         return;
     };
     // Only a style that carries a bake: one that carries none has a
@@ -1025,6 +1042,7 @@ pub(crate) fn note_kind_at_read(
 /// flags. Called before `read_layout_results` walks the document.
 pub(crate) fn begin_read(tree: &mut NodeTree) {
     tree.placed_absolutes.clear();
+    tree.abs_static_fits.clear();
     tree.abs_late_moves = false;
     tree.abs_inline_cb_seen = false;
     let mut marked = std::mem::take(&mut tree.abs_chain_marked);
@@ -1088,19 +1106,35 @@ pub(crate) fn apply_out_of_flow_size_overrides(
         let l = cs.left.resolve(cw).unwrap_or(0.0);
         let r = cs.right.resolve(cw).unwrap_or(0.0);
         taffy_style.size.width = taffy::Dimension::length((cw - l - r - ml - mr).max(0.0));
-    } else if taffy_style.size.width == taffy::Dimension::auto() {
+    } else if taffy_style.size.width == taffy::Dimension::auto()
+        || (absolute && taffy_style.size.width == taffy::Dimension::fit_content())
+    {
+        let auto = taffy_style.size.width == taffy::Dimension::auto();
         match (cs.left.resolve(cw), cs.right.resolve(cw)) {
-            (Some(l), Some(r)) => {
+            (Some(l), Some(r)) if auto => {
                 taffy_style.size.width = taffy::Dimension::length((cw - l - r - ml - mr).max(0.0));
             }
             // A fixed box with unpaired insets fills the viewport, as it has
-            // since the fixed path was written. An absolute one must not: an
-            // auto-width absolute still shrinks to fit, so leave it auto and
-            // let Taffy measure it.
+            // since the fixed path was written.
             _ if !absolute => {
                 taffy_style.size.width = taffy::Dimension::length(cw);
             }
-            _ => {}
+            // An absolute one shrinks to fit (CSS 2.1 §10.3.7) — in what its
+            // **containing block** leaves it: that block's width less the
+            // insets and margins, and with both insets `auto`, less the
+            // distance from the block's edge to the static position, which
+            // is where the box starts (#1404). Taffy would measure it in the
+            // whole width of the box it lays it out in; `fit-content(<px>)`
+            // is its spelling of "measure at this available width".
+            (l, r) => {
+                let offset = if l.is_none() && r.is_none() {
+                    node.abs_static_offset
+                } else {
+                    0.0
+                };
+                let available = cw - l.unwrap_or(0.0) - r.unwrap_or(0.0) - ml - mr - offset;
+                taffy_style.size.width = taffy::Dimension::fit_content_px(available.max(0.0));
+            }
         }
     } else if absolute {
         // Taffy would resolve these against the direct parent. A mixed
@@ -1172,6 +1206,115 @@ pub(crate) fn apply_out_of_flow_size_overrides(
     edge(&mut taffy_style.margin.right, cs.margin_right);
     edge(&mut taffy_style.margin.top, cs.margin_top);
     edge(&mut taffy_style.margin.bottom, cs.margin_bottom);
+}
+
+/// Shrink an auto-width absolute box **whose layout parent is its containing
+/// block** to fit in what its insets and margins leave of that block (CSS 2.1
+/// §10.3.7, #1404), by handing Taffy the `fit-content` keyword: on an
+/// absolutely positioned child of a block or flex container Taffy measures
+/// that at the containing block's width less the insets and margins, where
+/// it measures an `auto` width at the whole width.
+///
+/// Only when that changes the answer — an inset or a margin that takes room,
+/// and not both insets (the box then fills the space between them). A box
+/// with neither keeps `auto`, which Taffy measures once; the keyword costs a
+/// second measure of the box.
+///
+/// Two things this cannot say:
+///
+/// - where a box with both insets `auto` *starts*: its static position,
+///   which CSS also takes off the space. Taffy knows it only during the
+///   compute, and a length baked here would need the parent's width before
+///   it. So such a box is measured in the parent's padding box less its
+///   margins — too wide by the parent's `padding-left`, or by the box's
+///   place in its line (Chrome 153: `d12`/`d13`/`d19` in
+///   `tests/abs_shrink_to_fit_1404_tests.rs`);
+/// - anything to a **grid** container, which measures the keyword on an
+///   absolute item in the item's whole grid area, insets or not (`d15`).
+fn fit_in_layout_parent(tree: &NodeTree, node: &Node, taffy_style: &mut taffy::Style) {
+    use LengthPercentageAutoValue as V;
+    if taffy_style.size.width != taffy::Dimension::auto() {
+        return;
+    }
+    let cs = &node.computed_style;
+    if !matches!(cs.left, V::Auto) && !matches!(cs.right, V::Auto) {
+        return;
+    }
+    let takes_room = |v: V| match v {
+        V::Auto => false,
+        V::Length(px) => px != 0.0,
+        V::Percent(p) => p != 0.0,
+        V::Calc { .. } => true,
+    };
+    if !(takes_room(cs.left)
+        || takes_room(cs.right)
+        || takes_room(cs.margin_left)
+        || takes_room(cs.margin_right))
+    {
+        return;
+    }
+    // The box Taffy lays this one out in.
+    let mut current = node.parent;
+    while let Some(id) = current {
+        let Some(ancestor) = tree.get(id) else {
+            return;
+        };
+        if generates_layout_box(ancestor) {
+            if matches!(
+                ancestor.computed_style.display,
+                DisplayValue::Grid | DisplayValue::InlineGrid
+            ) {
+                return;
+            }
+            break;
+        }
+        current = ancestor.parent;
+    }
+    taffy_style.size.width = taffy::Dimension::fit_content();
+}
+
+/// The inputs to hand `taffy::compute_leaf_layout` for a leaf with `style`.
+///
+/// Taffy's leaf algorithm takes the leaf's **own margins** off the available
+/// width it was given; its block, flex and grid algorithms do not take a
+/// container's own. An absolutely positioned box is measured at the room its
+/// containing block leaves it, margins already out ([`fit_in_layout_parent`],
+/// the bake in [`apply_out_of_flow_size_overrides`], Taffy's grid), so a
+/// leaf — a box holding only inline content — had them taken off twice:
+/// `right: 20px; margin-right: 20px` in 394px came out 334 wide, and the
+/// same box around a block child 354 (Chrome: 354). The margins are put
+/// back here, so one rule holds for both.
+pub(crate) fn absolute_leaf_inputs(
+    mut inputs: taffy::LayoutInput,
+    style: &taffy::Style,
+) -> taffy::LayoutInput {
+    if style.position == taffy::Position::Absolute
+        && inputs.known_dimensions.width.is_none()
+        && let taffy::AvailableSpace::Definite(width) = inputs.available_space.width
+    {
+        use taffy::{CoreStyle, ResolveOrZero};
+        let margin = style
+            .margin()
+            .resolve_or_zero(inputs.parent_size.width, |_, _| 0.0);
+        let margins = margin.left + margin.right;
+        if margins != 0.0 {
+            inputs.available_space.width = taffy::AvailableSpace::Definite(width + margins);
+        }
+    }
+    inputs
+}
+
+/// Whether an absolute box with this style is **shrunk to fit from its
+/// static position**: an `auto` or `fit-content` width and both inline insets
+/// `auto`, so the room it has is what its containing block leaves after the
+/// place the box starts at (#1404).
+pub(crate) fn fits_from_static_position(cs: &ComputedStyle) -> bool {
+    use crate::computed_style::IntrinsicSize;
+    static_axes(cs).0
+        && matches!(
+            cs.width,
+            DimensionValue::Auto | DimensionValue::Intrinsic(IntrinsicSize::FitContent)
+        )
 }
 
 /// Copy the fields [`apply_out_of_flow_size_overrides`] and [`unbake`] read
@@ -1755,6 +1898,51 @@ pub(crate) fn replace_after_scroll(tree: &mut NodeTree, scrolled: RawNodeId) {
     tree.placed_absolutes = placed;
 }
 
+/// Where the static position of the absolute box `node_id` starts on the
+/// inline axis, measured from the padding edge of its containing block
+/// (`kind`'s) — what an auto-width box with both inline insets `auto` gives
+/// up of that block's width (#1404). Chrome 153: under a wrapper 42px into a
+/// 394px containing block the box is shrunk to fit in 352.
+///
+/// Read from the layouts and lines **as they stand**, so the caller runs
+/// after both are final. The box's own margin is not part of it.
+///
+/// It must not depend on the box's own width, or sizing the box from it
+/// would feed back. So in a flex or grid container it is the edge Taffy
+/// measures a start-aligned box from — the content edge of a flex container,
+/// the padding edge of a grid — whatever `justify-content` or `align-items`
+/// then does with the box (Chrome, for a box centred by its flex container,
+/// takes twice the shorter distance from the centre to a containing-block
+/// edge: `a11`/`a11b` in `tests/abs_shrink_to_fit_1404_tests.rs`).
+fn static_inline_offset(tree: &mut NodeTree, node_id: RawNodeId, kind: OutOfFlowKind) -> Option<f32> {
+    let end = match kind {
+        OutOfFlowKind::Fixed => return None,
+        OutOfFlowKind::IcbAbsolute => None,
+        OutOfFlowKind::AncestorAbsolute(cb) => Some(chain_end(tree, cb)?),
+    };
+    let ((ox, _), _) = chain_to_containing_block(tree, node_id, end, false)?;
+    let cb = ContainingBox::of(tree, kind)?;
+    let parent = tree.get(layout_parent(tree, node_id)?)?;
+    let edges = |parent: &Node| {
+        let l = tree.taffy.layout(parent.taffy_id?).ok()?;
+        Some((l.border.left, l.padding.left))
+    };
+    let x = match parent.computed_style.display {
+        DisplayValue::Flex | DisplayValue::InlineFlex => {
+            let (border, padding) = edges(parent)?;
+            border + padding
+        }
+        DisplayValue::Grid | DisplayValue::InlineGrid => edges(parent)?.0,
+        _ => {
+            let node = tree.get(node_id)?;
+            let taffy = tree.taffy.layout(node.taffy_id?).ok()?;
+            let at = static_location(tree, node_id, Some(kind), (taffy.location.x, taffy.location.y));
+            at.0 - node.computed_style.margin_left.resolve(cb.width).unwrap_or(0.0)
+        }
+    };
+    Some(ox + x - cb.border_left)
+}
+
 /// Whether `ancestor` is on `node_id`'s box-tree parent chain.
 fn is_box_ancestor(tree: &NodeTree, ancestor: RawNodeId, node_id: RawNodeId) -> bool {
     let mut current = RinchDocument::box_tree_parent(&tree.nodes, node_id);
@@ -1846,6 +2034,76 @@ impl RinchDocument {
                 inline.span_fragments = measured;
             }
         }
+    }
+
+    /// Bring every absolute box that is **shrunk to fit from its static
+    /// position** (#1404; `NodeTree::abs_static_fits`, the ones the read-back
+    /// placed) into agreement with where that position is now: the box's
+    /// room is its containing block's width less the distance to it
+    /// ([`static_inline_offset`]). Returns whether any Taffy style was
+    /// rewritten; the caller then goes round — compute, read-back, lines.
+    ///
+    /// Called once the lines are built, because that is when the position is
+    /// final: it may be a place in a line (#632, #634), and a box on the way
+    /// to the containing block may be an atomic inline its own line has just
+    /// placed. So the boxes the late writes moved are placed first
+    /// ([`replace_all`]).
+    ///
+    /// The distance is kept on the node (`Node::abs_static_offset`), where
+    /// every bake of the box reads it, so a layout in which it did not move
+    /// rewrites nothing: one extra compute when such a box is first laid out
+    /// away from its containing block's edge, and one when it is moved along
+    /// the inline axis. A box's own width does not move its static position
+    /// (an out-of-flow box sizes nothing above it), so one round settles it.
+    ///
+    /// One `is_empty` in a document with no such box.
+    pub(crate) fn resolve_static_shrink_to_fit(&mut self) -> bool {
+        if self.tree.abs_static_fits.is_empty() {
+            return false;
+        }
+        replace_all(&mut self.tree);
+        let fits = std::mem::take(&mut self.tree.abs_static_fits);
+        self.tree
+            .perf
+            .add(crate::perf::Counter::AbsBoxesVisited, fits.len() as u64);
+        let mut changed = false;
+        for &(id, kind) in &fits {
+            let Some(offset) = static_inline_offset(&mut self.tree, id, kind) else {
+                continue;
+            };
+            let node = &self.tree.nodes[id];
+            if (node.abs_static_offset - offset).abs() <= 0.01 {
+                continue;
+            }
+            let Some(taffy_id) = node.taffy_id else {
+                continue;
+            };
+            // Neither has a size built from its computed values.
+            if node.estimated_height.is_some() || node.taffy_style_owned_by_contents_splice() {
+                continue;
+            }
+            let Some(cb) = ContainingBox::of(&self.tree, kind) else {
+                continue;
+            };
+            self.tree.nodes[id].abs_static_offset = offset;
+            let node = &self.tree.nodes[id];
+            let Ok(current) = self.tree.taffy.style(taffy_id) else {
+                continue;
+            };
+            let mut next = current.clone();
+            unbake(&node.computed_style, false, &mut next);
+            apply_out_of_flow_size_overrides(node, kind, (cb.width, cb.height), &mut next);
+            if next.size != current.size {
+                let _ = self.tree.taffy.set_style(taffy_id, next);
+                // The root compute does not reach a box inside an atomic
+                // inline (#661).
+                self.mark_atomic_inline_dirty(id);
+                self.tree.perf.bump(crate::perf::Counter::TaffyStyleChanges);
+                changed = true;
+            }
+        }
+        self.tree.abs_static_fits = fits;
+        changed
     }
 
     /// Bring every absolute box whose containing block is a non-parent
@@ -1946,14 +2204,19 @@ impl RinchDocument {
                 // Baked against an ancestor it no longer resolves against.
                 _ if was_baked => {
                     unbake(&node.computed_style, true, &mut next);
-                    if let Some(kind) = kind {
-                        let vp = self.tree.viewport;
-                        apply_out_of_flow_size_overrides(
-                            node,
-                            kind,
-                            (vp.width, vp.height),
-                            &mut next,
-                        );
+                    match kind {
+                        Some(kind) => {
+                            let vp = self.tree.viewport;
+                            apply_out_of_flow_size_overrides(
+                                node,
+                                kind,
+                                (vp.width, vp.height),
+                                &mut next,
+                            );
+                        }
+                        // Taffy's own answer again, as a style site would
+                        // have written it.
+                        None => fit_in_layout_parent(&self.tree, node, &mut next),
                     }
                     false
                 }

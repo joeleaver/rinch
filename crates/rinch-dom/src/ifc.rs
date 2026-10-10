@@ -5986,7 +5986,7 @@ impl RinchDocument {
                 // `align-items: baseline` aligns its own items by it.
                 let mut first_baseline: Option<f32> = None;
                 let out = taffy::compute_leaf_layout(
-                    inputs,
+                    crate::out_of_flow::absolute_leaf_inputs(inputs, style),
                     style,
                     |_, _| 0.0,
                     |known_dims, avail_space| {

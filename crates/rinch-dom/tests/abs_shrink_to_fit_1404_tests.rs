@@ -224,18 +224,58 @@ const CHROME: &[(&str, &str, &str)] = &[
     ),
     (
         "a15_in_inline_block_static",
-        r##"<div data-m="c" style="position:relative;width:400px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;"><div>ab cd <span data-m="p" style="display:inline-block;width:100px;height:40px;vertical-align:top"><div data-m="a" style="position:absolute;"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></span></div></div>"##,
-        "p=61.72,8,100,40 a=61.72,8,335.28,40 t=61.72,8,335.28,40",
+        r##"<div data-m="c" style="position:relative;width:400px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;"><div>ab cd <span style="display:inline-block;width:100px;height:20px"><div data-m="a" style="position:absolute;top:40px"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></span></div></div>"##,
+        "a=61.72,43,335.28,40 t=61.72,43,335.28,40",
     ),
     (
         "a16_in_inline_block_left",
-        r##"<div data-m="c" style="position:relative;width:400px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;"><div>ab cd <span data-m="p" style="display:inline-block;width:100px;height:40px;vertical-align:top"><div data-m="a" style="position:absolute;left:20px"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></span></div></div>"##,
-        "p=61.72,8,100,40 a=23,8,374,40 t=23,8,374,40",
+        r##"<div data-m="c" style="position:relative;width:400px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;"><div>ab cd <span style="display:inline-block;width:100px;height:20px"><div data-m="a" style="position:absolute;left:20px;top:40px"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></span></div></div>"##,
+        "a=23,43,374,40 t=23,43,374,40",
     ),
     (
         "a17_span_cb_left",
-        r##"<div data-m="c" style="position:relative;width:400px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;"><div>ab <span data-m="q" style="position:relative">cd ef gh<div data-m="a" style="position:absolute;left:0;top:20px"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></span></div></div>"##,
-        "q=38.28,8,62.47,20 a=38.28,28,66.14,200 t=38.28,28,66.14,200",
+        r##"<div data-m="c" style="position:relative;width:400px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;"><div>ab <span style="position:relative">cd ef gh<div data-m="a" style="position:absolute;left:0;top:20px"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></span></div></div>"##,
+        "a=38.28,28,66.14,200 t=38.28,28,66.14,200",
+    ),
+    (
+        "a24_container_left_margin",
+        r##"<div data-m="c" style="position:relative;width:400px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;"><div data-m="p" style="width:200px;height:200px;margin-left:30px;"><div data-m="a" style="position:absolute;left:20px;margin-right:30px"><div><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div></div></div>"##,
+        "p=45,8,200,200 a=23,8,344,40 t=23,8,344,40",
+    ),
+    (
+        "a25_fit_content_static",
+        r##"<div data-m="c" style="position:relative;width:400px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;"><div data-m="p" style="width:200px;height:200px;margin-left:30px;"><div data-m="a" style="position:absolute;width:fit-content"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div></div>"##,
+        "p=45,8,200,200 a=45,8,352,40 t=45,8,352,40",
+    ),
+    (
+        "a26_contents_wrapper_left",
+        r##"<div data-m="c" style="position:relative;width:400px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;"><div data-m="p" style="width:200px;height:200px;margin-left:30px;"><div style="display:contents"><div data-m="a" style="position:absolute;left:20px"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div></div></div>"##,
+        "p=45,8,200,200 a=23,8,374,40 t=23,8,374,40",
+    ),
+    (
+        "a27_container_static_margin",
+        r##"<div data-m="c" style="position:relative;width:400px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;"><div data-m="p" style="width:200px;height:200px;margin-left:30px;"><div data-m="a" style="position:absolute;margin-left:20px"><div><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div></div></div>"##,
+        "p=45,8,200,200 a=65,8,332,40 t=65,8,332,40",
+    ),
+    (
+        "d23_container_right_margin",
+        r##"<div data-m="c" style="position:relative;width:400px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;"><div data-m="a" style="position:absolute;right:20px;margin-right:20px"><div><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div></div>"##,
+        "a=3,8,354,40 t=3,8,354,40",
+    ),
+    (
+        "d24_grid_margin_right",
+        r##"<div data-m="c" style="position:relative;width:400px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;display:grid;"><div data-m="a" style="position:absolute;left:0;margin-right:20px"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
+        "a=3,3,374,40 t=3,3,374,40",
+    ),
+    (
+        "d25_container_left0_margin",
+        r##"<div data-m="c" style="position:relative;width:400px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;"><div data-m="a" style="position:absolute;left:0;margin-right:20px"><div><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div></div>"##,
+        "a=3,8,374,40 t=3,8,374,40",
+    ),
+    (
+        "i09_container_left_margin",
+        r##"<div data-m="c" style="width:400px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;"><div data-m="a" style="position:absolute;left:400px;top:0;margin-right:50px"><div><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div></div>"##,
+        "a=386,-9,350,40 t=386,-9,350,40",
     ),
     (
         "a18_in_auto_abs",
