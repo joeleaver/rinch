@@ -203,14 +203,39 @@ impl FocusEntry {
     }
 }
 
+/// One registered focus target.
+struct Registered {
+    doc_key: u64,
+    node_id: usize,
+    /// Names the `register_focus_target` call that made this entry
+    /// (issue #1490).
+    token: u64,
+    entry: Rc<FocusEntry>,
+}
+
+impl Registered {
+    fn is_at(&self, doc_key: u64, node_id: usize) -> bool {
+        self.doc_key == doc_key && self.node_id == node_id
+    }
+}
+
 thread_local! {
-    /// `(doc_key, node id, entry)` for every registered focus target.
+    /// Every registered focus target.
     ///
     /// Keyed by `(doc_key, node_id)` exactly like the mounted-editor registry:
     /// node ids are per-document slab indices, so two documents on one thread
     /// (two embedded `RinchContext`s, two desktop windows) can both hold a
     /// target at the same node id (issue #134).
-    static TARGETS: RefCell<Vec<(u64, usize, Rc<FocusEntry>)>> = const { RefCell::new(Vec::new()) };
+    ///
+    /// The token names the `register_focus_target` call that made the entry
+    /// (issue #1490): that call's scope cleanup releases the entry only while
+    /// it is still the one registered, since `rinch-dom` re-issues a freed node
+    /// id and a cleanup that forgot by id would drop another component's
+    /// target.
+    static TARGETS: RefCell<Vec<Registered>> = const { RefCell::new(Vec::new()) };
+
+    /// The next registration token. Never reused.
+    static NEXT_TOKEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Register `node` as a focus target, so the component behind it hears about
@@ -219,7 +244,10 @@ thread_local! {
 /// Replaces any prior registration for **this** node in **this** document;
 /// another document's target at a colliding node id is left alone. The
 /// registration is dropped when the ambient render scope is disposed — see the
-/// module docs for why that is silent.
+/// module docs for why that is silent. That disposal drops **this**
+/// registration only: one that has replaced it since (a second call for the
+/// node, or another component's on a node id the document re-issued) stays
+/// (issue #1490).
 ///
 /// Called outside a render (no ambient owner — `main()`, a timer, a detached
 /// callback) the entry is still registered, but nothing will ever deregister
@@ -227,24 +255,35 @@ thread_local! {
 pub fn register_focus_target(node: &NodeHandle, entry: FocusEntry) {
     let doc_key = node.doc_key();
     let node_id = node.node_id().0;
+    let token = NEXT_TOKEN.with(|next| {
+        let token = next.get();
+        next.set(token + 1);
+        token
+    });
     TARGETS.with(|t| {
         let mut t = t.borrow_mut();
-        t.retain(|(dk, id, _)| !(*dk == doc_key && *id == node_id));
-        t.push((doc_key, node_id, Rc::new(entry)));
+        t.retain(|r| !r.is_at(doc_key, node_id));
+        t.push(Registered {
+            doc_key,
+            node_id,
+            token,
+            entry: Rc::new(entry),
+        });
     });
     // Tie the registration to the component that made it. The *ambient owner*,
     // not `RenderScope::on_cleanup`: an `if`/`for` branch renders into a child
     // scope that is never installed as the thread-local render scope, but it
     // does push itself as the owner — so this is the hook that follows a
     // conditionally-mounted widget (issue #141 PR4).
-    rinch_core::reactive::on_cleanup(move || unregister_focus_target(doc_key, node_id));
+    rinch_core::reactive::on_cleanup(move || unregister_focus_target(doc_key, node_id, token));
 }
 
-/// Forget the target registered at `(doc_key, node_id)`.
-pub(crate) fn unregister_focus_target(doc_key: u64, node_id: usize) {
+/// Forget the target `token` registered at `(doc_key, node_id)`, if it is
+/// still the one registered there (issue #1490).
+fn unregister_focus_target(doc_key: u64, node_id: usize, token: u64) {
     TARGETS.with(|t| {
         t.borrow_mut()
-            .retain(|(dk, id, _)| !(*dk == doc_key && *id == node_id))
+            .retain(|r| !(r.is_at(doc_key, node_id) && r.token == token))
     });
 }
 
@@ -255,8 +294,8 @@ fn entry_for(doc_key: u64, node_id: usize) -> Option<Rc<FocusEntry>> {
     TARGETS.with(|t| {
         t.borrow()
             .iter()
-            .find(|(dk, id, _)| *dk == doc_key && *id == node_id)
-            .map(|(_, _, e)| e.clone())
+            .find(|r| r.is_at(doc_key, node_id))
+            .map(|r| r.entry.clone())
     })
 }
 
@@ -264,14 +303,14 @@ fn entry_for(doc_key: u64, node_id: usize) -> Option<Rc<FocusEntry>> {
 ///
 /// This is the arbiter's **liveness authority** for a registered claim: an
 /// unmount deregisters through the scope cleanup, which is a push notification
-/// rather than the attribute probe `node_target_is_live` falls back to — so the
-/// recycled-slab-slot window (#304) is closed for registered targets.
+/// rather than the attribute probe `node_target_is_live` falls back to. That
+/// closes the recycled-slab-slot window (#304) only while the registering
+/// scope's lifetime brackets the node's: a node freed while that scope is
+/// still alive (`set_inner_html` over it) leaves its entry under the freed id,
+/// and a node `rinch-dom` mints on that id answers as registered until the
+/// scope goes (#1509).
 pub(crate) fn is_registered(doc_key: u64, node_id: usize) -> bool {
-    TARGETS.with(|t| {
-        t.borrow()
-            .iter()
-            .any(|(dk, id, _)| *dk == doc_key && *id == node_id)
-    })
+    TARGETS.with(|t| t.borrow().iter().any(|r| r.is_at(doc_key, node_id)))
 }
 
 /// Whether the target at `(doc_key, node_id)` registered [`FocusEntry::on_key`]
@@ -353,5 +392,56 @@ pub(crate) fn offer_ime(doc_key: u64, node_id: usize, ime: &ImeEvent) -> bool {
             true
         }
         None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::mock::MockDomDocument;
+    use rinch_core::reactive::Scope;
+    use std::cell::RefCell;
+    use std::rc::Weak;
+
+    /// Issue #1490: a registration's scope cleanup releases that registration,
+    /// not whatever is registered at `(doc_key, node_id)` when it runs. On
+    /// `rinch-dom` a freed node id is handed to the next node minted, so the
+    /// "second" registration there is another component's; a second
+    /// registration on the same node reaches the same cleanup without needing
+    /// the id re-issued.
+    #[test]
+    fn a_replaced_target_survives_the_first_scopes_cleanup() {
+        let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(MockDomDocument::new()));
+        let weak: Weak<RefCell<dyn DomDocument>> = Rc::downgrade(&doc);
+        let id = doc.borrow_mut().create_element("div");
+        let node = NodeHandle::new(id, weak);
+        let (doc_key, node_id) = (node.doc_key(), node.node_id().0);
+
+        let first = Scope::new();
+        first.run(|| register_focus_target(&node, FocusEntry::new()));
+        assert!(
+            !wants_key_routing(doc_key, node_id),
+            "control: no on_key yet"
+        );
+        let second = Scope::new();
+        second.run(|| register_focus_target(&node, FocusEntry::new().on_key(|_| true)));
+        assert!(
+            wants_key_routing(doc_key, node_id),
+            "control: the second registration replaced the first"
+        );
+
+        first.dispose();
+        assert!(
+            wants_key_routing(doc_key, node_id),
+            "the first scope's cleanup must not take the registration that \
+             replaced its own"
+        );
+
+        second.dispose();
+        assert!(
+            !is_registered(doc_key, node_id),
+            "the second scope's own cleanup does release it"
+        );
     }
 }
