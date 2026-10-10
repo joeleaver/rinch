@@ -40,8 +40,11 @@
 //!   rebuild, so an atom `Node::same_ref` to one before the change is that atom. Every
 //!   atom is the same U+FFFC, so a diff by chars alone took a picture inserted right
 //!   before another for that other (review of #1503, F2). An atom changed in place (a new
-//!   node) is the atom at its place when neither is in the change otherwise; see
-//!   `projection::SRC_CHANGE_KEEPS_IDENTITY` for the one edit this cannot tell from it.
+//!   node) is the atom at its place when neither is in the change otherwise and both
+//!   have one type and one `src`: a `src` change makes a new atom, so a picture pasted
+//!   over a selected one (which the model cannot tell from a `src` change) never takes
+//!   the old one's identity. Chosen by Joe (2026-10-09): a wrong attribution is worse
+//!   than a lost one.
 //! * **A move** writes a new char, since yrs has no move: Enter before an image in its
 //!   line deletes the image's char and inserts one in the new block, and Backspace
 //!   joining the line back does the same. [`carry_over`] hands the new char the old
@@ -59,23 +62,21 @@
 //! ## What a build from before reads
 //!
 //! An atom only ever inserted (and typed around, deleted, marked) is written exactly as
-//! before: one `@atom` value, no `@id`, nothing in [`ATOMS`]. The first per-attribute
-//! change of an atom stamps its value with `@id` = its own identity
-//! ([`write_atom_change`]), and a move writes `@id` too: a build from before refuses
-//! such an atom (`unknown reserved key @id`), which poisons its session until it
-//! rejoins on an upgraded build (#196). It never reads an atom whose attrs it would get
-//! wrong, with one exception: an older peer that changes an atom's attrs (rewriting its
-//! whole value) at the same time as a newer peer's first change of that atom can drop
-//! the stamp, and then reads the attrs as it wrote them while the newer peers lay the
-//! newer peer's entry over them.
-//!
+//! before: one `@atom` value, no `@id`, nothing in [`ATOMS`]. A per-attribute change
+//! also marks the atom's char with the reserved formatting attribute [`ATOM_STAMP`],
+//! and a move writes `@id`: a build from before refuses either (`unknown mark type
+//! @entries`, `unknown reserved key @id`), which poisons its session until it rejoins
+//! on an upgraded build (#196). So it never shows attrs it would get wrong. Once
+//! refused, a document stays refused for such a build (an `@entries` mark can extend
+//! over text beside the picture and is not cleared).
+
 //! ## Growth
 //!
 //! An entry is never removed: one per attr ever changed per atom (an overwritten value
 //! is collected by yrs). An atom deleted keeps its entries in the map; each costs a few
-//! dozen bytes (measured: the first `board` of a picture, entry and stamp, +53 bytes;
-//! 200 further `alt` changes of it +36 bytes in all; deleting it 0) and one read per
-//! operation that reads the map ([`overlay_scope`]).
+//! dozen bytes (measured: the first `board` of a picture, entry and `@entries` mark,
+//! +62 bytes; 200 further `alt` changes of it +38 bytes in all; deleting it 0) and one
+//! read per operation that reads the map ([`overlay_scope`]).
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -98,6 +99,17 @@ use crate::projection::{
 
 /// The root map holding every atom attribute written after its atom's char.
 pub(crate) const ATOMS: &str = "atoms";
+
+/// A reserved formatting attribute (value `true`) over the char of an atom that has
+/// [`ATOMS`] entries. This build reads nothing from it ([`scan_text`] skips it); it is
+/// there so a build from before per-attribute merging, which reads every formatting
+/// attribute as a mark, refuses the document loudly (`unknown mark type`) rather than
+/// show the attrs the char was written with and miss the entries (review of #1503,
+/// F5). A separate attribute, not a key in the `@atom` value: yrs can extend a
+/// formatted range over a peer's concurrent insert at its edge, and a value naming an
+/// identity that leaked onto a neighbouring picture would show that picture as this
+/// one (measured by the differential, seed 208). A leaked `@entries` is harmless.
+pub(crate) const ATOM_STAMP: &str = "@entries";
 
 /// The reserved key in an `@atom` value naming the identity the char carries over from
 /// the atom it replaced (a move), or a fresh one (a retype).
@@ -177,7 +189,7 @@ pub(crate) fn scan_text<T: ReadTxn>(txn: &T, text: &TextRef) -> Result<ScannedTe
         if let Some(attrs) = &chunk.attributes {
             for (name, value) in attrs.iter() {
                 // A cleared format can linger as an explicit null; it is not a mark.
-                if matches!(value, Any::Null | Any::Undefined) {
+                if matches!(value, Any::Null | Any::Undefined) || name.as_ref() == ATOM_STAMP {
                     continue;
                 }
                 if name.as_ref() == ATOM_MARK {
@@ -420,12 +432,9 @@ fn write_value(
 /// [`ATOMS`] entry per attr that changed. Anything else (a retype, a value the char
 /// inherited): its `@atom` is rewritten whole under a fresh identity.
 ///
-/// The first entry written for an atom whose `@atom` value names no identity also
-/// **stamps** the value with [`ATOM_ID`] = its own char id, which changes nothing for
-/// this build (that is the identity the char already had) and makes a build from
-/// before per-attribute merging refuse the atom loudly (`unknown reserved key`), rather
-/// than read the attrs it was written with and silently miss every entry (review of
-/// #1503, F5). Two peers stamping one atom at once write equal values.
+/// Writing entries also marks the char with [`ATOM_STAMP`], so a build from before
+/// per-attribute merging refuses the document loudly rather than silently miss them
+/// (review of #1503, F5). Two peers marking one char at once write equal values.
 pub(crate) fn write_atom_change(
     txn: &mut TransactionMut,
     text: &TextRef,
@@ -444,8 +453,8 @@ pub(crate) fn write_atom_change(
     // once (both pressed Enter before it) each wrote a copy carrying it. Both read the
     // same, on every replica; a change made to one of them here must not reach the
     // other, so the one changed takes an identity of its own. An identity that is the
-    // char's own id (unstamped, or stamped) is held by no other live char: a copy that
-    // carries it was written by a move that deleted this char.
+    // char's own id is held by no other live char: a copy that carries it was written
+    // by a move that deleted this char.
     let identity = identity.filter(|id| {
         atom.carried.is_none() || own.as_deref() == Some(id.as_str()) || claims(txn, id) < 2
     });
@@ -454,9 +463,12 @@ pub(crate) fn write_atom_change(
         write_value(txn, text, atom.u16, want, Some(&fresh));
         return;
     };
-    if atom.carried.is_none() {
-        write_value(txn, text, atom.u16, &atom.value, Some(&identity));
-    }
+    text.format(
+        txn,
+        atom.u16,
+        1,
+        YAttrs::from([(Arc::from(ATOM_STAMP), Any::Bool(true))]),
+    );
     let map = txn.get_or_insert_map(ATOMS);
     let put = |txn: &mut TransactionMut, k: &str, any: Any| {
         note_entry(&identity, k, &any);

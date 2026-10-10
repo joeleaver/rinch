@@ -250,11 +250,15 @@ fn concurrent_changes_of_alt_and_title_both_survive() {
     }
 }
 
-/// The same with the attribute an app is least likely to expect it on: a peer
-/// replacing the picture (`src`) while another edits its description. Both are kept;
-/// before the merge was per attribute, the old picture could come back.
+/// A peer replacing the picture (`src`) while another edits its description: the
+/// `src` change makes a new picture, and the concurrent `alt` change, made to the old
+/// one, is lost (the new `src` is kept, with the `alt` the image had). Chosen by Joe
+/// (2026-10-09): a wrong attribution is worse than a lost one — the projection cannot
+/// tell a `src` change from a picture pasted over another, and keeping the identity
+/// through it showed a peer's board markup on the pasted picture. Pimble never
+/// changes `src` on a live picture, so this costs it nothing.
 #[test]
-fn a_concurrent_src_change_and_alt_change_both_survive() {
+fn a_src_change_drops_a_concurrent_alt_change() {
     for ids in ID_ORDERS {
         let schema = Rc::new(Schema::starter_kit());
         let (mut a, mut b) = two_peers(&schema, line(&schema, SRC, "old alt", ""), ids);
@@ -264,7 +268,7 @@ fn a_concurrent_src_change_and_alt_change_both_survive() {
         let (src, alt, _) = converged(&a, &b, &schema);
         assert_eq!(
             (src.as_str(), alt.as_str()),
-            ("pimble-blob:other/blob", "new alt"),
+            ("pimble-blob:other/blob", "old alt"),
             "ids {ids:?}"
         );
     }

@@ -1489,17 +1489,18 @@ has cells (thousands of them) is refused before it is shared, and the session re
 it as not syncing until you remove it.
 
 An image's attributes merge one by one: two people changing different attributes of
-one image at the same moment (one its `alt`, the other its `title`, `src` or an
-app's `board`) both keep their change, and two changing the same attribute end up
-with one of the two values. A change to an image's attributes is kept while someone
+one image at the same moment (one its `alt`, the other its `title` or an app's
+`board`) both keep their change, and two changing the same attribute end up with one
+of the two values. Changing an image's `src` makes it a new image: a change someone
+else makes to the old one at that moment is dropped. A change to an image's attributes is kept while someone
 else types beside it, presses Enter or Backspace anywhere in its line, drags it,
 inserts or deletes another image next to it, copies it, makes the line bold or turns
 it into a heading; if they delete the image, it is deleted. Such a change never shows
-on another image. Three cases still lose it, and both editors still end up with the
-same document when they do: **pasting another picture over a selected one** at that
-moment shows the change on the pasted picture (the editor cannot tell that from
-changing the picture's `src`); **moving the image into or out of a table cell**; and
-**loading a document** over it. Two people moving one image at the same moment (both
+on another image. Some cases lose it, and both editors still end up with the same
+document when they do: **changing the image's `src`**, or **pasting another picture
+over it**, at that moment (the editor cannot tell the two apart, and a change dropped
+is better than a change shown on the wrong picture); **moving the image into or out of
+a table cell**; and **loading a document** over it. Two people moving one image at the same moment (both
 pressing Enter before it) end up with two copies of it.
 
 Every person sharing a document must run a version with per-attribute image merging

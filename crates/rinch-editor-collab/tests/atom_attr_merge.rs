@@ -571,6 +571,39 @@ fn raw_atoms(bytes: &[u8], block: u32) -> Vec<(String, Option<HashMap<String, yr
         .collect()
 }
 
+/// The chunks of block `block`'s text carrying the `@entries` mark, read with yrs alone.
+fn raw_stamped(bytes: &[u8], block: u32) -> Vec<String> {
+    use yrs::updates::decoder::Decode;
+    use yrs::{Array, Map, Text, Transact, Update};
+    let doc = yrs::Doc::with_options(yrs::Options {
+        offset_kind: yrs::OffsetKind::Utf16,
+        ..Default::default()
+    });
+    doc.transact_mut()
+        .apply_update(Update::decode_v1(bytes).unwrap())
+        .unwrap();
+    let content = doc.get_or_insert_array("content");
+    let txn = doc.transact();
+    let Some(yrs::Out::YMap(node)) = content.get(&txn, block) else {
+        panic!("no block {block}");
+    };
+    let Some(yrs::Out::YText(text)) = node.get(&txn, "text") else {
+        panic!("block {block} has no text");
+    };
+    text.diff(&txn, yrs::types::text::YChange::identity)
+        .into_iter()
+        .filter(|d| {
+            d.attributes
+                .as_ref()
+                .is_some_and(|a| matches!(a.get("@entries"), Some(yrs::Any::Bool(true))))
+        })
+        .map(|d| match &d.insert {
+            yrs::Out::Any(yrs::Any::String(s)) => s.to_string(),
+            other => panic!("{other:?}"),
+        })
+        .collect()
+}
+
 /// The `atoms` root map's keys, read with yrs alone.
 fn raw_atom_entries(bytes: &[u8]) -> Vec<(String, yrs::Any)> {
     use yrs::updates::decoder::Decode;
@@ -595,10 +628,9 @@ fn raw_atom_entries(bytes: &[u8]) -> Vec<(String, yrs::Any)> {
 /// A new image is written exactly as a build before this change writes it (one
 /// `@atom` value, its type and attrs, nothing else), so such a build reads every
 /// document whose images were only inserted. A change of one attr is one `atoms`
-/// entry, and the first one stamps the value with `@id` = the image's own char id (the
-/// identity the entry is under), so a build from before refuses the image loudly
-/// instead of silently missing the entry; a move carries `@id` and the moved image's
-/// merged attrs.
+/// entry and leaves that value alone; it marks the char with `@entries`, so a build
+/// from before refuses the document loudly instead of silently missing the entry; a
+/// move carries `@id` and the moved image's merged attrs.
 #[test]
 fn the_wire_a_new_image_a_changed_attr_and_a_moved_image() {
     let s = schema(true);
@@ -609,6 +641,7 @@ fn the_wire_a_new_image_a_changed_attr_and_a_moved_image() {
     keys.sort();
     assert_eq!(keys, vec!["@type", "alt", "src"]);
     assert!(raw_atom_entries(&a.session.snapshot()).is_empty());
+    assert_eq!(raw_stamped(&a.session.snapshot(), 0), Vec::<String>::new());
 
     a.set("board", "b1");
     let after = a.session.snapshot();
@@ -617,20 +650,16 @@ fn the_wire_a_new_image_a_changed_attr_and_a_moved_image() {
     assert!(entries[0].0.ends_with("/board"), "{entries:?}");
     assert_eq!(entries[0].1, yrs::Any::String(Arc::from("b1")));
     let id = entries[0].0.trim_end_matches("/board").to_string();
-    let mut stamped = atom.clone();
-    stamped.insert("@id".into(), yrs::Any::String(Arc::from(id.as_str())));
     assert_eq!(
         raw_atoms(&after, 0)[1].1,
-        Some(stamped),
-        "the value is stamped with its own identity, its attrs untouched"
+        Some(atom.clone()),
+        "the value is not rewritten"
     );
+    assert_eq!(raw_stamped(&after, 0), vec!["\u{fffc}".to_string()]);
     // A second change writes an entry and nothing else.
     a.set("alt", "second");
     assert_eq!(raw_atom_entries(&a.session.snapshot()).len(), 2);
-    assert_eq!(
-        raw_atoms(&a.session.snapshot(), 0)[1].1,
-        raw_atoms(&after, 0)[1].1
-    );
+    assert_eq!(raw_atoms(&a.session.snapshot(), 0)[1].1, Some(atom));
 
     // Enter right before the image moves it into a new block: its new char carries
     // the identity the entry is under.
@@ -815,7 +844,7 @@ fn an_image_inserted_right_after_an_image_is_written_in_the_old_shape() {
         values[1].get("src"),
         Some(&yrs::Any::String(Arc::from("other")))
     );
-    // And after the first was stamped by an attr change.
+    // And after the first was marked by an attr change.
     a.set("alt", "edited");
     insert_node_at(&mut a, 4, image(&s, "third", "t"));
     let chunks = raw_atoms(&a.session.snapshot(), 0);
@@ -882,32 +911,39 @@ fn an_attr_removed_in_place_reads_as_absent() {
     assert_eq!(attr(&imgs[0], "alt"), "old alt");
 }
 
-/// What the projection cannot tell from an attr change: a picture pasted over a
-/// selected picture in one step puts a new node where the old one was, as a `src`
-/// change does. With `SRC_CHANGE_KEEPS_IDENTITY` (`projection.rs`) it is taken for one,
-/// so a peer's concurrent `board` on the old picture shows on the new one. Pinned so a
-/// change of that switch is a decision, not an accident.
+/// A picture pasted over a boarded picture at the moment a peer marks the old one up:
+/// the model cannot tell a paste-over from a `src` change (both put a new node where
+/// the old one was), and a `src` change makes a new atom, so the board is lost; it
+/// never shows on the pasted picture. Chosen by Joe (2026-10-09): a wrong attribution
+/// is worse than a lost one.
 #[test]
-fn a_picture_pasted_over_another_is_taken_for_an_attr_change() {
+fn a_board_never_lands_on_a_picture_pasted_over_its_own() {
     for ids in ID_ORDERS {
-        let s = schema(true);
-        let (mut a, mut b) = two_peers(&s, document(&s, false), ids);
-        a.set("board", "on the old picture");
-        b.local(|tr| {
-            tr.replace(
-                3,
-                4,
-                Slice::new(Fragment::from_node(image(&s, "pasted", "")), 0, 0),
-            )
-            .unwrap();
-        });
-        sync(&mut a, &mut b);
-        let imgs = converged(&a, &b, &s);
-        assert_eq!(
-            srcs_and_boards(&imgs),
-            vec![("pasted".to_string(), "on the old picture".to_string())],
-            "{ids:?}"
-        );
+        for board_first in [false, true] {
+            let s = schema(true);
+            let (mut a, mut b) = two_peers(&s, document(&s, false), ids);
+            if board_first {
+                // Already boarded and synced: a second mark-up races the paste.
+                a.set("board", "first");
+                sync(&mut a, &mut b);
+            }
+            a.set("board", "on the old picture");
+            b.local(|tr| {
+                tr.replace(
+                    3,
+                    4,
+                    Slice::new(Fragment::from_node(image(&s, "pasted", "")), 0, 0),
+                )
+                .unwrap();
+            });
+            sync(&mut a, &mut b);
+            let imgs = converged(&a, &b, &s);
+            assert_eq!(
+                srcs_and_boards(&imgs),
+                vec![("pasted".to_string(), String::new())],
+                "{ids:?} board_first {board_first}"
+            );
+        }
     }
 }
 
@@ -1008,10 +1044,9 @@ fn a_picture_pasted_twice_carries_its_identity_to_neither_copy() {
 }
 
 /// A picture dragged past the text after it ("ab X cd" to "abcd X") while a peer
-/// writes its first `board`: the peer's stamp (`@id`) can land over the re-inserted
-/// text as well as the moved picture's char, and the picture is still the first atom
-/// of that run, so the board follows it. (Found by the differential, seed 544: the
-/// run's first char was taken to be the stray text.)
+/// writes its first `board`: the board follows it. (Found by the differential, seed
+/// 544: a formatted value could extend over the re-inserted text before the moved
+/// picture's char, and the run's first char was taken to be that stray text.)
 #[test]
 fn a_board_follows_a_picture_dragged_past_the_text_after_it() {
     for ids in ID_ORDERS {
@@ -1028,5 +1063,43 @@ fn a_board_follows_a_picture_dragged_past_the_text_after_it() {
         let imgs = converged(&a, &b, &s);
         assert_eq!(attr(&imgs[0], "board"), "b1", "{ids:?}: {imgs:?}");
         assert_eq!(attr(&imgs[0], "alt"), "old alt", "{ids:?}");
+    }
+}
+
+/// A copy of a picture pasted right before a second picture while a peer marks the
+/// second up: the peer's change can extend a formatted range over the pasted char (yrs
+/// orders the two edits at one boundary by client id), so the change must not be a
+/// key of the `@atom` value, or the copy reads as the second picture, board and all.
+/// (Found by the differential, seed 208, when the first change wrote `@id` into the
+/// value; it now marks the char with a separate `@entries`.)
+#[test]
+fn a_copy_pasted_before_a_picture_being_marked_up_stays_a_copy() {
+    for ids in ID_ORDERS {
+        let s = schema(true);
+        let line = para(
+            &s,
+            vec![
+                s.text("ab").unwrap(),
+                image(&s, "one", "x"),
+                image(&s, "two", "y"),
+                s.text("cd").unwrap(),
+            ],
+        );
+        let doc = s.branch("doc", Fragment::from_node(line)).unwrap();
+        let (mut a, mut b) = two_peers(&s, doc, ids);
+        a.set_nth(1, "board", AttrValue::from("on two"));
+        let one = b.state.doc.child(0).child(1).clone();
+        insert_node_at(&mut b, 4, one);
+        sync(&mut a, &mut b);
+        let imgs = converged(&a, &b, &s);
+        assert_eq!(
+            srcs_and_boards(&imgs),
+            vec![
+                ("one".to_string(), String::new()),
+                ("one".to_string(), String::new()),
+                ("two".to_string(), "on two".to_string())
+            ],
+            "{ids:?}"
+        );
     }
 }

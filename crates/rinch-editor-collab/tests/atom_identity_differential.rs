@@ -1,15 +1,19 @@
 //! A seeded random differential for an inline atom's identity (review of #1503, F2).
 //!
 //! Two peers share a random history (typing, Enter, Backspace joins, pictures inserted,
-//! moved, copied, replaced and deleted, attrs set); then peer A sets `board` on one
-//! picture while peer B makes one more random edit that keeps that picture. After the
+//! moved, copied, replaced and deleted, attrs and `src` set); then peer A sets `board`
+//! on one picture (half the time after a random edit of its own) while peer B makes one
+//! more random edit that keeps that picture. After the
 //! peers sync, the board is:
 //!
-//! * **wrong** when it shows on any other picture (or on two copies of the target):
-//!   what an app must never see, since what it draws over a picture would show over
-//!   another. The test asserts there is none.
+//! * **wrong** when it shows on any other picture: what an app must never see, since
+//!   what it draws over a picture would show over another. The test asserts there is
+//!   none.
+//! * **doubled** when both peers moved the target at once and the converged document
+//!   holds it twice, the board on both copies of it: counted and printed.
 //! * **lost** when it shows on no picture: counted and printed, and asserted only for
-//!   the edits that cannot lose it.
+//!   the edits that cannot lose it. A `src` change of the target loses it by design (a
+//!   `src` change makes a new picture: a wrong attribution is worse than a lost one).
 //!
 //! Every picture carries a unique `title`, which is how the test tells them apart; the
 //! projection never reads it. `ATOM_DIFF_SEEDS` runs more seeds (default 60, both
@@ -322,7 +326,7 @@ impl Titles {
     }
 }
 
-const OPS: [&str; 10] = [
+const OPS: [&str; 11] = [
     "type",
     "enter",
     "join",
@@ -333,6 +337,7 @@ const OPS: [&str; 10] = [
     "move-image",
     "copy-image",
     "replace-image",
+    "set-src",
 ];
 
 /// One random edit on `p`. `keep`: a title whose picture this edit must not delete,
@@ -434,6 +439,19 @@ fn random_op(
                     .unwrap();
             });
         }
+        "set-src" => {
+            // The target included: a `src` change makes a new picture, and a
+            // concurrent change of the old one is lost (never shown on another).
+            if ts.is_empty() {
+                return "noop";
+            }
+            let (at, _) = with_title(&doc, &ts[r.below(ts.len())])[0].clone();
+            let v = AttrValue::from(format!("s{}", 4 + r.below(9)));
+            p.local(|tr| {
+                tr.step(Box::new(SetNodeAttrStep::new(at, "src", v)))
+                    .unwrap();
+            });
+        }
         _ => {
             // A picture pasted over a selected one: the same place, a new node.
             if others.is_empty() {
@@ -485,6 +503,7 @@ struct Tally {
     by_op: HashMap<&'static str, usize>,
     history_copies: Vec<String>,
     lost_cases: Vec<String>,
+    doubled: Vec<String>,
 }
 
 fn run(seed: u64, ids: (u64, u64), verbose: bool, tally: &mut Tally) {
@@ -532,6 +551,16 @@ fn run(seed: u64, ids: (u64, u64), verbose: bool, tally: &mut Tally) {
     }
     let target = ts[r.below(ts.len())].clone();
     let mine = format!("board-of-{seed}");
+    // Half the time A also makes an edit of its own first, concurrent with B's (a
+    // move, a join, a copy beside the target: both sides' writes then meet in yrs).
+    let a_op = if r.chance(50) {
+        random_op(&mut r, &mut t, &s, &mut a, Some(&target))
+    } else {
+        "none"
+    };
+    if with_title(&a.state.doc, &target).len() != 1 {
+        return;
+    }
     let (at, _) = with_title(&a.state.doc, &target)[0].clone();
     a.local(|tr| {
         tr.step(Box::new(SetNodeAttrStep::new(
@@ -554,6 +583,7 @@ fn run(seed: u64, ids: (u64, u64), verbose: bool, tally: &mut Tally) {
     let b_sets_board = with_title(&b.state.doc, &target)
         .first()
         .is_some_and(|(_, n)| n.attrs().get("board").is_some());
+
     sync(&mut a, &mut b);
     let imgs = converged(&a, &b, &s);
     tally.checked += 1;
@@ -566,9 +596,18 @@ fn run(seed: u64, ids: (u64, u64), verbose: bool, tally: &mut Tally) {
     if verbose {
         eprintln!("target {target}; B {op}; boards on {carrying:?}; {imgs:?}");
     }
-    if carrying.iter().any(|x| *x != target) || carrying.len() > 1 {
+    if carrying.len() > 1 && carrying.iter().all(|x| *x == target) {
+        // Both peers moved the target at once (Enter before it on each side, a drag
+        // and an Enter): yrs keeps both new chars, so the converged document holds the
+        // picture twice, each copy carrying its identity until one is changed
+        // (`two_copies_from_concurrent_splits_are_edited_apart`). The board is on the
+        // target, twice; counted on its own.
+        tally.doubled.push(format!(
+            "seed {seed} {ids:?} A {a_op} B {op}: {target} is doubled, the board on both"
+        ));
+    } else if carrying.iter().any(|x| *x != target) {
         tally.wrong.push(format!(
-            "seed {seed} {ids:?} B {op}: the board of {target} shows on {carrying:?}"
+            "seed {seed} {ids:?} A {a_op} B {op}: the board of {target} shows on {carrying:?}"
         ));
     } else if carrying.is_empty() && !b_sets_board {
         *tally.lost.entry(op).or_default() += 1;
@@ -601,10 +640,11 @@ fn a_board_never_shows_on_another_picture() {
     let mut by_op: Vec<_> = tally.by_op.iter().collect();
     by_op.sort();
     eprintln!(
-        "checked {}; wrong {}; lost {} {lost:?}; by B's edit {by_op:?}; copies in histories {}",
+        "checked {}; wrong {}; lost {} {lost:?}; doubled by concurrent moves {}; by B's edit {by_op:?}; copies in histories {}",
         tally.checked,
         tally.wrong.len(),
         tally.lost.values().sum::<usize>(),
+        tally.doubled.len(),
         tally.history_copies.len()
     );
     for w in tally

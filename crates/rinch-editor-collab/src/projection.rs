@@ -105,12 +105,11 @@
 //! **Compatibility.** An atom only ever inserted (typed around, marked, deleted) is
 //! written exactly as before (no `@id`, nothing in `atoms`), and a document written
 //! before reads unchanged: an atom with no `@id` is identified by its char, so its attrs
-//! merge per attribute from its first change on. That first change also stamps the
-//! atom's value with `@id` (its own identity), and a move writes `@id` too: a build from
-//! before refuses an `@id` (`unknown reserved key`), which poisons its session (#196),
-//! rather than read the attrs the char was written with and miss the entries. The inline
-//! atoms' **coordinated upgrade** again; `crate::atoms` has the one concurrent case where
-//! an older build still misses an entry silently.
+//! merge per attribute from its first change on. A change also marks the atom's char
+//! with the reserved formatting attribute `@entries`, and a move writes `@id`: a build
+//! from before refuses either (`unknown mark type`, `unknown reserved key`), which
+//! poisons its session (#196), rather than read the attrs the char was written with and
+//! miss the entries. The inline atoms' **coordinated upgrade** again.
 //!
 //! Wire-compatibly this is **additive**: [`FORMAT_TAG`] does not move, which also means
 //! it needs a **coordinated upgrade**, as the leaf block atoms above do. An older reader
@@ -1161,17 +1160,6 @@ fn reconcile_text(
     Ok(())
 }
 
-/// Whether an atom changed in place to another `src` is still the same atom
-/// ([`text_splice_bounds`]). `true`: a `src` change is an attr change like any other,
-/// and keeps the identity (a peer's concurrent change of another attr is kept), but a
-/// picture pasted over a selected one in one step is then taken for it as well (a
-/// peer's concurrent change of the old picture shows on the new one). `false`: an
-/// atom whose `src` changed is a new atom, so a paste-over never takes the old one's
-/// identity, and a concurrent change of another attr of a picture whose `src` changed
-/// is lost. The model cannot tell the two edits apart (both put a new node where the
-/// old one was).
-const SRC_CHANGE_KEEPS_IDENTITY: bool = true;
-
 /// What [`model_atom_scope`] holds: the keys ([`node_key`]) of every inline atom in
 /// the blocks a local change touches, before and after it, and whether the two
 /// documents are one document edited (`related`).
@@ -1251,9 +1239,11 @@ pub(crate) fn model_atoms(node: &Node, out: &mut Vec<ModelAtom>) {
 /// editor keeps the `Rc` of an atom an edit does not rebuild, so an atom `same_ref` to
 /// one before it is that atom. An atom changed in place (its attrs set: a new node) is
 /// `same_ref` to nothing; it is taken to be the atom at its place before when that one
-/// is `same_ref` to no atom after the change either and both have one type: an attr
-/// change, kept in place (`src` included: see [`SRC_CHANGE_KEEPS_IDENTITY`], which
-/// says what that costs when a picture is pasted over a selected one). Without a
+/// is `same_ref` to no atom after the change either, both have one type and both the
+/// same `src` (or neither has one): an attr change, kept in place. A `src` change (and a
+/// picture pasted over a selected one, which the model cannot tell from it) makes a new
+/// atom, and a peer's concurrent change of the old one is lost rather than shown on
+/// another picture (the reason is with `same_place` below). Without a
 /// model that reads as the CRDT's text, or when the before and after share no node (a
 /// load, a re-base: two documents, not one edited), an atom matches only one with an
 /// equal value: an attr change there replaces the atom (a peer's concurrent change of
@@ -1322,10 +1312,18 @@ fn text_splice_bounds(
         ),
         (None, None) => Default::default(),
     };
-    let same_place = |a: &Attrs, b: &Attrs| {
-        a.get(ATOM_TYPE) == b.get(ATOM_TYPE)
-            && (SRC_CHANGE_KEEPS_IDENTITY || a.get("src") == b.get("src"))
-    };
+    // An atom changed in place is the same atom only with the same type and the same
+    // `src`. Chosen by Joe (2026-10-09): a wrong attribution is worse than a lost one —
+    // board markup would show on the wrong picture. Pimble never changes `src` on a
+    // live picture (it inserts an image only after the upload returns its final URL;
+    // moving between stores writes a fresh copy), so this costs it nothing. The
+    // rejected alternative, type alone, kept a picture's identity through a `src`
+    // change (and a peer's concurrent change of another attr with it), but the model
+    // cannot tell a `src` change from a picture pasted over a selected one (both put a
+    // new node where the old one was), so a peer's concurrent `board` on the old
+    // picture then showed on the pasted one.
+    let same_place =
+        |a: &Attrs, b: &Attrs| a.get(ATOM_TYPE) == b.get(ATOM_TYPE) && a.get("src") == b.get("src");
     common_runs(o.len(), n.len(), |i, j| {
         if o[i] != n[j] {
             return false;
