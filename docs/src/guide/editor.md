@@ -82,10 +82,30 @@ contain. The starter-kit catalogue:
 
 - **Nodes:** `doc`, `paragraph`, `heading{level}`, `blockquote`, `code_block`,
   `bullet_list`, `ordered_list`, `list_item`, `horizontal_rule`, `hard_break`,
-  `text`, `image{src, alt}`, plus the table nodes.
+  `text`, `image{src, alt, title, board, width}`, plus the table nodes.
 - **Marks:** `bold`, `italic`, `underline`, `strike`, `code`, `link{href}`,
   `highlight{color?}`, `text_color{color}`, `subscript`, `superscript`. Every mark
   is inclusive except `link` (see [inherited marks](#state-selection-stored-marks)).
+
+An image's `board` and `width` are an app's: the editor keeps them through edits,
+copy and paste and collaboration, and only shows them. `board` (an id for something
+the app draws over the picture) reaches the `<img>` as `data-board` and HTML as
+`data-board`; `width` (whole CSS pixels, absent or not positive for the natural
+width; read from HTML by HTML's dimension rules, so `320px` is 320, rounded and at
+most 65535) is the `<img>`'s `width` hint and HTML's `width`. A GFM image `![alt](src)`
+has neither, so it is written without them; an image in a table written as HTML keeps
+both. Like every attr of an inline atom they merge per attribute when collaborating:
+two peers changing different attrs of one image at once both keep their change, and a
+peer's `board` follows its picture through Enter, Backspace, drags and pictures
+inserted beside it, and never shows on another picture (one pasted over it with the
+same `src` counts as the same picture: identity is type and `src`). A change of an
+image's `src` (or a picture with another `src` pasted over it, which the editor cannot
+tell from one) makes a new picture, and a concurrent change of the old one is dropped;
+so does cutting and pasting a picture, undoing its delete, or dragging it after an
+in-editor copy of it. Chosen by Joe (2026-10-09):
+a wrong attribution is worse than a lost one — board markup would show on the wrong
+picture (`rinch-editor-collab/tests/image_attrs.rs`, `atom_attr_merge.rs`,
+`atom_identity_differential.rs`).
 
 Each node spec carries a **content expression** (e.g. `blockquote > block+`,
 `list_item > block+`, `bullet_list > list_item+`). These compile to a **ContentMatch

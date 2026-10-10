@@ -419,6 +419,65 @@ URL is made.
 you need (or destructure with `..`), and give a `match` on the source a
 wildcard arm.
 
+### Pictures drawn over, and controls over a picture
+
+The `<img>` of an `image` node asks the image loader for its node's `src`. An app
+that shows something else for some pictures (a picture with marks drawn over it)
+chooses the source from the node's attributes, once, for every editor on the
+thread:
+
+```rust
+rinch::editor::set_image_source(|attrs| {
+    let board = attrs.get_str("board").filter(|b| !b.is_empty())?;
+    Some(format!("{}#board={board}", attrs.get_str("src")?))
+});
+```
+
+`None` keeps the `src`. The document is untouched (copy, export and collaboration
+still see the `src`); only the picture shown changes. The answer is what the
+loader is asked for and what `rinch::image::reload_image` names, so two images with
+one `src` and different attributes are two pictures, each loaded and reloaded on
+its own: `reload_image("…#board=b1")` asks again for that one alone. It is asked
+whenever an `<img>` is built or its node's attributes change, with the editor
+borrowed, so it must be a function of `attrs` alone. `clear_image_source()` takes
+it away. In the browser it is `rinch_web::set_image_source`.
+
+Installed while a component renders, the source function is removed when that
+component unmounts (a later install is never clobbered by an earlier unmount);
+installed from `main`, it keeps app lifetime. It is per thread, not per document:
+two documents on one thread (two embedded contexts) share it, the last install
+winning for both. Pictures already shown keep the source they were given until
+their `<img>` is rebuilt or their attributes change; `handle.load_doc(handle.doc())`
+makes an editor's pictures ask again.
+
+To float controls over a picture (a button in its corner), an app hears where the
+pointer is:
+
+```rust
+let eye: Signal<Option<(Pos, rinch::reactive::ElementBounds)>> = Signal::new(None);
+editor.on_image_hover(move |hover| eye.set(hover.map(|h| (h.pos, h.rect))));
+```
+
+| Method | Purpose |
+|--------|---------|
+| `on_image_hover(impl Fn(Option<&ImageHover>))` | The pointer came onto an image (`Some`), moved straight onto another (`Some`), or left this editor's images (`None`). Called only when that answer changes; an image that was edited, or that a scroll or relayout moved, is reported again on the next move. |
+| `image_at_host(host_id) -> Option<(Pos, Attrs)>` | The image whose `<img>` is that host element (what the runtimes ask). |
+
+`ImageHover` carries `pos` (before the image: where a `SetNodeAttrStep` for it
+goes), `attrs`, and `rect`, the box the `<img>` is painted in, in the same frames
+as `LinkHover::rect`. The controls are the app's own elements outside the editor,
+so moving onto them leaves the image and reports `None`; keep them shown while the
+pointer is over them with their own `onmouseenter` / `onmouseleave`. Not reported
+during a drag-select or a drag-and-drop; free while no editor has the callback.
+
+Hover is measured on pointer moves only: a wheel scroll moves the picture under a
+resting pointer and reports nothing until the pointer moves, so **hide the controls
+when the content scrolls** (an `onscroll` on the scroller). On desktop the pointer
+leaving the window reports nothing either (the browser reports `None`). Like
+`on_change`, the callback belongs to the component that registered it: once that
+component unmounts it is not called again, and one registered outside any render
+keeps app lifetime.
+
 With the callback registered:
 
 - A paste whose clipboard holds a bitmap is offered. That includes a browser's
@@ -1429,20 +1488,31 @@ A table you make yourself whose merged cells span far more rows and columns than
 has cells (thousands of them) is refused before it is shared, and the session reports
 it as not syncing until you remove it.
 
-Three concurrent edits to images can still be lost, and both editors still end up
-with the same document when they are. **Two identical images side by side**
-(same `src`, same `alt`, …) whose attributes two people change at the same
-moment: the CRDT sees them as one formatted run, and one change can overwrite the
-other (#860). And **splitting a block anywhere before an image in it** (Enter in the
-text before the image, not only right before it) while someone else changes that
-image's attributes loses the change — a split moves content, and this is true of any
-mark change on moved text, not only images (#861). Enter after the image keeps it.
-And **two people changing different attributes of one image** at the same moment
-(one its `alt`, the other its `title` or `src`): an image's attributes merge as one
-value, so the image ends up exactly as one of them left it and the other's change is
-lost. Changing an image's attributes while someone else types beside it, makes the
-line bold, turns it into a heading or deletes a neighbouring character keeps the
-change; if they delete the image, it is deleted.
+An image's attributes merge one by one: two people changing different attributes of
+one image at the same moment (one its `alt`, the other its `title` or an app's
+`board`) both keep their change, and two changing the same attribute end up with one
+of the two values. An image is known by its type and its `src`: changing its `src`
+makes it a new image, and a change someone else makes to the old one at that moment is
+dropped. A change to an image's attributes is kept while someone else types beside it,
+presses Enter or Backspace anywhere in its line, drags it, inserts or deletes another
+image next to it (an identical one included), copies it elsewhere, makes the line bold
+or turns it into a heading; if they delete the image, it is deleted. Such a change
+never shows on another image; pasting a picture **with the same `src`** over it counts
+as the same image, so the change shows on the pasted one. Some cases lose it, and both
+editors still end up with the same document when they do: **changing the image's
+`src`**, or **pasting a picture with another `src` over it**, at that moment (the
+editor cannot tell the two apart, and a change dropped is better than a change shown
+on the wrong picture); **moving the image into or out of a table cell**; **cutting the
+image and pasting it back**, or **deleting it and undoing the delete** (the image comes
+back as a new one: only a move made in one step, such as a drag, keeps it);
+**dragging an image after copying it within the editor**, until either copy is changed
+(the two are one image to the editor, so which one moved cannot be told); and
+**loading a document** over it. Two people moving one image at the same moment (both
+pressing Enter before it) end up with two copies of it.
+
+Every person sharing a document must run a version with per-attribute image merging
+before any of them changes an image's attributes or moves an image: an older version
+refuses such an image and stops syncing until it rejoins on a newer one.
 
 Typing right after a link while someone else changes that link at the same moment
 keeps their change — a new `href`, removing the link, or extending it over the text

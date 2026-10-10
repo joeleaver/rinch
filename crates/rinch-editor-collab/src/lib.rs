@@ -60,6 +60,7 @@
 //! # let _ = (&a, &b, &state);
 //! ```
 
+mod atoms;
 pub mod error;
 pub mod plugin;
 pub mod projection;

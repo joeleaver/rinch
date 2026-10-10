@@ -197,3 +197,113 @@ fn a_void_container_costs_one_shape_read_per_block() {
     a.exchange(&mut b);
     assert_eq!(a.state.doc, b.state.doc);
 }
+
+// --- per-attribute atom entries are read once per operation (review of #1503, F4) ---
+
+/// `n` lines, each `x` + a picture, every picture's `alt` changed once (one entry each
+/// in the shared document's `atoms` map); a guest joined from the host's snapshot.
+fn edited_pictures(n: usize) -> (Peer, Peer) {
+    use rinch_editor_core::{AttrValue, Attrs, SetNodeAttrStep};
+    let s = Rc::new(Schema::starter_kit());
+    let blocks = (0..n)
+        .map(|i| {
+            let img = s
+                .create_node(
+                    "image",
+                    Attrs::new().with("src", AttrValue::from(format!("p{i}.png"))),
+                    Fragment::empty(),
+                )
+                .unwrap();
+            s.branch(
+                "paragraph",
+                Fragment::from_children(vec![s.text("x").unwrap(), img]),
+            )
+            .unwrap()
+        })
+        .collect();
+    let mut host = Peer::host(&s, blocks, 1);
+    for i in 0..n {
+        // Each line is 4 positions: open, `x`, the picture, close.
+        let mut tr = host.state.tr();
+        tr.step(Box::new(SetNodeAttrStep::new(
+            4 * i + 2,
+            "alt",
+            AttrValue::from(format!("alt {i}")),
+        )))
+        .unwrap();
+        let next = host.state.apply(tr);
+        host.session
+            .record_local(&s, &host.state.doc, &next.doc)
+            .unwrap();
+        host.state = next;
+    }
+    let guest = host.join(2);
+    guest.assert_model_is_projection();
+    (host, guest)
+}
+
+/// Entries of the `atoms` map and block texts read by a keystroke in a line holding a
+/// picture, by projecting it (`local`) and by a peer integrating it (`remote`, twice:
+/// the first and a second keystroke).
+fn keystroke_reads(n: usize) -> ((u64, u64), u64, u64, u64) {
+    use rinch_editor_collab::testing::{overlay_entry_reads, text_scans};
+    let (mut host, mut guest) = edited_pictures(n);
+    use rinch_editor_core::{AttrValue, SetNodeAttrStep};
+    let mut remote = Vec::new();
+    let mut local = (0, 0);
+    for k in 0..2 {
+        if k == 0 {
+            // A change of the map first, so the guest's read of it is stale.
+            let mut tr = host.state.tr();
+            tr.step(Box::new(SetNodeAttrStep::new(
+                2,
+                "alt",
+                AttrValue::from("x"),
+            )))
+            .unwrap();
+            let next = host.state.apply(tr);
+            host.session
+                .record_local(&host.schema, &host.state.doc, &next.doc)
+                .unwrap();
+            host.state = next;
+        }
+        let (e, t) = (overlay_entry_reads(), text_scans());
+        host.type_at(2 + k, "y");
+        local = (overlay_entry_reads() - e, text_scans() - t);
+        let delta = host.session.save_incremental().unwrap();
+        let before = overlay_entry_reads();
+        let next = guest
+            .session
+            .integrate_incremental(&guest.state, &delta)
+            .unwrap()
+            .expect("the keystroke changes the guest");
+        remote.push(overlay_entry_reads() - before);
+        guest.state = next;
+    }
+    guest.assert_model_is_projection();
+    assert_eq!(guest.state.doc, host.state.doc);
+    let entries = host.session.snapshot().len() as u64;
+    (local, remote[0], remote[1], entries)
+}
+
+/// A keystroke reads the `atoms` map at most once whichever side projects it — as many
+/// entries as the map holds, not that many for every line holding a picture (it was:
+/// a remote keystroke took 1.23 s at 1000 edited pictures in a debug build) — and not
+/// at all while the map has not changed since the last read. Projecting it locally
+/// scans only the line it changed (it scanned every block once: 1.4 ms a key at 1000
+/// pictures).
+#[test]
+fn a_keystroke_reads_the_atom_entries_once() {
+    let ((entries_50, scans_50), first_50, second_50, _) = keystroke_reads(50);
+    let ((entries_100, scans_100), first_100, second_100, _) = keystroke_reads(100);
+    // The host read the map when it last changed it.
+    assert_eq!((entries_50, entries_100), (0, 0));
+    assert_eq!(
+        scans_50, scans_100,
+        "a keystroke's scans do not grow with the document"
+    );
+    assert!(scans_50 <= 8, "{scans_50}");
+    // The guest reads the changed map once, then not again until it changes.
+    assert_eq!((first_50, first_100), (50, 100));
+    assert_eq!((second_50, second_100), (0, 0));
+}
