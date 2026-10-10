@@ -194,6 +194,8 @@ mod review_1481_probe_tests;
 #[cfg(all(test, software_shell))]
 mod review_1494_tests;
 #[cfg(test)]
+mod review_1514_tests;
+#[cfg(test)]
 mod right_press_click_1093_tests;
 #[cfg(test)]
 mod right_press_focus_452_review_tests;
@@ -4371,6 +4373,11 @@ impl RinchApp {
     /// having been announced an `on_focus_gained`. Closing it needs a
     /// registration identity (a generation counter), not a sharper probe.
     fn node_target_is_live(&self, node_id: usize) -> bool {
+        // A registered target `set_inner_html` freed (#1509): dead whatever
+        // node `rinch-dom` minted on its id since.
+        if crate::focus_registry::was_freed(self.doc_key(), node_id) {
+            return false;
+        }
         let registered = crate::focus_registry::is_registered(self.doc_key(), node_id);
         let Some(doc) = &self.doc else { return false };
         let d = doc.borrow();
