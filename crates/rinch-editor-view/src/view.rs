@@ -33,8 +33,31 @@ fn create_text(doc: &DocRef, text: &str) -> Option<NodeHandle> {
 /// schema type, a debugging/MCP/a11y aid) plus the node-specific attributes the
 /// tag itself does not encode. Idempotent — clears attributes that no longer
 /// apply, so an in-place update can't leave a stale `start`/`src`.
-fn apply_element_attrs(dom: &NodeHandle, node: &Node) {
+///
+/// A node whose spec keeps an app's `data-*` attributes (`NodeSpec::data_attrs`)
+/// gets each of them as itself; `old` is the node the host showed before an
+/// in-place update, whose data attributes the new one no longer has are
+/// removed. Only an app data attribute the node keeps is ever written or
+/// removed ([`rinch_editor_core::app_data_attrs`]: unreserved, bounded in
+/// number and size), so one can never overwrite or take away a name rinch
+/// reserves (`data-pm-type`, `data-rid`, …).
+fn apply_element_attrs(dom: &NodeHandle, node: &Node, old: Option<&Node>) {
     dom.set_attribute("data-pm-type", node.type_name());
+    let kept: Vec<(&str, &str)> = if node.node_type().spec().data_attrs {
+        rinch_editor_core::app_data_attrs(node.attrs()).collect()
+    } else {
+        Vec::new()
+    };
+    if let Some(old) = old {
+        for (name, _) in rinch_editor_core::app_data_attrs(old.attrs()) {
+            if !kept.iter().any(|(k, _)| *k == name) {
+                dom.remove_attribute(name);
+            }
+        }
+    }
+    for (name, value) in kept {
+        dom.set_attribute(name, value);
+    }
     match node.type_name() {
         "image" => {
             // The source the picture is loaded from: the node's `src`, unless
@@ -43,13 +66,6 @@ fn apply_element_attrs(dom: &NodeHandle, node: &Node) {
             match node.attrs().get_str("alt") {
                 Some(alt) if !alt.is_empty() => dom.set_attribute("alt", alt),
                 _ => dom.remove_attribute("alt"),
-            }
-            // An app's id for what is drawn over the picture, for its
-            // stylesheet and its own lookups; the editor does nothing else
-            // with it.
-            match node.attrs().get_str("board") {
-                Some(board) if !board.is_empty() => dom.set_attribute("data-board", board),
-                _ => dom.remove_attribute("data-board"),
             }
             // A presentational hint, as HTML's own: an author `width` rule
             // (or `max-width`) still wins, and the height follows the
@@ -473,7 +489,7 @@ impl ViewDesc {
             (create_text(doc, text)?, Vec::new(), true)
         } else {
             let el = create_element(doc, &node_dom_tag(node))?;
-            apply_element_attrs(&el, node);
+            apply_element_attrs(&el, node, None);
             let mut children = Vec::with_capacity(node.child_count());
             for i in 0..node.child_count() {
                 if let Some(child) = ViewDesc::build(node.child(i), doc) {
@@ -645,7 +661,7 @@ impl ViewDesc {
             && rinch_editor_core::tables::column_count(&self.node)
                 != rinch_editor_core::tables::column_count(new);
         if self.node.attrs() != new.attrs() || table_cols_changed {
-            apply_element_attrs(&self.dom, new);
+            apply_element_attrs(&self.dom, new, Some(&self.node));
         }
         // A cell's placement is its rectangle in the whole table's map, so a
         // span or a row anywhere in the table can move it; and a cell host
@@ -4380,11 +4396,13 @@ mod tests {
         crate::images::clear_image_source();
     }
 
-    /// An image's `board` and `width` reach its host element as `data-board`
-    /// and the `width` hint, and follow an attribute edit in place: the same
-    /// `<img>`, so a picture on screen is not torn down to change them.
+    /// An image's app data attributes and `width` reach its host element as
+    /// themselves and the `width` hint, and follow an attribute edit in place:
+    /// the same `<img>`, so a picture on screen is not torn down to change
+    /// them. A data attribute rinch reserves on the node is never written over
+    /// the view's own (`data-pm-type`).
     #[test]
-    fn an_images_board_and_width_reach_its_host_and_follow_an_edit_in_place() {
+    fn an_images_data_attrs_and_width_reach_its_host_and_follow_an_edit_in_place() {
         use rinch_editor_core::{AttrValue, Attrs, SetNodeAttrStep};
         let h = harness();
         let s = schema();
@@ -4403,15 +4421,22 @@ mod tests {
         let host = children(&h, children(&h, h.container_id)[0])[0];
         let attr = |name: &str| h.doc.borrow().get_attribute(host, name);
         assert_eq!(tag(&h, host).as_deref(), Some("img"));
-        assert_eq!((attr("data-board"), attr("width")), (None, None));
+        assert_eq!((attr("data-ref"), attr("width")), (None, None));
 
         let mut tr = st.tr();
-        tr.step(Box::new(SetNodeAttrStep::new(
-            1,
-            "board",
-            AttrValue::from("b1"),
-        )))
-        .unwrap();
+        for (name, value) in [
+            ("data-ref", "r1"),
+            ("data-annotation-id", "a1"),
+            ("data-pm-type", "paragraph"),
+            ("data-rid", "7"),
+        ] {
+            tr.step(Box::new(SetNodeAttrStep::new(
+                1,
+                name,
+                AttrValue::from(value),
+            )))
+            .unwrap();
+        }
         tr.step(Box::new(SetNodeAttrStep::new(
             1,
             "width",
@@ -4425,7 +4450,10 @@ mod tests {
             host,
             "the same <img>"
         );
-        assert_eq!(attr("data-board").as_deref(), Some("b1"));
+        assert_eq!(attr("data-ref").as_deref(), Some("r1"));
+        assert_eq!(attr("data-annotation-id").as_deref(), Some("a1"));
+        assert_eq!(attr("data-pm-type").as_deref(), Some("image"));
+        assert_eq!(attr("data-rid"), None);
         assert_eq!(attr("width").as_deref(), Some("320"));
         assert_eq!(attr("src").as_deref(), Some("x.png"));
 
@@ -4443,11 +4471,18 @@ mod tests {
         view.update_dom(&huge, &next);
         assert_eq!(attr("width").as_deref(), Some("320"));
 
-        // Taken away again, and a width that is not positive is no hint.
+        // One changed, one taken away; and a width that is not positive is no
+        // hint.
         let mut tr = next.tr();
+        tr.step(Box::new(SetNodeAttrStep::new(
+            1,
+            "data-ref",
+            AttrValue::from("r2"),
+        )))
+        .unwrap();
         tr.step(Box::new(SetNodeAttrStep {
             pos: 1,
-            attr: "board".into(),
+            attr: "data-annotation-id".into(),
             value: None,
         }))
         .unwrap();
@@ -4459,7 +4494,140 @@ mod tests {
         .unwrap();
         let last = next.apply(tr);
         view.update_dom(&next, &last);
-        assert_eq!((attr("data-board"), attr("width")), (None, None));
+        assert_eq!(attr("data-ref").as_deref(), Some("r2"));
+        assert_eq!((attr("data-annotation-id"), attr("width")), (None, None));
+        assert_eq!(attr("data-pm-type").as_deref(), Some("image"));
+    }
+
+    /// Review of PR #1518 (mutant M17): a reserved name the model carried
+    /// (a step can store any attr) and then drops is never removed from the
+    /// host: `data-pm-type` stays the view's own.
+    #[test]
+    fn review_1518_dropping_a_reserved_model_attr_keeps_the_hosts_own() {
+        use rinch_editor_core::{AttrValue, Attrs, SetNodeAttrStep};
+        let h = harness();
+        let s = schema();
+        let img = s
+            .create_node(
+                "image",
+                Attrs::new().with("src", AttrValue::from("x.png")),
+                Fragment::empty(),
+            )
+            .unwrap();
+        let p = s
+            .branch("paragraph", Fragment::from_children(vec![img]))
+            .unwrap();
+        let st = state(s.clone(), doc_node(&s, vec![p]));
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+        let host = children(&h, children(&h, h.container_id)[0])[0];
+        let mut tr = st.tr();
+        tr.step(Box::new(SetNodeAttrStep::new(
+            1,
+            "data-pm-type",
+            AttrValue::from("paragraph"),
+        )))
+        .unwrap();
+        let next = st.apply(tr);
+        view.update_dom(&st, &next);
+        let mut tr = next.tr();
+        tr.step(Box::new(SetNodeAttrStep {
+            pos: 1,
+            attr: "data-pm-type".into(),
+            value: None,
+        }))
+        .unwrap();
+        let last = next.apply(tr);
+        view.update_dom(&next, &last);
+        assert_eq!(
+            h.doc
+                .borrow()
+                .get_attribute(host, "data-pm-type")
+                .as_deref(),
+            Some("image")
+        );
+    }
+    /// The host shows only the data attributes the node keeps (the first
+    /// `MAX_DATA_ATTRS` by name): one pushed past the bound by an edit is taken
+    /// off the host, not left stale, and a value past `MAX_DATA_ATTR_VALUE` is
+    /// never stamped.
+    #[test]
+    fn the_host_shows_only_the_data_attrs_the_node_keeps() {
+        use rinch_editor_core::schema::{MAX_DATA_ATTR_VALUE, MAX_DATA_ATTRS};
+        use rinch_editor_core::{AttrValue, Attrs, SetNodeAttrStep};
+        let h = harness();
+        let s = schema();
+        let mut attrs: Vec<(String, AttrValue)> = vec![("src".into(), AttrValue::from("x.png"))];
+        attrs.extend((0..MAX_DATA_ATTRS).map(|i| (format!("data-k{i:02}"), AttrValue::from("v"))));
+        attrs.push((
+            "data-big".into(),
+            AttrValue::from("x".repeat(MAX_DATA_ATTR_VALUE + 1)),
+        ));
+        let img = s
+            .create_node("image", Attrs::from_iter(attrs), Fragment::empty())
+            .unwrap();
+        let p = s
+            .branch("paragraph", Fragment::from_children(vec![img]))
+            .unwrap();
+        let st = state(s.clone(), doc_node(&s, vec![p]));
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+        let host = children(&h, children(&h, h.container_id)[0])[0];
+        let attr = |name: &str| h.doc.borrow().get_attribute(host, name);
+        let last = format!("data-k{:02}", MAX_DATA_ATTRS - 1);
+        assert_eq!(attr(&last).as_deref(), Some("v"));
+        assert_eq!(attr("data-big"), None);
+        // `data-a` sorts first and pushes the last one past the bound.
+        let mut tr = st.tr();
+        tr.step(Box::new(SetNodeAttrStep::new(
+            1,
+            "data-a",
+            AttrValue::from("new"),
+        )))
+        .unwrap();
+        let next = st.apply(tr);
+        view.update_dom(&st, &next);
+        assert_eq!(attr("data-a").as_deref(), Some("new"));
+        assert_eq!(
+            attr(&last),
+            None,
+            "pushed past the bound, taken off the host"
+        );
+    }
+
+    /// Review of PR #1518: names rinch's desktop runtime reads on any element
+    /// (`data-tcm-item` by the text menu's hit walk, `data-block-index` by the
+    /// click text-hit walk, the input caret/selection state paint reads) must
+    /// not reach an editor `<img>` from a paste.
+    #[test]
+    fn review_1518_a_pasted_runtime_name_never_reaches_the_host() {
+        let h = harness();
+        let s = schema();
+        let slice = rinch_editor_core::serialize::slice_from_html(
+            &s,
+            r#"<p><img src="x.png" data-tcm-item="3" data-block-index="0" data-cursor-pos="1" data-selection-start="0" data-cursor-visible="true" data-text-sel-start="0" data-text-sel-end="1" data-video-player="v" data-user-rid="1" data-ref="ok"></p>"#,
+        )
+        .unwrap();
+        let p = slice.content.child(0).clone();
+        let st = state(s.clone(), doc_node(&s, vec![p]));
+        let _view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+        let host = children(&h, children(&h, h.container_id)[0])[0];
+        let attr = |name: &str| h.doc.borrow().get_attribute(host, name);
+        assert_eq!(tag(&h, host).as_deref(), Some("img"));
+        assert_eq!(attr("data-ref").as_deref(), Some("ok"), "positive control");
+        let leaked: Vec<&str> = [
+            "data-tcm-item",
+            "data-block-index",
+            "data-cursor-pos",
+            "data-selection-start",
+            "data-cursor-visible",
+            "data-text-sel-start",
+            "data-text-sel-end",
+            "data-video-player",
+            "data-user-rid",
+        ]
+        .into_iter()
+        .filter(|n| attr(n).is_some())
+        .collect();
+        assert!(leaked.is_empty(), "stamped on the editor <img>: {leaked:?}");
     }
 }
 

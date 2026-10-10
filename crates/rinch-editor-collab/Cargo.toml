@@ -42,3 +42,5 @@ pretty_assertions = "1"
 # `pub mod testing` is compiled out of every release. The facade's `collaboration`
 # feature never names it, so no downstream unification can switch it on either.
 rinch-editor-collab = { path = ".", features = ["test-util"] }
+# `model::attrs::attr_entries_copied`, for the linear-copies cost test.
+rinch-editor-core = { workspace = true, features = ["cost-counters"] }

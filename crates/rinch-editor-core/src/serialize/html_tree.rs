@@ -1287,29 +1287,32 @@ pub(super) fn is_void_tag(tag: &str) -> bool {
     )
 }
 
-/// Keep only the safe, schema-relevant attributes — drops `on*` event handlers
-/// and everything else.
+/// Keep only the safe, schema-relevant attributes and an app's data
+/// attributes ([`is_app_data_attr`](crate::schema::is_app_data_attr), which
+/// the reader keeps on a node whose schema opts in) — drops `on*` event
+/// handlers, every data attribute rinch reserves and everything else.
 fn filter_attributes(attrs: Vec<(String, String)>) -> Vec<(String, String)> {
     attrs
         .into_iter()
         .filter(|(name, _)| {
-            matches!(
-                name.as_str(),
-                "href"
-                    | "src"
-                    | "alt"
-                    | "title"
-                    | "target"
-                    | "start"
-                    | "style"
-                    | "class"
-                    | "colspan"
-                    | "rowspan"
-                    | "width"
-                    | super::html::IMAGE_BOARD
-                    | super::html::TASK_TYPE
-                    | super::html::TASK_CHECKED
-            )
+            crate::schema::is_app_data_attr(name)
+                || name == super::html::CLIPBOARD_MARK
+                || matches!(
+                    name.as_str(),
+                    "href"
+                        | "src"
+                        | "alt"
+                        | "title"
+                        | "target"
+                        | "start"
+                        | "style"
+                        | "class"
+                        | "colspan"
+                        | "rowspan"
+                        | "width"
+                        | super::html::TASK_TYPE
+                        | super::html::TASK_CHECKED
+                )
         })
         .collect()
 }

@@ -14,7 +14,7 @@
 //!
 //! An atom reads as its `@atom` value with every entry under its identity laid over
 //! it. yrs merges a map per key, so two peers changing **different** attrs of one atom
-//! at once (one its `alt`, the other an app's `board` id) write different keys and both
+//! at once (one its `alt`, the other an app's `data-*` attribute) write different keys and both
 //! survive; two peers changing the **same** attr write one key, and the replicas
 //! converge on one of the two values (last writer wins, yrs's map rule). Before this,
 //! `@atom` was the only place the attrs lived, a change rewrote the whole value, and
@@ -31,8 +31,9 @@
 //! replica reads the same and which needs nothing written: an atom written before this
 //! module existed has one too, so its attrs merge per attribute from its first change on.
 //!
-//! An identity must stay on **its** atom: an app keeps what it draws over a picture
-//! under an attr of it (`board`), and that shown over another picture is worse than lost.
+//! An identity must stay on **its** atom: an app keys its own data to a picture through
+//! an attr of it (a `data-*` attribute), and that shown on another picture is worse
+//! than lost.
 //! Two things decide which char is which atom, and both ask the model, not the text:
 //!
 //! * **The text diff** (`projection::text_splice_bounds`) matches an atom's placeholder
@@ -76,7 +77,7 @@
 //!
 //! An entry is never removed: one per attr ever changed per atom (an overwritten value
 //! is collected by yrs). An atom deleted keeps its entries in the map; each costs a few
-//! dozen bytes (measured: the first `board` of a picture, entry and `@entries` mark,
+//! dozen bytes (measured: the first app attribute of a picture, entry and `@entries` mark,
 //! +62 bytes; 200 further `alt` changes of it +38 bytes in all; deleting it 0) and one
 //! read per operation that reads the map ([`overlay_scope`]).
 
@@ -121,7 +122,7 @@ pub(crate) const ATOM_ID: &str = "@id";
 /// was written for. yrs extends a formatted range over a peer's concurrent insert at
 /// its edge, so a value can leak onto a neighbouring char; an [`ATOM_ID`] is honoured
 /// only on the char this names, and a leaked copy is inert (review 2 of #1503, R2-1:
-/// a board showed on a picture inserted beside a moved one).
+/// an app attribute showed on a picture inserted beside a moved one).
 pub(crate) const ATOM_FOR: &str = "@for";
 
 /// One char of a block's text carrying an `@atom` value, as written.
@@ -402,17 +403,29 @@ fn note_entry(identity: &str, attr: &str, value: &Any) {
 /// reserved key is ignored (the type is never changed this way: a retype writes a
 /// fresh identity); `Undefined` removes the attr.
 pub(crate) fn merged(value: &Attrs, entries: Option<&Vec<(String, Any)>>) -> Result<Attrs> {
-    let mut out = value.clone();
-    for (k, v) in entries.into_iter().flatten() {
+    let Some(entries) = entries.filter(|e| !e.is_empty()) else {
+        return Ok(value.clone());
+    };
+    // One map for every entry (not `Attrs::with` per entry, which copies the
+    // map each time: quadratic in the attribute count).
+    let mut out: std::collections::BTreeMap<Box<str>, AttrValue> = value
+        .iter()
+        .map(|(k, v)| (Box::from(k), v.clone()))
+        .collect();
+    for (k, v) in entries {
         if k.starts_with(RESERVED_PREFIX) {
             continue;
         }
-        out = match v {
-            Any::Undefined => out.without(k),
-            other => out.with(k.as_str(), decode_attr_value(k, other)?),
-        };
+        match v {
+            Any::Undefined => {
+                out.remove(k.as_str());
+            }
+            other => {
+                out.insert(k.as_str().into(), decode_attr_value(k, other)?);
+            }
+        }
     }
-    Ok(out)
+    Ok(Attrs::from_iter(out))
 }
 
 /// The merged value of every char of `scanned` carrying `@atom`, in order, each with

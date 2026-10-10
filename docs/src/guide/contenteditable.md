@@ -428,8 +428,8 @@ thread:
 
 ```rust
 rinch::editor::set_image_source(|attrs| {
-    let board = attrs.get_str("board").filter(|b| !b.is_empty())?;
-    Some(format!("{}#board={board}", attrs.get_str("src")?))
+    let id = attrs.get_str("data-annotation-id").filter(|i| !i.is_empty())?;
+    Some(format!("{}#annotation={id}", attrs.get_str("src")?))
 });
 ```
 
@@ -437,7 +437,7 @@ rinch::editor::set_image_source(|attrs| {
 still see the `src`); only the picture shown changes. The answer is what the
 loader is asked for and what `rinch::image::reload_image` names, so two images with
 one `src` and different attributes are two pictures, each loaded and reloaded on
-its own: `reload_image("…#board=b1")` asks again for that one alone. It is asked
+its own: `reload_image("…#annotation=a1")` asks again for that one alone. It is asked
 whenever an `<img>` is built or its node's attributes change, with the editor
 borrowed, so it must be a function of `attrs` alone. `clear_image_source()` takes
 it away. In the browser it is `rinch_web::set_image_source`.
@@ -1493,7 +1493,7 @@ it as not syncing until you remove it.
 
 An image's attributes merge one by one: two people changing different attributes of
 one image at the same moment (one its `alt`, the other its `title` or an app's
-`board`) both keep their change, and two changing the same attribute end up with one
+`data-*` attribute) both keep their change, and two changing the same attribute end up with one
 of the two values. An image is known by its type and its `src`: changing its `src`
 makes it a new image, and a change someone else makes to the old one at that moment is
 dropped. A change to an image's attributes is kept while someone else types beside it,

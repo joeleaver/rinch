@@ -5,10 +5,16 @@
 //! structure validation.
 
 pub mod content_match;
+pub mod data_attrs;
 pub mod mark;
 pub mod node;
 pub mod validation;
 
+pub use data_attrs::{
+    MAX_DATA_ATTR_NAME, MAX_DATA_ATTR_VALUE, MAX_DATA_ATTRS, RESERVED_DATA_ATTR_PREFIXES,
+    RESERVED_DATA_ATTRS, app_data_attrs, is_app_data_attr, is_data_attr_name,
+    is_reserved_data_attr, kept_data_attrs,
+};
 pub use mark::{MarkSpec, MarkSpecBuilder};
 pub use node::{AttrSpec, MarkSet, NodeSpec, NodeSpecBuilder};
 
@@ -221,16 +227,16 @@ impl Schema {
             spec.attrs.insert("src".into(), AttrSpec::required());
             spec.attrs.insert("alt".into(), AttrSpec::optional(""));
             spec.attrs.insert("title".into(), AttrSpec::optional(""));
-            // Two attributes the editor keeps and merges but does not interpret
-            // beyond showing them. `board` is an app's id for something drawn
-            // over the picture (written to the host element and to HTML as
-            // `data-board`); `width` is the width the picture is shown at, in
-            // whole CSS pixels, at most `IMAGE_MAX_WIDTH` (absent or not
-            // positive: its natural width — the editor's stylesheet does not
-            // cap it). A GFM image `![alt](src)` carries neither; an image in a
-            // table written as HTML keeps both.
-            spec.attrs.insert("board".into(), AttrSpec::optional(""));
+            // `width` is the width the picture is shown at, in whole CSS
+            // pixels, at most `IMAGE_MAX_WIDTH` (absent or not positive: its
+            // natural width — the editor's stylesheet does not cap it).
             spec.attrs.insert("width".into(), AttrSpec::optional(0i64));
+            // An app's own `data-*` attributes (an annotation id, a reference
+            // into its store): kept through edits, HTML, `DocNode` and
+            // collaboration, and written on the host `<img>`. A GFM image
+            // `![alt](src)` carries neither them nor `width`; an image in a
+            // table written as HTML keeps both.
+            spec.data_attrs = true;
             spec.parse_html_tags = vec!["img".into()];
             spec
         });
@@ -473,6 +479,12 @@ impl SchemaBuilder {
 
     /// Build the schema, compiling interned node/mark-type handles and the
     /// per-type content matches.
+    ///
+    /// # Panics
+    ///
+    /// When a node type that is not a leaf (one with content) sets
+    /// [`NodeSpec::data_attrs`]: app data attributes are carried through HTML
+    /// on a void element only.
     pub fn build(self) -> Schema {
         let groups = compute_groups(&self.nodes);
         // A node-type name must not collide with a group name, or content
@@ -482,6 +494,15 @@ impl SchemaBuilder {
             "a node-type name collides with a group name"
         );
         let node_types = compile_node_types(&self.nodes, &groups);
+        // App data attributes go through HTML on a void element only, so a
+        // container that kept them would lose them on every copy and paste.
+        for (name, spec) in &self.nodes {
+            assert!(
+                !spec.data_attrs || node_types[name.as_str()].is_leaf(),
+                "node type `{name}` sets `data_attrs`, which only a leaf node type \
+                 (an atom such as `image`) may"
+            );
+        }
         let mark_types = compile_mark_types(&self.marks);
         Schema {
             nodes: self.nodes,
@@ -801,8 +822,12 @@ mod tests {
         let image = schema.node("image").unwrap();
         assert!(image.attrs["src"].required);
         assert!(!image.attrs["alt"].required);
-        assert!(!image.attrs["board"].required);
         assert_eq!(image.attrs["width"].default, Some(AttrValue::Int(0)));
+        assert!(
+            image.data_attrs,
+            "the image keeps an app's data-* attributes"
+        );
+        assert!(!schema.node("paragraph").unwrap().data_attrs);
     }
 
     #[test]

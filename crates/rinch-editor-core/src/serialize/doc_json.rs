@@ -381,7 +381,7 @@ mod tests {
                     "image",
                     attrs(&[
                         ("src", AttrValue::from("b.png")),
-                        ("board", AttrValue::from("b1")),
+                        ("data-ref", AttrValue::from("r1")),
                         ("width", AttrValue::Int(320)),
                     ]),
                     Fragment::empty(),

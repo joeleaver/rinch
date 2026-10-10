@@ -655,7 +655,12 @@ impl<'a> MdBuilder<'a> {
         // blank line never ends the HTML block early.
         let decoded = trimmed.replace("&#10;", "\n");
         if self.strict
-            && let Some(dropped) = dropped_table_attr(&decoded)
+            && let Some(dropped) = dropped_table_attr(
+                &decoded,
+                self.schema
+                    .node("image")
+                    .is_some_and(|image| image.data_attrs),
+            )
         {
             let construct = match dropped {
                 DroppedAttr::UnsafeLink => Construct::UnsafeLink,
@@ -2592,11 +2597,11 @@ mod tests {
         assert!(md.contains("![logo](a.png)"), "{md}");
     }
 
-    /// A GFM image `![alt](src)` has nowhere to put an image's `board` or
-    /// `width`: it is written without them (in a table written as HTML they
-    /// are kept — `an_image_in_an_html_table_keeps_board_and_width`).
+    /// A GFM image `![alt](src)` has nowhere to put an image's data
+    /// attributes or `width`: it is written without them (in a table written
+    /// as HTML they are kept — `an_image_in_an_html_table_keeps_data_attrs_and_width`).
     #[test]
-    fn an_images_board_and_width_are_not_written() {
+    fn an_images_data_attrs_and_width_are_not_written() {
         let schema = s();
         let img = schema
             .create_node(
@@ -2604,7 +2609,7 @@ mod tests {
                 Attrs::from_iter([
                     ("src", AttrValue::from("a.png")),
                     ("alt", AttrValue::from("logo")),
-                    ("board", AttrValue::from("b1")),
+                    ("data-ref", AttrValue::from("r1")),
                     ("width", AttrValue::Int(320)),
                 ]),
                 Fragment::empty(),
@@ -3330,25 +3335,25 @@ mod tests {
         assert!(d.child(1).child(0).marks().is_empty());
     }
 
-    /// An image in a table written as HTML keeps `board` and `width`, and the
+    /// An image in a table written as HTML keeps its data attributes and `width`, and the
     /// strict reader takes that markup back; a `width` the import would not
     /// keep (a percentage, an error) is a refusal, not a silent drop.
     #[test]
-    fn an_image_in_an_html_table_keeps_board_and_width() {
+    fn an_image_in_an_html_table_keeps_data_attrs_and_width() {
         let schema = s();
         let table = |img: &str| {
             format!(
                 "<table>\n<tbody><tr><td colspan=\"2\">{img}</td></tr><tr><td>a</td><td>b</td></tr></tbody>\n</table>"
             )
         };
-        let md = table(r#"<img src="a.png" data-board="b1" width="320px">"#);
+        let md = table(r#"<img src="a.png" data-ref="r1" width="320px">"#);
         let d = doc_from_markdown_strict(&schema, &md).unwrap();
         let img = d.child(0).child(0).child(0).child(0).child(0);
         assert_eq!(img.type_name(), "image");
-        assert_eq!(img.attrs().get_str("board"), Some("b1"));
+        assert_eq!(img.attrs().get_str("data-ref"), Some("r1"));
         assert_eq!(img.attrs().get_int("width"), Some(320));
         let out = doc_to_markdown(&d);
-        assert!(out.contains(r#"data-board="b1""#), "{out}");
+        assert!(out.contains(r#"data-ref="r1""#), "{out}");
         assert!(out.contains(r#"width="320""#), "{out}");
         for width in ["50%", "+5", "0", "abc"] {
             let md = table(&format!(r#"<img src="a.png" width="{width}">"#));

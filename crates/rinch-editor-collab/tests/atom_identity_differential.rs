@@ -1,16 +1,16 @@
 //! A seeded random differential for an inline atom's identity (review of #1503, F2).
 //!
 //! Two peers share a random history (typing, Enter, Backspace joins, pictures inserted,
-//! moved, copied, replaced and deleted, attrs and `src` set); then peer A sets `board`
+//! moved, copied, replaced and deleted, attrs and `src` set); then peer A sets `data-ref`
 //! on one picture (half the time after a random edit of its own) while peer B makes one
 //! more random edit that keeps that picture. After the
-//! peers sync, the board is:
+//! peers sync, the data-ref is:
 //!
 //! * **wrong** when it shows on any other picture: what an app must never see, since
 //!   what it draws over a picture would show over another. The test asserts there is
 //!   none.
 //! * **doubled** when both peers moved the target at once and the converged document
-//!   holds it twice, the board on both copies of it: counted and printed.
+//!   holds it twice, the data-ref on both copies of it: counted and printed.
 //! * **lost** when it shows on no picture: counted and printed, and asserted only for
 //!   the edits that cannot lose it. A `src` change of the target loses it by design (a
 //!   `src` change makes a new picture: a wrong attribution is worse than a lost one).
@@ -29,11 +29,11 @@ use rinch_editor_core::{
     Selection, SetNodeAttrStep, Slice, Transaction, default_plugins,
 };
 
-const SRC: &str = "pimble-blob:6f1c2a0e/b3-9f86d081884c7d65";
+const SRC: &str = "app-blob:6f1c2a0e/b3-9f86d081884c7d65";
 const ID_ORDERS: [(u64, u64); 2] = [(11, 22), (22, 11)];
 
 /// `doc > paragraph+ > (text | image | hard_break)*`, with `image` carrying `src`,
-/// `alt`, `title` and, when `app` is set, `board` and `width`.
+/// `alt`, `title` and, when `app` is set, `data-ref` and `width`.
 fn schema(app: bool) -> Rc<Schema> {
     let mut b = Schema::builder();
     b = b.node("doc", NodeSpec::builder("doc").content("block+").build());
@@ -62,7 +62,7 @@ fn schema(app: bool) -> Rc<Schema> {
         spec.attrs.insert("alt".into(), AttrSpec::optional(""));
         spec.attrs.insert("title".into(), AttrSpec::optional(""));
         if app {
-            spec.attrs.insert("board".into(), AttrSpec::optional(""));
+            spec.data_attrs = true;
             spec.attrs.insert("width".into(), AttrSpec::optional(0i64));
         }
         spec
@@ -108,7 +108,7 @@ fn document(s: &Schema, second: bool) -> Node {
             s,
             vec![
                 s.text("ef").unwrap(),
-                image(s, "pimble-blob:two", "second"),
+                image(s, "app-blob:two", "second"),
                 s.text("gh").unwrap(),
             ],
         ));
@@ -394,7 +394,7 @@ fn random_op(
                 return "noop";
             }
             let (at, _) = with_title(&doc, &ts[r.below(ts.len())])[0].clone();
-            let k = ["alt", "board", "width"][r.below(3)];
+            let k = ["alt", "data-ref", "width"][r.below(3)];
             let v = if k == "width" {
                 AttrValue::Int(1 + r.below(500) as i64)
             } else {
@@ -550,7 +550,7 @@ fn run(seed: u64, ids: (u64, u64), verbose: bool, tally: &mut Tally) {
         return;
     }
     let target = ts[r.below(ts.len())].clone();
-    let mine = format!("board-of-{seed}");
+    let mine = format!("ref-of-{seed}");
     // Half the time A also makes an edit of its own first, concurrent with B's (a
     // move, a join, a copy beside the target: both sides' writes then meet in yrs).
     let a_op = if r.chance(50) {
@@ -565,7 +565,7 @@ fn run(seed: u64, ids: (u64, u64), verbose: bool, tally: &mut Tally) {
     a.local(|tr| {
         tr.step(Box::new(SetNodeAttrStep::new(
             at,
-            "board",
+            "data-ref",
             AttrValue::from(mine.as_str()),
         )))
         .unwrap();
@@ -580,9 +580,9 @@ fn run(seed: u64, ids: (u64, u64), verbose: bool, tally: &mut Tally) {
             images(&b.state.doc)
         );
     }
-    let b_sets_board = with_title(&b.state.doc, &target)
+    let b_sets_data_ref = with_title(&b.state.doc, &target)
         .first()
-        .is_some_and(|(_, n)| n.attrs().get("board").is_some());
+        .is_some_and(|(_, n)| n.attrs().get("data-ref").is_some());
 
     sync(&mut a, &mut b);
     let imgs = converged(&a, &b, &s);
@@ -590,35 +590,35 @@ fn run(seed: u64, ids: (u64, u64), verbose: bool, tally: &mut Tally) {
     *tally.by_op.entry(op).or_default() += 1;
     let carrying: Vec<String> = imgs
         .iter()
-        .filter(|i| attr(i, "board") == mine)
+        .filter(|i| attr(i, "data-ref") == mine)
         .map(|i| attr(i, "title"))
         .collect();
     if verbose {
-        eprintln!("target {target}; B {op}; boards on {carrying:?}; {imgs:?}");
+        eprintln!("target {target}; B {op}; data-refs on {carrying:?}; {imgs:?}");
     }
     if carrying.len() > 1 && carrying.iter().all(|x| *x == target) {
         // Both peers moved the target at once (Enter before it on each side, a drag
         // and an Enter): yrs keeps both new chars, so the converged document holds the
         // picture twice, each copy carrying its identity until one is changed
-        // (`two_copies_from_concurrent_splits_are_edited_apart`). The board is on the
+        // (`two_copies_from_concurrent_splits_are_edited_apart`). The data-ref is on the
         // target, twice; counted on its own.
         tally.doubled.push(format!(
-            "seed {seed} {ids:?} A {a_op} B {op}: {target} is doubled, the board on both"
+            "seed {seed} {ids:?} A {a_op} B {op}: {target} is doubled, the data-ref on both"
         ));
     } else if carrying.iter().any(|x| *x != target) {
         tally.wrong.push(format!(
-            "seed {seed} {ids:?} A {a_op} B {op}: the board of {target} shows on {carrying:?}"
+            "seed {seed} {ids:?} A {a_op} B {op}: the data-ref of {target} shows on {carrying:?}"
         ));
-    } else if carrying.is_empty() && !b_sets_board {
+    } else if carrying.is_empty() && !b_sets_data_ref {
         *tally.lost.entry(op).or_default() += 1;
         tally.lost_cases.push(format!(
-            "seed {seed} {ids:?} B {op}: the board of {target} is lost"
+            "seed {seed} {ids:?} B {op}: the data-ref of {target} is lost"
         ));
     }
 }
 
 #[test]
-fn a_board_never_shows_on_another_picture() {
+fn a_data_ref_never_shows_on_another_picture() {
     let seeds: u64 = std::env::var("ATOM_DIFF_SEEDS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -660,7 +660,7 @@ fn a_board_never_shows_on_another_picture() {
         "positive control: {}",
         tally.checked
     );
-    assert!(tally.wrong.is_empty(), "a board on another picture");
+    assert!(tally.wrong.is_empty(), "a data-ref on another picture");
     assert!(
         tally.history_copies.is_empty(),
         "a picture duplicated by a sequential history"
@@ -674,6 +674,6 @@ fn a_board_never_shows_on_another_picture() {
         "move-image",
         "copy-image",
     ] {
-        assert_eq!(tally.lost.get(op), None, "{op} lost a board");
+        assert_eq!(tally.lost.get(op), None, "{op} lost a data-ref");
     }
 }

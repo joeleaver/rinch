@@ -42,14 +42,14 @@ thread_local! {
 ///
 /// ```ignore
 /// rinch::editor::set_image_source(|attrs| {
-///     let board = attrs.get_str("board").filter(|b| !b.is_empty())?;
-///     Some(format!("{}#board={board}", attrs.get_str("src")?))
+///     let id = attrs.get_str("data-annotation-id").filter(|i| !i.is_empty())?;
+///     Some(format!("{}#annotation={id}", attrs.get_str("src")?))
 /// });
-/// // … and when that board changes:
-/// rinch::image::reload_image(&format!("{src}#board={board}"));
+/// // … and when that annotation changes:
+/// rinch::image::reload_image(&format!("{src}#annotation={id}"));
 /// ```
 ///
-/// and its loader answers `…#board=…` with the picture drawn over.
+/// and its loader answers `…#annotation=…` with the picture drawn over.
 ///
 /// It is asked whenever an image's `<img>` is built or its attributes change,
 /// with the editor's state borrowed: it must be a function of `attrs` alone

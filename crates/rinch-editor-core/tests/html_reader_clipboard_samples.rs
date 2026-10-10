@@ -7,7 +7,7 @@
 //! read, checked for validity and for reading back the same, and compared
 //! with the document it should give. `all_the_text_arrives` checks, for every
 //! sample, that each word a browser would show is in the document once.
-use rinch_editor_core::serialize::{node_to_html, slice_from_html};
+use rinch_editor_core::serialize::{node_to_html, slice_from_html, slice_from_pasted_html};
 use rinch_editor_core::{Node, Schema};
 
 fn valid(node: &Node) {
@@ -27,7 +27,8 @@ fn valid(node: &Node) {
 
 fn read(html: &str) -> String {
     let schema = Schema::starter_kit();
-    let slice = slice_from_html(&schema, html).unwrap();
+    // Read as the default paste reads a clipboard.
+    let slice = slice_from_pasted_html(&schema, html).unwrap();
     let doc = schema.branch("doc", slice.content.clone()).unwrap();
     valid(&doc);
     let written = node_to_html(&doc);
@@ -338,6 +339,9 @@ class=\"c-mrkdwn__quote\" data-stringify-type=\"quote\">quoted <i data-stringify
 fn slack() {
     assert_eq!(
         read(SLACK),
+        // Slack's own `data-stringify-type` on the emoji is not kept: the
+        // default paste keeps an image's data attributes only from rinch's
+        // own copy-out.
         "<p>Hello <strong>team</strong> <img alt=\":wave:\" \
          src=\"https://a.slack-edge.com/production-standard-emoji-assets/14.0/google-small/1f44b.png\"> see \
          <a href=\"https://example.com\" target=\"_blank\" rel=\"noopener noreferrer\">the doc</a>\u{a0}@sam<br>second line with \

@@ -26,6 +26,10 @@ serde = ["dep:serde"]
 markdown = ["dep:pulldown-cmark"]
 # Accessibility tree derivation (a11y.rs): EditorState -> accesskit::TreeUpdate.
 a11y = ["dep:accesskit"]
+# Test-only cost counters (`model::attrs::attr_entries_copied`): off in every
+# release build; `rinch-editor-collab`'s dev-dependency turns it on for its
+# cost tests.
+cost-counters = []
 
 [dev-dependencies]
 # Only to cross-check serialize/html_integer.rs, a private copy of its HTML

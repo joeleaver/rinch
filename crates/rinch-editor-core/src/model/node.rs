@@ -43,6 +43,7 @@ impl Node {
     /// Construct a non-text (branch or atom) node.
     pub(crate) fn new_branch(typ: NodeType, attrs: Attrs, content: Fragment) -> Node {
         debug_assert!(!typ.is_text(), "use new_text for text nodes");
+        let attrs = crate::schema::data_attrs::bound_node_data_attrs(typ.spec(), attrs);
         Node(Rc::new(NodeInner {
             typ,
             attrs,
@@ -319,6 +320,7 @@ impl Node {
     /// marks. The attr-step primitive.
     pub(crate) fn with_attrs(&self, attrs: Attrs) -> Node {
         debug_assert!(!self.is_text(), "with_attrs on a text node");
+        let attrs = crate::schema::data_attrs::bound_node_data_attrs(self.0.typ.spec(), attrs);
         Node(Rc::new(NodeInner {
             typ: self.0.typ.clone(),
             attrs,

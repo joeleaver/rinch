@@ -209,7 +209,7 @@ async fn each_source_an_app_chooses_resolves_and_reloads_on_its_own() {
     });
     set_image_source(|attrs| {
         let title = attrs.get_str("title").filter(|t| !t.is_empty())?;
-        Some(format!("{}#board={title}", attrs.get_str("src")?))
+        Some(format!("{}#overlay={title}", attrs.get_str("src")?))
     });
     const S: &str = "hover-web-blob:store/blob";
     let f = Fixture::mount(&format!(
@@ -226,7 +226,11 @@ async fn each_source_an_app_chooses_resolves_and_reloads_on_its_own() {
         .collect();
     assert_eq!(
         logical,
-        [format!("{S}#board=b1"), S.into(), format!("{S}#board=b2")]
+        [
+            format!("{S}#overlay=b1"),
+            S.into(),
+            format!("{S}#overlay=b2")
+        ]
     );
     let sorted = |v: &RefCell<Vec<String>>| {
         let mut v = v.borrow().clone();
@@ -237,14 +241,14 @@ async fn each_source_an_app_chooses_resolves_and_reloads_on_its_own() {
         sorted(&asked),
         [
             S.to_string(),
-            format!("{S}#board=b1"),
-            format!("{S}#board=b2")
+            format!("{S}#overlay=b1"),
+            format!("{S}#overlay=b2")
         ]
     );
 
     asked.borrow_mut().clear();
-    rinch::image::reload_image(&format!("{S}#board=b2"));
-    assert_eq!(sorted(&asked), [format!("{S}#board=b2")]);
+    rinch::image::reload_image(&format!("{S}#overlay=b2"));
+    assert_eq!(sorted(&asked), [format!("{S}#overlay=b2")]);
 
     asked.borrow_mut().clear();
     assert!(f.handle.update(|state| {
@@ -260,9 +264,9 @@ async fn each_source_an_app_chooses_resolves_and_reloads_on_its_own() {
     let _ = microtask().await;
     assert_eq!(
         f.images()[1].get_attribute(LOGICAL_SRC_ATTR).as_deref(),
-        Some(format!("{S}#board=b3").as_str())
+        Some(format!("{S}#overlay=b3").as_str())
     );
-    assert_eq!(sorted(&asked), [format!("{S}#board=b3")]);
+    assert_eq!(sorted(&asked), [format!("{S}#overlay=b3")]);
     clear_image_source();
     rinch_web::unregister_image_url_scheme("hover-web-blob");
     f.teardown();
