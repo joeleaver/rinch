@@ -4821,11 +4821,11 @@ Rinch owns the window. Your renderer submits frames into a `RenderSurface` compo
 
 | Type | Purpose |
 |------|---------|
-| `RenderSurfaceHandle` | Main handle — `writer()`, `gpu_registrar()`, `set_event_handler()`, `set_key_handler()` |
+| `RenderSurfaceHandle` | Main handle — `writer()`, `gpu_registrar()`, `set_event_handler()`, `set_key_handler()`, `set_pointer_events()` |
 | `RenderSurface` | Component — `RenderSurface { surface: Some(handle) }` |
 | `SurfaceWriter` | Thread-safe CPU pixel submission (`Send + Sync + Clone`) |
 | `GpuTextureRegistrar` | Thread-safe GPU texture registration (`Send + Sync + Clone`) |
-| `SurfaceEvent` | Input events dispatched to surface handler |
+| `SurfaceEvent` | Input events dispatched to surface handler (with `set_pointer_events(true)`: `PointerDown/Move/Up/Cancel` carrying a `SurfacePointer { id, kind, pressure, primary }`, and `Pinch`, instead of `MouseDown/Move/Up`) |
 | `create_render_surface()` | Factory function |
 
 **Usage:**
@@ -4845,6 +4845,23 @@ registrar.notify_frame_ready();
 
 rsx! { RenderSurface { surface: Some(surface), style: "flex: 1;" } }
 ```
+
+**A press on a surface keeps the pointer** (#1502), on desktop and the web: its moves
+and releases go to that surface wherever they are, until the release of the button that
+started it (a chord's release ends nothing, #1087). Desktop keeps one capture per pointer
+(`RinchApp::surface_captures`, so two fingers each hold one) and routes only the
+surface's events: DOM hover and the cursor still follow the pointer. A capture whose
+release went missing is ended through the missed-release heal (`release_press_gestures` →
+`release_surface_captures`): a window blur and a platform `PointerCancel` end every
+capture, a left press only the pressing pointer's (another finger's press proves nothing,
+and two fingers holding a surface is a pinch); the surface hears `PointerCancel` or, without
+pointer events, a `MouseUp` at the cursor. A surface that is unregistered or leaves the
+document drops its capture silently (`prune_surface_captures`). Ctrl+wheel on a surface with
+pointer events is a `Pinch`; desktop negates winit's `delta_y` so the direction matches the
+browser's `deltaY` (`wheel_zoom_scale` takes the DOM sign). Pointer ids: desktop mouse `1`,
+tablet tool `2`, fingers above `1 << 32`; the web passes `pointerId` through; Android and
+embed report every pointer as the mouse. Pins: `app/surface_pointer_tests.rs`,
+`shell/rinch_runtime.rs` `pointer_source_tests`, `rinch-web/tests/render_surface_pointer_events.rs`.
 
 **A focused surface only swallows the keys it claims (issue #482).** `set_event_handler`
 still receives every `KeyDown`/`KeyUp` while the surface is focused — that delivery is

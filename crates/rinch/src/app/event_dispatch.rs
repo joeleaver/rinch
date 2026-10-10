@@ -184,14 +184,19 @@ impl RinchApp {
         if let PlatformEvent::MouseDown { button, .. } = event {
             rinch_core::note_pointer_press(Self::core_button(button));
         }
+        // A surface that went away (unmounted, unregistered) holds no press.
+        self.prune_surface_captures();
         if matches!(
             event,
             PlatformEvent::MouseDown {
                 button: MouseButton::Left,
                 ..
             }
-        ) && self.heal_missed_release(vp_w, vp_h)
-        {
+        ) && self.heal_missed_release(
+            vp_w,
+            vp_h,
+            Some(crate::render_surface::current_pointer(true).id),
+        ) {
             actions.push(AppAction::RequestRedraw);
         }
 
@@ -606,69 +611,94 @@ impl RinchApp {
                     // Don't request redraw — AboutToWait batches dirty state.
                     actions.push(AppAction::SetCursor(cursor_style));
 
-                    // Dispatch MouseMove + MouseEnter/MouseLeave to render surfaces.
-                    // During an active drag with forward_surface_events, dispatch MouseMove
-                    // to the captured surface even when the mouse is outside its bounds
-                    // (pointer capture semantics).
-                    let new_surface = if let Some(hit_id) = hovered {
-                        let d = doc.borrow();
-                        Self::find_render_surface_at_full(&d.tree, hit_id, x, y)
-                    } else {
-                        None
-                    };
-
-                    let new_surface_entry = new_surface.as_ref().map(|(id, nid, _, _)| (*id, *nid));
-
-                    if new_surface_entry != self.hovered_surface {
-                        if !drag_active {
-                            // Normal (non-drag) path: dispatch enter/leave
-                            if let Some((old_id, _)) = self.hovered_surface {
-                                crate::render_surface::dispatch_surface_event(
-                                    old_id,
-                                    crate::render_surface::SurfaceEvent::MouseLeave,
-                                );
-                            }
-                            if let Some((sid, _, lx, ly)) = &new_surface {
-                                crate::render_surface::dispatch_surface_event(
-                                    *sid,
-                                    crate::render_surface::SurfaceEvent::MouseEnter {
-                                        x: *lx,
-                                        y: *ly,
-                                    },
-                                );
-                            }
-                            self.hovered_surface = new_surface_entry;
-                        }
-                        // During drag: don't update hovered_surface or send
-                        // enter/leave — the captured surface keeps getting events.
-                    }
-
-                    if let Some((surface_id, _, local_x, local_y)) = new_surface {
-                        // Mouse is over a surface — dispatch with hit-tested coords
-                        crate::render_surface::dispatch_surface_event(
-                            surface_id,
-                            crate::render_surface::SurfaceEvent::MouseMove {
-                                x: local_x,
-                                y: local_y,
-                            },
-                        );
-                    } else if drag_active && drag_forward_surface {
-                        // Mouse is OFF any surface during a drag with forwarding.
-                        // Pointer capture: dispatch to the captured surface with
-                        // coordinates relative to its bounds (may be negative or
-                        // beyond width/height).
-                        if let Some((captured_sid, captured_nid)) = self.hovered_surface {
+                    // A press on a surface holds its pointer until the release
+                    // (`SurfaceEvent`'s capture note): the move is that surface's,
+                    // in its coordinates, wherever it is, and no surface hears
+                    // an enter or a leave meanwhile.
+                    let pointer = crate::render_surface::current_pointer(false);
+                    let captured = self
+                        .surface_captures
+                        .iter()
+                        .find(|c| c.pointer == pointer.id)
+                        .map(|c| (c.surface, c.node));
+                    if let Some((sid, nid)) = captured {
+                        let (local_x, local_y) = {
                             let d = doc.borrow();
-                            let (local_x, local_y) =
-                                Self::surface_local_coords(&d.tree, captured_nid, x, y);
-                            drop(d);
-                            crate::render_surface::dispatch_surface_event(
-                                captured_sid,
-                                crate::render_surface::SurfaceEvent::MouseMove {
-                                    x: local_x,
-                                    y: local_y,
-                                },
+                            Self::surface_local_coords(&d.tree, nid, x, y)
+                        };
+                        crate::render_surface::dispatch_surface_pointer(
+                            sid,
+                            crate::render_surface::PointerPhase::Move,
+                            local_x,
+                            local_y,
+                            crate::render_surface::current_pointer(true),
+                        );
+                    } else {
+                        // Dispatch MouseMove + MouseEnter/MouseLeave to render surfaces.
+                        // During an active drag with forward_surface_events, dispatch MouseMove
+                        // to the captured surface even when the mouse is outside its bounds
+                        // (pointer capture semantics).
+                        let new_surface = if let Some(hit_id) = hovered {
+                            let d = doc.borrow();
+                            Self::find_render_surface_at_full(&d.tree, hit_id, x, y)
+                        } else {
+                            None
+                        };
+
+                        let new_surface_entry =
+                            new_surface.as_ref().map(|(id, nid, _, _)| (*id, *nid));
+
+                        if new_surface_entry != self.hovered_surface {
+                            if !drag_active {
+                                // Normal (non-drag) path: dispatch enter/leave
+                                if let Some((old_id, _)) = self.hovered_surface {
+                                    crate::render_surface::dispatch_surface_event(
+                                        old_id,
+                                        crate::render_surface::SurfaceEvent::MouseLeave,
+                                    );
+                                }
+                                if let Some((sid, _, lx, ly)) = &new_surface {
+                                    crate::render_surface::dispatch_surface_event(
+                                        *sid,
+                                        crate::render_surface::SurfaceEvent::MouseEnter {
+                                            x: *lx,
+                                            y: *ly,
+                                        },
+                                    );
+                                }
+                                self.hovered_surface = new_surface_entry;
+                            }
+                            // During drag: don't update hovered_surface or send
+                            // enter/leave — the captured surface keeps getting events.
+                        }
+
+                        if let Some((surface_id, _, local_x, local_y)) = new_surface {
+                            // Mouse is over a surface — dispatch with hit-tested coords
+                            crate::render_surface::dispatch_surface_pointer(
+                                surface_id,
+                                crate::render_surface::PointerPhase::Move,
+                                local_x,
+                                local_y,
+                                crate::render_surface::current_pointer(false),
                             );
+                        } else if drag_active && drag_forward_surface {
+                            // Mouse is OFF any surface during a drag with forwarding.
+                            // Pointer capture: dispatch to the captured surface with
+                            // coordinates relative to its bounds (may be negative or
+                            // beyond width/height).
+                            if let Some((captured_sid, captured_nid)) = self.hovered_surface {
+                                let d = doc.borrow();
+                                let (local_x, local_y) =
+                                    Self::surface_local_coords(&d.tree, captured_nid, x, y);
+                                drop(d);
+                                crate::render_surface::dispatch_surface_pointer(
+                                    captured_sid,
+                                    crate::render_surface::PointerPhase::Move,
+                                    local_x,
+                                    local_y,
+                                    crate::render_surface::current_pointer(false),
+                                );
+                            }
                         }
                     }
 
@@ -1075,8 +1105,71 @@ impl RinchApp {
                     actions.push(AppAction::RequestRedraw);
                 }
 
-                // Dispatch MouseUp to focused render surface
-                if let Some(surface_id) = crate::render_surface::focused_surface_id() {
+                // The release of a press that started on a surface is that
+                // surface's, wherever it happens. The release of the button
+                // that started it frees the pointer, which then leaves the
+                // surface if it is no longer over it; a release of another
+                // button meanwhile is a chord (#1087): the surface hears it,
+                // and keeps the pointer.
+                let pointer = crate::render_surface::current_pointer(false);
+                let captured = self
+                    .surface_captures
+                    .iter()
+                    .position(|c| c.pointer == pointer.id)
+                    .map(|i| {
+                        let capture = self.surface_captures[i];
+                        if capture.button == button {
+                            self.surface_captures.remove(i);
+                        }
+                        capture
+                    });
+                if let Some(capture) = captured {
+                    let (surface_id, surface_node) = (capture.surface, capture.node);
+                    let ended = capture.button == button;
+                    if let Some(doc) = self.doc.clone() {
+                        let (local_x, local_y, now_over) = {
+                            let d = doc.borrow();
+                            let (lx, ly) = Self::surface_local_coords(&d.tree, surface_node, x, y);
+                            let over = self.shared_hit(&d, x, y).and_then(|hit| {
+                                Self::find_render_surface_at_full(&d.tree, hit, x, y)
+                            });
+                            (lx, ly, over)
+                        };
+                        crate::render_surface::dispatch_surface_pointer(
+                            surface_id,
+                            crate::render_surface::PointerPhase::Up(
+                                crate::render_surface::SurfaceMouseButton::from_platform(button),
+                            ),
+                            local_x,
+                            local_y,
+                            pointer,
+                        );
+                        let now_over = now_over.map(|(sid, nid, lx, ly)| ((sid, nid), lx, ly));
+                        if ended
+                            && self.surface_captures.is_empty()
+                            && self.hovered_surface != now_over.map(|(entry, _, _)| entry)
+                        {
+                            if let Some((old_id, _)) = self.hovered_surface {
+                                crate::render_surface::dispatch_surface_event(
+                                    old_id,
+                                    crate::render_surface::SurfaceEvent::MouseLeave,
+                                );
+                            }
+                            if let Some(((sid, _), lx, ly)) = now_over {
+                                crate::render_surface::dispatch_surface_event(
+                                    sid,
+                                    crate::render_surface::SurfaceEvent::MouseEnter {
+                                        x: lx,
+                                        y: ly,
+                                    },
+                                );
+                            }
+                            self.hovered_surface = now_over.map(|(entry, _, _)| entry);
+                        }
+                    }
+                } else if let Some(surface_id) = crate::render_surface::focused_surface_id() {
+                    // A release with no press on a surface behind it goes to
+                    // the focused surface, as it always has.
                     if let Some(doc) = &self.doc {
                         let surface_hit = {
                             let d = doc.borrow();
@@ -1142,15 +1235,31 @@ impl RinchApp {
                         }
                     };
                     if let Some((surface_id, local_x, local_y)) = surface_hit {
-                        crate::render_surface::dispatch_surface_event(
-                            surface_id,
-                            crate::render_surface::SurfaceEvent::MouseWheel {
-                                x: local_x,
-                                y: local_y,
-                                delta_x: delta_x as f32,
-                                delta_y: delta_y as f32,
-                            },
-                        );
+                        // Ctrl+wheel zooms a surface with pointer events (a
+                        // `Pinch`, as the browser backend reports it); every
+                        // other wheel is a wheel.
+                        let zoomed = self.modifiers.ctrl
+                            && crate::render_surface::dispatch_surface_zoom(
+                                surface_id,
+                                local_x,
+                                local_y,
+                                // Desktop's `delta_y` is winit's sign, the
+                                // opposite of the DOM's `deltaY` (a positive
+                                // one scrolls content up: the wheel turned
+                                // away from the user, which zooms in).
+                                crate::render_surface::wheel_zoom_scale(-(delta_y as f32)),
+                            );
+                        if !zoomed {
+                            crate::render_surface::dispatch_surface_event(
+                                surface_id,
+                                crate::render_surface::SurfaceEvent::MouseWheel {
+                                    x: local_x,
+                                    y: local_y,
+                                    delta_x: delta_x as f32,
+                                    delta_y: delta_y as f32,
+                                },
+                            );
+                        }
                         true
                     } else {
                         false
@@ -1321,7 +1430,7 @@ impl RinchApp {
                 // keyboard grab (a global hotkey, Alt+Tab) mid-drag: that
                 // healthy drag is cancelled too. Accepted — a cancel, never a
                 // wrong commit.
-                if !focused && self.heal_missed_release(vp_w, vp_h) {
+                if !focused && self.heal_missed_release(vp_w, vp_h, None) {
                     actions.push(AppAction::RequestRedraw);
                 }
                 if self.window_focused != focused {
@@ -2210,7 +2319,7 @@ impl RinchApp {
         #[cfg(feature = "desktop")]
         crate::editor::end_drag(self.input_doc());
 
-        released |= self.release_press_gestures(vp_w, vp_h);
+        released |= self.release_press_gestures(vp_w, vp_h, None);
 
         // The pointer-capture drag's counterpart to the `finish_drag` on
         // `MouseUp`. A no-op when none is active.
@@ -2237,13 +2346,17 @@ impl RinchApp {
     ///   `data-ondrop`.
     /// - A scrollbar-thumb drag and a read-only text-selection drag are just
     ///   released; the selection itself is kept, as a release would keep it.
+    /// - A render surface holding a press hears it cancelled
+    ///   ([`Self::release_surface_captures`]; `pressing` limits that to one
+    ///   pointer's).
     ///
     /// Returns whether anything was in flight.
-    fn release_press_gestures(&mut self, vp_w: f32, vp_h: f32) -> bool {
+    fn release_press_gestures(&mut self, vp_w: f32, vp_h: f32, pressing: Option<u64>) -> bool {
         let mut released = self.pending_drag.take().is_some();
         released |= self.cancel_active_dnd(vp_w, vp_h);
         released |= self.scrollbar_drag.take().is_some();
         released |= std::mem::take(&mut self.text_selecting);
+        released |= self.release_surface_captures(pressing);
         released
     }
 
@@ -3630,15 +3743,105 @@ impl RinchApp {
     /// stranded element drag is cancelled (`data-ondragend`, no `data-ondrop`)
     /// rather than dropped by the next unrelated release. `:active` is not
     /// cleared: a press sets its own, but after a blur it stays where the
-    /// stranded press put it until the next release (pre-existing). Returns whether
-    /// anything was ended.
-    fn heal_missed_release(&mut self, vp_w: f32, vp_h: f32) -> bool {
+    /// stranded press put it until the next release (pre-existing). A render
+    /// surface holding a press is told it was cancelled
+    /// ([`Self::release_surface_captures`]) — for a press, only the pressing
+    /// pointer's capture (`pressing`), since another finger's press proves
+    /// nothing about this one; for a blur (`None`), every capture. Returns
+    /// whether anything was ended.
+    fn heal_missed_release(&mut self, vp_w: f32, vp_h: f32, pressing: Option<u64>) -> bool {
         #[cfg(feature = "desktop")]
         crate::editor::end_drag(self.input_doc());
-        let released = self.release_press_gestures(vp_w, vp_h);
+        let released = self.release_press_gestures(vp_w, vp_h, pressing);
         // Every build: `handle_event` calls this with or without `desktop`
         // (embed, Android), and the pointer-capture drag lives in rinch-core.
         rinch_core::heal_missed_release() | released
+    }
+
+    /// The platform took `pointer` away mid-press (a touch the system
+    /// cancelled): the surface holding its press hears a `PointerCancel` (a
+    /// `MouseUp` where the cursor is, without pointer events) and lets it go.
+    /// Nothing happens for a pointer that holds no surface's press. Desktop
+    /// only: no other shell names the pointer a touch belongs to.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn cancel_surface_pointer(
+        &mut self,
+        pointer: crate::render_surface::SurfacePointer,
+    ) {
+        let Some(i) = self
+            .surface_captures
+            .iter()
+            .position(|c| c.pointer == pointer.id)
+        else {
+            return;
+        };
+        let capture = self.surface_captures.remove(i);
+        self.dispatch_surface_capture_cancel(capture, pointer);
+    }
+
+    /// Tell the surface holding `capture` that its press is over without a
+    /// release: `PointerCancel` with pointer events, a `MouseUp` where the
+    /// cursor is without.
+    fn dispatch_surface_capture_cancel(
+        &self,
+        capture: super::SurfaceCapture,
+        pointer: crate::render_surface::SurfacePointer,
+    ) {
+        let (x, y) = self.cursor_pos.unwrap_or((0.0, 0.0));
+        let (local_x, local_y) = match &self.doc {
+            Some(doc) => Self::surface_local_coords(&doc.borrow().tree, capture.node, x, y),
+            None => (x, y),
+        };
+        crate::render_surface::dispatch_surface_pointer_cancel(
+            capture.surface,
+            local_x,
+            local_y,
+            pointer,
+        );
+    }
+
+    /// End the surface captures whose release went missing, as
+    /// [`Self::release_press_gestures`] ends every other press gesture: each
+    /// surface hears its press cancelled (`PointerCancel`, or a `MouseUp`
+    /// without pointer events). `only`: just that pointer's (a press proves
+    /// only its own pointer's release was missed — another finger's press
+    /// proves nothing, and two fingers each holding a surface is a pinch);
+    /// `None`: every one (a window blur, a platform `PointerCancel`).
+    /// Answers whether any was ended.
+    pub(crate) fn release_surface_captures(&mut self, only: Option<u64>) -> bool {
+        let mut ended = Vec::new();
+        self.surface_captures.retain(|c| {
+            let end = only.is_none_or(|id| c.pointer == id);
+            if end {
+                ended.push(*c);
+            }
+            !end
+        });
+        for capture in &ended {
+            let pointer = crate::render_surface::SurfacePointer {
+                pressure: 0.0,
+                ..capture.device
+            };
+            self.dispatch_surface_capture_cancel(*capture, pointer);
+        }
+        !ended.is_empty()
+    }
+
+    /// Drop the captures of surfaces that went away (unregistered — an
+    /// unmounted `RenderSurface` unregisters itself — or whose node left the
+    /// document): nothing is left to tell, and a stale capture would keep
+    /// every other surface from hearing an enter, a move or a leave.
+    pub(crate) fn prune_surface_captures(&mut self) {
+        if self.surface_captures.is_empty() {
+            return;
+        }
+        let doc = self.doc.clone();
+        self.surface_captures.retain(|c| {
+            crate::render_surface::surface_is_registered(c.surface)
+                && doc
+                    .as_ref()
+                    .is_some_and(|d| d.borrow().is_connected(rinch_core::dom::NodeId(c.node)))
+        });
     }
 }
 
@@ -4434,6 +4637,26 @@ impl RinchApp {
             })
         };
         rect().unwrap_or_default()
+    }
+
+    /// A trackpad pinch (winit's `PinchGesture`) of `delta` (positive is
+    /// magnification): a `Pinch` with scale `1 + delta` to the surface under
+    /// the cursor, if it has pointer events. Answers whether one heard it.
+    pub(crate) fn surface_pinch_gesture(&mut self, delta: f32) -> bool {
+        let Some((x, y)) = self.cursor_pos else {
+            return false;
+        };
+        let Some(doc) = self.doc.clone() else {
+            return false;
+        };
+        let surface_hit = {
+            let d = doc.borrow();
+            self.shared_hit(&d, x, y)
+                .and_then(|hit| Self::find_render_surface_at(&d.tree, hit, x, y))
+        };
+        surface_hit.is_some_and(|(surface_id, local_x, local_y)| {
+            crate::render_surface::dispatch_surface_zoom(surface_id, local_x, local_y, 1.0 + delta)
+        })
     }
 
     /// Report the link under the pointer to [`crate::editor::set_link_hover`],
