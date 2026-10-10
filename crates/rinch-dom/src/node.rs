@@ -1157,15 +1157,14 @@ pub struct Node {
     /// between them became `display: contents`) can be put back. Only ever
     /// set on a node in [`NodeTree::ancestor_absolutes`].
     pub(crate) abs_ancestor_baked: bool,
-    /// Where this absolute box's **static position** starts on the inline
-    /// axis, measured from its containing block's padding edge, as the last
-    /// layout found it (`RinchDocument::resolve_static_shrink_to_fit`,
-    /// #1404). An auto-width box with both inline insets `auto` is shrunk to
-    /// fit in what is left of its containing block from there, and the bake
-    /// that says so (`out_of_flow::apply_out_of_flow_size_overrides`) reads
-    /// it. Only ever non-zero on a box resolved against the initial
-    /// containing block or a non-parent ancestor.
-    pub(crate) abs_static_offset: f32,
+    /// Where this absolute box's **static position** lies on the inline
+    /// axis of its containing block, as the last layout found it — start,
+    /// centre or end, by how it is aligned (`out_of_flow::StaticAnchor`,
+    /// `RinchDocument::resolve_static_shrink_to_fit`, #1404). An auto-width
+    /// box with both inline insets `auto` is shrunk to fit in the room that
+    /// leaves it, and every bake of its size reads it. `StaticAnchor::EDGE`
+    /// (the block's start edge: the whole width) on every other box.
+    pub(crate) abs_static_anchor: crate::out_of_flow::StaticAnchor,
     /// Whether this node is a CSS pseudo-element (::before or ::after).
     /// Pseudo-element nodes are synthetic children created during style resolution
     /// and are cleaned up before re-resolution to avoid duplicates.
@@ -1512,7 +1511,7 @@ impl Node {
             on_abs_chain: false,
             abs_ancestor_recorded: false,
             abs_ancestor_baked: false,
-            abs_static_offset: 0.0,
+            abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -1587,7 +1586,7 @@ impl Node {
             on_abs_chain: false,
             abs_ancestor_recorded: false,
             abs_ancestor_baked: false,
-            abs_static_offset: 0.0,
+            abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -1661,7 +1660,7 @@ impl Node {
             on_abs_chain: false,
             abs_ancestor_recorded: false,
             abs_ancestor_baked: false,
-            abs_static_offset: 0.0,
+            abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
@@ -1733,7 +1732,7 @@ impl Node {
             on_abs_chain: false,
             abs_ancestor_recorded: false,
             abs_ancestor_baked: false,
-            abs_static_offset: 0.0,
+            abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
             is_pseudo_element: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),

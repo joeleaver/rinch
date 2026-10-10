@@ -8,7 +8,7 @@
 //! block gave 394 (and overflowed it by 20), and a box under a narrow
 //! unpositioned wrapper wrapped at the wrapper's width.
 //!
-//! Every number in `CHROME` is **Chrome 153**'s (`--headless=new`, standards
+//! Every number in `CHROME` is **Chrome 155**'s (`--headless=new`, standards
 //! mode, `* { box-sizing: border-box }`, 800x600, device scale factor 1, the
 //! bundled Inter registered as `ProbeFace` through `@font-face`,
 //! `16px/20px`), `getBoundingClientRect` relative to the container `c`'s
@@ -30,7 +30,7 @@ use rinch_dom::testing::query_selector;
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
 const VIEWPORT: (f32, f32) = (800.0, 600.0);
 
-/// (name, html, Chrome 153).
+/// (name, html, Chrome 155).
 const CHROME: &[(&str, &str, &str)] = &[
     (
         "d01_left",
@@ -208,6 +208,41 @@ const CHROME: &[(&str, &str, &str)] = &[
         "p=45,8,200,200 a=51,8,346,40 t=51,8,346,40",
     ),
     (
+        "a11d_static_in_column_center",
+        r##"<div data-m="c" style="position:relative;width:400px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;"><div data-m="p" style="width:200px;height:200px;margin-left:30px;display:flex;flex-direction:column;align-items:center;"><div data-m="a" style="position:absolute;"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div></div>"##,
+        "p=45,8,200,200 a=3,8,284,40 t=3,8,284,40",
+    ),
+    (
+        "a11e_static_in_column_end",
+        r##"<div data-m="c" style="position:relative;width:400px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;"><div data-m="p" style="width:200px;height:200px;margin-left:30px;display:flex;flex-direction:column;align-items:flex-end;"><div data-m="a" style="position:absolute;"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div></div>"##,
+        "p=45,8,200,200 a=3,8,242,60 t=3,8,242,60",
+    ),
+    (
+        "a11f_static_in_column_self_center",
+        r##"<div data-m="c" style="position:relative;width:400px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;"><div data-m="p" style="width:200px;height:200px;margin-left:30px;display:flex;flex-direction:column;"><div data-m="a" style="position:absolute;align-self:center"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div></div>"##,
+        "p=45,8,200,200 a=3,8,284,40 t=3,8,284,40",
+    ),
+    (
+        "a11g_static_in_row_reverse",
+        r##"<div data-m="c" style="position:relative;width:400px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;"><div data-m="p" style="width:200px;height:200px;margin-left:30px;display:flex;flex-direction:row-reverse;"><div data-m="a" style="position:absolute;"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div></div>"##,
+        "p=45,8,200,200 a=3,8,242,60 t=3,8,242,60",
+    ),
+    (
+        "a11h_static_in_column_wrap_reverse",
+        r##"<div data-m="c" style="position:relative;width:400px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;"><div data-m="p" style="width:200px;height:200px;margin-left:30px;display:flex;flex-direction:column;flex-wrap:wrap-reverse;"><div data-m="a" style="position:absolute;"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div></div>"##,
+        "p=45,8,200,200 a=3,8,242,60 t=3,8,242,60",
+    ),
+    (
+        "a11i_static_in_flex_center_near_end",
+        r##"<div data-m="c" style="position:relative;width:400px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;"><div data-m="p" style="width:200px;height:200px;margin-left:30px;display:flex;justify-content:center;margin-left:150px;"><div data-m="a" style="position:absolute;"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div></div>"##,
+        "p=165,8,200,200 a=133,8,264,60 t=133,8,264,60",
+    ),
+    (
+        "a28_static_pct_margins",
+        r##"<div data-m="c" style="position:relative;width:400px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;"><div style="margin-left:42px"><div data-m="a" style="position:absolute;margin-left:5%;margin-right:10%"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div></div>"##,
+        "a=76.69,8,280.92,60 t=76.69,8,280.92,60",
+    ),
+    (
         "a12_static_in_grid",
         r##"<div data-m="c" style="position:relative;width:400px;height:300px;padding:5px 0 0 12px;border:3px solid;margin:9px 0 0 14px;font:16px/20px ProbeFace;"><div data-m="p" style="width:200px;height:200px;margin-left:30px;display:grid;padding-left:6px;"><div data-m="a" style="position:absolute;"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div></div>"##,
         "p=45,8,200,200 a=51,8,346,40 t=51,8,346,40",
@@ -374,16 +409,6 @@ const CHROME: &[(&str, &str, &str)] = &[
 /// come here and take the row out.
 const KNOWN: &[(&str, &str, &str)] = &[
     (
-        "a11_static_in_flex_center",
-        "p=45,8,200,200 a=-31,8,352,40 t=-31,8,352,40",
-        "a box centred by its flex container from its static position: rinch gives it the room after the container's content edge and centres it there (Chrome: twice the shorter distance from the centre to a containing-block edge, and placed at that edge)",
-    ),
-    (
-        "a11b_static_in_flex_end",
-        "p=45,8,200,200 a=-107,8,352,40 t=-107,8,352,40",
-        "as a11, for `justify-content: flex-end`",
-    ),
-    (
         "a12_static_in_grid",
         "p=45,8,200,200 a=45,8,352,40 t=45,8,352,40",
         "the static position in a grid container that is not the containing block is its padding edge in rinch and its content edge in Chrome",
@@ -471,7 +496,8 @@ fn num(v: f32) -> String {
 }
 
 /// Whether two dumps agree to within the pixel grid: rinch puts every box
-/// edge on a whole pixel, Chrome reports the unrounded box.
+/// edge on a whole pixel, Chrome reports the unrounded box — so a width,
+/// whose two edges are rounded apart, can be a whole pixel off.
 fn close(want: &str, got: &str) -> bool {
     let nums = |s: &str| -> Vec<f32> {
         s.split(' ')
@@ -480,7 +506,7 @@ fn close(want: &str, got: &str) -> bool {
             .collect()
     };
     let (w, g) = (nums(want), nums(got));
-    w.len() == g.len() && w.iter().zip(&g).all(|(a, b)| (a - b).abs() <= 0.75)
+    w.len() == g.len() && w.iter().zip(&g).all(|(a, b)| (a - b).abs() <= 1.0)
 }
 
 fn known(name: &str) -> Option<&'static (&'static str, &'static str, &'static str)> {
@@ -488,7 +514,7 @@ fn known(name: &str) -> Option<&'static (&'static str, &'static str, &'static st
 }
 
 #[test]
-fn shrink_to_fit_widths_match_chrome_153() {
+fn shrink_to_fit_widths_match_chrome_155() {
     let mut rows = 0;
     let bad: Vec<_> = CHROME
         .iter()
@@ -580,6 +606,45 @@ fn histories() -> Vec<(&'static str, String, String)> {
             r(&wrapped(30, "left:20px"), 400),
             r(&wrapped(30, ""), 400),
         ),
+        // Percentage margins, the containing block narrowed (review of
+        // #1510: the stored static offset carried the old margin).
+        (
+            "pct_margins_cb_narrowed",
+            r(
+                &format!(
+                    r##"<div data-m="w" style="margin-left:42px">{}</div>"##,
+                    direct("margin-left:5%;margin-right:10%")
+                ),
+                400,
+            ),
+            r(
+                &format!(
+                    r##"<div data-m="w" style="margin-left:42px">{}</div>"##,
+                    direct("margin-left:5%;margin-right:10%")
+                ),
+                333,
+            ),
+        ),
+        // A flex container that centres the box, moved toward the block's end.
+        (
+            "flex_centre_moves",
+            r(
+                &wrapped(30, "").replacen(
+                    "height:200px",
+                    "height:200px;display:flex;justify-content:center",
+                    1,
+                ),
+                400,
+            ),
+            r(
+                &wrapped(150, "").replacen(
+                    "height:200px",
+                    "height:200px;display:flex;justify-content:center",
+                    1,
+                ),
+                400,
+            ),
+        ),
         // The wrapper starts generating no box.
         (
             "contents",
@@ -597,12 +662,27 @@ fn incremental_layout_equals_a_fresh_one() {
     let bad: Vec<_> = histories()
         .into_iter()
         .filter_map(|(n, before, after)| {
+            // The same nodes, restyled: every marked element takes the style
+            // it has in `after` (the two differ in styles alone).
             let mut doc = lay_out(&before);
-            // Replace the container's markup in place: the wrapper div the
-            // fixture mounted holds it.
-            let c = one(&doc, "[data-m=c]");
-            let wrap = doc.tree.get(c).unwrap().parent.unwrap();
-            doc.set_inner_html(rinch_core::dom::NodeId(wrap), &after);
+            let style_of = |html: &str, m: &str| -> String {
+                let at = html.find(&format!(r#"data-m="{m}" style=""#)).unwrap();
+                let rest = &html[at + format!(r#"data-m="{m}" style=""#).len()..];
+                rest[..rest.find('"').unwrap()].to_string()
+            };
+            let mut changed = 0;
+            for m in ["c", "w", "p", "a"] {
+                if !before.contains(&format!(r#"data-m="{m}""#)) {
+                    continue;
+                }
+                let (old, new) = (style_of(&before, m), style_of(&after, m));
+                if old != new {
+                    changed += 1;
+                    let id = rinch_core::dom::NodeId(one(&doc, &format!("[data-m={m}]")));
+                    doc.set_attribute(id, "style", &new);
+                }
+            }
+            assert_eq!(changed, 1, "{n}: one element is restyled");
             doc.resolve_layout(VIEWPORT.0, VIEWPORT.1 + 40.0);
             let fresh = lay_out(&after);
             let want = "a=0,0,0,0 t=0,0,0,0";

@@ -463,9 +463,19 @@ impl AtomicContributions<'_> {
         // Resolved against exactly this width: the size it has is the answer
         // (and the one the paint layout will use).
         if resolved_at.is_some_and(|w| (w - wrap).abs() < 0.01) {
-            // Capped: its margin box, as below.
+            // Capped: its margin box, as below — at the width it was capped
+            // at, not the one rounding gave its layout, or a measure at this
+            // width answers otherwise than the one before the box was
+            // resolved here, and a container sized from it moves by the
+            // rounding (review of #1510).
             return match plain_shrink_to_fit_margins(&node.computed_style) {
-                Some(margins) if layout.0 + 0.5 < natural.0 => (layout.0 + margins, layout.1),
+                Some(margins) if layout.0 + 0.5 < natural.0 => {
+                    let width = self
+                        .min_content
+                        .get(&id)
+                        .map_or(layout.0, |&min| (wrap - margins).max(0.0).max(min));
+                    (width + margins, layout.1)
+                }
                 _ => layout,
             };
         }
