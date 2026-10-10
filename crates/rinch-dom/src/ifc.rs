@@ -496,7 +496,15 @@ impl AtomicContributions<'_> {
             // its min-content compute, which breaks its text at every
             // opportunity: at its min-content *width* the short words share
             // lines (review of #1488).
-            Some(fit) => (fit + margins, layout.1),
+            //
+            // At the width its layout will round that to (a box laid out as
+            // a root is `round(width)` wide), which is what the branch above
+            // answers once it has been: a measure at this width then answers
+            // the same before and after, so a container sized from it does
+            // not move by the rounding between an incremental layout and a
+            // fresh one, and is not a pixel narrower than the box it holds
+            // (reviews of #1510).
+            Some(fit) => (fit.round() + margins, layout.1),
         }
     }
 }
@@ -5986,7 +5994,7 @@ impl RinchDocument {
                 // `align-items: baseline` aligns its own items by it.
                 let mut first_baseline: Option<f32> = None;
                 let out = taffy::compute_leaf_layout(
-                    inputs,
+                    crate::out_of_flow::absolute_leaf_inputs(inputs, style),
                     style,
                     |_, _| 0.0,
                     |known_dims, avail_space| {

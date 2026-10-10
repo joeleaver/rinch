@@ -680,8 +680,6 @@ differs, each with its issue:
   the first layout is not where it settles — it drifts over the next few
   layouts, and since #1476 an `auto` box in a neighbouring item or track
   moves with it (up to seven layouts, measured).
-  And an absolute box with only `left` (or only `right`) set is shrunk to
-  fit its parent's whole width, not that width less the inset (#1404).
   A box that fits within a pixel of its containing block is left unwrapped
   (a 380.9px line in a 380px block overflows by that pixel).
 

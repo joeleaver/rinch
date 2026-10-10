@@ -253,13 +253,20 @@ impl RinchDocument {
                     self.tree.abs_late_moves = true;
                 }
                 crate::out_of_flow::replace_all(&mut self.tree);
+                // The rebuild may also have moved the static position of a
+                // box that is shrunk to fit from it (`text-align` moves its
+                // line, or an atomic inline it sits in): its width is owed a
+                // compute after all (#1404).
+                if !self.resolve_static_shrink_to_fit() {
+                    return;
+                }
             } else {
                 if viewport_changed {
                     self.tree.hit_cache.invalidate();
                 }
                 self.tree.perf.bump(Counter::LayoutSkippedPaintOnly);
+                return;
             }
-            return;
         }
         self.tree.hit_cache.invalidate();
         self.tree.layout_dirty = false;
@@ -548,10 +555,15 @@ impl RinchDocument {
             if self.tree.abs_inline_cb_seen {
                 self.measure_inline_containing_blocks();
             }
-            if self.tree.abs_inline_cb_seen
+            let spans_changed = self.tree.abs_inline_cb_seen
                 && inline_rounds < 8
-                && self.resolve_ancestor_absolutes(true)
-            {
+                && self.resolve_ancestor_absolutes(true);
+            // #1404: a box shrunk to fit from its static position has the
+            // room its containing block leaves after that position, which
+            // the lines (a place in one, an atomic inline on the way up)
+            // have only now settled. One `is_empty` without such a box.
+            let statics_changed = inline_rounds < 8 && self.resolve_static_shrink_to_fit();
+            if spans_changed || statics_changed {
                 inline_rounds += 1;
                 rebaked = true;
                 continue;
@@ -766,7 +778,7 @@ impl RinchDocument {
                     // `with_first_baseline` hands it to Taffy (#1013).
                     let mut first_baseline: Option<f32> = None;
                     let out = taffy::compute_leaf_layout(
-                        inputs,
+                        crate::out_of_flow::absolute_leaf_inputs(inputs, style),
                         style,
                         |_, _| 0.0,
                         |known_dims, avail_space| {
@@ -1563,6 +1575,13 @@ impl RinchDocument {
                 {
                     self.tree.placed_absolutes.push((node_id, kind));
                     self.tree.perf.bump(crate::perf::Counter::AbsBoxesVisited);
+                    // One shrunk to fit from its static position is looked
+                    // at again once the lines say where that is (#1404).
+                    if crate::out_of_flow::fits_from_static_position(
+                        &self.tree.nodes[node_id].computed_style,
+                    ) {
+                        self.tree.abs_static_fits.push((node_id, Some(kind)));
+                    }
                     // Its static position: Taffy's, or its place in a line
                     // (#632).
                     let location = crate::out_of_flow::static_location(
@@ -1582,7 +1601,20 @@ impl RinchDocument {
                         new_layout.x = x;
                         new_layout.y = y;
                     }
-                } else if kind.is_none() && self.tree.nodes[node_id].static_ifc_root.is_some() {
+                } else if kind.is_none()
+                    && crate::out_of_flow::fits_in_layout_parent_later(&self.tree, node_id)
+                    && crate::out_of_flow::is_laid_out(
+                        &self.tree,
+                        node_id,
+                        (new_layout.width, new_layout.height),
+                    )
+                {
+                    // Shrunk to fit in its parent from its static position,
+                    // or in a grid: sized from the parent's last layout,
+                    // which is checked once the lines are built (#1404).
+                    self.tree.abs_static_fits.push((node_id, None));
+                }
+                if kind.is_none() && self.tree.nodes[node_id].static_ifc_root.is_some() {
                     // Taffy's own answer — the layout parent is the
                     // containing block — except on an axis with no inset,
                     // when the box sits among inline content: its static
