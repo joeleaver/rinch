@@ -75,6 +75,8 @@ mod editor_image_drop_review_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_image_drop_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_image_hover_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_inline_leaf_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_line_edge_scrolled_tests;

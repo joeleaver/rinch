@@ -23,6 +23,7 @@ use std::cell::{Cell, RefCell};
 use rinch_core::doc_matches as same_doc;
 
 use crate::handle::EditorHandle;
+use crate::images::ImageHover;
 use crate::links::{LinkHover, LinkSpan};
 
 thread_local! {
@@ -52,6 +53,13 @@ thread_local! {
     /// The link each document's pointer is over, as `(doc, editor, link)` —
     /// at most one per document, keyed like [`DRAG`]. See [`set_link_hover`].
     static LINK_HOVER: RefCell<Vec<(Option<u64>, EditorHandle, LinkSpan)>> =
+        const { RefCell::new(Vec::new()) };
+    /// How many live editors on this thread have an
+    /// [`EditorHandle::on_image_hover`] callback — see [`image_hover_wanted`].
+    static IMAGE_HOVER_LISTENERS: Cell<usize> = const { Cell::new(0) };
+    /// The image each document's pointer is over, as `(doc, editor, hover)` —
+    /// at most one per document, keyed like [`DRAG`]. See [`set_image_hover`].
+    static IMAGE_HOVER: RefCell<Vec<(Option<u64>, EditorHandle, ImageHover)>> =
         const { RefCell::new(Vec::new()) };
     /// See [`set_focus_handler`].
     static FOCUS_HANDLER: Cell<Option<fn(usize)>> = const { Cell::new(None) };
@@ -316,6 +324,63 @@ pub fn set_link_hover(doc: Option<u64>, hovered: Option<(EditorHandle, LinkHover
     }
 }
 
+/// Whether any editor on this thread has an [`EditorHandle::on_image_hover`]
+/// callback: [`link_hover_wanted`]'s question for images, asked on every
+/// pointer move before any image hover work.
+pub fn image_hover_wanted() -> bool {
+    IMAGE_HOVER_LISTENERS.with(Cell::get) > 0
+}
+
+pub(crate) fn image_hover_listener_added() {
+    IMAGE_HOVER_LISTENERS.with(|c| c.set(c.get() + 1));
+}
+
+pub(crate) fn image_hover_listener_removed() {
+    // `try_with`: an editor can be dropped during thread-local teardown.
+    let _ = IMAGE_HOVER_LISTENERS.try_with(|c| c.set(c.get().saturating_sub(1)));
+}
+
+/// Report which image the pointer of document `doc` is over after a pointer
+/// move: `Some((editor, hover))`, or `None` when it is over no image of any
+/// editor. `doc` is keyed as [`begin_drag`]'s is.
+///
+/// Fires the editors' [`EditorHandle::on_image_hover`] callbacks only for a
+/// change, as [`set_link_hover`] does: leaving an editor's images fires its
+/// `None`; reaching an image fires its editor's `Some`; a move from one image
+/// straight onto another of the same editor fires only the new `Some`. "The
+/// same image" is an equal [`ImageHover`] — position, attrs **and** rect — so
+/// the next move over an image that was edited, or that a scroll or a
+/// relayout moved under a resting pointer, reports it again with its new box.
+/// Callbacks run after the registry's borrow is released.
+pub fn set_image_hover(doc: Option<u64>, hovered: Option<(EditorHandle, ImageHover)>) {
+    let previous = IMAGE_HOVER.with(|h| {
+        let mut h = h.borrow_mut();
+        let index = h.iter().position(|(owner, _, _)| *owner == doc);
+        if let (Some(i), Some((editor, hover))) = (index, &hovered)
+            && h[i].1.same_editor(editor)
+            && h[i].2 == *hover
+        {
+            return Err(()); // unchanged
+        }
+        let previous = index.map(|i| h.remove(i));
+        if let Some((editor, hover)) = &hovered {
+            h.push((doc, editor.clone(), hover.clone()));
+        }
+        Ok(previous)
+    });
+    let Ok(previous) = previous else { return };
+    if let Some((_, old, _)) = previous
+        && hovered
+            .as_ref()
+            .is_none_or(|(editor, _)| !editor.same_editor(&old))
+    {
+        old.notify_image_hover(None);
+    }
+    if let Some((editor, hover)) = &hovered {
+        editor.notify_image_hover(Some(hover));
+    }
+}
+
 /// Register `handle` under its document's `doc_key` and `container_id`
 /// (replacing any prior registration **for that same document + container** —
 /// another document's editor at a colliding container id is left registered).
@@ -363,8 +428,23 @@ pub fn unregister_editor(doc_key: u64, container_id: usize) {
         return;
     }
     // Taken out of the borrow and dropped after it: dropping the last handle
-    // runs `EditorCore`'s `Drop`, which must not find `LINK_HOVER` borrowed.
+    // runs `EditorCore`'s `Drop`, which must not find `LINK_HOVER` (or
+    // `IMAGE_HOVER`) borrowed.
     let _forgotten: Vec<_> = LINK_HOVER.with(|h| {
+        let mut h = h.borrow_mut();
+        let mut forgotten = Vec::new();
+        let mut i = 0;
+        while i < h.len() {
+            if removed.iter().any(|r| r.same_editor(&h[i].1)) {
+                forgotten.push(h.remove(i));
+            } else {
+                i += 1;
+            }
+        }
+        forgotten
+    });
+    drop(_forgotten);
+    let _forgotten: Vec<_> = IMAGE_HOVER.with(|h| {
         let mut h = h.borrow_mut();
         let mut forgotten = Vec::new();
         let mut i = 0;
