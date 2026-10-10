@@ -56,7 +56,8 @@ pub use plugin::{PasteContent, Plugin, PluginKey};
 pub use plugins::{HistoryPlugin, MarkdownInputRulesPlugin, PlaceholderPlugin};
 pub use pos::{Pos, ResolvedPos};
 pub use schema::{
-    AttrSpec, MarkSet, MarkSpec, MarkSpecBuilder, NodeSpec, NodeSpecBuilder, Schema, SchemaBuilder,
+    AttrSpec, IMAGE_MAX_WIDTH, MarkSet, MarkSpec, MarkSpecBuilder, NodeSpec, NodeSpecBuilder,
+    Schema, SchemaBuilder,
 };
 pub use selection::{CellSelection, NodeSelection, Selection, TextSelection};
 pub use state::{EditorState, Transaction};

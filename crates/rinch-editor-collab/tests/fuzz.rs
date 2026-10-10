@@ -36,7 +36,8 @@ use rinch_editor_collab::CollabSession;
 use rinch_editor_collab::testing::{session_from_bytes_with_client_id, session_with_client_id};
 use rinch_editor_core::model::Fragment;
 use rinch_editor_core::{
-    AttrValue, Attrs, EditorState, Node, Pos, Schema, Selection, Slice, default_plugins,
+    AttrValue, Attrs, EditorState, Node, Pos, Schema, Selection, SetNodeAttrStep, Slice,
+    default_plugins,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -211,6 +212,34 @@ fn random_edit_unchecked(rng: &mut Rng, state: &EditorState, images: bool) -> Op
             // a trial that asserts convergence and not replay. Two `src` values, so that
             // adjacent images are sometimes identical (one coalesced `@atom` range) and
             // sometimes not.
+            // In the image trial, most of these change an attr of an image already
+            // in the document instead: every per-attribute write, against the peers'
+            // splits, joins and deletions around it.
+            if images && rng.chance(70) {
+                let mut found = Vec::new();
+                state
+                    .doc
+                    .nodes_between(0, state.doc.content_size(), &mut |n, pos, _| {
+                        if n.type_name() == "image" {
+                            found.push(pos);
+                        }
+                        true
+                    });
+                if !found.is_empty() {
+                    let at = found[rng.below(found.len())];
+                    let attr = ["alt", "title", "src"][rng.below(3)];
+                    let value = format!("{attr}{}", rng.below(4));
+                    let mut tr = state.tr();
+                    tr.step(Box::new(SetNodeAttrStep::new(
+                        at,
+                        attr,
+                        AttrValue::from(value.as_str()),
+                    )))
+                    .ok()?;
+                    IMAGE_ATTRS_SET.fetch_add(1, Ordering::Relaxed);
+                    return Some(state.apply(tr));
+                }
+            }
             let atom = if images && rng.chance(50) {
                 IMAGES_INSERTED.fetch_add(1, Ordering::Relaxed);
                 state
@@ -411,6 +440,8 @@ struct Swarm {
 /// Images inserted by [`random_edit`] across the whole test binary — the positive
 /// control that the image trial generated any.
 static IMAGES_INSERTED: AtomicUsize = AtomicUsize::new(0);
+/// How many image attr changes [`random_edit`] has made, for the same control.
+static IMAGE_ATTRS_SET: AtomicUsize = AtomicUsize::new(0);
 
 /// Blocks wrapped in a quote by [`random_edit`] — the positive control that the trials
 /// exercise quotes at all.
@@ -787,6 +818,7 @@ fn fuzz_many_peers_converge() {
 #[test]
 fn fuzz_with_images_converges() {
     let before = IMAGES_INSERTED.load(Ordering::Relaxed);
+    let attrs_before = IMAGE_ATTRS_SET.load(Ordering::Relaxed);
     for seed in 700..=715u64 {
         let _ = fuzz_trial_with(seed, 2 + (seed % 3) as usize, 300, true);
     }
@@ -794,6 +826,11 @@ fn fuzz_with_images_converges() {
     assert!(
         inserted >= 20,
         "the trial must actually insert images to test anything (inserted {inserted})"
+    );
+    let set = IMAGE_ATTRS_SET.load(Ordering::Relaxed) - attrs_before;
+    assert!(
+        set >= 20,
+        "the trial must actually change images' attrs to test anything (changed {set})"
     );
 }
 
