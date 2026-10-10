@@ -9,7 +9,8 @@
 //!
 //! The oracle is node identity in B's model: the target is the node B's edit kept
 //! (`Node::same_ref`), or, when B's edit rebuilt it in place (an attr change, an undo
-//! of one, a paste-over with its `src`), the picture at its place with its `src`.
+//! of one, a paste-over with its `src`), the picture its position maps to through B's
+//! transactions, if it has the target's `src` ([`target_flags`]).
 //! **Wrong** (asserted none): TARGET on any other picture. **Lost**: TARGET on none
 //! (counted; cut then paste and an undo of a delete re-insert the picture as a new one
 //! in a later transaction, so they lose it by design). `R2_SEEDS` (default 100, both
@@ -21,8 +22,8 @@ use std::rc::Rc;
 use rinch_editor_collab::testing::{session_from_bytes_with_client_id, session_with_client_id};
 use rinch_editor_collab::{CollabPlugin, CollabSession};
 use rinch_editor_core::{
-    AttrSpec, AttrValue, Attrs, EditorState, Fragment, Node, NodeSpec, Plugin, Pos, Schema,
-    Selection, SetNodeAttrStep, Slice, Transaction, default_plugins,
+    AttrSpec, AttrValue, Attrs, EditorState, Fragment, Mapping, Node, NodeSpec, Plugin, Pos,
+    Schema, Selection, SetNodeAttrStep, Slice, Transaction, default_plugins,
 };
 
 const SRC: &str = "pimble-blob:6f1c2a0e/b3-9f86d081884c7d65";
@@ -253,10 +254,49 @@ fn converged(a: &Peer, b: &Peer, schema: &Rc<Schema>) -> Vec<Attrs> {
 
 struct R(u64);
 
+thread_local! {
+    /// The position mapping of every local transaction made since it was last taken
+    /// ([`take_mappings`]): the oracle maps the target through B's edit with it.
+    static MAPPINGS: std::cell::RefCell<Vec<Mapping>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn take_mappings() -> Vec<Mapping> {
+    MAPPINGS.with(|m| std::mem::take(&mut *m.borrow_mut()))
+}
+
+/// Which of `after`'s pictures is the target, the node at `pos` before a peer's edit
+/// whose transactions' mappings are `maps`: the node `same_ref` to it (an edit that
+/// kept it, wherever it moved), else the picture its position maps to, when the edit
+/// kept that one position's worth of content there and the picture has the target's
+/// `src` (an edit that rebuilt it in place: an attr change, an undo of one, a paste-over
+/// with its `src`). Mapping the position, not taking "the picture at its index", is
+/// what keeps a reorder in the same edit from naming another picture (review 3).
+fn target_flags(target: &Node, pos: usize, after: &Node, maps: &[Mapping]) -> Vec<bool> {
+    let pics = imgs(after);
+    let mut flags: Vec<bool> = pics.iter().map(|(_, n)| n.same_ref(target)).collect();
+    if flags.iter().any(|f| *f) {
+        return flags;
+    }
+    let (mut start, mut end) = (pos, pos + 1);
+    for m in maps {
+        start = m.map(start, 1);
+        end = m.map(end, -1);
+    }
+    if end == start + 1
+        && let Some(i) = pics
+            .iter()
+            .position(|(p, n)| *p == start && n.attrs().get("src") == target.attrs().get("src"))
+    {
+        flags[i] = true;
+    }
+    flags
+}
+
 impl Peer {
     fn try_local(&mut self, f: impl FnOnce(&mut Transaction)) -> bool {
         let mut tr = self.state.tr();
         f(&mut tr);
+        MAPPINGS.with(|m| m.borrow_mut().push(tr.mapping().clone()));
         let before = self.state.doc.clone();
         let after = self.state.apply(tr);
         let ok = self
@@ -270,9 +310,10 @@ impl Peer {
         let Some(c) = self.state.command(name) else {
             return false;
         };
-        let Some(next) = self.state.run_command(&c) else {
+        let Some((next, mapping)) = self.state.run_command_mapped(&c) else {
             return false;
         };
+        MAPPINGS.with(|m| m.borrow_mut().push(mapping));
         let before = self.state.doc.clone();
         let ok = self
             .session
@@ -639,7 +680,10 @@ fn run2(seed: u64, ids: (u64, u64), v: bool, t: &mut T2) {
                 .collect::<Vec<_>>()
         );
     }
+    let target_pos = all[k].0;
+    take_mappings();
     let op = op2(&mut r, &s, &mut b, Some(&target_b));
+    let maps = take_mappings();
     if v {
         eprintln!("B after {op}: {:?}", b.state.doc);
     }
@@ -652,21 +696,11 @@ fn run2(seed: u64, ids: (u64, u64), v: bool, t: &mut T2) {
             raw_atom_entries(&b.session.snapshot())
         );
     }
-    let mut expected: Vec<(Node, bool)> = imgs(&b.state.doc)
+    let expected: Vec<(Node, bool)> = imgs(&b.state.doc)
         .into_iter()
-        .map(|(_, n)| {
-            let is = n.same_ref(&target_b);
-            (n, is)
-        })
+        .map(|(_, n)| n)
+        .zip(target_flags(&target_b, target_pos, &b.state.doc, &maps))
         .collect();
-    // B's edit rebuilt the target in place (an attr change, an undo of one, a paste-over
-    // with its `src`): the picture at its place with its `src` is the target.
-    if expected.len() == all.len()
-        && !expected.iter().any(|x| x.1)
-        && expected[k].0.attrs().get("src") == target_b.attrs().get("src")
-    {
-        expected[k].1 = true;
-    }
     let n_t = expected.iter().filter(|x| x.1).count();
     sync3(&mut a, &mut b, &mut c);
     t.checks += 1;
@@ -1034,4 +1068,175 @@ fn an_identity_never_leaks_onto_a_concurrently_inserted_neighbour() {
         }
     }
     assert!(fails.is_empty(), "{fails:?}");
+}
+
+/// B changes the target's `alt` (rebuilding it in place) and, in the same transaction,
+/// drags an identical picture in front of it. The oracle maps the target through B's
+/// transaction and names the rebuilt picture, never the dragged one (review 3: "the
+/// picture at its index" named the dragged one); and A's concurrent board shows on no
+/// other picture.
+#[test]
+fn a_rebuild_and_a_reorder_in_one_transaction_never_move_the_board() {
+    for ids in ID_ORDERS {
+        let s = schema(true);
+        let doc = s
+            .branch(
+                "doc",
+                Fragment::from_children(vec![para(
+                    &s,
+                    vec![
+                        s.text("ab").unwrap(),
+                        same_src(&s, "s1"),
+                        s.text("cd").unwrap(),
+                        same_src(&s, "s1"),
+                        s.text("ef").unwrap(),
+                    ],
+                )]),
+            )
+            .unwrap();
+        let (mut a, mut b) = two_peers(&s, doc, ids);
+        let all = imgs(&b.state.doc);
+        let (target_pos, target) = all[0].clone();
+        let at_a = imgs(&a.state.doc)[0].0;
+        a.try_local(|tr| {
+            tr.step(Box::new(SetNodeAttrStep::new(
+                at_a,
+                "board",
+                AttrValue::from("TARGET"),
+            )))
+            .unwrap();
+        });
+        let (p1, n1) = all[1].clone();
+        take_mappings();
+        b.try_local(|tr| {
+            tr.step(Box::new(SetNodeAttrStep::new(
+                target_pos,
+                "alt",
+                AttrValue::from("changed"),
+            )))
+            .unwrap();
+            tr.delete(p1, p1 + 1).unwrap();
+            tr.replace(1, 1, Slice::new(Fragment::from_node(n1.clone()), 0, 0))
+                .unwrap();
+        });
+        let flags = target_flags(&target, target_pos, &b.state.doc, &take_mappings());
+        let after: Vec<String> = imgs(&b.state.doc)
+            .iter()
+            .map(|(_, n)| n.attrs().get_str("alt").unwrap_or("").to_string())
+            .collect();
+        assert_eq!(after, vec!["", "changed"], "{ids:?}");
+        assert_eq!(
+            flags,
+            vec![false, true],
+            "{ids:?}: the oracle names the rebuilt picture"
+        );
+        sync(&mut a, &mut b);
+        converged(&a, &b, &s);
+        let got: Vec<(String, String)> = imgs(&a.state.doc)
+            .iter()
+            .map(|(_, n)| {
+                (
+                    n.attrs().get_str("alt").unwrap_or("").to_string(),
+                    n.attrs().get_str("board").unwrap_or("-").to_string(),
+                )
+            })
+            .collect();
+        // The board is on the rebuilt picture or on none, never on the dragged one.
+        assert_ne!(got[0].1, "TARGET", "{ids:?}: {got:?}");
+        assert_eq!(got[1].0, "changed", "{ids:?}");
+    }
+}
+
+/// The `atoms` map's read is kept between operations: it must never be served stale.
+/// Three peers fill theirs; a `board` change reaches one by an incremental delta and one
+/// by a state-vector diff; a keystroke, an attr removal and a late joiner follow
+/// (review 3).
+#[test]
+fn the_atom_map_read_kept_between_operations_is_never_stale() {
+    let s = schema(true);
+    let doc = s
+        .branch(
+            "doc",
+            Fragment::from_children(vec![para(
+                &s,
+                vec![
+                    s.text("ab").unwrap(),
+                    same_src(&s, "s1"),
+                    s.text("cd").unwrap(),
+                ],
+            )]),
+        )
+        .unwrap();
+    let (mut a, mut b) = two_peers(&s, doc, (11, 22));
+    let at = imgs(&a.state.doc)[0].0;
+    a.try_local(|tr| {
+        tr.step(Box::new(SetNodeAttrStep::new(
+            at,
+            "board",
+            AttrValue::from("one"),
+        )))
+        .unwrap();
+    });
+    sync(&mut a, &mut b);
+    let mut c = peer_from_bytes(&s, &a.session.snapshot(), 33);
+    for p in [&mut a, &mut b, &mut c] {
+        let _ = p.session.projected_doc(&s).unwrap();
+        p.try_local(|tr| {
+            tr.set_selection(Selection::cursor(Pos(2)));
+            tr.insert_text("x").unwrap();
+        });
+    }
+    sync(&mut a, &mut b);
+    sync(&mut a, &mut c);
+    sync(&mut b, &mut c);
+    let at = imgs(&b.state.doc)[0].0;
+    b.try_local(|tr| {
+        tr.step(Box::new(SetNodeAttrStep::new(
+            at,
+            "board",
+            AttrValue::from("two"),
+        )))
+        .unwrap();
+    });
+    let delta = b.session.sync_diff(&a.session.state_vector()).unwrap();
+    if let Some(ns) = a.session.integrate_incremental(&a.state, &delta).unwrap() {
+        a.state = ns;
+    }
+    let to_c = b.session.sync_diff(&c.session.state_vector()).unwrap();
+    if let Some(ns) = c.session.integrate_incremental(&c.state, &to_c).unwrap() {
+        c.state = ns;
+    }
+    for (n, p) in [("A", &a), ("B", &b), ("C", &c)] {
+        let model = imgs(&p.state.doc)[0]
+            .1
+            .attrs()
+            .get_str("board")
+            .map(str::to_string);
+        let crdt = imgs(&p.session.projected_doc(&s).unwrap())[0]
+            .1
+            .attrs()
+            .get_str("board")
+            .map(str::to_string);
+        assert_eq!(model.as_deref(), Some("two"), "{n}");
+        assert_eq!(crdt.as_deref(), Some("two"), "{n}");
+    }
+    a.try_local(|tr| {
+        tr.set_selection(Selection::cursor(Pos(2)));
+        tr.insert_text("y").unwrap();
+    });
+    let at = imgs(&c.state.doc)[0].0;
+    c.try_local(|tr| {
+        tr.step(Box::new(SetNodeAttrStep {
+            pos: at,
+            attr: "board".into(),
+            value: None,
+        }))
+        .unwrap();
+    });
+    sync(&mut a, &mut c);
+    sync(&mut a, &mut b);
+    converged(&a, &b, &s);
+    let late = peer_from_bytes(&s, &a.session.snapshot(), 44);
+    assert_eq!(imgs(&a.state.doc)[0].1.attrs().get("board"), None);
+    assert_eq!(imgs(&late.state.doc)[0].1.attrs().get("board"), None);
 }

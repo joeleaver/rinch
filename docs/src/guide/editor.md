@@ -97,9 +97,12 @@ has neither, so it is written without them; an image in a table written as HTML 
 both. Like every attr of an inline atom they merge per attribute when collaborating:
 two peers changing different attrs of one image at once both keep their change, and a
 peer's `board` follows its picture through Enter, Backspace, drags and pictures
-inserted beside it, and never shows on another picture. A change of an image's `src`
-(or a picture pasted over it, which the editor cannot tell from one) makes a new
-picture, and a concurrent change of the old one is dropped. Chosen by Joe (2026-10-09):
+inserted beside it, and never shows on another picture (one pasted over it with the
+same `src` counts as the same picture: identity is type and `src`). A change of an
+image's `src` (or a picture with another `src` pasted over it, which the editor cannot
+tell from one) makes a new picture, and a concurrent change of the old one is dropped;
+so does cutting and pasting a picture, undoing its delete, or dragging it after an
+in-editor copy of it. Chosen by Joe (2026-10-09):
 a wrong attribution is worse than a lost one — board markup would show on the wrong
 picture (`rinch-editor-collab/tests/image_attrs.rs`, `atom_attr_merge.rs`,
 `atom_identity_differential.rs`).

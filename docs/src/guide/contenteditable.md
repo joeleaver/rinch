@@ -1491,19 +1491,24 @@ it as not syncing until you remove it.
 An image's attributes merge one by one: two people changing different attributes of
 one image at the same moment (one its `alt`, the other its `title` or an app's
 `board`) both keep their change, and two changing the same attribute end up with one
-of the two values. Changing an image's `src` makes it a new image: a change someone
-else makes to the old one at that moment is dropped. A change to an image's attributes is kept while someone
-else types beside it, presses Enter or Backspace anywhere in its line, drags it,
-inserts or deletes another image next to it, copies it, makes the line bold or turns
-it into a heading; if they delete the image, it is deleted. Such a change never shows
-on another image. Some cases lose it, and both editors still end up with the same
-document when they do: **changing the image's `src`**, or **pasting another picture
-over it**, at that moment (the editor cannot tell the two apart, and a change dropped
-is better than a change shown on the wrong picture); **moving the image into or out of
-a table cell**; **cutting the image and pasting it back**, or **deleting it and
-undoing the delete** (the image comes back as a new one: only a move made in one step,
-such as a drag, keeps it); and **loading a document** over it. Two people moving one
-image at the same moment (both pressing Enter before it) end up with two copies of it.
+of the two values. An image is known by its type and its `src`: changing its `src`
+makes it a new image, and a change someone else makes to the old one at that moment is
+dropped. A change to an image's attributes is kept while someone else types beside it,
+presses Enter or Backspace anywhere in its line, drags it, inserts or deletes another
+image next to it (an identical one included), copies it elsewhere, makes the line bold
+or turns it into a heading; if they delete the image, it is deleted. Such a change
+never shows on another image; pasting a picture **with the same `src`** over it counts
+as the same image, so the change shows on the pasted one. Some cases lose it, and both
+editors still end up with the same document when they do: **changing the image's
+`src`**, or **pasting a picture with another `src` over it**, at that moment (the
+editor cannot tell the two apart, and a change dropped is better than a change shown
+on the wrong picture); **moving the image into or out of a table cell**; **cutting the
+image and pasting it back**, or **deleting it and undoing the delete** (the image comes
+back as a new one: only a move made in one step, such as a drag, keeps it);
+**dragging an image after copying it within the editor**, until either copy is changed
+(the two are one image to the editor, so which one moved cannot be told); and
+**loading a document** over it. Two people moving one image at the same moment (both
+pressing Enter before it) end up with two copies of it.
 
 Every person sharing a document must run a version with per-attribute image merging
 before any of them changes an image's attributes or moves an image: an older version
