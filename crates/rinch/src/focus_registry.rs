@@ -303,8 +303,12 @@ fn entry_for(doc_key: u64, node_id: usize) -> Option<Rc<FocusEntry>> {
 ///
 /// This is the arbiter's **liveness authority** for a registered claim: an
 /// unmount deregisters through the scope cleanup, which is a push notification
-/// rather than the attribute probe `node_target_is_live` falls back to — so the
-/// recycled-slab-slot window (#304) is closed for registered targets.
+/// rather than the attribute probe `node_target_is_live` falls back to. That
+/// closes the recycled-slab-slot window (#304) only while the registering
+/// scope's lifetime brackets the node's: a node freed while that scope is
+/// still alive (`set_inner_html` over it) leaves its entry under the freed id,
+/// and a node `rinch-dom` mints on that id answers as registered until the
+/// scope goes (#1509).
 pub(crate) fn is_registered(doc_key: u64, node_id: usize) -> bool {
     TARGETS.with(|t| t.borrow().iter().any(|r| r.is_at(doc_key, node_id)))
 }
