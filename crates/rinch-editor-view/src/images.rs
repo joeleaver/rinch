@@ -57,16 +57,25 @@ thread_local! {
 /// editor or the DOM. Installing it again replaces the earlier one; images
 /// already shown keep the source they were given until they are rebuilt or
 /// their attributes change, so install it before the first editor shows a
-/// picture. Per thread, like the rest of the editor's registry.
+/// picture. To make images already shown ask again, reload their documents
+/// (`handle.load_doc(handle.doc())`).
+///
+/// **Its lifetime is the registering component's.** Installed while a
+/// component renders, it is removed when that component unmounts (unless a
+/// later install has replaced it — an earlier unmount never clobbers a later
+/// one); installed outside any render (from `main`), it keeps app lifetime.
+/// It is **per thread, not per document**: two documents on one thread (two
+/// embedded contexts, a window and its DevTools) share one source function,
+/// and the last install wins for both.
 pub fn set_image_source(source: impl Fn(&Attrs) -> Option<String> + 'static) {
     let source: ImageSourceFn = Rc::new(source);
-    IMAGE_SOURCE.with(|s| *s.borrow_mut() = Some(source));
+    rinch_core::reactive::install_scoped_slot(&IMAGE_SOURCE, source);
 }
 
 /// Remove what [`set_image_source`] installed: an image's `<img>` asks for
 /// its node's `src` again (from its next rebuild or attribute change).
 pub fn clear_image_source() {
-    IMAGE_SOURCE.with(|s| s.borrow_mut().take());
+    rinch_core::reactive::clear_scoped_slot(&IMAGE_SOURCE);
 }
 
 /// The source an `image` node with `attrs` shows: [`set_image_source`]'s
@@ -74,7 +83,7 @@ pub fn clear_image_source() {
 pub(crate) fn image_source(attrs: &Attrs) -> String {
     // Cloned out, so a source function that installs another is not inside
     // the borrow.
-    let source = IMAGE_SOURCE.with(|s| s.borrow().clone());
+    let source = rinch_core::reactive::read_scoped_slot(&IMAGE_SOURCE);
     source
         .and_then(|f| f(attrs))
         .unwrap_or_else(|| attrs.get_str("src").unwrap_or("").to_string())

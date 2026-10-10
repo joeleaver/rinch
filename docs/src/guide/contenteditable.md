@@ -442,6 +442,14 @@ whenever an `<img>` is built or its node's attributes change, with the editor
 borrowed, so it must be a function of `attrs` alone. `clear_image_source()` takes
 it away. In the browser it is `rinch_web::set_image_source`.
 
+Installed while a component renders, the source function is removed when that
+component unmounts (a later install is never clobbered by an earlier unmount);
+installed from `main`, it keeps app lifetime. It is per thread, not per document:
+two documents on one thread (two embedded contexts) share it, the last install
+winning for both. Pictures already shown keep the source they were given until
+their `<img>` is rebuilt or their attributes change; `handle.load_doc(handle.doc())`
+makes an editor's pictures ask again.
+
 To float controls over a picture (a button in its corner), an app hears where the
 pointer is:
 
@@ -461,6 +469,14 @@ as `LinkHover::rect`. The controls are the app's own elements outside the editor
 so moving onto them leaves the image and reports `None`; keep them shown while the
 pointer is over them with their own `onmouseenter` / `onmouseleave`. Not reported
 during a drag-select or a drag-and-drop; free while no editor has the callback.
+
+Hover is measured on pointer moves only: a wheel scroll moves the picture under a
+resting pointer and reports nothing until the pointer moves, so **hide the controls
+when the content scrolls** (an `onscroll` on the scroller). On desktop the pointer
+leaving the window reports nothing either (the browser reports `None`). Like
+`on_change`, the callback belongs to the component that registered it: once that
+component unmounts it is not called again, and one registered outside any render
+keeps app lifetime.
 
 With the callback registered:
 

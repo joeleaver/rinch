@@ -249,3 +249,44 @@ fn hovering_an_image_reports_its_position_attrs_and_painted_box() {
     assert_eq!(seen.borrow().len(), 4);
     assert!(seen.borrow()[3].is_none());
 }
+
+/// The image under the pointer is read from the move's hit **before** any
+/// `on_link_hover` callback runs: one that replaces the document as the
+/// pointer leaves a link for a picture used to leave the image hover walking a
+/// detached `<img>`, which reported nothing.
+#[test]
+fn the_image_hover_is_read_before_a_link_hover_callback_changes_the_document() {
+    let (mut app, handle) = page(
+        r#"<p><a href="https://example.com/l">link text</a> <img src="x.png" alt="first"></p>"#,
+        SIZED,
+    );
+    let seen = record(&handle);
+    let h2 = handle.clone();
+    let link_calls = Rc::new(RefCell::new(Vec::new()));
+    let link_calls_in = link_calls.clone();
+    handle.on_link_hover(move |link| {
+        link_calls_in.borrow_mut().push(link.is_some());
+        if link.is_none() {
+            assert!(h2.load_html(r#"<p>replaced <img src="z.png" alt="second"></p>"#));
+        }
+    });
+    let img = images(&app)[0].0;
+    let (x, y, _, _) = painted_box(&app, img);
+    // Onto the link's text first, then straight onto the picture.
+    let (tx, ty, th) = app.editor_caret_point(&handle, Pos(2)).expect("caret");
+    pointer_move(&mut app, (tx + 1.0, ty + th / 2.0));
+    assert_eq!(*link_calls.borrow(), [true], "control: on the link");
+    pointer_move(&mut app, (x + 5.0, y + 5.0));
+    assert_eq!(
+        *link_calls.borrow(),
+        [true, false],
+        "control: left the link"
+    );
+    let seen = seen.borrow();
+    assert_eq!(seen.len(), 1, "the picture under the pointer is reported");
+    assert_eq!(
+        seen[0].as_ref().unwrap().attrs.get_str("alt"),
+        Some("first"),
+        "as the hit found it"
+    );
+}

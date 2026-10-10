@@ -672,18 +672,22 @@ impl RinchApp {
                         }
                     }
 
-                    // Link hover for editors that asked for it: the move's one
-                    // hit test, and nothing at all while no editor has a hover
-                    // callback. Last, because the callbacks are app code that
-                    // may change the document the hit above was taken in.
+                    // Link and image hover for editors that asked for them: the
+                    // move's one hit test, and nothing at all while no editor
+                    // has a hover callback. Last, because the callbacks are app
+                    // code that may change the document the hit above was taken
+                    // in — so the image under the pointer is read before any
+                    // link hover callback runs, not after.
                     #[cfg(feature = "desktop")]
-                    if crate::editor::link_hover_wanted() {
-                        self.update_editor_link_hover(hovered, x, y);
-                    }
-                    // Image hover likewise, from the same hit.
-                    #[cfg(feature = "desktop")]
-                    if crate::editor::image_hover_wanted() {
-                        self.update_editor_image_hover(hovered);
+                    {
+                        let image_hover = crate::editor::image_hover_wanted()
+                            .then(|| hovered.and_then(|hit| self.editor_image_at_hit(hit)));
+                        if crate::editor::link_hover_wanted() {
+                            self.update_editor_link_hover(hovered, x, y);
+                        }
+                        if let Some(image_hover) = image_hover {
+                            crate::editor::set_image_hover(self.input_doc(), image_hover);
+                        }
                     }
                 }
             }
@@ -4445,15 +4449,6 @@ impl RinchApp {
                     (handle, crate::editor::LinkHover { link, rect })
                 });
         crate::editor::set_link_hover(self.input_doc(), hovered);
-    }
-
-    /// Report the image under the pointer to [`crate::editor::set_image_hover`],
-    /// which fires the editors' `on_image_hover` callbacks on a change. `hit`
-    /// is the pointer move's shared hit test; the caller has checked
-    /// [`crate::editor::image_hover_wanted`].
-    pub(crate) fn update_editor_image_hover(&self, hit: Option<usize>) {
-        let hovered = hit.and_then(|hit| self.editor_image_at_hit(hit));
-        crate::editor::set_image_hover(self.input_doc(), hovered);
     }
 
     /// The editor image whose `<img>` is `hit` or holds it, with its editor:
