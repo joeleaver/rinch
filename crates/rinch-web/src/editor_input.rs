@@ -73,8 +73,8 @@ use wasm_bindgen::prelude::*;
 
 use rinch_editor_core::{CursorMotion, PasteContent, Pos, Selection};
 use rinch_editor_view::{
-    CaretAffinity, EditorHandle, ImageInputSource, LinkClick, LinkHover, LinkSpan, SelectionAnchor,
-    registry, sniff_image_mime,
+    CaretAffinity, EditorHandle, ImageHover, ImageInputSource, LinkClick, LinkHover, LinkSpan,
+    SelectionAnchor, registry, sniff_image_mime,
 };
 
 use crate::event_delegation::{
@@ -1927,6 +1927,33 @@ fn update_link_hover(event: &web_sys::MouseEvent, doc: &web_sys::Document) {
     registry::set_link_hover(None, hovered);
 }
 
+/// Report the image under the pointer to the editors' `on_image_hover`
+/// callbacks, which the registry fires only on a change. Called for a
+/// `mousemove` that is not a drag-select, and only while some editor has an
+/// image hover callback. A move over no editor image costs one `closest` walk.
+fn update_image_hover(event: &web_sys::MouseEvent) {
+    let hovered = (|| {
+        let target = event
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())?;
+        let img = target.closest("[data-pm-type='image']").ok().flatten()?;
+        let editor_el = img.closest("[data-pm-editor]").ok().flatten()?;
+        let container_nid = get_nid(&editor_el.clone().into())?.0;
+        let handle = registry::editor_for(container_nid)?;
+        let host_nid = get_nid(&img.clone().into())?.0;
+        let (pos, attrs) = handle.image_at_host(host_nid)?;
+        let r = img.get_bounding_client_rect();
+        let rect = rinch_core::ElementBounds {
+            x: r.x() as f32,
+            y: r.y() as f32,
+            width: r.width() as f32,
+            height: r.height() as f32,
+        };
+        Some((handle, ImageHover { pos, attrs, rect }))
+    })();
+    registry::set_image_hover(None, hovered);
+}
+
 /// The first text node under `node`, in document order.
 fn first_text_node(node: &web_sys::Node) -> Option<web_sys::Node> {
     let kids = node.child_nodes();
@@ -3222,14 +3249,24 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
     add_capture(browser_doc, "mousemove", move |e: web_sys::MouseEvent| {
         if handle_mousemove(&e, &doc) {
             e.prevent_default();
-        } else if registry::link_hover_wanted() {
-            update_link_hover(&e, &doc);
+        } else {
+            if registry::link_hover_wanted() {
+                update_link_hover(&e, &doc);
+            }
+            if registry::image_hover_wanted() {
+                update_image_hover(&e);
+            }
         }
     });
-    // The pointer leaving the window leaves whatever link it was over.
+    // The pointer leaving the window leaves whatever link or image it was over.
     add_capture(browser_doc, "mouseout", |e: web_sys::MouseEvent| {
-        if e.related_target().is_none() && registry::link_hover_wanted() {
-            registry::set_link_hover(None, None);
+        if e.related_target().is_none() {
+            if registry::link_hover_wanted() {
+                registry::set_link_hover(None, None);
+            }
+            if registry::image_hover_wanted() {
+                registry::set_image_hover(None, None);
+            }
         }
     });
     // Whether an editor link navigates, and keyboard activation of one (see

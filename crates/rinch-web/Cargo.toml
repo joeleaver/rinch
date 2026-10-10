@@ -52,6 +52,7 @@ web-sys = { version = "0.3", features = [
     # Event constructors, so the browser-driven tests (tests/) can synthesise
     # the pointerdown/click/keydown sequences the delegation gates on (#240).
     "EventInit", "MouseEventInit", "KeyboardEventInit", "PointerEventInit",
+    "WheelEvent", "WheelEventInit",
     "EventTarget", "FocusOptions", "FocusEvent",
     "Range",
     # `Element::scrollIntoView({block, inline})` — the minimal ("nearest") scroll

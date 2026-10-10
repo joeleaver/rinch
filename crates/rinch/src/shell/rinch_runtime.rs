@@ -39,6 +39,7 @@ use rinch_platform::{
 };
 
 use crate::app::RinchApp;
+use crate::render_surface::{SurfacePointer, SurfacePointerKind};
 
 #[cfg(feature = "gpu")]
 use super::desktop::WgpuRenderer;
@@ -264,6 +265,147 @@ pub fn inject_platform_event(event: PlatformEvent) {
     send_native_event(RinchNativeEvent::InjectedPlatformEvent(event));
 }
 
+// ── Pointer sources ──────────────────────────────────────────────────────────
+
+/// Touch pointers are numbered from here, so a finger never shares an id
+/// with the mouse (1) or a tablet tool (2).
+const TOUCH_POINTER_BASE: u64 = 1 << 32;
+
+/// A winit force as a pressure in `0.0..=1.0`; with none measured, the
+/// Pointer Events default (`0.5` while down, else `0`).
+fn force_pressure(force: Option<&winit::event::Force>, down: bool) -> f32 {
+    match force {
+        Some(f) => (f.normalized(None) as f32).clamp(0.0, 1.0),
+        None if down => 0.5,
+        None => 0.0,
+    }
+}
+
+/// A tablet tool's kind as a surface pointer's: an eraser is an eraser, a
+/// puck or lens a mouse, a finger on the tablet a touch, every stylus a pen.
+fn tool_kind(kind: winit::event::TabletToolKind) -> SurfacePointerKind {
+    match kind {
+        winit::event::TabletToolKind::Eraser => SurfacePointerKind::Eraser,
+        winit::event::TabletToolKind::Mouse | winit::event::TabletToolKind::Lens => {
+            SurfacePointerKind::Mouse
+        }
+        winit::event::TabletToolKind::Finger => SurfacePointerKind::Touch,
+        _ => SurfacePointerKind::Pen,
+    }
+}
+
+/// The one id a tablet tool has: winit numbers neither tools nor tablets.
+const TABLET_POINTER_ID: u64 = 2;
+
+/// [`SurfacePointer::id`] of the pointer a winit source describes.
+fn pointer_id_of(source: &winit::event::PointerSource) -> u64 {
+    match source {
+        winit::event::PointerSource::Touch { finger_id, .. } => {
+            TOUCH_POINTER_BASE + finger_id.into_raw() as u64
+        }
+        winit::event::PointerSource::TabletTool { .. } => TABLET_POINTER_ID,
+        _ => SurfacePointer::mouse(false).id,
+    }
+}
+
+/// The pointer a winit move came from, as a render surface hears it. `down`:
+/// that pointer has a button or contact down, which decides the pressure a
+/// device that cannot measure it reports.
+fn surface_pointer_of(
+    source: &winit::event::PointerSource,
+    primary: bool,
+    down: bool,
+) -> SurfacePointer {
+    use winit::event::PointerSource;
+    match source {
+        PointerSource::Mouse | PointerSource::Unknown => SurfacePointer {
+            primary,
+            ..SurfacePointer::mouse(down)
+        },
+        PointerSource::Touch { finger_id, force } => SurfacePointer {
+            id: TOUCH_POINTER_BASE + finger_id.into_raw() as u64,
+            kind: SurfacePointerKind::Touch,
+            pressure: force_pressure(force.as_ref(), down),
+            primary,
+        },
+        PointerSource::TabletTool { kind, data } => SurfacePointer {
+            id: TABLET_POINTER_ID,
+            kind: tool_kind(*kind),
+            pressure: force_pressure(data.force.as_ref(), down),
+            primary,
+        },
+    }
+}
+
+/// [`surface_pointer_of`] for a winit button event. `pressed`: the button
+/// went down (a release reports no pressure).
+fn surface_pointer_of_button(
+    button: &winit::event::ButtonSource,
+    primary: bool,
+    pressed: bool,
+) -> SurfacePointer {
+    use winit::event::{ButtonSource, PointerSource};
+    let source = match button {
+        ButtonSource::Mouse(_) | ButtonSource::Unknown(_) => PointerSource::Mouse,
+        ButtonSource::Touch { finger_id, force } => PointerSource::Touch {
+            finger_id: *finger_id,
+            force: *force,
+        },
+        ButtonSource::TabletTool { kind, data, .. } => PointerSource::TabletTool {
+            kind: *kind,
+            data: data.clone(),
+        },
+    };
+    let mut pointer = surface_pointer_of(&source, primary, pressed);
+    if !pressed {
+        pointer.pressure = 0.0;
+    }
+    pointer
+}
+
+/// The buttons or contacts down, as `(SurfacePointer::id, button)`: what
+/// decides the pressure a move reports for a device that cannot measure it.
+/// Per button, so a chord's release (right up while left is held) leaves the
+/// pointer down.
+#[derive(Debug, Default)]
+struct PressedButtons(Vec<(u64, Option<MouseButton>)>);
+
+impl PressedButtons {
+    /// `button` of pointer `id` went down (`pressed`) or up.
+    fn note(&mut self, id: u64, button: Option<MouseButton>, pressed: bool) {
+        self.0.retain(|k| *k != (id, button));
+        if pressed {
+            self.0.push((id, button));
+        }
+    }
+
+    /// Whether pointer `id` has any button or contact down.
+    fn is_down(&self, id: u64) -> bool {
+        self.0.iter().any(|(p, _)| *p == id)
+    }
+
+    /// Forget every button of pointer `id`; answers whether it had any down.
+    fn lift(&mut self, id: u64) -> bool {
+        let was = self.is_down(id);
+        self.0.retain(|(p, _)| *p != id);
+        was
+    }
+
+    /// Forget every press (the window lost focus).
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+/// Resets the pointer `set_current_pointer` named when dropped.
+struct ForgetCurrentPointer;
+
+impl Drop for ForgetCurrentPointer {
+    fn drop(&mut self) {
+        crate::render_surface::set_current_pointer(None);
+    }
+}
+
 // ── RinchRuntime ─────────────────────────────────────────────────────────────
 
 /// The desktop runtime: thin winit `ApplicationHandler` that delegates to
@@ -296,8 +438,14 @@ pub struct RinchRuntime {
     /// the drain, and the `RedrawRequested` arm drains before painting (#153).
     draining_native_events: bool,
     /// The newest pointer position winit has reported that the app has not
-    /// been handed yet (logical px). See [`Self::flush_pointer_move`].
-    pending_pointer_move: Option<(f32, f32)>,
+    /// been handed yet (logical px), and which pointer it is. See
+    /// [`Self::flush_pointer_move`].
+    pending_pointer_move: Option<(f32, f32, SurfacePointer)>,
+    /// The buttons or contacts down, as `(SurfacePointer::id, button)`: what
+    /// decides the pressure a move reports for a device that cannot measure
+    /// it. Per button, so a chord's release (right up while left is held)
+    /// leaves the pointer down.
+    pressed_pointers: PressedButtons,
     /// The cursor last applied to the window, so an unchanged
     /// `AppAction::SetCursor` — which hover emits on every pointer move — does
     /// not reach the windowing system. Reset when the window is dropped.
@@ -372,6 +520,7 @@ impl RinchRuntime {
             native_menu: None,
             draining_native_events: false,
             pending_pointer_move: None,
+            pressed_pointers: PressedButtons::default(),
             applied_cursor: None,
             devtools_store: None,
             devtools_app: None,
@@ -1810,6 +1959,12 @@ impl ApplicationHandler for RinchRuntime {
             return;
         }
 
+        // Whatever pointer this event names (`set_current_pointer` below) is
+        // forgotten when it has been handled, on every return path, so an
+        // event that names none (a key, an injected debug `mouse_down`) is
+        // never read as the last pen or finger.
+        let _forget_pointer = ForgetCurrentPointer;
+
         // Pointer moves are coalesced (update-path audit F2.2): a high-rate
         // mouse reports several per frame, and each used to run hover, the
         // `data-onmousemove` walk and — during a component drag — a whole
@@ -1818,15 +1973,47 @@ impl ApplicationHandler for RinchRuntime {
         // pointer last reported) and at the end of the batch, in
         // `about_to_wait`. That is the browser's model: one `pointermove` per
         // frame at most.
-        if let WindowEvent::PointerMoved { position, .. } = &event {
+        if let WindowEvent::PointerMoved {
+            position,
+            primary,
+            source,
+            ..
+        } = &event
+        {
             // winit reports the pointer in **physical** pixels; every
             // `PlatformEvent` coordinate is logical (#299). This is the
             // conversion for the whole pointer stream: `MouseDown`, `MouseUp`
             // and `MouseWheel` below all read the position back out of
             // `app.cursor_pos`, which the flushed move sets.
             let (lx, ly) = to_logical_point((position.x, position.y), self.scale_factor());
-            self.pending_pointer_move = Some((lx as f32, ly as f32));
+            let id = pointer_id_of(source);
+            let down = self.pressed_pointers.is_down(id);
+            let pointer = surface_pointer_of(source, *primary, down);
+            self.queue_pointer_move(lx as f32, ly as f32, pointer, event_loop);
             return;
+        }
+        // A press or release is judged where *its* pointer is: a finger or a
+        // pen reports no move before it touches down, so the position the
+        // press carries is queued as that pointer's move first (a mouse's
+        // press is where its last move already put it).
+        if let WindowEvent::PointerButton {
+            state,
+            position,
+            primary,
+            button,
+            ..
+        } = &event
+        {
+            let pressed = *state == ElementState::Pressed;
+            let pointer = surface_pointer_of_button(button, *primary, pressed);
+            if !matches!(button, winit::event::ButtonSource::Mouse(_)) {
+                let (lx, ly) = to_logical_point((position.x, position.y), self.scale_factor());
+                self.queue_pointer_move(lx as f32, ly as f32, pointer, event_loop);
+            }
+            self.flush_pointer_move(event_loop);
+            self.pressed_pointers
+                .note(pointer.id, button.clone().mouse_button(), pressed);
+            crate::render_surface::set_current_pointer(Some(pointer));
         }
         self.flush_pointer_move(event_loop);
 
@@ -1885,15 +2072,12 @@ impl ApplicationHandler for RinchRuntime {
                 button,
                 ..
             } => {
-                let platform_button = match button {
-                    winit::event::ButtonSource::Mouse(MouseButton::Left)
-                    | winit::event::ButtonSource::Touch { .. } => PlatformMouseButton::Left,
-                    winit::event::ButtonSource::Mouse(MouseButton::Right) => {
-                        PlatformMouseButton::Right
-                    }
-                    winit::event::ButtonSource::Mouse(MouseButton::Middle) => {
-                        PlatformMouseButton::Middle
-                    }
+                // A finger is the left button, and so is a pen's tip (its
+                // barrel button the right): winit's own mapping.
+                let platform_button = match button.mouse_button() {
+                    Some(MouseButton::Left) => PlatformMouseButton::Left,
+                    Some(MouseButton::Right) => PlatformMouseButton::Right,
+                    Some(MouseButton::Middle) => PlatformMouseButton::Middle,
                     _ => return,
                 };
                 // For click handling, we need the cursor position
@@ -1947,15 +2131,12 @@ impl ApplicationHandler for RinchRuntime {
                 button,
                 ..
             } => {
-                let platform_button = match button {
-                    winit::event::ButtonSource::Mouse(MouseButton::Left)
-                    | winit::event::ButtonSource::Touch { .. } => PlatformMouseButton::Left,
-                    winit::event::ButtonSource::Mouse(MouseButton::Right) => {
-                        PlatformMouseButton::Right
-                    }
-                    winit::event::ButtonSource::Mouse(MouseButton::Middle) => {
-                        PlatformMouseButton::Middle
-                    }
+                // A finger is the left button, and so is a pen's tip (its
+                // barrel button the right): winit's own mapping.
+                let platform_button = match button.mouse_button() {
+                    Some(MouseButton::Left) => PlatformMouseButton::Left,
+                    Some(MouseButton::Right) => PlatformMouseButton::Right,
+                    Some(MouseButton::Middle) => PlatformMouseButton::Middle,
                     _ => return,
                 };
                 let (x, y) = self.app.cursor_pos.unwrap_or((0.0, 0.0));
@@ -1964,6 +2145,34 @@ impl ApplicationHandler for RinchRuntime {
                     y,
                     button: platform_button,
                 }
+            }
+            // A touch the system stopped tracking without a release (the
+            // window lost focus, a palm was rejected): the press it held is
+            // cancelled.
+            WindowEvent::PointerLeft {
+                kind: winit::event::PointerKind::Touch(finger_id),
+                ..
+            } => {
+                let id = TOUCH_POINTER_BASE + finger_id.into_raw() as u64;
+                if !self.pressed_pointers.lift(id) {
+                    return;
+                }
+                let pointer = SurfacePointer {
+                    id,
+                    kind: SurfacePointerKind::Touch,
+                    pressure: 0.0,
+                    primary: false,
+                };
+                self.app.cancel_surface_pointer(pointer);
+                return;
+            }
+            // A trackpad pinch (macOS, iOS, Wayland): a `Pinch` for a
+            // surface with pointer events under the cursor.
+            WindowEvent::PinchGesture { delta, .. } => {
+                if delta.is_finite() {
+                    self.app.surface_pinch_gesture(delta as f32);
+                }
+                return;
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = match delta {
@@ -1990,6 +2199,15 @@ impl ApplicationHandler for RinchRuntime {
                 }
             }
             WindowEvent::Focused(focused) => {
+                // A window that lost focus may never be sent the release of a
+                // button held across the blur (it goes to the window that took
+                // focus): forget every press, or a hover on a surface with
+                // pointer events would go on reporting a pressure of 0.5 until
+                // that button is pressed and released here again. The app's
+                // own heal ends the press gestures and surface captures.
+                if !focused {
+                    self.pressed_pointers.clear();
+                }
                 // Tell the AT whether this window has OS focus.
                 #[cfg(feature = "a11y")]
                 if let Some(bridge) = self.a11y.as_mut() {
@@ -2133,9 +2351,32 @@ impl ApplicationHandler for RinchRuntime {
 impl RinchRuntime {
     /// Hand the app the pointer move [`Self::window_event`] held back, if any.
     fn flush_pointer_move(&mut self, event_loop: &dyn ActiveEventLoop) {
-        if let Some((x, y)) = self.pending_pointer_move.take() {
+        if let Some((x, y, pointer)) = self.pending_pointer_move.take() {
+            crate::render_surface::set_current_pointer(Some(pointer));
             self.dispatch_main_event(PlatformEvent::MouseMove { x, y }, event_loop);
+            crate::render_surface::set_current_pointer(None);
         }
+    }
+
+    /// Hold back a move of `pointer` to `(x, y)` (logical px) until the
+    /// batch ends or another event comes, replacing a held move of the same
+    /// pointer: one move per pointer per frame. A held move of **another**
+    /// pointer (the other finger of a pinch) is handed over first, so no
+    /// pointer's last position is lost.
+    fn queue_pointer_move(
+        &mut self,
+        x: f32,
+        y: f32,
+        pointer: SurfacePointer,
+        event_loop: &dyn ActiveEventLoop,
+    ) {
+        if self
+            .pending_pointer_move
+            .is_some_and(|(_, _, held)| held.id != pointer.id)
+        {
+            self.flush_pointer_move(event_loop);
+        }
+        self.pending_pointer_move = Some((x, y, pointer));
     }
 
     /// Dispatch one main-window event to the app and act on what it asks for.
@@ -3905,5 +4146,111 @@ mod native_event_queue_tests {
         assert_eq!(drained.len(), 4, "{drained:?}");
         assert!(matches!(drained[1], RinchNativeEvent::ReRender));
         assert_eq!(rerenders(&drained), 1);
+    }
+}
+
+/// winit's pointer sources as a render surface hears them
+/// (`SurfacePointer`): which device, which id, how hard.
+#[cfg(test)]
+mod pointer_source_tests {
+    use super::*;
+    use winit::event::{
+        ButtonSource, FingerId, Force, PointerSource, TabletToolButton, TabletToolData,
+        TabletToolKind,
+    };
+
+    fn tool(kind: TabletToolKind, force: Option<f64>) -> PointerSource {
+        PointerSource::TabletTool {
+            kind,
+            data: TabletToolData {
+                force: force.map(Force::Normalized),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// A chord's release leaves the held button down; a window blur forgets
+    /// every press, since the release of a button held across it may go to
+    /// another window (review of #1502, N3).
+    #[test]
+    fn pressed_buttons_track_chords_and_a_blur_forgets_them() {
+        let mut p = PressedButtons::default();
+        p.note(1, Some(MouseButton::Left), true);
+        p.note(1, Some(MouseButton::Right), true);
+        p.note(1, Some(MouseButton::Right), false);
+        assert!(p.is_down(1), "the left button is still held");
+        p.note(1, Some(MouseButton::Left), false);
+        assert!(!p.is_down(1));
+        p.note(1, Some(MouseButton::Left), true);
+        p.note(TOUCH_POINTER_BASE, None, true);
+        p.clear();
+        assert!(!p.is_down(1) && !p.is_down(TOUCH_POINTER_BASE));
+        p.note(TOUCH_POINTER_BASE, None, true);
+        assert!(p.lift(TOUCH_POINTER_BASE) && !p.lift(TOUCH_POINTER_BASE));
+    }
+
+    #[test]
+    fn a_pen_reports_its_force_and_an_eraser_says_so() {
+        let p = surface_pointer_of(&tool(TabletToolKind::Pen, Some(0.3)), true, true);
+        assert_eq!(p.kind, SurfacePointerKind::Pen);
+        assert!((p.pressure - 0.3).abs() < 1e-6);
+        assert_eq!(p.id, TABLET_POINTER_ID);
+        let e = surface_pointer_of(&tool(TabletToolKind::Eraser, Some(1.5)), true, true);
+        assert_eq!(e.kind, SurfacePointerKind::Eraser);
+        assert_eq!(e.pressure, 1.0, "clamped");
+        // A tool without force sensing reports the Pointer Events default.
+        assert_eq!(
+            surface_pointer_of(&tool(TabletToolKind::Pen, None), true, true).pressure,
+            0.5
+        );
+        assert_eq!(
+            surface_pointer_of(&tool(TabletToolKind::Pen, None), true, false).pressure,
+            0.0
+        );
+    }
+
+    #[test]
+    fn each_finger_is_its_own_pointer_and_never_the_mouse() {
+        let finger = |raw: usize| PointerSource::Touch {
+            finger_id: FingerId::from_raw(raw),
+            force: None,
+        };
+        let a = surface_pointer_of(&finger(0), true, true);
+        let b = surface_pointer_of(&finger(1), false, true);
+        assert_eq!(a.kind, SurfacePointerKind::Touch);
+        assert_ne!(a.id, b.id);
+        assert!(a.id != SurfacePointer::mouse(true).id && a.id != TABLET_POINTER_ID);
+        // No finger's id is the mouse's or the tablet's, the first two
+        // included (a touch base of 0 gives finger 1 the mouse's id).
+        for raw in 0..4 {
+            let id = surface_pointer_of(&finger(raw), false, true).id;
+            assert!(id != SurfacePointer::mouse(true).id && id != TABLET_POINTER_ID);
+        }
+        assert_eq!(a.id, pointer_id_of(&finger(0)));
+        assert!(a.primary && !b.primary);
+        assert_eq!(a.pressure, 0.5, "no force measured, contact down");
+    }
+
+    #[test]
+    fn the_mouse_is_pointer_one_and_a_release_has_no_pressure() {
+        let m = surface_pointer_of(&PointerSource::Mouse, true, true);
+        assert_eq!(m, SurfacePointer::mouse(true));
+        let pressed = surface_pointer_of_button(
+            &ButtonSource::TabletTool {
+                kind: TabletToolKind::Pen,
+                button: TabletToolButton::Contact,
+                data: TabletToolData {
+                    force: Some(Force::Normalized(0.8)),
+                    ..Default::default()
+                },
+            },
+            true,
+            true,
+        );
+        assert!((pressed.pressure - 0.8).abs() < 1e-6);
+        let released =
+            surface_pointer_of_button(&ButtonSource::Mouse(MouseButton::Left), true, false);
+        assert_eq!(released.pressure, 0.0);
+        assert_eq!(released.id, 1);
     }
 }

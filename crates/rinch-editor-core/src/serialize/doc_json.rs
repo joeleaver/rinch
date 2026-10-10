@@ -375,6 +375,17 @@ mod tests {
                     attrs(&[("src", AttrValue::from("a.png"))]),
                     Fragment::empty(),
                 ),
+                // An image's app-owned attrs travel through the wire format.
+                node(
+                    s,
+                    "image",
+                    attrs(&[
+                        ("src", AttrValue::from("b.png")),
+                        ("board", AttrValue::from("b1")),
+                        ("width", AttrValue::Int(320)),
+                    ]),
+                    Fragment::empty(),
+                ),
                 node(s, "hard_break", Attrs::new(), Fragment::empty()),
             ]),
         );
