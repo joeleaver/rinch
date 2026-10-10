@@ -11,8 +11,9 @@ pub mod node;
 pub mod validation;
 
 pub use data_attrs::{
-    RESERVED_DATA_ATTR_PREFIXES, RESERVED_DATA_ATTRS, app_data_attrs, is_app_data_attr,
-    is_data_attr_name, is_reserved_data_attr,
+    MAX_DATA_ATTR_NAME, MAX_DATA_ATTR_VALUE, MAX_DATA_ATTRS, RESERVED_DATA_ATTR_PREFIXES,
+    RESERVED_DATA_ATTRS, app_data_attrs, is_app_data_attr, is_data_attr_name,
+    is_reserved_data_attr, kept_data_attrs,
 };
 pub use mark::{MarkSpec, MarkSpecBuilder};
 pub use node::{AttrSpec, MarkSet, NodeSpec, NodeSpecBuilder};
@@ -478,6 +479,12 @@ impl SchemaBuilder {
 
     /// Build the schema, compiling interned node/mark-type handles and the
     /// per-type content matches.
+    ///
+    /// # Panics
+    ///
+    /// When a node type that is not a leaf (one with content) sets
+    /// [`NodeSpec::data_attrs`]: app data attributes are carried through HTML
+    /// on a void element only.
     pub fn build(self) -> Schema {
         let groups = compute_groups(&self.nodes);
         // A node-type name must not collide with a group name, or content
@@ -487,6 +494,15 @@ impl SchemaBuilder {
             "a node-type name collides with a group name"
         );
         let node_types = compile_node_types(&self.nodes, &groups);
+        // App data attributes go through HTML on a void element only, so a
+        // container that kept them would lose them on every copy and paste.
+        for (name, spec) in &self.nodes {
+            assert!(
+                !spec.data_attrs || node_types[name.as_str()].is_leaf(),
+                "node type `{name}` sets `data_attrs`, which only a leaf node type \
+                 (an atom such as `image`) may"
+            );
+        }
         let mark_types = compile_mark_types(&self.marks);
         Schema {
             nodes: self.nodes,

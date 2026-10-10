@@ -995,17 +995,19 @@ impl RinchApp {
         };
         let d = doc.borrow();
         let mut cur = self.shared_hit(&d, x, y);
+        // A row is a `data-tcm-item` **inside the panel**: one anywhere else
+        // (pasted into a document, an app's own markup) is no row of this menu.
+        let mut row = None;
         while let Some(nid) = cur {
             let Some(node) = d.tree.get(nid) else { break };
-            if let Some(idx) = node
-                .attributes
-                .get("data-tcm-item")
-                .and_then(|s| s.parse::<usize>().ok())
-            {
-                return MenuHit::Item(idx);
+            if row.is_none() {
+                row = node
+                    .attributes
+                    .get("data-tcm-item")
+                    .and_then(|s| s.parse::<usize>().ok());
             }
             if nid == open.panel_id {
-                return MenuHit::InsidePanel;
+                return row.map_or(MenuHit::InsidePanel, MenuHit::Item);
             }
             cur = node.parent;
         }

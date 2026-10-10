@@ -1296,6 +1296,7 @@ fn filter_attributes(attrs: Vec<(String, String)>) -> Vec<(String, String)> {
         .into_iter()
         .filter(|(name, _)| {
             crate::schema::is_app_data_attr(name)
+                || name == super::html::CLIPBOARD_MARK
                 || matches!(
                     name.as_str(),
                     "href"

@@ -2217,7 +2217,9 @@ fn push_mark_span(marks: &mut Vec<SpanMark>, name: &str, attrs: Attrs, start: us
 /// an attr in the reserved namespace would be indistinguishable from it, so it is
 /// refused here rather than silently overwritten.
 fn atom_attrs(atom: &Node) -> Result<Attrs> {
-    let mut attrs = Attrs::new();
+    // Built once, not with `Attrs::with` per attr (which copies the map each
+    // time: quadratic in an atom's attribute count).
+    let mut attrs: Vec<(&str, AttrValue)> = Vec::with_capacity(atom.attrs().len() + 1);
     for (k, v) in atom.attrs().iter() {
         if k.starts_with(RESERVED_PREFIX) {
             return Err(CollabError::schema(format!(
@@ -2226,9 +2228,10 @@ fn atom_attrs(atom: &Node) -> Result<Attrs> {
                 atom.type_name()
             )));
         }
-        attrs = attrs.with(k, v.clone());
+        attrs.push((k, v.clone()));
     }
-    Ok(attrs.with(ATOM_TYPE, AttrValue::from(atom.type_name())))
+    attrs.push((ATOM_TYPE, AttrValue::from(atom.type_name())));
+    Ok(Attrs::from_iter(attrs))
 }
 
 /// The inverse of [`atom_attrs`]: an [`ATOM_MARK`] span's attrs split back into the
@@ -2237,7 +2240,7 @@ fn atom_attrs(atom: &Node) -> Result<Attrs> {
 /// rather than materializing a guess.
 fn atom_span_type(span: &SpanMark) -> Result<(String, Attrs)> {
     let mut type_name: Option<String> = None;
-    let mut attrs = Attrs::new();
+    let mut attrs: Vec<(&str, AttrValue)> = Vec::new();
     for (k, v) in span.attrs.iter() {
         if k == ATOM_TYPE {
             let AttrValue::Str(name) = v else {
@@ -2251,9 +2254,10 @@ fn atom_span_type(span: &SpanMark) -> Result<(String, Attrs)> {
                 "unknown reserved key `{k}` in an inline atom's `{ATOM_MARK}` value"
             )));
         } else {
-            attrs = attrs.with(k, v.clone());
+            attrs.push((k, v.clone()));
         }
     }
+    let attrs = Attrs::from_iter(attrs);
     let type_name = type_name.ok_or_else(|| {
         CollabError::schema(format!(
             "an `{ATOM_MARK}` span carries no `{ATOM_TYPE}`, so there is no node to build"
@@ -2567,15 +2571,15 @@ pub(crate) fn reconcile_attrs(
 /// Read a yrs map back into a model attr set. Values yrs cannot have come from
 /// [`write_attrs`] (a nested shared type, a buffer) are skipped rather than guessed at.
 fn read_attrs<T: ReadTxn>(txn: &T, obj: &MapRef) -> Attrs {
-    let mut out = Attrs::new();
+    let mut out: Vec<(&str, AttrValue)> = Vec::new();
     for (key, value) in obj.iter(txn) {
         if let Out::Any(any) = value
             && let Some(v) = any_to_attr(&any)
         {
-            out = out.with(key, v);
+            out.push((key, v));
         }
     }
-    out
+    Attrs::from_iter(out)
 }
 
 /// One model attr value as a yrs [`Any`]. `None` for [`AttrValue::Null`], which is not
@@ -2639,11 +2643,11 @@ pub(crate) fn decode_mark_value(value: &Any) -> Result<Attrs> {
             )));
         }
     };
-    let mut out = Attrs::new();
+    let mut out: Vec<(&str, AttrValue)> = Vec::with_capacity(map.len());
     for (k, v) in map.iter() {
-        out = out.with(k.as_str(), decode_attr_value(k, v)?);
+        out.push((k.as_str(), decode_attr_value(k, v)?));
     }
-    Ok(out)
+    Ok(Attrs::from_iter(out))
 }
 
 /// One attr value of a mark's (or an atom's) formatting value, decoded as

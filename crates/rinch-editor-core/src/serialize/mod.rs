@@ -26,7 +26,8 @@ pub mod text;
 #[cfg(feature = "serde")]
 pub use doc_json::{DocMark, DocNode, JsonAttr};
 pub use html::{
-    clipboard_slice, mark_dom_tag, node_dom_tag, node_to_html, slice_from_html, slice_to_html,
+    CLIPBOARD_MARK, clipboard_slice, mark_dom_tag, node_dom_tag, node_to_html, slice_from_html,
+    slice_from_pasted_html, slice_to_html,
 };
 #[doc(hidden)]
 pub use html_tree::{html_reader_max_depth, html_reader_steps};

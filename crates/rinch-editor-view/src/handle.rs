@@ -23,7 +23,8 @@ use rinch_core::reactive::{Owner, current_owner, unowned, untracked_handler};
 use rinch_editor_core::commands::{current_block_type, in_node_type, is_mark_active, marks_at};
 use rinch_editor_core::model::{Fragment, Slice};
 use rinch_editor_core::serialize::{
-    clipboard_slice, slice_from_html, slice_from_text, slice_to_html, slice_to_text,
+    clipboard_slice, slice_from_html, slice_from_pasted_html, slice_from_text, slice_to_html,
+    slice_to_text,
 };
 use rinch_editor_core::transform::Mapping;
 use rinch_editor_core::{
@@ -2523,9 +2524,14 @@ impl EditorHandle {
     /// ProseMirror's `replaceSelection`): a list, a table or a rule has no
     /// place inside the textblock the caret is in, so the textblock is closed
     /// or split around it rather than the paste being refused.
+    ///
+    /// It reads as a paste does ([`slice_from_pasted_html`]): an image keeps
+    /// its `data-*` attributes only when rinch's own copy-out wrote them
+    /// ([`selection_clipboard`](Self::selection_clipboard)), so another
+    /// application's are dropped. [`Self::load_html`] keeps them all.
     pub fn replace_selection_with_html(&self, html: &str) -> bool {
         let schema = self.core().schema.clone();
-        match slice_from_html(&schema, html) {
+        match slice_from_pasted_html(&schema, html) {
             Ok(slice) if slice.content.child_count() > 0 => self.replace_selection_slice(slice),
             _ => false,
         }

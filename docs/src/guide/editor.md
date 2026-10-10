@@ -88,19 +88,39 @@ contain. The starter-kit catalogue:
   is inclusive except `link` (see [inherited marks](#state-selection-stored-marks)).
 
 An image keeps an app's own `data-*` attributes — any valid HTML custom data
-attribute name (`data-` and at least one character, no uppercase letter, no `:`),
-with a string value — beside `src`, `alt`, `title` and `width`. That is what HTML's
-data attributes are for: an annotation id, a reference into the app's own store,
-whatever the app needs to find the picture again. The editor keeps them through
-edits, copy and paste (each written to HTML and to the host `<img>` as itself, an
-empty one included) and collaboration, and does nothing else with them. A name
-rinch reserves for itself is never kept, written or read from pasted HTML:
-`data-pm-*`, the `data-on*` event attributes, `data-rinch-*`, and the whole names
-in `rinch_editor_core::schema::RESERVED_DATA_ATTRS` (`data-rid`, `data-nofocus`,
-`data-type`, `data-checked`, …); `is_app_data_attr(name)` is the one test. A paste
-keeps the data attributes another application put on its `<img>` (Slack's
-`data-stringify-type`, for one); a `Plugin::handle_paste` that wants them gone
-removes them. Set or remove one like any attribute:
+attribute name (`data-` and at least one character, no uppercase letter, no `:`, at
+most 64 bytes), with a string value — beside `src`, `alt`, `title` and `width`. That
+is what HTML's data attributes are for: an annotation id, a reference into the app's
+own store, whatever the app needs to find the picture again. The editor keeps them
+through edits, copy and paste (each written to HTML and to the host `<img>` as
+itself, an empty one included) and collaboration, and does nothing else with them.
+
+- **Reserved names.** A name rinch's own code reads or writes on elements is never
+  kept, written, stamped or read from HTML: `data-pm-*`, `data-rinch-*`, the shell's
+  state families `data-text-sel*`, `data-cursor-*`, `data-selection-*`, `data-tcm-*`,
+  and the whole names in `rinch_editor_core::schema::RESERVED_DATA_ATTRS` — `data-rid`,
+  each `data-on…` event name `rsx!` writes (exactly those: `data-one` or `data-online`
+  are yours), `data-nofocus`, `data-block-index`, `data-type`, `data-checked`, ….
+  `is_app_data_attr(name)` is the one test; a ratchet test fails when rinch's sources
+  start using a name that is neither reserved nor known to be safe.
+- **Bounds.** A node keeps at most 32 app data attributes (`MAX_DATA_ATTRS`), each
+  value at most 1024 bytes (`MAX_DATA_ATTR_VALUE`). Past either bound an attribute
+  is dropped whole, never truncated; the first ones are kept (in document order from
+  HTML, in name order otherwise), and of two with one name, the first. The HTML
+  reader, validation (`DocNode` load, `to_doc`), the HTML writer and the view all
+  apply it.
+- **Paste.** The default paste keeps an image's data attributes only when rinch's
+  own copy-out wrote them: `selection_clipboard` marks each element that carries
+  them with `data-rinch-clip` (`serialize::CLIPBOARD_MARK`, reserved, so it never
+  reaches a document), and the paste (`replace_selection_with_html`,
+  `serialize::slice_from_pasted_html`) keeps them only beside it. So a copy between
+  two rinch editors keeps them with no plugin, and another application's (Slack's
+  `data-stringify-type`, Vue's `data-v-…`, React's `data-reactid`, a lazy loader's
+  `data-src`) are dropped. A `Plugin::handle_paste` sees `PasteContent::html` whole
+  and can keep what it wants. A load (`load_html`, `slice_from_html`) keeps every
+  one, bounded.
+
+Set or remove one like any attribute:
 
 ```rust
 handle.update(|state| {
@@ -112,12 +132,11 @@ handle.update(|state| {
 ```
 
 The opt-in is the node spec's: `NodeSpec::data_attrs` (`NodeSpecBuilder::data_attrs(true)`).
-The starter kit's `image` sets it and nothing else does. A node that opts in keeps
-them in the model, `DocNode`, collaboration and its host element; HTML writes and
-reads them on a leaf node only (a void element such as `<img>`, `<hr>`, `<br>`), so
-a container that opts in loses them through copy and paste. An attribute a node's
-spec neither declares nor keeps is dropped by validation (`to_doc`,
-`node_from_doc`), and the HTML writer does not write it.
+The starter kit's `image` sets it and nothing else does. Only a **leaf** node type
+(an atom: `<img>`, `<hr>`, `<br>`) may set it — `SchemaBuilder::build` panics for one
+with content — because HTML carries the attributes on a void element only. An
+attribute a node's spec neither declares nor keeps is dropped by validation
+(`to_doc`, `node_from_doc`), and the HTML writer does not write it.
 
 `width` (whole CSS pixels, absent or not positive for the natural width; read from
 HTML by HTML's dimension rules, so `320px` is 320, rounded and at most 65535) is the

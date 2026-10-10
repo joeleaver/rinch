@@ -9,47 +9,119 @@
 //! needs to find again — an annotation id, a reference into its own store —
 //! on the picture itself.
 //!
-//! Two filters decide which names are kept, and every reader and writer asks
-//! [`is_app_data_attr`], which applies both:
+//! Every reader and writer asks [`is_app_data_attr`] which names are kept:
 //!
 //! - the name is a **valid custom data attribute** (HTML: `data-` and at least
 //!   one character after it, XML-compatible, no ASCII uppercase —
-//!   [`is_data_attr_name`]);
+//!   [`is_data_attr_name`]), of at most [`MAX_DATA_ATTR_NAME`] bytes;
 //! - rinch does **not reserve** it ([`is_reserved_data_attr`]): the names its
-//!   own view and runtime read and write on elements (`data-pm-*`, `data-rid`,
-//!   the `data-on*` event attributes, …). A reserved name pasted in from HTML
-//!   is markup rinch wrote, never an app's, and stamping one on a host element
-//!   would change what rinch does with it.
+//!   own view, shell and runtime read and write on elements (`data-pm-*`,
+//!   `data-rid`, the `data-on…` event attributes, the shell's selection and
+//!   caret state, …). A reserved name pasted in from HTML is markup rinch
+//!   wrote, never an app's, and stamping one on a host element would change
+//!   what rinch does with it (a pasted `data-tcm-item` made a press on the
+//!   picture run a text-menu item). `tests/data_attr_ratchet.rs` scans every
+//!   crate's sources for `"data-…"` literals and fails on one that is neither
+//!   reserved nor on its list of names that are safe to carry.
+//!
+//! And [`kept_data_attrs`] bounds how many a node keeps: at most
+//! [`MAX_DATA_ATTRS`] attributes, each value at most [`MAX_DATA_ATTR_VALUE`]
+//! bytes. Past either bound the attribute is **dropped whole** (the first ones
+//! are kept), never truncated: a value cut short would be a different value.
+//! Every route into the model that validates applies it — the HTML reader,
+//! attribute validation (`DocNode` load, `to_doc`) — and so do the HTML writer
+//! and the view, so an attribute set past the bound by a raw
+//! `SetNodeAttrStep` is neither written out nor shown.
 //!
 //! [`NodeSpec::data_attrs`]: crate::schema::NodeSpec::data_attrs
 
 use crate::model::{AttrValue, Attrs};
 
-/// Name prefixes rinch reserves: the editor view's own markers (`data-pm-*`),
-/// every event-handler attribute the runtime dispatches on (`data-onclick`,
-/// `data-ondragstart`, …) and anything rinch names after itself.
-pub const RESERVED_DATA_ATTR_PREFIXES: &[&str] = &["data-pm-", "data-on", "data-rinch-"];
+/// The most app data attributes one node keeps. Enough for an app's own ids
+/// and flags; a page that stamps dozens (framework scoping attributes, lazy
+/// loaders) is not what the document should store or every collaborator sync.
+pub const MAX_DATA_ATTRS: usize = 32;
 
-/// Whole names rinch reserves: attributes its runtime reads on any element
-/// (`data-rid` is a click handler's id, `data-nofocus` … `data-backdrop` change
-/// focus and pointer handling, `data-viewport*` / `data-render-surface` make a
-/// compositing hole, `data-drag-window` drags the window), the state the shell
-/// writes on elements, and the task-list markup the HTML reader reads on
-/// `<ul>` / `<li>` (TipTap's `data-type` / `data-checked`).
+/// The longest value, in UTF-8 bytes, of an app data attribute a node keeps.
+/// An id or a short reference fits; a base64 `data-src` placeholder does not.
+pub const MAX_DATA_ATTR_VALUE: usize = 1024;
+
+/// The longest name, in bytes, of an app data attribute (`data-` included).
+pub const MAX_DATA_ATTR_NAME: usize = 64;
+
+/// Name prefixes rinch reserves: the editor view's own markers (`data-pm-*`),
+/// anything rinch names after itself (`data-rinch-*`), and the shell's
+/// families of state attributes — the read-only text selection
+/// (`data-text-sel*`), an input's caret and selection (`data-cursor-*`,
+/// `data-selection-*`) and the text context menu's rows (`data-tcm-*`).
+pub const RESERVED_DATA_ATTR_PREFIXES: &[&str] = &[
+    "data-pm-",
+    "data-rinch-",
+    "data-text-sel",
+    "data-cursor-",
+    "data-selection-",
+    "data-tcm-",
+];
+
+/// Whole names rinch reserves:
+///
+/// - the event attributes the runtime dispatches on (`data-rid`, and each
+///   `data-on…` name `rsx!` writes — the exact names, so `data-one` or
+///   `data-online` stay an app's);
+/// - what the runtime reads on any element: focus and pointer handling
+///   (`data-nofocus`, `data-disabled`, `data-trap-focus`, `data-backdrop`,
+///   `data-scroll-lock-exempt`, `data-drag-window`), compositing holes
+///   (`data-viewport`, `data-viewport-ready`, `data-render-surface`,
+///   `data-video-player`), a press's block (`data-block-index`);
+/// - state the shell writes on elements (`data-focused`, `data-preedit`, the
+///   native `<select>` popup's `data-nsel-opt` / `data-selected` /
+///   `data-highlighted`), and `rsx!`'s and components' runtime markers
+///   (`data-fragment`, `data-theme-provider`, `data-rid-reactive`,
+///   `data-user-rid`);
+/// - the task-list markup the HTML reader reads on `<ul>` / `<li>` (TipTap's
+///   `data-type` / `data-checked`).
 pub const RESERVED_DATA_ATTRS: &[&str] = &[
     "data-rid",
+    "data-oninput",
+    "data-onchange",
+    "data-onscroll",
+    "data-onsubmit",
+    "data-onfiledrop",
+    "data-onfiledragenter",
+    "data-onfiledragleave",
+    "data-ondragstart",
+    "data-ondragmove",
+    "data-ondragend",
+    "data-ondrop",
+    "data-ondragenter",
+    "data-ondragover",
+    "data-ondragleave",
+    "data-oncontextmenu",
+    "data-onenter",
+    "data-onleave",
+    "data-onmousedown",
+    "data-onmouseup",
+    "data-onmousemove",
     "data-nofocus",
     "data-disabled",
     "data-trap-focus",
     "data-backdrop",
     "data-scroll-lock-exempt",
+    "data-drag-window",
     "data-viewport",
     "data-viewport-ready",
     "data-render-surface",
-    "data-drag-window",
+    "data-video-player",
+    "data-block-index",
     "data-focused",
-    "data-text-sel",
     "data-preedit",
+    "data-nsel-opt",
+    "data-selected",
+    "data-highlighted",
+    "data-fragment",
+    "data-theme-provider",
+    "data-rid-reactive",
+    "data-user-rid",
     "data-type",
     "data-checked",
 ];
@@ -96,18 +168,41 @@ pub fn is_reserved_data_attr(name: &str) -> bool {
 }
 
 /// Whether `name` is an attribute an opted-in node keeps for an app: a valid
-/// custom data attribute name rinch does not reserve.
+/// custom data attribute name of at most [`MAX_DATA_ATTR_NAME`] bytes that
+/// rinch does not reserve.
 pub fn is_app_data_attr(name: &str) -> bool {
-    is_data_attr_name(name) && !is_reserved_data_attr(name)
+    name.len() <= MAX_DATA_ATTR_NAME && is_data_attr_name(name) && !is_reserved_data_attr(name)
 }
 
-/// The app data attributes in `attrs` with a string value, in name order: what
-/// an opted-in node carries out to HTML and to its host element.
+/// The app data attributes of `pairs` a node keeps, in the order given: each
+/// [`is_app_data_attr`] name the **first** time it appears (HTML keeps the
+/// first of two attributes with one name), with a value of at most
+/// [`MAX_DATA_ATTR_VALUE`] bytes, at most [`MAX_DATA_ATTRS`] of them. Anything
+/// else is dropped whole.
+pub fn kept_data_attrs<'a>(
+    pairs: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> impl Iterator<Item = (&'a str, &'a str)> {
+    let mut seen: Vec<&'a str> = Vec::new();
+    pairs
+        .into_iter()
+        .filter(move |(name, value)| {
+            if value.len() > MAX_DATA_ATTR_VALUE || !is_app_data_attr(name) || seen.contains(name) {
+                return false;
+            }
+            seen.push(name);
+            true
+        })
+        .take(MAX_DATA_ATTRS)
+}
+
+/// The app data attributes in `attrs` a node keeps ([`kept_data_attrs`] over
+/// its string-valued attributes, in name order): what an opted-in node carries
+/// out to HTML and to its host element.
 pub fn app_data_attrs(attrs: &Attrs) -> impl Iterator<Item = (&str, &str)> {
-    attrs.iter().filter_map(|(k, v)| match v {
-        AttrValue::Str(s) if is_app_data_attr(k) => Some((k, &**s)),
+    kept_data_attrs(attrs.iter().filter_map(|(k, v)| match v {
+        AttrValue::Str(s) => Some((k, &**s)),
         _ => None,
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -181,5 +276,36 @@ mod tests {
             app_data_attrs(&attrs).collect::<Vec<_>>(),
             [("data-ref", "r")]
         );
+    }
+
+    /// The bounds drop whole attributes, the first ones are kept, and a
+    /// repeated name keeps its first value.
+    #[test]
+    fn kept_data_attrs_bounds_count_value_and_name() {
+        let names: Vec<String> = (0..40).map(|i| format!("data-k{i:02}")).collect();
+        let kept: Vec<&str> = kept_data_attrs(names.iter().map(|n| (n.as_str(), "v")))
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(kept.len(), MAX_DATA_ATTRS);
+        assert_eq!(kept[0], "data-k00");
+        assert_eq!(kept[MAX_DATA_ATTRS - 1], "data-k31");
+
+        let at = "x".repeat(MAX_DATA_ATTR_VALUE);
+        let past = "x".repeat(MAX_DATA_ATTR_VALUE + 1);
+        let long_name = format!("data-{}", "n".repeat(MAX_DATA_ATTR_NAME - 4));
+        let kept: Vec<(&str, &str)> = kept_data_attrs([
+            ("data-a", "first"),
+            ("data-a", "second"),
+            ("data-at", at.as_str()),
+            ("data-past", past.as_str()),
+            (long_name.as_str(), "v"),
+            ("data-rid", "1"),
+        ])
+        .collect();
+        assert_eq!(kept, [("data-a", "first"), ("data-at", at.as_str())]);
+        // A name of exactly the bound is kept.
+        let at_name = format!("data-{}", "n".repeat(MAX_DATA_ATTR_NAME - 5));
+        assert!(is_app_data_attr(&at_name));
+        assert!(!is_app_data_attr(&long_name));
     }
 }

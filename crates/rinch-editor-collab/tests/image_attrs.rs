@@ -733,3 +733,46 @@ fn two_different_data_attrs_set_at_once_both_survive() {
         assert_eq!(late.projected_doc(&schema).unwrap(), a.state.doc);
     }
 }
+
+/// Projecting, joining and syncing an image is linear in its attribute count:
+/// every path builds an atom's attributes in one pass, never with an
+/// `Attrs::with` per attribute (which copies the map each time). The counter is
+/// the entries those copies cost, at two sizes: doubling the attributes at most
+/// doubles it (a quadratic build quadruples it). Review of #1518: 4000 attrs
+/// took 1.5 s to record and 3.2 s to project before.
+#[test]
+fn an_images_attributes_cost_linear_copies_in_collaboration() {
+    use rinch_editor_core::model::attrs::attr_entries_copied;
+    fn copies(n: usize) -> u64 {
+        let schema = Rc::new(Schema::starter_kit());
+        let mut attrs: Vec<(String, AttrValue)> = vec![("src".into(), AttrValue::from(SRC))];
+        attrs.extend((0..n).map(|i| (format!("data-k{i:04}"), AttrValue::from("v"))));
+        let image = schema
+            .create_node("image", Attrs::from_iter(attrs), Fragment::empty())
+            .unwrap();
+        let para = schema
+            .branch(
+                "paragraph",
+                Fragment::from_children(vec![
+                    schema.text("ab").unwrap(),
+                    image,
+                    schema.text("cd").unwrap(),
+                ]),
+            )
+            .unwrap();
+        let doc = schema.branch("doc", Fragment::from_node(para)).unwrap();
+        let before = attr_entries_copied();
+        let (mut a, mut b) = two_peers(&schema, doc, (11, 22));
+        a.set("data-k0000", "changed");
+        b.set("alt", "described");
+        sync(&mut a, &mut b);
+        converged(&a, &b, &schema);
+        attr_entries_copied() - before
+    }
+    let (small, large) = (copies(200), copies(400));
+    eprintln!("attr entries copied: 200 attrs {small}, 400 attrs {large}");
+    assert!(
+        large <= 2 * small + 64,
+        "copies grow faster than the attributes: {small} at 200, {large} at 400"
+    );
+}

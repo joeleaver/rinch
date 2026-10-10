@@ -35,7 +35,7 @@ use super::html_tree::{HtmlFragmentParser, ParsedNode, is_table_part, step};
 use crate::EditorError;
 use crate::model::{AttrValue, Attrs, Fragment, Mark, MarkType, Node, NodeType, Slice};
 use crate::pos::Pos;
-use crate::schema::{IMAGE_MAX_WIDTH, Schema, is_app_data_attr};
+use crate::schema::{IMAGE_MAX_WIDTH, Schema, app_data_attrs, kept_data_attrs};
 use crate::tables;
 use std::collections::HashMap;
 
@@ -47,10 +47,10 @@ pub fn node_to_html(node: &Node) -> String {
     let mut out = String::new();
     if node.type_name() == "doc" {
         for child in node.content().children() {
-            write_node(child, &mut out);
+            write_node(child, &mut out, false);
         }
     } else {
-        write_node(node, &mut out);
+        write_node(node, &mut out, false);
     }
     out
 }
@@ -63,10 +63,17 @@ pub fn node_to_html(node: &Node) -> String {
 /// a multi-block copy emits its `<p>`/`<h1>`/… children directly. Content that
 /// is nothing without the node it was in — list items, table rows — should be
 /// cut with [`clipboard_slice`], which keeps that node.
+///
+/// An element that carries app data attributes ([`NodeSpec::data_attrs`]) is
+/// marked as rinch's own with [`CLIPBOARD_MARK`], which is what makes the
+/// default paste ([`slice_from_pasted_html`]) keep them; [`node_to_html`]
+/// writes no mark.
+///
+/// [`NodeSpec::data_attrs`]: crate::schema::NodeSpec::data_attrs
 pub fn slice_to_html(slice: &Slice) -> String {
     let mut out = String::new();
     for child in slice.content.children() {
-        write_node(child, &mut out);
+        write_node(child, &mut out, true);
     }
     out
 }
@@ -106,7 +113,9 @@ pub fn clipboard_slice(doc: &Node, from: usize, to: usize) -> Result<Slice, Edit
     Ok(slice)
 }
 
-fn write_node(node: &Node, out: &mut String) {
+/// `clipboard`: mark an element that carries app data attributes with
+/// [`CLIPBOARD_MARK`] (the copy-out, [`slice_to_html`]).
+fn write_node(node: &Node, out: &mut String, clipboard: bool) {
     // Text node: escaped text wrapped in its marks (innermost = marks[0]).
     if let Some(text) = node.text() {
         let mut s = escape_text(text);
@@ -118,7 +127,7 @@ fn write_node(node: &Node, out: &mut String) {
     }
     // Leaf non-text node (atom: hr / image / hard_break) → void element.
     if node.is_leaf() {
-        let mut s = void_element(node);
+        let mut s = void_element(node, clipboard);
         for mark in node.marks() {
             s = wrap_mark(mark, &s);
         }
@@ -129,7 +138,7 @@ fn write_node(node: &Node, out: &mut String) {
     let (open, close) = block_tags(node);
     out.push_str(&open);
     for child in node.content().children() {
-        write_node(child, out);
+        write_node(child, out, clipboard);
     }
     out.push_str(&close);
 }
@@ -210,15 +219,22 @@ fn align_style_attr(node: &Node) -> String {
 
 /// A void/self-closing element (hr, img, br) with its declared string attrs,
 /// an image's `width` when positive (clamped to [`IMAGE_MAX_WIDTH`]) and, for
-/// a node whose spec keeps them ([`NodeSpec::data_attrs`]), every app data
-/// attribute as itself, an empty one included. An attribute the node carries
-/// that its spec neither declares nor keeps is not written.
+/// a node whose spec keeps them ([`NodeSpec::data_attrs`]), the app data
+/// attributes it keeps ([`app_data_attrs`], bounded) as themselves, an empty
+/// one included — with [`CLIPBOARD_MARK`] beside them when `clipboard`. An
+/// attribute the node carries that its spec neither declares nor keeps is not
+/// written.
 ///
 /// [`NodeSpec::data_attrs`]: crate::schema::NodeSpec::data_attrs
-fn void_element(node: &Node) -> String {
+fn void_element(node: &Node, clipboard: bool) -> String {
     let tag = primary_tag(node.node_type());
     let image = node.type_name() == "image";
     let spec = node.node_type().spec();
+    let data: Vec<&str> = if spec.data_attrs {
+        app_data_attrs(node.attrs()).map(|(k, _)| k).collect()
+    } else {
+        Vec::new()
+    };
     let mut s = format!("<{tag}");
     for (k, v) in node.attrs().iter() {
         if image && k == "width" {
@@ -232,31 +248,38 @@ fn void_element(node: &Node) -> String {
             {
                 s.push_str(&format!(" {k}=\"{}\"", escape_attr(val)));
             }
-        } else if spec.data_attrs
-            && is_app_data_attr(k)
+        } else if data.contains(&k)
             && let Some(val) = v.as_str()
         {
             s.push_str(&format!(" {k}=\"{}\"", escape_attr(val)));
         }
     }
+    if clipboard && !data.is_empty() {
+        s.push_str(&format!(" {CLIPBOARD_MARK}=\"\""));
+    }
     s.push('>');
     s
 }
 
-/// The app data attributes in `attributes` a node of type `nt` keeps
-/// ([`NodeSpec::data_attrs`]), as model attributes: none for a type that does
-/// not opt in, and never one rinch reserves.
+/// The attribute rinch's clipboard copy-out ([`slice_to_html`]) puts on an
+/// element that carries app data attributes: the default paste
+/// ([`slice_from_pasted_html`]) keeps an element's data attributes only beside
+/// it, so another application's (Slack's `data-stringify-type`, a framework's
+/// `data-v-…`, a lazy loader's `data-src`) are not stored, synced and stamped.
+/// It is reserved (`data-rinch-*`), so it never reaches a document itself.
+pub const CLIPBOARD_MARK: &str = "data-rinch-clip";
+
+/// Which data attributes the HTML reader keeps on a node whose spec keeps
+/// them ([`NodeSpec::data_attrs`]).
 ///
 /// [`NodeSpec::data_attrs`]: crate::schema::NodeSpec::data_attrs
-fn data_attr_pairs<'a>(
-    nt: &NodeType,
-    attributes: &'a [(String, String)],
-) -> impl Iterator<Item = (&'a str, AttrValue)> {
-    let keep = nt.spec().data_attrs;
-    attributes
-        .iter()
-        .filter(move |(name, _)| keep && is_app_data_attr(name))
-        .map(|(name, value)| (name.as_str(), AttrValue::from(value.as_str())))
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DataAttrSource {
+    /// Every app data attribute ([`slice_from_html`]: a load, an import).
+    Any,
+    /// Only on an element rinch's copy-out marked ([`CLIPBOARD_MARK`]): the
+    /// default paste ([`slice_from_pasted_html`]).
+    MarkedOnly,
 }
 
 /// An `<img width>` the import keeps: the value HTML's dimension rules read
@@ -415,10 +438,30 @@ fn escape_attr(s: &str) -> String {
 /// elements never materialize. The only errors are a schema with no
 /// paragraph or list item type, and attributes the schema refuses.
 ///
+/// A node whose spec keeps app data attributes ([`NodeSpec::data_attrs`])
+/// keeps every one the element carries (bounded, [`kept_data_attrs`]); the
+/// default paste reads with [`slice_from_pasted_html`] instead.
+///
 /// [`Transaction::replace_selection`]: crate::state::Transaction::replace_selection
+/// [`NodeSpec::data_attrs`]: crate::schema::NodeSpec::data_attrs
 pub fn slice_from_html(schema: &Schema, html: &str) -> Result<Slice, EditorError> {
+    read_slice(schema, html, DataAttrSource::Any)
+}
+
+/// [`slice_from_html`] for the default (unclaimed) paste: an element's app
+/// data attributes are kept only when rinch's own copy-out wrote them
+/// ([`CLIPBOARD_MARK`] on the element), so a copy between rinch editors keeps
+/// them and another application's are dropped. A
+/// [`Plugin::handle_paste`](crate::Plugin::handle_paste) that wants the
+/// pasted markup's attributes reads them from `PasteContent::html` itself.
+pub fn slice_from_pasted_html(schema: &Schema, html: &str) -> Result<Slice, EditorError> {
+    read_slice(schema, html, DataAttrSource::MarkedOnly)
+}
+
+fn read_slice(schema: &Schema, html: &str, data: DataAttrSource) -> Result<Slice, EditorError> {
     let mut forest = HtmlFragmentParser::new(html).parse();
-    let parser = HtmlParser::new(schema)?;
+    let mut parser = HtmlParser::new(schema)?;
+    parser.data_attrs = data;
     parser.mark_blocks(&mut forest);
     let blocks = parser.parse_blocks(&forest)?;
     if blocks.is_empty() {
@@ -482,6 +525,8 @@ struct HtmlParser<'a> {
     tables: Option<TableTypes<'a>>,
     code_block: Option<&'a NodeType>,
     hard_break: Option<&'a NodeType>,
+    /// Which data attributes a node that keeps them takes from an element.
+    data_attrs: DataAttrSource,
 }
 
 /// The textblock that inline content between blocks becomes: a paragraph
@@ -573,7 +618,29 @@ impl<'a> HtmlParser<'a> {
             tables,
             code_block: schema.node_type("code_block"),
             hard_break,
+            data_attrs: DataAttrSource::Any,
         })
+    }
+
+    /// The app data attributes in `attributes` a node of type `nt` keeps
+    /// ([`NodeSpec::data_attrs`], [`kept_data_attrs`]: bounded, the first of a
+    /// repeated name), as model attributes: none for a type that does not opt
+    /// in, never one rinch reserves, and under [`DataAttrSource::MarkedOnly`]
+    /// none from an element without [`CLIPBOARD_MARK`].
+    ///
+    /// [`NodeSpec::data_attrs`]: crate::schema::NodeSpec::data_attrs
+    fn data_attr_pairs<'x>(
+        &self,
+        nt: &NodeType,
+        attributes: &'x [(String, String)],
+    ) -> Vec<(&'x str, AttrValue)> {
+        let marked = || attributes.iter().any(|(name, _)| name == CLIPBOARD_MARK);
+        if !nt.spec().data_attrs || (self.data_attrs == DataAttrSource::MarkedOnly && !marked()) {
+            return Vec::new();
+        }
+        kept_data_attrs(attributes.iter().map(|(n, v)| (n.as_str(), v.as_str())))
+            .map(|(n, v)| (n, AttrValue::from(v)))
+            .collect()
     }
 
     /// Whether `tag` is a block: one of the schema's, or an HTML element that
@@ -974,7 +1041,7 @@ impl<'a> HtmlParser<'a> {
             }
             "horizontal_rule" => self.make_node(
                 nt,
-                Attrs::from_iter(data_attr_pairs(nt, attributes)),
+                Attrs::from_iter(self.data_attr_pairs(nt, attributes)),
                 Fragment::empty(),
             ),
             _ if nt.is_textblock() => {
@@ -1590,7 +1657,7 @@ impl<'a> HtmlParser<'a> {
         match nt.name() {
             "hard_break" => Ok(Some(self.make_node(
                 nt,
-                Attrs::from_iter(data_attr_pairs(nt, attributes)),
+                Attrs::from_iter(self.data_attr_pairs(nt, attributes)),
                 Fragment::empty(),
             )?)),
             "image" => {
@@ -1614,7 +1681,7 @@ impl<'a> HtmlParser<'a> {
                 if let Some(width) = attr(attributes, "width").and_then(image_width) {
                     pairs.push(("width", AttrValue::Int(width)));
                 }
-                pairs.extend(data_attr_pairs(nt, attributes));
+                pairs.extend(self.data_attr_pairs(nt, attributes));
                 let img = self.make_node(nt, Attrs::from_iter(pairs), Fragment::empty())?;
                 Ok(Some(if active.is_empty() {
                     img
@@ -2088,6 +2155,7 @@ pub(crate) fn dropped_table_attr(html: &str, img_data_attrs: bool) -> Option<Dro
         in_task_list: bool,
         img_data_attrs: bool,
     ) -> Option<DroppedAttr> {
+        let mut data_seen = 0usize;
         for (name, value) in attributes {
             let kept = match (tag, name.as_str()) {
                 ("ul", TASK_TYPE) => value.trim() == TASK_LIST,
@@ -2102,7 +2170,13 @@ pub(crate) fn dropped_table_attr(html: &str, img_data_attrs: bool) -> Option<Dro
                 ("a", "href" | "title" | "target" | "rel") | ("img", "src" | "alt" | "title") => {
                     true
                 }
-                ("img", name) if img_data_attrs && is_app_data_attr(name) => true,
+                // Each one the import keeps: a valid, unreserved name with a
+                // value inside the bound, at most `MAX_DATA_ATTRS` of them.
+                ("img", name) if img_data_attrs && crate::schema::is_app_data_attr(name) => {
+                    data_seen += 1;
+                    value.len() <= crate::schema::MAX_DATA_ATTR_VALUE
+                        && data_seen <= crate::schema::MAX_DATA_ATTRS
+                }
                 ("img", "width") => image_width(value).is_some(),
                 ("td" | "th", "colspan") => value
                     .trim()

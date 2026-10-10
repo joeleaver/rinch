@@ -10,8 +10,28 @@
 //! - cloning is cheap (an `Rc` bump — attrs ride along in the persistent tree),
 //! - the empty case allocates nothing (`Attrs(None)`).
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
+
+thread_local! {
+    /// Entries copied by [`Attrs::with`] / [`Attrs::without`] (each copies the
+    /// whole map), for a cost test to pin; see [`attr_entries_copied`].
+    static ENTRIES_COPIED: Cell<u64> = const { Cell::new(0) };
+}
+
+/// How many attribute entries [`Attrs::with`] and [`Attrs::without`] have
+/// copied on this thread. A loop of `with`s building `n` attributes copies
+/// `n²/2`; a cost test reads this to pin that a path builds its attributes in
+/// one pass ([`FromIterator`]).
+#[doc(hidden)]
+pub fn attr_entries_copied() -> u64 {
+    ENTRIES_COPIED.with(Cell::get)
+}
+
+fn note_copied(n: usize) {
+    ENTRIES_COPIED.with(|c| c.set(c.get() + n as u64));
+}
 
 /// A single attribute value. Deliberately small and `Hash`/`Eq` so that [`Attrs`]
 /// — and therefore `Node`/`Mark` — can derive structural equality and hashing.
@@ -134,7 +154,10 @@ impl Attrs {
     /// Return a new `Attrs` with `key` set to `value` (copy-on-write).
     pub fn with(&self, key: impl Into<Box<str>>, value: impl Into<AttrValue>) -> Self {
         let mut map = match &self.0 {
-            Some(rc) => (**rc).clone(),
+            Some(rc) => {
+                note_copied(rc.len());
+                (**rc).clone()
+            }
             None => BTreeMap::new(),
         };
         map.insert(key.into(), value.into());
@@ -145,6 +168,7 @@ impl Attrs {
     pub fn without(&self, key: &str) -> Self {
         match &self.0 {
             Some(rc) if rc.contains_key(key) => {
+                note_copied(rc.len());
                 let mut map = (**rc).clone();
                 map.remove(key);
                 if map.is_empty() {

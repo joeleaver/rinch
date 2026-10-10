@@ -403,17 +403,29 @@ fn note_entry(identity: &str, attr: &str, value: &Any) {
 /// reserved key is ignored (the type is never changed this way: a retype writes a
 /// fresh identity); `Undefined` removes the attr.
 pub(crate) fn merged(value: &Attrs, entries: Option<&Vec<(String, Any)>>) -> Result<Attrs> {
-    let mut out = value.clone();
-    for (k, v) in entries.into_iter().flatten() {
+    let Some(entries) = entries.filter(|e| !e.is_empty()) else {
+        return Ok(value.clone());
+    };
+    // One map for every entry (not `Attrs::with` per entry, which copies the
+    // map each time: quadratic in the attribute count).
+    let mut out: std::collections::BTreeMap<Box<str>, AttrValue> = value
+        .iter()
+        .map(|(k, v)| (Box::from(k), v.clone()))
+        .collect();
+    for (k, v) in entries {
         if k.starts_with(RESERVED_PREFIX) {
             continue;
         }
-        out = match v {
-            Any::Undefined => out.without(k),
-            other => out.with(k.as_str(), decode_attr_value(k, other)?),
-        };
+        match v {
+            Any::Undefined => {
+                out.remove(k.as_str());
+            }
+            other => {
+                out.insert(k.as_str().into(), decode_attr_value(k, other)?);
+            }
+        }
     }
-    Ok(out)
+    Ok(Attrs::from_iter(out))
 }
 
 /// The merged value of every char of `scanned` carrying `@atom`, in order, each with

@@ -57,12 +57,18 @@ pub struct NodeSpec {
     /// Whether the node keeps an app's `data-*` attributes beside the ones
     /// [`attrs`](Self::attrs) declares: any valid HTML custom data attribute
     /// name rinch does not reserve ([`is_app_data_attr`]), with a string
-    /// value. Kept by attribute validation, `DocNode`, collaboration and the
-    /// view (which writes them on the host element); written to and read from
-    /// HTML on a leaf node (a void element such as `<img>`), where a container
-    /// does not carry them. Off by default; the starter kit's `image` opts in.
+    /// value, at most [`MAX_DATA_ATTRS`] of them and each value at most
+    /// [`MAX_DATA_ATTR_VALUE`] bytes ([`kept_data_attrs`]). Kept by attribute
+    /// validation, `DocNode`, HTML (as themselves on the node's void element),
+    /// collaboration and the view (which writes them on the host element).
+    /// Off by default; the starter kit's `image` opts in. Only a **leaf** node
+    /// type may set it: [`SchemaBuilder::build`] panics for one with content.
     ///
     /// [`is_app_data_attr`]: crate::schema::is_app_data_attr
+    /// [`kept_data_attrs`]: crate::schema::kept_data_attrs
+    /// [`MAX_DATA_ATTRS`]: crate::schema::MAX_DATA_ATTRS
+    /// [`MAX_DATA_ATTR_VALUE`]: crate::schema::MAX_DATA_ATTR_VALUE
+    /// [`SchemaBuilder::build`]: crate::schema::SchemaBuilder::build
     pub data_attrs: bool,
 
     /// HTML tags to parse as this node (e.g., ["p"], ["h1", "h2", "h3"...])

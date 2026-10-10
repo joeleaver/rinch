@@ -2337,3 +2337,38 @@ mod bench {
         );
     }
 }
+
+/// Review of PR #1518: `data-tcm-item` is read by an ancestor walk from the
+/// hit node, so any element carrying it — an editor `<img>` that kept a pasted
+/// `data-tcm-item` (the PR keeps every unreserved `data-*`) — is a menu row
+/// while the menu is open. A press on it must act as an outside press.
+#[test]
+fn review_1518_a_foreign_data_tcm_item_outside_the_panel_is_no_row() {
+    let (mut app, ids, _log) = page("hello world", &[]);
+    focus_and_select(&mut app, ids.input);
+    let x = x_for_offset(&mut app, ids.input, 4);
+    let (_, by, _, bh) = abs_box(&app, ids.input);
+    right_press(&mut app, x, by + bh / 2.0);
+    let idx = app
+        .open_text_menu
+        .as_ref()
+        .unwrap()
+        .items
+        .iter()
+        .position(|r| r.action == TextEditAction::SelectAll)
+        .unwrap();
+    app.doc.as_ref().unwrap().borrow_mut().set_attribute(
+        NodeId(ids.plain),
+        "data-tcm-item",
+        &idx.to_string(),
+    );
+    let state_before = field_state(&app, ids.input);
+    let (px, py, _, ph) = abs_box(&app, ids.plain);
+    left_press(&mut app, px + 10.0, py + ph / 2.0);
+    assert!(!app.is_text_context_menu_open(), "closed");
+    assert_eq!(
+        field_state(&app, ids.input),
+        state_before,
+        "a press outside the panel ran an item"
+    );
+}
