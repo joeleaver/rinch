@@ -252,4 +252,102 @@ mod tests {
             "gone with the last editor that had one"
         );
     }
+
+    /// #1504: the link callbacks belong to the component rendering when they
+    /// were registered, as the other editor hooks do (#147/#183). Adapted from
+    /// the #1501 review's r1: the callback reads a signal its component made,
+    /// so calling it after the unmount reads a freed signal and panics.
+    mod owner_1504 {
+        use super::*;
+        use rinch_core::reactive::{Scope, Signal, current_owner};
+        use std::cell::Cell;
+
+        #[test]
+        fn a_hover_callback_stops_with_its_scope_and_the_unmount_is_silent() {
+            let h = editor();
+            let scope = Scope::new();
+            let fired = Rc::new(Cell::new(0u32));
+            scope.run(|| {
+                let sig = Signal::new(0u32);
+                let fired = fired.clone();
+                h.on_link_hover(move |_| {
+                    fired.set(fired.get() + 1);
+                    let _ = sig.get();
+                });
+            });
+            set_link_hover(Some(1504), Some((h.clone(), hover(&h, 4))));
+            assert_eq!(fired.get(), 1, "control: a live callback runs");
+            scope.dispose();
+            // The leave, and a new link: both would read the freed signal.
+            set_link_hover(Some(1504), None);
+            set_link_hover(Some(1504), Some((h.clone(), hover(&h, 13))));
+            set_link_hover(Some(1504), None);
+            assert_eq!(fired.get(), 1, "a disposed component's callback must not run");
+        }
+
+        #[test]
+        fn a_click_callback_stops_with_its_scope_and_answers_false() {
+            let h = editor();
+            let link = h.link_at(Pos(4)).unwrap();
+            let scope = Scope::new();
+            let fired = Rc::new(Cell::new(0u32));
+            scope.run(|| {
+                let sig = Signal::new(0u32);
+                let fired = fired.clone();
+                h.on_link_click(move |_| {
+                    fired.set(fired.get() + 1);
+                    let _ = sig.get();
+                    true
+                });
+            });
+            assert!(h.has_link_click_callback(), "control: registered");
+            assert!(h.dispatch_link_click(&click(link.clone(), true)), "control: live, claimed");
+            scope.dispose();
+            assert!(
+                !h.dispatch_link_click(&click(link, true)),
+                "a disposed callback claims nothing"
+            );
+            assert_eq!(fired.get(), 1, "and is not called");
+            assert!(
+                !h.has_link_click_callback(),
+                "a read-only web editor leaves its links to the browser again"
+            );
+        }
+
+        #[test]
+        fn a_live_callback_runs_inside_its_owner_and_an_ownerless_one_unowned() {
+            let h = editor();
+            let link = h.link_at(Pos(4)).unwrap();
+            let scope = Scope::new();
+            let in_owner = Rc::new(Cell::new(None::<bool>));
+            let hover_in_owner = Rc::new(Cell::new(None::<bool>));
+            scope.run(|| {
+                let seen = in_owner.clone();
+                h.on_link_click(move |_| {
+                    seen.set(Some(current_owner().is_some()));
+                    true
+                });
+                let seen = hover_in_owner.clone();
+                h.on_link_hover(move |_| seen.set(Some(current_owner().is_some())));
+            });
+            h.dispatch_link_click(&click(link.clone(), true));
+            set_link_hover(Some(1505), Some((h.clone(), hover(&h, 4))));
+            set_link_hover(Some(1505), None);
+            assert_eq!(in_owner.get(), Some(true), "the click runs inside its owner");
+            assert_eq!(hover_in_owner.get(), Some(true), "the hover runs inside its owner");
+
+            // Registered outside any render: app lifetime, run unowned.
+            let ran = Rc::new(Cell::new(None::<bool>));
+            {
+                let ran = ran.clone();
+                h.on_link_click(move |_| {
+                    ran.set(Some(current_owner().is_some()));
+                    true
+                });
+            }
+            scope.dispose();
+            assert!(h.dispatch_link_click(&click(link, true)), "an ownerless callback keeps running");
+            assert_eq!(ran.get(), Some(false), "unowned");
+        }
+    }
 }
