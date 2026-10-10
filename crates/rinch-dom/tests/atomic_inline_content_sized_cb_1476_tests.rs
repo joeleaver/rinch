@@ -285,19 +285,22 @@ const CHROME: &[(&str, &str, &str)] = &[
         r##"<div style="width:400px;display:flex;flex-direction:column;align-items:center"><div data-m="f">ab <span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
         "f=400.0x60.0 t=400.0x40.0",
     ),
+    (
+        "c17_abs_left",
+        r##"<div style="position:relative;width:400px;height:100px"><div data-m="f" style="position:absolute;left:20px"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
+        "f=380.0x40.0 t=380.0x40.0",
+    ),
+    (
+        "d12_abs_right_only",
+        r##"<div style="position:relative;width:400px;height:100px"><div data-m="f" style="position:absolute;right:20px"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
+        "f=380.0x40.0 t=380.0x40.0",
+    ),
 ];
 
 /// (name, html, rinch today, Chrome 153, why) — not Chrome's yet, for a
 /// reason that is not this issue's. Each pins rinch's current answer so a
 /// fix has to come here and move the row up.
 const GAPS: &[(&str, &str, &str, &str, &str)] = &[
-    (
-        "c17_abs_left",
-        r##"<div style="position:relative;width:400px;height:100px"><div data-m="f" style="position:absolute;left:20px"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
-        "f=400.0x40.0 t=400.0x40.0",
-        "f=380.0x40.0 t=380.0x40.0",
-        "#1404: Taffy shrinks an auto-width absolute box to fit its parent's width, not that width less its insets",
-    ),
     (
         "d03_pct_max_width_in_flex_item",
         r##"<div style="width:400px;display:flex"><div data-m="f"><span data-m="t" style="display:inline-block;max-width:80%">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
@@ -311,13 +314,6 @@ const GAPS: &[(&str, &str, &str, &str, &str)] = &[
         "f=544.0x20.0 t=544.0x20.0",
         "f=400.0x40.0 t=400.0x40.0",
         "a `fit-content` width is not `auto`: the box is lined up at the size it has (max-content)",
-    ),
-    (
-        "d12_abs_right_only",
-        r##"<div style="position:relative;width:400px;height:100px"><div data-m="f" style="position:absolute;right:20px"><span data-m="t" style="display:inline-block">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div></div>"##,
-        "f=400.0x40.0 t=400.0x40.0",
-        "f=380.0x40.0 t=380.0x40.0",
-        "#1404, as c17",
     ),
 ];
 
