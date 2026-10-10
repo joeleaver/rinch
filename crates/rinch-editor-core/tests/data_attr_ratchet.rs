@@ -17,7 +17,6 @@ use rinch_editor_core::schema::is_reserved_data_attr;
 /// safe on an editor's element.
 const SAFE: &[(&str, &str)] = &[
     // Not names: prefixes the code tests names against.
-    ("data-", "the `data-` prefix itself (the name rule)"),
     (
         "data-on",
         "a prefix the debug HTML serializer skips; the runtime reads only the whole `data-on…` names, all reserved",
@@ -78,15 +77,29 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The `"data-…"` literals in `source` outside comments and `#[cfg(test)]`
-/// modules, with their line numbers.
+/// The data attribute names in `source` outside comments and `#[cfg(test)]`
+/// modules, with their line numbers:
+///
+/// - every `"data-…"` string literal: a whole name (`"data-rid"`), a prefix
+///   (`"data-pm-"`), the bare `"data-"` fragment a `concat!` builds a name
+///   from, or a `format!` template (`"data-{x}"`), reported as written so a
+///   built name never passes as a plain one;
+/// - every `[data-…` in a CSS selector (`closest("[data-rid]")`), the shape
+///   the web backend reads names with.
+///
+/// A test module is skipped from its `mod … {` line to the `}` at the same
+/// indentation (a brace inside a string in it does not end the skip early or
+/// late).
 fn literals(source: &str) -> Vec<(String, usize)> {
+    fn name_char(c: char) -> bool {
+        c.is_ascii_alphanumeric() || c == '-' || c == '_'
+    }
     let lines: Vec<&str> = source.lines().collect();
     let mut out = Vec::new();
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
-        let next_is_mod = lines.get(i + 1).is_some_and(|l| {
+        let module = lines.get(i + 1).filter(|l| {
             let l = l.trim_start();
             let l = l
                 .strip_prefix("pub(crate) ")
@@ -94,44 +107,49 @@ fn literals(source: &str) -> Vec<(String, usize)> {
                 .unwrap_or(l);
             l.starts_with("mod ") && l.trim_end().ends_with('{')
         });
-        if line.trim() == "#[cfg(test)]" && next_is_mod {
-            // Skip the module: from its `{` to the brace that closes it.
-            let mut depth = 0i64;
-            let mut j = i + 1;
-            while j < lines.len() {
-                depth += lines[j].matches('{').count() as i64;
-                depth -= lines[j].matches('}').count() as i64;
-                if depth <= 0 {
-                    break;
-                }
+        if line.trim() == "#[cfg(test)]"
+            && let Some(module) = module
+        {
+            let indent = &module[..module.len() - module.trim_start().len()];
+            let close = format!("{indent}}}");
+            let mut j = i + 2;
+            while j < lines.len() && lines[j].trim_end() != close {
                 j += 1;
             }
             i = j + 1;
             continue;
         }
         if !line.trim_start().starts_with("//") {
+            // String literals that start with `data-`.
             let mut rest = line;
             while let Some(at) = rest.find("\"data-") {
                 let after = &rest[at + 1..];
-                let end = after[1..].find('"').map(|e| e + 1);
-                if let Some(end) = end {
-                    let lit = &after[..end];
-                    if lit
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-                    {
-                        out.push((lit.to_string(), i + 1));
-                    }
-                    rest = &after[end..];
-                } else {
+                let Some(end) = after[1..].find('"').map(|e| e + 1) else {
                     break;
+                };
+                let lit = &after[..end];
+                if lit.chars().all(name_char) || lit.contains('{') {
+                    out.push((lit.to_string(), i + 1));
                 }
+                rest = &after[end..];
+            }
+            // Attribute selectors.
+            let mut rest = line;
+            while let Some(at) = rest.find("[data-") {
+                let after = &rest[at + 1..];
+                let end = after.find(|c: char| !name_char(c)).unwrap_or(after.len());
+                out.push((after[..end].to_string(), i + 1));
+                rest = &after[end..];
             }
         }
         i += 1;
     }
     out
 }
+
+/// The one file that may hold the bare `"data-"` fragment: the name rule
+/// itself. Anywhere else it builds a name the ratchet cannot read.
+const NAME_RULE: &str = "rinch-editor-core/src/schema/data_attrs.rs";
 
 #[test]
 fn every_data_attribute_rinch_uses_is_reserved_or_known_safe() {
@@ -147,8 +165,9 @@ fn every_data_attribute_rinch_uses_is_reserved_or_known_safe() {
         let source = std::fs::read_to_string(file).unwrap();
         for (name, line) in literals(&source) {
             seen += 1;
-            let reserved = is_reserved_data_attr(&name);
-            let safe = SAFE.iter().any(|(s, _)| *s == name);
+            let reserved = name != "data-" && !name.contains('{') && is_reserved_data_attr(&name);
+            let safe = SAFE.iter().any(|(s, _)| *s == name)
+                || (name == "data-" && file.ends_with(NAME_RULE));
             if !reserved && !safe {
                 unknown.push(format!(
                     "{name} at {}:{line}",
@@ -195,5 +214,40 @@ mod tests {
 fn h() { y("data-after"); z(format!("data-{x}")); }
 "#;
     let names: Vec<String> = literals(src).into_iter().map(|(n, _)| n).collect();
-    assert_eq!(names, ["data-found", "data-after"]);
+    assert_eq!(names, ["data-found", "data-after", "data-{x}"]);
+}
+
+/// Review 2: the scanner's former blind spots — a selector, a `format!` and a
+/// `concat!`-built name, and a literal after a test module holding an
+/// unbalanced `"{"` — are all seen.
+#[test]
+fn review2_the_scanner_sees_selectors_and_built_names() {
+    let src = r#"
+fn a(el: &E) {
+    el.get_attribute("data-zap-plain");
+    el.closest("[data-zap-sel]");
+    el.get_attribute(&format!("data-{}", "zap-fmt"));
+    el.get_attribute(concat!("data-", "zap-concat"));
+}
+#[cfg(test)]
+mod t {
+    const S: &str = "{";
+}
+fn b(el: &E) {
+    el.get_attribute("data-zap-after-test-mod");
+}
+"#;
+    let names: Vec<String> = literals(src).into_iter().map(|(n, _)| n).collect();
+    for want in [
+        "data-zap-plain",
+        "data-zap-sel",
+        "data-{}",
+        "data-",
+        "data-zap-after-test-mod",
+    ] {
+        assert!(
+            names.iter().any(|n| n == want),
+            "{want} not seen: {names:?}"
+        );
+    }
 }

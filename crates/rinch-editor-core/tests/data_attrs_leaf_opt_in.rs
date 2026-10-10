@@ -1,3 +1,7 @@
+//! An image's data attributes: the HTML reader keeps the first of a repeated
+//! name, `data-on…` look-alikes are an app's, and a custom `hr`/`br` that opts
+//! in keeps them through HTML (review of #1518).
+
 use rinch_editor_core::Schema;
 use rinch_editor_core::serialize::{node_to_html, slice_from_html};
 

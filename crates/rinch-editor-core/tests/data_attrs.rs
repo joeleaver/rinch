@@ -341,3 +341,75 @@ fn a_container_that_opts_in_is_refused() {
         )
         .build();
 }
+
+/// The bound is the model's, not only the serializers': a node built by
+/// `create_node` (which validates nothing else) and one changed by a raw
+/// `SetNodeAttrStep` hold only the data attributes HTML, `DocNode` and the view
+/// keep. Other attributes are as they always were; a type that does not opt in
+/// is untouched.
+#[test]
+fn the_model_holds_only_the_data_attrs_a_node_keeps() {
+    use rinch_editor_core::{EditorState, SetNodeAttrStep};
+    let schema = Schema::starter_kit();
+    let mut attrs: Vec<(String, AttrValue)> = vec![
+        ("src".into(), AttrValue::from("a.png")),
+        (
+            "caption".into(),
+            AttrValue::from("undeclared, kept as before"),
+        ),
+        ("data-rid".into(), AttrValue::from("1")),
+        ("data-n".into(), AttrValue::Int(3)),
+    ];
+    attrs.extend((0..40).map(|i| (format!("data-k{i:02}"), AttrValue::from("v"))));
+    let img = schema
+        .create_node("image", Attrs::from_iter(attrs), Fragment::empty())
+        .unwrap();
+    let data = |n: &Node| {
+        n.attrs()
+            .iter()
+            .filter(|(k, _)| k.starts_with("data-"))
+            .count()
+    };
+    assert_eq!(data(&img), MAX_DATA_ATTRS);
+    assert_eq!(img.attrs().get("data-rid"), None);
+    assert_eq!(img.attrs().get("data-n"), None);
+    assert!(img.attrs().get("caption").is_some());
+
+    // A step: a reserved name, an over-long value and one past the count are not
+    // held; the rest of the image is.
+    let small = image(&schema, &[("data-ref", AttrValue::from("r1"))]);
+    let para = schema
+        .branch("paragraph", Fragment::from_node(small))
+        .unwrap();
+    let doc = schema.branch("doc", Fragment::from_node(para)).unwrap();
+    let state = EditorState::create(std::rc::Rc::new(schema.clone()), doc, vec![]);
+    let mut tr = state.tr();
+    for (name, value) in [
+        ("data-pm-type".to_string(), "paragraph".to_string()),
+        ("data-long".to_string(), "x".repeat(MAX_DATA_ATTR_VALUE + 1)),
+        ("data-ok".to_string(), "fine".to_string()),
+    ] {
+        tr.step(Box::new(SetNodeAttrStep::new(
+            1,
+            name,
+            AttrValue::from(value),
+        )))
+        .unwrap();
+    }
+    let next = state.apply(tr);
+    let img = next.doc.child(0).child(0);
+    assert_eq!(img.attrs().get_str("data-ok"), Some("fine"));
+    assert_eq!(img.attrs().get_str("data-ref"), Some("r1"));
+    assert_eq!(img.attrs().get("data-pm-type"), None);
+    assert_eq!(img.attrs().get("data-long"), None);
+
+    // A paragraph does not opt in: `create_node` keeps what it is given.
+    let p = schema
+        .create_node(
+            "paragraph",
+            Attrs::from_iter([("data-rid", AttrValue::from("1"))]),
+            Fragment::empty(),
+        )
+        .unwrap();
+    assert!(p.attrs().get("data-rid").is_some());
+}

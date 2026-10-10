@@ -2528,7 +2528,12 @@ impl EditorHandle {
     /// It reads as a paste does ([`slice_from_pasted_html`]): an image keeps
     /// its `data-*` attributes only when rinch's own copy-out wrote them
     /// ([`selection_clipboard`](Self::selection_clipboard)), so another
-    /// application's are dropped. [`Self::load_html`] keeps them all.
+    /// application's are dropped. [`Self::load_html`] keeps them all. An app
+    /// inserting its own markup here keeps its data attributes by putting
+    /// [`CLIPBOARD_MARK`](rinch_editor_core::serialize::CLIPBOARD_MARK)
+    /// (`data-rinch-clip=""`) on the element that carries them, as the
+    /// copy-out does; or it builds the node and inserts it with
+    /// [`Self::update`].
     pub fn replace_selection_with_html(&self, html: &str) -> bool {
         let schema = self.core().schema.clone();
         match slice_from_pasted_html(&schema, html) {

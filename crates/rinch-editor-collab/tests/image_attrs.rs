@@ -776,3 +776,123 @@ fn an_images_attributes_cost_linear_copies_in_collaboration() {
         "copies grow faster than the attributes: {small} at 200, {large} at 400"
     );
 }
+
+/// The starter kit as a build that does not keep data attributes on an image
+/// (one from before #1518, or an app's own schema): its model holds whatever a
+/// raw step writes.
+fn schema_without_data_attrs() -> Rc<Schema> {
+    let kit = Schema::starter_kit();
+    let mut b = Schema::builder();
+    for n in [
+        "doc",
+        "paragraph",
+        "heading",
+        "blockquote",
+        "code_block",
+        "bullet_list",
+        "ordered_list",
+        "list_item",
+        "task_list",
+        "task_item",
+        "text",
+        "table",
+        "table_row",
+        "table_cell",
+        "table_header_cell",
+        "image",
+        "horizontal_rule",
+        "hard_break",
+    ] {
+        let mut spec = kit.node(n).unwrap().clone();
+        spec.data_attrs = false;
+        b = b.node(n, spec);
+    }
+    for m in [
+        "bold",
+        "code",
+        "highlight",
+        "italic",
+        "link",
+        "strike",
+        "subscript",
+        "superscript",
+        "text_color",
+        "underline",
+    ] {
+        if let Some(spec) = kit.mark(m) {
+            b = b.mark(m, spec.clone());
+        }
+    }
+    Rc::new(b.build())
+}
+
+/// A peer that does not bound an image's data attributes floods one with 40 of
+/// them and a 4 KB value. The receiver's model holds what HTML, `DocNode` and
+/// its view keep — the first 32, no over-long value — and is still exactly its
+/// CRDT's read (the bound is applied where every node is built).
+#[test]
+fn a_peers_data_attrs_past_the_bounds_are_bounded_on_receive() {
+    use rinch_editor_core::schema::{MAX_DATA_ATTR_VALUE, MAX_DATA_ATTRS};
+    let old = schema_without_data_attrs();
+    let kit = Rc::new(Schema::starter_kit());
+    let a_state = EditorState::create(old.clone(), line(&old, SRC, "", ""), plugins());
+    let session_a = session_with_client_id(&a_state, 11).unwrap();
+    let session_b = session_from_bytes_with_client_id(&session_a.snapshot(), 22).unwrap();
+    let b_doc = session_b.projected_doc(&kit).unwrap();
+    let mut a = Peer {
+        state: a_state,
+        session: session_a,
+    };
+    let mut b = Peer {
+        state: EditorState::create(kit.clone(), b_doc, plugins()),
+        session: session_b,
+    };
+    let big = "x".repeat(MAX_DATA_ATTR_VALUE * 4);
+    a.local(|tr| {
+        for i in 0..40 {
+            tr.step(Box::new(SetNodeAttrStep::new(
+                3,
+                format!("data-k{i:02}"),
+                AttrValue::from("v"),
+            )))
+            .unwrap();
+        }
+        tr.step(Box::new(SetNodeAttrStep::new(
+            3,
+            "data-a-big",
+            AttrValue::from(big.as_str()),
+        )))
+        .unwrap();
+    });
+    // The sender kept all of it.
+    let sent = a.state.doc.child(0).child(1).clone();
+    assert_eq!(
+        sent.attrs()
+            .iter()
+            .filter(|(k, _)| k.starts_with("data-"))
+            .count(),
+        41
+    );
+    let delta = a.session.save_incremental().unwrap();
+    let next = b
+        .session
+        .integrate_incremental(&b.state, &delta)
+        .unwrap()
+        .expect("a change");
+    b.state = next;
+    let img = b.state.doc.child(0).child(1).clone();
+    let data: Vec<&str> = img
+        .attrs()
+        .iter()
+        .map(|(k, _)| k)
+        .filter(|k| k.starts_with("data-"))
+        .collect();
+    assert_eq!(data.len(), MAX_DATA_ATTRS, "{data:?}");
+    assert_eq!(img.attrs().get("data-a-big"), None);
+    assert!(img.attrs().get("data-k31").is_some());
+    assert_eq!(img.attrs().get("data-k32"), None);
+    assert_eq!(b.state.doc, b.session.projected_doc(&kit).unwrap());
+    // What a save and a reload keep is what the model holds.
+    let image = kit.node_type("image").unwrap();
+    assert_eq!(image.compute_attrs(img.attrs()).unwrap(), *img.attrs());
+}

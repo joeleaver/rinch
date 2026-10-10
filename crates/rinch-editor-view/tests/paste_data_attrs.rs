@@ -92,3 +92,22 @@ fn a_plugin_sees_the_pasted_markup_whole() {
     // Unclaimed, the default dropped it.
     assert_eq!(data_attrs(&to), Vec::<(String, String)>::new());
 }
+
+/// An app inserting its own markup through `replace_selection_with_html` keeps
+/// its data attributes by marking the element as rinch's copy-out does
+/// (`CLIPBOARD_MARK`); unmarked, they are dropped like any paste's.
+#[test]
+fn an_apps_own_html_keeps_its_data_attrs_with_the_mark() {
+    use rinch_editor_core::serialize::CLIPBOARD_MARK;
+    let h = empty_editor();
+    assert!(h.replace_selection_with_html(r#"<img src="a.png" data-ref="mine">"#));
+    assert_eq!(data_attrs(&h), Vec::<(String, String)>::new());
+    let h = empty_editor();
+    assert!(h.replace_selection_with_html(&format!(
+        r#"<img src="a.png" data-ref="mine" {CLIPBOARD_MARK}="">"#
+    )));
+    assert_eq!(
+        data_attrs(&h),
+        [("data-ref".to_string(), "mine".to_string())]
+    );
+}

@@ -10,10 +10,12 @@
 //! - cloning is cheap (an `Rc` bump — attrs ride along in the persistent tree),
 //! - the empty case allocates nothing (`Attrs(None)`).
 
+#[cfg(feature = "cost-counters")]
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+#[cfg(feature = "cost-counters")]
 thread_local! {
     /// Entries copied by [`Attrs::with`] / [`Attrs::without`] (each copies the
     /// whole map), for a cost test to pin; see [`attr_entries_copied`].
@@ -23,14 +25,18 @@ thread_local! {
 /// How many attribute entries [`Attrs::with`] and [`Attrs::without`] have
 /// copied on this thread. A loop of `with`s building `n` attributes copies
 /// `n²/2`; a cost test reads this to pin that a path builds its attributes in
-/// one pass ([`FromIterator`]).
+/// one pass ([`FromIterator`]). Only with the test-only `cost-counters`
+/// feature, so no release build pays for the count.
+#[cfg(feature = "cost-counters")]
 #[doc(hidden)]
 pub fn attr_entries_copied() -> u64 {
     ENTRIES_COPIED.with(Cell::get)
 }
 
-fn note_copied(n: usize) {
-    ENTRIES_COPIED.with(|c| c.set(c.get() + n as u64));
+#[inline(always)]
+fn note_copied(_n: usize) {
+    #[cfg(feature = "cost-counters")]
+    ENTRIES_COPIED.with(|c| c.set(c.get() + _n as u64));
 }
 
 /// A single attribute value. Deliberately small and `Hash`/`Eq` so that [`Attrs`]

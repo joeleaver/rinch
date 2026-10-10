@@ -28,10 +28,11 @@
 //! [`MAX_DATA_ATTRS`] attributes, each value at most [`MAX_DATA_ATTR_VALUE`]
 //! bytes. Past either bound the attribute is **dropped whole** (the first ones
 //! are kept), never truncated: a value cut short would be a different value.
-//! Every route into the model that validates applies it — the HTML reader,
-//! attribute validation (`DocNode` load, `to_doc`) — and so do the HTML writer
-//! and the view, so an attribute set past the bound by a raw
-//! `SetNodeAttrStep` is neither written out nor shown.
+//! The bound is the model's: every node of an opted-in type is built through
+//! `bound_node_data_attrs` (construction, an attribute step, a node
+//! collaboration builds from a peer's update), so the document holds what the
+//! HTML reader, attribute validation (`DocNode` load, `to_doc`), the HTML
+//! writer and the view keep.
 //!
 //! [`NodeSpec::data_attrs`]: crate::schema::NodeSpec::data_attrs
 
@@ -203,6 +204,42 @@ pub fn app_data_attrs(attrs: &Attrs) -> impl Iterator<Item = (&str, &str)> {
         AttrValue::Str(s) => Some((k, &**s)),
         _ => None,
     }))
+}
+
+/// `attrs` as a node of a type with spec `spec` holds them: for a type that
+/// keeps app data attributes, its `data-*` entries cut to [`kept_data_attrs`]
+/// (a reserved, invalid, non-string, over-long or past-the-count one dropped),
+/// every other entry untouched. The one boundary every node passes through
+/// (construction, an attribute step, a rebind), so a node built by
+/// `create_node`, by collaboration from a peer's update, or changed by a raw
+/// `SetNodeAttrStep` holds what HTML, `DocNode` and the view keep. For any
+/// other type, or when nothing is cut, `attrs` itself.
+pub(crate) fn bound_node_data_attrs(spec: &crate::schema::NodeSpec, attrs: Attrs) -> Attrs {
+    if !spec.data_attrs {
+        return attrs;
+    }
+    let is_data = |k: &str| k.starts_with("data-") && !spec.attrs.contains_key(k);
+    let keep: Option<Vec<Box<str>>> = {
+        let data = attrs.iter().filter(|(k, _)| is_data(k)).count();
+        if data == 0 {
+            None
+        } else {
+            let kept: Vec<Box<str>> = app_data_attrs(&attrs)
+                .filter(|(k, _)| is_data(k))
+                .map(|(k, _)| Box::from(k))
+                .collect();
+            (kept.len() < data).then_some(kept)
+        }
+    };
+    match keep {
+        None => attrs,
+        Some(kept) => Attrs::from_iter(
+            attrs
+                .iter()
+                .filter(|(k, _)| !is_data(k) || kept.iter().any(|x| &**x == *k))
+                .map(|(k, v)| (k, v.clone())),
+        ),
+    }
 }
 
 #[cfg(test)]

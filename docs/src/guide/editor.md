@@ -106,9 +106,12 @@ itself, an empty one included) and collaboration, and does nothing else with the
 - **Bounds.** A node keeps at most 32 app data attributes (`MAX_DATA_ATTRS`), each
   value at most 1024 bytes (`MAX_DATA_ATTR_VALUE`). Past either bound an attribute
   is dropped whole, never truncated; the first ones are kept (in document order from
-  HTML, in name order otherwise), and of two with one name, the first. The HTML
-  reader, validation (`DocNode` load, `to_doc`), the HTML writer and the view all
-  apply it.
+  HTML, in name order otherwise), and of two with one name, the first. The bound
+  is the model's: every node of an opted-in type is built through it
+  (`create_node`, a `SetNodeAttrStep`, a node collaboration builds from a peer's
+  update, which a peer that does not bound them can send), so the document holds
+  exactly what HTML, `DocNode` and the view keep. A reserved, invalid or
+  non-string `data-*` on such a node is dropped the same way.
 - **Paste.** The default paste keeps an image's data attributes only when rinch's
   own copy-out wrote them: `selection_clipboard` marks each element that carries
   them with `data-rinch-clip` (`serialize::CLIPBOARD_MARK`, reserved, so it never
@@ -118,7 +121,12 @@ itself, an empty one included) and collaboration, and does nothing else with the
   `data-stringify-type`, Vue's `data-v-…`, React's `data-reactid`, a lazy loader's
   `data-src`) are dropped. A `Plugin::handle_paste` sees `PasteContent::html` whole
   and can keep what it wants. A load (`load_html`, `slice_from_html`) keeps every
-  one, bounded.
+  one, bounded. An app inserting its own markup with `replace_selection_with_html`
+  keeps its data attributes by writing `data-rinch-clip=""` on the element that
+  carries them (or builds the node and inserts it with `update`). The mark is a
+  filter for other applications' noise, not proof of where markup came from: a
+  page can write it too, and what it then keeps still passes the reserved list
+  and the bounds.
 
 Set or remove one like any attribute:
 
