@@ -40,6 +40,7 @@ use yrs::{Array, Transact};
 
 use rinch_editor_core::{Node, Transaction};
 
+use crate::atoms::{carry_over, find_atoms};
 use crate::error::{CollabError, Result};
 use crate::projection::{
     CollabDoc, RawIndex, common_runs, identity_runs, insert_node, read_node, read_node_data,
@@ -162,6 +163,9 @@ impl CollabDoc {
             non_inclusive_marks(before.child(prefix + k), &mut per_char);
             non_inclusive_marks(after.child(prefix + k), &mut per_char);
         }
+        // Whether the change touches a block holding an inline atom: then the atoms the
+        // change removes are read before it (`atoms::carry_over`).
+        let moves_atoms = (prefix..prefix + pre_mid).any(|i| holds_inline_atom(before.child(i)));
 
         // Pre-pass gate 3, CRDT side (issue #194): read back every CRDT node the write
         // phase will read — the blocks being reconciled in place, recursively (a
@@ -172,7 +176,11 @@ impl CollabDoc {
         // block's text, a corrupt mark value, a node that is neither text-block nor
         // container — before the first write. Blocks being *deleted* are not read back:
         // removal never reads their content.
-        {
+        //
+        // The same read finds the atoms in the blocks the change touches, raw indices
+        // `span` of the top level (void containers between them included, so the span
+        // after the change is this one grown by what it inserts).
+        let (span, atoms_before) = {
             let txn = self.doc.transact();
             for k in 0..common {
                 let at = raw.get(prefix + k).ok_or_else(|| {
@@ -180,7 +188,15 @@ impl CollabDoc {
                 })?;
                 read_node_data(&txn, &self.content, at)?;
             }
-        }
+            if moves_atoms {
+                let len = self.content.len(&txn);
+                let start = raw.get(prefix).unwrap_or(len);
+                let end = raw.get(prefix + pre_mid).unwrap_or(len);
+                (start..end, find_atoms(&txn, &self.content, start..end))
+            } else {
+                (0..0, Vec::new())
+            }
+        };
 
         // Writes — one transaction for the whole change, which yrs commits on drop:
         // there is no rollback primitive, so the pre-pass above is the *only*
@@ -207,7 +223,16 @@ impl CollabDoc {
             &targets,
             Some((before, after)),
             &per_char,
-        )
+        )?;
+        // An atom this change moved (Enter before an image deletes its char and writes
+        // a new one in the new block) keeps its identity, so a peer's concurrent change
+        // of its attrs applies to it where it now is.
+        if !atoms_before.is_empty() {
+            let end = (span.end + post_mid as u32).saturating_sub(pre_mid as u32);
+            let atoms_after = find_atoms(&txn, &content, span.start..end);
+            carry_over(&mut txn, &atoms_before, &atoms_after);
+        }
+        Ok(())
     }
 
     /// Insert every block of `doc` into a CRDT that holds **no** blocks — the recovery
@@ -229,6 +254,15 @@ impl CollabDoc {
         }
         Ok(())
     }
+}
+
+/// Whether `node` holds an inline atom anywhere below it.
+fn holds_inline_atom(node: &Node) -> bool {
+    (0..node.child_count()).any(|i| {
+        let child = node.child(i);
+        let typ = child.node_type();
+        (!typ.is_block() && typ.is_atom() && typ.is_leaf()) || holds_inline_atom(child)
+    })
 }
 
 /// Add the name of every non-inclusive mark ([`MarkSpec::inclusive`] `false`, the

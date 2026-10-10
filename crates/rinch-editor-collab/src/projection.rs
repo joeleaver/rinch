@@ -53,6 +53,7 @@
 //!       "text" -> Text            // "look: \u{FFFC} and on"
 //!         "@atom" -> Map          // over the U+FFFC char only:
 //!                                 //   {"@type": "image", "src": "cat.png", …}
+//!                                 //   (+ "@id" for an atom a local change moved)
 //! ```
 //!
 //! …which is the *same* shape as a mark with attrs, deliberately: the atom is a char
@@ -72,34 +73,36 @@
 //! char is ignored formatting — see [`is_atom_char`], which is also where the
 //! yrs behaviour that forces that second rule is written down.
 //!
-//! **Known limitation: two *identical* atoms side by side, edited concurrently.** They
-//! are one `@atom` formatting range with one value at the CRDT level. A peer changing
-//! the attrs of one of them writes a format marker at the boundary between the two
-//! chars, and so does a peer changing the other; yrs orders two concurrent markers at
-//! one boundary by client id, and the loser's change can be overwritten by the
-//! winner's rewrite of the neighbour it did not touch. The replicas still converge, but
-//! **one of the two edits may be lost** (measured: 15 to 22 of 40 random client-id
-//! pairs, for two copies of one picture whose `src` both peers change at once). It is
-//! Yjs formatting semantics, not something a formatting encoding can fix; the pin is
-//! `two_adjacent_identical_images_edited_concurrently_converge` in `tests/collab.rs`,
-//! which asserts convergence only. Atoms that differ in any attr are separate ranges
-//! and are not affected by *that* loss. It is not the only one: splitting a block
-//! anywhere before an atom in it (Enter inside the text before an image, as well as
-//! right before it) while a peer changes the atom's attrs loses the change too —
-//! a split moves content, and a concurrent mark or atom-attr change on moved content is
-//! lost whatever it applies to (#861, pre-existing). A split after the atom keeps it.
+//! **An atom's attrs merge per attribute** (`crate::atoms`). The `@atom` value is what
+//! the char was *written* with, and it is not rewritten to change an attr: a change of
+//! one attr is one entry of the root map `atoms`, keyed by the atom's identity (its
+//! char's yrs id) and the attr, laid over the value on read:
 //!
-//! **Known limitation: an atom's attrs merge as one value.** The `@atom` map is the
-//! atom's *whole* attribute set, and yrs keeps one of two concurrent writes of one
-//! formatting attribute over one char. So two peers changing **different** attrs of one
-//! image at once (one its `alt`, the other its `title` or its `src`) converge on the
-//! image exactly as *one* of them left it, and the other's change is lost: last writer
-//! wins on the atom, not on the attribute (the higher client id's write is kept). Each
-//! attr still round-trips, and a change to the attrs is kept beside a peer's *typing*
-//! on either side, a mark over the line, a retype of the block and a deleted
-//! neighbouring char (not beside a split before the atom, above).
-//! Merging per attribute would take one formatting attribute per attr, a change of the
-//! wire shape; the pins are in `tests/image_attrs.rs`.
+//! ```text
+//! root Map "atoms"
+//!   "<identity>/<attr>" -> Any    // e.g. "1234:56/alt" -> "the garden"
+//! ```
+//!
+//! So two peers changing different attrs of one image at once (its `alt`, an app's
+//! `board` id) both keep their change, and two changing the same attr converge on one
+//! value (the higher client id's). Two identical images side by side are one `@atom`
+//! range but two identities, so a change to each is kept too. A change of a node
+//! attribute of a *block* (a heading's `level`) was already per key: a block's `attrs`
+//! is a map of its own (#193).
+//!
+//! A local change that **moves** an atom (Enter before an image in its line, Backspace
+//! joining it into the line above, a drag) deletes its char and writes a new one, since
+//! yrs has no move; the new char's `@atom` value names the identity it takes over under
+//! the reserved key `@id`, so a peer's concurrent change of the atom's attrs reaches it
+//! where it now is. Before this, a split anywhere before an atom lost such a change
+//! (#861's mechanism). A mark change on a moved *text* char is still lost that way.
+//!
+//! **Compatibility.** An atom only ever inserted is written exactly as before (no `@id`,
+//! nothing in `atoms`), and a document written before reads unchanged: an atom with no
+//! `@id` is identified by its char, so its attrs merge per attribute from its first
+//! change on. A build from before this cannot see an `atoms` entry, though (it reads
+//! the attrs the char was written with), and refuses an `@id` (`unknown reserved key`),
+//! which poisons its session (#196): the inline atoms' **coordinated upgrade** again.
 //!
 //! Wire-compatibly this is **additive**: [`FORMAT_TAG`] does not move, which also means
 //! it needs a **coordinated upgrade**, as the leaf block atoms above do. An older reader
@@ -226,7 +229,6 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use yrs::types::Attrs as YAttrs;
-use yrs::types::text::YChange;
 use yrs::updates::decoder::Decode;
 use yrs::{
     Any, Array, ArrayPrelim, ArrayRef, ClientID, Doc, Map, MapPrelim, MapRef, OffsetKind, Options,
@@ -236,6 +238,7 @@ use yrs::{
 
 use rinch_editor_core::{AttrValue, Attrs, Fragment, Mark, Node, NodeType, Schema};
 
+use crate::atoms::{AtomChar, merged_atoms, scan_text, write_atom_change};
 use crate::error::{CollabError, Result};
 use crate::table::{
     OversizedTable, TABLE, TableData, is_table_map, lock_oversized, placeholder_reads,
@@ -272,7 +275,7 @@ const FORMAT_TAG: &str = "rinch-editor-collab/yrs-1";
 /// guarded rather than trusted: [`read_block`] refuses an inline atom whose own attrs
 /// carry a reserved key, and [`build_block`] refuses a schema that has minted a mark
 /// type in the reserved namespace.
-const RESERVED_PREFIX: char = '@';
+pub(crate) const RESERVED_PREFIX: char = '@';
 
 /// The reserved formatting attribute that turns an [`ATOM_PLACEHOLDER`] char in a
 /// block's text into an **inline atom** (`image`, `hard_break`).
@@ -280,18 +283,18 @@ const RESERVED_PREFIX: char = '@';
 /// Its value is the atom's attrs in [`encode_mark_value`]'s ordinary encoding, plus the
 /// node type name under [`ATOM_TYPE`] — so it rides the wire as any other mark does and
 /// [`read_text_data`] needs no case of its own for it.
-const ATOM_MARK: &str = "@atom";
+pub(crate) const ATOM_MARK: &str = "@atom";
 
 /// The key inside an [`ATOM_MARK`] value carrying the atom's **node type name**
 /// (`"image"`). Reserved (see [`RESERVED_PREFIX`]) so it cannot collide with an attr of
 /// the atom itself — an `image`'s `src`/`alt`/`title` sit in the same map.
-const ATOM_TYPE: &str = "@type";
+pub(crate) const ATOM_TYPE: &str = "@type";
 
 /// U+FFFC OBJECT REPLACEMENT CHARACTER — the one char an inline atom occupies in a
 /// block's projected text, which is also the one model position it occupies
 /// (`Node::node_size` of a leaf is 1). The same stand-in `remote::flat_units` already
 /// uses when it measures a caret across a line holding an inline leaf.
-const ATOM_PLACEHOLDER: char = '\u{FFFC}';
+pub(crate) const ATOM_PLACEHOLDER: char = '\u{FFFC}';
 
 /// Origin tag for a yrs transaction that applies bytes received from a peer, as opposed to
 /// one that projects a local edit. The update observer skips these: they are already
@@ -1502,7 +1505,7 @@ fn apply_mark(txn: &mut TransactionMut, text: &TextRef, s: &str, m: &SpanMark) {
 /// new) nets out to exactly the new range.
 ///
 /// An **inline atom**'s [`ATOM_MARK`] attribute is the one exception: it is diffed **per
-/// char** by [`resync_per_char`], never per span. A span is too coarse for it,
+/// char** by [`resync_atoms`], never per span. A span is too coarse for it,
 /// because yrs extends a formatted range over an insert at its end boundary: a char
 /// typed right after an image lands inside the image's `@atom` range at the CRDT level
 /// while the model holds it as plain text, so the current span covers `[image, typed]`
@@ -1512,8 +1515,8 @@ fn apply_mark(txn: &mut TransactionMut, text: &TextRef, s: &str, m: &SpanMark) {
 /// letter after a picture (review of #838). Per char, the image's own char is unchanged
 /// and is not written; only the stray char is cleared. Two *identical adjacent* atoms
 /// coalesce into one span the same way, and per-char diffing stops an edit of one from
-/// rewriting the other — but see the module docs for what yrs still does to that pair
-/// under concurrency.
+/// rewriting the other. An atom whose attrs changed is not reformatted at all: the
+/// change is written per attribute under its identity (`crate::atoms`).
 ///
 /// A **non-inclusive** mark (`per_char`: the names the caller found with
 /// `MarkSpec::inclusive == false` on the model — the starter kit's `link`) is the same
@@ -1543,7 +1546,7 @@ fn resync_marks(
     per_char: &BTreeSet<String>,
 ) {
     let is_per_char = |name: &str| name == ATOM_MARK || per_char.contains(name);
-    resync_per_char(txn, text, current, current_marks, target, ATOM_MARK);
+    resync_atoms(txn, text, current, current_marks, target);
     for name in per_char {
         resync_per_char(txn, text, current, current_marks, target, name);
     }
@@ -1639,6 +1642,99 @@ fn resync_per_char(
     }
 }
 
+/// The [`ATOM_MARK`] half of [`resync_marks`]: [`resync_per_char`]'s per-char diff,
+/// with an atom whose attrs changed written as `crate::atoms` says rather than by
+/// rewriting its `@atom` value.
+///
+/// * A char that carries `@atom` and should carry none is cleared, as any per-char
+///   attribute is (a char typed right after an image inherits the image's value).
+/// * A char that should be an atom and carries no `@atom` (a placeholder just
+///   inserted) is written with its whole value, which is the atom's identity from then
+///   on.
+/// * A char that is an atom of the same type with other attrs gets one `atoms` entry
+///   per attr that changed, so a peer's concurrent change of another attr is kept.
+/// * Anything else (another type of atom, a value the char inherited) is rewritten
+///   whole under a fresh identity.
+fn resync_atoms(
+    txn: &mut TransactionMut,
+    text: &TextRef,
+    current: &str,
+    current_marks: &[SpanMark],
+    target: &[SpanMark],
+) {
+    if !current_marks
+        .iter()
+        .chain(target)
+        .any(|m| m.name == ATOM_MARK)
+    {
+        return;
+    }
+    let n = current.chars().count();
+    let per_char = |spans: &[SpanMark]| -> Vec<Option<Attrs>> {
+        let mut v = vec![None; n];
+        for m in spans.iter().filter(|m| m.name == ATOM_MARK) {
+            for slot in &mut v[m.start.min(n)..m.end.min(n)] {
+                *slot = Some(m.attrs.clone());
+            }
+        }
+        v
+    };
+    let (cur, tgt) = (per_char(current_marks), per_char(target));
+
+    // Clears first, by maximal runs.
+    let mut i = 0;
+    while i < n {
+        if cur[i].is_none() || tgt[i].is_some() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < n && cur[i].is_some() && tgt[i].is_none() {
+            i += 1;
+        }
+        let (at, len) = u16_span(current, start, i);
+        text.format(txn, at, len, YAttrs::from([(ATOM_MARK.into(), Any::Null)]));
+    }
+    // Then each atom whose value is not what the model holds. The chars as written are
+    // read once, and only when an atom's attrs changed.
+    let mut written: Option<Vec<AtomChar>> = None;
+    for i in 0..n {
+        let Some(want) = tgt[i].as_ref() else {
+            continue;
+        };
+        match cur[i].as_ref() {
+            Some(have) if have == want => {}
+            None => apply_mark(
+                txn,
+                text,
+                current,
+                &SpanMark {
+                    name: ATOM_MARK.into(),
+                    attrs: want.clone(),
+                    start: i,
+                    end: i + 1,
+                },
+            ),
+            Some(have) => {
+                if written.is_none() {
+                    // A read of what this transaction already wrote cannot fail where
+                    // the read of `current` just succeeded; an error leaves the atom
+                    // unwritten rather than half-written.
+                    written = Some(scan_text(txn, text).map(|s| s.atoms).unwrap_or_default());
+                }
+                let Some(atom) = written
+                    .as_ref()
+                    .and_then(|w| w.iter().find(|a| a.index == i))
+                    .cloned()
+                else {
+                    continue;
+                };
+                write_atom_change(txn, text, &atom, have, want);
+            }
+        }
+    }
+}
+
 // --- CRDT → NodeData -----------------------------------------------------------
 
 /// Read a `Text` back as its plain string plus the canonical (sorted, coalesced) mark
@@ -1650,31 +1746,18 @@ fn resync_per_char(
 /// value, which is outside the staged scope (A22) and fails loud rather than being
 /// dropped.
 fn read_text_data<T: ReadTxn>(txn: &T, text: &TextRef) -> Result<(String, Vec<SpanMark>)> {
-    let mut s = String::new();
+    let scanned = scan_text(txn, text)?;
     let mut marks: Vec<SpanMark> = Vec::new();
-    for chunk in text.diff(txn, YChange::identity) {
-        let Out::Any(Any::String(part)) = &chunk.insert else {
-            return Err(CollabError::unsupported(
-                "an embedded value inside a block's text is not supported; an inline \
-                 atom is projected as a placeholder char with an `@atom` attribute, \
-                 never as a yrs embed",
-            ));
-        };
-        let start = s.chars().count();
-        s.push_str(part);
-        let end = s.chars().count();
-        if let Some(attrs) = &chunk.attributes {
-            for (name, value) in attrs.iter() {
-                // A cleared format can linger as an explicit null; it is not a mark.
-                if matches!(value, Any::Null | Any::Undefined) {
-                    continue;
-                }
-                push_mark_span(&mut marks, name, decode_mark_value(value)?, start, end);
-            }
-        }
+    for (name, attrs, start, end) in &scanned.spans {
+        push_mark_span(&mut marks, name, attrs.clone(), *start, *end);
+    }
+    // An atom's value is what its char was written with, laid over by the per-attribute
+    // writes made since (`crate::atoms`). Pushed per char and coalesced as any span is.
+    for (i, value) in merged_atoms(txn, text, &scanned)? {
+        push_mark_span(&mut marks, ATOM_MARK, value, i, i + 1);
     }
     marks.sort_by(|a, b| (a.start, a.end, &a.name).cmp(&(b.start, b.end, &b.name)));
-    Ok((s, marks))
+    Ok((scanned.text, marks))
 }
 
 /// Read the node at `index` of `list` back out of the CRDT as [`NodeData`]. A node
@@ -2261,7 +2344,7 @@ fn read_attrs<T: ReadTxn>(txn: &T, obj: &MapRef) -> Attrs {
 
 /// One model attr value as a yrs [`Any`]. `None` for [`AttrValue::Null`], which is not
 /// stored at all.
-fn attr_to_any(v: &AttrValue) -> Option<Any> {
+pub(crate) fn attr_to_any(v: &AttrValue) -> Option<Any> {
     match v {
         AttrValue::Str(s) => Some(Any::String(s.as_ref().into())),
         // Written explicitly as a `BigInt` so the encoding does not depend on the
@@ -2294,7 +2377,7 @@ fn any_to_attr(v: &Any) -> Option<AttrValue> {
 /// (bold, italic) and a `Map` of typed values for an attr-bearing one (a link's
 /// `href`). yrs formatting attributes carry structured values, so — unlike automerge,
 /// whose marks held a single scalar — no JSON-string indirection is needed.
-fn encode_mark_value(attrs: &Attrs) -> Any {
+pub(crate) fn encode_mark_value(attrs: &Attrs) -> Any {
     if attrs.is_empty() {
         return Any::Bool(true);
     }
@@ -2309,7 +2392,7 @@ fn encode_mark_value(attrs: &Attrs) -> Any {
 /// [`encode_mark_value`] could not have produced — a wrong value kind, a non-integer
 /// number, a nested collection — rather than silently dropping a peer's corrupted mark
 /// attrs (A22).
-fn decode_mark_value(value: &Any) -> Result<Attrs> {
+pub(crate) fn decode_mark_value(value: &Any) -> Result<Attrs> {
     let map = match value {
         // The attr-less encoding — no attributes to decode.
         Any::Bool(_) => return Ok(Attrs::new()),
@@ -2322,26 +2405,32 @@ fn decode_mark_value(value: &Any) -> Result<Attrs> {
     };
     let mut out = Attrs::new();
     for (k, v) in map.iter() {
-        let av = match v {
-            Any::String(s) => AttrValue::from(s.to_string()),
-            Any::Bool(b) => AttrValue::Bool(*b),
-            Any::BigInt(i) => AttrValue::Int(*i),
-            Any::Number(n) if n.fract() == 0.0 => AttrValue::Int(*n as i64),
-            Any::Number(n) => {
-                return Err(CollabError::schema(format!(
-                    "non-integer number in mark attr `{k}`: {n}"
-                )));
-            }
-            Any::Null | Any::Undefined => AttrValue::Null,
-            other => {
-                return Err(CollabError::schema(format!(
-                    "unsupported value in mark attr `{k}`: {other:?}"
-                )));
-            }
-        };
-        out = out.with(k.as_str(), av);
+        out = out.with(k.as_str(), decode_attr_value(k, v)?);
     }
     Ok(out)
+}
+
+/// One attr value of a mark's (or an atom's) formatting value, decoded as
+/// [`decode_mark_value`] decodes each. Fails loud on a value [`attr_to_any`] could not
+/// have written.
+pub(crate) fn decode_attr_value(k: &str, v: &Any) -> Result<AttrValue> {
+    Ok(match v {
+        Any::String(s) => AttrValue::from(s.to_string()),
+        Any::Bool(b) => AttrValue::Bool(*b),
+        Any::BigInt(i) => AttrValue::Int(*i),
+        Any::Number(n) if n.fract() == 0.0 => AttrValue::Int(*n as i64),
+        Any::Number(n) => {
+            return Err(CollabError::schema(format!(
+                "non-integer number in mark attr `{k}`: {n}"
+            )));
+        }
+        Any::Null | Any::Undefined => AttrValue::Null,
+        other => {
+            return Err(CollabError::schema(format!(
+                "unsupported value in mark attr `{k}`: {other:?}"
+            )));
+        }
+    })
 }
 
 #[cfg(test)]
