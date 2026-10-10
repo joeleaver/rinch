@@ -298,7 +298,14 @@ const CHROME: &[(&str, &str, &str)] = &[
 
 /// (name, rinch's answer, why) — rows of `CHROME` that are not Chrome's yet,
 /// each for a reason that is not this issue's.
-const KNOWN: &[(&str, &str, &str)] = &[];
+const KNOWN: &[(&str, &str, &str)] = &[
+    (
+        "g_ji_center",
+        "a=0,0,40,30",
+        "rinch reads no `justify-items` / `justify-self`, so a grid container's static position follows `align-items` alone (#1511)",
+    ),
+    ("g_self_center", "a=0,25,40,30", "as g_ji_center (#1511)"),
+];
 
 fn lay_out(html: &str, height: f32) -> RinchDocument {
     let mut doc = RinchDocument::new();

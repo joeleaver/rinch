@@ -3364,9 +3364,13 @@ is a viewport position, that is the sum of the layouts above it
 the baked scroll back off an absolute one), and no scroll moves it afterwards. A
 fixed box with a static axis is pushed to `placed_absolutes` (one
 `abs_boxes_visited` per layout); one with insets on both axes, and an absolute
-box placed by Taffy, static or not, are in no pass. Not Chrome's, each pinned in
-`known_differences_from_chrome`: the static position in a **flex** container
-is Taffy's (the cross axis ignores `align-items`; **#1492**); it
+box placed by Taffy, static or not, are in no pass. In a **flex** container
+the static position is the box as its sole flex item: `justify-content` on the
+main axis and `align-self`, else `align-items`, on the cross (`stretch` as the
+start; #1492 — `to_taffy_style` used to force `align-self: flex-start` on every
+out-of-flow box, so the cross axis ignored `align-items`; pins:
+`static_position_flex_1492_tests.rs`, Chrome 153). Not Chrome's, each pinned in
+`known_differences_from_chrome`: the static position
 follows rinch's line boxes, so below a line holding a 26px `inline-block` and
 text it is 4px high (rinch's line is 26px, Chrome's 30 — #663); a fixed box with no
 insets and no size still fills the viewport where Chrome shrinks it to its
