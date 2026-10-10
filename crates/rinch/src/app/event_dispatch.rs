@@ -1989,6 +1989,15 @@ impl RinchApp {
                 }
             }
             PlatformEvent::AboutToWait => {
+                // A focused registered target `set_inner_html` freed (#1509):
+                // release the claim now, so its `on_focus_lost` runs and the
+                // claim is not left on a dead (or re-minted) id until the next
+                // key, Tab or click. One scan of an empty list otherwise.
+                if let FocusTarget::Node(id) = self.focus_target
+                    && crate::focus_registry::was_freed(self.doc_key(), id)
+                {
+                    self.set_focus_target(FocusTarget::None);
+                }
                 // Was there anything to tick? Not: is anything still running
                 // afterwards. A transition that *finishes* on this tick applies
                 // its end value and then reports nothing active, and that last

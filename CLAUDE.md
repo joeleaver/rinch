@@ -2267,9 +2267,10 @@ register_focus_target(
   registered nodes, which closes the recycled-slot window (#304) for them:
   a node `set_inner_html` frees while the registering scope is alive takes its
   entry with it before the write, so a node minted on that id is not a
-  registered target. If the freed target held the claim, the arbiter releases
-  it at its next key or IME dispatch (even when the markup re-minted a
-  focusable node on the id) and its `on_focus_lost` still fires, deferred —
+  registered target. If the freed target held the claim (whatever callbacks it
+  registered), the arbiter releases it at the next `AboutToWait` (or an
+  earlier key or IME dispatch), even when the markup re-minted a focusable
+  node on the id, and its `on_focus_lost` still fires, deferred —
   unless its component was disposed meanwhile, which stays silent (#1509 — the focus registry registers a
   `rinch_core::dom::FreedNodesListener`, which `set_inner_html` calls with the
   replaced subtree's ids, walked only while some listener holds an entry; a

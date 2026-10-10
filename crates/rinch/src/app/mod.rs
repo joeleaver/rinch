@@ -187,6 +187,8 @@ mod perf_stats_tests;
 mod popover_dropdown_transform_hit_test_tests;
 #[cfg(all(test, software_shell))]
 mod repaint_old_rect_tests;
+#[cfg(test)]
+mod review2_1514_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod review_1429_pimble_tests;
 #[cfg(all(test, feature = "desktop"))]
@@ -10869,4 +10871,15 @@ struct TabStops {
     /// How many of `stops` precede the probe in tree order, when the probe was
     /// inside the root.
     probe_rank: Option<usize>,
+}
+
+impl Drop for RinchApp {
+    /// Forget this document's focus-claim record and any freed target parked
+    /// on it (#1509), so neither outlives the app.
+    fn drop(&mut self) {
+        let doc_key = self.doc_key();
+        if doc_key != 0 {
+            crate::focus_registry::note_claim(doc_key, None);
+        }
+    }
 }

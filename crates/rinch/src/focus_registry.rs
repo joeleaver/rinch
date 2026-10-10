@@ -224,15 +224,16 @@ struct Registered {
 /// and still owed `on_focus_lost` when the arbiter releases the claim.
 pub(crate) struct FreedFocusLost {
     owner: Option<Owner>,
-    on_focus_lost: Rc<dyn Fn()>,
+    on_focus_lost: Option<Rc<dyn Fn()>>,
 }
 
 impl FreedFocusLost {
     /// Run the callback — unless its component has been disposed since, which
     /// stays silent like any unmount (#141 PR4).
     pub(crate) fn fire(self) {
-        if self.owner.as_ref().is_none_or(Owner::is_alive) {
-            let cb = self.on_focus_lost;
+        if let Some(cb) = self.on_focus_lost
+            && self.owner.as_ref().is_none_or(Owner::is_alive)
+        {
             rinch_core::batch(|| cb());
         }
     }
@@ -337,11 +338,13 @@ fn has_targets() -> bool {
 /// to the next nodes it mints (#1509). The registering scope's own cleanup
 /// later finds nothing and does nothing.
 ///
-/// A target that holds its document's arbiter claim is still owed
-/// `on_focus_lost`: its component may be alive. It is parked (see
+/// A target that holds its document's arbiter claim is parked whatever it
+/// registered, so the arbiter drops the claim rather than handing it to a
+/// node the markup mints on the id; it is still owed `on_focus_lost` (if it
+/// registered one): its component may be alive. It is parked (see
 /// [`was_freed`], [`take_freed`]) until the arbiter releases the claim,
-/// which it does at its next key or IME dispatch through the ordinary
-/// transition, so the callback runs deferred like any focus work — or not at
+/// which it does at its next `AboutToWait` (or an earlier key or IME
+/// dispatch) through the ordinary transition, so the callback runs deferred like any focus work — or not at
 /// all if the component is disposed by then. Every other freed entry is
 /// dropped silently. Linear in `ids` plus the registered targets.
 fn forget_freed_nodes(doc_key: u64, ids: &[NodeId]) {
@@ -358,9 +361,8 @@ fn forget_freed_nodes(doc_key: u64, ids: &[NodeId]) {
     // Out of the `TARGETS` borrow: dropping an entry drops its captures,
     // which are app code.
     for r in removed {
-        if Some(r.node_id) == claimed
-            && let Some(cb) = r.entry.on_focus_lost.clone()
-        {
+        if Some(r.node_id) == claimed {
+            let cb = r.entry.on_focus_lost.clone();
             let lost = FreedFocusLost {
                 owner: r.owner.clone(),
                 on_focus_lost: cb,
@@ -391,6 +393,12 @@ pub(crate) fn note_claim(doc_key: u64, node_id: Option<usize>) {
         stale
     });
     drop(stale);
+}
+
+/// The claim [`note_claim`] last recorded for `doc_key`.
+#[cfg(test)]
+pub(crate) fn claimed_for_tests(doc_key: u64) -> Option<usize> {
+    CLAIMED.with(|c| c.borrow().get(&doc_key).copied())
 }
 
 /// Whether the claim on `(doc_key, node_id)` is a target `set_inner_html`
