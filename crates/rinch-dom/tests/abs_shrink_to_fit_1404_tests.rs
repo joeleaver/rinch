@@ -693,13 +693,23 @@ fn incremental_layout_equals_a_fresh_one() {
     assert!(bad.is_empty(), "{bad:#?}");
 }
 
-/// What it costs, in root computes: a box shrunk to fit from a static
-/// position away from its containing block's edge pays one more on its first
-/// layout (the position is known only after it) and none on a relayout that
-/// moves nothing. A box whose static position is at the edge, and one with
-/// an inset, pay nothing extra.
+/// What it costs, in root computes, on (first layout, a relayout that moves
+/// nothing, the containing block resized). Pinned exactly: a change that
+/// moves a number explains it.
+///
+/// - a box whose size does not depend on its containing block's — both
+///   insets set in a box's own parent, or one inset (the `fit-content`
+///   keyword, which Taffy resolves in the same compute) — pays nothing;
+/// - a static offset is known only after the compute, so a box shrunk to
+///   fit from one pays one more compute on its first layout and on each
+///   resize of the block it is measured against;
+/// - a box resolved against a non-parent ancestor (#386) whose size depends
+///   on that block — now any auto-width one, insets or not — pays one more
+///   on its first layout and one per resize of that block, as an `inset: 0`
+///   one always has; with a static offset too, one more on its first layout.
 #[test]
-fn a_static_offset_costs_one_compute_on_first_layout_only() {
+fn what_shrink_to_fit_costs_in_root_computes() {
+    use rinch_core::dom::NodeId;
     use rinch_dom::perf::Counter;
     let computes = |h: &str| {
         let mut doc = mount(h);
@@ -707,7 +717,13 @@ fn a_static_offset_costs_one_compute_on_first_layout_only() {
         let first = doc.tree.perf.get(Counter::TaffyRootComputes);
         doc.tree.perf.end_frame();
         doc.resolve_layout(VIEWPORT.0, VIEWPORT.1 + 40.0);
-        (first, doc.tree.perf.get(Counter::TaffyRootComputes))
+        let again = doc.tree.perf.get(Counter::TaffyRootComputes);
+        doc.tree.perf.end_frame();
+        let c = NodeId(one(&doc, "[data-m=c]"));
+        let style = doc.get_attribute(c, "style").unwrap();
+        doc.set_attribute(c, "style", &style.replace("width:400px", "width:333px"));
+        doc.resolve_layout(VIEWPORT.0, VIEWPORT.1 + 40.0);
+        (first, again, doc.tree.perf.get(Counter::TaffyRootComputes))
     };
     // Short content, so no #1476 min-content round blurs the count.
     let row = |n: &str| {
@@ -716,27 +732,25 @@ fn a_static_offset_costs_one_compute_on_first_layout_only() {
             "Wavy",
         )
     };
-    // At the edge: the plain cost.
-    let (base, again) = computes(&row("d11_both_insets"));
-    assert_eq!(again, 1, "a relayout is one compute");
-    assert_eq!(
-        computes(&row("d01_left")),
-        (base, 1),
-        "an inset: the keyword"
-    );
-    assert_eq!(
-        computes(&row("d13_static")),
-        (base + 1, 1),
-        "a static offset: one more, once"
-    );
-    assert_eq!(
-        computes(&row("a02_left")),
-        (base + 1, 1),
-        "an ancestor-resolved box, as #386 has it"
-    );
-    assert_eq!(
-        computes(&row("a05_static")),
-        (base + 2, 1),
-        "both: one each"
-    );
+    let got: Vec<_> = [
+        "d11_both_insets",
+        "d01_left",
+        "d13_static",
+        "a10_two_levels_left",
+        "a02_left",
+        "a05_static",
+    ]
+    .iter()
+    .map(|n| (*n, computes(&row(n))))
+    .collect();
+    let base = got[0].1.0;
+    let want = [
+        ("d11_both_insets", (base, 1, 1)),
+        ("d01_left", (base, 1, 1)),
+        ("d13_static", (base + 1, 1, 2)),
+        ("a10_two_levels_left", (base + 1, 1, 2)),
+        ("a02_left", (base + 1, 1, 2)),
+        ("a05_static", (base + 2, 1, 2)),
+    ];
+    assert_eq!(got, want);
 }

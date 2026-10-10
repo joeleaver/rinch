@@ -201,8 +201,9 @@
 //! An absolute box with an `auto` (or `fit-content`) width is shrunk to fit
 //! (CSS 2.1 §10.3.7) in what its **containing block** leaves it: the block's
 //! padding-box width less the insets and margins, and — with both inline
-//! insets `auto` — less the distance from the block's padding edge to the
-//! static position (issue #1404). Taffy measures it in the whole width of
+//! insets `auto` — the room its static position leaves it ([`StaticAnchor`]:
+//! from the position to the block's end, or for a box a flex container
+//! aligns to its end or centre, the room on that side; issue #1404). Taffy measures it in the whole width of
 //! the box it lays it out in. Three routes give it the room instead:
 //!
 //! - a box whose layout parent is its containing block is handed the
@@ -211,12 +212,15 @@
 //!   room, so a plain box keeps `auto` and costs one measure;
 //! - a box resolved against the ICB or a non-parent ancestor is baked
 //!   `fit-content(<px>)` with the room ([`apply_out_of_flow_size_overrides`]);
-//! - the static offset is known only once the lines are built, so it is
-//!   measured then ([`RinchDocument::resolve_static_shrink_to_fit`]), kept on
-//!   the node (`Node::abs_static_anchor`) for every bake to read, and the
-//!   layout goes round once when it moved. A grid container (whose keyword
-//!   measure ignores insets) and a static offset in a box's own parent take
-//!   a length from the parent's last layout, checked by the same pass.
+//! - the static position is known only once the lines are built, so its
+//!   anchor is measured then ([`RinchDocument::resolve_static_shrink_to_fit`]),
+//!   kept on the node (`Node::abs_static_anchor`) for every bake to read, and
+//!   the layout goes round once when it moved. A grid container (whose
+//!   keyword measure ignores insets) and an anchor away from the edge of a
+//!   box's own parent take a length from the parent's last layout, checked
+//!   by the same pass. What each case costs in computes is pinned by
+//!   `what_shrink_to_fit_costs_in_root_computes`
+//!   (`tests/abs_shrink_to_fit_1404_tests.rs`).
 //!
 //! ## What is not corrected
 //!
@@ -1146,9 +1150,8 @@ pub(crate) fn apply_out_of_flow_size_overrides(
             }
             // An absolute one shrinks to fit (CSS 2.1 §10.3.7) — in what its
             // **containing block** leaves it: that block's width less the
-            // insets and margins, and with both insets `auto`, less the
-            // distance from the block's edge to the static position, which
-            // is where the box starts (#1404). Taffy would measure it in the
+            // insets and margins, and with both insets `auto`, the room its
+            // static position leaves it (`StaticAnchor`, #1404). Taffy would measure it in the
             // whole width of the box it lays it out in; `fit-content(<px>)`
             // is its spelling of "measure at this available width".
             (l, r) => {
@@ -1315,9 +1318,8 @@ fn is_grid(tree: &NodeTree, id: RawNodeId) -> bool {
 
 /// Shrink an auto-width absolute box **whose layout parent is its containing
 /// block** to fit in what that block leaves it (CSS 2.1 §10.3.7, #1404): its
-/// width less the insets and margins, and with both insets `auto` less the
-/// distance from the block's padding edge to the static position, where the
-/// box starts (`Node::abs_static_anchor`).
+/// width less the insets and margins, and with both insets `auto` the room
+/// its static position leaves it (`Node::abs_static_anchor`).
 ///
 /// Where it can, by handing Taffy the `fit-content` keyword: on an absolute
 /// child of a block or flex container Taffy measures that at the containing
@@ -2253,7 +2255,7 @@ impl RinchDocument {
     /// Bring every absolute box that is **shrunk to fit from its static
     /// position** (#1404; `NodeTree::abs_static_fits`, the ones the read-back
     /// placed) into agreement with where that position is now: the box's
-    /// room is its containing block's width less the distance to it
+    /// room is what that position leaves of its containing block
     /// ([`static_anchor`]). Returns whether any Taffy style was
     /// rewritten; the caller then goes round — compute, read-back, lines.
     ///
@@ -2263,12 +2265,15 @@ impl RinchDocument {
     /// placed. So the boxes the late writes moved are placed first
     /// ([`replace_all`]).
     ///
-    /// The distance is kept on the node (`Node::abs_static_anchor`), where
-    /// every bake of the box reads it, so a layout in which it did not move
+    /// The anchor is kept on the node (`Node::abs_static_anchor`), where every
+    /// bake of the box reads it, so a layout in which it did not move
     /// rewrites nothing: one extra compute when such a box is first laid out
-    /// away from its containing block's edge, and one when it is moved along
-    /// the inline axis. A box's own width does not move its static position
-    /// (an out-of-flow box sizes nothing above it), so one round settles it.
+    /// away from its containing block's start edge, and one when it moves.
+    /// A box resolved by Taffy itself carries a length from its parent's
+    /// last layout, which is compared here every layout: one more compute
+    /// per resize of that parent. A box's own width does not move its static
+    /// position (an out-of-flow box sizes nothing above it), so one round
+    /// settles it.
     ///
     /// One `is_empty` in a document with no such box.
     pub(crate) fn resolve_static_shrink_to_fit(&mut self) -> bool {

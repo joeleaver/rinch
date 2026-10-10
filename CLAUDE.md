@@ -3245,8 +3245,12 @@ itself, `out_of_flow::rebake_after_inset_write`).
 **The passes look only at the boxes that need them** (review of #1409; they
 iterated every `position: absolute` node at first, which cost a list of
 ordinary badges +12% per relayout). An absolute child of its own positioned
-parent — Taffy's own answer — is in no index and no pass, on a layout or a
-scroll. `NodeTree::ancestor_absolutes` holds the ancestor-resolved boxes (kept
+parent — Taffy's own answer — is in no index and no pass on a scroll, and on
+a layout in none unless its width is `auto`/`fit-content` with no inline inset
+(a `top: 100%` dropdown) or it sits in a grid container with an inset or margin
+that takes room: those are in `NodeTree::abs_static_fits` and visited once per
+layout after the lines (#1404; one `abs_boxes_visited` each, no compute when
+nothing moved). `NodeTree::ancestor_absolutes` holds the ancestor-resolved boxes (kept
 by the style sites; `read_layout_results` classifies every absolute box anyway,
 and one it finds the sites missed — a box *between* it and its containing block
 stopped being `display: contents` with no restyle of the absolute one — is
@@ -3457,30 +3461,47 @@ layout, the scroll range and damage do see the span.
 
 **An auto-width absolute box is shrunk to fit in what its containing block
 leaves it** (#1404, CSS 2.1 §10.3.7): that block's padding-box width less the
-insets and margins, and with both inline insets `auto` less the distance from
-its padding edge to the static position, where the box starts — not in its
-Taffy parent's whole width. Three routes, all to `fit-content`: a box whose
-layout parent is its containing block gets the `fit-content` **keyword**
-(`out_of_flow::fit_in_layout_parent`), which Taffy's block and flex algorithms
-measure at the containing block less the insets and margins — only when an
-inset or margin takes room, so a plain box keeps `auto` and one measure; an
-ancestor-resolved or ICB box is baked `fit-content(<px>)` with the room
-(`apply_out_of_flow_size_overrides`); and the static offset, which Taffy does
-not know before the compute, is measured after the lines are built
-(`RinchDocument::resolve_static_shrink_to_fit`, over
-`NodeTree::abs_static_fits`), kept on the node (`Node::abs_static_offset`) for
-every bake to read, and costs **one extra compute** when such a box is first
-laid out away from its containing block's edge (or is moved along the inline
-axis, or its parent resized under a parent-relative one) and none on a relayout
-that moves nothing; a grid parent (whose keyword measure ignores insets) takes
-the length from the parent's last layout the same way. Taffy's leaf algorithm
-took an absolute leaf's own margins off a second time;
+insets and margins, and with both inline insets `auto` the room its static
+position leaves — not its Taffy parent's whole width. Where the static position
+is (`out_of_flow::StaticAnchor`, on the node as `Node::abs_static_anchor`): a
+box among block or inline content or in a grid starts there and may run to the
+block's end; in a flex container it is placed as the sole item, so an
+end-aligned box gets the room from the block's start to the container's
+content end, and a centred one twice the shorter distance from the content
+box's centre to a block edge (Chrome 155; the inline-axis alignment is
+`justify-content` in a row, `align-self`/`align-items` in a column — so
+`Stack align="center"` holding a tooltip-like box). Three routes, all to
+`fit-content`: a box whose layout parent is its containing block gets the
+`fit-content` **keyword** (`out_of_flow::fit_in_layout_parent`), which Taffy's
+block and flex algorithms measure at the block less the insets and margins —
+only when an inset or margin takes room, so a plain box keeps `auto` and one
+measure; an ancestor-resolved or ICB box is baked `fit-content(<px>)` with the
+room (`apply_out_of_flow_size_overrides`); and the anchor, which Taffy does not
+know before the compute, is measured after the lines are built
+(`RinchDocument::resolve_static_shrink_to_fit`, over `NodeTree::abs_static_fits`)
+and read by every bake; a grid parent (whose keyword measure ignores insets)
+and an anchor away from the edge of a box's own parent take a length from the
+parent's last layout, checked by the same pass. **Cost, in root computes**
+(pinned by `what_shrink_to_fit_costs_in_root_computes`): a box whose size does
+not depend on its containing block's, or one with a single inset in its own
+parent, pays nothing; one shrunk to fit from a static anchor away from its
+block's edge pays **one** more on its first layout and on each resize of the
+block it is measured against; an ancestor-resolved box (#386) of any auto
+width — newly including one with a single inset — pays one more on its first
+layout and one per resize of its containing block, as `inset: 0` always has,
+and **two** more on its first layout with a static anchor too; none pays
+anything on a relayout that moves nothing. An ICB box re-bakes (and is
+re-measured) on every viewport resize, with no extra compute. Taffy's leaf
+algorithm took an absolute leaf's own margins off a second time;
 `out_of_flow::absolute_leaf_inputs` puts them back at both leaf measure sites.
-Pins: `tests/abs_shrink_to_fit_1404_tests.rs` (67 Chrome 153 rows). Not
-Chrome's: content that wraps answers its widest line (**#1276**: the issue's
-own example is 390x40, was 130x80, Chrome 394x40), a box centred or end-placed
-by its flex container from its static position, and the static position in a
-grid container that is not the containing block (its content edge in Chrome).
+An `auto` atomic inline capped by #1476 answers an IFC measure at the width it
+was capped at, not its rounded layout width (a container sized from it moved by
+the rounding, so an incremental layout disagreed with a fresh one). Pins:
+`tests/abs_shrink_to_fit_1404_tests.rs` (74 Chrome 155 rows) and
+`review_1510_1010_fixtures.rs`. Not Chrome's: content that wraps answers its
+widest line (**#1276**: the issue's own example is 390x40, was 130x80, Chrome
+394x40), and the static position in a grid container that is not the
+containing block (its content edge in Chrome).
 **Not covered:** a box whose containing block is a non-parent **scroll
 container** is placed in it but still counted in no scroll range (**#770**);
 `position: fixed` takes none of the margin, padding or min/max rules above,
