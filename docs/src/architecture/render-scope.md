@@ -446,11 +446,11 @@ it is a reorder inside one parent, which fires only the insertion.
 `NodeHandle::set_text` on an element that has children, and
 `NodeHandle::set_inner_html`, replace the node's whole child list: each fires
 the removal half once, for that node (issue #1440), and neither fires the
-insertion half for the text or the parsed markup. `set_text` discards the
-children the element's own render built — minted by the scope that minted the
-element or one descended from it — and only detaches the rest (a captured
-handle, a cache scope's node, a raw-minted one), the rule a branch's hide uses
-(issue #1487). `UpdateBatch::apply` calls the
+insertion half for the text or the parsed markup. `set_text` only detaches the
+children; the ones the element's own render built — minted by the scope that
+minted the element or one descended from it — are discarded when that scope
+goes, if they are still detached then (issue #1487). Until then a handle to one
+re-inserts. `UpdateBatch::apply` calls the
 backend with the document already borrowed and fires neither half, so a
 `DomUpdate::SetText` should target a text node.
 
