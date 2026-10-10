@@ -82,10 +82,24 @@ impl RinchApp {
                 // whether focus changes), and give it the pointer until the
                 // release: its moves and its release go to this surface
                 // wherever they happen (`SurfaceEvent`'s capture note).
+                // A press of another button while this pointer already holds
+                // a surface is a chord: the first press keeps its capture
+                // until its own button comes up (#1087).
                 let pointer = crate::render_surface::current_pointer(true);
-                self.surface_captures.retain(|(id, _, _)| *id != pointer.id);
-                self.surface_captures
-                    .push((pointer.id, surface_id, surface_node));
+                if !self
+                    .surface_captures
+                    .iter()
+                    .any(|c| c.pointer == pointer.id && c.button != button)
+                {
+                    self.surface_captures.retain(|c| c.pointer != pointer.id);
+                    self.surface_captures.push(super::SurfaceCapture {
+                        pointer: pointer.id,
+                        device: pointer,
+                        button,
+                        surface: surface_id,
+                        node: surface_node,
+                    });
+                }
                 crate::render_surface::dispatch_surface_pointer(
                     surface_id,
                     crate::render_surface::PointerPhase::Down(

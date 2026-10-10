@@ -175,11 +175,21 @@ Events are dispatched to the handler set via `set_event_handler()`. Coordinates 
 | `FocusGained` | — | Surface received keyboard focus |
 | `FocusLost` | — | Surface lost keyboard focus |
 
-**A press keeps the pointer.** From a press on the surface until its release, every move
-and the release go to the surface wherever the pointer is (coordinates then fall outside
-the surface's size), and it hears no `MouseLeave` until the release; a `MouseLeave` follows
-a release off the surface. The browser backend does this with `setPointerCapture`; desktop
-does the same.
+**A press keeps the pointer.** From a press on the surface until the release of the button
+that started it, every move and release of that pointer go to the surface wherever it is
+(coordinates then fall outside the surface's size), and it hears no `MouseLeave` until
+then; a `MouseLeave` follows a release off the surface. A press or release of another button
+meanwhile is a chord: the surface hears it and keeps the pointer. The browser backend does
+this with `setPointerCapture`. Desktop routes the *surface's* events the same way, but
+not the document's: DOM hover (`:hover`, `onmouseenter` / `onmouseleave`) and the cursor
+still follow the element under the pointer during the press, where a browser routes them
+to the capturing canvas.
+
+A press whose release never arrives is ended without one, and the surface hears it ended —
+`PointerCancel` with pointer events, else a `MouseUp` where the cursor is: on desktop when
+the window loses focus, when the same pointer presses the left button again (another
+finger's press proves nothing), on a platform `PointerCancel` (Android's touch-scroll
+takeover), and silently when the surface unmounts; in the browser on `pointercancel`.
 
 **Pen, touch and pinch: pointer events (opt-in).** A drawing surface wants to know which
 device pressed and how hard. `surface.set_pointer_events(true)` replaces `MouseDown` /
@@ -195,11 +205,23 @@ device pressed and how hard. `surface.set_pointer_events(true)` replaces `MouseD
 
 `SurfacePointer` is `{ id, kind, pressure, primary }`: `kind` is `Mouse`, `Pen`, `Eraser`,
 `Touch` or `Unknown`; `pressure` is `0.0..=1.0`, and a device that cannot measure it
-reports `0.5` while down and `0` otherwise (the Pointer Events rule); `id` tells two
-fingers apart. In the browser these come from Pointer Events (`pointerType`, `pressure`,
-`pointerId`, `isPrimary`, the eraser button); on desktop from winit (a tablet tool's force,
-a touch's force where measured; a trackpad pinch on macOS, iOS and Wayland). Desktop hands
-over one move per pointer per frame, as the browser does without `getCoalescedEvents`.
+reports `0.5` while down and `0` otherwise (the Pointer Events rule); `id` tells pointers
+that are down at once apart (two fingers) and stays the same from a press to its release.
+Compare ids for equality only: their values are the platform's. On desktop the mouse is
+`1`, a tablet tool `2` and each finger an id of its own above both; in the browser `id` is
+the event's `pointerId`, whose value for a mouse differs between engines. What each host
+reports:
+
+- **Browser**: Pointer Events (`pointerType`, `pressure`, `pointerId`, `isPrimary`, the
+  eraser button); two touches pinch; Ctrl+wheel (a trackpad pinch) pinches.
+- **Desktop**: winit's pointer source (a tablet tool's force, a touch's force where
+  measured); two touches pinch; a trackpad pinch (macOS, iOS, Wayland) and Ctrl+wheel
+  pinch. One move per pointer per frame, as the browser does without
+  `getCoalescedEvents`.
+- **Android**: every finger is folded into one mouse pointer (id `1`, kind `Mouse`) by the
+  touch translation, so there is no `Touch` kind and no two-finger `Pinch`.
+- **Embed** (`RinchContext`): the host feeds plain mouse events, so every pointer is the
+  mouse (`Mouse`, id `1`); Ctrl+wheel still pinches.
 
 `SurfaceKeyData` contains `key`, `code`, `ctrl`, `shift`, `alt`, `meta`. `key` is spelled like the browser's `KeyboardEvent.key` on both backends, so the space bar is `key == " "` and `code == "Space"`.
 

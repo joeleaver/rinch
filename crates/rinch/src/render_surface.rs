@@ -131,12 +131,22 @@ fn next_surface_id() -> usize {
 ///
 /// Coordinates are in logical pixels relative to the surface's top-left corner.
 ///
-/// **A press keeps the pointer.** From a press on the surface until its
-/// release, every move and the release go to the surface, wherever the
-/// pointer is (coordinates then fall outside `0..width`, `0..height`), and
-/// the surface hears no `MouseLeave`/`MouseEnter` until the release: the
-/// browser's pointer capture, which the web backend takes on every press, and
-/// the desktop runtime's equivalent.
+/// **A press keeps the pointer.** From a press on the surface until the
+/// release of the button that started it, that pointer's moves and releases
+/// go to the surface, wherever it is (coordinates then fall outside
+/// `0..width`, `0..height`), and the surface hears no `MouseLeave` /
+/// `MouseEnter` until then; a press or release of another button meanwhile
+/// (a chord) is the surface's too and ends nothing. That is the browser's
+/// pointer capture, which the web backend takes on every press. The desktop
+/// runtime routes the surface's events the same way, but the document's DOM
+/// hover (`:hover`, `onmouseenter`/`onmouseleave`) and the cursor still
+/// follow the element under the pointer meanwhile.
+///
+/// A press whose release never arrives ends without one: the surface hears
+/// `PointerCancel` (with pointer events) or a `MouseUp` where the cursor is
+/// (without). On desktop that happens when the window loses focus, when the
+/// same pointer presses the left button again, and on a platform
+/// `PointerCancel`; a surface that unmounts just stops holding it.
 ///
 /// **Pointer events are opt-in.** A surface that calls
 /// [`RenderSurfaceHandle::set_pointer_events`] hears presses, moves and
@@ -283,7 +293,10 @@ pub enum SurfacePointerKind {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SurfacePointer {
     /// Which pointer: stable from its down to its up, unique among the
-    /// pointers down at once (two fingers are two ids). A mouse is `1`.
+    /// pointers down at once (two fingers are two ids). Compare for equality
+    /// only. On desktop (and Android and embed, where every pointer is the
+    /// mouse) the mouse is `1`; in the browser it is the event's
+    /// `pointerId`, whose value for a mouse differs between engines.
     pub id: u64,
     /// The device.
     pub kind: SurfacePointerKind,
@@ -370,14 +383,14 @@ impl PinchTracker {
     }
 
     /// A touch moved: the pinch it makes, as `(centre x, centre y, scale)`,
-    /// when it is one of the first two touches down and the distance between
-    /// them changed.
+    /// when the distance between the first two touches down changed. A third
+    /// touch is in no pinch: moving it leaves that distance as it was (`last`
+    /// is always the current spread between moves, which every `down`, `up`
+    /// and `moved` keeps true), so it reports nothing without a check of its
+    /// own.
     pub(crate) fn moved(&mut self, id: u64, x: f32, y: f32) -> Option<(f32, f32, f32)> {
         let i = self.touches.iter().position(|t| t.0 == id)?;
         self.touches[i] = (id, x, y);
-        if i > 1 {
-            return None;
-        }
         let (cx, cy, d) = self.spread()?;
         let last = self.last.replace(d)?;
         (last > 0.0 && d > 0.0 && d != last).then(|| (cx, cy, d / last))
@@ -630,7 +643,10 @@ impl RenderSurfaceHandle {
     /// winit's pointer source (a tablet tool's force, a touch's force where
     /// the platform measures one, else `0.5` while down). Desktop delivers
     /// one move per pointer per frame, as the browser does without
-    /// `getCoalescedEvents`.
+    /// `getCoalescedEvents`. On Android every finger is folded into the mouse
+    /// (kind `Mouse`, id `1`: no `Touch`, no two-finger `Pinch`), and an
+    /// embedded `RinchContext` is fed mouse events, so it reports the mouse
+    /// too; Ctrl+wheel still pinches on both.
     pub fn set_pointer_events(&self, on: bool) {
         self.pointer_events.set(on);
     }
@@ -1704,6 +1720,13 @@ pub(crate) fn current_pointer(down: bool) -> SurfacePointer {
         .unwrap_or(SurfacePointer::mouse(down))
 }
 
+/// Whether surface `id` is registered (created and not yet unregistered —
+/// an unmounted `RenderSurface` unregisters itself).
+#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+pub(crate) fn surface_is_registered(id: usize) -> bool {
+    SURFACE_REGISTRY.with(|reg| reg.borrow().iter().any(|s| s.id == id))
+}
+
 /// Whether surface `id` asked for pointer events
 /// ([`RenderSurfaceHandle::set_pointer_events`]).
 #[cfg(any(
@@ -1784,7 +1807,12 @@ pub(crate) fn dispatch_surface_pointer(
 /// The platform took `pointer` away mid-press (a touch the system
 /// cancelled): `PointerCancel` to a surface that asked for pointer events, a
 /// `MouseUp` at `(x, y)` to any other, so it is not left mid-drag.
-#[cfg(any(feature = "desktop", target_arch = "wasm32"))]
+#[cfg(any(
+    feature = "desktop",
+    feature = "android",
+    feature = "embed",
+    target_arch = "wasm32"
+))]
 pub(crate) fn dispatch_surface_pointer_cancel(id: usize, x: f32, y: f32, pointer: SurfacePointer) {
     if !wants_pointer_events(id) {
         let button = SurfaceMouseButton::Left;
@@ -1815,6 +1843,8 @@ pub(crate) fn dispatch_surface_zoom(id: usize, x: f32, y: f32, scale: f32) -> bo
 
 /// The scale a wheel turn of `delta_y` logical pixels zooms by: 100 px of
 /// wheel is a factor of e, the curve browsers and most canvas apps use.
+/// `delta_y` has the DOM's sign (`WheelEvent.deltaY`: positive is the wheel
+/// turned towards the user, which zooms out); desktop negates winit's.
 #[cfg(any(
     feature = "desktop",
     feature = "android",

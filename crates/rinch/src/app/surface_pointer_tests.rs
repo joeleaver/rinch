@@ -302,7 +302,9 @@ fn ctrl_wheel_and_a_trackpad_pinch_zoom_a_surface_with_pointer_events() {
             assert_eq!(
                 got,
                 [
-                    format!("pinch 50,50 {}", std::f32::consts::E),
+                    // The wheel turned towards the user (a negative winit
+                    // `delta_y`) zooms out, as a browser's positive `deltaY`.
+                    format!("pinch 50,50 {}", (-1.0f32).exp()),
                     "pinch 50,50 1.5".to_string()
                 ]
             );
@@ -334,4 +336,202 @@ fn the_pinch_tracker_scales_by_the_spread_of_the_first_two_touches() {
             after / before
         }))
     );
+}
+
+// ── Ending a capture without its release, chords, zoom sign (review of #1502) ─
+
+/// A press on the surface whose release is swallowed (alt-tab, a WM grab)
+/// does not leave the surface holding the pointer for the rest of the
+/// session (#189/#381's shape): a window blur ends it as it ends every other
+/// press gesture (`heal_missed_release`), and the surface hears it end — a
+/// `MouseUp` where the cursor is, without pointer events. Then the pointer is
+/// a hover like any other: leaving the surface is a `MouseLeave`, not a move.
+#[test]
+fn a_blur_mid_press_ends_the_surfaces_capture() {
+    let (mut app, _surface, seen) = app_with_surface();
+    down(&mut app, (100.0, 100.0));
+    seen.borrow_mut().clear();
+    ev(&mut app, PlatformEvent::WindowFocus(false));
+    assert_eq!(names(&seen), ["up 50,50"]);
+    seen.borrow_mut().clear();
+    // Back in the window with no button down, hovering elsewhere.
+    moved(&mut app, (400.0, 300.0));
+    assert_eq!(names(&seen), ["leave"]);
+}
+
+/// A left press elsewhere after a swallowed release proves the release went
+/// missing: the surface hears its press end at that press, and the new
+/// press's drag and release are not the surface's. (The move that brings the
+/// pointer to the new press is still the surface's: until the press, nothing
+/// tells it from a drag.)
+#[test]
+fn a_later_press_elsewhere_ends_the_capture_and_keeps_its_own_release() {
+    let (mut app, _surface, seen) = app_with_surface();
+    down(&mut app, (100.0, 100.0));
+    // The release is swallowed. The user clicks elsewhere in the window.
+    seen.borrow_mut().clear();
+    down(&mut app, (600.0, 500.0));
+    assert_eq!(names(&seen), ["move 550,450", "up 550,450"]);
+    seen.borrow_mut().clear();
+    moved(&mut app, (610.0, 500.0));
+    up(&mut app, (610.0, 500.0));
+    assert_eq!(names(&seen), ["leave"]);
+}
+
+/// A right press and release while the left button holds the surface is a
+/// chord (#1087): the surface hears both, in its own coordinates, and the
+/// left press keeps the pointer until the left release.
+#[test]
+fn a_chord_release_does_not_end_the_left_press_capture() {
+    let (mut app, _surface, seen) = app_with_surface();
+    down(&mut app, (100.0, 100.0));
+    seen.borrow_mut().clear();
+    let right = MouseButton::Right;
+    ev(
+        &mut app,
+        PlatformEvent::MouseDown {
+            x: 100.0,
+            y: 100.0,
+            button: right,
+        },
+    );
+    moved(&mut app, (500.0, 100.0));
+    ev(
+        &mut app,
+        PlatformEvent::MouseUp {
+            x: 500.0,
+            y: 100.0,
+            button: right,
+        },
+    );
+    moved(&mut app, (400.0, 300.0));
+    let left = MouseButton::Left;
+    ev(
+        &mut app,
+        PlatformEvent::MouseUp {
+            x: 400.0,
+            y: 300.0,
+            button: left,
+        },
+    );
+    assert_eq!(
+        names(&seen),
+        [
+            "down 50,50",
+            "move 450,50",
+            "up 450,50",
+            "move 350,250",
+            "up 350,250",
+            "leave",
+        ]
+    );
+}
+
+/// A platform `PointerCancel` (the Android touch-scroll takeover, a
+/// `PointerCancel` from any shell) ends the surface's press: the surface hears
+/// it (MouseUp without pointer events, PointerCancel with), and the pointer is
+/// free again.
+#[test]
+fn a_platform_pointer_cancel_ends_the_surfaces_press() {
+    let (mut app, surface, seen) = app_with_surface();
+    surface.set_pointer_events(true);
+    down(&mut app, (100.0, 100.0));
+    seen.borrow_mut().clear();
+    ev(&mut app, PlatformEvent::PointerCancel);
+    moved(&mut app, (400.0, 300.0));
+    let got = names(&seen);
+    assert!(
+        got.first().is_some_and(|e| e.starts_with("pcancel")),
+        "no cancel reached the surface: {got:?}"
+    );
+    assert!(!got.iter().any(|e| e.starts_with("pmove")), "{got:?}");
+}
+
+/// Ctrl+wheel zoom direction. On desktop `delta_y` is winit's sign: a
+/// positive delta scrolls a container UP (`old_y - delta_y`), i.e. the wheel
+/// turned away from the user, which zooms IN in every browser (where it is a
+/// negative `deltaY`). So a negative desktop `delta_y` (wheel towards the
+/// user, scrolls down) must zoom OUT: scale < 1.
+#[test]
+fn ctrl_wheel_towards_the_user_zooms_out_on_desktop_as_in_the_browser() {
+    let (mut app, surface, seen) = app_with_surface();
+    surface.set_pointer_events(true);
+    moved(&mut app, (100.0, 100.0));
+    seen.borrow_mut().clear();
+    let ctrl = Modifiers {
+        ctrl: true,
+        ..Default::default()
+    };
+    ev(&mut app, PlatformEvent::ModifiersChanged(ctrl));
+    ev(
+        &mut app,
+        PlatformEvent::MouseWheel {
+            x: 100.0,
+            y: 100.0,
+            delta_x: 0.0,
+            delta_y: -100.0,
+        },
+    );
+    let scale = seen.borrow().iter().find_map(|e| match e {
+        SurfaceEvent::Pinch { scale, .. } => Some(*scale),
+        _ => None,
+    });
+    assert!(scale.is_some_and(|s| s < 1.0), "scale {scale:?}");
+}
+
+/// A press of one finger on the surface while another holds it is no proof
+/// the first one's release went missing: both keep their capture, and the
+/// pointer leaves the surface only once the last of them is released.
+#[test]
+fn a_second_fingers_press_and_release_leave_the_first_ones_capture() {
+    let (mut app, surface, seen) = app_with_surface();
+    surface.set_pointer_events(true);
+    set_current_pointer(Some(finger(10, true)));
+    down(&mut app, (100.0, 100.0));
+    set_current_pointer(Some(finger(11, true)));
+    down(&mut app, (150.0, 100.0));
+    // Finger 11 lifts off the surface while finger 10 still holds it.
+    set_current_pointer(Some(finger(11, false)));
+    up(&mut app, (400.0, 300.0));
+    assert!(
+        !names(&seen)
+            .iter()
+            .any(|n| n == "leave" || n.starts_with("pcancel")),
+        "{:?}",
+        names(&seen)
+    );
+    seen.borrow_mut().clear();
+    set_current_pointer(Some(finger(10, true)));
+    moved(&mut app, (450.0, 300.0));
+    assert_eq!(names(&seen), ["pmove 400,250 Touch 0.5"]);
+    set_current_pointer(Some(finger(10, false)));
+    up(&mut app, (450.0, 300.0));
+    set_current_pointer(None);
+    assert_eq!(names(&seen).last().map(String::as_str), Some("leave"));
+}
+
+/// A captured move with no pointer named (an embedded host, the debug
+/// server, a test: nothing calls `set_current_pointer`) is the mouse with its
+/// button down, so it reports the Pointer Events default `0.5`.
+#[test]
+fn a_captured_move_of_an_unnamed_pointer_presses_at_half() {
+    let (mut app, surface, seen) = app_with_surface();
+    surface.set_pointer_events(true);
+    set_current_pointer(None);
+    down(&mut app, (100.0, 100.0));
+    seen.borrow_mut().clear();
+    moved(&mut app, (400.0, 300.0));
+    assert_eq!(names(&seen), ["pmove 350,250 Mouse 0.5"]);
+}
+
+/// A surface unregistered (unmounted) while it holds a press holds nothing:
+/// another surface hears its enter, moves and leave again.
+#[test]
+fn an_unregistered_surface_holds_no_press() {
+    let (mut app, surface, _seen) = app_with_surface();
+    down(&mut app, (100.0, 100.0));
+    assert_eq!(app.surface_captures.len(), 1, "control: captured");
+    crate::render_surface::unregister_render_surface(surface.id());
+    moved(&mut app, (400.0, 300.0));
+    assert!(app.surface_captures.is_empty());
 }

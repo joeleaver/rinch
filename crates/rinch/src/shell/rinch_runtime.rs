@@ -363,6 +363,15 @@ fn surface_pointer_of_button(
     pointer
 }
 
+/// Resets the pointer `set_current_pointer` named when dropped.
+struct ForgetCurrentPointer;
+
+impl Drop for ForgetCurrentPointer {
+    fn drop(&mut self) {
+        crate::render_surface::set_current_pointer(None);
+    }
+}
+
 // ── RinchRuntime ─────────────────────────────────────────────────────────────
 
 /// The desktop runtime: thin winit `ApplicationHandler` that delegates to
@@ -398,10 +407,11 @@ pub struct RinchRuntime {
     /// been handed yet (logical px), and which pointer it is. See
     /// [`Self::flush_pointer_move`].
     pending_pointer_move: Option<(f32, f32, SurfacePointer)>,
-    /// The pointers with a button or contact down, by
-    /// [`SurfacePointer::id`]: what decides the pressure a move reports for a
-    /// device that cannot measure it.
-    pressed_pointers: Vec<u64>,
+    /// The buttons or contacts down, as `(SurfacePointer::id, button)`: what
+    /// decides the pressure a move reports for a device that cannot measure
+    /// it. Per button, so a chord's release (right up while left is held)
+    /// leaves the pointer down.
+    pressed_pointers: Vec<(u64, Option<MouseButton>)>,
     /// The cursor last applied to the window, so an unchanged
     /// `AppAction::SetCursor` — which hover emits on every pointer move — does
     /// not reach the windowing system. Reset when the window is dropped.
@@ -1915,6 +1925,12 @@ impl ApplicationHandler for RinchRuntime {
             return;
         }
 
+        // Whatever pointer this event names (`set_current_pointer` below) is
+        // forgotten when it has been handled, on every return path, so an
+        // event that names none (a key, an injected debug `mouse_down`) is
+        // never read as the last pen or finger.
+        let _forget_pointer = ForgetCurrentPointer;
+
         // Pointer moves are coalesced (update-path audit F2.2): a high-rate
         // mouse reports several per frame, and each used to run hover, the
         // `data-onmousemove` walk and — during a component drag — a whole
@@ -1936,7 +1952,8 @@ impl ApplicationHandler for RinchRuntime {
             // and `MouseWheel` below all read the position back out of
             // `app.cursor_pos`, which the flushed move sets.
             let (lx, ly) = to_logical_point((position.x, position.y), self.scale_factor());
-            let down = self.pressed_pointers.contains(&pointer_id_of(source));
+            let id = pointer_id_of(source);
+            let down = self.pressed_pointers.iter().any(|(p, _)| *p == id);
             let pointer = surface_pointer_of(source, *primary, down);
             self.queue_pointer_move(lx as f32, ly as f32, pointer, event_loop);
             return;
@@ -1960,9 +1977,10 @@ impl ApplicationHandler for RinchRuntime {
                 self.queue_pointer_move(lx as f32, ly as f32, pointer, event_loop);
             }
             self.flush_pointer_move(event_loop);
-            self.pressed_pointers.retain(|id| *id != pointer.id);
+            let key = (pointer.id, button.clone().mouse_button());
+            self.pressed_pointers.retain(|p| *p != key);
             if pressed {
-                self.pressed_pointers.push(pointer.id);
+                self.pressed_pointers.push(key);
             }
             crate::render_surface::set_current_pointer(Some(pointer));
         }
@@ -2105,10 +2123,10 @@ impl ApplicationHandler for RinchRuntime {
                 ..
             } => {
                 let id = TOUCH_POINTER_BASE + finger_id.into_raw() as u64;
-                if !self.pressed_pointers.contains(&id) {
+                if !self.pressed_pointers.iter().any(|(p, _)| *p == id) {
                     return;
                 }
-                self.pressed_pointers.retain(|p| *p != id);
+                self.pressed_pointers.retain(|(p, _)| *p != id);
                 let pointer = SurfacePointer {
                     id,
                     kind: SurfacePointerKind::Touch,
@@ -2297,6 +2315,7 @@ impl RinchRuntime {
         if let Some((x, y, pointer)) = self.pending_pointer_move.take() {
             crate::render_surface::set_current_pointer(Some(pointer));
             self.dispatch_main_event(PlatformEvent::MouseMove { x, y }, event_loop);
+            crate::render_surface::set_current_pointer(None);
         }
     }
 
@@ -4142,6 +4161,12 @@ mod pointer_source_tests {
         assert_eq!(a.kind, SurfacePointerKind::Touch);
         assert_ne!(a.id, b.id);
         assert!(a.id != SurfacePointer::mouse(true).id && a.id != TABLET_POINTER_ID);
+        // No finger's id is the mouse's or the tablet's, the first two
+        // included (a touch base of 0 gives finger 1 the mouse's id).
+        for raw in 0..4 {
+            let id = surface_pointer_of(&finger(raw), false, true).id;
+            assert!(id != SurfacePointer::mouse(true).id && id != TABLET_POINTER_ID);
+        }
         assert_eq!(a.id, pointer_id_of(&finger(0)));
         assert!(a.primary && !b.primary);
         assert_eq!(a.pressure, 0.5, "no force measured, contact down");
