@@ -452,7 +452,8 @@ node moved through a batch reached no observer. `apply` is still the literal
 backend call per arm: `SetAttribute` is not `write_attribute` (no boolean
 rule), and no pending effect is flushed first. **A write that replaces a child
 list fires the removal half too** (#1440): `NodeHandle::set_text` on an
-**element** (it orphans every child; told only when the list changed — an
+**element** (it orphans every child, and discards the ones the element's own
+render built, #1487 below; told only when the list changed — an
 element whose only child is a text node loses none on any backend: `rinch-dom`
 writes that node in place, where it used to orphan it and mint another per
 write, and the mock and a browser list no child for it) and
@@ -5125,7 +5126,25 @@ by that document's `RenderScope`s and dropped with the last one, slot included.
 A scope's entry outlives the scope while a node it minted is recorded or a child
 entry names it, so a throwaway scope's nodes (a late patch, a spacer) still
 chain to its parent. A record goes when its node is discarded or replaced by
-`NodeHandle::set_inner_html`; a node that is only detached keeps it. Cost: one
+`NodeHandle::set_inner_html`; a node that is only detached keeps it.
+**`NodeHandle::set_text` over an element's children decides by the same rule**
+(#1487): a child minted by the scope that minted the element, or by one
+descended from it, is discarded with its subtree after the write
+(`render_scope::children_built_with` / `discard_orphans`; a captured handle
+nested in it is detached first); a child the render was handed (another
+scope's, a `cache_scope`'s) or with no record (raw backend access, the editor
+view) is only detached and re-inserts, and so is everything under an element
+with no record. Before, every child was orphaned: under no root, so no hide
+reached it, and it stayed in the node and minting tables for the life of the
+document — measured +300 / +300 per 100 show/hide cycles of
+`div > (span > text, span)` set over with text, in Chrome 155 and on the mock.
+A child the backend left in place (`rinch-dom` writes a lone text child in
+place) is not touched. The other route the issue names is unchanged by
+contract: `child.remove()` with the handle dropped keeps its node and record —
+`remove` promises a re-insertable node; call `discard()` when finished. Pins:
+`reinsertion_tests::text_over_children_1487`,
+`rinch-dom/tests/text_over_children_1487_tests.rs`,
+`rinch-web/tests/text_over_children_1487.rs`. Cost: one
 hash insert per minted node, and the sweep per hide — and every plain
 `NodeHandle::discard()` sweeps its subtree too (`sweep_for_discard(self, None,
 ..)`), including the editor's `ViewDesc` discards; on web each `get_children`
