@@ -260,6 +260,11 @@ pub fn register_focus_target(node: &NodeHandle, entry: FocusEntry) {
         next.set(token + 1);
         token
     });
+    // A node `set_inner_html` frees takes its entry with it (#1509).
+    rinch_core::dom::on_nodes_freed(rinch_core::dom::FreedNodesListener {
+        wants: has_targets,
+        forget: forget_freed_nodes,
+    });
     TARGETS.with(|t| {
         let mut t = t.borrow_mut();
         t.retain(|r| !r.is_at(doc_key, node_id));
@@ -287,6 +292,25 @@ fn unregister_focus_target(doc_key: u64, node_id: usize, token: u64) {
     });
 }
 
+/// Whether any focus target is registered on this thread.
+fn has_targets() -> bool {
+    TARGETS.with(|t| !t.borrow().is_empty())
+}
+
+/// Forget every target registered on one of `ids` in `doc_key`: nodes
+/// `NodeHandle::set_inner_html` is about to free, whose ids `rinch-dom` hands
+/// to the next nodes it mints (#1509). Silent, like an unmount: the node is
+/// gone, and the component that registered it may still be alive, so its
+/// `on_focus_lost` is not called — the arbiter releases a claim on a target
+/// that vanished at its next dispatch. The registering scope's own cleanup
+/// later finds nothing under its token and does nothing.
+fn forget_freed_nodes(doc_key: u64, ids: &[rinch_core::dom::NodeId]) {
+    TARGETS.with(|t| {
+        t.borrow_mut()
+            .retain(|r| !(r.doc_key == doc_key && ids.iter().any(|id| id.0 == r.node_id)))
+    });
+}
+
 /// The entry registered at `(doc_key, node_id)`, if any. Cloned out of the
 /// registry so the callback runs with no borrow held — it is user code and may
 /// register or unregister targets itself.
@@ -304,11 +328,11 @@ fn entry_for(doc_key: u64, node_id: usize) -> Option<Rc<FocusEntry>> {
 /// This is the arbiter's **liveness authority** for a registered claim: an
 /// unmount deregisters through the scope cleanup, which is a push notification
 /// rather than the attribute probe `node_target_is_live` falls back to. That
-/// closes the recycled-slab-slot window (#304) only while the registering
-/// scope's lifetime brackets the node's: a node freed while that scope is
-/// still alive (`set_inner_html` over it) leaves its entry under the freed id,
-/// and a node `rinch-dom` mints on that id answers as registered until the
-/// scope goes (#1509).
+/// closes the recycled-slab-slot window (#304) for registered nodes: an
+/// unmount releases the entry by its token (#1490), and a node freed while the
+/// registering scope is still alive (`set_inner_html` over it, the one
+/// `NodeHandle` verb that frees on `rinch-dom`) takes its entry with it
+/// before `rinch-dom` can mint another node on its id (#1509).
 pub(crate) fn is_registered(doc_key: u64, node_id: usize) -> bool {
     TARGETS.with(|t| t.borrow().iter().any(|r| r.is_at(doc_key, node_id)))
 }

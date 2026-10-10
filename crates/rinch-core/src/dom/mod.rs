@@ -71,6 +71,7 @@
 
 /// The HTML boolean-attribute set and the truthiness rule for it (issue #551).
 mod bool_attr;
+mod freed_nodes;
 
 /// HTML's rules for parsing dimension values, for `width`/`height` (#684).
 mod html_dimension;
@@ -92,6 +93,8 @@ pub mod traits;
 pub use bool_attr::{
     attr_is_truthy, data_attr_is_on, is_boolean_attribute, is_presence_reflected_attribute,
 };
+#[doc(hidden)]
+pub use freed_nodes::{FreedNodesListener, on_nodes_freed};
 pub use html_dimension::{HtmlDimension, parse_html_dimension};
 pub use html_integer::{parse_html_integer, parse_html_non_negative_integer};
 pub use inline_style::{
@@ -1128,8 +1131,8 @@ impl NodeHandle {
     /// The existing children are **gone for good**, as after
     /// [`discard`](Self::discard). An [`on_child_removed`] observer above this
     /// node is told they left, and observers registered on them are dropped
-    /// (issue #1440); the parsed nodes are not reported to
-    /// [`on_child_inserted`].
+    /// (issue #1440), as is a focus target registered on one (#1509); the
+    /// parsed nodes are not reported to [`on_child_inserted`].
     pub fn set_inner_html(&self, html: &str) {
         // The replaced children are gone from the backend's point of view; so
         // are their ownership records (issue #732).
@@ -1140,6 +1143,8 @@ impl NodeHandle {
             // leave, and any observer registered on one (issue #1440).
             let at_stake = late_child::children_at_stake(self);
             late_child::forget_descendants(self);
+            // And the registries outside this crate keyed by node id (#1509).
+            freed_nodes::forget_descendants(self);
             doc.borrow_mut().set_inner_html(self.node_id, html);
             // Not compared with the list afterwards, as `set_text` does: the
             // children there were are freed, and `rinch-dom` hands their ids
