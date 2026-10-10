@@ -2592,8 +2592,9 @@ mod tests {
         assert!(md.contains("![logo](a.png)"), "{md}");
     }
 
-    /// Markdown has nowhere to put an image's `board` or `width`: the image
-    /// is written as one without them.
+    /// A GFM image `![alt](src)` has nowhere to put an image's `board` or
+    /// `width`: it is written without them (in a table written as HTML they
+    /// are kept — `an_image_in_an_html_table_keeps_board_and_width`).
     #[test]
     fn an_images_board_and_width_are_not_written() {
         let schema = s();
@@ -3327,6 +3328,35 @@ mod tests {
         let d = doc_from_markdown(&schema, "a <u>b\n\nc").unwrap();
         assert_eq!(d.child(0).child(1).marks()[0].type_name(), "underline");
         assert!(d.child(1).child(0).marks().is_empty());
+    }
+
+    /// An image in a table written as HTML keeps `board` and `width`, and the
+    /// strict reader takes that markup back; a `width` the import would not
+    /// keep (a percentage, an error) is a refusal, not a silent drop.
+    #[test]
+    fn an_image_in_an_html_table_keeps_board_and_width() {
+        let schema = s();
+        let table = |img: &str| {
+            format!(
+                "<table>\n<tbody><tr><td colspan=\"2\">{img}</td></tr><tr><td>a</td><td>b</td></tr></tbody>\n</table>"
+            )
+        };
+        let md = table(r#"<img src="a.png" data-board="b1" width="320px">"#);
+        let d = doc_from_markdown_strict(&schema, &md).unwrap();
+        let img = d.child(0).child(0).child(0).child(0).child(0);
+        assert_eq!(img.type_name(), "image");
+        assert_eq!(img.attrs().get_str("board"), Some("b1"));
+        assert_eq!(img.attrs().get_int("width"), Some(320));
+        let out = doc_to_markdown(&d);
+        assert!(out.contains(r#"data-board="b1""#), "{out}");
+        assert!(out.contains(r#"width="320""#), "{out}");
+        for width in ["50%", "+5", "0", "abc"] {
+            let md = table(&format!(r#"<img src="a.png" width="{width}">"#));
+            match doc_from_markdown_strict(&schema, &md) {
+                Err(MarkdownError::Unsupported { .. }) => {}
+                other => panic!("{width}: expected a refusal, got {other:?}"),
+            }
+        }
     }
 
     #[test]

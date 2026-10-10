@@ -27,12 +27,15 @@
 //!
 //! The tree builder is [`super::html_tree`], zero-dependency.
 
-use super::html_integer::{parse_html_clamped_non_negative_integer, parse_html_integer};
+use super::html_integer::{
+    HtmlDimension, parse_html_clamped_non_negative_integer, parse_html_dimension,
+    parse_html_integer,
+};
 use super::html_tree::{HtmlFragmentParser, ParsedNode, is_table_part, step};
 use crate::EditorError;
 use crate::model::{AttrValue, Attrs, Fragment, Mark, MarkType, Node, NodeType, Slice};
 use crate::pos::Pos;
-use crate::schema::Schema;
+use crate::schema::{IMAGE_MAX_WIDTH, Schema};
 use crate::tables;
 use std::collections::HashMap;
 
@@ -207,7 +210,7 @@ fn align_style_attr(node: &Node) -> String {
 
 /// A void/self-closing element (hr, img, br) with its declared string attrs.
 /// An image's `board` is written as `data-board` (it is no HTML attribute)
-/// and its `width`, when positive, as `width`.
+/// and its `width`, when positive, as `width`, clamped to [`IMAGE_MAX_WIDTH`].
 fn void_element(node: &Node) -> String {
     let tag = primary_tag(node.node_type());
     let image = node.type_name() == "image";
@@ -215,6 +218,7 @@ fn void_element(node: &Node) -> String {
     for (k, v) in node.attrs().iter() {
         if image && k == "width" {
             if let Some(width) = v.as_int().filter(|w| *w > 0) {
+                let width = width.min(IMAGE_MAX_WIDTH);
                 s.push_str(&format!(" width=\"{width}\""));
             }
         } else if let Some(val) = v.as_str()
@@ -235,10 +239,19 @@ fn void_element(node: &Node) -> String {
 /// The HTML attribute an image's `board` is written to and read from.
 pub(super) const IMAGE_BOARD: &str = "data-board";
 
-/// An `<img width>` the import keeps: a whole number of CSS pixels, 1 or more
-/// (`"320"`, not `"320px"` or `"50%"`, which HTML does not mean either).
+/// An `<img width>` the import keeps: the value HTML's dimension rules read
+/// (`"320"`, `"320px"`, `" 320.4"` and `"320abc"` are all 320 px), when it is a
+/// length (not a percentage) that rounds to 1 px or more, rounded to whole
+/// pixels and clamped to [`IMAGE_MAX_WIDTH`]. An error (`"+5"`, `"-5"`,
+/// `"\u{a0}64"`, `".5"`) or a percentage is no width.
 fn image_width(value: &str) -> Option<i64> {
-    value.trim().parse::<i64>().ok().filter(|w| *w > 0)
+    match parse_html_dimension(value)? {
+        HtmlDimension::Length(px) => {
+            let px = px.round();
+            (px >= 1.0).then(|| (px.min(IMAGE_MAX_WIDTH as f64)) as i64)
+        }
+        HtmlDimension::Percentage(_) => None,
+    }
 }
 
 /// The DOM element tag name a **non-text** node renders to — the schema's
@@ -2031,7 +2044,7 @@ pub(crate) enum DroppedAttr {
 /// The first attribute in `html` that [`slice_from_html`] would not carry into
 /// the document, for the tags a table block may hold: `href`/`title`/`target`
 /// (`rel` is the writer's own) on `<a>`, `src`/`alt`/`title`/`data-board` and
-/// a whole-pixel `width` on `<img>`,
+/// a `width` the import keeps (`image_width`) on `<img>`,
 /// `colspan`/`rowspan` in range on a cell, `style` holding only `text-align` on
 /// a paragraph or heading, `start` on `<ol>`, and a `style` of safe colours on
 /// `<span>` (`color`, `background-color`) and `<mark>` (`background-color`).
@@ -2552,6 +2565,36 @@ mod tests {
         assert_eq!(node_to_html(&para), r#"<p><img src="a.png"></p>"#);
     }
 
+    /// The writer writes a positive `width` (clamped to the bound) and no
+    /// `width` at all for zero or a negative one.
+    #[test]
+    fn an_image_width_is_written_only_when_positive() {
+        let schema = s();
+        let html = |w: i64| {
+            let img = schema
+                .create_node(
+                    "image",
+                    Attrs::from_iter([
+                        ("src", AttrValue::from("a.png")),
+                        ("width", AttrValue::Int(w)),
+                    ]),
+                    Fragment::empty(),
+                )
+                .unwrap();
+            let para = schema
+                .branch("paragraph", Fragment::from_node(img))
+                .unwrap();
+            node_to_html(&para)
+        };
+        assert_eq!(html(0), r#"<p><img src="a.png"></p>"#);
+        assert_eq!(html(-3), r#"<p><img src="a.png"></p>"#);
+        assert_eq!(html(1), r#"<p><img src="a.png" width="1"></p>"#);
+        assert_eq!(
+            html(99_999_999_999_999),
+            r#"<p><img src="a.png" width="65535"></p>"#
+        );
+    }
+
     #[test]
     fn an_img_width_is_kept_only_as_whole_pixels() {
         let schema = s();
@@ -2560,9 +2603,27 @@ mod tests {
             let slice = slice_from_html(&schema, &html).unwrap();
             slice.content.child(0).child(0).attrs().get_int("width")
         };
-        assert_eq!(width("320"), Some(320));
-        assert_eq!(width(" 64 "), Some(64));
-        for dropped in ["0", "-5", "50%", "320px", "1.5", ""] {
+        // HTML's dimension rules (Chrome 153), rounded to whole pixels.
+        for (value, want) in [
+            ("320", 320),
+            (" 64 ", 64),
+            ("320px", 320),
+            ("320abc", 320),
+            ("1.5", 2),
+            ("320.4", 320),
+            ("0.5", 1),
+            ("1e3", 1),
+            ("\t\n 7", 7),
+            // Clamped to the bound, not dropped.
+            ("65535", 65535),
+            ("65536", 65535),
+            ("99999999999999", 65535),
+        ] {
+            assert_eq!(width(value), Some(want), "{value:?}");
+        }
+        for dropped in [
+            "0", "0.4", "-5", "+5", "\u{a0}64", ".5", "50%", "50*", "abc", "", "  ",
+        ] {
             assert_eq!(width(dropped), None, "{dropped:?}");
         }
         // And an empty `data-board` is no board.

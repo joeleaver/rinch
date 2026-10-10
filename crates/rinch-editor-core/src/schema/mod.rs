@@ -39,6 +39,12 @@ pub struct Schema {
     groups: HashMap<String, HashSet<Box<str>>>,
 }
 
+/// The widest an image's `width` attr is written or shown, in CSS pixels:
+/// the HTML import clamps an `<img width>` to it, and the HTML writer and the
+/// view clamp a model value above it. A bound of our own, as the import's
+/// `colspan` cap of 1000 is Chrome's; Chrome has none for `width`.
+pub const IMAGE_MAX_WIDTH: i64 = 65535;
+
 impl Schema {
     /// Create a new empty schema with "doc" as the top node.
     pub fn new() -> Self {
@@ -219,8 +225,10 @@ impl Schema {
             // beyond showing them. `board` is an app's id for something drawn
             // over the picture (written to the host element and to HTML as
             // `data-board`); `width` is the width the picture is shown at, in
-            // CSS pixels (absent or not positive: its natural width, capped by
-            // the stylesheet). Markdown carries neither.
+            // whole CSS pixels, at most `IMAGE_MAX_WIDTH` (absent or not
+            // positive: its natural width — the editor's stylesheet does not
+            // cap it). A GFM image `![alt](src)` carries neither; an image in a
+            // table written as HTML keeps both.
             spec.attrs.insert("board".into(), AttrSpec::optional(""));
             spec.attrs.insert("width".into(), AttrSpec::optional(0i64));
             spec.parse_html_tags = vec!["img".into()];

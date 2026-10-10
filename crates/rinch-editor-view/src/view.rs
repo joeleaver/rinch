@@ -53,7 +53,10 @@ fn apply_element_attrs(dom: &NodeHandle, node: &Node) {
             // (or `max-width`) still wins, and the height follows the
             // picture's aspect ratio.
             match node.attrs().get_int("width") {
-                Some(width) if width > 0 => dom.set_attribute("width", &width.to_string()),
+                Some(width) if width > 0 => dom.set_attribute(
+                    "width",
+                    &width.min(rinch_editor_core::IMAGE_MAX_WIDTH).to_string(),
+                ),
                 _ => dom.remove_attribute("width"),
             }
         }
@@ -4372,6 +4375,20 @@ mod tests {
         assert_eq!(attr("data-board").as_deref(), Some("b1"));
         assert_eq!(attr("width").as_deref(), Some("320"));
         assert_eq!(attr("src").as_deref(), Some("x.png"));
+
+        // A width past the bound is shown at the bound.
+        let mut tr = next.tr();
+        tr.step(Box::new(SetNodeAttrStep::new(
+            1,
+            "width",
+            AttrValue::Int(99_999_999_999_999),
+        )))
+        .unwrap();
+        let huge = next.apply(tr);
+        view.update_dom(&next, &huge);
+        assert_eq!(attr("width").as_deref(), Some("65535"));
+        view.update_dom(&huge, &next);
+        assert_eq!(attr("width").as_deref(), Some("320"));
 
         // Taken away again, and a width that is not positive is no hint.
         let mut tr = next.tr();
