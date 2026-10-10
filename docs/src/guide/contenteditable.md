@@ -419,6 +419,65 @@ URL is made.
 you need (or destructure with `..`), and give a `match` on the source a
 wildcard arm.
 
+### Pictures drawn over, and controls over a picture
+
+The `<img>` of an `image` node asks the image loader for its node's `src`. An app
+that shows something else for some pictures (a picture with marks drawn over it)
+chooses the source from the node's attributes, once, for every editor on the
+thread:
+
+```rust
+rinch::editor::set_image_source(|attrs| {
+    let board = attrs.get_str("board").filter(|b| !b.is_empty())?;
+    Some(format!("{}#board={board}", attrs.get_str("src")?))
+});
+```
+
+`None` keeps the `src`. The document is untouched (copy, export and collaboration
+still see the `src`); only the picture shown changes. The answer is what the
+loader is asked for and what `rinch::image::reload_image` names, so two images with
+one `src` and different attributes are two pictures, each loaded and reloaded on
+its own: `reload_image("…#board=b1")` asks again for that one alone. It is asked
+whenever an `<img>` is built or its node's attributes change, with the editor
+borrowed, so it must be a function of `attrs` alone. `clear_image_source()` takes
+it away. In the browser it is `rinch_web::set_image_source`.
+
+Installed while a component renders, the source function is removed when that
+component unmounts (a later install is never clobbered by an earlier unmount);
+installed from `main`, it keeps app lifetime. It is per thread, not per document:
+two documents on one thread (two embedded contexts) share it, the last install
+winning for both. Pictures already shown keep the source they were given until
+their `<img>` is rebuilt or their attributes change; `handle.load_doc(handle.doc())`
+makes an editor's pictures ask again.
+
+To float controls over a picture (a button in its corner), an app hears where the
+pointer is:
+
+```rust
+let eye: Signal<Option<(Pos, rinch::reactive::ElementBounds)>> = Signal::new(None);
+editor.on_image_hover(move |hover| eye.set(hover.map(|h| (h.pos, h.rect))));
+```
+
+| Method | Purpose |
+|--------|---------|
+| `on_image_hover(impl Fn(Option<&ImageHover>))` | The pointer came onto an image (`Some`), moved straight onto another (`Some`), or left this editor's images (`None`). Called only when that answer changes; an image that was edited, or that a scroll or relayout moved, is reported again on the next move. |
+| `image_at_host(host_id) -> Option<(Pos, Attrs)>` | The image whose `<img>` is that host element (what the runtimes ask). |
+
+`ImageHover` carries `pos` (before the image: where a `SetNodeAttrStep` for it
+goes), `attrs`, and `rect`, the box the `<img>` is painted in, in the same frames
+as `LinkHover::rect`. The controls are the app's own elements outside the editor,
+so moving onto them leaves the image and reports `None`; keep them shown while the
+pointer is over them with their own `onmouseenter` / `onmouseleave`. Not reported
+during a drag-select or a drag-and-drop; free while no editor has the callback.
+
+Hover is measured on pointer moves only: a wheel scroll moves the picture under a
+resting pointer and reports nothing until the pointer moves, so **hide the controls
+when the content scrolls** (an `onscroll` on the scroller). On desktop the pointer
+leaving the window reports nothing either (the browser reports `None`). Like
+`on_change`, the callback belongs to the component that registered it: once that
+component unmounts it is not called again, and one registered outside any render
+keeps app lifetime.
+
 With the callback registered:
 
 - A paste whose clipboard holds a bitmap is offered. That includes a browser's

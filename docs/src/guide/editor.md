@@ -82,10 +82,21 @@ contain. The starter-kit catalogue:
 
 - **Nodes:** `doc`, `paragraph`, `heading{level}`, `blockquote`, `code_block`,
   `bullet_list`, `ordered_list`, `list_item`, `horizontal_rule`, `hard_break`,
-  `text`, `image{src, alt}`, plus the table nodes.
+  `text`, `image{src, alt, title, board, width}`, plus the table nodes.
 - **Marks:** `bold`, `italic`, `underline`, `strike`, `code`, `link{href}`,
   `highlight{color?}`, `text_color{color}`, `subscript`, `superscript`. Every mark
   is inclusive except `link` (see [inherited marks](#state-selection-stored-marks)).
+
+An image's `board` and `width` are an app's: the editor keeps them through edits,
+copy and paste and collaboration, and only shows them. `board` (an id for something
+the app draws over the picture) reaches the `<img>` as `data-board` and HTML as
+`data-board`; `width` (whole CSS pixels, absent or not positive for the natural
+width; read from HTML by HTML's dimension rules, so `320px` is 320, rounded and at
+most 65535) is the `<img>`'s `width` hint and HTML's `width`. A GFM image `![alt](src)`
+has neither, so it is written without them; an image in a table written as HTML keeps
+both. Like every attr of an inline atom they travel
+as one value: two peers changing different attrs of one image at once keep one
+peer's image whole (`rinch-editor-collab/tests/image_attrs.rs`).
 
 Each node spec carries a **content expression** (e.g. `blockquote > block+`,
 `list_item > block+`, `bullet_list > list_item+`). These compile to a **ContentMatch

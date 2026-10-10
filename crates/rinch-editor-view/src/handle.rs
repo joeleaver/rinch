@@ -36,6 +36,7 @@ use rinch_editor_collab::{CollabError, CollabSession, OversizedTable};
 
 #[cfg(feature = "collaboration")]
 use super::collab::CollabBridge;
+use super::images::ImageHover;
 use super::images::{ImageInput, ImageInputSource};
 use super::keys::EditorKey;
 use super::links::{LinkClick, LinkHover, LinkSpan};
@@ -46,6 +47,8 @@ use super::view::RinchDomEditorView;
 type LinkClickFn = Rc<dyn Fn(&LinkClick) -> bool>;
 /// An [`EditorHandle::on_link_hover`] callback.
 type LinkHoverFn = Rc<dyn Fn(Option<&LinkHover>)>;
+/// An [`EditorHandle::on_image_hover`] callback, with its owner (see [`Hook`]).
+type ImageHoverHook = Hook<dyn Fn(Option<&ImageHover>)>;
 
 /// Whether `prev → next` only shifted the selection: the same kind, both ends
 /// moved by one amount, and the head at the same offset in a textblock of the
@@ -101,6 +104,11 @@ struct EditorCore {
     /// counted in [`registry::link_hover_wanted`], which is what lets a
     /// runtime skip link hover entirely on a pointer move when no editor asked.
     on_link_hover: Option<LinkHoverFn>,
+    /// See [`EditorHandle::on_image_hover`]; counted in
+    /// [`registry::image_hover_wanted`] while `Some`, as `on_link_hover` is.
+    /// Carries its owner, like `on_change`: a callback whose component has
+    /// unmounted is not called.
+    on_image_hover: Option<ImageHoverHook>,
     /// Offered every key press before the editor acts on it — see
     /// [`EditorHandle::on_key`]. Cloned out and called with no borrow held.
     on_key: Option<KeyHook>,
@@ -329,6 +337,9 @@ impl Drop for EditorCore {
     fn drop(&mut self) {
         if self.on_link_hover.is_some() {
             registry::link_hover_listener_removed();
+        }
+        if self.on_image_hover.is_some() {
+            registry::image_hover_listener_removed();
         }
     }
 }
@@ -953,6 +964,7 @@ impl EditorHandle {
                 on_change: None,
                 on_link_click: None,
                 on_link_hover: None,
+                on_image_hover: None,
                 on_key: None,
                 on_image_input: None,
                 on_selection_change: None,
@@ -1009,6 +1021,7 @@ impl EditorHandle {
                 on_change: None,
                 on_link_click: None,
                 on_link_hover: None,
+                on_image_hover: None,
                 on_key: None,
                 on_image_input: None,
                 on_selection_change: None,
@@ -1400,6 +1413,74 @@ impl EditorHandle {
             // Untracked, like the hooks (#931).
             untracked_handler(|| cb(hover));
         }
+    }
+
+    /// Register a callback for the pointer **entering and leaving images**.
+    /// Replaces any previously registered callback.
+    ///
+    /// It is called with `Some(hover)` when the pointer comes over an image —
+    /// from text, from outside the editor, or from another image — and with
+    /// `None` when it leaves every image of this editor. Like
+    /// [`on_link_hover`](Self::on_link_hover) it is called only when that
+    /// answer changes, never once per pointer move: an image is reported
+    /// again only when the next move finds it changed (another position, an
+    /// attribute edited, or a box a scroll or a relayout moved).
+    /// [`ImageHover::rect`] says where the picture is painted, so it is the
+    /// place to show controls over it:
+    ///
+    /// ```ignore
+    /// editor.on_image_hover(move |hover| match hover {
+    ///     // An absolutely positioned button in the picture's top-right corner.
+    ///     Some(h) => eye.set(Some((h.pos, h.attrs.clone(), h.rect))),
+    ///     None => eye.set(None),
+    /// });
+    /// ```
+    ///
+    /// The controls are the app's own elements, outside the editor's
+    /// document, so moving the pointer from the picture onto them leaves the
+    /// image and fires `None`: an app keeps them while the pointer is over
+    /// them (their own `onmouseenter` / `onmouseleave`).
+    ///
+    /// Hover is not tracked during a drag-select or a drag-and-drop, and a
+    /// pointer move costs the runtime nothing extra while no editor on the
+    /// thread has an image hover callback. The callback runs with no internal
+    /// borrow held, so it may re-enter the handle (an `update` that sets one
+    /// of the image's attributes at `hover.pos`).
+    ///
+    /// Hover is measured on pointer moves only. A wheel scroll moves the
+    /// picture under a resting pointer and reports nothing until the next
+    /// move, so an app hides its controls when the content scrolls (an
+    /// `onscroll` on the scroller). On desktop the pointer leaving the window
+    /// reports nothing either; the browser reports `None` then.
+    ///
+    /// The callback belongs to the component rendering when it was registered,
+    /// as [`on_change`](Self::on_change)'s does: once that component unmounts it
+    /// is not called any more (a handle can outlive it), a live one runs inside
+    /// it, and one registered outside any render keeps app lifetime.
+    pub fn on_image_hover(&self, cb: impl Fn(Option<&ImageHover>) + 'static) {
+        let mut core = self.core_mut();
+        if core.on_image_hover.is_none() {
+            registry::image_hover_listener_added();
+        }
+        core.on_image_hover = Some(Hook::new(Rc::new(cb)));
+    }
+
+    /// Invoke the image hover callback, if any, with no borrow held: inside
+    /// its owner, untracked, and not at all once that owner is disposed.
+    pub(crate) fn notify_image_hover(&self, hover: Option<&ImageHover>) {
+        let hook = self.core().on_image_hover.clone();
+        if let Some(hook) = hook {
+            hook.invoke(|cb| cb(hover));
+        }
+    }
+
+    /// The `image` node whose `<img>` is the host element `host_id`, as the
+    /// position before it and its attributes; `None` for any other element.
+    /// The runtimes ask it on a pointer move to build an [`ImageHover`].
+    pub fn image_at_host(&self, host_id: usize) -> Option<(Pos, rinch_editor_core::Attrs)> {
+        let core = self.core();
+        let (pos, node) = core.view.as_ref()?.node_pos_for_host(host_id)?;
+        (node.type_name() == "image").then(|| (Pos(pos), node.attrs().clone()))
     }
 
     /// A handle that does not keep the editor alive, for tests whose callbacks
@@ -3624,6 +3705,96 @@ mod tests {
         mock: Rc<RefCell<MockDomDocument>>,
         container_id: NodeId,
         handle: EditorHandle,
+    }
+
+    /// The image hooks keep the #147/#183 lifetime rules (review of #1501).
+    mod image_hook_lifetime {
+        use super::*;
+        use crate::images::{ImageHover, clear_image_source, image_source, set_image_source};
+        use crate::registry::set_image_hover;
+        use rinch_core::reactive::{Effect, ElementBounds, Scope, Signal};
+        use std::cell::Cell;
+
+        fn hov() -> ImageHover {
+            ImageHover {
+                pos: Pos(1),
+                attrs: rinch_editor_core::Attrs::new(),
+                rect: ElementBounds {
+                    x: 1.0,
+                    y: 2.0,
+                    width: 3.0,
+                    height: 4.0,
+                },
+            }
+        }
+
+        /// R1: an image-hover callback registered by a component that has
+        /// since unmounted must not run (the #147/#183 rule the other hooks keep).
+        #[test]
+        fn r1_image_hover_callback_stops_with_its_scope() {
+            let s = schema();
+            let h = mount(doc_node(&s, vec![para(&s, "hello")])).handle;
+            let scope = Scope::new();
+            let fired = Rc::new(Cell::new(0u32));
+            scope.run(|| {
+                let sig = Signal::new(0u32);
+                let fired = fired.clone();
+                h.on_image_hover(move |_| {
+                    fired.set(fired.get() + 1);
+                    let _ = sig.get();
+                });
+            });
+            set_image_hover(Some(5), Some((h.clone(), hov())));
+            assert_eq!(fired.get(), 1, "control: live");
+            scope.dispose();
+            set_image_hover(Some(5), None);
+            assert_eq!(
+                fired.get(),
+                1,
+                "a disposed component's callback must not run"
+            );
+        }
+
+        /// R2: a source function installed during a render that has since
+        /// unmounted must not run (install_scoped_slot's lifetime rule).
+        #[test]
+        fn r2_image_source_installed_in_a_scope_is_released_with_it() {
+            let scope = Scope::new();
+            scope.run(|| {
+                let sig = Signal::new(String::from("x"));
+                set_image_source(move |_| Some(sig.get()));
+            });
+            let attrs = rinch_editor_core::Attrs::new()
+                .with("src", rinch_editor_core::AttrValue::from("a.png"));
+            assert_eq!(image_source(&attrs), "x", "control: live");
+            scope.dispose();
+            let got = image_source(&attrs);
+            clear_image_source();
+            assert_eq!(got, "a.png");
+        }
+
+        /// R3: a source function that writes a signal (a memo cache, a counter)
+        /// whose effect touches the editor: does a load panic?
+        #[test]
+        fn r3_source_fn_writing_a_signal_observed_by_an_editor_effect() {
+            let s = schema();
+            let h = mount(doc_node(&s, vec![para(&s, "hello")])).handle;
+            let asked = Signal::new(0u32);
+            let seen = Rc::new(Cell::new(0usize));
+            let (h2, seen2) = (h.clone(), seen.clone());
+            let _e = Effect::new(move || {
+                let _ = asked.get();
+                seen2.set(h2.doc().content_size());
+            });
+            set_image_source(move |_| {
+                asked.update(|n| *n += 1);
+                None
+            });
+            let ok = h.load_html(r#"<p>a<img src="x.png">b</p>"#);
+            clear_image_source();
+            assert!(ok);
+            assert!(seen.get() > 0);
+        }
     }
 
     fn mount(html_blocks: Node) -> Harness {
