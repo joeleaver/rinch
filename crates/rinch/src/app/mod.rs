@@ -107,6 +107,8 @@ mod focus;
 #[cfg(test)]
 mod focus_lifecycle_tests;
 #[cfg(test)]
+mod focus_registry_reissued_id_1490_tests;
+#[cfg(test)]
 mod font_tests;
 #[cfg(test)]
 mod frozen_component_box_tests;

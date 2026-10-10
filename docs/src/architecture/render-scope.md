@@ -436,7 +436,10 @@ Both call **every** registered ancestor, nearest first, synchronously with the
 mutation, so a patch is in place before the frame that shows the change is laid
 out. Both are released by the ambient scope's `on_cleanup` and by
 `discard()` on the container, and dispatch is suppressed for the duration of a
-callback so a container's own edits do not call it back.
+callback so a container's own edits do not call it back. The scope's cleanup
+releases the registration it made and no other: one that replaced it since (a
+second call on the node, or another container on a node id `rinch-dom`
+re-issued) stays (issue #1490).
 
 The removal half is handed the parent rather than the node that went because
 that node is detached by then, and after a `discard()` the backend may have

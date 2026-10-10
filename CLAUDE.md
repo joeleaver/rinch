@@ -498,7 +498,14 @@ The pieces that follow from it:
   watches recurses without bound (measured: stack overflow).
 - **An observer is released by the ambient scope's `on_cleanup`**, the #147
   discipline, and by `NodeHandle::discard` on the container — a discarded id may
-  be reissued.
+  be reissued. The cleanup releases **its own registration**, by a token, not
+  whatever stands under the node's id when it runs (#1490): `rinch-dom` hands a
+  freed id to the next node it mints, and a cleanup that forgot by
+  `(doc, id)` dropped the observers of the container now holding the id (a
+  second `on_child_*` call on one node was dropped the same way by the first
+  call's scope). `register_focus_target` releases by token too. The editor
+  registry (`unregister_editor`, and its blink clock) still releases by
+  `(doc_key, container id)` (#1498).
 - **A child moved between containers re-resolves**, because a container marks
   what it supplied (`data-list-icon`) and never touches what the child asked for
   itself.
@@ -2257,7 +2264,12 @@ register_focus_target(
   the ambient scope's `on_cleanup`**, so unmounting is **silent** —
   `on_focus_lost` never fires after disposal (that would read freed signals and
   panic, #141 PR4). The registry is the arbiter's liveness authority for
-  registered nodes, which closes the recycled-slot window (#304) for them.
+  registered nodes, which closes the recycled-slot window (#304) for them
+  only while each node outlives the scope that registered it: a node freed
+  while that scope is alive (`set_inner_html` over it) leaves its entry under
+  the freed id, and a node minted on that id answers as registered until the
+  scope goes (#1509). The scope's cleanup itself releases by token, so it
+  never drops a later registration on a re-issued id (#1490).
 - Both focus callbacks run **after** the transition completes (deferred through
   the same `PendingFocusWork` mechanism as a blurred input's `data-onchange`),
   so they may re-enter the runtime freely.
