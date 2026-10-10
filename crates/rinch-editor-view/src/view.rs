@@ -44,6 +44,23 @@ fn apply_element_attrs(dom: &NodeHandle, node: &Node) {
                 Some(alt) if !alt.is_empty() => dom.set_attribute("alt", alt),
                 _ => dom.remove_attribute("alt"),
             }
+            // An app's id for what is drawn over the picture, for its
+            // stylesheet and its own lookups; the editor does nothing else
+            // with it.
+            match node.attrs().get_str("board") {
+                Some(board) if !board.is_empty() => dom.set_attribute("data-board", board),
+                _ => dom.remove_attribute("data-board"),
+            }
+            // A presentational hint, as HTML's own: an author `width` rule
+            // (or `max-width`) still wins, and the height follows the
+            // picture's aspect ratio.
+            match node.attrs().get_int("width") {
+                Some(width) if width > 0 => dom.set_attribute(
+                    "width",
+                    &width.min(rinch_editor_core::IMAGE_MAX_WIDTH).to_string(),
+                ),
+                _ => dom.remove_attribute("width"),
+            }
         }
         "ordered_list" => match node.attrs().get_int("start") {
             Some(start) if start != 1 => dom.set_attribute("start", &start.to_string()),
@@ -4361,6 +4378,88 @@ mod tests {
         assert_eq!(srcs(&h), ["blob:1#a", "blob:1#c", "blob:1#b"]);
         assert_eq!(children(&h, children(&h, h.container_id)[0])[1], host);
         crate::images::clear_image_source();
+    }
+
+    /// An image's `board` and `width` reach its host element as `data-board`
+    /// and the `width` hint, and follow an attribute edit in place: the same
+    /// `<img>`, so a picture on screen is not torn down to change them.
+    #[test]
+    fn an_images_board_and_width_reach_its_host_and_follow_an_edit_in_place() {
+        use rinch_editor_core::{AttrValue, Attrs, SetNodeAttrStep};
+        let h = harness();
+        let s = schema();
+        let img = s
+            .create_node(
+                "image",
+                Attrs::new().with("src", AttrValue::from("x.png")),
+                Fragment::empty(),
+            )
+            .unwrap();
+        let p = s
+            .branch("paragraph", Fragment::from_children(vec![img]))
+            .unwrap();
+        let st = state(s.clone(), doc_node(&s, vec![p]));
+        let mut view = RinchDomEditorView::new(h.container.clone(), doc_ref(&h), &st);
+        let host = children(&h, children(&h, h.container_id)[0])[0];
+        let attr = |name: &str| h.doc.borrow().get_attribute(host, name);
+        assert_eq!(tag(&h, host).as_deref(), Some("img"));
+        assert_eq!((attr("data-board"), attr("width")), (None, None));
+
+        let mut tr = st.tr();
+        tr.step(Box::new(SetNodeAttrStep::new(
+            1,
+            "board",
+            AttrValue::from("b1"),
+        )))
+        .unwrap();
+        tr.step(Box::new(SetNodeAttrStep::new(
+            1,
+            "width",
+            AttrValue::Int(320),
+        )))
+        .unwrap();
+        let next = st.apply(tr);
+        view.update_dom(&st, &next);
+        assert_eq!(
+            children(&h, children(&h, h.container_id)[0])[0],
+            host,
+            "the same <img>"
+        );
+        assert_eq!(attr("data-board").as_deref(), Some("b1"));
+        assert_eq!(attr("width").as_deref(), Some("320"));
+        assert_eq!(attr("src").as_deref(), Some("x.png"));
+
+        // A width past the bound is shown at the bound.
+        let mut tr = next.tr();
+        tr.step(Box::new(SetNodeAttrStep::new(
+            1,
+            "width",
+            AttrValue::Int(99_999_999_999_999),
+        )))
+        .unwrap();
+        let huge = next.apply(tr);
+        view.update_dom(&next, &huge);
+        assert_eq!(attr("width").as_deref(), Some("65535"));
+        view.update_dom(&huge, &next);
+        assert_eq!(attr("width").as_deref(), Some("320"));
+
+        // Taken away again, and a width that is not positive is no hint.
+        let mut tr = next.tr();
+        tr.step(Box::new(SetNodeAttrStep {
+            pos: 1,
+            attr: "board".into(),
+            value: None,
+        }))
+        .unwrap();
+        tr.step(Box::new(SetNodeAttrStep::new(
+            1,
+            "width",
+            AttrValue::Int(0),
+        )))
+        .unwrap();
+        let last = next.apply(tr);
+        view.update_dom(&next, &last);
+        assert_eq!((attr("data-board"), attr("width")), (None, None));
     }
 }
 

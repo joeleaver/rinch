@@ -564,3 +564,124 @@ fn enter_before_the_image_in_its_line_loses_a_concurrent_alt_change() {
         }
     }
 }
+
+// An app's own attributes on an image: `board` (an id an app keeps for what it
+// draws over the picture) and `width`. They ride in the same `@atom` value as
+// `src`/`alt`/`title`, so everything above holds for them too.
+
+impl Peer {
+    fn set_int(&mut self, attr: &str, value: i64) {
+        self.local(|tr| {
+            tr.step(Box::new(SetNodeAttrStep::new(
+                3,
+                attr,
+                AttrValue::Int(value),
+            )))
+            .unwrap();
+        });
+    }
+
+    /// The image's `(board, width)`, absent as `("", 0)`.
+    fn board_and_width(&self) -> (String, i64) {
+        let _ = self.image(); // exactly one
+        let para = self.state.doc.child(0);
+        let img = (0..para.child_count())
+            .map(|i| para.child(i))
+            .find(|n| n.type_name() == "image")
+            .unwrap();
+        (
+            img.attrs().get_str("board").unwrap_or("").to_string(),
+            img.attrs().get_int("width").unwrap_or(0),
+        )
+    }
+}
+
+#[test]
+fn board_and_width_round_trip_through_a_snapshot_and_a_live_update() {
+    let schema = Rc::new(Schema::starter_kit());
+    let (mut a, mut b) = two_peers(&schema, line(&schema, SRC, "alt", ""), (11, 22));
+    a.set("board", "01JA7Z3QK2V9");
+    sync(&mut a, &mut b);
+    assert_eq!(b.board_and_width(), ("01JA7Z3QK2V9".to_string(), 0));
+    b.set_int("width", 320);
+    sync(&mut a, &mut b);
+    converged(&a, &b, &schema);
+    assert_eq!(a.board_and_width(), ("01JA7Z3QK2V9".to_string(), 320));
+    // The other attrs are untouched.
+    assert_eq!(
+        a.image(),
+        (SRC.to_string(), "alt".to_string(), String::new())
+    );
+
+    // A peer joining from a snapshot builds the image with both.
+    let late = CollabSession::from_bytes(&a.session.snapshot()).unwrap();
+    assert_eq!(late.projected_doc(&schema).unwrap(), a.state.doc);
+}
+
+/// Marking a picture up (writing its `board`) while a peer types beside it,
+/// on either side: both are kept.
+#[test]
+fn a_board_written_beside_a_peers_typing_is_kept() {
+    for ids in ID_ORDERS {
+        for at in [3, 4] {
+            let schema = Rc::new(Schema::starter_kit());
+            let (mut a, mut b) = two_peers(&schema, line(&schema, SRC, "alt", ""), ids);
+            a.set("board", "b1");
+            b.local(|tr| {
+                tr.set_selection(rinch_editor_core::Selection::cursor(
+                    rinch_editor_core::Pos(at),
+                ));
+                tr.insert_text("XY").unwrap();
+            });
+            sync(&mut a, &mut b);
+            converged(&a, &b, &schema);
+            assert_eq!(
+                a.board_and_width().0,
+                "b1",
+                "ids {ids:?}, typed at {at}: {:?}",
+                a.state.doc
+            );
+        }
+    }
+}
+
+/// **The same limitation as `alt` and `title`, pinned for `board`:** a peer's
+/// concurrent change to another attribute of the same image (here `alt`) and
+/// a first mark-up converge on one peer's image, whole. An app that mints a
+/// board id must expect the id it wrote to be lost this way (and the same for
+/// Enter before the image in its line, above), and so must not count on the
+/// attribute being there because it wrote it.
+#[test]
+fn a_board_and_a_concurrent_alt_change_keep_one_peers_image() {
+    for ids in ID_ORDERS {
+        let schema = Rc::new(Schema::starter_kit());
+        let (mut a, mut b) = two_peers(&schema, line(&schema, SRC, "old alt", ""), ids);
+        a.set("board", "b1");
+        b.set("alt", "new alt");
+        sync(&mut a, &mut b);
+        let (_, alt, _) = converged(&a, &b, &schema);
+        let (board, _) = a.board_and_width();
+        let expected = if ids.0 > ids.1 {
+            ("b1", "old alt")
+        } else {
+            ("", "new alt")
+        };
+        assert_eq!((board.as_str(), alt.as_str()), expected, "ids {ids:?}");
+    }
+}
+
+/// Two peers marking the same picture up at once both mint a board id; they
+/// converge on one of the two.
+#[test]
+fn two_boards_written_at_once_converge_on_one() {
+    for ids in ID_ORDERS {
+        let schema = Rc::new(Schema::starter_kit());
+        let (mut a, mut b) = two_peers(&schema, line(&schema, SRC, "", ""), ids);
+        a.set("board", "from A");
+        b.set("board", "from B");
+        sync(&mut a, &mut b);
+        converged(&a, &b, &schema);
+        let expected = if ids.0 > ids.1 { "from A" } else { "from B" };
+        assert_eq!(a.board_and_width().0, expected, "ids {ids:?}");
+    }
+}

@@ -1,4 +1,5 @@
-//! HTML's rules for parsing integers, for the HTML import (issue #1164).
+//! HTML's rules for parsing integers (issue #1164) and dimension values
+//! (`<img width>`), for the HTML import.
 //!
 //! `<ol start>`, `colspan` and `rowspan` are read by the WHATWG *rules for
 //! parsing (non-negative) integers* (HTML § 2.3.4.1), not by `str::parse`:
@@ -17,6 +18,52 @@
 //! value too large for the parse is the **maximum**, not an error — measured in
 //! Chrome 153, `colspan="99999999999"` is 1000 and `rowspan="99999999999"` is
 //! 65534, while `ol.start` with the same value is an error (the default 1).
+
+/// A parsed dimension attribute (`<img width>`): CSS pixels or a
+/// percentage. A private copy of `rinch_core::dom::HtmlDimension`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum HtmlDimension {
+    Length(f64),
+    Percentage(f64),
+}
+
+/// HTML's *rules for parsing dimension values* (HTML § 2.3.4.4), as
+/// `rinch_core::dom::parse_html_dimension` reads them (#684, Chrome 153):
+/// skip leading ASCII whitespace, then at least one ASCII digit (no sign, no
+/// leading `.`), an optional fraction, then `%` for a percentage; anything
+/// else after the number is ignored (`"320px"` is 320), except a `*`, which
+/// is an error. `None` for an error. A private copy, cross-checked below.
+pub(crate) fn parse_html_dimension(s: &str) -> Option<HtmlDimension> {
+    let bytes = s.as_bytes();
+    let mut i = bytes
+        .iter()
+        .position(|b| !matches!(b, b'\t' | b'\n' | b'\x0C' | b'\r' | b' '))?;
+    if !bytes[i].is_ascii_digit() {
+        return None;
+    }
+    let mut value = 0f64;
+    while let Some(b) = bytes.get(i).filter(|b| b.is_ascii_digit()) {
+        value = value * 10.0 + f64::from(b - b'0');
+        i += 1;
+    }
+    if bytes.get(i) == Some(&b'.') {
+        i += 1;
+        let mut divisor = 1f64;
+        while let Some(b) = bytes.get(i).filter(|b| b.is_ascii_digit()) {
+            divisor *= 10.0;
+            value += f64::from(b - b'0') / divisor;
+            i += 1;
+        }
+    }
+    if !value.is_finite() {
+        return None;
+    }
+    match bytes.get(i) {
+        Some(b'%') => Some(HtmlDimension::Percentage(value)),
+        Some(b'*') => None,
+        _ => Some(HtmlDimension::Length(value)),
+    }
+}
 
 /// The sign and magnitude HTML's integer rules read from `s`, the magnitude
 /// saturated at `u64::MAX`; `None` for an error (no digit where one is due).
@@ -158,6 +205,56 @@ mod tests {
                 want,
                 "{s:?}"
             );
+        }
+    }
+
+    /// The dimension copy answers what `rinch_core::dom::parse_html_dimension`
+    /// answers, on its Chrome 153 table plus the integer inputs above.
+    #[test]
+    fn dimension_matches_rinch_core() {
+        use rinch_core::dom::HtmlDimension as Core;
+        let rows = [
+            "100",
+            "100px",
+            "100abc",
+            " 100",
+            "\t\n\x0C\r 50",
+            "100.7",
+            "1e2",
+            "0",
+            "50%",
+            "12.5%",
+            "",
+            ".5",
+            "+100",
+            "-5",
+            "abc",
+            "%",
+            "50*",
+            "7.",
+            "7.%",
+            "7 %",
+            "\x0B50",
+            "50% ",
+            "50%%",
+            "320px",
+            "1.5",
+            "0.4",
+            "0.5",
+            "99999999999999",
+        ];
+        let long = "9".repeat(400);
+        for s in rows
+            .iter()
+            .copied()
+            .chain(SHARED.iter().copied())
+            .chain([long.as_str()])
+        {
+            let want = rinch_core::dom::parse_html_dimension(s).map(|d| match d {
+                Core::Length(v) => HtmlDimension::Length(v),
+                Core::Percentage(v) => HtmlDimension::Percentage(v),
+            });
+            assert_eq!(parse_html_dimension(s), want, "{s:?}");
         }
     }
 
