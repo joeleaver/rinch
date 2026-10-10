@@ -2697,6 +2697,9 @@ mod text_over_children_1487 {
     #[test]
     fn text_over_scope_built_children_goes_when_the_scope_does() {
         let doc = doc();
+        // Holds the document's minting table past `sc`: it goes with the last
+        // scope of its document.
+        let _table = scope(&doc);
         let mut sc = scope(&doc);
         let body = body_handle(&doc);
         let base = (node_count(&doc), __minted_by_len());
@@ -2905,9 +2908,9 @@ mod text_over_children_1487 {
         assert!(doc.borrow().is_retired(inner.node_id()));
         assert_eq!(
             __minted_by_len(),
-            base - 2,
-            "only `wrap` (still the caller's handle) and the kept panel are \
-             recorded; nothing an observer minted is left behind"
+            base - 1,
+            "`inner`'s record went with it, and nothing an observer minted \
+             into it is left behind"
         );
     }
 

@@ -2,11 +2,9 @@
 //! above it, in Chrome (issue #1440): `NodeHandle::set_text` on an element and
 //! `NodeHandle::set_inner_html`.
 //!
-//! The browser's `textContent = …` detaches the children, and the text node it
-//! makes has no rinch id — so the element reads back no children. Children the
-//! written element's own render built are then discarded by `set_text`
-//! (issue #1487; a handed-in child is only detached, pinned in
-//! `text_over_children_1487.rs`).
+//! The browser's `textContent = …` detaches the children (they stay in
+//! `rinch-web`'s node table, re-insertable, as after `remove()`), and the text
+//! node it makes has no rinch id — so the element reads back no children.
 //!
 //! Run with `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner`
 //! and a chromedriver matching the installed Chrome.
@@ -91,12 +89,11 @@ fn text_written_over_an_elements_children_tells_the_removal_observer() {
     f.wrapper.set_text("again");
     assert!(f.seen.borrow().is_empty());
 
-    // The spans were built by the scope that built `wrapper`, so the write
-    // retired them (issue #1487): nothing could show them again.
-    assert!(
-        f.kids
-            .iter()
-            .all(|k| f._doc.borrow().is_retired(k.node_id()))
+    // Detached, not retired: a span goes back in.
+    f.wrapper.append_child(&f.kids[0]);
+    assert_eq!(
+        f.kids[0].parent_node().map(|p| p.node_id()),
+        Some(f.wrapper.node_id())
     );
 }
 

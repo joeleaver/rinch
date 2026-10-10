@@ -68,6 +68,39 @@ impl std::hash::Hasher for IdHasher {
 
 type IdMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<IdHasher>>;
 
+/// A node's minting record: the scope that minted it, and whether it is a
+/// text node (issue #1487 — so a write to a scope-minted text node, every
+/// reactive `{|| text}`, asks the backend nothing about its kind).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Minted(u64);
+
+impl Minted {
+    const TEXT: u64 = 1 << 63;
+
+    fn new(scope: ScopeId, text: bool) -> Self {
+        Minted(scope.0 | if text { Self::TEXT } else { 0 })
+    }
+    fn scope(self) -> ScopeId {
+        ScopeId(self.0 & !Self::TEXT)
+    }
+    fn is_text(self) -> bool {
+        self.0 & Self::TEXT != 0
+    }
+}
+
+/// A child a text write detached from an element its render built (issue
+/// #1487), waiting for the scope it is filed under to go.
+pub(crate) struct Orphan {
+    node: NodeId,
+    /// Its minting record when it was orphaned. A node whose record has moved
+    /// on since — discarded, freed by `set_inner_html`, its id re-issued — is
+    /// not this orphan any more.
+    minted: Minted,
+    /// The written element's minting scope: what a captured handle inside the
+    /// orphan is judged against when it is discarded.
+    owner: ScopeId,
+}
+
 /// One scope's entry in its document's [`Ancestry`].
 struct ScopeEntry {
     parent: Option<ScopeId>,
@@ -82,8 +115,10 @@ struct ScopeEntry {
 /// One document's ancestry tables (issue #732).
 pub(crate) struct Ancestry {
     doc_key: u64,
-    minted_by: IdMap<NodeId, ScopeId>,
+    minted_by: IdMap<NodeId, Minted>,
     scopes: IdMap<ScopeId, ScopeEntry>,
+    /// Text-write orphans by the live scope they go with (issue #1487).
+    orphans: IdMap<ScopeId, Vec<Orphan>>,
 }
 
 type AncestryRef = Rc<RefCell<Ancestry>>;
@@ -130,8 +165,8 @@ impl Ancestry {
 
     /// Forget `node`'s minting record, if it has one.
     fn purge(&mut self, node: NodeId) {
-        if let Some(scope) = self.minted_by.remove(&node) {
-            self.release(scope, 1);
+        if let Some(minted) = self.minted_by.remove(&node) {
+            self.release(minted.scope(), 1);
         }
     }
 
@@ -162,6 +197,7 @@ fn ancestry_for_or_new(doc_key: u64) -> AncestryRef {
             doc_key,
             minted_by: IdMap::default(),
             scopes: IdMap::default(),
+            orphans: IdMap::default(),
         }));
         slots.insert(doc_key, Rc::downgrade(&table));
         table
@@ -200,7 +236,8 @@ pub(crate) fn sweep_for_discard(
     let mut stack = vec![root.node_id()];
     let mut is_root = true;
     while let Some(id) = stack.pop() {
-        let record = table.minted_by.remove(&id);
+        let minted = table.minted_by.remove(&id);
+        let record = minted.map(Minted::scope);
         if !is_root && let Some(owner) = owner {
             let owned = match (record, last_answer) {
                 // No record: raw backend access (the editor view,
@@ -215,8 +252,8 @@ pub(crate) fn sweep_for_discard(
                 }
             };
             if !owned {
-                if let Some(scope) = record {
-                    table.minted_by.insert(id, scope);
+                if let Some(minted) = minted {
+                    table.minted_by.insert(id, minted);
                 }
                 captured.push(NodeHandle::new(id, root.doc.clone()));
                 continue;
@@ -258,68 +295,123 @@ pub(crate) fn purge_descendants(root: &NodeHandle) {
     }
 }
 
-/// The children of `node` that the render which built `node` also built — the
-/// ones a text write over `node` takes out for good (issue #1487) — and the
-/// scope that minted `node`, which is the owner they are judged against.
+/// The children a text write over `node` is about to detach that `node`'s own
+/// render built, with the scope they will be filed under (issue #1487).
 ///
-/// A child is one of them when it has a minting record and its minting scope
-/// is `node`'s or descended from it: the same question a hide asks of a
-/// branch's content ([`sweep_for_discard`]), asked of the element the text is
-/// written to. A child minted by any other scope was handed to that render
-/// (a captured handle, a cache scope's node), and one with no record at all
-/// was minted by raw backend access; the write says nothing about either and
-/// they are only detached. So is everything when `node` itself has no record.
+/// A child counts when its minting scope is the scope that minted `node`, or
+/// descends from it — the question a hide asks of a branch's content
+/// ([`sweep_for_discard`]). Any other child was handed to that render (a
+/// captured handle, a cache scope's node) or minted by raw backend access, and
+/// is only detached, as every child is.
 ///
-/// `None` — after one kind check and no child list read — for a text node,
-/// which is what every reactive `{|| text}` writes to.
-pub(crate) fn children_built_with(
+/// `None`, asking the backend nothing, when `node` has no minting record or is
+/// a text node (every reactive `{|| text}`), and when neither its minting
+/// scope nor any ancestor of it is still alive: nothing would ever collect
+/// what was filed.
+pub(crate) fn orphans_at_stake(
     node: &NodeHandle,
     doc: &Rc<RefCell<dyn DomDocument>>,
-) -> Option<(ScopeId, Vec<NodeId>)> {
-    let doc = doc.borrow();
-    if doc.is_text_node(node.node_id()) {
+) -> Option<(ScopeId, Vec<Orphan>)> {
+    let table = ancestry_for(doc.borrow().doc_key())?;
+    let table = table.borrow();
+    let minted = *table.minted_by.get(&node.node_id())?;
+    if minted.is_text() {
         return None;
     }
-    let table = ancestry_for(doc.doc_key())?;
-    let table = table.borrow();
-    let owner = *table.minted_by.get(&node.node_id())?;
-    let mut built = doc.get_children(node.node_id());
-    built.retain(|child| {
-        table
-            .minted_by
-            .get(child)
-            .is_some_and(|&scope| table.descends_from(scope, owner))
-    });
-    (!built.is_empty()).then_some((owner, built))
+    let owner = minted.scope();
+    let mut keeper = Some(owner);
+    while let Some(scope) = keeper {
+        let entry = table.scopes.get(&scope)?;
+        if entry.alive {
+            break;
+        }
+        keeper = entry.parent;
+    }
+    let keeper = keeper?;
+    let children = doc.borrow().get_children(node.node_id());
+    let built: Vec<Orphan> = children
+        .into_iter()
+        .filter_map(|child| {
+            let minted = *table.minted_by.get(&child)?;
+            table
+                .descends_from(minted.scope(), owner)
+                .then_some(Orphan {
+                    node: child,
+                    minted,
+                    owner,
+                })
+        })
+        .collect();
+    (!built.is_empty()).then_some((keeper, built))
 }
 
-/// Discard what [`children_built_with`] found, after the text write that
-/// orphaned them (issue #1487).
+/// File what [`orphans_at_stake`] found under its scope, after the text write
+/// (issue #1487). Only the ones the write actually took out: `rinch-dom`
+/// writes an element's lone text child in place.
 ///
-/// Nothing can show these nodes again: they are under no root, so the hide of
-/// the branch that built them never walks to them, and they would stay in the
-/// backend's node table and in the minting table for the life of the
-/// document. A node the write left where it was is not touched — `rinch-dom`
-/// writes an element's lone text child in place. A captured handle nested
-/// inside one is detached first and kept, as on a hide.
-pub(crate) fn discard_orphans(node: &NodeHandle, built: Option<(ScopeId, Vec<NodeId>)>) {
-    let Some((owner, built)) = built else {
+/// Nothing is discarded here. Each orphan stays a node, re-insertable through
+/// any handle to it, until the scope it is filed under goes
+/// ([`discard_filed_orphans`]).
+pub(crate) fn file_orphans(node: &NodeHandle, at_stake: Option<(ScopeId, Vec<Orphan>)>) {
+    let Some((keeper, mut built)) = at_stake else {
         return;
     };
     let Some(doc) = node.doc.upgrade() else {
         return;
     };
-    for id in built {
-        if doc.borrow().parent_node(id).is_some() {
+    {
+        let doc = doc.borrow();
+        built.retain(|o| doc.parent_node(o.node).is_none());
+    }
+    if built.is_empty() {
+        return;
+    }
+    let Some(table) = ancestry_for(doc.borrow().doc_key()) else {
+        return;
+    };
+    table
+        .borrow_mut()
+        .orphans
+        .entry(keeper)
+        .or_default()
+        .extend(built);
+}
+
+/// Discard the text-write orphans filed under `scope` that are still what
+/// they were: detached, not retired, and with the minting record they had
+/// (issue #1487). One that was put back, adopted elsewhere, discarded, or
+/// whose id was freed and re-issued is left alone.
+///
+/// Nothing can show the rest again: they are under no root, so no hide walks
+/// to them. A captured handle nested inside one is detached first and kept,
+/// as on a hide, with no child observer told: everything such an observer
+/// could patch is being retired.
+fn discard_filed_orphans(
+    doc: &Weak<RefCell<dyn DomDocument>>,
+    ancestry: &AncestryRef,
+    orphans: Vec<Orphan>,
+) {
+    let Some(live) = doc.upgrade() else {
+        return;
+    };
+    for orphan in orphans {
+        let current = ancestry.borrow().minted_by.get(&orphan.node).copied();
+        let still = current == Some(orphan.minted) && {
+            let d = live.borrow();
+            d.parent_node(orphan.node).is_none() && !d.is_retired(orphan.node)
+        };
+        if !still {
             continue;
         }
-        let orphan = NodeHandle::new(id, node.doc.clone());
+        let handle = NodeHandle::new(orphan.node, doc.clone());
         let mut captured = Vec::new();
-        sweep_for_discard(&orphan, Some(owner), &mut captured);
-        for kept in captured {
-            kept.remove();
-        }
-        orphan.discard_swept();
+        sweep_for_discard(&handle, Some(orphan.owner), &mut captured);
+        super::late_child::without_notifications(|| {
+            for kept in captured {
+                kept.remove();
+            }
+        });
+        handle.discard_swept();
     }
 }
 
@@ -607,9 +699,22 @@ impl RenderScope {
 
     /// Record a node this scope just minted. See [`created`](Self::created).
     fn own(&mut self, id: NodeId) -> NodeId {
+        self.own_as(id, false)
+    }
+
+    /// [`own`](Self::own) for a text node, recorded as one (issue #1487).
+    fn own_text(&mut self, id: NodeId) -> NodeId {
+        self.own_as(id, true)
+    }
+
+    fn own_as(&mut self, id: NodeId, text: bool) -> NodeId {
         self.created.push(id);
-        let previous = self.ancestry.borrow_mut().minted_by.insert(id, self.id);
-        match previous {
+        let previous = self
+            .ancestry
+            .borrow_mut()
+            .minted_by
+            .insert(id, Minted::new(self.id, text));
+        match previous.map(Minted::scope) {
             // Already ours (an id reused without a purge): counted once.
             Some(scope) if scope == self.id => {}
             Some(scope) => {
@@ -639,7 +744,7 @@ impl RenderScope {
     pub fn create_text(&mut self, text: &str) -> NodeHandle {
         let doc = self.doc().expect("Document dropped");
         let node_id = doc.borrow_mut().create_text(text);
-        NodeHandle::new(self.own(node_id), self.doc.clone())
+        NodeHandle::new(self.own_text(node_id), self.doc.clone())
     }
 
     /// Create a reactive text node wrapped in a span with a tracking ID.
@@ -660,7 +765,7 @@ impl RenderScope {
 
         // Create the text node inside the span
         let text_id = doc.borrow_mut().create_text(initial_text);
-        self.own(text_id);
+        self.own_text(text_id);
         doc.borrow_mut().append_child(span_id, text_id);
 
         tracing::debug!(
@@ -938,6 +1043,20 @@ impl Drop for RenderScope {
         // The scope's ancestry entry outlives it while its nodes are still
         // recorded or a child entry names it (issue #732): settle its mints
         // onto the entry and let the count decide.
+        //
+        // First, the children text writes detached and filed under this scope
+        // (issue #1487): once it is gone nothing collects them. Its cleanups
+        // run before they go, as a branch's run before its content is
+        // discarded, so a cleanup still sees its own node.
+        let filed = self
+            .ancestry
+            .try_borrow_mut()
+            .ok()
+            .and_then(|mut t| t.orphans.remove(&self.id));
+        if let Some(filed) = filed {
+            self.reactive_scope.dispose();
+            discard_filed_orphans(&self.doc, &self.ancestry, filed);
+        }
         let Ok(mut table) = self.ancestry.try_borrow_mut() else {
             debug_assert!(
                 false,

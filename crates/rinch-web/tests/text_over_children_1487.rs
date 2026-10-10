@@ -2,8 +2,9 @@
 //!
 //! `set_text_content` is `textContent = …` here: the old children leave the
 //! page and stay in the node table, and no hide of the branch that built them
-//! ever walks to them. `NodeHandle::set_text` now discards the ones the
-//! written element's render built and only detaches the ones it was handed.
+//! ever walks to them. `NodeHandle::set_text` still only detaches them; the
+//! ones the written element's render built are discarded when its scope goes,
+//! and the ones it was handed are the caller's.
 //! The mock's twins are `reinsertion_tests::text_over_children_1487` in
 //! `rinch-core`.
 //!
@@ -136,11 +137,12 @@ fn text_over_a_captured_handle_only_detaches_it() {
         None::<fn(&mut RenderScope) -> NodeHandle>,
     );
     visible.set(true);
+    visible.set(false);
 
     let own = fresh.borrow().clone().expect("the branch rendered");
     assert!(
         doc.borrow().is_retired(own.node_id()),
-        "control: the span the branch built beside the panel was discarded"
+        "control: the span the branch built beside the panel went with the branch"
     );
     assert!(!doc.borrow().is_retired(panel.node_id()));
     assert!(!doc.borrow().is_retired(panel_text.node_id()));

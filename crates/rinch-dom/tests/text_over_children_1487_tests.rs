@@ -21,27 +21,32 @@ fn mounted() -> (Rc<RefCell<dyn DomDocument>>, NodeHandle, RenderScope) {
 }
 
 #[test]
-fn text_over_scope_built_children_drops_their_minting_records() {
-    let (doc, body, mut scope) = mounted();
+fn text_over_scope_built_children_go_with_their_scope() {
+    let (doc, body, _table) = mounted();
+    let mut scope = RenderScope::new(doc.clone(), body.node_id());
+    let base = __minted_by_len();
     let host = scope.create_element("div");
     body.append_child(&host);
-    let base = __minted_by_len();
     for i in 0..50 {
         let c = scope.create_element("p");
         c.append_child(&scope.create_text(&i.to_string()));
         host.append_child(&c);
         host.append_child(&scope.create_element("span"));
-        if i == 0 {
-            assert_eq!(__minted_by_len(), base + 3, "control: three records");
-        }
         host.set_text("cleared");
         assert_eq!(doc.borrow().parent_node(c.node_id()), None);
     }
+    assert_eq!(
+        __minted_by_len(),
+        base + 1 + 150,
+        "while the scope lives the orphans are kept, records and all"
+    );
+    drop(scope);
     // The text node `rinch-dom` mints for "cleared" is raw: it has no record.
     assert_eq!(
         __minted_by_len(),
-        base,
-        "#1487: the orphaned children's records went with them"
+        base + 1,
+        "#1487: the orphaned children's records went with their scope; `host` \
+         is still in the document"
     );
 }
 
