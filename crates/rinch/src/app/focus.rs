@@ -49,6 +49,9 @@ pub(crate) struct PendingFocusWork {
     /// A blurred registered focus target's `on_focus_lost`, as its
     /// `(doc_key, node id)` (issue #147).
     focus_lost: Option<(u64, usize)>,
+    /// The `on_focus_lost` owed to a registered target `set_inner_html` freed
+    /// while it held the claim (#1509), whose registration is gone.
+    freed_focus_lost: Option<crate::focus_registry::FreedFocusLost>,
     /// The document whose focus moved, for the key-handler entries' focus
     /// check (`rinch_core::notify_focus_moved`, issue #434). Set on every
     /// transition.
@@ -118,6 +121,9 @@ impl RinchApp {
         }
         if let Some((doc_key, node_id)) = work.focus_lost {
             crate::focus_registry::notify_focus_lost(doc_key, node_id);
+        }
+        if let Some(lost) = work.freed_focus_lost {
+            lost.fire();
         }
         // Last: a popup that owns the keyboard closes once focus has left it
         // (issue #434). Callers fire this work after installing the new owner,
@@ -195,6 +201,7 @@ impl RinchApp {
         let mut pending = PendingFocusWork {
             input_commit: None,
             focus_lost: None,
+            freed_focus_lost: None,
             focus_moved: Some(self.doc_key()),
         };
         match self.focus_target {
@@ -305,6 +312,10 @@ impl RinchApp {
                 let doc_key = self.doc_key();
                 if crate::focus_registry::is_registered(doc_key, prev) {
                     pending.focus_lost = Some((doc_key, prev));
+                } else {
+                    // Freed by `set_inner_html` while its component lives on
+                    // (#1509): still told, unless disposed by the time it fires.
+                    pending.freed_focus_lost = crate::focus_registry::take_freed(doc_key, prev);
                 }
             }
             #[cfg(feature = "desktop")]
@@ -321,10 +332,18 @@ impl RinchApp {
             }
         }
         self.focus_target = target;
+        crate::focus_registry::note_claim(
+            self.doc_key(),
+            match target {
+                FocusTarget::Node(id) => Some(id),
+                _ => None,
+            },
+        );
         self.focus_epoch = self.focus_epoch.wrapping_add(1);
         self.scene_dirty = true;
         let has_work = pending.input_commit.is_some()
             || pending.focus_lost.is_some()
+            || pending.freed_focus_lost.is_some()
             || pending.focus_moved.is_some();
         (true, has_work.then_some(pending))
     }

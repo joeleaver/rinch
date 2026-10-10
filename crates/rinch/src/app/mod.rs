@@ -187,12 +187,16 @@ mod perf_stats_tests;
 mod popover_dropdown_transform_hit_test_tests;
 #[cfg(all(test, software_shell))]
 mod repaint_old_rect_tests;
+#[cfg(test)]
+mod review2_1514_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod review_1429_pimble_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod review_1481_probe_tests;
 #[cfg(all(test, software_shell))]
 mod review_1494_tests;
+#[cfg(test)]
+mod review_1514_tests;
 #[cfg(test)]
 mod right_press_click_1093_tests;
 #[cfg(test)]
@@ -4371,6 +4375,11 @@ impl RinchApp {
     /// having been announced an `on_focus_gained`. Closing it needs a
     /// registration identity (a generation counter), not a sharper probe.
     fn node_target_is_live(&self, node_id: usize) -> bool {
+        // A registered target `set_inner_html` freed (#1509): dead whatever
+        // node `rinch-dom` minted on its id since.
+        if crate::focus_registry::was_freed(self.doc_key(), node_id) {
+            return false;
+        }
         let registered = crate::focus_registry::is_registered(self.doc_key(), node_id);
         let Some(doc) = &self.doc else { return false };
         let d = doc.borrow();
@@ -10862,4 +10871,15 @@ struct TabStops {
     /// How many of `stops` precede the probe in tree order, when the probe was
     /// inside the root.
     probe_rank: Option<usize>,
+}
+
+impl Drop for RinchApp {
+    /// Forget this document's focus-claim record and any freed target parked
+    /// on it (#1509), so neither outlives the app.
+    fn drop(&mut self) {
+        let doc_key = self.doc_key();
+        if doc_key != 0 {
+            crate::focus_registry::note_claim(doc_key, None);
+        }
+    }
 }

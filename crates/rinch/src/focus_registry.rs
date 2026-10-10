@@ -49,8 +49,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use rinch_core::dom::NodeHandle;
+use std::collections::{HashMap, HashSet};
+
+use rinch_core::dom::{NodeHandle, NodeId};
 use rinch_core::events::KeyEventData;
+use rinch_core::reactive::{Owner, current_owner};
 use rinch_platform::ImeEvent;
 
 /// A registered target's key handler. `true` consumes the key — the runtime's
@@ -210,7 +213,30 @@ struct Registered {
     /// Names the `register_focus_target` call that made this entry
     /// (issue #1490).
     token: u64,
+    /// The ambient owner at registration (`None`: app lifetime). Read only
+    /// for a target freed while it held the claim (#1509).
+    owner: Option<Owner>,
     entry: Rc<FocusEntry>,
+}
+
+/// A registered target `set_inner_html` freed while it held the arbiter's
+/// claim (#1509): its registration is gone, but its component may be alive
+/// and still owed `on_focus_lost` when the arbiter releases the claim.
+pub(crate) struct FreedFocusLost {
+    owner: Option<Owner>,
+    on_focus_lost: Option<Rc<dyn Fn()>>,
+}
+
+impl FreedFocusLost {
+    /// Run the callback — unless its component has been disposed since, which
+    /// stays silent like any unmount (#141 PR4).
+    pub(crate) fn fire(self) {
+        if let Some(cb) = self.on_focus_lost
+            && self.owner.as_ref().is_none_or(Owner::is_alive)
+        {
+            rinch_core::batch(|| cb());
+        }
+    }
 }
 
 impl Registered {
@@ -233,6 +259,15 @@ thread_local! {
     /// id and a cleanup that forgot by id would drop another component's
     /// target.
     static TARGETS: RefCell<Vec<Registered>> = const { RefCell::new(Vec::new()) };
+
+    /// The node each document's arbiter claim is on, as `FocusTarget::Node`
+    /// (kept by [`note_claim`]). Lets [`forget_freed_nodes`] tell the one
+    /// freed target still owed an `on_focus_lost` from the rest (#1509).
+    static CLAIMED: RefCell<HashMap<u64, usize>> = RefCell::new(HashMap::new());
+
+    /// Targets freed while they held their document's claim, until the arbiter
+    /// releases it (at most one per document).
+    static FREED: RefCell<Vec<(u64, usize, FreedFocusLost)>> = const { RefCell::new(Vec::new()) };
 
     /// The next registration token. Never reused.
     static NEXT_TOKEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -260,6 +295,11 @@ pub fn register_focus_target(node: &NodeHandle, entry: FocusEntry) {
         next.set(token + 1);
         token
     });
+    // A node `set_inner_html` frees takes its entry with it (#1509).
+    rinch_core::dom::on_nodes_freed(rinch_core::dom::FreedNodesListener {
+        wants: has_targets,
+        forget: forget_freed_nodes,
+    });
     TARGETS.with(|t| {
         let mut t = t.borrow_mut();
         t.retain(|r| !r.is_at(doc_key, node_id));
@@ -267,6 +307,7 @@ pub fn register_focus_target(node: &NodeHandle, entry: FocusEntry) {
             doc_key,
             node_id,
             token,
+            owner: current_owner(),
             entry: Rc::new(entry),
         });
     });
@@ -287,6 +328,101 @@ fn unregister_focus_target(doc_key: u64, node_id: usize, token: u64) {
     });
 }
 
+/// Whether any focus target is registered on this thread.
+fn has_targets() -> bool {
+    TARGETS.with(|t| !t.borrow().is_empty())
+}
+
+/// Forget every target registered on one of `ids` in `doc_key`: nodes
+/// `NodeHandle::set_inner_html` is about to free, whose ids `rinch-dom` hands
+/// to the next nodes it mints (#1509). The registering scope's own cleanup
+/// later finds nothing and does nothing.
+///
+/// A target that holds its document's arbiter claim is parked whatever it
+/// registered, so the arbiter drops the claim rather than handing it to a
+/// node the markup mints on the id; it is still owed `on_focus_lost` (if it
+/// registered one): its component may be alive. It is parked (see
+/// [`was_freed`], [`take_freed`]) until the arbiter releases the claim,
+/// which it does at its next `AboutToWait` (or an earlier key or IME
+/// dispatch) through the ordinary transition, so the callback runs deferred like any focus work — or not at
+/// all if the component is disposed by then. Every other freed entry is
+/// dropped silently. Linear in `ids` plus the registered targets.
+fn forget_freed_nodes(doc_key: u64, ids: &[NodeId]) {
+    let freed: HashSet<usize> = ids.iter().map(|id| id.0).collect();
+    let claimed = CLAIMED.with(|c| c.borrow().get(&doc_key).copied());
+    let removed: Vec<Registered> = TARGETS.with(|t| {
+        let mut t = t.borrow_mut();
+        let (gone, kept) = std::mem::take(&mut *t)
+            .into_iter()
+            .partition(|r| r.doc_key == doc_key && freed.contains(&r.node_id));
+        *t = kept;
+        gone
+    });
+    // Out of the `TARGETS` borrow: dropping an entry drops its captures,
+    // which are app code.
+    for r in removed {
+        if Some(r.node_id) == claimed {
+            let cb = r.entry.on_focus_lost.clone();
+            let lost = FreedFocusLost {
+                owner: r.owner.clone(),
+                on_focus_lost: cb,
+            };
+            FREED.with(|f| f.borrow_mut().push((doc_key, r.node_id, lost)));
+        }
+    }
+}
+
+/// Record the node `doc_key`'s arbiter claim is on now (`None`: not a
+/// `FocusTarget::Node`). Called on every arbiter transition, after the
+/// previous owner's teardown has taken what it was owed, so a parked freed
+/// target that is no longer the claim is dropped here.
+pub(crate) fn note_claim(doc_key: u64, node_id: Option<usize>) {
+    CLAIMED.with(|c| {
+        let mut c = c.borrow_mut();
+        match node_id {
+            Some(id) => c.insert(doc_key, id),
+            None => c.remove(&doc_key),
+        }
+    });
+    let stale: Vec<_> = FREED.with(|f| {
+        let mut f = f.borrow_mut();
+        let (stale, kept) = std::mem::take(&mut *f)
+            .into_iter()
+            .partition(|(d, id, _)| *d == doc_key && Some(*id) != node_id);
+        *f = kept;
+        stale
+    });
+    drop(stale);
+}
+
+/// The claim [`note_claim`] last recorded for `doc_key`.
+#[cfg(test)]
+pub(crate) fn claimed_for_tests(doc_key: u64) -> Option<usize> {
+    CLAIMED.with(|c| c.borrow().get(&doc_key).copied())
+}
+
+/// Whether the claim on `(doc_key, node_id)` is a target `set_inner_html`
+/// freed (#1509): the arbiter must release it, whatever node now has the id.
+pub(crate) fn was_freed(doc_key: u64, node_id: usize) -> bool {
+    FREED.with(|f| {
+        f.borrow()
+            .iter()
+            .any(|(d, id, _)| *d == doc_key && *id == node_id)
+    })
+}
+
+/// Take the `on_focus_lost` owed to a target freed while it held the claim
+/// on `(doc_key, node_id)`, for the arbiter's teardown of that claim.
+pub(crate) fn take_freed(doc_key: u64, node_id: usize) -> Option<FreedFocusLost> {
+    FREED.with(|f| {
+        let mut f = f.borrow_mut();
+        let i = f
+            .iter()
+            .position(|(d, id, _)| *d == doc_key && *id == node_id)?;
+        Some(f.remove(i).2)
+    })
+}
+
 /// The entry registered at `(doc_key, node_id)`, if any. Cloned out of the
 /// registry so the callback runs with no borrow held — it is user code and may
 /// register or unregister targets itself.
@@ -304,11 +440,13 @@ fn entry_for(doc_key: u64, node_id: usize) -> Option<Rc<FocusEntry>> {
 /// This is the arbiter's **liveness authority** for a registered claim: an
 /// unmount deregisters through the scope cleanup, which is a push notification
 /// rather than the attribute probe `node_target_is_live` falls back to. That
-/// closes the recycled-slab-slot window (#304) only while the registering
-/// scope's lifetime brackets the node's: a node freed while that scope is
-/// still alive (`set_inner_html` over it) leaves its entry under the freed id,
-/// and a node `rinch-dom` mints on that id answers as registered until the
-/// scope goes (#1509).
+/// closes the recycled-slab-slot window (#304) for registered nodes: an
+/// unmount releases the entry by its token (#1490), and a node freed while the
+/// registering scope is still alive (`set_inner_html` over it, the one
+/// `NodeHandle` verb that frees on `rinch-dom`) takes its entry with it
+/// before `rinch-dom` can mint another node on its id (#1509). A freed target
+/// that held the claim is still owed `on_focus_lost` — see
+/// [`forget_freed_nodes`].
 pub(crate) fn is_registered(doc_key: u64, node_id: usize) -> bool {
     TARGETS.with(|t| t.borrow().iter().any(|r| r.is_at(doc_key, node_id)))
 }
