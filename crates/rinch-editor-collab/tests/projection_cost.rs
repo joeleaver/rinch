@@ -197,3 +197,86 @@ fn a_void_container_costs_one_shape_read_per_block() {
     a.exchange(&mut b);
     assert_eq!(a.state.doc, b.state.doc);
 }
+
+// --- per-attribute atom entries are read once per operation (review of #1503, F4) ---
+
+/// `n` lines, each `x` + a picture, every picture's `alt` changed once (one entry each
+/// in the shared document's `atoms` map); a guest joined from the host's snapshot.
+fn edited_pictures(n: usize) -> (Peer, Peer) {
+    use rinch_editor_core::{AttrValue, Attrs, SetNodeAttrStep};
+    let s = Rc::new(Schema::starter_kit());
+    let blocks = (0..n)
+        .map(|i| {
+            let img = s
+                .create_node(
+                    "image",
+                    Attrs::new().with("src", AttrValue::from(format!("p{i}.png"))),
+                    Fragment::empty(),
+                )
+                .unwrap();
+            s.branch(
+                "paragraph",
+                Fragment::from_children(vec![s.text("x").unwrap(), img]),
+            )
+            .unwrap()
+        })
+        .collect();
+    let mut host = Peer::host(&s, blocks, 1);
+    for i in 0..n {
+        // Each line is 4 positions: open, `x`, the picture, close.
+        let mut tr = host.state.tr();
+        tr.step(Box::new(SetNodeAttrStep::new(
+            4 * i + 2,
+            "alt",
+            AttrValue::from(format!("alt {i}")),
+        )))
+        .unwrap();
+        let next = host.state.apply(tr);
+        host.session
+            .record_local(&s, &host.state.doc, &next.doc)
+            .unwrap();
+        host.state = next;
+    }
+    let guest = host.join(2);
+    guest.assert_model_is_projection();
+    (host, guest)
+}
+
+/// Entries of the `atoms` map read by a keystroke in a line holding a picture, by
+/// projecting it (`local`) and by a peer integrating it (`remote`).
+fn entry_reads(n: usize) -> (u64, u64) {
+    use rinch_editor_collab::testing::overlay_entry_reads;
+    let (mut host, mut guest) = edited_pictures(n);
+    let before = overlay_entry_reads();
+    host.type_at(2, "y");
+    let local = overlay_entry_reads() - before;
+    let delta = host.session.save_incremental().unwrap();
+    let before = overlay_entry_reads();
+    let next = guest
+        .session
+        .integrate_incremental(&guest.state, &delta)
+        .unwrap()
+        .expect("the keystroke changes the guest");
+    let remote = overlay_entry_reads() - before;
+    guest.state = next;
+    guest.assert_model_is_projection();
+    assert_eq!(guest.state.doc, host.state.doc);
+    (local, remote)
+}
+
+/// A keystroke reads the `atoms` map once whichever side projects it: as many entries
+/// as the map holds, not that many for every line holding a picture. It was every
+/// line's (n² for n edited pictures: a remote keystroke took 1.23 s at 1000 in a debug
+/// build).
+#[test]
+fn a_keystroke_reads_the_atom_entries_once() {
+    let (local_50, remote_50) = entry_reads(50);
+    let (local_100, remote_100) = entry_reads(100);
+    // The host has one entry per picture.
+    assert_eq!((local_50, local_100), (50, 100));
+    assert!(
+        remote_50 <= 2 * 50 && remote_100 <= 2 * 100,
+        "{remote_50} {remote_100}"
+    );
+    assert_eq!(remote_100, 2 * remote_50, "linear in the entries");
+}

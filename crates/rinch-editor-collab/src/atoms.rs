@@ -2,9 +2,10 @@
 //!
 //! An inline atom (`image`, `hard_break`) is one U+FFFC char in its block's `Text`
 //! carrying the reserved formatting attribute `@atom` (see [`crate::projection`]). That
-//! value is the atom's type and attrs **as they were when the char was written**, and it
-//! is never rewritten to change an attr. A change of one attr is one entry of the root
-//! map [`ATOMS`] instead:
+//! value is the atom's type and attrs **as they were when the char was written** (or
+//! moved, below), and its attrs are never rewritten to change one: a change of one attr
+//! is one entry of the root map [`ATOMS`] instead (the first one also adds `@id` to the
+//! value, see *What a build from before reads*):
 //!
 //! ```text
 //! root Map "atoms"
@@ -30,25 +31,53 @@
 //! replica reads the same and which needs nothing written: an atom written before this
 //! module existed has one too, so its attrs merge per attribute from its first change on.
 //!
-//! A char's id cannot follow the atom when the atom **moves**, and the projection moves
-//! one more often than it looks: Enter before an image in its line deletes the image's
-//! char and inserts a new one in the new block (yrs has no move), and Backspace joining
-//! the line back does the same. A local transaction that removes an atom and inserts
-//! one with the same type and attrs therefore hands the new char the old identity, in
-//! the `@atom` value's reserved key [`ATOM_ID`] ([`carry_over`]). A peer's concurrent
-//! change of the atom's attrs is an entry under that identity, so it applies to the
-//! moved atom as well: neither the change nor the move is lost.
+//! An identity must stay on **its** atom: an app keeps what it draws over a picture
+//! under an attr of it (`board`), and that shown over another picture is worse than lost.
+//! Two things decide which char is which atom, and both ask the model, not the text:
 //!
-//! An `@atom` value is also rewritten, with a **fresh** identity, when a char changes
-//! from one atom type to another, or when its value was inherited (below): the entries
-//! of the old identity no longer describe it.
+//! * **The text diff** (`projection::text_splice_bounds`) matches an atom's placeholder
+//!   only with the same atom: the editor keeps the `Rc` of a node an edit does not
+//!   rebuild, so an atom `Node::same_ref` to one before the change is that atom. Every
+//!   atom is the same U+FFFC, so a diff by chars alone took a picture inserted right
+//!   before another for that other (review of #1503, F2). An atom changed in place (a new
+//!   node) is the atom at its place when neither is in the change otherwise; see
+//!   `projection::SRC_CHANGE_KEEPS_IDENTITY` for the one edit this cannot tell from it.
+//! * **A move** writes a new char, since yrs has no move: Enter before an image in its
+//!   line deletes the image's char and inserts one in the new block, and Backspace
+//!   joining the line back does the same. [`carry_over`] hands the new char the old
+//!   one's identity, in the `@atom` value's reserved key [`ATOM_ID`], when the model says
+//!   it is the same atom (`same_ref`). A peer's concurrent change of the atom's attrs is
+//!   an entry under that identity, so it applies to the moved atom as well. When the
+//!   model does not say so plainly, nothing is carried and that change is lost.
 //!
 //! **Inherited values.** yrs extends a formatted range over an insert at its end, so a
 //! char inserted right after an atom carries that atom's `@atom` value, `@id` and all.
-//! Only the **first** char of a run of one `@atom` value holding an `@id` is that
-//! identity; a char that continues the run is identified by its own char id
-//! ([`AtomChar::inherited`]).
+//! The projection writes every char it inserts with its own whole value, so that lasts
+//! only within one local change; a char that continues a run of one `@atom` value
+//! holding an `@id` is identified by its own char id ([`AtomChar::inherited`]).
+//!
+//! ## What a build from before reads
+//!
+//! An atom only ever inserted (and typed around, deleted, marked) is written exactly as
+//! before: one `@atom` value, no `@id`, nothing in [`ATOMS`]. The first per-attribute
+//! change of an atom stamps its value with `@id` = its own identity
+//! ([`write_atom_change`]), and a move writes `@id` too: a build from before refuses
+//! such an atom (`unknown reserved key @id`), which poisons its session until it
+//! rejoins on an upgraded build (#196). It never reads an atom whose attrs it would get
+//! wrong, with one exception: an older peer that changes an atom's attrs (rewriting its
+//! whole value) at the same time as a newer peer's first change of that atom can drop
+//! the stamp, and then reads the attrs as it wrote them while the newer peers lay the
+//! newer peer's entry over them.
+//!
+//! ## Growth
+//!
+//! An entry is never removed: one per attr ever changed per atom (an overwritten value
+//! is collected by yrs). An atom deleted keeps its entries in the map; each costs a few
+//! dozen bytes (measured: the first `board` of a picture, entry and stamp, +53 bytes;
+//! 200 further `alt` changes of it +36 bytes in all; deleting it 0) and one read per
+//! operation that reads the map ([`overlay_scope`]).
 
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -59,7 +88,7 @@ use yrs::{
     WriteTxn,
 };
 
-use rinch_editor_core::{AttrValue, Attrs};
+use rinch_editor_core::{AttrValue, Attrs, Node};
 
 use crate::error::{CollabError, Result};
 use crate::projection::{
@@ -89,8 +118,9 @@ pub(crate) struct AtomChar {
     pub value: Attrs,
     /// The value's [`ATOM_ID`].
     pub carried: Option<String>,
-    /// The value has an [`ATOM_ID`] and the char before carries the same value: this
-    /// char inherited it by being inserted at the end of that atom's range.
+    /// The value has an [`ATOM_ID`] and the char before is an atom's placeholder
+    /// carrying the same value: this char inherited it by being inserted at the end of
+    /// that atom's range.
     pub inherited: bool,
 }
 
@@ -128,7 +158,10 @@ pub(crate) fn scan_text<T: ReadTxn>(txn: &T, text: &TextRef) -> Result<ScannedTe
     let mut u16 = 0u32;
     let mut spans = Vec::new();
     let mut atoms: Vec<AtomChar> = Vec::new();
-    // The `@atom` value of the char before the current one, as written.
+    // The `@atom` value of the char before the current one, as written, when that char
+    // is an atom's placeholder. Only an atom is inherited from: a stray `@atom` over an
+    // ordinary char (one a concurrent format left over text, which the next local edit
+    // clears) is no atom, and an atom after it is the first of its run.
     let mut prev: Option<Any> = None;
     for chunk in text.diff(txn, YChange::identity) {
         let Out::Any(Any::String(part)) = &chunk.insert else {
@@ -173,22 +206,19 @@ pub(crate) fn scan_text<T: ReadTxn>(txn: &T, text: &TextRef) -> Result<ScannedTe
             let stripped = decoded.without(ATOM_ID);
             let mut at = u16;
             for (k, c) in part.chars().enumerate() {
-                let continues = if k == 0 {
-                    prev.as_ref() == Some(value)
-                } else {
-                    true
-                };
+                let continues = prev.as_ref() == Some(value);
+                let placeholder = c == ATOM_PLACEHOLDER;
                 atoms.push(AtomChar {
                     index: start + k,
                     u16: at,
-                    placeholder: c == ATOM_PLACEHOLDER,
+                    placeholder,
                     value: stripped.clone(),
                     carried: carried.clone(),
                     inherited: carried.is_some() && continues,
                 });
                 at += c.len_utf16() as u32;
+                prev = placeholder.then(|| value.clone());
             }
-            prev = Some(value.clone());
         } else if n > 0 {
             prev = None;
         }
@@ -203,14 +233,34 @@ pub(crate) fn scan_text<T: ReadTxn>(txn: &T, text: &TextRef) -> Result<ScannedTe
     })
 }
 
+/// Every entry of the [`ATOMS`] map, grouped by identity.
+pub(crate) type Overlay = HashMap<String, Vec<(String, Any)>>;
+
+thread_local! {
+    /// While an [`overlay_scope`] is held: the [`ATOMS`] map read once for the whole
+    /// scope (`Some(None)` until something first needs it). `None` outside a scope.
+    static OVERLAY: RefCell<Option<Option<Overlay>>> = const { RefCell::new(None) };
+    /// How many [`ATOMS`] entries this thread has read ([`read_overlay`]).
+    static OVERLAY_ENTRY_READS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// How many [`ATOMS`] entries this thread has read so far (`testing::overlay_entry_reads`).
+#[cfg_attr(not(feature = "test-util"), allow(dead_code))]
+pub(crate) fn overlay_entry_reads() -> u64 {
+    OVERLAY_ENTRY_READS.with(Cell::get)
+}
+
 /// Every entry of the [`ATOMS`] map, grouped by identity. Empty when the map does not
-/// exist or holds nothing.
-pub(crate) fn read_overlay<T: ReadTxn>(txn: &T) -> HashMap<String, Vec<(String, Any)>> {
-    let mut out: HashMap<String, Vec<(String, Any)>> = HashMap::new();
+/// exist or holds nothing. Reads the whole map: callers go through [`with_overlay`],
+/// which reads it once per [`overlay_scope`].
+fn read_overlay<T: ReadTxn>(txn: &T) -> Overlay {
+    let mut out: Overlay = HashMap::new();
     let Some(map) = txn.get_map(ATOMS) else {
         return out;
     };
+    let mut n = 0u64;
     for (key, value) in map.iter(txn) {
+        n += 1;
         let (Some((identity, attr)), Out::Any(any)) = (key.split_once('/'), value) else {
             continue;
         };
@@ -218,7 +268,78 @@ pub(crate) fn read_overlay<T: ReadTxn>(txn: &T) -> HashMap<String, Vec<(String, 
             .or_default()
             .push((attr.to_string(), any));
     }
+    OVERLAY_ENTRY_READS.with(|c| c.set(c.get() + n));
     out
+}
+
+/// While the returned guard lives, the [`ATOMS`] map is read at most once on this
+/// thread, and the per-attribute writes made meanwhile ([`write_atom_change`]) are laid
+/// into that read. Held by the operations that read many blocks (`CollabDoc::to_doc`,
+/// `CollabDoc::project_change`): without it every block holding an atom read the whole
+/// map, which made a remote integrate quadratic in edited atoms (review of #1503, F4).
+/// Nested scopes share the outermost one.
+///
+/// A scope must not outlive a change it did not see: one is held only for the length
+/// of one call on one `CollabDoc`, during which nothing else writes to it.
+pub(crate) fn overlay_scope() -> OverlayScope {
+    let outer = OVERLAY.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.is_some() {
+            false
+        } else {
+            *c = Some(None);
+            true
+        }
+    });
+    OverlayScope { outer }
+}
+
+/// The guard [`overlay_scope`] returns.
+pub(crate) struct OverlayScope {
+    outer: bool,
+}
+
+impl Drop for OverlayScope {
+    fn drop(&mut self) {
+        if self.outer {
+            OVERLAY.with(|c| *c.borrow_mut() = None);
+        }
+    }
+}
+
+/// Run `f` over the [`ATOMS`] map: the scope's read when an [`overlay_scope`] is held
+/// (made now if this is the first need), a fresh read otherwise. `f` must not reach
+/// [`with_overlay`] again.
+fn with_overlay<T: ReadTxn, R>(txn: &T, f: impl FnOnce(&Overlay) -> R) -> R {
+    let scoped = OVERLAY.with(|c| c.borrow().is_some());
+    if !scoped {
+        return f(&read_overlay(txn));
+    }
+    let loaded = OVERLAY.with(|c| matches!(&*c.borrow(), Some(Some(_))));
+    if !loaded {
+        let read = read_overlay(txn);
+        OVERLAY.with(|c| *c.borrow_mut() = Some(Some(read)));
+    }
+    OVERLAY.with(|c| {
+        let c = c.borrow();
+        let Some(Some(overlay)) = &*c else {
+            unreachable!("loaded above")
+        };
+        f(overlay)
+    })
+}
+
+/// Lay one entry just written into the scope's read, if the scope has read the map.
+fn note_entry(identity: &str, attr: &str, value: &Any) {
+    OVERLAY.with(|c| {
+        if let Some(Some(overlay)) = &mut *c.borrow_mut() {
+            let entries = overlay.entry(identity.to_string()).or_default();
+            match entries.iter_mut().find(|(k, _)| k == attr) {
+                Some(slot) => slot.1 = value.clone(),
+                None => entries.push((attr.to_string(), value.clone())),
+            }
+        }
+    });
 }
 
 /// An atom's value with the entries of its identity laid over it. An entry for a
@@ -248,19 +369,20 @@ pub(crate) fn merged_atoms<T: ReadTxn>(
     if scanned.atoms.is_empty() {
         return Ok(Vec::new());
     }
-    let overlay = read_overlay(txn);
-    let mut out = Vec::with_capacity(scanned.atoms.len());
-    for a in &scanned.atoms {
-        // A stray `@atom` over an ordinary char is no atom and has no identity.
-        let value = if a.placeholder && !overlay.is_empty() {
-            let entries = a.identity(txn, text).and_then(|id| overlay.get(&id));
-            merged(&a.value, entries)?
-        } else {
-            a.value.clone()
-        };
-        out.push((a.index, value));
-    }
-    Ok(out)
+    with_overlay(txn, |overlay| {
+        let mut out = Vec::with_capacity(scanned.atoms.len());
+        for a in &scanned.atoms {
+            // A stray `@atom` over an ordinary char is no atom and has no identity.
+            let value = if a.placeholder && !overlay.is_empty() {
+                let entries = a.identity(txn, text).and_then(|id| overlay.get(&id));
+                merged(&a.value, entries)?
+            } else {
+                a.value.clone()
+            };
+            out.push((a.index, value));
+        }
+        Ok(out)
+    })
 }
 
 /// A fresh identity, unique across replicas: the writer's client id and the clock its
@@ -293,9 +415,17 @@ fn write_value(
 }
 
 /// Bring the atom at char `atom.index` from `have` (its merged value) to `want`, both
-/// carrying [`ATOM_TYPE`]. The same type on a char that is its own atom: one [`ATOMS`]
-/// entry per attr that changed, and nothing else. Anything else (a retype, a value the
-/// char inherited): its `@atom` is rewritten whole under a fresh identity.
+/// carrying [`ATOM_TYPE`]: an **attr change** of an atom the text diff kept in place
+/// (`projection::reconcile_text`). The same type on a char that is its own atom: one
+/// [`ATOMS`] entry per attr that changed. Anything else (a retype, a value the char
+/// inherited): its `@atom` is rewritten whole under a fresh identity.
+///
+/// The first entry written for an atom whose `@atom` value names no identity also
+/// **stamps** the value with [`ATOM_ID`] = its own char id, which changes nothing for
+/// this build (that is the identity the char already had) and makes a build from
+/// before per-attribute merging refuse the atom loudly (`unknown reserved key`), rather
+/// than read the attrs it was written with and silently miss every entry (review of
+/// #1503, F5). Two peers stamping one atom at once write equal values.
 pub(crate) fn write_atom_change(
     txn: &mut TransactionMut,
     text: &TextRef,
@@ -309,33 +439,44 @@ pub(crate) fn write_atom_change(
     } else {
         None
     };
+    let own = char_id(txn, text, atom.u16);
     // A carried identity can be held by two chars: two peers who moved one image at
     // once (both pressed Enter before it) each wrote a copy carrying it. Both read the
     // same, on every replica; a change made to one of them here must not reach the
-    // other, so the one changed takes an identity of its own.
-    let identity = identity.filter(|id| atom.carried.is_none() || claims(txn, id) < 2);
+    // other, so the one changed takes an identity of its own. An identity that is the
+    // char's own id (unstamped, or stamped) is held by no other live char: a copy that
+    // carries it was written by a move that deleted this char.
+    let identity = identity.filter(|id| {
+        atom.carried.is_none() || own.as_deref() == Some(id.as_str()) || claims(txn, id) < 2
+    });
     let Some(identity) = identity else {
         let fresh = fresh_identity(txn);
         write_value(txn, text, atom.u16, want, Some(&fresh));
         return;
     };
+    if atom.carried.is_none() {
+        write_value(txn, text, atom.u16, &atom.value, Some(&identity));
+    }
     let map = txn.get_or_insert_map(ATOMS);
+    let put = |txn: &mut TransactionMut, k: &str, any: Any| {
+        note_entry(&identity, k, &any);
+        map.insert(txn, format!("{identity}/{k}"), any);
+    };
     for (k, v) in want.iter() {
         if k.starts_with(RESERVED_PREFIX) || have.get(k) == Some(v) {
             continue;
         }
-        let any = attr_to_any(v).unwrap_or(Any::Null);
-        map.insert(txn, format!("{identity}/{k}"), any);
+        put(txn, k, attr_to_any(v).unwrap_or(Any::Null));
     }
     for (k, _) in have.iter() {
         if !k.starts_with(RESERVED_PREFIX) && want.get(k).is_none() {
-            map.insert(txn, format!("{identity}/{k}"), Any::Undefined);
+            put(txn, k, Any::Undefined);
         }
     }
 }
 
 /// How many live atom chars in the whole document hold the carried identity `id`. Reads
-/// every block's text, so it is asked only when a carried atom's attrs change.
+/// every block's text, so it is asked only when a moved atom's attrs change.
 fn claims<T: ReadTxn>(txn: &T, id: &str) -> usize {
     fn count<T: ReadTxn>(txn: &T, value: Out, id: &str) -> usize {
         use yrs::Array;
@@ -365,91 +506,120 @@ pub(crate) struct FoundAtom {
     text: TextRef,
     u16: u32,
     identity: String,
-    /// Its value as written, without [`ATOM_ID`].
-    value: Attrs,
     /// Its merged value: what the model holds.
-    merged: Attrs,
+    pub merged: Attrs,
 }
 
 /// Every inline atom in the nodes at raw indices `range` of `list`, in document order,
-/// descending through containers and tables.
+/// descending through containers but **not into tables** (a table's cells are keyed by
+/// row and column, so the CRDT's order is not the model's; an atom moved into or out of
+/// a table is not carried, see [`carry_over`]).
 ///
 /// Best effort, never an error: it runs on both sides of a local change's write (the
-/// write's own pre-pass is what refuses a corrupt document), and a text it cannot read
-/// only means an atom in it keeps the identity of its char.
+/// write's own pre-pass is what refuses a corrupt document). `None` for a text it
+/// cannot read, which makes [`carry_over`] carry nothing.
 pub(crate) fn find_atoms<T: ReadTxn>(
     txn: &T,
     list: &ArrayRef,
     range: std::ops::Range<u32>,
-) -> Vec<FoundAtom> {
+) -> Option<Vec<FoundAtom>> {
     use yrs::Array;
-    let overlay = read_overlay(txn);
-    let mut out = Vec::new();
-    for (i, child) in list.iter(txn).enumerate() {
-        if range.contains(&(i as u32)) {
-            walk(txn, child, &overlay, &mut out);
+    with_overlay(txn, |overlay| {
+        let mut out = Vec::new();
+        for (i, child) in list.iter(txn).enumerate() {
+            if range.contains(&(i as u32)) {
+                walk(txn, child, overlay, &mut out)?;
+            }
         }
-    }
-    out
+        Some(out)
+    })
 }
 
 fn walk<T: ReadTxn>(
     txn: &T,
     value: Out,
-    overlay: &HashMap<String, Vec<(String, Any)>>,
+    overlay: &Overlay,
     out: &mut Vec<FoundAtom>,
-) {
+) -> Option<()> {
     use yrs::Array;
     match value {
         Out::YText(text) => {
-            let Ok(scanned) = scan_text(txn, &text) else {
-                return;
-            };
+            let scanned = scan_text(txn, &text).ok()?;
             for a in scanned.atoms.iter().filter(|a| a.placeholder) {
-                let Some(identity) = a.identity(txn, &text) else {
-                    continue;
-                };
-                let Ok(merged) = merged(&a.value, overlay.get(&identity)) else {
-                    continue;
-                };
+                let identity = a.identity(txn, &text)?;
+                let merged = merged(&a.value, overlay.get(&identity)).ok()?;
                 out.push(FoundAtom {
                     text: text.clone(),
                     u16: a.u16,
                     identity,
-                    value: a.value.clone(),
                     merged,
                 });
             }
         }
         Out::YMap(map) => {
-            // A yrs map's key order is not document order; sorted, at least it is the
-            // same on every run. Only a table's cells (keyed by row and column) come back
-            // out of document order, and matching a moved atom does not depend on it.
-            let mut entries: Vec<(String, Out)> =
-                map.iter(txn).map(|(k, v)| (k.to_string(), v)).collect();
-            entries.sort_by(|a, b| a.0.cmp(&b.0));
-            for (_, v) in entries {
-                walk(txn, v, overlay, out);
+            if crate::table::is_table_map(txn, &map) {
+                return Some(());
+            }
+            // A node map: its `text` or its `content` (the other keys hold no atom).
+            for key in ["text", "content"] {
+                if let Some(v) = map.get(txn, key) {
+                    walk(txn, v, overlay, out)?;
+                }
             }
         }
         Out::YArray(array) => {
             for v in array.iter(txn) {
-                walk(txn, v, overlay, out);
+                walk(txn, v, overlay, out)?;
             }
         }
         _ => {}
     }
+    Some(())
 }
 
-/// After a local change: every atom in `after` that is not one of `before` (a char this
-/// change inserted) and reads exactly as one of `before` that is gone (a char this
-/// change removed) takes that atom's identity. Each removed atom is taken at most once,
-/// in document order.
+/// One inline atom of the model: the node (for its identity, `Node::same_ref`) and
+/// its projected value (its attrs and [`ATOM_TYPE`]).
+pub(crate) struct ModelAtom {
+    pub node: Node,
+    pub value: Attrs,
+}
+
+/// After a local change: an atom the change **moved** keeps its identity. The model
+/// says which: the editor keeps the `Rc` of every node an edit does not rebuild, so an
+/// atom of `after` that is `same_ref` to one of `before` is that atom, wherever it
+/// now is (Enter or Backspace before it, a drag). When the projection wrote it as a
+/// new char (yrs has no move), the new char takes the old char's identity, so a peer's
+/// concurrent change of its attrs reaches it where it now is.
 ///
-/// An atom with no attrs of its own (a `hard_break`) has nothing a peer could change,
-/// so it carries nothing: its value stays the one-key `{"@type": …}`, whose encoding
-/// is the same on every run (#841).
-pub(crate) fn carry_over(txn: &mut TransactionMut, before: &[FoundAtom], after: &[FoundAtom]) {
+/// `before` / `after` are the CRDT's atoms in the change's span (from [`find_atoms`]),
+/// `model_before` / `model_after` the model's in the same blocks, in the same order.
+/// The two are paired by position and must agree value for value; when they do not
+/// (an atom in a table, a CRDT the model is not in step with), nothing is carried: an
+/// identity left behind is a peer's concurrent change lost, an identity carried to the
+/// wrong atom would be that change shown on another picture.
+///
+/// Only an atom that is `same_ref` to exactly one atom of `before`, whose char this
+/// change removed, and that is the only one of `after` `same_ref` to it, is carried
+/// (an atom copied within the editor and pasted keeps its `Rc` twice: the copy that is
+/// new gets an identity of its own). An atom with no attrs of its own (a `hard_break`)
+/// has nothing a peer could change, so it carries nothing: its value stays the one-key
+/// `{"@type": …}`, whose encoding is the same on every run (#841).
+///
+/// The new char's value is the moved atom's **merged** value under its identity, so it
+/// reads the same whether or not the entries of that identity are there.
+pub(crate) fn carry_over(
+    txn: &mut TransactionMut,
+    before: &[FoundAtom],
+    after: &[FoundAtom],
+    model_before: &[ModelAtom],
+    model_after: &[ModelAtom],
+) {
+    let agrees = |crdt: &[FoundAtom], model: &[ModelAtom]| {
+        crdt.len() == model.len() && crdt.iter().zip(model).all(|(c, m)| c.merged == m.value)
+    };
+    if !agrees(before, model_before) || !agrees(after, model_after) {
+        return;
+    }
     let before_ids: HashSet<&str> = before.iter().map(|a| a.identity.as_str()).collect();
     let after_ids: HashSet<&str> = after.iter().map(|a| a.identity.as_str()).collect();
     let has_attrs = |a: &FoundAtom| {
@@ -457,25 +627,37 @@ pub(crate) fn carry_over(txn: &mut TransactionMut, before: &[FoundAtom], after: 
             .iter()
             .any(|(k, _)| !k.starts_with(RESERVED_PREFIX))
     };
-    let mut removed: Vec<Option<&FoundAtom>> = before
-        .iter()
-        .filter(|a| has_attrs(a) && !after_ids.contains(a.identity.as_str()))
-        .map(Some)
-        .collect();
-    if removed.is_empty() {
-        return;
-    }
-    for a in after
-        .iter()
-        .filter(|a| !before_ids.contains(a.identity.as_str()))
-    {
-        let Some(slot) = removed
-            .iter_mut()
-            .find(|r| r.is_some_and(|r| r.merged == a.merged))
-        else {
+    let mut writes = Vec::new();
+    for (a, m) in after.iter().zip(model_after) {
+        if before_ids.contains(a.identity.as_str()) {
+            continue; // a char the change kept
+        }
+        if model_after
+            .iter()
+            .filter(|o| o.node.same_ref(&m.node))
+            .count()
+            != 1
+        {
+            continue;
+        }
+        let mut sources = before
+            .iter()
+            .zip(model_before)
+            .filter(|(_, o)| o.node.same_ref(&m.node));
+        let (Some((gone, _)), None) = (sources.next(), sources.next()) else {
             continue;
         };
-        let gone = slot.take().expect("matched a live slot");
-        write_value(txn, &a.text, a.u16, &a.value, Some(&gone.identity));
+        if after_ids.contains(gone.identity.as_str()) || !has_attrs(gone) {
+            continue;
+        }
+        writes.push((
+            a.text.clone(),
+            a.u16,
+            gone.merged.clone(),
+            gone.identity.clone(),
+        ));
+    }
+    for (text, u16, value, identity) in writes {
+        write_value(txn, &text, u16, &value, Some(&identity));
     }
 }

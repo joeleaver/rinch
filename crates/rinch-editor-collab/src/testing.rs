@@ -70,6 +70,14 @@ pub fn node_reads() -> u64 {
     crate::projection::node_reads()
 }
 
+/// How many entries of the shared document's per-attribute atom map (`atoms`) this
+/// **thread** has read so far. Take the difference across an operation: a remote
+/// integrate or a local change reads the map at most once (review of #1503, F4), so
+/// the count grows with the entries, never with the entries times the blocks.
+pub fn overlay_entry_reads() -> u64 {
+    crate::atoms::overlay_entry_reads()
+}
+
 /// yrs client ids are **53-bit** (`ClientID::new` debug-asserts it, and a release build
 /// would silently fold the high bits into the mask instead), so two ids that differ only
 /// above bit 52 would collide — the corruption this module exists to warn about. Reject

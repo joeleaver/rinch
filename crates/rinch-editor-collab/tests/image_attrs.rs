@@ -578,7 +578,7 @@ fn enter_anywhere_in_the_images_line_keeps_a_concurrent_alt_change() {
 }
 
 // An app's own attributes on an image: `board` (an id an app keeps for what it
-// draws over the picture) and `width`. They ride in the same `@atom` value as
+// draws over the picture) and `width`. They merge per attribute like
 // `src`/`alt`/`title`, so everything above holds for them too.
 
 impl Peer {
@@ -657,14 +657,12 @@ fn a_board_written_beside_a_peers_typing_is_kept() {
     }
 }
 
-/// **The same limitation as `alt` and `title`, pinned for `board`:** a peer's
-/// concurrent change to another attribute of the same image (here `alt`) and
-/// a first mark-up converge on one peer's image, whole. An app that mints a
-/// board id must expect the id it wrote to be lost this way (and the same for
-/// Enter before the image in its line, above), and so must not count on the
-/// attribute being there because it wrote it.
+/// A first mark-up (`board`) and a peer's concurrent change of another attribute
+/// of the same image (here `alt`) are both kept: an image's attrs merge per
+/// attribute (#1503). Before that they merged as one value, and one peer's image was
+/// kept whole.
 #[test]
-fn a_board_and_a_concurrent_alt_change_keep_one_peers_image() {
+fn a_board_and_a_concurrent_alt_change_both_survive() {
     for ids in ID_ORDERS {
         let schema = Rc::new(Schema::starter_kit());
         let (mut a, mut b) = two_peers(&schema, line(&schema, SRC, "old alt", ""), ids);
@@ -673,12 +671,11 @@ fn a_board_and_a_concurrent_alt_change_keep_one_peers_image() {
         sync(&mut a, &mut b);
         let (_, alt, _) = converged(&a, &b, &schema);
         let (board, _) = a.board_and_width();
-        let expected = if ids.0 > ids.1 {
-            ("b1", "old alt")
-        } else {
-            ("", "new alt")
-        };
-        assert_eq!((board.as_str(), alt.as_str()), expected, "ids {ids:?}");
+        assert_eq!(
+            (board.as_str(), alt.as_str()),
+            ("b1", "new alt"),
+            "ids {ids:?}"
+        );
     }
 }
 

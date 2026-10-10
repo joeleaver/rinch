@@ -40,11 +40,11 @@ use yrs::{Array, Transact};
 
 use rinch_editor_core::{Node, Transaction};
 
-use crate::atoms::{carry_over, find_atoms};
+use crate::atoms::{carry_over, find_atoms, overlay_scope};
 use crate::error::{CollabError, Result};
 use crate::projection::{
-    CollabDoc, RawIndex, common_runs, identity_runs, insert_node, read_node, read_node_data,
-    visible_indices, write_child_diff,
+    CollabDoc, RawIndex, common_runs, identity_runs, insert_node, model_atom_scope, model_atoms,
+    read_node, read_node_data, visible_indices, write_child_diff,
 };
 
 impl CollabDoc {
@@ -64,6 +64,9 @@ impl CollabDoc {
     /// Project an arbitrary `before → after` document change (also the building block
     /// for loading content). Both must be within the projected scope.
     pub fn project_change(&mut self, before: &Node, after: &Node) -> Result<()> {
+        // The `atoms` map is read at most once for the whole change (review of #1503,
+        // F4).
+        let _overlay = overlay_scope();
         // A CRDT holding zero blocks is a legitimate converged state (issue #192: two
         // peers deleting *different* blocks concurrently deletes every block), and the
         // model cannot mirror it — the schema requires at least one block, so `to_doc`
@@ -125,9 +128,9 @@ impl CollabDoc {
         // collaborating, a re-base on the CRDT's read-back): there the runs are taken by
         // the blocks' values, as a nested list does (`reconcile_child_list`).
         let mut runs = identity_runs(before, after);
-        if runs == (0, 0)
-            && !(0..an).any(|j| (0..bn).any(|i| before.child(i).same_ref(after.child(j))))
-        {
+        let shares_a_block = runs != (0, 0)
+            || (0..an).any(|j| (0..bn).any(|i| before.child(i).same_ref(after.child(j))));
+        if !shares_a_block {
             runs = common_runs(bn, an, |i, j| before.child(i) == after.child(j));
         }
         let (prefix, suffix) = runs;
@@ -163,9 +166,21 @@ impl CollabDoc {
             non_inclusive_marks(before.child(prefix + k), &mut per_char);
             non_inclusive_marks(after.child(prefix + k), &mut per_char);
         }
-        // Whether the change touches a block holding an inline atom: then the atoms the
-        // change removes are read before it (`atoms::carry_over`).
-        let moves_atoms = (prefix..prefix + pre_mid).any(|i| holds_inline_atom(before.child(i)));
+        // The inline atoms of the blocks the change touches, before and after it. An
+        // atom in both (`Node::same_ref`) is one the change kept or moved: then the
+        // CRDT's atoms are read on both sides of the write, so one it moved keeps its
+        // identity (`atoms::carry_over`).
+        let mut model_before = Vec::new();
+        for i in prefix..prefix + pre_mid {
+            model_atoms(before.child(i), &mut model_before);
+        }
+        let mut model_after = Vec::new();
+        for i in prefix..prefix + post_mid {
+            model_atoms(after.child(i), &mut model_after);
+        }
+        let moves_atoms = model_after
+            .iter()
+            .any(|a| model_before.iter().any(|b| b.node.same_ref(&a.node)));
 
         // Pre-pass gate 3, CRDT side (issue #194): read back every CRDT node the write
         // phase will read — the blocks being reconciled in place, recursively (a
@@ -194,7 +209,7 @@ impl CollabDoc {
                 let end = raw.get(prefix + pre_mid).unwrap_or(len);
                 (start..end, find_atoms(&txn, &self.content, start..end))
             } else {
-                (0..0, Vec::new())
+                (0..0, None)
             }
         };
 
@@ -214,6 +229,15 @@ impl CollabDoc {
         // the extra pre blocks deleted (a join, a block deletion) — the same child-list
         // write a container's own content gets, addressed through the raw indices.
         let content = self.content.clone();
+        // Whether `before` and `after` are one document edited (they share a block, or
+        // an inline node of the blocks the change touches) rather than two documents
+        // (a load, a re-base): only then does the model say which atom is which.
+        let related = shares_a_block
+            || (prefix..prefix + pre_mid).any(|i| {
+                (prefix..prefix + post_mid)
+                    .any(|j| shares_an_inline_node(before.child(i), after.child(j)))
+            });
+        let _atoms = model_atom_scope(&model_before, &model_after, related);
         let mut txn = self.doc.transact_mut();
         write_child_diff(
             &mut txn,
@@ -227,10 +251,17 @@ impl CollabDoc {
         // An atom this change moved (Enter before an image deletes its char and writes
         // a new one in the new block) keeps its identity, so a peer's concurrent change
         // of its attrs applies to it where it now is.
-        if !atoms_before.is_empty() {
+        if let Some(atoms_before) = atoms_before {
             let end = (span.end + post_mid as u32).saturating_sub(pre_mid as u32);
-            let atoms_after = find_atoms(&txn, &content, span.start..end);
-            carry_over(&mut txn, &atoms_before, &atoms_after);
+            if let Some(atoms_after) = find_atoms(&txn, &content, span.start..end) {
+                carry_over(
+                    &mut txn,
+                    &atoms_before,
+                    &atoms_after,
+                    &model_before,
+                    &model_after,
+                );
+            }
         }
         Ok(())
     }
@@ -256,13 +287,23 @@ impl CollabDoc {
     }
 }
 
-/// Whether `node` holds an inline atom anywhere below it.
-fn holds_inline_atom(node: &Node) -> bool {
-    (0..node.child_count()).any(|i| {
-        let child = node.child(i);
-        let typ = child.node_type();
-        (!typ.is_block() && typ.is_atom() && typ.is_leaf()) || holds_inline_atom(child)
-    })
+/// Whether two blocks hold one inline node (`Node::same_ref`) anywhere below them: a
+/// text run or an atom an edit kept.
+fn shares_an_inline_node(a: &Node, b: &Node) -> bool {
+    fn inline(n: &Node, out: &mut Vec<Node>) {
+        for i in 0..n.child_count() {
+            let c = n.child(i);
+            if c.node_type().is_block() {
+                inline(c, out);
+            } else {
+                out.push(c.clone());
+            }
+        }
+    }
+    let (mut x, mut y) = (Vec::new(), Vec::new());
+    inline(a, &mut x);
+    inline(b, &mut y);
+    x.iter().any(|n| y.iter().any(|m| n.same_ref(m)))
 }
 
 /// Add the name of every non-inclusive mark ([`MarkSpec::inclusive`] `false`, the

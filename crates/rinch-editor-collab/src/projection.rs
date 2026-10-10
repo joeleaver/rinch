@@ -74,7 +74,7 @@
 //! yrs behaviour that forces that second rule is written down.
 //!
 //! **An atom's attrs merge per attribute** (`crate::atoms`). The `@atom` value is what
-//! the char was *written* with, and it is not rewritten to change an attr: a change of
+//! the char was *written* with, and its attrs are not rewritten to change one: a change of
 //! one attr is one entry of the root map `atoms`, keyed by the atom's identity (its
 //! char's yrs id) and the attr, laid over the value on read:
 //!
@@ -90,19 +90,27 @@
 //! attribute of a *block* (a heading's `level`) was already per key: a block's `attrs`
 //! is a map of its own (#193).
 //!
-//! A local change that **moves** an atom (Enter before an image in its line, Backspace
-//! joining it into the line above, a drag) deletes its char and writes a new one, since
-//! yrs has no move; the new char's `@atom` value names the identity it takes over under
-//! the reserved key `@id`, so a peer's concurrent change of the atom's attrs reaches it
-//! where it now is. Before this, a split anywhere before an atom lost such a change
-//! (#861's mechanism). A mark change on a moved *text* char is still lost that way.
+//! Which char is which atom is the model's answer, not the text's: the text diff
+//! matches an atom only with the same atom (the editor keeps an unchanged node's `Rc`;
+//! [`text_splice_bounds`]), so a picture inserted right before another never takes that
+//! other's identity. A local change that **moves** an atom (Enter before an image in
+//! its line, Backspace joining it into the line above, a drag) deletes its char and
+//! writes a new one, since yrs has no move; the new char's `@atom` value names the
+//! identity it takes over under the reserved key `@id`, so a peer's concurrent change of
+//! the atom's attrs reaches it where it now is. Before this, a split anywhere before an
+//! atom lost such a change (#861's mechanism). A mark change on a moved *text* char is
+//! still lost that way, and so is an atom's attr change when the model cannot say which
+//! atom moved where (in a table, or in a load or a re-base, which share no node).
 //!
-//! **Compatibility.** An atom only ever inserted is written exactly as before (no `@id`,
-//! nothing in `atoms`), and a document written before reads unchanged: an atom with no
-//! `@id` is identified by its char, so its attrs merge per attribute from its first
-//! change on. A build from before this cannot see an `atoms` entry, though (it reads
-//! the attrs the char was written with), and refuses an `@id` (`unknown reserved key`),
-//! which poisons its session (#196): the inline atoms' **coordinated upgrade** again.
+//! **Compatibility.** An atom only ever inserted (typed around, marked, deleted) is
+//! written exactly as before (no `@id`, nothing in `atoms`), and a document written
+//! before reads unchanged: an atom with no `@id` is identified by its char, so its attrs
+//! merge per attribute from its first change on. That first change also stamps the
+//! atom's value with `@id` (its own identity), and a move writes `@id` too: a build from
+//! before refuses an `@id` (`unknown reserved key`), which poisons its session (#196),
+//! rather than read the attrs the char was written with and miss the entries. The inline
+//! atoms' **coordinated upgrade** again; `crate::atoms` has the one concurrent case where
+//! an older build still misses an entry silently.
 //!
 //! Wire-compatibly this is **additive**: [`FORMAT_TAG`] does not move, which also means
 //! it needs a **coordinated upgrade**, as the leaf block atoms above do. An older reader
@@ -225,7 +233,8 @@
 //! tile a rectangle (a ragged row, overlapping spans), and an embedded value in a
 //! block's text, which is not how this projection writes an atom.
 
-use std::collections::{BTreeSet, HashMap};
+use std::cell::RefCell;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use yrs::types::Attrs as YAttrs;
@@ -238,7 +247,9 @@ use yrs::{
 
 use rinch_editor_core::{AttrValue, Attrs, Fragment, Mark, Node, NodeType, Schema};
 
-use crate::atoms::{AtomChar, merged_atoms, scan_text, write_atom_change};
+use crate::atoms::{
+    AtomChar, ModelAtom, merged_atoms, overlay_scope, scan_text, write_atom_change,
+};
 use crate::error::{CollabError, Result};
 use crate::table::{
     OversizedTable, TABLE, TableData, is_table_map, lock_oversized, placeholder_reads,
@@ -249,7 +260,7 @@ use crate::table::{
 pub(crate) const CONTENT: &str = "content";
 pub(crate) const TYPE: &str = "type";
 pub(crate) const ATTRS: &str = "attrs";
-const TEXT: &str = "text";
+pub(crate) const TEXT: &str = "text";
 /// The root map holding the projection-format marker, and its one key.
 const META: &str = "meta";
 const FORMAT: &str = "format";
@@ -729,6 +740,7 @@ impl CollabDoc {
             // (and in the join gate, nowhere else), and the tables read so are what
             // [`CollabDoc::oversized_tables`] answers from now on.
             let placeholders = placeholder_reads();
+            let _overlay = overlay_scope();
             let txn = self.doc.transact();
             let mut blocks = Vec::new();
             for (_, nd) in read_children(&txn, &self.content)? {
@@ -1072,7 +1084,7 @@ pub(crate) fn reconcile_node(
         NodeData::Block(b) => {
             let text = block_text(txn, &node)
                 .ok_or_else(|| CollabError::schema("reconcile_node: missing text"))?;
-            reconcile_text(txn, &text, b, per_char)
+            reconcile_text(txn, &text, b, per_char, model)
         }
         NodeData::Container { children, .. } => {
             let content = node_content(txn, &node)
@@ -1099,19 +1111,30 @@ fn reconcile_text(
     text: &TextRef,
     b: &BlockData,
     per_char: &BTreeSet<String>,
+    model: Model<'_>,
 ) -> Result<()> {
     let (old, old_marks) = read_text_data(txn, text)?;
     let mut target_marks = b.marks.clone();
     target_marks.sort_by(|a, b| (a.start, a.end, &a.name).cmp(&(b.start, b.end, &b.name)));
 
-    let spliced = old != b.text;
+    let o: Vec<char> = old.chars().collect();
+    let n: Vec<char> = b.text.chars().collect();
+    let bounds = text_splice_bounds(&o, &old_marks, &n, &target_marks, model);
+    let (prefix, suffix) = bounds;
+    let spliced = prefix + suffix < o.len() || prefix + suffix < n.len();
     if spliced {
-        if inserts_after_non_inclusive(&old, &old_marks, &b.text, &target_marks, per_char) {
-            splice_min_with_marks(txn, text, &old, &b.text, &target_marks);
+        if inserts_after_non_inclusive(&o, &old_marks, &n, &target_marks, per_char, bounds) {
+            splice_min_with_marks(txn, text, &o, &n, &target_marks, bounds);
         } else {
-            splice_min(txn, text, &old, &b.text);
+            splice_min(txn, text, &o, &n, bounds);
         }
     }
+    // The chars the splice inserted, in the new text's offsets.
+    let inserted = if spliced {
+        prefix..n.len() - suffix
+    } else {
+        0..0
+    };
 
     // Marks must be compared *after* the splice: yrs has already shifted existing
     // formatting ranges with the text, and text inserted **inside** a formatted run
@@ -1125,9 +1148,207 @@ fn reconcile_text(
         (old, old_marks)
     };
     if current_marks != target_marks {
-        resync_marks(txn, text, &current, &current_marks, &target_marks, per_char);
+        resync_marks(
+            txn,
+            text,
+            &current,
+            &current_marks,
+            &target_marks,
+            per_char,
+            inserted,
+        );
     }
     Ok(())
+}
+
+/// Whether an atom changed in place to another `src` is still the same atom
+/// ([`text_splice_bounds`]). `true`: a `src` change is an attr change like any other,
+/// and keeps the identity (a peer's concurrent change of another attr is kept), but a
+/// picture pasted over a selected one in one step is then taken for it as well (a
+/// peer's concurrent change of the old picture shows on the new one). `false`: an
+/// atom whose `src` changed is a new atom, so a paste-over never takes the old one's
+/// identity, and a concurrent change of another attr of a picture whose `src` changed
+/// is lost. The model cannot tell the two edits apart (both put a new node where the
+/// old one was).
+const SRC_CHANGE_KEEPS_IDENTITY: bool = true;
+
+/// What [`model_atom_scope`] holds: the keys ([`node_key`]) of every inline atom in
+/// the blocks a local change touches, before and after it, and whether the two
+/// documents are one document edited (`related`).
+type ModelAtomSets = (HashSet<usize>, HashSet<usize>, bool);
+
+thread_local! {
+    /// While a [`model_atom_scope`] is held: the change's [`ModelAtomSets`].
+    static MODEL_ATOMS: RefCell<Option<ModelAtomSets>> = const { RefCell::new(None) };
+}
+
+/// While the returned guard lives, [`text_splice_bounds`] asks whether an atom is in
+/// the change at all against these sets (the whole change's, so an atom moved to
+/// another block counts as kept) rather than against its own block's, and trusts the
+/// model's identities only when `related` (see [`text_splice_bounds`]).
+pub(crate) fn model_atom_scope(
+    before: &[ModelAtom],
+    after: &[ModelAtom],
+    related: bool,
+) -> ModelAtomScope {
+    let set = |v: &[ModelAtom]| v.iter().map(|a| node_key(&a.node)).collect();
+    let prev = MODEL_ATOMS.with(|c| c.replace(Some((set(before), set(after), related))));
+    ModelAtomScope(prev)
+}
+
+/// The guard [`model_atom_scope`] returns; restores the previous sets on drop.
+pub(crate) struct ModelAtomScope(Option<ModelAtomSets>);
+
+impl Drop for ModelAtomScope {
+    fn drop(&mut self) {
+        let prev = self.0.take();
+        MODEL_ATOMS.with(|c| *c.borrow_mut() = prev);
+    }
+}
+
+/// A key for a model node's identity: two nodes have one key exactly when they are
+/// `Node::same_ref`, while both live. (The address of the attrs inside the node's
+/// shared allocation; the model exposes no pointer of its own.)
+fn node_key(node: &Node) -> usize {
+    std::ptr::from_ref(node.attrs()) as usize
+}
+
+/// The inline atoms of `node` in document order, each with its projected value,
+/// descending through containers but not into tables (see `atoms::find_atoms`).
+pub(crate) fn model_atoms(node: &Node, out: &mut Vec<ModelAtom>) {
+    if node.type_name() == TABLE {
+        return;
+    }
+    if node.is_textblock() {
+        for i in 0..node.child_count() {
+            let child = node.child(i);
+            if child.text().is_none()
+                && is_inline_atom(child.node_type())
+                && let Ok(value) = atom_attrs(child)
+            {
+                out.push(ModelAtom {
+                    node: child.clone(),
+                    value,
+                });
+            }
+        }
+        return;
+    }
+    for i in 0..node.child_count() {
+        model_atoms(node.child(i), out);
+    }
+}
+
+/// The common leading and trailing runs [`splice_min`] keeps when it turns `o` into
+/// `n`: chars that are equal, where an inline atom's placeholder equals another only
+/// when it is **the same atom** (review of #1503, F2). Every atom is the same U+FFFC,
+/// so a diff by chars alone lines a picture inserted right before another up with that
+/// other: the old char would hold the new picture and a new char the old one, and the
+/// identity (the char's id), with every attr a peer changes under it, would go to the
+/// wrong picture.
+///
+/// The same atom is told from the model (`model`, the block before and after): the
+/// editor keeps the `Rc` of an atom an edit does not rebuild, so an atom `same_ref` to
+/// one before it is that atom. An atom changed in place (its attrs set: a new node) is
+/// `same_ref` to nothing; it is taken to be the atom at its place before when that one
+/// is `same_ref` to no atom after the change either and both have one type: an attr
+/// change, kept in place (`src` included: see [`SRC_CHANGE_KEEPS_IDENTITY`], which
+/// says what that costs when a picture is pasted over a selected one). Without a
+/// model that reads as the CRDT's text, or when the before and after share no node (a
+/// load, a re-base: two documents, not one edited), an atom matches only one with an
+/// equal value: an attr change there replaces the atom (a peer's concurrent change of
+/// it is lost), and two equal copies of one picture cannot be told apart.
+fn text_splice_bounds(
+    o: &[char],
+    old_marks: &[SpanMark],
+    n: &[char],
+    target: &[SpanMark],
+    model: Model<'_>,
+) -> (usize, usize) {
+    if !o.contains(&ATOM_PLACEHOLDER) || !n.contains(&ATOM_PLACEHOLDER) {
+        return common_runs(o.len(), n.len(), |i, j| o[i] == n[j]);
+    }
+    let values = |marks: &[SpanMark], len: usize| -> Vec<Option<Attrs>> {
+        let mut v = vec![None; len];
+        for m in marks.iter().filter(|m| m.name == ATOM_MARK) {
+            for slot in &mut v[m.start.min(len)..m.end.min(len)] {
+                *slot = Some(m.attrs.clone());
+            }
+        }
+        v
+    };
+    let (ov, nv) = (values(old_marks, o.len()), values(target, n.len()));
+    // Each placeholder's model node, when the model's block reads as this text.
+    let nodes = |block: &Node, chars: &[char]| -> Option<Vec<Option<Node>>> {
+        let data = read_block(block).ok()?;
+        if data.text.chars().ne(chars.iter().copied()) {
+            return None;
+        }
+        let mut atoms = Vec::new();
+        model_atoms(block, &mut atoms);
+        let mut atoms = atoms.into_iter();
+        let mut out = Vec::with_capacity(chars.len());
+        for (i, c) in chars.iter().enumerate() {
+            let is_atom = *c == ATOM_PLACEHOLDER
+                && data
+                    .marks
+                    .iter()
+                    .any(|m| m.name == ATOM_MARK && m.start <= i && i < m.end);
+            out.push(if is_atom {
+                Some(atoms.next()?.node)
+            } else {
+                None
+            });
+        }
+        Some(out)
+    };
+    let scoped = MODEL_ATOMS.with(|c| c.borrow().clone());
+    // Two documents that share no node (a load, a re-base) say nothing about which
+    // atom is which: every atom would be "changed in place".
+    let related = |before: &Node, after: &Node| match &scoped {
+        Some((_, _, related)) => *related,
+        None => (0..before.child_count())
+            .any(|i| (0..after.child_count()).any(|j| before.child(i).same_ref(after.child(j)))),
+    };
+    let pair = match model {
+        Some((before, after)) if related(before, after) => nodes(before, o).zip(nodes(after, n)),
+        _ => None,
+    };
+    let (before_set, after_set): (HashSet<usize>, HashSet<usize>) = match (scoped, &pair) {
+        (Some((before, after, _)), _) => (before, after),
+        (None, Some((on, nn))) => (
+            on.iter().flatten().map(node_key).collect(),
+            nn.iter().flatten().map(node_key).collect(),
+        ),
+        (None, None) => Default::default(),
+    };
+    let same_place = |a: &Attrs, b: &Attrs| {
+        a.get(ATOM_TYPE) == b.get(ATOM_TYPE)
+            && (SRC_CHANGE_KEEPS_IDENTITY || a.get("src") == b.get("src"))
+    };
+    common_runs(o.len(), n.len(), |i, j| {
+        if o[i] != n[j] {
+            return false;
+        }
+        if o[i] != ATOM_PLACEHOLDER {
+            return true;
+        }
+        let (Some(a), Some(b)) = (&ov[i], &nv[j]) else {
+            return ov[i].is_none() && nv[j].is_none();
+        };
+        match &pair {
+            Some((on, nn)) => match (&on[i], &nn[j]) {
+                (Some(p), Some(q)) => {
+                    p.same_ref(q)
+                        || (!after_set.contains(&node_key(p))
+                            && !before_set.contains(&node_key(q))
+                            && same_place(a, b))
+                }
+                _ => false,
+            },
+            None => a == b,
+        }
+    })
 }
 
 /// The model's before and after of the node being reconciled, when the caller has
@@ -1319,14 +1540,18 @@ pub(crate) fn read_children<T: ReadTxn>(txn: &T, list: &ArrayRef) -> Result<Vec<
     Ok(out)
 }
 
-/// Minimal common-prefix/suffix splice: replace only the changed middle so unchanged
-/// characters keep their CRDT identity (and merge across peers). yrs has no
+/// Minimal common-prefix/suffix splice: replace only the changed middle (between the
+/// `(prefix, suffix)` runs [`text_splice_bounds`] keeps) so unchanged characters keep
+/// their CRDT identity (and merge across peers). yrs has no
 /// `update_text` equivalent, so the diff is computed here and applied as a
 /// remove-then-insert pair, converted from char offsets into UTF-16 code units.
-pub(crate) fn splice_min(txn: &mut TransactionMut, text: &TextRef, old: &str, new: &str) {
-    let o: Vec<char> = old.chars().collect();
-    let n: Vec<char> = new.chars().collect();
-    let (prefix, suffix) = splice_bounds(&o, &n);
+pub(crate) fn splice_min(
+    txn: &mut TransactionMut,
+    text: &TextRef,
+    o: &[char],
+    n: &[char],
+    (prefix, suffix): (usize, usize),
+) {
     let del = o.len() - prefix - suffix;
     let ins: String = n[prefix..n.len() - suffix].iter().collect();
 
@@ -1341,23 +1566,6 @@ pub(crate) fn splice_min(txn: &mut TransactionMut, text: &TextRef, old: &str, ne
     if !ins.is_empty() {
         text.insert(txn, at, &ins);
     }
-}
-
-/// The `(prefix, suffix)` [`splice_min`] keeps: the common leading and trailing runs of
-/// `o` and `n`, in chars, never overlapping.
-fn splice_bounds(o: &[char], n: &[char]) -> (usize, usize) {
-    let mut prefix = 0;
-    while prefix < o.len() && prefix < n.len() && o[prefix] == n[prefix] {
-        prefix += 1;
-    }
-    let mut suffix = 0;
-    while suffix < o.len() - prefix
-        && suffix < n.len() - prefix
-        && o[o.len() - 1 - suffix] == n[n.len() - 1 - suffix]
-    {
-        suffix += 1;
-    }
-    (prefix, suffix)
 }
 
 /// Whether the splice turning `old` into `new` inserts text right after a char that
@@ -1375,18 +1583,16 @@ fn splice_bounds(o: &[char], n: &[char]) -> (usize, usize) {
 /// into the image's `@atom` range reads back as a second image (measured) — the
 /// insert-then-clear path of [`resync_marks`] is right for an atom.
 fn inserts_after_non_inclusive(
-    old: &str,
+    o: &[char],
     old_marks: &[SpanMark],
-    new: &str,
+    n: &[char],
     target: &[SpanMark],
     per_char: &BTreeSet<String>,
+    (prefix, suffix): (usize, usize),
 ) -> bool {
     if per_char.is_empty() {
         return false;
     }
-    let o: Vec<char> = old.chars().collect();
-    let n: Vec<char> = new.chars().collect();
-    let (prefix, suffix) = splice_bounds(&o, &n);
     if prefix == 0 || n.len() - prefix - suffix == 0 {
         return false;
     }
@@ -1435,13 +1641,11 @@ fn inserts_after_non_inclusive(
 fn splice_min_with_marks(
     txn: &mut TransactionMut,
     text: &TextRef,
-    old: &str,
-    new: &str,
+    o: &[char],
+    n: &[char],
     target: &[SpanMark],
+    (prefix, suffix): (usize, usize),
 ) {
-    let o: Vec<char> = old.chars().collect();
-    let n: Vec<char> = new.chars().collect();
-    let (prefix, suffix) = splice_bounds(&o, &n);
     let del = o.len() - prefix - suffix;
     let mut at: u32 = o[..prefix].iter().map(|c| c.len_utf16() as u32).sum();
     let del_u16: u32 = o[prefix..prefix + del]
@@ -1544,9 +1748,10 @@ fn resync_marks(
     current_marks: &[SpanMark],
     target: &[SpanMark],
     per_char: &BTreeSet<String>,
+    inserted: std::ops::Range<usize>,
 ) {
     let is_per_char = |name: &str| name == ATOM_MARK || per_char.contains(name);
-    resync_atoms(txn, text, current, current_marks, target);
+    resync_atoms(txn, text, current, current_marks, target, inserted);
     for name in per_char {
         resync_per_char(txn, text, current, current_marks, target, name);
     }
@@ -1648,19 +1853,22 @@ fn resync_per_char(
 ///
 /// * A char that carries `@atom` and should carry none is cleared, as any per-char
 ///   attribute is (a char typed right after an image inherits the image's value).
-/// * A char that should be an atom and carries no `@atom` (a placeholder just
-///   inserted) is written with its whole value, which is the atom's identity from then
-///   on.
-/// * A char that is an atom of the same type with other attrs gets one `atoms` entry
-///   per attr that changed, so a peer's concurrent change of another attr is kept.
-/// * Anything else (another type of atom, a value the char inherited) is rewritten
-///   whole under a fresh identity.
+/// * A char the splice inserted (`inserted`, in `current`'s offsets) that should be an
+///   atom is written with its whole value and nothing else (no `@id`, no `atoms`
+///   entry), whatever it inherited: the shape a build from before per-attribute
+///   merging writes and reads. Its char is its identity from then on.
+/// * A char that should be an atom and carries no `@atom` is written the same way.
+/// * A char the diff kept as the same atom ([`text_splice_bounds`]) with other attrs
+///   gets one `atoms` entry per attr that changed, so a peer's concurrent change of
+///   another attr is kept.
+/// * Anything else (another type of atom) is rewritten whole under a fresh identity.
 fn resync_atoms(
     txn: &mut TransactionMut,
     text: &TextRef,
     current: &str,
     current_marks: &[SpanMark],
     target: &[SpanMark],
+    inserted: std::ops::Range<usize>,
 ) {
     if !current_marks
         .iter()
@@ -1702,7 +1910,18 @@ fn resync_atoms(
         let Some(want) = tgt[i].as_ref() else {
             continue;
         };
+        let whole = || SpanMark {
+            name: ATOM_MARK.into(),
+            attrs: want.clone(),
+            start: i,
+            end: i + 1,
+        };
         match cur[i].as_ref() {
+            // A char this change inserted is written whole, whatever it inherited from
+            // the atom before it (yrs extends a range over an insert at its end): a new
+            // atom is written exactly as before per-attribute merging, so a build from
+            // before it reads it (review of #1503, F3).
+            _ if inserted.contains(&i) => apply_mark(txn, text, current, &whole()),
             Some(have) if have == want => {}
             None => apply_mark(
                 txn,

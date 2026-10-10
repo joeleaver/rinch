@@ -595,7 +595,10 @@ fn raw_atom_entries(bytes: &[u8]) -> Vec<(String, yrs::Any)> {
 /// A new image is written exactly as a build before this change writes it (one
 /// `@atom` value, its type and attrs, nothing else), so such a build reads every
 /// document whose images were only inserted. A change of one attr is one `atoms`
-/// entry and leaves that value alone; a move carries `@id`.
+/// entry, and the first one stamps the value with `@id` = the image's own char id (the
+/// identity the entry is under), so a build from before refuses the image loudly
+/// instead of silently missing the entry; a move carries `@id` and the moved image's
+/// merged attrs.
 #[test]
 fn the_wire_a_new_image_a_changed_attr_and_a_moved_image() {
     let s = schema(true);
@@ -609,24 +612,38 @@ fn the_wire_a_new_image_a_changed_attr_and_a_moved_image() {
 
     a.set("board", "b1");
     let after = a.session.snapshot();
-    assert_eq!(
-        raw_atoms(&after, 0)[1].1,
-        Some(atom.clone()),
-        "the value is not rewritten"
-    );
     let entries = raw_atom_entries(&after);
     assert_eq!(entries.len(), 1, "{entries:?}");
     assert!(entries[0].0.ends_with("/board"), "{entries:?}");
     assert_eq!(entries[0].1, yrs::Any::String(Arc::from("b1")));
+    let id = entries[0].0.trim_end_matches("/board").to_string();
+    let mut stamped = atom.clone();
+    stamped.insert("@id".into(), yrs::Any::String(Arc::from(id.as_str())));
+    assert_eq!(
+        raw_atoms(&after, 0)[1].1,
+        Some(stamped),
+        "the value is stamped with its own identity, its attrs untouched"
+    );
+    // A second change writes an entry and nothing else.
+    a.set("alt", "second");
+    assert_eq!(raw_atom_entries(&a.session.snapshot()).len(), 2);
+    assert_eq!(
+        raw_atoms(&a.session.snapshot(), 0)[1].1,
+        raw_atoms(&after, 0)[1].1
+    );
 
     // Enter right before the image moves it into a new block: its new char carries
     // the identity the entry is under.
     a.enter_at(3);
     let moved = raw_atoms(&a.session.snapshot(), 1);
     let value = moved[0].1.clone().expect("the moved image's value");
-    let id = entries[0].0.trim_end_matches("/board");
-    assert_eq!(value.get("@id"), Some(&yrs::Any::String(Arc::from(id))));
+    assert_eq!(
+        value.get("@id"),
+        Some(&yrs::Any::String(Arc::from(id.as_str())))
+    );
+    assert_eq!(value.get("board"), Some(&yrs::Any::String(Arc::from("b1"))));
     assert_eq!(attr(&images(&a.state.doc)[0], "board"), "b1");
+    assert_eq!(attr(&images(&a.state.doc)[0], "alt"), "second");
 }
 
 /// A `hard_break` has no attrs a peer could change, so a move carries nothing: its
@@ -648,4 +665,368 @@ fn a_moved_hard_break_carries_no_identity() {
     let moved = raw_atoms(&a.session.snapshot(), 1);
     let value = moved[0].1.clone().expect("the moved break's value");
     assert_eq!(value.keys().collect::<Vec<_>>(), vec!["@type"], "{moved:?}");
+}
+
+// --- review of #1503: identity follows the atom, never the text diff ---------------
+
+fn insert_node_at(p: &mut Peer, at: usize, n: Node) {
+    p.local(|tr| {
+        tr.replace(at, at, Slice::new(Fragment::from_node(n), 0, 0))
+            .unwrap();
+    });
+}
+
+fn srcs_and_boards(imgs: &[Attrs]) -> Vec<(String, String)> {
+    imgs.iter()
+        .map(|i| (attr(i, "src"), attr(i, "board")))
+        .collect()
+}
+
+/// A plain Backspace joining a line that starts with a picture onto a line that ends
+/// with one moves the second picture's char right after the first's, where yrs gives
+/// it the first's `@atom` value. The moved char must read as the second picture, on
+/// every peer (review of #1503, F1: it read as a copy of the first).
+#[test]
+fn a_join_after_an_image_keeps_the_moved_images_attrs() {
+    let s = schema(true);
+    let doc = s
+        .branch(
+            "doc",
+            Fragment::from_children(vec![
+                para(&s, vec![s.text("ab").unwrap(), image(&s, "one", "first")]),
+                para(&s, vec![image(&s, "two", "second"), s.text("cd").unwrap()]),
+            ]),
+        )
+        .unwrap();
+    let (mut a, mut b) = two_peers(&s, doc, (11, 22));
+    a.set_nth(1, "board", AttrValue::from("on two"));
+    sync(&mut a, &mut b);
+    a.local(|tr| {
+        tr.delete(4, 6).unwrap();
+    });
+    assert_eq!(
+        images(&a.state.doc),
+        images(&a.session.projected_doc(&s).unwrap()),
+        "model != project(model) after a local join"
+    );
+    sync(&mut a, &mut b);
+    let imgs = converged(&a, &b, &s);
+    assert_eq!(
+        srcs_and_boards(&imgs),
+        vec![
+            ("one".to_string(), String::new()),
+            ("two".to_string(), "on two".to_string())
+        ]
+    );
+    assert_eq!(attr(&imgs[1], "alt"), "second");
+}
+
+/// A picture inserted right before another keeps that other's identity where it is:
+/// a peer's concurrent `board` on the other stays on it (review of #1503, F2: it went
+/// to the new picture).
+#[test]
+fn an_image_inserted_before_another_does_not_take_its_identity() {
+    for ids in ID_ORDERS {
+        let s = schema(true);
+        let line = para(
+            &s,
+            vec![
+                s.text("ab").unwrap(),
+                image(&s, "one", "x"),
+                image(&s, "two", "x"),
+                s.text("cd").unwrap(),
+            ],
+        );
+        let doc = s.branch("doc", Fragment::from_node(line)).unwrap();
+        let (mut a, mut b) = two_peers(&s, doc, ids);
+        a.set_nth(1, "board", AttrValue::from("on two"));
+        insert_node_at(&mut b, 4, image(&s, "new", "x"));
+        sync(&mut a, &mut b);
+        let imgs = converged(&a, &b, &s);
+        assert_eq!(
+            srcs_and_boards(&imgs),
+            vec![
+                ("one".to_string(), String::new()),
+                ("new".to_string(), String::new()),
+                ("two".to_string(), "on two".to_string())
+            ],
+            "{ids:?}"
+        );
+    }
+}
+
+/// Two pictures swapped in one transaction (the text unchanged): each keeps its own
+/// identity, so a peer's concurrent `board` stays on its picture.
+#[test]
+fn two_images_swapped_keep_their_identities() {
+    for ids in ID_ORDERS {
+        let s = schema(true);
+        let one = image(&s, "one", "x");
+        let two = image(&s, "two", "x");
+        let line = para(&s, vec![s.text("ab").unwrap(), one.clone(), two.clone()]);
+        let doc = s.branch("doc", Fragment::from_node(line)).unwrap();
+        let (mut a, mut b) = two_peers(&s, doc, ids);
+        a.set_nth(0, "board", AttrValue::from("on one"));
+        // B swaps them, keeping the nodes (a drag).
+        let (n1, n2) = {
+            let p = b.state.doc.child(0);
+            (p.child(1).clone(), p.child(2).clone())
+        };
+        b.local(|tr| {
+            tr.replace(
+                3,
+                5,
+                Slice::new(Fragment::from_children(vec![n2, n1]), 0, 0),
+            )
+            .unwrap();
+        });
+        sync(&mut a, &mut b);
+        let imgs = converged(&a, &b, &s);
+        assert_eq!(
+            srcs_and_boards(&imgs),
+            vec![
+                ("two".to_string(), String::new()),
+                ("one".to_string(), "on one".to_string())
+            ],
+            "{ids:?}"
+        );
+    }
+}
+
+/// A picture inserted right after another is written in the old shape (one `@atom`
+/// value, no `@id`, no `atoms` entry), though yrs hands its char the neighbour's value
+/// first (review of #1503, F3).
+#[test]
+fn an_image_inserted_right_after_an_image_is_written_in_the_old_shape() {
+    let s = schema(true);
+    let (mut a, _) = two_peers(&s, document(&s, false), (11, 22));
+    insert_node_at(&mut a, 4, image(&s, "other", "other alt"));
+    let snap = a.session.snapshot();
+    assert!(
+        raw_atom_entries(&snap).is_empty(),
+        "{:?}",
+        raw_atom_entries(&snap)
+    );
+    let chunks = raw_atoms(&snap, 0);
+    let values: Vec<_> = chunks.iter().filter_map(|(_, v)| v.clone()).collect();
+    assert_eq!(values.len(), 2, "{chunks:?}");
+    assert!(values.iter().all(|v| !v.contains_key("@id")), "{chunks:?}");
+    assert_eq!(
+        values[1].get("src"),
+        Some(&yrs::Any::String(Arc::from("other")))
+    );
+    // And after the first was stamped by an attr change.
+    a.set("alt", "edited");
+    insert_node_at(&mut a, 4, image(&s, "third", "t"));
+    let chunks = raw_atoms(&a.session.snapshot(), 0);
+    let third = chunks
+        .iter()
+        .filter_map(|(_, v)| v.clone())
+        .find(|v| v.get("src") == Some(&yrs::Any::String(Arc::from("third"))))
+        .expect("the third image");
+    assert!(!third.contains_key("@id"), "{chunks:?}");
+}
+
+/// A hard break (Shift+Enter) right after a picture carries no `@id`: a build from
+/// before per-attribute merging reads it (review of #1503, F3: it was poisoned).
+#[test]
+fn a_hard_break_right_after_an_image_carries_no_id() {
+    let s = schema(true);
+    let (mut a, _) = two_peers(&s, document(&s, false), (11, 22));
+    insert_node_at(
+        &mut a,
+        4,
+        s.branch("hard_break", Fragment::empty()).unwrap(),
+    );
+    let chunks = raw_atoms(&a.session.snapshot(), 0);
+    assert!(
+        !chunks
+            .iter()
+            .any(|(_, v)| v.as_ref().is_some_and(|m| m.contains_key("@id"))),
+        "{chunks:?}"
+    );
+}
+
+/// An attr removed in place (`SetNodeAttrStep` with no value) reads as absent on every
+/// peer: an `Undefined` entry, laid over a value that was written with the attr.
+#[test]
+fn an_attr_removed_in_place_reads_as_absent() {
+    let s = schema(true);
+    let img = s
+        .create_node(
+            "image",
+            Attrs::new()
+                .with("src", AttrValue::from(SRC))
+                .with("alt", AttrValue::from("old alt"))
+                .with("board", AttrValue::from("b1")),
+            Fragment::empty(),
+        )
+        .unwrap();
+    let line = para(&s, vec![s.text("ab").unwrap(), img, s.text("cd").unwrap()]);
+    let doc = s.branch("doc", Fragment::from_node(line)).unwrap();
+    let (mut a, mut b) = two_peers(&s, doc, (11, 22));
+    a.local(|tr| {
+        tr.step(Box::new(SetNodeAttrStep {
+            pos: 3,
+            attr: "board".into(),
+            value: None,
+        }))
+        .unwrap();
+    });
+    let entries = raw_atom_entries(&a.session.snapshot());
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0].1, yrs::Any::Undefined, "{entries:?}");
+    sync(&mut a, &mut b);
+    let imgs = converged(&a, &b, &s);
+    assert_eq!(imgs[0].get("board"), None, "{imgs:?}");
+    assert_eq!(attr(&imgs[0], "alt"), "old alt");
+}
+
+/// What the projection cannot tell from an attr change: a picture pasted over a
+/// selected picture in one step puts a new node where the old one was, as a `src`
+/// change does. With `SRC_CHANGE_KEEPS_IDENTITY` (`projection.rs`) it is taken for one,
+/// so a peer's concurrent `board` on the old picture shows on the new one. Pinned so a
+/// change of that switch is a decision, not an accident.
+#[test]
+fn a_picture_pasted_over_another_is_taken_for_an_attr_change() {
+    for ids in ID_ORDERS {
+        let s = schema(true);
+        let (mut a, mut b) = two_peers(&s, document(&s, false), ids);
+        a.set("board", "on the old picture");
+        b.local(|tr| {
+            tr.replace(
+                3,
+                4,
+                Slice::new(Fragment::from_node(image(&s, "pasted", "")), 0, 0),
+            )
+            .unwrap();
+        });
+        sync(&mut a, &mut b);
+        let imgs = converged(&a, &b, &s);
+        assert_eq!(
+            srcs_and_boards(&imgs),
+            vec![("pasted".to_string(), "on the old picture".to_string())],
+            "{ids:?}"
+        );
+    }
+}
+
+/// A document loaded over the shared one (its nodes are not the editor's: nothing is
+/// `same_ref`) says nothing about which picture is which, so the text diff matches a
+/// picture only with an equal one: a picture the load inserts right before another
+/// does not take the other's identity, and a peer's concurrent `board` on the other
+/// stays on it.
+#[test]
+fn a_load_that_inserts_a_picture_before_another_keeps_the_others_identity() {
+    for ids in ID_ORDERS {
+        let s = schema(true);
+        let (mut a, mut b) = two_peers(&s, document(&s, false), ids);
+        b.set("board", "on the first");
+        // A loads the same document with a new picture before the first, built anew.
+        let loaded = s
+            .branch(
+                "doc",
+                Fragment::from_node(para(
+                    &s,
+                    vec![
+                        s.text("ab").unwrap(),
+                        image(&s, "loaded", "l"),
+                        image(&s, SRC, "old alt"),
+                        s.text("cd").unwrap(),
+                    ],
+                )),
+            )
+            .unwrap();
+        let before = a.state.doc.clone();
+        a.session.record_local(&s, &before, &loaded).unwrap();
+        a.state = EditorState::create(s.clone(), loaded, plugins());
+        sync(&mut a, &mut b);
+        let imgs = converged(&a, &b, &s);
+        assert_eq!(
+            srcs_and_boards(&imgs),
+            vec![
+                ("loaded".to_string(), String::new()),
+                (SRC.to_string(), "on the first".to_string())
+            ],
+            "{ids:?}"
+        );
+    }
+}
+
+/// One transaction that changes one picture's attrs and moves another (Enter before
+/// it): the move still carries the moved picture's identity, so a peer's concurrent
+/// `board` on it follows it.
+#[test]
+fn an_attr_change_and_a_move_in_one_transaction() {
+    for ids in ID_ORDERS {
+        let s = schema(true);
+        let (mut a, mut b) = two_peers(&s, document(&s, true), ids);
+        b.set_nth(1, "board", AttrValue::from("on the second"));
+        a.local(|tr| {
+            tr.step(Box::new(SetNodeAttrStep::new(
+                3,
+                "alt",
+                AttrValue::from("x"),
+            )))
+            .unwrap();
+            tr.split(10, 1, None).unwrap();
+        });
+        sync(&mut a, &mut b);
+        let imgs = converged(&a, &b, &s);
+        assert_eq!(attr(&imgs[0], "alt"), "x", "{ids:?}");
+        assert_eq!(attr(&imgs[1], "board"), "on the second", "{ids:?}");
+        assert_eq!(attr(&imgs[1], "alt"), "second", "{ids:?}");
+    }
+}
+
+/// A picture cut and pasted twice in one transaction is two copies of one node: which
+/// one is the picture cannot be told, so neither takes its identity and a peer's
+/// concurrent `board` on it is lost rather than shown on both.
+#[test]
+fn a_picture_pasted_twice_carries_its_identity_to_neither_copy() {
+    for ids in ID_ORDERS {
+        let s = schema(true);
+        let (mut a, mut b) = two_peers(&s, document(&s, false), ids);
+        b.set("board", "on the picture");
+        let node = a.state.doc.child(0).child(1).clone();
+        a.local(|tr| {
+            tr.delete(3, 4).unwrap();
+            tr.replace(1, 1, Slice::new(Fragment::from_node(node.clone()), 0, 0))
+                .unwrap();
+            let end = tr.doc().child(0).content_size() + 1;
+            tr.replace(end, end, Slice::new(Fragment::from_node(node), 0, 0))
+                .unwrap();
+        });
+        sync(&mut a, &mut b);
+        let imgs = converged(&a, &b, &s);
+        assert_eq!(imgs.len(), 2, "{ids:?}");
+        assert!(
+            imgs.iter().all(|i| attr(i, "board").is_empty()),
+            "{ids:?}: {imgs:?}"
+        );
+    }
+}
+
+/// A picture dragged past the text after it ("ab X cd" to "abcd X") while a peer
+/// writes its first `board`: the peer's stamp (`@id`) can land over the re-inserted
+/// text as well as the moved picture's char, and the picture is still the first atom
+/// of that run, so the board follows it. (Found by the differential, seed 544: the
+/// run's first char was taken to be the stray text.)
+#[test]
+fn a_board_follows_a_picture_dragged_past_the_text_after_it() {
+    for ids in ID_ORDERS {
+        let s = schema(true);
+        let (mut a, mut b) = two_peers(&s, document(&s, false), ids);
+        a.set("board", "b1");
+        let node = b.state.doc.child(0).child(1).clone();
+        b.local(|tr| {
+            tr.delete(3, 4).unwrap();
+            tr.replace(5, 5, Slice::new(Fragment::from_node(node), 0, 0))
+                .unwrap();
+        });
+        sync(&mut a, &mut b);
+        let imgs = converged(&a, &b, &s);
+        assert_eq!(attr(&imgs[0], "board"), "b1", "{ids:?}: {imgs:?}");
+        assert_eq!(attr(&imgs[0], "alt"), "old alt", "{ids:?}");
+    }
 }
