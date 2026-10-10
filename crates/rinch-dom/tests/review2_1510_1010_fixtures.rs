@@ -16,7 +16,10 @@ fn width(html: &str, m: &str) -> f32 {
     let mut doc = RinchDocument::new();
     doc.font_cx.collection.register_fonts(
         Blob::new(std::sync::Arc::new(FACE)),
-        Some(FontInfoOverride { family_name: Some("ProbeFace"), ..Default::default() }),
+        Some(FontInfoOverride {
+            family_name: Some("ProbeFace"),
+            ..Default::default()
+        }),
     );
     let body = doc.body();
     doc.set_attribute(body, "style", "margin: 0");
@@ -31,14 +34,23 @@ fn width(html: &str, m: &str) -> f32 {
 #[test]
 fn an_auto_width_absolute_box_is_not_narrower_than_its_content() {
     let shapes = [
-        format!(r#"{C}<div style="margin-left:42px"><div data-m="a" style="position:absolute;margin-left:5%;margin-right:10%">{T}</div></div></div>"#),
-        format!(r#"{C}<div data-m="a" style="position:absolute;left:7.3%;margin-right:17.7%">{T}</div></div>"#),
-        format!(r#"{C}<div data-m="a" style="position:absolute;left:5.3%;margin-right:3.7%">{T}</div></div>"#),
+        format!(
+            r#"{C}<div style="margin-left:42px"><div data-m="a" style="position:absolute;margin-left:5%;margin-right:10%">{T}</div></div></div>"#
+        ),
+        format!(
+            r#"{C}<div data-m="a" style="position:absolute;left:7.3%;margin-right:17.7%">{T}</div></div>"#
+        ),
+        format!(
+            r#"{C}<div data-m="a" style="position:absolute;left:5.3%;margin-right:3.7%">{T}</div></div>"#
+        ),
     ];
     let bad: Vec<_> = shapes
         .iter()
         .map(|h| (width(h, "a"), width(h, "t")))
         .filter(|(a, t)| t - a > 0.5)
         .collect();
-    assert!(bad.is_empty(), "box narrower than its content (box, content): {bad:?}");
+    assert!(
+        bad.is_empty(),
+        "box narrower than its content (box, content): {bad:?}"
+    );
 }
