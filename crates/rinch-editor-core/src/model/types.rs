@@ -31,7 +31,9 @@ use std::rc::Rc;
 ///
 /// Attributes present in `provided` but **not declared** by the spec are dropped
 /// (PM behavior) — a node never carries undeclared attrs, which keeps the model,
-/// equality, and serialization clean. The result is deterministic (keys ordered by
+/// equality, and serialization clean — except, when `data_attrs` is set (a node
+/// whose spec opts in, [`NodeSpec::data_attrs`]), an app data attribute
+/// ([`is_app_data_attr`](crate::schema::is_app_data_attr)) with a string value. The result is deterministic (keys ordered by
 /// [`Attrs`]'s `BTreeMap`) and idempotent: `compute(compute(x)) == compute(x)`.
 ///
 /// # Absent means unspecified
@@ -52,11 +54,12 @@ use std::rc::Rc;
 /// default value.
 fn compute_attrs(
     specs: &BTreeMap<String, AttrSpec>,
+    data_attrs: bool,
     provided: &Attrs,
     kind: &str,
     type_name: &str,
 ) -> Result<Attrs, EditorError> {
-    if specs.is_empty() {
+    if specs.is_empty() && !data_attrs {
         return Ok(Attrs::new());
     }
     let mut pairs: Vec<(Box<str>, AttrValue)> = Vec::with_capacity(specs.len());
@@ -71,6 +74,13 @@ fn compute_attrs(
             return Err(EditorError::SchemaValidation(format!(
                 "missing required attribute '{name}' on {kind} '{type_name}'"
             )));
+        }
+    }
+    if data_attrs {
+        for (name, value) in crate::schema::app_data_attrs(provided) {
+            if !specs.contains_key(name) {
+                pairs.push((name.into(), AttrValue::from(value)));
+            }
         }
     }
     Ok(Attrs::from_iter(pairs))
@@ -174,7 +184,13 @@ impl NodeType {
     /// (possibly partial) `provided` attribute set. See [`compute_attrs`]. Used by
     /// serialization (M3) and, in M4, by `Step::apply`.
     pub fn compute_attrs(&self, provided: &Attrs) -> Result<Attrs, EditorError> {
-        compute_attrs(&self.0.spec.attrs, provided, "node", &self.0.name)
+        compute_attrs(
+            &self.0.spec.attrs,
+            self.0.spec.data_attrs,
+            provided,
+            "node",
+            &self.0.name,
+        )
     }
 }
 
@@ -227,7 +243,7 @@ impl MarkType {
     /// Fill defaults and validate required attributes for this mark type, given a
     /// (possibly partial) `provided` attribute set. See [`compute_attrs`].
     pub fn compute_attrs(&self, provided: &Attrs) -> Result<Attrs, EditorError> {
-        compute_attrs(&self.0.spec.attrs, provided, "mark", &self.0.name)
+        compute_attrs(&self.0.spec.attrs, false, provided, "mark", &self.0.name)
     }
 }
 

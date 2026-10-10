@@ -54,6 +54,17 @@ pub struct NodeSpec {
     /// Node attributes with their defaults
     pub attrs: BTreeMap<String, AttrSpec>,
 
+    /// Whether the node keeps an app's `data-*` attributes beside the ones
+    /// [`attrs`](Self::attrs) declares: any valid HTML custom data attribute
+    /// name rinch does not reserve ([`is_app_data_attr`]), with a string
+    /// value. Kept by attribute validation, `DocNode`, collaboration and the
+    /// view (which writes them on the host element); written to and read from
+    /// HTML on a leaf node (a void element such as `<img>`), where a container
+    /// does not carry them. Off by default; the starter kit's `image` opts in.
+    ///
+    /// [`is_app_data_attr`]: crate::schema::is_app_data_attr
+    pub data_attrs: bool,
+
     /// HTML tags to parse as this node (e.g., ["p"], ["h1", "h2", "h3"...])
     pub parse_html_tags: Vec<String>,
 }
@@ -79,6 +90,7 @@ impl NodeSpec {
             defining: false,
             code: false,
             attrs: BTreeMap::new(),
+            data_attrs: false,
             parse_html_tags: Vec::new(),
         }
     }
@@ -98,6 +110,7 @@ impl NodeSpec {
             defining: false,
             code: false,
             attrs: BTreeMap::new(),
+            data_attrs: false,
             parse_html_tags: Vec::new(),
         }
     }
@@ -117,6 +130,7 @@ impl NodeSpec {
             defining: false,
             code: false,
             attrs: BTreeMap::new(),
+            data_attrs: false,
             parse_html_tags: Vec::new(),
         }
     }
@@ -208,6 +222,7 @@ impl NodeSpecBuilder {
                 defining: false,
                 code: false,
                 attrs: BTreeMap::new(),
+                data_attrs: false,
                 parse_html_tags: Vec::new(),
             },
         }
@@ -282,6 +297,12 @@ impl NodeSpecBuilder {
     /// Add an attribute specification.
     pub fn attr(mut self, name: impl Into<String>, attr: AttrSpec) -> Self {
         self.spec.attrs.insert(name.into(), attr);
+        self
+    }
+
+    /// Keep an app's `data-*` attributes (see [`NodeSpec::data_attrs`]).
+    pub fn data_attrs(mut self, data_attrs: bool) -> Self {
+        self.spec.data_attrs = data_attrs;
         self
     }
 

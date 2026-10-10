@@ -82,29 +82,59 @@ contain. The starter-kit catalogue:
 
 - **Nodes:** `doc`, `paragraph`, `heading{level}`, `blockquote`, `code_block`,
   `bullet_list`, `ordered_list`, `list_item`, `horizontal_rule`, `hard_break`,
-  `text`, `image{src, alt, title, board, width}`, plus the table nodes.
+  `text`, `image{src, alt, title, width, data-*}`, plus the table nodes.
 - **Marks:** `bold`, `italic`, `underline`, `strike`, `code`, `link{href}`,
   `highlight{color?}`, `text_color{color}`, `subscript`, `superscript`. Every mark
   is inclusive except `link` (see [inherited marks](#state-selection-stored-marks)).
 
-An image's `board` and `width` are an app's: the editor keeps them through edits,
-copy and paste and collaboration, and only shows them. `board` (an id for something
-the app draws over the picture) reaches the `<img>` as `data-board` and HTML as
-`data-board`; `width` (whole CSS pixels, absent or not positive for the natural
-width; read from HTML by HTML's dimension rules, so `320px` is 320, rounded and at
-most 65535) is the `<img>`'s `width` hint and HTML's `width`. A GFM image `![alt](src)`
-has neither, so it is written without them; an image in a table written as HTML keeps
-both. Like every attr of an inline atom they merge per attribute when collaborating:
-two peers changing different attrs of one image at once both keep their change, and a
-peer's `board` follows its picture through Enter, Backspace, drags and pictures
+An image keeps an app's own `data-*` attributes — any valid HTML custom data
+attribute name (`data-` and at least one character, no uppercase letter, no `:`),
+with a string value — beside `src`, `alt`, `title` and `width`. That is what HTML's
+data attributes are for: an annotation id, a reference into the app's own store,
+whatever the app needs to find the picture again. The editor keeps them through
+edits, copy and paste (each written to HTML and to the host `<img>` as itself, an
+empty one included) and collaboration, and does nothing else with them. A name
+rinch reserves for itself is never kept, written or read from pasted HTML:
+`data-pm-*`, the `data-on*` event attributes, `data-rinch-*`, and the whole names
+in `rinch_editor_core::schema::RESERVED_DATA_ATTRS` (`data-rid`, `data-nofocus`,
+`data-type`, `data-checked`, …); `is_app_data_attr(name)` is the one test. A paste
+keeps the data attributes another application put on its `<img>` (Slack's
+`data-stringify-type`, for one); a `Plugin::handle_paste` that wants them gone
+removes them. Set or remove one like any attribute:
+
+```rust
+handle.update(|state| {
+    let mut tr = state.tr();
+    tr.step(Box::new(SetNodeAttrStep::new(pos, "data-annotation-id", AttrValue::from("a1"))))
+        .ok()?;
+    Some(tr)
+});
+```
+
+The opt-in is the node spec's: `NodeSpec::data_attrs` (`NodeSpecBuilder::data_attrs(true)`).
+The starter kit's `image` sets it and nothing else does. A node that opts in keeps
+them in the model, `DocNode`, collaboration and its host element; HTML writes and
+reads them on a leaf node only (a void element such as `<img>`, `<hr>`, `<br>`), so
+a container that opts in loses them through copy and paste. An attribute a node's
+spec neither declares nor keeps is dropped by validation (`to_doc`,
+`node_from_doc`), and the HTML writer does not write it.
+
+`width` (whole CSS pixels, absent or not positive for the natural width; read from
+HTML by HTML's dimension rules, so `320px` is 320, rounded and at most 65535) is the
+`<img>`'s `width` hint and HTML's `width`. A GFM image `![alt](src)` has neither
+`width` nor data attributes, so it is written without them; an image in a table
+written as HTML keeps both. Like every attr of an inline atom they merge per
+attribute when collaborating: two peers changing different attrs of one image at
+once both keep their change, two changing the same one converge on one value, and a
+peer's attribute follows its picture through Enter, Backspace, drags and pictures
 inserted beside it, and never shows on another picture (one pasted over it with the
 same `src` counts as the same picture: identity is type and `src`). A change of an
 image's `src` (or a picture with another `src` pasted over it, which the editor cannot
 tell from one) makes a new picture, and a concurrent change of the old one is dropped;
 so does cutting and pasting a picture, undoing its delete, or dragging it after an
-in-editor copy of it. Chosen by Joe (2026-10-09):
-a wrong attribution is worse than a lost one — board markup would show on the wrong
-picture (`rinch-editor-collab/tests/image_attrs.rs`, `atom_attr_merge.rs`,
+in-editor copy of it. Chosen by Joe (2026-10-09): a wrong attribution is worse than a
+lost one — app data keyed to a picture would show on the wrong picture
+(`rinch-editor-collab/tests/image_attrs.rs`, `atom_attr_merge.rs`,
 `atom_identity_differential.rs`).
 
 Each node spec carries a **content expression** (e.g. `blockquote > block+`,

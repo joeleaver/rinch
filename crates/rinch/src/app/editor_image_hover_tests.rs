@@ -110,7 +110,7 @@ fn each_source_an_app_chooses_loads_and_reloads_on_its_own() {
     });
     crate::editor::set_image_source(|attrs| {
         let title = attrs.get_str("title").filter(|t| !t.is_empty())?;
-        Some(format!("{}#board={title}", attrs.get_str("src")?))
+        Some(format!("{}#overlay={title}", attrs.get_str("src")?))
     });
     const S: &str = "hover-test-blob:store/blob";
     let (mut app, handle) = page(
@@ -120,25 +120,29 @@ fn each_source_an_app_chooses_loads_and_reloads_on_its_own() {
     let srcs: Vec<String> = images(&app).into_iter().map(|(_, s)| s).collect();
     assert_eq!(
         srcs,
-        [format!("{S}#board=b1"), S.into(), format!("{S}#board=b2")]
+        [
+            format!("{S}#overlay=b1"),
+            S.into(),
+            format!("{S}#overlay=b2")
+        ]
     );
     assert_eq!(
         wait_for_asks(&mut app, &asked, 3),
         [
             S.to_string(),
-            format!("{S}#board=b1"),
-            format!("{S}#board=b2")
+            format!("{S}#overlay=b1"),
+            format!("{S}#overlay=b2")
         ],
         "three sources, each loaded once"
     );
 
     asked.lock().unwrap().clear();
-    std::thread::spawn(|| crate::image::reload_image("hover-test-blob:store/blob#board=b2"))
+    std::thread::spawn(|| crate::image::reload_image("hover-test-blob:store/blob#overlay=b2"))
         .join()
         .unwrap();
     assert_eq!(
         wait_for_asks(&mut app, &asked, 1),
-        [format!("{S}#board=b2")],
+        [format!("{S}#overlay=b2")],
         "a reload asks for its own source only"
     );
 
@@ -156,14 +160,14 @@ fn each_source_an_app_chooses_loads_and_reloads_on_its_own() {
         Some(tr)
     }));
     frame(&mut app);
-    assert_eq!(images(&app)[1].1, format!("{S}#board=b3"));
+    assert_eq!(images(&app)[1].1, format!("{S}#overlay=b3"));
     assert_eq!(
         wait_for_asks(&mut app, &asked, 1),
-        [format!("{S}#board=b3")]
+        [format!("{S}#overlay=b3")]
     );
     // The document still names the picture's own `src`.
     let html = rinch_editor_core::serialize::node_to_html(&handle.doc());
-    assert!(!html.contains("#board"), "{html}");
+    assert!(!html.contains("#overlay"), "{html}");
     crate::editor::clear_image_source();
 }
 

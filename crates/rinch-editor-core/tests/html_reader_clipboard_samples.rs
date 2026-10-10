@@ -338,7 +338,9 @@ class=\"c-mrkdwn__quote\" data-stringify-type=\"quote\">quoted <i data-stringify
 fn slack() {
     assert_eq!(
         read(SLACK),
-        "<p>Hello <strong>team</strong> <img alt=\":wave:\" \
+        // The image keeps Slack's own data attribute: an image keeps every
+        // app data attribute a paste carries (`NodeSpec::data_attrs`).
+        "<p>Hello <strong>team</strong> <img alt=\":wave:\" data-stringify-type=\"emoji\" \
          src=\"https://a.slack-edge.com/production-standard-emoji-assets/14.0/google-small/1f44b.png\"> see \
          <a href=\"https://example.com\" target=\"_blank\" rel=\"noopener noreferrer\">the doc</a>\u{a0}@sam<br>second line with \
          <code>x = 1</code></p>\

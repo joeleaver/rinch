@@ -84,7 +84,7 @@
 //! ```
 //!
 //! So two peers changing different attrs of one image at once (its `alt`, an app's
-//! `board` id) both keep their change, and two changing the same attr converge on one
+//! `data-*` attribute) both keep their change, and two changing the same attr converge on one
 //! value (the higher client id's). Two identical images side by side are one `@atom`
 //! range but two identities, so a change to each is kept too. A change of a node
 //! attribute of a *block* (a heading's `level`) was already per key: a block's `attrs`
@@ -1333,14 +1333,14 @@ fn text_splice_bounds(
     };
     // An atom changed in place is the same atom only with the same type and the same
     // `src`. Chosen by Joe (2026-10-09): a wrong attribution is worse than a lost one —
-    // board markup would show on the wrong picture. Pimble never changes `src` on a
-    // live picture (it inserts an image only after the upload returns its final URL;
-    // moving between stores writes a fresh copy), so this costs it nothing. The
-    // rejected alternative, type alone, kept a picture's identity through a `src`
-    // change (and a peer's concurrent change of another attr with it), but the model
-    // cannot tell a `src` change from a picture pasted over a selected one (both put a
-    // new node where the old one was), so a peer's concurrent `board` on the old
-    // picture then showed on the pasted one.
+    // app data keyed to a picture would show on the wrong picture. An app that inserts
+    // a picture only once its final `src` is known, and writes a fresh copy rather than
+    // changing a live picture's `src`, loses nothing to it. The rejected alternative,
+    // type alone, kept a picture's identity through a `src` change (and a peer's
+    // concurrent change of another attr with it), but the model cannot tell a `src`
+    // change from a picture pasted over a selected one (both put a new node where the
+    // old one was), so a peer's concurrent app attribute on the old picture then showed
+    // on the pasted one.
     let same_place =
         |a: &Attrs, b: &Attrs| a.get(ATOM_TYPE) == b.get(ATOM_TYPE) && a.get("src") == b.get("src");
     common_runs(o.len(), n.len(), |i, j| {

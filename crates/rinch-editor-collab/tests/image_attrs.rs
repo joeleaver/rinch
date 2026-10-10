@@ -28,7 +28,7 @@ use rinch_editor_core::{
     default_plugins,
 };
 
-const SRC: &str = "pimble-blob:6f1c2a0e-58b1-4a3e-9d57-0c1f3b0a9e11/b3-9f86d081884c7d65";
+const SRC: &str = "app-blob:6f1c2a0e-58b1-4a3e-9d57-0c1f3b0a9e11/b3-9f86d081884c7d65";
 
 struct Peer {
     state: EditorState,
@@ -186,12 +186,12 @@ fn src_alt_and_title_round_trip_through_a_snapshot_and_a_live_update() {
     sync(&mut a, &mut b);
     b.set("title", "");
     sync(&mut a, &mut b);
-    a.set("src", "pimble-blob:other/blob");
+    a.set("src", "app-blob:other/blob");
     sync(&mut a, &mut b);
     assert_eq!(
         converged(&a, &b, &schema),
         (
-            "pimble-blob:other/blob".to_string(),
+            "app-blob:other/blob".to_string(),
             "the garden, summer".to_string(),
             String::new()
         )
@@ -255,20 +255,20 @@ fn concurrent_changes_of_alt_and_title_both_survive() {
 /// one, is lost (the new `src` is kept, with the `alt` the image had). Chosen by Joe
 /// (2026-10-09): a wrong attribution is worse than a lost one — the projection cannot
 /// tell a `src` change from a picture pasted over another, and keeping the identity
-/// through it showed a peer's board markup on the pasted picture. Pimble never
-/// changes `src` on a live picture, so this costs it nothing.
+/// through it showed a peer's app data on the pasted picture. An app that never
+/// changes `src` on a live picture loses nothing to it.
 #[test]
 fn a_src_change_drops_a_concurrent_alt_change() {
     for ids in ID_ORDERS {
         let schema = Rc::new(Schema::starter_kit());
         let (mut a, mut b) = two_peers(&schema, line(&schema, SRC, "old alt", ""), ids);
-        a.set("src", "pimble-blob:other/blob");
+        a.set("src", "app-blob:other/blob");
         b.set("alt", "new alt");
         sync(&mut a, &mut b);
         let (src, alt, _) = converged(&a, &b, &schema);
         assert_eq!(
             (src.as_str(), alt.as_str()),
-            ("pimble-blob:other/blob", "old alt"),
+            ("app-blob:other/blob", "old alt"),
             "ids {ids:?}"
         );
     }
@@ -581,7 +581,7 @@ fn enter_anywhere_in_the_images_line_keeps_a_concurrent_alt_change() {
     }
 }
 
-// An app's own attributes on an image: `board` (an id an app keeps for what it
+// An app's own attributes on an image: `data-ref` (an id an app keeps for what it
 // draws over the picture) and `width`. They merge per attribute like
 // `src`/`alt`/`title`, so everything above holds for them too.
 
@@ -597,8 +597,8 @@ impl Peer {
         });
     }
 
-    /// The image's `(board, width)`, absent as `("", 0)`.
-    fn board_and_width(&self) -> (String, i64) {
+    /// The image's `(data-ref, width)`, absent as `("", 0)`.
+    fn ref_and_width(&self) -> (String, i64) {
         let _ = self.image(); // exactly one
         let para = self.state.doc.child(0);
         let img = (0..para.child_count())
@@ -606,23 +606,23 @@ impl Peer {
             .find(|n| n.type_name() == "image")
             .unwrap();
         (
-            img.attrs().get_str("board").unwrap_or("").to_string(),
+            img.attrs().get_str("data-ref").unwrap_or("").to_string(),
             img.attrs().get_int("width").unwrap_or(0),
         )
     }
 }
 
 #[test]
-fn board_and_width_round_trip_through_a_snapshot_and_a_live_update() {
+fn ref_and_width_round_trip_through_a_snapshot_and_a_live_update() {
     let schema = Rc::new(Schema::starter_kit());
     let (mut a, mut b) = two_peers(&schema, line(&schema, SRC, "alt", ""), (11, 22));
-    a.set("board", "01JA7Z3QK2V9");
+    a.set("data-ref", "01JA7Z3QK2V9");
     sync(&mut a, &mut b);
-    assert_eq!(b.board_and_width(), ("01JA7Z3QK2V9".to_string(), 0));
+    assert_eq!(b.ref_and_width(), ("01JA7Z3QK2V9".to_string(), 0));
     b.set_int("width", 320);
     sync(&mut a, &mut b);
     converged(&a, &b, &schema);
-    assert_eq!(a.board_and_width(), ("01JA7Z3QK2V9".to_string(), 320));
+    assert_eq!(a.ref_and_width(), ("01JA7Z3QK2V9".to_string(), 320));
     // The other attrs are untouched.
     assert_eq!(
         a.image(),
@@ -634,15 +634,15 @@ fn board_and_width_round_trip_through_a_snapshot_and_a_live_update() {
     assert_eq!(late.projected_doc(&schema).unwrap(), a.state.doc);
 }
 
-/// Marking a picture up (writing its `board`) while a peer types beside it,
+/// Marking a picture up (writing its `data-ref`) while a peer types beside it,
 /// on either side: both are kept.
 #[test]
-fn a_board_written_beside_a_peers_typing_is_kept() {
+fn a_data_ref_written_beside_a_peers_typing_is_kept() {
     for ids in ID_ORDERS {
         for at in [3, 4] {
             let schema = Rc::new(Schema::starter_kit());
             let (mut a, mut b) = two_peers(&schema, line(&schema, SRC, "alt", ""), ids);
-            a.set("board", "b1");
+            a.set("data-ref", "b1");
             b.local(|tr| {
                 tr.set_selection(rinch_editor_core::Selection::cursor(
                     rinch_editor_core::Pos(at),
@@ -652,7 +652,7 @@ fn a_board_written_beside_a_peers_typing_is_kept() {
             sync(&mut a, &mut b);
             converged(&a, &b, &schema);
             assert_eq!(
-                a.board_and_width().0,
+                a.ref_and_width().0,
                 "b1",
                 "ids {ids:?}, typed at {at}: {:?}",
                 a.state.doc
@@ -661,40 +661,75 @@ fn a_board_written_beside_a_peers_typing_is_kept() {
     }
 }
 
-/// A first mark-up (`board`) and a peer's concurrent change of another attribute
+/// A first mark-up (`data-ref`) and a peer's concurrent change of another attribute
 /// of the same image (here `alt`) are both kept: an image's attrs merge per
 /// attribute (#1503). Before that they merged as one value, and one peer's image was
 /// kept whole.
 #[test]
-fn a_board_and_a_concurrent_alt_change_both_survive() {
+fn a_data_ref_and_a_concurrent_alt_change_both_survive() {
     for ids in ID_ORDERS {
         let schema = Rc::new(Schema::starter_kit());
         let (mut a, mut b) = two_peers(&schema, line(&schema, SRC, "old alt", ""), ids);
-        a.set("board", "b1");
+        a.set("data-ref", "b1");
         b.set("alt", "new alt");
         sync(&mut a, &mut b);
         let (_, alt, _) = converged(&a, &b, &schema);
-        let (board, _) = a.board_and_width();
+        let (data_ref, _) = a.ref_and_width();
         assert_eq!(
-            (board.as_str(), alt.as_str()),
+            (data_ref.as_str(), alt.as_str()),
             ("b1", "new alt"),
             "ids {ids:?}"
         );
     }
 }
 
-/// Two peers marking the same picture up at once both mint a board id; they
+/// Two peers marking the same picture up at once both mint a data-ref; they
 /// converge on one of the two.
 #[test]
-fn two_boards_written_at_once_converge_on_one() {
+fn two_data_refs_written_at_once_converge_on_one() {
     for ids in ID_ORDERS {
         let schema = Rc::new(Schema::starter_kit());
         let (mut a, mut b) = two_peers(&schema, line(&schema, SRC, "", ""), ids);
-        a.set("board", "from A");
-        b.set("board", "from B");
+        a.set("data-ref", "from A");
+        b.set("data-ref", "from B");
         sync(&mut a, &mut b);
         converged(&a, &b, &schema);
         let expected = if ids.0 > ids.1 { "from A" } else { "from B" };
-        assert_eq!(a.board_and_width().0, expected, "ids {ids:?}");
+        assert_eq!(a.ref_and_width().0, expected, "ids {ids:?}");
+    }
+}
+
+/// Two peers setting **different** `data-*` attributes of one starter-kit image at
+/// once both keep theirs: each is its own entry in the per-attribute `atoms` map. A
+/// third, set beforehand, is untouched; and a peer joining from a snapshot reads all
+/// of them.
+#[test]
+fn two_different_data_attrs_set_at_once_both_survive() {
+    for ids in ID_ORDERS {
+        let schema = Rc::new(Schema::starter_kit());
+        let (mut a, mut b) = two_peers(&schema, line(&schema, SRC, "", ""), ids);
+        a.set("data-kept", "k");
+        sync(&mut a, &mut b);
+        a.set("data-ref", "r1");
+        b.set("data-annotation-id", "a1");
+        sync(&mut a, &mut b);
+        converged(&a, &b, &schema);
+        let para = a.state.doc.child(0);
+        let img = (0..para.child_count())
+            .map(|i| para.child(i))
+            .find(|n| n.type_name() == "image")
+            .unwrap();
+        let data: Vec<(&str, &str)> = rinch_editor_core::app_data_attrs(img.attrs()).collect();
+        assert_eq!(
+            data,
+            [
+                ("data-annotation-id", "a1"),
+                ("data-kept", "k"),
+                ("data-ref", "r1")
+            ],
+            "ids {ids:?}"
+        );
+        let late = CollabSession::from_bytes(&a.session.snapshot()).unwrap();
+        assert_eq!(late.projected_doc(&schema).unwrap(), a.state.doc);
     }
 }

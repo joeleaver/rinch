@@ -4,7 +4,7 @@
 //! and reconciles through `sync_diff`), and a history of typing, Enter, joins, pictures
 //! inserted next to identical ones, hard breaks beside pictures, cut and paste, copy and
 //! paste, copy-then-move, drags, deletes with and without undo, undo, undo-redo, alt
-//! changes, same-`src` paste-over and boards. Then A sets `board = TARGET` on one picture
+//! changes, same-`src` paste-over and data-refs. Then A sets `data-ref = TARGET` on one picture
 //! while B makes one more edit.
 //!
 //! The oracle is node identity in B's model: the target is the node B's edit kept
@@ -26,11 +26,11 @@ use rinch_editor_core::{
     Schema, Selection, SetNodeAttrStep, Slice, Transaction, default_plugins,
 };
 
-const SRC: &str = "pimble-blob:6f1c2a0e/b3-9f86d081884c7d65";
+const SRC: &str = "app-blob:6f1c2a0e/b3-9f86d081884c7d65";
 const ID_ORDERS: [(u64, u64); 2] = [(11, 22), (22, 11)];
 
 /// `doc > paragraph+ > (text | image | hard_break)*`, with `image` carrying `src`,
-/// `alt`, `title` and, when `app` is set, `board` and `width`.
+/// `alt`, `title` and, when `app` is set, `data-ref` and `width`.
 fn schema(app: bool) -> Rc<Schema> {
     let mut b = Schema::builder();
     b = b.node("doc", NodeSpec::builder("doc").content("block+").build());
@@ -59,7 +59,7 @@ fn schema(app: bool) -> Rc<Schema> {
         spec.attrs.insert("alt".into(), AttrSpec::optional(""));
         spec.attrs.insert("title".into(), AttrSpec::optional(""));
         if app {
-            spec.attrs.insert("board".into(), AttrSpec::optional(""));
+            spec.data_attrs = true;
             spec.attrs.insert("width".into(), AttrSpec::optional(0i64));
         }
         spec
@@ -105,7 +105,7 @@ fn document(s: &Schema, second: bool) -> Node {
             s,
             vec![
                 s.text("ef").unwrap(),
-                image(s, "pimble-blob:two", "second"),
+                image(s, "app-blob:two", "second"),
                 s.text("gh").unwrap(),
             ],
         ));
@@ -425,7 +425,7 @@ fn op2(r: &mut R, s: &Schema, p: &mut Peer, target: Option<&Node>) -> &'static s
             let new = if op == "hard-break-adj" {
                 s.branch("hard_break", Fragment::empty()).unwrap()
             } else {
-                s.create_node("image", n.attrs().without("board"), Fragment::empty())
+                s.create_node("image", n.attrs().without("data-ref"), Fragment::empty())
                     .unwrap()
             };
             p.try_local(|tr| {
@@ -620,7 +620,7 @@ fn run2(seed: u64, ids: (u64, u64), v: bool, t: &mut T2) {
             _ => op2(&mut r, &s, &mut c, None),
         };
         if r.chance(25) {
-            // a board in history
+            // a data-ref in history
             let p = match r.below(3) {
                 0 => &mut a,
                 1 => &mut b,
@@ -631,7 +631,7 @@ fn run2(seed: u64, ids: (u64, u64), v: bool, t: &mut T2) {
                 let (at, _) = all[r.below(all.len())].clone();
                 let v = AttrValue::from(format!("h{}", r.below(5)));
                 p.try_local(|tr| {
-                    tr.step(Box::new(SetNodeAttrStep::new(at, "board", v)))
+                    tr.step(Box::new(SetNodeAttrStep::new(at, "data-ref", v)))
                         .unwrap();
                 });
             }
@@ -665,7 +665,7 @@ fn run2(seed: u64, ids: (u64, u64), v: bool, t: &mut T2) {
     a.try_local(|tr| {
         tr.step(Box::new(SetNodeAttrStep::new(
             at_a,
-            "board",
+            "data-ref",
             AttrValue::from("TARGET"),
         )))
         .unwrap();
@@ -733,7 +733,7 @@ fn run2(seed: u64, ids: (u64, u64), v: bool, t: &mut T2) {
     }
     let mut on_target = 0;
     for (i, (_, n)) in got.iter().enumerate() {
-        let has = n.attrs().get_str("board") == Some("TARGET");
+        let has = n.attrs().get_str("data-ref") == Some("TARGET");
         if has && !expected[i].1 {
             t.wrong.push(format!(
                 "{tag}: TARGET on image #{i} (target at {:?})",
@@ -764,7 +764,7 @@ fn run2(seed: u64, ids: (u64, u64), v: bool, t: &mut T2) {
 }
 
 #[test]
-fn a_board_never_shows_on_another_identical_picture() {
+fn a_data_ref_never_shows_on_another_identical_picture() {
     let seeds: u64 = std::env::var("R2_SEEDS")
         .ok()
         .and_then(|x| x.parse().ok())
@@ -852,7 +852,7 @@ fn inline_pos(r: &mut R, doc: &Node) -> usize {
     a + r.below(b - a + 1)
 }
 
-fn boards_after(
+fn refs_after(
     blocks: Vec<Vec<&str>>,
     target: usize,
     ids: (u64, u64),
@@ -881,7 +881,7 @@ fn boards_after(
     a.try_local(|tr| {
         tr.step(Box::new(SetNodeAttrStep::new(
             at,
-            "board",
+            "data-ref",
             AttrValue::from("TARGET"),
         )))
         .unwrap();
@@ -891,14 +891,14 @@ fn boards_after(
     converged(&a, &b, &s);
     imgs(&a.state.doc)
         .iter()
-        .map(|x| x.1.attrs().get_str("board").unwrap_or("-").to_string())
+        .map(|x| x.1.attrs().get_str("data-ref").unwrap_or("-").to_string())
         .collect()
 }
 
 #[test]
-fn a_hard_break_between_two_identical_pictures_keeps_the_board_on_its_own() {
+fn a_hard_break_between_two_identical_pictures_keeps_the_data_ref_on_its_own() {
     for ids in ID_ORDERS {
-        let got = boards_after(vec![vec!["ab", "img1", "img1", "cd"]], 0, ids, &|s, b| {
+        let got = refs_after(vec![vec!["ab", "img1", "img1", "cd"]], 0, ids, &|s, b| {
             b.try_local(|tr| {
                 tr.replace(
                     4,
@@ -918,17 +918,17 @@ fn a_hard_break_between_two_identical_pictures_keeps_the_board_on_its_own() {
 }
 
 /// An undo of a delete re-inserts the picture as a new char in a later transaction, so
-/// nothing carries its identity: a peer's concurrent board is lost, and never shows on
+/// nothing carries its identity: a peer's concurrent data-ref is lost, and never shows on
 /// the identical picture beside it.
 #[test]
-fn a_delete_undone_beside_an_identical_picture_loses_the_board_on_neither() {
+fn a_delete_undone_beside_an_identical_picture_loses_the_data_ref_on_neither() {
     for (layout, t) in [
         (vec!["ab", "img1", "img1", "cd"], 0usize),
         (vec!["ab", "img1", "img1", "cd"], 1),
         (vec!["ab", "img1", "cd", "img1", "ef"], 0),
     ] {
         for ids in ID_ORDERS {
-            let got = boards_after(vec![layout.clone()], t, ids, &|_, b| {
+            let got = refs_after(vec![layout.clone()], t, ids, &|_, b| {
                 let at = imgs(&b.state.doc)[t].0;
                 b.try_local(|tr| {
                     tr.delete(at, at + 1).unwrap();
@@ -1034,7 +1034,7 @@ fn an_identity_never_leaks_onto_a_concurrently_inserted_neighbour() {
         a.try_local(|tr| {
             tr.step(Box::new(SetNodeAttrStep::new(
                 p0,
-                "board",
+                "data-ref",
                 AttrValue::from("TARGET"),
             )))
             .unwrap();
@@ -1046,9 +1046,9 @@ fn an_identity_never_leaks_onto_a_concurrently_inserted_neighbour() {
         });
         sync(&mut a, &mut b);
         eprintln!("M3 {ids:?} RAW {:?}", raw_atoms(&a.session.snapshot(), 1));
-        let boards1: Vec<String> = imgs(&a.state.doc)
+        let refs1: Vec<String> = imgs(&a.state.doc)
             .iter()
-            .map(|x| x.1.attrs().get_str("board").unwrap_or("-").to_string())
+            .map(|x| x.1.attrs().get_str("data-ref").unwrap_or("-").to_string())
             .collect();
         // B types a char between the two pictures.
         let p1 = imgs(&b.state.doc)[1].0;
@@ -1058,12 +1058,12 @@ fn an_identity_never_leaks_onto_a_concurrently_inserted_neighbour() {
         });
         sync(&mut a, &mut b);
         converged(&a, &b, &s);
-        let boards2: Vec<String> = imgs(&a.state.doc)
+        let refs2: Vec<String> = imgs(&a.state.doc)
             .iter()
-            .map(|x| x.1.attrs().get_str("board").unwrap_or("-").to_string())
+            .map(|x| x.1.attrs().get_str("data-ref").unwrap_or("-").to_string())
             .collect();
-        eprintln!("M3 {ids:?} boards after insert {boards1:?}, after typing between {boards2:?}");
-        if boards2.iter().filter(|x| *x == "TARGET").count() > 1 {
+        eprintln!("M3 {ids:?} data-refs after insert {refs1:?}, after typing between {refs2:?}");
+        if refs2.iter().filter(|x| *x == "TARGET").count() > 1 {
             fails.push(ids);
         }
     }
@@ -1073,10 +1073,10 @@ fn an_identity_never_leaks_onto_a_concurrently_inserted_neighbour() {
 /// B changes the target's `alt` (rebuilding it in place) and, in the same transaction,
 /// drags an identical picture in front of it. The oracle maps the target through B's
 /// transaction and names the rebuilt picture, never the dragged one (review 3: "the
-/// picture at its index" named the dragged one); and A's concurrent board shows on no
+/// picture at its index" named the dragged one); and A's concurrent data-ref shows on no
 /// other picture.
 #[test]
-fn a_rebuild_and_a_reorder_in_one_transaction_never_move_the_board() {
+fn a_rebuild_and_a_reorder_in_one_transaction_never_move_the_data_ref() {
     for ids in ID_ORDERS {
         let s = schema(true);
         let doc = s
@@ -1101,7 +1101,7 @@ fn a_rebuild_and_a_reorder_in_one_transaction_never_move_the_board() {
         a.try_local(|tr| {
             tr.step(Box::new(SetNodeAttrStep::new(
                 at_a,
-                "board",
+                "data-ref",
                 AttrValue::from("TARGET"),
             )))
             .unwrap();
@@ -1137,18 +1137,18 @@ fn a_rebuild_and_a_reorder_in_one_transaction_never_move_the_board() {
             .map(|(_, n)| {
                 (
                     n.attrs().get_str("alt").unwrap_or("").to_string(),
-                    n.attrs().get_str("board").unwrap_or("-").to_string(),
+                    n.attrs().get_str("data-ref").unwrap_or("-").to_string(),
                 )
             })
             .collect();
-        // The board is on the rebuilt picture or on none, never on the dragged one.
+        // The data-ref is on the rebuilt picture or on none, never on the dragged one.
         assert_ne!(got[0].1, "TARGET", "{ids:?}: {got:?}");
         assert_eq!(got[1].0, "changed", "{ids:?}");
     }
 }
 
 /// The `atoms` map's read is kept between operations: it must never be served stale.
-/// Three peers fill theirs; a `board` change reaches one by an incremental delta and one
+/// Three peers fill theirs; a `data-ref` change reaches one by an incremental delta and one
 /// by a state-vector diff; a keystroke, an attr removal and a late joiner follow
 /// (review 3).
 #[test]
@@ -1172,7 +1172,7 @@ fn the_atom_map_read_kept_between_operations_is_never_stale() {
     a.try_local(|tr| {
         tr.step(Box::new(SetNodeAttrStep::new(
             at,
-            "board",
+            "data-ref",
             AttrValue::from("one"),
         )))
         .unwrap();
@@ -1193,7 +1193,7 @@ fn the_atom_map_read_kept_between_operations_is_never_stale() {
     b.try_local(|tr| {
         tr.step(Box::new(SetNodeAttrStep::new(
             at,
-            "board",
+            "data-ref",
             AttrValue::from("two"),
         )))
         .unwrap();
@@ -1210,12 +1210,12 @@ fn the_atom_map_read_kept_between_operations_is_never_stale() {
         let model = imgs(&p.state.doc)[0]
             .1
             .attrs()
-            .get_str("board")
+            .get_str("data-ref")
             .map(str::to_string);
         let crdt = imgs(&p.session.projected_doc(&s).unwrap())[0]
             .1
             .attrs()
-            .get_str("board")
+            .get_str("data-ref")
             .map(str::to_string);
         assert_eq!(model.as_deref(), Some("two"), "{n}");
         assert_eq!(crdt.as_deref(), Some("two"), "{n}");
@@ -1228,7 +1228,7 @@ fn the_atom_map_read_kept_between_operations_is_never_stale() {
     c.try_local(|tr| {
         tr.step(Box::new(SetNodeAttrStep {
             pos: at,
-            attr: "board".into(),
+            attr: "data-ref".into(),
             value: None,
         }))
         .unwrap();
@@ -1237,6 +1237,6 @@ fn the_atom_map_read_kept_between_operations_is_never_stale() {
     sync(&mut a, &mut b);
     converged(&a, &b, &s);
     let late = peer_from_bytes(&s, &a.session.snapshot(), 44);
-    assert_eq!(imgs(&a.state.doc)[0].1.attrs().get("board"), None);
-    assert_eq!(imgs(&late.state.doc)[0].1.attrs().get("board"), None);
+    assert_eq!(imgs(&a.state.doc)[0].1.attrs().get("data-ref"), None);
+    assert_eq!(imgs(&late.state.doc)[0].1.attrs().get("data-ref"), None);
 }

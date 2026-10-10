@@ -33,8 +33,28 @@ fn create_text(doc: &DocRef, text: &str) -> Option<NodeHandle> {
 /// schema type, a debugging/MCP/a11y aid) plus the node-specific attributes the
 /// tag itself does not encode. Idempotent — clears attributes that no longer
 /// apply, so an in-place update can't leave a stale `start`/`src`.
-fn apply_element_attrs(dom: &NodeHandle, node: &Node) {
+///
+/// A node whose spec keeps an app's `data-*` attributes (`NodeSpec::data_attrs`)
+/// gets each of them as itself; `old` is the node the host showed before an
+/// in-place update, whose data attributes the new one no longer has are
+/// removed. Only an app data attribute is ever written or removed
+/// ([`rinch_editor_core::is_app_data_attr`]), so one can never overwrite or take
+/// away a name rinch reserves (`data-pm-type`, `data-rid`, …).
+fn apply_element_attrs(dom: &NodeHandle, node: &Node, old: Option<&Node>) {
     dom.set_attribute("data-pm-type", node.type_name());
+    let keeps = node.node_type().spec().data_attrs;
+    if let Some(old) = old {
+        for (name, _) in rinch_editor_core::app_data_attrs(old.attrs()) {
+            if !keeps || node.attrs().get_str(name).is_none() {
+                dom.remove_attribute(name);
+            }
+        }
+    }
+    if keeps {
+        for (name, value) in rinch_editor_core::app_data_attrs(node.attrs()) {
+            dom.set_attribute(name, value);
+        }
+    }
     match node.type_name() {
         "image" => {
             // The source the picture is loaded from: the node's `src`, unless
@@ -43,13 +63,6 @@ fn apply_element_attrs(dom: &NodeHandle, node: &Node) {
             match node.attrs().get_str("alt") {
                 Some(alt) if !alt.is_empty() => dom.set_attribute("alt", alt),
                 _ => dom.remove_attribute("alt"),
-            }
-            // An app's id for what is drawn over the picture, for its
-            // stylesheet and its own lookups; the editor does nothing else
-            // with it.
-            match node.attrs().get_str("board") {
-                Some(board) if !board.is_empty() => dom.set_attribute("data-board", board),
-                _ => dom.remove_attribute("data-board"),
             }
             // A presentational hint, as HTML's own: an author `width` rule
             // (or `max-width`) still wins, and the height follows the
@@ -473,7 +486,7 @@ impl ViewDesc {
             (create_text(doc, text)?, Vec::new(), true)
         } else {
             let el = create_element(doc, &node_dom_tag(node))?;
-            apply_element_attrs(&el, node);
+            apply_element_attrs(&el, node, None);
             let mut children = Vec::with_capacity(node.child_count());
             for i in 0..node.child_count() {
                 if let Some(child) = ViewDesc::build(node.child(i), doc) {
@@ -645,7 +658,7 @@ impl ViewDesc {
             && rinch_editor_core::tables::column_count(&self.node)
                 != rinch_editor_core::tables::column_count(new);
         if self.node.attrs() != new.attrs() || table_cols_changed {
-            apply_element_attrs(&self.dom, new);
+            apply_element_attrs(&self.dom, new, Some(&self.node));
         }
         // A cell's placement is its rectangle in the whole table's map, so a
         // span or a row anywhere in the table can move it; and a cell host
@@ -4380,11 +4393,13 @@ mod tests {
         crate::images::clear_image_source();
     }
 
-    /// An image's `board` and `width` reach its host element as `data-board`
-    /// and the `width` hint, and follow an attribute edit in place: the same
-    /// `<img>`, so a picture on screen is not torn down to change them.
+    /// An image's app data attributes and `width` reach its host element as
+    /// themselves and the `width` hint, and follow an attribute edit in place:
+    /// the same `<img>`, so a picture on screen is not torn down to change
+    /// them. A data attribute rinch reserves on the node is never written over
+    /// the view's own (`data-pm-type`).
     #[test]
-    fn an_images_board_and_width_reach_its_host_and_follow_an_edit_in_place() {
+    fn an_images_data_attrs_and_width_reach_its_host_and_follow_an_edit_in_place() {
         use rinch_editor_core::{AttrValue, Attrs, SetNodeAttrStep};
         let h = harness();
         let s = schema();
@@ -4403,15 +4418,22 @@ mod tests {
         let host = children(&h, children(&h, h.container_id)[0])[0];
         let attr = |name: &str| h.doc.borrow().get_attribute(host, name);
         assert_eq!(tag(&h, host).as_deref(), Some("img"));
-        assert_eq!((attr("data-board"), attr("width")), (None, None));
+        assert_eq!((attr("data-ref"), attr("width")), (None, None));
 
         let mut tr = st.tr();
-        tr.step(Box::new(SetNodeAttrStep::new(
-            1,
-            "board",
-            AttrValue::from("b1"),
-        )))
-        .unwrap();
+        for (name, value) in [
+            ("data-ref", "r1"),
+            ("data-annotation-id", "a1"),
+            ("data-pm-type", "paragraph"),
+            ("data-rid", "7"),
+        ] {
+            tr.step(Box::new(SetNodeAttrStep::new(
+                1,
+                name,
+                AttrValue::from(value),
+            )))
+            .unwrap();
+        }
         tr.step(Box::new(SetNodeAttrStep::new(
             1,
             "width",
@@ -4425,7 +4447,10 @@ mod tests {
             host,
             "the same <img>"
         );
-        assert_eq!(attr("data-board").as_deref(), Some("b1"));
+        assert_eq!(attr("data-ref").as_deref(), Some("r1"));
+        assert_eq!(attr("data-annotation-id").as_deref(), Some("a1"));
+        assert_eq!(attr("data-pm-type").as_deref(), Some("image"));
+        assert_eq!(attr("data-rid"), None);
         assert_eq!(attr("width").as_deref(), Some("320"));
         assert_eq!(attr("src").as_deref(), Some("x.png"));
 
@@ -4443,11 +4468,18 @@ mod tests {
         view.update_dom(&huge, &next);
         assert_eq!(attr("width").as_deref(), Some("320"));
 
-        // Taken away again, and a width that is not positive is no hint.
+        // One changed, one taken away; and a width that is not positive is no
+        // hint.
         let mut tr = next.tr();
+        tr.step(Box::new(SetNodeAttrStep::new(
+            1,
+            "data-ref",
+            AttrValue::from("r2"),
+        )))
+        .unwrap();
         tr.step(Box::new(SetNodeAttrStep {
             pos: 1,
-            attr: "board".into(),
+            attr: "data-annotation-id".into(),
             value: None,
         }))
         .unwrap();
@@ -4459,7 +4491,9 @@ mod tests {
         .unwrap();
         let last = next.apply(tr);
         view.update_dom(&next, &last);
-        assert_eq!((attr("data-board"), attr("width")), (None, None));
+        assert_eq!(attr("data-ref").as_deref(), Some("r2"));
+        assert_eq!((attr("data-annotation-id"), attr("width")), (None, None));
+        assert_eq!(attr("data-pm-type").as_deref(), Some("image"));
     }
 }
 

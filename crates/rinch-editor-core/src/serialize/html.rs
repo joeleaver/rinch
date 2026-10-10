@@ -35,7 +35,7 @@ use super::html_tree::{HtmlFragmentParser, ParsedNode, is_table_part, step};
 use crate::EditorError;
 use crate::model::{AttrValue, Attrs, Fragment, Mark, MarkType, Node, NodeType, Slice};
 use crate::pos::Pos;
-use crate::schema::{IMAGE_MAX_WIDTH, Schema};
+use crate::schema::{IMAGE_MAX_WIDTH, Schema, is_app_data_attr};
 use crate::tables;
 use std::collections::HashMap;
 
@@ -208,12 +208,17 @@ fn align_style_attr(node: &Node) -> String {
     }
 }
 
-/// A void/self-closing element (hr, img, br) with its declared string attrs.
-/// An image's `board` is written as `data-board` (it is no HTML attribute)
-/// and its `width`, when positive, as `width`, clamped to [`IMAGE_MAX_WIDTH`].
+/// A void/self-closing element (hr, img, br) with its declared string attrs,
+/// an image's `width` when positive (clamped to [`IMAGE_MAX_WIDTH`]) and, for
+/// a node whose spec keeps them ([`NodeSpec::data_attrs`]), every app data
+/// attribute as itself, an empty one included. An attribute the node carries
+/// that its spec neither declares nor keeps is not written.
+///
+/// [`NodeSpec::data_attrs`]: crate::schema::NodeSpec::data_attrs
 fn void_element(node: &Node) -> String {
     let tag = primary_tag(node.node_type());
     let image = node.type_name() == "image";
+    let spec = node.node_type().spec();
     let mut s = format!("<{tag}");
     for (k, v) in node.attrs().iter() {
         if image && k == "width" {
@@ -221,23 +226,38 @@ fn void_element(node: &Node) -> String {
                 let width = width.min(IMAGE_MAX_WIDTH);
                 s.push_str(&format!(" width=\"{width}\""));
             }
-        } else if let Some(val) = v.as_str()
-            && !val.is_empty()
+        } else if spec.attrs.contains_key(k) {
+            if let Some(val) = v.as_str()
+                && !val.is_empty()
+            {
+                s.push_str(&format!(" {k}=\"{}\"", escape_attr(val)));
+            }
+        } else if spec.data_attrs
+            && is_app_data_attr(k)
+            && let Some(val) = v.as_str()
         {
-            let name = if image && k == "board" {
-                IMAGE_BOARD
-            } else {
-                k
-            };
-            s.push_str(&format!(" {name}=\"{}\"", escape_attr(val)));
+            s.push_str(&format!(" {k}=\"{}\"", escape_attr(val)));
         }
     }
     s.push('>');
     s
 }
 
-/// The HTML attribute an image's `board` is written to and read from.
-pub(super) const IMAGE_BOARD: &str = "data-board";
+/// The app data attributes in `attributes` a node of type `nt` keeps
+/// ([`NodeSpec::data_attrs`]), as model attributes: none for a type that does
+/// not opt in, and never one rinch reserves.
+///
+/// [`NodeSpec::data_attrs`]: crate::schema::NodeSpec::data_attrs
+fn data_attr_pairs<'a>(
+    nt: &NodeType,
+    attributes: &'a [(String, String)],
+) -> impl Iterator<Item = (&'a str, AttrValue)> {
+    let keep = nt.spec().data_attrs;
+    attributes
+        .iter()
+        .filter(move |(name, _)| keep && is_app_data_attr(name))
+        .map(|(name, value)| (name.as_str(), AttrValue::from(value.as_str())))
+}
 
 /// An `<img width>` the import keeps: the value HTML's dimension rules read
 /// (`"320"`, `"320px"`, `" 320.4"` and `"320abc"` are all 320 px), when it is a
@@ -952,7 +972,11 @@ impl<'a> HtmlParser<'a> {
                 let items: Vec<&ParsedNode> = children.iter().collect();
                 self.build_list(nt, attributes, is_task_list(attributes), &items)
             }
-            "horizontal_rule" => self.make_node(nt, Attrs::new(), Fragment::empty()),
+            "horizontal_rule" => self.make_node(
+                nt,
+                Attrs::from_iter(data_attr_pairs(nt, attributes)),
+                Fragment::empty(),
+            ),
             _ if nt.is_textblock() => {
                 let content = self.parse_inline_children(children)?;
                 self.make_node(nt, textblock_attrs(nt, tag, attributes), content)
@@ -1564,7 +1588,11 @@ impl<'a> HtmlParser<'a> {
         active: &[Mark],
     ) -> Result<Option<Node>, EditorError> {
         match nt.name() {
-            "hard_break" => Ok(Some(self.make_node(nt, Attrs::new(), Fragment::empty())?)),
+            "hard_break" => Ok(Some(self.make_node(
+                nt,
+                Attrs::from_iter(data_attr_pairs(nt, attributes)),
+                Fragment::empty(),
+            )?)),
             "image" => {
                 // An empty `src` is no image: the writer writes no empty
                 // attribute, so an image with one would not read back.
@@ -1583,12 +1611,10 @@ impl<'a> HtmlParser<'a> {
                 if let Some(title) = attr(attributes, "title").filter(|v| !v.is_empty()) {
                     pairs.push(("title", AttrValue::from(title)));
                 }
-                if let Some(board) = attr(attributes, IMAGE_BOARD).filter(|v| !v.is_empty()) {
-                    pairs.push(("board", AttrValue::from(board)));
-                }
                 if let Some(width) = attr(attributes, "width").and_then(image_width) {
                     pairs.push(("width", AttrValue::Int(width)));
                 }
+                pairs.extend(data_attr_pairs(nt, attributes));
                 let img = self.make_node(nt, Attrs::from_iter(pairs), Fragment::empty())?;
                 Ok(Some(if active.is_empty() {
                     img
@@ -2043,13 +2069,14 @@ pub(crate) enum DroppedAttr {
 
 /// The first attribute in `html` that [`slice_from_html`] would not carry into
 /// the document, for the tags a table block may hold: `href`/`title`/`target`
-/// (`rel` is the writer's own) on `<a>`, `src`/`alt`/`title`/`data-board` and
-/// a `width` the import keeps (`image_width`) on `<img>`,
+/// (`rel` is the writer's own) on `<a>`, `src`/`alt`/`title`, a `width` the
+/// import keeps (`image_width`) and, when `img_data_attrs` (the schema's
+/// `image` keeps them), every app data attribute on `<img>`,
 /// `colspan`/`rowspan` in range on a cell, `style` holding only `text-align` on
 /// a paragraph or heading, `start` on `<ol>`, and a `style` of safe colours on
 /// `<span>` (`color`, `background-color`) and `<mark>` (`background-color`).
 #[cfg(feature = "markdown")]
-pub(crate) fn dropped_table_attr(html: &str) -> Option<DroppedAttr> {
+pub(crate) fn dropped_table_attr(html: &str, img_data_attrs: bool) -> Option<DroppedAttr> {
     fn style_is(style: &str, ok: &dyn Fn(&str, &str) -> bool) -> bool {
         super::style_scan::style_declarations(style)
             .into_iter()
@@ -2059,6 +2086,7 @@ pub(crate) fn dropped_table_attr(html: &str) -> Option<DroppedAttr> {
         tag: &str,
         attributes: &[(String, String)],
         in_task_list: bool,
+        img_data_attrs: bool,
     ) -> Option<DroppedAttr> {
         for (name, value) in attributes {
             let kept = match (tag, name.as_str()) {
@@ -2071,8 +2099,10 @@ pub(crate) fn dropped_table_attr(html: &str) -> Option<DroppedAttr> {
                 ("img", "src") if !is_safe_url(value, true) => {
                     return Some(DroppedAttr::UnsafeImage);
                 }
-                ("a", "href" | "title" | "target" | "rel")
-                | ("img", "src" | "alt" | "title" | IMAGE_BOARD) => true,
+                ("a", "href" | "title" | "target" | "rel") | ("img", "src" | "alt" | "title") => {
+                    true
+                }
+                ("img", name) if img_data_attrs && is_app_data_attr(name) => true,
                 ("img", "width") => image_width(value).is_some(),
                 ("td" | "th", "colspan") => value
                     .trim()
@@ -2108,7 +2138,7 @@ pub(crate) fn dropped_table_attr(html: &str) -> Option<DroppedAttr> {
         }
     }
     /// `in_task_list`: `nodes` are the children of a task list's `<ul>`.
-    fn walk(nodes: &[ParsedNode], in_task_list: bool) -> Option<DroppedAttr> {
+    fn walk(nodes: &[ParsedNode], in_task_list: bool, img_data: bool) -> Option<DroppedAttr> {
         nodes.iter().find_map(|n| match n {
             ParsedNode::Text(_) => None,
             ParsedNode::Element {
@@ -2119,13 +2149,14 @@ pub(crate) fn dropped_table_attr(html: &str) -> Option<DroppedAttr> {
             } => {
                 let tag = tag.to_ascii_lowercase();
                 let task_list = tag == "ul" && is_task_list(attributes);
-                element(&tag, attributes, in_task_list).or_else(|| walk(children, task_list))
+                element(&tag, attributes, in_task_list, img_data)
+                    .or_else(|| walk(children, task_list, img_data))
             }
         })
     }
     let mut parser = HtmlFragmentParser::new(html);
     parser.all_attributes = true;
-    walk(&parser.parse(), false)
+    walk(&parser.parse(), false, img_data_attrs)
 }
 
 #[cfg(test)]
@@ -2520,10 +2551,11 @@ mod tests {
         assert_eq!(node_to_html(&para), r#"<p><img src="a.png"><br></p>"#);
     }
 
-    /// An image's `board` and `width` survive copy and paste, which is HTML:
-    /// `board` as `data-board`, `width` as HTML's own whole-pixel `width`.
+    /// An image's app data attributes and `width` survive copy and paste,
+    /// which is HTML: each `data-*` as itself, `width` as HTML's own
+    /// whole-pixel `width`.
     #[test]
-    fn an_images_board_and_width_round_trip_through_html() {
+    fn an_images_data_attrs_and_width_round_trip_through_html() {
         let schema = s();
         let img = schema
             .create_node(
@@ -2531,7 +2563,7 @@ mod tests {
                 Attrs::from_iter([
                     ("src", AttrValue::from("a.png")),
                     ("alt", AttrValue::from("a cat")),
-                    ("board", AttrValue::from("3f9c\"<b>")),
+                    ("data-ref", AttrValue::from("3f9c\"<b>")),
                     ("width", AttrValue::Int(320)),
                 ]),
                 Fragment::empty(),
@@ -2541,12 +2573,8 @@ mod tests {
             .branch("paragraph", Fragment::from_node(img.clone()))
             .unwrap();
         let html = node_to_html(&para);
-        assert!(
-            html.contains(r#"data-board="3f9c&quot;&lt;b&gt;""#),
-            "{html}"
-        );
+        assert!(html.contains(r#"data-ref="3f9c&quot;&lt;b&gt;""#), "{html}");
         assert!(html.contains(r#"width="320""#), "{html}");
-        assert!(!html.contains(" board="), "{html}");
         let slice = slice_from_html(&schema, &html).unwrap();
         let back = slice.content.child(0).child(0);
         assert_eq!(back.attrs(), img.attrs(), "{html}");
@@ -2626,9 +2654,6 @@ mod tests {
         ] {
             assert_eq!(width(dropped), None, "{dropped:?}");
         }
-        // And an empty `data-board` is no board.
-        let slice = slice_from_html(&schema, r#"<p><img src="a.png" data-board=""></p>"#).unwrap();
-        assert_eq!(slice.content.child(0).child(0).attrs().get("board"), None);
     }
 
     #[test]

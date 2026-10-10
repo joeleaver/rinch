@@ -1,10 +1,10 @@
 //! Per-attribute merge of an inline atom's attrs, with the attributes an app adds to
-//! an image: `board` (an id the app keeps what it draws over the picture under) and
-//! `width`. An app that stores something under `board` must never see the id lost to a
+//! an image: `data-ref` (an id the app keeps what it draws over the picture under) and
+//! `width`. An app that stores something under `data-ref` must never see the id lost to a
 //! peer's concurrent edit of the same image, or of the line around it.
 //!
 //! The schema here is the starter kit's own shape cut to what the tests need, with an
-//! `image` that also carries `board` and `width`; and, for documents written before an
+//! `image` that also carries `data-ref` and `width`; and, for documents written before an
 //! app added them, the same image without them.
 
 use std::collections::HashMap;
@@ -18,11 +18,11 @@ use rinch_editor_core::{
     Selection, SetNodeAttrStep, Slice, Transaction, default_plugins,
 };
 
-const SRC: &str = "pimble-blob:6f1c2a0e/b3-9f86d081884c7d65";
+const SRC: &str = "app-blob:6f1c2a0e/b3-9f86d081884c7d65";
 const ID_ORDERS: [(u64, u64); 2] = [(11, 22), (22, 11)];
 
 /// `doc > paragraph+ > (text | image | hard_break)*`, with `image` carrying `src`,
-/// `alt`, `title` and, when `app` is set, `board` and `width`.
+/// `alt`, `title` and, when `app` is set, `data-ref` and `width`.
 fn schema(app: bool) -> Rc<Schema> {
     let mut b = Schema::builder();
     b = b.node("doc", NodeSpec::builder("doc").content("block+").build());
@@ -51,7 +51,7 @@ fn schema(app: bool) -> Rc<Schema> {
         spec.attrs.insert("alt".into(), AttrSpec::optional(""));
         spec.attrs.insert("title".into(), AttrSpec::optional(""));
         if app {
-            spec.attrs.insert("board".into(), AttrSpec::optional(""));
+            spec.data_attrs = true;
             spec.attrs.insert("width".into(), AttrSpec::optional(0i64));
         }
         spec
@@ -97,7 +97,7 @@ fn document(s: &Schema, second: bool) -> Node {
             s,
             vec![
                 s.text("ef").unwrap(),
-                image(s, "pimble-blob:two", "second"),
+                image(s, "app-blob:two", "second"),
                 s.text("gh").unwrap(),
             ],
         ));
@@ -242,35 +242,35 @@ fn converged(a: &Peer, b: &Peer, schema: &Rc<Schema>) -> Vec<Attrs> {
     images(&a.state.doc)
 }
 
-// --- board against every concurrent edit of the image and its line -----------------
+// --- data-ref against every concurrent edit of the image and its line -----------------
 
 #[test]
-fn a_board_and_a_concurrent_alt_change_both_survive() {
+fn a_data_ref_and_a_concurrent_alt_change_both_survive() {
     for ids in ID_ORDERS {
         let s = schema(true);
         let (mut a, mut b) = two_peers(&s, document(&s, false), ids);
-        a.set("board", "01JA7Z3QK2V9");
+        a.set("data-ref", "01JA7Z3QK2V9");
         b.set("alt", "new alt");
         sync(&mut a, &mut b);
         let imgs = converged(&a, &b, &s);
         assert_eq!(imgs.len(), 1);
-        assert_eq!(attr(&imgs[0], "board"), "01JA7Z3QK2V9", "{ids:?}");
+        assert_eq!(attr(&imgs[0], "data-ref"), "01JA7Z3QK2V9", "{ids:?}");
         assert_eq!(attr(&imgs[0], "alt"), "new alt", "{ids:?}");
         assert_eq!(attr(&imgs[0], "src"), SRC, "{ids:?}");
     }
 }
 
 #[test]
-fn a_board_and_a_concurrent_width_change_both_survive() {
+fn a_data_ref_and_a_concurrent_width_change_both_survive() {
     for ids in ID_ORDERS {
         let s = schema(true);
         let (mut a, mut b) = two_peers(&s, document(&s, false), ids);
-        a.set("board", "b1");
+        a.set("data-ref", "b1");
         b.set("width", 320i64);
         sync(&mut a, &mut b);
         let imgs = converged(&a, &b, &s);
         assert_eq!(
-            (attr(&imgs[0], "board"), attr(&imgs[0], "width")),
+            (attr(&imgs[0], "data-ref"), attr(&imgs[0], "width")),
             ("b1".to_string(), "320".to_string()),
             "{ids:?}"
         );
@@ -278,35 +278,35 @@ fn a_board_and_a_concurrent_width_change_both_survive() {
 }
 
 /// Enter inside the text before the image, right before it, right after it and at the
-/// end of the line, while a peer marks the picture up: the board is kept, and there is
+/// end of the line, while a peer marks the picture up: the data-ref is kept, and there is
 /// one image.
 #[test]
-fn a_board_survives_enter_anywhere_in_the_images_line() {
+fn a_data_ref_survives_enter_anywhere_in_the_images_line() {
     for ids in ID_ORDERS {
         for at in [2, 3, 4, 6] {
             let s = schema(true);
             let (mut a, mut b) = two_peers(&s, document(&s, false), ids);
-            a.set("board", "b1");
+            a.set("data-ref", "b1");
             b.enter_at(at);
             sync(&mut a, &mut b);
             let imgs = converged(&a, &b, &s);
             assert_eq!(imgs.len(), 1, "{ids:?} Enter at {at}");
-            assert_eq!(attr(&imgs[0], "board"), "b1", "{ids:?} Enter at {at}");
+            assert_eq!(attr(&imgs[0], "data-ref"), "b1", "{ids:?} Enter at {at}");
             assert_eq!(attr(&imgs[0], "alt"), "old alt", "{ids:?} Enter at {at}");
         }
     }
 }
 
 /// The other way round: the peer presses Enter first and syncs, then both edit at once
-/// (Backspace joining the line back, and a board): kept.
+/// (Backspace joining the line back, and a data-ref): kept.
 #[test]
-fn a_board_survives_a_join_that_moves_the_image_into_the_line_above() {
+fn a_data_ref_survives_a_join_that_moves_the_image_into_the_line_above() {
     for ids in ID_ORDERS {
         let s = schema(true);
         let (mut a, mut b) = two_peers(&s, document(&s, true), ids);
         // The second line's image is at 10; Backspace at the start of that line joins
         // it into the first, which moves the image's char into the first line's text.
-        a.set_nth(1, "board", AttrValue::from("b2"));
+        a.set_nth(1, "data-ref", AttrValue::from("b2"));
         b.local(|tr| {
             tr.delete(6, 8).unwrap();
         });
@@ -314,10 +314,10 @@ fn a_board_survives_a_join_that_moves_the_image_into_the_line_above() {
         let imgs = converged(&a, &b, &s);
         assert_eq!(a.state.doc.child_count(), 1, "{ids:?}: joined");
         assert_eq!(imgs.len(), 2, "{ids:?}");
-        assert_eq!(attr(&imgs[1], "board"), "b2", "{ids:?}");
+        assert_eq!(attr(&imgs[1], "data-ref"), "b2", "{ids:?}");
         assert_eq!(attr(&imgs[1], "alt"), "second", "{ids:?}");
         assert_eq!(
-            attr(&imgs[0], "board"),
+            attr(&imgs[0], "data-ref"),
             "",
             "{ids:?}: the other image untouched"
         );
@@ -325,13 +325,13 @@ fn a_board_survives_a_join_that_moves_the_image_into_the_line_above() {
 }
 
 /// A peer cuts the image and pastes it at the end of the line in one transaction (a
-/// drag), while another marks it up: the board follows the picture.
+/// drag), while another marks it up: the data-ref follows the picture.
 #[test]
-fn a_board_follows_an_image_moved_in_one_transaction() {
+fn a_data_ref_follows_an_image_moved_in_one_transaction() {
     for ids in ID_ORDERS {
         let s = schema(true);
         let (mut a, mut b) = two_peers(&s, document(&s, true), ids);
-        a.set("board", "b1");
+        a.set("data-ref", "b1");
         b.local(|tr| {
             let img = tr.doc().child(0).child(1).clone();
             tr.delete(3, 4).unwrap();
@@ -347,23 +347,23 @@ fn a_board_follows_an_image_moved_in_one_transaction() {
             SRC,
             "{ids:?}: moved to the second line"
         );
-        assert_eq!(attr(&imgs[1], "board"), "b1", "{ids:?}");
+        assert_eq!(attr(&imgs[1], "data-ref"), "b1", "{ids:?}");
     }
 }
 
-/// Two peers marking one picture up at once both mint a board id; the replicas
+/// Two peers marking one picture up at once both mint a data-ref; the replicas
 /// converge on one of them (the higher client id's, yrs's rule for one map key).
 #[test]
-fn two_boards_written_at_once_converge_on_the_higher_client_ids() {
+fn two_data_refs_written_at_once_converge_on_the_higher_client_ids() {
     for ids in ID_ORDERS {
         let s = schema(true);
         let (mut a, mut b) = two_peers(&s, document(&s, false), ids);
-        a.set("board", "from A");
-        b.set("board", "from B");
+        a.set("data-ref", "from A");
+        b.set("data-ref", "from B");
         sync(&mut a, &mut b);
         let imgs = converged(&a, &b, &s);
         let expected = if ids.0 > ids.1 { "from A" } else { "from B" };
-        assert_eq!(attr(&imgs[0], "board"), expected, "{ids:?}");
+        assert_eq!(attr(&imgs[0], "data-ref"), expected, "{ids:?}");
     }
 }
 
@@ -380,11 +380,11 @@ fn two_copies_from_concurrent_splits_are_edited_apart() {
         sync(&mut a, &mut b);
         let imgs = converged(&a, &b, &s);
         assert_eq!(imgs.len(), 2, "{ids:?}: the copies {:?}", a.state.doc);
-        a.set_nth(0, "board", AttrValue::from("only the first"));
+        a.set_nth(0, "data-ref", AttrValue::from("only the first"));
         sync(&mut a, &mut b);
         let imgs = converged(&a, &b, &s);
         assert_eq!(
-            imgs.iter().map(|i| attr(i, "board")).collect::<Vec<_>>(),
+            imgs.iter().map(|i| attr(i, "data-ref")).collect::<Vec<_>>(),
             vec!["only the first".to_string(), String::new()],
             "{ids:?}"
         );
@@ -407,7 +407,7 @@ fn an_attr_the_image_no_longer_has_reads_as_absent_everywhere() {
     for ids in ID_ORDERS {
         let s = schema(true);
         let (mut a, mut b) = two_peers(&s, document(&s, false), ids);
-        a.set("board", "b1");
+        a.set("data-ref", "b1");
         sync(&mut a, &mut b);
         let plain = image(&s, SRC, "old alt");
         a.local(|tr| {
@@ -418,7 +418,7 @@ fn an_attr_the_image_no_longer_has_reads_as_absent_everywhere() {
         sync(&mut a, &mut b);
         let imgs = converged(&a, &b, &s);
         assert_eq!(imgs.len(), 1, "{ids:?}");
-        assert_eq!(imgs[0].get("board"), None, "{ids:?}: {:?}", imgs[0]);
+        assert_eq!(imgs[0].get("data-ref"), None, "{ids:?}: {:?}", imgs[0]);
         assert_eq!(attr(&imgs[0], "width"), "120", "{ids:?}");
     }
 }
@@ -426,10 +426,10 @@ fn an_attr_the_image_no_longer_has_reads_as_absent_everywhere() {
 // --- documents written before the merge was per attribute -----------------------
 
 /// A session snapshot written by `rinch-editor-collab` at `3c9958cc` (before this
-/// change): `ab` + image(`pimble-blob:one`, alt `old alt`, title `t`) + `cd`, then
+/// change; the bytes are as recorded, `src`s and all): `ab` + image(`pimble-blob:one`, alt `old alt`, title `t`) + `cd`, then
 /// `ef` + image(`pimble-blob:two`, alt `second`, title `t`) + `gh`, and the first
 /// image's alt then changed to `edited alt` (which that build wrote as the image's
-/// whole `@atom` value again). Starter-kit image: no `board`, no `width`.
+/// whole `@atom` value again). Starter-kit image: no `data-ref`, no `width`.
 const OLD_DOCUMENT: &[&str] = &[
     "011507002801046d65746106666f726d617401771972696e63682d656469746f722d636f6c6c61622f797273",
     "2d31070107636f6e74656e740128000701047479706501770970617261677261706827000701056174747273",
@@ -471,15 +471,15 @@ fn a_document_written_before_loads_as_it_was() {
             ("pimble-blob:two".into(), "second".into())
         );
         // The attrs the app added since are not there.
-        assert_eq!(imgs[0].get("board"), None);
+        assert_eq!(imgs[0].get("data-ref"), None);
         assert_eq!(imgs[0].get("width"), None);
     }
 }
 
 /// The everyday case for an app upgrading: its existing pictures get their first
-/// board while a peer edits around them. Every concurrent edit keeps the board.
+/// data-ref while a peer edits around them. Every concurrent edit keeps the data-ref.
 #[test]
-fn an_image_written_before_takes_a_board_beside_every_concurrent_edit() {
+fn an_image_written_before_takes_a_data_ref_beside_every_concurrent_edit() {
     type Edit = Box<dyn Fn(&mut Peer)>;
     let edits: Vec<(&str, Edit)> = vec![
         ("alt", Box::new(|b: &mut Peer| b.set("alt", "new alt"))),
@@ -511,13 +511,13 @@ fn an_image_written_before_takes_a_board_beside_every_concurrent_edit() {
             let s = schema(true);
             let mut a = peer_from_bytes(&s, &old_bytes(), ids.0);
             let mut b = peer_from_bytes(&s, &old_bytes(), ids.1);
-            a.set_nth(0, "board", AttrValue::from("b1"));
-            a.set_nth(1, "board", AttrValue::from("b2"));
+            a.set_nth(0, "data-ref", AttrValue::from("b1"));
+            a.set_nth(1, "data-ref", AttrValue::from("b2"));
             edit(&mut b);
             sync(&mut a, &mut b);
             let imgs = converged(&a, &b, &s);
             assert_eq!(
-                imgs.iter().map(|i| attr(i, "board")).collect::<Vec<_>>(),
+                imgs.iter().map(|i| attr(i, "data-ref")).collect::<Vec<_>>(),
                 vec!["b1".to_string(), "b2".to_string()],
                 "{name} {ids:?}: {:?}",
                 a.state.doc
@@ -643,13 +643,13 @@ fn the_wire_a_new_image_a_changed_attr_and_a_moved_image() {
     assert!(raw_atom_entries(&a.session.snapshot()).is_empty());
     assert_eq!(raw_stamped(&a.session.snapshot(), 0), Vec::<String>::new());
 
-    a.set("board", "b1");
+    a.set("data-ref", "b1");
     let after = a.session.snapshot();
     let entries = raw_atom_entries(&after);
     assert_eq!(entries.len(), 1, "{entries:?}");
-    assert!(entries[0].0.ends_with("/board"), "{entries:?}");
+    assert!(entries[0].0.ends_with("/data-ref"), "{entries:?}");
     assert_eq!(entries[0].1, yrs::Any::String(Arc::from("b1")));
-    let id = entries[0].0.trim_end_matches("/board").to_string();
+    let id = entries[0].0.trim_end_matches("/data-ref").to_string();
     assert_eq!(
         raw_atoms(&after, 0)[1].1,
         Some(atom.clone()),
@@ -672,12 +672,12 @@ fn the_wire_a_new_image_a_changed_attr_and_a_moved_image() {
     );
     // The value as written (its attrs before any change: those are entries), and the
     // char it was written for, so a copy of it that leaks onto a neighbour is inert.
-    assert_eq!(value.get("board"), None, "{value:?}");
+    assert_eq!(value.get("data-ref"), None, "{value:?}");
     assert!(
         matches!(value.get("@for"), Some(yrs::Any::String(_))),
         "{value:?}"
     );
-    assert_eq!(attr(&images(&a.state.doc)[0], "board"), "b1");
+    assert_eq!(attr(&images(&a.state.doc)[0], "data-ref"), "b1");
     assert_eq!(attr(&images(&a.state.doc)[0], "alt"), "second");
 }
 
@@ -711,9 +711,9 @@ fn insert_node_at(p: &mut Peer, at: usize, n: Node) {
     });
 }
 
-fn srcs_and_boards(imgs: &[Attrs]) -> Vec<(String, String)> {
+fn srcs_and_data_refs(imgs: &[Attrs]) -> Vec<(String, String)> {
     imgs.iter()
-        .map(|i| (attr(i, "src"), attr(i, "board")))
+        .map(|i| (attr(i, "src"), attr(i, "data-ref")))
         .collect()
 }
 
@@ -734,7 +734,7 @@ fn a_join_after_an_image_keeps_the_moved_images_attrs() {
         )
         .unwrap();
     let (mut a, mut b) = two_peers(&s, doc, (11, 22));
-    a.set_nth(1, "board", AttrValue::from("on two"));
+    a.set_nth(1, "data-ref", AttrValue::from("on two"));
     sync(&mut a, &mut b);
     a.local(|tr| {
         tr.delete(4, 6).unwrap();
@@ -747,7 +747,7 @@ fn a_join_after_an_image_keeps_the_moved_images_attrs() {
     sync(&mut a, &mut b);
     let imgs = converged(&a, &b, &s);
     assert_eq!(
-        srcs_and_boards(&imgs),
+        srcs_and_data_refs(&imgs),
         vec![
             ("one".to_string(), String::new()),
             ("two".to_string(), "on two".to_string())
@@ -757,7 +757,7 @@ fn a_join_after_an_image_keeps_the_moved_images_attrs() {
 }
 
 /// A picture inserted right before another keeps that other's identity where it is:
-/// a peer's concurrent `board` on the other stays on it (review of #1503, F2: it went
+/// a peer's concurrent `data-ref` on the other stays on it (review of #1503, F2: it went
 /// to the new picture).
 #[test]
 fn an_image_inserted_before_another_does_not_take_its_identity() {
@@ -774,12 +774,12 @@ fn an_image_inserted_before_another_does_not_take_its_identity() {
         );
         let doc = s.branch("doc", Fragment::from_node(line)).unwrap();
         let (mut a, mut b) = two_peers(&s, doc, ids);
-        a.set_nth(1, "board", AttrValue::from("on two"));
+        a.set_nth(1, "data-ref", AttrValue::from("on two"));
         insert_node_at(&mut b, 4, image(&s, "new", "x"));
         sync(&mut a, &mut b);
         let imgs = converged(&a, &b, &s);
         assert_eq!(
-            srcs_and_boards(&imgs),
+            srcs_and_data_refs(&imgs),
             vec![
                 ("one".to_string(), String::new()),
                 ("new".to_string(), String::new()),
@@ -791,7 +791,7 @@ fn an_image_inserted_before_another_does_not_take_its_identity() {
 }
 
 /// Two pictures swapped in one transaction (the text unchanged): each keeps its own
-/// identity, so a peer's concurrent `board` stays on its picture.
+/// identity, so a peer's concurrent `data-ref` stays on its picture.
 #[test]
 fn two_images_swapped_keep_their_identities() {
     for ids in ID_ORDERS {
@@ -801,7 +801,7 @@ fn two_images_swapped_keep_their_identities() {
         let line = para(&s, vec![s.text("ab").unwrap(), one.clone(), two.clone()]);
         let doc = s.branch("doc", Fragment::from_node(line)).unwrap();
         let (mut a, mut b) = two_peers(&s, doc, ids);
-        a.set_nth(0, "board", AttrValue::from("on one"));
+        a.set_nth(0, "data-ref", AttrValue::from("on one"));
         // B swaps them, keeping the nodes (a drag).
         let (n1, n2) = {
             let p = b.state.doc.child(0);
@@ -818,7 +818,7 @@ fn two_images_swapped_keep_their_identities() {
         sync(&mut a, &mut b);
         let imgs = converged(&a, &b, &s);
         assert_eq!(
-            srcs_and_boards(&imgs),
+            srcs_and_data_refs(&imgs),
             vec![
                 ("two".to_string(), String::new()),
                 ("one".to_string(), "on one".to_string())
@@ -893,7 +893,7 @@ fn an_attr_removed_in_place_reads_as_absent() {
             Attrs::new()
                 .with("src", AttrValue::from(SRC))
                 .with("alt", AttrValue::from("old alt"))
-                .with("board", AttrValue::from("b1")),
+                .with("data-ref", AttrValue::from("b1")),
             Fragment::empty(),
         )
         .unwrap();
@@ -903,7 +903,7 @@ fn an_attr_removed_in_place_reads_as_absent() {
     a.local(|tr| {
         tr.step(Box::new(SetNodeAttrStep {
             pos: 3,
-            attr: "board".into(),
+            attr: "data-ref".into(),
             value: None,
         }))
         .unwrap();
@@ -913,27 +913,27 @@ fn an_attr_removed_in_place_reads_as_absent() {
     assert_eq!(entries[0].1, yrs::Any::Undefined, "{entries:?}");
     sync(&mut a, &mut b);
     let imgs = converged(&a, &b, &s);
-    assert_eq!(imgs[0].get("board"), None, "{imgs:?}");
+    assert_eq!(imgs[0].get("data-ref"), None, "{imgs:?}");
     assert_eq!(attr(&imgs[0], "alt"), "old alt");
 }
 
-/// A picture pasted over a boarded picture at the moment a peer marks the old one up:
+/// A picture pasted over a data_refed picture at the moment a peer marks the old one up:
 /// the model cannot tell a paste-over from a `src` change (both put a new node where
-/// the old one was), and a `src` change makes a new atom, so the board is lost; it
+/// the old one was), and a `src` change makes a new atom, so the data-ref is lost; it
 /// never shows on the pasted picture. Chosen by Joe (2026-10-09): a wrong attribution
 /// is worse than a lost one.
 #[test]
-fn a_board_never_lands_on_a_picture_pasted_over_its_own() {
+fn a_data_ref_never_lands_on_a_picture_pasted_over_its_own() {
     for ids in ID_ORDERS {
-        for board_first in [false, true] {
+        for data_ref_first in [false, true] {
             let s = schema(true);
             let (mut a, mut b) = two_peers(&s, document(&s, false), ids);
-            if board_first {
-                // Already boarded and synced: a second mark-up races the paste.
-                a.set("board", "first");
+            if data_ref_first {
+                // Already data_refed and synced: a second mark-up races the paste.
+                a.set("data-ref", "first");
                 sync(&mut a, &mut b);
             }
-            a.set("board", "on the old picture");
+            a.set("data-ref", "on the old picture");
             b.local(|tr| {
                 tr.replace(
                     3,
@@ -945,9 +945,9 @@ fn a_board_never_lands_on_a_picture_pasted_over_its_own() {
             sync(&mut a, &mut b);
             let imgs = converged(&a, &b, &s);
             assert_eq!(
-                srcs_and_boards(&imgs),
+                srcs_and_data_refs(&imgs),
                 vec![("pasted".to_string(), String::new())],
-                "{ids:?} board_first {board_first}"
+                "{ids:?} data_ref_first {data_ref_first}"
             );
         }
     }
@@ -956,14 +956,14 @@ fn a_board_never_lands_on_a_picture_pasted_over_its_own() {
 /// A document loaded over the shared one (its nodes are not the editor's: nothing is
 /// `same_ref`) says nothing about which picture is which, so the text diff matches a
 /// picture only with an equal one: a picture the load inserts right before another
-/// does not take the other's identity, and a peer's concurrent `board` on the other
+/// does not take the other's identity, and a peer's concurrent `data-ref` on the other
 /// stays on it.
 #[test]
 fn a_load_that_inserts_a_picture_before_another_keeps_the_others_identity() {
     for ids in ID_ORDERS {
         let s = schema(true);
         let (mut a, mut b) = two_peers(&s, document(&s, false), ids);
-        b.set("board", "on the first");
+        b.set("data-ref", "on the first");
         // A loads the same document with a new picture before the first, built anew.
         let loaded = s
             .branch(
@@ -985,7 +985,7 @@ fn a_load_that_inserts_a_picture_before_another_keeps_the_others_identity() {
         sync(&mut a, &mut b);
         let imgs = converged(&a, &b, &s);
         assert_eq!(
-            srcs_and_boards(&imgs),
+            srcs_and_data_refs(&imgs),
             vec![
                 ("loaded".to_string(), String::new()),
                 (SRC.to_string(), "on the first".to_string())
@@ -997,13 +997,13 @@ fn a_load_that_inserts_a_picture_before_another_keeps_the_others_identity() {
 
 /// One transaction that changes one picture's attrs and moves another (Enter before
 /// it): the move still carries the moved picture's identity, so a peer's concurrent
-/// `board` on it follows it.
+/// `data-ref` on it follows it.
 #[test]
 fn an_attr_change_and_a_move_in_one_transaction() {
     for ids in ID_ORDERS {
         let s = schema(true);
         let (mut a, mut b) = two_peers(&s, document(&s, true), ids);
-        b.set_nth(1, "board", AttrValue::from("on the second"));
+        b.set_nth(1, "data-ref", AttrValue::from("on the second"));
         a.local(|tr| {
             tr.step(Box::new(SetNodeAttrStep::new(
                 3,
@@ -1016,20 +1016,20 @@ fn an_attr_change_and_a_move_in_one_transaction() {
         sync(&mut a, &mut b);
         let imgs = converged(&a, &b, &s);
         assert_eq!(attr(&imgs[0], "alt"), "x", "{ids:?}");
-        assert_eq!(attr(&imgs[1], "board"), "on the second", "{ids:?}");
+        assert_eq!(attr(&imgs[1], "data-ref"), "on the second", "{ids:?}");
         assert_eq!(attr(&imgs[1], "alt"), "second", "{ids:?}");
     }
 }
 
 /// A picture cut and pasted twice in one transaction is two copies of one node: which
 /// one is the picture cannot be told, so neither takes its identity and a peer's
-/// concurrent `board` on it is lost rather than shown on both.
+/// concurrent `data-ref` on it is lost rather than shown on both.
 #[test]
 fn a_picture_pasted_twice_carries_its_identity_to_neither_copy() {
     for ids in ID_ORDERS {
         let s = schema(true);
         let (mut a, mut b) = two_peers(&s, document(&s, false), ids);
-        b.set("board", "on the picture");
+        b.set("data-ref", "on the picture");
         let node = a.state.doc.child(0).child(1).clone();
         a.local(|tr| {
             tr.delete(3, 4).unwrap();
@@ -1043,22 +1043,22 @@ fn a_picture_pasted_twice_carries_its_identity_to_neither_copy() {
         let imgs = converged(&a, &b, &s);
         assert_eq!(imgs.len(), 2, "{ids:?}");
         assert!(
-            imgs.iter().all(|i| attr(i, "board").is_empty()),
+            imgs.iter().all(|i| attr(i, "data-ref").is_empty()),
             "{ids:?}: {imgs:?}"
         );
     }
 }
 
 /// A picture dragged past the text after it ("ab X cd" to "abcd X") while a peer
-/// writes its first `board`: the board follows it. (Found by the differential, seed
+/// writes its first `data-ref`: the data-ref follows it. (Found by the differential, seed
 /// 544: a formatted value could extend over the re-inserted text before the moved
 /// picture's char, and the run's first char was taken to be that stray text.)
 #[test]
-fn a_board_follows_a_picture_dragged_past_the_text_after_it() {
+fn a_data_ref_follows_a_picture_dragged_past_the_text_after_it() {
     for ids in ID_ORDERS {
         let s = schema(true);
         let (mut a, mut b) = two_peers(&s, document(&s, false), ids);
-        a.set("board", "b1");
+        a.set("data-ref", "b1");
         let node = b.state.doc.child(0).child(1).clone();
         b.local(|tr| {
             tr.delete(3, 4).unwrap();
@@ -1067,7 +1067,7 @@ fn a_board_follows_a_picture_dragged_past_the_text_after_it() {
         });
         sync(&mut a, &mut b);
         let imgs = converged(&a, &b, &s);
-        assert_eq!(attr(&imgs[0], "board"), "b1", "{ids:?}: {imgs:?}");
+        assert_eq!(attr(&imgs[0], "data-ref"), "b1", "{ids:?}: {imgs:?}");
         assert_eq!(attr(&imgs[0], "alt"), "old alt", "{ids:?}");
     }
 }
@@ -1075,7 +1075,7 @@ fn a_board_follows_a_picture_dragged_past_the_text_after_it() {
 /// A copy of a picture pasted right before a second picture while a peer marks the
 /// second up: the peer's change can extend a formatted range over the pasted char (yrs
 /// orders the two edits at one boundary by client id), so the change must not be a
-/// key of the `@atom` value, or the copy reads as the second picture, board and all.
+/// key of the `@atom` value, or the copy reads as the second picture, data-ref and all.
 /// (Found by the differential, seed 208, when the first change wrote `@id` into the
 /// value; it now marks the char with a separate `@entries`.)
 #[test]
@@ -1093,13 +1093,13 @@ fn a_copy_pasted_before_a_picture_being_marked_up_stays_a_copy() {
         );
         let doc = s.branch("doc", Fragment::from_node(line)).unwrap();
         let (mut a, mut b) = two_peers(&s, doc, ids);
-        a.set_nth(1, "board", AttrValue::from("on two"));
+        a.set_nth(1, "data-ref", AttrValue::from("on two"));
         let one = b.state.doc.child(0).child(1).clone();
         insert_node_at(&mut b, 4, one);
         sync(&mut a, &mut b);
         let imgs = converged(&a, &b, &s);
         assert_eq!(
-            srcs_and_boards(&imgs),
+            srcs_and_data_refs(&imgs),
             vec![
                 ("one".to_string(), String::new()),
                 ("one".to_string(), String::new()),

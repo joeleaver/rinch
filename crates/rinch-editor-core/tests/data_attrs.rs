@@ -27,7 +27,12 @@ fn pasted_image(html: &str) -> Node {
         }
         n.content().children().iter().find_map(find)
     }
-    slice.content.children().iter().find_map(find).expect("an image")
+    slice
+        .content
+        .children()
+        .iter()
+        .find_map(find)
+        .expect("an image")
 }
 
 /// The attribute validation keeps an opted-in node's app data attributes, and
@@ -44,7 +49,7 @@ fn an_image_keeps_valid_app_data_attrs_and_nothing_else() {
         ("data-annotation-id", AttrValue::from("")),
         ("data-é", AttrValue::from("accented")),
         // Not kept:
-        ("board", AttrValue::from("b1")),
+        ("caption", AttrValue::from("undeclared")),
         ("onerror", AttrValue::from("alert(1)")),
         ("data-", AttrValue::from("no name")),
         ("data-Ref", AttrValue::from("uppercase")),
@@ -77,7 +82,8 @@ fn a_paragraph_keeps_no_data_attr() {
     assert!(kept.is_empty(), "{kept:?}");
 }
 
-/// The starter kit's image declares no `board` any more.
+/// The starter kit's image declares `src`, `alt`, `title` and `width`, and
+/// nothing an app would otherwise have to ask for: its own data goes in `data-*`.
 #[test]
 fn the_starter_kits_image_declares_src_alt_title_width() {
     let schema = Schema::starter_kit();
@@ -153,7 +159,9 @@ mod doc_json {
     fn an_images_data_attrs_survive_doc_node() {
         let schema = Schema::starter_kit();
         let img = image(&schema, &[("data-ref", AttrValue::from("r1"))]);
-        let para = schema.branch("paragraph", Fragment::from_node(img)).unwrap();
+        let para = schema
+            .branch("paragraph", Fragment::from_node(img))
+            .unwrap();
         let doc = schema.branch("doc", Fragment::from_node(para)).unwrap();
         let wire = doc.to_doc().unwrap();
         let back = schema.node_from_doc(&wire).unwrap();
@@ -165,17 +173,16 @@ mod doc_json {
     }
 
     /// A stored image attribute the schema does not declare and that is no data
-    /// attribute (`board`, which builds between #1500 and this change declared)
-    /// is dropped on load, as any unknown attribute is.
+    /// attribute is dropped on load, as any unknown attribute is.
     #[test]
     fn an_unknown_image_attr_is_dropped_on_load() {
         let schema = Schema::starter_kit();
         let json = r#"{"type":"doc","content":[{"type":"paragraph","content":[
-            {"type":"image","attrs":{"src":"a.png","board":"b1","data-ref":"r1"}}]}]}"#;
+            {"type":"image","attrs":{"src":"a.png","caption":"undeclared","data-ref":"r1"}}]}]}"#;
         let wire: rinch_editor_core::serialize::DocNode = serde_json::from_str(json).unwrap();
         let doc = schema.node_from_doc(&wire).unwrap();
         let img = doc.child(0).child(0);
-        assert_eq!(img.attrs().get("board"), None);
+        assert_eq!(img.attrs().get("caption"), None);
         assert_eq!(img.attrs().get_str("data-ref"), Some("r1"));
     }
 }
@@ -183,9 +190,7 @@ mod doc_json {
 #[cfg(feature = "markdown")]
 mod markdown {
     use super::*;
-    use rinch_editor_core::serialize::{
-        MarkdownError, doc_from_markdown_strict, doc_to_markdown,
-    };
+    use rinch_editor_core::serialize::{MarkdownError, doc_from_markdown_strict, doc_to_markdown};
 
     fn table(img: &str) -> String {
         format!(
