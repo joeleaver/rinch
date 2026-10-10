@@ -506,7 +506,7 @@ fn close(want: &str, got: &str) -> bool {
             .collect()
     };
     let (w, g) = (nums(want), nums(got));
-    w.len() == g.len() && w.iter().zip(&g).all(|(a, b)| (a - b).abs() <= 1.0)
+    w.len() == g.len() && w.iter().zip(&g).all(|(a, b)| (a - b).abs() <= 0.75)
 }
 
 fn known(name: &str) -> Option<&'static (&'static str, &'static str, &'static str)> {
