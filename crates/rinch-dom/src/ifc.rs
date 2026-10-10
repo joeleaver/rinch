@@ -463,19 +463,9 @@ impl AtomicContributions<'_> {
         // Resolved against exactly this width: the size it has is the answer
         // (and the one the paint layout will use).
         if resolved_at.is_some_and(|w| (w - wrap).abs() < 0.01) {
-            // Capped: its margin box, as below — at the width it was capped
-            // at, not the one rounding gave its layout, or a measure at this
-            // width answers otherwise than the one before the box was
-            // resolved here, and a container sized from it moves by the
-            // rounding (review of #1510).
+            // Capped: its margin box, as below.
             return match plain_shrink_to_fit_margins(&node.computed_style) {
-                Some(margins) if layout.0 + 0.5 < natural.0 => {
-                    let width = self
-                        .min_content
-                        .get(&id)
-                        .map_or(layout.0, |&min| (wrap - margins).max(0.0).max(min));
-                    (width + margins, layout.1)
-                }
+                Some(margins) if layout.0 + 0.5 < natural.0 => (layout.0 + margins, layout.1),
                 _ => layout,
             };
         }
@@ -506,7 +496,15 @@ impl AtomicContributions<'_> {
             // its min-content compute, which breaks its text at every
             // opportunity: at its min-content *width* the short words share
             // lines (review of #1488).
-            Some(fit) => (fit + margins, layout.1),
+            //
+            // At the width its layout will round that to (a box laid out as
+            // a root is `round(width)` wide), which is what the branch above
+            // answers once it has been: a measure at this width then answers
+            // the same before and after, so a container sized from it does
+            // not move by the rounding between an incremental layout and a
+            // fresh one, and is not a pixel narrower than the box it holds
+            // (reviews of #1510).
+            Some(fit) => (fit.round() + margins, layout.1),
         }
     }
 }

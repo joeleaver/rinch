@@ -3494,9 +3494,11 @@ anything on a relayout that moves nothing. An ICB box re-bakes (and is
 re-measured) on every viewport resize, with no extra compute. Taffy's leaf
 algorithm took an absolute leaf's own margins off a second time;
 `out_of_flow::absolute_leaf_inputs` puts them back at both leaf measure sites.
-An `auto` atomic inline capped by #1476 answers an IFC measure at the width it
-was capped at, not its rounded layout width (a container sized from it moved by
-the rounding, so an incremental layout disagreed with a fresh one). Pins:
+An `auto` atomic inline capped by #1476 answers an IFC measure at its capped
+width **rounded**, as its layout will be (`round(width)`) — the answer it gives
+once laid out there — so a container sized from it does not move by the
+rounding between an incremental and a fresh layout, nor come out a pixel
+narrower than the box it holds. Pins:
 `tests/abs_shrink_to_fit_1404_tests.rs` (74 Chrome 155 rows) and
 `review_1510_1010_fixtures.rs`. Not Chrome's: content that wraps answers its
 widest line (**#1276**: the issue's own example is 390x40, was 130x80, Chrome
