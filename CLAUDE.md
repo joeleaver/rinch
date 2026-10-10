@@ -5148,7 +5148,14 @@ it is gone, and not at all if none is), and when that scope drops, after its
 cleanups, each one still detached, not retired and with an unchanged minting
 record is discarded (`render_scope::discard_filed_orphans`; a captured handle
 inside is taken out first, with no child observer told,
-`late_child::without_notifications`). So every handle re-inserts while its
+`late_child::without_notifications`). Orphans are filed per node (`filed`,
+with a per-scope set), so a host toggling text over one kept child holds one
+entry, and any `NodeHandle` insertion verb (`append_child`, `insert_before`,
+`insert_after`, `replace_with`) unfiles the node it puts back
+(`render_scope::unfile`, one `Cell` read while nothing is filed): from then on
+it is an ordinary node, kept at the scope's end even if `remove()`d again. The
+record check matters only for a node put back through the backend directly,
+whose id `rinch-dom` may free and re-issue. So every handle re-inserts while its
 scope lives — a static component's handed children share its caller's scope,
 and a component may keep a handle to its own child — and a branch's orphans go
 with the branch. Before, every orphan stayed in the node and minting tables for
