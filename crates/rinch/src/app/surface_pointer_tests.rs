@@ -535,3 +535,95 @@ fn an_unregistered_surface_holds_no_press() {
     moved(&mut app, (400.0, 300.0));
     assert!(app.surface_captures.is_empty());
 }
+
+// ── REVIEW-1502 round 2 fixtures ─────────────────────────────────────────────
+
+/// N1: two fingers pinch, a third taps (down, a jitter move, up) on the same
+/// surface: the tap makes no `Pinch`, ends neither pinching finger's capture
+/// (its left press heals only its own pointer), and the next move of a
+/// pinching finger scales against the spread before the tap.
+#[test]
+fn n1_a_third_finger_tapping_during_a_pinch_changes_nothing() {
+    let (mut app, surface, seen) = app_with_surface();
+    surface.set_pointer_events(true);
+    set_current_pointer(Some(finger(10, true)));
+    down(&mut app, (100.0, 100.0));
+    set_current_pointer(Some(finger(11, true)));
+    down(&mut app, (150.0, 100.0));
+    seen.borrow_mut().clear();
+    set_current_pointer(Some(finger(12, true)));
+    down(&mut app, (200.0, 130.0));
+    moved(&mut app, (203.0, 131.0));
+    set_current_pointer(Some(finger(12, false)));
+    up(&mut app, (203.0, 131.0));
+    let got = names(&seen);
+    assert!(
+        !got.iter()
+            .any(|n| n.starts_with("pinch") || n.starts_with("pcancel")),
+        "{got:?}"
+    );
+    assert_eq!(
+        app.surface_captures.len(),
+        2,
+        "both pinching fingers keep the surface"
+    );
+    seen.borrow_mut().clear();
+    set_current_pointer(Some(finger(11, true)));
+    moved(&mut app, (200.0, 100.0));
+    let pinches: Vec<String> = names(&seen)
+        .into_iter()
+        .filter(|n| n.starts_with("pinch"))
+        .collect();
+    assert_eq!(pinches, ["pinch 100,50 2"]);
+    set_current_pointer(None);
+}
+
+/// N1b: the tracker alone — a third touch moving never reports; then the
+/// first lifts and the third becomes one of the first two.
+#[test]
+fn n1b_the_tracker_ignores_a_third_touch_until_it_is_one_of_the_first_two() {
+    let mut t = crate::render_surface::PinchTracker::default();
+    t.down(1, 0.0, 0.0);
+    t.down(2, 10.0, 0.0);
+    t.down(3, 50.0, 50.0);
+    for i in 0..5 {
+        assert_eq!(
+            t.moved(3, 50.0 + i as f32 * 7.3, 50.0 - i as f32 * 1.1),
+            None
+        );
+    }
+    assert_eq!(t.moved(2, 20.0, 0.0), Some((10.0, 0.0, 2.0)));
+    t.up(1);
+    // Now 2 (20,0) and 3 (79.2,45.6) are the pair.
+    assert!(t.moved(3, 20.0, 10.0).is_some());
+}
+
+/// N2 (policy, #381 rule): a capture armed by the RIGHT button is ended by a
+/// left chord press — the left-press proof does not ask which button armed the
+/// press, as it already does not for a `Drag`. Pinned so the choice is
+/// visible; flip the assertion if the policy changes.
+#[test]
+fn n2_a_left_chord_press_cancels_a_right_button_capture() {
+    let (mut app, _surface, seen) = app_with_surface();
+    moved(&mut app, (100.0, 100.0));
+    let right = MouseButton::Right;
+    ev(
+        &mut app,
+        PlatformEvent::MouseDown {
+            x: 100.0,
+            y: 100.0,
+            button: right,
+        },
+    );
+    seen.borrow_mut().clear();
+    let left = MouseButton::Left;
+    ev(
+        &mut app,
+        PlatformEvent::MouseDown {
+            x: 100.0,
+            y: 100.0,
+            button: left,
+        },
+    );
+    assert_eq!(names(&seen), ["up 50,50", "down 50,50"]);
+}

@@ -363,6 +363,40 @@ fn surface_pointer_of_button(
     pointer
 }
 
+/// The buttons or contacts down, as `(SurfacePointer::id, button)`: what
+/// decides the pressure a move reports for a device that cannot measure it.
+/// Per button, so a chord's release (right up while left is held) leaves the
+/// pointer down.
+#[derive(Debug, Default)]
+struct PressedButtons(Vec<(u64, Option<MouseButton>)>);
+
+impl PressedButtons {
+    /// `button` of pointer `id` went down (`pressed`) or up.
+    fn note(&mut self, id: u64, button: Option<MouseButton>, pressed: bool) {
+        self.0.retain(|k| *k != (id, button));
+        if pressed {
+            self.0.push((id, button));
+        }
+    }
+
+    /// Whether pointer `id` has any button or contact down.
+    fn is_down(&self, id: u64) -> bool {
+        self.0.iter().any(|(p, _)| *p == id)
+    }
+
+    /// Forget every button of pointer `id`; answers whether it had any down.
+    fn lift(&mut self, id: u64) -> bool {
+        let was = self.is_down(id);
+        self.0.retain(|(p, _)| *p != id);
+        was
+    }
+
+    /// Forget every press (the window lost focus).
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
 /// Resets the pointer `set_current_pointer` named when dropped.
 struct ForgetCurrentPointer;
 
@@ -411,7 +445,7 @@ pub struct RinchRuntime {
     /// decides the pressure a move reports for a device that cannot measure
     /// it. Per button, so a chord's release (right up while left is held)
     /// leaves the pointer down.
-    pressed_pointers: Vec<(u64, Option<MouseButton>)>,
+    pressed_pointers: PressedButtons,
     /// The cursor last applied to the window, so an unchanged
     /// `AppAction::SetCursor` — which hover emits on every pointer move — does
     /// not reach the windowing system. Reset when the window is dropped.
@@ -486,7 +520,7 @@ impl RinchRuntime {
             native_menu: None,
             draining_native_events: false,
             pending_pointer_move: None,
-            pressed_pointers: Vec::new(),
+            pressed_pointers: PressedButtons::default(),
             applied_cursor: None,
             devtools_store: None,
             devtools_app: None,
@@ -1953,7 +1987,7 @@ impl ApplicationHandler for RinchRuntime {
             // `app.cursor_pos`, which the flushed move sets.
             let (lx, ly) = to_logical_point((position.x, position.y), self.scale_factor());
             let id = pointer_id_of(source);
-            let down = self.pressed_pointers.iter().any(|(p, _)| *p == id);
+            let down = self.pressed_pointers.is_down(id);
             let pointer = surface_pointer_of(source, *primary, down);
             self.queue_pointer_move(lx as f32, ly as f32, pointer, event_loop);
             return;
@@ -1977,11 +2011,8 @@ impl ApplicationHandler for RinchRuntime {
                 self.queue_pointer_move(lx as f32, ly as f32, pointer, event_loop);
             }
             self.flush_pointer_move(event_loop);
-            let key = (pointer.id, button.clone().mouse_button());
-            self.pressed_pointers.retain(|p| *p != key);
-            if pressed {
-                self.pressed_pointers.push(key);
-            }
+            self.pressed_pointers
+                .note(pointer.id, button.clone().mouse_button(), pressed);
             crate::render_surface::set_current_pointer(Some(pointer));
         }
         self.flush_pointer_move(event_loop);
@@ -2123,10 +2154,9 @@ impl ApplicationHandler for RinchRuntime {
                 ..
             } => {
                 let id = TOUCH_POINTER_BASE + finger_id.into_raw() as u64;
-                if !self.pressed_pointers.iter().any(|(p, _)| *p == id) {
+                if !self.pressed_pointers.lift(id) {
                     return;
                 }
-                self.pressed_pointers.retain(|(p, _)| *p != id);
                 let pointer = SurfacePointer {
                     id,
                     kind: SurfacePointerKind::Touch,
@@ -2169,6 +2199,15 @@ impl ApplicationHandler for RinchRuntime {
                 }
             }
             WindowEvent::Focused(focused) => {
+                // A window that lost focus may never be sent the release of a
+                // button held across the blur (it goes to the window that took
+                // focus): forget every press, or a hover on a surface with
+                // pointer events would go on reporting a pressure of 0.5 until
+                // that button is pressed and released here again. The app's
+                // own heal ends the press gestures and surface captures.
+                if !focused {
+                    self.pressed_pointers.clear();
+                }
                 // Tell the AT whether this window has OS focus.
                 #[cfg(feature = "a11y")]
                 if let Some(bridge) = self.a11y.as_mut() {
@@ -4128,6 +4167,26 @@ mod pointer_source_tests {
                 ..Default::default()
             },
         }
+    }
+
+    /// A chord's release leaves the held button down; a window blur forgets
+    /// every press, since the release of a button held across it may go to
+    /// another window (review of #1502, N3).
+    #[test]
+    fn pressed_buttons_track_chords_and_a_blur_forgets_them() {
+        let mut p = PressedButtons::default();
+        p.note(1, Some(MouseButton::Left), true);
+        p.note(1, Some(MouseButton::Right), true);
+        p.note(1, Some(MouseButton::Right), false);
+        assert!(p.is_down(1), "the left button is still held");
+        p.note(1, Some(MouseButton::Left), false);
+        assert!(!p.is_down(1));
+        p.note(1, Some(MouseButton::Left), true);
+        p.note(TOUCH_POINTER_BASE, None, true);
+        p.clear();
+        assert!(!p.is_down(1) && !p.is_down(TOUCH_POINTER_BASE));
+        p.note(TOUCH_POINTER_BASE, None, true);
+        assert!(p.lift(TOUCH_POINTER_BASE) && !p.lift(TOUCH_POINTER_BASE));
     }
 
     #[test]
