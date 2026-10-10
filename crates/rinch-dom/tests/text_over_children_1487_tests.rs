@@ -73,3 +73,49 @@ fn an_elements_lone_text_child_written_in_place_keeps_its_record() {
     );
     assert_eq!(label.text_content().as_deref(), Some("two"));
 }
+
+/// An orphan whose id was freed and handed to another node before its scope
+/// goes is not that orphan any more: the scope's end leaves the newcomer
+/// alone. `rinch-dom` frees an id through `set_inner_html` and re-issues it to
+/// the next node minted.
+#[test]
+fn a_reissued_orphan_id_is_not_discarded_with_the_old_scope() {
+    let (doc, body, _table) = mounted();
+    let mut scope = RenderScope::new(doc.clone(), body.node_id());
+    let host = scope.create_element("div");
+    body.append_child(&host);
+    let child = scope.create_element("span");
+    host.append_child(&child);
+    host.set_text("over");
+
+    // The orphan goes back somewhere and is freed with that element's markup.
+    let elsewhere = scope.create_element("section");
+    body.append_child(&elsewhere);
+    elsewhere.append_child(&child);
+    elsewhere.set_inner_html("");
+
+    // Another scope mints a node on the freed id and keeps it detached.
+    let mut other = RenderScope::new(doc.clone(), body.node_id());
+    let mut newcomer = other.create_element("p");
+    for _ in 0..64 {
+        if newcomer.node_id() == child.node_id() {
+            break;
+        }
+        newcomer = other.create_element("p");
+    }
+    assert_eq!(
+        newcomer.node_id(),
+        child.node_id(),
+        "precondition: the freed id was re-issued"
+    );
+    assert_eq!(doc.borrow().parent_node(newcomer.node_id()), None);
+
+    let before = __minted_by_len();
+    drop(scope);
+    assert_eq!(
+        __minted_by_len(),
+        before,
+        "the newcomer keeps its minting record: it is `other`'s node, not the \
+         old scope's orphan"
+    );
+}
