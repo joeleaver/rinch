@@ -3337,6 +3337,10 @@ pub fn run_rinch_with_window_props_and_menu<F>(
         send_native_event(RinchNativeEvent::ReRender);
     });
 
+    #[cfg(all(target_os = "linux", feature = "system-tray"))]
+    if let Some(id) = props.app_id.as_deref() {
+        let _ = DECLARED_APP_ID.set(id.to_string());
+    }
     let mut runtime = build_runtime(component, &props, native_menu, fonts);
     runtime.proxy = Some(proxy.clone());
 
@@ -3432,7 +3436,7 @@ fn load_window_icon(png_data: &[u8]) -> Result<winit::icon::Icon, Box<dyn std::e
 /// Falls back to `"rinch-app"` only when the executable path is unavailable,
 /// which is where the old behaviour came from.
 #[cfg(target_os = "linux")]
-fn resolved_app_id(explicit: Option<&str>) -> String {
+pub(crate) fn resolved_app_id(explicit: Option<&str>) -> String {
     if let Some(id) = explicit {
         return id.to_string();
     }
@@ -3441,6 +3445,20 @@ fn resolved_app_id(explicit: Option<&str>) -> String {
         .as_deref()
         .and_then(app_id_from_exe_path)
         .unwrap_or_else(|| "rinch-app".to_string())
+}
+
+/// The `WindowProps::app_id` the running app declared, recorded when its
+/// event loop starts. Read by the tray (`rinch::tray`, #1529) so a tray built
+/// after that point reports the same identity as the window; a tray built
+/// earlier (the usual order: in `main`, before `App::run`) cannot see it and
+/// takes `TrayIconBuilder::with_id` or the executable name instead.
+#[cfg(all(target_os = "linux", feature = "system-tray"))]
+static DECLARED_APP_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// See [`DECLARED_APP_ID`].
+#[cfg(all(target_os = "linux", feature = "system-tray"))]
+pub(crate) fn declared_app_id() -> Option<&'static str> {
+    DECLARED_APP_ID.get().map(String::as_str)
 }
 
 /// The identity an executable path implies: its **whole** file name.

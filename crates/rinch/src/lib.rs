@@ -160,6 +160,8 @@ pub mod prelude {
     pub use crate::app_builder::App;
     #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
     pub use crate::font::{AppFont, GenericFamily};
+    #[cfg(feature = "desktop")]
+    pub use crate::shell::activation::ActivationPolicy;
     #[cfg(all(feature = "android", target_os = "android"))]
     #[allow(deprecated)]
     pub use crate::shell::android_runtime::{
@@ -313,6 +315,8 @@ pub use rinch_core::{
     Effect, Memo, Owner, Scope, Signal, batch, current_owner, derived, unowned, untracked,
 };
 pub use rinch_macros::{component, rsx};
+#[cfg(feature = "desktop")]
+pub use shell::activation::ActivationPolicy;
 #[cfg(feature = "desktop")]
 pub use shell::renderer::Renderer;
 #[cfg(feature = "desktop")]

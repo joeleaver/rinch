@@ -710,6 +710,26 @@ replacing itself with "Stop"). To move a check mark, write the item's signal
 instead: checkbox and radio items ([Menus](menus.md#checkbox-and-radio-items))
 follow their signals in a tray menu too.
 
+### Item Id
+
+On Linux the tray item reports an id to the panel (the StatusNotifierItem
+`Id`), which panels use to remember per-item settings such as whether the icon
+is shown and where. It is the app's own (issue #1529; it was `"rinch-app"` for
+every rinch app): the executable's file name, or the `WindowProps::app_id` the
+app declared if the tray is built after `App::run` has started. Set it
+explicitly with `with_id`, which an app that declares an `app_id` and builds its
+tray in `main` should do with the same string:
+
+```rust
+let tray = TrayIconBuilder::new()
+    .with_id("com.example.notes")
+    .with_icon(icon)
+    .build()?;
+```
+
+Windows and macOS have no such id (they identify the icon by the app), so
+`with_id` is not used there.
+
 ### Left Click (Activate)
 
 By default a primary click on the icon shows the window. `on_activate` replaces
@@ -732,7 +752,9 @@ click that does nothing.
 ### Tray-Only Apps
 
 An app whose whole UI is the tray starts with `WindowProps { visible: false, .. }`
-and shows its one window ("Settings…") with `show_current_window()`. See
+and shows its one window ("Settings…") with `show_current_window()`; on macOS
+it also sets `App::activation_policy(ActivationPolicy::Accessory)` so it has no
+Dock icon. See
 [Windows](windows.md#starting-with-no-window-tray-only-apps) and
 `examples/tray-only`, which swaps icons on a timer, changes its tooltip, has a
 checkbox and a radio group, and opens a settings window from the menu.

@@ -81,6 +81,10 @@ pub struct App<F> {
     /// See [`prefer_x11`](App::prefer_x11).
     #[cfg(feature = "desktop")]
     pub(crate) prefer_x11: bool,
+    /// See [`activation_policy`](App::activation_policy). `None` leaves it to
+    /// winit (and a bundle's `Info.plist`).
+    #[cfg(feature = "desktop")]
+    pub(crate) activation_policy: Option<crate::shell::activation::ActivationPolicy>,
     #[cfg(feature = "gpu")]
     pub(crate) gpu: Option<crate::shell::desktop::GpuInit>,
 }
@@ -106,6 +110,7 @@ where
             shortcut_matching: crate::menu::ShortcutMatching::default(),
             #[cfg(feature = "desktop")]
             prefer_x11: false,
+            activation_policy: None,
             #[cfg(feature = "gpu")]
             gpu: None,
         }
@@ -345,6 +350,29 @@ where
         self
     }
 
+    /// Set the macOS activation policy (issue #1528): whether the app has a
+    /// Dock icon and a menu bar of its own.
+    ///
+    /// A tray-resident app — a [tray icon](crate::tray) plus a window it shows
+    /// on request, typically started with `WindowProps::visible: false` —
+    /// wants [`ActivationPolicy::Accessory`](crate::ActivationPolicy::Accessory):
+    /// no Dock icon and no app menu, while its window can still be shown,
+    /// focused and typed into. `visible: false` alone hides the window, not the
+    /// Dock icon, and does not imply this; pair the two yourself.
+    ///
+    /// Not calling this leaves the policy to winit, unchanged from before: an
+    /// unbundled executable is `Regular`, and a bundled `.app` follows its
+    /// `Info.plist` (`LSUIElement`). Calling it overrides the `Info.plist`.
+    ///
+    /// macOS only. On Windows and Linux it does nothing: there an app has a
+    /// taskbar entry exactly while it has a visible window, so a tray-only app
+    /// needs nothing beyond `visible: false`. Applied at [`run`](App::run).
+    #[cfg(feature = "desktop")]
+    pub fn activation_policy(mut self, policy: crate::shell::activation::ActivationPolicy) -> Self {
+        self.activation_policy = Some(policy);
+        self
+    }
+
     /// Run on an embedder-provided GPU device.
     ///
     /// The embedder creates the whole GPU stack with its own `DeviceDescriptor`
@@ -379,6 +407,7 @@ where
             renderer: self.renderer,
             shortcut_matching: self.shortcut_matching,
             prefer_x11: self.prefer_x11,
+            activation_policy: self.activation_policy,
             #[cfg(feature = "gpu")]
             gpu: self.gpu,
             component: self.component,
@@ -421,6 +450,7 @@ where
             renderer,
             shortcut_matching,
             prefer_x11,
+            activation_policy,
             #[cfg(feature = "gpu")]
             gpu,
         } = self.into_startup();
@@ -428,6 +458,9 @@ where
         crate::shell::renderer::set_requested(renderer);
         crate::shell::overlay_window::set_prefer_x11(prefer_x11);
         crate::menu::set_shortcut_matching(shortcut_matching);
+        if let Some(policy) = activation_policy {
+            crate::shell::activation::set_requested(policy);
+        }
         #[cfg(feature = "gpu")]
         if let Some(gpu) = gpu {
             crate::shell::desktop::set_gpu_init(gpu);
@@ -697,6 +730,8 @@ pub(crate) struct Startup<F> {
     pub(crate) shortcut_matching: crate::menu::ShortcutMatching,
     /// See [`App::prefer_x11`].
     pub(crate) prefer_x11: bool,
+    /// See [`App::activation_policy`].
+    pub(crate) activation_policy: Option<crate::shell::activation::ActivationPolicy>,
     #[cfg(feature = "gpu")]
     pub(crate) gpu: Option<crate::shell::desktop::GpuInit>,
 }
@@ -824,6 +859,31 @@ mod tests {
                 assert_eq!(cfg.required_limits.max_texture_dimension_2d, 8192)
             }
             _ => panic!("gpu_config must record a Config"),
+        }
+    }
+
+    /// `activation_policy` reaches the startup, and leaving it out records
+    /// nothing (issue #1528): `None` is what keeps winit's own default and a
+    /// bundle's `LSUIElement`, so a default of `Some(Regular)` would be a
+    /// behaviour change for every bundled accessory app.
+    #[test]
+    fn activation_policy_is_recorded_only_when_set() {
+        use crate::ActivationPolicy;
+        assert_eq!(App::new(component).into_startup().activation_policy, None);
+        for policy in [
+            ActivationPolicy::Regular,
+            ActivationPolicy::Accessory,
+            ActivationPolicy::Prohibited,
+        ] {
+            let startup = App::new(component)
+                .activation_policy(ActivationPolicy::Regular)
+                .activation_policy(policy)
+                .into_startup();
+            assert_eq!(
+                startup.activation_policy,
+                Some(policy),
+                "the last call wins"
+            );
         }
     }
 
