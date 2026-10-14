@@ -391,6 +391,25 @@ thread_local! {
     static DISPOSE_CTX: RefCell<Option<DisposeCtx>> = const { RefCell::new(None) };
 }
 
+/// Whether a scope holding only effects can be disposed on this thread now.
+///
+/// `false` once the thread has begun destroying the locals disposal reads,
+/// which happens when a value owning a [`Scope`] is itself dropped from a
+/// `thread_local!` at thread exit after them (the destruction order of thread
+/// locals is not under anyone's control). Disposing then would panic inside a
+/// TLS destructor, which aborts the process. A caller that may be dropped
+/// there checks this first and, when it answers `false`, leaks the scope
+/// instead (`std::mem::forget`): the thread is ending and takes the effects
+/// with it. Covers effects, signals and memos; not event handlers.
+#[doc(hidden)]
+pub fn disposal_available() -> bool {
+    DISPOSE_CTX.try_with(|_| ()).is_ok()
+        && super::RUNTIME.try_with(|_| ()).is_ok()
+        && super::effect::EFFECTS.try_with(|_| ()).is_ok()
+        && super::SIGNAL_STORE.try_with(|_| ()).is_ok()
+        && super::MEMO_STORE.try_with(|_| ()).is_ok()
+}
+
 /// Suspends the **entire** observer stack until dropped.
 ///
 /// Teardown's counterpart to [`untracked`](super::untracked), which pops

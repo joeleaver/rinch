@@ -840,9 +840,14 @@ impl RinchRuntime {
     }
 
     fn create_window(&mut self, event_loop: &dyn ActiveEventLoop) {
+        let hidden = starts_hidden(self.app.window_props.as_ref());
         let mut window_attrs = WindowAttributes::default()
             .with_title(&self.title)
-            .with_surface_size(winit::dpi::LogicalSize::new(self.width, self.height));
+            .with_surface_size(winit::dpi::LogicalSize::new(self.width, self.height))
+            // A window that starts hidden is never shown before it is
+            // destroyed below (X11 and Windows honour this; Wayland maps no
+            // toplevel until a buffer is attached, and none ever is).
+            .with_visible(!hidden);
 
         // Apply window props if set
         if let Some(props) = &self.app.window_props {
@@ -899,9 +904,12 @@ impl RinchRuntime {
         let scale = window.scale_factor();
 
         // Create the GPU renderer when the choice wants one and it starts; the
-        // software renderer is created lazily by the first software paint.
+        // software renderer is created lazily by the first software paint. A
+        // window that starts hidden gets none: it is destroyed before it could
+        // present, and `show_window` creates the renderer with the window it
+        // creates.
         #[cfg(feature = "gpu")]
-        {
+        if !hidden {
             self.renderer = start_gpu_renderer(&*window);
         }
         #[cfg(not(feature = "gpu"))]
@@ -931,6 +939,19 @@ impl RinchRuntime {
         self.app.set_device_pixel_ratio(scale);
         let logical = to_logical((size.width, size.height), scale);
         self.app.mount_component(logical.0 as f32, logical.1 as f32);
+
+        // `WindowProps::visible: false` (issue #1520): the app runs with no
+        // window on screen — a tray-only app — until `show_current_window`.
+        // The window above existed only to give the root its size and display
+        // scale; the root is mounted now, once, and `show_window` re-creates
+        // the OS window over the same document without mounting it again.
+        // Destroyed rather than kept invisible for the reason `hide_window`
+        // gives: Wayland has no invisible toplevel. No frame was requested and
+        // no renderer made, so nothing was ever presented.
+        if hidden {
+            self.hide_window();
+            return;
+        }
 
         // Request initial draw
         self.window.as_ref().unwrap().request_redraw();
@@ -1882,12 +1903,21 @@ impl Drop for RinchRuntime {
     }
 }
 
+/// Whether the app's window starts hidden: `WindowProps::visible` is `false`
+/// (issue #1520). Absent props mean a visible window.
+fn starts_hidden(props: Option<&rinch_core::element::WindowProps>) -> bool {
+    props.is_some_and(|p| !p.visible)
+}
+
 // ── ApplicationHandler impl ──────────────────────────────────────────────────
 
 impl ApplicationHandler for RinchRuntime {
     fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
         event_loop.set_control_flow(ControlFlow::Wait);
-        if self.window.is_none() {
+        // Mounted already means the window was hidden on purpose — started
+        // hidden (#1520) or sent to the tray — and creating one here would
+        // mount the root a second time; `show_window` is what brings it back.
+        if self.window.is_none() && self.app.doc.is_none() {
             self.create_window(event_loop);
         }
     }

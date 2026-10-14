@@ -67,8 +67,36 @@ fn main() {
 | `resizable` | `bool` | `true` | Allow window resizing |
 | `transparent` | `bool` | `false` | Enable window transparency |
 | `always_on_top` | `bool` | `false` | Keep window above others |
-| `visible` | `bool` | `true` | Initial visibility state |
+| `visible` | `bool` | `true` | Whether the window is on screen at startup; `false` starts a tray-only app (see below) |
 | `resize_inset` | `Option<f32>` | `None` | Resize handle inset for borderless windows |
+
+### Starting with no window (tray-only apps)
+
+`visible: false` starts the app with no window on screen (issue #1520): the
+tray is the whole UI until something calls `show_current_window()`, for
+example a "Settings…" tray item. The root component is mounted at startup all
+the same, at the window's size, so its effects, timers and stores run while
+nothing is shown. Showing the window creates the OS window over that same
+document, without mounting it again, and `hide_current_window()` or an
+`on_close_requested` that returns `false` hides it again. Desktop only; no frame
+is presented before the window is first shown (on X11 the window is created
+unmapped and destroyed again, measured with `xev`).
+
+```rust
+let props = WindowProps {
+    title: "Settings".into(),
+    visible: false,
+    on_close_requested: Some(Arc::new(|| {
+        hide_current_window();
+        false
+    })),
+    ..Default::default()
+};
+App::new(app).window_props(props).run();
+```
+
+`examples/tray-only` is a complete one. Before #1520, `visible` was accepted and
+ignored: the window was always shown.
 
 ## Frameless Windows (Custom Chrome)
 

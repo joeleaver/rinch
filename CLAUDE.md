@@ -1263,6 +1263,22 @@ let count = Signal::new(0);
 MenuItem::new("Reset Counter").on_click(move || count.set(0))
 ```
 
+**Checkbox and radio items (#1520).** `MenuItem::checkbox(label, Signal<bool>)`
+and `MenuItem::radio(label, Signal<T>, value)`: the signal is the state both
+ways. Activation (`MenuItem::activation`, used by every backend and by chords)
+flips/selects it *before* `on_click`; a write from anywhere moves the mark
+through a **watcher** — an `Effect` in a `Scope` owned by the build's
+`MenuRegistration` (`MenuRegistration::watch`), so it dies with the menu, not
+with whatever was rendering. muda builds a `CheckMenuItem` (no radio item; the
+watcher re-asserts the mark muda flips itself on click), ksni a `Checkmark` or a
+`RadioGroup` per run of adjacent options of one group (the ksni thread never
+touches a `Signal`: clicks dispatch to the main thread, marks arrive through
+`KsniUpdater`), the DOM bar a `rinch-app-menu-entry__check` mark with
+`aria-checked`. A registration can be dropped from a `thread_local!` at thread
+exit after the reactive runtime's locals: it disposes its watchers only while
+`rinch_core::reactive::disposal_available()`, and leaks them otherwise (a panic
+in a TLS destructor aborts).
+
 **Callback lifetime (#183).** A callback belongs to the component that *created*
 it — the scope rendering when `on_click` was called, where the closure captured
 its signals — and stops firing once that component unmounts, rather than reading
@@ -4500,7 +4516,29 @@ let tray = TrayIconBuilder::new()
 - `with_icon_rgba(rgba, w, h)` — Load from raw RGBA pixel data
 - `with_icon_path(path)` — Load from a PNG file path
 - **Push-based events** — Menu callbacks fire via `MenuEvent::set_event_handler` on the main thread. No polling thread, no wasted CPU.
-- **Left-click** — Shows the window automatically via `TrayIconEvent::set_event_handler`.
+- **Left-click** — runs `TrayIconBuilder::on_activate(cb)` if given, else
+  `show_current_window` (the old hard-wired behaviour, kept as the default;
+  #1520). The callback is registered in the menu registry under a
+  `tray-activate-{n}` id, so it obeys #183's owner rule; ksni's `activate` and
+  the global `tray-icon` click handler (which maps the clicked tray's id to its
+  activate id, `ACTIVATE_IDS`) both dispatch it on the main thread.
+- **Runtime changes** (#1520): `TrayIcon::set_icon(&TrayIconImage)` (decode
+  once, swap cheaply; `set_icon_png`/`set_icon_rgba` too), `set_tooltip`,
+  `set_menu(Option<Menu>)`, all `&self` and **never blocking the caller**. On
+  Linux they go through `KsniUpdater`, a `rinch-tray-update` thread that applies
+  a **coalesced** `KsniPending` (newest icon/tooltip/menu, latest state per
+  check key) with `Handle::update`, which blocks — that thread, never the
+  caller's — until the service emits; a hung watcher holds one pending set, not
+  a queue. Elsewhere `tray-icon`'s setters run on the main thread. `set_menu`
+  releases the old menu's `MenuRegistration` (callbacks and watchers) at once,
+  as a rebuilt bar does.
+- **Tray-only apps**: `WindowProps::visible: false` (#1520; the field was
+  ignored before). `create_window` makes the window with `with_visible(false)`
+  and no renderer, mounts the root, then `hide_window`s it — no frame is
+  presented (X11: created unmapped, destroyed). `can_create_surfaces` creates a
+  window only while no document is mounted, so the root is never mounted twice;
+  `show_current_window` re-creates the OS window over the same document.
+  `examples/tray-only`.
 - **Dropping the `TrayIcon` removes the icon, then releases its callbacks** (#377).
   On Linux, ksni's own `Handle` does not stop the service when dropped (its loop
   ignores a closed request channel), so `TrayIcon`'s `Drop` sends ksni's
