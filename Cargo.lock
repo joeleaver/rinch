@@ -2290,6 +2290,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
+name = "global-hotkey"
+version = "0.1.0"
+dependencies = [
+ "rinch",
+]
+
+[[package]]
 name = "glow"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4873,6 +4880,7 @@ dependencies = [
  "anyrender_vello",
  "base64",
  "bytemuck",
+ "futures-lite",
  "futures-util",
  "gtk",
  "js-sys",
@@ -4916,6 +4924,8 @@ dependencies = [
  "wgpu",
  "windows-sys 0.59.0",
  "winit",
+ "x11rb",
+ "zbus",
 ]
 
 [[package]]

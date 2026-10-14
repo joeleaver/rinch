@@ -1323,7 +1323,7 @@ pub(crate) fn attach_menu_to_window(menu: &muda::Menu, window: &dyn winit::windo
 /// this function actually running, which is what review of #1304 asked for
 /// in place of a bare `target_os` guess.
 #[cfg(all(feature = "desktop", target_os = "macos"))]
-pub(crate) fn attach_menu_to_window(menu: &muda::Menu, _window: &winit::window::Window) {
+pub(crate) fn attach_menu_to_window(menu: &muda::Menu, _window: &dyn winit::window::Window) {
     menu.init_for_nsapp();
     mark_native_accelerator_attached();
 }
@@ -1434,7 +1434,7 @@ fn parse_shortcut_or_warn(shortcut: &str) -> Option<ParsedShortcut> {
 /// A slice of pairs rather than a `match`: `the_two_key_tables_name_the_same_codes`
 /// reads the key table out of this file by the shape of its arms, and this table
 /// must not look like it.
-fn shifted_key_hint(key: &str) -> Option<&'static str> {
+pub(crate) fn shifted_key_hint(key: &str) -> Option<&'static str> {
     const SHIFTED_ON_US_LAYOUT: [(&str, &str); 20] = [
         ("~", "`"),
         ("!", "1"),
@@ -1499,7 +1499,26 @@ fn parse_shortcut_for_matching(shortcut: &str) -> Option<ParsedShortcut> {
         }
     }
 
-    let code = match key_str.to_uppercase().as_str() {
+    let code = key_spelling_code(key_str)?;
+
+    Some(ParsedShortcut {
+        ctrl_or_cmd,
+        alt,
+        shift,
+        code,
+    })
+}
+
+/// The W3C `code` name a shortcut string's key token spells (`"k"` →
+/// `"KeyK"`, `"/"` → `"Slash"`, `"PageUp"` → `"PageUp"`), case-insensitively,
+/// or `None` for a token that names no key a chord can match.
+///
+/// The one key vocabulary of the crate: a menu shortcut ([`parse_shortcut_for_matching`])
+/// and a global hotkey (`crate::hotkey`, which adds its modifier keys and a few
+/// keys a menu has no use for on top) read their key token through it, so a
+/// key that works in one works in the other.
+pub(crate) fn key_spelling_code(key_str: &str) -> Option<&'static str> {
+    Some(match key_str.to_uppercase().as_str() {
         "A" => "KeyA",
         "B" => "KeyB",
         "C" => "KeyC",
@@ -1578,13 +1597,6 @@ fn parse_shortcut_for_matching(shortcut: &str) -> Option<ParsedShortcut> {
         "LEFT" | "ARROWLEFT" => "ArrowLeft",
         "RIGHT" | "ARROWRIGHT" => "ArrowRight",
         _ => return None,
-    };
-
-    Some(ParsedShortcut {
-        ctrl_or_cmd,
-        alt,
-        shift,
-        code,
     })
 }
 

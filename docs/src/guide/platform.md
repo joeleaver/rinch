@@ -733,6 +733,82 @@ let window_props = WindowProps {
 };
 ```
 
+## Global Hotkeys
+
+Enable with `features = ["global-hotkeys"]` (off by default). `rinch::hotkey` registers **system-wide** hotkeys: they fire while another application has the keyboard focus, and they report **press and release**, so a hold-to-talk binding works.
+
+```rust
+use rinch::hotkey::{self, HotkeySpec, HotkeyState};
+
+let listening = Signal::new(false);
+let hk = hotkey::register(
+    HotkeySpec::new("Ctrl+Alt+Space").id("listen").description("Start listening"),
+    move |ev| listening.set(ev.state == HotkeyState::Pressed),
+)?;
+hk.rebind("RightCtrl")?; // hold Right Ctrl alone
+drop(hk);                // unregisters
+```
+
+- **Callbacks run on the main thread**, each in its own `batch`, so they can set signals directly. Register on the main thread; a `Hotkey` is neither `Send` nor `Sync`.
+- **Lifetime.** A hotkey registered while a component renders belongs to that component: it is unregistered when the component unmounts and its callback does not run after that. One registered outside any render (in `main`) lives until its `Hotkey` is dropped. Dropping the handle always unregisters. This is the menu-callback rule.
+- **Conflicts are errors.** `register` and `rebind` return `HotkeyError::Conflict` when another application holds a plain chord (on the platforms that can tell, see below) or when this app already registered it. A failed `rebind` keeps the old binding. Rebinding while the hotkey is held delivers its `Released` first.
+- **Auto-repeat** does not press a hotkey again.
+
+### Shortcut strings
+
+A shortcut names **physical keys**, as a menu shortcut does: `"Ctrl+/"` is the key labelled `/` on a US layout, and a shifted character such as `?` is an error that tells you to write `Shift+/`. Every key a menu shortcut accepts works here. On top of those:
+
+- **Sided modifiers:** `LeftCtrl`, `RightCtrl` (also `RCtrl`, `ControlRight`), `RightAlt` (`AltGr`), `LeftShift`, `RightSuper`. A plain `Ctrl` matches either key.
+- **Modifier-only bindings:** a shortcut whose last key is a modifier. `"RightCtrl"` fires when Right Ctrl is pressed with no other key held and releases when it comes up. `"Ctrl+Shift"` fires when Shift goes down while Ctrl is held, and releases when either comes up. Pressing Right Ctrl and then C (copy) does fire `"RightCtrl"`: a modifier-only binding cannot know that a chord will follow. Only a key that was *already* held when the modifier went down stops it.
+- `Super` (also `Win`, `Cmd`, `Meta`) is its own modifier, separate from Ctrl. `CmdOrCtrl` is Cmd on macOS and Ctrl elsewhere.
+- Any W3C key `code` name: `F13`…`F24`, `Insert`, `Pause`, `PrintScreen`, `Numpad1`.
+
+Matching is exact on modifiers: `Ctrl+Space` does not fire for `Ctrl+Shift+Space`. `Shortcut::parse` checks a string without registering it, and its `Display` is the canonical spelling.
+
+### Letting the user choose: `HotkeyCapture`
+
+`HotkeyCapture` turns the keys pressed in your own window into a shortcut. Feed it every key event while a settings field is waiting, for example from a keyboard interceptor installed for the duration:
+
+```rust
+use rinch::core::{set_keyboard_interceptor, clear_keyboard_interceptor};
+use rinch::hotkey::{CaptureStep, HotkeyCapture};
+
+let capture = RefCell::new(HotkeyCapture::new());
+set_keyboard_interceptor(move |k| {
+    match capture.borrow_mut().feed(k) {
+        CaptureStep::Pending(held) => preview.set(held),        // "Ctrl+Alt+"
+        CaptureStep::Done(sc) => { let _ = hk.rebind(&sc.to_string()); clear_keyboard_interceptor(); }
+        CaptureStep::Cancelled => clear_keyboard_interceptor(), // Escape alone
+    }
+    true
+});
+```
+
+A non-modifier key completes a chord, captured with unsided modifiers (`Ctrl+Alt+Space`). Modifiers pressed and released with nothing else are captured as a modifier-only binding, with sides (`RightCtrl`). The capture reads only your app's own key events, so it needs no permission. On the desktop it sees only the keys rinch's desktop shell names (letters, digits, F1–F12, the editing and arrow keys, `=`, `-`, Ctrl/Shift/Alt). Other keys, Super included, are ignored there; write those shortcuts by hand.
+
+### Platforms
+
+`hotkey::backend()` says which mechanism the process uses.
+
+| Platform | Plain chord (`Ctrl+Alt+Space`) | Modifier-only or sided (`RightCtrl`, `LeftShift+Space`) |
+|---|---|---|
+| Windows | `RegisterHotKey` reserves it: a conflict is an error, and Windows **swallows** the chord (the focused app does not get it). A `WH_KEYBOARD_LL` hook reports press and release. | The hook alone. **Not swallowed** (Right Ctrl still reaches the focused app), and no conflict check. |
+| macOS | Carbon `RegisterEventHotKey`: press and release, conflicts reported, swallowed, **no permission needed**. | A listen-only `CGEventTap`, which needs the **Input Monitoring** permission. Not swallowed, no conflict check. |
+| Linux, X11 | `XGrabKey` reserves it: a conflict is an error, swallowed. XInput2 raw key events report press and release. | XInput2 raw key events alone. Not swallowed, no conflict check. |
+| Linux, Wayland | The `org.freedesktop.portal.GlobalShortcuts` portal (KDE Plasma, recent GNOME). | The same portal. |
+
+**Windows.** A low-level hook sees no input while an elevated (administrator) window has the focus. If a release is missed that way, a 100 ms check of the keys the hook believes are down releases the binding, so a hold never sticks.
+
+**macOS.** The event tap starts only when the first modifier-only or sided binding is registered, so an app that uses only chords never asks for a permission. Without Input Monitoring that registration returns `HotkeyError::PermissionMissing`, and `hotkey::permission()` answers `Permission::Missing`. `hotkey::request_permission()` shows the system prompt. After the user grants it, register the binding again; some macOS versions apply the grant only after the app restarts.
+
+**Wayland.** A Wayland compositor gives no application another application's keyboard, so the portal is the only route, and the **user** decides the binding. The shortcut you pass is the *preferred* trigger; the desktop shows its own dialog, and remembers the user's choice per application and id. That is why `register` answers `Binding::Pending` at once instead of waiting for the dialog, and why `Hotkey::binding()` later becomes `Binding::SystemChosen { description }`, with the desktop's own text for the trigger, or `Binding::Declined` if the user dismissed the dialog. Hear the outcome with `Hotkey::on_binding_change`. Give every hotkey a stable `id`, or the desktop treats a rebound one as a new shortcut. A modifier-only shortcut has no portal spelling, so it is registered with no preferred trigger and the user picks one. `HotkeySpec::system_chosen(id)` asks for a binding with no preference at all.
+
+The portal files shortcuts under an **app id**, and it accepts only an app id that has an installed desktop entry (KDE Plasma refuses an app without one). rinch names the app with the id its window carries (`WindowProps::app_id`, else the executable's name); `hotkey::set_app_id` overrides that, for example when hotkeys are registered before the window exists. **When no entry is installed, rinch writes one:** a minimal `<app id>.desktop` with `NoDisplay=true` (so it shows in no menu) in `$XDG_DATA_HOME/applications` (`~/.local/share/applications`). It does so only when the portal refused the id for want of an entry, never when a system directory or the user's directory already has one, and it never replaces a file. An app that installs its own entry, or must not write to the user's home directory, calls `hotkey::set_write_desktop_entry(false)` before registering; without an entry, registration then fails with `HotkeyError::Unsupported`, and the message names the file the desktop needs.
+
+In an X11 session (no `WAYLAND_DISPLAY`) rinch uses X11. `RINCH_HOTKEY_BACKEND=x11` or `=portal` overrides the choice; X11 in a Wayland session sees only keys typed into XWayland windows.
+
+The feature adds no crate to `Cargo.lock`. On Windows and macOS it adds tokio to the build (two crates; only the Linux portal uses it). On Linux it builds the D-Bus stack (zbus) and tokio, which the portal thread runs in; with `file-dialogs` already on, that is two more crates (tokio and its macros).
+
 ---
 
 ## Enabling Features
@@ -753,6 +829,7 @@ rinch = { version = "0.1", features = ["file-dialogs", "clipboard", "system-tray
 | Clipboard (Image) | ✓ | ✓ | ✓* | – |
 | Text-selection toolbar | DOM menu | DOM menu | DOM menu | native (`ActionMode`) |
 | System Tray | ✓ | ✓ | ✓** | – |
+| Global hotkeys | ✓ | ✓ | ✓ (X11, Wayland portal) | – |
 
 \* Linux image clipboard requires X11 or Wayland clipboard support.
 

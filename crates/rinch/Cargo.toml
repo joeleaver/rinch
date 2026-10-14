@@ -101,6 +101,17 @@ ksni = { workspace = true, optional = true }
 # AT-SPI (D-Bus) accessibility adapter for Linux. Pulls zbus/atspi/async-io; only
 # compiled when the `a11y` feature is on. Windows/macOS adapters are a follow-up.
 accesskit_unix = { version = "0.22", optional = true }
+# Global hotkeys (`global-hotkeys`): the Wayland GlobalShortcuts portal over
+# zbus, run inside a current-thread tokio runtime on its own thread (right
+# whether zbus ends up in async-io or tokio mode — see hotkey/backend/portal.rs),
+# and X11 grabs + XInput2 raw key events through x11rb (already linked by winit
+# and softbuffer). None adds a package to Cargo.lock. (tokio is the
+# crate-wide optional dependency, so the feature builds it on every platform;
+# a Linux-only rename of it does not survive a build that also has `gpu`:
+# "depends on crate tokio multiple times with different names".)
+zbus = { version = "5", default-features = false, features = ["async-io"], optional = true }
+futures-lite = { version = "2", optional = true }
+x11rb = { version = "0.13", features = ["xinput"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
@@ -116,8 +127,18 @@ web-sys = { version = "0.3", features = [
     "ResizeObserver", "ResizeObserverEntry", "ResizeObserverSize", "DomRectReadOnly",
 ] }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# Test-only: the live X11 hotkey test types through XTEST (`hotkey::backend::x11`).
+x11rb = { version = "0.13", features = ["xinput", "xtest"] }
+
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Graphics_Gdi", "Win32_Foundation"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Graphics_Gdi", "Win32_Foundation",
+    # Global hotkeys: the WH_KEYBOARD_LL hook, RegisterHotKey, the hook
+    # thread's message pump.
+    "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Threading", "Win32_System_LibraryLoader",
+] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6", features = ["native-activity"], optional = true }
@@ -215,6 +236,14 @@ serde = ["rinch-editor-core/serde"]
 # (the editor wiring is a desktop feature); forwards to the shared view crate, which is
 # wasm-compatible with no shims, so the web view reuses the SAME adapter.
 collaboration = ["desktop", "rinch-editor-view/collaboration"]
+# System-wide hotkeys with press/release (`rinch::hotkey`, issue #1521): Windows
+# low-level hook + RegisterHotKey, macOS Carbon hot keys + CGEventTap, X11
+# grabs + XInput2, the Wayland GlobalShortcuts portal. Off by default.
+global-hotkeys = [
+    "desktop",
+    "dep:zbus", "dep:futures-lite", "dep:x11rb",
+    "dep:tokio", "tokio/rt", "tokio/sync", "tokio/time",
+]
 
 # Probe app for the ignored e2e test tests/debug_event_latency.rs (issue #153).
 [[example]]
