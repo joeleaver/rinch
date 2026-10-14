@@ -391,18 +391,12 @@ thread_local! {
     static DISPOSE_CTX: RefCell<Option<DisposeCtx>> = const { RefCell::new(None) };
 }
 
-/// Whether a scope holding only effects can be disposed on this thread now.
-///
-/// `false` once the thread has begun destroying the locals disposal reads,
-/// which happens when a value owning a [`Scope`] is itself dropped from a
-/// `thread_local!` at thread exit after them (the destruction order of thread
-/// locals is not under anyone's control). Disposing then would panic inside a
-/// TLS destructor, which aborts the process. A caller that may be dropped
-/// there checks this first and, when it answers `false`, leaks the scope
-/// instead (`std::mem::forget`): the thread is ending and takes the effects
-/// with it. Covers effects, signals and memos; not event handlers.
-#[doc(hidden)]
-pub fn disposal_available() -> bool {
+/// Whether a scope can be disposed on this thread now: `false` once the thread
+/// has begun destroying the locals disposal reads, which happens when a
+/// [`Scope`] is dropped from a `thread_local!` at thread exit after them (the
+/// destruction order of thread locals is not under anyone's control).
+/// [`ScopeInner`]'s `Drop` asks it and skips disposal when it answers `false`.
+fn disposal_available() -> bool {
     DISPOSE_CTX.try_with(|_| ()).is_ok()
         && super::RUNTIME.try_with(|_| ()).is_ok()
         && super::effect::EFFECTS.try_with(|_| ()).is_ok()
@@ -660,6 +654,16 @@ impl Default for Scope {
 
 impl Drop for ScopeInner {
     fn drop(&mut self) {
+        // A scope kept in a `thread_local!` (directly, or inside a menu
+        // registration or a tray) is dropped at thread exit, possibly after
+        // the runtime locals disposal uses. Disposing then panics inside a TLS
+        // destructor, which aborts the process. The thread is ending, so
+        // there is nothing left to release: mark the scope disposed and let
+        // the fields drop as plain data.
+        if !disposal_available() {
+            self.disposed.set(true);
+            return;
+        }
         // Use the iterative dispose to avoid stack overflow.
         // Rust's default field drop would recursively drop children -> Scope -> Drop,
         // and Effect::dispose can drop closures that own RenderScopes -> more Scopes.

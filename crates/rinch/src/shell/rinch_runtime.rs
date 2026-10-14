@@ -1909,6 +1909,45 @@ fn starts_hidden(props: Option<&rinch_core::element::WindowProps>) -> bool {
     props.is_some_and(|p| !p.visible)
 }
 
+/// Whether `can_create_surfaces` creates the main window: only when there is
+/// none **and** nothing is mounted. A mounted document with no window was
+/// hidden on purpose (started hidden, #1520, or sent to the tray), and
+/// creating the window here would mount the root a second time.
+fn creates_window_on_surfaces(has_window: bool, mounted: bool) -> bool {
+    !has_window && !mounted
+}
+
+#[cfg(test)]
+mod hidden_start_tests {
+    use super::*;
+    use rinch_core::element::WindowProps;
+
+    /// #1520: `visible: false` starts hidden; the default and absent props
+    /// do not.
+    #[test]
+    fn only_visible_false_starts_hidden() {
+        assert!(!starts_hidden(None));
+        assert!(!starts_hidden(Some(&WindowProps::default())));
+        assert!(starts_hidden(Some(&WindowProps {
+            visible: false,
+            ..Default::default()
+        })));
+    }
+
+    /// #1520: after a hidden start the document is mounted and the window
+    /// gone, and a later `can_create_surfaces` must not create (and mount)
+    /// again. Only the first call, with nothing mounted, creates one.
+    #[test]
+    fn surfaces_create_the_window_only_before_anything_is_mounted() {
+        assert!(creates_window_on_surfaces(false, false), "first start");
+        assert!(
+            !creates_window_on_surfaces(false, true),
+            "hidden start or tray: mounted, no window"
+        );
+        assert!(!creates_window_on_surfaces(true, true), "already shown");
+    }
+}
+
 // ── ApplicationHandler impl ──────────────────────────────────────────────────
 
 impl ApplicationHandler for RinchRuntime {
@@ -1917,7 +1956,7 @@ impl ApplicationHandler for RinchRuntime {
         // Mounted already means the window was hidden on purpose — started
         // hidden (#1520) or sent to the tray — and creating one here would
         // mount the root a second time; `show_window` is what brings it back.
-        if self.window.is_none() && self.app.doc.is_none() {
+        if creates_window_on_surfaces(self.window.is_some(), self.app.doc.is_some()) {
             self.create_window(event_loop);
         }
     }

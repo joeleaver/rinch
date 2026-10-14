@@ -77,10 +77,12 @@ tray is the whole UI until something calls `show_current_window()`, for
 example a "Settings…" tray item. The root component is mounted at startup all
 the same, at the window's size, so its effects, timers and stores run while
 nothing is shown. Showing the window creates the OS window over that same
-document, without mounting it again, and `hide_current_window()` or an
-`on_close_requested` that returns `false` hides it again. Desktop only; no frame
+document, without mounting it again. `hide_current_window()` hides it again,
+and so does an `on_close_requested` that calls `hide_current_window()` and
+returns `false` (returning `false` alone only cancels the exit). Desktop only; no frame
 is presented before the window is first shown (on X11 the window is created
-unmapped and destroyed again, measured with `xev`).
+unmapped and destroyed again, measured with `xev`). No renderer exists before
+the first show either, so `gpu_handle()` is `None` while the root mounts.
 
 ```rust
 let props = WindowProps {

@@ -132,6 +132,14 @@ impl<T: 'static> Signal<T> {
     pub fn debug_id(&self) -> u32 {
         self.id
     }
+
+    /// The signal's identity: slot id and generation. Unlike
+    /// [`debug_id`](Self::debug_id), two signals never share it, even after
+    /// one's slot has been freed and reused by the other.
+    #[doc(hidden)]
+    pub fn identity(&self) -> (u32, u32) {
+        (self.id, self.generation)
+    }
 }
 
 // Manual Copy/Clone because PhantomData<T> would require T: Copy for derive

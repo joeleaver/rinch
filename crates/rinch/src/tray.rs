@@ -968,7 +968,7 @@ struct KsniToggle {
     /// ([`KsniPending::checks`]). Unique across builds.
     key: u64,
     /// `Some(group)` for a radio option, `None` for a checkbox.
-    radio_group: Option<u32>,
+    radio_group: Option<(u32, u32)>,
     checked: bool,
 }
 
@@ -2168,7 +2168,12 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn first_toggle(entries: &[KsniMenuEntry]) -> (Option<String>, KsniToggle) {
         for e in entries {
-            if let KsniMenuEntry::Item { menu_id, toggle: Some(t), .. } = e {
+            if let KsniMenuEntry::Item {
+                menu_id,
+                toggle: Some(t),
+                ..
+            } = e
+            {
                 return (menu_id.clone(), t.clone());
             }
         }
@@ -2203,8 +2208,15 @@ mod tests {
         let (id2, t1) = first_toggle(p.menu.as_ref().expect("the replacement menu"));
         assert!(t1.checked, "rebuilt with the flipped state");
         assert!(p.checks.is_empty(), "{:?}", p.checks);
-        assert_eq!(crate::menu::callback_count(), before + 1, "old callback released");
-        assert!(rx.recv_timeout(std::time::Duration::from_millis(200)).is_err());
+        assert_eq!(
+            crate::menu::callback_count(),
+            before + 1,
+            "old callback released"
+        );
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(200))
+                .is_err()
+        );
         // A second round trip through the new menu.
         assert!(crate::menu::dispatch_menu_event(&id2.unwrap()));
         assert!(!on.get());
@@ -2214,41 +2226,46 @@ mod tests {
         assert_eq!(crate::menu::callback_count(), before);
     }
 
-    #[cfg(target_os = "linux")]
-    fn update_threads() -> usize {
-        std::fs::read_dir("/proc/self/task")
-            .unwrap()
-            .filter(|t| {
-                let p = t.as_ref().unwrap().path().join("comm");
-                std::fs::read_to_string(p).unwrap_or_default().trim() == "rinch-tray-upda"
-            })
-            .count()
-    }
-
     /// Dropping a tray ends its update thread; set_menu spawns none.
+    ///
+    /// The thread is the only other holder of its updater's shared state, so
+    /// the state is freed exactly when the thread has ended. (The review's
+    /// version counted `rinch-tray-update` threads process-wide, which races
+    /// with other tests' trays running in parallel.)
     #[cfg(target_os = "linux")]
     #[test]
     fn review_1527_update_threads_do_not_leak() {
-        let base = update_threads();
+        let mut ends = Vec::new();
         for _ in 0..20 {
             let (tray, rx) = tray_with_probe();
+            let shared = Arc::downgrade(&tray.updates.as_ref().unwrap().shared);
             for n in 0..10 {
-                tray.set_menu(Some(Menu::new().item(MenuItem::new(format!("i{n}")).on_click(|| {}))));
+                tray.set_menu(Some(
+                    Menu::new().item(MenuItem::new(format!("i{n}")).on_click(|| {})),
+                ));
             }
             let _ = next(&rx);
-            assert!(update_threads() <= base + 1 + 20);
+            assert_eq!(
+                shared.strong_count(),
+                2,
+                "one thread per tray, none per set_menu"
+            );
             drop(tray);
+            ends.push(shared);
         }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while update_threads() > base && std::time::Instant::now() < deadline {
+        while ends.iter().any(|w| w.strong_count() > 0) && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert_eq!(update_threads(), base, "every update thread ended");
+        assert!(
+            ends.iter().all(|w| w.strong_count() == 0),
+            "every update thread ended"
+        );
     }
 
-    /// Radio groups are keyed by the signal's slot id only: a freed group's
-    /// options next to a live group that reused its slot merge into one ksni
-    /// RadioGroup.
+    /// Radio groups are keyed by the signal's slot id **and generation**: a
+    /// freed group's options next to a live group that reused its slot stay a
+    /// group of their own (they merged when the key was the slot id alone).
     #[cfg(target_os = "linux")]
     #[test]
     fn review_1527_radio_group_key_survives_slot_reuse() {

@@ -162,9 +162,11 @@ pub(crate) enum ToggleKind {
     Check,
     /// [`MenuItem::radio`]: activating it selects it within its group. `group`
     /// tells adjacent radio items apart from each other's groups (the group
-    /// signal's id); backends that draw a group as one widget (ksni's
-    /// `RadioGroup`) gather a run of adjacent items with one `group`.
-    Radio { group: u32 },
+    /// signal's slot id and generation, so a freed group's options never merge
+    /// with a group that reused its slot); backends that draw a group as one
+    /// widget (ksni's `RadioGroup`) gather a run of adjacent items with one
+    /// `group`.
+    Radio { group: (u32, u32) },
 }
 
 /// The state of a checkbox or radio [`MenuItem`].
@@ -261,7 +263,7 @@ impl MenuItem {
         let mine = value.clone();
         item.toggle = Some(Toggle {
             kind: ToggleKind::Radio {
-                group: selected.debug_id(),
+                group: selected.identity(),
             },
             is_on: Rc::new(move || selected.try_with(|v| *v == mine)),
             activate: Rc::new(move || {
@@ -1124,18 +1126,10 @@ impl Drop for MenuRegistration {
                 take_callback_if_ours(&mut map, menu_id, entry);
             }
         });
-        // The watchers go with the menu. A registration held (through a
-        // `TrayIcon`) in a `thread_local!` is dropped at thread exit, possibly
-        // after the reactive runtime's own locals: disposing into them then
-        // would panic inside a TLS destructor and abort. The thread is ending,
-        // so the effects are left to it.
-        if let Some(scope) = self.watchers.take() {
-            if rinch_core::reactive::disposal_available() {
-                drop(scope);
-            } else {
-                std::mem::forget(scope);
-            }
-        }
+        // The watchers go with the menu. (Dropped from a `thread_local!` at
+        // thread exit, the scope skips disposal itself: see `ScopeInner`'s
+        // `Drop` in rinch-core.)
+        drop(self.watchers.take());
         // One pass over the chord list, not one per serial: releasing a menu bar
         // drops every chord it registered at once.
         if !self.shortcuts.is_empty() {

@@ -55,12 +55,26 @@ fn web_menu_bar_check_marks_follow_their_signals() {
     };
     assert_eq!(rows.len(), 4, "every toggle row carries aria-checked");
     let aria = |i: usize| rows[i].get_attribute("aria-checked").unwrap();
-    assert_eq!(rows[0].get_attribute("role").as_deref(), Some("menuitemcheckbox"));
-    assert_eq!(rows[1].get_attribute("role").as_deref(), Some("menuitemradio"));
-    assert_eq!((aria(0).as_str(), aria(1).as_str(), aria(2).as_str()), ("false", "false", "true"));
+    assert_eq!(
+        rows[0].get_attribute("role").as_deref(),
+        Some("menuitemcheckbox")
+    );
+    assert_eq!(
+        rows[1].get_attribute("role").as_deref(),
+        Some("menuitemradio")
+    );
+    assert_eq!(
+        (aria(0).as_str(), aria(1).as_str(), aria(2).as_str()),
+        ("false", "false", "true")
+    );
 
     // The mark's visibility comes from the component stylesheet.
-    let mark = |i: usize| rows[i].query_selector(".rinch-app-menu-entry__check").unwrap().unwrap();
+    let mark = |i: usize| {
+        rows[i]
+            .query_selector(".rinch-app-menu-entry__check")
+            .unwrap()
+            .unwrap()
+    };
     let vis = |i: usize| {
         web_sys::window()
             .unwrap()

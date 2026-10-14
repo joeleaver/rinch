@@ -1274,10 +1274,11 @@ watcher re-asserts the mark muda flips itself on click), ksni a `Checkmark` or a
 `RadioGroup` per run of adjacent options of one group (the ksni thread never
 touches a `Signal`: clicks dispatch to the main thread, marks arrive through
 `KsniUpdater`), the DOM bar a `rinch-app-menu-entry__check` mark with
-`aria-checked`. A registration can be dropped from a `thread_local!` at thread
-exit after the reactive runtime's locals: it disposes its watchers only while
-`rinch_core::reactive::disposal_available()`, and leaks them otherwise (a panic
-in a TLS destructor aborts).
+`aria-checked`. **Any `Scope` dropped from a `thread_local!` at thread exit**
+after the reactive runtime's own locals (a `TrayIcon` in one, holding its
+watchers) skips disposal: `ScopeInner`'s `Drop` asks `disposal_available()` and
+marks itself disposed, because disposing then panicked inside a TLS destructor
+and aborted the process (`rinch-core/tests/review_1527_scope_tls.rs`).
 
 **Callback lifetime (#183).** A callback belongs to the component that *created*
 it — the scope rendering when `on_click` was called, where the closure captured
