@@ -1296,7 +1296,13 @@ impl Drop for KsniUpdater {
 /// as one item.
 #[cfg(target_os = "linux")]
 fn tray_item_id(explicit: Option<&str>) -> String {
-    let declared = crate::shell::rinch_runtime::declared_app_id();
+    tray_item_id_from(explicit, crate::shell::rinch_runtime::declared_app_id())
+}
+
+/// [`tray_item_id`] without the global, for tests: `explicit`, else
+/// `declared`, else the executable's file name.
+#[cfg(target_os = "linux")]
+fn tray_item_id_from(explicit: Option<&str>, declared: Option<&str>) -> String {
     crate::shell::rinch_runtime::resolved_app_id(explicit.or(declared))
 }
 
@@ -2211,6 +2217,15 @@ mod tests {
             "com.example.notes",
             "with_id wins, verbatim"
         );
+    }
+
+    /// Issue #1529: a declared `WindowProps::app_id` is the id when the
+    /// builder names none, and `with_id` beats it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_declared_app_id_is_the_tray_id_unless_with_id_names_one() {
+        assert_eq!(tray_item_id_from(None, Some("d")), "d");
+        assert_eq!(tray_item_id_from(Some("e"), Some("d")), "e");
     }
 
     /// Issue #1520: a primary click on the icon runs `on_activate`'s callback

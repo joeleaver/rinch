@@ -718,7 +718,11 @@ is shown and where. It is the app's own (issue #1529; it was `"rinch-app"` for
 every rinch app): the executable's file name, or the `WindowProps::app_id` the
 app declared if the tray is built after `App::run` has started. Set it
 explicitly with `with_id`, which an app that declares an `app_id` and builds its
-tray in `main` should do with the same string:
+tray in `main` should do with the same string. Rebuilding the tray after
+`App::run` has started can change its id (the declared `app_id` is seen from
+then on), so pass `with_id` to keep it fixed. Upgrading to this changes an
+existing app's id, so a panel forgets any visibility or position the user had
+set for its icon, once.
 
 ```rust
 let tray = TrayIconBuilder::new()
