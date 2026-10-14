@@ -451,7 +451,9 @@ pub struct WindowProps {
     /// Application ID for desktop integration (Linux).
     ///
     /// On Wayland, this sets the `app_id` used by compositors to match `.desktop` files.
-    /// On X11, this sets the `WM_CLASS`. Defaults to `"rinch-app"` if not set.
+    /// On X11, this sets the `WM_CLASS` (instance and class). When not set,
+    /// Wayland gets the executable's file name and X11 keeps winit's default
+    /// `WM_CLASS` (`argv[0]`'s file name).
     pub app_id: Option<String>,
     /// Callback invoked when the window close button (X) is pressed.
     ///
@@ -478,8 +480,9 @@ pub struct WindowProps {
     /// `App::prefer_x11(true)`.
     pub non_activating: bool,
     /// Let pointer events pass through to the window underneath. Change it
-    /// at run time with `set_click_through_current_window`. Works on Windows,
-    /// macOS, X11 and Wayland.
+    /// at run time with `set_click_through_current_window`; the state is kept
+    /// across hide/show. Windows, macOS and Wayland through winit's hit test;
+    /// on X11 rinch sets an empty input shape itself.
     pub click_through: bool,
     /// Keep the window off the taskbar (and, on Windows, out of Alt+Tab).
     /// Windows: `WS_EX_TOOLWINDOW`. X11: `_NET_WM_STATE_SKIP_TASKBAR` and

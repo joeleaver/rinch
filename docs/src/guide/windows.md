@@ -381,12 +381,27 @@ shown again.
 | Platform | `non_activating` | `click_through` | `skip_taskbar` |
 |---|---|---|---|
 | Windows | `WS_EX_NOACTIVATE`; `WM_MOUSEACTIVATE` answers `MA_NOACTIVATE`; first shown with `SW_SHOWNOACTIVATE` | `WS_EX_TRANSPARENT \| WS_EX_LAYERED` | `WS_EX_TOOLWINDOW` (no taskbar button, no Alt+Tab entry) |
-| macOS | a non-activating `NSPanel` with `becomesKeyOnlyIfNeeded`, kept on screen while its app is inactive, ordered front without becoming key | `ignoresMouseEvents` | nothing to do: a window has no Dock entry of its own (the app's Dock icon is the activation policy's business) |
-| X11 | `WM_HINTS.input = False` | an empty input shape | `_NET_WM_STATE_SKIP_TASKBAR` and `_SKIP_PAGER` |
+| macOS | a non-activating `NSPanel` with `becomesKeyOnlyIfNeeded`, kept on screen while its app is inactive, ordered front at creation without becoming key | `ignoresMouseEvents` | nothing to do: a window has no Dock entry of its own (the app's Dock icon is the activation policy's business) |
+| X11 | `WM_HINTS.input = False` | an empty input shape (set by rinch over its own connection, XFixes version negotiated) | `_NET_WM_STATE_SKIP_TASKBAR` and `_SKIP_PAGER` |
 | Wayland | **no effect** | an empty input region | **no effect** |
 
-On Windows, macOS and X11 such a window is created hidden, adjusted, and only
-then shown, so it is never on screen in a state that could take focus.
+On Windows and X11 such a window is created hidden, adjusted, and only then
+shown, so it is never on screen in a state that could take focus. On macOS it is
+shown at creation (winit orders a window created inactive to the front without
+making it key) and adjusted right after, before any event is handled: showing a
+hidden window later would make it key. A window without these fields takes
+exactly the path it always did.
+
+### Window identity on Linux (`app_id` and `WM_CLASS`)
+
+On Wayland a window's `app_id` is `WindowProps::app_id`, or the executable's
+file name when that is not set. On X11 an explicit `WindowProps::app_id` is the
+window's `WM_CLASS` (instance and class) since #1519; before, X11 never saw it.
+Without one, `WM_CLASS` is unchanged: winit's default, `argv[0]`'s file name,
+with `RESOURCE_NAME` as the instance when it is set. The two defaults can
+differ (a binary run through a symlink has `argv[0]` naming the link), so a
+`.desktop` file whose `StartupWMClass` must match on both should set
+`WindowProps::app_id`.
 
 ### Wayland
 

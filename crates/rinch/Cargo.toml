@@ -103,7 +103,7 @@ ksni = { workspace = true, optional = true }
 accesskit_unix = { version = "0.22", optional = true }
 # X11 overlay hints (`WM_HINTS.input`, `_NET_WM_STATE_SKIP_TASKBAR`, #1519) that
 # winit has no API for. Already in the graph through winit-x11.
-x11rb = { version = "0.13", default-features = false, optional = true }
+x11rb = { version = "0.13", default-features = false, features = ["xfixes", "shape"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
