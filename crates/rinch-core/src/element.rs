@@ -464,6 +464,28 @@ pub struct WindowProps {
     /// When true, menu items render inline in the titlebar (VS Code style)
     /// instead of on a separate row below the titlebar.
     pub menu_in_titlebar: bool,
+    /// Never take keyboard focus or activation: not when the window is
+    /// created, not when it is shown, and not when it is clicked (issue
+    /// #1519). For an overlay that sits over another application while the
+    /// user keeps typing there — a status pill, a HUD. Pointer clicks still
+    /// reach the window's DOM, so it can have buttons; keystrokes do not, so
+    /// a text field in it cannot be typed into.
+    ///
+    /// Windows: `WS_EX_NOACTIVATE` and `WM_MOUSEACTIVATE` → `MA_NOACTIVATE`.
+    /// macOS: a non-activating `NSPanel` that does not become key on a click.
+    /// X11: `WM_HINTS.input = False`. **Wayland: no effect** (a warning is
+    /// logged): xdg-toplevel cannot refuse focus; run under XWayland with
+    /// `App::prefer_x11(true)`.
+    pub non_activating: bool,
+    /// Let pointer events pass through to the window underneath. Change it
+    /// at run time with `set_click_through_current_window`. Works on Windows,
+    /// macOS, X11 and Wayland.
+    pub click_through: bool,
+    /// Keep the window off the taskbar (and, on Windows, out of Alt+Tab).
+    /// Windows: `WS_EX_TOOLWINDOW`. X11: `_NET_WM_STATE_SKIP_TASKBAR` and
+    /// `_SKIP_PAGER`. macOS: nothing to do — a window has no Dock entry of its
+    /// own. **Wayland: no effect.**
+    pub skip_taskbar: bool,
 }
 
 impl Default for WindowProps {
@@ -484,6 +506,9 @@ impl Default for WindowProps {
             app_id: None,
             on_close_requested: None,
             menu_in_titlebar: false,
+            non_activating: false,
+            click_through: false,
+            skip_taskbar: false,
         }
     }
 }
@@ -496,6 +521,9 @@ impl std::fmt::Debug for WindowProps {
             .field("height", &self.height)
             .field("borderless", &self.borderless)
             .field("transparent", &self.transparent)
+            .field("non_activating", &self.non_activating)
+            .field("click_through", &self.click_through)
+            .field("skip_taskbar", &self.skip_taskbar)
             .field(
                 "on_close_requested",
                 &self.on_close_requested.as_ref().map(|_| "Fn() -> bool"),

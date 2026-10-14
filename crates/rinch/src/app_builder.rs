@@ -78,6 +78,9 @@ pub struct App<F> {
     /// See [`shortcut_matching`](App::shortcut_matching).
     #[cfg(feature = "desktop")]
     pub(crate) shortcut_matching: crate::menu::ShortcutMatching,
+    /// See [`prefer_x11`](App::prefer_x11).
+    #[cfg(feature = "desktop")]
+    pub(crate) prefer_x11: bool,
     #[cfg(feature = "gpu")]
     pub(crate) gpu: Option<crate::shell::desktop::GpuInit>,
 }
@@ -101,6 +104,8 @@ where
             renderer: crate::shell::renderer::Renderer::Auto,
             #[cfg(feature = "desktop")]
             shortcut_matching: crate::menu::ShortcutMatching::default(),
+            #[cfg(feature = "desktop")]
+            prefer_x11: false,
             #[cfg(feature = "gpu")]
             gpu: None,
         }
@@ -324,6 +329,22 @@ where
         self
     }
 
+    /// On Linux, run on X11 — under a Wayland session, through XWayland —
+    /// whenever an X server is reachable (`DISPLAY` is set); otherwise on
+    /// whatever winit picks, as without this (issue #1519).
+    ///
+    /// The backend is chosen once per process, when the event loop is built,
+    /// so this is an application option, not a window one. Its use is an
+    /// overlay: [`WindowProps::non_activating`] and
+    /// [`WindowProps::skip_taskbar`] work on X11 (`WM_HINTS.input = False`,
+    /// `_NET_WM_STATE_SKIP_TASKBAR`) and cannot be had from xdg-toplevel on
+    /// native Wayland. Ignored on every other platform.
+    #[cfg(feature = "desktop")]
+    pub fn prefer_x11(mut self, prefer: bool) -> Self {
+        self.prefer_x11 = prefer;
+        self
+    }
+
     /// Run on an embedder-provided GPU device.
     ///
     /// The embedder creates the whole GPU stack with its own `DeviceDescriptor`
@@ -357,6 +378,7 @@ where
             menus: self.menus,
             renderer: self.renderer,
             shortcut_matching: self.shortcut_matching,
+            prefer_x11: self.prefer_x11,
             #[cfg(feature = "gpu")]
             gpu: self.gpu,
             component: self.component,
@@ -398,11 +420,13 @@ where
             menus,
             renderer,
             shortcut_matching,
+            prefer_x11,
             #[cfg(feature = "gpu")]
             gpu,
         } = self.into_startup();
 
         crate::shell::renderer::set_requested(renderer);
+        crate::shell::overlay_window::set_prefer_x11(prefer_x11);
         crate::menu::set_shortcut_matching(shortcut_matching);
         #[cfg(feature = "gpu")]
         if let Some(gpu) = gpu {
@@ -671,6 +695,8 @@ pub(crate) struct Startup<F> {
     pub(crate) renderer: crate::shell::renderer::Renderer,
     /// See [`App::shortcut_matching`].
     pub(crate) shortcut_matching: crate::menu::ShortcutMatching,
+    /// See [`App::prefer_x11`].
+    pub(crate) prefer_x11: bool,
     #[cfg(feature = "gpu")]
     pub(crate) gpu: Option<crate::shell::desktop::GpuInit>,
 }
@@ -921,6 +947,18 @@ mod tests {
     #[test]
     fn omitting_fonts_bundles_none() {
         assert!(App::new(component).into_startup().fonts.is_empty());
+    }
+
+    /// `prefer_x11` reaches the startup, off unless asked (issue #1519).
+    #[test]
+    fn prefer_x11_reaches_the_startup() {
+        assert!(!App::new(component).into_startup().prefer_x11);
+        assert!(
+            App::new(component)
+                .prefer_x11(true)
+                .into_startup()
+                .prefer_x11
+        );
     }
 
     /// With no `.theme()`, the DEFAULT theme is installed rather than nothing —

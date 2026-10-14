@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::window::{WindowAttributes, WindowId};
 
 use rinch_core::clear_context;
@@ -43,6 +43,7 @@ use crate::render_surface::{SurfacePointer, SurfacePointerKind};
 
 #[cfg(feature = "gpu")]
 use super::desktop::WgpuRenderer;
+use super::overlay_window::{self, Backend, WindowSteps};
 use super::window::WinitWindow;
 
 #[cfg(feature = "debug")]
@@ -224,6 +225,8 @@ pub enum RinchNativeEvent {
     ShowWindow,
     /// Hide the window.
     HideWindow,
+    /// Let pointer events through the window, or stop (issue #1519).
+    SetClickThrough(bool),
     /// An injected platform event (e.g. synthetic gamepad input).
     InjectedPlatformEvent(PlatformEvent),
     /// An accessibility action requested by the AT (delivered from the adapter's
@@ -450,6 +453,10 @@ pub struct RinchRuntime {
     /// `AppAction::SetCursor` — which hover emits on every pointer move — does
     /// not reach the windowing system. Reset when the window is dropped.
     applied_cursor: Option<rinch_platform::CursorStyle>,
+    /// Whether the main window lets pointer events through: starts at
+    /// `WindowProps::click_through`, changed by
+    /// [`set_click_through_current_window`](crate::windows::set_click_through_current_window).
+    click_through: bool,
 
     // ── DevTools ─────────────────────────────────────────────────
     /// Shared DevTools store (persists across open/close cycles).
@@ -522,6 +529,7 @@ impl RinchRuntime {
             pending_pointer_move: None,
             pressed_pointers: PressedButtons::default(),
             applied_cursor: None,
+            click_through: false,
             devtools_store: None,
             devtools_app: None,
             devtools_window: None,
@@ -839,12 +847,29 @@ impl RinchRuntime {
         }
     }
 
-    fn create_window(&mut self, event_loop: &dyn ActiveEventLoop) {
+    /// The attributes of the main window, for its first creation and for
+    /// the re-creation [`Self::show_window`] makes, with the overlay steps
+    /// (#1519) folded in. `first` installs the Wayland icon and reports an icon
+    /// that does not decode; a re-creation does neither again.
+    fn main_window_attributes(
+        &self,
+        steps: WindowSteps,
+        backend: Backend,
+        first: bool,
+    ) -> WindowAttributes {
         let mut window_attrs = WindowAttributes::default()
             .with_title(&self.title)
             .with_surface_size(winit::dpi::LogicalSize::new(self.width, self.height));
 
-        // Apply window props if set
+        // app_id / WM_CLASS on Linux for desktop integration
+        #[cfg(target_os = "linux")]
+        let app_id: Option<String> = self
+            .app
+            .window_props
+            .as_ref()
+            .map(|props| resolved_app_id(props.app_id.as_deref()));
+        #[cfg(not(target_os = "linux"))]
+        let app_id: Option<String> = None;
         if let Some(props) = &self.app.window_props {
             if props.borderless {
                 window_attrs = window_attrs.with_decorations(false);
@@ -868,32 +893,54 @@ impl RinchRuntime {
                     Ok(icon) => {
                         window_attrs = window_attrs.with_window_icon(Some(icon));
                     }
-                    Err(e) => {
+                    Err(e) if first => {
                         tracing::warn!("Failed to load window icon: {}", e);
                     }
+                    Err(_) => {}
                 }
                 // On Wayland, write icon to a temp file and install a .desktop entry
                 // so the compositor can find it via the app_id.
                 #[cfg(target_os = "linux")]
-                {
+                if first {
                     let app_id = resolved_app_id(props.app_id.as_deref());
                     install_wayland_icon(&app_id, icon_data);
                 }
             }
-            // Set app_id / WM_CLASS on Linux for desktop integration
-            #[cfg(target_os = "linux")]
-            {
-                let app_id = resolved_app_id(props.app_id.as_deref());
-                use winit::platform::wayland::WindowAttributesWayland;
-                let wayland_attrs =
-                    WindowAttributesWayland::default().with_name(app_id.as_str(), app_id.as_str());
-                window_attrs = window_attrs.with_platform_attributes(Box::new(wayland_attrs));
-            }
         }
+        overlay_window::apply_to_attributes(window_attrs, steps, backend, app_id.as_deref())
+    }
+
+    /// The overlay steps (#1519) for the main window on this event loop.
+    fn main_window_steps(&self, event_loop: &dyn ActiveEventLoop) -> (WindowSteps, Backend) {
+        let backend = Backend::of(event_loop);
+        let steps = match &self.app.window_props {
+            Some(props) => WindowSteps::plan(props, self.click_through, backend),
+            None => WindowSteps::plan(&Default::default(), self.click_through, backend),
+        };
+        (steps, backend)
+    }
+
+    /// Whether the main window asked to stay on top.
+    fn main_window_always_on_top(&self) -> bool {
+        self.app
+            .window_props
+            .as_ref()
+            .is_some_and(|p| p.always_on_top)
+    }
+
+    fn create_window(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.click_through = self
+            .app
+            .window_props
+            .as_ref()
+            .is_some_and(|p| p.click_through);
+        let (steps, backend) = self.main_window_steps(event_loop);
+        let window_attrs = self.main_window_attributes(steps, backend, true);
 
         let window = event_loop
             .create_window(window_attrs)
             .expect("Failed to create window");
+        overlay_window::after_create(&*window, steps, self.main_window_always_on_top());
 
         let size = window.surface_size();
         let scale = window.scale_factor();
@@ -962,42 +1009,13 @@ impl RinchRuntime {
             return; // Already visible
         }
 
-        let mut window_attrs = WindowAttributes::default()
-            .with_title(&self.title)
-            .with_surface_size(winit::dpi::LogicalSize::new(self.width, self.height));
-
-        if let Some(props) = &self.app.window_props {
-            if props.borderless {
-                window_attrs = window_attrs.with_decorations(false);
-            }
-            if props.transparent {
-                window_attrs = window_attrs.with_transparent(true);
-            }
-            if !props.resizable {
-                window_attrs = window_attrs.with_resizable(false);
-            }
-            if props.always_on_top {
-                window_attrs =
-                    window_attrs.with_window_level(winit::window::WindowLevel::AlwaysOnTop);
-            }
-            if let Some(icon_data) = props.icon {
-                if let Ok(icon) = load_window_icon(icon_data) {
-                    window_attrs = window_attrs.with_window_icon(Some(icon));
-                }
-            }
-            #[cfg(target_os = "linux")]
-            {
-                let app_id = resolved_app_id(props.app_id.as_deref());
-                use winit::platform::wayland::WindowAttributesWayland;
-                let wayland_attrs =
-                    WindowAttributesWayland::default().with_name(app_id.as_str(), app_id.as_str());
-                window_attrs = window_attrs.with_platform_attributes(Box::new(wayland_attrs));
-            }
-        }
+        let (steps, backend) = self.main_window_steps(event_loop);
+        let window_attrs = self.main_window_attributes(steps, backend, false);
 
         let window = event_loop
             .create_window(window_attrs)
             .expect("Failed to recreate window");
+        overlay_window::after_create(&*window, steps, self.main_window_always_on_top());
 
         #[cfg(feature = "gpu")]
         {
@@ -2622,6 +2640,15 @@ impl RinchRuntime {
             }
             RinchNativeEvent::ShowWindow => PlatformEvent::UserEvent(UserEvent::ShowWindow),
             RinchNativeEvent::HideWindow => PlatformEvent::UserEvent(UserEvent::HideWindow),
+            RinchNativeEvent::SetClickThrough(click_through) => {
+                // The shell's alone: no app state depends on it. Remembered so
+                // a window re-created by `show_window` comes back the same.
+                self.click_through = click_through;
+                if let Some(w) = &self.window {
+                    overlay_window::set_click_through(w.raw(), click_through);
+                }
+                return;
+            }
             RinchNativeEvent::InjectedPlatformEvent(pe) => pe,
             #[cfg(feature = "a11y")]
             RinchNativeEvent::A11yAction(req) => {
@@ -3024,7 +3051,7 @@ where
     events::clear_handlers();
     clear_context();
 
-    let event_loop = EventLoop::new().expect("Failed to create event loop");
+    let event_loop = overlay_window::new_event_loop();
 
     let proxy = event_loop.create_proxy();
 
@@ -3143,7 +3170,7 @@ pub fn run_rinch_with_window_props_and_menu<F>(
     events::clear_handlers();
     clear_context();
 
-    let event_loop = EventLoop::new().expect("Failed to create event loop");
+    let event_loop = overlay_window::new_event_loop();
 
     let proxy = event_loop.create_proxy();
 
