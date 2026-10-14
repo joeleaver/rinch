@@ -2164,6 +2164,113 @@ mod tests {
         assert_eq!(ran.get(), 1, "a released callback does not run");
     }
 
+    // ── review-1527 fixtures ────────────────────────────────────────────
+    #[cfg(target_os = "linux")]
+    fn first_toggle(entries: &[KsniMenuEntry]) -> (Option<String>, KsniToggle) {
+        for e in entries {
+            if let KsniMenuEntry::Item { menu_id, toggle: Some(t), .. } = e {
+                return (menu_id.clone(), t.clone());
+            }
+        }
+        panic!("no toggle in {entries:?}");
+    }
+
+    /// A checkbox whose own on_click replaces the menu (with the same item):
+    /// no borrow panic, the new menu is built with the flipped state, the old
+    /// callbacks are released and nothing more is queued.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn review_1527_set_menu_from_its_own_checkbox_callback() {
+        use rinch_core::reactive::Signal;
+        let before = crate::menu::callback_count();
+        let (tray, rx) = tray_with_probe();
+        let tray = Rc::new(tray);
+        let on = Signal::new(false);
+        fn menu(on: rinch_core::reactive::Signal<bool>, tray: std::rc::Weak<TrayIcon>) -> Menu {
+            Menu::new().item(MenuItem::checkbox("Mute", on).on_click(move || {
+                if let Some(t) = tray.upgrade() {
+                    t.set_menu(Some(menu(on, Rc::downgrade(&t))));
+                }
+            }))
+        }
+        tray.set_menu(Some(menu(on, Rc::downgrade(&tray))));
+        let (id, t0) = first_toggle(&next(&rx).menu.unwrap());
+        assert!(!t0.checked);
+        assert_eq!(crate::menu::callback_count(), before + 1);
+        assert!(crate::menu::dispatch_menu_event(&id.unwrap()));
+        assert!(on.get());
+        let p = next(&rx);
+        let (id2, t1) = first_toggle(p.menu.as_ref().expect("the replacement menu"));
+        assert!(t1.checked, "rebuilt with the flipped state");
+        assert!(p.checks.is_empty(), "{:?}", p.checks);
+        assert_eq!(crate::menu::callback_count(), before + 1, "old callback released");
+        assert!(rx.recv_timeout(std::time::Duration::from_millis(200)).is_err());
+        // A second round trip through the new menu.
+        assert!(crate::menu::dispatch_menu_event(&id2.unwrap()));
+        assert!(!on.get());
+        let (_, t2) = first_toggle(&next(&rx).menu.unwrap());
+        assert!(!t2.checked);
+        drop(tray);
+        assert_eq!(crate::menu::callback_count(), before);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn update_threads() -> usize {
+        std::fs::read_dir("/proc/self/task")
+            .unwrap()
+            .filter(|t| {
+                let p = t.as_ref().unwrap().path().join("comm");
+                std::fs::read_to_string(p).unwrap_or_default().trim() == "rinch-tray-upda"
+            })
+            .count()
+    }
+
+    /// Dropping a tray ends its update thread; set_menu spawns none.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn review_1527_update_threads_do_not_leak() {
+        let base = update_threads();
+        for _ in 0..20 {
+            let (tray, rx) = tray_with_probe();
+            for n in 0..10 {
+                tray.set_menu(Some(Menu::new().item(MenuItem::new(format!("i{n}")).on_click(|| {}))));
+            }
+            let _ = next(&rx);
+            assert!(update_threads() <= base + 1 + 20);
+            drop(tray);
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while update_threads() > base && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(update_threads(), base, "every update thread ended");
+    }
+
+    /// Radio groups are keyed by the signal's slot id only: a freed group's
+    /// options next to a live group that reused its slot merge into one ksni
+    /// RadioGroup.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn review_1527_radio_group_key_survives_slot_reuse() {
+        use rinch_core::reactive::{Scope, Signal};
+        let scope = Scope::new();
+        let stale = scope.run(|| {
+            let a = Signal::new(1u8);
+            (MenuItem::radio("A1", a, 1), MenuItem::radio("A2", a, 2))
+        });
+        scope.dispose();
+        let b = Signal::new(1u8);
+        let (entries, _r, _) = convert_menu_to_ksni_entries(
+            Menu::new()
+                .item(stale.0)
+                .item(stale.1)
+                .item(MenuItem::radio("B1", b, 1))
+                .item(MenuItem::radio("B2", b, 2)),
+        );
+        let items = build_ksni_menu(&entries);
+        assert_eq!(items.len(), 2, "two groups, not one");
+    }
+
     /// Issue #1520, live: a burst of icon and tooltip swaps on a real tray
     /// returns at once and lands — the item's `Title` reads the last tooltip
     /// back over D-Bus. Needs a session bus with a StatusNotifierWatcher (a
