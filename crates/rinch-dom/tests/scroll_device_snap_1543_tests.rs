@@ -15,7 +15,10 @@
 //! scroll axis (over the scroller's interior, away from its clipped edges).
 //! Off the fixed point on purpose: two offsets a whole device pixel apart are a
 //! rigid shift even with no snapping at all (`round(x + 1) == round(x) + 1`),
-//! so the offsets differ by 0.4 / 0.6 device px.
+//! so the offsets differ by a fraction of a device pixel (0.6 to 0.9). And each
+//! pair snaps to two *different* grid points, so the shift found must be
+//! non-zero: a pair snapping to one value would compare an image with itself
+//! and could not tell the device grid from any other (review of #1545).
 //!
 //! The face is the bundled Inter under an override name, and `font-size` /
 //! `line-height` are declared, so nothing here measures the host's fonts —
@@ -99,7 +102,7 @@ fn paint_at(style: &str, text: &str, scale: f64, axis: usize, offset: f64) -> (V
     (gray, w as usize)
 }
 
-/// Whether `b` is `a` moved by a whole number of device pixels (−3..=3) along
+/// The whole number of device pixels (−3..=3) `b` is `a` moved by along
 /// `axis`, over the device rect `(x0, y0, x1, y1)`. Returns the shift.
 fn rigid_shift(
     a: &[u8],
@@ -140,7 +143,7 @@ fn horizontal(scale: f64, from: f64, to: f64) {
         "nothing painted; the fixture measures nothing"
     );
     assert!(
-        rigid_shift(&a, &b, w, 0, rect).is_some(),
+        rigid_shift(&a, &b, w, 0, rect).is_some_and(|k| k != 0),
         "at scale {scale}, scrolling from {from} to {to} logical px did not move the \
          line rigidly: glyph spacing changed (#1543)"
     );
@@ -163,7 +166,7 @@ fn vertical(scale: f64, from: f64, to: f64) {
         "nothing painted; the fixture measures nothing"
     );
     assert!(
-        rigid_shift(&a, &b, w, 1, rect).is_some(),
+        rigid_shift(&a, &b, w, 1, rect).is_some_and(|k| k != 0),
         "at scale {scale}, scrolling from {from} to {to} logical px did not move the \
          lines rigidly: line spacing changed (#1543)"
     );
@@ -171,32 +174,33 @@ fn vertical(scale: f64, from: f64, to: f64) {
 
 #[test]
 fn a_horizontal_scroll_at_125_percent_moves_the_line_rigidly() {
-    // 12.5 and 12.9 device px.
-    horizontal(1.25, 10.0, 10.32);
-    // 12.5 and 13.4: on the grid, a whole device pixel apart.
+    // 12.5 and 13.1 device px: 12 and 13 on the grid.
+    horizontal(1.25, 10.0, 10.48);
+    // 12.5 and 13.4: 12 and 13.
     horizontal(1.25, 10.0, 10.72);
 }
 
 #[test]
 fn a_horizontal_scroll_at_150_percent_moves_the_line_rigidly() {
-    // 15.0 and 15.6 device px.
-    horizontal(1.5, 10.0, 10.4);
+    // 15.3 and 16.2 device px: 15 and 16 on the grid.
+    horizontal(1.5, 10.2, 10.8);
 }
 
 #[test]
 fn a_fractional_horizontal_scroll_at_100_percent_moves_the_line_rigidly() {
     // A fractional wheel delta (Wayland reports them) at scale 1.
-    horizontal(1.0, 10.0, 10.4);
+    // 10.3 and 11.1: 10 and 11 on the grid.
+    horizontal(1.0, 10.3, 11.1);
 }
 
 #[test]
 fn a_vertical_scroll_at_125_percent_moves_the_lines_rigidly() {
-    vertical(1.25, 10.0, 10.32);
+    vertical(1.25, 10.0, 10.48);
 }
 
 #[test]
 fn a_vertical_scroll_at_150_percent_moves_the_lines_rigidly() {
-    vertical(1.5, 10.0, 10.4);
+    vertical(1.5, 10.2, 10.8);
 }
 
 fn on_grid(v: f64, scale: f64) -> bool {
@@ -283,4 +287,14 @@ fn rewriting_an_offset_on_the_grid_keeps_it() {
     }
     assert_eq!(doc.scroll_top(c), first);
     assert!((first * 1.75 - 61.0).abs() < 1e-6, "got {first}");
+}
+
+/// review-1545: two offsets whose SNAPPED values differ, by a step that is a
+/// whole number of device px but not of CSS px (9.6 -> 11.2 at 125%). The
+/// pairs above all snap to one value (or whole-CSS-px apart at scale 1), so a
+/// snap to the wrong grid (whole CSS px) passes them.
+#[test]
+fn review_snapped_offsets_that_differ_are_rigid_at_125() {
+    horizontal(1.25, 10.0, 11.3);
+    vertical(1.25, 10.0, 11.3);
 }
