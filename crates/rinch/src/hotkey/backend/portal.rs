@@ -621,4 +621,88 @@ mod tests {
         started.expect("portal");
         assert!(wrote, "the stub was written");
     }
+
+    /// Against a fake GlobalShortcuts portal on a private bus: a binding held
+    /// while the app registers another hotkey, and while it rebinds this one,
+    /// gets exactly one Released, in both portal modes (`refuse` makes the
+    /// backend move sessions, where the release is rinch's own). Not in CI: it
+    /// needs `dbus-launch`, python3-dbus and python3-gi. Run it alone, once per
+    /// mode, from the repository root:
+    ///
+    /// ```text
+    /// cargo test -p rinch --features global-hotkeys --lib --no-run
+    /// eval $(dbus-launch --sh-syntax)
+    /// python3 -I crates/rinch/tests/fixtures/fake_global_shortcuts_portal.py refuse & sleep 1
+    /// cargo test -p rinch --features global-hotkeys --lib -- --ignored --exact \
+    ///     hotkey::backend::portal::tests::the_portal_releases_a_held_binding_across_changes
+    /// kill %1; kill $DBUS_SESSION_BUS_PID
+    /// ```
+    ///
+    /// (and again without `refuse`). Removing the release of held bindings on
+    /// a session change fails it in `refuse` mode with a stuck Pressed.
+    #[test]
+    #[ignore = "needs a fake portal on a private bus; see the doc comment"]
+    fn the_portal_releases_a_held_binding_across_changes() {
+        use crate::hotkey::{HotkeySpec, HotkeyState, register};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        unsafe { std::env::set_var("RINCH_HOTKEY_BACKEND", "portal") };
+        crate::hotkey::set_app_id("org.example.ReviewProbe");
+        crate::hotkey::set_write_desktop_entry(false);
+        let ctl = |id: &str, down: bool| {
+            let o = std::process::Command::new("dbus-send")
+                .args([
+                    "--session",
+                    "--print-reply",
+                    "--dest=org.freedesktop.portal.Desktop",
+                    "/org/freedesktop/portal/desktop",
+                    "org.example.FakeControl.Key",
+                    &format!("string:{id}"),
+                    &format!("boolean:{down}"),
+                ])
+                .output()
+                .unwrap();
+            assert!(o.status.success(), "{o:?}");
+        };
+        let pump = |ms: u64| {
+            let end = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+            while std::time::Instant::now() < end {
+                rinch_core::reactive::drain_main_callbacks();
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let l = log.clone();
+        let a = register(HotkeySpec::new("Ctrl+Alt+F1").id("a"), move |e| {
+            l.borrow_mut().push(("a", e.state, e.chorded))
+        })
+        .unwrap();
+        pump(400);
+        // Hold a, register b meanwhile, then release.
+        ctl("a", true);
+        pump(200);
+        let _b = register(HotkeySpec::new("Ctrl+Alt+F2").id("b"), |_| {}).unwrap();
+        pump(400);
+        ctl("a", false);
+        pump(300);
+        let after_register = log.borrow().clone();
+        // Hold a, rebind a, then release.
+        ctl("a", true);
+        pump(200);
+        a.rebind("Ctrl+Alt+F3").unwrap();
+        pump(400);
+        ctl("a", false);
+        pump(300);
+        // And a fresh press/release still works after all that.
+        ctl("a", true);
+        pump(200);
+        ctl("a", false);
+        pump(300);
+        let p = (
+            ("a", HotkeyState::Pressed, false),
+            ("a", HotkeyState::Released, false),
+        );
+        assert_eq!(after_register, vec![p.0, p.1], "held across a register");
+        assert_eq!(*log.borrow(), vec![p.0, p.1, p.0, p.1, p.0, p.1]);
+    }
 }

@@ -40,11 +40,13 @@ fn r1_right_ctrl_then_c_fires_the_modifier_only_binding() {
     );
 }
 
-/// R2: a modifier key-up the stream lost while NO binding was pressed (Alt+Tab
-/// into an elevated window on Windows; secure input on macOS) stays in `down`
-/// and blocks every exact-modifier chord without that modifier until the user
-/// presses and releases that key again. The Windows poll only runs while a
-/// binding is pressed, so it never clears this.
+/// R2: a unit test of the reconcile rule (`Matcher::key_reconciled`), not of
+/// the Windows backend: the oracle below says "Alt is up" at once, where the
+/// backend asks `GetAsyncKeyState` later and only about keys whose last event
+/// is old (see `windows_reconcile_tests`). The shape: a modifier key-up the
+/// stream lost while no binding was pressed (Alt+Tab into an elevated window
+/// on Windows; secure input on macOS) stays in `down` and, unreconciled,
+/// refuses every exact-modifier chord without that modifier.
 #[test]
 fn r2_a_lost_modifier_up_with_nothing_pressed_blocks_other_chords() {
     let mut m = Matcher::default();
@@ -78,6 +80,7 @@ fn r2_a_lost_modifier_up_with_nothing_pressed_blocks_other_chords() {
 #[test]
 fn r3_a_press_queued_before_rebind_is_not_stranded() {
     let _fk = fake::install();
+    test_queue::install();
     let log = Rc::new(RefCell::new(Vec::new()));
     let l = log.clone();
     let hk = register(HotkeySpec::new("F8").id("x"), move |e| {
@@ -88,7 +91,7 @@ fn r3_a_press_queued_before_rebind_is_not_stranded() {
     report(hk.key, Report::State(HotkeyState::Pressed));
     // …and the app rebinds before the main loop drained it.
     hk.rebind("F9").unwrap();
-    rinch_core::reactive::drain_main_callbacks();
+    test_queue::drain();
     let pressed = REGISTRY.with(|r| r.borrow().get(&hk.key).unwrap().pressed);
     assert!(
         !pressed,
@@ -97,16 +100,18 @@ fn r3_a_press_queued_before_rebind_is_not_stranded() {
     );
 }
 
-/// R4: report() really goes through the main-thread queue (not inline).
+/// R4: report() queues; it never delivers inline (the backend may hold a
+/// lock). On this thread's own queue (`test_queue`), not the process-wide one.
 #[test]
 fn r4_report_is_delivered_by_the_main_queue_not_inline() {
     let _fk = fake::install();
+    test_queue::install();
     let log = Rc::new(RefCell::new(Vec::new()));
     let l = log.clone();
     let hk = register("F7", move |e| l.borrow_mut().push(e.state)).unwrap();
     report(hk.key, Report::State(HotkeyState::Pressed));
     assert!(log.borrow().is_empty(), "inline");
-    rinch_core::reactive::drain_main_callbacks();
+    test_queue::drain();
     assert_eq!(*log.borrow(), vec![HotkeyState::Pressed]);
 }
 

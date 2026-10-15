@@ -19,11 +19,14 @@
 //! - **A key-up the hook never sees cannot strand a binding.** While an
 //!   elevated (administrator) window has the focus the hook sees no input at
 //!   all (UIPI), so a release can be lost. Every key-down first asks
-//!   `GetAsyncKeyState` about each key the matcher believes is down and drops
-//!   the ones that are up (`Matcher::key_reconciled`), so a lost Alt cannot
-//!   refuse the next chord; and while any key is believed down, a 100 ms
-//!   timer does the same, so a pressed binding is released without waiting
-//!   for another key.
+//!   `GetAsyncKeyState` about each key the matcher believes is down whose last
+//!   event is at least 500 ms old, and drops the ones that are up
+//!   (`Matcher::key_reconciled_aged`), so a lost Alt cannot refuse the next
+//!   chord; and while any key is believed down, a 100 ms timer does the same,
+//!   so a pressed binding is released without waiting for another key. The
+//!   age rule is there because the state is read when the pump processes a
+//!   key, after the hook: in a burst the user may already have let go of the
+//!   Ctrl of the Ctrl+Space being processed.
 //! - The fake Left Ctrl an AltGr layout sends with Right Alt is skipped, so
 //!   `RightAlt` is a modifier-only binding there too.
 
@@ -36,6 +39,7 @@ use windows_sys::Win32::Foundation::{
     ERROR_HOTKEY_ALREADY_REGISTERED, GetLastError, LPARAM, LRESULT, WPARAM,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::SystemInformation::GetTickCount;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, MAPVK_VSC_TO_VK_EX, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN,
@@ -51,7 +55,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::platform::scancode::PhysicalKeyExtScancode;
 
 use super::BackendImpl;
-use crate::hotkey::matcher::{BindingKey, Matcher};
+use crate::hotkey::matcher::{BindingKey, Matcher, still_down_by_age};
 use crate::hotkey::{
     Backend, Binding, HotkeyError, Meta, Modifier, Shortcut, Trigger, report_matched,
 };
@@ -172,15 +176,19 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         if kb.scanCode & 0x200 == 0 {
             let down = wparam as u32 == WM_KEYDOWN || wparam as u32 == WM_SYSKEYDOWN;
             let extended = kb.flags & LLKHF_EXTENDED != 0;
-            let packed =
-                (kb.scanCode & 0xFFFF) | ((extended as u32) << 16) | ((kb.vkCode & 0xFF) << 17);
+            let packed = (kb.scanCode & 0xFFFF)
+                | ((extended as u32) << 16)
+                | ((kb.vkCode & 0xFF) << 17)
+                | ((down as u32) << 25);
             // SAFETY: a post to this very thread's queue; nothing else here.
             unsafe {
                 PostThreadMessageW(
                     HOOK_THREAD.load(Ordering::Relaxed),
                     WM_HOTKEY_KEY,
                     packed as WPARAM,
-                    down as LPARAM,
+                    // The event's own time (GetTickCount ms), for the late-read
+                    // rule in the pump; round-trips through `as u32`.
+                    kb.time as LPARAM,
                 )
             };
         }
@@ -214,6 +222,7 @@ fn pump(ready: mpsc::Sender<Result<u32, String>>) {
 
         let mut matcher = Matcher::default();
         let mut vks: BTreeMap<KeyCode, u32> = BTreeMap::new();
+        let mut last_ms: BTreeMap<KeyCode, u32> = BTreeMap::new();
         let mut hotkey_ids: BTreeMap<BindingKey, i32> = BTreeMap::new();
         let mut next_id: i32 = 1;
         let mut timer: usize = 0;
@@ -226,21 +235,41 @@ fn pump(ready: mpsc::Sender<Result<u32, String>>) {
                     let scan = packed & 0xFFFF;
                     let extended = packed & (1 << 16) != 0;
                     let vk = (packed >> 17) & 0xFF;
+                    let down = packed & (1 << 25) != 0;
+                    let time = msg.lParam as u32;
                     if let Some(code) = key_of(scan, extended) {
                         vks.insert(code, vk);
                         // A key-up the hook never saw (UIPI) is dropped here,
-                        // before it can refuse this chord.
-                        let still_down = |k: KeyCode| {
+                        // before it can refuse this chord — but only for a key
+                        // whose last event is old: `GetAsyncKeyState` is read
+                        // now, after the hook, and in a burst the user may
+                        // already have let go of a key this event needs.
+                        let os_says_down = |k: KeyCode| {
                             let vk = vks.get(&k).copied().unwrap_or(0);
                             vk == 0 || GetAsyncKeyState(vk as i32) as u16 & 0x8000 != 0
                         };
-                        matcher.key_reconciled(code, msg.lParam != 0, still_down, &mut out);
+                        matcher.key_reconciled_aged(
+                            code,
+                            down,
+                            time,
+                            |k| last_ms.get(&k).copied(),
+                            os_says_down,
+                            &mut out,
+                        );
+                        last_ms.insert(code, time);
                     }
                 }
                 WM_TIMER if msg.wParam == timer && timer != 0 => {
+                    // The same age rule as a key event, against the clock the
+                    // hook's timestamps come from.
+                    let now = GetTickCount();
                     for code in matcher.down_keys().to_vec() {
                         let vk = vks.get(&code).copied().unwrap_or(0);
-                        if vk != 0 && GetAsyncKeyState(vk as i32) as u16 & 0x8000 == 0 {
+                        let os_says_down = |_k: KeyCode| {
+                            vk == 0 || GetAsyncKeyState(vk as i32) as u16 & 0x8000 != 0
+                        };
+                        if !still_down_by_age(code, now, |k| last_ms.get(&k).copied(), os_says_down)
+                        {
                             matcher.forget_key(code, &mut out);
                         }
                     }

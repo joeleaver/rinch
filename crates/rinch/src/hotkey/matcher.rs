@@ -55,6 +55,27 @@ pub(crate) fn is_lock_key(code: KeyCode) -> bool {
     )
 }
 
+/// How old a key's last event must be before a late OS read of its state is
+/// trusted over the stream (see [`Matcher::key_reconciled_aged`]).
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+pub(crate) const STALE_AFTER_MS: u32 = 500;
+
+/// The rule [`Matcher::key_reconciled_aged`] applies to one key: down if its
+/// last event is recent (or unknown), else whatever the OS says. The clock
+/// wraps (Windows' `GetTickCount` / `KBDLLHOOKSTRUCT.time`, every 49.7 days).
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+pub(crate) fn still_down_by_age(
+    k: KeyCode,
+    now_ms: u32,
+    last_ms: impl Fn(KeyCode) -> Option<u32>,
+    os_says_down: impl Fn(KeyCode) -> bool,
+) -> bool {
+    match last_ms(k) {
+        Some(t) if now_ms.wrapping_sub(t) >= STALE_AFTER_MS => os_says_down(k),
+        _ => true,
+    }
+}
+
 impl Matcher {
     pub(crate) fn add(&mut self, key: BindingKey, shortcut: Shortcut) {
         self.bindings.retain(|b| b.key != key);
@@ -158,6 +179,30 @@ impl Matcher {
             }
         }
         self.key(code, down, out);
+    }
+
+    /// [`Self::key_reconciled`] for a stream whose "is it still down?" answer
+    /// comes **late** — the Windows hook thread asks `GetAsyncKeyState` when it
+    /// processes a posted key, which in a burst (SendInput, AutoHotkey, remote
+    /// desktop, fast typing while the pump is behind) can be after the
+    /// user's own `Ctrl↑` already happened: asked then, Ctrl reads up, and the
+    /// Ctrl+Space being processed would never fire. So only a key whose last
+    /// event is at least [`STALE_AFTER_MS`] older than this one (`now_ms`, the
+    /// event's own timestamp, a wrapping millisecond clock) is put to the OS;
+    /// a recent one is taken as down. `last_ms` gives each key's last event
+    /// time.
+    #[cfg_attr(not(any(windows, test)), allow(dead_code))]
+    pub(crate) fn key_reconciled_aged(
+        &mut self,
+        code: KeyCode,
+        down: bool,
+        now_ms: u32,
+        last_ms: impl Fn(KeyCode) -> Option<u32>,
+        os_says_down: impl Fn(KeyCode) -> bool,
+        out: &mut Vec<(BindingKey, HotkeyState)>,
+    ) {
+        let still_down = |k: KeyCode| still_down_by_age(k, now_ms, &last_ms, &os_says_down);
+        self.key_reconciled(code, down, still_down, out);
     }
 
     /// The stream says `code` went up without our seeing it: treat it as a
@@ -316,6 +361,90 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    /// The Windows rule, with timestamps: a burst whose OS read comes after
+    /// the user already let go of Ctrl still fires Ctrl+Space (Ctrl's event is
+    /// recent, so the late "up" is not believed), while an Alt whose last event
+    /// is old and that the OS says is up is dropped.
+    #[test]
+    fn a_late_os_read_drops_only_keys_whose_last_event_is_old() {
+        use std::collections::BTreeMap;
+        let os_all_up = |_k: KeyCode| false; // read after the whole burst ended
+        // Burst: Ctrl↓ at t=1000, Space↓ at t=1005.
+        let mut mm = m(&[(1, "Ctrl+Space")]);
+        let mut last = BTreeMap::from([(ControlLeft, 1000u32)]);
+        let mut out = Vec::new();
+        mm.key_reconciled_aged(
+            ControlLeft,
+            true,
+            1000,
+            |k| last.get(&k).copied(),
+            os_all_up,
+            &mut out,
+        );
+        mm.key_reconciled_aged(
+            Space,
+            true,
+            1005,
+            |k| last.get(&k).copied(),
+            os_all_up,
+            &mut out,
+        );
+        assert_eq!(
+            out,
+            vec![(1, Pressed)],
+            "a fast or injected Ctrl+Space fires"
+        );
+
+        // Alt went down at t=0 and its up was lost; Ctrl+Space at t=600.
+        let mut mm = m(&[(1, "Ctrl+Space")]);
+        last.clear();
+        last.insert(AltLeft, 0);
+        let mut out = Vec::new();
+        mm.key_reconciled_aged(
+            AltLeft,
+            true,
+            0,
+            |k| last.get(&k).copied(),
+            |_| true,
+            &mut out,
+        );
+        last.insert(ControlLeft, 599);
+        let os = |k: KeyCode| k != AltLeft;
+        mm.key_reconciled_aged(
+            ControlLeft,
+            true,
+            599,
+            |k| last.get(&k).copied(),
+            os,
+            &mut out,
+        );
+        mm.key_reconciled_aged(Space, true, 600, |k| last.get(&k).copied(), os, &mut out);
+        assert_eq!(out, vec![(1, Pressed)], "the old, lost Alt is dropped");
+
+        // The same Alt only 100 ms old is believed: the chord is refused.
+        let mut mm = m(&[(1, "Ctrl+Space")]);
+        let last = BTreeMap::from([(AltLeft, 500u32), (ControlLeft, 590u32)]);
+        let mut out = Vec::new();
+        for (k, t) in [(AltLeft, 500), (ControlLeft, 590), (Space, 600)] {
+            mm.key_reconciled_aged(k, true, t, |k| last.get(&k).copied(), os, &mut out);
+        }
+        assert!(out.is_empty(), "{out:?}");
+
+        // The clock wraps: an event at u32::MAX - 10 is 611 ms before 600.
+        assert!(!still_down_by_age(
+            AltLeft,
+            600,
+            |_| Some(u32::MAX - 10),
+            |_| false
+        ));
+        assert!(still_down_by_age(
+            AltLeft,
+            5,
+            |_| Some(u32::MAX - 10),
+            |_| false
+        ));
     }
 
     #[test]

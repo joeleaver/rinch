@@ -632,7 +632,55 @@ pub(crate) fn report_matched(matcher: &matcher::Matcher, out: &mut Vec<(BindingK
 /// Deliver a backend report to the main thread. Safe from any thread and from
 /// a `Drop`; never runs inline (the backend may hold a lock).
 pub(crate) fn report(key: BindingKey, r: Report) {
+    #[cfg(test)]
+    let Some(r) = test_queue::capture(key, r) else {
+        return;
+    };
     rinch_core::reactive::dispatch_main_callback(Box::new(move || deliver(key, r)));
+}
+
+/// A queue of this test thread's own, standing in for the main-thread queue.
+/// That queue is process-wide, and other lib tests drain it from their
+/// threads, where this thread's registry does not exist: a test that reports
+/// and then drains it races them (#1530's second review measured the
+/// generation-filter fixture passing with the filter removed).
+#[cfg(test)]
+pub(crate) mod test_queue {
+    use super::{BindingKey, Report, deliver};
+    use std::cell::RefCell;
+
+    thread_local! {
+        static QUEUE: RefCell<Option<Vec<(BindingKey, Report)>>> = const { RefCell::new(None) };
+    }
+
+    /// Reports made on this thread queue here, not on the main queue.
+    pub(crate) fn install() {
+        QUEUE.with(|q| *q.borrow_mut() = Some(Vec::new()));
+    }
+
+    /// The report back if no queue is installed on this thread.
+    pub(super) fn capture(key: BindingKey, r: Report) -> Option<Report> {
+        QUEUE.with(|q| match q.borrow_mut().as_mut() {
+            Some(v) => {
+                v.push((key, r));
+                None
+            }
+            None => Some(r),
+        })
+    }
+
+    /// Deliver what this thread queued, in order, as the main loop would.
+    pub(crate) fn drain() {
+        let items = QUEUE.with(|q| {
+            q.borrow_mut()
+                .as_mut()
+                .map(std::mem::take)
+                .unwrap_or_default()
+        });
+        for (k, r) in items {
+            deliver(k, r);
+        }
+    }
 }
 
 /// Run on the main thread: hand a report to its hotkey's callbacks.
