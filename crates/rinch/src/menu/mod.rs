@@ -151,6 +151,34 @@ pub struct MenuItem {
     /// `None` means the item was created outside any render and has app
     /// lifetime. `Owner` is a `Weak`, so this keeps nothing alive.
     callback_owner: Option<Owner>,
+    /// A checkbox or radio item's state, if this is one (issue #1520).
+    toggle: Option<Toggle>,
+}
+
+/// Whether a toggle item is a checkbox or one option of a radio group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ToggleKind {
+    /// [`MenuItem::checkbox`]: activating it flips its own state.
+    Check,
+    /// [`MenuItem::radio`]: activating it selects it within its group. `group`
+    /// tells adjacent radio items apart from each other's groups (the group
+    /// signal's slot id and generation, so a freed group's options never merge
+    /// with a group that reused its slot); backends that draw a group as one
+    /// widget (ksni's `RadioGroup`) gather a run of adjacent items with one
+    /// `group`.
+    Radio { group: (u32, u32) },
+}
+
+/// The state of a checkbox or radio [`MenuItem`].
+///
+/// Type-erased over the signal it reads, so every backend handles one shape:
+/// `is_on` reads the state (tracked, so a backend can watch it from an effect;
+/// `None` once the signal is freed) and `activate` is what a click does to it.
+#[derive(Clone)]
+pub(crate) struct Toggle {
+    pub(crate) kind: ToggleKind,
+    pub(crate) is_on: Rc<dyn Fn() -> Option<bool>>,
+    pub(crate) activate: Rc<dyn Fn()>,
 }
 
 #[derive(Clone)]
@@ -184,7 +212,93 @@ impl MenuItem {
             enabled: true,
             callback: None,
             callback_owner: None,
+            toggle: None,
         }
+    }
+
+    /// A **checkbox** item whose checked state is `checked` (issue #1520).
+    ///
+    /// The signal *is* the state, in both directions: activating the item (a
+    /// click, its shortcut, a tray menu) flips it before any
+    /// [`on_click`](MenuItem::on_click) callback runs, so the callback reads the
+    /// new value; and writing it from anywhere (`checked.set(true)`) moves the
+    /// check mark in every menu built from this item — the native window bar,
+    /// a tray menu, the DOM menu bar. Read it back with `checked.get()`.
+    ///
+    /// The item belongs to the component rendering here, like an `on_click`
+    /// callback (see the [module docs](self)): once that component unmounts
+    /// and frees the signal, the item stops toggling it.
+    pub fn checkbox(label: impl Into<String>, checked: rinch_core::reactive::Signal<bool>) -> Self {
+        let mut item = Self::new(label);
+        item.callback_owner = current_owner();
+        item.toggle = Some(Toggle {
+            kind: ToggleKind::Check,
+            is_on: Rc::new(move || checked.try_get()),
+            activate: Rc::new(move || {
+                if let Some(on) = rinch_core::reactive::untracked(|| checked.try_get()) {
+                    checked.set(!on);
+                }
+            }),
+        });
+        item
+    }
+
+    /// One option of a **radio group**: checked while `selected` holds `value`
+    /// (issue #1520).
+    ///
+    /// Every item built over the same `selected` signal is one group, and at
+    /// most one of them is checked. Activating an item writes its `value` to
+    /// `selected` before any [`on_click`](MenuItem::on_click) callback runs;
+    /// writing `selected` from anywhere moves the mark. Activating the option
+    /// that is already selected leaves it selected. Keep a group's items next to
+    /// each other in one menu: the Linux tray draws a run of adjacent options of
+    /// one group as a single radio group.
+    pub fn radio<T: Clone + PartialEq + 'static>(
+        label: impl Into<String>,
+        selected: rinch_core::reactive::Signal<T>,
+        value: T,
+    ) -> Self {
+        let mut item = Self::new(label);
+        item.callback_owner = current_owner();
+        let mine = value.clone();
+        item.toggle = Some(Toggle {
+            kind: ToggleKind::Radio {
+                group: selected.identity(),
+            },
+            is_on: Rc::new(move || selected.try_with(|v| *v == mine)),
+            activate: Rc::new(move || {
+                if selected.is_alive() {
+                    selected.set(value.clone());
+                }
+            }),
+        });
+        item
+    }
+
+    /// What activating this item runs: the toggle's state change, then the
+    /// [`on_click`](MenuItem::on_click) callback. `None` when it does neither.
+    pub(crate) fn activation(&self) -> Option<Rc<dyn Fn()>> {
+        match (&self.toggle, &self.callback) {
+            (None, None) => None,
+            (None, Some(cb)) => Some(Rc::clone(cb)),
+            (Some(t), cb) => {
+                let toggle = Rc::clone(&t.activate);
+                let cb = cb.clone();
+                Some(Rc::new(move || {
+                    toggle();
+                    if let Some(cb) = &cb {
+                        cb();
+                    }
+                }))
+            }
+        }
+    }
+
+    /// Whether this item is checked now, read without subscribing anything.
+    /// `None` for an item that is not a checkbox or radio item.
+    pub(crate) fn checked_now(&self) -> Option<bool> {
+        let t = self.toggle.as_ref()?;
+        Some(rinch_core::reactive::untracked(|| (t.is_on)()).unwrap_or(false))
     }
 
     /// Set the keyboard shortcut (e.g., `"Ctrl+N"`, `"Cmd+Shift+S"`).
@@ -209,6 +323,15 @@ impl MenuItem {
         self.callback = Some(Rc::new(cb));
         self.callback_owner = current_owner();
         self
+    }
+
+    /// Whether this is a checkbox or radio item, and if so whether it is
+    /// checked now. `None` for a plain item.
+    ///
+    /// Reads the item's signal untracked; to react to changes, read the signal
+    /// you built the item with.
+    pub fn checked(&self) -> Option<bool> {
+        self.checked_now()
     }
 }
 
@@ -274,6 +397,8 @@ pub(crate) enum MenuEntryKind {
         /// Carried through so the tray backend registers the item under the
         /// scope that created its callback, not the one that built the tray.
         callback_owner: Option<Owner>,
+        /// A checkbox or radio item's state.
+        toggle: Option<Toggle>,
     },
     Separator,
     Submenu {
@@ -290,10 +415,11 @@ impl Menu {
             .into_iter()
             .map(|entry| match entry {
                 MenuEntryInner::Item(item) => MenuEntryKind::Item {
+                    callback: item.activation(),
                     label: item.label,
                     enabled: item.enabled,
-                    callback: item.callback,
                     callback_owner: item.callback_owner,
+                    toggle: item.toggle,
                 },
                 MenuEntryInner::Separator => MenuEntryKind::Separator,
                 MenuEntryInner::Submenu { label, menu } => MenuEntryKind::Submenu { label, menu },
@@ -912,6 +1038,11 @@ pub(crate) struct MenuRegistration {
     /// names this build", which is every registration but a
     /// [`register_menu_shortcuts`] one.
     build: u64,
+    /// The effects that keep a backend's check marks in step with the
+    /// checkbox and radio signals of this build ([`Self::watch`]). Created on
+    /// the first watch; disposed when this token drops, so a replaced menu stops
+    /// pushing state into widgets that are gone.
+    watchers: Option<rinch_core::reactive::Scope>,
 }
 
 impl MenuRegistration {
@@ -925,6 +1056,34 @@ impl MenuRegistration {
     ) {
         let entry = register_callback_owned(menu_id, cb, owner);
         self.callbacks.push((menu_id.to_string(), entry));
+    }
+
+    /// Run `sync` now and again whenever a signal it reads changes, for as long
+    /// as this token lives (issue #1520).
+    ///
+    /// This is how a backend follows a checkbox or radio item's signal: the
+    /// effect is owned by a scope of this registration's own, not by whatever
+    /// happens to be rendering, so it lives exactly as long as the menu it
+    /// serves.
+    #[cfg_attr(
+        not(any(feature = "desktop", feature = "system-tray")),
+        allow(dead_code)
+    )]
+    pub(crate) fn watch(&mut self, sync: impl FnMut() + 'static) {
+        let scope = self
+            .watchers
+            .get_or_insert_with(rinch_core::reactive::Scope::new);
+        scope.run(|| {
+            rinch_core::reactive::Effect::new(sync);
+        });
+    }
+
+    /// Whether this build watches any signal (test introspection).
+    #[cfg(test)]
+    pub(crate) fn watch_count(&self) -> usize {
+        self.watchers
+            .as_ref()
+            .map_or(0, |s| s.owned_counts().effects)
     }
 
     /// Register a chord dispatching `menu_id`, recording it for release.
@@ -967,6 +1126,10 @@ impl Drop for MenuRegistration {
                 take_callback_if_ours(&mut map, menu_id, entry);
             }
         });
+        // The watchers go with the menu. (Dropped from a `thread_local!` at
+        // thread exit, the scope skips disposal itself: see `ScopeInner`'s
+        // `Drop` in rinch-core.)
+        drop(self.watchers.take());
         // One pass over the chord list, not one per serial: releasing a menu bar
         // drops every chord it registered at once.
         if !self.shortcuts.is_empty() {
@@ -1079,16 +1242,12 @@ fn register_menu_shortcuts_into(menu: &Menu, registration: &mut MenuRegistration
                 if !item.enabled {
                     continue;
                 }
-                let (Some(cb), Some(shortcut)) = (item.callback.as_ref(), item.shortcut.as_deref())
+                let (Some(cb), Some(shortcut)) = (item.activation(), item.shortcut.as_deref())
                 else {
                     continue;
                 };
                 let menu_id = next_menu_id();
-                registration.register_callback(
-                    &menu_id,
-                    Rc::clone(cb),
-                    item.callback_owner.clone(),
-                );
+                registration.register_callback(&menu_id, cb, item.callback_owner.clone());
                 registration.register_shortcut(shortcut, &menu_id);
             }
             MenuEntryInner::Separator => {}
@@ -1156,7 +1315,7 @@ pub(crate) fn build_muda_menu(menu: Menu) -> (muda::Menu, MenuRegistration) {
                 // matching is the only thing that fires these from the
                 // keyboard (#1170, B).
                 let muda_item = build_muda_item(&item, &mut registration, false);
-                let _ = muda_menu.append(&muda_item);
+                let _ = muda_menu.append(&*muda_item);
             }
             MenuEntryInner::Separator => {
                 let _ = muda_menu.append(&muda::PredefinedMenuItem::separator());
@@ -1188,7 +1347,7 @@ fn build_muda_entries(
         match entry {
             MenuEntryInner::Item(item) => {
                 let muda_item = build_muda_item(&item, registration, native_bar);
-                let _ = submenu.append(&muda_item);
+                let _ = submenu.append(&*muda_item);
             }
             MenuEntryInner::Separator => {
                 let _ = submenu.append(&muda::PredefinedMenuItem::separator());
@@ -1232,9 +1391,38 @@ fn build_muda_item(
     item: &MenuItem,
     registration: &mut MenuRegistration,
     native_bar: bool,
-) -> muda::MenuItem {
+) -> Box<dyn muda::IsMenuItem> {
     let accelerator = item.shortcut.as_ref().and_then(|s| parse_shortcut(s));
-    let muda_item = muda::MenuItem::new(&item.label, item.enabled, accelerator);
+    // A checkbox or radio item is a muda `CheckMenuItem` (muda has no radio
+    // item; a radio option is a check item whose mark the group's signal moves).
+    // Its mark follows the item's signal through a watcher, so a write from the
+    // app moves it, and so does the click: muda flips a check item's native
+    // state itself, and the watcher then puts it where the signal says — which
+    // is what keeps an already-selected radio option checked when clicked again.
+    let (muda_item, id): (Box<dyn muda::IsMenuItem>, String) = match &item.toggle {
+        Some(toggle) => {
+            let check = muda::CheckMenuItem::new(
+                &item.label,
+                item.enabled,
+                item.checked_now().unwrap_or(false),
+                accelerator,
+            );
+            let id = check.id().0.clone();
+            let is_on = Rc::clone(&toggle.is_on);
+            let mark = check.clone();
+            registration.watch(move || {
+                if let Some(on) = is_on() {
+                    mark.set_checked(on);
+                }
+            });
+            (Box::new(check), id)
+        }
+        None => {
+            let plain = muda::MenuItem::new(&item.label, item.enabled, accelerator);
+            let id = plain.id().0.clone();
+            (Box::new(plain), id)
+        }
+    };
 
     // A disabled item fires nothing. muda will not emit a `MenuEvent` for one,
     // and the in-app menu bar already skips its click handler — but registering
@@ -1246,15 +1434,15 @@ fn build_muda_item(
 
     // Register callback, owned by the scope that created it rather than by
     // whoever is building this menu.
-    if let Some(cb) = &item.callback {
-        registration.register_callback(&muda_item.id().0, cb.clone(), item.callback_owner.clone());
+    if let Some(cb) = item.activation() {
+        registration.register_callback(&id, cb, item.callback_owner.clone());
     }
 
     // Register the shortcut unconditionally; whether it ever matches is
     // decided at dispatch time by `skips_rinch_chord` — see this function's
     // doc.
     if let Some(shortcut_str) = &item.shortcut {
-        registration.register_shortcut_native_bar(shortcut_str, &muda_item.id().0, native_bar);
+        registration.register_shortcut_native_bar(shortcut_str, &id, native_bar);
     }
 
     muda_item
@@ -1306,7 +1494,7 @@ pub(crate) fn attach_menu_to_window(menu: &muda::Menu, window: &dyn winit::windo
     use winit::raw_window_handle::HasWindowHandle;
     if let Ok(handle) = window.window_handle() {
         if let winit::raw_window_handle::RawWindowHandle::Win32(win32) = handle.as_raw() {
-            let hwnd = win32.hwnd.get() as isize;
+            let hwnd = win32.hwnd.get();
             // Safety: hwnd is a valid window handle from winit, and we're on the main thread.
             let attached = unsafe { menu.init_for_hwnd(hwnd) };
             if attached.is_ok() {
@@ -3319,5 +3507,203 @@ mod modifier_spelling_tests {
         ] {
             assert!(input_type_takes_text(ty), "{ty:?}");
         }
+    }
+}
+
+/// Issue #1520: checkbox and radio items. The signal is the state, both ways:
+/// activating an item writes it, and a write from the app is what every
+/// backend's mark follows.
+#[cfg(test)]
+mod toggle_tests {
+    use super::*;
+    use rinch_core::reactive::{Scope, Signal};
+    use std::cell::Cell;
+
+    fn activate(item: &MenuItem) {
+        let cb = item.activation().expect("a toggle item always activates");
+        invoke_menu_callback(&cb, item.callback_owner.as_ref());
+    }
+
+    /// Activating a checkbox flips its signal, and does so *before* the
+    /// item's own `on_click` runs, which therefore reads the new state.
+    /// Sampled from `true` as well as `false`, so a mutant that only sets
+    /// (`set(true)`) instead of flipping fails the second half.
+    #[test]
+    fn a_checkbox_flips_its_signal_before_on_click_runs() {
+        let on = Signal::new(false);
+        let seen = Rc::new(Cell::new(None));
+        let s = seen.clone();
+        let item = MenuItem::checkbox("Mute", on).on_click(move || s.set(Some(on.get())));
+        assert_eq!(item.checked(), Some(false));
+        activate(&item);
+        assert!(on.get());
+        assert_eq!(seen.get(), Some(true), "on_click saw the new state");
+        assert_eq!(item.checked(), Some(true));
+        activate(&item);
+        assert!(!on.get(), "a second activation unchecks it");
+        assert_eq!(seen.get(), Some(false));
+    }
+
+    /// A radio option writes its value; the option already selected stays
+    /// selected when activated again (a flip would deselect it).
+    #[test]
+    fn a_radio_option_selects_its_value_and_stays_selected() {
+        let model = Signal::new("small".to_string());
+        let small = MenuItem::radio("Small", model, "small".to_string());
+        let large = MenuItem::radio("Large", model, "large".to_string());
+        assert_eq!(
+            (small.checked(), large.checked()),
+            (Some(true), Some(false))
+        );
+        activate(&large);
+        assert_eq!(model.get(), "large");
+        assert_eq!(
+            (small.checked(), large.checked()),
+            (Some(false), Some(true))
+        );
+        activate(&large);
+        assert_eq!(model.get(), "large", "re-selecting keeps the selection");
+        // An app write moves the mark.
+        model.set("small".into());
+        assert_eq!(
+            (small.checked(), large.checked()),
+            (Some(true), Some(false))
+        );
+        assert_eq!(MenuItem::new("plain").checked(), None);
+    }
+
+    /// The #183 rule reaches a toggle: a checkbox built in a component whose
+    /// scope has gone (and freed its signal) neither runs nor panics, and its
+    /// reader answers "unknown" instead of reading a freed signal.
+    #[test]
+    fn a_checkbox_whose_component_unmounted_does_nothing() {
+        let scope = Scope::new();
+        let item = scope.run(|| MenuItem::checkbox("Mute", Signal::new(false)));
+        scope.dispose();
+        let cb = item.activation().unwrap();
+        assert!(
+            !invoke_menu_callback(&cb, item.callback_owner.as_ref()),
+            "a dead owner's item does not run"
+        );
+        let toggle = item.toggle.as_ref().unwrap();
+        assert_eq!(
+            (toggle.is_on)(),
+            None,
+            "the reader does not read a freed signal"
+        );
+        // Even invoked directly, the toggle checks before it writes.
+        (toggle.activate)();
+    }
+
+    /// A registration's watcher runs on every write of what it reads, and
+    /// stops the moment the registration drops — so a replaced menu stops
+    /// pushing marks into widgets that are gone.
+    #[test]
+    fn a_watcher_lives_exactly_as_long_as_its_registration() {
+        let on = Signal::new(false);
+        let runs = Rc::new(Cell::new(0));
+        let mut registration = MenuRegistration::default();
+        let r = runs.clone();
+        registration.watch(move || {
+            on.get();
+            r.set(r.get() + 1);
+        });
+        assert_eq!(registration.watch_count(), 1);
+        assert_eq!(runs.get(), 1, "a watcher runs once on creation");
+        on.set(true);
+        assert_eq!(runs.get(), 2, "and again on a write");
+        drop(registration);
+        on.set(false);
+        assert_eq!(runs.get(), 2, "not after its registration dropped");
+    }
+
+    /// A registration with watchers dropped from a `thread_local!` at thread
+    /// exit, after the reactive runtime's own locals are gone, must not panic
+    /// in the TLS destructor (which aborts the whole process). Found live: the
+    /// tray-only example keeps its `TrayIcon` in a `thread_local!`, the
+    /// documented place for one. The holder's key is created first, so it is
+    /// destroyed last; the dispose context is created after it, by a dispose.
+    #[test]
+    fn a_registration_dropped_at_thread_exit_does_not_abort() {
+        std::thread::spawn(|| {
+            thread_local! {
+                static HOLD: RefCell<Option<MenuRegistration>> = const { RefCell::new(None) };
+            }
+            HOLD.with(|_| ());
+            let on = Signal::new(false);
+            let mut registration = MenuRegistration::default();
+            registration.watch(move || {
+                on.get();
+            });
+            // First dispose on this thread: its context is created now, after
+            // `HOLD`, and so destroyed before it.
+            Scope::new().dispose();
+            HOLD.with(|h| *h.borrow_mut() = Some(registration));
+        })
+        .join()
+        .expect("the thread ends cleanly");
+    }
+
+    /// A chord on a checkbox toggles it, like a click (the DOM bar's chords go
+    /// through `register_menu_shortcuts`).
+    #[test]
+    fn a_checkbox_chord_toggles_it() {
+        let on = Signal::new(false);
+        let menu = Menu::new().item(MenuItem::checkbox("Mute", on).shortcut("Ctrl+M"));
+        let _chords = register_menu_shortcuts(&[("Edit", &menu)]);
+        assert!(match_shortcut_code(true, false, false, false, "KeyM", None));
+        assert!(on.get());
+    }
+
+    /// muda: a checkbox is a `CheckMenuItem` whose mark follows the signal on
+    /// an app write, and goes back to the signal's state when muda's own click
+    /// handling flipped it (an already-selected radio option clicked again).
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn a_muda_check_item_follows_its_signal() {
+        let on = Signal::new(true);
+        let model = Signal::new(1u8);
+        let menu = Menu::new()
+            .item(MenuItem::checkbox("Mute", on))
+            .item(MenuItem::radio("One", model, 1))
+            .item(MenuItem::radio("Two", model, 2));
+        let (muda_menu, registration) = build_muda_menu(menu);
+        let checks: Vec<muda::CheckMenuItem> = muda_menu
+            .items()
+            .into_iter()
+            .filter_map(|k| match k {
+                muda::MenuItemKind::Check(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(checks.len(), 3, "every toggle item is a check item");
+        let marks = || checks.iter().map(|c| c.is_checked()).collect::<Vec<_>>();
+        assert_eq!(
+            marks(),
+            [true, true, false],
+            "built with the signals' state"
+        );
+
+        on.set(false);
+        model.set(2);
+        assert_eq!(
+            marks(),
+            [false, false, true],
+            "an app write moves the marks"
+        );
+
+        // muda unchecks a selected check item when it is clicked; the
+        // dispatch that follows writes the same value back, which re-asserts.
+        checks[2].set_checked(false);
+        assert!(dispatch_menu_event(&checks[2].id().0));
+        assert_eq!(model.get(), 2);
+        assert!(checks[2].is_checked(), "the selected option stays marked");
+
+        drop(registration);
+        on.set(true);
+        assert!(
+            !checks[0].is_checked(),
+            "a released menu is no longer synced"
+        );
     }
 }

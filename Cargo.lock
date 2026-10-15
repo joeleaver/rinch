@@ -6580,6 +6580,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tray-only"
+version = "0.1.0"
+dependencies = [
+ "rinch",
+]
+
+[[package]]
 name = "tree-demo"
 version = "0.1.0"
 dependencies = [

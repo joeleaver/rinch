@@ -428,6 +428,13 @@ pub struct WindowProps {
     pub resizable: bool,
     pub transparent: bool,
     pub always_on_top: bool,
+    /// Whether the window is on screen when the app starts (default `true`).
+    ///
+    /// `false` starts the app with no window shown — a tray-only app whose
+    /// window (settings, say) appears only on `show_current_window()`. The root
+    /// component is mounted at startup either way, at the window's size, so
+    /// its effects and stores run while it is hidden; showing it creates the
+    /// OS window over that same document. Desktop only (issue #1520).
     pub visible: bool,
     /// The inset from window edges where resize handles are active (in logical pixels).
     ///

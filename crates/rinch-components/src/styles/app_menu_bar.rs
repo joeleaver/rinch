@@ -96,6 +96,18 @@ pub fn styles() -> String {
     flex: 1;
 }
 
+/* Check mark of a checkbox or radio item (#1520): always takes its room, so
+   checked and unchecked rows line up; shown only while the item is on. */
+.rinch-app-menu-entry__check {
+    width: 1em;
+    text-align: center;
+    visibility: hidden;
+}
+
+.rinch-app-menu-entry__check--on {
+    visibility: visible;
+}
+
 .rinch-app-menu-entry__shortcut {
     margin-left: auto;
     color: var(--rinch-color-dimmed);
