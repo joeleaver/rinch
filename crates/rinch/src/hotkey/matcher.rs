@@ -92,7 +92,7 @@ impl Matcher {
     }
 
     /// The keys the matcher believes are down.
-    #[cfg_attr(not(any(windows, target_os = "macos", test)), allow(dead_code))]
+    #[cfg_attr(not(any(windows, test)), allow(dead_code))]
     pub(crate) fn down_keys(&self) -> &[KeyCode] {
         &self.down
     }
