@@ -3333,3 +3333,171 @@ mod modifier_spelling_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod key_table_refactor_differential {
+    use super::*;
+    // `parse_shortcut_for_matching` as it was before #1521 moved its key table
+    // into `key_spelling_code` (base 2ae35772), kept as the differential oracle.
+    fn old_parse_shortcut_for_matching(shortcut: &str) -> Option<ParsedShortcut> {
+        let parts: Vec<&str> = shortcut.split('+').collect();
+        if parts.is_empty() {
+            return None;
+        }
+
+        let mut ctrl_or_cmd = false;
+        let mut alt = false;
+        let mut shift = false;
+        let mut key_str = "";
+
+        for part in &parts {
+            // The key is the last token. Anything after it — a second key
+            // (`Ctrl+Shift+C+A`), a modifier written late (`Ctrl+N+Shift`), or an
+            // unknown modifier taken as a key (`Hyper+N`) — is not a shortcut, and
+            // [`parse_shortcut_or_warn`] says so. Taking the last key token instead
+            // made `Hyper+N` a *bare* N, which swallowed every n typed while the
+            // item was live.
+            if !key_str.is_empty() {
+                return None;
+            }
+            let part_lower = part.to_lowercase();
+            match part_lower.as_str() {
+                // One modifier on every platform: Ctrl or Command, whichever is held
+                // (`match_shortcut_code` folds `meta` into `ctrl`). Every spelling
+                // muda and Electron accept for either is taken here, so none of them
+                // falls through to be read as the key.
+                "cmd" | "command" | "ctrl" | "control" | "meta" | "super" | "cmdorctrl"
+                | "cmdorcontrol" | "commandorctrl" | "commandorcontrol" => ctrl_or_cmd = true,
+                "alt" | "option" => alt = true,
+                "shift" => shift = true,
+                _ => key_str = part,
+            }
+        }
+
+        let code = match key_str.to_uppercase().as_str() {
+            "A" => "KeyA",
+            "B" => "KeyB",
+            "C" => "KeyC",
+            "D" => "KeyD",
+            "E" => "KeyE",
+            "F" => "KeyF",
+            "G" => "KeyG",
+            "H" => "KeyH",
+            "I" => "KeyI",
+            "J" => "KeyJ",
+            "K" => "KeyK",
+            "L" => "KeyL",
+            "M" => "KeyM",
+            "N" => "KeyN",
+            "O" => "KeyO",
+            "P" => "KeyP",
+            "Q" => "KeyQ",
+            "R" => "KeyR",
+            "S" => "KeyS",
+            "T" => "KeyT",
+            "U" => "KeyU",
+            "V" => "KeyV",
+            "W" => "KeyW",
+            "X" => "KeyX",
+            "Y" => "KeyY",
+            "Z" => "KeyZ",
+            "0" => "Digit0",
+            "1" => "Digit1",
+            "2" => "Digit2",
+            "3" => "Digit3",
+            "4" => "Digit4",
+            "5" => "Digit5",
+            "6" => "Digit6",
+            "7" => "Digit7",
+            "8" => "Digit8",
+            "9" => "Digit9",
+            "=" | "EQUAL" | "PLUS" => "Equal",
+            "-" | "MINUS" => "Minus",
+            // Punctuation, by the key's unshifted character on a US layout or by
+            // its code name (#1160). A shifted character (`?`, `<`, `:` …) is not
+            // here on purpose: a chord is a key and modifiers, so `?` is spelled
+            // `Shift+/` — see `shifted_key_hint`.
+            "`" | "BACKQUOTE" => "Backquote",
+            "\\" | "BACKSLASH" => "Backslash",
+            "[" | "BRACKETLEFT" => "BracketLeft",
+            "]" | "BRACKETRIGHT" => "BracketRight",
+            "," | "COMMA" => "Comma",
+            "." | "PERIOD" => "Period",
+            "'" | "QUOTE" => "Quote",
+            ";" | "SEMICOLON" => "Semicolon",
+            "/" | "SLASH" => "Slash",
+            "F1" => "F1",
+            "F2" => "F2",
+            "F3" => "F3",
+            "F4" => "F4",
+            "F5" => "F5",
+            "F6" => "F6",
+            "F7" => "F7",
+            "F8" => "F8",
+            "F9" => "F9",
+            "F10" => "F10",
+            "F11" => "F11",
+            "F12" => "F12",
+            "ENTER" | "RETURN" => "Enter",
+            "ESCAPE" | "ESC" => "Escape",
+            "BACKSPACE" => "Backspace",
+            "TAB" => "Tab",
+            "SPACE" => "Space",
+            "DELETE" | "DEL" => "Delete",
+            "HOME" => "Home",
+            "END" => "End",
+            "PAGEUP" => "PageUp",
+            "PAGEDOWN" => "PageDown",
+            "UP" | "ARROWUP" => "ArrowUp",
+            "DOWN" | "ARROWDOWN" => "ArrowDown",
+            "LEFT" | "ARROWLEFT" => "ArrowLeft",
+            "RIGHT" | "ARROWRIGHT" => "ArrowRight",
+            _ => return None,
+        };
+
+        Some(ParsedShortcut {
+            ctrl_or_cmd,
+            alt,
+            shift,
+            code,
+        })
+    }
+
+    fn key(p: &Option<ParsedShortcut>) -> Option<(bool, bool, bool, String)> {
+        p.as_ref().map(|p| (p.ctrl_or_cmd, p.alt, p.shift, p.code.to_string()))
+    }
+
+    #[test]
+    fn menu_parsing_is_unchanged_by_the_key_table_refactor() {
+        let src = include_str!("mod.rs");
+        let mut toks: Vec<String> = Vec::new();
+        for line in src.lines() {
+            let mut rest = line;
+            while let Some(i) = rest.find('"') {
+                rest = &rest[i + 1..];
+                if let Some(j) = rest.find('"') {
+                    toks.push(rest[..j].to_string());
+                    rest = &rest[j + 1..];
+                } else { break; }
+            }
+        }
+        toks.extend(["", "+", "++", "a", "z", "?", "é", "ß", "Ä", "f13", "F24", "numpad1", "Hyper", "€", "ǅ", "ﬀ", "İ", "ı", "ss"].map(String::from));
+        toks.sort(); toks.dedup();
+        let prefixes = ["", "Ctrl+", "ctrl+shift+", "Alt+", "Cmd+Alt+Shift+", "Hyper+", "Ctrl+A+", "super+"];
+        let mut n = 0;
+        let mut seen_some = 0;
+        for p in prefixes {
+            for t in &toks {
+                for s in [format!("{p}{t}"), format!("{p}{}", t.to_lowercase()), format!("{p}{}", t.to_uppercase()), format!("{p}{t}+Shift")] {
+                    let a = key(&old_parse_shortcut_for_matching(&s));
+                    let b = key(&parse_shortcut_for_matching(&s));
+                    assert_eq!(a, b, "{s:?}");
+                    if a.is_some() { seen_some += 1; }
+                    n += 1;
+                }
+            }
+        }
+        assert!(n > 2000 && seen_some > 500, "n={n} some={seen_some}");
+        eprintln!("menu differential: {n} strings, {seen_some} parsed");
+    }
+}

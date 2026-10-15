@@ -372,4 +372,89 @@ mod tests {
             ]
         );
     }
+
+    /// Review 1530: holding a grabbed chord and a raw-only binding past the
+    /// autorepeat delay delivers exactly one press and one release each.
+    #[test]
+    #[ignore = "review: private X server"]
+    fn review_autorepeat_gives_no_spurious_pairs() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use x11rb::protocol::xtest::ConnectionExt as _;
+        use crate::hotkey::{HotkeyState, register};
+        unsafe { std::env::set_var("RINCH_HOTKEY_BACKEND", "x11") };
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let (l1, l2, l3) = (log.clone(), log.clone(), log.clone());
+        let _a = register("Ctrl+Alt+F19", move |e| l1.borrow_mut().push(("chord", e.state))).unwrap();
+        let _b = register("RightCtrl", move |e| l2.borrow_mut().push(("hold", e.state))).unwrap();
+        let _c = register("F18", move |e| l3.borrow_mut().push(("bare", e.state))).unwrap();
+        let (conn, screen) = RustConnection::connect(None).unwrap();
+        let root = conn.setup().roots[screen].root;
+        // make sure autorepeat is on with a short delay
+        if std::env::var_os("REVIEW_NO_XSET").is_none() { let _ = std::process::Command::new("xset").args(["r", "on", "r", "rate", "200", "30"]).status(); }
+        let press = |code: KeyCode, down: bool, wait: u64| {
+            let kc = x_keycode(code).unwrap();
+            let ty = if down { xproto::KEY_PRESS_EVENT } else { xproto::KEY_RELEASE_EVENT };
+            conn.xtest_fake_input(ty, kc, 0, root, 0, 0, 0).unwrap();
+            conn.flush().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(wait));
+        };
+        use KeyCode::*;
+        press(ControlLeft, true, 30);
+        press(AltLeft, true, 30);
+        press(F19, true, 1500);
+        press(F19, false, 30);
+        press(AltLeft, false, 30);
+        press(ControlLeft, false, 30);
+        press(ControlRight, true, 1500);
+        press(ControlRight, false, 30);
+        press(F18, true, 1500);
+        press(F18, false, 30);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        rinch_core::reactive::drain_main_callbacks();
+        eprintln!("LOG {:?}", log.borrow());
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                ("chord", HotkeyState::Pressed),
+                ("chord", HotkeyState::Released),
+                ("hold", HotkeyState::Pressed),
+                ("hold", HotkeyState::Released),
+                ("bare", HotkeyState::Pressed),
+                ("bare", HotkeyState::Released),
+            ]
+        );
+    }
+
+    /// Review 1530: the grab covers the Num Lock / Caps Lock variants (another
+    /// client cannot take Ctrl+Alt+F20 with Mod2), a chord fires with Num Lock
+    /// on, and a client holding only a Lock variant is a Conflict that leaves
+    /// nothing behind.
+    #[test]
+    #[ignore = "review: private X server"]
+    fn review_lock_variants() {
+        let sc = Shortcut::parse("Ctrl+Alt+F20").unwrap();
+        let meta = Meta { id: "t".into(), description: "t".into() };
+        let mut a = X11Backend::start().expect("X11");
+        assert_eq!(a.register(1, Some(&sc), &meta), Ok(Binding::Exact(sc)));
+        assert_eq!(a.grabs.len(), 4);
+        let (other, screen) = RustConnection::connect(None).unwrap();
+        let root = other.setup().roots[screen].root;
+        let kc = x_keycode(KeyCode::F20).unwrap();
+        let base = u16::from(ModMask::CONTROL) | u16::from(ModMask::M1);
+        for extra in [MOD2, LOCK, MOD2 | LOCK] {
+            let r = other.grab_key(false, root, ModMask::from(base | extra), kc, GrabMode::ASYNC, GrabMode::ASYNC).unwrap().check();
+            assert!(matches!(r, Err(ReplyError::X11Error(ref x)) if x.error_kind == ErrorKind::Access), "variant {extra:#x}: {r:?}");
+        }
+        a.unregister(1);
+        assert!(a.grabs.is_empty());
+        // other takes only the Caps Lock variant; we must report a Conflict and keep nothing.
+        other.grab_key(false, root, ModMask::from(base | LOCK), kc, GrabMode::ASYNC, GrabMode::ASYNC).unwrap().check().unwrap();
+        assert_eq!(a.register(2, Some(&sc), &meta), Err(HotkeyError::Conflict(sc.to_string())));
+        assert!(a.grabs.is_empty(), "{:?}", a.grabs);
+        drop(other);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(a.register(3, Some(&sc), &meta), Ok(Binding::Exact(sc)), "free once the other client left");
+        a.unregister(3);
+    }
 }
