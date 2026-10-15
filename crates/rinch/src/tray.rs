@@ -274,7 +274,8 @@ impl TrayIcon {
         self.set_icon(&TrayIconImage::from_rgba(rgba, width, height)?)
     }
 
-    /// Replace the tooltip shown on hover (on Linux also the item's title).
+    /// Replace the tooltip shown on hover. On Linux the item's `Title` stays
+    /// as it was (see [`TrayIconBuilder::with_title`]).
     ///
     /// Never blocks; see [`set_icon`](Self::set_icon) for when an error can be
     /// returned.
@@ -681,6 +682,8 @@ fn run_activate(id: Option<String>) {
 pub struct TrayIconBuilder {
     id: Option<String>,
     tooltip: Option<String>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    title: Option<String>,
     icon: Option<TrayIconImage>,
     menu: Option<Menu>,
     activate: Option<ActivateCallback>,
@@ -692,6 +695,7 @@ impl TrayIconBuilder {
         Self {
             id: None,
             tooltip: None,
+            title: None,
             icon: None,
             menu: None,
             activate: None,
@@ -720,6 +724,26 @@ impl TrayIconBuilder {
     #[cfg(target_os = "linux")]
     fn item_id(&self) -> String {
         tray_item_id(self.id.as_deref())
+    }
+
+    /// A stable name for the tray item (issue #1536).
+    ///
+    /// On Linux this is the StatusNotifierItem's `Title`, which Plasma sorts
+    /// the tray by, so it must not change while the app runs: without it the
+    /// title is the tray's id (see [`with_id`](Self::with_id)), never the
+    /// tooltip, and [`TrayIcon::set_tooltip`] changes only the `ToolTip`.
+    /// Windows and macOS have no such property (the tooltip is all there is),
+    /// so the value is not used there.
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+
+    /// The `Title` this builder's tray item reports: [`with_title`](Self::with_title),
+    /// else the item's id.
+    #[cfg(target_os = "linux")]
+    fn item_title(&self) -> String {
+        self.title.clone().unwrap_or_else(|| self.item_id())
     }
 
     /// Set the tooltip text shown on hover.
@@ -866,6 +890,7 @@ impl TrayIconBuilder {
 
         release_closed_parked();
         let id = self.item_id();
+        let title = self.item_title();
 
         // Register callbacks on the main thread and collect entries for ksni.
         let (menu_entries, mut registration, toggles) = match self.menu {
@@ -879,6 +904,7 @@ impl TrayIconBuilder {
 
         let tray = RinchKsniTray {
             id,
+            title,
             tooltip: self.tooltip.unwrap_or_default(),
             icon_pixmap: self
                 .icon
@@ -1310,6 +1336,8 @@ fn tray_item_id_from(explicit: Option<&str>, declared: Option<&str>) -> String {
 struct RinchKsniTray {
     /// The item's `Id` ([`tray_item_id`]).
     id: String,
+    /// The item's `Title` (#1536): stable, never the tooltip.
+    title: String,
     tooltip: String,
     icon_pixmap: Vec<ksni::Icon>,
     menu_entries: Vec<KsniMenuEntry>,
@@ -1325,7 +1353,7 @@ impl ksni::Tray for RinchKsniTray {
     }
 
     fn title(&self) -> String {
-        self.tooltip.clone()
+        self.title.clone()
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
@@ -2200,6 +2228,7 @@ mod tests {
         let default = TrayIconBuilder::new();
         let tray = RinchKsniTray {
             id: default.item_id(),
+            title: String::new(),
             tooltip: String::new(),
             icon_pixmap: Vec::new(),
             menu_entries: Vec::new(),
@@ -2217,6 +2246,36 @@ mod tests {
             "com.example.notes",
             "with_id wins, verbatim"
         );
+    }
+
+    /// Issue #1536: the item's `Title` is a stable name. Plasma sorts tray
+    /// items by it, so a title that followed the tooltip moved the icon on
+    /// every `set_tooltip`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_title_is_stable_across_set_tooltip() {
+        let mut tray = RinchKsniTray {
+            id: "com.example.notes".into(),
+            title: "com.example.notes".into(),
+            tooltip: "Idle".into(),
+            icon_pixmap: Vec::new(),
+            menu_entries: Vec::new(),
+            activate_id: None,
+        };
+        let before = ksni::Tray::title(&tray);
+        let pending = KsniPending {
+            tooltip: Some("Listening…".into()),
+            ..Default::default()
+        };
+        pending.apply(&mut tray);
+        assert_eq!(ksni::Tray::tool_tip(&tray).title, "Listening…");
+        assert_eq!(ksni::Tray::title(&tray), before, "title unchanged");
+        assert_eq!(before, "com.example.notes", "defaults to the tray id");
+
+        let b = TrayIconBuilder::new().with_id("com.example.notes");
+        assert_eq!(b.item_title(), "com.example.notes", "the id by default");
+        let b = b.with_title("Notes").with_tooltip("Idle");
+        assert_eq!(b.item_title(), "Notes", "with_title wins");
     }
 
     /// Issue #1529: a declared `WindowProps::app_id` is the id when the
@@ -2242,6 +2301,7 @@ mod tests {
         assert!(activate_id.is_some() && registration.is_some());
         let mut tray = RinchKsniTray {
             id: String::new(),
+            title: String::new(),
             tooltip: String::new(),
             icon_pixmap: Vec::new(),
             menu_entries: Vec::new(),
@@ -2386,8 +2446,8 @@ mod tests {
     }
 
     /// Issue #1520, live: a burst of icon and tooltip swaps on a real tray
-    /// returns at once and lands — the item's `Title` reads the last tooltip
-    /// back over D-Bus. Needs a session bus with a StatusNotifierWatcher (a
+    /// returns at once and lands — the item's `ToolTip` reads the last tooltip
+    /// back over D-Bus and its `Title` stays the tray id. Needs a session bus with a StatusNotifierWatcher (a
     /// KDE session); `cargo test -p rinch --features system-tray --lib
     /// tray::tests::live_runtime -- --ignored`.
     #[cfg(target_os = "linux")]
@@ -2434,7 +2494,7 @@ mod tests {
                     service,
                     &format!("/{path}"),
                     "org.kde.StatusNotifierItem",
-                    "Title",
+                    "ToolTip",
                 ])
                 .output()
                 .ok()?;

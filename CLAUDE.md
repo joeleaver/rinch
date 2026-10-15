@@ -4529,6 +4529,7 @@ let tray = TrayIconBuilder::new()
   `tray-activate-{n}` id, so it obeys #183's owner rule; ksni's `activate` and
   the global `tray-icon` click handler (which maps the clicked tray's id to its
   activate id, `ACTIVATE_IDS`) both dispatch it on the main thread.
+- **Linux `Title` is stable** (#1536): `with_title(..)`, else the tray id; `set_tooltip` changes only `ToolTip` (Plasma sorts by Title). `tray-icon` has no title concept, so Windows/macOS ignore `with_title`.
 - **Runtime changes** (#1520): `TrayIcon::set_icon(&TrayIconImage)` (decode
   once, swap cheaply; `set_icon_png`/`set_icon_rgba` too), `set_tooltip`,
   `set_menu(Option<Menu>)`, all `&self` and **never blocking the caller**. On
