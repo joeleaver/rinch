@@ -110,6 +110,7 @@ where
             shortcut_matching: crate::menu::ShortcutMatching::default(),
             #[cfg(feature = "desktop")]
             prefer_x11: false,
+            #[cfg(feature = "desktop")]
             activation_policy: None,
             #[cfg(feature = "gpu")]
             gpu: None,
