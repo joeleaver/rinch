@@ -3235,22 +3235,6 @@ fn load_window_icon(png_data: &[u8]) -> Result<winit::icon::Icon, Box<dyn std::e
     Ok(rgba_icon.into())
 }
 
-/// Write the icon PNG to a data directory and create a `.desktop` file so Wayland
-/// The Wayland `app_id` / X11 `WM_CLASS` this window identifies itself by.
-///
-/// An app that sets [`WindowProps::app_id`] gets exactly that. Everything else
-/// gets its **own** identity, derived from the executable's file stem, rather
-/// than a constant shared with every other rinch application.
-///
-/// A shared default is not merely a cosmetic label. `install_wayland_icon`
-/// writes `~/.local/share/applications/{app_id}.desktop` carrying
-/// `Name={app_id}`, and compositors match a window to a desktop entry by
-/// `app_id` — so under one constant, the first rinch app to ship an icon
-/// supplies the dock icon *and* the displayed name for every other rinch app
-/// on the machine, and they group together as a single application.
-///
-/// Falls back to `"rinch-app"` only when the executable path is unavailable,
-/// which is where the old behaviour came from.
 /// The app id the last window was created with, for a service that has to
 /// name the application to the desktop the same way the window does (the
 /// global-shortcuts portal, `crate::hotkey`).
@@ -3270,6 +3254,21 @@ pub(crate) fn current_app_id() -> String {
         .unwrap_or_else(|| resolved_app_id(None))
 }
 
+/// The Wayland `app_id` / X11 `WM_CLASS` this window identifies itself by.
+///
+/// An app that sets [`WindowProps::app_id`] gets exactly that. Everything else
+/// gets its **own** identity, derived from the executable's file stem, rather
+/// than a constant shared with every other rinch application.
+///
+/// A shared default is not merely a cosmetic label. `install_wayland_icon`
+/// writes `~/.local/share/applications/{app_id}.desktop` carrying
+/// `Name={app_id}`, and compositors match a window to a desktop entry by
+/// `app_id` — so under one constant, the first rinch app to ship an icon
+/// supplies the dock icon *and* the displayed name for every other rinch app
+/// on the machine, and they group together as a single application.
+///
+/// Falls back to `"rinch-app"` only when the executable path is unavailable,
+/// which is where the old behaviour came from.
 #[cfg(target_os = "linux")]
 fn resolved_app_id(explicit: Option<&str>) -> String {
     if let Some(id) = explicit {
@@ -3297,6 +3296,7 @@ fn app_id_from_exe_path(path: &std::path::Path) -> Option<String> {
         .filter(|name| !name.is_empty())
 }
 
+/// Write the icon PNG to a data directory and create a `.desktop` file so Wayland
 /// compositors can display the icon in the taskbar via `app_id` matching.
 #[cfg(target_os = "linux")]
 fn install_wayland_icon(app_id: &str, png_data: &[u8]) {
@@ -3349,13 +3349,23 @@ fn install_wayland_icon(app_id: &str, png_data: &[u8]) {
 /// application directory (`$XDG_DATA_DIRS`, default `/usr/local/share:/usr/share`).
 #[cfg(target_os = "linux")]
 fn system_desktop_entry_exists(app_id: &str) -> bool {
-    // Read XDG_DATA_DIRS as an OsString and split with split_paths so non-UTF8
-    // directory entries are preserved (var() would drop the whole value to the
-    // default on any non-UTF8 byte).
-    let dirs = std::env::var_os("XDG_DATA_DIRS")
-        .unwrap_or_else(|| std::ffi::OsString::from("/usr/local/share:/usr/share"));
+    desktop_entry_in(&system_data_dirs(), app_id)
+}
+
+/// `$XDG_DATA_DIRS`, read as an `OsString` so non-UTF8 directory entries are
+/// preserved (`var()` would drop the whole value to the default on any
+/// non-UTF8 byte).
+#[cfg(target_os = "linux")]
+fn system_data_dirs() -> std::ffi::OsString {
+    std::env::var_os("XDG_DATA_DIRS")
+        .unwrap_or_else(|| std::ffi::OsString::from("/usr/local/share:/usr/share"))
+}
+
+/// Whether `applications/{app_id}.desktop` exists under any of `dirs`.
+#[cfg(target_os = "linux")]
+fn desktop_entry_in(dirs: &std::ffi::OsStr, app_id: &str) -> bool {
     let rel = format!("applications/{app_id}.desktop");
-    std::env::split_paths(&dirs)
+    std::env::split_paths(dirs)
         .filter(|p| !p.as_os_str().is_empty())
         .any(|p| p.join(&rel).exists())
 }
@@ -3371,15 +3381,27 @@ fn system_desktop_entry_exists(app_id: &str) -> bool {
 #[cfg(target_os = "linux")]
 #[cfg_attr(not(feature = "global-hotkeys"), allow(dead_code))]
 pub(crate) fn ensure_desktop_entry(app_id: &str) -> Result<Option<std::path::PathBuf>, String> {
-    if system_desktop_entry_exists(app_id) {
-        return Ok(None);
-    }
     let data_home = std::env::var_os("XDG_DATA_HOME")
         .map(std::path::PathBuf::from)
         .or_else(dirs_icon_fallback)
         .ok_or("neither XDG_DATA_HOME nor HOME is set")?;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    write_desktop_entry_stub(&data_home, app_id, &exe)
+    ensure_desktop_entry_in(&system_data_dirs(), &data_home, app_id, &exe)
+}
+
+/// [`ensure_desktop_entry`] against explicit directories.
+#[cfg(target_os = "linux")]
+#[cfg_attr(not(feature = "global-hotkeys"), allow(dead_code))]
+fn ensure_desktop_entry_in(
+    system_dirs: &std::ffi::OsStr,
+    data_home: &std::path::Path,
+    app_id: &str,
+    exe: &std::path::Path,
+) -> Result<Option<std::path::PathBuf>, String> {
+    if desktop_entry_in(system_dirs, app_id) {
+        return Ok(None);
+    }
+    write_desktop_entry_stub(data_home, app_id, exe)
 }
 
 /// [`ensure_desktop_entry`]'s write, against an explicit data directory.
@@ -3742,7 +3764,34 @@ mod letterbox_backdrop {
 /// ship an icon supplied the dock icon and name for all the others.
 #[cfg(all(test, target_os = "linux"))]
 mod app_id_tests {
-    use super::{app_id_from_exe_path, resolved_app_id, write_desktop_entry_stub};
+    use super::{
+        app_id_from_exe_path, ensure_desktop_entry_in, resolved_app_id, write_desktop_entry_stub,
+    };
+
+    /// A packaged launcher in a system directory is never shadowed: no stub
+    /// is written for an app id one of them has.
+    #[test]
+    fn no_desktop_entry_stub_shadows_a_system_entry() {
+        let root = std::env::temp_dir().join(format!("rinch-desktop-sys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (sys, home) = (root.join("sys"), root.join("home"));
+        std::fs::create_dir_all(sys.join("applications")).unwrap();
+        std::fs::write(sys.join("applications/com.example.notes.desktop"), "x").unwrap();
+        let dirs = std::env::join_paths([root.join("empty"), sys.clone()]).unwrap();
+        let exe = std::path::Path::new("/bin/notes");
+        assert_eq!(
+            ensure_desktop_entry_in(&dirs, &home, "com.example.notes", exe),
+            Ok(None)
+        );
+        assert!(!home.join("applications/com.example.notes.desktop").exists());
+        // Positive control: an id no system directory has is written.
+        assert!(
+            ensure_desktop_entry_in(&dirs, &home, "com.example.other", exe)
+                .unwrap()
+                .is_some()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// The desktop-entry stub the hotkey portal needs: written once with
     /// `NoDisplay`, and an existing file — the app's own, or the user's — is

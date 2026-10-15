@@ -36,6 +36,10 @@ pub(crate) trait BackendImpl {
     /// Unbind `key`. A key that is not bound is ignored.
     fn unregister(&mut self, key: BindingKey);
 
+    /// After a rebind: let the user change a binding the system keeps
+    /// (the portal's ConfigureShortcuts). A no-op where the app decides.
+    fn configure(&mut self, _key: BindingKey) {}
+
     fn permission(&self) -> Permission {
         Permission::NotNeeded
     }

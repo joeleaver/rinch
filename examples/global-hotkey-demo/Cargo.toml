@@ -1,5 +1,5 @@
 [package]
-name = "global-hotkey"
+name = "global-hotkey-demo"
 version.workspace = true
 edition.workspace = true
 publish = false

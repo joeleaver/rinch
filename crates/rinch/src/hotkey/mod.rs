@@ -75,6 +75,15 @@ pub struct HotkeyEvent {
     pub state: HotkeyState,
     /// The binding's id ([`HotkeySpec::id`]).
     pub id: String,
+    /// On a `Released`: another key went down while the hotkey was held —
+    /// `Right Ctrl` then `C` for a `"RightCtrl"` binding. A modifier-only
+    /// binding is pressed the moment its modifier goes down, before anyone
+    /// can know a chord will follow; a hold-to-talk app uses the press as is,
+    /// and a toggle app ignores a release with `chorded` set (the user was
+    /// typing Ctrl+C, not asking for the hotkey). Always `false` on a
+    /// `Pressed`, and on the backends that cannot see other keys (the Wayland
+    /// portal, macOS Carbon chords).
+    pub chorded: bool,
 }
 
 /// What a hotkey is bound to now.
@@ -264,6 +273,21 @@ struct Entry {
     /// Whether the last state delivered was `Pressed`, so a rebind that takes
     /// the binding away mid-hold can end the hold with a `Released`.
     pressed: bool,
+    /// Bumped by every rebind; part of the key the backend holds
+    /// ([`backend_key`]), so a report the backend queued for the old binding
+    /// is dropped instead of pressing the new one with no release to follow.
+    generation: u64,
+}
+
+/// The bits of a backend key that name the registry entry; the rest are its
+/// generation.
+const GENERATION_SHIFT: u32 = 40;
+const HANDLE_MASK: BindingKey = (1 << GENERATION_SHIFT) - 1;
+
+/// The key a backend holds for `handle` at `generation`. Generation 0 is the
+/// handle itself.
+fn backend_key(handle: BindingKey, generation: u64) -> BindingKey {
+    handle | (generation << GENERATION_SHIFT)
 }
 
 thread_local! {
@@ -333,6 +357,7 @@ pub fn register(
                 on_binding: None,
                 owner: owner.clone(),
                 pressed: false,
+                generation: 0,
             },
         )
     });
@@ -409,17 +434,30 @@ impl Hotkey {
         if old == Some(new) {
             return Ok(());
         }
+        let generation = REGISTRY.with(|r| r.borrow().get(&self.key).map_or(0, |e| e.generation));
         with_backend(|b| {
-            b.unregister(self.key);
+            b.unregister(backend_key(self.key, generation));
             Ok(())
         })?;
         // A binding taken away while held gets its release now: the backend
         // forgot it, and a hold-to-talk app must not stay "talking".
         let held = REGISTRY.with(|r| r.borrow().get(&self.key).is_some_and(|e| e.pressed));
         if held {
-            deliver(self.key, Report::State(HotkeyState::Released));
+            deliver(
+                backend_key(self.key, generation),
+                Report::State(HotkeyState::Released),
+            );
         }
-        match with_backend(|b| b.register(self.key, Some(&new), &meta)) {
+        // From here on, reports for the old generation are dropped.
+        let next = generation + 1;
+        REGISTRY.with(|r| {
+            if let Some(e) = r.borrow_mut().get_mut(&self.key) {
+                e.generation = next;
+                e.pressed = false;
+            }
+        });
+        let bk = backend_key(self.key, next);
+        match with_backend(|b| b.register(bk, Some(&new), &meta)) {
             Ok(binding) => {
                 REGISTRY.with(|r| {
                     if let Some(e) = r.borrow_mut().get_mut(&self.key) {
@@ -427,12 +465,18 @@ impl Hotkey {
                         e.binding = binding;
                     }
                 });
+                // The portal keeps the user's own choice per id; let them
+                // change it there (a no-op elsewhere).
+                let _ = with_backend(|b| {
+                    b.configure(bk);
+                    Ok(())
+                });
                 Ok(())
             }
             Err(err) => {
                 // Put the old binding back; if even that fails, the hotkey is
                 // bound to nothing and says so.
-                let restored = with_backend(|b| b.register(self.key, old.as_ref(), &meta));
+                let restored = with_backend(|b| b.register(bk, old.as_ref(), &meta));
                 if restored.is_err() {
                     REGISTRY.with(|r| {
                         if let Some(e) = r.borrow_mut().get_mut(&self.key) {
@@ -457,12 +501,12 @@ fn unregister_key(key: BindingKey) {
         .try_with(|r| r.try_borrow_mut().ok().and_then(|mut r| r.remove(&key)))
         .ok()
         .flatten();
-    if removed.is_some() {
+    if let Some(entry) = removed {
         let _ = BACKEND.try_with(|b| {
             if let Ok(mut b) = b.try_borrow_mut()
                 && let Some(b) = b.as_mut()
             {
-                b.unregister(key);
+                b.unregister(backend_key(key, entry.generation));
             }
         });
     }
@@ -563,7 +607,26 @@ pub(crate) fn app_id() -> String {
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // `Binding`: the portal
 pub(crate) enum Report {
     State(HotkeyState),
+    /// A `Released` after another key went down during the hold.
+    ChordedRelease,
     Binding(Binding),
+}
+
+/// Report what a [`matcher::Matcher`] pressed and released, with
+/// [`HotkeyEvent::chorded`] read from it.
+#[cfg_attr(
+    not(any(windows, target_os = "macos", target_os = "linux")),
+    allow(dead_code)
+)]
+pub(crate) fn report_matched(matcher: &matcher::Matcher, out: &mut Vec<(BindingKey, HotkeyState)>) {
+    for (k, s) in out.drain(..) {
+        let r = if s == HotkeyState::Released && matcher.chorded(k) {
+            Report::ChordedRelease
+        } else {
+            Report::State(s)
+        };
+        report(k, r);
+    }
 }
 
 /// Deliver a backend report to the main thread. Safe from any thread and from
@@ -573,20 +636,24 @@ pub(crate) fn report(key: BindingKey, r: Report) {
 }
 
 /// Run on the main thread: hand a report to its hotkey's callbacks.
-pub(crate) fn deliver(key: BindingKey, r: Report) {
+pub(crate) fn deliver(bk: BindingKey, r: Report) {
+    let key = bk & HANDLE_MASK;
+    let generation = bk >> GENERATION_SHIFT;
     let found = REGISTRY.with(|reg| {
         let reg = reg.borrow();
-        reg.get(&key).map(|e| {
-            (
-                e.id.clone(),
-                e.cb.clone(),
-                e.on_binding.clone(),
-                e.owner.clone(),
-            )
-        })
+        reg.get(&key)
+            .filter(|e| e.generation == generation)
+            .map(|e| {
+                (
+                    e.id.clone(),
+                    e.cb.clone(),
+                    e.on_binding.clone(),
+                    e.owner.clone(),
+                )
+            })
     });
     let Some((id, cb, on_binding, owner)) = found else {
-        return; // unregistered since the backend saw it
+        return; // unregistered or rebound since the backend saw it
     };
     if let Some(o) = &owner
         && !o.is_alive()
@@ -600,6 +667,10 @@ pub(crate) fn deliver(key: BindingKey, r: Report) {
             None => unowned(|| untracked_handler(f)),
         })
     };
+    let (r, chorded) = match r {
+        Report::ChordedRelease => (Report::State(HotkeyState::Released), true),
+        other => (other, false),
+    };
     match r {
         Report::State(state) => {
             let was = REGISTRY.with(|reg| {
@@ -610,9 +681,10 @@ pub(crate) fn deliver(key: BindingKey, r: Report) {
             if was == Some(state == HotkeyState::Pressed) {
                 return; // a repeat of the state already delivered
             }
-            let ev = HotkeyEvent { state, id };
+            let ev = HotkeyEvent { state, id, chorded };
             run(&|| cb(&ev));
         }
+        Report::ChordedRelease => unreachable!("mapped above"),
         Report::Binding(b) => {
             REGISTRY.with(|reg| {
                 if let Some(e) = reg.borrow_mut().get_mut(&key) {

@@ -3464,7 +3464,8 @@ mod key_table_refactor_differential {
     }
 
     fn key(p: &Option<ParsedShortcut>) -> Option<(bool, bool, bool, String)> {
-        p.as_ref().map(|p| (p.ctrl_or_cmd, p.alt, p.shift, p.code.to_string()))
+        p.as_ref()
+            .map(|p| (p.ctrl_or_cmd, p.alt, p.shift, p.code.to_string()))
     }
 
     #[test]
@@ -3478,21 +3479,46 @@ mod key_table_refactor_differential {
                 if let Some(j) = rest.find('"') {
                     toks.push(rest[..j].to_string());
                     rest = &rest[j + 1..];
-                } else { break; }
+                } else {
+                    break;
+                }
             }
         }
-        toks.extend(["", "+", "++", "a", "z", "?", "é", "ß", "Ä", "f13", "F24", "numpad1", "Hyper", "€", "ǅ", "ﬀ", "İ", "ı", "ss"].map(String::from));
-        toks.sort(); toks.dedup();
-        let prefixes = ["", "Ctrl+", "ctrl+shift+", "Alt+", "Cmd+Alt+Shift+", "Hyper+", "Ctrl+A+", "super+"];
+        toks.extend(
+            [
+                "", "+", "++", "a", "z", "?", "é", "ß", "Ä", "f13", "F24", "numpad1", "Hyper", "€",
+                "ǅ", "ﬀ", "İ", "ı", "ss",
+            ]
+            .map(String::from),
+        );
+        toks.sort();
+        toks.dedup();
+        let prefixes = [
+            "",
+            "Ctrl+",
+            "ctrl+shift+",
+            "Alt+",
+            "Cmd+Alt+Shift+",
+            "Hyper+",
+            "Ctrl+A+",
+            "super+",
+        ];
         let mut n = 0;
         let mut seen_some = 0;
         for p in prefixes {
             for t in &toks {
-                for s in [format!("{p}{t}"), format!("{p}{}", t.to_lowercase()), format!("{p}{}", t.to_uppercase()), format!("{p}{t}+Shift")] {
+                for s in [
+                    format!("{p}{t}"),
+                    format!("{p}{}", t.to_lowercase()),
+                    format!("{p}{}", t.to_uppercase()),
+                    format!("{p}{t}+Shift"),
+                ] {
                     let a = key(&old_parse_shortcut_for_matching(&s));
                     let b = key(&parse_shortcut_for_matching(&s));
                     assert_eq!(a, b, "{s:?}");
-                    if a.is_some() { seen_some += 1; }
+                    if a.is_some() {
+                        seen_some += 1;
+                    }
                     n += 1;
                 }
             }

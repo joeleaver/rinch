@@ -26,7 +26,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
@@ -37,7 +37,7 @@ use super::BackendImpl;
 use crate::hotkey::matcher::{BindingKey, Matcher};
 use crate::hotkey::{
     Backend, Binding, HotkeyError, HotkeyState, Meta, Modifier, Permission, Report, Shortcut,
-    Trigger, report,
+    Trigger, report, report_matched,
 };
 
 type OSStatus = i32;
@@ -144,9 +144,13 @@ const K_CG_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
 const K_CG_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
 const K_CG_KEYBOARD_EVENT_KEYCODE: u32 = 9;
 
+static NEXT_CARBON_ID: AtomicU32 = AtomicU32::new(1);
+static CARBON_IDS: Mutex<BTreeMap<u32, BindingKey>> = Mutex::new(BTreeMap::new());
+
 pub(crate) struct MacBackend {
     handler_installed: bool,
-    carbon: BTreeMap<BindingKey, Ptr>,
+    /// Each Carbon hot key and the id it was registered under.
+    carbon: BTreeMap<BindingKey, (Ptr, u32)>,
     tap: Option<Tap>,
     tap_keys: Vec<BindingKey>,
     /// A tap binding was refused for want of the permission, and no tap has
@@ -229,9 +233,12 @@ impl MacBackend {
                 Modifier::Super => CMD_KEY,
             };
         }
+        // A Carbon id is 32 bits and a backend key is not (its generation
+        // sits above bit 40), so ids are minted and mapped back.
+        let carbon_id = NEXT_CARBON_ID.fetch_add(1, Ordering::Relaxed);
         let id = EventHotKeyID {
             signature: SIGNATURE,
-            id: u32::try_from(key).map_err(|_| HotkeyError::Platform("too many hotkeys".into()))?,
+            id: carbon_id,
         };
         let mut out = std::ptr::null_mut();
         // SAFETY: Carbon call on the main thread.
@@ -239,7 +246,11 @@ impl MacBackend {
             unsafe { RegisterEventHotKey(vk, mods, id, GetApplicationEventTarget(), 0, &mut out) };
         match st {
             0 => {
-                self.carbon.insert(key, out);
+                self.carbon.insert(key, (out, carbon_id));
+                CARBON_IDS
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(carbon_id, key);
                 Ok(())
             }
             EVENT_HOT_KEY_EXISTS_ERR => Err(HotkeyError::Conflict(sc.to_string())),
@@ -320,7 +331,14 @@ extern "C" fn carbon_handler(_call: Ptr, event: Ptr, _user: Ptr) -> OSStatus {
         K_EVENT_HOT_KEY_RELEASED => HotkeyState::Released,
         _ => return -9874,
     };
-    report(BindingKey::from(id.id), Report::State(state));
+    let key = CARBON_IDS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&id.id)
+        .copied();
+    if let Some(key) = key {
+        report(key, Report::State(state));
+    }
     0
 }
 
@@ -359,24 +377,31 @@ extern "C" fn tap_callback(_proxy: Ptr, ty: u32, event: Ptr, user: Ptr) -> Ptr {
                 // SAFETY: plain accessors on the event we were handed.
                 let vk = unsafe { CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_KEYCODE) }
                     as u32;
-                if let Some(code) = key_of_mac_keycode(vk) {
-                    let down = if ty == K_CG_FLAGS_CHANGED {
-                        match flag_bit(code) {
-                            // SAFETY: as above.
-                            Some(bit) => (unsafe { CGEventGetFlags(event) } & bit) != 0,
-                            None => !m.down_keys().contains(&code), // Caps Lock, Fn
-                        }
-                    } else {
-                        ty == K_CG_KEY_DOWN
-                    };
-                    m.key(code, down, &mut out);
+                // SAFETY: as above.
+                let flags = unsafe { CGEventGetFlags(event) };
+                let code = key_of_mac_keycode(vk);
+                let down = match (ty, code.and_then(flag_bit)) {
+                    (K_CG_FLAGS_CHANGED, Some(bit)) => Some(flags & bit != 0),
+                    // Caps Lock and Fn change flags with no key held: macOS
+                    // sends one event per lock-state change, so they are not
+                    // fed at all (a lock key is never "another key held").
+                    (K_CG_FLAGS_CHANGED, None) => None,
+                    _ => Some(ty == K_CG_KEY_DOWN),
+                };
+                if let (Some(code), Some(down)) = (code, down) {
+                    // Secure input hides key-ups from a listen-only tap
+                    // without disabling it: a modifier believed down whose
+                    // flag bit is clear in this event went up unseen.
+                    let still_down = |k: KeyCode| flag_bit(k).is_none_or(|bit| flags & bit != 0);
+                    m.key_reconciled(code, down, still_down, &mut out);
                 }
             }
             _ => {}
         }
     }
-    for (k, s) in out {
-        report(k, Report::State(s));
+    {
+        let m = shared.matcher.lock().unwrap_or_else(|p| p.into_inner());
+        report_matched(&m, &mut out);
     }
     event
 }
@@ -443,7 +468,11 @@ impl BackendImpl for MacBackend {
     }
 
     fn unregister(&mut self, key: BindingKey) {
-        if let Some(hk) = self.carbon.remove(&key) {
+        if let Some((hk, id)) = self.carbon.remove(&key) {
+            CARBON_IDS
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&id);
             // SAFETY: a hot key this backend registered.
             unsafe { UnregisterEventHotKey(hk) };
         }
@@ -481,7 +510,7 @@ impl BackendImpl for MacBackend {
 
 impl Drop for MacBackend {
     fn drop(&mut self) {
-        for (_, hk) in std::mem::take(&mut self.carbon) {
+        for (_, (hk, _)) in std::mem::take(&mut self.carbon) {
             // SAFETY: hot keys this backend registered.
             unsafe { UnregisterEventHotKey(hk) };
         }

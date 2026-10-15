@@ -1,4 +1,6 @@
-//! Review fixtures for PR #1530.
+//! Fixtures from #1530's review: the stuck states it found (R2, R3, R5), the
+//! modifier-only behaviour the guide documents (R1), and the main-queue
+//! delivery (R4).
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -25,9 +27,17 @@ fn r1_right_ctrl_then_c_fires_the_modifier_only_binding() {
     m.add(7, Shortcut::parse("RightCtrl").unwrap());
     let out = run(
         &mut m,
-        &[(ControlRight, true), (KeyC, true), (KeyC, false), (ControlRight, false)],
+        &[
+            (ControlRight, true),
+            (KeyC, true),
+            (KeyC, false),
+            (ControlRight, false),
+        ],
     );
-    assert_eq!(out, vec![(7, HotkeyState::Pressed), (7, HotkeyState::Released)]);
+    assert_eq!(
+        out,
+        vec![(7, HotkeyState::Pressed), (7, HotkeyState::Released)]
+    );
 }
 
 /// R2: a modifier key-up the stream lost while NO binding was pressed (Alt+Tab
@@ -42,8 +52,23 @@ fn r2_a_lost_modifier_up_with_nothing_pressed_blocks_other_chords() {
     // Alt+Tab; the Alt key-up is lost.
     run(&mut m, &[(AltLeft, true), (Tab, true), (Tab, false)]);
     assert!(!m.any_pressed(), "nothing pressed: the Windows poll is off");
-    let out = run(&mut m, &[(ControlLeft, true), (Space, true), (Space, false), (ControlLeft, false)]);
-    assert_eq!(out, vec![(1, HotkeyState::Pressed), (1, HotkeyState::Released)], "stale Alt blocks Ctrl+Space");
+    // The fix: the Windows and macOS backends feed `key_reconciled`, asking
+    // the OS (`GetAsyncKeyState`, the event's flag bits) whether each key
+    // believed down still is. Here the OS says Alt is up.
+    let mut out = Vec::new();
+    for (k, d) in [
+        (ControlLeft, true),
+        (Space, true),
+        (Space, false),
+        (ControlLeft, false),
+    ] {
+        m.key_reconciled(k, d, |k| k != AltLeft, &mut out);
+    }
+    assert_eq!(
+        out,
+        vec![(1, HotkeyState::Pressed), (1, HotkeyState::Released)],
+        "stale Alt blocks Ctrl+Space"
+    );
 }
 
 /// R3: a press the backend reported before a rebind, still queued on the
@@ -55,14 +80,21 @@ fn r3_a_press_queued_before_rebind_is_not_stranded() {
     let _fk = fake::install();
     let log = Rc::new(RefCell::new(Vec::new()));
     let l = log.clone();
-    let hk = register(HotkeySpec::new("F8").id("x"), move |e| l.borrow_mut().push(e.state)).unwrap();
+    let hk = register(HotkeySpec::new("F8").id("x"), move |e| {
+        l.borrow_mut().push(e.state)
+    })
+    .unwrap();
     // The backend thread saw F8 go down and queued the report…
     report(hk.key, Report::State(HotkeyState::Pressed));
     // …and the app rebinds before the main loop drained it.
     hk.rebind("F9").unwrap();
     rinch_core::reactive::drain_main_callbacks();
     let pressed = REGISTRY.with(|r| r.borrow().get(&hk.key).unwrap().pressed);
-    assert!(!pressed, "log {:?}: the hotkey is stuck pressed after a rebind", log.borrow());
+    assert!(
+        !pressed,
+        "log {:?}: the hotkey is stuck pressed after a rebind",
+        log.borrow()
+    );
 }
 
 /// R4: report() really goes through the main-thread queue (not inline).
@@ -88,5 +120,8 @@ fn r5_caps_lock_on_blocks_modifier_only_bindings() {
     m.add(7, Shortcut::parse("RightCtrl").unwrap());
     run(&mut m, &[(CapsLock, true)]); // macOS: Caps Lock turned on (one event)
     let out = run(&mut m, &[(ControlRight, true), (ControlRight, false)]);
-    assert_eq!(out, vec![(7, HotkeyState::Pressed), (7, HotkeyState::Released)]);
+    assert_eq!(
+        out,
+        vec![(7, HotkeyState::Pressed), (7, HotkeyState::Released)]
+    );
 }

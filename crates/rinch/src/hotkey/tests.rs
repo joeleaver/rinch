@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use rinch_core::reactive::{Scope, Signal};
-use winit::keyboard::KeyCode::{AltLeft, ControlLeft, ControlRight, F7, F8, Space};
+use winit::keyboard::KeyCode::{AltLeft, ControlLeft, ControlRight, F7, F8, KeyC, Space};
 
 use super::backend::fake;
 use super::*;
@@ -184,4 +184,51 @@ fn the_backends_add_no_package_to_the_lock() {
     }
     // Positive control: a crate only rinch depends on is told apart.
     assert!(!used_by_another("memory-stats"), "the check cannot fail");
+}
+
+/// A state the callback already has is not delivered again: a `Released`
+/// for a hotkey that is not pressed (a portal moving sessions releases every
+/// key it thinks is held) reaches no callback.
+#[test]
+fn a_release_without_a_press_is_not_delivered() {
+    let _fk = fake::install();
+    let (log, cb) = log();
+    let hk = register("F6", cb).unwrap();
+    deliver(hk.key, Report::State(HotkeyState::Released));
+    assert!(log.borrow().is_empty(), "{:?}", log.borrow());
+    deliver(hk.key, Report::State(HotkeyState::Pressed));
+    deliver(hk.key, Report::State(HotkeyState::Pressed));
+    assert_eq!(log.borrow().len(), 1, "nor a second press");
+}
+
+/// The release of a modifier-only binding says whether a chord happened.
+#[test]
+fn a_release_reports_whether_another_key_went_down() {
+    let fk = fake::install();
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let e = events.clone();
+    let _hk = register("RightCtrl", move |ev: &HotkeyEvent| {
+        e.borrow_mut().push((ev.state, ev.chorded))
+    })
+    .unwrap();
+    for (k, d) in [(ControlRight, true), (ControlRight, false)] {
+        fake::key(&fk, k, d);
+    }
+    for (k, d) in [
+        (ControlRight, true),
+        (KeyC, true),
+        (KeyC, false),
+        (ControlRight, false),
+    ] {
+        fake::key(&fk, k, d);
+    }
+    assert_eq!(
+        *events.borrow(),
+        vec![
+            (HotkeyState::Pressed, false),
+            (HotkeyState::Released, false),
+            (HotkeyState::Pressed, false),
+            (HotkeyState::Released, true),
+        ]
+    );
 }

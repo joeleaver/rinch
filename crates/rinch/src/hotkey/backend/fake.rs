@@ -8,7 +8,7 @@ use winit::keyboard::KeyCode;
 
 use super::BackendImpl;
 use crate::hotkey::matcher::{BindingKey, Matcher};
-use crate::hotkey::{Backend, Binding, HotkeyError, Meta, Report, Shortcut, deliver};
+use crate::hotkey::{Backend, Binding, HotkeyError, HotkeyState, Meta, Report, Shortcut, deliver};
 
 #[derive(Default)]
 pub(crate) struct FakeState {
@@ -52,8 +52,24 @@ pub(crate) fn take() -> Option<Box<dyn BackendImpl>> {
 pub(crate) fn key(state: &Rc<RefCell<FakeState>>, code: KeyCode, down: bool) {
     let mut out = Vec::new();
     state.borrow_mut().matcher.key(code, down, &mut out);
-    for (k, s) in out {
-        deliver(k, Report::State(s));
+    let reports: Vec<_> = {
+        let st = state.borrow();
+        out.into_iter()
+            .map(|(k, s)| {
+                let chorded = s == HotkeyState::Released && st.matcher.chorded(k);
+                (
+                    k,
+                    if chorded {
+                        Report::ChordedRelease
+                    } else {
+                        Report::State(s)
+                    },
+                )
+            })
+            .collect()
+    };
+    for (k, r) in reports {
+        deliver(k, r);
     }
 }
 

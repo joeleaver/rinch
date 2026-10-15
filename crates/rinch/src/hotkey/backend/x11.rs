@@ -34,7 +34,7 @@ use x11rb::rust_connection::RustConnection;
 use super::BackendImpl;
 use crate::hotkey::matcher::{BindingKey, Matcher};
 use crate::hotkey::{
-    Backend, Binding, HotkeyError, Meta, Modifier, Report, Shortcut, Trigger, report,
+    Backend, Binding, HotkeyError, Meta, Modifier, Shortcut, Trigger, report_matched,
 };
 
 /// Lock modifiers a grab must ignore: Caps Lock (`Lock`) and Num Lock
@@ -56,6 +56,39 @@ impl X11Backend {
         let unsupported = |e: &dyn std::fmt::Display| HotkeyError::Unsupported(format!("X11: {e}"));
         let (conn, screen) = RustConnection::connect(None).map_err(|e| unsupported(&e))?;
         let root = conn.setup().roots[screen].root;
+        // Detectable auto-repeat: while one of our grabs is active the server
+        // sends core events, and its auto-repeat comes as KeyRelease+KeyPress
+        // pairs that read as the user letting go and pressing again (about 25
+        // Released/Pressed pairs a second on a held chord, measured by #1530's
+        // review). With it, a repeat is a KeyPress alone, which the matcher
+        // drops as a repeat. A server without XKB keeps the old behaviour.
+        {
+            use x11rb::protocol::xkb::{self, ConnectionExt as _};
+            let ok = conn
+                .xkb_use_extension(1, 0)
+                .ok()
+                .and_then(|c| c.reply().ok())
+                .is_some();
+            let flag = xkb::PerClientFlag::DETECTABLE_AUTO_REPEAT;
+            let set = ok
+                && conn
+                    .xkb_per_client_flags(
+                        u16::from(xkb::ID::USE_CORE_KBD),
+                        flag,
+                        flag,
+                        xkb::BoolCtrl::from(0u32),
+                        xkb::BoolCtrl::from(0u32),
+                        xkb::BoolCtrl::from(0u32),
+                    )
+                    .ok()
+                    .and_then(|c| c.reply().ok())
+                    .is_some_and(|r| r.value.contains(flag));
+            if !set {
+                tracing::warn!(
+                    "global hotkeys: X11 detectable auto-repeat unavailable; a held chord repeats"
+                );
+            }
+        }
         let version = conn
             .xinput_xi_query_version(2, 2)
             .map_err(|e| unsupported(&e))?
@@ -182,10 +215,7 @@ fn reader(conn: &RustConnection, matcher: &Mutex<Matcher>) {
                 tracing::warn!("global hotkeys: X11 connection lost ({e}); hotkeys stop");
                 let mut m = matcher.lock().unwrap_or_else(|p| p.into_inner());
                 m.release_all(&mut out);
-                drop(m);
-                for (k, s) in out.drain(..) {
-                    report(k, Report::State(s));
-                }
+                report_matched(&m, &mut out);
                 return;
             }
         };
@@ -203,13 +233,9 @@ fn reader(conn: &RustConnection, matcher: &Mutex<Matcher>) {
         let Some(code) = key_of_x_keycode(detail) else {
             continue;
         };
-        matcher
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .key(code, down, &mut out);
-        for (k, s) in out.drain(..) {
-            report(k, Report::State(s));
-        }
+        let mut m = matcher.lock().unwrap_or_else(|p| p.into_inner());
+        m.key(code, down, &mut out);
+        report_matched(&m, &mut out);
     }
 }
 
@@ -341,6 +367,13 @@ mod tests {
             conn.flush().unwrap();
             std::thread::sleep(std::time::Duration::from_millis(30));
         };
+        // A fresh server sets up the XTEST device's keymap on its first
+        // fake key, and loses that key (measured by #1530's review: the first
+        // run after Xwayland starts missed the chord, every later run passed).
+        // Spend the first one on a key nothing is bound to.
+        press(KeyCode::F24, true);
+        press(KeyCode::F24, false);
+        std::thread::sleep(std::time::Duration::from_millis(300));
         use KeyCode::*;
         for (k, d) in [
             (ControlLeft, true),
@@ -351,8 +384,8 @@ mod tests {
             (ControlLeft, false),
             (ControlRight, true),
             (ControlRight, false),
-            // Right Ctrl pressed while another key is held is not the
-            // modifier-only binding.
+            // Right Ctrl pressed while C is already held is not the
+            // modifier-only binding (Right Ctrl *then* C is, reported chorded).
             (KeyC, true),
             (ControlRight, true),
             (ControlRight, false),
@@ -373,32 +406,52 @@ mod tests {
         );
     }
 
-    /// Review 1530: holding a grabbed chord and a raw-only binding past the
-    /// autorepeat delay delivers exactly one press and one release each.
+    /// Holding a grabbed chord, a modifier-only binding and a bare key past
+    /// the auto-repeat delay delivers exactly one press and one release each
+    /// (#1530's review measured about 25 pairs a second on the grabbed ones
+    /// before detectable auto-repeat). Private X server, like the test above.
     #[test]
-    #[ignore = "review: private X server"]
-    fn review_autorepeat_gives_no_spurious_pairs() {
+    #[ignore = "needs a private X server; see xtest_presses_and_releases_reach_the_callback"]
+    fn a_held_hotkey_does_not_auto_repeat() {
+        use crate::hotkey::{HotkeyState, register};
         use std::cell::RefCell;
         use std::rc::Rc;
         use x11rb::protocol::xtest::ConnectionExt as _;
-        use crate::hotkey::{HotkeyState, register};
         unsafe { std::env::set_var("RINCH_HOTKEY_BACKEND", "x11") };
         let log = Rc::new(RefCell::new(Vec::new()));
         let (l1, l2, l3) = (log.clone(), log.clone(), log.clone());
-        let _a = register("Ctrl+Alt+F19", move |e| l1.borrow_mut().push(("chord", e.state))).unwrap();
-        let _b = register("RightCtrl", move |e| l2.borrow_mut().push(("hold", e.state))).unwrap();
+        let _a = register("Ctrl+Alt+F19", move |e| {
+            l1.borrow_mut().push(("chord", e.state))
+        })
+        .unwrap();
+        let _b = register("RightCtrl", move |e| {
+            l2.borrow_mut().push(("hold", e.state))
+        })
+        .unwrap();
         let _c = register("F18", move |e| l3.borrow_mut().push(("bare", e.state))).unwrap();
         let (conn, screen) = RustConnection::connect(None).unwrap();
         let root = conn.setup().roots[screen].root;
         // make sure autorepeat is on with a short delay
-        if std::env::var_os("REVIEW_NO_XSET").is_none() { let _ = std::process::Command::new("xset").args(["r", "on", "r", "rate", "200", "30"]).status(); }
+        // Auto-repeat on, with a short delay (`xset`; `HOTKEY_TEST_NO_XSET`
+        // skips it, to run against the server's own settings).
+        if std::env::var_os("HOTKEY_TEST_NO_XSET").is_none() {
+            let _ = std::process::Command::new("xset")
+                .args(["r", "on", "r", "rate", "200", "30"])
+                .status();
+        }
         let press = |code: KeyCode, down: bool, wait: u64| {
             let kc = x_keycode(code).unwrap();
-            let ty = if down { xproto::KEY_PRESS_EVENT } else { xproto::KEY_RELEASE_EVENT };
+            let ty = if down {
+                xproto::KEY_PRESS_EVENT
+            } else {
+                xproto::KEY_RELEASE_EVENT
+            };
             conn.xtest_fake_input(ty, kc, 0, root, 0, 0, 0).unwrap();
             conn.flush().unwrap();
             std::thread::sleep(std::time::Duration::from_millis(wait));
         };
+        press(KeyCode::F24, true, 30); // warm a fresh server's XTEST keymap
+        press(KeyCode::F24, false, 300);
         use KeyCode::*;
         press(ControlLeft, true, 30);
         press(AltLeft, true, 30);
@@ -412,7 +465,6 @@ mod tests {
         press(F18, false, 30);
         std::thread::sleep(std::time::Duration::from_millis(200));
         rinch_core::reactive::drain_main_callbacks();
-        eprintln!("LOG {:?}", log.borrow());
         assert_eq!(
             *log.borrow(),
             vec![
@@ -426,15 +478,18 @@ mod tests {
         );
     }
 
-    /// Review 1530: the grab covers the Num Lock / Caps Lock variants (another
+    /// The grab covers the Num Lock / Caps Lock variants (another
     /// client cannot take Ctrl+Alt+F20 with Mod2), a chord fires with Num Lock
     /// on, and a client holding only a Lock variant is a Conflict that leaves
     /// nothing behind.
     #[test]
-    #[ignore = "review: private X server"]
-    fn review_lock_variants() {
+    #[ignore = "needs a private X server; see xtest_presses_and_releases_reach_the_callback"]
+    fn a_grab_covers_the_lock_variants() {
         let sc = Shortcut::parse("Ctrl+Alt+F20").unwrap();
-        let meta = Meta { id: "t".into(), description: "t".into() };
+        let meta = Meta {
+            id: "t".into(),
+            description: "t".into(),
+        };
         let mut a = X11Backend::start().expect("X11");
         assert_eq!(a.register(1, Some(&sc), &meta), Ok(Binding::Exact(sc)));
         assert_eq!(a.grabs.len(), 4);
@@ -443,18 +498,49 @@ mod tests {
         let kc = x_keycode(KeyCode::F20).unwrap();
         let base = u16::from(ModMask::CONTROL) | u16::from(ModMask::M1);
         for extra in [MOD2, LOCK, MOD2 | LOCK] {
-            let r = other.grab_key(false, root, ModMask::from(base | extra), kc, GrabMode::ASYNC, GrabMode::ASYNC).unwrap().check();
-            assert!(matches!(r, Err(ReplyError::X11Error(ref x)) if x.error_kind == ErrorKind::Access), "variant {extra:#x}: {r:?}");
+            let r = other
+                .grab_key(
+                    false,
+                    root,
+                    ModMask::from(base | extra),
+                    kc,
+                    GrabMode::ASYNC,
+                    GrabMode::ASYNC,
+                )
+                .unwrap()
+                .check();
+            assert!(
+                matches!(r, Err(ReplyError::X11Error(ref x)) if x.error_kind == ErrorKind::Access),
+                "variant {extra:#x}: {r:?}"
+            );
         }
         a.unregister(1);
         assert!(a.grabs.is_empty());
         // other takes only the Caps Lock variant; we must report a Conflict and keep nothing.
-        other.grab_key(false, root, ModMask::from(base | LOCK), kc, GrabMode::ASYNC, GrabMode::ASYNC).unwrap().check().unwrap();
-        assert_eq!(a.register(2, Some(&sc), &meta), Err(HotkeyError::Conflict(sc.to_string())));
+        other
+            .grab_key(
+                false,
+                root,
+                ModMask::from(base | LOCK),
+                kc,
+                GrabMode::ASYNC,
+                GrabMode::ASYNC,
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        assert_eq!(
+            a.register(2, Some(&sc), &meta),
+            Err(HotkeyError::Conflict(sc.to_string()))
+        );
         assert!(a.grabs.is_empty(), "{:?}", a.grabs);
         drop(other);
         std::thread::sleep(std::time::Duration::from_millis(100));
-        assert_eq!(a.register(3, Some(&sc), &meta), Ok(Binding::Exact(sc)), "free once the other client left");
+        assert_eq!(
+            a.register(3, Some(&sc), &meta),
+            Ok(Binding::Exact(sc)),
+            "free once the other client left"
+        );
         a.unregister(3);
     }
 }

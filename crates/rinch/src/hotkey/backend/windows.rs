@@ -18,9 +18,12 @@
 //!   no conflict check.
 //! - **A key-up the hook never sees cannot strand a binding.** While an
 //!   elevated (administrator) window has the focus the hook sees no input at
-//!   all (UIPI), so a release can be lost. While any binding is pressed, a
-//!   100 ms timer on the hook thread asks `GetAsyncKeyState` for each key the
-//!   matcher believes is down and releases the ones that are up.
+//!   all (UIPI), so a release can be lost. Every key-down first asks
+//!   `GetAsyncKeyState` about each key the matcher believes is down and drops
+//!   the ones that are up (`Matcher::key_reconciled`), so a lost Alt cannot
+//!   refuse the next chord; and while any key is believed down, a 100 ms
+//!   timer does the same, so a pressed binding is released without waiting
+//!   for another key.
 //! - The fake Left Ctrl an AltGr layout sends with Right Alt is skipped, so
 //!   `RightAlt` is a modifier-only binding there too.
 
@@ -50,7 +53,7 @@ use winit::platform::scancode::PhysicalKeyExtScancode;
 use super::BackendImpl;
 use crate::hotkey::matcher::{BindingKey, Matcher};
 use crate::hotkey::{
-    Backend, Binding, HotkeyError, Meta, Modifier, Report, Shortcut, Trigger, report,
+    Backend, Binding, HotkeyError, Meta, Modifier, Shortcut, Trigger, report_matched,
 };
 
 const WM_HOTKEY_KEY: u32 = WM_APP + 0x31;
@@ -225,7 +228,13 @@ fn pump(ready: mpsc::Sender<Result<u32, String>>) {
                     let vk = (packed >> 17) & 0xFF;
                     if let Some(code) = key_of(scan, extended) {
                         vks.insert(code, vk);
-                        matcher.key(code, msg.lParam != 0, &mut out);
+                        // A key-up the hook never saw (UIPI) is dropped here,
+                        // before it can refuse this chord.
+                        let still_down = |k: KeyCode| {
+                            let vk = vks.get(&k).copied().unwrap_or(0);
+                            vk == 0 || GetAsyncKeyState(vk as i32) as u16 & 0x8000 != 0
+                        };
+                        matcher.key_reconciled(code, msg.lParam != 0, still_down, &mut out);
                     }
                 }
                 WM_TIMER if msg.wParam == timer && timer != 0 => {
@@ -266,22 +275,20 @@ fn pump(ready: mpsc::Sender<Result<u32, String>>) {
                     DispatchMessageW(&msg);
                 }
             }
-            for (k, s) in out.drain(..) {
-                report(k, Report::State(s));
-            }
-            // Poll for lost key-ups only while something is pressed.
-            if matcher.any_pressed() && timer == 0 {
+            report_matched(&matcher, &mut out);
+            // Poll for lost key-ups while any key is believed down, so a
+            // pressed binding is released even if no other key comes.
+            let held = !matcher.down_keys().is_empty();
+            if held && timer == 0 {
                 timer = SetTimer(std::ptr::null_mut(), 0, POLL_MS, None);
-            } else if !matcher.any_pressed() && timer != 0 {
+            } else if !held && timer != 0 {
                 KillTimer(std::ptr::null_mut(), timer);
                 timer = 0;
             }
         }
         // WM_QUIT: release what is held and leave.
         matcher.release_all(&mut out);
-        for (k, s) in out.drain(..) {
-            report(k, Report::State(s));
-        }
+        report_matched(&matcher, &mut out);
         for id in hotkey_ids.values() {
             UnregisterHotKey(std::ptr::null_mut(), *id);
         }

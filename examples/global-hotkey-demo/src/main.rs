@@ -4,7 +4,7 @@
 //! while another application has the focus. "Rebind" captures the next keys
 //! pressed in this window — a chord, or a modifier alone such as Right Ctrl —
 //! and rebinds the hotkey to them. Run with
-//! `cargo run -p global-hotkey`, focus another window, and press the hotkey.
+//! `cargo run -p global-hotkey-demo`, focus another window, and press the hotkey.
 
 use std::cell::RefCell;
 use std::rc::Rc;

@@ -16,8 +16,11 @@
 //! - A pressed binding always gets its release: [`Matcher::release_all`] is the
 //!   clearing condition for a stream that loses key-ups (a hook that stops
 //!   seeing input while an elevated window has focus, a tap the OS disabled),
-//!   and [`Matcher::forget_key`] lets a backend that can ask the OS whether a
-//!   key is still down drop one it missed.
+//!   and [`Matcher::forget_key`] / [`Matcher::key_reconciled`] let a backend
+//!   that can ask the OS whether a key is still down drop one it missed.
+//! - Lock keys (Caps/Num/Scroll Lock) are never "another key held".
+//! - [`Matcher::chorded`] says whether another key went down while a binding
+//!   was pressed.
 
 use winit::keyboard::KeyCode;
 
@@ -27,22 +30,46 @@ use super::shortcut::Shortcut;
 /// A binding's key in the main-thread registry.
 pub(crate) type BindingKey = u64;
 
+struct Bound {
+    key: BindingKey,
+    shortcut: Shortcut,
+    pressed: bool,
+    /// Another key went down while this binding was pressed (see
+    /// [`Matcher::chorded`]).
+    chorded: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct Matcher {
-    bindings: Vec<(BindingKey, Shortcut, bool)>,
+    bindings: Vec<Bound>,
     down: Vec<KeyCode>,
+}
+
+/// Caps Lock, Num Lock and Scroll Lock: a lock key's state is not a key
+/// being held. macOS reports Caps Lock as one `flagsChanged` per state change,
+/// so a stream can leave it "down" for as long as the lock is on.
+pub(crate) fn is_lock_key(code: KeyCode) -> bool {
+    matches!(
+        code,
+        KeyCode::CapsLock | KeyCode::NumLock | KeyCode::ScrollLock
+    )
 }
 
 impl Matcher {
     pub(crate) fn add(&mut self, key: BindingKey, shortcut: Shortcut) {
-        self.bindings.retain(|b| b.0 != key);
-        self.bindings.push((key, shortcut, false));
+        self.bindings.retain(|b| b.key != key);
+        self.bindings.push(Bound {
+            key,
+            shortcut,
+            pressed: false,
+            chorded: false,
+        });
     }
 
     /// Remove a binding. A binding removed while pressed gets no release: its
     /// owner unregistered it and is not listening.
     pub(crate) fn remove(&mut self, key: BindingKey) {
-        self.bindings.retain(|b| b.0 != key);
+        self.bindings.retain(|b| b.key != key);
     }
 
     #[cfg(test)]
@@ -50,10 +77,18 @@ impl Matcher {
         self.bindings.is_empty()
     }
 
-    /// Whether any binding is pressed now (a backend polls the keys while one is).
-    #[cfg_attr(not(any(windows, test)), allow(dead_code))]
+    /// Whether any binding is pressed now.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn any_pressed(&self) -> bool {
-        self.bindings.iter().any(|b| b.2)
+        self.bindings.iter().any(|b| b.pressed)
+    }
+
+    /// Whether another key went down while `key` was last pressed — read with
+    /// its `Released`. A modifier-only binding (`RightCtrl`) fires on the
+    /// modifier alone, before anyone can know a chord (`Right Ctrl+C`) will
+    /// follow; this says, at the release, that one did.
+    pub(crate) fn chorded(&self, key: BindingKey) -> bool {
+        self.bindings.iter().any(|b| b.key == key && b.chorded)
     }
 
     /// The keys the matcher believes are down.
@@ -75,21 +110,54 @@ impl Matcher {
             }
             let held = self.down.clone();
             self.down.push(code);
-            for (key, shortcut, pressed) in &mut self.bindings {
-                if !*pressed && shortcut.completes(code, &held) {
-                    *pressed = true;
-                    out.push((*key, HotkeyState::Pressed));
+            for b in &mut self.bindings {
+                if b.pressed {
+                    if !is_lock_key(code) {
+                        b.chorded = true;
+                    }
+                } else if b.shortcut.completes(code, &held) {
+                    b.pressed = true;
+                    b.chorded = false;
+                    out.push((b.key, HotkeyState::Pressed));
                 }
             }
         } else {
             self.down.retain(|&k| k != code);
-            for (key, shortcut, pressed) in &mut self.bindings {
-                if *pressed && shortcut.released_by(code) {
-                    *pressed = false;
-                    out.push((*key, HotkeyState::Released));
+            for b in &mut self.bindings {
+                if b.pressed && b.shortcut.released_by(code) {
+                    b.pressed = false;
+                    out.push((b.key, HotkeyState::Released));
                 }
             }
         }
+    }
+
+    /// [`Self::key`] for a stream that can lose key-ups (the Windows hook
+    /// under UIPI, a macOS tap under secure input): before a key-down is
+    /// matched, every key believed down that `still_down` says is up is
+    /// released first. A key-up lost while nothing was pressed would otherwise
+    /// stay "held" and refuse every chord without it (matching is exact on
+    /// modifiers) until the user pressed and released that key again.
+    #[cfg_attr(not(any(windows, target_os = "macos", test)), allow(dead_code))]
+    pub(crate) fn key_reconciled(
+        &mut self,
+        code: KeyCode,
+        down: bool,
+        still_down: impl Fn(KeyCode) -> bool,
+        out: &mut Vec<(BindingKey, HotkeyState)>,
+    ) {
+        if down {
+            let stale: Vec<KeyCode> = self
+                .down
+                .iter()
+                .copied()
+                .filter(|&k| k != code && !still_down(k))
+                .collect();
+            for k in stale {
+                self.key(k, false, out);
+            }
+        }
+        self.key(code, down, out);
     }
 
     /// The stream says `code` went up without our seeing it: treat it as a
@@ -105,10 +173,10 @@ impl Matcher {
     /// track (it was disabled, the session was locked).
     pub(crate) fn release_all(&mut self, out: &mut Vec<(BindingKey, HotkeyState)>) {
         self.down.clear();
-        for (key, _, pressed) in &mut self.bindings {
-            if *pressed {
-                *pressed = false;
-                out.push((*key, HotkeyState::Released));
+        for b in &mut self.bindings {
+            if b.pressed {
+                b.pressed = false;
+                out.push((b.key, HotkeyState::Released));
             }
         }
     }
@@ -186,7 +254,9 @@ mod tests {
             vec![(7, Pressed)]
         );
         assert_eq!(run(&mut mm, &[(ControlRight, false)]), vec![(7, Released)]);
-        // Left Ctrl, and Right Ctrl as part of a chord, press nothing.
+        // Left Ctrl presses nothing, and neither does Right Ctrl pressed while
+        // C is already held. (Right Ctrl *then* C does press it, and reports
+        // the release `chorded`: see the next test.)
         assert!(run(&mut mm, &[(ControlLeft, true), (ControlLeft, false)]).is_empty());
         assert!(
             run(
@@ -197,6 +267,52 @@ mod tests {
                     (ControlRight, false),
                     (KeyC, false)
                 ]
+            )
+            .is_empty()
+        );
+    }
+
+    /// Right Ctrl then C (the natural copy order) presses a `RightCtrl`
+    /// binding at once — hold-to-talk cannot wait — and its release says a
+    /// chord happened, so a toggle app can ignore it. Lock keys do not count.
+    #[test]
+    fn a_key_pressed_during_a_modifier_only_binding_marks_it_chorded() {
+        let mut mm = m(&[(7, "RightCtrl")]);
+        let out = run(
+            &mut mm,
+            &[
+                (ControlRight, true),
+                (KeyC, true),
+                (KeyC, false),
+                (ControlRight, false),
+            ],
+        );
+        assert_eq!(out, vec![(7, Pressed), (7, Released)]);
+        assert!(mm.chorded(7));
+        run(&mut mm, &[(ControlRight, true)]);
+        assert!(!mm.chorded(7), "a new press starts clean");
+        run(&mut mm, &[(CapsLock, true), (ControlRight, false)]);
+        assert!(!mm.chorded(7), "a lock key is not a chord");
+    }
+
+    /// A key-up the stream lost is dropped at the next key-down by a backend
+    /// that can ask the OS (`key_reconciled`).
+    #[test]
+    fn a_reconciled_stream_drops_a_lost_key_up() {
+        let mut mm = m(&[(1, "Ctrl+Space")]);
+        run(&mut mm, &[(AltLeft, true)]); // its key-up is lost
+        let mut out = Vec::new();
+        let alt_is_up = |k: KeyCode| k != AltLeft;
+        for (k, d) in [(ControlLeft, true), (Space, true)] {
+            mm.key_reconciled(k, d, alt_is_up, &mut out);
+        }
+        assert_eq!(out, vec![(1, Pressed)]);
+        // The plain `key` would have kept Alt and refused the chord.
+        let mut plain = m(&[(1, "Ctrl+Space")]);
+        assert!(
+            run(
+                &mut plain,
+                &[(AltLeft, true), (ControlLeft, true), (Space, true)]
             )
             .is_empty()
         );

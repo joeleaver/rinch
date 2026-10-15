@@ -222,6 +222,9 @@ impl Shortcut {
         // (on an admitted side), and each one it asks for must be held.
         let mut seen = [false; 4];
         for &h in held {
+            if super::matcher::is_lock_key(h) {
+                continue;
+            }
             match Modifier::of_code(h) {
                 Some((m, s)) => match self.mods[m.index()] {
                     Some(want) if want.admits(s) => seen[m.index()] = true,
