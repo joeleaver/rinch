@@ -105,10 +105,11 @@ accesskit_unix = { version = "0.22", optional = true }
 # winit has no API for, and global hotkeys' X11 grabs + XInput2 raw key events
 # (`global-hotkeys`, #1521). Already in the graph through winit-x11.
 x11rb = { version = "0.13", default-features = false, features = ["xfixes", "shape", "xinput", "xkb"], optional = true }
-# Global hotkeys (`global-hotkeys`): the Wayland GlobalShortcuts portal over
-# zbus, run inside a current-thread tokio runtime on its own thread (right
-# whether zbus ends up in async-io or tokio mode — see hotkey/backend/portal.rs).
-# None adds a package to Cargo.lock. (tokio is the crate-wide optional
+# zbus for the Wayland GlobalShortcuts portal (`global-hotkeys`, #1521, see
+# hotkey/backend/portal.rs) and the freedesktop notification service
+# (`notifications`, #1522, see notification/backend/freedesktop.rs), each run
+# inside a current-thread tokio runtime on its own thread (right whether zbus
+# ends up in async-io or tokio mode). None adds a package to Cargo.lock. (tokio is the crate-wide optional
 # dependency, so the feature builds it on every platform; a Linux-only rename
 # of it does not survive a build that also has `gpu`: "depends on crate tokio
 # multiple times with different names".)
@@ -141,11 +142,19 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_System_LibraryLoader",
     "Win32_System_SystemInformation",
 ] }
+# Toast notifications (`notifications`, #1522): WinRT `Windows.UI.Notifications`
+# and the HKCU AppUserModelId registration. 0.62 is already in Cargo.lock.
+windows = { version = "0.62", optional = true, features = [
+    "UI_Notifications", "Data_Xml_Dom", "Foundation",
+    "Win32_System_WinRT", "Win32_System_Registry", "Win32_Foundation", "Win32_Security",
+] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The non-activating panel's `becomesKeyOnlyIfNeeded` / `hidesOnDeactivate`
 # (#1519). Already in the graph through winit-appkit.
 objc2 = { version = "0.6", optional = true }
+# UserNotifications completion handlers (`notifications`, #1522); in Cargo.lock.
+block2 = { version = "0.6", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6", features = ["native-activity"], optional = true }
@@ -244,6 +253,15 @@ serde = ["rinch-editor-core/serde"]
 # (the editor wiring is a desktop feature); forwards to the shared view crate, which is
 # wasm-compatible with no shims, so the web view reuses the SAME adapter.
 collaboration = ["desktop", "rinch-editor-view/collaboration"]
+# Operating-system notifications (`rinch::notification`, issue #1522): the
+# freedesktop D-Bus service on Linux, WinRT toasts on Windows,
+# UserNotifications on macOS. Off by default; implies no windowing.
+notifications = [
+    "dep:zbus", "dep:futures-lite",
+    "dep:tokio", "tokio/rt", "tokio/sync",
+    "dep:windows",
+    "dep:objc2", "dep:block2",
+]
 # System-wide hotkeys with press/release (`rinch::hotkey`, issue #1521): Windows
 # low-level hook + RegisterHotKey, macOS Carbon hot keys + CGEventTap, X11
 # grabs + XInput2, the Wayland GlobalShortcuts portal. Off by default.

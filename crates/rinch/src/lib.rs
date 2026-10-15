@@ -121,6 +121,9 @@ pub mod clipboard;
 #[cfg(feature = "system-tray")]
 pub mod tray;
 
+#[cfg(feature = "notifications")]
+pub mod notification;
+
 #[cfg(feature = "global-hotkeys")]
 pub mod hotkey;
 

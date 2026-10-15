@@ -822,6 +822,61 @@ let window_props = WindowProps {
 };
 ```
 
+## Notifications
+
+Enable with: `features = ["notifications"]` (off by default; it needs no windowing feature).
+
+`rinch::notification` shows an operating-system notification: a freedesktop notification on Linux (KDE, GNOME, dunst, mako), a toast on Windows, a UserNotifications banner on macOS.
+
+```rust
+use rinch::notification::{Notification, NotificationError};
+use rinch::prelude::*;
+
+let shown = Notification::new("Hotkey unavailable")
+    .body("Ctrl+Alt+Space is taken by another app.")
+    .icon_png(include_bytes!("icon.png"))        // optional
+    .on_click(|| show_current_window())          // optional
+    .on_dismiss(|why| tracing::info!("gone: {why:?}"))
+    .on_error(|e: &NotificationError| tracing::warn!("{e}"))
+    .show();                                     // Result<NotificationHandle, NotificationError>
+```
+
+`examples/tray-only`'s "Test notification" item raises one; clicking it opens the settings window.
+
+### Threads and callbacks
+
+`show()` makes no IPC call on the calling thread. The D-Bus calls (Linux) and the WinRT calls (Windows) run on a worker thread started by the first `show()`, and macOS's calls answer through completion handlers. The only work done in place is writing an `icon_png` image to a file, once per distinct image, in a directory only the user can write (`$XDG_RUNTIME_DIR` on Linux, else the user's cache directory; the per-user temporary directory on macOS and Windows). Call `show()` on the main thread: the callbacks are `!Send` and stay there.
+
+`on_click`, `on_dismiss` and `on_error` run on the main thread, each in one batch, like a menu callback. They follow the same lifetime rule: a callback set while a component renders belongs to that component, and does not run once it has unmounted; one set outside any render (from `main`, a timer) keeps app lifetime.
+
+A click ends the notification: `on_dismiss` does not run after `on_click`. `on_dismiss` gets a `DismissReason`: `Expired`, `Dismissed` (by the user), `Closed` (by `NotificationHandle::close`) or `Unknown`.
+
+### Errors
+
+`show()` returns `Err` for what is known at once: `Unsupported` on a platform with no backend (Android; the feature does not build for the web, see below) and on an unbundled macOS executable. What only the platform can answer arrives later through `on_error`, on the main thread:
+
+- `NoService`: no D-Bus session bus (or it went away), or no `org.freedesktop.Notifications` server on it.
+- `PermissionDenied`: the user refused the app notifications (macOS).
+- `Platform`: anything else (Windows would not show the toast, D-Bus failed).
+
+A notification with no `on_error` logs the error with `tracing::warn!`.
+
+### App identity
+
+The desktop files notifications under the app that sent them. rinch uses the identity the window has: `WindowProps::app_id` if the window sets one, else the executable's file name (without `.exe` on Windows), the same derivation as the Wayland `app_id`. `rinch::notification::set_app_id` overrides it and `set_app_name` sets the name shown as the source (default: the app id).
+
+- **Linux:** the id goes in the `desktop-entry` hint, so the server can take the app's name and icon from `<app id>.desktop` if it is installed. rinch writes no file for notifications. The image is passed as the `image-path` hint. A click needs a server with actions (KDE and GNOME have them). If the notification server restarts (plasmashell, dunst), the notifications it was showing are gone: each gets `on_dismiss(DismissReason::Unknown)`, and a signal from the new server that reuses an old id never reaches them.
+- **Windows:** the id is the toast's AppUserModelID (AUMID). Windows shows toasts from an unpackaged app only for an AUMID it knows, either from a Start-menu shortcut that carries it or from a registry key. On the first `show()` rinch writes `HKCU\Software\Classes\AppUserModelId\<AUMID>` with a `DisplayName` (the `set_app_name` name), unless that key already exists. No shortcut is needed or created. Call `set_register_app(false)` if your installer registers the AUMID itself. An AUMID may not contain spaces, so an executable named `My App.exe` needs `set_app_id("com.example.MyApp")`; an explicit id also keeps two unpackaged apps with the same file name apart. A click is reported while the toast is up; once it has timed out into the Action Center (`on_dismiss(Expired)` has run), a click there is not reported. A toast clicked in the Action Center after the app has exited does nothing: relaunching on click needs a COM activator, which rinch does not register.
+- **macOS:** the identity is the bundle identifier. The UserNotifications framework works only inside an `.app` bundle; run unbundled (`cargo run`), `show()` returns `Unsupported`. The first `show()` asks the user for permission. macOS does not report a dismissal, so `on_dismiss` runs there only for `NotificationHandle::close`. The image is attached to the notification; the app icon is the bundle's. rinch installs its `UNUserNotificationCenter` delegate on the first `show()`: a click that launches the app is not reported, and an app or crate that sets its own delegate replaces rinch's (one delegate per process).
+
+### Not covered
+
+- The web: the feature brings in tokio's multi-threaded runtime (the workspace's tokio), which does not build for `wasm32`. A web app can use the browser's `Notification` API through `web-sys`.
+- Android.
+- Buttons other than the click itself, replies, sounds, urgency and timeouts.
+
+---
+
 ## Global Hotkeys
 
 Enable with `features = ["global-hotkeys"]` (off by default). `rinch::hotkey` registers **system-wide** hotkeys: they fire while another application has the keyboard focus, and they report **press and release**, so a hold-to-talk binding works.
@@ -919,7 +974,7 @@ Add features to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rinch = { version = "0.1", features = ["file-dialogs", "clipboard", "system-tray"] }
+rinch = { version = "0.1", features = ["file-dialogs", "clipboard", "system-tray", "notifications"] }
 ```
 
 ## Platform Support
@@ -931,6 +986,7 @@ rinch = { version = "0.1", features = ["file-dialogs", "clipboard", "system-tray
 | Clipboard (Image) | ✓ | ✓ | ✓* | – |
 | Text-selection toolbar | DOM menu | DOM menu | DOM menu | native (`ActionMode`) |
 | System Tray | ✓ | ✓ | ✓** | – |
+| Notifications | toast | ✓ (in an `.app` bundle) | ✓ (freedesktop server) | – |
 | Global hotkeys | ✓ | ✓ | ✓ (X11, Wayland portal) | – |
 
 \* Linux image clipboard requires X11 or Wayland clipboard support.

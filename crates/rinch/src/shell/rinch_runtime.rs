@@ -3425,7 +3425,8 @@ fn load_window_icon(png_data: &[u8]) -> Result<winit::icon::Icon, Box<dyn std::e
 
 /// The app id the last window was created with, for a service that has to
 /// name the application to the desktop the same way the window does (the
-/// global-shortcuts portal, `crate::hotkey`).
+/// global-shortcuts portal, `crate::hotkey`; notifications' `desktop-entry`
+/// hint, `crate::notification`).
 #[cfg(target_os = "linux")]
 static WINDOW_APP_ID: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
@@ -3433,7 +3434,10 @@ static WINDOW_APP_ID: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(N
 /// one has been created, else the one a window would get with no
 /// `WindowProps::app_id`.
 #[cfg(target_os = "linux")]
-#[cfg_attr(not(feature = "global-hotkeys"), allow(dead_code))]
+#[cfg_attr(
+    not(any(feature = "global-hotkeys", feature = "notifications")),
+    allow(dead_code)
+)]
 pub(crate) fn current_app_id() -> String {
     WINDOW_APP_ID
         .lock()

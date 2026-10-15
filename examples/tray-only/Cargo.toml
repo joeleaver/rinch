@@ -6,3 +6,9 @@ publish = false
 
 [dependencies]
 rinch = { workspace = true, features = ["desktop", "components", "theme", "system-tray"] }
+
+[features]
+# The "Test notification" tray item (`rinch::notification`, #1522).
+default = ["notifications"]
+notifications = ["rinch/notifications"]
+
