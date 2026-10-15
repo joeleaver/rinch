@@ -103,6 +103,27 @@ App::new(app).window_props(props).run();
 `examples/tray-only` is a complete one. Before #1520, `visible` was accepted and
 ignored: the window was always shown.
 
+On macOS a hidden window still leaves the app's icon in the Dock, because the
+Dock icon belongs to the app, not the window. A tray-only app pairs
+`visible: false` with the accessory activation policy (issue #1528), which
+removes the Dock icon and the app's menu bar while its window can still be
+shown and typed into:
+
+```rust
+App::new(app)
+    .window_props(props)
+    .activation_policy(ActivationPolicy::Accessory)
+    .run();
+```
+
+`visible: false` does not imply it: an app that only starts hidden and is
+otherwise an ordinary app keeps its Dock icon. Without `activation_policy` the
+policy is winit's default, unchanged: `Regular` for a bare executable, and the
+bundle's `Info.plist` (`LSUIElement`) for a `.app`; setting one overrides the
+`Info.plist`. `ActivationPolicy::Prohibited` forbids windows altogether. On
+Windows and Linux the call does nothing — an app has a taskbar entry there only
+while a window is shown.
+
 ## Frameless Windows (Custom Chrome)
 
 Create frameless windows for custom title bars and window chrome using `borderless: true`:

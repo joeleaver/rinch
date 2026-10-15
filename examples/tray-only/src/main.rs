@@ -13,6 +13,8 @@
 //!   group, each bound to a `Signal` the settings window binds too, so a change
 //!   in either place shows in both;
 //! - closing the settings window hides it again; "Quit" exits.
+//! - on macOS the app has no Dock icon (`App::activation_policy(Accessory)`),
+//!   and on Linux the tray item's id is this executable's name, `tray-only`.
 //!
 //! Run with `cargo run -p tray-only`.
 
@@ -192,7 +194,13 @@ fn main() {
         })),
         ..Default::default()
     };
-    App::new(app).window_props(props).run();
+    // On macOS, no Dock icon and no app menu: the tray is the app (#1528).
+    // Does nothing on Windows and Linux, where a hidden window already means
+    // no taskbar entry.
+    App::new(app)
+        .window_props(props)
+        .activation_policy(ActivationPolicy::Accessory)
+        .run();
 
     // Take the tray down with the app.
     TRAY.with(|t| t.borrow_mut().take());
