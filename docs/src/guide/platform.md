@@ -674,6 +674,69 @@ let tray = TrayIconBuilder::new()
     .build()?;
 ```
 
+### Changing the Tray at Runtime
+
+Every part of a built tray can change while it runs (issue #1520). Each setter
+takes `&self`, so a tray kept in an `Rc` or a `thread_local!` can be changed
+from a menu callback, a timer or an effect:
+
+```rust
+use rinch::tray::{TrayIconBuilder, TrayIconImage};
+
+// Decode each image once; swapping is then cheap.
+let idle = TrayIconImage::from_png(include_bytes!("idle.png"))?;
+let busy = TrayIconImage::from_png(include_bytes!("busy.png"))?;
+
+let tray = TrayIconBuilder::new().with_icon(idle.clone()).build()?;
+
+tray.set_icon(&busy)?;                 // also set_icon_png / set_icon_rgba
+tray.set_tooltip("Working… 43%")?;
+tray.set_menu(Some(new_menu));         // or None to remove the menu
+```
+
+None of them blocks the calling thread. On Windows and macOS `tray-icon`
+applies a change on the spot. On Linux each change goes to a thread of rinch's
+own, which applies it to the ksni service: a tray host that has stopped
+answering holds that thread, never yours. Changes made while it is held are
+coalesced — the newest icon, tooltip and menu win, and only the latest state of
+each check mark is kept — so an app swapping icons several times a second
+queues neither work nor memory behind a hung host. (Measured: 200 icon and
+tooltip swaps on a KDE tray return in about 1 ms, and the item's title then
+reads the last tooltip.)
+
+`set_menu` releases the previous menu's callbacks at once, like a rebuilt menu
+bar; it is safe to call from one of the old menu's own callbacks ("Start"
+replacing itself with "Stop"). To move a check mark, write the item's signal
+instead: checkbox and radio items ([Menus](menus.md#checkbox-and-radio-items))
+follow their signals in a tray menu too.
+
+### Left Click (Activate)
+
+By default a primary click on the icon shows the window. `on_activate` replaces
+that:
+
+```rust
+let listening = Signal::new(false);
+let tray = TrayIconBuilder::new()
+    .with_icon(idle)
+    .on_activate(move || listening.update(|l| *l = !*l))
+    .build()?;
+```
+
+On Linux this is the StatusNotifierItem `Activate` request (which click sends
+it, and whether a panel opens the menu instead, is the panel's choice); on
+Windows and macOS it is a left-button release on the icon. The callback runs on
+the main thread and follows a menu callback's lifetime rule. Pass `|| {}` for a
+click that does nothing.
+
+### Tray-Only Apps
+
+An app whose whole UI is the tray starts with `WindowProps { visible: false, .. }`
+and shows its one window ("Settings…") with `show_current_window()`. See
+[Windows](windows.md#starting-with-no-window-tray-only-apps) and
+`examples/tray-only`, which swaps icons on a timer, changes its tooltip, has a
+checkbox and a radio group, and opens a settings window from the menu.
+
 ### Nested Submenus
 
 ```rust
