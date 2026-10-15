@@ -1,0 +1,9 @@
+[package]
+name = "overlay-pill"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+rinch = { workspace = true, features = ["desktop"] }
+rinch-core = { workspace = true }

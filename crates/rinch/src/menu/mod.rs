@@ -1323,7 +1323,7 @@ pub(crate) fn attach_menu_to_window(menu: &muda::Menu, window: &dyn winit::windo
 /// this function actually running, which is what review of #1304 asked for
 /// in place of a bare `target_os` guess.
 #[cfg(all(feature = "desktop", target_os = "macos"))]
-pub(crate) fn attach_menu_to_window(menu: &muda::Menu, _window: &winit::window::Window) {
+pub(crate) fn attach_menu_to_window(menu: &muda::Menu, _window: &dyn winit::window::Window) {
     menu.init_for_nsapp();
     mark_native_accelerator_attached();
 }
