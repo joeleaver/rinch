@@ -75,6 +75,47 @@ let item = MenuItem::new("Save")
 | `shortcut(s)` | `impl Into<String>` | Keyboard shortcut |
 | `enabled(e)` | `bool` | Whether the item is clickable |
 | `on_click(cb)` | `impl Fn() + 'static` | Callback when activated |
+| `checkbox(label, signal)` | `Signal<bool>` | A checkbox item; see below |
+| `radio(label, signal, value)` | `Signal<T>`, `T` | One option of a radio group; see below |
+| `checked()` | | `Some(state)` for a checkbox or radio item, `None` otherwise |
+
+### Checkbox and radio items
+
+A checkbox or radio item is built over a `Signal`, and the signal *is* its
+state in both directions (issue #1520):
+
+```rust
+use rinch::menu::{Menu, MenuItem};
+
+let sounds = Signal::new(true);
+let speed = Signal::new("fast");
+
+let menu = Menu::new()
+    .item(MenuItem::checkbox("Play sounds", sounds))
+    .separator()
+    .item(MenuItem::radio("Fast", speed, "fast"))
+    .item(MenuItem::radio("Accurate", speed, "accurate"));
+
+// Read it back:  sounds.get(), speed.get()
+// Set it:        sounds.set(false) moves the check mark in every menu built
+//                from these items.
+```
+
+- **Activating** the item (a click, its shortcut, a tray menu) flips a
+  checkbox's signal, or writes a radio option's value to the group's signal,
+  *before* its `on_click` callback runs, so the callback reads the new state.
+  Activating the option that is already selected leaves it selected.
+- **Writing** the signal from anywhere moves the mark: in the native window
+  menu bar and a tray menu on Windows and macOS (muda `CheckMenuItem`s), in a
+  Linux tray menu (ksni), and in the DOM menu bar on Linux and in the browser
+  (a `rinch-app-menu-entry__check` mark before the label, with
+  `role="menuitemcheckbox"`/`"menuitemradio"` and `aria-checked`).
+- Every item built over one signal is one radio group. Keep a group's options
+  next to each other: the Linux tray draws a run of adjacent options of one
+  group as a single radio group.
+- The item follows the same lifetime rule as a callback: built during a render,
+  it belongs to that component, and once the component unmounts (freeing a
+  signal it created) the item stops toggling and its mark stops following.
 
 ## Menu Callbacks
 

@@ -512,6 +512,39 @@ fn build_menu_entries_with_flyouts(
                 }
                 entry_node.set_attribute("class", &cls);
 
+                // A checkbox or radio item draws its mark in a slot before the
+                // label, kept in step with the item's signal by an effect owned
+                // by this render (issue #1520).
+                if let Some(toggle) = item.toggle.as_ref() {
+                    let radio = matches!(toggle.kind, super::ToggleKind::Radio { .. });
+                    entry_node.set_attribute(
+                        "role",
+                        if radio {
+                            "menuitemradio"
+                        } else {
+                            "menuitemcheckbox"
+                        },
+                    );
+                    let mark = scope.create_element("span");
+                    let glyph = scope.create_text(if radio { "\u{2022}" } else { "\u{2713}" });
+                    mark.append_child(&glyph);
+                    entry_node.append_child(&mark);
+                    let is_on = Rc::clone(&toggle.is_on);
+                    let (mark, row) = (mark.clone(), entry_node.clone());
+                    Effect::new(move || {
+                        let on = is_on().unwrap_or(false);
+                        mark.set_attribute(
+                            "class",
+                            if on {
+                                "rinch-app-menu-entry__check rinch-app-menu-entry__check--on"
+                            } else {
+                                "rinch-app-menu-entry__check"
+                            },
+                        );
+                        row.set_attribute("aria-checked", if on { "true" } else { "false" });
+                    });
+                }
+
                 let label_span = scope.create_element("span");
                 label_span.set_attribute("class", "rinch-app-menu-entry__label");
                 let text = scope.create_text(&item.label);
@@ -527,8 +560,7 @@ fn build_menu_entries_with_flyouts(
                 }
 
                 if enabled {
-                    if let Some(cb) = item.callback.as_ref() {
-                        let cb = Rc::clone(cb);
+                    if let Some(cb) = item.activation() {
                         // The item is invoked straight from the `Menu` here — it
                         // never goes through the callback registry — so this
                         // path has to apply the #183 lifetime rule itself, or a
@@ -1370,5 +1402,49 @@ mod portable_tests {
             "Escape closed the menu"
         );
         assert!(!escape(), "and the bar goes back to passing Escape through");
+    }
+
+    /// Issue #1520: a checkbox row draws a mark that follows its signal — on
+    /// an app write as well as on a click — and says so to assistive tech.
+    #[test]
+    fn a_checkbox_entry_mark_follows_its_signal() {
+        let mut h = harness();
+        let on = rinch_core::reactive::Signal::new(false);
+        let model = rinch_core::reactive::Signal::new(2u8);
+        let menu = Menu::new()
+            .item(MenuItem::checkbox("Mute", on))
+            .item(MenuItem::radio("One", model, 1))
+            .item(MenuItem::radio("Two", model, 2));
+        let content = h.scope.create_element("div");
+        let root = render_with_menu_bar(&mut h.scope, &[("View", &menu)], content, 0);
+        let root = root.node_id();
+
+        let on_marks =
+            |h: &Harness| nodes_with_class(h, root, "rinch-app-menu-entry__check--on").len();
+        let rows = nodes_with_class(&h, root, "rinch-app-menu-entry");
+        let attr = |h: &Harness, id, a: &str| h.doc.borrow().get_attribute(id, a);
+        assert_eq!(
+            nodes_with_class(&h, root, "rinch-app-menu-entry__check").len(),
+            3
+        );
+        assert_eq!(on_marks(&h), 1, "only the selected radio option is marked");
+        assert_eq!(
+            attr(&h, rows[0], "role").as_deref(),
+            Some("menuitemcheckbox")
+        );
+        assert_eq!(attr(&h, rows[1], "role").as_deref(), Some("menuitemradio"));
+        assert_eq!(attr(&h, rows[0], "aria-checked").as_deref(), Some("false"));
+
+        on.set(true);
+        assert_eq!(on_marks(&h), 2, "an app write marks the checkbox");
+        assert_eq!(attr(&h, rows[0], "aria-checked").as_deref(), Some("true"));
+
+        click(&h, rows[0]);
+        assert!(!on.get(), "a click unchecks it");
+        click(&h, rows[1]);
+        assert_eq!(model.get(), 1, "a click selects the radio option");
+        assert_eq!(attr(&h, rows[1], "aria-checked").as_deref(), Some("true"));
+        assert_eq!(attr(&h, rows[2], "aria-checked").as_deref(), Some("false"));
+        assert_eq!(on_marks(&h), 1);
     }
 }

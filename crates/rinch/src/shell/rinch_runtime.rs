@@ -457,6 +457,10 @@ pub struct RinchRuntime {
     /// `WindowProps::click_through`, changed by
     /// [`set_click_through_current_window`](crate::windows::set_click_through_current_window).
     click_through: bool,
+    /// Whether the main window has been on screen yet. `false` after a
+    /// hidden start (#1520) until the first `show_window`, which then places
+    /// it as a first creation would.
+    shown_once: bool,
 
     // ── DevTools ─────────────────────────────────────────────────
     /// Shared DevTools store (persists across open/close cycles).
@@ -530,6 +534,7 @@ impl RinchRuntime {
             pressed_pointers: PressedButtons::default(),
             applied_cursor: None,
             click_through: false,
+            shown_once: false,
             devtools_store: None,
             devtools_app: None,
             devtools_window: None,
@@ -963,22 +968,33 @@ impl RinchRuntime {
     }
 
     fn create_window(&mut self, event_loop: &dyn ActiveEventLoop) {
+        let hidden = starts_hidden(self.app.window_props.as_ref());
         let backend = Backend::of(event_loop);
         let steps = self.main_window_steps(backend, true);
-        let window_attrs = self.main_window_attributes(steps, backend, true);
+        let window_attrs =
+            hidden_start_attributes(self.main_window_attributes(steps, backend, true), hidden);
 
         let window = event_loop
             .create_window(window_attrs)
             .expect("Failed to create window");
-        overlay_window::after_create(&*window, steps, self.main_window_always_on_top());
+        // A hidden start skips the post-creation steps: they would show a
+        // window created hidden (`AfterCreate::Show`), and they run on the
+        // window `show_window` creates instead.
+        if !hidden {
+            overlay_window::after_create(&*window, steps, self.main_window_always_on_top());
+            self.shown_once = true;
+        }
 
         let size = window.surface_size();
         let scale = window.scale_factor();
 
         // Create the GPU renderer when the choice wants one and it starts; the
-        // software renderer is created lazily by the first software paint.
+        // software renderer is created lazily by the first software paint. A
+        // window that starts hidden gets none: it is destroyed before it could
+        // present, and `show_window` creates the renderer with the window it
+        // creates.
         #[cfg(feature = "gpu")]
-        {
+        if !hidden {
             self.renderer = start_gpu_renderer(&*window);
         }
         #[cfg(not(feature = "gpu"))]
@@ -1008,6 +1024,19 @@ impl RinchRuntime {
         self.app.set_device_pixel_ratio(scale);
         let logical = to_logical((size.width, size.height), scale);
         self.app.mount_component(logical.0 as f32, logical.1 as f32);
+
+        // `WindowProps::visible: false` (issue #1520): the app runs with no
+        // window on screen — a tray-only app — until `show_current_window`.
+        // The window above existed only to give the root its size and display
+        // scale; the root is mounted now, once, and `show_window` re-creates
+        // the OS window over the same document without mounting it again.
+        // Destroyed rather than kept invisible for the reason `hide_window`
+        // gives: Wayland has no invisible toplevel. No frame was requested and
+        // no renderer made, so nothing was ever presented.
+        if hidden {
+            self.hide_window();
+            return;
+        }
 
         // Request initial draw
         self.window.as_ref().unwrap().request_redraw();
@@ -1041,7 +1070,11 @@ impl RinchRuntime {
 
         let backend = Backend::of(event_loop);
         let steps = self.main_window_steps(backend, false);
-        let window_attrs = self.main_window_attributes(steps, backend, false);
+        // After a hidden start (#1520) the first show is the window's first
+        // appearance, so it takes the requested position as a first creation
+        // does; a restore from the tray is placed by the system, as before.
+        let first_show = !std::mem::replace(&mut self.shown_once, true);
+        let window_attrs = self.main_window_attributes(steps, backend, first_show);
 
         let window = event_loop
             .create_window(window_attrs)
@@ -1931,12 +1964,108 @@ impl Drop for RinchRuntime {
     }
 }
 
+/// Whether the app's window starts hidden: `WindowProps::visible` is `false`
+/// (issue #1520). Absent props mean a visible window.
+fn starts_hidden(props: Option<&rinch_core::element::WindowProps>) -> bool {
+    props.is_some_and(|p| !p.visible)
+}
+
+/// The first creation's attributes for a hidden start (#1520): `visible:
+/// false` whatever the overlay steps (#1519) chose. That window only sizes the
+/// root and is destroyed before anything is presented (X11 and Windows honour
+/// `with_visible(false)`; Wayland maps no toplevel until a buffer is attached,
+/// and none ever is). The overlay steps' own creation visibility is about the
+/// window `show_window` makes later — on macOS a non-activating panel is
+/// created *visible*, since a hidden-then-`set_visible` show would make it key —
+/// and that re-creation takes the overlay attributes unchanged. A start that
+/// is not hidden is left exactly as the overlay steps built it.
+fn hidden_start_attributes(attrs: WindowAttributes, hidden: bool) -> WindowAttributes {
+    if hidden {
+        attrs.with_visible(false)
+    } else {
+        attrs
+    }
+}
+
+/// Whether `can_create_surfaces` creates the main window: only when there is
+/// none **and** nothing is mounted. A mounted document with no window was
+/// hidden on purpose (started hidden, #1520, or sent to the tray), and
+/// creating the window here would mount the root a second time.
+fn creates_window_on_surfaces(has_window: bool, mounted: bool) -> bool {
+    !has_window && !mounted
+}
+
+#[cfg(test)]
+mod hidden_start_tests {
+    use super::*;
+    use rinch_core::element::WindowProps;
+
+    /// #1520: `visible: false` starts hidden; the default and absent props
+    /// do not.
+    #[test]
+    fn only_visible_false_starts_hidden() {
+        assert!(!starts_hidden(None));
+        assert!(!starts_hidden(Some(&WindowProps::default())));
+        assert!(starts_hidden(Some(&WindowProps {
+            visible: false,
+            ..Default::default()
+        })));
+    }
+
+    /// #1520 with #1519: a hidden start creates its sizing window invisible
+    /// even where the overlay steps would create it visible (a macOS
+    /// non-activating panel), and leaves every other start as the steps built
+    /// it — an ordinary window visible, an X11 overlay created hidden.
+    #[test]
+    fn a_hidden_start_overrides_the_overlay_visibility_and_nothing_else() {
+        use super::overlay_window::{Backend, WindowSteps, apply_to_attributes};
+        let panel = WindowProps {
+            non_activating: true,
+            ..Default::default()
+        };
+        let mac = WindowSteps::plan(&panel, false, Backend::MacOs);
+        let built =
+            || apply_to_attributes(WindowAttributes::default(), mac, Backend::MacOs, None, None);
+        assert!(built().visible, "the macOS panel itself is created visible");
+        assert!(!hidden_start_attributes(built(), true).visible);
+        assert!(
+            !hidden_start_attributes(built(), true).active,
+            "the steps' other attributes stay"
+        );
+        assert!(hidden_start_attributes(built(), false).visible);
+        let x11 = WindowSteps::plan(&panel, false, Backend::X11);
+        let x11_attrs =
+            apply_to_attributes(WindowAttributes::default(), x11, Backend::X11, None, None);
+        assert!(
+            !hidden_start_attributes(x11_attrs, false).visible,
+            "the X11 overlay is created hidden as before"
+        );
+        assert!(hidden_start_attributes(WindowAttributes::default(), false).visible);
+    }
+
+    /// #1520: after a hidden start the document is mounted and the window
+    /// gone, and a later `can_create_surfaces` must not create (and mount)
+    /// again. Only the first call, with nothing mounted, creates one.
+    #[test]
+    fn surfaces_create_the_window_only_before_anything_is_mounted() {
+        assert!(creates_window_on_surfaces(false, false), "first start");
+        assert!(
+            !creates_window_on_surfaces(false, true),
+            "hidden start or tray: mounted, no window"
+        );
+        assert!(!creates_window_on_surfaces(true, true), "already shown");
+    }
+}
+
 // ── ApplicationHandler impl ──────────────────────────────────────────────────
 
 impl ApplicationHandler for RinchRuntime {
     fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
         event_loop.set_control_flow(ControlFlow::Wait);
-        if self.window.is_none() {
+        // Mounted already means the window was hidden on purpose — started
+        // hidden (#1520) or sent to the tray — and creating one here would
+        // mount the root a second time; `show_window` is what brings it back.
+        if creates_window_on_surfaces(self.window.is_some(), self.app.doc.is_some()) {
             self.create_window(event_loop);
         }
     }
