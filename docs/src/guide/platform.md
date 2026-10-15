@@ -701,8 +701,13 @@ answering holds that thread, never yours. Changes made while it is held are
 coalesced — the newest icon, tooltip and menu win, and only the latest state of
 each check mark is kept — so an app swapping icons several times a second
 queues neither work nor memory behind a hung host. (Measured: 200 icon and
-tooltip swaps on a KDE tray return in about 1 ms, and the item's title then
-reads the last tooltip.)
+tooltip swaps on a KDE tray return in about 1 ms, and the item's tooltip then
+reads the last one.)
+
+On Linux the item's `Title`, which Plasma sorts the tray by, is a stable name:
+`TrayIconBuilder::with_title(..)`, else the tray's id. `set_tooltip` changes
+only the `ToolTip`, so the icon does not move when the text does. Windows and
+macOS have no title property and ignore `with_title`.
 
 `set_menu` releases the previous menu's callbacks at once, like a rebuilt menu
 bar; it is safe to call from one of the old menu's own callbacks ("Start"
