@@ -51,7 +51,11 @@ fn app() -> NodeHandle {
             HotkeyState::Pressed => "pressed",
             HotkeyState::Released => "released",
         };
-        let chord = if ev.chorded { " (chorded: another key went down)" } else { "" };
+        let chord = if ev.chorded {
+            " (chorded: another key went down)"
+        } else {
+            ""
+        };
         push(format!("{} {what}{chord}", ev.id));
     }) {
         Ok(hk) => {
