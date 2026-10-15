@@ -101,17 +101,19 @@ ksni = { workspace = true, optional = true }
 # AT-SPI (D-Bus) accessibility adapter for Linux. Pulls zbus/atspi/async-io; only
 # compiled when the `a11y` feature is on. Windows/macOS adapters are a follow-up.
 accesskit_unix = { version = "0.22", optional = true }
+# X11 overlay hints (`WM_HINTS.input`, `_NET_WM_STATE_SKIP_TASKBAR`, #1519) that
+# winit has no API for, and global hotkeys' X11 grabs + XInput2 raw key events
+# (`global-hotkeys`, #1521). Already in the graph through winit-x11.
+x11rb = { version = "0.13", default-features = false, features = ["xfixes", "shape", "xinput", "xkb"], optional = true }
 # Global hotkeys (`global-hotkeys`): the Wayland GlobalShortcuts portal over
 # zbus, run inside a current-thread tokio runtime on its own thread (right
-# whether zbus ends up in async-io or tokio mode — see hotkey/backend/portal.rs),
-# and X11 grabs + XInput2 raw key events through x11rb (already linked by winit
-# and softbuffer). None adds a package to Cargo.lock. (tokio is the
-# crate-wide optional dependency, so the feature builds it on every platform;
-# a Linux-only rename of it does not survive a build that also has `gpu`:
-# "depends on crate tokio multiple times with different names".)
+# whether zbus ends up in async-io or tokio mode — see hotkey/backend/portal.rs).
+# None adds a package to Cargo.lock. (tokio is the crate-wide optional
+# dependency, so the feature builds it on every platform; a Linux-only rename
+# of it does not survive a build that also has `gpu`: "depends on crate tokio
+# multiple times with different names".)
 zbus = { version = "5", default-features = false, features = ["async-io"], optional = true }
 futures-lite = { version = "2", optional = true }
-x11rb = { version = "0.13", features = ["xinput", "xkb"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
@@ -133,12 +135,16 @@ x11rb = { version = "0.13", features = ["xinput", "xtest"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = [
-    "Win32_Graphics_Gdi", "Win32_Foundation",
+    "Win32_Graphics_Gdi", "Win32_Foundation", "Win32_UI_WindowsAndMessaging",
     # Global hotkeys: the WH_KEYBOARD_LL hook, RegisterHotKey, the hook
     # thread's message pump.
-    "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse",
-    "Win32_System_Threading", "Win32_System_LibraryLoader",
+    "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_System_LibraryLoader",
 ] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The non-activating panel's `becomesKeyOnlyIfNeeded` / `hidesOnDeactivate`
+# (#1519). Already in the graph through winit-appkit.
+objc2 = { version = "0.6", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6", features = ["native-activity"], optional = true }
@@ -154,6 +160,7 @@ desktop = [
     "dep:rinch-dom", "dep:rinch-editable", "dep:parley",
     "dep:peniko", "dep:serde_json",
     "dep:winit", "dep:muda",
+    "dep:x11rb", "dep:objc2",
     "dep:tracing-subscriber",
     "dep:png", "dep:base64", "dep:keyboard-types",
     "dep:bytemuck",

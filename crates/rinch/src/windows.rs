@@ -407,7 +407,9 @@ pub fn hide_current_window() {
 
 /// Show the current window (restore from tray).
 ///
-/// Makes a previously hidden window visible again and brings it to focus.
+/// Makes a previously hidden window visible again and brings it to focus —
+/// except a [`WindowProps::non_activating`](rinch_core::element::WindowProps::non_activating)
+/// window, which is shown without taking focus or activation.
 ///
 /// # Example
 ///
@@ -417,6 +419,27 @@ pub fn hide_current_window() {
 /// ```
 pub fn show_current_window() {
     send_native_event(RinchNativeEvent::ShowWindow);
+}
+
+/// Let pointer events pass through the current window to whatever is under
+/// it (`true`), or make it take them again (`false`). Starts at
+/// [`WindowProps::click_through`](rinch_core::element::WindowProps::click_through)
+/// and is kept across [`hide_current_window`] / [`show_current_window`]
+/// (issue #1519).
+///
+/// A click-through window receives no pointer events at all, so nothing in it
+/// can turn click-through off again: toggle it from a global hotkey, a tray
+/// menu, a timer or another thread (it is `Send`-safe, like the other window
+/// controls).
+///
+/// # Example
+///
+/// ```ignore
+/// MenuItem::new("Make overlay interactive")
+///     .on_click(|| set_click_through_current_window(false))
+/// ```
+pub fn set_click_through_current_window(click_through: bool) {
+    send_native_event(RinchNativeEvent::SetClickThrough(click_through));
 }
 
 /// Close the current window.

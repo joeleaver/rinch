@@ -215,13 +215,13 @@ pub mod prelude {
     // Window control functions
     #[cfg(feature = "desktop")]
     pub use crate::windows::{
-        close_current_window, hide_current_window, minimize_current_window, show_current_window,
-        toggle_maximize_current_window,
+        close_current_window, hide_current_window, minimize_current_window,
+        set_click_through_current_window, show_current_window, toggle_maximize_current_window,
     };
     #[cfg(all(feature = "android", not(feature = "desktop")))]
     pub use crate::windows_stub::{
-        close_current_window, hide_current_window, minimize_current_window, show_current_window,
-        toggle_maximize_current_window,
+        close_current_window, hide_current_window, minimize_current_window,
+        set_click_through_current_window, show_current_window, toggle_maximize_current_window,
     };
     // Fine-grained rendering types
     pub use rinch_core::dom::{
