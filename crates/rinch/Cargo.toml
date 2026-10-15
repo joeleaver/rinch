@@ -111,7 +111,7 @@ accesskit_unix = { version = "0.22", optional = true }
 # "depends on crate tokio multiple times with different names".)
 zbus = { version = "5", default-features = false, features = ["async-io"], optional = true }
 futures-lite = { version = "2", optional = true }
-x11rb = { version = "0.13", features = ["xinput"], optional = true }
+x11rb = { version = "0.13", features = ["xinput", "xkb"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
