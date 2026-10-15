@@ -38,8 +38,6 @@ mod contents_1038_damage_scroll_tests;
 #[cfg(test)]
 mod contents_scroll_396_tests;
 #[cfg(test)]
-mod scroll_device_snap_1543_tests;
-#[cfg(test)]
 mod contents_stacking_1038_tests;
 #[cfg(test)]
 mod css_hook_1339_tests;
@@ -207,6 +205,8 @@ mod right_press_focus_452_review_tests;
 mod right_press_focus_452_tests;
 #[cfg(all(test, software_shell))]
 mod screenshot_capture_tests;
+#[cfg(test)]
+mod scroll_device_snap_1543_tests;
 #[cfg(test)]
 mod scrollbar_corner_444_tests;
 #[cfg(test)]

@@ -75,10 +75,17 @@ fn sub_pixel_wheel_deltas_add_up() {
     let (mut app, s, _) = mount();
     for _ in 0..5 {
         wheel(&mut app, -0.3);
-        assert!(on_grid(scroll_top(&app, s)), "off the grid: {}", scroll_top(&app, s));
+        assert!(
+            on_grid(scroll_top(&app, s)),
+            "off the grid: {}",
+            scroll_top(&app, s)
+        );
     }
     let top = scroll_top(&app, s);
-    assert!((top - 0.8).abs() < 1e-9, "five 0.3px deltas scrolled to {top}, not 0.8");
+    assert!(
+        (top - 0.8).abs() < 1e-9,
+        "five 0.3px deltas scrolled to {top}, not 0.8"
+    );
     // And back up: the same deltas the other way return to the top.
     for _ in 0..5 {
         wheel(&mut app, 0.3);
@@ -114,7 +121,10 @@ fn scrolling_a_box_into_view_from_above_rounds_up_to_the_grid() {
     app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
     let top = scroll_top(&app, s);
     assert!(on_grid(top), "off the grid: {top}");
-    assert!(top >= 70.3, "the box's bottom is still under the edge: scrolled to {top}");
+    assert!(
+        top >= 70.3,
+        "the box's bottom is still under the edge: scrolled to {top}"
+    );
     assert!((top - 70.4).abs() < 1e-9, "got {top}");
 }
 
@@ -158,5 +168,9 @@ fn sub_pixel_horizontal_wheel_deltas_add_up() {
         );
         assert!(on_grid(left(&app)), "off the grid: {}", left(&app));
     }
-    assert!((left(&app) - 0.8).abs() < 1e-9, "scrolled to {}, not 0.8", left(&app));
+    assert!(
+        (left(&app) - 0.8).abs() < 1e-9,
+        "scrolled to {}, not 0.8",
+        left(&app)
+    );
 }

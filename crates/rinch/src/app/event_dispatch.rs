@@ -1371,7 +1371,8 @@ impl RinchApp {
                             if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
                                 // On the device pixel grid, keeping what falls
                                 // below it, as the vertical half does (#1543).
-                                let precise = (node.scroll_offset.0 + node.scroll_remainder.0 - delta_x)
+                                let precise = (node.scroll_offset.0 + node.scroll_remainder.0
+                                    - delta_x)
                                     .clamp(0.0, max_scroll);
                                 let new_x = rinch_dom::node::snap_to_device(precise, device_scale);
                                 node.scroll_remainder.0 = precise - new_x;

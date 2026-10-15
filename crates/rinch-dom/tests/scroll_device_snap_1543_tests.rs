@@ -81,7 +81,14 @@ fn paint_at(style: &str, text: &str, scale: f64, axis: usize, offset: f64) -> (V
     );
     let mut painter = TinySkiaPainter::new(w, h);
     let mut cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
-    rinch_dom::paint::paint_document(&doc.tree, &mut painter, scale, (VW, VH), &mut doc.font_cx, &mut cx);
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut painter,
+        scale,
+        (VW, VH),
+        &mut doc.font_cx,
+        &mut cx,
+    );
     let gray = painter
         .pixels()
         .as_chunks::<4>()
@@ -128,7 +135,10 @@ fn horizontal(scale: f64, from: f64, to: f64) {
     // The scroller is 10..210 x 10..30 logical; keep 8px clear of its edges.
     let s = |v: f64| (v * scale).round() as usize;
     let rect = (s(18.0), s(10.0), s(202.0), s(30.0));
-    assert!(has_ink(&a, w, rect), "nothing painted; the fixture measures nothing");
+    assert!(
+        has_ink(&a, w, rect),
+        "nothing painted; the fixture measures nothing"
+    );
     assert!(
         rigid_shift(&a, &b, w, 0, rect).is_some(),
         "at scale {scale}, scrolling from {from} to {to} logical px did not move the \
@@ -148,7 +158,10 @@ fn vertical(scale: f64, from: f64, to: f64) {
     let (b, _) = paint_at(style, &text, scale, 1, to);
     let s = |v: f64| (v * scale).round() as usize;
     let rect = (s(10.0), s(18.0), s(210.0), s(82.0));
-    assert!(has_ink(&a, w, rect), "nothing painted; the fixture measures nothing");
+    assert!(
+        has_ink(&a, w, rect),
+        "nothing painted; the fixture measures nothing"
+    );
     assert!(
         rigid_shift(&a, &b, w, 1, rect).is_some(),
         "at scale {scale}, scrolling from {from} to {to} logical px did not move the \
@@ -200,10 +213,18 @@ fn a_written_offset_is_floored_to_the_device_grid() {
     let (mut doc, c) = document(style, &text, 1.25);
     doc.set_scroll_top(c, 10.33);
     // 12.9125 device px -> 12 -> 9.6.
-    assert!((doc.scroll_top(c) - 9.6).abs() < 1e-9, "got {}", doc.scroll_top(c));
+    assert!(
+        (doc.scroll_top(c) - 9.6).abs() < 1e-9,
+        "got {}",
+        doc.scroll_top(c)
+    );
     // Idempotent: writing a value already on the grid keeps it.
     doc.set_scroll_top(c, 9.6);
-    assert!((doc.scroll_top(c) - 9.6).abs() < 1e-9, "got {}", doc.scroll_top(c));
+    assert!(
+        (doc.scroll_top(c) - 9.6).abs() < 1e-9,
+        "got {}",
+        doc.scroll_top(c)
+    );
 }
 
 /// When the content shrinks under a scrolled region, layout clamps the offset
@@ -212,11 +233,7 @@ fn a_written_offset_is_floored_to_the_device_grid() {
 #[test]
 fn the_layout_clamp_lands_on_the_grid_and_stays() {
     let scale = 1.25;
-    let (mut doc, c) = document(
-        "width: 200px; height: 80px; overflow-y: auto",
-        "",
-        scale,
-    );
+    let (mut doc, c) = document("width: 200px; height: 80px; overflow-y: auto", "", scale);
     let inner = doc.create_element("div");
     doc.set_attribute(inner, "style", "height: 300px");
     doc.append_child(c, inner);
@@ -228,7 +245,10 @@ fn the_layout_clamp_lands_on_the_grid_and_stays() {
     doc.set_attribute(inner, "style", "height: 161px");
     doc.resolve_layout(VW, VH);
     let top = doc.scroll_top(c);
-    assert!(on_grid(top, scale) && (top - 80.8).abs() < 1e-9, "got {top}");
+    assert!(
+        on_grid(top, scale) && (top - 80.8).abs() < 1e-9,
+        "got {top}"
+    );
     doc.tree.pending_scroll_clamps.clear();
     doc.resolve_layout(VW + 1.0, VH);
     assert!(
@@ -252,7 +272,10 @@ fn rewriting_an_offset_on_the_grid_keeps_it() {
     doc.append_child(c, inner);
     doc.resolve_layout(VW, VH);
     let v: f64 = 61.0 / 1.75;
-    assert!((v * 1.75).floor() < 61.0, "premise: the product is under 61");
+    assert!(
+        (v * 1.75).floor() < 61.0,
+        "premise: the product is under 61"
+    );
     doc.set_scroll_top(c, v);
     let first = doc.scroll_top(c);
     for _ in 0..3 {
