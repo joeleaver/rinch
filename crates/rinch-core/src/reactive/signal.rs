@@ -554,7 +554,9 @@ impl<T: Send + 'static> Signal<T> {
     ///
     /// If called from the main thread, behaves identically to [`set()`](Signal::set).
     /// If called from a background thread, automatically dispatches to the main
-    /// thread where the signal store lives.
+    /// thread where the signal store lives. A background thread that writes
+    /// before the host has started (a worker spawned in `main()` ahead of
+    /// `App::run`) has its write queued and applied once the host starts.
     ///
     /// Requires `T: Send` since the value may cross thread boundaries.
     ///
@@ -575,13 +577,22 @@ impl<T: Send + 'static> Signal<T> {
         // Without this every dropped cross-thread write would be attributed to
         // one line in this file and the warn-once dedup would silence them all.
         let loc = Location::caller();
-        if super::is_main_thread() {
-            self.set_at(value, loc);
-        } else {
-            let signal = *self;
-            super::dispatch_to_main_thread(Box::new(move || {
+        let signal = *self;
+        match super::write_thread() {
+            super::WriteThread::Main => self.set_at(value, loc),
+            super::WriteThread::Other => super::dispatch_to_main_thread(Box::new(move || {
                 signal.set_at(value, loc);
-            }));
+            })),
+            super::WriteThread::Unregistered if super::unregistered_write_is_local() => {
+                self.set_at(value, loc)
+            }
+            // A worker ahead of the host (issue #1541): queue for the host to
+            // drain once it starts, rather than write this thread's empty store.
+            super::WriteThread::Unregistered => {
+                super::dispatch_main_callback(Box::new(move || {
+                    signal.set_at(value, loc);
+                }))
+            }
         }
     }
 
@@ -606,13 +617,21 @@ impl<T: Send + 'static> Signal<T> {
     pub fn update_send(&self, f: impl FnOnce(&mut T) + Send + 'static) {
         // See `send` — the location must be captured before the thread hop.
         let loc = Location::caller();
-        if super::is_main_thread() {
-            self.update_at(f, loc);
-        } else {
-            let signal = *self;
-            super::dispatch_to_main_thread(Box::new(move || {
+        let signal = *self;
+        match super::write_thread() {
+            super::WriteThread::Main => self.update_at(f, loc),
+            super::WriteThread::Other => super::dispatch_to_main_thread(Box::new(move || {
                 signal.update_at(f, loc);
-            }));
+            })),
+            super::WriteThread::Unregistered if super::unregistered_write_is_local() => {
+                self.update_at(f, loc)
+            }
+            // See `send` (issue #1541).
+            super::WriteThread::Unregistered => {
+                super::dispatch_main_callback(Box::new(move || {
+                    signal.update_at(f, loc);
+                }))
+            }
         }
     }
 }

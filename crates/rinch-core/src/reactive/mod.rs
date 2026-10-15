@@ -392,10 +392,11 @@ static MAIN_QUEUE: Mutex<Vec<(u64, Box<dyn FnOnce() + Send>)>> = Mutex::new(Vec:
 
 /// Push `f` onto the shared main-thread queue.
 ///
-/// Returns `true` if the queue was empty before the push — a host's cue to wake
-/// its event loop, which it then does once per batch rather than once per
-/// closure. A host with nothing to wake (an embedded context, whose game loop is
-/// already turning) ignores it.
+/// Returns `true` if the queue was empty before the push. No host keys its wake
+/// on it any more: a desktop paint can drain the wake it asked for without
+/// running the queue (issue #1540), so the shell asks for a coalesced
+/// `ReRender` on every push instead. A host with nothing to wake (an embedded
+/// context, whose game loop is already turning) ignores it.
 ///
 /// `f` will run under the document current **here**, on the thread that queues
 /// it (issue #963): the document whose code queued it on the main thread, and
@@ -482,6 +483,43 @@ pub(crate) fn is_main_thread() -> bool {
     }
 }
 
+/// Which thread a cross-thread write ([`Signal::send`](crate::Signal::send),
+/// [`Signal::update_send`](crate::Signal::update_send)) is being made on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum WriteThread {
+    /// The registered main thread: apply the write here.
+    Main,
+    /// Another thread, with a main thread registered: dispatch it.
+    Other,
+    /// No host has registered a main thread yet (issue #1541).
+    Unregistered,
+}
+
+/// Classify the current thread for a cross-thread write. Costs what
+/// [`is_main_thread`] costs; only the [`WriteThread::Unregistered`] answer
+/// leaves the caller anything more to decide.
+pub(crate) fn write_thread() -> WriteThread {
+    match MAIN_THREAD_ID.get() {
+        Some(id) if std::thread::current().id() == *id => WriteThread::Main,
+        Some(_) => WriteThread::Other,
+        None => WriteThread::Unregistered,
+    }
+}
+
+/// With no main thread registered, whether a cross-thread write made on this
+/// thread is this thread's to apply (issue #1541).
+///
+/// A thread that has never allocated a signal cannot own the one being
+/// written — signals live in a thread-local store — so it is a worker
+/// writing ahead of the host (a thread spawned in `main()` before
+/// `App::run`), and the write is queued for the main thread instead of being
+/// applied to this thread's empty store and dropped. A thread that has
+/// allocated signals keeps the old behaviour (apply here): the main thread
+/// of a test or of `rinch-web`, which registers no main thread at all.
+pub(crate) fn unregistered_write_is_local() -> bool {
+    SIGNAL_STORE.with(|store| store.borrow().has_allocated())
+}
+
 /// Dispatch a closure to the main thread via the registered dispatcher.
 ///
 /// Panics if no dispatcher has been registered (i.e., rinch runtime not
@@ -517,11 +555,11 @@ pub(crate) fn dispatch_to_main_thread(f: Box<dyn FnOnce() + Send>) {
 /// `f` is queued plainly: there is no host to wake, and whatever drains the
 /// queue will run it.
 ///
-/// Why not [`queue_main_callback`] from such a caller: a waking host coalesces
-/// on the queue — it wakes only for a push onto an empty queue, because a
-/// non-empty one already has a wake owed. A closure pushed with no wake breaks
-/// that, and strands not only itself but the next sender from any thread,
-/// which finds the queue non-empty and asks for no wake either (issue #1035).
+/// Why not [`queue_main_callback`] from such a caller: a closure pushed past
+/// the dispatcher gets no wake of its own and waits for the next sender's. A
+/// host whose dispatcher wakes only for a push onto an empty queue (the
+/// desktop shell's rule until #1540) strands it for good: the next sender
+/// finds the queue non-empty and asks for no wake either (issue #1035).
 ///
 /// The dispatcher is called with its lock released, so a dispatcher that drops
 /// something whose `Drop` dispatches in turn does not deadlock, and a poisoned
@@ -702,6 +740,12 @@ impl SignalStore {
             self.slots.push(Some(slot));
             (idx, generation)
         }
+    }
+
+    /// Whether this store has ever allocated a signal (slots are never
+    /// removed, only emptied, so a freed signal still counts).
+    fn has_allocated(&self) -> bool {
+        !self.slots.is_empty()
     }
 
     /// The slot's `SignalCell`, cloned out under a shared borrow of the store
