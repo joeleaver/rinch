@@ -38,6 +38,8 @@ mod contents_1038_damage_scroll_tests;
 #[cfg(test)]
 mod contents_scroll_396_tests;
 #[cfg(test)]
+mod scroll_device_snap_1543_tests;
+#[cfg(test)]
 mod contents_stacking_1038_tests;
 #[cfg(test)]
 mod css_hook_1339_tests;
@@ -1171,6 +1173,7 @@ impl RinchApp {
         // (issue #211). No-op at the 1.0 default.
         doc.borrow_mut()
             .set_device_pixel_ratio(self.device_pixel_ratio as f32);
+        doc.borrow_mut().tree.device_scale = self.device_pixel_ratio;
 
         // Set up network image loader if feature enabled (replaces default FileImageLoader)
         #[cfg(all(feature = "image-network", not(target_arch = "wasm32")))]
@@ -1711,7 +1714,17 @@ impl RinchApp {
                 continue; // already visible
             };
 
-            let clamped = new_scroll.clamp(0.0, max_scroll);
+            let mut clamped = new_scroll.clamp(0.0, max_scroll);
+            // `mark_scrolled` floors the offset to the device pixel grid
+            // (#1543). Scrolling down to reveal a box, a floor would stop up to
+            // a device pixel short of its bottom edge, so round that one up —
+            // as far as the range allows, where the floor takes over again.
+            if clamped > current_scroll {
+                let s = d.tree.device_scale;
+                if s.is_finite() && s > 0.0 {
+                    clamped = ((clamped * s - 1e-6).ceil() / s).clamp(clamped, max_scroll);
+                }
+            }
             if let Some(node) = d.tree.nodes.get_mut(container_id) {
                 node.scroll_offset.1 = clamped;
             }
@@ -4719,7 +4732,11 @@ impl RinchApp {
     pub fn set_device_pixel_ratio(&mut self, dpr: f64) {
         self.device_pixel_ratio = dpr;
         if let Some(doc) = &self.doc {
-            doc.borrow_mut().set_device_pixel_ratio(dpr as f32);
+            let mut d = doc.borrow_mut();
+            d.set_device_pixel_ratio(dpr as f32);
+            // The paint scale itself, not its `f32` rounding: scroll offsets
+            // snap to this grid (#1543).
+            d.tree.device_scale = dpr;
         }
     }
 

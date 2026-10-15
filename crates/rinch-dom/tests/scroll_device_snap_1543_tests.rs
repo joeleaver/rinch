@@ -160,6 +160,8 @@ fn vertical(scale: f64, from: f64, to: f64) {
 fn a_horizontal_scroll_at_125_percent_moves_the_line_rigidly() {
     // 12.5 and 12.9 device px.
     horizontal(1.25, 10.0, 10.32);
+    // 12.5 and 13.4: on the grid, a whole device pixel apart.
+    horizontal(1.25, 10.0, 10.72);
 }
 
 #[test]
@@ -182,4 +184,56 @@ fn a_vertical_scroll_at_125_percent_moves_the_lines_rigidly() {
 #[test]
 fn a_vertical_scroll_at_150_percent_moves_the_lines_rigidly() {
     vertical(1.5, 10.0, 10.4);
+}
+
+fn on_grid(v: f64, scale: f64) -> bool {
+    let d = v * scale;
+    (d - d.round()).abs() < 1e-6
+}
+
+/// A written offset lands on the grid at or below what was written, and is
+/// what `scroll_top()` answers.
+#[test]
+fn a_written_offset_is_floored_to_the_device_grid() {
+    let style = "width: 200px; height: 80px; overflow-y: auto; line-height: 17px";
+    let text = format!("{TEXT} {TEXT} {TEXT} {TEXT}");
+    let (mut doc, c) = document(style, &text, 1.25);
+    doc.set_scroll_top(c, 10.33);
+    // 12.9125 device px -> 12 -> 9.6.
+    assert!((doc.scroll_top(c) - 9.6).abs() < 1e-9, "got {}", doc.scroll_top(c));
+    // Idempotent: writing a value already on the grid keeps it.
+    doc.set_scroll_top(c, 9.6);
+    assert!((doc.scroll_top(c) - 9.6).abs() < 1e-9, "got {}", doc.scroll_top(c));
+}
+
+/// When the content shrinks under a scrolled region, layout clamps the offset
+/// to the new range — on the grid and at or below the range, so the next pass
+/// does not clamp it again.
+#[test]
+fn the_layout_clamp_lands_on_the_grid_and_stays() {
+    let scale = 1.25;
+    let (mut doc, c) = document(
+        "width: 200px; height: 80px; overflow-y: auto",
+        "",
+        scale,
+    );
+    let inner = doc.create_element("div");
+    doc.set_attribute(inner, "style", "height: 300px");
+    doc.append_child(c, inner);
+    doc.resolve_layout(VW, VH);
+    doc.set_scroll_top(c, 200.0);
+    assert_eq!(doc.scroll_top(c), 200.0);
+    // Range 80.3: 100.375 device px, off the grid.
+    doc.set_attribute(inner, "style", "height: 160.3px");
+    doc.resolve_layout(VW, VH);
+    let top = doc.scroll_top(c);
+    assert!(on_grid(top, scale) && top <= 80.3 && top > 79.0, "got {top}");
+    doc.tree.pending_scroll_clamps.clear();
+    doc.resolve_layout(VW + 1.0, VH);
+    assert!(
+        doc.tree.pending_scroll_clamps.is_empty(),
+        "a clamped offset was clamped again: {:?}",
+        doc.tree.pending_scroll_clamps
+    );
+    assert_eq!(doc.scroll_top(c), top);
 }

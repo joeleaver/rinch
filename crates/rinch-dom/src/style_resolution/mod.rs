@@ -263,6 +263,9 @@ impl RinchDocument {
             return;
         }
         self.device_params.device_pixel_ratio = dpr;
+        // Scroll offsets snap to this grid (#1543); one already written stays
+        // where it is until the next scroll moves it.
+        self.tree.device_scale = dpr as f64;
 
         // Rebuild the Device from the updated params (this also forces all
         // stylesheet origins dirty, which media-feature changes require).

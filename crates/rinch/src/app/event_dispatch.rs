@@ -868,7 +868,9 @@ impl RinchApp {
                         let new_scroll = if on_thumb {
                             current
                         } else {
-                            track.scroll_for_click(along)
+                            // On the grid `mark_scrolled` keeps (#1543), so a
+                            // jump that snaps to where it is moves nothing.
+                            d.tree.snap_scroll_offset(track.scroll_for_click(along))
                         };
 
                         // A press that moved nothing dirties nothing and
@@ -1314,7 +1316,19 @@ impl RinchApp {
                                 .and_then(|n| n.attributes.get("data-onscroll"))
                                 .and_then(|s| s.parse::<usize>().ok());
                             let old_y = doc_mut.scroll_top(nid);
-                            let new_y = (old_y - delta_y).clamp(0.0, max_scroll);
+                            // The offset is kept on the device pixel grid
+                            // (#1543); what a delta leaves below it is kept
+                            // too, so sub-pixel deltas still add up.
+                            let remainder = doc_mut
+                                .tree
+                                .nodes
+                                .get(scroll_node_id)
+                                .map_or(0.0, |n| n.scroll_remainder.1);
+                            let precise = (old_y + remainder - delta_y).clamp(0.0, max_scroll);
+                            let new_y = doc_mut.tree.snap_scroll_offset(precise);
+                            if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
+                                node.scroll_remainder.1 = precise - new_y;
+                            }
                             if new_y != old_y {
                                 if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
                                     node.scroll_offset.1 = new_y;
@@ -1353,8 +1367,14 @@ impl RinchApp {
                                 .and_then(|n| n.attributes.get("data-onscroll"))
                                 .and_then(|s| s.parse::<usize>().ok());
                             let mut moved = false;
+                            let device_scale = doc_mut.tree.device_scale;
                             if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
-                                let new_x = (node.scroll_offset.0 - delta_x).clamp(0.0, max_scroll);
+                                // On the device pixel grid, keeping what falls
+                                // below it, as the vertical half does (#1543).
+                                let precise = (node.scroll_offset.0 + node.scroll_remainder.0 - delta_x)
+                                    .clamp(0.0, max_scroll);
+                                let new_x = rinch_dom::node::snap_to_device(precise, device_scale);
+                                node.scroll_remainder.0 = precise - new_x;
                                 if new_x != node.scroll_offset.0 {
                                     node.scroll_offset.0 = new_x;
                                     doc_mut.tree.mark_scrolled(scroll_node_id);
