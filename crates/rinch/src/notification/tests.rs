@@ -284,6 +284,94 @@ fn set_app_id_and_name_override_the_derivation() {
     assert_eq!(app_id(), derived);
 }
 
+
+/// R6 (run alone: sets TMPDIR): the icon file lives at a predictable path in a
+/// shared temporary directory, so another local user can plant a symlink at
+/// the `.tmp` name and have `show` write through it.
+#[test]
+#[ignore]
+#[cfg(unix)]
+fn r6_the_icon_write_follows_a_planted_symlink() {
+    let root = std::env::current_dir().unwrap().join(".scratch-r6");
+    let _ = std::fs::remove_dir_all(&root);
+    let shared = root.join("tmp");
+    std::fs::create_dir_all(shared.join("rinch-notifications")).unwrap();
+    let victim = root.join("victim.txt");
+    std::fs::write(&victim, b"precious").unwrap();
+    let png = b"\x89PNG fake";
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    png.as_slice().hash(&mut h);
+    let tmp = shared.join("rinch-notifications").join(format!("{:016x}.{}.tmp", h.finish(), std::process::id()));
+    std::os::unix::fs::symlink(&victim, &tmp).unwrap();
+    // SAFETY: test run alone.
+    unsafe { std::env::set_var("TMPDIR", &shared) };
+    let p = write_icon(png).unwrap();
+    eprintln!("R6 icon at {}", p.display());
+    let v = std::fs::read(&victim).unwrap();
+    eprintln!("R6 victim now: {:?}", String::from_utf8_lossy(&v));
+    assert_eq!(v, b"precious", "the icon write went through the planted symlink");
+}
+
+
+/// R7: `NotificationHandle::id` says "unique within this process"; the counter
+/// is thread-local.
+#[test]
+fn r7_ids_are_unique_across_threads() {
+    let backend = fake();
+    let a = show_with(Ok(backend), Notification::new("main")).unwrap().id();
+    let b = std::thread::spawn(move || {
+        show_with(Ok(backend), Notification::new("other")).unwrap().id()
+    })
+    .join()
+    .unwrap();
+    assert_ne!(a, b, "two notifications share id {a}");
+}
+
+/// R8 (kills `.all` -> `.any` in `Entry::is_dead`): a live ownerless
+/// `on_dismiss` beside a dead `on_click` is not pruned.
+#[test]
+fn r8_a_live_callback_beside_a_dead_one_is_not_pruned() {
+    let backend = fake();
+    let scope = Scope::new();
+    let dismissed = Rc::new(Cell::new(false));
+    let d = dismissed.clone();
+    let n = scope.run(|| Notification::new("mixed").on_click(|| {}));
+    let n = n.on_dismiss(move |_| d.set(true));
+    // on_dismiss was set outside the scope (ownerless)
+    let h = show_with(Ok(backend), n).unwrap();
+    scope.dispose();
+    show_with(Ok(backend), Notification::new("next")).unwrap();
+    deliver(h.id(), Event::Dismissed(DismissReason::Expired));
+    assert!(dismissed.get(), "a live on_dismiss was pruned with its dead sibling");
+}
+
+/// R9 (kills dropping the batch in `Owned::invoke`): two writes in a
+/// callback wake an observing effect once.
+#[test]
+fn r9_a_callback_runs_in_one_batch() {
+    let backend = fake();
+    let a = Signal::new(0);
+    let b = Signal::new(0);
+    let runs = Rc::new(Cell::new(0));
+    let r = runs.clone();
+    let _e = rinch_core::reactive::Effect::new(move || {
+        let _ = (a.get(), b.get());
+        r.set(r.get() + 1);
+    });
+    let base = runs.get();
+    let h = show_with(
+        Ok(backend),
+        Notification::new("t").on_click(move || {
+            a.set(1);
+            b.set(1);
+        }),
+    )
+    .unwrap();
+    deliver(h.id(), Event::Clicked);
+    assert_eq!(runs.get() - base, 1, "the effect ran once per write, not once per batch");
+}
+
 // ── Windows toast XML ───────────────────────────────────────────────────────
 
 fn request(title: &str, body: &str, icon: Option<&str>) -> Request {
@@ -665,6 +753,252 @@ mod freedesktop_bus {
                 assert!(m.contains("no D-Bus session bus"), "{m}")
             }
             other => panic!("expected NoService, got {other:?}"),
+        }
+    }
+
+    // ── review-1535 fixtures ────────────────────────────────────────────────
+    mod review_1535 {
+        use super::*;
+
+        enum Ctl {
+            Signal(&'static str, u32, Option<String>, u32),
+            Stop,
+        }
+
+        /// A stoppable fake server answering ids from `first`.
+        fn server(
+            address: String,
+            first: u32,
+        ) -> (
+            mpsc::Receiver<Seen>,
+            tokio::sync::mpsc::UnboundedSender<Ctl>,
+            std::thread::JoinHandle<()>,
+        ) {
+            let (seen_tx, seen_rx) = mpsc::channel();
+            let (do_tx, mut do_rx) = tokio::sync::mpsc::unbounded_channel::<Ctl>();
+            let (ready_tx, ready_rx) = mpsc::channel();
+            let h = std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async move {
+                    let conn = zbus::connection::Builder::address(address.as_str())
+                        .unwrap()
+                        .build()
+                        .await
+                        .unwrap();
+                    conn.request_name("org.freedesktop.Notifications").await.unwrap();
+                    ready_tx.send(()).unwrap();
+                    let mut next_id = first;
+                    let mut stream = MessageStream::from(&conn);
+                    let path = "/org/freedesktop/Notifications";
+                    let iface = "org.freedesktop.Notifications";
+                    loop {
+                        tokio::select! {
+                            Some(cmd) = do_rx.recv() => match cmd {
+                                Ctl::Signal(name, id, Some(key), _) => {
+                                    conn.emit_signal(None::<()>, path, iface, name, &(id, key)).await.unwrap();
+                                }
+                                Ctl::Signal(name, id, None, reason) => {
+                                    conn.emit_signal(None::<()>, path, iface, name, &(id, reason)).await.unwrap();
+                                }
+                                Ctl::Stop => break,
+                            },
+                            Some(Ok(msg)) = stream.next() => {
+                                let header = msg.header();
+                                if header.message_type() != Type::MethodCall { continue; }
+                                match header.member().map(|m| m.as_str()) {
+                                    Some("Notify") => {
+                                        type Body = (String, u32, String, String, String, Vec<String>, HashMap<String, OwnedValue>, i32);
+                                        let (app_name, _, _, summary, body, actions, _hints, _): Body =
+                                            msg.body().deserialize().unwrap();
+                                        let id = next_id;
+                                        next_id += 1;
+                                        let _ = seen_tx.send(Seen::Notify { app_name, summary, body, actions, hints: HashMap::new(), id });
+                                        conn.reply(&header, &(id,)).await.unwrap();
+                                    }
+                                    Some("CloseNotification") => {
+                                        let (id,): (u32,) = msg.body().deserialize().unwrap();
+                                        let _ = seen_tx.send(Seen::Close(id));
+                                        conn.reply(&header, &()).await.unwrap();
+                                        conn.emit_signal(None::<()>, path, iface, "NotificationClosed", &(id, 3u32)).await.unwrap();
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                    let _ = conn.release_name("org.freedesktop.Notifications").await;
+                });
+            });
+            ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            (seen_rx, do_tx, h)
+        }
+
+        fn rq(id: u64) -> crate::notification::Request {
+            let mut r = request(&format!("n{id}"), "", None);
+            r.id = id;
+            r
+        }
+
+        /// R1: the server restarts (plasmashell / dunst restart). A click on a
+        /// notification of the NEW server reaches us?
+        #[test]
+        fn r1_a_restarted_server_still_reaches_us() {
+            let Some(bus) = private_bus("r1") else { return };
+            let (seen_a, ctl_a, ha) = server(bus.address.clone(), 41);
+            let (backend, events) = backend(&bus.address);
+            backend.show(rq(7)).unwrap();
+            notified(&seen_a);
+            ctl_a.send(Ctl::Stop).ok();
+            ha.join().unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            let (seen_b, ctl_b, _hb) = server(bus.address.clone(), 100);
+            backend.show(rq(8)).unwrap();
+            let (_, _, _, _, _, sid) = notified(&seen_b);
+            assert_eq!(sid, 100);
+            std::thread::sleep(Duration::from_millis(300));
+            ctl_b.send(Ctl::Signal("ActionInvoked", sid, Some("default".into()), 0)).ok();
+            let got = events.recv_timeout(Duration::from_secs(3));
+            eprintln!("R1 after restart: {got:?}");
+            assert_eq!(got.ok(), Some((8, Event::Clicked)), "click from the restarted server lost");
+        }
+
+        /// R2: after a restart the new server reuses server ids (dunst starts at
+        /// 1 again). Another app's notification on the new server with the id
+        /// our dead notification had must not be delivered to ours.
+        #[test]
+        fn r2_a_reused_server_id_after_restart_is_not_ours() {
+            let Some(bus) = private_bus("r2") else { return };
+            let (seen_a, ctl_a, ha) = server(bus.address.clone(), 41);
+            let (backend, events) = backend(&bus.address);
+            backend.show(rq(7)).unwrap();
+            let (_, _, _, _, _, sid) = notified(&seen_a);
+            ctl_a.send(Ctl::Stop).ok();
+            ha.join().unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            let (_seen_b, ctl_b, _hb) = server(bus.address.clone(), 41);
+            std::thread::sleep(Duration::from_millis(300));
+            // another app's notification 41 on the new server is dismissed
+            ctl_b.send(Ctl::Signal("NotificationClosed", sid, None, 2)).ok();
+            let got = events.recv_timeout(Duration::from_secs(2));
+            eprintln!("R2 stale id: {got:?}");
+            assert!(got.is_err(), "another app's close delivered to our dead notification: {got:?}");
+        }
+
+        /// R2b: after a restart that reuses ids, closing our OLD notification
+        /// must not close the NEW one the server gave the same id.
+        #[test]
+        fn r2b_closing_a_pre_restart_notification_does_not_close_a_new_one() {
+            let Some(bus) = private_bus("r2b") else { return };
+            let (seen_a, ctl_a, ha) = server(bus.address.clone(), 41);
+            let (backend, events) = backend(&bus.address);
+            backend.show(rq(7)).unwrap();
+            notified(&seen_a);
+            ctl_a.send(Ctl::Stop).ok();
+            ha.join().unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            let (seen_b, _ctl_b, _hb) = server(bus.address.clone(), 41);
+            backend.show(rq(8)).unwrap();
+            let (_, _, _, _, _, sid) = notified(&seen_b);
+            assert_eq!(sid, 41);
+            backend.close(7);
+            let closed = seen_b.recv_timeout(Duration::from_secs(2));
+            let ev = events.recv_timeout(Duration::from_secs(2));
+            eprintln!("R2b server saw {closed:?}, events {ev:?}");
+            assert!(closed.is_err(), "close(7) closed the new server's notification {sid} (ours, id 8): {closed:?} / {ev:?}");
+        }
+
+        /// R3: many notifications in flight, closed out of order.
+        #[test]
+        fn r3_many_concurrent_notifications_map_one_to_one() {
+            let Some(bus) = private_bus("r3") else { return };
+            let (seen, ctl, _h) = server(bus.address.clone(), 41);
+            let (backend, events) = backend(&bus.address);
+            let n = 64u64;
+            for i in 0..n {
+                backend.show(rq(1000 + i)).unwrap();
+            }
+            let mut sids = Vec::new();
+            for _ in 0..n {
+                let (_, s, _, _, _, sid) = notified(&seen);
+                sids.push((s, sid));
+            }
+            // reverse-order clicks with interleaved closes
+            for (k, (s, sid)) in sids.iter().enumerate().rev() {
+                let local: u64 = s[1..].parse().unwrap();
+                if k % 2 == 0 {
+                    ctl.send(Ctl::Signal("ActionInvoked", *sid, Some("default".into()), 0)).ok();
+                    assert_eq!(events.recv_timeout(WAIT).unwrap(), (local, Event::Clicked));
+                } else {
+                    backend.close(local);
+                    assert_eq!(events.recv_timeout(WAIT).unwrap(), (local, Event::Dismissed(DismissReason::Closed)));
+                }
+            }
+            assert!(events.recv_timeout(Duration::from_millis(300)).is_err());
+        }
+
+        fn threads_named(name: &str) -> usize {
+            std::fs::read_dir("/proc/self/task").unwrap().filter_map(|e| {
+                std::fs::read_to_string(e.ok()?.path().join("comm")).ok()
+            }).filter(|c| c.trim() == name).count()
+        }
+
+        /// R4: the bus dies; the next show reports an error (not a hang), and
+        /// after the bus is back at the same address a show works again.
+        #[test]
+        fn r4_the_bus_dying_is_reported_and_recovered_from() {
+            let Some(mut bus) = private_bus("r4") else { return };
+            bus.address = bus.address.split(",guid=").next().unwrap().to_string();
+            let (seen, _ctl, _h) = server(bus.address.clone(), 41);
+            let (backend, events) = backend(&bus.address);
+            backend.show(rq(1)).unwrap();
+            notified(&seen);
+            std::thread::sleep(Duration::from_millis(500));
+            let _ = bus.child.kill();
+            let _ = bus.child.wait();
+            std::thread::sleep(Duration::from_millis(300));
+            backend.show(rq(2)).unwrap();
+            let got = events.recv_timeout(Duration::from_secs(5));
+            eprintln!("R4 after bus death: {got:?}");
+            assert!(matches!(got, Ok((2, Event::Failed(_)))), "{got:?}");
+            // bring the bus back at the same socket
+            let _ = std::fs::remove_file(bus._dir.join("bus"));
+            let config = bus._dir.join("bus.conf");
+            let mut child = Command::new("dbus-daemon")
+                .arg(format!("--config-file={}", config.display()))
+                .arg("--nofork").arg("--print-address")
+                .stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+            let mut line = String::new();
+            BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+            bus.child = child;
+            let (seen2, _ctl2, _h2) = server(bus.address.clone(), 200);
+            backend.show(rq(3)).unwrap();
+            let got3 = events.recv_timeout(Duration::from_secs(5));
+            eprintln!("R4 show after bus came back: {got3:?}");
+            let s3 = seen2.recv_timeout(Duration::from_secs(5));
+            eprintln!("R4 server2 saw: {s3:?}");
+            backend.show(rq(4)).unwrap();
+            let s4 = seen2.recv_timeout(Duration::from_secs(5));
+            eprintln!("R4 server2 saw (2nd): {s4:?} events: {:?}", events.recv_timeout(Duration::from_millis(500)));
+            assert!(s3.is_ok() || s4.is_ok(), "never reconnected");
+        }
+
+        /// R5: dropping a backend ends its thread.
+        #[test]
+        fn r5_dropping_the_backend_ends_its_thread() {
+            let Some(bus) = private_bus("r5") else { return };
+            let (seen, _ctl, _h) = server(bus.address.clone(), 41);
+            let before: Vec<String> = std::fs::read_dir("/proc/self/task").unwrap().filter_map(|e| std::fs::read_to_string(e.ok()?.path().join("comm")).ok()).collect();
+            {
+                let (backend, _events) = backend(&bus.address);
+                backend.show(rq(1)).unwrap();
+                notified(&seen);
+            }
+            std::thread::sleep(Duration::from_millis(500));
+            let after: Vec<String> = std::fs::read_dir("/proc/self/task").unwrap().filter_map(|e| std::fs::read_to_string(e.ok()?.path().join("comm")).ok()).collect();
+            eprintln!("R5 threads before {} after {}: {:?}", before.len(), after.len(), after);
         }
     }
 }
