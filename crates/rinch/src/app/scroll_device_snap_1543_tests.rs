@@ -117,3 +117,46 @@ fn scrolling_a_box_into_view_from_above_rounds_up_to_the_grid() {
     assert!(top >= 70.3, "the box's bottom is still under the edge: scrolled to {top}");
     assert!((top - 70.4).abs() < 1e-9, "got {top}");
 }
+
+/// The horizontal half of the wheel keeps its own remainder.
+#[test]
+fn sub_pixel_horizontal_wheel_deltas_add_up() {
+    let mut app = RinchApp::new(|__scope: &mut RenderScope| {
+        rsx! {
+            div { class: "scroller", style: "width: 200px; height: 100px; overflow-x: auto; overflow-y: hidden;",
+                div { style: "width: 600px; height: 50px;" }
+            }
+        }
+    });
+    app.set_device_pixel_ratio(SCALE);
+    app.mount_component(VIEWPORT.0, VIEWPORT.1);
+    app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    let s = {
+        let doc = app.doc.as_ref().expect("mounted").clone();
+        let d = doc.borrow();
+        d.tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.attributes.get("class").is_some_and(|c| c == "scroller"))
+            .map(|(id, _)| id)
+            .expect("the scroller")
+    };
+    let left = |app: &RinchApp| {
+        let doc = app.doc.as_ref().expect("mounted");
+        doc.borrow().tree.nodes[s].scroll_offset.0
+    };
+    for _ in 0..5 {
+        app.handle_event(
+            PlatformEvent::MouseWheel {
+                x: 50.0,
+                y: 50.0,
+                delta_x: -0.3,
+                delta_y: 0.0,
+            },
+            (VIEWPORT.0 as u32, VIEWPORT.1 as u32),
+            SCALE,
+        );
+        assert!(on_grid(left(&app)), "off the grid: {}", left(&app));
+    }
+    assert!((left(&app) - 0.8).abs() < 1e-9, "scrolled to {}, not 0.8", left(&app));
+}
