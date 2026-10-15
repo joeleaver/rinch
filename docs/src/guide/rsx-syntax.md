@@ -289,6 +289,13 @@ div {
 
 [`ScrollEvent`]: https://docs.rs/rinch/latest/rinch/prelude/struct.ScrollEvent.html
 
+On desktop a scroll offset is kept on the **device pixel grid** (issue #1543),
+so scrolled text moves by whole device pixels and does not re-space as it
+scrolls: at a display scale of 125% the offsets are multiples of 0.8px. The
+`ScrollEvent` offsets and `scroll_top()` report that snapped value, so
+`set_scroll_top(10.33)` at 125% reads back 9.6. Do not compare an offset you
+wrote with one you read back for equality.
+
 `oninput` and `onchange` follow HTML semantics and are **not** aliases (they
 were before issue #226): `oninput` fires on every keystroke with the live
 value, while `onchange` fires once when the typed gesture *ends* — focus

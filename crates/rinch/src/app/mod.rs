@@ -8310,7 +8310,8 @@ mod horizontal_scrollbar_tests {
         // to read `(moved / 96) * 800` = 400, which moved the thumb 43.4px for
         // a 48px drag; the thumb lagged the pointer (#400).
         let thumb_travel = 96.0 - 20.0;
-        assert_eq!(top, moved as f64 * (800.0 - 100.0) / thumb_travel);
+        // Floored to the device pixel grid (scale 1 here), #1543.
+        assert_eq!(top, (moved as f64 * (800.0 - 100.0) / thumb_travel).floor());
         assert_eq!(
             *fired.borrow().last().expect("onscroll fired"),
             ScrollEvent::new(top, 0.0)
