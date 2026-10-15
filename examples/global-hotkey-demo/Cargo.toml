@@ -1,0 +1,8 @@
+[package]
+name = "global-hotkey-demo"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+rinch = { workspace = true, features = ["desktop", "components", "theme", "global-hotkeys"] }
