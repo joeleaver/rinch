@@ -590,7 +590,14 @@ impl<T: Send + 'static> Signal<T> {
             // drain once it starts, rather than write this thread's empty store.
             super::WriteThread::Unregistered => {
                 super::dispatch_main_callback(Box::new(move || {
-                    signal.set_at(value, loc);
+                    // Only the registered main thread owns the store this
+                    // write was meant for. Ids alias across thread-local
+                    // stores, so a drain on any other thread (a second
+                    // test, an unregistered host) would write a stranger's
+                    // signal: drop it there, as the write was before #1541.
+                    if super::write_thread() == super::WriteThread::Main {
+                        signal.set_at(value, loc);
+                    }
                 }))
             }
         }
@@ -629,7 +636,9 @@ impl<T: Send + 'static> Signal<T> {
             // See `send` (issue #1541).
             super::WriteThread::Unregistered => {
                 super::dispatch_main_callback(Box::new(move || {
-                    signal.update_at(f, loc);
+                    if super::write_thread() == super::WriteThread::Main {
+                        signal.update_at(f, loc);
+                    }
                 }))
             }
         }

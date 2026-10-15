@@ -214,20 +214,31 @@ fn dispatch_to_main_thread(f: Box<dyn FnOnce() + Send>) {
     send_native_event(RinchNativeEvent::ReRender);
 }
 
-/// Owe the loop a wake for work queued before `GLOBAL_PROXY` was set
-/// (issues #1540, #1541): a worker's `Signal::send` made before the host
-/// registered its main thread is queued plainly, and one made after the
-/// dispatcher was registered but before the proxy existed queued a `ReRender`
-/// that nothing woke the loop for. Called once, right after the proxy is set.
-fn wake_for_work_queued_before_the_proxy() {
+/// Set `GLOBAL_PROXY` and pay the wake owed to anything queued before it
+/// existed (issue #1540). Both desktop entry points call this.
+fn install_global_proxy(proxy: &EventLoopProxy) {
+    let _ = GLOBAL_PROXY.set(proxy.clone());
+    owe_startup_wake(|| proxy.wake_up());
+}
+
+/// The wake owed once the proxy exists (issue #1540): a `ReRender` sent
+/// before then — by the mount's signal-change callback, or by a worker's
+/// `Signal::send` — carried no wake, and it holds `NativeEventQueue`'s
+/// coalescing flag up, so every later `ReRender` coalesces into it and asks
+/// for no wake either. A window that paints drains it at its first frame; a
+/// windowless or hidden app (tray-only, started hidden) never does, and
+/// stalled. A callback queued plainly before the dispatcher existed (#1541)
+/// is given a `ReRender` here first. `wake` is called when a native event is
+/// waiting; returns whether it was.
+fn owe_startup_wake(wake: impl FnOnce()) -> bool {
     if rinch_core::main_callbacks_pending() {
         send_native_event(RinchNativeEvent::ReRender);
     }
-    if !NATIVE_EVENT_QUEUE.lock().unwrap().is_empty()
-        && let Some(proxy) = GLOBAL_PROXY.get()
-    {
-        proxy.wake_up();
+    let owed = !NATIVE_EVENT_QUEUE.lock().unwrap().is_empty();
+    if owed {
+        wake();
     }
+    owed
 }
 
 /// Events sent to the event loop.
@@ -3238,8 +3249,12 @@ where
     let proxy = event_loop.create_proxy();
 
     // Register main thread and cross-thread dispatcher for Signal::send()
-    rinch_core::register_main_thread();
+    // Dispatcher first: a worker sending between the two would otherwise be
+    // classified "not the main thread" with no dispatcher to take its write,
+    // and panic. In this order it is still unregistered there, and its write
+    // is queued through the dispatcher (#1541).
     rinch_core::set_cross_thread_dispatcher(dispatch_to_main_thread);
+    rinch_core::register_main_thread();
 
     // Set up signal change notification
     rinch_core::set_on_signal_change(move || {
@@ -3256,8 +3271,7 @@ where
     NATIVE_PROXY.with(|p| *p.borrow_mut() = Some(proxy.clone()));
 
     // Set global proxy so run_on_main_thread() works from any thread
-    let _ = GLOBAL_PROXY.set(proxy.clone());
-    wake_for_work_queued_before_the_proxy();
+    install_global_proxy(&proxy);
 
     // Register video frame sink factory so video players deliver frames
     // through the RenderSurface compositing pipeline.
@@ -3358,8 +3372,12 @@ pub fn run_rinch_with_window_props_and_menu<F>(
     let proxy = event_loop.create_proxy();
 
     // Register main thread and cross-thread dispatcher for Signal::send()
-    rinch_core::register_main_thread();
+    // Dispatcher first: a worker sending between the two would otherwise be
+    // classified "not the main thread" with no dispatcher to take its write,
+    // and panic. In this order it is still unregistered there, and its write
+    // is queued through the dispatcher (#1541).
     rinch_core::set_cross_thread_dispatcher(dispatch_to_main_thread);
+    rinch_core::register_main_thread();
 
     rinch_core::set_on_signal_change(move || {
         send_native_event(RinchNativeEvent::ReRender);
@@ -3379,8 +3397,7 @@ pub fn run_rinch_with_window_props_and_menu<F>(
     NATIVE_PROXY.with(|p| *p.borrow_mut() = Some(proxy.clone()));
 
     // Set global proxy so run_on_main_thread() works from any thread
-    let _ = GLOBAL_PROXY.set(proxy.clone());
-    wake_for_work_queued_before_the_proxy();
+    install_global_proxy(&proxy);
 
     // Register video frame sink factory so video players deliver frames
     // through the RenderSurface compositing pipeline.
@@ -4609,34 +4626,24 @@ mod native_event_queue_tests {
         callback_queued_mid_wake_keeps_its_wake(true);
     }
 
-    /// Issue #1540: a cross-thread write whose
-    /// `ReRender` is consumed by the paint path's pre-paint
-    /// `drain_native_events` (RedrawRequested), not by `proxy_wake_up`, stays in
-    /// the main-thread queue — the paint drains native events only. The
-    /// dispatcher wakes only for a push onto an EMPTY main queue, so every
-    /// later `Signal::send`/`update_send` from any thread finds it non-empty
-    /// and asks for no wake: the window stops updating until something else
-    /// wakes the loop. Reachable at startup: a worker sending between
-    /// `set_cross_thread_dispatcher` and `GLOBAL_PROXY.set` (all of
-    /// `RinchRuntime::new`) queues with no proxy to wake, and the first paint
-    /// eats its `ReRender`.
-    #[test]
-    fn a_send_after_a_paint_consumed_the_rerender_still_wakes() {
+    /// Why every dispatch asks for a `ReRender` (#1540) rather than only a push
+    /// onto an empty main queue: the queue can be non-empty with no wake owed
+    /// for it — a closure pushed past the dispatcher (#1035's shape), or one
+    /// queued plainly before the dispatcher existed (#1541) — and under the
+    /// empty-queue rule every later sender, from any thread, then found it
+    /// non-empty and asked for nothing. Run through both senders the shell
+    /// installs: the dispatcher behind `Signal::send`, and the shell's own
+    /// `run_on_main_thread`.
+    fn a_dispatch_behind_an_unwoken_callback_still_wakes(send: fn()) {
         let _lock = crate::app::RERENDER_EVENTS_TEST_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
         rinch_core::drain_main_callbacks();
-        // A worker's write, dispatched as `Signal::update_send` dispatches it.
-        std::thread::spawn(|| dispatch_to_main_thread(Box::new(|| {})))
-            .join()
-            .unwrap();
-        // The paint path's pre-paint drain: native events only.
-        let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
-        // The next write from the worker.
-        std::thread::spawn(|| dispatch_to_main_thread(Box::new(|| {})))
-            .join()
-            .unwrap();
+        // A callback with no wake of its own.
+        rinch_core::queue_main_callback(Box::new(|| {}));
+        // The next write from a worker.
+        std::thread::spawn(send).join().unwrap();
         let wake_owed = rerenders(&NATIVE_EVENT_QUEUE.lock().unwrap().drain()) > 0;
         let still_queued = rinch_core::main_callbacks_pending();
         rinch_core::drain_main_callbacks();
@@ -4644,6 +4651,18 @@ mod native_event_queue_tests {
             wake_owed || !still_queued,
             "cross-thread writes stranded: queued, and no wake owed"
         );
+    }
+
+    #[test]
+    fn a_signal_send_behind_an_unwoken_callback_still_wakes() {
+        a_dispatch_behind_an_unwoken_callback_still_wakes(|| {
+            dispatch_to_main_thread(Box::new(|| {}))
+        });
+    }
+
+    #[test]
+    fn a_run_on_main_thread_behind_an_unwoken_callback_still_wakes() {
+        a_dispatch_behind_an_unwoken_callback_still_wakes(|| run_on_main_thread(|| {}));
     }
 
     /// Issue #1540's fix asks for a `ReRender` on every dispatch; the
@@ -4677,26 +4696,53 @@ mod native_event_queue_tests {
         rinch_core::drain_main_callbacks();
     }
 
-    /// Issues #1540 / #1541: work queued before `GLOBAL_PROXY` existed (a
-    /// worker's `Signal::send` ahead of the host, queued plainly) is owed a
-    /// `ReRender` once the proxy is set. No proxy exists in a unit test, so
-    /// this pins the owed event; the wake itself is `proxy.wake_up()`.
+    /// Issue #1541: a callback queued plainly before the dispatcher existed
+    /// is given a `ReRender`, and the wake is paid, once the proxy is set.
     #[test]
-    fn work_queued_before_the_proxy_is_owed_a_rerender() {
+    fn work_queued_before_the_proxy_is_owed_a_wake() {
         let _lock = crate::app::RERENDER_EVENTS_TEST_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
         // Queued plainly, as `dispatch_main_callback` does with no dispatcher.
         rinch_core::queue_main_callback(Box::new(|| {}));
-        wake_for_work_queued_before_the_proxy();
+        let mut woke = 0;
+        owe_startup_wake(|| woke += 1);
         let owed = rerenders(&NATIVE_EVENT_QUEUE.lock().unwrap().drain());
         let still_queued = rinch_core::main_callbacks_pending();
         rinch_core::drain_main_callbacks();
         assert!(
-            owed == 1 || !still_queued,
-            "queued before the proxy, and no wake owed"
+            (owed == 1 && woke == 1) || !still_queued,
+            "queued before the proxy, and no wake owed or paid (owed {owed}, woke {woke})"
         );
+    }
+
+    /// Issue #1540: a `ReRender` sent before the proxy existed (the mount's
+    /// signal-change callback, an early `Signal::send`) carried no wake and
+    /// holds the coalescing flag up, so every later `ReRender` coalesces into
+    /// it and wakes nothing. A window that paints drains it; a windowless or
+    /// hidden app never does. The wake owed once the proxy is set is what
+    /// clears it — and it is the `wake` call, not a further `ReRender`, that
+    /// does: one more `ReRender` coalesces into the stale one.
+    #[test]
+    fn a_rerender_queued_before_the_proxy_is_woken_for() {
+        let _lock = crate::app::RERENDER_EVENTS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+        rinch_core::drain_main_callbacks();
+        // The stale `ReRender`, flag up, nothing woken.
+        send_native_event(RinchNativeEvent::ReRender);
+        // A worker's write behind it: coalesced, no wake of its own.
+        std::thread::spawn(|| dispatch_to_main_thread(Box::new(|| {})))
+            .join()
+            .unwrap();
+        let mut woke = 0;
+        let owed = owe_startup_wake(|| woke += 1);
+        let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+        rinch_core::drain_main_callbacks();
+        assert!(owed, "a ReRender is waiting");
+        assert_eq!(woke, 1, "and the loop is woken for it");
     }
 
     /// Only `ReRender` coalesces: every other event is a distinct request, and
