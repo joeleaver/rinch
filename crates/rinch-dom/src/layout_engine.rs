@@ -1187,11 +1187,14 @@ impl RinchDocument {
             let visible_h = crate::paint::scrollbar::visible_extents(&self.tree, node_id).1;
             let max_scroll = (content_height - visible_h).max(0.0);
             if node.scroll_offset.1 > max_scroll {
-                clamps.push((node_id, max_scroll));
+                // On the device pixel grid, at or below the range (#1543),
+                // so the clamped offset is not clamped again next pass.
+                clamps.push((node_id, self.tree.snap_scroll_offset(max_scroll)));
             }
         }
         for (node_id, max_scroll) in clamps {
             self.tree.nodes[node_id].scroll_offset.1 = max_scroll;
+            self.tree.nodes[node_id].scroll_remainder = (0.0, 0.0);
             // An absolute box placed past this scroller summed the old
             // offset (`out_of_flow::replace_all`).
             self.tree.abs_late_moves = true;

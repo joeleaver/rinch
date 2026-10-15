@@ -206,6 +206,8 @@ mod right_press_focus_452_tests;
 #[cfg(all(test, software_shell))]
 mod screenshot_capture_tests;
 #[cfg(test)]
+mod scroll_device_snap_1543_tests;
+#[cfg(test)]
 mod scrollbar_corner_444_tests;
 #[cfg(test)]
 mod scrollbar_thumb_press_443_tests;
@@ -1171,6 +1173,7 @@ impl RinchApp {
         // (issue #211). No-op at the 1.0 default.
         doc.borrow_mut()
             .set_device_pixel_ratio(self.device_pixel_ratio as f32);
+        doc.borrow_mut().tree.device_scale = self.device_pixel_ratio;
 
         // Set up network image loader if feature enabled (replaces default FileImageLoader)
         #[cfg(all(feature = "image-network", not(target_arch = "wasm32")))]
@@ -1711,7 +1714,17 @@ impl RinchApp {
                 continue; // already visible
             };
 
-            let clamped = new_scroll.clamp(0.0, max_scroll);
+            let mut clamped = new_scroll.clamp(0.0, max_scroll);
+            // `mark_scrolled` floors the offset to the device pixel grid
+            // (#1543). Scrolling down to reveal a box, a floor would stop up to
+            // a device pixel short of its bottom edge, so round that one up —
+            // as far as the range allows, where the floor takes over again.
+            if clamped > current_scroll {
+                let s = d.tree.device_scale;
+                if s.is_finite() && s > 0.0 {
+                    clamped = ((clamped * s - 1e-6).ceil() / s).clamp(clamped, max_scroll);
+                }
+            }
             if let Some(node) = d.tree.nodes.get_mut(container_id) {
                 node.scroll_offset.1 = clamped;
             }
@@ -4719,7 +4732,16 @@ impl RinchApp {
     pub fn set_device_pixel_ratio(&mut self, dpr: f64) {
         self.device_pixel_ratio = dpr;
         if let Some(doc) = &self.doc {
-            doc.borrow_mut().set_device_pixel_ratio(dpr as f32);
+            let mut d = doc.borrow_mut();
+            let previous = d.tree.device_scale;
+            d.set_device_pixel_ratio(dpr as f32);
+            // The paint scale itself, not its `f32` rounding: scroll offsets
+            // snap to this grid (#1543), and one written on the old grid is
+            // put back on it. Nothing to do when the scale is unchanged.
+            d.tree.device_scale = dpr;
+            if previous != dpr {
+                d.tree.resnap_scroll_offsets();
+            }
         }
     }
 
@@ -8293,7 +8315,8 @@ mod horizontal_scrollbar_tests {
         // to read `(moved / 96) * 800` = 400, which moved the thumb 43.4px for
         // a 48px drag; the thumb lagged the pointer (#400).
         let thumb_travel = 96.0 - 20.0;
-        assert_eq!(top, moved as f64 * (800.0 - 100.0) / thumb_travel);
+        // Floored to the device pixel grid (scale 1 here), #1543.
+        assert_eq!(top, (moved as f64 * (800.0 - 100.0) / thumb_travel).floor());
         assert_eq!(
             *fired.borrow().last().expect("onscroll fired"),
             ScrollEvent::new(top, 0.0)

@@ -3987,6 +3987,29 @@ notch after a layout still finds the cache cold (498).
 `prune_tests::nested_scrollers_scrolled_one_at_a_time_hit_identically` and
 `a_resize_that_moves_percentage_boxes_drops_the_memo` are its oracles.
 
+**A scroll offset is kept on the device pixel grid** (#1543). `mark_scrolled`
+floors the offset just written to a multiple of `1 / NodeTree::device_scale`
+(`NodeTree::snap_scroll_offset`; the scale is set beside the Stylo device pixel
+ratio, `RinchApp::set_device_pixel_ratio`), before anything reads it, and
+layout's clamp writes the floored range end. So every reader — paint on both
+backends, hit testing, damage, `out_of_flow::replace_after_scroll`,
+`scroll_top()` — sees one offset, and scrolled content moves rigidly by whole
+device pixels, as in Chrome. Before, the software painter's per-glyph
+nearest-pixel placement (`skia_painter.rs`'s `CachedGlyph`) rounded each glyph
+and each baseline on its own at every fractional device position (125%/150%,
+or a fractional wheel delta at 100%), so text re-spaced while it scrolled. The
+wheel keeps what a delta leaves below the grid (`Node::scroll_remainder`), or a
+slow touchpad's sub-pixel deltas would floor back to where they started; every
+other writer zeroes it (`mark_scrolled`, the clamp, the `display: none` reset); a
+reveal that scrolls **down** (`apply_scroll_into_view`) rounds up instead,
+within the range, so the box is not left a fraction under the edge. The cost:
+`scroll_top()` answers the snapped value (a `set_scroll_top(10.33)` at 125%
+reads back 9.6), the last fraction of a device pixel of a range that is not on
+the grid is unreachable, and a display-scale change re-snaps every offset
+(`NodeTree::resnap_scroll_offsets`, from `RinchApp::set_device_pixel_ratio`). Pins:
+`rinch-dom/tests/scroll_device_snap_1543_tests.rs` (rigid shift, pixel by
+pixel, at 100/125/150%), `app/scroll_device_snap_1543_tests.rs`.
+
 **Two behaviour changes that follow from the rules, are CSS-correct, and will
 still surprise someone.**
 

@@ -152,7 +152,8 @@ fn thumb_press_grabs_in_place(vertical: bool) {
     // And the drag then runs 1:1 from where the thumb was, not from where a
     // jump would have put it.
     move_to(&mut app, on_bar(vertical, along + 10.0));
-    let expected = t.scroll_for_drag(s, 10.0);
+    // Floored to the device pixel grid (scale 1 here), #1543.
+    let expected = t.scroll_for_drag(s, 10.0).floor();
     let got = scroll(&app, id, vertical);
     assert!(
         (got - expected).abs() < 1e-3,
@@ -192,10 +193,11 @@ fn pressing_the_empty_track_still_jumps() {
             press(&mut app, on_bar(vertical, along));
             assert!(app.scrollbar_drag.is_some());
             let got = scroll(&app, id, vertical);
+            // Floored to the device pixel grid (scale 1 here), #1543.
             assert!(
-                (got - t.scroll_for_click(along)).abs() < 1e-3,
+                (got - t.scroll_for_click(along).floor()).abs() < 1e-3,
                 "a track press jumps to {} (vertical {vertical}, after {after_thumb}), got {got}",
-                t.scroll_for_click(along)
+                t.scroll_for_click(along).floor()
             );
             assert!((got - s).abs() > 1.0, "and that is a move");
         }
@@ -217,7 +219,8 @@ fn the_track_the_thumb_scrolled_away_from_jumps() {
     );
     press(&mut app, on_bar(true, along));
     assert!(
-        (scroll(&app, id, true) - t.scroll_for_click(along)).abs() < 1e-3,
+        // Floored to the device pixel grid (scale 1 here), #1543.
+        (scroll(&app, id, true) - t.scroll_for_click(along).floor()).abs() < 1e-3,
         "the vacated track jumps"
     );
 }

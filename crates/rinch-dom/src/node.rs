@@ -871,8 +871,14 @@ pub struct Node {
     pub value_dirty: bool,
     /// Dirty flags for incremental updates.
     pub dirty: DirtyFlags,
-    /// Scroll offset (x, y).
+    /// Scroll offset (x, y), on the device pixel grid once
+    /// [`NodeTree::mark_scrolled`] has seen it (#1543).
     pub scroll_offset: (f64, f64),
+    /// The part of the last wheel scroll that fell below the device pixel
+    /// grid (x, y), under one device pixel. The wheel adds it back before
+    /// its next delta, so a run of sub-pixel deltas (a slow touchpad) still
+    /// adds up rather than snapping back to where it started (#1543).
+    pub scroll_remainder: (f64, f64),
     /// Taffy layout node ID.
     pub taffy_id: Option<taffy::NodeId>,
     /// Computed layout result.
@@ -1484,6 +1490,7 @@ impl Node {
             value_dirty: false,
             dirty: DirtyFlags::empty(),
             scroll_offset: (0.0, 0.0),
+            scroll_remainder: (0.0, 0.0),
             taffy_id: None,
             layout: LayoutResult::default(),
             natural_inline_size: (0.0, 0.0),
@@ -1559,6 +1566,7 @@ impl Node {
             value_dirty: false,
             dirty: DirtyFlags::STYLE | DirtyFlags::LAYOUT,
             scroll_offset: (0.0, 0.0),
+            scroll_remainder: (0.0, 0.0),
             taffy_id: None,
             layout: LayoutResult::default(),
             natural_inline_size: (0.0, 0.0),
@@ -1633,6 +1641,7 @@ impl Node {
             value_dirty: false,
             dirty: DirtyFlags::LAYOUT,
             scroll_offset: (0.0, 0.0),
+            scroll_remainder: (0.0, 0.0),
             taffy_id: None,
             layout: LayoutResult::default(),
             natural_inline_size: (0.0, 0.0),
@@ -1705,6 +1714,7 @@ impl Node {
             value_dirty: false,
             dirty: DirtyFlags::empty(),
             scroll_offset: (0.0, 0.0),
+            scroll_remainder: (0.0, 0.0),
             taffy_id: None,
             layout: LayoutResult::default(),
             natural_inline_size: (0.0, 0.0),
@@ -3039,6 +3049,12 @@ pub struct NodeTree {
     /// here — coalesced per node, last value wins, since layout may resolve
     /// more than once per frame — for the facade to drain after layout.
     pub pending_scroll_clamps: Vec<(RawNodeId, f64)>,
+    /// The device pixels per CSS px this document is painted at — the
+    /// display scale, set with the Stylo device pixel ratio
+    /// (`RinchDocument::set_device_pixel_ratio`). A scroll offset is kept on
+    /// this grid ([`Self::snap_scroll_offset`], #1543), so scrolled content
+    /// moves by whole device pixels.
+    pub device_scale: f64,
     /// Scale factor for text rendering (1.0 on desktop, >1.0 on HiDPI/mobile).
     /// Applied to Parley font sizes so glyphs rasterize at physical pixel resolution.
     pub text_scale: f32,
@@ -3233,6 +3249,7 @@ impl NodeTree {
             scroll_into_view_requests: Vec::new(),
             scroll_to_fraction_requests: Vec::new(),
             pending_scroll_clamps: Vec::new(),
+            device_scale: 1.0,
             text_scale: 1.0,
             taffy_attach_faults: 0,
         }
@@ -3390,6 +3407,42 @@ impl NodeTree {
         self.paint_dirty_nodes.push(id);
     }
 
+    /// `v`, a scroll offset in CSS px, on this document's device pixel grid
+    /// (#1543): the nearest multiple of `1 / device_scale` **at or below**
+    /// it, so a snapped offset never passes the scroll range `v` was clamped
+    /// to.
+    ///
+    /// The software painter places each glyph at a whole device pixel on its
+    /// own, so content scrolled to a fractional device position re-spaced its
+    /// glyphs and lines at every scroll step. On the grid, a scroll is a
+    /// rigid move by whole device pixels, as in Chrome.
+    ///
+    /// Idempotent: a value already on the grid (within floating error) comes
+    /// back unchanged rather than one pixel lower.
+    pub fn snap_scroll_offset(&self, v: f64) -> f64 {
+        snap_to_device(v, self.device_scale)
+    }
+
+    /// Put every scroll offset back on the grid after `device_scale`
+    /// changed (a window moved to a display of another scale), through
+    /// [`Self::mark_scrolled`] for each one that moves. One pass over the
+    /// nodes, on a scale change only.
+    pub fn resnap_scroll_offsets(&mut self) {
+        let scale = self.device_scale;
+        let moved: Vec<RawNodeId> = self
+            .nodes
+            .iter()
+            .filter(|(_, n)| {
+                let (x, y) = n.scroll_offset;
+                snap_to_device(x, scale) != x || snap_to_device(y, scale) != y
+            })
+            .map(|(id, _)| id)
+            .collect();
+        for id in moved {
+            self.mark_scrolled(id);
+        }
+    }
+
     /// `id`'s `scroll_offset` has just been written, and nothing else about
     /// it: mark it paint-dirty (the whole container repaints, as its content
     /// and its scrollbar thumb both moved) and tell the hit cache.
@@ -3400,8 +3453,23 @@ impl NodeTree {
     /// scroll-offset write that changes nothing else should come through
     /// here; one that changes more (a layout, a style) must invalidate in
     /// full as well.
+    ///
+    /// It also puts the offset just written on the device pixel grid
+    /// ([`Self::snap_scroll_offset`], #1543), before anything below reads it.
+    /// So every reader — paint on both backends, hit testing, damage, the
+    /// absolute boxes placed past the scroller, `scroll_top()` — sees one
+    /// snapped offset, and scrolled content moves rigidly.
     pub fn mark_scrolled(&mut self, id: RawNodeId) {
+        let scale = self.device_scale;
         if let Some(node) = self.nodes.get_mut(id) {
+            node.scroll_offset = (
+                snap_to_device(node.scroll_offset.0, scale),
+                snap_to_device(node.scroll_offset.1, scale),
+            );
+            // A writer that is not the wheel chose this offset: the
+            // wheel's sub-pixel remainder is not part of it (the wheel
+            // writes its own back after this call).
+            node.scroll_remainder = (0.0, 0.0);
             node.dirty.insert(DirtyFlags::PAINT);
             // Per-axis (#535): `flow_extent` folds children into whichever
             // axis does not clip, so it reads this node's own scroll offset
@@ -3860,4 +3928,18 @@ impl PaintedState {
             order: crate::stacking::PaintOrderKey::of(node),
         }
     }
+}
+
+/// [`NodeTree::snap_scroll_offset`] with the scale passed in.
+///
+/// Floors to the grid with a millionth of a device pixel of slack, so an
+/// offset already on it (whose product with `scale` lands a hair below an
+/// integer) is not dropped a pixel; `min(v)` keeps the answer at or below `v`
+/// whatever that slack does. A scale that is not a positive finite number
+/// leaves `v` alone.
+pub fn snap_to_device(v: f64, scale: f64) -> f64 {
+    if !v.is_finite() || !scale.is_finite() || scale <= 0.0 {
+        return v;
+    }
+    ((v * scale + 1e-6).floor() / scale).min(v)
 }
