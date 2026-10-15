@@ -1381,6 +1381,7 @@ impl RinchDocument {
                 && !matches!(new_style.display, crate::computed_style::DisplayValue::None)
             {
                 self.tree.nodes[node_id].scroll_offset = (0.0, 0.0);
+                self.tree.nodes[node_id].scroll_remainder = (0.0, 0.0);
 
                 // …and a subtree that starts being rendered again gets its
                 // animations back, from t=0 (issue #747). This node's own were

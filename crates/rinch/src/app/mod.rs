@@ -4733,10 +4733,15 @@ impl RinchApp {
         self.device_pixel_ratio = dpr;
         if let Some(doc) = &self.doc {
             let mut d = doc.borrow_mut();
+            let previous = d.tree.device_scale;
             d.set_device_pixel_ratio(dpr as f32);
             // The paint scale itself, not its `f32` rounding: scroll offsets
-            // snap to this grid (#1543).
+            // snap to this grid (#1543), and one written on the old grid is
+            // put back on it. Nothing to do when the scale is unchanged.
             d.tree.device_scale = dpr;
+            if previous != dpr {
+                d.tree.resnap_scroll_offsets();
+            }
         }
     }
 

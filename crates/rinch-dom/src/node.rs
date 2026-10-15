@@ -3423,6 +3423,26 @@ impl NodeTree {
         snap_to_device(v, self.device_scale)
     }
 
+    /// Put every scroll offset back on the grid after `device_scale`
+    /// changed (a window moved to a display of another scale), through
+    /// [`Self::mark_scrolled`] for each one that moves. One pass over the
+    /// nodes, on a scale change only.
+    pub fn resnap_scroll_offsets(&mut self) {
+        let scale = self.device_scale;
+        let moved: Vec<RawNodeId> = self
+            .nodes
+            .iter()
+            .filter(|(_, n)| {
+                let (x, y) = n.scroll_offset;
+                snap_to_device(x, scale) != x || snap_to_device(y, scale) != y
+            })
+            .map(|(id, _)| id)
+            .collect();
+        for id in moved {
+            self.mark_scrolled(id);
+        }
+    }
+
     /// `id`'s `scroll_offset` has just been written, and nothing else about
     /// it: mark it paint-dirty (the whole container repaints, as its content
     /// and its scrollbar thumb both moved) and tell the hit cache.
@@ -3446,6 +3466,10 @@ impl NodeTree {
                 snap_to_device(node.scroll_offset.0, scale),
                 snap_to_device(node.scroll_offset.1, scale),
             );
+            // A writer that is not the wheel chose this offset: the
+            // wheel's sub-pixel remainder is not part of it (the wheel
+            // writes its own back after this call).
+            node.scroll_remainder = (0.0, 0.0);
             node.dirty.insert(DirtyFlags::PAINT);
             // Per-axis (#535): `flow_extent` folds children into whichever
             // axis does not clip, so it reads this node's own scroll offset

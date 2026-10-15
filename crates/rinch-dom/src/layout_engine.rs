@@ -1194,6 +1194,7 @@ impl RinchDocument {
         }
         for (node_id, max_scroll) in clamps {
             self.tree.nodes[node_id].scroll_offset.1 = max_scroll;
+            self.tree.nodes[node_id].scroll_remainder = (0.0, 0.0);
             // An absolute box placed past this scroller summed the old
             // offset (`out_of_flow::replace_all`).
             self.tree.abs_late_moves = true;

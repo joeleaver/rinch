@@ -1323,12 +1323,9 @@ impl RinchApp {
                                 .tree
                                 .nodes
                                 .get(scroll_node_id)
-                                .map_or(0.0, |n| n.scroll_remainder.1);
-                            let precise = (old_y + remainder - delta_y).clamp(0.0, max_scroll);
+                                .map_or((0.0, 0.0), |n| n.scroll_remainder);
+                            let precise = (old_y + remainder.1 - delta_y).clamp(0.0, max_scroll);
                             let new_y = doc_mut.tree.snap_scroll_offset(precise);
-                            if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
-                                node.scroll_remainder.1 = precise - new_y;
-                            }
                             if new_y != old_y {
                                 if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
                                     node.scroll_offset.1 = new_y;
@@ -1339,6 +1336,11 @@ impl RinchApp {
                                 if let Some(hid) = handler_id {
                                     scrolled.push((scroll_node_id, hid));
                                 }
+                            }
+                            // After `mark_scrolled`, which zeroes the remainder
+                            // every other writer leaves stale.
+                            if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
+                                node.scroll_remainder = (remainder.0, precise - new_y);
                             }
                         }
 
@@ -1375,12 +1377,18 @@ impl RinchApp {
                                     - delta_x)
                                     .clamp(0.0, max_scroll);
                                 let new_x = rinch_dom::node::snap_to_device(precise, device_scale);
-                                node.scroll_remainder.0 = precise - new_x;
+                                let remainder = (precise - new_x, node.scroll_remainder.1);
                                 if new_x != node.scroll_offset.0 {
                                     node.scroll_offset.0 = new_x;
                                     doc_mut.tree.mark_scrolled(scroll_node_id);
                                     self.scene_dirty = true;
                                     moved = true;
+                                }
+                                // After `mark_scrolled`, which zeroes both:
+                                // this axis keeps its new remainder, and the
+                                // vertical half's, set this event, is kept.
+                                if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
+                                    node.scroll_remainder = remainder;
                                 }
                             }
                             if moved
