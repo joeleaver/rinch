@@ -1215,14 +1215,41 @@ layout pass. `run_on_main_thread` and everything riding it (`set_timeout`,
 lives in `rinch-core` (`queue_main_callback` / `drain_main_callbacks`) so the
 desktop shell, the Android loop and embed all share one; the shell's dispatcher
 adds the "wake the event loop" side effect that embed has no use for. That wake
-is coalesced (one pending `ReRender` at a time), so a callback queued between a
-wake's callback drain and its native-event drain would fold into the wake being
-served; the wake therefore asks `rinch_core::main_callbacks_pending()` after the
-native drain and owes itself another (`drain_wake_queues`, issue #988).
-Because the wake is coalesced on the queue, **library code must not push onto
-it with a bare `queue_main_callback`** where a host may be waking: that closure
-gets no wake, and the next sender from any thread finds the queue non-empty and
-asks for none either (issue #1035 — a video sink dropped off-thread did this).
+is coalesced (one pending `ReRender` at a time, in `NativeEventQueue`, re-armed
+by every native drain), so a callback queued between a wake's callback drain
+and its native-event drain would fold into the wake being served; the wake
+therefore asks `rinch_core::main_callbacks_pending()` after the native drain
+and owes itself another (`drain_wake_queues`, issue #988). **A `ReRender` sent
+before `GLOBAL_PROXY` exists carries no wake** (#1540) — the mount's
+signal-change callback sends one, and so does a worker's early `send` — and it
+holds that coalescing flag up, so every later `ReRender` coalesces into it and
+wakes nothing. A window that paints drains it at its first frame; a windowless
+or hidden app (tray-only, started hidden) never did, and stopped updating.
+`install_global_proxy` pays the owed wake right after setting the proxy
+(`owe_startup_wake`). Every dispatch also asks for its `ReRender` rather than
+only a push onto an *empty* main queue: the queue can be non-empty with no wake
+owed for it (a closure pushed past the dispatcher, or queued before the
+dispatcher existed), and under the empty-queue rule every later sender asked
+for nothing. Hosts install the dispatcher **before** registering the main
+thread: in the other order a worker sending in between found a main thread and
+no dispatcher, and panicked. **Library code
+must not push onto the queue with a bare `queue_main_callback`** where a host
+may be waking: that closure gets no wake of its own and waits for the next
+sender's (issue #1035 — a video sink dropped off-thread did this; before #1540
+the next sender asked for none either).
+**A worker that sends before the host registers its main thread** (spawned in
+`main()` ahead of `App::run`) has its `send`/`update_send` queued through
+`dispatch_main_callback` and applied once the host starts (#1541): with no main
+thread registered, a thread whose signal store has never allocated cannot own
+the signal (`reactive::unregistered_write_is_local`). It used to take the
+main-thread branch (`is_main_thread()` answers `true` while unregistered) and
+write its own empty store — dropped. The queued write is applied only when
+drained on the registered main thread: signal ids alias across thread-local
+stores, so a drain on any other thread (a second test, a host-less helper)
+drops it rather than writing a stranger's signal. A thread that has allocated signals keeps
+applying in place, which is the web's and a test's main thread; a worker that
+creates signals of its own before the host starts still writes its own store.
+Only the unregistered case pays the store check.
 Use `rinch_core::dispatch_main_callback`, which goes through the registered
 dispatcher (or queues plainly when there is none) and, unlike
 `run_on_main_thread`, does not panic for a missing dispatcher and never runs

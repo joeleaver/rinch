@@ -1439,9 +1439,9 @@ fn full_repaint_gpu() {
 /// a process-wide atomic, which the runtime's dispatcher bumps
 /// (`rinch_runtime::send_native_event_counts_one_rerender_per_drain` pins the
 /// bump). This pins the fold: three events queued between two frames reach the
-/// frame, exactly. The atomic is process-wide, so the only two tests that
-/// write it — this one and `send_native_event_counts_one_rerender_per_drain` —
-/// both hold `RERENDER_EVENTS_TEST_LOCK`.
+/// frame, exactly. The atomic is process-wide, so every test that writes it —
+/// this one and the `rinch_runtime` queue tests that send a `ReRender` — holds
+/// `RERENDER_EVENTS_TEST_LOCK`.
 ///
 /// `time_present_ns` has no such check. It is added only by the desktop and
 /// Android runtimes' present, after a real window's `present_pixels` or GPU

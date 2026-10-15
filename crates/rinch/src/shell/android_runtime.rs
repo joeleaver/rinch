@@ -148,8 +148,10 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
             .with_tag("rinch"),
     );
 
-    rinch_core::register_main_thread();
+    // Dispatcher first, as on desktop: a worker send between the two would
+    // otherwise find a main thread registered and no dispatcher, and panic.
     rinch_core::set_cross_thread_dispatcher(dispatch_to_main_thread);
+    rinch_core::register_main_thread();
     rinch_core::set_on_signal_change(|| {
         REDRAW_PENDING.store(true, Ordering::Release);
     });

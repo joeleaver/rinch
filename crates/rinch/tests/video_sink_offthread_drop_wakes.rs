@@ -11,8 +11,9 @@
 //! `Signal::send`, from any thread — finds the queue non-empty, asks for no
 //! wake either, and waits behind it for an unrelated event.
 //!
-//! The dispatcher here is the desktop shell's rule (`dispatch_to_main_thread`
-//! in `shell/rinch_runtime.rs`: queue, and wake when the queue was empty),
+//! The dispatcher here is the desktop shell's rule as it was until #1540
+//! (`dispatch_to_main_thread` in `shell/rinch_runtime.rs`: queue, and wake when
+//! the queue was empty — the strictest host for this invariant),
 //! counting its wakes instead of posting a winit `ReRender`. Its own binary,
 //! because it registers the process-global dispatcher and main thread.
 #![cfg(feature = "desktop")]

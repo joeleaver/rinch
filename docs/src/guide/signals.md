@@ -135,6 +135,12 @@ std::thread::spawn(move || {
 
 `send()` requires `T: Send`. `update_send()` requires the closure to be `Send + 'static`.
 
+A worker may start sending before the app does — spawned in `main()` ahead of
+`App::run()`. Such a write is queued and applied once the app has started
+(issue #1541); it used to be dropped. That holds for a thread that has created
+no signals of its own: rinch tells the thread that owns a signal from a worker
+by whether it has ever created one, until the host registers its main thread.
+
 ## Best Practices
 
 **Keep signals focused.** One signal per concern, not one giant state bag:

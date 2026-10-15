@@ -203,8 +203,10 @@ impl RinchContext {
         // the shell's dispatcher, which additionally wakes the winit event loop.
         // Both push onto the same `rinch-core` queue, so either dispatcher feeds
         // both drain sites.
-        rinch_core::register_main_thread();
+        // Dispatcher first: a worker send between the two would otherwise
+        // find a main thread registered and no dispatcher, and panic.
         rinch_core::set_cross_thread_dispatcher_if_unset(queue_on_main_thread);
+        rinch_core::register_main_thread();
 
         // Subscribe to signal changes so the game loop can detect dirty state.
         // A guard-based subscription (not the legacy single slot): each context
