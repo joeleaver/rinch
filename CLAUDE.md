@@ -4545,7 +4545,26 @@ let tray = TrayIconBuilder::new()
   presented (X11: created unmapped, destroyed). `can_create_surfaces` creates a
   window only while no document is mounted, so the root is never mounted twice;
   `show_current_window` re-creates the OS window over the same document.
-  `examples/tray-only`.
+  `examples/tray-only`. **On macOS `visible: false` still leaves a Dock icon**:
+  pair it with `App::activation_policy(ActivationPolicy::Accessory)` (#1528,
+  `shell/activation.rs`, handed to winit's
+  `EventLoopBuilderExtMacOS::with_activation_policy` when the event loop is
+  built). Unset (the default) leaves it to winit: `Regular` unbundled, the
+  `Info.plist`'s `LSUIElement` in a bundle. A no-op on Windows and Linux.
+  `visible: false` does not imply `Accessory`, deliberately.
+- **The item id is the app's own** (#1529): ksni's `Tray::id` was the constant
+  `"rinch-app"` for every app, so a panel that keys per-item settings on the
+  `Id` treated all rinch apps as one. It is now `tray_item_id`:
+  `TrayIconBuilder::with_id(..)`, else the `WindowProps::app_id` the running
+  app declared (`rinch_runtime::declared_app_id`, recorded when the event loop
+  starts — so only for a tray built after `App::run` began), else the
+  executable's file name via `resolved_app_id`, the Wayland `app_id`'s
+  derivation. An app declaring an `app_id` and building its tray in `main`
+  passes the same string to `with_id`. `with_id` is unused off Linux: Windows
+  keys a notification icon by executable + `uID` (tray-icon sets no GUID) and
+  macOS a status item by the app, and tray-icon's `TrayIconId` is an
+  in-process counter, so neither had the shared-constant problem. Pin:
+  `tray::tests::the_tray_item_id_is_the_apps_own`.
 - **Dropping the `TrayIcon` removes the icon, then releases its callbacks** (#377).
   On Linux, ksni's own `Handle` does not stop the service when dropped (its loop
   ignores a closed request channel), so `TrayIcon`'s `Drop` sends ksni's

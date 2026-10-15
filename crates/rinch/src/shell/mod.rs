@@ -1,5 +1,7 @@
 //! Shell module - window management and event loop.
 
+#[cfg(feature = "desktop")]
+pub mod activation;
 #[cfg(feature = "gpu")]
 pub(crate) mod compositor;
 #[cfg(feature = "gpu")]
