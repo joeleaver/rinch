@@ -77,18 +77,85 @@ impl Backend for FreedesktopBackend {
 }
 
 /// Server id ↔ rinch id, shared with the signal tasks.
+///
+/// A server id means something only to the server that issued it: a
+/// notification server that restarts (plasmashell, dunst, mako) numbers from
+/// the start again, and its ids then name other notifications. So every
+/// mapping records the **unique bus name** of the server that answered its
+/// `Notify`, a signal is matched on (sender, id), and when the well-known name
+/// changes owner every mapping of another owner is ended
+/// ([`Ids::owner_changed`]): those notifications went with their server.
 #[derive(Default)]
 struct Ids {
-    by_server: HashMap<u32, u64>,
-    by_local: HashMap<u64, u32>,
+    by_server: HashMap<(String, u32), u64>,
+    by_local: HashMap<u64, (String, u32)>,
     /// Signals for a server id not (yet) mapped: a server may close a
     /// notification before its `Notify` reply has been read (one that drops
     /// everything while "do not disturb" is on). Signals for other apps'
     /// notifications land here too, so it is bounded.
-    early: Vec<(u32, Event)>,
+    early: Vec<((String, u32), Event)>,
 }
 
 const EARLY_CAP: usize = 32;
+
+impl Ids {
+    /// The rinch id a signal from `sender` about `server` is for, forgetting
+    /// the pair (a click or a close ends a notification). An unknown pair
+    /// keeps `ev` for [`Ids::insert`].
+    fn take(&mut self, sender: &str, server: u32, ev: Event) -> Option<u64> {
+        let key = (sender.to_string(), server);
+        let Some(local) = self.by_server.remove(&key) else {
+            if self.early.len() == EARLY_CAP {
+                self.early.remove(0);
+            }
+            self.early.push((key, ev));
+            return None;
+        };
+        self.by_local.remove(&local);
+        Some(local)
+    }
+
+    /// Map `(sender, server)` to `local`, or answer the event that arrived
+    /// first. A pair still mapped to an older notification means that one is
+    /// gone (its id was reused); it is answered in `stale`.
+    fn insert(
+        &mut self,
+        sender: &str,
+        server: u32,
+        local: u64,
+        stale: &mut Vec<u64>,
+    ) -> Option<Event> {
+        let key = (sender.to_string(), server);
+        if let Some(i) = self.early.iter().position(|(k, _)| *k == key) {
+            return Some(self.early.remove(i).1);
+        }
+        if let Some(old) = self.by_server.insert(key.clone(), local) {
+            self.by_local.remove(&old);
+            stale.push(old);
+        }
+        self.by_local.insert(local, key);
+        None
+    }
+
+    /// The well-known name now belongs to `owner` (`None`: nobody). Every
+    /// notification mapped under another owner ended with its server:
+    /// forget it and answer it.
+    fn owner_changed(&mut self, owner: Option<&str>) -> Vec<u64> {
+        let gone: Vec<u64> = self
+            .by_local
+            .iter()
+            .filter(|(_, (o, _))| Some(o.as_str()) != owner)
+            .map(|(l, _)| *l)
+            .collect();
+        for l in &gone {
+            if let Some(key) = self.by_local.remove(l) {
+                self.by_server.remove(&key);
+            }
+        }
+        self.early.retain(|((o, _), _)| Some(o.as_str()) == owner);
+        gone
+    }
+}
 
 struct Live {
     proxy: Proxy<'static>,
@@ -101,8 +168,8 @@ async fn connect(address: Option<&str>) -> zbus::Result<Connection> {
     }
 }
 
-/// Connect, and start the two tasks that turn the server's signals into
-/// [`Event`]s.
+/// Connect, and start the tasks that turn the server's signals — and its
+/// going away — into [`Event`]s.
 async fn open(
     address: Option<&str>,
     ids: &Arc<Mutex<Ids>>,
@@ -130,13 +197,17 @@ async fn open(
                 let Ok((server, key)) = msg.body().deserialize::<(u32, String)>() else {
                     continue;
                 };
+                let Some(sender) = sender_of(&msg) else {
+                    continue;
+                };
                 if key != DEFAULT_ACTION {
                     continue;
                 }
-                let local = ids
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .take(server, Event::Clicked);
+                let local = ids.lock().unwrap_or_else(|p| p.into_inner()).take(
+                    &sender,
+                    server,
+                    Event::Clicked,
+                );
                 if let Some(local) = local {
                     sink(local, Event::Clicked);
                 }
@@ -151,13 +222,35 @@ async fn open(
                 let Ok((server, reason)) = msg.body().deserialize::<(u32, u32)>() else {
                     continue;
                 };
+                let Some(sender) = sender_of(&msg) else {
+                    continue;
+                };
                 let ev = Event::Dismissed(dismiss_reason(reason));
-                let local = ids
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .take(server, ev.clone());
+                let local =
+                    ids.lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .take(&sender, server, ev.clone());
                 if let Some(local) = local {
                     sink(local, ev);
+                }
+            }
+        });
+    }
+    let mut owners = proxy
+        .receive_owner_changed()
+        .await
+        .map_err(|e| NotificationError::Platform(e.to_string()))?;
+    {
+        let ids = ids.clone();
+        let sink = sink.clone();
+        tokio::spawn(async move {
+            while let Some(owner) = owners.next().await {
+                let gone = ids
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .owner_changed(owner.as_ref().map(|o| o.as_str()));
+                for local in gone {
+                    sink(local, Event::Dismissed(DismissReason::Unknown));
                 }
             }
         });
@@ -165,31 +258,17 @@ async fn open(
     Ok(Live { proxy })
 }
 
-impl Ids {
-    /// The rinch id a signal about `server` is for, forgetting the pair (a
-    /// click or a close ends a notification). An unknown id keeps `ev` for
-    /// [`Ids::insert`].
-    fn take(&mut self, server: u32, ev: Event) -> Option<u64> {
-        let Some(local) = self.by_server.remove(&server) else {
-            if self.early.len() == EARLY_CAP {
-                self.early.remove(0);
-            }
-            self.early.push((server, ev));
-            return None;
-        };
-        self.by_local.remove(&local);
-        Some(local)
-    }
+/// The unique name that owns the notification service now.
+async fn current_owner(live: &Live) -> Option<String> {
+    let dbus = zbus::fdo::DBusProxy::new(live.proxy.connection())
+        .await
+        .ok()?;
+    let name = zbus::names::BusName::try_from(DEST).ok()?;
+    dbus.get_name_owner(name).await.ok().map(|o| o.to_string())
+}
 
-    /// Map `server` to `local`, or answer the event that arrived first.
-    fn insert(&mut self, server: u32, local: u64) -> Option<Event> {
-        if let Some(i) = self.early.iter().position(|(s, _)| *s == server) {
-            return Some(self.early.remove(i).1);
-        }
-        self.by_server.insert(server, local);
-        self.by_local.insert(local, server);
-        None
-    }
+fn sender_of(msg: &zbus::Message) -> Option<String> {
+    msg.header().sender().map(|s| s.to_string())
 }
 
 /// The specification's `NotificationClosed` reasons.
@@ -225,11 +304,15 @@ fn method_error(e: zbus::Error) -> NotificationError {
                 "no notification server ({DEST}) on the session bus"
             ))
         }
+        zbus::Error::InputOutput(_) => {
+            NotificationError::NoService(format!("the D-Bus session bus went away: {e}"))
+        }
         _ => NotificationError::Platform(e.to_string()),
     }
 }
 
-async fn notify(live: &Live, req: &Request) -> zbus::Result<u32> {
+/// `Notify`: the server's id, and the unique name of the server that issued it.
+async fn notify(live: &Live, req: &Request) -> zbus::Result<(String, u32)> {
     let actions: Vec<&str> = if req.wants_click {
         // The label is what a server that draws buttons shows; the default
         // action is usually a click on the body and its label is not drawn.
@@ -243,8 +326,9 @@ async fn notify(live: &Live, req: &Request) -> zbus::Result<u32> {
     if let Some(image) = &image {
         hints.insert("image-path", Value::from(image.as_str()));
     }
-    live.proxy
-        .call(
+    let reply = live
+        .proxy
+        .call_method(
             "Notify",
             &(
                 req.app_name.as_str(),
@@ -257,7 +341,10 @@ async fn notify(live: &Live, req: &Request) -> zbus::Result<u32> {
                 -1i32,
             ),
         )
-        .await
+        .await?;
+    let id: u32 = reply.body().deserialize()?;
+    let sender = sender_of(&reply).unwrap_or_default();
+    Ok((sender, id))
 }
 
 async fn run(address: Option<String>, mut rx: UnboundedReceiver<Cmd>, sink: Sink) {
@@ -277,11 +364,15 @@ async fn run(address: Option<String>, mut rx: UnboundedReceiver<Cmd>, sink: Sink
                 }
                 let Some(l) = &live else { continue };
                 match notify(l, &req).await {
-                    Ok(server) => {
+                    Ok((sender, server)) => {
+                        let mut stale = Vec::new();
                         let early = ids
                             .lock()
                             .unwrap_or_else(|p| p.into_inner())
-                            .insert(server, req.id);
+                            .insert(&sender, server, req.id, &mut stale);
+                        for old in stale {
+                            sink(old, Event::Dismissed(DismissReason::Unknown));
+                        }
                         if let Some(ev) = early {
                             sink(req.id, ev);
                         }
@@ -296,20 +387,73 @@ async fn run(address: Option<String>, mut rx: UnboundedReceiver<Cmd>, sink: Sink
                 }
             }
             Cmd::Close(local) => {
-                let server = ids
+                let mapped = ids
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .by_local
                     .get(&local)
-                    .copied();
-                if let (Some(server), Some(l)) = (server, &live) {
-                    // The server answers with NotificationClosed(reason 3).
-                    let _ = l
-                        .proxy
-                        .call::<_, _, ()>("CloseNotification", &(server,))
-                        .await;
+                    .cloned();
+                let (Some((owner, server)), Some(l)) = (mapped, &live) else {
+                    continue;
+                };
+                // Only to the server that issued the id: after a restart the
+                // same number names someone else's notification.
+                let now = current_owner(l).await;
+                if now.as_deref() != Some(owner.as_str()) {
+                    let gone = ids
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .owner_changed(now.as_deref());
+                    for g in gone {
+                        sink(g, Event::Dismissed(DismissReason::Unknown));
+                    }
+                    continue;
                 }
+                // The server answers with NotificationClosed(reason 3).
+                let _ = l
+                    .proxy
+                    .call::<_, _, ()>("CloseNotification", &(server,))
+                    .await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod ids_tests {
+    use super::*;
+
+    #[test]
+    fn a_reused_id_from_the_same_server_ends_the_old_mapping() {
+        let mut ids = Ids::default();
+        let mut stale = Vec::new();
+        assert_eq!(ids.insert(":1.5", 41, 7, &mut stale), None);
+        assert_eq!(ids.insert(":1.5", 41, 8, &mut stale), None);
+        assert_eq!(stale, vec![7]);
+        assert_eq!(ids.by_local.get(&7), None, "close(7) must not reach 8's id");
+        assert_eq!(ids.take(":1.5", 41, Event::Clicked), Some(8));
+    }
+
+    #[test]
+    fn a_signal_from_another_owner_is_not_ours() {
+        let mut ids = Ids::default();
+        let mut stale = Vec::new();
+        ids.insert(":1.5", 41, 7, &mut stale);
+        assert_eq!(ids.take(":1.9", 41, Event::Clicked), None);
+        assert_eq!(ids.take(":1.5", 41, Event::Clicked), Some(7));
+    }
+
+    #[test]
+    fn an_owner_change_ends_every_other_owners_notifications() {
+        let mut ids = Ids::default();
+        let mut stale = Vec::new();
+        ids.insert(":1.5", 41, 7, &mut stale);
+        ids.insert(":1.5", 42, 8, &mut stale);
+        ids.insert(":1.9", 41, 9, &mut stale);
+        let mut gone = ids.owner_changed(Some(":1.9"));
+        gone.sort();
+        assert_eq!(gone, vec![7, 8]);
+        assert_eq!(ids.owner_changed(None), vec![9]);
+        assert!(ids.by_local.is_empty() && ids.by_server.is_empty());
     }
 }

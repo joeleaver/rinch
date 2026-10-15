@@ -12,7 +12,10 @@
 //! - "Play sounds" is a **checkbox** item and "Fast" / "Accurate" a **radio**
 //!   group, each bound to a `Signal` the settings window binds too, so a change
 //!   in either place shows in both;
-//! - closing the settings window hides it again; "Quit" exits.
+//! - closing the settings window hides it again; "Quit" exits;
+//! - "Test notification" raises an operating-system notification
+//!   (`rinch::notification`, issue #1522); clicking it opens the settings
+//!   window, and what became of it is printed to stdout.
 //!
 //! Run with `cargo run -p tray-only`.
 
@@ -20,6 +23,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use rinch::menu::{Menu, MenuItem};
+use rinch::notification::Notification;
 use rinch::prelude::*;
 use rinch::reactive::Effect;
 use rinch::tray::{TrayIcon, TrayIconBuilder, TrayIconImage};
@@ -94,8 +98,22 @@ fn tray_menu(store: TrayStore, mode: Mode) -> Menu {
                 .item(MenuItem::radio("Accurate", store.accurate, true)),
         )
         .separator()
+        .item(MenuItem::new("Test notification").on_click(notify))
         .item(MenuItem::new("Settings…").on_click(show_current_window))
         .item(MenuItem::new("Quit").on_click(close_current_window))
+}
+
+/// Raise a notification; a click on it opens the settings window.
+fn notify() {
+    let shown = Notification::new("Tray-only")
+        .body("Click to open the settings.")
+        .on_click(show_current_window)
+        .on_dismiss(|why| println!("notification went away: {why:?}"))
+        .on_error(|e| println!("notification failed: {e}"))
+        .show();
+    if let Err(e) = shown {
+        println!("notification not shown: {e}");
+    }
 }
 
 /// The settings window. It is mounted at startup even though nothing is on

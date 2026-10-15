@@ -5,7 +5,7 @@
 //!
 //! Notification::new("Hotkey unavailable")
 //!     .body("Ctrl+Alt+Space is taken by another app.")
-//!     .icon_png(include_bytes!("bear.png"))
+//!     .icon_png(include_bytes!("icon.png"))
 //!     .on_click(|| show_current_window())
 //!     .show()?;
 //! ```
@@ -22,9 +22,11 @@
 //!
 //! # Threads and callbacks
 //!
-//! [`Notification::show`] never blocks: the D-Bus and WinRT calls run on a
-//! worker thread of their own (started on the first `show`), and macOS's
-//! calls are asynchronous already. Call `show` on the main (UI) thread — the
+//! [`Notification::show`] makes no IPC call on the calling thread: the D-Bus
+//! and WinRT calls run on a worker thread of their own (started on the first
+//! `show`), and macOS's calls are asynchronous already. The only work it does
+//! in place is writing an [`icon_png`](Notification::icon_png) image to a
+//! file, once per distinct image. Call `show` on the main (UI) thread — the
 //! callbacks are `!Send` and are kept there.
 //!
 //! [`on_click`](Notification::on_click), [`on_dismiss`](Notification::on_dismiss)
@@ -64,11 +66,15 @@
 //!   Start-menu shortcut is needed or created. A toast clicked in the Action
 //!   Center **after the app has exited** does nothing: relaunching the app on
 //!   click needs a COM activator, which rinch does not register.
+//!   An AUMID may not contain spaces, so an executable named `My App.exe`
+//!   needs [`set_app_id`] (`"com.example.MyApp"` is the usual shape); that
+//!   also keeps two unpackaged apps with the same file name apart, since
+//!   rinch never rewrites the other one's registration.
 //! - **macOS:** the bundle identifier. An executable run outside an `.app`
 //!   bundle has none, and the UserNotifications framework refuses it, so
 //!   `show` answers [`NotificationError::Unsupported`] there.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Mutex;
@@ -217,7 +223,9 @@ impl Notification {
     }
 
     /// An image shown with the notification, as PNG bytes. rinch writes it to
-    /// a file under the temporary directory and hands the platform its path
+    /// a file in a directory only this user can write (`$XDG_RUNTIME_DIR` on
+    /// Linux, else the user's cache directory; the per-user temporary
+    /// directory on macOS and Windows) and hands the platform its path
     /// (the `image-path` hint on Linux, the app-logo override on Windows, an
     /// attachment on macOS). Without one, the platform shows the app's icon.
     pub fn icon_png(mut self, png: &[u8]) -> Self {
@@ -227,9 +235,12 @@ impl Notification {
 
     /// Run `f` on the main thread when the user clicks the notification.
     ///
-    /// On Linux this needs a server that supports actions (KDE and GNOME do);
-    /// on Windows a click is reported while the app is running; on macOS a
-    /// click also brings the app forward.
+    /// On Linux this needs a server that supports actions (KDE and GNOME do).
+    /// On Windows a click is reported while the app is running and the toast
+    /// is up; once it has timed out into the Action Center
+    /// ([`DismissReason::Expired`] has run), a click there is not reported.
+    /// On macOS a click also brings the app forward; a click that launches
+    /// the app is not reported.
     pub fn on_click(mut self, f: impl Fn() + 'static) -> Self {
         self.on_click = Some(Owned::new(Rc::new(f)));
         self
@@ -255,7 +266,8 @@ impl Notification {
         self
     }
 
-    /// Show it. Never blocks: returns as soon as the request is queued.
+    /// Show it. Returns as soon as the request is queued; no IPC call runs on
+    /// the calling thread.
     ///
     /// `Err` is what is known at once (see the module docs); a refusal only
     /// the platform can give arrives through [`on_error`](Self::on_error).
@@ -354,15 +366,14 @@ impl Entry {
 
 thread_local! {
     static CALLBACKS: RefCell<HashMap<u64, Entry>> = RefCell::new(HashMap::new());
-    static NEXT_ID: Cell<u64> = const { Cell::new(1) };
 }
 
+/// Process-wide, so an id names one notification whichever thread showed it
+/// (a backend's maps are keyed on it).
+static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 fn next_id() -> u64 {
-    NEXT_ID.with(|n| {
-        let id = n.get();
-        n.set(id + 1);
-        id
-    })
+    NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 pub(crate) fn show_with(
@@ -443,12 +454,25 @@ pub(crate) fn deliver(id: u64, ev: Event) {
         }
         Some(Call::Error(cb, err)) => {
             if !cb.invoke(|f| f(&err)) {
-                tracing::warn!("notification {id}: {err}");
+                warn_unhandled(id, &err);
             }
         }
-        Some(Call::Warn(err)) => tracing::warn!("notification {id}: {err}"),
+        Some(Call::Warn(err)) => warn_unhandled(id, &err),
         None => {}
     }
+}
+
+/// An error nobody handles is logged, never dropped.
+fn warn_unhandled(id: u64, err: &NotificationError) {
+    tracing::warn!("notification {id}: {err}");
+    #[cfg(test)]
+    UNHANDLED.with(|u| u.set(u.get() + 1));
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many errors [`warn_unhandled`] logged on this thread.
+    pub(crate) static UNHANDLED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -533,23 +557,101 @@ pub(crate) fn app_id_from_exe_path(path: &std::path::Path) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-/// Write `png` to the temporary directory and answer its path. One file per
-/// distinct image (named by a hash of its bytes), written once; macOS gets a
-/// fresh copy per notification, since the system moves an attachment into its
-/// own store.
+/// Write `png` to a directory only this user can write, and answer its path.
+/// One file per distinct image (named by a hash of its bytes), written once;
+/// macOS gets a fresh copy per notification, since the system moves an
+/// attachment into its own store.
 fn write_icon(png: &[u8]) -> Result<std::path::PathBuf, String> {
+    write_icon_in(&icon_dir(), png)
+}
+
+/// Where icons go. Not a shared `/tmp` directory: another local user could
+/// predict the names there and plant a file or a symlink. On Unix it is
+/// `$XDG_RUNTIME_DIR` (per user, 0700 by specification), else the user's
+/// cache directory; macOS's and Windows's temporary directories are per user
+/// already. [`write_icon_in`] checks the directory either way.
+fn icon_dir() -> std::path::PathBuf {
+    const NAME: &str = "rinch-notifications";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let nonempty = |v: Option<std::ffi::OsString>| v.filter(|v| !v.is_empty());
+        if let Some(run) = nonempty(std::env::var_os("XDG_RUNTIME_DIR")) {
+            return std::path::PathBuf::from(run).join(NAME);
+        }
+        if let Some(cache) = nonempty(std::env::var_os("XDG_CACHE_HOME")) {
+            return std::path::PathBuf::from(cache).join(NAME);
+        }
+        if let Some(home) = nonempty(std::env::var_os("HOME")) {
+            return std::path::PathBuf::from(home).join(".cache").join(NAME);
+        }
+    }
+    std::env::temp_dir().join(NAME)
+}
+
+/// [`write_icon`] into `dir`, which is made private (0700 on Unix) and
+/// refused unless it is a real directory with no group or other access —
+/// one this process could then not write into unless it owns it. The file is
+/// written under a fresh name opened with `create_new` (which neither follows
+/// a symlink nor reuses a file) and renamed into place.
+pub(crate) fn write_icon_in(
+    dir: &std::path::Path,
+    png: &[u8],
+) -> Result<std::path::PathBuf, String> {
     use std::hash::{Hash, Hasher};
+    use std::io::Write;
+    let err = |p: &std::path::Path, e: std::io::Error| format!("{}: {e}", p.display());
+
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| err(parent, e))?;
+    }
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    match builder.create(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(err(dir, e)),
+    }
+    let meta = std::fs::symlink_metadata(dir).map_err(|e| err(dir, e))?;
+    if !meta.file_type().is_dir() {
+        return Err(format!("{} is not a directory", dir.display()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if meta.permissions().mode() & 0o077 != 0 {
+            return Err(format!(
+                "{} is open to other users (mode {:o}); refusing to write the icon there",
+                dir.display(),
+                meta.permissions().mode() & 0o777
+            ));
+        }
+    }
+
     let mut h = std::collections::hash_map::DefaultHasher::new();
     png.hash(&mut h);
-    let dir = std::env::temp_dir().join("rinch-notifications");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let path = dir.join(format!("{:016x}.png", h.finish()));
-    if !path.exists() {
-        // Write beside it and rename, so a concurrent reader never sees half
-        // a file.
-        let tmp = dir.join(format!("{:016x}.{}.tmp", h.finish(), std::process::id()));
-        std::fs::write(&tmp, png).map_err(|e| format!("{}: {e}", tmp.display()))?;
-        std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let hash = h.finish();
+    let path = dir.join(format!("{hash:016x}.png"));
+    if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file()) {
+        return Ok(path);
+    }
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = dir.join(format!(
+        "{hash:016x}.{}.{}.tmp",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(&tmp).map_err(|e| err(&tmp, e))?;
+    let written = file.write_all(png).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(e) = written.and_then(|()| std::fs::rename(&tmp, &path)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err(&path, e));
     }
     Ok(path)
 }

@@ -5,4 +5,4 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-rinch = { workspace = true, features = ["desktop", "components", "theme", "system-tray"] }
+rinch = { workspace = true, features = ["desktop", "components", "theme", "system-tray", "notifications"] }

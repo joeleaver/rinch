@@ -201,27 +201,22 @@ fn dismiss_reason(r: ToastDismissalReason) -> DismissReason {
 }
 
 /// Write `HKCU\Software\Classes\AppUserModelId\<aumid>` with a `DisplayName`,
-/// unless the key exists.
+/// only when this call created the key.
 fn register_aumid(aumid: &str, display_name: &str) -> Result<(), String> {
     use ::windows::Win32::Foundation::ERROR_SUCCESS;
     use ::windows::Win32::System::Registry::{
-        HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
-        RegCreateKeyExW, RegOpenKeyExW, RegSetValueExW,
+        HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_CREATE_KEY_DISPOSITION, REG_CREATED_NEW_KEY,
+        REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey, RegCreateKeyExW, RegSetValueExW,
     };
 
     let path = HSTRING::from(format!("Software\\Classes\\AppUserModelId\\{aumid}"));
     let mut key = HKEY::default();
-    // SAFETY: valid HKEY constant, NUL-terminated path, out-pointer to a
-    // local; the key is closed below.
-    let open = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, &path, None, KEY_READ, &mut key) };
-    if open == ERROR_SUCCESS {
-        // SAFETY: the key was opened above.
-        unsafe {
-            let _ = RegCloseKey(key);
-        }
-        return Ok(());
-    }
-    // SAFETY: as above; `key` receives the created key.
+    let mut disposition = REG_CREATE_KEY_DISPOSITION::default();
+    // One call that creates the key or opens the existing one, and says
+    // which: no window between a check and a create, and no "the open failed,
+    // so it must be missing" when it failed for another reason.
+    // SAFETY: valid HKEY constant, NUL-terminated path, out-pointers to
+    // locals; the key is closed below.
     let created = unsafe {
         RegCreateKeyExW(
             HKEY_CURRENT_USER,
@@ -232,11 +227,19 @@ fn register_aumid(aumid: &str, display_name: &str) -> Result<(), String> {
             KEY_WRITE,
             None,
             &mut key,
-            None,
+            Some(&mut disposition),
         )
     };
     if created != ERROR_SUCCESS {
         return Err(format!("RegCreateKeyExW: {created:?}"));
+    }
+    if disposition != REG_CREATED_NEW_KEY {
+        // An installer's (or an earlier run's) registration: leave it.
+        // SAFETY: the key was opened above.
+        unsafe {
+            let _ = RegCloseKey(key);
+        }
+        return Ok(());
     }
     let value: Vec<u8> = display_name
         .encode_utf16()

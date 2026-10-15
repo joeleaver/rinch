@@ -808,18 +808,18 @@ use rinch::prelude::*;
 
 let shown = Notification::new("Hotkey unavailable")
     .body("Ctrl+Alt+Space is taken by another app.")
-    .icon_png(include_bytes!("bear.png"))        // optional
+    .icon_png(include_bytes!("icon.png"))        // optional
     .on_click(|| show_current_window())          // optional
     .on_dismiss(|why| tracing::info!("gone: {why:?}"))
     .on_error(|e: &NotificationError| tracing::warn!("{e}"))
     .show();                                     // Result<NotificationHandle, NotificationError>
 ```
 
-`examples/notifications` raises one with a click action and logs what happens to it.
+`examples/tray-only`'s "Test notification" item raises one; clicking it opens the settings window.
 
 ### Threads and callbacks
 
-`show()` never blocks. The D-Bus calls (Linux) and the WinRT calls (Windows) run on a worker thread started by the first `show()`, and macOS's calls answer through completion handlers. Call `show()` on the main thread: the callbacks are `!Send` and stay there.
+`show()` makes no IPC call on the calling thread. The D-Bus calls (Linux) and the WinRT calls (Windows) run on a worker thread started by the first `show()`, and macOS's calls answer through completion handlers. The only work done in place is writing an `icon_png` image to a file, once per distinct image, in a directory only the user can write (`$XDG_RUNTIME_DIR` on Linux, else the user's cache directory; the per-user temporary directory on macOS and Windows). Call `show()` on the main thread: the callbacks are `!Send` and stay there.
 
 `on_click`, `on_dismiss` and `on_error` run on the main thread, each in one batch, like a menu callback. They follow the same lifetime rule: a callback set while a component renders belongs to that component, and does not run once it has unmounted; one set outside any render (from `main`, a timer) keeps app lifetime.
 
@@ -829,7 +829,7 @@ A click ends the notification: `on_dismiss` does not run after `on_click`. `on_d
 
 `show()` returns `Err` for what is known at once: `Unsupported` on a platform with no backend (Android; the feature does not build for the web, see below) and on an unbundled macOS executable. What only the platform can answer arrives later through `on_error`, on the main thread:
 
-- `NoService`: no D-Bus session bus, or no `org.freedesktop.Notifications` server on it.
+- `NoService`: no D-Bus session bus (or it went away), or no `org.freedesktop.Notifications` server on it.
 - `PermissionDenied`: the user refused the app notifications (macOS).
 - `Platform`: anything else (Windows would not show the toast, D-Bus failed).
 
@@ -839,9 +839,9 @@ A notification with no `on_error` logs the error with `tracing::warn!`.
 
 The desktop files notifications under the app that sent them. rinch uses the identity the window has: `WindowProps::app_id` if the window sets one, else the executable's file name (without `.exe` on Windows), the same derivation as the Wayland `app_id`. `rinch::notification::set_app_id` overrides it and `set_app_name` sets the name shown as the source (default: the app id).
 
-- **Linux:** the id goes in the `desktop-entry` hint, so the server can take the app's name and icon from `<app id>.desktop` if it is installed. rinch writes no file for notifications. The image is passed as the `image-path` hint. A click needs a server with actions (KDE and GNOME have them).
-- **Windows:** the id is the toast's AppUserModelID (AUMID). Windows shows toasts from an unpackaged app only for an AUMID it knows, either from a Start-menu shortcut that carries it or from a registry key. On the first `show()` rinch writes `HKCU\Software\Classes\AppUserModelId\<AUMID>` with a `DisplayName` (the `set_app_name` name), unless that key already exists. No shortcut is needed or created. Call `set_register_app(false)` if your installer registers the AUMID itself. A toast clicked in the Action Center after the app has exited does nothing: relaunching on click needs a COM activator, which rinch does not register.
-- **macOS:** the identity is the bundle identifier. The UserNotifications framework works only inside an `.app` bundle; run unbundled (`cargo run`), `show()` returns `Unsupported`. The first `show()` asks the user for permission. macOS does not report a dismissal, so `on_dismiss` runs there only for `NotificationHandle::close`. The image is attached to the notification; the app icon is the bundle's.
+- **Linux:** the id goes in the `desktop-entry` hint, so the server can take the app's name and icon from `<app id>.desktop` if it is installed. rinch writes no file for notifications. The image is passed as the `image-path` hint. A click needs a server with actions (KDE and GNOME have them). If the notification server restarts (plasmashell, dunst), the notifications it was showing are gone: each gets `on_dismiss(DismissReason::Unknown)`, and a signal from the new server that reuses an old id never reaches them.
+- **Windows:** the id is the toast's AppUserModelID (AUMID). Windows shows toasts from an unpackaged app only for an AUMID it knows, either from a Start-menu shortcut that carries it or from a registry key. On the first `show()` rinch writes `HKCU\Software\Classes\AppUserModelId\<AUMID>` with a `DisplayName` (the `set_app_name` name), unless that key already exists. No shortcut is needed or created. Call `set_register_app(false)` if your installer registers the AUMID itself. An AUMID may not contain spaces, so an executable named `My App.exe` needs `set_app_id("com.example.MyApp")`; an explicit id also keeps two unpackaged apps with the same file name apart. A click is reported while the toast is up; once it has timed out into the Action Center (`on_dismiss(Expired)` has run), a click there is not reported. A toast clicked in the Action Center after the app has exited does nothing: relaunching on click needs a COM activator, which rinch does not register.
+- **macOS:** the identity is the bundle identifier. The UserNotifications framework works only inside an `.app` bundle; run unbundled (`cargo run`), `show()` returns `Unsupported`. The first `show()` asks the user for permission. macOS does not report a dismissal, so `on_dismiss` runs there only for `NotificationHandle::close`. The image is attached to the notification; the app icon is the bundle's. rinch installs its `UNUserNotificationCenter` delegate on the first `show()`: a click that launches the app is not reported, and an app or crate that sets its own delegate replaces rinch's (one delegate per process).
 
 ### Not covered
 

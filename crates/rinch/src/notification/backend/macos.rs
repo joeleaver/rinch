@@ -15,6 +15,12 @@
 //! is reported only for a category with `customDismissAction`; rinch
 //! registers none, so `on_dismiss` runs on macOS only for
 //! [`NotificationHandle::close`](crate::notification::NotificationHandle::close).
+//!
+//! The delegate is installed on the first `show`. So a click that launches
+//! (or relaunches) the app reaches no callback, and an app or crate that
+//! sets its own `UNUserNotificationCenter` delegate replaces rinch's (or is
+//! replaced by it): there is one delegate per process. No sound is asked
+//! for, as on the other platforms.
 
 use std::ffi::{CStr, CString, c_char};
 use std::sync::{Once, OnceLock};
@@ -246,8 +252,6 @@ fn add_request(req: &Request) {
         if !req.body.is_empty() {
             let _: () = msg_send![&*content, setBody: ns_string(&req.body)];
         }
-        let sound: *mut AnyObject = msg_send![class!(UNNotificationSound), defaultSound];
-        let _: () = msg_send![&*content, setSound: sound];
         if let Some(icon) = &req.icon {
             // The system moves an attachment's file into its own store, so
             // it gets a copy of its own.

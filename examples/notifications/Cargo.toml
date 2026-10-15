@@ -1,8 +1,0 @@
-[package]
-name = "notifications"
-version.workspace = true
-edition.workspace = true
-publish = false
-
-[dependencies]
-rinch = { workspace = true, features = ["desktop", "notifications"] }
