@@ -3602,6 +3602,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "notifications"
+version = "0.1.0"
+dependencies = [
+ "rinch",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4880,7 +4887,9 @@ dependencies = [
  "anyrender",
  "anyrender_vello",
  "base64",
+ "block2 0.6.2",
  "bytemuck",
+ "futures-lite",
  "futures-util",
  "gtk",
  "js-sys",
@@ -4923,9 +4932,11 @@ dependencies = [
  "wasm-bindgen",
  "web-sys",
  "wgpu",
+ "windows 0.62.2",
  "windows-sys 0.59.0",
  "winit",
  "x11rb",
+ "zbus",
 ]
 
 [[package]]

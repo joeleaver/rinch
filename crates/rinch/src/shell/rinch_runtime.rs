@@ -869,6 +869,10 @@ impl RinchRuntime {
             .window_props
             .as_ref()
             .map(|props| resolved_app_id(props.app_id.as_deref()));
+        #[cfg(target_os = "linux")]
+        if let Some(id) = &app_id {
+            *WINDOW_APP_ID.lock().unwrap_or_else(|p| p.into_inner()) = Some(id.clone());
+        }
         #[cfg(not(target_os = "linux"))]
         let app_id: Option<String> = None;
         let x11_class: Option<String> = self
@@ -3286,7 +3290,25 @@ fn load_window_icon(png_data: &[u8]) -> Result<winit::icon::Icon, Box<dyn std::e
     Ok(rgba_icon.into())
 }
 
-/// Write the icon PNG to a data directory and create a `.desktop` file so Wayland
+/// The app id the last window was created with, for a service that has to
+/// name the application to the desktop the same way the window does
+/// (notifications' `desktop-entry` hint, `crate::notification`).
+#[cfg(target_os = "linux")]
+static WINDOW_APP_ID: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// The app id this application presents to the desktop: the window's, once
+/// one has been created, else the one a window would get with no
+/// `WindowProps::app_id`.
+#[cfg(target_os = "linux")]
+#[cfg_attr(not(feature = "notifications"), allow(dead_code))]
+pub(crate) fn current_app_id() -> String {
+    WINDOW_APP_ID
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+        .unwrap_or_else(|| resolved_app_id(None))
+}
+
 /// The Wayland `app_id` / X11 `WM_CLASS` this window identifies itself by.
 ///
 /// An app that sets [`WindowProps::app_id`] gets exactly that. Everything else
@@ -3329,6 +3351,7 @@ fn app_id_from_exe_path(path: &std::path::Path) -> Option<String> {
         .filter(|name| !name.is_empty())
 }
 
+/// Write the icon PNG to a data directory and create a `.desktop` file so Wayland
 /// compositors can display the icon in the taskbar via `app_id` matching.
 #[cfg(target_os = "linux")]
 fn install_wayland_icon(app_id: &str, png_data: &[u8]) {

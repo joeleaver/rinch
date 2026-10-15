@@ -4563,6 +4563,10 @@ let window_props = WindowProps {
 };
 ```
 
+### Notifications (optional)
+
+Enable with `features = ["notifications"]` (off by default, no windowing needed; issue #1522). `rinch::notification::Notification::new(title).body(..).icon_png(..).on_click(..).on_dismiss(|DismissReason| ..).on_error(|&NotificationError| ..).show() -> Result<NotificationHandle, NotificationError>`. Backends, thin and on crates already in Cargo.lock (no package added): Linux `org.freedesktop.Notifications` over zbus in a current-thread tokio runtime on a worker thread (`notification/backend/freedesktop.rs`; the #1521 reasoning for tokio), Windows WinRT toasts on a worker thread (`windows` 0.62), macOS `UNUserNotificationCenter` through raw `objc2` messages + `block2` (needs an `.app` bundle: unbundled, `show` is `Err(Unsupported)`). The feature does not build for wasm32 (the workspace tokio has `rt-multi-thread`). `show()` never blocks; what only the platform can refuse (no server, permission, a failed toast) arrives through `on_error` on the main thread, else a `tracing::warn!`. Callbacks follow the #183 owner rule (owner captured when each `on_*` is called), are delivered through `dispatch_main_callback` into a thread-local registry keyed by rinch's id, and a click ends the notification (no `on_dismiss` after it). Identity: `set_app_id` > the window's `app_id` (Linux: `shell::rinch_runtime::current_app_id`) > the executable's name (no `.exe`); Linux sends it as the `desktop-entry` hint and writes no file, Windows uses it as the AUMID and registers `HKCU\Software\Classes\AppUserModelId\<id>` (`DisplayName` only, never over an existing key; `set_register_app(false)` opts out; no Start-menu shortcut; no COM activator, so a toast clicked after exit does nothing). Pins: `notification/tests.rs` (the Linux backend against a private `dbus-daemon` with a fake server). Guide: `docs/src/guide/platform.md#notifications`.
+
 ### Theme System (optional)
 
 Enable with `features = ["theme"]` for the theme system inspired by Mantine.
@@ -6456,7 +6460,7 @@ Documentation locations:
 - `docs/src/guide/windows.md` - Window management
 - `docs/src/guide/reactivity.md` - Signals, effects, memos
 - `docs/src/guide/rsx-syntax.md` - RSX macro syntax
-- `docs/src/guide/platform.md` - File dialogs, clipboard, system tray
+- `docs/src/guide/platform.md` - File dialogs, clipboard, system tray, notifications
 - `docs/src/guide/game-engine.md` - Game engine integration (embed API)
 - `docs/src/guide/theming.md` - Theme system and CSS variables
 - `docs/src/guide/components.md` - Component library

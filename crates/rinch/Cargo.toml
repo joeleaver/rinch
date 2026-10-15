@@ -104,6 +104,12 @@ accesskit_unix = { version = "0.22", optional = true }
 # X11 overlay hints (`WM_HINTS.input`, `_NET_WM_STATE_SKIP_TASKBAR`, #1519) that
 # winit has no API for. Already in the graph through winit-x11.
 x11rb = { version = "0.13", default-features = false, features = ["xfixes", "shape"], optional = true }
+# Notifications (`notifications`, #1522): `org.freedesktop.Notifications` over
+# zbus, run inside a current-thread tokio runtime on its own thread (right
+# whether zbus ends up in async-io or tokio mode — see
+# notification/backend/freedesktop.rs). Neither adds a package to Cargo.lock.
+zbus = { version = "5", default-features = false, features = ["async-io"], optional = true }
+futures-lite = { version = "2", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
@@ -121,11 +127,19 @@ web-sys = { version = "0.3", features = [
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Graphics_Gdi", "Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+# Toast notifications (`notifications`, #1522): WinRT `Windows.UI.Notifications`
+# and the HKCU AppUserModelId registration. 0.62 is already in Cargo.lock.
+windows = { version = "0.62", optional = true, features = [
+    "UI_Notifications", "Data_Xml_Dom", "Foundation",
+    "Win32_System_WinRT", "Win32_System_Registry", "Win32_Foundation", "Win32_Security",
+] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The non-activating panel's `becomesKeyOnlyIfNeeded` / `hidesOnDeactivate`
 # (#1519). Already in the graph through winit-appkit.
 objc2 = { version = "0.6", optional = true }
+# UserNotifications completion handlers (`notifications`, #1522); in Cargo.lock.
+block2 = { version = "0.6", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6", features = ["native-activity"], optional = true }
@@ -224,6 +238,15 @@ serde = ["rinch-editor-core/serde"]
 # (the editor wiring is a desktop feature); forwards to the shared view crate, which is
 # wasm-compatible with no shims, so the web view reuses the SAME adapter.
 collaboration = ["desktop", "rinch-editor-view/collaboration"]
+# Operating-system notifications (`rinch::notification`, issue #1522): the
+# freedesktop D-Bus service on Linux, WinRT toasts on Windows,
+# UserNotifications on macOS. Off by default; implies no windowing.
+notifications = [
+    "dep:zbus", "dep:futures-lite",
+    "dep:tokio", "tokio/rt", "tokio/sync",
+    "dep:windows",
+    "dep:objc2", "dep:block2",
+]
 
 # Probe app for the ignored e2e test tests/debug_event_latency.rs (issue #153).
 [[example]]

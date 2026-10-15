@@ -121,6 +121,9 @@ pub mod clipboard;
 #[cfg(feature = "system-tray")]
 pub mod tray;
 
+#[cfg(feature = "notifications")]
+pub mod notification;
+
 /// Memory profiling utilities (enable with `memory-profile` feature).
 #[cfg(any(feature = "desktop", feature = "android"))]
 pub mod memory {
