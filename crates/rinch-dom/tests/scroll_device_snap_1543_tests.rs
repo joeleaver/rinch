@@ -223,11 +223,12 @@ fn the_layout_clamp_lands_on_the_grid_and_stays() {
     doc.resolve_layout(VW, VH);
     doc.set_scroll_top(c, 200.0);
     assert_eq!(doc.scroll_top(c), 200.0);
-    // Range 80.3: 100.375 device px, off the grid.
-    doc.set_attribute(inner, "style", "height: 160.3px");
+    // Range 81 (layout rounds boxes to whole px): 101.25 device px, off
+    // the grid.
+    doc.set_attribute(inner, "style", "height: 161px");
     doc.resolve_layout(VW, VH);
     let top = doc.scroll_top(c);
-    assert!(on_grid(top, scale) && top <= 80.3 && top > 79.0, "got {top}");
+    assert!(on_grid(top, scale) && (top - 80.8).abs() < 1e-9, "got {top}");
     doc.tree.pending_scroll_clamps.clear();
     doc.resolve_layout(VW + 1.0, VH);
     assert!(
@@ -236,4 +237,27 @@ fn the_layout_clamp_lands_on_the_grid_and_stays() {
         doc.tree.pending_scroll_clamps
     );
     assert_eq!(doc.scroll_top(c), top);
+}
+
+/// Writing back an offset read from the grid keeps it, even where the product
+/// with the scale lands a hair below the whole pixel: at 175%, 61 device px is
+/// `61 / 1.75` px, and `(61 / 1.75) * 1.75` is just under 61 in `f64`. A floor
+/// with no slack would drop it to 60 on every write-back.
+#[test]
+fn rewriting_an_offset_on_the_grid_keeps_it() {
+    let style = "width: 200px; height: 80px; overflow-y: auto";
+    let (mut doc, c) = document(style, "", 1.75);
+    let inner = doc.create_element("div");
+    doc.set_attribute(inner, "style", "height: 400px");
+    doc.append_child(c, inner);
+    doc.resolve_layout(VW, VH);
+    let v: f64 = 61.0 / 1.75;
+    assert!((v * 1.75).floor() < 61.0, "premise: the product is under 61");
+    doc.set_scroll_top(c, v);
+    let first = doc.scroll_top(c);
+    for _ in 0..3 {
+        doc.set_scroll_top(c, doc.scroll_top(c));
+    }
+    assert_eq!(doc.scroll_top(c), first);
+    assert!((first * 1.75 - 61.0).abs() < 1e-6, "got {first}");
 }
