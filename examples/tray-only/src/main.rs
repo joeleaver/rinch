@@ -15,7 +15,10 @@
 //! - closing the settings window hides it again; "Quit" exits;
 //! - "Test notification" raises an operating-system notification
 //!   (`rinch::notification`, issue #1522); clicking it opens the settings
-//!   window, and what became of it is printed to stdout.
+//!   window, and what became of it is printed to stdout (the default
+//!   `notifications` feature; `--no-default-features` leaves the item out).
+//! - on macOS the app has no Dock icon (`App::activation_policy(Accessory)`),
+//!   and on Linux the tray item's id is this executable's name, `tray-only`.
 //!
 //! Run with `cargo run -p tray-only`.
 
@@ -23,6 +26,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use rinch::menu::{Menu, MenuItem};
+#[cfg(feature = "notifications")]
 use rinch::notification::Notification;
 use rinch::prelude::*;
 use rinch::reactive::Effect;
@@ -87,7 +91,7 @@ fn tray_menu(store: TrayStore, mode: Mode) -> Menu {
         Mode::Idle => "Start listening",
         Mode::Listening => "Stop listening",
     };
-    Menu::new()
+    let menu = Menu::new()
         .item(MenuItem::new(start_stop).on_click(move || store.toggle_listening()))
         .separator()
         .item(MenuItem::checkbox("Play sounds", store.sounds))
@@ -97,13 +101,15 @@ fn tray_menu(store: TrayStore, mode: Mode) -> Menu {
                 .item(MenuItem::radio("Fast", store.accurate, false))
                 .item(MenuItem::radio("Accurate", store.accurate, true)),
         )
-        .separator()
-        .item(MenuItem::new("Test notification").on_click(notify))
-        .item(MenuItem::new("Settings…").on_click(show_current_window))
+        .separator();
+    #[cfg(feature = "notifications")]
+    let menu = menu.item(MenuItem::new("Test notification").on_click(notify));
+    menu.item(MenuItem::new("Settings…").on_click(show_current_window))
         .item(MenuItem::new("Quit").on_click(close_current_window))
 }
 
 /// Raise a notification; a click on it opens the settings window.
+#[cfg(feature = "notifications")]
 fn notify() {
     let shown = Notification::new("Tray-only")
         .body("Click to open the settings.")
@@ -210,7 +216,13 @@ fn main() {
         })),
         ..Default::default()
     };
-    App::new(app).window_props(props).run();
+    // On macOS, no Dock icon and no app menu: the tray is the app (#1528).
+    // Does nothing on Windows and Linux, where a hidden window already means
+    // no taskbar entry.
+    App::new(app)
+        .window_props(props)
+        .activation_policy(ActivationPolicy::Accessory)
+        .run();
 
     // Take the tray down with the app.
     TRAY.with(|t| t.borrow_mut().take());

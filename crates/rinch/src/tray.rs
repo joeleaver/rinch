@@ -679,6 +679,7 @@ fn run_activate(id: Option<String>) {
 
 /// Builder for creating a system tray icon.
 pub struct TrayIconBuilder {
+    id: Option<String>,
     tooltip: Option<String>,
     icon: Option<TrayIconImage>,
     menu: Option<Menu>,
@@ -689,11 +690,36 @@ impl TrayIconBuilder {
     /// Create a new tray icon builder.
     pub fn new() -> Self {
         Self {
+            id: None,
             tooltip: None,
             icon: None,
             menu: None,
             activate: None,
         }
+    }
+
+    /// The identity the tray item reports to the desktop (issue #1529).
+    ///
+    /// On Linux this is the StatusNotifierItem's `Id`, which panels key
+    /// per-item settings on (shown or hidden, position). Without it the id is
+    /// the app's own: the `WindowProps::app_id` it declared, when the app is
+    /// already running as the tray is built, else the executable's file name
+    /// — the same derivation the Wayland `app_id` uses. A tray built in `main`
+    /// before [`App::run`](crate::App::run) cannot see `WindowProps::app_id`,
+    /// so an app that declares one should pass the same string here.
+    ///
+    /// Windows and macOS have no such string to set: Windows keys a
+    /// notification-area icon by the executable and an icon number, and macOS
+    /// a status item by the app, so the value is not used there.
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    /// The id this builder's tray item reports (see [`with_id`](Self::with_id)).
+    #[cfg(target_os = "linux")]
+    fn item_id(&self) -> String {
+        tray_item_id(self.id.as_deref())
     }
 
     /// Set the tooltip text shown on hover.
@@ -788,6 +814,11 @@ impl TrayIconBuilder {
     fn build_tray_icon(self) -> TrayResult<TrayIcon> {
         use tray_icon::TrayIconBuilder as TrayIconBuilderInner;
 
+        // The OS has no item id to set here (see `with_id`); tray-icon's own
+        // `TrayIconId` is an in-process key, left to its counter so two trays
+        // can never share one.
+        let _no_os_id = self.id;
+
         let mut builder = TrayIconBuilderInner::new();
 
         if let Some(tip) = self.tooltip {
@@ -834,6 +865,7 @@ impl TrayIconBuilder {
         use ksni::blocking::TrayMethods;
 
         release_closed_parked();
+        let id = self.item_id();
 
         // Register callbacks on the main thread and collect entries for ksni.
         let (menu_entries, mut registration, toggles) = match self.menu {
@@ -846,6 +878,7 @@ impl TrayIconBuilder {
         let (activate_id, activate_registration) = register_activate(self.activate);
 
         let tray = RinchKsniTray {
+            id,
             tooltip: self.tooltip.unwrap_or_default(),
             icon_pixmap: self
                 .icon
@@ -1255,8 +1288,28 @@ impl Drop for KsniUpdater {
     }
 }
 
+/// The StatusNotifierItem id for a tray whose builder asked for `explicit`
+/// (issue #1529): that, else the `WindowProps::app_id` the running app
+/// declared, else the executable's file name (`resolved_app_id`, the Wayland
+/// `app_id`'s derivation). It used to be the constant `"rinch-app"` for every
+/// app, so panels that key per-item settings on the id treated all rinch apps
+/// as one item.
+#[cfg(target_os = "linux")]
+fn tray_item_id(explicit: Option<&str>) -> String {
+    tray_item_id_from(explicit, crate::shell::rinch_runtime::declared_app_id())
+}
+
+/// [`tray_item_id`] without the global, for tests: `explicit`, else
+/// `declared`, else the executable's file name.
+#[cfg(target_os = "linux")]
+fn tray_item_id_from(explicit: Option<&str>, declared: Option<&str>) -> String {
+    crate::shell::rinch_runtime::resolved_app_id(explicit.or(declared))
+}
+
 #[cfg(target_os = "linux")]
 struct RinchKsniTray {
+    /// The item's `Id` ([`tray_item_id`]).
+    id: String,
     tooltip: String,
     icon_pixmap: Vec<ksni::Icon>,
     menu_entries: Vec<KsniMenuEntry>,
@@ -1268,7 +1321,7 @@ struct RinchKsniTray {
 #[cfg(target_os = "linux")]
 impl ksni::Tray for RinchKsniTray {
     fn id(&self) -> String {
-        "rinch-app".into()
+        self.id.clone()
     }
 
     fn title(&self) -> String {
@@ -2132,6 +2185,49 @@ mod tests {
         }
     }
 
+    /// Issue #1529: the item's id is the app's own, not the constant
+    /// `"rinch-app"` every rinch app used to share. A test binary is never
+    /// named `rinch-app`, so this fails on the constant.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_tray_item_id_is_the_apps_own() {
+        let exe = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
+            .expect("the test binary has a path");
+        assert_ne!(exe, "rinch-app");
+
+        let default = TrayIconBuilder::new();
+        let tray = RinchKsniTray {
+            id: default.item_id(),
+            tooltip: String::new(),
+            icon_pixmap: Vec::new(),
+            menu_entries: Vec::new(),
+            activate_id: None,
+        };
+        assert_eq!(ksni::Tray::id(&tray), exe, "derived from the executable");
+
+        let named = TrayIconBuilder::new().with_id("com.example.notes");
+        let tray = RinchKsniTray {
+            id: named.item_id(),
+            ..tray
+        };
+        assert_eq!(
+            ksni::Tray::id(&tray),
+            "com.example.notes",
+            "with_id wins, verbatim"
+        );
+    }
+
+    /// Issue #1529: a declared `WindowProps::app_id` is the id when the
+    /// builder names none, and `with_id` beats it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_declared_app_id_is_the_tray_id_unless_with_id_names_one() {
+        assert_eq!(tray_item_id_from(None, Some("d")), "d");
+        assert_eq!(tray_item_id_from(Some("e"), Some("d")), "e");
+    }
+
     /// Issue #1520: a primary click on the icon runs `on_activate`'s callback
     /// on the main thread, through the registry (so the #183 lifetime rule
     /// holds), and not `show_current_window`.
@@ -2145,6 +2241,7 @@ mod tests {
         let (activate_id, registration) = register_activate(builder.activate);
         assert!(activate_id.is_some() && registration.is_some());
         let mut tray = RinchKsniTray {
+            id: String::new(),
             tooltip: String::new(),
             icon_pixmap: Vec::new(),
             menu_entries: Vec::new(),

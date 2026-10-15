@@ -172,8 +172,10 @@ pub(crate) fn new_event_loop() -> EventLoop {
             || EventLoop::new().expect("Failed to create event loop"),
         );
     }
+    // Elsewhere the backend is fixed; macOS takes the activation policy
+    // (#1528) when the loop is built.
     #[allow(unreachable_code)]
-    EventLoop::new().expect("Failed to create event loop")
+    super::activation::new_event_loop().expect("Failed to create event loop")
 }
 
 /// X11 when `try_x11` and it builds; otherwise the default backend, with a

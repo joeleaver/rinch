@@ -3341,6 +3341,10 @@ pub fn run_rinch_with_window_props_and_menu<F>(
         send_native_event(RinchNativeEvent::ReRender);
     });
 
+    #[cfg(all(target_os = "linux", feature = "system-tray"))]
+    if let Some(id) = props.app_id.as_deref() {
+        let _ = DECLARED_APP_ID.set(id.to_string());
+    }
     let mut runtime = build_runtime(component, &props, native_menu, fonts);
     runtime.proxy = Some(proxy.clone());
 
@@ -3420,8 +3424,9 @@ fn load_window_icon(png_data: &[u8]) -> Result<winit::icon::Icon, Box<dyn std::e
 }
 
 /// The app id the last window was created with, for a service that has to
-/// name the application to the desktop the same way the window does
-/// (notifications' `desktop-entry` hint, `crate::notification`).
+/// name the application to the desktop the same way the window does (the
+/// global-shortcuts portal, `crate::hotkey`; notifications' `desktop-entry`
+/// hint, `crate::notification`).
 #[cfg(target_os = "linux")]
 static WINDOW_APP_ID: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
@@ -3429,7 +3434,10 @@ static WINDOW_APP_ID: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(N
 /// one has been created, else the one a window would get with no
 /// `WindowProps::app_id`.
 #[cfg(target_os = "linux")]
-#[cfg_attr(not(feature = "notifications"), allow(dead_code))]
+#[cfg_attr(
+    not(any(feature = "global-hotkeys", feature = "notifications")),
+    allow(dead_code)
+)]
 pub(crate) fn current_app_id() -> String {
     WINDOW_APP_ID
         .lock()
@@ -3454,7 +3462,7 @@ pub(crate) fn current_app_id() -> String {
 /// Falls back to `"rinch-app"` only when the executable path is unavailable,
 /// which is where the old behaviour came from.
 #[cfg(target_os = "linux")]
-fn resolved_app_id(explicit: Option<&str>) -> String {
+pub(crate) fn resolved_app_id(explicit: Option<&str>) -> String {
     if let Some(id) = explicit {
         return id.to_string();
     }
@@ -3463,6 +3471,20 @@ fn resolved_app_id(explicit: Option<&str>) -> String {
         .as_deref()
         .and_then(app_id_from_exe_path)
         .unwrap_or_else(|| "rinch-app".to_string())
+}
+
+/// The `WindowProps::app_id` the running app declared, recorded when its
+/// event loop starts. Read by the tray (`rinch::tray`, #1529) so a tray built
+/// after that point reports the same identity as the window; a tray built
+/// earlier (the usual order: in `main`, before `App::run`) cannot see it and
+/// takes `TrayIconBuilder::with_id` or the executable name instead.
+#[cfg(all(target_os = "linux", feature = "system-tray"))]
+static DECLARED_APP_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// See [`DECLARED_APP_ID`].
+#[cfg(all(target_os = "linux", feature = "system-tray"))]
+pub(crate) fn declared_app_id() -> Option<&'static str> {
+    DECLARED_APP_ID.get().map(String::as_str)
 }
 
 /// The identity an executable path implies: its **whole** file name.
@@ -3533,15 +3555,104 @@ fn install_wayland_icon(app_id: &str, png_data: &[u8]) {
 /// application directory (`$XDG_DATA_DIRS`, default `/usr/local/share:/usr/share`).
 #[cfg(target_os = "linux")]
 fn system_desktop_entry_exists(app_id: &str) -> bool {
-    // Read XDG_DATA_DIRS as an OsString and split with split_paths so non-UTF8
-    // directory entries are preserved (var() would drop the whole value to the
-    // default on any non-UTF8 byte).
-    let dirs = std::env::var_os("XDG_DATA_DIRS")
-        .unwrap_or_else(|| std::ffi::OsString::from("/usr/local/share:/usr/share"));
+    desktop_entry_in(&system_data_dirs(), app_id)
+}
+
+/// `$XDG_DATA_DIRS`, read as an `OsString` so non-UTF8 directory entries are
+/// preserved (`var()` would drop the whole value to the default on any
+/// non-UTF8 byte).
+#[cfg(target_os = "linux")]
+fn system_data_dirs() -> std::ffi::OsString {
+    std::env::var_os("XDG_DATA_DIRS")
+        .unwrap_or_else(|| std::ffi::OsString::from("/usr/local/share:/usr/share"))
+}
+
+/// Whether `applications/{app_id}.desktop` exists under any of `dirs`.
+#[cfg(target_os = "linux")]
+fn desktop_entry_in(dirs: &std::ffi::OsStr, app_id: &str) -> bool {
     let rel = format!("applications/{app_id}.desktop");
-    std::env::split_paths(&dirs)
+    std::env::split_paths(dirs)
         .filter(|p| !p.as_os_str().is_empty())
         .any(|p| p.join(&rel).exists())
+}
+
+/// Write a minimal `NoDisplay` desktop entry for `app_id` in the user's
+/// applications directory, unless one exists there or in any system
+/// directory — never shadowing a packaged launcher, never overwriting a file.
+///
+/// For a service that the desktop accepts only from an application with an
+/// installed entry: the Wayland global-shortcuts portal (`crate::hotkey`)
+/// refuses `Registry.Register` with "App info not found" otherwise. Answers
+/// the path written, `Ok(None)` when an entry already existed.
+#[cfg(target_os = "linux")]
+#[cfg_attr(not(feature = "global-hotkeys"), allow(dead_code))]
+pub(crate) fn ensure_desktop_entry(app_id: &str) -> Result<Option<std::path::PathBuf>, String> {
+    let data_home = std::env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(dirs_icon_fallback)
+        .ok_or("neither XDG_DATA_HOME nor HOME is set")?;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    ensure_desktop_entry_in(&system_data_dirs(), &data_home, app_id, &exe)
+}
+
+/// [`ensure_desktop_entry`] against explicit directories.
+#[cfg(target_os = "linux")]
+#[cfg_attr(not(feature = "global-hotkeys"), allow(dead_code))]
+fn ensure_desktop_entry_in(
+    system_dirs: &std::ffi::OsStr,
+    data_home: &std::path::Path,
+    app_id: &str,
+    exe: &std::path::Path,
+) -> Result<Option<std::path::PathBuf>, String> {
+    if desktop_entry_in(system_dirs, app_id) {
+        return Ok(None);
+    }
+    write_desktop_entry_stub(data_home, app_id, exe)
+}
+
+/// [`ensure_desktop_entry`]'s write, against an explicit data directory.
+#[cfg(target_os = "linux")]
+#[cfg_attr(not(feature = "global-hotkeys"), allow(dead_code))]
+fn write_desktop_entry_stub(
+    data_home: &std::path::Path,
+    app_id: &str,
+    exe: &std::path::Path,
+) -> Result<Option<std::path::PathBuf>, String> {
+    if app_id.is_empty() || app_id.contains(['/', '\n']) {
+        return Err(format!("{app_id:?} is not a usable app id"));
+    }
+    let dir = data_home.join("applications");
+    let path = dir.join(format!("{app_id}.desktop"));
+    if path.exists() {
+        return Ok(None);
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // Exec is required for Type=Application; quoted per the desktop entry
+    // specification, with its reserved characters escaped.
+    let exec = exe
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('`', "\\`")
+        .replace('$', "\\$");
+    let content = format!(
+        "[Desktop Entry]\nType=Application\nName={app_id}\nExec=\"{exec}\"\nNoDisplay=true\n\
+         X-Rinch-Generated=global-hotkeys\n"
+    );
+    // `create_new`: a file that appeared since the check is not overwritten.
+    use std::io::Write;
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(mut f) => f
+            .write_all(content.as_bytes())
+            .map(|()| Some(path.clone()))
+            .map_err(|e| format!("{}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -3859,7 +3970,68 @@ mod letterbox_backdrop {
 /// ship an icon supplied the dock icon and name for all the others.
 #[cfg(all(test, target_os = "linux"))]
 mod app_id_tests {
-    use super::{app_id_from_exe_path, resolved_app_id};
+    use super::{
+        app_id_from_exe_path, ensure_desktop_entry_in, resolved_app_id, write_desktop_entry_stub,
+    };
+
+    /// A packaged launcher in a system directory is never shadowed: no stub
+    /// is written for an app id one of them has.
+    #[test]
+    fn no_desktop_entry_stub_shadows_a_system_entry() {
+        let root = std::env::temp_dir().join(format!("rinch-desktop-sys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (sys, home) = (root.join("sys"), root.join("home"));
+        std::fs::create_dir_all(sys.join("applications")).unwrap();
+        std::fs::write(sys.join("applications/com.example.notes.desktop"), "x").unwrap();
+        let dirs = std::env::join_paths([root.join("empty"), sys.clone()]).unwrap();
+        let exe = std::path::Path::new("/bin/notes");
+        assert_eq!(
+            ensure_desktop_entry_in(&dirs, &home, "com.example.notes", exe),
+            Ok(None)
+        );
+        assert!(!home.join("applications/com.example.notes.desktop").exists());
+        // Positive control: an id no system directory has is written.
+        assert!(
+            ensure_desktop_entry_in(&dirs, &home, "com.example.other", exe)
+                .unwrap()
+                .is_some()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The desktop-entry stub the hotkey portal needs: written once with
+    /// `NoDisplay`, and an existing file — the app's own, or the user's — is
+    /// never overwritten.
+    #[test]
+    fn a_desktop_entry_stub_never_overwrites() {
+        let home = std::env::temp_dir().join(format!("rinch-desktop-stub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let exe = std::path::Path::new("/opt/My App/bin/notes");
+        let written = write_desktop_entry_stub(&home, "com.example.notes", exe).unwrap();
+        let path = home.join("applications/com.example.notes.desktop");
+        assert_eq!(written.as_deref(), Some(path.as_path()));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.starts_with("[Desktop Entry]\nType=Application\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("NoDisplay=true\n") && text.contains("Exec=\"/opt/My App/bin/notes\"\n"),
+            "{text}"
+        );
+
+        std::fs::write(&path, "[Desktop Entry]\nName=Mine\n").unwrap();
+        assert_eq!(
+            write_desktop_entry_stub(&home, "com.example.notes", exe),
+            Ok(None)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[Desktop Entry]\nName=Mine\n"
+        );
+        assert!(write_desktop_entry_stub(&home, "a/b", exe).is_err());
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     /// The identity `resolved_app_id` would derive from a given executable path.
     fn id_of(path: &str) -> Option<String> {
