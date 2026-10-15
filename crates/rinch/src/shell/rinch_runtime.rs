@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::window::{WindowAttributes, WindowId};
 
 use rinch_core::clear_context;
@@ -43,6 +43,7 @@ use crate::render_surface::{SurfacePointer, SurfacePointerKind};
 
 #[cfg(feature = "gpu")]
 use super::desktop::WgpuRenderer;
+use super::overlay_window::{self, Backend, WindowSteps};
 use super::window::WinitWindow;
 
 #[cfg(feature = "debug")]
@@ -224,6 +225,8 @@ pub enum RinchNativeEvent {
     ShowWindow,
     /// Hide the window.
     HideWindow,
+    /// Let pointer events through the window, or stop (issue #1519).
+    SetClickThrough(bool),
     /// An injected platform event (e.g. synthetic gamepad input).
     InjectedPlatformEvent(PlatformEvent),
     /// An accessibility action requested by the AT (delivered from the adapter's
@@ -450,6 +453,14 @@ pub struct RinchRuntime {
     /// `AppAction::SetCursor` — which hover emits on every pointer move — does
     /// not reach the windowing system. Reset when the window is dropped.
     applied_cursor: Option<rinch_platform::CursorStyle>,
+    /// Whether the main window lets pointer events through: starts at
+    /// `WindowProps::click_through`, changed by
+    /// [`set_click_through_current_window`](crate::windows::set_click_through_current_window).
+    click_through: bool,
+    /// Whether the main window has been on screen yet. `false` after a
+    /// hidden start (#1520) until the first `show_window`, which then places
+    /// it as a first creation would.
+    shown_once: bool,
 
     // ── DevTools ─────────────────────────────────────────────────
     /// Shared DevTools store (persists across open/close cycles).
@@ -522,6 +533,8 @@ impl RinchRuntime {
             pending_pointer_move: None,
             pressed_pointers: PressedButtons::default(),
             applied_cursor: None,
+            click_through: false,
+            shown_once: false,
             devtools_store: None,
             devtools_app: None,
             devtools_window: None,
@@ -839,17 +852,35 @@ impl RinchRuntime {
         }
     }
 
-    fn create_window(&mut self, event_loop: &dyn ActiveEventLoop) {
-        let hidden = starts_hidden(self.app.window_props.as_ref());
+    /// The attributes of the main window, for its first creation and for
+    /// the re-creation [`Self::show_window`] makes, with the overlay steps
+    /// (#1519) folded in. `first` installs the Wayland icon and reports an icon
+    /// that does not decode; a re-creation does neither again.
+    fn main_window_attributes(
+        &self,
+        steps: WindowSteps,
+        backend: Backend,
+        first: bool,
+    ) -> WindowAttributes {
         let mut window_attrs = WindowAttributes::default()
             .with_title(&self.title)
-            .with_surface_size(winit::dpi::LogicalSize::new(self.width, self.height))
-            // A window that starts hidden is never shown before it is
-            // destroyed below (X11 and Windows honour this; Wayland maps no
-            // toplevel until a buffer is attached, and none ever is).
-            .with_visible(!hidden);
+            .with_surface_size(winit::dpi::LogicalSize::new(self.width, self.height));
 
-        // Apply window props if set
+        // app_id on Wayland (always resolved) and WM_CLASS on X11 (only an
+        // explicit app_id; winit's argv[0] default otherwise, as before).
+        #[cfg(target_os = "linux")]
+        let app_id: Option<String> = self
+            .app
+            .window_props
+            .as_ref()
+            .map(|props| resolved_app_id(props.app_id.as_deref()));
+        #[cfg(not(target_os = "linux"))]
+        let app_id: Option<String> = None;
+        let x11_class: Option<String> = self
+            .app
+            .window_props
+            .as_ref()
+            .and_then(|props| props.app_id.clone());
         if let Some(props) = &self.app.window_props {
             if props.borderless {
                 window_attrs = window_attrs.with_decorations(false);
@@ -864,7 +895,9 @@ impl RinchRuntime {
                 window_attrs =
                     window_attrs.with_window_level(winit::window::WindowLevel::AlwaysOnTop);
             }
-            if let (Some(x), Some(y)) = (props.x, props.y) {
+            // The first creation only: a window re-created by `show_window`
+            // (restore from tray) is placed by the system, as it always was.
+            if let (true, Some(x), Some(y)) = (first, props.x, props.y) {
                 window_attrs = window_attrs.with_position(winit::dpi::LogicalPosition::new(x, y));
             }
             if let Some(icon_data) = props.icon {
@@ -873,32 +906,80 @@ impl RinchRuntime {
                     Ok(icon) => {
                         window_attrs = window_attrs.with_window_icon(Some(icon));
                     }
-                    Err(e) => {
+                    Err(e) if first => {
                         tracing::warn!("Failed to load window icon: {}", e);
                     }
+                    Err(_) => {}
                 }
                 // On Wayland, write icon to a temp file and install a .desktop entry
                 // so the compositor can find it via the app_id.
                 #[cfg(target_os = "linux")]
-                {
+                if first {
                     let app_id = resolved_app_id(props.app_id.as_deref());
                     install_wayland_icon(&app_id, icon_data);
                 }
             }
-            // Set app_id / WM_CLASS on Linux for desktop integration
-            #[cfg(target_os = "linux")]
-            {
-                let app_id = resolved_app_id(props.app_id.as_deref());
-                use winit::platform::wayland::WindowAttributesWayland;
-                let wayland_attrs =
-                    WindowAttributesWayland::default().with_name(app_id.as_str(), app_id.as_str());
-                window_attrs = window_attrs.with_platform_attributes(Box::new(wayland_attrs));
-            }
         }
+        overlay_window::apply_to_attributes(
+            window_attrs,
+            steps,
+            backend,
+            app_id.as_deref(),
+            x11_class.as_deref(),
+        )
+    }
+
+    /// The overlay steps (#1519) for the main window on `backend`. The
+    /// `first` creation starts click-through from
+    /// `WindowProps::click_through`; a re-creation by `show_window` keeps the
+    /// state the runtime toggle left.
+    fn main_window_steps(&mut self, backend: Backend, first: bool) -> WindowSteps {
+        if first {
+            self.click_through = self
+                .app
+                .window_props
+                .as_ref()
+                .is_some_and(|p| p.click_through);
+        }
+        match &self.app.window_props {
+            Some(props) => WindowSteps::plan(props, self.click_through, backend),
+            None => WindowSteps::plan(&Default::default(), self.click_through, backend),
+        }
+    }
+
+    /// Record a click-through toggle (`set_click_through_current_window`) so
+    /// a window re-created by `show_window` comes back the same. Returns the
+    /// state to apply to the live window.
+    fn note_click_through(&mut self, click_through: bool) -> bool {
+        self.click_through = click_through;
+        self.click_through
+    }
+
+    /// Whether the main window asked to stay on top.
+    fn main_window_always_on_top(&self) -> bool {
+        self.app
+            .window_props
+            .as_ref()
+            .is_some_and(|p| p.always_on_top)
+    }
+
+    fn create_window(&mut self, event_loop: &dyn ActiveEventLoop) {
+        let hidden = starts_hidden(self.app.window_props.as_ref());
+        let backend = Backend::of(event_loop);
+        let steps = self.main_window_steps(backend, true);
+        let window_attrs =
+            hidden_start_attributes(self.main_window_attributes(steps, backend, true), hidden);
 
         let window = event_loop
             .create_window(window_attrs)
             .expect("Failed to create window");
+        // A hidden start skips the post-creation steps: they would show a
+        // window created hidden (`AfterCreate::Show`), and they run on the
+        // window `show_window` creates instead.
+        if !hidden {
+            overlay_window::after_create(&*window, steps, self.main_window_always_on_top());
+            self.shown_once = true;
+        }
 
         let size = window.surface_size();
         let scale = window.scale_factor();
@@ -983,42 +1064,18 @@ impl RinchRuntime {
             return; // Already visible
         }
 
-        let mut window_attrs = WindowAttributes::default()
-            .with_title(&self.title)
-            .with_surface_size(winit::dpi::LogicalSize::new(self.width, self.height));
-
-        if let Some(props) = &self.app.window_props {
-            if props.borderless {
-                window_attrs = window_attrs.with_decorations(false);
-            }
-            if props.transparent {
-                window_attrs = window_attrs.with_transparent(true);
-            }
-            if !props.resizable {
-                window_attrs = window_attrs.with_resizable(false);
-            }
-            if props.always_on_top {
-                window_attrs =
-                    window_attrs.with_window_level(winit::window::WindowLevel::AlwaysOnTop);
-            }
-            if let Some(icon_data) = props.icon {
-                if let Ok(icon) = load_window_icon(icon_data) {
-                    window_attrs = window_attrs.with_window_icon(Some(icon));
-                }
-            }
-            #[cfg(target_os = "linux")]
-            {
-                let app_id = resolved_app_id(props.app_id.as_deref());
-                use winit::platform::wayland::WindowAttributesWayland;
-                let wayland_attrs =
-                    WindowAttributesWayland::default().with_name(app_id.as_str(), app_id.as_str());
-                window_attrs = window_attrs.with_platform_attributes(Box::new(wayland_attrs));
-            }
-        }
+        let backend = Backend::of(event_loop);
+        let steps = self.main_window_steps(backend, false);
+        // After a hidden start (#1520) the first show is the window's first
+        // appearance, so it takes the requested position as a first creation
+        // does; a restore from the tray is placed by the system, as before.
+        let first_show = !std::mem::replace(&mut self.shown_once, true);
+        let window_attrs = self.main_window_attributes(steps, backend, first_show);
 
         let window = event_loop
             .create_window(window_attrs)
             .expect("Failed to recreate window");
+        overlay_window::after_create(&*window, steps, self.main_window_always_on_top());
 
         #[cfg(feature = "gpu")]
         {
@@ -1909,6 +1966,23 @@ fn starts_hidden(props: Option<&rinch_core::element::WindowProps>) -> bool {
     props.is_some_and(|p| !p.visible)
 }
 
+/// The first creation's attributes for a hidden start (#1520): `visible:
+/// false` whatever the overlay steps (#1519) chose. That window only sizes the
+/// root and is destroyed before anything is presented (X11 and Windows honour
+/// `with_visible(false)`; Wayland maps no toplevel until a buffer is attached,
+/// and none ever is). The overlay steps' own creation visibility is about the
+/// window `show_window` makes later — on macOS a non-activating panel is
+/// created *visible*, since a hidden-then-`set_visible` show would make it key —
+/// and that re-creation takes the overlay attributes unchanged. A start that
+/// is not hidden is left exactly as the overlay steps built it.
+fn hidden_start_attributes(attrs: WindowAttributes, hidden: bool) -> WindowAttributes {
+    if hidden {
+        attrs.with_visible(false)
+    } else {
+        attrs
+    }
+}
+
 /// Whether `can_create_surfaces` creates the main window: only when there is
 /// none **and** nothing is mounted. A mounted document with no window was
 /// hidden on purpose (started hidden, #1520, or sent to the tray), and
@@ -1932,6 +2006,37 @@ mod hidden_start_tests {
             visible: false,
             ..Default::default()
         })));
+    }
+
+    /// #1520 with #1519: a hidden start creates its sizing window invisible
+    /// even where the overlay steps would create it visible (a macOS
+    /// non-activating panel), and leaves every other start as the steps built
+    /// it — an ordinary window visible, an X11 overlay created hidden.
+    #[test]
+    fn a_hidden_start_overrides_the_overlay_visibility_and_nothing_else() {
+        use super::overlay_window::{Backend, WindowSteps, apply_to_attributes};
+        let panel = WindowProps {
+            non_activating: true,
+            ..Default::default()
+        };
+        let mac = WindowSteps::plan(&panel, false, Backend::MacOs);
+        let built =
+            || apply_to_attributes(WindowAttributes::default(), mac, Backend::MacOs, None, None);
+        assert!(built().visible, "the macOS panel itself is created visible");
+        assert!(!hidden_start_attributes(built(), true).visible);
+        assert!(
+            !hidden_start_attributes(built(), true).active,
+            "the steps' other attributes stay"
+        );
+        assert!(hidden_start_attributes(built(), false).visible);
+        let x11 = WindowSteps::plan(&panel, false, Backend::X11);
+        let x11_attrs =
+            apply_to_attributes(WindowAttributes::default(), x11, Backend::X11, None, None);
+        assert!(
+            !hidden_start_attributes(x11_attrs, false).visible,
+            "the X11 overlay is created hidden as before"
+        );
+        assert!(hidden_start_attributes(WindowAttributes::default(), false).visible);
     }
 
     /// #1520: after a hidden start the document is mounted and the window
@@ -2691,6 +2796,14 @@ impl RinchRuntime {
             }
             RinchNativeEvent::ShowWindow => PlatformEvent::UserEvent(UserEvent::ShowWindow),
             RinchNativeEvent::HideWindow => PlatformEvent::UserEvent(UserEvent::HideWindow),
+            RinchNativeEvent::SetClickThrough(click_through) => {
+                // The shell's alone: no app state depends on it.
+                let apply = self.note_click_through(click_through);
+                if let Some(w) = &self.window {
+                    overlay_window::set_click_through(w.raw(), apply);
+                }
+                return;
+            }
             RinchNativeEvent::InjectedPlatformEvent(pe) => pe,
             #[cfg(feature = "a11y")]
             RinchNativeEvent::A11yAction(req) => {
@@ -3093,7 +3206,7 @@ where
     events::clear_handlers();
     clear_context();
 
-    let event_loop = EventLoop::new().expect("Failed to create event loop");
+    let event_loop = overlay_window::new_event_loop();
 
     let proxy = event_loop.create_proxy();
 
@@ -3212,7 +3325,7 @@ pub fn run_rinch_with_window_props_and_menu<F>(
     events::clear_handlers();
     clear_context();
 
-    let event_loop = EventLoop::new().expect("Failed to create event loop");
+    let event_loop = overlay_window::new_event_loop();
 
     let proxy = event_loop.create_proxy();
 
@@ -4024,6 +4137,81 @@ mod bundled_font_tests {
     /// survive the trip (a `&[]` here and `App::fonts` would be a builder
     /// method with no effect on any real window), and so must the window props
     /// that carry the title, size and `app_id`.
+    /// #1519: the click-through state the window is created with. The first
+    /// creation takes `WindowProps::click_through`; a toggle is kept across a
+    /// hide/show re-creation (which does not re-read the props); a new first
+    /// creation starts from the props again.
+    #[test]
+    fn click_through_starts_at_the_props_and_a_toggle_survives_a_re_show() {
+        use super::overlay_window::{AfterCreate, after_create_actions};
+        let props = rinch_core::element::WindowProps {
+            click_through: true,
+            ..Default::default()
+        };
+        let mut runtime = build_runtime(component, &props, None, &[]);
+        let first = runtime.main_window_steps(Backend::X11, true);
+        assert!(first.click_through, "the prop reaches the first creation");
+        assert!(after_create_actions(first, false).contains(&AfterCreate::ClickThrough));
+
+        assert!(!runtime.note_click_through(false));
+        let reshown = runtime.main_window_steps(Backend::X11, false);
+        assert!(
+            !reshown.click_through,
+            "the toggle is kept across hide/show"
+        );
+        assert!(!after_create_actions(reshown, false).contains(&AfterCreate::ClickThrough));
+
+        assert!(runtime.note_click_through(true));
+        assert!(runtime.main_window_steps(Backend::X11, false).click_through);
+
+        // Off in the props: a re-show after a toggle on keeps it on.
+        let mut plain = build_runtime(component, &Default::default(), None, &[]);
+        assert!(
+            !plain
+                .main_window_steps(Backend::Wayland, true)
+                .click_through
+        );
+        plain.note_click_through(true);
+        assert!(
+            plain
+                .main_window_steps(Backend::Wayland, false)
+                .click_through
+        );
+    }
+
+    /// #1519, the default path: an ordinary window takes no hit-test call and
+    /// no extra step, and a tray re-show is not moved to `WindowProps::x/y`
+    /// (it never was); only the first creation is placed.
+    #[test]
+    fn an_ordinary_window_takes_the_old_path() {
+        use super::overlay_window::after_create_actions;
+        let props = rinch_core::element::WindowProps {
+            x: Some(40),
+            y: Some(50),
+            ..Default::default()
+        };
+        let mut runtime = build_runtime(component, &props, None, &[]);
+        for backend in [
+            Backend::X11,
+            Backend::Wayland,
+            Backend::Windows,
+            Backend::MacOs,
+        ] {
+            let steps = runtime.main_window_steps(backend, true);
+            assert!(after_create_actions(steps, false).is_empty(), "{backend:?}");
+            assert!(after_create_actions(steps, true).is_empty(), "{backend:?}");
+        }
+        let steps = runtime.main_window_steps(Backend::Wayland, true);
+        let first = runtime.main_window_attributes(steps, Backend::Wayland, true);
+        assert!(first.position.is_some(), "the first creation is placed");
+        let reshown = runtime.main_window_attributes(steps, Backend::Wayland, false);
+        assert!(
+            reshown.position.is_none(),
+            "a re-show is placed by the system"
+        );
+        assert!(first.active && first.visible && reshown.active && reshown.visible);
+    }
+
     #[test]
     fn build_runtime_carries_both_the_window_props_and_the_bundled_fonts() {
         let props = rinch_core::element::WindowProps {

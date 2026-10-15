@@ -69,6 +69,9 @@ fn main() {
 | `always_on_top` | `bool` | `false` | Keep window above others |
 | `visible` | `bool` | `true` | Whether the window is on screen at startup; `false` starts a tray-only app (see below) |
 | `resize_inset` | `Option<f32>` | `None` | Resize handle inset for borderless windows |
+| `non_activating` | `bool` | `false` | Never take keyboard focus or activation, even when clicked (see [Overlay Windows](#overlay-windows)) |
+| `click_through` | `bool` | `false` | Let pointer events pass through to the window underneath |
+| `skip_taskbar` | `bool` | `false` | No taskbar entry (and on Windows, none in Alt+Tab) |
 
 ### Starting with no window (tray-only apps)
 
@@ -220,6 +223,8 @@ button { onclick: || close_current_window(), "×" }
 ```
 
 These functions work from onclick handlers and affect the window containing the element.
+`set_click_through_current_window(bool)` belongs to the same family; see
+[Overlay Windows](#overlay-windows).
 
 ### Fixed Overlays and Custom Chrome
 
@@ -364,6 +369,90 @@ fn app() -> NodeHandle {
     root
 }
 ```
+
+## Overlay Windows
+
+An overlay — a status pill, a HUD, an indicator — sits on top of another
+application while the user keeps typing into that application. It must not
+take the keyboard: not when it is created, not when it is shown, and not when
+it is clicked. Three `WindowProps` fields ask for that (issue #1519):
+
+```rust
+use rinch::prelude::*;
+use rinch_core::element::WindowProps;
+
+App::new(pill)
+    .window_props(WindowProps {
+        width: 360,
+        height: 44,
+        borderless: true,
+        transparent: true,
+        always_on_top: true,
+        non_activating: true, // never takes focus or activation
+        skip_taskbar: true,   // no taskbar / Alt+Tab entry
+        click_through: false, // the pill's buttons take clicks
+        ..Default::default()
+    })
+    .prefer_x11(true) // see "Wayland" below
+    .run();
+```
+
+A non-activating window still takes **pointer** clicks in its DOM, so it can
+have buttons; it does not take **keystrokes**, so a text field in it cannot be
+typed into. `show_current_window()` shows it without activating it.
+
+`click_through: true` lets pointer events pass to whatever is under the window.
+Change it at run time with `set_click_through_current_window(bool)`, from any
+thread. A click-through window receives no pointer events at all, so nothing
+inside it can turn click-through off again: do it from a hotkey, a tray item, a
+timer or another thread. The setting is kept when the window is hidden and
+shown again.
+
+| Platform | `non_activating` | `click_through` | `skip_taskbar` |
+|---|---|---|---|
+| Windows | `WS_EX_NOACTIVATE`; `WM_MOUSEACTIVATE` answers `MA_NOACTIVATE`; first shown with `SW_SHOWNOACTIVATE` | `WS_EX_TRANSPARENT \| WS_EX_LAYERED` | `WS_EX_TOOLWINDOW` (no taskbar button, no Alt+Tab entry) |
+| macOS | a non-activating `NSPanel` with `becomesKeyOnlyIfNeeded`, kept on screen while its app is inactive, ordered front at creation without becoming key | `ignoresMouseEvents` | nothing to do: a window has no Dock entry of its own (the app's Dock icon is the activation policy's business) |
+| X11 | `WM_HINTS.input = False` | an empty input shape (set by rinch over its own connection, XFixes version negotiated) | `_NET_WM_STATE_SKIP_TASKBAR` and `_SKIP_PAGER` |
+| Wayland | **no effect** | an empty input region | **no effect** |
+
+On Windows and X11 such a window is created hidden, adjusted, and only then
+shown, so it is never on screen in a state that could take focus. On macOS it is
+shown at creation (winit orders a window created inactive to the front without
+making it key) and adjusted right after, before any event is handled: showing a
+hidden window later would make it key. A window without these fields takes
+exactly the path it always did.
+
+### Window identity on Linux (`app_id` and `WM_CLASS`)
+
+On Wayland a window's `app_id` is `WindowProps::app_id`, or the executable's
+file name when that is not set. On X11 an explicit `WindowProps::app_id` is the
+window's `WM_CLASS` (instance and class) since #1519; before, X11 never saw it.
+Without one, `WM_CLASS` is unchanged: winit's default, `argv[0]`'s file name,
+with `RESOURCE_NAME` as the instance when it is set. The two defaults can
+differ (a binary run through a symlink has `argv[0]` naming the link), so a
+`.desktop` file whose `StartupWMClass` must match on both should set
+`WindowProps::app_id`.
+
+### Wayland
+
+A plain xdg-toplevel cannot refuse keyboard focus or a taskbar entry: the
+compositor decides. KWin decides whether to activate a window when it is
+**mapped**, and winit's request to show a window inactive is ignored there.
+On native Wayland `non_activating` and `skip_taskbar` therefore do nothing,
+and rinch logs one warning saying so. (A `wlr-layer-shell` surface could do
+it: #1523.)
+
+Two ways to live with it:
+
+- **`App::prefer_x11(true)`** builds the event loop on X11 whenever an X server
+  is reachable (`DISPLAY` is set), which under a Wayland session means
+  XWayland, where the X11 column above applies. The backend is chosen once per
+  process, so this is an application option, not a window one. It changes the
+  whole app's backend (fractional scaling and input go through XWayland).
+- **Create the overlay once and keep it mapped.** Since activation is decided
+  at map time, create the overlay at startup, keep it on screen (fully
+  transparent while idle) and click-through, and change its content rather
+  than hiding and showing it per use. What remains is a taskbar entry.
 
 ## Programmatic Window Management
 

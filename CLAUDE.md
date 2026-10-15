@@ -658,8 +658,8 @@ deprecation note names its builder chain. Behaviour is unchanged with one
 deliberate exception: unifying the startup paths also unified the Linux
 **Wayland `app_id`**, which is now derived per application from the executable
 name instead of the shared constant `"rinch-app"` (an explicit
-`WindowProps::app_id` still wins). X11 `WM_CLASS` and every non-Linux platform
-are untouched. See **Window identity on Wayland** below.
+`WindowProps::app_id` still wins). Every non-Linux platform is untouched. See
+**Window identity on Wayland** below.
 They exist because none of them could express its own combinations:
 `run_with_menu` took no window props, `run_with_window_props` took no menu
 without a second function, and neither could take whatever landed next.
@@ -711,7 +711,13 @@ icon and taskbar group a window belongs to. rinch derives it from the
 executable's file name unless `WindowProps::app_id` says otherwise
 (`resolved_app_id`, `shell/rinch_runtime.rs`), at **both** the initial
 `create_window` and the `show_window` re-creation path that minimize-to-tray
-restores through.
+restores through. On X11 an **explicit** `app_id` is the window's `WM_CLASS`
+(instance and class) since #1519: a window has one platform-attributes box,
+read by the backend the event loop runs on, and rinch used to hand X11 the
+Wayland one, which X11 discards, so an explicit `app_id` never reached
+`WM_CLASS`. Without one, X11 keeps winit's default (`argv[0]`'s file name,
+`RESOURCE_NAME` for the instance), which can differ from the executable name
+the Wayland `app_id` is derived from — deliberately unchanged.
 
 It used to default to the constant `"rinch-app"` for every app that did not set
 one. That is not merely a label: `install_wayland_icon` writes
@@ -4887,9 +4893,59 @@ button { onclick: || close_current_window(), "×" }
 button { onclick: || hide_current_window(), "Hide to Tray" }
 // From a tray menu callback:
 MenuItem::new("Show").on_click(|| show_current_window())
+
+// Pointer events pass through the window, or stop doing so (any thread):
+set_click_through_current_window(true);
 ```
 
 These functions are available in the prelude and work from onclick handlers.
+
+### Overlay windows (non-activating, click-through, skip-taskbar)
+
+`WindowProps::non_activating`, `click_through` and `skip_taskbar` (#1519,
+`shell/overlay_window.rs`) make a window that never takes keyboard focus or
+activation — on creation, on `show_current_window`, or on a click — while its
+DOM still takes pointer clicks. The decision is pure (`WindowSteps::plan`, per
+`Backend`), executed as an ordered action list (`after_create_actions`, also
+pure). A window without the three fields gets **no** action — no hit-test call
+— and a tray re-show is not moved to `WindowProps::x/y` (only the first
+creation is placed), as before. On Windows and X11 a window that needs a tweak
+winit cannot make at creation is created hidden, adjusted, and then shown:
+
+- **Windows**: the window procedure is replaced (`SetWindowLongPtrW`) so
+  `WM_MOUSEACTIVATE` answers `MA_NOACTIVATE` and every `WM_STYLECHANGING` of
+  `GWL_EXSTYLE` re-adds `WS_EX_NOACTIVATE` / `WS_EX_TOOLWINDOW` (minus
+  `WS_EX_APPWINDOW`) — winit rewrites the whole extended style on every flag
+  change (`set_cursor_hittest`, `set_visible`), so setting them once is not
+  enough; `with_active(false)` gives the first show `SW_SHOWNOACTIVATE`.
+- **macOS**: winit's `with_panel(true)` (a `NonactivatingPanel` `NSPanel`),
+  then `setBecomesKeyOnlyIfNeeded:YES` and `setHidesOnDeactivate:NO` through
+  `objc2`. **Not** created hidden: in winit-appkit `set_visible(true)` is
+  `makeKeyAndOrderFront` whatever `active` says, which would make the panel
+  key; only the creation-time show honours `with_active(false)`
+  (`orderFront`). A tray re-show re-creates the window, so it takes the same
+  path.
+- **X11**: `WM_HINTS.input = False` and `_NET_WM_STATE_SKIP_TASKBAR` /
+  `_SKIP_PAGER` written over a separate `x11rb` connection before the map,
+  then a round trip; `always_on_top` is asked again after the map, since a
+  level set on an unmapped window is a client message the WM ignores.
+- **Wayland**: xdg-toplevel cannot refuse focus or a taskbar entry (KWin
+  decides activation at map time and ignores winit's `with_active(false)`), so
+  the two do nothing and one `tracing::warn!` says so. `App::prefer_x11(true)`
+  builds the event loop on X11 whenever `DISPLAY` is set (XWayland), and
+  falls back to the default backend with a warning when that server refuses
+  the connection.
+- **Click-through** is winit's `set_cursor_hittest(false)` everywhere but X11,
+  where winit's XFixes requests are refused (it never negotiates the XFixes
+  version), so rinch sets an empty `ShapeInput` region itself over its own
+  x11rb connection (`xfixes_query_version` first) and restores `None` to turn
+  it off. It is kept by
+  the runtime (`RinchRuntime::click_through`) across a hide/show re-creation;
+  `set_click_through_current_window` posts `RinchNativeEvent::SetClickThrough`,
+  which the shell applies without reaching the app.
+
+Only the Linux paths have run; Windows and macOS are type-checked. Example:
+`examples/overlay-pill`. Guide: `docs/src/guide/windows.md#overlay-windows`.
 
 **`on_close_requested` callback:** Intercept the window close button to hide instead of exit:
 
