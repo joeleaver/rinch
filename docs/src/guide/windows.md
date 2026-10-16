@@ -254,7 +254,12 @@ These functions work from onclick handlers and affect the window containing the 
 and at the size it had** when it was hidden, including a position and size the
 user gave it by dragging (issue #1546). On Wayland only the size comes back:
 the compositor places windows, and a client cannot learn or choose its
-position. A maximized window comes back maximized.
+position. A maximized window comes back maximized, and un-maximizing it
+returns it to the last place and size it had before it was maximized. A
+minimized window's position is never recorded (Windows reports it as
+(-32000, -32000)), and a position that lies on no connected monitor when the
+window is shown (a monitor unplugged while it was hidden) is dropped, so the
+system places the window.
 
 The shell does this by recording the window's outer (frame) position and inner
 size at the hide and creating the new window with them, rather than by keeping
@@ -278,7 +283,10 @@ it appears at `WindowProps::x`/`y`, as a window created visible does.
 They are in the prelude and callable from any thread. The getters keep
 answering while the window is hidden, so an app can read them at exit and
 persist them; the setters, called while it is hidden, decide where and how big
-it comes back. A setter takes effect on the event loop's next turn, so a getter
+it comes back — except for a window hidden while maximized, which comes back
+maximized, the set geometry becoming the one it returns to when
+un-maximized. On Wayland the position setter does nothing and the position
+getter always answers `None`. A setter takes effect on the event loop's next turn, so a getter
 called right after it still answers the old value. The window manager may
 adjust a requested size or position.
 
