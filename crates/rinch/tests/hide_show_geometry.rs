@@ -588,3 +588,38 @@ impl Probe {
         }
     }
 }
+
+// ── review-1548 round 2 ─────────────────────────────────────────────────────
+
+/// No WM (the server places windows exactly): off every monitor → placed by
+/// the system on show; partly on screen → kept.
+#[test]
+#[ignore = "review2"]
+fn rv2_off_screen_no_wm() {
+    let mut probe = Probe::spawn(&[]);
+    let wid = wait_for("window", visible_window);
+    settle(&wid, (220, 224, 560, 280));
+    let root = run("xwininfo", &["-root"]);
+    eprintln!(
+        "{}",
+        root.lines()
+            .filter(|l| l.contains("Width") || l.contains("Height"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    run("xdotool", &["windowmove", &wid, "5000", "4000"]);
+    let off = settle(&wid, (5000, 4000, 560, 280));
+    assert_eq!(off, (5000, 4000, 560, 280), "positive control");
+    std::thread::sleep(Duration::from_millis(300));
+    let shown = hide_and_show(&mut probe);
+    std::thread::sleep(Duration::from_millis(500));
+    let back = geometry(&shown);
+    eprintln!("off-screen back {back:?}");
+    assert!(back.0 < 1000 && back.1 < 700, "on screen: {back:?}");
+    // Partly on screen (overlaps the right edge) is kept.
+    run("xdotool", &["windowmove", &shown, "900", "100"]);
+    settle(&shown, (900, 100, 560, 280));
+    std::thread::sleep(Duration::from_millis(300));
+    let shown = hide_and_show(&mut probe);
+    assert_eq!(settle(&shown, (900, 100, 560, 280)), (900, 100, 560, 280));
+}
