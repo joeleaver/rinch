@@ -55,7 +55,7 @@ impl SavedGeometry {
         }
         self.maximized = false;
         let scale = window.scale_factor();
-        if let Ok(pos) = window.outer_position() {
+        if let Some(pos) = super::overlay_window::outer_position(window) {
             self.position = Some(if cfg!(target_os = "macos") {
                 Position::Logical(pos.to_logical::<f64>(scale))
             } else {
@@ -111,7 +111,7 @@ static PUBLISHED: Mutex<Option<PublishedGeometry>> = Mutex::new(None);
 /// Publish the geometry of the live main window.
 pub(crate) fn publish_window(window: &dyn Window) {
     let scale = window.scale_factor();
-    let position = window.outer_position().ok().map(|p| {
+    let position = super::overlay_window::outer_position(window).map(|p| {
         let l = p.to_logical::<f64>(scale);
         (l.x, l.y)
     });

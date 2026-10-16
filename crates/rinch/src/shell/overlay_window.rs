@@ -378,6 +378,25 @@ pub(crate) fn set_click_through(window: &dyn Window, click_through: bool) {
     }
 }
 
+/// The window's outer (frame) top-left, in desktop pixels: where a window
+/// created `with_position` at it would be placed (issue #1546).
+///
+/// On X11 rinch reads it itself: winit's `outer_position` subtracts frame
+/// extents it cached when the window was created, before the window manager
+/// wrote `_NET_FRAME_EXTENTS`, so under KWin it answered the client's own
+/// top-left and every hide/show moved the window down by its title bar
+/// (measured on a private headless KWin + Xwayland). Elsewhere winit's
+/// answer; `None` where there is none (Wayland).
+pub(crate) fn outer_position(window: &dyn Window) -> Option<winit::dpi::PhysicalPosition<i32>> {
+    #[cfg(target_os = "linux")]
+    match x11::frame_origin(window) {
+        Ok(Some((x, y))) => return Some(winit::dpi::PhysicalPosition::new(x, y)),
+        Ok(None) => {} // not an X11 window
+        Err(e) => tracing::debug!("Could not read the X11 frame position: {e}"),
+    }
+    window.outer_position().ok()
+}
+
 #[cfg(target_os = "linux")]
 mod x11 {
     use std::cell::RefCell;
@@ -405,6 +424,53 @@ mod x11 {
         /// rinch's own connection for input shapes, XFixes version negotiated.
         /// Kept: a toggle should not open a connection each time.
         static SHAPE_CONN: RefCell<Option<RustConnection>> = const { RefCell::new(None) };
+    }
+
+    /// The top-left of `window`'s frame on the root window: the client's own
+    /// top-left less the left and top `_NET_FRAME_EXTENTS` the window manager
+    /// published (none without a window manager). `Ok(None)` when `window` is
+    /// not an X11 window.
+    pub(super) fn frame_origin(
+        window: &dyn Window,
+    ) -> Result<Option<(i32, i32)>, Box<dyn std::error::Error>> {
+        let Some(xid) = xid_of(window)? else {
+            return Ok(None);
+        };
+        SHAPE_CONN.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            if slot.is_none() {
+                let (conn, _) = x11rb::connect(None)?;
+                *slot = Some(conn);
+            }
+            let conn = slot.as_ref().expect("just connected");
+            let result = frame_origin_on(conn, xid);
+            if result.is_err() {
+                *slot = None;
+            }
+            result.map(Some)
+        })
+    }
+
+    /// [`frame_origin`] on a given connection and window id.
+    pub(crate) fn frame_origin_on<C: Connection>(
+        conn: &C,
+        xid: u32,
+    ) -> Result<(i32, i32), Box<dyn std::error::Error>> {
+        let root = conn.get_geometry(xid)?.reply()?.root;
+        let at = conn.translate_coordinates(xid, root, 0, 0)?.reply()?;
+        let extents = conn
+            .intern_atom(false, b"_NET_FRAME_EXTENTS")?
+            .reply()?
+            .atom;
+        let reply = conn
+            .get_property(false, xid, extents, AtomEnum::CARDINAL, 0, 4)?
+            .reply()?;
+        // left, right, top, bottom.
+        let (left, top) = match reply.value32().map(|v| v.collect::<Vec<u32>>()) {
+            Some(v) if v.len() == 4 => (v[0] as i32, v[2] as i32),
+            _ => (0, 0),
+        };
+        Ok((at.dst_x as i32 - left, at.dst_y as i32 - top))
     }
 
     /// Give `window` an empty input shape (pointer passes through) or none

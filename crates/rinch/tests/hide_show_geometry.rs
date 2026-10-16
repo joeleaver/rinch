@@ -307,3 +307,90 @@ fn a_hidden_start_appears_at_the_requested_position() {
     let shown = hide_and_show(&mut probe);
     assert_eq!(settle(&shown, (333, 111, 560, 280)), (333, 111, 560, 280));
 }
+
+// ── Under a window manager ──────────────────────────────────────────────────
+//
+// A reparenting window manager puts a frame around the window, so the
+// position a client asks for is the frame's and `xwininfo` reports the
+// client's: these compare the window with itself before the hide rather than
+// with fixed numbers. Run them inside a private headless KWin:
+//
+// ```sh
+// dbus-run-session -- kwin_wayland --virtual --xwayland --socket wayland-test \
+//     --no-lockscreen --no-global-shortcuts --exit-with-session ./run.sh
+// ```
+//
+// where `run.sh` unsets `WAYLAND_DISPLAY` (so the probe takes the X11
+// backend) and runs this test binary with `--ignored wm_`.
+
+/// The window `_NET_ACTIVE_WINDOW` names, as `xdotool` spells ids (decimal).
+fn active_window() -> String {
+    let out = run("xprop", &["-root", "_NET_ACTIVE_WINDOW"]);
+    let hex = out
+        .rsplit("# ")
+        .next()
+        .map(str::trim)
+        .unwrap_or_else(|| panic!("no _NET_ACTIVE_WINDOW: {out}"));
+    u64::from_str_radix(hex.trim_start_matches("0x"), 16)
+        .unwrap_or_else(|_| panic!("unreadable _NET_ACTIVE_WINDOW: {out}"))
+        .to_string()
+}
+
+fn wm_moved_and_resized_comes_back(envs: &[(&str, &str)]) -> (Probe, String) {
+    let wm = run("xprop", &["-root", "_NET_SUPPORTING_WM_CHECK"]);
+    assert!(
+        wm.contains("window id"),
+        "positive control: a window manager runs on this display: {wm}"
+    );
+    let mut probe = Probe::spawn(envs);
+    let wid = wait_for("the probe's window", visible_window);
+    std::thread::sleep(Duration::from_millis(500));
+    run("xdotool", &["windowmove", &wid, "300", "378"]);
+    run("xdotool", &["windowsize", &wid, "700", "200"]);
+    std::thread::sleep(Duration::from_millis(700));
+    let before = geometry(&wid);
+    assert_eq!(
+        (before.2, before.3),
+        (700, 200),
+        "positive control: the resize reached the window"
+    );
+    assert!(
+        before.0 > 250 && before.1 > 330,
+        "positive control: the move reached the window: {before:?}"
+    );
+    let shown = hide_and_show(&mut probe);
+    assert_eq!(
+        settle(&shown, before),
+        before,
+        "the re-shown window is where it was hidden, at its size"
+    );
+    (probe, shown)
+}
+
+#[test]
+#[ignore = "needs an X server with a window manager; see the section docs"]
+fn wm_an_ordinary_window_comes_back_at_its_geometry_and_active() {
+    let (_probe, shown) = wm_moved_and_resized_comes_back(&[]);
+    let active = wait_for("the re-shown window to be activated", || {
+        let a = active_window();
+        (a == shown).then_some(a)
+    });
+    assert_eq!(active, shown, "an ordinary show still activates");
+}
+
+#[test]
+#[ignore = "needs an X server with a window manager; see the section docs"]
+fn wm_a_non_activating_window_comes_back_at_its_geometry_inactive() {
+    let (_probe, shown) = wm_moved_and_resized_comes_back(&[("PROBE_NON_ACTIVATING", "1")]);
+    std::thread::sleep(Duration::from_millis(700));
+    assert_ne!(
+        active_window(),
+        shown,
+        "the re-shown panel was not activated"
+    );
+    let hints = run("xprop", &["-id", &shown, "WM_HINTS"]);
+    assert!(
+        hints.contains("Client accepts input or input focus: False"),
+        "{hints}"
+    );
+}
