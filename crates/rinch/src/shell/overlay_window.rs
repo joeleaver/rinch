@@ -187,6 +187,7 @@ pub(crate) mod mac {
     pub(crate) const IGNORES_CYCLE: u64 = 1 << 6;
     pub(crate) const FULL_SCREEN_PRIMARY: u64 = 1 << 7;
     pub(crate) const FULL_SCREEN_AUXILIARY: u64 = 1 << 8;
+    pub(crate) const FULL_SCREEN_NONE: u64 = 1 << 9;
 
     /// The `setLevel:` rinch makes itself: `None` where winit's own level is
     /// right (`Normal`; `Floating` is winit's `AlwaysOnTop`).
@@ -216,7 +217,7 @@ pub(crate) mod mac {
     /// `current` with `add` laid over it, dropping each bit `add` excludes:
     /// AppKit raises on `canJoinAllSpaces | moveToActiveSpace`, on more than
     /// one of `managed` / `transient` / `stationary`, on both cycle bits and
-    /// on both fullscreen bits.
+    /// on more than one of the three fullscreen bits.
     #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
     pub(crate) fn merge(current: u64, add: u64) -> u64 {
         let mut clear = 0;
@@ -230,7 +231,7 @@ pub(crate) mod mac {
             clear |= PARTICIPATES_IN_CYCLE;
         }
         if add & FULL_SCREEN_AUXILIARY != 0 {
-            clear |= FULL_SCREEN_PRIMARY;
+            clear |= FULL_SCREEN_PRIMARY | FULL_SCREEN_NONE;
         }
         (current & !clear) | add
     }
@@ -1356,12 +1357,13 @@ mod tests {
         // Nothing to add: the window keeps what it has.
         assert_eq!(mac::merge(0b10_0110, 0), 0b10_0110);
         // moveToActiveSpace (2), managed (4), transient (8),
-        // participatesInCycle (32) and fullScreenPrimary (128) are each
-        // excluded by a bit added; an unrelated bit (1 << 9) is kept.
-        let current = 2 | 4 | 8 | 32 | 128 | (1 << 9);
+        // participatesInCycle (32), fullScreenPrimary (128) and
+        // fullScreenNone (512) are each excluded by a bit added; an unrelated
+        // bit (fullScreenAllowsTiling, 1 << 11) is kept.
+        let current = 2 | 4 | 8 | 32 | 128 | 512 | (1 << 11);
         assert_eq!(
             mac::merge(current, mac::collection(true, true)),
-            1 | 16 | 64 | 256 | (1 << 9)
+            1 | 16 | 64 | 256 | (1 << 11)
         );
         // Each exclusion only on its own trigger.
         assert_eq!(mac::merge(2 | 4, mac::CAN_JOIN_ALL_SPACES), 1 | 4);

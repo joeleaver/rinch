@@ -5073,8 +5073,10 @@ fullScreenAuxiliary`; X11 `_NET_WM_DESKTOP = 0xFFFFFFFF` +
 activation policy, #1528). Collection bits are merged into the window's own,
 dropping the ones AppKit says exclude them (`overlay_window::mac::merge`). The
 steps come from the props on every creation, so a hide/show re-creation (#1546)
-keeps them. Wayland's `wlr-layer-shell` (#1523) maps `Normal`/`Floating` to
-the `top` layer and `StatusBar`/`ScreenSaver` to `overlay`.
+keeps them. On native Wayland a level is a no-op today; once #1523 lands a
+`non_activating` window there is a `wlr-layer-shell` surface, `Normal`/`Floating`
+in the `top` layer and `StatusBar`/`ScreenSaver` in `overlay` (until then
+`non_activating` warns).
 
 Only the Linux paths have run; Windows and macOS are type-checked. Example:
 `examples/overlay-pill`. Guide: `docs/src/guide/windows.md#overlay-windows`.

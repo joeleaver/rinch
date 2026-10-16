@@ -427,6 +427,9 @@ pub struct WindowProps {
     pub borderless: bool,
     pub resizable: bool,
     pub transparent: bool,
+    /// Keep the window above ordinary windows: [`WindowLevel::Floating`].
+    /// [`WindowProps::level`] chooses a higher level; this never lowers one
+    /// ([`WindowProps::effective_level`]).
     pub always_on_top: bool,
     /// Whether the window is on screen when the app starts (default `true`).
     ///
@@ -537,8 +540,11 @@ impl WindowProps {
 /// | X11 | `_NET_WM_STATE_ABOVE` | `_NET_WM_STATE_ABOVE` | `_NET_WM_STATE_ABOVE` |
 /// | Wayland | no effect | no effect | no effect |
 ///
-/// On Wayland a `wlr-layer-shell` surface would place it (#1523): `Floating`
-/// is the `top` layer, `StatusBar` and `ScreenSaver` the `overlay` layer.
+/// On native Wayland a level is a no-op today. Once #1523 lands, a
+/// `non_activating` window there becomes a `wlr-layer-shell` surface, placed
+/// by its level: `Normal` and `Floating` in the `top` layer, `StatusBar` and
+/// `ScreenSaver` in the `overlay` layer. Until then it is a plain
+/// xdg-toplevel, and `non_activating` logs a warning.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum WindowLevel {
     /// An ordinary window (the default).
