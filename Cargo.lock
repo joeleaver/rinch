@@ -7101,6 +7101,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "wayland-overlay"
+version = "0.1.0"
+dependencies = [
+ "rinch",
+ "rinch-core",
+]
+
+[[package]]
 name = "wayland-protocols"
 version = "0.32.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"

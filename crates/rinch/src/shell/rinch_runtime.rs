@@ -2480,6 +2480,26 @@ impl ApplicationHandler for RinchRuntime {
             self.queue_pointer_move(lx as f32, ly as f32, pointer, event_loop);
             return;
         }
+        // A mouse entering the window is where it is: a press can follow with
+        // no move in between (an input injector, a window mapped under a
+        // still pointer), and it must not be judged at a stale position
+        // (#1523: a layer surface's drag started from (0, 0)).
+        if let WindowEvent::PointerEntered {
+            position,
+            primary,
+            kind: winit::event::PointerKind::Mouse,
+            ..
+        } = &event
+        {
+            let (lx, ly) = to_logical_point((position.x, position.y), self.scale_factor());
+            let down = self.pressed_pointers.is_down(SurfacePointer::mouse(false).id);
+            let pointer = SurfacePointer {
+                primary: *primary,
+                ..SurfacePointer::mouse(down)
+            };
+            self.queue_pointer_move(lx as f32, ly as f32, pointer, event_loop);
+            return;
+        }
         // A press or release is judged where *its* pointer is: a finger or a
         // pen reports no move before it touches down, so the position the
         // press carries is queued as that pointer's move first (a mouse's
