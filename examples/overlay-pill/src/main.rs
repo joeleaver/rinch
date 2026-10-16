@@ -6,6 +6,9 @@
 //! keystroke still goes to the editor. "Click-through 5 s" lets the pointer
 //! through to whatever is under the pill for five seconds, then turns it back.
 //!
+//! The pill sits at the status-bar level and on every workspace (#1549):
+//! switch desktops (or macOS Spaces, fullscreen apps' included) and it stays.
+//!
 //! On native Wayland the focus half cannot be had (see the guide's
 //! "Overlay windows" section); `prefer_x11(true)` runs the pill under
 //! XWayland, where it can.
@@ -13,7 +16,7 @@
 use std::time::Duration;
 
 use rinch::prelude::*;
-use rinch_core::element::WindowProps;
+use rinch_core::element::{WindowLevel, WindowProps};
 
 #[component]
 fn pill() -> NodeHandle {
@@ -64,6 +67,10 @@ fn main() {
             always_on_top: true,
             non_activating: true,
             skip_taskbar: true,
+            // #1549: on every workspace / Space, over fullscreen apps on
+            // macOS (Windows and Wayland: no effect).
+            level: WindowLevel::StatusBar,
+            visible_on_all_workspaces: true,
             ..Default::default()
         })
         .prefer_x11(true)
