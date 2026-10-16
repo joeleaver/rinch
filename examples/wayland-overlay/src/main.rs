@@ -74,6 +74,12 @@ fn script() {
 #[component]
 fn bar() -> NodeHandle {
     let shown = Signal::new(geometry());
+    if std::env::var_os("OVERLAY_TIMER_DRAG").is_some() {
+        set_timeout(3000, || {
+            println!("TIMER start_window_drag");
+            start_window_drag();
+        });
+    }
     if std::env::var_os("OVERLAY_SCRIPT").is_some() {
         script();
     }
@@ -88,6 +94,12 @@ fn bar() -> NodeHandle {
                 style: "cursor: move; padding: 4px 6px; border-radius: 4px; \
                         background: rgba(255, 255, 255, 0.15);",
                 "⠿"
+            }
+            div {
+                id: "apigrip",
+                onmousedown: || start_window_drag(),
+                style: "padding: 4px 6px; background: rgba(255, 0, 0, 0.5);",
+                "API"
             }
             span { style: "flex: 1; white-space: nowrap; overflow: hidden;", {|| shown.get()} }
             button { onclick: move || shown.set(geometry()), "Where?" }

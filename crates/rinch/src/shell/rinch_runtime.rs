@@ -49,6 +49,14 @@ use super::overlay_window::{self, Backend, WindowSteps};
 use super::window::WinitWindow;
 use super::window_geometry::{self, SavedGeometry};
 
+/// Ask again in a second whether an output has appeared for a layer surface
+/// the compositor closed with none left (#1523).
+fn arm_layer_output_retry() {
+    rinch_core::set_timeout(1000, || {
+        send_native_event(RinchNativeEvent::RetryLayerOutput)
+    });
+}
+
 /// The main window's state while it is a Wayland layer surface (#1523).
 #[derive(Debug, Clone, Copy)]
 struct LayerWindow {
@@ -282,6 +290,9 @@ pub enum RinchNativeEvent {
     SetWindowOutput(Option<String>),
     /// Start moving the window with the pointer (#1523).
     StartWindowDrag,
+    /// Look again for an output to show a layer surface on, after the
+    /// compositor closed it with no output left (#1523).
+    RetryLayerOutput,
     /// Start resizing the window from an edge with the pointer (#1523).
     StartWindowResize(rinch_platform::ResizeDirection),
     /// An injected platform event (e.g. synthetic gamepad input).
@@ -444,6 +455,12 @@ impl PressedButtons {
         self.0.iter().any(|(p, _)| *p == id)
     }
 
+    /// Whether the primary button (a mouse's left, a finger, a pen's tip) of
+    /// any pointer is down.
+    fn primary_down(&self) -> bool {
+        self.0.iter().any(|(_, b)| *b == Some(MouseButton::Left))
+    }
+
     /// Forget every button of pointer `id`; answers whether it had any down.
     fn lift(&mut self, id: u64) -> bool {
         let was = self.is_down(id);
@@ -527,6 +544,9 @@ pub struct RinchRuntime {
     /// The output `set_current_window_output` named, over
     /// `WindowProps::output` (#1523).
     output_override: Option<Option<String>>,
+    /// A layer surface was closed by the compositor with no output left: show
+    /// it again when one appears (#1523).
+    layer_awaiting_output: bool,
 
     // ── DevTools ─────────────────────────────────────────────────
     /// Shared DevTools store (persists across open/close cycles).
@@ -604,6 +624,7 @@ impl RinchRuntime {
             saved_geometry: SavedGeometry::default(),
             layer: None,
             output_override: None,
+            layer_awaiting_output: false,
             devtools_store: None,
             devtools_app: None,
             devtools_window: None,
@@ -1144,6 +1165,13 @@ impl RinchRuntime {
         if self.layer.is_none() {
             return false;
         }
+        // Only while the primary button is held: nothing but its release ends
+        // the gesture, so one started without it would follow the hovering
+        // pointer (a compositor refuses a move with no live press, too).
+        if !self.pressed_pointers.primary_down() {
+            tracing::debug!("window drag/resize refused: no button is down");
+            return true;
+        }
         let scale = w.scale_factor();
         let size = w.raw().surface_size().to_logical::<f64>(scale);
         let size = (size.width, size.height);
@@ -1202,6 +1230,23 @@ impl RinchRuntime {
             self.place_layer(new_position);
         }
         true
+    }
+
+    /// The compositor closed the layer surface (#1523): its output was
+    /// unplugged or disabled. Make it again, at the same position and size,
+    /// on the output the compositor picks — the named one may be gone, so
+    /// the name is dropped until `set_current_window_output` sets one again.
+    /// With no output left, wait for one.
+    fn layer_surface_closed(&mut self, event_loop: &dyn ActiveEventLoop) {
+        tracing::info!("the compositor closed the layer surface; making it again");
+        self.output_override = Some(None);
+        self.hide_window();
+        if event_loop.available_monitors().next().is_some() {
+            self.show_window(event_loop);
+        } else {
+            self.layer_awaiting_output = true;
+            arm_layer_output_retry();
+        }
     }
 
     /// Whether the main window asked to stay on top: `always_on_top`, or
@@ -1909,6 +1954,8 @@ impl RinchRuntime {
                     }
                 }
                 AppAction::SetVisible(visible) => {
+                    // The app decides now: no pending re-show (#1523).
+                    self.layer_awaiting_output = false;
                     if visible {
                         self.show_window(event_loop);
                     } else {
@@ -2564,6 +2611,13 @@ impl ApplicationHandler for RinchRuntime {
         }
 
         let platform_event = match event {
+            // A layer surface has no close button: its close is the
+            // compositor's, for an output that went away. Show it again
+            // rather than quitting (#1523).
+            WindowEvent::CloseRequested if self.layer.is_some() => {
+                self.layer_surface_closed(event_loop);
+                return;
+            }
             WindowEvent::CloseRequested => PlatformEvent::CloseRequested,
             WindowEvent::SurfaceResized(size) => {
                 // Also resize the renderer — it works in physical pixels.
@@ -3180,9 +3234,14 @@ impl RinchRuntime {
                 let position = Position::Logical(LogicalPosition::new(x, y));
                 // A layer surface (#1523) is placed by its margins, on its
                 // output; hidden, it comes back there.
-                let layer_window = self.app.window_props.as_ref().is_some_and(|p| {
-                    super::layer_shell::uses_layer_shell(p, Backend::of(event_loop))
-                });
+                // What the window got, once it has been created (a toplevel
+                // on GNOME); before that, what it will ask for.
+                let layer_window = match super::layer_shell::published_surface_kind() {
+                    Some(kind) => kind == WindowSurfaceKind::LayerShell,
+                    None => self.app.window_props.as_ref().is_some_and(|p| {
+                        super::layer_shell::uses_layer_shell(p, Backend::of(event_loop))
+                    }),
+                };
                 match &self.window {
                     Some(_) if self.layer.is_some() => self.place_layer((x, y)),
                     Some(w) => w.raw().set_outer_position(position),
@@ -3232,12 +3291,33 @@ impl RinchRuntime {
                 }
                 return;
             }
+            // From the app's own press handler; refused once the press is
+            // over (a timer, or the release dispatched before this event).
             RinchNativeEvent::StartWindowDrag => {
-                self.process_actions(vec![AppAction::DragWindow], event_loop);
+                if self.pressed_pointers.primary_down() {
+                    self.process_actions(vec![AppAction::DragWindow], event_loop);
+                } else {
+                    tracing::debug!("start_window_drag refused: no button is down");
+                }
                 return;
             }
             RinchNativeEvent::StartWindowResize(dir) => {
-                self.process_actions(vec![AppAction::DragResizeWindow(dir)], event_loop);
+                if self.pressed_pointers.primary_down() {
+                    self.process_actions(vec![AppAction::DragResizeWindow(dir)], event_loop);
+                } else {
+                    tracing::debug!("start_window_resize refused: no button is down");
+                }
+                return;
+            }
+            RinchNativeEvent::RetryLayerOutput => {
+                if self.layer_awaiting_output && self.window.is_none() {
+                    if event_loop.available_monitors().next().is_some() {
+                        self.layer_awaiting_output = false;
+                        self.show_window(event_loop);
+                    } else {
+                        arm_layer_output_retry();
+                    }
+                }
                 return;
             }
             RinchNativeEvent::InjectedPlatformEvent(pe) => pe,

@@ -293,6 +293,8 @@ mod tests {
     fn the_keyboard_follows_non_activating() {
         assert!(!LayerRequest::new(&props(true, None), None, None, "a").keyboard);
         assert!(LayerRequest::new(&props(false, Some(true)), None, None, "a").keyboard);
+        // Forced and non-activating: still no keyboard.
+        assert!(!LayerRequest::new(&props(true, Some(true)), None, None, "a").keyboard);
     }
 
     #[cfg(target_os = "linux")]
@@ -363,6 +365,11 @@ mod tests {
         assert_eq!(
             start(D::North).update((0.0, 500.0), at),
             ((100.0, 130.0 - MIN_SIZE), (200.0, MIN_SIZE))
+        );
+        // East and south at the minimum: the top-left stays.
+        assert_eq!(
+            start(D::SouthEast).update((-500.0, -500.0), at),
+            ((100.0, 50.0), (MIN_SIZE, MIN_SIZE))
         );
         assert_eq!(
             start(D::NorthWest).update((10.0, 10.0), at),
