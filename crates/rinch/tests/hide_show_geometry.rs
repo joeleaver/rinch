@@ -394,3 +394,197 @@ fn wm_a_non_activating_window_comes_back_at_its_geometry_inactive() {
         "{hints}"
     );
 }
+
+// ── review-1548 fixtures ────────────────────────────────────────────────────
+
+fn net_state(wid: &str) -> String {
+    run("xprop", &["-id", wid, "_NET_WM_STATE"])
+}
+
+/// No WM: a window at a negative position comes back there.
+#[test]
+#[ignore = "review"]
+fn rv_negative_position_round_trips() {
+    moved_and_resized_comes_back_at(&[], (220, 224, 560, 280), (-50, -30, 600, 300));
+}
+
+/// Under a WM: three hide/show cycles do not drift (frame extents subtracted
+/// exactly once each time).
+#[test]
+#[ignore = "review wm"]
+fn rv_wm_three_cycles_do_not_drift() {
+    let (mut probe, mut shown) = wm_moved_and_resized_comes_back(&[]);
+    let before = geometry(&shown);
+    for _ in 0..3 {
+        std::thread::sleep(Duration::from_millis(400));
+        shown = hide_and_show(&mut probe);
+        assert_eq!(settle(&shown, before), before, "cycle drifted");
+    }
+}
+
+/// Under a WM: what the setter asks is what the getter answers (both are the
+/// frame's top-left).
+#[test]
+#[ignore = "review wm"]
+fn rv_wm_setter_and_getter_agree() {
+    let wm = run("xprop", &["-root", "_NET_SUPPORTING_WM_CHECK"]);
+    assert!(wm.contains("window id"), "{wm}");
+    let mut probe = Probe::spawn(&[]);
+    let wid = wait_for("window", visible_window);
+    std::thread::sleep(Duration::from_millis(600));
+    let g0 = probe.geom();
+    eprintln!("initial geom {g0:?} xwininfo {:?}", geometry(&wid));
+    probe.send("move 260 300");
+    std::thread::sleep(Duration::from_millis(800));
+    let g = probe.geom();
+    eprintln!("after move geom {g:?} xwininfo {:?}", geometry(&wid));
+    assert_eq!(&g[..2], &[260.0, 300.0], "setter/getter disagree");
+    // And set while hidden lands there.
+    probe.send("hide");
+    wait_for("gone", || visible_window().is_none().then_some(()));
+    probe.send("move 140 160");
+    std::thread::sleep(Duration::from_millis(300));
+    probe.send("show");
+    let shown = wait_for("back", visible_window);
+    std::thread::sleep(Duration::from_millis(800));
+    let g = probe.geom();
+    eprintln!("after show geom {g:?} xwininfo {:?}", geometry(&shown));
+    assert_eq!(&g[..2], &[140.0, 160.0], "set-while-hidden position");
+}
+
+/// Under a WM: maximize, hide, show → maximized; un-maximize → the geometry
+/// it had before maximizing.
+#[test]
+#[ignore = "review wm"]
+fn rv_wm_maximized_round_trip() {
+    let (mut probe, shown) = wm_moved_and_resized_comes_back(&[]);
+    let before = geometry(&shown);
+    probe.send("max");
+    wait_for("maximized", || {
+        net_state(&shown).contains("MAXIMIZED_VERT").then_some(())
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    let maxed = geometry(&shown);
+    eprintln!("before {before:?} maxed {maxed:?}");
+    let shown = hide_and_show(&mut probe);
+    std::thread::sleep(Duration::from_millis(800));
+    let st = net_state(&shown);
+    eprintln!("after show state {st} geom {:?}", geometry(&shown));
+    assert!(st.contains("MAXIMIZED_VERT"), "comes back maximized: {st}");
+    assert_eq!(geometry(&shown), maxed, "maximized geometry");
+    probe.send("max");
+    wait_for("unmaximized", || {
+        (!net_state(&shown).contains("MAXIMIZED_VERT")).then_some(())
+    });
+    assert_eq!(settle(&shown, before), before, "restore geometry");
+}
+
+/// Under a WM: minimize, then hide and show → comes back on screen where it
+/// was (Windows records -32000 for a minimized window; X11 reference).
+#[test]
+#[ignore = "review wm"]
+fn rv_wm_minimized_then_hidden() {
+    let (mut probe, shown) = wm_moved_and_resized_comes_back(&[]);
+    let before = geometry(&shown);
+    probe.send("min");
+    std::thread::sleep(Duration::from_millis(800));
+    eprintln!(
+        "minimized geom {:?} state {}",
+        probe.geom(),
+        net_state(&shown)
+    );
+    probe.send("hide");
+    std::thread::sleep(Duration::from_millis(800));
+    probe.send("show");
+    let shown = wait_for("back", visible_window);
+    assert_eq!(settle(&shown, before), before);
+}
+
+/// Under a WM: hide/show once at A, move to B, maximize, hide, show,
+/// un-maximize → where should it go? The WM's own restore geometry was B.
+#[test]
+#[ignore = "review wm"]
+fn rv_wm_maximize_after_a_move_restores_the_latest_geometry() {
+    let (mut probe, shown) = wm_moved_and_resized_comes_back(&[]);
+    std::thread::sleep(Duration::from_millis(400));
+    run("xdotool", &["windowmove", &shown, "120", "140"]);
+    std::thread::sleep(Duration::from_millis(700));
+    let b = geometry(&shown);
+    eprintln!("B = {b:?}");
+    probe.send("max");
+    wait_for("maximized", || {
+        net_state(&shown).contains("MAXIMIZED_VERT").then_some(())
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    let shown = hide_and_show(&mut probe);
+    std::thread::sleep(Duration::from_millis(800));
+    probe.send("max");
+    wait_for("unmaximized", || {
+        (!net_state(&shown).contains("MAXIMIZED_VERT")).then_some(())
+    });
+    let got = settle(&shown, b);
+    eprintln!("restored to {got:?}");
+    assert_eq!(got, b, "restore geometry is the latest one, B");
+}
+
+/// Under a WM: first hide while maximized (nothing recorded before).
+#[test]
+#[ignore = "review wm"]
+fn rv_wm_first_hide_while_maximized() {
+    let mut probe = Probe::spawn(&[]);
+    let wid = wait_for("window", visible_window);
+    std::thread::sleep(Duration::from_millis(600));
+    let start = geometry(&wid);
+    probe.send("max");
+    wait_for("maximized", || {
+        net_state(&wid).contains("MAXIMIZED_VERT").then_some(())
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    let shown = hide_and_show(&mut probe);
+    std::thread::sleep(Duration::from_millis(800));
+    assert!(net_state(&shown).contains("MAXIMIZED_VERT"));
+    probe.send("max");
+    wait_for("unmaximized", || {
+        (!net_state(&shown).contains("MAXIMIZED_VERT")).then_some(())
+    });
+    let got = settle(&shown, start);
+    eprintln!("start {start:?} restored {got:?}");
+    assert_eq!(got, start, "un-maximize after a first maximized hide");
+}
+
+/// Wayland: `current_window_position` is documented "always None on
+/// Wayland". A position set while hidden is published anyway.
+#[test]
+#[ignore = "review wayland"]
+fn rv_wayland_position_stays_none() {
+    let wl = std::env::var("RV_WL").expect("RV_WL");
+    let mut probe = Probe::spawn(&[("WAYLAND_DISPLAY", &wl)]);
+    std::thread::sleep(Duration::from_millis(1500));
+    let g = probe.send_geom_raw();
+    eprintln!("live: {g}");
+    probe.send("hide");
+    std::thread::sleep(Duration::from_millis(800));
+    probe.send("move 10 20");
+    std::thread::sleep(Duration::from_millis(500));
+    let g2 = probe.send_geom_raw();
+    eprintln!("hidden after set: {g2}");
+    assert!(g.starts_with("geom none none"), "live: {g}");
+    assert!(g2.starts_with("geom none none"), "hidden after set: {g2}");
+}
+
+impl Probe {
+    fn send_geom_raw(&mut self) -> String {
+        self.send("geom");
+        let mut line = String::new();
+        loop {
+            line.clear();
+            assert!(
+                self.stdout.read_line(&mut line).unwrap() > 0,
+                "probe exited"
+            );
+            if line.starts_with("geom") {
+                return line.trim().to_string();
+            }
+        }
+    }
+}

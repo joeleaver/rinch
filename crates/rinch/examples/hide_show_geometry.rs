@@ -33,6 +33,8 @@ fn main() {
             match words.first().copied() {
                 Some("hide") => hide_current_window(),
                 Some("show") => show_current_window(),
+                Some("max") => toggle_maximize_current_window(),
+                Some("min") => minimize_current_window(),
                 Some("move") => {
                     if let (Some(x), Some(y)) = (num(1), num(2)) {
                         set_current_window_position(x, y);

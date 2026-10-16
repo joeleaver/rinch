@@ -385,13 +385,15 @@ pub(crate) fn set_click_through(window: &dyn Window, click_through: bool) {
 /// extents it cached when the window was created, before the window manager
 /// wrote `_NET_FRAME_EXTENTS`, so under KWin it answered the client's own
 /// top-left and every hide/show moved the window down by its title bar
-/// (measured on a private headless KWin + Xwayland). Elsewhere winit's
-/// answer; `None` where there is none (Wayland).
+/// (measured on a private headless KWin + Xwayland). A window manager that
+/// publishes no `_NET_FRAME_EXTENTS` (none at all, or a twm-class one) gets
+/// winit's answer, which walks the parent windows. Elsewhere winit's answer;
+/// `None` where there is none (Wayland).
 pub(crate) fn outer_position(window: &dyn Window) -> Option<winit::dpi::PhysicalPosition<i32>> {
     #[cfg(target_os = "linux")]
     match x11::frame_origin(window) {
         Ok(Some((x, y))) => return Some(winit::dpi::PhysicalPosition::new(x, y)),
-        Ok(None) => {} // not an X11 window
+        Ok(None) => {} // not an X11 window, or no frame extents published
         Err(e) => tracing::debug!("Could not read the X11 frame position: {e}"),
     }
     window.outer_position().ok()
@@ -428,8 +430,8 @@ mod x11 {
 
     /// The top-left of `window`'s frame on the root window: the client's own
     /// top-left less the left and top `_NET_FRAME_EXTENTS` the window manager
-    /// published (none without a window manager). `Ok(None)` when `window` is
-    /// not an X11 window.
+    /// published. `Ok(None)` when `window` is not an X11 window or no
+    /// extents are published.
     pub(super) fn frame_origin(
         window: &dyn Window,
     ) -> Result<Option<(i32, i32)>, Box<dyn std::error::Error>> {
@@ -446,31 +448,48 @@ mod x11 {
             let result = frame_origin_on(conn, xid);
             if result.is_err() {
                 *slot = None;
+                FRAME_EXTENTS_ATOM.with(|a| a.set(None));
             }
-            result.map(Some)
+            result
         })
+    }
+
+    thread_local! {
+        /// `_NET_FRAME_EXTENTS` on [`SHAPE_CONN`], interned once.
+        static FRAME_EXTENTS_ATOM: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
     }
 
     /// [`frame_origin`] on a given connection and window id.
     pub(crate) fn frame_origin_on<C: Connection>(
         conn: &C,
         xid: u32,
-    ) -> Result<(i32, i32), Box<dyn std::error::Error>> {
-        let root = conn.get_geometry(xid)?.reply()?.root;
-        let at = conn.translate_coordinates(xid, root, 0, 0)?.reply()?;
-        let extents = conn
-            .intern_atom(false, b"_NET_FRAME_EXTENTS")?
-            .reply()?
-            .atom;
+    ) -> Result<Option<(i32, i32)>, Box<dyn std::error::Error>> {
+        let extents = match FRAME_EXTENTS_ATOM.with(std::cell::Cell::get) {
+            Some(atom) => atom,
+            None => {
+                let atom = conn
+                    .intern_atom(false, b"_NET_FRAME_EXTENTS")?
+                    .reply()?
+                    .atom;
+                FRAME_EXTENTS_ATOM.with(|a| a.set(Some(atom)));
+                atom
+            }
+        };
         let reply = conn
             .get_property(false, xid, extents, AtomEnum::CARDINAL, 0, 4)?
             .reply()?;
         // left, right, top, bottom.
-        let (left, top) = match reply.value32().map(|v| v.collect::<Vec<u32>>()) {
-            Some(v) if v.len() == 4 => (v[0] as i32, v[2] as i32),
-            _ => (0, 0),
+        let Some((left, top)) = reply
+            .value32()
+            .map(|v| v.collect::<Vec<u32>>())
+            .filter(|v| v.len() == 4)
+            .map(|v| (v[0] as i32, v[2] as i32))
+        else {
+            return Ok(None);
         };
-        Ok((at.dst_x as i32 - left, at.dst_y as i32 - top))
+        let root = conn.get_geometry(xid)?.reply()?.root;
+        let at = conn.translate_coordinates(xid, root, 0, 0)?.reply()?;
+        Ok(Some((at.dst_x as i32 - left, at.dst_y as i32 - top)))
     }
 
     /// Give `window` an empty input shape (pointer passes through) or none

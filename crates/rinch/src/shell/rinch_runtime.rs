@@ -1012,6 +1012,18 @@ impl RinchRuntime {
         self.click_through
     }
 
+    /// Keep the saved normal geometry and the published one current
+    /// (#1546). Only for a window that is on screen: a hidden start's sizing
+    /// window sits wherever it was created.
+    fn note_geometry(&mut self, window: &dyn winit::window::Window) {
+        if !self.shown_once {
+            return;
+        }
+        let reading = window_geometry::WindowReading::of(window);
+        self.saved_geometry.note(&reading);
+        window_geometry::publish_window(&reading);
+    }
+
     /// Whether the main window asked to stay on top.
     fn main_window_always_on_top(&self) -> bool {
         self.app
@@ -1038,7 +1050,7 @@ impl RinchRuntime {
         if !hidden {
             overlay_window::after_create(&*window, steps, self.main_window_always_on_top());
             self.shown_once = true;
-            window_geometry::publish_window(&*window);
+            self.note_geometry(&*window);
         }
 
         let size = window.surface_size();
@@ -1110,8 +1122,9 @@ impl RinchRuntime {
             // start (#1520), which was never on screen and sits wherever the
             // system put it.
             if self.shown_once {
-                self.saved_geometry.record(w.raw());
-                window_geometry::publish_window(w.raw());
+                let reading = window_geometry::WindowReading::of(w.raw());
+                self.saved_geometry.record(&reading);
+                window_geometry::publish_window(&reading);
             }
             // The menu bar leaves the window with it (Windows: muda keeps a
             // list of the HWNDs it serves, and a recycled HWND would be
@@ -1147,6 +1160,24 @@ impl RinchRuntime {
         // does; a restore from the tray comes back where it was hidden
         // (#1546), with the size it had.
         let first_show = !std::mem::replace(&mut self.shown_once, true);
+        // A position on no monitor that is connected now (one unplugged
+        // while the window was hidden) is left to the system.
+        if let Some(position) = self.saved_geometry.position {
+            let monitors: Vec<window_geometry::MonitorRect> = event_loop
+                .available_monitors()
+                .filter_map(|m| {
+                    let size = m.current_video_mode()?.size();
+                    Some(window_geometry::MonitorRect {
+                        position: m.position()?,
+                        size,
+                        scale: m.scale_factor(),
+                    })
+                })
+                .collect();
+            if !window_geometry::on_some_monitor(position, self.saved_geometry.size, &monitors) {
+                self.saved_geometry.position = None;
+            }
+        }
         let window_attrs = self.main_window_attributes(steps, backend, false, first_show);
 
         let window = event_loop
@@ -1164,8 +1195,15 @@ impl RinchRuntime {
         // its chords were skipped by rinch's matcher while no bar fired them).
         if let Some(menu) = &self.native_menu {
             crate::menu::attach_menu_to_window(menu, &*window);
+            // Windows: `SetMenu` keeps the outer rect and takes the bar out of
+            // the client area, so the content would lose the bar's height on
+            // every hide / show. Ask for the recorded content size again.
+            #[cfg(target_os = "windows")]
+            if let Some(size) = self.saved_geometry.size {
+                let _ = window.request_surface_size(size);
+            }
         }
-        window_geometry::publish_window(&*window);
+        self.note_geometry(&*window);
 
         let winit_window = WinitWindow::new(window);
         self.window = Some(winit_window);
@@ -2283,8 +2321,8 @@ impl ApplicationHandler for RinchRuntime {
                 | WindowEvent::SurfaceResized(_)
                 | WindowEvent::ScaleFactorChanged { .. }
         ) {
-            if let Some(w) = &self.window {
-                window_geometry::publish_window(w.raw());
+            if let Some(w) = self.window.as_ref().map(|w| w.window.clone()) {
+                self.note_geometry(&*w);
             }
         }
 
@@ -2905,6 +2943,8 @@ impl RinchRuntime {
                 let position = Position::Logical(LogicalPosition::new(x, y));
                 match &self.window {
                     Some(w) => w.raw().set_outer_position(position),
+                    // Wayland: a client has no position to set or report.
+                    None if Backend::of(event_loop) == Backend::Wayland => {}
                     None => {
                         self.saved_geometry.position = Some(position);
                         window_geometry::publish_hidden(Some((x, y)), None);
