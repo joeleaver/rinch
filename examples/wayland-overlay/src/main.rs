@@ -29,6 +29,9 @@ fn geometry() -> String {
     )
 }
 
+/// The scripted steps: a name and what it does.
+type Steps = std::rc::Rc<Vec<(&'static str, Box<dyn Fn()>)>>;
+
 /// The scripted run: each step, then `OVERLAY_STEP_MS` (600 ms) later what
 /// it gave, then as long again before the next.
 fn script() {
@@ -36,7 +39,7 @@ fn script() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(600);
-    let steps: Vec<(&str, Box<dyn Fn()>)> = vec![
+    let steps: Steps = std::rc::Rc::new(vec![
         ("start", Box::new(|| {})),
         (
             "move to (200, 150)",
@@ -52,8 +55,8 @@ fn script() {
             "move to (37, 411)",
             Box::new(|| set_current_window_position(37.0, 411.0)),
         ),
-    ];
-    fn run(steps: std::rc::Rc<Vec<(&'static str, Box<dyn Fn()>)>>, i: usize, step_ms: u32) {
+    ]);
+    fn run(steps: Steps, i: usize, step_ms: u32) {
         if i == steps.len() {
             println!("SCRIPT done");
             std::process::exit(0);
@@ -64,7 +67,6 @@ fn script() {
             set_timeout(step_ms, move || run(steps, i + 1, step_ms));
         });
     }
-    let steps = std::rc::Rc::new(steps);
     set_timeout(800, move || run(steps, 0, step_ms));
 }
 
