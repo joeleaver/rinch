@@ -16,3 +16,9 @@ pub fn set_current_window_size(_width: f64, _height: f64) {}
 pub fn close_current_window() {
     std::process::exit(0);
 }
+pub fn current_window_surface_kind() -> Option<rinch_core::element::WindowSurfaceKind> {
+    None
+}
+pub fn set_current_window_output(_output: Option<&str>) {}
+pub fn start_window_drag() {}
+pub fn start_window_resize(_edge: rinch_platform::ResizeDirection) {}

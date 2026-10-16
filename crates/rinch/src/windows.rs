@@ -49,6 +49,7 @@ use winit::event_loop::EventLoopProxy;
 use winit::window::WindowId;
 
 use crate::shell::rinch_runtime::{RinchNativeEvent, send_native_event};
+use rinch_core::element::WindowSurfaceKind;
 
 /// A handle to an open window.
 ///
@@ -452,9 +453,12 @@ pub fn set_click_through_current_window(click_through: bool) {
 ///
 /// Kept while the window is hidden ([`hide_current_window`]): it is where
 /// [`show_current_window`] puts it back. So an app can read it at exit and
-/// persist it. `None` before the window first exists, and always on Wayland,
-/// where a client cannot learn its window's position. Callable from any
-/// thread.
+/// persist it. `None` before the window first exists, and on Wayland, where
+/// a client cannot learn its window's position — except a layer-shell window
+/// (issue #1523), whose position is its top-left on its output, once it has
+/// one (from `WindowProps::x`/`y`, [`set_current_window_position`] or a
+/// move); before that the compositor centres it and this is `None`.
+/// Callable from any thread.
 pub fn current_window_position() -> Option<(f64, f64)> {
     crate::shell::window_geometry::published().and_then(|g| g.position)
 }
@@ -472,7 +476,10 @@ pub fn current_window_size() -> Option<(f64, f64)> {
 /// the desktop (issue #1546). While the window is hidden, this is where
 /// [`show_current_window`] puts it. Applied on the event loop's next turn, so
 /// [`current_window_position`] answers the new position after that. Ignored
-/// on Wayland, where a client cannot position its window.
+/// on Wayland, where a client cannot position its window — except a
+/// layer-shell window (issue #1523), which is anchored to its output's
+/// top-left corner with `(x, y)` as its margins: logical pixels relative to
+/// its output ([`set_current_window_output`]), not the desktop.
 pub fn set_current_window_position(x: f64, y: f64) {
     send_native_event(RinchNativeEvent::SetWindowPosition(x, y));
 }
@@ -484,6 +491,52 @@ pub fn set_current_window_position(x: f64, y: f64) {
 /// adjust it (a tiling window manager, a size constraint).
 pub fn set_current_window_size(width: f64, height: f64) {
     send_native_event(RinchNativeEvent::SetWindowSize(width, height));
+}
+
+/// What kind of surface the current window got (issue #1523): on native
+/// Wayland a [`WindowProps::non_activating`](rinch_core::element::WindowProps::non_activating)
+/// window (or one with `wayland_layer_shell: Some(true)`) is a
+/// [`WindowSurfaceKind::LayerShell`] surface where the compositor supports
+/// `wlr-layer-shell`, and a [`WindowSurfaceKind::Toplevel`] where it does not
+/// (GNOME/Mutter). Every other window is `Toplevel`. Kept while the window is
+/// hidden; `None` before the window first exists. Callable from any thread.
+pub fn current_window_surface_kind() -> Option<WindowSurfaceKind> {
+    crate::shell::layer_shell::published_surface_kind()
+}
+
+/// Show the current window on the output (monitor) with this connector name
+/// (`"DP-1"`, `"eDP-1"`), or let the compositor choose (`None`) — for a
+/// Wayland layer-shell window (issue #1523), whose position
+/// ([`set_current_window_position`]) is relative to its output. The window is
+/// made again on that output at the same position and size. Overrides
+/// [`WindowProps::output`](rinch_core::element::WindowProps::output); no
+/// effect on any other kind of window. Monitor names are what
+/// `wl_output.name` reports, as `wlr-randr` / `kscreen-doctor -o` list them.
+pub fn set_current_window_output(output: Option<&str>) {
+    send_native_event(RinchNativeEvent::SetWindowOutput(
+        output.map(str::to_string),
+    ));
+}
+
+/// Start moving the current window with the pointer, from a handler of the
+/// press that should move it (a custom title bar's `onmousedown`) — what a
+/// `data-drag-window` region does (issue #1523). An ordinary window asks the
+/// window manager for an interactive move. A Wayland layer-shell window has
+/// none, so rinch follows the pointer until the button is released and moves
+/// the window by its margins; [`current_window_position`] then answers where
+/// it is. Ignored when no button is held (a timer, a press already over).
+pub fn start_window_drag() {
+    send_native_event(RinchNativeEvent::StartWindowDrag);
+}
+
+/// Start resizing the current window from `edge` with the pointer, from a
+/// handler of the press on that edge — what `WindowProps::resize_inset` does
+/// for a borderless window (issue #1523). A Wayland layer-shell window is
+/// resized by rinch, following the pointer until the button is released (the
+/// opposite edge stays put; 16 logical pixels at the least). Ignored when no
+/// button is held.
+pub fn start_window_resize(edge: rinch_platform::ResizeDirection) {
+    send_native_event(RinchNativeEvent::StartWindowResize(edge));
 }
 
 /// Close the current window.

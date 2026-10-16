@@ -17,7 +17,7 @@
 //! | Windows | `WS_EX_NOACTIVATE`, `WM_MOUSEACTIVATE` → `MA_NOACTIVATE`, shown with `SW_SHOWNOACTIVATE` | `set_cursor_hittest(false)` (`WS_EX_TRANSPARENT \| WS_EX_LAYERED`) | `WS_EX_TOOLWINDOW` (no taskbar button, no Alt+Tab) and winit's `with_skip_taskbar` |
 //! | macOS | non-activating `NSPanel`, `becomesKeyOnlyIfNeeded`, `hidesOnDeactivate = NO`, ordered front at creation without becoming key | `ignoresMouseEvents` (through `set_cursor_hittest`) | no Dock entry to skip; `ignoresCycle \| stationary` (#1549) |
 //! | X11 | `WM_HINTS.input = False` (ICCCM "no input" model) | an empty `ShapeInput` region set by rinch over its own x11rb connection (winit's `set_cursor_hittest` never negotiates XFixes and is refused) | `_NET_WM_STATE_SKIP_TASKBAR`, `_NET_WM_STATE_SKIP_PAGER` |
-//! | Wayland | **not available** (xdg-toplevel cannot refuse focus) | an empty input region (through `set_cursor_hittest`) | **not available** |
+//! | Wayland | a `wlr-layer-shell` surface with no keyboard interactivity (#1523, [`super::layer_shell`]); **not available** where the compositor has no layer shell (GNOME) | an empty input region (through `set_cursor_hittest`) | a layer surface has no taskbar entry; an xdg-toplevel **cannot refuse one** |
 //!
 //! [`WindowProps::level`] and [`WindowProps::visible_on_all_workspaces`]
 //! (issue #1549) place an overlay among windows and workspaces:
@@ -115,6 +115,9 @@ pub(crate) struct WindowSteps {
     pub(crate) mac_collection: u64,
     /// Wayland was asked for something it cannot do: warn once.
     pub(crate) wayland_unsupported: bool,
+    /// Wayland: a `wlr-layer-shell` surface (#1523); warn once if the
+    /// compositor gave an xdg-toplevel instead.
+    pub(crate) wayland_layer: bool,
     /// Turn the pointer hit test off after creation.
     pub(crate) click_through: bool,
 }
@@ -158,7 +161,11 @@ impl WindowSteps {
                 steps.create_hidden = non_activating || skip_taskbar || all_workspaces;
             }
             Backend::Wayland => {
-                steps.wayland_unsupported = non_activating || skip_taskbar;
+                steps.wayland_layer = super::layer_shell::uses_layer_shell(props, backend);
+                // A layer surface takes no focus and has no taskbar entry; a
+                // toplevel can do neither.
+                steps.wayland_unsupported =
+                    !steps.wayland_layer && (non_activating || skip_taskbar);
             }
             Backend::Other => {}
         }
@@ -307,8 +314,9 @@ pub(crate) fn apply_to_attributes(
     backend: Backend,
     wayland_app_id: Option<&str>,
     x11_class: Option<&str>,
+    layer: Option<&super::layer_shell::LayerRequest>,
 ) -> WindowAttributes {
-    let _ = (backend, wayland_app_id, x11_class);
+    let _ = (backend, wayland_app_id, x11_class, layer);
     if steps.inactive {
         attrs = attrs.with_active(false);
     }
@@ -325,9 +333,15 @@ pub(crate) fn apply_to_attributes(
             let x11 = WindowAttributesX11::default().with_name(class, class);
             attrs = attrs.with_platform_attributes(Box::new(x11));
         }
-    } else if let Some(app_id) = wayland_app_id {
+    } else if wayland_app_id.is_some() || layer.is_some() {
         use winit::platform::wayland::WindowAttributesWayland;
-        let wayland = WindowAttributesWayland::default().with_name(app_id, app_id);
+        let mut wayland = WindowAttributesWayland::default();
+        if let Some(app_id) = wayland_app_id {
+            wayland = wayland.with_name(app_id, app_id);
+        }
+        if let Some(layer) = layer {
+            wayland = wayland.with_layer_shell(layer.to_winit());
+        }
         attrs = attrs.with_platform_attributes(Box::new(wayland));
     }
     #[cfg(target_os = "windows")]
@@ -355,6 +369,9 @@ static WAYLAND_WARNED: AtomicBool = AtomicBool::new(false);
 pub(crate) enum AfterCreate {
     /// Log once that Wayland cannot do what was asked.
     WarnWayland,
+    /// Log once if a window asked to be a layer surface got an
+    /// xdg-toplevel (no `zwlr_layer_shell_v1`: GNOME).
+    CheckLayerShell,
     /// Windows: subclass for no-activate / tool-window.
     Win32Install {
         no_activate: bool,
@@ -388,6 +405,9 @@ pub(crate) fn after_create_actions(steps: WindowSteps, always_on_top: bool) -> V
     let mut actions = Vec::new();
     if steps.wayland_unsupported {
         actions.push(AfterCreate::WarnWayland);
+    }
+    if steps.wayland_layer {
+        actions.push(AfterCreate::CheckLayerShell);
     }
     if steps.win_no_activate || steps.win_tool_window {
         actions.push(AfterCreate::Win32Install {
@@ -435,6 +455,19 @@ pub(crate) fn after_create(window: &dyn Window, steps: WindowSteps, always_on_to
                         "WindowProps::non_activating / skip_taskbar have no effect on Wayland: \
                          xdg-toplevel cannot refuse keyboard focus or a taskbar entry. \
                          Use App::prefer_x11(true) to run under XWayland, where they work."
+                    );
+                }
+            }
+            AfterCreate::CheckLayerShell => {
+                if super::layer_shell::surface_kind_of(window)
+                    != super::layer_shell::WindowSurfaceKind::LayerShell
+                    && !WAYLAND_WARNED.swap(true, Ordering::Relaxed)
+                {
+                    tracing::warn!(
+                        "This Wayland compositor has no wlr-layer-shell (GNOME/Mutter): the \
+                         overlay window is an ordinary xdg-toplevel, which cannot refuse keyboard \
+                         focus or a taskbar entry. Use App::prefer_x11(true) to run under \
+                         XWayland, where WindowProps::non_activating works."
                     );
                 }
             }
@@ -974,12 +1007,24 @@ mod tests {
         assert!(!m.mac_panel && !m.create_hidden);
     }
 
+    /// Wayland (#1523): a non-activating window is a layer surface, which
+    /// also has no taskbar entry; `skip_taskbar` alone keeps the decorated
+    /// toplevel and warns, and so does a non-activating window told never to
+    /// be a layer surface.
     #[test]
-    fn wayland_warns_instead_of_pretending() {
+    fn wayland_makes_a_layer_surface_or_warns_instead_of_pretending() {
         let w = WindowSteps::plan(&props(true, true), true, Backend::Wayland);
-        assert!(w.wayland_unsupported);
+        assert!(w.wayland_layer && !w.wayland_unsupported);
         assert!(!w.create_hidden, "nothing to adjust before showing");
         assert!(w.click_through, "an empty input region works on Wayland");
+        let skip = WindowSteps::plan(&props(false, true), false, Backend::Wayland);
+        assert!(!skip.wayland_layer && skip.wayland_unsupported);
+        let never = WindowProps {
+            wayland_layer_shell: Some(false),
+            ..props(true, false)
+        };
+        let n = WindowSteps::plan(&never, false, Backend::Wayland);
+        assert!(!n.wayland_layer && n.wayland_unsupported);
         assert!(
             !WindowSteps::plan(&props(false, false), true, Backend::Wayland).wayland_unsupported
         );
@@ -1007,14 +1052,21 @@ mod tests {
     #[test]
     fn the_attributes_carry_inactive_and_hidden() {
         let steps = WindowSteps::plan(&props(true, false), false, Backend::X11);
-        let attrs =
-            apply_to_attributes(WindowAttributes::default(), steps, Backend::X11, None, None);
+        let attrs = apply_to_attributes(
+            WindowAttributes::default(),
+            steps,
+            Backend::X11,
+            None,
+            None,
+            None,
+        );
         assert!(!attrs.active);
         assert!(!attrs.visible);
         let plain = apply_to_attributes(
             WindowAttributes::default(),
             WindowSteps::default(),
             Backend::X11,
+            None,
             None,
             None,
         );
@@ -1225,6 +1277,7 @@ mod tests {
                 Backend::X11,
                 Some("ignored-on-x11"),
                 Some("probe-app-id"),
+                None,
             );
             assert!(!a.visible, "created hidden");
             let overlay: Arc<dyn Window> = Arc::from(el.create_window(a).unwrap());
@@ -1243,6 +1296,7 @@ mod tests {
                 WindowSteps::default(),
                 Backend::X11,
                 Some("resolved-app-id"),
+                None,
                 None,
             );
             let plain: Arc<dyn Window> = Arc::from(el.create_window(plain).unwrap());
@@ -1463,7 +1517,7 @@ mod tests {
         let wl = WindowSteps::plan(&props(true, false), true, Backend::Wayland);
         assert_eq!(
             after_create_actions(wl, true),
-            vec![AfterCreate::WarnWayland, AfterCreate::ClickThrough]
+            vec![AfterCreate::CheckLayerShell, AfterCreate::ClickThrough]
         );
     }
 }

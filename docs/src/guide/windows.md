@@ -256,7 +256,8 @@ These functions work from onclick handlers and affect the window containing the 
 and at the size it had** when it was hidden, including a position and size the
 user gave it by dragging (issue #1546). On Wayland only the size comes back:
 the compositor places windows, and a client cannot learn or choose its
-position. A maximized window comes back maximized, and un-maximizing it
+position — except a [layer-shell overlay](#wayland-layer-shell-overlays),
+which is placed by rinch and comes back where it was. A maximized window comes back maximized, and un-maximizing it
 returns it to the last place and size it had before it was maximized. A
 minimized window's position is never recorded (Windows reports it as
 (-32000, -32000)), and a position that lies on no connected monitor when the
@@ -277,9 +278,12 @@ it appears at `WindowProps::x`/`y`, as a window created visible does.
 
 | Function | Description |
 |----------|-------------|
-| `current_window_position() -> Option<(f64, f64)>` | Outer top-left in logical pixels; `None` before the window exists and on Wayland |
+| `current_window_position() -> Option<(f64, f64)>` | Outer top-left in logical pixels; `None` before the window exists and on Wayland (a layer-shell overlay answers its position on its output) |
 | `current_window_size() -> Option<(f64, f64)>` | Inner (content) size in logical pixels; `None` before the window exists |
-| `set_current_window_position(x, y)` | Move the outer top-left (ignored on Wayland) |
+| `set_current_window_position(x, y)` | Move the outer top-left (ignored on Wayland, except a layer-shell overlay) |
+| `current_window_surface_kind() -> Option<WindowSurfaceKind>` | `Toplevel`, or `LayerShell` for a Wayland layer-shell overlay |
+| `set_current_window_output(Option<&str>)` | The output a layer-shell overlay is on, by connector name |
+| `start_window_drag()` / `start_window_resize(edge)` | Move or resize the window with the pointer, from a press handler |
 | `set_current_window_size(width, height)` | Resize the content area |
 
 They are in the prelude and callable from any thread. The getters keep
@@ -288,7 +292,7 @@ persist them; the setters, called while it is hidden, decide where and how big
 it comes back — except for a window hidden while maximized, which comes back
 maximized, the set geometry becoming the one it returns to when
 un-maximized. On Wayland the position setter does nothing and the position
-getter always answers `None`. A setter takes effect on the event loop's next turn, so a getter
+getter always answers `None`, except for a layer-shell overlay. A setter takes effect on the event loop's next turn, so a getter
 called right after it still answers the old value. The window manager may
 adjust a requested size or position.
 
@@ -501,7 +505,7 @@ shown again.
 | Windows | `WS_EX_NOACTIVATE`; `WM_MOUSEACTIVATE` answers `MA_NOACTIVATE`; first shown with `SW_SHOWNOACTIVATE` | `WS_EX_TRANSPARENT \| WS_EX_LAYERED` | `WS_EX_TOOLWINDOW` (no taskbar button, no Alt+Tab entry) |
 | macOS | a non-activating `NSPanel` with `becomesKeyOnlyIfNeeded`, kept on screen while its app is inactive, ordered front at creation without becoming key | `ignoresMouseEvents` | a window has no Dock entry of its own (the app's Dock icon and Cmd-Tab entry are the activation policy's business); the window is kept out of Cmd-` cycling and Mission Control (`ignoresCycle \| stationary`) |
 | X11 | `WM_HINTS.input = False` | an empty input shape (set by rinch over its own connection, XFixes version negotiated) | `_NET_WM_STATE_SKIP_TASKBAR` and `_SKIP_PAGER` |
-| Wayland | **no effect** | an empty input region | **no effect** |
+| Wayland | a `wlr-layer-shell` surface with no keyboard ([below](#wayland-layer-shell-overlays)); **no effect** on GNOME | an empty input region | a layer surface has no taskbar entry; alone, **no effect** |
 
 On Windows and X11 such a window is created hidden, adjusted, and only then
 shown, so it is never on screen in a state that could take focus. On macOS it is
@@ -537,7 +541,7 @@ raised level is the same "above" state.
 | macOS | `NSFloatingWindowLevel` (3) | `NSStatusWindowLevel` (25) | `NSScreenSaverWindowLevel` (1000) | `canJoinAllSpaces \| fullScreenAuxiliary` collection behavior |
 | Windows | `HWND_TOPMOST` | `HWND_TOPMOST` | `HWND_TOPMOST` | **no effect** (no public API pins a window to every virtual desktop) |
 | X11 | `_NET_WM_STATE_ABOVE` | `_NET_WM_STATE_ABOVE` | `_NET_WM_STATE_ABOVE` | `_NET_WM_DESKTOP = 0xFFFFFFFF` and `_NET_WM_STATE_STICKY`, set before the map |
-| Wayland | no effect | no effect | no effect | no effect |
+| Wayland | a [layer-shell window](#wayland-layer-shell-overlays): `top` layer; a toplevel: no effect | layer-shell: `overlay` layer | layer-shell: `overlay` layer | no effect |
 
 On macOS a window shows over another app's fullscreen window only with
 `visible_on_all_workspaces` (`fullScreenAuxiliary` lets it into that app's
@@ -561,16 +565,65 @@ differ (a binary run through a symlink has `argv[0]` naming the link), so a
 `.desktop` file whose `StartupWMClass` must match on both should set
 `WindowProps::app_id`.
 
-### Wayland
+### Wayland layer-shell overlays
 
 A plain xdg-toplevel cannot refuse keyboard focus or a taskbar entry: the
-compositor decides. KWin decides whether to activate a window when it is
-**mapped**, and winit's request to show a window inactive is ignored there.
-On native Wayland `non_activating` and `skip_taskbar` therefore do nothing,
-and rinch logs one warning saying so. (A `wlr-layer-shell` surface could do
-it: #1523.)
+compositor decides (KWin decides whether to activate a window when it is
+mapped, and ignores a request to show it inactive). So on native Wayland a
+`non_activating` window is not an xdg-toplevel: it is a **`wlr-layer-shell`
+surface** (issue #1523) — the kind of surface panels, docks and on-screen
+indicators are. It never takes the keyboard (keyboard interactivity *none*),
+has no taskbar entry, and sits in the `top` layer, above ordinary windows —
+or in the `overlay` layer, above panels and fullscreen windows, when its
+`level` is `StatusBar` or `ScreenSaver`.
+KWin, wlroots compositors (sway, labwc), Hyprland, niri and COSMIC support it.
 
-Two ways to live with it:
+`WindowProps::wayland_layer_shell: Option<bool>` decides: `None` (the default)
+makes a window a layer surface when it is `non_activating`; `Some(true)` makes
+any window one (a focusable overlay, whose keyboard is then *on-demand*: it
+takes focus when clicked); `Some(false)` never does. `skip_taskbar` alone does
+not: a decorated tool window that only wants no taskbar entry keeps its
+decorations and compositor move. Under `App::prefer_x11(true)` the app runs on
+XWayland and the X11 column applies instead.
+
+**This changed what a `non_activating` window is on KWin and wlroots**: before
+#1523 it was an ordinary window there (with a warning). A layer surface has no
+server decorations, title bar, minimize, maximize or fullscreen, and **the
+compositor does not move or resize it**. rinch does, so the app's own controls
+keep working:
+
+- **Position.** The surface is anchored to its output's top-left corner and
+  placed by its margins: `WindowProps::x`/`y`, `set_current_window_position`
+  and `current_window_position` are logical pixels **relative to its output**,
+  not the desktop. With no position it is not anchored and the compositor
+  centres it; `current_window_position` answers `None` until it is moved.
+- **Output.** `WindowProps::output` names the output by its connector name
+  (`"DP-1"`, `"eDP-1"`, as `wlr-randr` or `kscreen-doctor -o` list them);
+  `set_current_window_output(Some("HDMI-A-1"))` moves it there (the surface is
+  made again, at the same position and size). An unknown name, or `None`,
+  leaves the choice to the compositor.
+- **Size.** `set_current_window_size` and `WindowProps::width`/`height` set it.
+- **Move and resize by the user.** A `data-drag-window` region and
+  `resize_inset` edges work as on any borderless window: rinch follows the
+  pointer until the button is released and moves or resizes the surface
+  itself. From a handler of your own, call `start_window_drag()` or
+  `start_window_resize(edge)` (with `rinch::platform::ResizeDirection`) on the
+  press; on an ordinary window they ask the window manager for its
+  interactive move or resize. Called with no button held (from a timer, or
+  after the press already ended) they do nothing, on every window.
+- **Hide and show** keep the position and size, as for any window, and
+  showing it takes no focus.
+- **Its output going away** (unplugged, or turned off) makes the compositor
+  close a layer surface. rinch does not take that for a close: it makes the
+  window again on an output the compositor picks (the `output` name is
+  dropped until `set_current_window_output` names one again), at the same
+  position and size, or, with no output left, as soon as one appears.
+
+`current_window_surface_kind()` answers what the window got:
+`Some(WindowSurfaceKind::LayerShell)`, or `Some(WindowSurfaceKind::Toplevel)`
+on a compositor without layer shell — **GNOME/Mutter**, where the window is
+an ordinary xdg-toplevel as before and rinch logs one warning. There, two
+ways to live with it:
 
 - **`App::prefer_x11(true)`** builds the event loop on X11 whenever an X server
   is reachable (`DISPLAY` is set), which under a Wayland session means
@@ -581,6 +634,11 @@ Two ways to live with it:
   at map time, create the overlay at startup, keep it on screen (fully
   transparent while idle) and click-through, and change its content rather
   than hiding and showing it per use. What remains is a taskbar entry.
+
+The layer role comes from rinch's winit fork
+(`WindowAttributesWayland::with_layer_shell`); the renderers, input and
+scaling are those of any window. `examples/wayland-overlay` is a bar to try it
+with.
 
 ## Programmatic Window Management
 
