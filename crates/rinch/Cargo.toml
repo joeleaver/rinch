@@ -275,3 +275,7 @@ global-hotkeys = [
 [[example]]
 name = "debug_click_latency"
 required-features = ["desktop", "debug"]
+
+[[example]]
+name = "hide_show_geometry"
+required-features = ["desktop"]

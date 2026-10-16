@@ -522,8 +522,10 @@ thread_local! {
     /// (a headless host, a borderless window whose chrome is the DOM bar
     /// instead) leaves this `false`, and a `false`-marked window-bar item's
     /// chord keeps matching through rinch's own registry rather than going
-    /// silently unreachable. Never reset once set: an app attaches its menu
-    /// bar once, not per-frame.
+    /// silently unreachable. Reset on Windows when the bar leaves its window
+    /// (`detach_menu_from_window`, at `hide_current_window`, which destroys
+    /// the HWND) and set again only if the re-created window's attach
+    /// succeeds (#1533).
     static NATIVE_ACCELERATOR_ATTACHED: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -539,6 +541,12 @@ thread_local! {
 #[allow(dead_code)]
 pub(crate) fn mark_native_accelerator_attached() {
     NATIVE_ACCELERATOR_ATTACHED.with(|f| f.set(true));
+}
+
+/// See [`NATIVE_ACCELERATOR_ATTACHED`]: the window it was attached to is gone.
+#[cfg(all(feature = "desktop", target_os = "windows"))]
+fn clear_native_accelerator_attached() {
+    NATIVE_ACCELERATOR_ATTACHED.with(|f| f.set(false));
 }
 
 /// Whether this thread's window menu bar actually has a native accelerator
@@ -1499,10 +1507,33 @@ pub(crate) fn attach_menu_to_window(menu: &muda::Menu, window: &dyn winit::windo
             let attached = unsafe { menu.init_for_hwnd(hwnd) };
             if attached.is_ok() {
                 mark_native_accelerator_attached();
+            } else {
+                clear_native_accelerator_attached();
             }
         }
     }
 }
+
+/// Take the native menu bar off a window that is about to be destroyed
+/// (Windows): muda keeps the HWNDs it serves and refuses one it already
+/// has, and Windows may hand the destroyed window's HWND to the next one.
+#[cfg(all(feature = "desktop", target_os = "windows"))]
+pub(crate) fn detach_menu_from_window(menu: &muda::Menu, window: &dyn winit::window::Window) {
+    use winit::raw_window_handle::HasWindowHandle;
+    if let Ok(handle) = window.window_handle()
+        && let winit::raw_window_handle::RawWindowHandle::Win32(win32) = handle.as_raw()
+    {
+        // Safety: the HWND is still valid (the window is dropped after this),
+        // and we are on the main thread.
+        let _ = unsafe { menu.remove_for_hwnd(win32.hwnd.get()) };
+        clear_native_accelerator_attached();
+    }
+}
+
+/// Nothing to take off: on macOS the bar belongs to the application, and on
+/// Linux nothing was attached.
+#[cfg(all(feature = "desktop", any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn detach_menu_from_window(_menu: &muda::Menu, _window: &dyn winit::window::Window) {}
 
 /// Attach a native menu bar to the application (macOS).
 ///

@@ -409,7 +409,11 @@ pub fn hide_current_window() {
 ///
 /// Makes a previously hidden window visible again and brings it to focus —
 /// except a [`WindowProps::non_activating`](rinch_core::element::WindowProps::non_activating)
-/// window, which is shown without taking focus or activation.
+/// window, which is shown without taking focus or activation. It comes back
+/// where it was when it was hidden and at the size it had (issue #1546; the
+/// size only on Wayland, where the compositor places windows), or where
+/// [`set_current_window_position`] / [`set_current_window_size`] put it
+/// meanwhile.
 ///
 /// # Example
 ///
@@ -440,6 +444,46 @@ pub fn show_current_window() {
 /// ```
 pub fn set_click_through_current_window(click_through: bool) {
     send_native_event(RinchNativeEvent::SetClickThrough(click_through));
+}
+
+/// The current window's outer (frame) top-left, in logical pixels on the
+/// desktop — the position [`WindowProps::x`](rinch_core::element::WindowProps::x)
+/// and [`WindowProps::y`](rinch_core::element::WindowProps::y) set (issue #1546).
+///
+/// Kept while the window is hidden ([`hide_current_window`]): it is where
+/// [`show_current_window`] puts it back. So an app can read it at exit and
+/// persist it. `None` before the window first exists, and always on Wayland,
+/// where a client cannot learn its window's position. Callable from any
+/// thread.
+pub fn current_window_position() -> Option<(f64, f64)> {
+    crate::shell::window_geometry::published().and_then(|g| g.position)
+}
+
+/// The current window's inner (content) size in logical pixels — the size
+/// [`WindowProps::width`](rinch_core::element::WindowProps::width) and
+/// [`WindowProps::height`](rinch_core::element::WindowProps::height) set
+/// (issue #1546). Kept while the window is hidden, like
+/// [`current_window_position`]. `None` before the window first exists.
+pub fn current_window_size() -> Option<(f64, f64)> {
+    crate::shell::window_geometry::published().and_then(|g| g.size)
+}
+
+/// Move the current window's outer top-left to `(x, y)`, logical pixels on
+/// the desktop (issue #1546). While the window is hidden, this is where
+/// [`show_current_window`] puts it. Applied on the event loop's next turn, so
+/// [`current_window_position`] answers the new position after that. Ignored
+/// on Wayland, where a client cannot position its window.
+pub fn set_current_window_position(x: f64, y: f64) {
+    send_native_event(RinchNativeEvent::SetWindowPosition(x, y));
+}
+
+/// Resize the current window's inner (content) area to `width` x `height`
+/// logical pixels (issue #1546). While the window is hidden, this is the size
+/// [`show_current_window`] gives it. Applied on the event loop's next turn,
+/// like [`set_current_window_position`]; the window manager may refuse or
+/// adjust it (a tiling window manager, a size constraint).
+pub fn set_current_window_size(width: f64, height: f64) {
+    send_native_event(RinchNativeEvent::SetWindowSize(width, height));
 }
 
 /// Close the current window.
