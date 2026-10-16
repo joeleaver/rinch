@@ -416,6 +416,17 @@ pub struct MenuBarContext {
 /// ```
 pub type CloseRequestCallback = Arc<dyn Fn() -> bool + Send + Sync>;
 
+/// What kind of surface a window got (issue #1523): see
+/// [`WindowProps::wayland_layer_shell`] and `current_window_surface_kind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WindowSurfaceKind {
+    /// An ordinary window: a Windows, macOS or X11 window, or a Wayland
+    /// xdg-toplevel.
+    Toplevel,
+    /// A Wayland `wlr-layer-shell` surface.
+    LayerShell,
+}
+
 /// Properties for the Window component.
 #[derive(Clone)]
 pub struct WindowProps {
@@ -424,6 +435,32 @@ pub struct WindowProps {
     pub height: u32,
     pub x: Option<i32>,
     pub y: Option<i32>,
+    /// Whether the window is a `wlr-layer-shell` surface on native Wayland
+    /// (issue #1523): `None` (the default) makes it one when it is
+    /// [`non_activating`](Self::non_activating); `Some(true)` makes any window
+    /// one (a focusable overlay: its keyboard is then on-demand);
+    /// `Some(false)` never.
+    ///
+    /// A layer surface is how a Wayland overlay refuses keyboard focus, stays
+    /// off the taskbar and above other windows. It has no server decorations,
+    /// title bar, minimize, maximize or compositor move/resize: a drag region
+    /// (`data-drag-window`, `start_window_drag`) and resize edges
+    /// (`resize_inset`, `start_window_resize`) move and resize it through its
+    /// margins instead. Its position is relative to its output (see
+    /// [`output`](Self::output)). KWin, wlroots compositors (sway, labwc),
+    /// Hyprland, niri and COSMIC support it; **GNOME/Mutter does not**, and
+    /// there the window is an ordinary xdg-toplevel as before (a warning is
+    /// logged, and `current_window_surface_kind()` answers `Toplevel`).
+    /// A layer surface has no taskbar entry, so it also does what
+    /// [`skip_taskbar`](Self::skip_taskbar) asks, which an xdg-toplevel
+    /// cannot. Ignored on X11 (`App::prefer_x11` wins), Windows and macOS.
+    pub wayland_layer_shell: Option<bool>,
+    /// The output (monitor) a Wayland layer-shell window is shown on, by its
+    /// connector name (`DP-1`, `eDP-1`, `HDMI-A-1`). `None` lets the
+    /// compositor choose (usually the focused output). Change it at run time
+    /// with `set_current_window_output`. Ignored by every other kind of
+    /// window (issue #1523).
+    pub output: Option<String>,
     pub borderless: bool,
     pub resizable: bool,
     pub transparent: bool,
@@ -482,9 +519,11 @@ pub struct WindowProps {
     ///
     /// Windows: `WS_EX_NOACTIVATE` and `WM_MOUSEACTIVATE` → `MA_NOACTIVATE`.
     /// macOS: a non-activating `NSPanel` that does not become key on a click.
-    /// X11: `WM_HINTS.input = False`. **Wayland: no effect** (a warning is
-    /// logged): xdg-toplevel cannot refuse focus; run under XWayland with
-    /// `App::prefer_x11(true)`.
+    /// X11: `WM_HINTS.input = False`. Wayland: a `wlr-layer-shell` surface
+    /// with no keyboard interactivity (issue #1523; see
+    /// [`wayland_layer_shell`](Self::wayland_layer_shell)), on compositors
+    /// that support it — not GNOME, where it has no effect (a warning is
+    /// logged) and `App::prefer_x11(true)` (XWayland) is the way.
     pub non_activating: bool,
     /// Let pointer events pass through to the window underneath. Change it
     /// at run time with `set_click_through_current_window`; the state is kept
@@ -506,6 +545,8 @@ impl Default for WindowProps {
             height: 600,
             x: None,
             y: None,
+            wayland_layer_shell: None,
+            output: None,
             borderless: false,
             resizable: true,
             transparent: false,
@@ -529,6 +570,8 @@ impl std::fmt::Debug for WindowProps {
             .field("title", &self.title)
             .field("width", &self.width)
             .field("height", &self.height)
+            .field("wayland_layer_shell", &self.wayland_layer_shell)
+            .field("output", &self.output)
             .field("borderless", &self.borderless)
             .field("transparent", &self.transparent)
             .field("non_activating", &self.non_activating)

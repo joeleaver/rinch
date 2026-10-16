@@ -12,6 +12,8 @@ pub mod devtools_store;
 #[cfg(feature = "gpu")]
 pub(crate) mod frame_upload;
 pub mod html_parser;
+#[cfg(feature = "desktop")]
+pub(crate) mod layer_shell;
 pub mod memory_profile;
 #[cfg(feature = "desktop")]
 pub(crate) mod overlay_window;
