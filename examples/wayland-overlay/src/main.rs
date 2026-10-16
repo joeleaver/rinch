@@ -97,7 +97,7 @@ fn bar() -> NodeHandle {
             }
             div {
                 id: "apigrip",
-                onmousedown: || start_window_drag(),
+                onmousedown: start_window_drag,
                 style: "padding: 4px 6px; background: rgba(255, 0, 0, 0.5);",
                 "API"
             }
