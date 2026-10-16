@@ -1006,7 +1006,10 @@ impl RinchRuntime {
         // saved position, or the requested one on a first appearance.
         let layer = steps.wayland_layer.then(|| {
             LayerRequest::new(
-                self.app.window_props.as_ref().unwrap_or(&Default::default()),
+                self.app
+                    .window_props
+                    .as_ref()
+                    .unwrap_or(&Default::default()),
                 self.layer_position(first_appearance),
                 self.layer_output(),
                 app_id.as_deref().unwrap_or("rinch"),
@@ -1158,19 +1161,18 @@ impl RinchRuntime {
         };
         let (cx, cy) = self.app.cursor_pos.unwrap_or((0.0, 0.0));
         if let Some(layer) = self.layer.as_mut() {
-            layer.gesture = Some(Gesture::start(
-                kind,
-                (cx as f64, cy as f64),
-                position,
-                size,
-            ));
+            layer.gesture = Some(Gesture::start(kind, (cx as f64, cy as f64), position, size));
         }
         true
     }
 
     /// Follow the pointer, at `local` (logical, over the surface), with the
     /// layer gesture. `false` when there is none.
-    fn update_layer_gesture(&mut self, local: (f64, f64), event_loop: &dyn ActiveEventLoop) -> bool {
+    fn update_layer_gesture(
+        &mut self,
+        local: (f64, f64),
+        event_loop: &dyn ActiveEventLoop,
+    ) -> bool {
         let Some((gesture, position)) = self
             .layer
             .as_ref()
@@ -2329,8 +2331,16 @@ mod hidden_start_tests {
             ..Default::default()
         };
         let mac = WindowSteps::plan(&panel, false, Backend::MacOs);
-        let built =
-            || apply_to_attributes(WindowAttributes::default(), mac, Backend::MacOs, None, None, None);
+        let built = || {
+            apply_to_attributes(
+                WindowAttributes::default(),
+                mac,
+                Backend::MacOs,
+                None,
+                None,
+                None,
+            )
+        };
         assert!(built().visible, "the macOS panel itself is created visible");
         assert!(!hidden_start_attributes(built(), true).visible);
         assert!(
@@ -2339,8 +2349,14 @@ mod hidden_start_tests {
         );
         assert!(hidden_start_attributes(built(), false).visible);
         let x11 = WindowSteps::plan(&panel, false, Backend::X11);
-        let x11_attrs =
-            apply_to_attributes(WindowAttributes::default(), x11, Backend::X11, None, None, None);
+        let x11_attrs = apply_to_attributes(
+            WindowAttributes::default(),
+            x11,
+            Backend::X11,
+            None,
+            None,
+            None,
+        );
         assert!(
             !hidden_start_attributes(x11_attrs, false).visible,
             "the X11 overlay is created hidden as before"
@@ -2492,7 +2508,9 @@ impl ApplicationHandler for RinchRuntime {
         } = &event
         {
             let (lx, ly) = to_logical_point((position.x, position.y), self.scale_factor());
-            let down = self.pressed_pointers.is_down(SurfacePointer::mouse(false).id);
+            let down = self
+                .pressed_pointers
+                .is_down(SurfacePointer::mouse(false).id);
             let pointer = SurfacePointer {
                 primary: *primary,
                 ..SurfacePointer::mouse(down)

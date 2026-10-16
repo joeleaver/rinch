@@ -11,7 +11,8 @@
 //! ordinary window and the label says so.
 //!
 //! `OVERLAY_OUTPUT=DP-1` puts it on that output; `OVERLAY_CENTRED=1` gives it
-//! no position, so the compositor centres it. `OVERLAY_SCRIPT=1` runs the
+//! no position, so the compositor centres it; `OVERLAY_TOPLEVEL=1` makes it an
+//! ordinary window (`wayland_layer_shell: Some(false)`). `OVERLAY_SCRIPT=1` runs the
 //! geometry API through a fixed sequence (move, resize, hide, show) and
 //! prints what `current_window_position` / `current_window_size` answer after
 //! each step, then exits: what the live test of #1523 reads.
@@ -37,11 +38,20 @@ fn script() {
         .unwrap_or(600);
     let steps: Vec<(&str, Box<dyn Fn()>)> = vec![
         ("start", Box::new(|| {})),
-        ("move to (200, 150)", Box::new(|| set_current_window_position(200.0, 150.0))),
-        ("resize to 420x60", Box::new(|| set_current_window_size(420.0, 60.0))),
+        (
+            "move to (200, 150)",
+            Box::new(|| set_current_window_position(200.0, 150.0)),
+        ),
+        (
+            "resize to 420x60",
+            Box::new(|| set_current_window_size(420.0, 60.0)),
+        ),
         ("hide", Box::new(hide_current_window)),
         ("show", Box::new(show_current_window)),
-        ("move to (37, 411)", Box::new(|| set_current_window_position(37.0, 411.0))),
+        (
+            "move to (37, 411)",
+            Box::new(|| set_current_window_position(37.0, 411.0)),
+        ),
     ];
     fn run(steps: std::rc::Rc<Vec<(&'static str, Box<dyn Fn()>)>>, i: usize, step_ms: u32) {
         if i == steps.len() {
@@ -107,6 +117,8 @@ fn main() {
             skip_taskbar: true,
             always_on_top: true,
             output: std::env::var("OVERLAY_OUTPUT").ok(),
+            // `OVERLAY_TOPLEVEL=1`: an ordinary xdg-toplevel, as before #1523.
+            wayland_layer_shell: std::env::var_os("OVERLAY_TOPLEVEL").map(|_| false),
             ..Default::default()
         })
         .run();

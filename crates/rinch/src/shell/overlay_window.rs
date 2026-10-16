@@ -138,7 +138,8 @@ impl WindowSteps {
                 steps.wayland_layer = super::layer_shell::uses_layer_shell(props, backend);
                 // A layer surface takes no focus and has no taskbar entry; a
                 // toplevel can do neither.
-                steps.wayland_unsupported = !steps.wayland_layer && (non_activating || skip_taskbar);
+                steps.wayland_unsupported =
+                    !steps.wayland_layer && (non_activating || skip_taskbar);
             }
             Backend::Other => {}
         }
@@ -892,8 +893,14 @@ mod tests {
     #[test]
     fn the_attributes_carry_inactive_and_hidden() {
         let steps = WindowSteps::plan(&props(true, false), false, Backend::X11);
-        let attrs =
-            apply_to_attributes(WindowAttributes::default(), steps, Backend::X11, None, None, None);
+        let attrs = apply_to_attributes(
+            WindowAttributes::default(),
+            steps,
+            Backend::X11,
+            None,
+            None,
+            None,
+        );
         assert!(!attrs.active);
         assert!(!attrs.visible);
         let plain = apply_to_attributes(

@@ -48,8 +48,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use winit::event_loop::EventLoopProxy;
 use winit::window::WindowId;
 
-use rinch_core::element::WindowSurfaceKind;
 use crate::shell::rinch_runtime::{RinchNativeEvent, send_native_event};
+use rinch_core::element::WindowSurfaceKind;
 
 /// A handle to an open window.
 ///
@@ -513,7 +513,9 @@ pub fn current_window_surface_kind() -> Option<WindowSurfaceKind> {
 /// effect on any other kind of window. Monitor names are what
 /// `wl_output.name` reports, as `wlr-randr` / `kscreen-doctor -o` list them.
 pub fn set_current_window_output(output: Option<&str>) {
-    send_native_event(RinchNativeEvent::SetWindowOutput(output.map(str::to_string)));
+    send_native_event(RinchNativeEvent::SetWindowOutput(
+        output.map(str::to_string),
+    ));
 }
 
 /// Start moving the current window with the pointer, from a handler of the

@@ -5044,9 +5044,31 @@ winit cannot make at creation is created hidden, adjusted, and then shown:
   `_SKIP_PAGER` written over a separate `x11rb` connection before the map,
   then a round trip; `always_on_top` is asked again after the map, since a
   level set on an unmapped window is a client message the WM ignores.
-- **Wayland**: xdg-toplevel cannot refuse focus or a taskbar entry (KWin
-  decides activation at map time and ignores winit's `with_active(false)`), so
-  the two do nothing and one `tracing::warn!` says so. `App::prefer_x11(true)`
+- **Wayland** (#1523, `shell/layer_shell.rs`): xdg-toplevel cannot refuse
+  focus or a taskbar entry (KWin decides activation at map time and ignores
+  winit's `with_active(false)`), so a `non_activating` window (or
+  `WindowProps::wayland_layer_shell: Some(true)`; `Some(false)` opts out,
+  `skip_taskbar` alone does not opt in) is a `wlr-layer-shell` surface instead,
+  through the winit fork's `WindowAttributesWayland::with_layer_shell`
+  (`zwlr_layer_surface_v1` on the window's `wl_surface`; its configure goes
+  through the window state's ordinary resize path, so both renderers and
+  input are unchanged). Layer `top`, keyboard none (on-demand when forced and
+  not non-activating), anchored top-left with the #1546 position as margins
+  (output-relative logical px; no position = unanchored, compositor-centred),
+  `WindowProps::output` / `set_current_window_output` by connector name. The
+  compositor has no move or resize for it, so `AppAction::DragWindow` /
+  `DragResizeWindow` (`data-drag-window`, `resize_inset`,
+  `start_window_drag` / `start_window_resize`) start a `layer_shell::Gesture`
+  that the shell's `PointerMoved` intercept follows (consuming the moves) and
+  any press or release ends; the fork commits a margin change at once. A
+  mouse `PointerEntered` now queues a pointer move for every window, so a press
+  with no move before it is judged where the pointer is. Where the compositor
+  has no layer shell (GNOME) the fork makes an xdg-toplevel and one
+  `tracing::warn!` says so (`AfterCreate::CheckLayerShell`);
+  `current_window_surface_kind()` answers which. Tested live in a private
+  `kwin_wayland --virtual` (no focus taken on map, click, hide/show; move,
+  resize, output, hide/show geometry; software and GPU); the GNOME fallback
+  is not (no such compositor on the host). `App::prefer_x11(true)`
   builds the event loop on X11 whenever `DISPLAY` is set (XWayland), and
   falls back to the default backend with a warning when that server refuses
   the connection.
@@ -5059,8 +5081,9 @@ winit cannot make at creation is created hidden, adjusted, and then shown:
   `set_click_through_current_window` posts `RinchNativeEvent::SetClickThrough`,
   which the shell applies without reaching the app.
 
-Only the Linux paths have run; Windows and macOS are type-checked. Example:
-`examples/overlay-pill`. Guide: `docs/src/guide/windows.md#overlay-windows`.
+Only the Linux paths have run; Windows and macOS are type-checked. Examples:
+`examples/overlay-pill`, `examples/wayland-overlay`. Guide:
+`docs/src/guide/windows.md#overlay-windows`.
 
 **`on_close_requested` callback:** Intercept the window close button to hide instead of exit:
 

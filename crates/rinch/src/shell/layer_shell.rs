@@ -26,8 +26,8 @@
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
-pub use rinch_core::element::WindowSurfaceKind;
 use rinch_core::element::WindowProps;
+pub use rinch_core::element::WindowSurfaceKind;
 use rinch_platform::ResizeDirection;
 
 use super::overlay_window::Backend;
@@ -279,7 +279,12 @@ mod tests {
             ..Default::default()
         };
         assert!(!uses_layer_shell(&skip, w));
-        for b in [Backend::X11, Backend::Windows, Backend::MacOs, Backend::Other] {
+        for b in [
+            Backend::X11,
+            Backend::Windows,
+            Backend::MacOs,
+            Backend::Other,
+        ] {
             assert!(!uses_layer_shell(&props(true, Some(true)), b), "{b:?}");
         }
     }
@@ -337,23 +342,42 @@ mod tests {
     #[test]
     fn a_resize_moves_only_the_dragged_edges() {
         use ResizeDirection as D;
-        let start = |d| Gesture::start(GestureKind::Resize(d), (0.0, 0.0), (100.0, 50.0), (200.0, 80.0));
+        let start = |d| {
+            Gesture::start(
+                GestureKind::Resize(d),
+                (0.0, 0.0),
+                (100.0, 50.0),
+                (200.0, 80.0),
+            )
+        };
         let at = (100.0, 50.0);
         // East/south grow from the top-left.
-        assert_eq!(start(D::SouthEast).update((25.0, 9.0), at), ((100.0, 50.0), (225.0, 89.0)));
+        assert_eq!(
+            start(D::SouthEast).update((25.0, 9.0), at),
+            ((100.0, 50.0), (225.0, 89.0))
+        );
         // West: the right edge (300) stays.
-        assert_eq!(start(D::West).update((-30.0, 4.0), at), ((70.0, 50.0), (230.0, 80.0)));
+        assert_eq!(
+            start(D::West).update((-30.0, 4.0), at),
+            ((70.0, 50.0), (230.0, 80.0))
+        );
         // North at the minimum: the bottom edge (130) stays.
         assert_eq!(
             start(D::North).update((0.0, 500.0), at),
             ((100.0, 130.0 - MIN_SIZE), (200.0, MIN_SIZE))
         );
-        assert_eq!(start(D::NorthWest).update((10.0, 10.0), at), ((110.0, 60.0), (190.0, 70.0)));
+        assert_eq!(
+            start(D::NorthWest).update((10.0, 10.0), at),
+            ((110.0, 60.0), (190.0, 70.0))
+        );
     }
 
     #[test]
     fn a_centred_surface_starts_its_move_from_the_centre() {
-        assert_eq!(centred_position((1920.0, 1080.0), (300.0, 41.0)), (810.0, 520.0));
+        assert_eq!(
+            centred_position((1920.0, 1080.0), (300.0, 41.0)),
+            (810.0, 520.0)
+        );
         assert_eq!(centred_position((100.0, 100.0), (300.0, 41.0)), (0.0, 30.0));
     }
 }
