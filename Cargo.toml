@@ -107,9 +107,9 @@ naga = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" 
 # Patch winit to use our fork with Wayland DnD support
 # Upstream winit 0.31-beta.2 has no Wayland drag-and-drop implementation, and no
 # wlr-layer-shell window role (WindowAttributesWayland::with_layer_shell, #1523)
-winit = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-layer-shell" }
-winit-core = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-layer-shell" }
-winit-common = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-layer-shell" }
-winit-wayland = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-layer-shell" }
-winit-x11 = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-layer-shell" }
-dpi = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-layer-shell" }
+winit = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
+winit-core = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
+winit-common = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
+winit-wayland = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
+winit-x11 = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
+dpi = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
