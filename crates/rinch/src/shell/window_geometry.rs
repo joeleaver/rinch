@@ -147,7 +147,7 @@ pub(crate) fn published() -> Option<PublishedGeometry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::dpi::PhysicalPosition;
+    use winit::dpi::{LogicalSize, PhysicalPosition};
 
     fn attrs() -> WindowAttributes {
         WindowAttributes::default().with_surface_size(LogicalSize::new(560.0, 280.0))

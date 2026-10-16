@@ -1144,7 +1144,8 @@ impl RinchRuntime {
         let steps = self.main_window_steps(backend, false);
         // After a hidden start (#1520) the first show is the window's first
         // appearance, so it takes the requested position as a first creation
-        // does; a restore from the tray is placed by the system, as before.
+        // does; a restore from the tray comes back where it was hidden
+        // (#1546), with the size it had.
         let first_show = !std::mem::replace(&mut self.shown_once, true);
         let window_attrs = self.main_window_attributes(steps, backend, false, first_show);
 

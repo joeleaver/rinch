@@ -9,7 +9,7 @@
 //! ```sh
 //! Xwayland :97 -rootless &            # or Xvfb :97
 //! cargo build -p rinch --example hide_show_geometry
-//! DISPLAY=:97 cargo test -p rinch --test hide_show_geometry -- --ignored --test-threads=1
+//! DISPLAY=:97 cargo test -p rinch --test hide_show_geometry -- --ignored --test-threads=1 --skip wm_
 //! ```
 //!
 //! The probe is found beside this test binary (see `debug_event_latency.rs`

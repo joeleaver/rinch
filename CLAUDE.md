@@ -4974,9 +4974,37 @@ MenuItem::new("Show").on_click(|| show_current_window())
 
 // Pointer events pass through the window, or stop doing so (any thread):
 set_click_through_current_window(true);
+
+// Geometry, logical px, any thread (#1546); kept while hidden:
+let pos: Option<(f64, f64)> = current_window_position(); // None on Wayland
+let size: Option<(f64, f64)> = current_window_size();
+set_current_window_position(300.0, 200.0); // while hidden: where it comes back
+set_current_window_size(700.0, 200.0);
 ```
 
 These functions are available in the prelude and work from onclick handlers.
+
+**Hide / show keeps the geometry** (#1546, `shell/window_geometry.rs`).
+`hide_window` still destroys the OS window (Wayland has no invisible toplevel;
+macOS `set_visible(true)` is `makeKeyAndOrderFront`, which would activate a
+non-activating panel), but first records its outer position and logical inner
+size (`SavedGeometry::record`, skipped for the never-shown sizing window of a
+hidden start), and `main_window_attributes` creates the next window with them
+(`SavedGeometry::apply`: saved geometry, else `WindowProps::x`/`y` on a first
+appearance only). The position is kept in desktop pixels (X11, Windows) or
+points (macOS), the size in logical pixels; a maximized window comes back
+maximized with its earlier geometry kept. Wayland restores the size only. **On
+X11 the frame position is read by rinch** (`overlay_window::outer_position`:
+the client's root coordinates less `_NET_FRAME_EXTENTS`), because winit's
+`outer_position` subtracts extents cached before the window manager wrote
+them, which under KWin moved the window down by its title bar on every
+hide/show. The published geometry the getters read is a `Mutex` updated on
+creation, `Moved`, `SurfaceResized`, `ScaleFactorChanged` and hide. The native
+menu bar is detached at hide (Windows: `remove_for_hwnd`, which also clears
+`NATIVE_ACCELERATOR_ATTACHED`) and attached to the re-created window (#1533).
+Pins: `shell::window_geometry::tests`, and the `#[ignore]`d live
+`crates/rinch/tests/hide_show_geometry.rs` (a private X server; its `wm_`
+tests inside a private headless KWin, `kwin_wayland --virtual --xwayland`).
 
 ### Overlay windows (non-activating, click-through, skip-taskbar)
 
@@ -4987,7 +5015,7 @@ DOM still takes pointer clicks. The decision is pure (`WindowSteps::plan`, per
 `Backend`), executed as an ordered action list (`after_create_actions`, also
 pure). A window without the three fields gets **no** action — no hit-test call
 — and a tray re-show is not moved to `WindowProps::x/y` (only the first
-creation is placed), as before. On Windows and X11 a window that needs a tweak
+appearance is placed; a re-show comes back where it was hidden, #1546). On Windows and X11 a window that needs a tweak
 winit cannot make at creation is created hidden, adjusted, and then shown:
 
 - **Windows**: the window procedure is replaced (`SetWindowLongPtrW`) so

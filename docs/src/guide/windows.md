@@ -247,6 +247,63 @@ These functions work from onclick handlers and affect the window containing the 
 `set_click_through_current_window(bool)` belongs to the same family; see
 [Overlay Windows](#overlay-windows).
 
+### Hiding, showing, and where the window comes back
+
+`hide_current_window()` takes the window off screen and
+`show_current_window()` puts it back. The window comes back **where it was
+and at the size it had** when it was hidden, including a position and size the
+user gave it by dragging (issue #1546). On Wayland only the size comes back:
+the compositor places windows, and a client cannot learn or choose its
+position. A maximized window comes back maximized.
+
+The shell does this by recording the window's outer (frame) position and inner
+size at the hide and creating the new window with them, rather than by keeping
+an invisible window: Wayland has no invisible toplevel, and on macOS winit's
+`set_visible(true)` makes the window key, which would activate a
+[non-activating](#overlay-windows) panel. A non-activating window is still
+shown without taking focus, and click-through and skip-taskbar are kept.
+
+The first time a window is shown after a [hidden start](#starting-with-no-window-tray-only-apps),
+it appears at `WindowProps::x`/`y`, as a window created visible does.
+
+### Reading and setting the window's geometry
+
+| Function | Description |
+|----------|-------------|
+| `current_window_position() -> Option<(f64, f64)>` | Outer top-left in logical pixels; `None` before the window exists and on Wayland |
+| `current_window_size() -> Option<(f64, f64)>` | Inner (content) size in logical pixels; `None` before the window exists |
+| `set_current_window_position(x, y)` | Move the outer top-left (ignored on Wayland) |
+| `set_current_window_size(width, height)` | Resize the content area |
+
+They are in the prelude and callable from any thread. The getters keep
+answering while the window is hidden, so an app can read them at exit and
+persist them; the setters, called while it is hidden, decide where and how big
+it comes back. A setter takes effect on the event loop's next turn, so a getter
+called right after it still answers the old value. The window manager may
+adjust a requested size or position.
+
+```rust
+// At exit (or in on_close_requested): remember the geometry.
+if let (Some((x, y)), Some((w, h))) = (current_window_position(), current_window_size()) {
+    save_geometry(x, y, w, h);
+}
+
+// At startup: pass it back through WindowProps.
+let props = WindowProps {
+    x: saved.map(|g| g.x as i32),
+    y: saved.map(|g| g.y as i32),
+    width: saved.map_or(800, |g| g.w as u32),
+    height: saved.map_or(600, |g| g.h as u32),
+    ..Default::default()
+};
+```
+
+The position is in logical pixels, like `WindowProps::x`/`y`. On a desktop
+whose monitors have different scale factors a logical position is ambiguous;
+the hide/show round trip itself does not go through it (it keeps desktop
+pixels on X11 and Windows and points on macOS), so a window comes back to the
+pixel.
+
 ### Fixed Overlays and Custom Chrome
 
 When you draw your own titlebar (or use `BorderlessWindow`, or the Linux in-app
@@ -598,7 +655,12 @@ fn app() -> NodeHandle {
 
 ## Window State Persistence
 
-For applications that need to save and restore window positions and sizes, use the `WindowState` API.
+For the app's main window, use [`current_window_position` / `current_window_size`](#reading-and-setting-the-windows-geometry).
+
+> **Note:** the `WindowHandle` / `WindowState` API below belongs to the
+> programmatic window API (`open_window`, `WindowBuilder`), which the desktop
+> shell does not process yet: no window is opened from it and no state is
+> recorded for it, so `get_window_state` answers `None`.
 
 ### Getting Window State
 
@@ -658,7 +720,6 @@ fn restore_window(saved: WindowState) -> WindowHandle {
 }
 ```
 
-> **Note:** Window state is automatically tracked and updated when windows are moved or resized. The state is available immediately after calling `open_window()` or `WindowBuilder::open()`.
 
 ---
 
