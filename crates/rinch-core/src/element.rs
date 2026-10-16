@@ -464,6 +464,9 @@ pub struct WindowProps {
     pub borderless: bool,
     pub resizable: bool,
     pub transparent: bool,
+    /// Keep the window above ordinary windows: [`WindowLevel::Floating`].
+    /// [`WindowProps::level`] chooses a higher level; this never lowers one
+    /// ([`WindowProps::effective_level`]).
     pub always_on_top: bool,
     /// Whether the window is on screen when the app starts (default `true`).
     ///
@@ -533,8 +536,64 @@ pub struct WindowProps {
     /// Keep the window off the taskbar (and, on Windows, out of Alt+Tab).
     /// Windows: `WS_EX_TOOLWINDOW`. X11: `_NET_WM_STATE_SKIP_TASKBAR` and
     /// `_SKIP_PAGER`. macOS: nothing to do — a window has no Dock entry of its
-    /// own. **Wayland: no effect.**
+    /// own; since #1549 it keeps the window out of window cycling (Cmd-`)
+    /// and Mission Control (`ignoresCycle`, `stationary`). **Wayland: no
+    /// effect.**
     pub skip_taskbar: bool,
+    /// How high the window sits among other windows (issue #1549). `Normal`
+    /// (the default) is an ordinary window; `always_on_top: true` is
+    /// [`WindowLevel::Floating`]. Only macOS tells the three raised levels
+    /// apart; see [`WindowLevel`] for each platform.
+    pub level: WindowLevel,
+    /// Show the window on every workspace (macOS Space, X11 desktop),
+    /// including the Space of another app's fullscreen window (issue #1549).
+    /// macOS: `canJoinAllSpaces` and `fullScreenAuxiliary`. X11:
+    /// `_NET_WM_DESKTOP = 0xFFFFFFFF` and `_NET_WM_STATE_STICKY`. **Windows
+    /// and Wayland: no effect** (Windows has no public API that pins a
+    /// window to every virtual desktop).
+    pub visible_on_all_workspaces: bool,
+}
+
+impl WindowProps {
+    /// The level the window is created at: [`WindowProps::level`], raised to
+    /// [`WindowLevel::Floating`] by `always_on_top`.
+    pub fn effective_level(&self) -> WindowLevel {
+        if self.always_on_top && self.level == WindowLevel::Normal {
+            WindowLevel::Floating
+        } else {
+            self.level
+        }
+    }
+}
+
+/// How high a window sits among other windows: [`WindowProps::level`]
+/// (issue #1549).
+///
+/// The names are macOS's window levels, the one platform with several. On
+/// the others every raised level is the platform's one "above" state:
+///
+/// | | `Floating` | `StatusBar` | `ScreenSaver` |
+/// |---|---|---|---|
+/// | macOS | `NSFloatingWindowLevel` (3) | `NSStatusWindowLevel` (25), above the menu bar | `NSScreenSaverWindowLevel` (1000), above nearly everything |
+/// | Windows | `HWND_TOPMOST` | `HWND_TOPMOST` | `HWND_TOPMOST` |
+/// | X11 | `_NET_WM_STATE_ABOVE` | `_NET_WM_STATE_ABOVE` | `_NET_WM_STATE_ABOVE` |
+/// | Wayland (layer-shell window) | `top` layer | `overlay` layer | `overlay` layer |
+/// | Wayland (xdg-toplevel) | no effect | no effect | no effect |
+///
+/// On native Wayland a level places a `wlr-layer-shell` window (#1523: a
+/// `non_activating` one, or `WindowProps::wayland_layer_shell: Some(true)`):
+/// `Normal` is in the `top` layer too. An xdg-toplevel cannot ask for any.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum WindowLevel {
+    /// An ordinary window (the default).
+    #[default]
+    Normal,
+    /// Above ordinary windows. What `always_on_top: true` asks for.
+    Floating,
+    /// Above floating windows and, on macOS, above the menu bar and the Dock.
+    StatusBar,
+    /// Above everything the system lets an app go above.
+    ScreenSaver,
 }
 
 impl Default for WindowProps {
@@ -560,6 +619,8 @@ impl Default for WindowProps {
             non_activating: false,
             click_through: false,
             skip_taskbar: false,
+            level: WindowLevel::Normal,
+            visible_on_all_workspaces: false,
         }
     }
 }
@@ -577,6 +638,8 @@ impl std::fmt::Debug for WindowProps {
             .field("non_activating", &self.non_activating)
             .field("click_through", &self.click_through)
             .field("skip_taskbar", &self.skip_taskbar)
+            .field("level", &self.level)
+            .field("visible_on_all_workspaces", &self.visible_on_all_workspaces)
             .field(
                 "on_close_requested",
                 &self.on_close_requested.as_ref().map(|_| "Fn() -> bool"),

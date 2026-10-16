@@ -12,13 +12,14 @@
 //!
 //! `OVERLAY_OUTPUT=DP-1` puts it on that output; `OVERLAY_CENTRED=1` gives it
 //! no position, so the compositor centres it; `OVERLAY_TOPLEVEL=1` makes it an
-//! ordinary window (`wayland_layer_shell: Some(false)`). `OVERLAY_SCRIPT=1` runs the
+//! ordinary window (`wayland_layer_shell: Some(false)`); `OVERLAY_ABOVE_ALL=1`
+//! puts it in the `overlay` layer. `OVERLAY_SCRIPT=1` runs the
 //! geometry API through a fixed sequence (move, resize, hide, show) and
 //! prints what `current_window_position` / `current_window_size` answer after
 //! each step, then exits: what the live test of #1523 reads.
 
 use rinch::prelude::*;
-use rinch_core::element::WindowProps;
+use rinch_core::element::{WindowLevel, WindowProps};
 
 fn geometry() -> String {
     format!(
@@ -117,8 +118,14 @@ fn main() {
             resize_inset: Some(6.0),
             non_activating: true,
             skip_taskbar: true,
-            always_on_top: true,
             output: std::env::var("OVERLAY_OUTPUT").ok(),
+            // `OVERLAY_ABOVE_ALL=1`: the `overlay` layer, above panels and
+            // fullscreen windows (#1549's level).
+            level: if std::env::var_os("OVERLAY_ABOVE_ALL").is_some() {
+                WindowLevel::ScreenSaver
+            } else {
+                WindowLevel::Floating
+            },
             // `OVERLAY_TOPLEVEL=1`: an ordinary xdg-toplevel, as before #1523.
             wayland_layer_shell: std::env::var_os("OVERLAY_TOPLEVEL").map(|_| false),
             ..Default::default()

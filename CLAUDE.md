@@ -5081,6 +5081,24 @@ winit cannot make at creation is created hidden, adjusted, and then shown:
   `set_click_through_current_window` posts `RinchNativeEvent::SetClickThrough`,
   which the shell applies without reaching the app.
 
+**Level and workspaces** (#1549): `WindowProps::level: WindowLevel`
+(`Normal` / `Floating` / `StatusBar` / `ScreenSaver`, macOS's names;
+`always_on_top` is `Floating`, read through `WindowProps::effective_level()`)
+and `visible_on_all_workspaces`. Every raised level is winit's `AlwaysOnTop`
+at creation (`HWND_TOPMOST`, `_NET_WM_STATE_ABOVE`, `NSFloatingWindowLevel`),
+and is re-asserted after an X11 map; macOS then `setLevel:`s 25 or 1000 for
+`StatusBar` / `ScreenSaver`. All workspaces: macOS `canJoinAllSpaces |
+fullScreenAuxiliary`; X11 `_NET_WM_DESKTOP = 0xFFFFFFFF` +
+`_NET_WM_STATE_STICKY` before the map (so the window is created hidden);
+**Windows and Wayland nothing**. On macOS `skip_taskbar` now adds `ignoresCycle
+| stationary` (out of Cmd-` and Mission Control; Cmd-Tab is the app's
+activation policy, #1528). Collection bits are merged into the window's own,
+dropping the ones AppKit says exclude them (`overlay_window::mac::merge`). The
+steps come from the props on every creation, so a hide/show re-creation (#1546)
+keeps them. On native Wayland a level places a layer-shell window (#1523):
+`Normal`/`Floating` in the `top` layer, `StatusBar`/`ScreenSaver` in
+`overlay`; it does nothing for an xdg-toplevel.
+
 Only the Linux paths have run; Windows and macOS are type-checked. Examples:
 `examples/overlay-pill`, `examples/wayland-overlay`. Guide:
 `docs/src/guide/windows.md#overlay-windows`.

@@ -967,7 +967,9 @@ impl RinchRuntime {
             if !props.resizable {
                 window_attrs = window_attrs.with_resizable(false);
             }
-            if props.always_on_top {
+            // Every raised level is winit's `AlwaysOnTop`; macOS sets the
+            // exact `StatusBar` / `ScreenSaver` level after creation (#1549).
+            if props.effective_level() != rinch_core::element::WindowLevel::Normal {
                 window_attrs =
                     window_attrs.with_window_level(winit::window::WindowLevel::AlwaysOnTop);
             }
@@ -1202,12 +1204,13 @@ impl RinchRuntime {
         true
     }
 
-    /// Whether the main window asked to stay on top.
+    /// Whether the main window asked to stay on top: `always_on_top`, or
+    /// any raised `WindowProps::level` (#1549).
     fn main_window_always_on_top(&self) -> bool {
         self.app
             .window_props
             .as_ref()
-            .is_some_and(|p| p.always_on_top)
+            .is_some_and(|p| p.effective_level() != rinch_core::element::WindowLevel::Normal)
     }
 
     fn create_window(&mut self, event_loop: &dyn ActiveEventLoop) {
@@ -4809,6 +4812,44 @@ mod bundled_font_tests {
                 .main_window_steps(Backend::Wayland, false)
                 .click_through
         );
+    }
+
+    /// #1549: the level and workspace settings come from the props on every
+    /// creation, so a hide/show re-creation (#1546) puts them back; and a
+    /// raised level is winit's `AlwaysOnTop` at creation on every backend.
+    #[test]
+    fn the_level_and_workspaces_survive_a_re_show() {
+        use super::overlay_window::{AfterCreate, after_create_actions};
+        use rinch_core::element::WindowLevel;
+        let props = rinch_core::element::WindowProps {
+            level: WindowLevel::ScreenSaver,
+            visible_on_all_workspaces: true,
+            ..Default::default()
+        };
+        let mut runtime = build_runtime(component, &props, None, &[]);
+        assert!(runtime.main_window_always_on_top());
+        for first in [true, false] {
+            let mac = runtime.main_window_steps(Backend::MacOs, first);
+            assert!(
+                after_create_actions(mac, true).contains(&AfterCreate::MacPlacement {
+                    level: Some(1000),
+                    collection: 1 | 256,
+                })
+            );
+            let x11 = runtime.main_window_steps(Backend::X11, first);
+            assert!(after_create_actions(x11, true).contains(&AfterCreate::ReassertOnTop));
+            for backend in [Backend::Windows, Backend::Wayland, Backend::MacOs] {
+                let steps = runtime.main_window_steps(backend, first);
+                let attrs = runtime.main_window_attributes(steps, backend, first, first);
+                assert_eq!(
+                    attrs.window_level,
+                    winit::window::WindowLevel::AlwaysOnTop,
+                    "{backend:?}"
+                );
+            }
+        }
+        let plain = build_runtime(component, &Default::default(), None, &[]);
+        assert!(!plain.main_window_always_on_top());
     }
 
     /// #1519, the default path: an ordinary window takes no hit-test call and

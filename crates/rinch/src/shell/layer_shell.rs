@@ -10,7 +10,7 @@
 //! What the window gets:
 //!
 //! - **Layer**: `top`, or `overlay` for a window raised above status bars
-//!   ([`wants_overlay_layer`]).
+//!   ([`wants_overlay_layer`]: `WindowProps::level` above `Floating`).
 //! - **Keyboard**: none for a non-activating window, on-demand otherwise.
 //! - **Position**: anchored to the output's top-left corner, with the
 //!   position as the top and left margins, in logical pixels relative to the
@@ -26,8 +26,8 @@
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use rinch_core::element::WindowProps;
 pub use rinch_core::element::WindowSurfaceKind;
+use rinch_core::element::{WindowLevel, WindowProps};
 use rinch_platform::ResizeDirection;
 
 use super::overlay_window::Backend;
@@ -38,12 +38,10 @@ pub(crate) fn uses_layer_shell(props: &WindowProps, backend: Backend) -> bool {
 }
 
 /// Whether the window goes in the `overlay` layer (above panels and
-/// fullscreen windows) rather than `top`.
-///
-/// Until a window level option exists (#1549) every layer-shell window is in
-/// `top`, the layer above ordinary windows.
-pub(crate) fn wants_overlay_layer(_props: &WindowProps) -> bool {
-    false
+/// fullscreen windows) rather than `top`: a level above `Floating` (#1549).
+/// `Normal` is in `top` too, since a layer surface is an overlay.
+pub(crate) fn wants_overlay_layer(props: &WindowProps) -> bool {
+    props.effective_level() > WindowLevel::Floating
 }
 
 /// What the layer surface is created with. Pure, so the choice is tested
@@ -370,6 +368,24 @@ mod tests {
             start(D::NorthWest).update((10.0, 10.0), at),
             ((110.0, 60.0), (190.0, 70.0))
         );
+    }
+
+    /// The layer follows the level: `top` up to `Floating` (`always_on_top`
+    /// included), `overlay` above.
+    #[test]
+    fn the_layer_follows_the_window_level() {
+        let at = |level| WindowProps {
+            level,
+            ..props(true, None)
+        };
+        assert!(!wants_overlay_layer(&at(WindowLevel::Normal)));
+        assert!(!wants_overlay_layer(&WindowProps {
+            always_on_top: true,
+            ..at(WindowLevel::Normal)
+        }));
+        assert!(!wants_overlay_layer(&at(WindowLevel::Floating)));
+        assert!(wants_overlay_layer(&at(WindowLevel::StatusBar)));
+        assert!(wants_overlay_layer(&at(WindowLevel::ScreenSaver)));
     }
 
     #[test]

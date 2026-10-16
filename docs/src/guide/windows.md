@@ -72,6 +72,8 @@ fn main() {
 | `non_activating` | `bool` | `false` | Never take keyboard focus or activation, even when clicked (see [Overlay Windows](#overlay-windows)) |
 | `click_through` | `bool` | `false` | Let pointer events pass through to the window underneath |
 | `skip_taskbar` | `bool` | `false` | No taskbar entry (and on Windows, none in Alt+Tab) |
+| `level` | `WindowLevel` | `Normal` | How high the window sits: `Normal`, `Floating`, `StatusBar`, `ScreenSaver` (see [Level and workspaces](#level-and-workspaces)) |
+| `visible_on_all_workspaces` | `bool` | `false` | Show the window on every workspace / Space, fullscreen ones included |
 
 ### Starting with no window (tray-only apps)
 
@@ -501,7 +503,7 @@ shown again.
 | Platform | `non_activating` | `click_through` | `skip_taskbar` |
 |---|---|---|---|
 | Windows | `WS_EX_NOACTIVATE`; `WM_MOUSEACTIVATE` answers `MA_NOACTIVATE`; first shown with `SW_SHOWNOACTIVATE` | `WS_EX_TRANSPARENT \| WS_EX_LAYERED` | `WS_EX_TOOLWINDOW` (no taskbar button, no Alt+Tab entry) |
-| macOS | a non-activating `NSPanel` with `becomesKeyOnlyIfNeeded`, kept on screen while its app is inactive, ordered front at creation without becoming key | `ignoresMouseEvents` | nothing to do: a window has no Dock entry of its own (the app's Dock icon is the activation policy's business) |
+| macOS | a non-activating `NSPanel` with `becomesKeyOnlyIfNeeded`, kept on screen while its app is inactive, ordered front at creation without becoming key | `ignoresMouseEvents` | a window has no Dock entry of its own (the app's Dock icon and Cmd-Tab entry are the activation policy's business); the window is kept out of Cmd-` cycling and Mission Control (`ignoresCycle \| stationary`) |
 | X11 | `WM_HINTS.input = False` | an empty input shape (set by rinch over its own connection, XFixes version negotiated) | `_NET_WM_STATE_SKIP_TASKBAR` and `_SKIP_PAGER` |
 | Wayland | a `wlr-layer-shell` surface with no keyboard ([below](#wayland-layer-shell-overlays)); **no effect** on GNOME | an empty input region | a layer surface has no taskbar entry; alone, **no effect** |
 
@@ -511,6 +513,46 @@ shown at creation (winit orders a window created inactive to the front without
 making it key) and adjusted right after, before any event is handled: showing a
 hidden window later would make it key. A window without these fields takes
 exactly the path it always did.
+
+### Level and workspaces
+
+Two more fields place an overlay among other windows and workspaces (issue
+#1549):
+
+```rust
+use rinch_core::element::{WindowLevel, WindowProps};
+
+WindowProps {
+    level: WindowLevel::StatusBar,    // above floating windows, the menu bar and the Dock
+    visible_on_all_workspaces: true,  // every Space / desktop, fullscreen apps' included
+    non_activating: true,
+    skip_taskbar: true,
+    ..Default::default()
+}
+```
+
+`level` is `Normal` (the default), `Floating`, `StatusBar` or `ScreenSaver`.
+`always_on_top: true` is `Floating`; it never lowers a higher `level`. The
+names are macOS's, the one platform with several levels; elsewhere every
+raised level is the same "above" state.
+
+| Platform | `Floating` | `StatusBar` | `ScreenSaver` | `visible_on_all_workspaces` |
+|---|---|---|---|---|
+| macOS | `NSFloatingWindowLevel` (3) | `NSStatusWindowLevel` (25) | `NSScreenSaverWindowLevel` (1000) | `canJoinAllSpaces \| fullScreenAuxiliary` collection behavior |
+| Windows | `HWND_TOPMOST` | `HWND_TOPMOST` | `HWND_TOPMOST` | **no effect** (no public API pins a window to every virtual desktop) |
+| X11 | `_NET_WM_STATE_ABOVE` | `_NET_WM_STATE_ABOVE` | `_NET_WM_STATE_ABOVE` | `_NET_WM_DESKTOP = 0xFFFFFFFF` and `_NET_WM_STATE_STICKY`, set before the map |
+| Wayland | a [layer-shell window](#wayland-layer-shell-overlays): `top` layer; a toplevel: no effect | layer-shell: `overlay` layer | layer-shell: `overlay` layer | no effect |
+
+On macOS a window shows over another app's fullscreen window only with
+`visible_on_all_workspaces` (`fullScreenAuxiliary` lets it into that app's
+Space) and a raised level. Overlays that do this on macOS are usually
+non-activating panels, which is what `non_activating: true` makes; an ordinary
+window with the same settings has not been tried on a Mac. Keeping the **app** out of Cmd-Tab and the Dock is
+the activation policy (`App::activation_policy(ActivationPolicy::Accessory)`),
+not a window setting. On X11 a window with `visible_on_all_workspaces` is
+created hidden and shown after the hints are set. All of these come from the
+props whenever the window is created, so hiding and showing it again keeps
+them.
 
 ### Window identity on Linux (`app_id` and `WM_CLASS`)
 
@@ -531,7 +573,9 @@ mapped, and ignores a request to show it inactive). So on native Wayland a
 `non_activating` window is not an xdg-toplevel: it is a **`wlr-layer-shell`
 surface** (issue #1523) — the kind of surface panels, docks and on-screen
 indicators are. It never takes the keyboard (keyboard interactivity *none*),
-has no taskbar entry, and sits in the `top` layer, above ordinary windows.
+has no taskbar entry, and sits in the `top` layer, above ordinary windows —
+or in the `overlay` layer, above panels and fullscreen windows, when its
+`level` is `StatusBar` or `ScreenSaver`.
 KWin, wlroots compositors (sway, labwc), Hyprland, niri and COSMIC support it.
 
 `WindowProps::wayland_layer_shell: Option<bool>` decides: `None` (the default)
