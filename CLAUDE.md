@@ -5060,7 +5060,13 @@ winit cannot make at creation is created hidden, adjusted, and then shown:
   `DragResizeWindow` (`data-drag-window`, `resize_inset`,
   `start_window_drag` / `start_window_resize`) start a `layer_shell::Gesture`
   that the shell's `PointerMoved` intercept follows (consuming the moves) and
-  any press or release ends; the fork commits a margin change at once. A
+  any press or release ends, and that starts only while the primary button is
+  held (so does a `start_window_*` call on any window); the fork commits a
+  margin change at once and sends only requests the bound layer-shell version
+  has. The compositor closes a layer surface whose output went away: the
+  shell's `CloseRequested` for a layer surface re-creates it
+  (`layer_surface_closed`, output name dropped; with no output left it retries
+  every second) instead of quitting. A
   mouse `PointerEntered` now queues a pointer move for every window, so a press
   with no move before it is judged where the pointer is. Where the compositor
   has no layer shell (GNOME) the fork makes an xdg-toplevel and one

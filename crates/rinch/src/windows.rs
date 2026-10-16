@@ -524,7 +524,7 @@ pub fn set_current_window_output(output: Option<&str>) {
 /// window manager for an interactive move. A Wayland layer-shell window has
 /// none, so rinch follows the pointer until the button is released and moves
 /// the window by its margins; [`current_window_position`] then answers where
-/// it is.
+/// it is. Ignored when no button is held (a timer, a press already over).
 pub fn start_window_drag() {
     send_native_event(RinchNativeEvent::StartWindowDrag);
 }
@@ -533,7 +533,8 @@ pub fn start_window_drag() {
 /// handler of the press on that edge — what `WindowProps::resize_inset` does
 /// for a borderless window (issue #1523). A Wayland layer-shell window is
 /// resized by rinch, following the pointer until the button is released (the
-/// opposite edge stays put; 16 logical pixels at the least).
+/// opposite edge stays put; 16 logical pixels at the least). Ignored when no
+/// button is held.
 pub fn start_window_resize(edge: rinch_platform::ResizeDirection) {
     send_native_event(RinchNativeEvent::StartWindowResize(edge));
 }

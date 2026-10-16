@@ -609,9 +609,15 @@ keep working:
   itself. From a handler of your own, call `start_window_drag()` or
   `start_window_resize(edge)` (with `rinch::platform::ResizeDirection`) on the
   press; on an ordinary window they ask the window manager for its
-  interactive move or resize.
+  interactive move or resize. Called with no button held (from a timer, or
+  after the press already ended) they do nothing, on every window.
 - **Hide and show** keep the position and size, as for any window, and
   showing it takes no focus.
+- **Its output going away** (unplugged, or turned off) makes the compositor
+  close a layer surface. rinch does not take that for a close: it makes the
+  window again on an output the compositor picks (the `output` name is
+  dropped until `set_current_window_output` names one again), at the same
+  position and size, or, with no output left, as soon as one appears.
 
 `current_window_surface_kind()` answers what the window got:
 `Some(WindowSurfaceKind::LayerShell)`, or `Some(WindowSurfaceKind::Toplevel)`

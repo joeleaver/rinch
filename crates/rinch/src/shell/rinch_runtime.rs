@@ -1238,7 +1238,9 @@ impl RinchRuntime {
     /// the name is dropped until `set_current_window_output` sets one again.
     /// With no output left, wait for one.
     fn layer_surface_closed(&mut self, event_loop: &dyn ActiveEventLoop) {
-        tracing::info!("the compositor closed the layer surface; making it again");
+        tracing::warn!(
+            "the compositor closed the layer surface (its output went away); making it again"
+        );
         self.output_override = Some(None);
         self.hide_window();
         if event_loop.available_monitors().next().is_some() {
