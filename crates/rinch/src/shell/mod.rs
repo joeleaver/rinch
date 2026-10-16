@@ -25,6 +25,8 @@ pub mod softbuffer_renderer;
 pub mod types;
 #[cfg(feature = "desktop")]
 pub mod window;
+#[cfg(feature = "desktop")]
+pub(crate) mod window_geometry;
 
 #[cfg(all(feature = "android", target_os = "android"))]
 pub mod android_runtime;
