@@ -15,9 +15,22 @@
 //! | | non-activating | click-through | skip taskbar |
 //! |---|---|---|---|
 //! | Windows | `WS_EX_NOACTIVATE`, `WM_MOUSEACTIVATE` → `MA_NOACTIVATE`, shown with `SW_SHOWNOACTIVATE` | `set_cursor_hittest(false)` (`WS_EX_TRANSPARENT \| WS_EX_LAYERED`) | `WS_EX_TOOLWINDOW` (no taskbar button, no Alt+Tab) and winit's `with_skip_taskbar` |
-//! | macOS | non-activating `NSPanel`, `becomesKeyOnlyIfNeeded`, `hidesOnDeactivate = NO`, ordered front at creation without becoming key | `ignoresMouseEvents` (through `set_cursor_hittest`) | nothing: a window has no Dock entry of its own |
+//! | macOS | non-activating `NSPanel`, `becomesKeyOnlyIfNeeded`, `hidesOnDeactivate = NO`, ordered front at creation without becoming key | `ignoresMouseEvents` (through `set_cursor_hittest`) | no Dock entry to skip; `ignoresCycle \| stationary` (#1549) |
 //! | X11 | `WM_HINTS.input = False` (ICCCM "no input" model) | an empty `ShapeInput` region set by rinch over its own x11rb connection (winit's `set_cursor_hittest` never negotiates XFixes and is refused) | `_NET_WM_STATE_SKIP_TASKBAR`, `_NET_WM_STATE_SKIP_PAGER` |
 //! | Wayland | **not available** (xdg-toplevel cannot refuse focus) | an empty input region (through `set_cursor_hittest`) | **not available** |
+//!
+//! [`WindowProps::level`] and [`WindowProps::visible_on_all_workspaces`]
+//! (issue #1549) place an overlay among windows and workspaces:
+//!
+//! | | raised level | all workspaces |
+//! |---|---|---|
+//! | Windows | `HWND_TOPMOST` (winit's `AlwaysOnTop`) for every raised level | **not available** |
+//! | macOS | winit's `AlwaysOnTop` (`NSFloatingWindowLevel`), then `setLevel:` 25 or 1000 for `StatusBar` / `ScreenSaver` | `canJoinAllSpaces \| fullScreenAuxiliary` collection behavior |
+//! | X11 | `_NET_WM_STATE_ABOVE` (winit) for every raised level | `_NET_WM_DESKTOP = 0xFFFFFFFF` and `_NET_WM_STATE_STICKY`, before the map |
+//! | Wayland | **not available** (a layer-shell surface could: #1523) | **not available** |
+//!
+//! On macOS `skip_taskbar` also adds `ignoresCycle | stationary` to the
+//! collection behavior: out of window cycling (Cmd-`) and Mission Control.
 //!
 //! On Windows and X11 a window that needs a tweak winit cannot make at
 //! creation is created hidden, adjusted, and then shown, so it is never on
@@ -28,7 +41,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use rinch_core::element::WindowProps;
+use rinch_core::element::{WindowLevel, WindowProps};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowAttributes};
 
@@ -93,6 +106,13 @@ pub(crate) struct WindowSteps {
     pub(crate) x11_no_input: bool,
     /// X11: `_NET_WM_STATE_SKIP_TASKBAR` + `_NET_WM_STATE_SKIP_PAGER`.
     pub(crate) x11_skip_taskbar: bool,
+    /// X11: `_NET_WM_DESKTOP = 0xFFFFFFFF` + `_NET_WM_STATE_STICKY`.
+    pub(crate) x11_sticky: bool,
+    /// macOS: an exact `NSWindowLevel` winit has no value for (`StatusBar`,
+    /// `ScreenSaver`; `Floating` is winit's `AlwaysOnTop`).
+    pub(crate) mac_level: Option<isize>,
+    /// macOS: `NSWindowCollectionBehavior` bits to add (0: leave it alone).
+    pub(crate) mac_collection: u64,
     /// Wayland was asked for something it cannot do: warn once.
     pub(crate) wayland_unsupported: bool,
     /// Turn the pointer hit test off after creation.
@@ -107,6 +127,7 @@ impl WindowSteps {
     pub(crate) fn plan(props: &WindowProps, click_through: bool, backend: Backend) -> Self {
         let non_activating = props.non_activating;
         let skip_taskbar = props.skip_taskbar;
+        let all_workspaces = props.visible_on_all_workspaces;
         let mut steps = WindowSteps {
             inactive: non_activating,
             click_through,
@@ -125,11 +146,16 @@ impl WindowSteps {
                 // honours `with_active(false)` (`orderFront`), and
                 // `configure_panel` runs right after it, before any event.
                 steps.mac_panel = non_activating;
+                steps.mac_level = mac::level(props.effective_level());
+                steps.mac_collection = mac::collection(all_workspaces, skip_taskbar);
             }
             Backend::X11 => {
                 steps.x11_no_input = non_activating;
                 steps.x11_skip_taskbar = skip_taskbar;
-                steps.create_hidden = non_activating || skip_taskbar;
+                steps.x11_sticky = all_workspaces;
+                // EWMH: a client asks for its desktop by setting
+                // `_NET_WM_DESKTOP` before mapping.
+                steps.create_hidden = non_activating || skip_taskbar || all_workspaces;
             }
             Backend::Wayland => {
                 steps.wayland_unsupported = non_activating || skip_taskbar;
@@ -137,6 +163,76 @@ impl WindowSteps {
             Backend::Other => {}
         }
         steps
+    }
+}
+
+/// The macOS numbers behind [`WindowLevel`] and the collection behavior
+/// (issue #1549). Pure, and compiled everywhere, so the mapping is tested on
+/// any host.
+pub(crate) mod mac {
+    use super::WindowLevel;
+
+    /// `NSStatusWindowLevel` (`kCGStatusWindowLevel`).
+    pub(crate) const STATUS_LEVEL: isize = 25;
+    /// `NSScreenSaverWindowLevel` (`kCGScreenSaverWindowLevel`).
+    pub(crate) const SCREEN_SAVER_LEVEL: isize = 1000;
+
+    // `NSWindowCollectionBehavior` bits.
+    pub(crate) const CAN_JOIN_ALL_SPACES: u64 = 1 << 0;
+    pub(crate) const MOVE_TO_ACTIVE_SPACE: u64 = 1 << 1;
+    pub(crate) const MANAGED: u64 = 1 << 2;
+    pub(crate) const TRANSIENT: u64 = 1 << 3;
+    pub(crate) const STATIONARY: u64 = 1 << 4;
+    pub(crate) const PARTICIPATES_IN_CYCLE: u64 = 1 << 5;
+    pub(crate) const IGNORES_CYCLE: u64 = 1 << 6;
+    pub(crate) const FULL_SCREEN_PRIMARY: u64 = 1 << 7;
+    pub(crate) const FULL_SCREEN_AUXILIARY: u64 = 1 << 8;
+
+    /// The `setLevel:` rinch makes itself: `None` where winit's own level is
+    /// right (`Normal`; `Floating` is winit's `AlwaysOnTop`).
+    pub(crate) fn level(level: WindowLevel) -> Option<isize> {
+        match level {
+            WindowLevel::Normal | WindowLevel::Floating => None,
+            WindowLevel::StatusBar => Some(STATUS_LEVEL),
+            WindowLevel::ScreenSaver => Some(SCREEN_SAVER_LEVEL),
+        }
+    }
+
+    /// The collection behavior bits to add.
+    pub(crate) fn collection(all_workspaces: bool, skip_taskbar: bool) -> u64 {
+        let mut bits = 0;
+        if all_workspaces {
+            // Every Space, and the Space of another app's fullscreen window.
+            bits |= CAN_JOIN_ALL_SPACES | FULL_SCREEN_AUXILIARY;
+        }
+        if skip_taskbar {
+            // Out of Cmd-` and the Window menu; left in place (not laid
+            // out) by Mission Control.
+            bits |= IGNORES_CYCLE | STATIONARY;
+        }
+        bits
+    }
+
+    /// `current` with `add` laid over it, dropping each bit `add` excludes:
+    /// AppKit raises on `canJoinAllSpaces | moveToActiveSpace`, on more than
+    /// one of `managed` / `transient` / `stationary`, on both cycle bits and
+    /// on both fullscreen bits.
+    #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+    pub(crate) fn merge(current: u64, add: u64) -> u64 {
+        let mut clear = 0;
+        if add & CAN_JOIN_ALL_SPACES != 0 {
+            clear |= MOVE_TO_ACTIVE_SPACE;
+        }
+        if add & STATIONARY != 0 {
+            clear |= MANAGED | TRANSIENT;
+        }
+        if add & IGNORES_CYCLE != 0 {
+            clear |= PARTICIPATES_IN_CYCLE;
+        }
+        if add & FULL_SCREEN_AUXILIARY != 0 {
+            clear |= FULL_SCREEN_PRIMARY;
+        }
+        (current & !clear) | add
     }
 }
 
@@ -265,8 +361,17 @@ pub(crate) enum AfterCreate {
     },
     /// macOS: `becomesKeyOnlyIfNeeded`, `hidesOnDeactivate = NO`.
     MacPanel,
-    /// X11: input hint and skip-taskbar states, before the map.
-    X11Hints { no_input: bool, skip_taskbar: bool },
+    /// macOS: an exact window level and collection behavior bits to add.
+    MacPlacement {
+        level: Option<isize>,
+        collection: u64,
+    },
+    /// X11: input hint, skip-taskbar and sticky states, before the map.
+    X11Hints {
+        no_input: bool,
+        skip_taskbar: bool,
+        sticky: bool,
+    },
     /// Let the pointer through. Only when asked for: an ordinary window
     /// takes no hit-test call at all, exactly as before #1519.
     ClickThrough,
@@ -292,10 +397,17 @@ pub(crate) fn after_create_actions(steps: WindowSteps, always_on_top: bool) -> V
     if steps.mac_panel {
         actions.push(AfterCreate::MacPanel);
     }
-    if steps.x11_no_input || steps.x11_skip_taskbar {
+    if steps.mac_level.is_some() || steps.mac_collection != 0 {
+        actions.push(AfterCreate::MacPlacement {
+            level: steps.mac_level,
+            collection: steps.mac_collection,
+        });
+    }
+    if steps.x11_no_input || steps.x11_skip_taskbar || steps.x11_sticky {
         actions.push(AfterCreate::X11Hints {
             no_input: steps.x11_no_input,
             skip_taskbar: steps.x11_skip_taskbar,
+            sticky: steps.x11_sticky,
         });
     }
     if steps.click_through {
@@ -337,15 +449,21 @@ pub(crate) fn after_create(window: &dyn Window, steps: WindowSteps, always_on_to
                 #[cfg(target_os = "macos")]
                 macos::configure_panel(window);
             }
+            AfterCreate::MacPlacement { level, collection } => {
+                #[cfg(target_os = "macos")]
+                macos::place(window, level, collection);
+                let _ = (level, collection);
+            }
             AfterCreate::X11Hints {
                 no_input,
                 skip_taskbar,
+                sticky,
             } => {
                 #[cfg(target_os = "linux")]
-                if let Err(e) = x11::set_hints(window, no_input, skip_taskbar) {
+                if let Err(e) = x11::set_hints(window, no_input, skip_taskbar, sticky) {
                     tracing::warn!("Could not set the X11 overlay hints: {e}");
                 }
-                let _ = (no_input, skip_taskbar);
+                let _ = (no_input, skip_taskbar, sticky);
             }
             AfterCreate::ClickThrough => set_click_through(window, true),
             AfterCreate::Show => window.set_visible(true),
@@ -548,12 +666,13 @@ mod x11 {
         window: &dyn Window,
         no_input: bool,
         skip_taskbar: bool,
+        sticky: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let Some(xid) = xid_of(window)? else {
             return Ok(());
         };
         let (conn, _) = x11rb::connect(None)?;
-        set_hints_on(&conn, xid, no_input, skip_taskbar)
+        set_hints_on(&conn, xid, no_input, skip_taskbar, sticky)
     }
 
     /// [`set_hints`] on a given connection and window id.
@@ -562,30 +681,39 @@ mod x11 {
         xid: u32,
         no_input: bool,
         skip_taskbar: bool,
+        sticky: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         if no_input {
             let mut hints = WmHints::get(conn, xid)?.reply()?.unwrap_or_default();
             hints.input = Some(false);
             hints.set(conn, xid)?;
         }
+        let mut states = Vec::new();
         if skip_taskbar {
-            let state = conn.intern_atom(false, b"_NET_WM_STATE")?.reply()?.atom;
-            let taskbar = conn
-                .intern_atom(false, b"_NET_WM_STATE_SKIP_TASKBAR")?
-                .reply()?
-                .atom;
-            let pager = conn
-                .intern_atom(false, b"_NET_WM_STATE_SKIP_PAGER")?
-                .reply()?
-                .atom;
-            // APPEND, not REPLACE: winit may already have written a state.
+            states.push(b"_NET_WM_STATE_SKIP_TASKBAR".as_slice());
+            states.push(b"_NET_WM_STATE_SKIP_PAGER".as_slice());
+        }
+        if sticky {
+            states.push(b"_NET_WM_STATE_STICKY".as_slice());
+            // EWMH: 0xFFFFFFFF is "all desktops"; read by the window
+            // manager when the window is mapped.
+            let desktop = conn.intern_atom(false, b"_NET_WM_DESKTOP")?.reply()?.atom;
             conn.change_property32(
-                PropMode::APPEND,
+                PropMode::REPLACE,
                 xid,
-                state,
-                AtomEnum::ATOM,
-                &[taskbar, pager],
+                desktop,
+                AtomEnum::CARDINAL,
+                &[0xFFFF_FFFF],
             )?;
+        }
+        if !states.is_empty() {
+            let state = conn.intern_atom(false, b"_NET_WM_STATE")?.reply()?.atom;
+            let mut atoms = Vec::with_capacity(states.len());
+            for name in states {
+                atoms.push(conn.intern_atom(false, name)?.reply()?.atom);
+            }
+            // APPEND, not REPLACE: winit may already have written a state.
+            conn.change_property32(PropMode::APPEND, xid, state, AtomEnum::ATOM, &atoms)?;
         }
         // A round trip: the server has processed everything above.
         conn.get_input_focus()?.reply()?;
@@ -624,6 +752,36 @@ mod macos {
             }
             let _: () = msg_send![ns_window, setBecomesKeyOnlyIfNeeded: true];
             let _: () = msg_send![ns_window, setHidesOnDeactivate: false];
+        }
+    }
+
+    /// Set an exact window level and add collection behavior bits (#1549).
+    /// The bits are merged into what the window has ([`super::mac::merge`]),
+    /// dropping the ones they exclude, which AppKit would raise on.
+    pub(super) fn place(window: &dyn Window, level: Option<isize>, collection: u64) {
+        let Ok(handle) = window.window_handle() else {
+            return;
+        };
+        let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+            return;
+        };
+        let view = handle.ns_view.as_ptr() as *mut AnyObject;
+        // SAFETY: as in `configure_panel`: winit's live `NSView` on the main
+        // thread, and its `NSWindow`. `level` is an `NSWindowLevel`
+        // (`NSInteger`), the collection behavior an `NSUInteger` bit set.
+        unsafe {
+            let ns_window: *mut AnyObject = msg_send![view, window];
+            if ns_window.is_null() {
+                return;
+            }
+            if let Some(level) = level {
+                let _: () = msg_send![ns_window, setLevel: level];
+            }
+            if collection != 0 {
+                let current: usize = msg_send![ns_window, collectionBehavior];
+                let merged = super::mac::merge(current as u64, collection) as usize;
+                let _: () = msg_send![ns_window, setCollectionBehavior: merged];
+            }
         }
     }
 }
@@ -913,7 +1071,7 @@ mod tests {
                 .unwrap();
         }
 
-        x11::set_hints_on(&conn, xid, true, true).unwrap();
+        x11::set_hints_on(&conn, xid, true, true, true).unwrap();
 
         let hints = WmHints::get(&conn, xid).unwrap().reply().unwrap().unwrap();
         assert_eq!(hints.input, Some(false));
@@ -932,6 +1090,29 @@ mod tests {
         let atoms: Vec<u32> = value.value32().unwrap().collect();
         assert!(atoms.contains(&skip), "{atoms:?}");
         assert!(atoms.contains(&above), "{atoms:?}");
+        // #1549: sticky, on every desktop.
+        let sticky = conn
+            .intern_atom(false, b"_NET_WM_STATE_STICKY")
+            .unwrap()
+            .reply()
+            .unwrap()
+            .atom;
+        assert!(atoms.contains(&sticky), "{atoms:?}");
+        let desktop = conn
+            .intern_atom(false, b"_NET_WM_DESKTOP")
+            .unwrap()
+            .reply()
+            .unwrap()
+            .atom;
+        let d: Vec<u32> = conn
+            .get_property(false, xid, desktop, AtomEnum::CARDINAL, 0, 1)
+            .unwrap()
+            .reply()
+            .unwrap()
+            .value32()
+            .unwrap()
+            .collect();
+        assert_eq!(d, vec![0xFFFF_FFFF]);
     }
 
     /// The X11 window id behind a winit window, for the X tests.
@@ -1046,7 +1227,13 @@ mod tests {
             );
             assert!(!a.visible, "created hidden");
             let overlay: Arc<dyn Window> = Arc::from(el.create_window(a).unwrap());
-            x11::set_hints(&*overlay, steps.x11_no_input, steps.x11_skip_taskbar).unwrap();
+            x11::set_hints(
+                &*overlay,
+                steps.x11_no_input,
+                steps.x11_skip_taskbar,
+                steps.x11_sticky,
+            )
+            .unwrap();
 
             let plain = apply_to_attributes(
                 WindowAttributes::default()
@@ -1120,6 +1307,115 @@ mod tests {
         );
     }
 
+    fn placed(level: WindowLevel, all_workspaces: bool, skip_taskbar: bool) -> WindowProps {
+        WindowProps {
+            level,
+            visible_on_all_workspaces: all_workspaces,
+            skip_taskbar,
+            ..Default::default()
+        }
+    }
+
+    /// #1549: each level's macOS number. `Floating` is winit's own
+    /// `AlwaysOnTop` (`kCGFloatingWindowLevel`), so rinch sets nothing.
+    #[test]
+    fn mac_levels_are_appkits_numbers() {
+        assert_eq!(mac::level(WindowLevel::Normal), None);
+        assert_eq!(mac::level(WindowLevel::Floating), None);
+        assert_eq!(mac::level(WindowLevel::StatusBar), Some(25));
+        assert_eq!(mac::level(WindowLevel::ScreenSaver), Some(1000));
+        // `always_on_top` is `Floating`, and does not lower a raised level.
+        let p = WindowProps {
+            always_on_top: true,
+            ..Default::default()
+        };
+        assert_eq!(p.effective_level(), WindowLevel::Floating);
+        let p = WindowProps {
+            always_on_top: true,
+            level: WindowLevel::ScreenSaver,
+            ..Default::default()
+        };
+        assert_eq!(p.effective_level(), WindowLevel::ScreenSaver);
+        assert_eq!(
+            WindowProps::default().effective_level(),
+            WindowLevel::Normal
+        );
+    }
+
+    /// #1549: the collection behavior bits, NSWindowCollectionBehavior's
+    /// values (AppKit headers), and the excluded bits a merge drops.
+    #[test]
+    fn mac_collection_behavior_bits() {
+        assert_eq!(mac::collection(false, false), 0);
+        // canJoinAllSpaces (1) | fullScreenAuxiliary (256).
+        assert_eq!(mac::collection(true, false), 1 | 256);
+        // ignoresCycle (64) | stationary (16).
+        assert_eq!(mac::collection(false, true), 64 | 16);
+        assert_eq!(mac::collection(true, true), 1 | 256 | 64 | 16);
+
+        // Nothing to add: the window keeps what it has.
+        assert_eq!(mac::merge(0b10_0110, 0), 0b10_0110);
+        // moveToActiveSpace (2), managed (4), transient (8),
+        // participatesInCycle (32) and fullScreenPrimary (128) are each
+        // excluded by a bit added; an unrelated bit (1 << 9) is kept.
+        let current = 2 | 4 | 8 | 32 | 128 | (1 << 9);
+        assert_eq!(
+            mac::merge(current, mac::collection(true, true)),
+            1 | 16 | 64 | 256 | (1 << 9)
+        );
+        // Each exclusion only on its own trigger.
+        assert_eq!(mac::merge(2 | 4, mac::CAN_JOIN_ALL_SPACES), 1 | 4);
+        assert_eq!(mac::merge(2 | 4 | 32, mac::STATIONARY), 2 | 16 | 32);
+        assert_eq!(mac::merge(32 | 128, mac::IGNORES_CYCLE), 64 | 128);
+        assert_eq!(mac::merge(32 | 128, mac::FULL_SCREEN_AUXILIARY), 32 | 256);
+    }
+
+    /// #1549: what each backend does with a level and all workspaces.
+    #[test]
+    fn placement_steps_per_backend() {
+        let p = placed(WindowLevel::StatusBar, true, false);
+        let m = WindowSteps::plan(&p, false, Backend::MacOs);
+        assert_eq!(m.mac_level, Some(25));
+        assert_eq!(m.mac_collection, 1 | 256);
+        assert!(!m.create_hidden && !m.mac_panel);
+        assert_eq!(
+            after_create_actions(m, true),
+            vec![AfterCreate::MacPlacement {
+                level: Some(25),
+                collection: 1 | 256
+            }]
+        );
+        // A plain always-on-top window on macOS is winit's alone.
+        let top = WindowProps {
+            always_on_top: true,
+            ..Default::default()
+        };
+        assert!(
+            after_create_actions(WindowSteps::plan(&top, false, Backend::MacOs), true).is_empty()
+        );
+
+        let x = WindowSteps::plan(&p, false, Backend::X11);
+        assert!(x.x11_sticky && x.create_hidden && !x.x11_skip_taskbar);
+        assert_eq!(
+            after_create_actions(x, true),
+            vec![
+                AfterCreate::X11Hints {
+                    no_input: false,
+                    skip_taskbar: false,
+                    sticky: true
+                },
+                AfterCreate::Show,
+                AfterCreate::ReassertOnTop,
+            ]
+        );
+        // Windows and Wayland: the level is winit's `AlwaysOnTop` at
+        // creation; all workspaces is not available, and takes no step.
+        for b in [Backend::Windows, Backend::Wayland] {
+            let s = WindowSteps::plan(&p, false, b);
+            assert_eq!(s, WindowSteps::default(), "{b:?}");
+        }
+    }
+
     #[test]
     fn after_create_does_what_the_steps_say_in_order() {
         // An ordinary window: nothing at all (no hit-test call either).
@@ -1130,7 +1426,8 @@ mod tests {
             vec![
                 AfterCreate::X11Hints {
                     no_input: true,
-                    skip_taskbar: true
+                    skip_taskbar: true,
+                    sticky: false
                 },
                 AfterCreate::ClickThrough,
                 AfterCreate::Show,
@@ -1150,7 +1447,17 @@ mod tests {
         );
         // macOS is never re-shown through set_visible (makeKeyAndOrderFront).
         let m = WindowSteps::plan(&props(true, true), false, Backend::MacOs);
-        assert_eq!(after_create_actions(m, true), vec![AfterCreate::MacPanel]);
+        assert_eq!(
+            after_create_actions(m, true),
+            vec![
+                AfterCreate::MacPanel,
+                // skip_taskbar: out of window cycling and Mission Control.
+                AfterCreate::MacPlacement {
+                    level: None,
+                    collection: 64 | 16
+                },
+            ]
+        );
         let wl = WindowSteps::plan(&props(true, false), true, Backend::Wayland);
         assert_eq!(
             after_create_actions(wl, true),
