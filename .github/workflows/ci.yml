@@ -441,6 +441,9 @@ jobs:
           CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
         working-directory: crates/rinch-web
         run: |
+          # `run:` is `bash -e` without pipefail, so without this a failing
+          # test would be hidden by `tee`.
+          set -o pipefail
           echo '{"goog:chromeOptions":{"args":["--headless=new","--window-size=1024,768","--force-device-scale-factor=1.5"]}}' > webdriver.json
           cargo test -p rinch-web --target wasm32-unknown-unknown \
             --test drag_auto_scroll --test review2_1592 -- --nocapture 2>&1 | tee dpr.log
