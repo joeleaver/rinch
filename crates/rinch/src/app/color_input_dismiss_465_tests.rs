@@ -560,8 +560,11 @@ fn escape_passes_a_picker_under_a_visibility_hidden_ancestor() {
 
     {
         let doc = app.doc.as_ref().unwrap();
-        doc.borrow_mut()
-            .set_style(rinch_core::dom::NodeId(wrapper_id.get().unwrap()), "visibility", "hidden");
+        doc.borrow_mut().set_style(
+            rinch_core::dom::NodeId(wrapper_id.get().unwrap()),
+            "visibility",
+            "hidden",
+        );
     }
     app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
 
