@@ -1246,6 +1246,13 @@ struct AutoScrollLoop {
     /// written in whole pixels through web-sys, and a slow band must still add
     /// up.
     remainder: f64,
+    /// A container a frame's write did not move, and the direction it was
+    /// written in: it is at its end that way, whatever its sizes say (#1592:
+    /// `scrollHeight` and `clientHeight` are rounded, so at a fractional
+    /// device scale a list can stop short of `scrollHeight - clientHeight` by
+    /// more than any fixed slack). Later frames skip it in that direction, so
+    /// the loop moves on up the chain or stops. Cleared when the loop stops.
+    stuck: Option<(web_sys::Element, f32)>,
 }
 
 thread_local! {
@@ -1267,7 +1274,10 @@ fn request_auto_scroll_frame() -> Option<i32> {
 /// Start the auto-scroll frame loop unless it is running. Called after every
 /// pointer move of an active drag; cheap when the loop is already scheduled.
 fn ensure_drag_auto_scroll() {
-    if AUTO_SCROLL.with(|a| a.borrow().is_some()) {
+    // A move while the loop runs lets a `stuck` container be tried again: its
+    // content may have grown since (a list loading more rows).
+    let running = AUTO_SCROLL.with(|a| a.borrow_mut().as_mut().map(|r| r.stuck = None).is_some());
+    if running {
         return;
     }
     let Some(handle) = request_auto_scroll_frame() else {
@@ -1278,8 +1288,17 @@ fn ensure_drag_auto_scroll() {
             handle,
             last: None,
             remainder: 0.0,
+            stuck: None,
         })
     });
+}
+
+/// Start the auto-scroll loop if a drag is active (the page scroll lock was
+/// released: a list it had locked out may be under a still pointer).
+pub(crate) fn restart_drag_auto_scroll_if_dragging() {
+    if WEB_DRAG.with(|d| d.borrow().as_ref().is_some_and(|s| s.active)) {
+        ensure_drag_auto_scroll();
+    }
 }
 
 /// Stop the auto-scroll frame loop. Idempotent.
@@ -1305,23 +1324,32 @@ pub fn __drag_auto_scroll_running() -> bool {
 /// overlay ([`crate::web_document::scroll_locked_out`]). Bands are measured on
 /// the part of the box inside the viewport; the scrolling element's on the
 /// viewport. Clipping by an outer scroller is not taken into account.
-fn drag_auto_scroll_container(hit: &web_sys::Element, y: f32) -> Option<(web_sys::Element, f32)> {
+///
+/// `stuck` is a container a frame found at its end in one direction; it is
+/// not picked for that direction.
+fn drag_auto_scroll_container(
+    hit: &web_sys::Element,
+    y: f32,
+    stuck: Option<&(web_sys::Element, f32)>,
+) -> Option<(web_sys::Element, f32)> {
     let win = web_sys::window()?;
     let doc = win.document()?;
     let viewport_h = win.inner_height().ok()?.as_f64()? as f32;
     let scrolling = doc.scrolling_element();
     // `scrollTop` read unrounded (web-sys's `scroll_top` is an `i32`) against
-    // a range of rounded sizes, with half a pixel of slack: at a fractional
-    // device scale the browser can keep the offset off whole pixels, and a
-    // container whose last fraction is out of reach must count as at its end,
-    // or the loop spins there and the page never takes over.
+    // a range of rounded sizes, with a pixel of slack: at a fractional device
+    // scale the browser keeps the offset on the device grid, and a container
+    // whose last fraction is out of reach must count as at its end, or the
+    // loop spins there and the page never takes over. The slack is not enough
+    // on its own (both sizes are rounded); a write that moves nothing marks
+    // the container `stuck`, which is what ends the loop in every case.
     let can_move = |el: &web_sys::Element, velocity: f32| {
-        let top = js_sys::Reflect::get(el, &"scrollTop".into())
-            .ok()
-            .and_then(|v| v.as_f64())
-            .unwrap_or_else(|| f64::from(el.scroll_top()));
+        if stuck.is_some_and(|(s, v)| same_element(s, el) && same_direction(*v, velocity)) {
+            return false;
+        }
+        let top = scroll_top_f64(el);
         let max = f64::from(el.scroll_height() - el.client_height());
-        (velocity < 0.0 && top > 0.5) || (velocity > 0.0 && top < max - 0.5)
+        (velocity < 0.0 && top > 1.0) || (velocity > 0.0 && top < max - 1.0)
     };
     let mut node = Some(hit.clone());
     while let Some(el) = node {
@@ -1374,6 +1402,19 @@ fn drag_auto_scroll_container(hit: &web_sys::Element, y: f32) -> Option<(web_sys
     (velocity != 0.0 && can_move(&el, velocity)).then_some((el, velocity))
 }
 
+/// `Element.scrollTop` unrounded (web-sys's `scroll_top` is an `i32`).
+fn scroll_top_f64(el: &web_sys::Element) -> f64 {
+    js_sys::Reflect::get(el, &"scrollTop".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or_else(|| f64::from(el.scroll_top()))
+}
+
+/// Whether two velocities point the same way.
+fn same_direction(a: f32, b: f32) -> bool {
+    (a < 0.0) == (b < 0.0)
+}
+
 /// One auto-scroll frame: scroll the container under the drag's pointer by
 /// its band's speed times the time since the last frame, resolve the drag
 /// target again if that moved anything, and schedule the next frame — or stop
@@ -1390,24 +1431,33 @@ fn drag_auto_scroll_frame(timestamp: f64) {
         AUTO_SCROLL.with(|a| *a.borrow_mut() = None);
         return;
     };
-    let pick = element_from_point(x, y).and_then(|hit| drag_auto_scroll_container(&hit, y));
+    let Some((last, remainder, stuck)) = AUTO_SCROLL.with(|a| {
+        a.borrow()
+            .as_ref()
+            .map(|r| (r.last, r.remainder, r.stuck.clone()))
+    }) else {
+        return; // stopped since this frame was scheduled
+    };
+    let pick = element_from_point(x, y)
+        .and_then(|hit| drag_auto_scroll_container(&hit, y, stuck.as_ref()));
     let Some((container, velocity)) = pick else {
         AUTO_SCROLL.with(|a| *a.borrow_mut() = None);
         return;
     };
-    let Some((last, remainder)) =
-        AUTO_SCROLL.with(|a| a.borrow().as_ref().map(|r| (r.last, r.remainder)))
-    else {
-        return; // stopped since this frame was scheduled
-    };
     let elapsed = last.map(|then| ((timestamp - then) / 1000.0) as f32);
     let precise = remainder + f64::from(velocity * events::drag_auto_scroll_step(elapsed));
     let whole = precise.trunc();
-    let before = container.scroll_top();
+    let before = scroll_top_f64(&container);
     if whole != 0.0 {
-        container.set_scroll_top(before + whole as i32);
+        container.set_scroll_top(container.scroll_top() + whole as i32);
     }
-    let moved = container.scroll_top() != before;
+    let moved = scroll_top_f64(&container) != before;
+    // A write that moved nothing: the container is at its end this way.
+    let stuck = if whole != 0.0 && !moved {
+        Some((container.clone(), velocity))
+    } else {
+        stuck
+    };
     let Some(handle) = request_auto_scroll_frame() else {
         AUTO_SCROLL.with(|a| *a.borrow_mut() = None);
         return;
@@ -1417,6 +1467,7 @@ fn drag_auto_scroll_frame(timestamp: f64) {
             handle,
             last: Some(timestamp),
             remainder: precise - whole,
+            stuck,
         })
     });
     if moved {

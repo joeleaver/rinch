@@ -2241,6 +2241,8 @@ impl RinchApp {
             self.shared_hit(&d, x, y)
                 .and_then(|hit| Self::drag_auto_scroll_container(&d, hit, y, vp_h))
         };
+        // A hit test made afresh here (after motion) is the newest answer.
+        self.drag_hit_memo = self.hit_memo.get();
         let Some((container, velocity)) = pick else {
             self.drag_auto_scroll_at = None;
             return false;

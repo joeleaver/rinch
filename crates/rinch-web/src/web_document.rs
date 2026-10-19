@@ -195,6 +195,11 @@ fn set_page_scroll_locked(locked: bool, root: usize, root_el: Option<web_sys::El
             }
         }
     });
+    // A drag whose pointer rests over a list the lock had kept still scrolls
+    // it now, as desktop's next frame does, not only after a pointer move.
+    if !locked {
+        crate::event_delegation::restart_drag_auto_scroll_if_dragging();
+    }
 }
 
 /// Reset the page scroll lock. Test-only: a fixture that fails between a lock

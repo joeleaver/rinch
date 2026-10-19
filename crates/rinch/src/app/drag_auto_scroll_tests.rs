@@ -619,3 +619,134 @@ fn review_a_stalled_clock_is_one_capped_step() {
     assert!(step <= 61.0, "a 400ms stall scrolled {step}px");
     assert!(step > 30.0, "but a full capped step: {step}");
 }
+
+// ── Round-2 review fixtures (PR #1592) ─────────────────────────────────────
+
+/// R2-1: a list slides away from a resting pointer (a `transform` transition
+/// ending at a non-`none` value, which moves no hit-cache generation). After
+/// the transition's last tick, a reused hit from mid-slide still names a row
+/// of the list; its band is measured on `y` alone, so the list keeps
+/// scrolling though the pointer is no longer over it.
+#[test]
+fn r2_a_list_that_slid_away_is_not_scrolled_from_a_mid_slide_hit() {
+    let mut f = fixture_with("transition: transform 60ms linear;", None);
+    start_drag(&mut f.app);
+    let px = 250.0;
+    move_to(&mut f.app, (px, LIST_BOTTOM - 4.0));
+    frame(&mut f.app);
+    {
+        let mut d = f.app.doc.as_ref().unwrap().borrow_mut();
+        rinch_core::dom::DomDocument::set_style(
+            &mut *d,
+            rinch_core::dom::NodeId(f.list),
+            "transform",
+            "translateX(400px)",
+        );
+    }
+    f.app.resolve_and_repaint(800.0, 600.0);
+    // Mid-slide: the list is still under x = 250, so it scrolls and the drag
+    // is re-resolved there (the memo is taken mid-slide).
+    frame_after(&mut f.app, 5);
+    // Let the slide finish; the frame that runs its last tick hit-tests
+    // afresh (motion) and finds the page, not the list.
+    frame_after(&mut f.app, 120);
+    let gen_before = f
+        .app
+        .doc
+        .as_ref()
+        .unwrap()
+        .borrow()
+        .tree
+        .hit_cache
+        .generation();
+    let at = scroll_top(&f.app, f.list);
+    let hits_before = hit_tests(&f.app);
+    frame_after(&mut f.app, 20);
+    let gen_after = f
+        .app
+        .doc
+        .as_ref()
+        .unwrap()
+        .borrow()
+        .tree
+        .hit_cache
+        .generation();
+    eprintln!(
+        "R2-1: at={at} after={} hits={} gen {gen_before}->{gen_after}",
+        scroll_top(&f.app, f.list),
+        hit_tests(&f.app) - hits_before
+    );
+    assert_eq!(
+        scroll_top(&f.app, f.list),
+        at,
+        "the list slid away from the pointer and must not scroll"
+    );
+}
+
+/// R2-2: every input that moves geometry without a pointer move must make
+/// the next idle drag frame hit-test afresh (positive control for the reuse).
+#[test]
+fn r2_the_reuse_is_dropped_by_scroll_resize_dpr_and_dom_writes() {
+    fn idle_frame_hits(f: &mut Fixture, change: &dyn Fn(&mut Fixture)) -> u64 {
+        // Settle into reuse first.
+        frame(&mut f.app);
+        frame(&mut f.app);
+        let before = hit_tests(&f.app);
+        frame(&mut f.app);
+        assert_eq!(hit_tests(&f.app) - before, 0, "control: idle frame reuses");
+        change(f);
+        let before = hit_tests(&f.app);
+        frame(&mut f.app);
+        hit_tests(&f.app) - before
+    }
+    type Change = Box<dyn Fn(&mut Fixture)>;
+    let cases: Vec<(&str, Change)> = vec![
+        (
+            "scroll of another scroller",
+            Box::new(|f: &mut Fixture| {
+                let body = f.app.doc.as_ref().unwrap().borrow().tree.body_id;
+                set_scroll_top(&mut f.app, body, 10.0);
+            }),
+        ),
+        (
+            "dom write from a timer",
+            Box::new(|f: &mut Fixture| {
+                let mut d = f.app.doc.as_ref().unwrap().borrow_mut();
+                rinch_core::dom::DomDocument::set_style(
+                    &mut *d,
+                    rinch_core::dom::NodeId(f.list),
+                    "left",
+                    "40px",
+                );
+            }),
+        ),
+        (
+            "window resize",
+            Box::new(|f: &mut Fixture| {
+                f.app.handle_event(
+                    PlatformEvent::Resized {
+                        width: 700,
+                        height: 500,
+                    },
+                    (700, 500),
+                    1.0,
+                );
+            }),
+        ),
+        (
+            "dpr change",
+            Box::new(|f: &mut Fixture| {
+                f.app.set_device_pixel_ratio(1.5);
+                f.app.resolve_and_repaint(800.0, 600.0);
+            }),
+        ),
+    ];
+    for (name, change) in cases {
+        let mut f = fixture_with("", Some(1200.0));
+        start_drag(&mut f.app);
+        move_to(&mut f.app, (X, 200.0));
+        let hits = idle_frame_hits(&mut f, &*change);
+        eprintln!("R2-2 {name}: {hits} hit test(s)");
+        assert!(hits >= 1, "{name}: the next drag frame reused a stale hit");
+    }
+}
