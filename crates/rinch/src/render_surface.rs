@@ -2007,11 +2007,11 @@ pub(crate) struct WebSurfaceCleanup {
     #[allow(clippy::type_complexity)]
     pointer_listeners: Vec<(
         &'static str,
-        wasm_bindgen::closure::Closure<dyn FnMut(web_sys::PointerEvent)>,
+        wasm_bindgen::closure::Closure<dyn FnMut(web_sys::Event)>,
     )>,
     wheel_listener: (
         &'static str,
-        wasm_bindgen::closure::Closure<dyn FnMut(web_sys::WheelEvent)>,
+        wasm_bindgen::closure::Closure<dyn FnMut(web_sys::Event)>,
     ),
     // Kept alive so the observer's callback stays valid until we disconnect it.
     _resize_closure:
@@ -2249,6 +2249,26 @@ fn mouse_button_from_i16(button: i16) -> SurfaceMouseButton {
     }
 }
 
+/// A canvas listener that runs `handler` only for an event of interface `E`
+/// (issue #811). A closure registered with a typed parameter is handed
+/// whatever the browser dispatches under the name, cast **unchecked**: a plain
+/// `Event("pointerdown")` from page script read `offsetX`, `pointerId` and
+/// `pointerType` as `undefined`, which threw (a string read in any build, a
+/// number read under wasm-bindgen's debug glue) or reached the surface as input
+/// at (0, 0). An event of another interface is not pointer input, so it is
+/// ignored.
+#[cfg(target_arch = "wasm32")]
+fn only<E: wasm_bindgen::JsCast + 'static>(
+    mut handler: impl FnMut(E) + 'static,
+) -> wasm_bindgen::closure::Closure<dyn FnMut(web_sys::Event)> {
+    use wasm_bindgen::JsCast;
+    wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::Event| {
+        if let Ok(event) = event.dyn_into::<E>() {
+            handler(event);
+        }
+    }) as Box<dyn FnMut(web_sys::Event)>)
+}
+
 #[cfg(target_arch = "wasm32")]
 #[allow(clippy::type_complexity)]
 fn setup_canvas_events(
@@ -2257,11 +2277,11 @@ fn setup_canvas_events(
 ) -> (
     Vec<(
         &'static str,
-        wasm_bindgen::closure::Closure<dyn FnMut(web_sys::PointerEvent)>,
+        wasm_bindgen::closure::Closure<dyn FnMut(web_sys::Event)>,
     )>,
     (
         &'static str,
-        wasm_bindgen::closure::Closure<dyn FnMut(web_sys::WheelEvent)>,
+        wasm_bindgen::closure::Closure<dyn FnMut(web_sys::Event)>,
     ),
 ) {
     use wasm_bindgen::JsCast;
@@ -2271,8 +2291,7 @@ fn setup_canvas_events(
 
     // Pointer closures are collected (not forgotten) so they can be removed on
     // unmount. Each is stored with its event-type string for removeEventListener.
-    let mut pointer_listeners: Vec<(&'static str, Closure<dyn FnMut(web_sys::PointerEvent)>)> =
-        Vec::new();
+    let mut pointer_listeners: Vec<(&'static str, Closure<dyn FnMut(web_sys::Event)>)> = Vec::new();
 
     // Pointer events (deref to MouseEvent) cover mouse, touch, and pen on one
     // path — so a game/custom-render surface receives input on touch devices too.
@@ -2284,7 +2303,7 @@ fn setup_canvas_events(
     // stability).
     {
         let canvas = canvas.clone();
-        let closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
+        let closure = only::<web_sys::PointerEvent>(move |event: web_sys::PointerEvent| {
             event.stop_propagation();
             let x = event.offset_x() as f32;
             let y = event.offset_y() as f32;
@@ -2298,7 +2317,7 @@ fn setup_canvas_events(
                 y,
                 pointer_of(&event),
             );
-        }) as Box<dyn FnMut(_)>);
+        });
         target
             .add_event_listener_with_callback("pointerdown", closure.as_ref().unchecked_ref())
             .unwrap();
@@ -2308,7 +2327,7 @@ fn setup_canvas_events(
     // pointerup — release the capture taken on pointerdown.
     {
         let canvas = canvas.clone();
-        let closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
+        let closure = only::<web_sys::PointerEvent>(move |event: web_sys::PointerEvent| {
             let x = event.offset_x() as f32;
             let y = event.offset_y() as f32;
             let button = mouse_button_from_i16(event.button());
@@ -2320,7 +2339,7 @@ fn setup_canvas_events(
                 y,
                 pointer_of(&event),
             );
-        }) as Box<dyn FnMut(_)>);
+        });
         target
             .add_event_listener_with_callback("pointerup", closure.as_ref().unchecked_ref())
             .unwrap();
@@ -2332,12 +2351,12 @@ fn setup_canvas_events(
     // pointer events, so it isn't left mid-drag).
     {
         let canvas = canvas.clone();
-        let closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
+        let closure = only::<web_sys::PointerEvent>(move |event: web_sys::PointerEvent| {
             let x = event.offset_x() as f32;
             let y = event.offset_y() as f32;
             let _ = canvas.release_pointer_capture(event.pointer_id());
             dispatch_surface_pointer_cancel(surface_id, x, y, pointer_of(&event));
-        }) as Box<dyn FnMut(_)>);
+        });
         target
             .add_event_listener_with_callback("pointercancel", closure.as_ref().unchecked_ref())
             .unwrap();
@@ -2346,11 +2365,11 @@ fn setup_canvas_events(
 
     // pointermove
     {
-        let closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
+        let closure = only::<web_sys::PointerEvent>(move |event: web_sys::PointerEvent| {
             let x = event.offset_x() as f32;
             let y = event.offset_y() as f32;
             dispatch_surface_pointer(surface_id, PointerPhase::Move, x, y, pointer_of(&event));
-        }) as Box<dyn FnMut(_)>);
+        });
         target
             .add_event_listener_with_callback("pointermove", closure.as_ref().unchecked_ref())
             .unwrap();
@@ -2359,11 +2378,11 @@ fn setup_canvas_events(
 
     // pointerenter
     {
-        let closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
+        let closure = only::<web_sys::PointerEvent>(move |event: web_sys::PointerEvent| {
             let x = event.offset_x() as f32;
             let y = event.offset_y() as f32;
             dispatch_surface_event(surface_id, SurfaceEvent::MouseEnter { x, y });
-        }) as Box<dyn FnMut(_)>);
+        });
         target
             .add_event_listener_with_callback("pointerenter", closure.as_ref().unchecked_ref())
             .unwrap();
@@ -2372,9 +2391,9 @@ fn setup_canvas_events(
 
     // pointerleave
     {
-        let closure = Closure::wrap(Box::new(move |_event: web_sys::PointerEvent| {
+        let closure = only::<web_sys::PointerEvent>(move |_event: web_sys::PointerEvent| {
             dispatch_surface_event(surface_id, SurfaceEvent::MouseLeave);
-        }) as Box<dyn FnMut(_)>);
+        });
         target
             .add_event_listener_with_callback("pointerleave", closure.as_ref().unchecked_ref())
             .unwrap();
@@ -2383,7 +2402,7 @@ fn setup_canvas_events(
 
     // wheel
     let wheel_listener = {
-        let closure = Closure::wrap(Box::new(move |event: web_sys::WheelEvent| {
+        let closure = only::<web_sys::WheelEvent>(move |event: web_sys::WheelEvent| {
             event.prevent_default();
             event.stop_propagation();
             let mouse: &web_sys::MouseEvent = event.as_ref();
@@ -2413,7 +2432,7 @@ fn setup_canvas_events(
                     delta_y,
                 },
             );
-        }) as Box<dyn FnMut(_)>);
+        });
         // Use non-passive listener so we can preventDefault on wheel
         let opts = web_sys::AddEventListenerOptions::new();
         opts.set_passive(false);
