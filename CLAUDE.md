@@ -6136,6 +6136,19 @@ and `none` → `rotate(0deg)` starts nothing. `@keyframes` stops use the same
 path; `crates/rinch-dom/tests/transform_interpolation_tests.rs` pins Chrome
 153's numbers. Guide: `docs/src/architecture/rendering-pipeline.md`.
 
+**Every easing function eases** (#1564): `steps()`, `step-start`/`step-end`
+and `linear(<stops>)` reach `transition::types::TimingFunction` as themselves
+(they used to become `linear`), in transitions, `@keyframes` and a keyframe's
+own `animation-timing-function`, through one converter. A step reads CSS
+Easing 2's before flag (`apply_with_before_flag`: set in the before phase going
+forwards and the after phase going backwards; a transition's delay is its easing
+at 0 with the flag, not always `from`), and an iteration's start and end
+are eased at interval distance 0 and 1 (`ActiveAnimation::interval`), not
+snapped to the keyframe. `TimingFunction` is not `Copy` (a `linear()` holds an
+`Arc`). The `jump-*` positions do not parse in Stylo's servo build, so such a
+declaration is dropped (#1581). Pins: `crates/rinch-dom/tests/easing_steps_linear_1564_tests.rs`
+(Chrome 155).
+
 **The 3D transform functions are drawn flat** (#405; they used to compute to the
 identity, `translate3d` aside). A list holding any of them is composed as 4×4
 matrices (`transition::transform::Mat4`) and **only the result** is flattened —

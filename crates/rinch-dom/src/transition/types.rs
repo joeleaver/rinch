@@ -2,6 +2,7 @@
 
 use peniko::Color;
 
+use style::piecewise_linear::PiecewiseLinearFunction;
 use style::values::computed::TransitionProperty as StyloTransitionProperty;
 use style::values::generics::easing::TimingKeyword;
 
@@ -226,7 +227,13 @@ impl TransitionProperty {
 // TimingFunction — easing curves
 // =============================================================================
 
-#[derive(Debug, Clone, Copy, Default)]
+/// An easing function (CSS Easing 2).
+///
+/// Every `<easing-function>` Stylo computes reaches rinch as one of these
+/// (#1564: `steps()` and `linear()` used to arrive as `Linear`). Not `Copy`:
+/// a `linear()` function holds its stops behind Stylo's `Arc`, so a clone is a
+/// reference-count bump.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub enum TimingFunction {
     Linear,
     #[default]
@@ -235,11 +242,44 @@ pub enum TimingFunction {
     EaseOut,
     EaseInOut,
     CubicBezier(f32, f32, f32, f32),
+    /// `steps(<n>, <step-position>)`, `step-start` and `step-end`. The count is
+    /// at least 1 (at least 2 for `jump-none`); Stylo rejects anything else.
+    Steps(u32, StepPosition),
+    /// `linear(<linear-stop>#)`, its stops already placed (missing input
+    /// positions spread evenly, as Stylo's builder does at parse time).
+    LinearFunction(PiecewiseLinearFunction),
+}
+
+/// Where a `steps()` function jumps (CSS Easing 2 §3.3).
+///
+/// Stylo's servo build parses only `start` and `end` (its
+/// `step_position_jump_enabled` answers `false`), so a `jump-*` keyword drops
+/// its declaration before rinch sees it; the four are kept so the easing
+/// follows the spec wherever they do arrive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepPosition {
+    JumpStart,
+    JumpEnd,
+    JumpNone,
+    JumpBoth,
+    Start,
+    End,
 }
 
 impl TimingFunction {
-    /// Evaluate the timing function at progress `t` (0.0 to 1.0).
+    /// Evaluate the timing function at progress `t` (0.0 to 1.0), with the
+    /// before flag unset.
     pub fn apply(&self, t: f32) -> f32 {
+        self.apply_with_before_flag(t, false)
+    }
+
+    /// Evaluate the timing function at input progress `t` with CSS Easing 2's
+    /// **before flag**, which only a step function reads: set, an input that
+    /// lands exactly on a jump takes the step before it. Web Animations sets it
+    /// in the before phase going forwards and in the after phase going
+    /// backwards, so `steps(4, start)` holds its first value through a
+    /// backwards-filled delay rather than its second.
+    pub fn apply_with_before_flag(&self, t: f32, before_flag: bool) -> f32 {
         match self {
             Self::Linear => t,
             Self::Ease => cubic_bezier_solve(0.25, 0.1, 0.25, 1.0, t),
@@ -247,8 +287,39 @@ impl TimingFunction {
             Self::EaseOut => cubic_bezier_solve(0.0, 0.0, 0.58, 1.0, t),
             Self::EaseInOut => cubic_bezier_solve(0.42, 0.0, 0.58, 1.0, t),
             Self::CubicBezier(x1, y1, x2, y2) => cubic_bezier_solve(*x1, *y1, *x2, *y2, t),
+            Self::Steps(steps, position) => step_output(*steps, *position, t, before_flag),
+            Self::LinearFunction(function) => function.at(t),
         }
     }
+}
+
+/// CSS Easing 2 §3.3.1, "the output of a step easing function".
+fn step_output(steps: u32, position: StepPosition, t: f32, before_flag: bool) -> f32 {
+    let steps = i64::from(steps.max(1));
+    let t = f64::from(t);
+    let mut current = (t * steps as f64).floor() as i64;
+    if matches!(
+        position,
+        StepPosition::Start | StepPosition::JumpStart | StepPosition::JumpBoth
+    ) {
+        current += 1;
+    }
+    let scaled = t * steps as f64;
+    if before_flag && (scaled - scaled.round()).abs() < 1e-6 {
+        current -= 1;
+    }
+    if t >= 0.0 && current < 0 {
+        current = 0;
+    }
+    let jumps = match position {
+        StepPosition::JumpBoth => steps + 1,
+        StepPosition::JumpNone => (steps - 1).max(1),
+        _ => steps,
+    };
+    if t <= 1.0 && current > jumps {
+        current = jumps;
+    }
+    (current as f64 / jumps as f64) as f32
 }
 
 /// Solve a cubic bezier curve for the Y value at a given X (time) position.
@@ -402,7 +473,7 @@ impl TransitionSpec {
                         property,
                         duration_ms,
                         delay_ms,
-                        timing,
+                        timing: timing.clone(),
                     });
                 }
             }
@@ -412,10 +483,12 @@ impl TransitionSpec {
     }
 }
 
-/// Convert a Stylo timing function to our TimingFunction.
+/// Convert a Stylo computed timing function to our TimingFunction — every
+/// variant of it, `steps()` and `linear()` included (#1564).
 pub fn convert_timing_function(
     tf: &style::values::computed::easing::TimingFunction,
 ) -> TimingFunction {
+    use style::values::generics::easing::StepPosition as StyloStep;
     use style::values::generics::easing::TimingFunction as StyloTF;
 
     match tf {
@@ -427,8 +500,18 @@ pub fn convert_timing_function(
             TimingKeyword::EaseInOut => TimingFunction::EaseInOut,
         },
         StyloTF::CubicBezier { x1, y1, x2, y2 } => TimingFunction::CubicBezier(*x1, *y1, *x2, *y2),
-        // Steps and linear functions fall back to linear for V1
-        StyloTF::Steps(..) | StyloTF::LinearFunction(..) => TimingFunction::Linear,
+        StyloTF::Steps(steps, position) => TimingFunction::Steps(
+            (*steps).max(1) as u32,
+            match position {
+                StyloStep::JumpStart => StepPosition::JumpStart,
+                StyloStep::JumpEnd => StepPosition::JumpEnd,
+                StyloStep::JumpNone => StepPosition::JumpNone,
+                StyloStep::JumpBoth => StepPosition::JumpBoth,
+                StyloStep::Start => StepPosition::Start,
+                StyloStep::End => StepPosition::End,
+            },
+        ),
+        StyloTF::LinearFunction(function) => TimingFunction::LinearFunction(function.clone()),
     }
 }
 
@@ -827,7 +910,7 @@ impl ActiveTransition {
             reversing_adjusted_start_value: from.clone(),
             from,
             to,
-            timing: spec.timing,
+            timing: spec.timing.clone(),
             start_time_ms: current_time_ms,
             duration_ms: spec.duration_ms,
             delay_ms: spec.delay_ms,
@@ -863,7 +946,7 @@ impl ActiveTransition {
             // the one the transition it cancelled was heading for.
             reversing_adjusted_start_value: self.to.clone(),
             to,
-            timing: spec.timing,
+            timing: spec.timing.clone(),
             start_time_ms: current_time_ms,
             duration_ms: spec.duration_ms * factor,
             // Only a **negative** delay is shortened. A negative delay is an
@@ -891,7 +974,9 @@ impl ActiveTransition {
     pub fn output_progress_at(&self, current_time_ms: f64) -> f32 {
         let elapsed = current_time_ms - self.start_time_ms;
         if elapsed < self.delay_ms {
-            return self.timing.apply(0.0);
+            // A transition fills backwards through its delay going forwards,
+            // which is where CSS Easing 2 sets the before flag.
+            return self.timing.apply_with_before_flag(0.0, true);
         }
         if self.duration_ms <= 0.0 {
             return self.timing.apply(1.0);
@@ -904,9 +989,15 @@ impl ActiveTransition {
     pub fn value_at(&self, current_time_ms: f64) -> Option<AnimatableValue> {
         let elapsed = current_time_ms - self.start_time_ms;
 
-        // Still in delay period
+        // Still in delay period: a transition fills backwards, sampling its
+        // easing at 0 with the before flag (#1564) — `from` for every easing
+        // but one whose output at 0 is not 0, such as `linear(0.5, 1)`.
         if elapsed < self.delay_ms {
-            return Some(self.from.clone());
+            let eased = self.timing.apply_with_before_flag(0.0, true);
+            if eased == 0.0 {
+                return Some(self.from.clone());
+            }
+            return self.from.interpolate(&self.to, eased);
         }
 
         let active_elapsed = elapsed - self.delay_ms;
