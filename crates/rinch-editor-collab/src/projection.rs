@@ -350,13 +350,29 @@ pub(crate) struct SpanMark {
 /// The plain text of a flat block plus the marks over it, ready to project. A **leaf
 /// block atom** (`horizontal_rule`) is the degenerate case: the same struct with an
 /// empty `text` and no marks — see [`is_leaf_block_atom`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct BlockData {
     pub type_name: String,
     pub attrs: Attrs,
     pub text: String,
     pub marks: Vec<SpanMark>,
+    /// The CRDT block this was read from (its node map's yrs item id); `None` for
+    /// data taken from the model. Not part of equality: two blocks with the same
+    /// content are equal wherever they came from. Read by [`build_block`] for a
+    /// leaf block atom while [`CollabDoc::to_doc_with_atom_ids`] records.
+    pub id: Option<BlockId>,
 }
+
+impl PartialEq for BlockData {
+    fn eq(&self, other: &Self) -> bool {
+        self.type_name == other.type_name
+            && self.attrs == other.attrs
+            && self.text == other.text
+            && self.marks == other.marks
+    }
+}
+
+impl Eq for BlockData {}
 
 /// One projectable model node: either a flat block ([`BlockData`] — a text-block, or a
 /// leaf block atom with empty text) or a container block (a list, list item or quote) holding
@@ -474,7 +490,7 @@ fn is_void(nd: &NodeData) -> bool {
 ///
 /// A textblock can be none of these (its content match accepts `text`), so the three
 /// never overlap with [`Node::is_textblock`].
-fn is_leaf_block_atom(typ: &NodeType) -> bool {
+pub(crate) fn is_leaf_block_atom(typ: &NodeType) -> bool {
     typ.is_block() && typ.is_atom() && typ.is_leaf()
 }
 
@@ -739,29 +755,29 @@ impl CollabDoc {
             .encode_state_as_update_v1(&StateVector::default())
     }
 
-    /// [`Self::to_doc`], with the identity of every flat block it read (a
-    /// textblock or a leaf block atom), in document order — `None` for a document
-    /// holding a table, or a zero-block one. The identities are what
-    /// [`crate::remote`] compares to tell an atom whose attributes changed from
-    /// a different atom that came to stand where it stood.
-    pub(crate) fn to_doc_with_block_ids(
+    /// [`Self::to_doc`], with the identity of every **leaf block atom** of the
+    /// document it reads (an `embed`, a `horizontal_rule`) — its CRDT block, in
+    /// document order. `None` when one could not be told. What [`crate::remote`]
+    /// compares to tell an atom whose attributes changed from a different atom that
+    /// came to stand where it stood, and two equal atoms a peer swapped from the same
+    /// two left alone.
+    pub(crate) fn to_doc_with_atom_ids(
         &self,
         schema: &Schema,
     ) -> Result<(Node, Option<Vec<BlockId>>)> {
         struct Recording;
         impl Drop for Recording {
             fn drop(&mut self) {
-                BLOCK_IDS.with(|ids| *ids.borrow_mut() = None);
+                ATOM_IDS.with(|ids| *ids.borrow_mut() = None);
             }
         }
-        BLOCK_IDS.with(|ids| *ids.borrow_mut() = Some(Ok(Vec::new())));
+        ATOM_IDS.with(|ids| *ids.borrow_mut() = Some(Ok(Vec::new())));
         let recording = Recording;
         let doc = self.to_doc(schema)?;
-        let ids = BLOCK_IDS
+        let ids = ATOM_IDS
             .with(|ids| ids.borrow_mut().take())
             .and_then(|r| r.ok());
         drop(recording);
-        let ids = ids.filter(|ids| !ids.is_empty());
         Ok((doc, ids))
     }
 
@@ -845,36 +861,32 @@ fn count_node_read() {
 /// A block's identity in the CRDT: its node map's yrs item id `(client, clock)`.
 pub(crate) type BlockId = (u64, u32);
 
+/// The [`BlockId`] of a node map, `None` for a root map (never a block).
+fn block_id(node: &MapRef) -> Option<BlockId> {
+    match AsRef::<yrs::branch::Branch>::as_ref(node).id() {
+        yrs::branch::BranchID::Nested(id) => Some((id.client.get(), id.clock)),
+        yrs::branch::BranchID::Root(_) => None,
+    }
+}
+
 thread_local! {
-    /// While [`CollabDoc::to_doc_with_block_ids`] reads: the [`BlockId`] of every
-    /// flat block it reads (a textblock or a leaf block atom), in document order,
-    /// or `Err` once it met something whose read is not one map per model block
-    /// (a table: its cells are keyed by grid slot and an uncovered slot is a
-    /// filler the CRDT does not hold).
-    static BLOCK_IDS: std::cell::RefCell<Option<std::result::Result<Vec<BlockId>, ()>>> =
+    /// While [`CollabDoc::to_doc_with_atom_ids`] reads: the [`BlockId`] of every
+    /// leaf block atom [`build_block`] builds, in document order (the order the
+    /// model is built in, so a table's cells and fillers cannot reorder it), or
+    /// `Err` once one had no id.
+    static ATOM_IDS: std::cell::RefCell<Option<std::result::Result<Vec<BlockId>, ()>>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// Note a flat block's map while [`BLOCK_IDS`] records.
-fn note_block_id(node: &MapRef) {
-    BLOCK_IDS.with(|ids| {
-        let mut ids = ids.borrow_mut();
-        let Some(record) = ids.as_mut() else {
-            return;
-        };
-        match (AsRef::<yrs::branch::Branch>::as_ref(node).id(), record) {
-            (yrs::branch::BranchID::Nested(id), Ok(list)) => list.push((id.client.get(), id.clock)),
-            (yrs::branch::BranchID::Root(_), record) => *record = Err(()),
-            (_, Err(())) => {}
-        }
-    });
-}
-
-/// Stop [`BLOCK_IDS`] recording: a read it cannot speak for.
-fn spoil_block_ids() {
-    BLOCK_IDS.with(|ids| {
-        if let Some(r) = ids.borrow_mut().as_mut() {
-            *r = Err(());
+/// Note a leaf block atom's id while [`ATOM_IDS`] records.
+fn note_atom_id(id: Option<BlockId>) {
+    ATOM_IDS.with(|ids| {
+        if let Some(record) = ids.borrow_mut().as_mut() {
+            match (id, record) {
+                (Some(id), Ok(list)) => list.push(id),
+                (None, record) => *record = Err(()),
+                (_, Err(())) => {}
+            }
         }
     });
 }
@@ -2139,8 +2151,8 @@ fn read_map_data<T: ReadTxn>(txn: &T, node: &MapRef) -> Result<NodeData> {
     let attrs = node_attrs(txn, node);
     if let Some(text_obj) = block_text(txn, node) {
         let (text, marks) = read_text_data(txn, &text_obj)?;
-        note_block_id(node);
         Ok(NodeData::Block(BlockData {
+            id: block_id(node),
             type_name,
             attrs,
             text,
@@ -2152,7 +2164,6 @@ fn read_map_data<T: ReadTxn>(txn: &T, node: &MapRef) -> Result<NodeData> {
                 "node `{type_name}` carries a table's `rows`"
             )));
         }
-        spoil_block_ids();
         Ok(NodeData::Table(read_table_data(txn, node)?))
     } else if let Some(content) = node_content(txn, node) {
         // Only the visible children: a void child container is not part of this one
@@ -2238,6 +2249,7 @@ pub(crate) fn read_block(block: &Node) -> Result<BlockData> {
             )));
         }
         return Ok(BlockData {
+            id: None,
             type_name: block.type_name().to_string(),
             attrs: block.attrs().clone(),
             text: String::new(),
@@ -2293,6 +2305,7 @@ pub(crate) fn read_block(block: &Node) -> Result<BlockData> {
     }
     marks.sort_by(|a, b| (a.start, a.end, &a.name).cmp(&(b.start, b.end, &b.name)));
     Ok(BlockData {
+        id: None,
         type_name: block.type_name().to_string(),
         attrs: block.attrs().clone(),
         text,
@@ -2485,6 +2498,7 @@ fn build_block(schema: &Schema, b: &BlockData) -> Result<Node> {
                 b.marks.len()
             )));
         }
+        note_atom_id(b.id);
         return schema
             .create_node(&b.type_name, b.attrs.clone(), Fragment::empty())
             .map_err(CollabError::from);
@@ -2806,6 +2820,7 @@ mod tests {
         // silently materialized.
         let s = schema();
         let bad = BlockData {
+            id: None,
             type_name: "blockquote".into(),
             attrs: Attrs::new(),
             text: "x".into(),
@@ -2815,6 +2830,7 @@ mod tests {
         assert!(matches!(err, CollabError::Unsupported(_)), "got {err:?}");
 
         let unknown = BlockData {
+            id: None,
             type_name: "not_a_real_type".into(),
             attrs: Attrs::new(),
             text: "x".into(),
@@ -2827,6 +2843,7 @@ mod tests {
 
         // a flat textblock is accepted
         let good = BlockData {
+            id: None,
             type_name: "paragraph".into(),
             attrs: Attrs::new(),
             text: "ok".into(),
@@ -2881,6 +2898,7 @@ mod tests {
         assert_eq!(
             data,
             BlockData {
+                id: None,
                 type_name: "horizontal_rule".into(),
                 attrs: Attrs::new(),
                 text: String::new(),
@@ -2899,6 +2917,7 @@ mod tests {
         // a shape no model can express, so it must fail loud rather than be dropped.
         let s = schema();
         let with_text = BlockData {
+            id: None,
             type_name: "horizontal_rule".into(),
             attrs: Attrs::new(),
             text: "smuggled".into(),
@@ -3084,6 +3103,7 @@ mod tests {
         // text. Erroring would poison a live session for it.
         let s = schema();
         let stray = BlockData {
+            id: None,
             type_name: "paragraph".into(),
             attrs: Attrs::new(),
             text: "xy".into(),
@@ -3106,6 +3126,7 @@ mod tests {
         // be silently dropped or silently invented (A22).
         let s = schema();
         let block = |attrs: Attrs| BlockData {
+            id: None,
             type_name: "paragraph".into(),
             attrs: Attrs::new(),
             text: "\u{FFFC}".into(),
@@ -3212,6 +3233,7 @@ mod tests {
         let err = build_block(
             &hostile,
             &BlockData {
+                id: None,
                 type_name: "paragraph".into(),
                 attrs: Attrs::new(),
                 text: "hi".into(),
@@ -3358,6 +3380,7 @@ mod tests {
     /// projection.
     fn plausible_block() -> NodeData {
         NodeData::Block(BlockData {
+            id: None,
             type_name: "paragraph".into(),
             attrs: Attrs::new(),
             text: "hi".into(),

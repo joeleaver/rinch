@@ -241,9 +241,12 @@ fn a_peer_swapping_two_embeds_is_a_replace_not_attr_steps() {
     assert!(attr_steps(&steps).is_none(), "{steps:?}");
 }
 
-/// A change that is more than attributes is still the block replace.
+/// A change that is more than attributes (a reconnect's batch: text typed in a
+/// paragraph and the embed's attributes changed) replaces the paragraph and sets
+/// the embed's attributes, so the embed keeps its identity and a node view stays
+/// mounted (review of #1575, F3: it was one replace of both).
 #[test]
-fn a_text_change_beside_the_attr_change_is_still_a_replace() {
+fn a_text_change_beside_the_attr_change_replaces_the_text_and_sets_the_attrs() {
     let schema = Rc::new(Schema::starter_kit());
     let d = doc(
         &schema,
@@ -262,7 +265,17 @@ fn a_text_change_beside_the_attr_change_is_still_a_replace() {
         .unwrap();
     });
     let steps = b.receive(&a);
-    assert!(attr_steps(&steps).is_none(), "{steps:?}");
+    let attrs: Vec<_> = steps
+        .iter()
+        .filter_map(|s| attr_steps(std::slice::from_ref(s)))
+        .flatten()
+        .collect();
+    assert_eq!(
+        attrs,
+        [(4, "data-k".to_string(), Some("2".to_string()))],
+        "{steps:?}"
+    );
+    assert_eq!(steps.len(), 2, "one replace of the paragraph: {steps:?}");
 }
 
 /// A selection captured elsewhere stands through an attr-only change.

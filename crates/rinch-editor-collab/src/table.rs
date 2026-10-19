@@ -357,6 +357,7 @@ fn without_spans(attrs: &Attrs) -> Attrs {
 /// The empty paragraph a filler cell holds, and that an emptied cell reads as.
 fn empty_block() -> NodeData {
     NodeData::Block(BlockData {
+        id: None,
         type_name: FILLER_BLOCK.into(),
         attrs: Attrs::new(),
         text: String::new(),

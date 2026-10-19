@@ -100,7 +100,8 @@ use rinch_editor_core::{EditorState, Node, Pos, Schema};
 
 use crate::error::{CollabError, Result};
 use crate::projection::CollabDoc;
-use crate::remote::{BlockIds, build_remote_transaction, build_remote_transaction_with};
+use crate::atom_cache;
+use crate::remote::{AtomIds, block_atoms, build_remote_transaction, build_remote_transaction_with};
 use crate::table::OversizedTable;
 
 /// An update that carries nothing, in the lib0 v1 encoding: zero blocks followed by a
@@ -126,6 +127,17 @@ pub struct CollabSession {
     /// large to read arrived) leaves the model the CRDT's read, so sticky indexes keep
     /// working through it; an edit refused during it does not.
     model_ahead: bool,
+    /// This session's key in [`atom_cache`].
+    uid: u64,
+    /// Bumped by every call that can change the CRDT, so an [`atom_cache`] entry is
+    /// used only for the CRDT it was read from.
+    generation: u64,
+}
+
+impl Drop for CollabSession {
+    fn drop(&mut self) {
+        atom_cache::forget(self.uid);
+    }
 }
 
 impl CollabSession {
@@ -137,6 +149,8 @@ impl CollabSession {
             poisoned: None,
             stalled: None,
             model_ahead: false,
+            uid: atom_cache::next_uid(),
+            generation: 0,
         })
     }
 
@@ -147,6 +161,8 @@ impl CollabSession {
             poisoned: None,
             stalled: None,
             model_ahead: false,
+            uid: atom_cache::next_uid(),
+            generation: 0,
         }
         .with_freeze())
     }
@@ -156,6 +172,14 @@ impl CollabSession {
     fn with_freeze(mut self) -> CollabSession {
         self.stalled = self.frozen();
         self
+    }
+
+    /// The CRDT may change: retire what [`atom_cache`] holds for the current
+    /// generation. Answers that generation, to look the cache up by.
+    fn touch(&mut self) -> u64 {
+        let previous = self.generation;
+        self.generation += 1;
+        previous
     }
 
     /// [`CollabSession::new`] with this replica's yrs client id pinned — the
@@ -168,6 +192,8 @@ impl CollabSession {
             poisoned: None,
             stalled: None,
             model_ahead: false,
+            uid: atom_cache::next_uid(),
+            generation: 0,
         })
     }
 
@@ -180,6 +206,8 @@ impl CollabSession {
             poisoned: None,
             stalled: None,
             model_ahead: false,
+            uid: atom_cache::next_uid(),
+            generation: 0,
         }
         .with_freeze())
     }
@@ -246,6 +274,7 @@ impl CollabSession {
         id: &str,
     ) -> Result<Option<EditorState>> {
         self.guard()?;
+        self.touch();
         if !self.cdoc.oversized_tables().iter().any(|t| t.id == id) || !self.cdoc.delete_table(id) {
             return Ok(None);
         }
@@ -392,6 +421,7 @@ impl CollabSession {
 
     fn record_local_inner(&mut self, schema: &Schema, before: &Node, after: &Node) -> Result<()> {
         self.guard()?;
+        let cached = atom_cache::lookup(self.uid, self.touch(), before);
         // Frozen while the shared document holds a table too large to read: the model
         // shows a placeholder for it, and a diff that touches a placeholder can delete
         // real content (a value-matched pairing, an export loaded back, …), so no diff
@@ -418,7 +448,12 @@ impl CollabSession {
             // session pays the read-back per edit" note below true.
             Some(prev) => prev,
             None => match self.cdoc.project_change(before, after) {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    if let Some(ids) = cached.and_then(|ids| atoms_after(before, after, ids)) {
+                        atom_cache::store(self.uid, self.generation, after.clone(), ids);
+                    }
+                    return Ok(());
+                }
                 Err(e) => e,
             },
         };
@@ -610,14 +645,28 @@ impl CollabSession {
             Ok(update) => update,
             Err(e) => return Err(self.sticky_or(e.into())),
         };
-        // The old document's block identities, read before the update moves
-        // anything: only while the model is the CRDT's read (so its blocks are the
-        // CRDT's, one for one) and only when an atom's attributes could change.
-        let old_ids = (self.model_matches_crdt() && has_attributed_block_atom(&state.doc))
-            .then(|| self.cdoc.to_doc_with_block_ids(state.schema()).ok())
-            .flatten()
-            .filter(|(read, _)| *read == state.doc)
-            .and_then(|(_, ids)| ids);
+        // The CRDT blocks of the old document's leaf block atoms (`remote::AtomIds`):
+        // only while the model is the CRDT's read (so its atoms are the CRDT's, one
+        // for one). The last operation left them in `atom_cache` for exactly this
+        // document; otherwise — the first update after the session started, or after
+        // a local edit that wrote an atom — they are read before the update moves
+        // anything, which costs a whole read of the CRDT, and only while the model
+        // holds an atom at all.
+        let generation = self.touch();
+        let old_ids = if self.model_matches_crdt() {
+            atom_cache::lookup(self.uid, generation, &state.doc).or_else(|| {
+                if block_atoms(&state.doc) == 0 {
+                    return Some(Vec::new());
+                }
+                self.cdoc
+                    .to_doc_with_atom_ids(state.schema())
+                    .ok()
+                    .filter(|(read, _)| *read == state.doc)
+                    .and_then(|(_, ids)| ids)
+            })
+        } else {
+            None
+        };
         if let Err(apply_err) = self.cdoc.apply_decoded(update) {
             // yrs commits on drop with no rollback, so a failed apply may have
             // partially integrated. Projectability decides how loud to be: if the
@@ -631,12 +680,8 @@ impl CollabSession {
             };
         }
         // The converged rebuild — the projectability verdict for these bytes.
-        let read = if old_ids.is_some() {
-            self.cdoc.to_doc_with_block_ids(state.schema())
-        } else {
-            self.cdoc.to_doc(state.schema()).map(|doc| (doc, None))
-        };
-        let (target, new_ids) = match read {
+        // Noting the atoms' blocks costs no read of its own.
+        let (target, new_ids) = match self.cdoc.to_doc_with_atom_ids(state.schema()) {
             Ok(read) => read,
             Err(cause) => return Err(self.classify_unprojectable(cause)),
         };
@@ -663,10 +708,19 @@ impl CollabSession {
         // in practice for a doc `to_doc` admitted). Defense in depth, not a supported
         // failure path.
         let ids = match (&old_ids, &new_ids) {
-            (Some(old), Some(new)) => Some(BlockIds { old, new }),
+            (Some(old), Some(new)) => Some(AtomIds { old, new }),
             _ => None,
         };
-        build_remote_transaction_with(state, &target, ids.as_ref())
+        let tr = build_remote_transaction_with(state, &target, ids.as_ref())?;
+        // The document the editor holds next, and its atoms' blocks — for the next
+        // operation (`atom_cache`). Only when this one knew which atom was which.
+        if ids.is_some()
+            && let Some(new_ids) = new_ids
+        {
+            let doc = tr.as_ref().map_or_else(|| state.doc.clone(), |tr| tr.doc().clone());
+            atom_cache::store(self.uid, self.generation, doc, new_ids);
+        }
+        Ok(tr)
     }
 
     /// Merge another peer's CRDT wholesale into this one (test/utility convenience).
@@ -675,6 +729,7 @@ impl CollabSession {
     pub fn merge(&mut self, other: &CollabSession) -> Result<()> {
         self.guard()?;
         other.guard()?;
+        self.touch();
         self.cdoc.merge_from(&other.cdoc)
     }
 
@@ -711,21 +766,38 @@ impl CollabSession {
     /// sticky error rather than re-deriving the underlying read failure.
     pub fn projected_doc(&self, schema: &Schema) -> Result<Node> {
         self.guard()?;
-        self.cdoc.to_doc(schema)
+        let (doc, ids) = self.cdoc.to_doc_with_atom_ids(schema)?;
+        // An editor built on this document (a guest joining) then knows its atoms'
+        // blocks without another read.
+        if let Some(ids) = ids {
+            atom_cache::store(self.uid, self.generation, doc.clone(), ids);
+        }
+        Ok(doc)
     }
 }
 
-/// Whether `doc` holds a leaf block atom carrying attributes (an `embed` with
-/// `data-*` keys): the only node a peer's change can leave the same atom with
-/// other attributes ([`CollabSession::integrate_incremental_transaction`]).
-fn has_attributed_block_atom(doc: &Node) -> bool {
-    doc.content().children().iter().any(|child| {
-        if child.is_leaf() {
-            child.is_block() && !child.attrs().is_empty()
-        } else if child.is_textblock() {
-            false
-        } else {
-            has_attributed_block_atom(child)
-        }
-    })
+/// The CRDT blocks of `after`'s leaf block atoms, given `before`'s (`ids`), after
+/// [`CollabDoc::project_change`] wrote `before → after` the fast way: the top-level
+/// blocks the two share at either end (`Rc` identity, as the projection takes them)
+/// were not written and keep their blocks, and the changed middle is written
+/// afresh. `None` — read the CRDT next time — when the middle of `after` holds a
+/// leaf block atom (its block is new, or was rewritten in place), or the two share
+/// no block (the projection then matches by value).
+fn atoms_after(before: &Node, after: &Node, ids: Vec<crate::projection::BlockId>) -> Option<Vec<crate::projection::BlockId>> {
+    let (prefix, suffix) = crate::projection::identity_runs(before, after);
+    if (prefix, suffix) == (0, 0) {
+        return None;
+    }
+    let (bn, an) = (before.child_count(), after.child_count());
+    if (prefix..an - suffix).any(|i| block_atoms(after.child(i)) > 0) {
+        return None;
+    }
+    let gone: usize = (prefix..bn - suffix).map(|i| block_atoms(before.child(i))).sum();
+    if gone == 0 {
+        return Some(ids);
+    }
+    let kept_before: usize = (0..prefix).map(|i| block_atoms(before.child(i))).sum();
+    let mut ids = ids;
+    ids.drain(kept_before..kept_before + gone);
+    Some(ids)
 }
