@@ -591,7 +591,9 @@ windows.
 
 So the pair to expect is `on_focus_lost` on window blur, `on_focus_gained` on
 window refocus, with no key routing in between. Use it to hide a caret and idle
-a blink timer. While the window is blurred, rinch reports the OS IME disabled,
+a blink timer. An open popup that owns the keyboard (a `Select` list, a native
+`<select>`'s popup, the text context menu) closes on window blur, as in a browser
+(issue #1171); the claim it was opened from is kept. While the window is blurred, rinch reports the OS IME disabled,
 so a candidate box follows the window that actually has the keyboard.
 
 The runtime does the same for its own caret: the rich-text editor's caret stops
@@ -756,7 +758,14 @@ it.** A field focused while the popup is open — by a shortcut, a script, an
 `autofocus` — keeps its own keys, and on the web a key typed outside the rinch
 mount is never touched. When focus moves and is no longer inside the owner, the
 entry's `on_focus_leave` runs (the backends report every focus move), which is
-where a listbox closes; pass `|| {}` if yours should stay open.
+where a listbox closes; pass `|| {}` if yours should stay open. It also runs when
+the **window** loses the keyboard, though the focused element stays focused then
+(issue #1171): a native `<select>`'s popup and Mantine's `Select` dropdown both
+close on a window blur, so the `Select` list does too, on both backends — desktop
+from `PlatformEvent::WindowFocus(false)`, `rinch-web` from a `window` `blur`
+(`rinch_core::notify_window_blurred`). The trigger keeps the focus. Desktop's
+native `<select>` popup closes the same way, handing the keyboard back to the
+control.
 
 Register it **at open** and release it at close and on unmount —
 `rinch_components::overlay_dismiss::arm_keys_while_open` is that policy.

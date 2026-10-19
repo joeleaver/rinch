@@ -341,7 +341,11 @@ fn a_window_blur_closes_the_list_in_chrome_1171() {
     let (doc, picks) = mount("banana");
     let trigger = open(&doc);
     keydown(&trigger, "ArrowDown");
-    assert_eq!(highlighted(&doc), Some(2), "precondition: Cherry highlighted");
+    assert_eq!(
+        highlighted(&doc),
+        Some(2),
+        "precondition: Cherry highlighted"
+    );
 
     focus_event(trigger.as_ref(), "blur", false);
     focus_event(trigger.as_ref(), "focusout", true);
