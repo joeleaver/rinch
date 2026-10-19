@@ -349,7 +349,13 @@ pub fn styles() -> String {
     top: 100%;
     left: 0;
     margin-top: 4px;
-    z-index: 1000;
+    /* #801: `ColorInput { z_index }` publishes --rinch-color-input-z-index on
+       the root; the backdrop sits one below it and the open field one above.
+       The default 100 is the level `DropdownMenu` and `Popover` use. It was a
+       literal 1000, which put the backdrop (999) above every Modal and Drawer
+       (200/201), Notification and Select popup (300): an overlay that appeared
+       while the picker was open lost its first click to the backdrop. */
+    z-index: var(--rinch-color-input-z-index, 100);
     background-color: var(--rinch-color-surface, #fff);
     border: 1px solid var(--rinch-color-default-border, #ced4da);
     border-radius: var(--rinch-radius-sm);
@@ -373,6 +379,14 @@ pub fn styles() -> String {
    It also puts the backdrop above the app's own fixed chrome (a hand-rolled
    titlebar has no z-index, so it enters at 0), which is why clicking the
    titlebar dismisses.
+
+   Its level is the panel's less one: 99 by default, below every `Modal` and
+   `Drawer` (200/201), `Notification` and `Select` popup (300) and the Linux
+   in-app menu bar (199-201), so an overlay that appears while the picker is
+   open takes its own clicks (#801; it was 999, above all of them). Opened
+   *inside* one of those, the three levels are compared within its stacking
+   context (#545), so they still order. A caller who wants the picker above
+   them raises `ColorInput { z_index }`, which moves all three levels.
 
    That is the same rule, and the same history, as
    `.rinch-dropdown-menu__backdrop`: #317 respelled that one `absolute` because
@@ -398,7 +412,7 @@ pub fn styles() -> String {
     left: 0;
     right: 0;
     bottom: 0;
-    z-index: 999;
+    z-index: calc(var(--rinch-color-input-z-index, 100) - 1);
     display: none;
 }
 
@@ -424,11 +438,12 @@ pub fn styles() -> String {
 
    Only while open, so a closed `ColorInput` creates no stacking context and
    nothing about an existing layout moves. The three levels are
-   999 < 1000 (`__dropdown`) < 1001, and the middle one is why a click on a
+   z - 1 < z (`__dropdown`) < z + 1, with z = `--rinch-color-input-z-index`
+   (default 100), and the middle one is why a click on a
    swatch inside the picker picks a colour instead of dismissing. */
 .rinch-color-input--opened .rinch-color-input__input-group {
     position: relative;
-    z-index: 1001;
+    z-index: calc(var(--rinch-color-input-z-index, 100) + 1);
 }
 
 .rinch-color-input__description {

@@ -91,6 +91,14 @@ pub struct ColorInput {
     /// pre-#465 behaviour and not a return to it in full. A closed dropdown
     /// leaves the key to whatever is behind it.
     pub close_on_click_outside: bool,
+    /// The open picker's stacking level (issue #801), published as
+    /// `--rinch-color-input-z-index` on the root, as `DropdownMenu`'s and
+    /// `Popover`'s `z_index` are. The panel sits at this level, the dismiss
+    /// backdrop one below it and the field one above it, so one number moves
+    /// all three. `None` keeps the stylesheet's `100`: below `Modal` and
+    /// `Drawer` (200/201), `Notification` and the `Select` popup (300), so an
+    /// overlay that appears while the picker is open takes its own clicks.
+    pub z_index: Option<i32>,
 }
 
 impl Default for ColorInput {
@@ -114,6 +122,7 @@ impl Default for ColorInput {
             // The one field whose default is not `Default::default()`, which is
             // why this impl is written out rather than derived.
             close_on_click_outside: true,
+            z_index: None,
         }
     }
 }
@@ -218,6 +227,11 @@ impl Component for ColorInput {
 
         let root = rinch_macros::rsx! { div {} };
         root.set_attribute("class", &root_class);
+        // z_index (#801): an inherited custom property, so the panel, the
+        // backdrop and the lifted field all derive their level from it in CSS.
+        if let Some(z) = self.z_index {
+            root.set_style("--rinch-color-input-z-index", &z.to_string());
+        }
 
         // Label
         if !self.label.is_empty() {
