@@ -229,7 +229,11 @@ pub(crate) fn scroll_locked_out(el: &web_sys::Element) -> bool {
         }
         let mut current = Some(el.clone());
         while let Some(node) = current {
-            if lock.roots.iter().any(|(_, root)| root.is_same_node(Some(&node))) {
+            if lock
+                .roots
+                .iter()
+                .any(|(_, root)| root.is_same_node(Some(&node)))
+            {
                 return false;
             }
             if node

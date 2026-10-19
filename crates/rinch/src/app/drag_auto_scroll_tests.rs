@@ -586,7 +586,10 @@ fn a_stranded_drag_stops_scrolling_when_the_missed_release_heals() {
     start_drag(&mut f.app);
     move_to(&mut f.app, (X, LIST_BOTTOM - 4.0));
     frame(&mut f.app);
-    assert!(scroll_top(&f.app, f.list) > 0.0, "it scrolls while stranded");
+    assert!(
+        scroll_top(&f.app, f.list) > 0.0,
+        "it scrolls while stranded"
+    );
     send(
         &mut f.app,
         PlatformEvent::MouseDown {

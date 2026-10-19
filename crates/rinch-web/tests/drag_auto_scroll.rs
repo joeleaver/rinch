@@ -280,7 +280,10 @@ async fn leaving_the_band_stops_it() {
 
 /// A 3000px-tall page with the fixture's fixed list and source; `lock`
 /// applies rinch's own `lock_scroll` (NodeHandle::set_scroll_locked).
-fn mount_tall_page(lock: bool, list_height: &'static str) -> (web_sys::Element, rinch_web::RootHandle) {
+fn mount_tall_page(
+    lock: bool,
+    list_height: &'static str,
+) -> (web_sys::Element, rinch_web::RootHandle) {
     let host = document().create_element("div").unwrap();
     document().body().unwrap().append_child(&host).unwrap();
     let root = rinch_web::mount_into(
@@ -333,11 +336,18 @@ async fn review_a_locked_page_is_not_auto_scrolled() {
     for lock in [false, true] {
         web_sys::window().unwrap().scroll_to_with_x_and_y(0.0, 0.0);
         let (host, root) = mount_tall_page(lock, "200px");
-        let vh = web_sys::window().unwrap().inner_height().unwrap().as_f64().unwrap() as i32;
+        let vh = web_sys::window()
+            .unwrap()
+            .inner_height()
+            .unwrap()
+            .as_f64()
+            .unwrap() as i32;
         let source = document().get_element_by_id("das-src").unwrap();
         pointer(&source, "pointerdown", 520, 55);
         pointer(&source, "pointermove", 540, 70);
-        let target = document().element_from_point(600.0, (vh - 2) as f32).unwrap();
+        let target = document()
+            .element_from_point(600.0, (vh - 2) as f32)
+            .unwrap();
         pointer(&target, "pointermove", 600, vh - 2);
         sleep_ms(200).await;
         let y = scroll_y();
@@ -363,7 +373,10 @@ async fn review_a_list_ending_between_pixels_lets_the_loop_stop() {
     let list = document().get_element_by_id("das-list").unwrap();
     let source = document().get_element_by_id("das-src").unwrap();
     list.set_scroll_top(10_000);
-    let precise = js_sys::Reflect::get(&list, &"scrollTop".into()).unwrap().as_f64().unwrap();
+    let precise = js_sys::Reflect::get(&list, &"scrollTop".into())
+        .unwrap()
+        .as_f64()
+        .unwrap();
     pointer(&source, "pointerdown", 520, 55);
     pointer(&source, "pointermove", 540, 70);
     let y = LIST_TOP + 198;
