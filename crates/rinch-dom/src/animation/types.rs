@@ -139,7 +139,7 @@ impl ActiveAnimation {
                 if current_iteration >= n {
                     return match self.fill_mode {
                         AnimationFillMode::Forwards | AnimationFillMode::Both => {
-                            self.values_at_progress(self.end_progress(n))
+                            self.values_at_progress(self.end_progress())
                         }
                         _ => AnimationResult::Complete,
                     };
@@ -223,9 +223,33 @@ impl ActiveAnimation {
         }
     }
 
-    fn end_progress(&self, iterations: f64) -> f32 {
-        let last_iter = (iterations.ceil() as u64).saturating_sub(1);
-        self.apply_direction(1.0, last_iter)
+    /// The directed progress at the end of the active duration — what a
+    /// `forwards` fill holds (Web Animations §4.8.4, #785).
+    ///
+    /// The active duration is `duration × count`, so it ends in iteration
+    /// `floor(count)` at progress `fract(count)`: 2.5 iterations stop half way
+    /// through the third, and the direction is that iteration's. A whole count
+    /// above zero ends at progress 1 of its last iteration (`count - 1`), and a
+    /// count of 0 at progress 0 of iteration 0. This holds for a zero duration
+    /// too, whose overall progress is its count. An infinite count (reachable
+    /// only with a zero duration, which is finished at once, #786) ends at
+    /// progress 1 of an infinite iteration, which Chrome 155 does not count as
+    /// odd: `alternate` fills forwards, `alternate-reverse` backwards, as
+    /// iteration 0 does.
+    fn end_progress(&self) -> f32 {
+        let (progress, iteration) = match self.iteration_count {
+            IterationCount::Finite(n) if n <= 0.0 => (0.0, 0),
+            IterationCount::Finite(n) => {
+                let whole = n.floor();
+                if n > whole {
+                    (n - whole, whole as u64)
+                } else {
+                    (1.0, whole as u64 - 1)
+                }
+            }
+            IterationCount::Infinite => (1.0, 0),
+        };
+        self.apply_direction(progress, iteration)
     }
 
     fn apply_direction(&self, progress: f64, iteration: u64) -> f32 {
@@ -245,11 +269,7 @@ impl ActiveAnimation {
     fn final_values(&self) -> AnimationResult {
         match self.fill_mode {
             AnimationFillMode::Forwards | AnimationFillMode::Both => {
-                let n = match self.iteration_count {
-                    IterationCount::Finite(n) => n,
-                    IterationCount::Infinite => 1.0,
-                };
-                self.values_at_progress(self.end_progress(n))
+                self.values_at_progress(self.end_progress())
             }
             _ => AnimationResult::Complete,
         }
