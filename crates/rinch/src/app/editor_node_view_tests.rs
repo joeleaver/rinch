@@ -319,3 +319,155 @@ fn down_onto_a_view_node_selects_it_and_offers_the_caret() {
         "into \"ef\" past the rule: {head}"
     );
 }
+
+/// Review of #1575: events inside a view never reach text editing.
+mod review_1575 {
+    use super::*;
+
+    fn key_mod(app: &mut RinchApp, key: KeyCode, text: Option<&str>, modifiers: Modifiers) {
+        ev(
+            app,
+            PlatformEvent::KeyDown {
+                key,
+                logical_key: None,
+                text: text.map(str::to_string),
+                modifiers,
+                repeat: KeyRepeat::Fresh,
+            },
+        );
+        ev(
+            app,
+            PlatformEvent::KeyUp {
+                key,
+                logical_key: None,
+                modifiers,
+            },
+        );
+        app.resolve_and_repaint(800.0, 600.0);
+    }
+
+    fn input_value(p: &Page, id: usize) -> String {
+        let doc = p.app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        d.tree
+            .get(id)
+            .and_then(|n| n.attributes.get("value").cloned())
+            .unwrap_or_default()
+    }
+
+    fn focus_input(p: &mut Page, view: &Rc<View>) -> usize {
+        let input = view.input.borrow().clone().unwrap().node_id().0;
+        let at = point_in(p, input, 5.0);
+        press(&mut p.app, at);
+        assert_eq!(p.app.focus_target, FocusTarget::Input(input));
+        input
+    }
+
+    #[test]
+    fn typing_ctrl_z_backspace_and_tab_in_the_views_input_never_edit_the_document() {
+        let view = Rc::new(View::default());
+        let mut p = page(Some(view.clone()));
+        // Give the editor an undoable edit first.
+        let at = caret_point(&p, 2);
+        press(&mut p.app, at);
+        key(&mut p.app, KeyCode::KeyQ, Some("q"));
+        assert_eq!(block_text(&p, 0), "aqb");
+        let doc_before = p.handle.doc();
+        let input = focus_input(&mut p, &view);
+        key(&mut p.app, KeyCode::KeyX, Some("x"));
+        assert_eq!(
+            input_value(&p, input),
+            "x",
+            "positive control: the input took it"
+        );
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        };
+        key_mod(&mut p.app, KeyCode::KeyZ, None, ctrl);
+        key(&mut p.app, KeyCode::Backspace, None);
+        key(&mut p.app, KeyCode::Backspace, None);
+        key(&mut p.app, KeyCode::Delete, None);
+        key(&mut p.app, KeyCode::Tab, None);
+        assert!(
+            p.handle.doc().same_ref(&doc_before) || p.handle.doc() == doc_before,
+            "the editor's document is untouched: {:?}",
+            p.handle.doc()
+        );
+        assert_eq!(block_text(&p, 0), "aqb", "no editor undo");
+        assert_eq!(view.renders.get(), 1);
+    }
+
+    #[test]
+    fn a_drag_that_starts_inside_the_view_selects_no_editor_text() {
+        let view = Rc::new(View::default());
+        let mut p = page(Some(view.clone()));
+        let at = caret_point(&p, 2);
+        press(&mut p.app, at);
+        let input = view.input.borrow().clone().unwrap().node_id().0;
+        let (ix, iy, iw, _) = box_of(&p, input);
+        let start = (ix + iw + 20.0, iy + 5.0);
+        let end = caret_point(&p, 7);
+        let button = MouseButton::Left;
+        ev(
+            &mut p.app,
+            PlatformEvent::MouseDown {
+                x: start.0,
+                y: start.1,
+                button,
+            },
+        );
+        for i in 1..=5 {
+            let t = i as f32 / 5.0;
+            ev(
+                &mut p.app,
+                PlatformEvent::MouseMove {
+                    x: start.0 + (end.0 - start.0) * t,
+                    y: start.1 + (end.1 - start.1) * t,
+                },
+            );
+            p.app.resolve_and_repaint(800.0, 600.0);
+        }
+        ev(
+            &mut p.app,
+            PlatformEvent::MouseUp {
+                x: end.0,
+                y: end.1,
+                button,
+            },
+        );
+        p.app.resolve_and_repaint(800.0, 600.0);
+        assert_eq!(p.handle.selection(), Selection::cursor(Pos(2)));
+    }
+
+    /// The overlay half of "a view that grows moves what is below it": a range
+    /// highlight in the paragraph below follows the growth.
+    #[test]
+    fn a_view_that_grows_moves_the_selection_highlight_below_it() {
+        let view = Rc::new(View::default());
+        let mut p = page(Some(view.clone()));
+        let at = caret_point(&p, 6);
+        press(&mut p.app, at);
+        p.handle.set_selection(Selection::text(Pos(6), Pos(8)));
+        p.app.resolve_and_repaint(800.0, 600.0);
+        let top = |p: &Page| {
+            let doc = p.app.doc.as_ref().unwrap();
+            let d = doc.borrow();
+            (0..d.tree.nodes.len())
+                .find(|&id| {
+                    d.tree.nodes.get(id).is_some_and(|n| {
+                        n.attributes.get("data-pm-selection").map(String::as_str) == Some("true")
+                    })
+                })
+                .map(|id| painted_element_box(&d.tree, id).1)
+        };
+        let before = top(&p).expect("a highlight");
+        view.grow.borrow().unwrap().set(120);
+        p.app.resolve_and_repaint(800.0, 600.0);
+        let after = top(&p).expect("a highlight");
+        assert!(
+            (after - before - 100.0).abs() < 0.5,
+            "the highlight moved down by the growth: {before} -> {after}"
+        );
+    }
+}

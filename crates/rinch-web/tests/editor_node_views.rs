@@ -344,3 +344,130 @@ async fn a_component_that_grows_moves_the_caret_below_it() {
     );
     assert_eq!(f.view.renders.get(), 1);
 }
+
+// ── Review of #1575 ──────────────────────────────────────────────────────────
+
+fn keydown_mod(el: &web_sys::Element, key: &str, code: &str, ctrl: bool) -> web_sys::KeyboardEvent {
+    let init = web_sys::KeyboardEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_key(key);
+    init.set_code(code);
+    init.set_ctrl_key(ctrl);
+    let ev = web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+    el.dispatch_event(&ev).unwrap();
+    ev
+}
+
+fn view_input() -> web_sys::HtmlElement {
+    document()
+        .query_selector(&format!("[{HOST_MARKER}] [data-pm-node-view] input"))
+        .unwrap()
+        .unwrap()
+        .dyn_into()
+        .unwrap()
+}
+
+/// Backspace, Delete, Ctrl+Z, Tab and a letter in the view's input: none edits
+/// the document, none is prevented (the input's own default runs).
+#[wasm_bindgen_test]
+fn r1575_keys_in_the_views_input_never_edit_the_document() {
+    let f = mount();
+    press_text(0);
+    keydown(&capture(), "q", "KeyQ");
+    let before = rinch_editor_core::serialize::html::node_to_html(&f.handle.doc());
+    let input = view_input();
+    let r = input.get_bounding_client_rect();
+    press((r.left() + 5.0) as f32, (r.top() + 5.0) as f32);
+    input.focus().unwrap();
+    for (k, c, ctrl) in [
+        ("Backspace", "Backspace", false),
+        ("Delete", "Delete", false),
+        ("z", "KeyZ", true),
+        ("y", "KeyY", true),
+        ("Tab", "Tab", false),
+        ("a", "KeyA", true),
+        ("Enter", "Enter", false),
+    ] {
+        let ev = keydown_mod(&input, k, c, ctrl);
+        assert!(!ev.default_prevented(), "{k} (ctrl {ctrl}) was prevented");
+    }
+    // The browser's own undo in the input.
+    let init = web_sys::InputEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_input_type("historyUndo");
+    let ev = web_sys::InputEvent::new_with_event_init_dict("beforeinput", &init).unwrap();
+    input.dispatch_event(&ev).unwrap();
+    assert!(!ev.default_prevented());
+    assert_eq!(
+        rinch_editor_core::serialize::html::node_to_html(&f.handle.doc()),
+        before,
+        "the document is untouched"
+    );
+    assert_eq!(f.view.renders.get(), 1);
+}
+
+/// A selection drag that starts on the component selects no editor text.
+#[wasm_bindgen_test]
+fn r1575_a_drag_from_inside_the_view_selects_no_editor_text() {
+    let f = mount();
+    press_text(0);
+    assert_eq!(f.handle.selection(), Selection::cursor(Pos(2)));
+    let ir = view_input().get_bounding_client_rect();
+    let (sx, sy) = ((ir.right() + 20.0) as f32, (ir.top() + 5.0) as f32);
+    let start = document().element_from_point(sx, sy).unwrap();
+    mouse_on(&start, "mousedown", sx, sy);
+    let list = document()
+        .query_selector_all(&format!("[{HOST_MARKER}] p"))
+        .unwrap();
+    let p: web_sys::Element = list.item(1).unwrap().dyn_into().unwrap();
+    let pr = rect(&p);
+    let (ex, ey) = (
+        (pr.left() + 14.0) as f32,
+        (pr.top() + pr.height() / 2.0) as f32,
+    );
+    for i in 1..=5 {
+        let t = i as f32 / 5.0;
+        let (x, y) = (sx + (ex - sx) * t, sy + (ey - sy) * t);
+        let el = document().element_from_point(x, y).unwrap();
+        mouse_on(&el, "mousemove", x, y);
+    }
+    let end = document().element_from_point(ex, ey).unwrap();
+    mouse_on(&end, "mouseup", ex, ey);
+    assert_eq!(f.handle.selection(), Selection::cursor(Pos(2)));
+    // Positive control: the same drag from the first paragraph's text selects.
+    press_text(0);
+    let p0: web_sys::Element = list.item(0).unwrap().dyn_into().unwrap();
+    let r0 = rect(&p0);
+    let (x0, y0) = (
+        (r0.left() + 12.0) as f32,
+        (r0.top() + r0.height() / 2.0) as f32,
+    );
+    let el = document().element_from_point(x0, y0).unwrap();
+    mouse_on(&el, "mousedown", x0, y0);
+    for i in 1..=5 {
+        let t = i as f32 / 5.0;
+        let (x, y) = (x0 + (ex - x0) * t, y0 + (ey - y0) * t);
+        let el = document().element_from_point(x, y).unwrap();
+        mouse_on(&el, "mousemove", x, y);
+    }
+    mouse_on(&end, "mouseup", ex, ey);
+    assert!(
+        !matches!(f.handle.selection(), Selection::Text(ref t) if t.anchor == t.head),
+        "control: a drag from text selects: {:?}",
+        f.handle.selection()
+    );
+}
+
+/// Mounting and unmounting an editor with a view leaks no registered node.
+#[wasm_bindgen_test]
+fn r1575_mount_unmount_leaks_no_node() {
+    let _ = mount();
+    let base = rinch_web::web_document::__node_registry_len() as isize;
+    for _ in 0..10 {
+        let _ = mount();
+    }
+    let after = rinch_web::web_document::__node_registry_len() as isize;
+    assert_eq!(after - base, 0, "registered nodes grew by {}", after - base);
+}
