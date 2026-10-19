@@ -1192,6 +1192,10 @@ fn wire_drag(
             Some(values) => values(&v),
             None => vec![v.clone()],
         };
+        // The tree shows the drag itself (the carried rows fade, the row
+        // under the pointer draws the drop); the built-in snapshot of the
+        // source row would sit over the very row the drop is drawn on.
+        rinch_core::suppress_drag_ghost();
         mark_dragging(&cfg, &carried, true);
         cfg.drag.level_px.set(None);
         *cfg.drag.dragged.borrow_mut() = carried.clone();
