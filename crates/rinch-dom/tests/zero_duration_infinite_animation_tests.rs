@@ -110,7 +110,10 @@ fn assert_settles(class: &str, expected: f32) {
             doc.tree.dirty_nodes.is_empty() && doc.tree.paint_dirty_nodes.is_empty(),
             "{class} round {round}: and the box is not dirtied again"
         );
-        assert!(!doc.tree.layout_dirty, "{class} round {round}: no layout owed");
+        assert!(
+            !doc.tree.layout_dirty,
+            "{class} round {round}: no layout owed"
+        );
         assert_eq!(
             width_px(&doc, node),
             Some(expected),
@@ -169,7 +172,11 @@ fn a_positive_delay_runs_until_it_ends_then_settles() {
         "inside the 200ms delay it is still waiting"
     );
     assert!(doc.tick_animations(), "so it asks for frames");
-    assert_eq!(width_px(&doc, node), Some(40.0), "backwards fill in the delay");
+    assert_eq!(
+        width_px(&doc, node),
+        Some(40.0),
+        "backwards fill in the delay"
+    );
 
     std::thread::sleep(std::time::Duration::from_millis(300));
     hand_off(&mut doc, node);
@@ -193,7 +200,10 @@ fn a_non_zero_infinite_animation_still_runs() {
     std::thread::sleep(std::time::Duration::from_millis(120));
     hand_off(&mut doc, node);
     assert!(doc.tree.has_running_animations());
-    assert!(doc.tick_animations(), "an infinite 50ms animation never ends");
+    assert!(
+        doc.tick_animations(),
+        "an infinite 50ms animation never ends"
+    );
     assert!(
         doc.tree.dirty_nodes.contains(&node.0),
         "and each tick moves it"
