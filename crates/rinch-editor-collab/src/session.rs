@@ -100,7 +100,7 @@ use rinch_editor_core::{EditorState, Node, Pos, Schema};
 
 use crate::error::{CollabError, Result};
 use crate::projection::CollabDoc;
-use crate::remote::build_remote_transaction;
+use crate::remote::{BlockIds, build_remote_transaction, build_remote_transaction_with};
 use crate::table::OversizedTable;
 
 /// An update that carries nothing, in the lib0 v1 encoding: zero blocks followed by a
@@ -363,6 +363,34 @@ impl CollabSession {
     /// stalled one is a state the app is being told about via
     /// [`Self::outbound_stall`].
     pub fn record_local(&mut self, schema: &Schema, before: &Node, after: &Node) -> Result<()> {
+        self.record_local_inner(schema, before, after)
+    }
+
+    /// [`Self::record_local`] for an editor that knows which leaf block atoms the
+    /// change kept: `kept` holds every leaf block atom of `after` that is the same
+    /// atom as the node at its place in `before` with other attributes (the editor
+    /// proves it with the `SetNodeAttrStep`s of the transaction). Any **other** leaf
+    /// block atom the change put where a different node stood is written as a new
+    /// CRDT block rather than by rewriting the old one's attributes, so a peer can
+    /// tell an embed whose attributes changed (one block, the same on both sides —
+    /// [`Self::integrate_incremental_transaction`] makes that `SetNodeAttrStep`s)
+    /// from an embed that came to stand where another stood (a move, an undo of a
+    /// delete), which a node view keyed to the old one must not be handed.
+    ///
+    /// [`Self::record_local`] is the positional rule: a leaf atom put in another's
+    /// place takes over its block, attributes and all.
+    pub fn record_local_keeping(
+        &mut self,
+        schema: &Schema,
+        before: &Node,
+        after: &Node,
+        kept: &[Node],
+    ) -> Result<()> {
+        let _kept = crate::projection::kept_atoms_scope(Some(kept));
+        self.record_local_inner(schema, before, after)
+    }
+
+    fn record_local_inner(&mut self, schema: &Schema, before: &Node, after: &Node) -> Result<()> {
         self.guard()?;
         // Frozen while the shared document holds a table too large to read: the model
         // shows a placeholder for it, and a diff that touches a placeholder can delete
@@ -547,6 +575,30 @@ impl CollabSession {
         state: &EditorState,
         changes: &[u8],
     ) -> Result<Option<EditorState>> {
+        Ok(self
+            .integrate_incremental_transaction(state, changes)?
+            .map(|tr| state.apply(tr)))
+    }
+
+    /// [`Self::integrate_incremental`], answering the **transaction** that brings
+    /// `state` to the converged document rather than the state it leads to —
+    /// for a caller that has to know how the document changed, not only what it
+    /// became (an editor view telling a node whose attributes a peer changed from
+    /// a node a peer replaced).
+    ///
+    /// A peer's change that only sets attributes of leaf block atoms (an
+    /// `embed`'s `data-*` keys) — and only of atoms that are **the same CRDT
+    /// block** before and after, so two embeds a peer swapped are not one —
+    /// is one `SetNodeAttrStep` per key, and moves no position; anything else is
+    /// the block-level replace [`build_remote_transaction`] describes. Telling the
+    /// two apart reads the old document's block identities before the update is
+    /// applied, which costs a second full read of the CRDT; it is paid only while
+    /// `state`'s document holds a leaf block atom with attributes.
+    pub fn integrate_incremental_transaction(
+        &mut self,
+        state: &EditorState,
+        changes: &[u8],
+    ) -> Result<Option<rinch_editor_core::Transaction>> {
         if changes.is_empty() || changes == EMPTY_UPDATE {
             // Nothing to apply — and therefore nothing that could heal a poisoned
             // session, so the sticky error still reports.
@@ -558,6 +610,14 @@ impl CollabSession {
             Ok(update) => update,
             Err(e) => return Err(self.sticky_or(e.into())),
         };
+        // The old document's block identities, read before the update moves
+        // anything: only while the model is the CRDT's read (so its blocks are the
+        // CRDT's, one for one) and only when an atom's attributes could change.
+        let old_ids = (self.model_matches_crdt() && has_attributed_block_atom(&state.doc))
+            .then(|| self.cdoc.to_doc_with_block_ids(state.schema()).ok())
+            .flatten()
+            .filter(|(read, _)| *read == state.doc)
+            .and_then(|(_, ids)| ids);
         if let Err(apply_err) = self.cdoc.apply_decoded(update) {
             // yrs commits on drop with no rollback, so a failed apply may have
             // partially integrated. Projectability decides how loud to be: if the
@@ -571,8 +631,13 @@ impl CollabSession {
             };
         }
         // The converged rebuild — the projectability verdict for these bytes.
-        let target = match self.cdoc.to_doc(state.schema()) {
-            Ok(target) => target,
+        let read = if old_ids.is_some() {
+            self.cdoc.to_doc_with_block_ids(state.schema())
+        } else {
+            self.cdoc.to_doc(state.schema()).map(|doc| (doc, None))
+        };
+        let (target, new_ids) = match read {
+            Ok(read) => read,
             Err(cause) => return Err(self.classify_unprojectable(cause)),
         };
         // The document is projectable: a previously-poisoned session is healed by
@@ -597,10 +662,11 @@ impl CollabSession {
         // the model transaction reads only the validated rebuild (and is unreachable
         // in practice for a doc `to_doc` admitted). Defense in depth, not a supported
         // failure path.
-        match build_remote_transaction(state, &target)? {
-            Some(tr) => Ok(Some(state.apply(tr))),
-            None => Ok(None),
-        }
+        let ids = match (&old_ids, &new_ids) {
+            (Some(old), Some(new)) => Some(BlockIds { old, new }),
+            _ => None,
+        };
+        build_remote_transaction_with(state, &target, ids.as_ref())
     }
 
     /// Merge another peer's CRDT wholesale into this one (test/utility convenience).
@@ -647,4 +713,19 @@ impl CollabSession {
         self.guard()?;
         self.cdoc.to_doc(schema)
     }
+}
+
+/// Whether `doc` holds a leaf block atom carrying attributes (an `embed` with
+/// `data-*` keys): the only node a peer's change can leave the same atom with
+/// other attributes ([`CollabSession::integrate_incremental_transaction`]).
+fn has_attributed_block_atom(doc: &Node) -> bool {
+    doc.content().children().iter().any(|child| {
+        if child.is_leaf() {
+            child.is_block() && !child.attrs().is_empty()
+        } else if child.is_textblock() {
+            false
+        } else {
+            has_attributed_block_atom(child)
+        }
+    })
 }

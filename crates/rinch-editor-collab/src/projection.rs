@@ -739,6 +739,32 @@ impl CollabDoc {
             .encode_state_as_update_v1(&StateVector::default())
     }
 
+    /// [`Self::to_doc`], with the identity of every flat block it read (a
+    /// textblock or a leaf block atom), in document order — `None` for a document
+    /// holding a table, or a zero-block one. The identities are what
+    /// [`crate::remote`] compares to tell an atom whose attributes changed from
+    /// a different atom that came to stand where it stood.
+    pub(crate) fn to_doc_with_block_ids(
+        &self,
+        schema: &Schema,
+    ) -> Result<(Node, Option<Vec<BlockId>>)> {
+        struct Recording;
+        impl Drop for Recording {
+            fn drop(&mut self) {
+                BLOCK_IDS.with(|ids| *ids.borrow_mut() = None);
+            }
+        }
+        BLOCK_IDS.with(|ids| *ids.borrow_mut() = Some(Ok(Vec::new())));
+        let recording = Recording;
+        let doc = self.to_doc(schema)?;
+        let ids = BLOCK_IDS
+            .with(|ids| ids.borrow_mut().take())
+            .and_then(|r| r.ok());
+        drop(recording);
+        let ids = ids.filter(|ids| !ids.is_empty());
+        Ok((doc, ids))
+    }
+
     /// Rebuild the whole model document from the projection (the canonical, total
     /// read-back; both peers reconstruct identically, so equal CRDTs give equal docs).
     ///
@@ -814,6 +840,43 @@ thread_local! {
 
 fn count_node_read() {
     NODE_READS.with(|c| c.set(c.get() + 1));
+}
+
+/// A block's identity in the CRDT: its node map's yrs item id `(client, clock)`.
+pub(crate) type BlockId = (u64, u32);
+
+thread_local! {
+    /// While [`CollabDoc::to_doc_with_block_ids`] reads: the [`BlockId`] of every
+    /// flat block it reads (a textblock or a leaf block atom), in document order,
+    /// or `Err` once it met something whose read is not one map per model block
+    /// (a table: its cells are keyed by grid slot and an uncovered slot is a
+    /// filler the CRDT does not hold).
+    static BLOCK_IDS: std::cell::RefCell<Option<std::result::Result<Vec<BlockId>, ()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Note a flat block's map while [`BLOCK_IDS`] records.
+fn note_block_id(node: &MapRef) {
+    BLOCK_IDS.with(|ids| {
+        let mut ids = ids.borrow_mut();
+        let Some(record) = ids.as_mut() else {
+            return;
+        };
+        match (AsRef::<yrs::branch::Branch>::as_ref(node).id(), record) {
+            (yrs::branch::BranchID::Nested(id), Ok(list)) => list.push((id.client.get(), id.clock)),
+            (yrs::branch::BranchID::Root(_), record) => *record = Err(()),
+            (_, Err(())) => {}
+        }
+    });
+}
+
+/// Stop [`BLOCK_IDS`] recording: a read it cannot speak for.
+fn spoil_block_ids() {
+    BLOCK_IDS.with(|ids| {
+        if let Some(r) = ids.borrow_mut().as_mut() {
+            *r = Err(());
+        }
+    });
 }
 
 /// The running count behind [`crate::testing::node_reads`].
@@ -1078,7 +1141,11 @@ pub(crate) fn reconcile_node(
         }
         NodeData::Container { .. } | NodeData::Table(_) => false,
     };
-    if crdt_kind != target_kind || retyped_to_empty || container_retyped {
+    if crdt_kind != target_kind
+        || retyped_to_empty
+        || container_retyped
+        || changed_atom_identity(model)
+    {
         check_index(txn, list, index, false)?;
         list.remove(txn, index);
         return insert_node(txn, list, index, target);
@@ -1390,6 +1457,55 @@ fn text_splice_bounds(
 /// every child by index. A level whose before and after share no child therefore
 /// matches by value, and still hands the model down, since a level below may share.
 pub(crate) type Model<'a> = Option<(&'a Node, &'a Node)>;
+
+thread_local! {
+    /// While a [`kept_atoms_scope`] is held with `Some`: the leaf block atoms of the
+    /// change's `after` document that are the **same atom** as the node standing at
+    /// their place before it (an attribute change the editor proved with a
+    /// `SetNodeAttrStep`). See [`changed_atom_identity`].
+    static KEPT_ATOMS: RefCell<Option<Vec<Node>>> = const { RefCell::new(None) };
+}
+
+/// Restores [`KEPT_ATOMS`] when dropped.
+pub(crate) struct KeptAtomsScope(Option<Vec<Node>>);
+
+impl Drop for KeptAtomsScope {
+    fn drop(&mut self) {
+        let previous = self.0.take();
+        KEPT_ATOMS.with(|k| *k.borrow_mut() = previous);
+    }
+}
+
+/// While the returned guard lives, a reconcile pairing a leaf block atom of the
+/// model's `after` with a **different** model node at its place writes it as a new
+/// CRDT block unless it is one of `kept` ([`changed_atom_identity`]). `None` is the
+/// positional rule a change always had: the pair is reconciled in place.
+pub(crate) fn kept_atoms_scope(kept: Option<&[Node]>) -> KeptAtomsScope {
+    let previous = KEPT_ATOMS.with(|k| k.replace(kept.map(<[Node]>::to_vec)));
+    KeptAtomsScope(previous)
+}
+
+/// Whether reconciling the model pair `model` (a node before and after the change,
+/// at one place) would hand a leaf block atom's CRDT block to **another atom**: the
+/// two are different model nodes, and the editor did not prove the new one is the
+/// old one with other attributes ([`kept_atoms_scope`]). An embed a peer's view keys
+/// an app's state to must never take another embed's attributes in place — a move
+/// (delete and insert) would read, position by position, exactly like an attribute
+/// change, and the receiver could not tell them apart. Such a pair is replaced, so
+/// the new atom is a new block on every replica.
+fn changed_atom_identity(model: Model<'_>) -> bool {
+    let Some((before, after)) = model else {
+        return false;
+    };
+    if !(after.is_leaf() && after.is_block()) || before.same_ref(after) {
+        return false;
+    }
+    KEPT_ATOMS.with(|k| {
+        k.borrow()
+            .as_ref()
+            .is_some_and(|kept| !kept.iter().any(|n| n.same_ref(after)))
+    })
+}
 
 /// The `i`-th children of a [`Model`] pair, given the before and after index.
 pub(crate) fn model_child<'a>(model: Model<'a>, before: usize, after: usize) -> Model<'a> {
@@ -2023,6 +2139,7 @@ fn read_map_data<T: ReadTxn>(txn: &T, node: &MapRef) -> Result<NodeData> {
     let attrs = node_attrs(txn, node);
     if let Some(text_obj) = block_text(txn, node) {
         let (text, marks) = read_text_data(txn, &text_obj)?;
+        note_block_id(node);
         Ok(NodeData::Block(BlockData {
             type_name,
             attrs,
@@ -2035,6 +2152,7 @@ fn read_map_data<T: ReadTxn>(txn: &T, node: &MapRef) -> Result<NodeData> {
                 "node `{type_name}` carries a table's `rows`"
             )));
         }
+        spoil_block_ids();
         Ok(NodeData::Table(read_table_data(txn, node)?))
     } else if let Some(content) = node_content(txn, node) {
         // Only the visible children: a void child container is not part of this one

@@ -21,9 +21,12 @@
 //! session. It can be rebuilt on yrs observer deltas (`TextRef::observe` → `TextEvent`)
 //! if a future refinement wants it.
 
-use rinch_editor_core::{EditorState, Fragment, Node, Pos, Selection, Slice, Transaction};
+use rinch_editor_core::{
+    AttrValue, EditorState, Fragment, Node, Pos, Selection, SetNodeAttrStep, Slice, Transaction,
+};
 
 use crate::error::Result;
+use crate::projection::BlockId;
 
 /// Transaction meta key marking a transaction as a remote (collab) application, so the
 /// history plugin and any origin-sensitive logic can tell it apart from local typing.
@@ -92,15 +95,180 @@ fn replace_changed_blocks(
     Ok(tr)
 }
 
+/// One attribute a remote change sets (`Some`) or removes (`None`) on the node
+/// that starts at a position of the old document.
+type AttrChange = (usize, String, Option<AttrValue>);
+
+/// The identity of every flat block (textblock or leaf block atom) of the old
+/// document and of the converged one, in document order — what proves a leaf
+/// atom is the same atom on both sides ([`attr_only_changes`]).
+pub(crate) struct BlockIds<'a> {
+    pub(crate) old: &'a [BlockId],
+    pub(crate) new: &'a [BlockId],
+}
+
+/// The attribute changes that turn the changed middle of `old` into `target`'s,
+/// when that is **all** that changed: the same blocks, of the same types and
+/// marks, holding the same text, except for the attributes of leaf **block**
+/// atoms (an `embed`) at any depth. `None` when anything else differs, and the
+/// change is a block replace.
+///
+/// With `ids`, an atom whose attributes differ must also be **the same atom**:
+/// the same CRDT block on both sides. Two embeds a peer swapped look, block by
+/// block, exactly like two embeds whose attributes changed — and a node view
+/// keyed to one must never be handed the other (decision (d) of the node-view
+/// design), so without that proof the change is a replace. Without `ids` the
+/// answer is positional only, which is right for carrying a selection (no
+/// position moved either way) and wrong for identity.
+///
+/// A node view keeps its component mounted only while its node is provably the
+/// same one: the same `Rc`, or one a `SetNodeAttrStep` changed. A block replace
+/// is a new node, so a collaborator's change to an embed's attributes would
+/// remount the app's component on every update, losing whatever it held.
+fn attr_only_changes(
+    old: &Node,
+    target: &Node,
+    diff: &BlockDiff,
+    ids: Option<&BlockIds>,
+) -> Option<Vec<AttrChange>> {
+    let (on, nn) = (old.child_count(), target.child_count());
+    if on != nn {
+        return None;
+    }
+    let mut walk = AttrWalk {
+        changes: Vec::new(),
+        ids,
+        ordinal: (0..diff.prefix).map(|i| flat_blocks(old.child(i))).sum(),
+    };
+    let mut pos = diff.start;
+    for i in diff.prefix..on - diff.suffix {
+        let (a, b) = (old.child(i), target.child(i));
+        if !walk.same_but_atom_attrs(a, b, pos) {
+            return None;
+        }
+        pos += a.node_size();
+    }
+    (!walk.changes.is_empty()).then_some(walk.changes)
+}
+
+/// How many flat blocks (textblocks and leaf block atoms) `node` is or holds:
+/// one CRDT block map each.
+fn flat_blocks(node: &Node) -> usize {
+    if node.is_textblock() || (node.is_leaf() && node.is_block()) {
+        1
+    } else if node.is_block() {
+        node.content().children().iter().map(flat_blocks).sum()
+    } else {
+        0
+    }
+}
+
+/// The walk behind [`attr_only_changes`].
+struct AttrWalk<'a> {
+    changes: Vec<AttrChange>,
+    ids: Option<&'a BlockIds<'a>>,
+    /// The document-order index of the next flat block ([`flat_blocks`]).
+    ordinal: usize,
+}
+
+impl AttrWalk<'_> {
+    /// Whether `a` (starting at `pos`) and `b` differ only in the attributes of
+    /// leaf block atoms that are the same atom, noting each differing key.
+    fn same_but_atom_attrs(&mut self, a: &Node, b: &Node, pos: usize) -> bool {
+        if a.same_ref(b) || a == b {
+            self.ordinal += flat_blocks(a);
+            return true;
+        }
+        if a.type_name() != b.type_name() || a.marks() != b.marks() || a.is_text() {
+            return false;
+        }
+        if a.is_textblock() {
+            return false; // its text, marks or attributes differ
+        }
+        if a.is_leaf() {
+            if !a.is_block() {
+                return false; // an inline atom: atoms.rs owns its identity
+            }
+            let k = self.ordinal;
+            self.ordinal += 1;
+            if let Some(ids) = self.ids
+                && (ids.old.get(k).is_none() || ids.old.get(k) != ids.new.get(k))
+            {
+                return false;
+            }
+            for (key, value) in b.attrs().iter() {
+                if a.attrs().get(key) != Some(value) {
+                    self.changes
+                        .push((pos, key.to_string(), Some(value.clone())));
+                }
+            }
+            for (key, _) in a.attrs().iter() {
+                if b.attrs().get(key).is_none() {
+                    self.changes.push((pos, key.to_string(), None));
+                }
+            }
+            return true;
+        }
+        if a.attrs() != b.attrs() || a.child_count() != b.child_count() {
+            return false;
+        }
+        let mut child_pos = pos + 1;
+        for i in 0..a.child_count() {
+            let (ca, cb) = (a.child(i), b.child(i));
+            if !self.same_but_atom_attrs(ca, cb, child_pos) {
+                return false;
+            }
+            child_pos += ca.node_size();
+        }
+        true
+    }
+}
+
+/// The transaction for a change [`attr_only_changes`] found: one
+/// `SetNodeAttrStep` per key. No step moves a position.
+fn set_changed_attrs(state: &EditorState, changes: Vec<AttrChange>) -> Result<Transaction> {
+    let mut tr = state.tr();
+    for (pos, attr, value) in changes {
+        tr.step(Box::new(SetNodeAttrStep { pos, attr, value }))
+            .map_err(|e| crate::error::CollabError::Schema(e.to_string()))?;
+    }
+    Ok(tr)
+}
+
 /// Build the transaction that brings `state`'s model up to the converged CRDT
 /// document `target`, as a minimal block-level replace. Returns `None` if nothing
 /// changed. The transaction is tagged remote + non-undoable.
 pub fn build_remote_transaction(state: &EditorState, target: &Node) -> Result<Option<Transaction>> {
+    build_remote_transaction_with(state, target, None)
+}
+
+/// [`build_remote_transaction`], told the identity of every flat block on both
+/// sides ([`BlockIds`]): a change that only sets attributes of leaf block atoms
+/// that are the same atoms is then `SetNodeAttrStep`s ([`attr_only_changes`]),
+/// so the atoms keep their identity in the model and a node view drawn for one
+/// stays mounted. Without `ids` it is always the block replace.
+pub(crate) fn build_remote_transaction_with(
+    state: &EditorState,
+    target: &Node,
+    ids: Option<&BlockIds>,
+) -> Result<Option<Transaction>> {
     let old = &state.doc;
     let Some(diff) = block_diff(old, target) else {
         return Ok(None);
     };
     let (prefix, suffix, start) = (diff.prefix, diff.suffix, diff.start);
+
+    // Only atoms' attributes changed: say so, attribute by attribute, so the
+    // atoms keep their identity (a node view stays mounted) and no position
+    // moves — the selection maps through unchanged.
+    if let Some(ids) = ids
+        && let Some(changes) = attr_only_changes(old, target, &diff, Some(ids))
+    {
+        let mut tr = set_changed_attrs(state, changes)?;
+        tr.set_add_to_history(false);
+        tr.set_meta(ORIGIN_REMOTE, true);
+        return Ok(Some(tr));
+    }
 
     // Where the selection's ends belong afterwards, worked out against the old
     // document before it is replaced (see `carried_position`).
@@ -146,6 +314,9 @@ pub fn build_remote_transaction(state: &EditorState, target: &Node) -> Result<Op
 /// answer is `None`: the block it was in was deleted, split, joined or changed
 /// kind by the peer, and inserting "nearby" would be a guess.
 pub struct RemoteCarry {
+    /// Only atoms' attributes changed ([`attr_only_changes`]): no position
+    /// moved, and every selection stands as it is.
+    attrs_only: bool,
     old: Node,
     new_doc: Node,
     diff: BlockDiff,
@@ -158,8 +329,12 @@ impl RemoteCarry {
     /// selection stands as it is) or the replace cannot be built.
     pub fn new(state: &EditorState, target: &Node) -> Option<RemoteCarry> {
         let diff = block_diff(&state.doc, target)?;
+        // Positional is enough here: whichever atom stands where, no position
+        // moved.
+        let attrs_only = attr_only_changes(&state.doc, target, &diff, None).is_some();
         let tr = replace_changed_blocks(state, target, &diff).ok()?;
         Some(RemoteCarry {
+            attrs_only,
             old: state.doc.clone(),
             new_doc: tr.doc().clone(),
             mapping: tr.mapping().clone(),
@@ -181,6 +356,9 @@ impl RemoteCarry {
     /// `selection`, taken in the old document, in the converged one; `None`
     /// when the content it named is gone.
     pub fn selection(&self, selection: &Selection) -> Option<Selection> {
+        if self.attrs_only {
+            return Some(selection.clone());
+        }
         let d = &self.diff;
         let inside = |pos: usize| pos > d.start && pos < d.end;
         let (anchor, head) = (selection.anchor().0, selection.head().0);

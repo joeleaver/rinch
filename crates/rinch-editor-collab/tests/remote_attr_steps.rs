@@ -1,23 +1,80 @@
-//! A peer's change to the **attributes** of a leaf atom arrives as
-//! `SetNodeAttrStep`s, not as a replace of its block (node views, PR B).
+//! A peer's change to the **attributes** of a leaf block atom (an `embed`) arrives
+//! as `SetNodeAttrStep`s, not as a replace of its block (node views, PR B).
 //!
 //! An editor that draws an app component inside a document (a node view) keeps
 //! that component mounted only while its node is provably the same node: the same
 //! `Rc`, or one a `SetNodeAttrStep` in the transaction changed. A remote change
 //! used to arrive as one block-level `ReplaceStep` over the changed top-level
 //! blocks — a new node, which the view must take for a different one and remount,
-//! losing the component's own state for every keystroke a collaborator typed into
-//! one of its attributes. Now a changed run whose blocks differ from the old ones
-//! only in the attributes of leaf atoms (at any depth) becomes one
-//! `SetNodeAttrStep` per changed key; anything else is still the block replace.
+//! losing the component's own state on every change a collaborator made to one
+//! of its attributes.
+//!
+//! The attr steps need **identity**, not only shape: two embeds a peer swapped
+//! look, position by position, exactly like two embeds whose attributes were
+//! exchanged, and a view must never be handed the other node. So the steps are
+//! emitted only when every atom whose attributes differ is the same CRDT block
+//! on both sides; a swap stays a replace.
 
 use std::rc::Rc;
 
-use rinch_editor_collab::{RemoteCarry, build_remote_transaction};
+use rinch_editor_collab::testing::{session_from_bytes_with_client_id, session_with_client_id};
+use rinch_editor_collab::{CollabPlugin, CollabSession, RemoteCarry};
 use rinch_editor_core::{
-    AttrValue, Attrs, EditorState, Fragment, Node, NodeSelection, Pos, Schema, Selection,
-    SetNodeAttrStep, Step, default_plugins,
+    AttrValue, Attrs, EditorState, Fragment, Node, NodeSelection, Plugin, Pos, Schema, Selection,
+    SetNodeAttrStep, Slice, Step, Transaction, default_plugins,
 };
+
+struct Peer {
+    state: EditorState,
+    session: CollabSession,
+}
+
+impl Peer {
+    /// A local edit, recorded as an editor records it: the leaf atoms at `kept`
+    /// (positions in the new document) are the ones the edit changed the
+    /// attributes of — the same atoms — and any other atom it put where another
+    /// node stood is a different one.
+    fn local(&mut self, kept: &[usize], f: impl FnOnce(&mut Transaction)) {
+        let mut tr = self.state.tr();
+        f(&mut tr);
+        let before = self.state.doc.clone();
+        let after = self.state.apply(tr);
+        let kept: Vec<Node> = kept
+            .iter()
+            .map(|&p| after.doc.node_at(p).expect("a node at a kept position"))
+            .collect();
+        self.session
+            .record_local_keeping(self.state.schema(), &before, &after.doc, &kept)
+            .expect("project local");
+        self.state = after;
+    }
+
+    /// Integrate `from`'s changes, answering the steps that did it.
+    fn receive(&mut self, from: &Peer) -> Vec<Box<dyn Step>> {
+        let delta = from
+            .session
+            .sync_diff(&self.session.state_vector())
+            .unwrap();
+        let tr = self
+            .session
+            .integrate_incremental_transaction(&self.state, &delta)
+            .unwrap()
+            .expect("a change");
+        let steps = tr.steps().to_vec();
+        self.state = self.state.apply(tr);
+        assert_eq!(
+            self.state.doc, from.state.doc,
+            "the receiver holds the sender's document"
+        );
+        steps
+    }
+}
+
+fn plugins() -> Vec<Rc<dyn Plugin>> {
+    let mut p = default_plugins();
+    p.push(Rc::new(CollabPlugin));
+    p
+}
 
 fn para(schema: &Schema, text: &str) -> Node {
     schema
@@ -41,10 +98,21 @@ fn doc(schema: &Schema, blocks: Vec<Node>) -> Node {
         .unwrap()
 }
 
-fn state(schema: &Rc<Schema>, d: Node, selection: Selection) -> EditorState {
-    let mut st = EditorState::create(schema.clone(), d, default_plugins());
-    st.selection = selection;
-    st
+fn two_peers(schema: &Rc<Schema>, d: Node) -> (Peer, Peer) {
+    let a_state = EditorState::create(schema.clone(), d, plugins());
+    let session_a = session_with_client_id(&a_state, 1).unwrap();
+    let session_b = session_from_bytes_with_client_id(&session_a.snapshot(), 2).unwrap();
+    let b_doc = session_b.projected_doc(schema).unwrap();
+    (
+        Peer {
+            state: a_state,
+            session: session_a,
+        },
+        Peer {
+            state: EditorState::create(schema.clone(), b_doc, plugins()),
+            session: session_b,
+        },
+    )
 }
 
 /// The transaction's steps as `(pos, attr, value)` when every one is a
@@ -67,9 +135,9 @@ fn attr_steps(steps: &[Box<dyn Step>]) -> Option<Vec<(usize, String, Option<Stri
 }
 
 #[test]
-fn an_attr_change_of_a_top_level_embed_is_set_node_attr_steps() {
+fn a_peers_attr_change_of_a_top_level_embed_is_set_node_attr_steps() {
     let schema = Rc::new(Schema::starter_kit());
-    let old = doc(
+    let d = doc(
         &schema,
         vec![
             para(&schema, "ab"),
@@ -77,21 +145,34 @@ fn an_attr_change_of_a_top_level_embed_is_set_node_attr_steps() {
             para(&schema, "cd"),
         ],
     );
-    let target = doc(
-        &schema,
-        vec![
-            para(&schema, "ab"),
-            embed(&schema, &[("data-sheet", "s2"), ("data-mode", "edit")]),
-            para(&schema, "cd"),
-        ],
-    );
+    let (mut a, mut b) = two_peers(&schema, d);
     let sel = Selection::Node(NodeSelection {
         anchor: Pos(4),
         head: Pos(5),
     });
-    let st = state(&schema, old, sel.clone());
-    let tr = build_remote_transaction(&st, &target).unwrap().unwrap();
-    let mut steps = attr_steps(tr.steps()).expect("only attr steps");
+    b.state.selection = sel.clone();
+    a.local(&[4], |tr| {
+        tr.step(Box::new(SetNodeAttrStep::new(
+            4,
+            "data-sheet",
+            AttrValue::from("s2"),
+        )))
+        .unwrap();
+        tr.step(Box::new(SetNodeAttrStep {
+            pos: 4,
+            attr: "data-zoom".into(),
+            value: None,
+        }))
+        .unwrap();
+        tr.step(Box::new(SetNodeAttrStep::new(
+            4,
+            "data-mode",
+            AttrValue::from("edit"),
+        )))
+        .unwrap();
+    });
+    let steps = b.receive(&a);
+    let mut steps = attr_steps(&steps).expect("only attr steps");
     steps.sort();
     assert_eq!(
         steps,
@@ -101,62 +182,87 @@ fn an_attr_change_of_a_top_level_embed_is_set_node_attr_steps() {
             (4, "data-zoom".into(), None),
         ]
     );
-    let next = st.apply(tr);
-    assert_eq!(next.doc, target, "the same document as the converged one");
-    assert_eq!(next.selection, sel, "the node selection stays on it");
+    assert_eq!(b.state.selection, sel, "the node selection stays on it");
 }
 
 #[test]
-fn an_attr_change_of_a_nested_embed_is_an_attr_step_too() {
+fn a_peers_attr_change_of_a_nested_embed_is_an_attr_step_too() {
     let schema = Rc::new(Schema::starter_kit());
-    let quote = |e: Node| {
-        schema
-            .branch(
-                "blockquote",
-                Fragment::from_children(vec![para(&schema, "q"), e]),
-            )
-            .unwrap()
-    };
-    let old = doc(
-        &schema,
-        vec![
-            para(&schema, "ab"),
-            quote(embed(&schema, &[("data-k", "1")])),
-        ],
-    );
-    let target = doc(
-        &schema,
-        vec![
-            para(&schema, "ab"),
-            quote(embed(&schema, &[("data-k", "2")])),
-        ],
-    );
-    let st = state(&schema, old, Selection::cursor(Pos(2)));
-    let tr = build_remote_transaction(&st, &target).unwrap().unwrap();
+    let quote = schema
+        .branch(
+            "blockquote",
+            Fragment::from_children(vec![para(&schema, "q"), embed(&schema, &[("data-k", "1")])]),
+        )
+        .unwrap();
+    let (mut a, mut b) = two_peers(&schema, doc(&schema, vec![para(&schema, "ab"), quote]));
     // blockquote opens at 4, its paragraph spans 5..8, the embed starts at 8.
+    a.local(&[8], |tr| {
+        tr.step(Box::new(SetNodeAttrStep::new(
+            8,
+            "data-k",
+            AttrValue::from("2"),
+        )))
+        .unwrap();
+    });
+    let steps = b.receive(&a);
     assert_eq!(
-        attr_steps(tr.steps()),
+        attr_steps(&steps),
         Some(vec![(8, "data-k".into(), Some("2".into()))])
     );
-    assert_eq!(st.apply(tr).doc, target);
+}
+
+/// Two embeds a peer swapped are not two embeds whose attributes changed: each
+/// stands where the other stood, and a node view keyed to one must not be
+/// handed the other. The sender writes the moved atom as a new CRDT block
+/// (`record_local_keeping` was told it is not the same atom), so the receiver
+/// sees another block and the change arrives as a replace.
+#[test]
+fn a_peer_swapping_two_embeds_is_a_replace_not_attr_steps() {
+    let schema = Rc::new(Schema::starter_kit());
+    let d = doc(
+        &schema,
+        vec![
+            para(&schema, "ab"),
+            embed(&schema, &[("data-k", "1")]),
+            embed(&schema, &[("data-k", "2")]),
+            para(&schema, "cd"),
+        ],
+    );
+    let (mut a, mut b) = two_peers(&schema, d);
+    // Move the first embed after the second: delete it and insert a copy.
+    a.local(&[], |tr| {
+        let first = tr.doc().child(1).clone();
+        tr.delete(4, 5).unwrap();
+        tr.replace(5, 5, Slice::new(Fragment::from_node(first), 0, 0))
+            .unwrap();
+    });
+    assert_eq!(a.state.doc.child(1).attrs().get_str("data-k"), Some("2"));
+    let steps = b.receive(&a);
+    assert!(attr_steps(&steps).is_none(), "{steps:?}");
 }
 
 /// A change that is more than attributes is still the block replace.
 #[test]
 fn a_text_change_beside_the_attr_change_is_still_a_replace() {
     let schema = Rc::new(Schema::starter_kit());
-    let old = doc(
+    let d = doc(
         &schema,
         vec![para(&schema, "ab"), embed(&schema, &[("data-k", "1")])],
     );
-    let target = doc(
-        &schema,
-        vec![para(&schema, "abc"), embed(&schema, &[("data-k", "2")])],
-    );
-    let st = state(&schema, old, Selection::cursor(Pos(2)));
-    let tr = build_remote_transaction(&st, &target).unwrap().unwrap();
-    assert!(attr_steps(tr.steps()).is_none(), "{:?}", tr.steps());
-    assert_eq!(st.apply(tr).doc, target);
+    let (mut a, mut b) = two_peers(&schema, d);
+    let c = schema.text("c").unwrap();
+    a.local(&[5], |tr| {
+        tr.replace(3, 3, Slice::new(Fragment::from_node(c), 0, 0))
+            .unwrap();
+        tr.step(Box::new(SetNodeAttrStep::new(
+            5,
+            "data-k",
+            AttrValue::from("2"),
+        )))
+        .unwrap();
+    });
+    let steps = b.receive(&a);
+    assert!(attr_steps(&steps).is_none(), "{steps:?}");
 }
 
 /// A selection captured elsewhere stands through an attr-only change.
@@ -171,7 +277,7 @@ fn an_anchor_survives_an_attr_only_change() {
         &schema,
         vec![para(&schema, "ab"), embed(&schema, &[("data-k", "2")])],
     );
-    let st = state(&schema, old, Selection::cursor(Pos(2)));
+    let st = EditorState::create(schema.clone(), old, default_plugins());
     let carry = RemoteCarry::new(&st, &target).expect("a change");
     let node = Selection::Node(NodeSelection {
         anchor: Pos(4),
