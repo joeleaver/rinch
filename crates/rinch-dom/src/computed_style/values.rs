@@ -1199,21 +1199,19 @@ impl AspectRatioValue {
         self.used_ratio(natural).map(|r| r.value)
     }
 
-    /// [`Self::used`], saying where the ratio came from: a natural ratio
-    /// relates content-box sizes, a declared one sizes of the `box-sizing`
-    /// box (css-sizing-4 §2).
+    /// [`Self::used`], saying which box it relates: a `<ratio>` without
+    /// `auto` the `box-sizing` box, a natural ratio and `auto <ratio>`'s the
+    /// content box (css-sizing-4 §2; Chrome 155).
     pub fn used_ratio(&self, natural: Option<f32>) -> Option<UsedRatio> {
-        let declared = |value| UsedRatio {
-            value,
-            declared: true,
-        };
         match (self.auto, self.ratio, natural) {
-            (false, Some(r), _) => Some(declared(r)),
-            (_, _, Some(value)) => Some(UsedRatio {
+            (false, Some(value), _) => Some(UsedRatio {
                 value,
-                declared: false,
+                box_sizing_box: true,
             }),
-            (_, r, None) => r.map(declared),
+            (_, r, n) => n.or(r).map(|value| UsedRatio {
+                value,
+                box_sizing_box: false,
+            }),
         }
     }
 }
@@ -1224,9 +1222,9 @@ impl AspectRatioValue {
 pub struct UsedRatio {
     /// Width / height.
     pub value: f32,
-    /// Declared by `aspect-ratio` rather than the element's natural ratio:
-    /// it relates the sizes of the `box-sizing` box, not of the content box.
-    pub declared: bool,
+    /// A `<ratio>` declared without `auto`, which relates the sizes of the
+    /// `box-sizing` box; otherwise the content box's.
+    pub box_sizing_box: bool,
 }
 
 /// CSS `user-select` property values.

@@ -4192,18 +4192,34 @@ either attribute on one of the three rebuilds the block
 (`note_attribute_change`); any other attribute on them, and `width`/`height`
 on any other element, still cascades nothing. On an `<img>` and a `<video>`
 the pair also maps to `aspect-ratio: auto w / h` when both are lengths above
-zero (`replaced::attribute_ratio`): rinch has no `aspect-ratio` property
-(#1286), so the ratio goes from the attributes to the measure context
-(`NodeContext::Image::hint_ratio`, `NodeContext::Replaced::ratio`, kept by
-`replaced::sync_replaced_measure` on each cascade), where it is the ratio of
-an image with no natural size (not loaded, or failed) —
+zero (`replaced::attribute_ratio`), written into the same hint block, so an
+author `aspect-ratio` replaces it (#1286: `aspect-ratio: auto; width: 200px;
+height: auto` on an unloaded hinted image is 200x0, as in Chrome). It is the
+ratio of an image with no natural size (not loaded, or failed) —
 `<img width=100 height=50 style="width: 200px; height: auto">` is 200x100
 before the image arrives — and a loaded image's own ratio replaces it. A
 `<canvas>`'s two attributes stay its bitmap size, read as integers (#1173).
-Not Chrome's: the mapped ratio cannot be switched off — an author
-`aspect-ratio` is not read (#1286), so `aspect-ratio: auto; width: 200px;
-height: auto` on an unloaded hinted image is 200x100 where Chrome gives
-200x0; an unloaded or failed image with a non-empty `alt` reserves its
+**CSS `aspect-ratio`** (#1286) is `ComputedStyle::aspect_ratio`
+(`AspectRatioValue { auto, ratio }`, a degenerate ratio is `auto`): a
+non-replaced box hands it to Taffy's `Style::aspect_ratio` (block, flex,
+grid, an atomic inline's root compute, absolute boxes); an `<img>`,
+`<canvas>`, `<video>` and `<iframe>` do not (`replaced::measures_aspect_ratio`,
+cleared in `taffy_style_from_computed`) — their measure context carries the
+computed value (`NodeContext::Image::aspect`, `NodeContext::Replaced::aspect`,
+kept by `replaced::sync_replaced_measure` on each cascade, which owes a layout
+when it moves) and `replaced::measure` takes `AspectRatioValue::used_ratio`:
+a `<ratio>` without `auto` replaces the natural ratio, `auto <ratio>` is used
+only when there is none, and a `<ratio>` without `auto` relates the
+`box-sizing` box's sizes, any other the content box's. `aspect-ratio` does not transition. Not Chrome's (pinned in
+`tests/aspect_ratio_1286_tests.rs`, `known_differences_from_chrome`): Taffy
+transfers the other axis's `min-*`/`max-*` onto a definite size
+(`width: 100px; aspect-ratio: 2; max-height: 30px` is 60x30, Chrome 100x30 —
+#1561), and a box with a ratio has no content-based automatic minimum size,
+so text taller than the ratio overflows a visible box and a stretched flex
+item shrinks (#1562); and Taffy applies a non-replaced box's `auto <ratio>`
+to its border box too, where Chrome uses the content box (visible only with
+padding or a border, every rinch box being `border-box` — #1278). Also not
+Chrome's: an unloaded or failed image with a non-empty `alt` reserves its
 attributes' 100x50 where Chrome lays out the alt text (48x18, both attributes
 ignored), and a failed one with one attribute and no `alt` is 100x0 where
 Chrome draws its 16x16 broken-image box; an out-of-flow image with an `auto`

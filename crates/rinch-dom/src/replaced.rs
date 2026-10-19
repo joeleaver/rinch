@@ -48,13 +48,20 @@
 //! ([`attribute_ratio`]) when both are lengths above zero: the ratio of an
 //! image with no natural size (not loaded, or failed) and of a video, so
 //! `<img width=100 height=50 style="width: 200px; height: auto">` is 200x100
-//! before its image arrives. A loaded image's own ratio replaces it. rinch
-//! has no `aspect-ratio` property; the ratio goes from the attributes to the
-//! measure context, and an author `aspect-ratio` declaration still does
-//! nothing (#1286) — so it cannot switch the mapped ratio off either, where
-//! Chrome 153 gives `aspect-ratio: auto; width: 200px; height: auto` on an
-//! unloaded hinted image 200x0. The hints sit below every author rule and
-//! above the UA sheet's normal rules. An unloaded or failed image with `alt`
+//! before its image arrives. A loaded image's own ratio replaces it. The
+//! ratio is a hint like the sizes (#1286), so an author `aspect-ratio`
+//! replaces it: `aspect-ratio: auto; width: 200px; height: auto` on an
+//! unloaded hinted image is 200x0, as in Chrome. The hints sit below every
+//! author rule and above the UA sheet's normal rules.
+//!
+//! **`aspect-ratio`** (#1286) reaches the four elements' measure, not
+//! Taffy ([`measures_aspect_ratio`]): the measure context carries the
+//! computed value and [`measure`] weighs it against the natural ratio
+//! (`AspectRatioValue::used_ratio`) — a `<ratio>` without `auto` replaces
+//! it, `auto <ratio>` is used only when there is none (a video, an iframe,
+//! an image not loaded). A `<ratio>` without `auto` relates the
+//! `box-sizing` box's sizes; a natural ratio and `auto <ratio>`'s (the
+//! attributes' hint included) the content box's. An unloaded or failed image with `alt`
 //! text still reserves its attributes' box (Chrome lays out the alt text).
 //!
 //! [`is_unstretched_replaced`] also covers a line-sized `<input>` /
@@ -242,8 +249,9 @@ pub fn replaced_context(node: &Node) -> Option<NodeContext> {
 /// says, and answer whether it had to change (the caller then owes a layout:
 /// `set_node_context` has already marked the Taffy node dirty). Called when
 /// the element is created and by every cascade of it, which a `width` or
-/// `height` write asks for. For an `<img>` it keeps the context's
-/// `hint_ratio` current instead.
+/// `height` write asks for, and whatever moves the element's computed
+/// `aspect-ratio` (#1286). For an `<img>` it keeps the context's `aspect`
+/// current instead.
 pub(crate) fn sync_replaced_measure(tree: &mut NodeTree, node_id: usize) -> bool {
     let Some(node) = tree.nodes.get(node_id) else {
         return false;
@@ -295,8 +303,8 @@ pub(crate) fn sync_replaced_measure(tree: &mut NodeTree, node_id: usize) -> bool
 /// of a replaced element with natural size `natural` and aspect ratio `ratio`
 /// (width / height, [`AspectRatioValue::used_ratio`]: the natural one unless
 /// `aspect-ratio` declares one without `auto`, #1286; an unloaded image with a
-/// mapped or declared ratio has one and a `(0, 0)` natural size; a declared
-/// ratio relates the `box-sizing` box's sizes, a natural one the content
+/// mapped or declared ratio has one and a `(0, 0)` natural size; a `<ratio>`
+/// without `auto` relates the `box-sizing` box's sizes, any other the content
 /// box's), shared by the root compute and the atomic-inline
 /// sizer. Taffy adds the padding and border, and keeps any dimension it
 /// already knows.
@@ -361,11 +369,15 @@ pub(crate) fn measure(
     let clamp_h = |v: f32| clamp(v, min.height, max.height);
 
     let (nw, nh) = natural;
-    let (width, height) = if let Some(UsedRatio { value: r, declared }) = ratio {
-        // A natural ratio relates content-box sizes; a declared one, sizes
-        // of the `box-sizing` box (css-sizing-4 §2), which with
-        // `border-box` is the content box grown by `pb`.
-        let (ox, oy) = if declared && border_box {
+    let (width, height) = if let Some(UsedRatio {
+        value: r,
+        box_sizing_box,
+    }) = ratio
+    {
+        // A `<ratio>` without `auto` relates sizes of the `box-sizing` box
+        // (css-sizing-4 §2), which with `border-box` is the content box grown
+        // by `pb`; a natural ratio, or `auto <ratio>`'s, the content box's.
+        let (ox, oy) = if box_sizing_box && border_box {
             (pb.width, pb.height)
         } else {
             (0.0, 0.0)
