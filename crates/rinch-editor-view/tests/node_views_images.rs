@@ -268,19 +268,31 @@ fn a_linked_claimed_image_keeps_its_link_wrapper() {
     assert_eq!(tag(&p, p.doc.borrow().parent_node(img).unwrap()), "a");
 }
 
-/// Decision (d): a claimed image moved elsewhere (cut and pasted, or replaced
-/// by an equal one) is another mount.
+/// Decision (d), as for an `embed`: the very same image node moved within one
+/// change keeps its view (it is the same node), and an equal copy put in its
+/// place — a cut and paste, a replace — is another node, and another mount.
 #[test]
-fn a_moved_claimed_image_is_remounted() {
+fn a_claimed_image_replaced_by_an_equal_copy_is_remounted() {
     let p = page(DOC);
     let seen = register(&p);
     seen.state.borrow()[0].set(9);
     let image = p.handle.doc().node_at(BADGED).unwrap().clone();
+    // The same node, moved after "ef" in one transaction.
     assert!(p.handle.update(|st| {
         let mut tr = st.tr();
         tr.delete(BADGED, BADGED + 1).ok()?;
-        // After "ef" (now 6..8 → its end is 8).
         tr.replace(8, 8, Slice::new(Fragment::from_node(image.clone()), 0, 0))
+            .ok()?;
+        Some(tr)
+    }));
+    assert_eq!(seen.renders.get(), 1, "the same node keeps its view");
+    assert_eq!(seen.ctx.borrow()[0].pos(), Some(Pos(8)));
+    // An equal copy in its place.
+    let copy = image.copy_with_content(image.content().clone());
+    assert!(!copy.same_ref(&image) && copy == image);
+    assert!(p.handle.update(|st| {
+        let mut tr = st.tr();
+        tr.replace(8, 9, Slice::new(Fragment::from_node(copy.clone()), 0, 0))
             .ok()?;
         Some(tr)
     }));
@@ -288,6 +300,7 @@ fn a_moved_claimed_image_is_remounted() {
     assert_eq!(seen.cleanups.get(), 1);
     assert_eq!(seen.state.borrow()[1].get(), 0, "fresh state");
     assert_eq!(seen.ctx.borrow()[1].pos(), Some(Pos(8)));
+    assert_eq!(tag(&p, image_hosts(&p)[1]), "span");
 }
 
 /// The node selection outlines the span, and the view's `selected` memo follows.

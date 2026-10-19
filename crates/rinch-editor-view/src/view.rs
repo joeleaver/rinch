@@ -43,6 +43,14 @@ fn create_text(doc: &DocRef, text: &str) -> Option<NodeHandle> {
 /// number and size), so one can never overwrite or take away a name rinch
 /// reserves (`data-pm-type`, `data-rid`, …).
 fn apply_element_attrs(dom: &NodeHandle, node: &Node, old: Option<&Node>) {
+    apply_marker_attrs(dom, node, old);
+    apply_type_attrs(dom, node);
+}
+
+/// The attributes every host of `node` carries, its own element or the `<span>`
+/// a node view of an inline leaf is mounted in ([`apply_view_host_attrs`]): the
+/// `data-pm-type` marker and the app's `data-*` attributes the node keeps.
+fn apply_marker_attrs(dom: &NodeHandle, node: &Node, old: Option<&Node>) {
     dom.set_attribute("data-pm-type", node.type_name());
     let kept: Vec<(&str, &str)> = if node.node_type().spec().data_attrs {
         rinch_editor_core::app_data_attrs(node.attrs()).collect()
@@ -59,6 +67,20 @@ fn apply_element_attrs(dom: &NodeHandle, node: &Node, old: Option<&Node>) {
     for (name, value) in kept {
         dom.set_attribute(name, value);
     }
+}
+
+/// The `<span>` a node view of an inline leaf (a claimed `image`) is mounted in:
+/// the marker and the app's data attributes, none of the picture's own (`src`,
+/// `alt`, `width` belong to an `<img>`), and `display: inline-block`, so the
+/// span is one atomic inline on its line, sized by the app's component.
+fn apply_view_host_attrs(dom: &NodeHandle, node: &Node, old: Option<&Node>) {
+    apply_marker_attrs(dom, node, old);
+    dom.set_style("display", "inline-block");
+}
+
+/// The attributes `node`'s type writes on its own element (an `<img>`'s source, a
+/// list's `start`, a table's grid, …).
+fn apply_type_attrs(dom: &NodeHandle, node: &Node) {
     match node.type_name() {
         "image" => {
             // The source the picture is loaded from: the node's `src`, unless
@@ -738,7 +760,11 @@ impl ViewDesc {
             {
                 return false;
             }
-            apply_element_attrs(&self.dom, new, Some(&self.node));
+            if slot.has_view_host() {
+                apply_view_host_attrs(&self.dom, new, Some(&self.node));
+            } else {
+                apply_element_attrs(&self.dom, new, Some(&self.node));
+            }
             slot.set_node(new.clone());
             cx.work.push(Work::Sync(slot.clone()));
             self.node = new.clone();
@@ -1505,6 +1531,52 @@ impl RinchDomEditorView {
         walk(&self.root, slot, 0)
     }
 
+    /// Swap the host element of the inline leaf `slot` is for: for an inline-block
+    /// `<span>` a node view is mounted in (`view_host`), or back for the node's own
+    /// element (an `<img>`). The descriptor, any mark wrapper around it and the
+    /// slot all name the new element; the old one is discarded. `false` when the
+    /// slot is not in this view or the document is gone.
+    pub(crate) fn swap_inline_host(&mut self, slot: &Rc<Slot>, view_host: bool) -> bool {
+        fn find<'a>(desc: &'a mut ViewDesc, slot: &Rc<Slot>) -> Option<&'a mut ViewDesc> {
+            if desc.slot.as_ref().is_some_and(|s| Rc::ptr_eq(s, slot)) {
+                return Some(desc);
+            }
+            if !desc.has_view {
+                return None;
+            }
+            desc.children.iter_mut().find_map(|c| find(c, slot))
+        }
+        let doc = self.doc.clone();
+        let Some(desc) = find(&mut self.root, slot) else {
+            return false;
+        };
+        let tag = if view_host {
+            "span".to_string()
+        } else {
+            node_dom_tag(&desc.node)
+        };
+        let Some(el) = create_element(&doc, &tag) else {
+            return false;
+        };
+        if view_host {
+            apply_view_host_attrs(&el, &desc.node, None);
+        } else {
+            apply_element_attrs(&el, &desc.node, None);
+        }
+        let old = desc.dom.clone();
+        let unmarked = desc.outer.node_id() == old.node_id();
+        old.replace_with(&el);
+        if unmarked {
+            desc.outer = el.clone();
+        }
+        desc.dom = el.clone();
+        old.discard();
+        slot.set_host(el, view_host);
+        // The box the caret and the node outline are drawn from moved.
+        self.view_boxes.clear();
+        true
+    }
+
     /// The slot of the node starting at `pos`, if it has one.
     pub(crate) fn slot_at(&self, doc: &Node, pos: Pos) -> Option<Rc<Slot>> {
         let r = doc.resolve(pos).ok()?;
@@ -1519,7 +1591,7 @@ impl RinchDomEditorView {
     pub(crate) fn slot_by_host(&self, host_id: usize) -> Option<Rc<Slot>> {
         self.slots
             .iter()
-            .find(|s| s.host.node_id().0 == host_id)
+            .find(|s| s.host().node_id().0 == host_id)
             .cloned()
     }
 
@@ -1572,7 +1644,7 @@ impl RinchDomEditorView {
                 .iter()
                 .filter(|s| s.is_mounted())
                 .filter_map(|s| {
-                    let id = s.host.node_id().0;
+                    let id = s.host().node_id().0;
                     let (x, y, w, h) = d.query_node_layout(id as u64)?;
                     Some((
                         id,

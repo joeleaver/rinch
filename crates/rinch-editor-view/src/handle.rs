@@ -4125,6 +4125,25 @@ impl EditorHandle {
         })
     }
 
+    /// Swap the host element of the inline leaf `slot` is for (see
+    /// [`RinchDomEditorView::swap_inline_host`]). Called with no borrow held, from
+    /// [`node_views::run`]; `false` when the editor is busy or the slot is gone.
+    pub(crate) fn swap_node_view_host(&self, slot: &Rc<node_views::Slot>, view_host: bool) -> bool {
+        let Ok(mut core) = self.try_core_mut() else {
+            return false;
+        };
+        let Some(view) = core.view.as_mut() else {
+            return false;
+        };
+        let swapped = view.swap_inline_host(slot, view_host);
+        if swapped {
+            // The caret beside it and the node outline are drawn from its box.
+            crate::registry::owe_overlay_pass(view.doc_key());
+            crate::registry::request_overlay_refresh();
+        }
+        swapped
+    }
+
     /// The position just before the node `slot` is for.
     pub(crate) fn node_view_pos(&self, slot: &Rc<node_views::Slot>) -> Option<usize> {
         self.core().view.as_ref()?.slot_pos(slot)
