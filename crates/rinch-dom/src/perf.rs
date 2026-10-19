@@ -208,6 +208,10 @@ define_counters! {
     /// line — logarithmic, not linear, in the length of an NBSP-glued chain,
     /// which a search over the line's units keeps it.
     IfcUnglueRebreaks = "ifc_unglue_rebreaks",
+    /// Builds of a paragraph after its first, made to put its preserved
+    /// tabs at their tab stops (#1122): shaped and broken again with each
+    /// tab widened. One for tabs on lines that do not wrap; at most three.
+    IfcTabRebuilds = "ifc_tab_rebuilds",
 
     // ── Layout ─────────────────────────────────────────────────────────
     /// `resolve_layout` calls.

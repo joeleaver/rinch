@@ -2248,8 +2248,9 @@ struct FlatWidths {
     /// ([`DomDocument::line_break_flat_bytes`]): `1` on rinch-dom, whose inline
     /// layout pushes `"\n"` for it, `0` in the browser.
     line_break: usize,
-    /// The bytes a tab occupies ([`DomDocument::tab_flat_bytes`]): `4` on
-    /// rinch-dom, which lays a tab out as four spaces, `1` in the browser.
+    /// The bytes a tab occupies ([`DomDocument::tab_flat_bytes`]): `1` on
+    /// rinch-dom (a space widened to its tab stop, #1122) and in the browser.
+    /// rinch-dom answered `4` while it laid a tab out as four spaces (#1109).
     tab: usize,
     /// The chars the host lays out as something of another length, and its
     /// flat bytes for each ([`DomDocument::substituted_char_flat_bytes`]):
@@ -2300,12 +2301,12 @@ impl FlatWidths {
 /// — the inverse of [`textblock_flat_byte`], used to turn a pointer hit into a
 /// cursor position. Leaves count as one char (matching `textblock_flat_byte`);
 /// a byte inside a leaf's own flat bytes (a `<br>`'s `"\n"`) is the position
-/// before it. A byte inside a tab's flat bytes (rinch-dom's four spaces) picks a
-/// side of the tab (#1109): the first of its four bytes is before it, the rest
-/// after. A pointer hit answers the nearest byte boundary, so a press lands
-/// before the tab on its first 3/8 and after it from 3/8 on, where a browser
-/// splits at the middle. A byte cannot say more, so some band of an eighth of
-/// a tab is on the wrong side whichever way the byte at the middle is read.
+/// before it. A byte inside a tab's flat bytes (a host whose tab is several,
+/// as rinch-dom's four spaces were until #1122) picks a side of the tab
+/// (#1109): the first of them is before it, the rest after. With four, a press
+/// landed before the tab on its first 3/8 and after it from 3/8 on, where a
+/// browser splits at the middle; rinch-dom's tab is one byte now, one cluster
+/// that a pointer hit splits at its middle.
 /// A byte inside a substituted char's flat bytes (rinch-dom's NBSP + ZWSP for
 /// U+2028, #1181) is after it: the first of them is the visible half.
 fn ifc_byte_to_char(block: &Node, ifc_byte: usize, flat: FlatWidths) -> usize {
@@ -4017,7 +4018,9 @@ mod tests {
         assert_eq!(text(&h, block).as_deref(), Some("helo"));
     }
 
-    /// rinch-dom's flat offsets: a `<br>` is `"\n"`, a tab four spaces.
+    /// rinch-dom's flat offsets as they were until #1122: a `<br>` is
+    /// `"\n"`, a tab four spaces. Kept as the case of a host whose tab is
+    /// several bytes.
     const DESKTOP: FlatWidths = FlatWidths {
         line_break: 1,
         tab: 4,

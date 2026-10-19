@@ -944,8 +944,9 @@ pub trait DomDocument {
     /// [`Self::query_selection_rects`], and the byte a pointer hit resolves to).
     ///
     /// A flat byte offset counts the text of the text nodes under the element, in
-    /// document order, as the backend lays that text out — rinch-dom expands a tab
-    /// to four spaces ([`Self::tab_flat_bytes`]). A
+    /// document order, as the backend lays that text out — a host may lay a
+    /// character out as something of another length ([`Self::tab_flat_bytes`],
+    /// [`Self::substituted_char_flat_bytes`]). A
     /// `<br>` has no text node, so a backend that counts only
     /// text gives it none — the browser's DOM ranges, and this default — while one
     /// that lays inline content out as a single string may give it the line break
@@ -958,18 +959,17 @@ pub trait DomDocument {
 
     /// How many bytes a tab (`'\t'`) in a text node occupies in the same flat
     /// byte offsets as [`Self::line_break_flat_bytes`]. Its UTF-8 length, `1`, by
-    /// default — the browser's DOM ranges count the character. rinch-dom's inline
-    /// formatting context lays a tab out as four spaces, whatever the tab's
-    /// column, and answers `4`, so the rich-text editor's caret map counts each
-    /// tab as that many bytes (#1109).
+    /// default — the browser's DOM ranges count the character, and rinch-dom
+    /// lays a preserved tab out as one space widened to its tab stop (#1122).
+    /// A host that laid a tab out as several characters would answer their
+    /// bytes, so the rich-text editor's caret map counts each tab as that many
+    /// (#1109: rinch-dom laid a tab out as four spaces until #1122).
     ///
     /// The answer is per host, not per node, and it holds only where
-    /// `white-space` preserves the tab: measured on rinch-dom, a tab is four
-    /// bytes under `pre`, `pre-wrap` and `pre-line`, and under `normal`,
-    /// `nowrap` and `break-spaces` it collapses like a space — one byte, as
-    /// `a b` lays out. The editor's stylesheet sets `pre-wrap` on its container
-    /// and its code blocks, which is why the editor may use it; a caller mapping
-    /// text under collapsing `white-space` would have to count differently.
+    /// `white-space` preserves the tab (`pre`, `pre-wrap`, `break-spaces`);
+    /// under `normal`, `nowrap` and `pre-line` a tab collapses like a space.
+    /// The editor's stylesheet sets `pre-wrap` on its container and its code
+    /// blocks, which is why the editor may use it.
     fn tab_flat_bytes(&self) -> usize {
         1
     }

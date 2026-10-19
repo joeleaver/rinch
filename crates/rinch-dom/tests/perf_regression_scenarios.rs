@@ -35,6 +35,7 @@
 //! | `ifc_unglue_rebreaks` | `ifc.rs` `NodeContext::Text` and `layout_engine.rs`'s leaf measure (`break_leaf_lines`) | [`an_nbsp_glued_chain_in_a_flex_items_own_text_is_rebroken_the_same_way`] |
 //! | `ifc_phantom_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure, together | [`an_overflowing_last_chip_is_rebroken_without_parleys_empty_line`] — 1 from each |
 //! | `ifc_phantom_rebreaks` | `layout_engine.rs`'s measure alone (a min-content measure) | [`a_flex_items_paragraph_ending_in_a_chip_pays_one_rebreak_per_min_content_measure`] |
+//! | `ifc_tab_rebuilds` | `ifc.rs` `build_inline_layout` (the paint layout and the root compute's measure) | [`a_pre_paragraph_of_tabs_is_set_in_one_rebuild`] (1 per layout), [`a_wrapping_paragraph_of_tabs_is_set_in_two_rebuilds`] (2 per layout) |
 //! | `inline_block_computes` | `ifc.rs` `resolve_percentage_inline_blocks`, a `fit-content`/`stretch` atomic inline (#691) | [`fit_content_inline_blocks_are_not_remeasured_for_an_unrelated_change`] |
 //! | `abs_containing_block_passes` | `layout_engine.rs` `resolve_layout`'s fixpoint (#386) | [`an_absolute_box_under_a_non_parent_containing_block_pays_one_compute_per_resize`] (1 per resize of the block), [`a_position_only_absolute_box_under_a_grandparent_pays_no_compute`] (0) |
 //! | `inline_font_family_resolves` | `ifc.rs` `inline_style_props` (review of #1326's perf finding) — fires only when a span's own `font-family` differs from the enclosing style's | [`a_spans_unchanged_font_family_resolves_nothing`] (0), [`a_spans_changed_font_family_resolves_once_per_rebuild`] (nonzero) |
@@ -1162,6 +1163,89 @@ fn a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass() {
             (IfcSignatureChanges, 1),
             (IfcHangPasses, 2),
             (IfcHangLines, 80),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// A 40-line `pre` paragraph with two tabs on every line (#1122): its tabs are
+/// set at their stops by **one** rebuild per layout however many lines and
+/// tabs it holds — the first build lays every tab out one space wide, and a
+/// line that does not wrap keeps its tabs where the widths found from it put
+/// them. `ifc_tab_rebuilds` is that count: one for the root compute's
+/// measure, one for the paint layout.
+#[test]
+fn a_pre_paragraph_of_tabs_is_set_in_one_rebuild() {
+    let mut doc = doc_with(".p { white-space: pre; }");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    text(&mut doc, p, &vec!["a\tb\tc"; 40].join("\n"));
+    let s = cold_frame(&mut doc);
+    expect(
+        "pre paragraph of tabs",
+        &s,
+        &[
+            (StyleResolves, 2),
+            (ElementsCascaded, 3),
+            (StyleNodesVisited, 7),
+            (FullStyleWalks, 2),
+            (TaffyStyleSyncs, 3),
+            (TaffyStyleChanges, 2),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 2),
+            (IfcSignatureChanges, 1),
+            (IfcTabRebuilds, 2),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// 40 lines of `a\tbbb cc\td` in a 60px `pre-wrap` paragraph: the first
+/// build (each tab one space wide) wraps each line before `cc`; the second,
+/// its first tab at its stop, wraps it before `bbb` instead, which moves the
+/// second tab; the third sets that tab where the new break leaves it.
+/// `ifc_tab_rebuilds` is two per layout, not two per line.
+#[test]
+fn a_wrapping_paragraph_of_tabs_is_set_in_two_rebuilds() {
+    let mut doc = doc_with(".p { width: 60px; white-space: pre-wrap; }");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    text(&mut doc, p, &vec!["a\tbbb cc\td"; 40].join("\n"));
+    let s = cold_frame(&mut doc);
+    expect(
+        "pre-wrap paragraph of tabs",
+        &s,
+        &[
+            (StyleResolves, 2),
+            (ElementsCascaded, 3),
+            (StyleNodesVisited, 7),
+            (FullStyleWalks, 2),
+            (TaffyStyleSyncs, 3),
+            (TaffyStyleChanges, 2),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 2),
+            (IfcSignatureChanges, 1),
+            (IfcTabRebuilds, 4),
             (LayoutResolves, 2),
             (LayoutSkippedPaintOnly, 1),
             (IfcSetupPasses, 1),
