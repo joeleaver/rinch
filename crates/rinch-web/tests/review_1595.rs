@@ -1,5 +1,8 @@
-//! Review of #1595 in Chrome: claim/unclaim churn leaks no registry entry; End
-//! and a press past the end of a line whose last atom is a claimed image.
+//! Review of #1595 in Chrome: claim/unclaim churn — by an attr change, and by a
+//! spec registered and dropped after mount — leaks no registry entry and does not
+//! panic (the host swap requested the overlay refresh with the core borrowed, and
+//! the web's refresher runs at once); End and a press past the end of a line whose
+//! last atom is a claimed image.
 #![cfg(target_arch = "wasm32")]
 
 use rinch_core::dom::RenderScope;
@@ -111,14 +114,9 @@ fn toggle(handle: &EditorHandle, on: bool) {
 
 #[wasm_bindgen_test]
 fn claim_unclaim_churn_grows_no_registry() {
-    let err = js_sys::Reflect::get(&js_sys::global(), &"Error".into()).unwrap();
-    js_sys::Reflect::set(&err, &"stackTraceLimit".into(), &200.into()).unwrap();
-    wasm_bindgen_test::console_log!("step mount");
     let handle = mount(r#"<p>ab<img src="x.png" data-badge="n">cd</p>"#, true);
-    wasm_bindgen_test::console_log!("step first unclaim");
     for _ in 0..3 {
         toggle(&handle, false);
-        wasm_bindgen_test::console_log!("step reclaim");
         toggle(&handle, true);
     }
     let base = __node_registry_len() as isize;
@@ -178,4 +176,48 @@ fn a_spec_registered_after_mount_claims_without_a_panic() {
         .query_selector(&format!("[{HOST_MARKER}] img[data-pm-type='image']"))
         .unwrap()
         .is_some());
+}
+
+/// A claiming spec registered and dropped after mount, 50 times: each swap of the
+/// `<img>` for the view's `<span>` and back runs the web's overlay refresher at
+/// once, which re-borrowed the core the swap still held ("RefCell already
+/// borrowed", which aborts the app), and no cycle leaves a node in the registry.
+#[wasm_bindgen_test]
+fn registering_and_dropping_a_claiming_spec_after_mount_grows_no_registry() {
+    let handle = mount(r#"<p>ab<img src="x.png" data-badge="n">cd</p>"#, false);
+    let claimed = || {
+        document()
+            .query_selector(&format!("[{HOST_MARKER}] span[data-pm-type='image'][data-pm-node-view]"))
+            .unwrap()
+            .is_some()
+    };
+    let img = || {
+        document()
+            .query_selector(&format!("[{HOST_MARKER}] img[data-pm-type='image']"))
+            .unwrap()
+            .is_some()
+    };
+    let cycle = || {
+        let reg = handle.register_node_view(
+            NodeViewSpec::new("image", |s: &mut RenderScope, _ctx| {
+                let b = s.create_element("b");
+                let t = s.create_text("chip");
+                b.append_child(&t);
+                b
+            })
+            .matches(|a| a.get_str("data-badge").is_some()),
+        );
+        assert!(claimed() && !img(), "the spec claims the shown image");
+        drop(reg);
+        assert!(img() && !claimed(), "dropping it gives the <img> back");
+    };
+    for _ in 0..3 {
+        cycle();
+    }
+    let base = __node_registry_len() as isize;
+    for _ in 0..50 {
+        cycle();
+    }
+    let g = __node_registry_len() as isize - base;
+    assert_eq!(g, 0, "registry grew by {g} over 50 register/drop cycles");
 }
