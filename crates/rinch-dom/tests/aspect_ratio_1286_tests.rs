@@ -218,8 +218,25 @@ fn a_video_with_no_natural_ratio_takes_the_declared_one() {
         "box-sizing: border-box; width: 100px; aspect-ratio: 2",
         (100.0, 50.0),
     );
-    // A natural ratio is the content box's, whatever `box-sizing` says: a
-    // 300x150 canvas with a 10px border is 120 + 20 wide, 60 + 20 tall.
+    // `auto <ratio>`'s is the content box's, whatever `box-sizing` says.
+    check_in(
+        "",
+        "iframe",
+        &[],
+        "box-sizing: border-box; width: 100px; aspect-ratio: auto 2",
+        (100.0, 52.0),
+    );
+    const PADDED: &str = "display: block; box-sizing: border-box; width: 100px; padding: 5px";
+    check_in(
+        "",
+        "video",
+        &[],
+        &format!("{PADDED}; aspect-ratio: auto 2"),
+        (100.0, 55.0),
+    );
+    check_in("", "video", &[], &format!("{PADDED}; aspect-ratio: 2"), (100.0, 50.0));
+    // So is a natural ratio: a 300x150 canvas with a 10px border is 120 + 20
+    // wide, 60 + 20 tall.
     check_in(
         "",
         "canvas",
@@ -365,6 +382,17 @@ fn known_differences_from_chrome() {
         // No automatic minimum size from the ratio: a stretched flex item
         // 300 tall is 600 wide in Chrome, and does not shrink.
         ("aspect-ratio: 2", "display: flex", (400.0, 300.0), (600.0, 300.0), 1562),
+        // Taffy applies `auto <ratio>` to a non-replaced box's border box
+        // like a plain `<ratio>`; Chrome uses the content box (120 x
+        // 56.65625). Only visible with padding or a border under
+        // `border-box`, which is every rinch box (#1278).
+        (
+            "width: 120px; padding: 10px 30px 20px 10px; box-sizing: border-box; aspect-ratio: auto 3",
+            "",
+            (120.0, 40.0),
+            (120.0, 57.0),
+            1278,
+        ),
     ];
     for &(style, container, rinch, chrome, issue) in rows {
         let (doc, _, e) = build(container, "div", &[], style, "");
