@@ -379,6 +379,17 @@ fn jump_positions_follow_css_easing_2() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
+/// Known difference, pinned: Stylo's servo build does not parse the `jump-*`
+/// keywords, so the whole `animation` shorthand is dropped and the box keeps
+/// its 10px. Chrome 155 animates it (60px here, as above).
+#[test]
+fn a_jump_keyword_drops_the_declaration() {
+    check(&[(
+        "k1564 1000ms steps(4, jump-none) -300ms forwards paused",
+        10.0,
+    )]);
+}
+
 // ── Transitions ─────────────────────────────────────────────────────────────
 
 /// A box at 40px with `transition`, moved to 100px: the running width

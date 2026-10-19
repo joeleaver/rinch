@@ -463,6 +463,23 @@ close direction carries `transition-delay: 150ms` as a grace period for moving
 the pointer onto the card, and scaling that with the factor would halve the
 grace period for anyone who leaves part way through the fade-in.
 
+**Every easing function eases** (#1564), in transitions and `@keyframes`
+alike, a keyframe's own `animation-timing-function` included:
+`cubic-bezier()` and its keywords, `steps(<n>, start | end)`,
+`step-start`/`step-end` and `linear(<stops>)` with percentage positions
+(`transition::types::TimingFunction`; `steps()` and `linear()` used to run as
+plain `linear`). A step function reads CSS Easing 2's **before flag**, set in
+the before phase going forwards and the after phase going backwards, so
+`steps(4, start)` shows its `from` value through a backwards-filled delay and
+at the end of a `reverse` run. An iteration's start and end are eased too (the
+first interval at distance 0, the last at distance 1), not snapped to the
+keyframe there: `steps(4, start)` begins a step in and `linear(0, 0.5)` ends
+half way. A reversal's shortening reads the stepped output, so reversing
+`steps(4, end)` at 600ms takes half the duration. Not Chrome's: the `jump-*`
+step positions do not parse in Stylo's servo build, so a declaration naming
+one is dropped like any invalid one (an `animation` shorthand with
+`steps(4, jump-none)` starts no animation).
+
 **A `transform` is interpolated as a function list, not matrix entry by entry**
 (#414). A computed transform keeps the list it was composed from
 (`TransformValue::functions`), and `transition::transform::interpolate_lists`
