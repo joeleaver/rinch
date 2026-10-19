@@ -758,9 +758,13 @@ impl CollabSession {
     /// block** before and after, so two embeds a peer swapped are not one —
     /// is one `SetNodeAttrStep` per key, and moves no position; anything else is
     /// the block-level replace [`build_remote_transaction`] describes. Telling the
-    /// two apart reads the old document's block identities before the update is
-    /// applied, which costs a second full read of the CRDT; it is paid only while
-    /// `state`'s document holds a leaf block atom with attributes.
+    /// two apart needs the old document's block identities: the previous
+    /// operation left them in [`atom_cache`]; on a miss they are read before the
+    /// update is applied, a second full read of the CRDT, paid only while
+    /// `state`'s document holds a leaf block atom. While outbound is stalled
+    /// (#220) the model is not the CRDT's read and nothing is read: the blocks a
+    /// refused local edit carried are used, and an atom nothing proves is
+    /// replaced, so a view drawn for it is remounted.
     pub fn integrate_incremental_transaction(
         &mut self,
         state: &EditorState,

@@ -9,7 +9,9 @@
 //! keeps it, per session, keyed by the model document it describes
 //! ([`Node::same_ref`]) and the session's CRDT **generation** (bumped by every
 //! session call that can change the CRDT), so it is used only for exactly the
-//! document and CRDT it was read from.
+//! document and CRDT it was read from. While outbound is stalled (#220) an entry
+//! holds what a refused local edit carried instead, an [`unproven`] id standing
+//! for each atom nothing proves.
 //!
 //! It is a thread-local rather than a session field because a [`Node`] is `!Send`
 //! and a `CollabSession` must stay `Send`. A session used from another thread
