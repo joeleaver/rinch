@@ -486,7 +486,11 @@ fn fuzz_two_peers() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(40);
-    for seed in 0..seeds {
+    let first: u64 = std::env::var("R2_FIRST")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    for seed in first..first + seeds {
         run_seed(seed, 2, 60);
     }
 }
@@ -497,7 +501,11 @@ fn fuzz_three_peers() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(40);
-    for seed in 1000..1000 + seeds {
+    let first: u64 = std::env::var("R2_FIRST")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1000);
+    for seed in first..first + seeds {
         run_seed(seed, 3, 60);
     }
 }
@@ -921,4 +929,134 @@ fn s8_a_kept_node_never_takes_another_nodes_descriptor() {
         Some(tr)
     }));
     check(&p, "after");
+}
+
+// --- the re-base that ends a stall (round 2's fix of N1) -----------------------
+
+/// Tag every live view of `p` with `"{p.name}{mount index}"`.
+fn tag_views(p: &Peer) {
+    for (i, _) in p.views.live() {
+        let tag = format!("{}{i}", p.name);
+        let ctx = p.views.mounts.borrow()[i].ctx.clone();
+        assert!(ctx.set_attrs(|x| *x = x.with("data-tag", AttrValue::from(tag.as_str()))));
+    }
+}
+
+/// B stalls on a task list in `<p>todo</p>` (the last block) and later removes
+/// it, which ends the stall with a re-base on the CRDT's read.
+fn stall(b: &Peer) {
+    let last = b.handle.doc().content_size() - 3;
+    b.handle.set_selection(Selection::cursor(Pos(last)));
+    assert!(b.handle.command("toggleTaskList"));
+    assert!(b.handle.collab_outbound_stall().is_some(), "B is stalled");
+}
+
+fn cure(b: &Peer) {
+    assert!(b.handle.update(|st| {
+        let mut tr = st.tr();
+        let n = st.doc.child_count();
+        let from = st.doc.content_size() - st.doc.child(n - 1).node_size();
+        tr.delete(from, st.doc.content_size()).ok()?;
+        Some(tr)
+    }));
+    assert!(
+        b.handle.collab_outbound_stall().is_none(),
+        "B recovered: {:?}",
+        b.handle.collab_outbound_stall()
+    );
+}
+
+/// A's views live since before B's recovery carry only their own counterparts'
+/// tags: B's view `i` and A's view `i` were mounted for one CRDT block.
+fn assert_counterparts(a: &Peer, before: usize) {
+    for (i, m) in a.views.mounts.borrow().iter().enumerate().take(before) {
+        if m.ctx.pos().is_none() {
+            continue;
+        }
+        if let Some(tag) = m.ctx.attrs.get().get_str("data-tag") {
+            assert_eq!(
+                tag,
+                format!("B{i}"),
+                "A's view {i} was edited by B's view {}",
+                &tag[1..]
+            );
+        }
+    }
+}
+
+/// S9 — B, stalled, pastes a copy of an embed (equal by value, a new node)
+/// before the original, then recovers. The re-base pairs blocks by value, so the
+/// copy would take the original's block: B's view of the copy would then write to
+/// the block A's view of the original is keyed to.
+#[test]
+fn s9_a_copy_pasted_before_its_original_while_stalled() {
+    let e = r#"<div data-pm-type="embed" data-sheet="s1"></div>"#;
+    let ps = peers(&format!("<p>ab</p>{e}<p>cd</p><p>todo</p>"), 2);
+    let (a, b) = (&ps[0], &ps[1]);
+    stall(b);
+    assert!(b.handle.update(|st| {
+        let original = st.doc.child(1).clone();
+        let copy = original.copy_with_content(original.content().clone());
+        let mut tr = st.tr();
+        tr.replace(4, 4, Slice::new(Fragment::from_node(copy), 0, 0))
+            .ok()?;
+        Some(tr)
+    }));
+    assert_eq!(b.views.live().len(), 2);
+    let before = a.views.mounts.borrow().len();
+    cure(b);
+    deliver_all(&ps);
+    tag_views(b);
+    deliver_all(&ps);
+    assert_counterparts(a, before);
+    assert_eq!(shape(&a.handle.doc()), shape(&b.handle.doc()));
+}
+
+/// S10 — B, stalled, moves the first of two equal embeds after the second, then
+/// recovers: each of B's views must still edit the node A's view of the same
+/// embed is mounted for.
+#[test]
+fn s10_equal_embeds_reordered_while_stalled() {
+    let e = r#"<div data-pm-type="embed" data-sheet="s1"></div>"#;
+    let ps = peers(&format!("<p>ab</p>{e}{e}<p>cd</p><p>todo</p>"), 2);
+    let (a, b) = (&ps[0], &ps[1]);
+    stall(b);
+    move_first_embed_after_second(b, 4);
+    cure(b);
+    deliver_all(&ps);
+    tag_views(b);
+    deliver_all(&ps);
+    assert_counterparts(a, 2);
+    assert_eq!(shape(&a.handle.doc()), shape(&b.handle.doc()));
+}
+
+/// S11 — what a stall proves is kept: B, stalled, types beside an embed and its
+/// view sets an attribute; a peer's keystroke arrives; B recovers. A's view of the
+/// embed is never remounted and shows B's attribute.
+#[test]
+fn s11_a_stall_that_moves_no_embed_remounts_none() {
+    let e = r#"<div data-pm-type="embed" data-sheet="s1"></div>"#;
+    let ps = peers(&format!("<p>ab</p>{e}<p>cd</p><p>todo</p>"), 2);
+    let (a, b) = (&ps[0], &ps[1]);
+    stall(b);
+    b.handle.set_selection(Selection::cursor(Pos(2)));
+    assert!(b.handle.insert_text("x"));
+    let ctx = b.views.mounts.borrow()[0].ctx.clone();
+    assert!(ctx.set_attrs(|x| *x = x.with("data-sheet", AttrValue::from("s2"))));
+    a.handle.set_selection(Selection::cursor(Pos(7)));
+    assert!(a.handle.insert_text("y"));
+    deliver_all(&ps);
+    assert_eq!(b.views.renders(), 1, "B: no remount on the peer's keystroke");
+    // A peer's change brings a stalled replica's model back to the shared
+    // document, local edits included (#220); the view's own change again:
+    let ctx = b.views.mounts.borrow()[0].ctx.clone();
+    assert!(ctx.set_attrs(|x| *x = x.with("data-sheet", AttrValue::from("s2"))));
+    cure(b);
+    deliver_all(&ps);
+    assert_eq!(a.views.renders(), 1, "A: no remount");
+    assert_eq!(b.views.renders(), 1, "B: no remount");
+    assert_eq!(
+        a.views.mounts.borrow()[0].ctx.attrs.get().get_str("data-sheet"),
+        Some("s2")
+    );
 }
