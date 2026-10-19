@@ -618,6 +618,9 @@ pub struct RinchApp {
     /// ([`Self::tick_drag_auto_scroll`]); `None` while the pointer of the drag
     /// in flight is in no band, and with no drag.
     pub(crate) drag_auto_scroll_at: Option<Instant>,
+    /// The hit test the element drag in flight last resolved its target with
+    /// ([`Self::track_drag_pointer`]), for the auto-scroll tick to reuse.
+    pub(crate) drag_hit_memo: Option<HitMemo>,
     /// The [`ThemeKey`] of the theme CSS last loaded into the document (for
     /// change detection).
     #[cfg(feature = "theme")]
@@ -912,6 +915,7 @@ impl RinchApp {
             active_dnd: None,
             drag_over_surface: None,
             drag_auto_scroll_at: None,
+            drag_hit_memo: None,
             #[cfg(feature = "theme")]
             last_theme_key: None,
             owned_theme_css: None,

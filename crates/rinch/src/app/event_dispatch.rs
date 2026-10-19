@@ -1944,7 +1944,7 @@ impl RinchApp {
 
                 // A drag resting in an edge band scrolls a frame's worth, and
                 // keeps the clock turning for the next one.
-                if self.tick_drag_auto_scroll(Instant::now(), vp_w, vp_h) {
+                if self.tick_drag_auto_scroll(Instant::now(), vp_w, vp_h, had_running) {
                     actions.push(AppAction::RequestRedraw);
                 }
 
@@ -2211,7 +2211,20 @@ impl RinchApp {
     ///
     /// Answers whether the pointer is in such a band, which is whether the
     /// clock must keep turning.
-    pub(crate) fn tick_drag_auto_scroll(&mut self, now: Instant, vp_w: f32, vp_h: f32) -> bool {
+    ///
+    /// The hit test it needs is the one the drag's last resolve made
+    /// ([`Self::track_drag_pointer`] keeps it in `drag_hit_memo`) whenever the
+    /// hit cache's generation and the pointer are unchanged since and nothing
+    /// was animating (`motion`: a transition or animation tick moves a
+    /// `transform` without moving the generation), so a drag frame whose
+    /// pointer is in no band costs no hit test.
+    pub(crate) fn tick_drag_auto_scroll(
+        &mut self,
+        now: Instant,
+        vp_w: f32,
+        vp_h: f32,
+        motion: bool,
+    ) -> bool {
         let Some((x, y)) = self.active_dnd.as_ref().map(|drag| drag.cursor) else {
             self.drag_auto_scroll_at = None;
             return false;
@@ -2219,6 +2232,10 @@ impl RinchApp {
         let Some(doc) = self.doc.clone() else {
             return false;
         };
+        if !motion && self.hit_memo.get().is_none() {
+            // `shared_hit` checks the generation and the point itself.
+            self.hit_memo.set(self.drag_hit_memo);
+        }
         let pick = {
             let d = doc.borrow();
             self.shared_hit(&d, x, y)
@@ -2283,7 +2300,13 @@ impl RinchApp {
             }
             let nid = rinch_core::dom::NodeId(id);
             let at = d.scroll_top(nid);
-            let max = (d.scroll_height(nid) - d.client_height(nid)).max(0.0);
+            // The end the offset can reach, which is the range's end on the
+            // device pixel grid (#1543): at a fractional scale the last
+            // fraction of a device pixel of a range off the grid is never
+            // reached, and `at < max` held for ever there.
+            let max = d
+                .tree
+                .snap_scroll_offset((d.scroll_height(nid) - d.client_height(nid)).max(0.0));
             if (velocity < 0.0 && at > 0.0) || (velocity > 0.0 && at < max) {
                 return Some((id, velocity));
             }
@@ -2306,6 +2329,8 @@ impl RinchApp {
         };
         // Hit test for drop targets — check both DOM elements and surfaces
         let hit_id = self.move_hit(x, y);
+        // Kept for the frame's auto-scroll tick, which asks the same point.
+        self.drag_hit_memo = self.hit_memo.get();
         let Some(drag) = self.active_dnd.as_mut() else {
             return;
         };
@@ -2466,6 +2491,7 @@ impl RinchApp {
         }
         events::reset_drag_ghost_visibility();
         self.drag_auto_scroll_at = None;
+        self.drag_hit_memo = None;
         self.scene_dirty = true;
     }
 
@@ -3273,6 +3299,7 @@ impl RinchApp {
             over_target: None,
         });
         self.drag_auto_scroll_at = None;
+        self.drag_hit_memo = None;
         // A drag starts with the built-in ghost visible, whatever the last one
         // left behind: a `suppress_drag_ghost` lasts exactly as long as its
         // own drag. Every ending resets it too (`end_active_dnd`); this is the

@@ -403,3 +403,216 @@ fn the_wheel_still_scrolls_the_list() {
     assert_eq!(scroll_top(&f.app, f.list), 50.0);
     assert_eq!(f.scrolls.get(), 1);
 }
+
+// ── Review fixtures (PR #1592 review) ──────────────────────────────────────
+
+fn hit_tests(app: &RinchApp) -> u64 {
+    let d = app.doc.as_ref().unwrap().borrow();
+    d.tree.perf.total().get(rinch_dom::perf::Counter::HitTests)
+}
+
+/// R1: at a fractional device scale the last fraction of a device pixel of a
+/// range off the grid is unreachable (#1543), so `at < max` holds for ever:
+/// the clock must still come to rest at the end.
+#[test]
+fn review_a_list_at_its_snapped_end_lets_the_clock_rest_at_a_fractional_scale() {
+    // height 201: max = 800 - 201 = 599, not a multiple of 0.8.
+    let mut f = fixture_with("height: 201px;", None);
+    f.app.set_device_pixel_ratio(1.25);
+    f.app.resolve_and_repaint(800.0, 600.0);
+    start_drag(&mut f.app);
+    move_to(&mut f.app, (X, LIST_TOP + 201.0 - 2.0));
+    let mut asked = false;
+    for _ in 0..80 {
+        asked = asks_for_a_frame(&frame_after(&mut f.app, 20));
+        if !asked {
+            break;
+        }
+    }
+    let top = scroll_top(&f.app, f.list);
+    assert!(top > 590.0, "it reached the end: {top}");
+    assert!(
+        !asked,
+        "at its end ({top}) nothing can scroll, so no frame should be asked for"
+    );
+}
+
+/// R1b: same, and the page around it must take over.
+#[test]
+fn review_a_list_at_its_snapped_end_hands_over_to_the_page_at_a_fractional_scale() {
+    let mut f = fixture_with("top: 399px; height: 201px;", Some(1200.0));
+    let body = f.app.doc.as_ref().unwrap().borrow().tree.body_id;
+    f.app.set_device_pixel_ratio(1.25);
+    f.app.resolve_and_repaint(800.0, 600.0);
+    set_scroll_top(&mut f.app, f.list, 598.4); // the snapped end
+    f.app.resolve_and_repaint(800.0, 600.0);
+    start_drag(&mut f.app);
+    move_to(&mut f.app, (X, 596.0));
+    for _ in 0..5 {
+        frame_after(&mut f.app, 20);
+    }
+    assert!(
+        scroll_top(&f.app, body) > 0.0,
+        "the page should scroll once the list is at its (snapped) end; list at {}",
+        scroll_top(&f.app, f.list)
+    );
+}
+
+/// R2: a drag under a `lock_scroll` overlay must not scroll the page behind it.
+#[test]
+fn review_a_locked_page_is_not_auto_scrolled() {
+    for locked in [false, true] {
+        let mut f = fixture_with("", Some(1200.0));
+        let body = f.app.doc.as_ref().unwrap().borrow().tree.body_id;
+        if locked {
+            let mut d = f.app.doc.as_ref().unwrap().borrow_mut();
+            rinch_core::dom::DomDocument::set_scroll_locked(
+                &mut *d,
+                true,
+                rinch_core::dom::NodeId(f.list),
+            );
+        }
+        start_drag(&mut f.app);
+        move_to(&mut f.app, (500.0, 596.0)); // over the page, not the list
+        frame(&mut f.app);
+        frame_after(&mut f.app, 20);
+        let top = scroll_top(&f.app, body);
+        if locked {
+            assert_eq!(top, 0.0, "locked page scrolled");
+        } else {
+            assert!(top > 0.0, "positive control: unlocked page scrolls");
+        }
+    }
+}
+
+/// R3: a pointer-capture `Drag` (a slider) near a scroller's edge is not an
+/// element drag and must not auto-scroll.
+#[test]
+fn review_a_pointer_capture_drag_does_not_auto_scroll() {
+    let mut f = fixture();
+    events::Drag::absolute().on_move(|_, _| {}).start();
+    move_to(&mut f.app, (X, LIST_BOTTOM - 2.0));
+    frame(&mut f.app);
+    frame_after(&mut f.app, 20);
+    events::Drag::cancel();
+    assert_eq!(scroll_top(&f.app, f.list), 0.0);
+}
+
+/// R4: a drag resting outside every band asks for no frame (idle clock).
+#[test]
+fn review_a_drag_outside_every_band_asks_for_no_frame() {
+    let mut f = fixture();
+    start_drag(&mut f.app);
+    move_to(&mut f.app, (X, 200.0));
+    frame(&mut f.app);
+    for _ in 0..3 {
+        assert!(!asks_for_a_frame(&frame_after(&mut f.app, 5)));
+    }
+}
+
+/// R5: an idle AboutToWait during a drag outside every band costs no hit test
+/// (base: 0).
+#[test]
+fn review_hit_tests_per_idle_drag_frame() {
+    let mut f = fixture();
+    start_drag(&mut f.app);
+    move_to(&mut f.app, (X, 200.0));
+    frame(&mut f.app);
+    let before = hit_tests(&f.app);
+    for _ in 0..10 {
+        frame(&mut f.app);
+    }
+    assert_eq!(
+        hit_tests(&f.app) - before,
+        0,
+        "an idle drag frame reuses the drag's own hit test"
+    );
+}
+
+/// The reuse is not blind: once a move puts the pointer in a band, the next
+/// frame scrolls (and an idle frame after a move re-tests nothing either).
+#[test]
+fn an_idle_frame_after_a_move_reuses_the_moves_hit_test() {
+    let mut f = fixture();
+    start_drag(&mut f.app);
+    move_to(&mut f.app, (X, 200.0));
+    let before = hit_tests(&f.app);
+    frame(&mut f.app);
+    assert_eq!(hit_tests(&f.app) - before, 0);
+    move_to(&mut f.app, (X, LIST_BOTTOM - 4.0));
+    frame(&mut f.app);
+    assert!(scroll_top(&f.app, f.list) > 0.0, "the band was seen");
+}
+
+/// The tick itself asks for the next frame. With the pointer at the band's
+/// inner edge a frame scrolls well under a device pixel (about 0.3 px/s), so
+/// nothing moves, nothing is dirtied and no repaint asks for a frame: only the
+/// tick's own request keeps the clock turning until the remainder adds up.
+#[test]
+fn a_band_too_slow_to_move_a_pixel_a_frame_still_keeps_the_clock_turning() {
+    let mut f = fixture();
+    start_drag(&mut f.app);
+    move_to(&mut f.app, (X, LIST_BOTTOM - 31.5));
+    frame(&mut f.app);
+    for _ in 0..3 {
+        let actions = frame_after(&mut f.app, 5);
+        assert_eq!(scroll_top(&f.app, f.list), 0.0, "a frame moved nothing");
+        assert!(
+            asks_for_a_frame(&actions),
+            "the slow band keeps asking for frames"
+        );
+    }
+}
+
+/// A container partly below the window: its bottom band is measured on the
+/// part inside the viewport, so a pointer near the window's bottom edge is in
+/// it (unclamped, the band would be 100px below the window, out of reach).
+#[test]
+fn a_container_running_off_the_window_has_its_band_at_the_window_edge() {
+    let mut f = fixture_with("top: 500px;", None);
+    start_drag(&mut f.app);
+    move_to(&mut f.app, (X, 596.0));
+    frame(&mut f.app);
+    frame_after(&mut f.app, 20);
+    assert!(scroll_top(&f.app, f.list) > 0.0);
+}
+
+/// A drag whose release went missing scrolls while it rests in a band, until
+/// the missed-release heal ends it: the next left press cancels the drag, and
+/// with it the auto-scroll.
+#[test]
+fn a_stranded_drag_stops_scrolling_when_the_missed_release_heals() {
+    let mut f = fixture();
+    start_drag(&mut f.app);
+    move_to(&mut f.app, (X, LIST_BOTTOM - 4.0));
+    frame(&mut f.app);
+    assert!(scroll_top(&f.app, f.list) > 0.0, "it scrolls while stranded");
+    send(
+        &mut f.app,
+        PlatformEvent::MouseDown {
+            x: X,
+            y: LIST_BOTTOM - 4.0,
+            button: MouseButton::Left,
+        },
+    );
+    assert!(f.app.active_dnd.is_none(), "the heal cancelled the drag");
+    let at = scroll_top(&f.app, f.list);
+    assert!(!asks_for_a_frame(&frame_after(&mut f.app, 20)));
+    assert_eq!(scroll_top(&f.app, f.list), at);
+}
+
+/// R6: a long first frame in the band scrolls one capped step, not the stall.
+#[test]
+fn review_a_stalled_clock_is_one_capped_step() {
+    let mut f = fixture();
+    start_drag(&mut f.app);
+    move_to(&mut f.app, (X, LIST_BOTTOM - 1.0));
+    frame(&mut f.app);
+    let a = scroll_top(&f.app, f.list);
+    std::thread::sleep(Duration::from_millis(400));
+    frame(&mut f.app);
+    let step = scroll_top(&f.app, f.list) - a;
+    // max speed at 1px from edge ~ 1200*(31/32)^2 ≈ 1126 px/s × 0.05 ≈ 56px.
+    assert!(step <= 61.0, "a 400ms stall scrolled {step}px");
+    assert!(step > 30.0, "but a full capped step: {step}");
+}

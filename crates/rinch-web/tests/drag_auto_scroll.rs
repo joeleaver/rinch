@@ -275,3 +275,109 @@ async fn leaving_the_band_stops_it() {
     assert!(!rinch_web::__drag_auto_scroll_running());
     f.teardown();
 }
+
+// ── Review fixtures (PR #1592 review) ──────────────────────────────────────
+
+/// A 3000px-tall page with the fixture's fixed list and source; `lock`
+/// applies rinch's own `lock_scroll` (NodeHandle::set_scroll_locked).
+fn mount_tall_page(lock: bool, list_height: &'static str) -> (web_sys::Element, rinch_web::RootHandle) {
+    let host = document().create_element("div").unwrap();
+    document().body().unwrap().append_child(&host).unwrap();
+    let root = rinch_web::mount_into(
+        &host,
+        ThemeProviderProps::default(),
+        move |scope: &mut RenderScope| {
+            let wrap = scope.create_element("div");
+            wrap.set_attribute("style", "height: 3000px");
+            let source = scope.create_element("div");
+            source.set_attribute("id", "das-src");
+            source.set_attribute("draggable", "true");
+            source.set_attribute(
+                "style",
+                "position: fixed; left: 500px; top: 40px; width: 100px; height: 40px",
+            );
+            wrap.append_child(&source);
+            let list = scope.create_element("div");
+            list.set_attribute("id", "das-list");
+            list.set_attribute(
+                "style",
+                &format!(
+                    "position: fixed; left: 0px; top: {LIST_TOP}px; width: 300px; \
+                     height: {list_height}; overflow-y: auto; margin: 0; padding: 0"
+                ),
+            );
+            for _ in 0..ROWS {
+                let row = scope.create_element("div");
+                row.set_attribute("style", &format!("height: {ROW_HEIGHT}px"));
+                list.append_child(&row);
+            }
+            wrap.append_child(&list);
+            if lock {
+                list.set_scroll_locked(true);
+            }
+            wrap
+        },
+    );
+    (host, root)
+}
+
+fn scroll_y() -> f64 {
+    web_sys::window().unwrap().scroll_y().unwrap()
+}
+
+/// W1: a drag under a `lock_scroll` overlay must not scroll the page behind
+/// it (desktop skips locked containers; the web's lock is `overflow: hidden`
+/// on <html>, which programmatic scrollTop writes ignore).
+#[wasm_bindgen_test]
+async fn review_a_locked_page_is_not_auto_scrolled() {
+    for lock in [false, true] {
+        web_sys::window().unwrap().scroll_to_with_x_and_y(0.0, 0.0);
+        let (host, root) = mount_tall_page(lock, "200px");
+        let vh = web_sys::window().unwrap().inner_height().unwrap().as_f64().unwrap() as i32;
+        let source = document().get_element_by_id("das-src").unwrap();
+        pointer(&source, "pointerdown", 520, 55);
+        pointer(&source, "pointermove", 540, 70);
+        let target = document().element_from_point(600.0, (vh - 2) as f32).unwrap();
+        pointer(&target, "pointermove", 600, vh - 2);
+        sleep_ms(200).await;
+        let y = scroll_y();
+        pointer(&target, "pointerup", 600, vh - 2);
+        root.unmount();
+        host.remove();
+        web_sys::window().unwrap().scroll_to_with_x_and_y(0.0, 0.0);
+        if lock {
+            assert_eq!(y, 0.0, "the locked page scrolled behind the overlay");
+        } else {
+            assert!(y > 0.0, "positive control: an unlocked page scrolls ({y})");
+        }
+    }
+}
+
+/// W2: a list whose scroll range ends between pixels: at its end the loop
+/// must stop (and the page take over), not spin for ever.
+#[wasm_bindgen_test]
+async fn review_a_list_ending_between_pixels_lets_the_loop_stop() {
+    web_sys::window().unwrap().scroll_to_with_x_and_y(0.0, 0.0);
+    let (host, root) = mount_tall_page(false, "200.4px");
+    let list = document().get_element_by_id("das-list").unwrap();
+    let source = document().get_element_by_id("das-src").unwrap();
+    list.set_scroll_top(10_000);
+    let precise = js_sys::Reflect::get(&list, &"scrollTop".into()).unwrap().as_f64().unwrap();
+    pointer(&source, "pointerdown", 520, 55);
+    pointer(&source, "pointermove", 540, 70);
+    let y = LIST_TOP + 198;
+    let target = document().element_from_point(X as f32, y as f32).unwrap();
+    pointer(&target, "pointermove", X, y);
+    sleep_ms(300).await;
+    let running = rinch_web::__drag_auto_scroll_running();
+    let info = format!(
+        "scrollTop {precise} (i32 {}), scrollHeight {}, clientHeight {}",
+        list.scroll_top(),
+        list.scroll_height(),
+        list.client_height()
+    );
+    pointer(&target, "pointerup", X, y);
+    root.unmount();
+    host.remove();
+    assert!(!running, "the loop still runs at the list's end: {info}");
+}

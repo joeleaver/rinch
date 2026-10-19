@@ -1216,16 +1216,27 @@ pub fn __drag_auto_scroll_running() -> bool {
 /// fast: the nearest ancestor of `hit` (or `hit`) with a computed `overflow-y`
 /// of `auto`/`scroll` and content taller than its box, or the document's
 /// scrolling element, that has the pointer in one of its bands and can still
-/// move toward that band's edge. Bands are measured on the part of the box
-/// inside the viewport; the scrolling element's on the viewport.
+/// move toward that band's edge, and is not locked out by a `lock_scroll`
+/// overlay ([`crate::web_document::scroll_locked_out`]). Bands are measured on
+/// the part of the box inside the viewport; the scrolling element's on the
+/// viewport. Clipping by an outer scroller is not taken into account.
 fn drag_auto_scroll_container(hit: &web_sys::Element, y: f32) -> Option<(web_sys::Element, f32)> {
     let win = web_sys::window()?;
     let doc = win.document()?;
     let viewport_h = win.inner_height().ok()?.as_f64()? as f32;
     let scrolling = doc.scrolling_element();
+    // `scrollTop` read unrounded (web-sys's `scroll_top` is an `i32`) against
+    // a range of rounded sizes, with half a pixel of slack: at a fractional
+    // device scale the browser can keep the offset off whole pixels, and a
+    // container whose last fraction is out of reach must count as at its end,
+    // or the loop spins there and the page never takes over.
     let can_move = |el: &web_sys::Element, velocity: f32| {
-        let max = el.scroll_height() - el.client_height();
-        (velocity < 0.0 && el.scroll_top() > 0) || (velocity > 0.0 && el.scroll_top() < max)
+        let top = js_sys::Reflect::get(el, &"scrollTop".into())
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or_else(|| f64::from(el.scroll_top()));
+        let max = f64::from(el.scroll_height() - el.client_height());
+        (velocity < 0.0 && top > 0.5) || (velocity > 0.0 && top < max - 0.5)
     };
     let mut node = Some(hit.clone());
     while let Some(el) = node {
@@ -1245,7 +1256,10 @@ fn drag_auto_scroll_container(hit: &web_sys::Element, y: f32) -> Option<(web_sys
                             "auto" | "scroll"
                         )
                     }));
-        if scrolls {
+        // A page under a `lock_scroll` overlay, and any container outside the
+        // overlay, is not scrolled: desktop's rule (`scroll_locked_out`). A
+        // `scrollTop` write ignores `<html>`'s `overflow: hidden`.
+        if scrolls && !crate::web_document::scroll_locked_out(&el) {
             let (top, bottom) = if is_scrolling {
                 (0.0, viewport_h)
             } else {
@@ -1268,6 +1282,9 @@ fn drag_auto_scroll_container(hit: &web_sys::Element, y: f32) -> Option<(web_sys
     // `hit` was outside the scrolling element's subtree (it never is in a
     // document; kept so a detached hit still ends here).
     let el = scrolling?;
+    if crate::web_document::scroll_locked_out(&el) {
+        return None;
+    }
     let velocity = events::drag_auto_scroll_velocity(y, 0.0, viewport_h);
     (velocity != 0.0 && can_move(&el, velocity)).then_some((el, velocity))
 }
