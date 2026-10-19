@@ -77,8 +77,5 @@ fn app() -> NodeHandle {
 }
 
 fn main() {
-    App::new(app)
-        .title("Node views")
-        .size(860, 760)
-        .run();
+    App::new(app).title("Node views").size(860, 760).run();
 }

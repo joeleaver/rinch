@@ -769,7 +769,8 @@ impl CollabDoc {
         &self,
         schema: &Schema,
     ) -> Result<(Node, Option<Vec<BlockId>>)> {
-        self.to_doc_with_ids(schema, false).map(|(doc, ids, _)| (doc, ids))
+        self.to_doc_with_ids(schema, false)
+            .map(|(doc, ids, _)| (doc, ids))
     }
 
     /// [`Self::to_doc_with_atom_ids`], with the identity of every **inline atom**
@@ -807,10 +808,7 @@ impl CollabDoc {
         Ok((doc, ids, inline_ids))
     }
 
-    fn to_doc_with_block_ids(
-        &self,
-        schema: &Schema,
-    ) -> Result<(Node, Option<Vec<BlockId>>)> {
+    fn to_doc_with_block_ids(&self, schema: &Schema) -> Result<(Node, Option<Vec<BlockId>>)> {
         struct Recording;
         impl Drop for Recording {
             fn drop(&mut self) {

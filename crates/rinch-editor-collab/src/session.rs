@@ -851,11 +851,11 @@ impl CollabSession {
         // left (`atom_cache::inline_lookup`): a picture the model made since is
         // unknown, and a peer's attribute change of it is a replace.
         let old_inline = atom_cache::inline_lookup(self.uid, &state.doc);
-        let (target, new_ids, new_inline) =
-            match self.cdoc.to_doc_with_all_atom_ids(state.schema()) {
-                Ok(read) => read,
-                Err(cause) => return Err(self.classify_unprojectable(cause)),
-            };
+        let (target, new_ids, new_inline) = match self.cdoc.to_doc_with_all_atom_ids(state.schema())
+        {
+            Ok(read) => read,
+            Err(cause) => return Err(self.classify_unprojectable(cause)),
+        };
         // The document is projectable: a previously-poisoned session is healed by
         // exactly this — a full inbound integration whose rebuild succeeds (the
         // returned state below is what brings the model back in step).

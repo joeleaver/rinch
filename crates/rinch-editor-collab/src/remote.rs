@@ -366,12 +366,12 @@ impl MiddleWalk<'_> {
             return true;
         };
         ia == ib
-            && (0..ia).all(|k| {
-                match (&inline.old[self.io + k], &inline.new[self.in_ + k]) {
+            && (0..ia).all(
+                |k| match (&inline.old[self.io + k], &inline.new[self.in_ + k]) {
                     (Some(x), Some(y)) => x == y,
                     _ => true,
-                }
-            })
+                },
+            )
     }
 
     /// The attribute changes that turn textblock `a` into `b` when the two differ

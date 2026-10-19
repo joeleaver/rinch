@@ -19,9 +19,7 @@ use rinch_core::dom::mock::MockDomDocument;
 use rinch_core::dom::{DomDocument, NodeHandle, NodeId, RenderScope};
 use rinch_core::reactive::{Signal, on_cleanup};
 use rinch_editor_core::{AttrValue, Fragment, NodeSelection, Pos, Selection, Slice};
-use rinch_editor_view::{
-    EditorHandle, NODE_VIEW_ATTR, NodeViewCtx, NodeViewSpec, create_editor,
-};
+use rinch_editor_view::{EditorHandle, NODE_VIEW_ATTR, NodeViewCtx, NodeViewSpec, create_editor};
 
 #[derive(Default)]
 struct Seen {
@@ -139,7 +137,11 @@ fn only_a_matching_image_is_claimed_and_its_host_is_an_inline_block_span() {
         vec![seen.roots.borrow()[0].node_id()],
         "the component is in the span"
     );
-    assert_eq!(tag(&p, plain), "img", "an image it does not match is unchanged");
+    assert_eq!(
+        tag(&p, plain),
+        "img",
+        "an image it does not match is unchanged"
+    );
     assert_eq!(attr(&p, plain, "src").as_deref(), Some("b.png"));
     assert_eq!(attr(&p, plain, NODE_VIEW_ATTR), None);
     assert!(p.handle.is_node_view_host(claimed.0));
@@ -432,7 +434,11 @@ mod collab {
         assert_eq!(*p.seen_b.badges.borrow(), ["new", "hot"]);
         assert_eq!(p.seen_b.renders.get(), 1, "not remounted");
         assert_eq!(p.seen_b.state.borrow()[0].get(), 3);
-        assert_eq!(html(&p.b.handle), html(&p.a.handle), "converged on the attribute");
+        assert_eq!(
+            html(&p.b.handle),
+            html(&p.a.handle),
+            "converged on the attribute"
+        );
         // Again after the guest typed beside it (its node kept, so still known).
         p.b.handle.set_selection(Selection::cursor(Pos(2)));
         assert!(p.b.handle.insert_text("x"));

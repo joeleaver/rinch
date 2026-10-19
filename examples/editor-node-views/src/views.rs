@@ -311,7 +311,12 @@ pub fn html_fallback(node: &Node) -> Option<String> {
     match (node.type_name(), attrs.get_str("data-kind")) {
         ("embed", Some("counter")) => Some(format!("<p>Count: {}</p>", text("data-count"))),
         ("embed", Some("table")) => {
-            let n = |k: &str| attrs.get_str(k).and_then(|v| v.parse().ok()).unwrap_or(2usize);
+            let n = |k: &str| {
+                attrs
+                    .get_str(k)
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(2usize)
+            };
             let mut s = String::from("<table>");
             for r in 0..n("data-rows") {
                 s.push_str("<tr>");

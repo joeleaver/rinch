@@ -245,7 +245,15 @@ fn keys_in_a_views_input_reach_on_key_then_the_input() {
     key(&mut p.app, KeyCode::ArrowLeft);
     key_mod(&mut p.app, KeyCode::KeyX, Some("x"), Modifiers::default());
     let value = |p: &Page, id: usize| {
-        p.app.doc.as_ref().unwrap().borrow().tree.get(id).unwrap().attributes
+        p.app
+            .doc
+            .as_ref()
+            .unwrap()
+            .borrow()
+            .tree
+            .get(id)
+            .unwrap()
+            .attributes
             .get("value")
             .cloned()
             .unwrap_or_default()

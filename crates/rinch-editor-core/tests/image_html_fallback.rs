@@ -69,7 +69,10 @@ fn a_claimed_image_is_written_as_a_span_holding_the_apps_markup() {
         r#"<p>a<span data-pm-type="image" alt="a pic" data-badge="new" src="pic.png" width="40"><b class="chip">new</b></span>b<img alt="a pic" src="pic.png" width="40"></p>"#
     );
     // Read back by rinch it is the same document: the span is the image.
-    assert_eq!(slice_from_html(&s, &html).unwrap().content, d.content().clone());
+    assert_eq!(
+        slice_from_html(&s, &html).unwrap().content,
+        d.content().clone()
+    );
 }
 
 #[test]
@@ -77,7 +80,11 @@ fn the_copy_out_carries_the_mark_and_pastes_back_as_the_image() {
     let s = Schema::starter_kit();
     let p = para(
         &s,
-        vec![s.text("a").unwrap(), image(&s, Some("hot")), s.text("b").unwrap()],
+        vec![
+            s.text("a").unwrap(),
+            image(&s, Some("hot")),
+            s.text("b").unwrap(),
+        ],
     );
     let slice = Slice::new(Fragment::from_node(p), 1, 1);
     let _guard = set_html_fallback(chip);
@@ -116,8 +123,11 @@ fn a_linked_claimed_image_keeps_its_link() {
     let mt = s.mark_type("link").unwrap();
     let link = Mark::new(
         mt.clone(),
-        mt.compute_attrs(&Attrs::from_iter([("href", AttrValue::from("https://x.test"))]))
-            .unwrap(),
+        mt.compute_attrs(&Attrs::from_iter([(
+            "href",
+            AttrValue::from("https://x.test"),
+        )]))
+        .unwrap(),
     );
     let img: Node = image(&s, Some("l")).with_marks(vec![link]);
     let d = doc(&s, vec![para(&s, vec![img])]);
@@ -127,5 +137,8 @@ fn a_linked_claimed_image_keeps_its_link() {
         html.starts_with(r#"<p><a href="https://x.test""#) && html.contains("<span data-pm-type"),
         "{html}"
     );
-    assert_eq!(slice_from_html(&s, &html).unwrap().content, d.content().clone());
+    assert_eq!(
+        slice_from_html(&s, &html).unwrap().content,
+        d.content().clone()
+    );
 }

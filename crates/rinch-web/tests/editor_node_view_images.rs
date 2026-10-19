@@ -159,10 +159,7 @@ fn a_claimed_image_is_an_inline_block_span_and_its_text_is_not_the_editors() {
         .get_computed_style(&span)
         .unwrap()
         .unwrap();
-    assert_eq!(
-        style.get_property_value("display").unwrap(),
-        "inline-block"
-    );
+    assert_eq!(style.get_property_value("display").unwrap(), "inline-block");
     assert!(span.query_selector("b.chip").unwrap().is_some());
     let r = span.get_bounding_client_rect();
     let at = |pos| handle.caret_rect(Pos(pos)).expect("a caret");
@@ -234,5 +231,8 @@ fn keys_in_a_views_input_reach_on_key_presses_only_and_stay_the_inputs() {
         "every press, no release"
     );
     let esc = key_event(&a, "keydown", "Escape", false);
-    assert!(esc.default_prevented(), "an unclaimed Escape returns the keyboard");
+    assert!(
+        esc.default_prevented(),
+        "an unclaimed Escape returns the keyboard"
+    );
 }
