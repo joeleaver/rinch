@@ -413,8 +413,8 @@ struct SlotState {
     mount: Option<Mount>,
     /// `render` is running for this slot. A sync it causes (the component
     /// setting its own node's attributes, a default) must not mount the slot a
-    /// second time under it: it is noted in `resync`, and the mount refreshes the
-    /// memos once it is stored (review of #1575, F7).
+    /// second time under it: it is noted in `resync`, and the slot is matched
+    /// again once the mount is stored (review of #1575, F7; review 2, N5).
     mounting: bool,
     resync: bool,
 }
@@ -639,12 +639,35 @@ fn mount(
     if let Some(cx) = host_cx {
         crate::registry::notify_node_view_host(cx.doc_key, cx.container, &slot.host, true);
     }
-    // What `render` itself changed (its node's attributes, say) reaches the memos
-    // now — a refresh, not another render: a render that changed them every time
-    // would otherwise never settle.
+    // What `render` itself changed (its node's attributes, say) is matched now,
+    // as any other change of the node is: the same spec still matching is a
+    // refresh of the memos (the token is equal, so no second render), another
+    // spec or none remounts or unmounts. A render that keeps flipping which spec
+    // matches would recurse here without end, so past `MAX_RESYNC_DEPTH` nested
+    // re-matches the memos are refreshed instead (review 2 of #1575, N5).
     if resync {
-        refresh(registry, slot);
+        struct Depth;
+        impl Drop for Depth {
+            fn drop(&mut self) {
+                RESYNC_DEPTH.with(|d| d.set(d.get() - 1));
+            }
+        }
+        if RESYNC_DEPTH.with(|d| d.get()) < MAX_RESYNC_DEPTH {
+            RESYNC_DEPTH.with(|d| d.set(d.get() + 1));
+            let _depth = Depth;
+            sync(editor, registry, slot, host_cx);
+        } else {
+            refresh(registry, slot);
+        }
     }
+}
+
+/// How many re-matches a render's own change may cause inside one another.
+const MAX_RESYNC_DEPTH: u32 = 8;
+
+thread_local! {
+    /// The re-matches [`mount`] is running inside one another.
+    static RESYNC_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 /// Dispose `slot`'s mounted view, if any: its scope first, then (unless the host

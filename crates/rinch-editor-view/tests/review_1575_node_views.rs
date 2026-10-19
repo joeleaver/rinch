@@ -771,3 +771,58 @@ mod collab {
         assert_eq!(seen_b.renders.get(), 1);
     }
 }
+
+/// N5 (review 2) — a render whose own attribute write makes its spec stop
+/// matching is matched again after the mount, as any other change of its node
+/// is: the view is unmounted, not left mounted on a node its spec refuses.
+#[test]
+fn n5_a_render_that_unmatches_its_own_spec_is_unmounted() {
+    let p = page(DOC);
+    let renders = Rc::new(Cell::new(0));
+    let cleanups = Rc::new(Cell::new(0));
+    let (r, cl) = (renders.clone(), cleanups.clone());
+    p.handle
+        .register_node_view(
+            NodeViewSpec::new("embed", move |scope: &mut RenderScope, ctx: NodeViewCtx| {
+                r.set(r.get() + 1);
+                ctx.set_attrs(|a| *a = a.with("data-off", AttrValue::from("1")));
+                let cl = cl.clone();
+                on_cleanup(move || cl.set(cl.get() + 1));
+                scope.create_element("div")
+            })
+            .matches(|a| a.get_str("data-off").is_none()),
+        )
+        .keep();
+    assert_eq!(
+        (renders.get(), cleanups.get()),
+        (1, 1),
+        "rendered once, then unmounted"
+    );
+    assert_eq!(
+        p.handle.doc().child(1).attrs().get_str("data-off"),
+        Some("1")
+    );
+}
+
+/// N5 (review 2) — two specs whose renders each make the other match: the
+/// re-match after a mount is bounded, so this settles instead of recursing for
+/// ever.
+#[test]
+fn n5_two_specs_that_flip_each_other_settle() {
+    let p = page(DOC);
+    let renders = Rc::new(Cell::new(0));
+    for (want, write) in [("b", "a"), ("a", "b")] {
+        let r = renders.clone();
+        p.handle
+            .register_node_view(
+                NodeViewSpec::new("embed", move |scope: &mut RenderScope, ctx: NodeViewCtx| {
+                    r.set(r.get() + 1);
+                    ctx.set_attrs(|a| *a = a.with("data-k", AttrValue::from(write)));
+                    scope.create_element("div")
+                })
+                .matches(move |a| a.get_str("data-k").unwrap_or("b") == want),
+            )
+            .keep();
+    }
+    assert!(renders.get() < 40, "settled after {} renders", renders.get());
+}
