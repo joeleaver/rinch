@@ -254,6 +254,7 @@ pub fn __reset_activation_state() {
     DISPATCHING.with(|d| d.borrow_mut().clear());
     LABEL_FORWARD.with(|l| l.set(None));
     FORCE_TRUSTED.with(|t| t.set(false));
+    clear_pending_press_focus();
 }
 
 /// Map a browser `MouseEvent.button` index onto the core button enum.
@@ -784,6 +785,83 @@ thread_local! {
     /// pointerup/pointercancel. Independent of `WEB_DRAG` (the element-DnD suite).
     static DRAG_POINTER_CAPTURE: std::cell::RefCell<Option<(web_sys::Element, i32)>> =
         const { std::cell::RefCell::new(None) };
+
+    /// A touch/pen press's focus move, waiting for the press to turn out a tap.
+    /// See [`PendingPressFocus`].
+    static PENDING_PRESS_FOCUS: std::cell::RefCell<Option<PendingPressFocus>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The focus move of a touch or pen press on a `data-rid` element (issue
+/// #1146), held until the press is known to be a tap. A finger that lands on a
+/// button and pans the page has not pressed it, and Chrome moves no focus for
+/// it; focusing on contact blurred the field being typed in, which dismisses a
+/// phone's soft keyboard on every scroll that starts over a button. Applied on
+/// the owning pointer's `pointerup`; dropped by a `pointercancel` (Chrome sends
+/// one when it starts the pan), by a move past the scroll slop, and by the next
+/// primary press. A mouse press focuses at once, as before.
+///
+/// The same record shape as [`PendingClick`]; only the focus waits here — the
+/// click itself still fires on contact outside a scroller (#1582).
+struct PendingPressFocus {
+    /// Where the focus walk starts ([`focus_press_target`]).
+    target: web_sys::Element,
+    pointer_id: i32,
+    start_x: f32,
+    start_y: f32,
+    /// The focused element when the press was recorded, after its handler ran:
+    /// a handler that moved the focus itself (an overlay's `focus_into`) is
+    /// not overruled on release.
+    active: Option<web_sys::Element>,
+}
+
+/// Discard a pending touch focus. Idempotent.
+fn clear_pending_press_focus() {
+    PENDING_PRESS_FOCUS.with(|c| *c.borrow_mut() = None);
+}
+
+/// Hold `target`'s focus move until `event`'s pointer is released.
+fn defer_press_focus(target: web_sys::Element, event: &web_sys::MouseEvent) {
+    let pointer_id = event
+        .dyn_ref::<web_sys::PointerEvent>()
+        .map_or(0, |p| p.pointer_id());
+    let active = target
+        .owner_document()
+        .and_then(|d| d.active_element());
+    PENDING_PRESS_FOCUS.with(|c| {
+        *c.borrow_mut() = Some(PendingPressFocus {
+            target,
+            pointer_id,
+            start_x: event.client_x() as f32,
+            start_y: event.client_y() as f32,
+            active,
+        })
+    });
+}
+
+/// The owning pointer's release: the press was a tap, so make its focus move —
+/// unless something else moved the focus since it was recorded.
+fn apply_pending_press_focus(event: &web_sys::PointerEvent) {
+    let pending = PENDING_PRESS_FOCUS.with(|c| {
+        let mut b = c.borrow_mut();
+        match b.as_ref() {
+            Some(p) if p.pointer_id == event.pointer_id() => b.take(),
+            _ => None,
+        }
+    });
+    let Some(p) = pending else { return };
+    if !p.target.is_connected() {
+        return;
+    }
+    let now = p.target.owner_document().and_then(|d| d.active_element());
+    let unchanged = match (&now, &p.active) {
+        (Some(a), Some(b)) => a.is_same_node(Some(b)),
+        (None, None) => true,
+        _ => false,
+    };
+    if unchanged {
+        focus_press_target(&p.target);
+    }
 }
 
 /// Release any pointer capture taken for an active `Drag` (slider/panel/resize).
@@ -1440,25 +1518,40 @@ fn dispatch_click_at(
         } else {
             PressFocus::Untouched
         };
-        if let PressFocus::Focus(target) = &press_focus {
+        // A touch or pen press focuses on release, once it is a tap and not
+        // the start of a pan ([`PendingPressFocus`]).
+        let touch = event
+            .dyn_ref::<web_sys::PointerEvent>()
+            .is_some_and(|p| PointerKind::from_type(&p.pointer_type()).uses_long_press());
+        if let PressFocus::Focus(target) = &press_focus
+            && !touch
+        {
             // Before the handler: the field that had the focus is blurred
             // (and commits its `change`) before the click runs, and a focus
             // move the handler makes itself is not undone afterwards.
-            let opts = web_sys::FocusOptions::new();
-            opts.set_prevent_scroll(true);
-            let _ = target.focus_with_options(&opts);
+            focus_press_target(target);
         }
-        if dispatch_rid(rid) && !matches!(press_focus, PressFocus::Browser) {
+        let ran = dispatch_rid(rid);
+        if let PressFocus::Focus(target) = press_focus.clone()
+            && touch
+        {
+            // Recorded after the handler, so its own focus move is seen.
+            defer_press_focus(target, event);
+        }
+        if ran && !matches!(press_focus, PressFocus::Browser) {
             event.prevent_default();
         }
     }
 }
 
-/// What browsers move focus to on a press: the nearest ancestor-or-self that
-/// is one of these. A superset is harmless where it is used: it decides only
-/// where a press stops looking, and a `focus()` the browser refuses changes
-/// nothing. `editor_input` asks the same question of a press outside every
-/// editor.
+/// The elements a press may move focus to: a browser focuses the nearest
+/// ancestor-or-self that can take focus, and every such element is one of
+/// these. It is a superset — a `disabled` button, a `contenteditable="false"`
+/// island and a `display: contents` link match and take no focus — so a match
+/// is where the walk *tries*, not where it stops: [`focus_press_target`] asks
+/// the browser and goes on to the next match when `focus()` is refused, as
+/// Chrome focuses the `tabindex` row around a disabled button. `editor_input`
+/// asks whether a press has any match at all.
 pub(crate) const PRESS_FOCUSABLE_SELECTOR: &str = "button, a[href], input, select, textarea, \
      [tabindex], [contenteditable], summary, iframe, audio[controls], video[controls]";
 
@@ -1467,6 +1560,7 @@ pub(crate) const PRESS_FOCUSABLE_SELECTOR: &str = "button, a[href], input, selec
 /// focus at all: a `Button` took none, the field that had it kept it with its
 /// `change` uncommitted, and a text field inside a clickable (`ColorInput`'s,
 /// inside its input group) could not be focused by a click.
+#[derive(Clone)]
 enum PressFocus {
     /// Moves no focus: nothing focusable on the press's chain, or a default
     /// already prevented (`data-nofocus` on the chain, an app's own listener),
@@ -1479,8 +1573,9 @@ enum PressFocus {
     /// at the press and starts a selection drag.
     Browser,
     /// Any other focusable (a `<button>`, an `<a href>`, a `tabindex` row):
-    /// rinch focuses it, since the prevented default cannot.
-    Focus(web_sys::HtmlElement),
+    /// rinch focuses it — or the next match above it that the browser accepts
+    /// ([`focus_press_target`]) — since the prevented default cannot.
+    Focus(web_sys::Element),
 }
 
 /// Where a press at `el` puts the focus. Not asked of a press whose default
@@ -1490,12 +1585,41 @@ fn press_focus_for(el: &web_sys::Element) -> PressFocus {
     let Some(target) = el.closest(PRESS_FOCUSABLE_SELECTOR).ok().flatten() else {
         return PressFocus::Untouched;
     };
-    if target.matches("input, textarea, select").unwrap_or(false) || in_content_editable(&target) {
+    if is_left_to_browser(&target) {
         return PressFocus::Browser;
     }
-    match target.dyn_into::<web_sys::HtmlElement>() {
-        Ok(html) => PressFocus::Focus(html),
-        Err(_) => PressFocus::Untouched,
+    PressFocus::Focus(target)
+}
+
+/// A form control, or an element in editable content: the browser focuses it
+/// itself (caret at the press, selection drag), so its press is not prevented.
+fn is_left_to_browser(target: &web_sys::Element) -> bool {
+    target.matches("input, textarea, select").unwrap_or(false) || in_content_editable(target)
+}
+
+/// Focus the first element from `start` up that takes focus: `start`, then
+/// each [`PRESS_FOCUSABLE_SELECTOR`] match above it, asking the browser at each
+/// step whether it took it — the browser is the authority on focusability, as
+/// in `handle_trapped_tab`. Stops at a form control or editable content above
+/// a refusal (the browser's own business) and when no match is left, moving no
+/// focus. Never scrolls: a press is on something already on screen.
+fn focus_press_target(start: &web_sys::Element) {
+    let opts = web_sys::FocusOptions::new();
+    opts.set_prevent_scroll(true);
+    let mut next = Some(start.clone());
+    while let Some(target) = next {
+        if !target.is_same_node(Some(start)) && is_left_to_browser(&target) {
+            return;
+        }
+        if let Some(html) = target.dyn_ref::<web_sys::HtmlElement>() {
+            let _ = html.focus_with_options(&opts);
+            if target.matches(":focus").unwrap_or(false) {
+                return;
+            }
+        }
+        next = target
+            .parent_element()
+            .and_then(|p| p.closest(PRESS_FOCUSABLE_SELECTOR).ok().flatten());
     }
 }
 
@@ -2038,6 +2162,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         // was missed (e.g. a dropped release), so a stale tap can't fire later.
         if event.is_primary() {
             clear_pending_click();
+            clear_pending_press_focus();
         }
 
         if let Some(target) = event.target()
@@ -2058,13 +2183,29 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             // the boolean-attribute rule desktop's `node_is_nofocus` applies:
             // present means on whatever the value, and only the explicit
             // `"false"` (any case) opts out.
-            if el
+            //
+            // A text field *inside* the region still focuses (issue #1579), as
+            // on desktop, whose claim walk meets the field before the region:
+            // the press is left alone when the nearest focusable on its chain
+            // is a form control or editable content strictly below the region.
+            // One above it, or the region itself, does not count.
+            if let Some(region) = el
                 .closest("[data-nofocus]:not([data-nofocus=\"false\" i])")
                 .ok()
                 .flatten()
-                .is_some()
             {
-                event.prevent_default();
+                let field_inside = el
+                    .closest(PRESS_FOCUSABLE_SELECTOR)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|t| {
+                        !t.is_same_node(Some(&region))
+                            && region.contains(Some(&t))
+                            && is_left_to_browser(&t)
+                    });
+                if !field_inside {
+                    event.prevent_default();
+                }
             }
 
             // Clear render surface focus if click is outside any surface
@@ -2164,6 +2305,13 @@ pub fn setup_event_delegation(doc: &WebDocument) {
 
                 if defer_to_up {
                     mark_gesture_acted();
+                    // Its focus waits for the same release
+                    // ([`PendingPressFocus`]); a form control is the browser's.
+                    if !event.default_prevented()
+                        && let PressFocus::Focus(target) = press_focus_for(&el)
+                    {
+                        defer_press_focus(target, event);
+                    }
                     PENDING_CLICK.with(|c| {
                         *c.borrow_mut() = Some(PendingClick {
                             target: el.clone(),
@@ -2263,6 +2411,24 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             {
                 clear_pending_click();
             }
+            // The same slop ends a pending touch focus: the press is a pan. Not
+            // while a pointer-capture `Drag` holds the contact (a slider
+            // dragged by a finger does not pan the page).
+            let focus_pending = PENDING_PRESS_FOCUS.with(|c| {
+                c.borrow()
+                    .as_ref()
+                    .map(|p| (p.pointer_id, p.start_x, p.start_y))
+            });
+            if let Some((pid, sx, sy)) = focus_pending
+                && pid == event.pointer_id()
+                && !drag_active
+                && drag_machine::pending_click_is_scroll(
+                    event.client_x() as f32 - sx,
+                    event.client_y() as f32 - sy,
+                )
+            {
+                clear_pending_press_focus();
+            }
 
             // Hover: fire data-onleave on the old element and data-onenter on the
             // new one whenever the resolved hover element changes.
@@ -2356,6 +2522,11 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             }
         }
 
+        // A touch/pen press that ended without a pan: make the focus move it
+        // held back ([`PendingPressFocus`]), before a deferred click's handler
+        // runs, as a mouse press focuses before its handler.
+        apply_pending_press_focus(event);
+
         // A deferred (touch/pen) tap on a scrollable-contained element that never
         // became a scroll: fire its click now, on release, matching the browser's
         // native click timing. Only the owning pointer fires it.
@@ -2395,6 +2566,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         // Scrolling won out (or a system gesture stole the contact): drop any
         // deferred click so it doesn't fire when the pointer is taken away.
         clear_pending_click();
+        clear_pending_press_focus();
         rinch_core::Drag::cancel();
         release_drag_pointer_capture();
     }) as Box<dyn FnMut(_)>);
