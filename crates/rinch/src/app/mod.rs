@@ -1405,6 +1405,7 @@ impl RinchApp {
                 && !theme_changed
                 && !rinch_dom::image_cache::has_pending(d.doc_key())
                 && !self.has_owed_editor_overlay_pass()
+                && !Self::has_owed_scroll(&d)
             {
                 return false;
             }
@@ -2321,11 +2322,25 @@ impl RinchApp {
             .as_ref()
             .map(|doc| {
                 let d = doc.borrow();
-                !d.tree.dirty_nodes.is_empty() || d.tree.styles_dirty
+                !d.tree.dirty_nodes.is_empty() || d.tree.styles_dirty || Self::has_owed_scroll(&d)
             })
             .unwrap_or(false)
             || self.has_pending_images()
             || self.has_owed_editor_overlay_pass()
+    }
+
+    /// Whether a `NodeHandle::scroll_into_view` / `scroll_to_fraction` is
+    /// queued and not yet applied (#1145). The request only queues on the tree
+    /// and `apply_scroll_into_view` drains it inside `resolve_and_repaint`, so,
+    /// like a decoded image, it is folded into both "is there anything to do?"
+    /// predicates and the resolve short-circuit: a "jump to" button or a
+    /// find-next asks for a scroll and changes nothing else, and used to wait
+    /// for an unrelated change to lay the document out. The drain empties both
+    /// queues whether or not a request found a scroll container, so a request
+    /// that moves nothing does not keep a loop spinning.
+    fn has_owed_scroll(d: &RinchDocument) -> bool {
+        !d.tree.scroll_into_view_requests.is_empty()
+            || !d.tree.scroll_to_fraction_requests.is_empty()
     }
 
     /// Whether an editor in this document is owed an overlay pass
@@ -2360,7 +2375,10 @@ impl RinchApp {
             .as_ref()
             .map(|doc| {
                 let d = doc.borrow();
-                !d.tree.dirty_nodes.is_empty() || d.tree.styles_dirty || d.tree.layout_dirty
+                !d.tree.dirty_nodes.is_empty()
+                    || d.tree.styles_dirty
+                    || d.tree.layout_dirty
+                    || Self::has_owed_scroll(&d)
             })
             .unwrap_or(false)
             || self.has_pending_images()
