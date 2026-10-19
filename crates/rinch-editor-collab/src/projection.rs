@@ -781,7 +781,7 @@ impl CollabDoc {
     pub(crate) fn to_doc_with_all_atom_ids(
         &self,
         schema: &Schema,
-    ) -> Result<(Node, Option<Vec<BlockId>>, Option<Vec<Option<String>>>)> {
+    ) -> Result<AllAtomIds> {
         self.to_doc_with_ids(schema, true)
     }
 
@@ -789,7 +789,7 @@ impl CollabDoc {
         &self,
         schema: &Schema,
         inline: bool,
-    ) -> Result<(Node, Option<Vec<BlockId>>, Option<Vec<Option<String>>>)> {
+    ) -> Result<AllAtomIds> {
         struct InlineRecording;
         impl Drop for InlineRecording {
             fn drop(&mut self) {
@@ -921,6 +921,10 @@ thread_local! {
     static ATOM_IDS: std::cell::RefCell<Option<std::result::Result<Vec<BlockId>, ()>>> =
         const { std::cell::RefCell::new(None) };
 }
+
+/// A read with its atoms' identities: the document, its leaf block atoms' CRDT
+/// blocks and its inline atoms' identities ([`CollabDoc::to_doc_with_all_atom_ids`]).
+pub(crate) type AllAtomIds = (Node, Option<Vec<BlockId>>, Option<Vec<Option<String>>>);
 
 thread_local! {
     /// While [`CollabDoc::to_doc_with_all_atom_ids`] reads: the identity of every
