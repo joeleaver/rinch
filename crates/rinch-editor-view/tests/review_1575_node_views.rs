@@ -826,3 +826,30 @@ fn n5_two_specs_that_flip_each_other_settle() {
     }
     assert!(renders.get() < 40, "settled after {} renders", renders.get());
 }
+
+/// Review 2 — a task list's host is a `div`, as an embed's is: an embed put in
+/// its place must get a view of its own, not the task list's patched
+/// descriptor, which has none.
+#[test]
+fn an_embed_replacing_a_task_list_at_its_place_gets_a_view() {
+    let p = page(
+        r#"<p>ab</p><ul data-type="taskList"><li data-type="taskItem" data-checked="false"><p>t</p></li></ul><p>cd</p>"#,
+    );
+    let seen = register(&p);
+    assert_eq!(seen.renders.get(), 0);
+    assert_eq!(p.handle.doc().child(1).type_name(), "task_list");
+    assert!(p.handle.update(|st| {
+        let list = st.doc.child(1);
+        let embed = st
+            .schema()
+            .create_node("embed", embed_attrs("s9"), Fragment::empty())
+            .ok()?;
+        let mut tr = st.tr();
+        tr.replace(4, 4 + list.node_size(), Slice::new(Fragment::from_node(embed), 0, 0))
+            .ok()?;
+        Some(tr)
+    }));
+    assert_eq!(p.handle.doc().child(1).type_name(), "embed");
+    assert_eq!(seen.renders.get(), 1, "the embed is drawn");
+    assert_eq!(seen.ctx.borrow()[0].pos(), Some(Pos(4)));
+}
