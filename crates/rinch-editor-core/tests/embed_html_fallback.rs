@@ -134,6 +134,27 @@ fn registrations_stack_and_release_by_their_own_guard() {
     assert_eq!(inner(&node_to_html(&d)), "");
 }
 
+/// Review of #1565, F4: a fallback that owns another registration's guard
+/// releases it when it is itself released — the inner guard drops while the
+/// outer one is being taken out, and is not lost to a registry still borrowed.
+#[test]
+fn a_guard_owned_by_a_fallback_is_released_with_it() {
+    let schema = Schema::starter_kit();
+    let d = doc(&schema, vec![embed(&schema, "s1")]);
+    let inner = set_html_fallback(|_| Some("INNER".to_string()));
+    let outer = set_html_fallback(move |_| {
+        let _keep = &inner;
+        Some("OUTER".to_string())
+    });
+    assert!(node_to_html(&d).contains("OUTER"));
+    drop(outer);
+    let after = node_to_html(&d);
+    assert_eq!(
+        after, r#"<div data-pm-type="embed" data-sheet="s1"></div>"#,
+        "the owned guard's fallback outlived it"
+    );
+}
+
 /// A fallback may itself export HTML (it runs with nothing borrowed).
 #[test]
 fn a_fallback_may_export_html_itself() {

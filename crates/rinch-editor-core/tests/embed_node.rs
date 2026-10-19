@@ -203,11 +203,117 @@ fn the_default_paste_keeps_an_embeds_data_attrs_from_rinchs_own_copy_only() {
     let pasted = slice_from_pasted_html(&schema, &copied).unwrap();
     assert_eq!(pasted.content.child(0), &e);
 
-    let foreign = r#"<div data-pm-type="embed" data-sheet="s1"></div>"#;
+    // Another application's element naming the type is not rinch's copy, so
+    // the paste reads it as the plain `<div>` it is (below).
+    let foreign = r#"<div data-pm-type="embed" data-sheet="s1"></div><p>x</p>"#;
     let pasted = slice_from_pasted_html(&schema, foreign).unwrap();
-    let got = pasted.content.child(0);
-    assert_eq!(got.type_name(), "embed");
-    assert!(data(got).is_empty(), "{got:?}");
+    assert!(
+        pasted
+            .content
+            .children()
+            .iter()
+            .all(|n| n.type_name() != "embed"),
+        "{pasted:?}"
+    );
+}
+
+/// Every text in `n`, in order.
+fn texts(n: &Node, out: &mut String) {
+    if let Some(t) = n.text() {
+        out.push_str(t);
+        out.push('|');
+    }
+    for c in n.content().children() {
+        texts(c, out);
+    }
+}
+
+fn slice_text(slice: &Slice) -> (String, usize) {
+    let mut out = String::new();
+    let mut embeds = 0;
+    fn count(n: &Node, k: &mut usize) {
+        if n.type_name() == "embed" {
+            *k += 1;
+        }
+        for c in n.content().children() {
+            count(c, k);
+        }
+    }
+    for c in slice.content.children() {
+        texts(c, &mut out);
+        count(c, &mut embeds);
+    }
+    (out, embeds)
+}
+
+/// Review of #1565, F2: the default paste reads a `<div data-pm-type>` as a
+/// block atom only from rinch's own copy-out ([`CLIPBOARD_MARK`]). A page that
+/// shows an app's export fallback (a static table) is copied from a browser
+/// without the mark, and its text arrives as text; an unclosed element no
+/// longer swallows what follows it.
+#[test]
+fn a_foreign_embed_element_pastes_as_its_content() {
+    let schema = Schema::starter_kit();
+    for (html, want) in [
+        (
+            r#"<div data-pm-type="embed" data-k="v">Hello <b>world</b></div><p>after</p>"#,
+            "Hello |world|after|",
+        ),
+        (
+            r#"<div data-pm-type="embed"><p>unclosed embed</p><p>rest of the doc</p>"#,
+            "unclosed embed|rest of the doc|",
+        ),
+        (
+            r#"<div data-pm-type="embed"><table><tr><td>cell</td></tr></table></div>"#,
+            "cell|",
+        ),
+    ] {
+        let (text, embeds) = slice_text(&slice_from_pasted_html(&schema, html).unwrap());
+        assert_eq!((text.as_str(), embeds), (want, 0), "{html}");
+    }
+}
+
+/// Review of #1565, F2: the copy-out marks every embed's element, so one with
+/// no data attributes still pastes back as an embed.
+#[test]
+fn a_rinch_copy_of_an_embed_without_data_attrs_pastes_back_as_an_embed() {
+    let schema = Schema::starter_kit();
+    let e = embed(&schema, &[]);
+    let slice = Slice::new(
+        Fragment::from_children(vec![para(&schema, "a"), e.clone(), para(&schema, "b")]),
+        0,
+        0,
+    );
+    let copied = slice_to_html(&slice);
+    assert!(copied.contains(CLIPBOARD_MARK), "{copied}");
+    let pasted = slice_from_pasted_html(&schema, &copied).unwrap();
+    assert_eq!(pasted.content.child(1), &e, "{copied}");
+}
+
+/// Review of #1565, F2: a load ([`slice_from_html`]) still reads the element as
+/// the embed whatever is inside it — exported HTML carries the app's fallback
+/// there and loads back as the same embed — and ignores that content.
+#[test]
+fn a_load_reads_a_marked_div_as_the_embed_and_ignores_its_content() {
+    let schema = Schema::starter_kit();
+    let html = r#"<div data-pm-type="embed" data-k="v"><p>fallback</p></div><p>after</p>"#;
+    let (text, embeds) = slice_text(&slice_from_html(&schema, html).unwrap());
+    assert_eq!((text.as_str(), embeds), ("after|", 1), "{html}");
+}
+
+/// Review of #1565, F5 (M12): only a `<div>` names a block atom; the marker on
+/// any other element is an unknown attribute.
+#[test]
+fn the_marker_on_an_element_that_is_not_a_div_is_no_embed() {
+    let schema = Schema::starter_kit();
+    for html in [
+        r#"<span data-pm-type="embed">x</span>"#,
+        r#"<p data-pm-type="embed">x</p>"#,
+        r#"<section data-pm-type="embed">x</section>"#,
+    ] {
+        let (text, embeds) = slice_text(&slice_from_html(&schema, html).unwrap());
+        assert_eq!((text.as_str(), embeds), ("x|", 0), "{html}");
+    }
 }
 
 #[cfg(feature = "serde")]
@@ -272,6 +378,38 @@ mod markdown {
         let d = doc(&schema, vec![table]);
         let md = doc_to_markdown(&d);
         assert_eq!(doc_from_markdown_strict(&schema, &md).unwrap(), d, "{md}");
+    }
+
+    /// Review of #1565, F5 (M10): strict refuses an embed in an HTML table whose
+    /// data attributes are past the bounds the import keeps (more than
+    /// `MAX_DATA_ATTRS`, or a value over `MAX_DATA_ATTR_VALUE`), rather than
+    /// reading it with the excess silently dropped.
+    #[test]
+    fn strict_refuses_an_embed_in_a_table_past_the_data_attr_bounds() {
+        use rinch_editor_core::schema::MAX_DATA_ATTR_VALUE;
+        let schema = Schema::starter_kit();
+        let many: String = (0..=MAX_DATA_ATTRS)
+            .map(|i| format!(" data-a{i}=\"v\""))
+            .collect();
+        let long = format!(" data-a=\"{}\"", "x".repeat(MAX_DATA_ATTR_VALUE + 1));
+        for attrs in [many, long] {
+            let md = format!(
+                "<table><tr><td><div data-pm-type=\"embed\"{attrs}></div></td></tr></table>\n"
+            );
+            match doc_from_markdown_strict(&schema, &md) {
+                Err(MarkdownError::Unsupported { .. }) => {}
+                other => panic!("{attrs:.60}: expected a refusal, got {other:?}"),
+            }
+        }
+        // At the bound it is read, every attribute kept.
+        let ok: String = (0..MAX_DATA_ATTRS)
+            .map(|i| format!(" data-a{i}=\"v\""))
+            .collect();
+        let md =
+            format!("<table><tr><td><div data-pm-type=\"embed\"{ok}></div></td></tr></table>\n");
+        let d = doc_from_markdown_strict(&schema, &md).unwrap();
+        let e = d.child(0).child(0).child(0).child(0).clone();
+        assert_eq!((e.type_name(), data(&e).len()), ("embed", MAX_DATA_ATTRS));
     }
 
     /// Strict refuses what it would drop: a reserved data attribute, text inside
