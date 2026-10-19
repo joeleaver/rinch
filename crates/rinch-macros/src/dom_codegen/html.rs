@@ -502,3 +502,138 @@ pub fn generate_class_code(
         }
     }
 }
+
+#[cfg(test)]
+mod event_and_fn_prop_tests {
+    //! What an `on*` or `*_fn` prop on an HTML element becomes (#1590, #1591).
+    use crate::dom_codegen::{DomCodegenContext, element_to_dom};
+    use crate::element::RsxElement;
+    use syn::parse_str;
+
+    fn codegen(src: &str) -> String {
+        let element: RsxElement = parse_str(src).expect("parses");
+        let mut ctx = DomCodegenContext::new();
+        element_to_dom(&element, &mut ctx).to_string()
+    }
+
+    fn is_error(out: &str) -> bool {
+        out.contains("compile_error")
+    }
+
+    /// #1590: `onsubmit` is the Enter handler, read by both backends from
+    /// `data-onsubmit`; it fell through to `data-rid`, the click handler.
+    #[test]
+    fn onsubmit_is_written_as_data_onsubmit_not_as_a_click() {
+        let out = codegen("input { onsubmit: || {} }");
+        assert!(!is_error(&out), "{out}");
+        assert!(out.contains("\"data-onsubmit\""), "{out}");
+        assert!(!out.contains("\"data-rid\""), "{out}");
+    }
+
+    /// An `onsubmit`-only `<input>`/`<textarea>` gets desktop's text-field
+    /// shim (a no-op `data-oninput`), as an `onchange`-only one does; any other
+    /// element does not, since a `div` carrying `data-oninput` is a text field.
+    #[test]
+    fn the_text_field_shim_is_given_to_controls_only() {
+        for tag in ["input", "textarea"] {
+            let out = codegen(&format!("{tag} {{ onsubmit: || {{}} }}"));
+            assert!(out.contains("\"data-oninput\""), "{tag}: {out}");
+        }
+        let out = codegen("div { onsubmit: || {} }");
+        assert!(!out.contains("\"data-oninput\""), "{out}");
+        // Beside a real oninput no shim is added (one data-oninput write).
+        let out = codegen("input { oninput: |_: String| {}, onsubmit: || {} }");
+        assert_eq!(out.matches("\"data-oninput\"").count(), 1, "{out}");
+    }
+
+    /// `onclick` stays the click handler.
+    #[test]
+    fn onclick_is_still_data_rid() {
+        let out = codegen("button { onclick: || {} }");
+        assert!(!is_error(&out) && out.contains("\"data-rid\""), "{out}");
+    }
+
+    /// Every event the macro supports still generates its handler — without
+    /// this, rejecting every `on*` name would pass the tests below.
+    #[test]
+    fn every_supported_event_generates_a_handler() {
+        for (name, attr) in [
+            ("onclick", "data-rid"),
+            ("oninput", "data-oninput"),
+            ("onchange", "data-onchange"),
+            ("onsubmit", "data-onsubmit"),
+            ("onscroll", "data-onscroll"),
+            ("onfiledrop", "data-onfiledrop"),
+            ("onfiledragenter", "data-onfiledragenter"),
+            ("onfiledragleave", "data-onfiledragleave"),
+            ("ondragstart", "data-ondragstart"),
+            ("ondragmove", "data-ondragmove"),
+            ("ondragend", "data-ondragend"),
+            ("ondrop", "data-ondrop"),
+            ("ondragenter", "data-ondragenter"),
+            ("ondragover", "data-ondragover"),
+            ("ondragleave", "data-ondragleave"),
+            ("oncontextmenu", "data-oncontextmenu"),
+            ("onmouseenter", "data-onenter"),
+            ("onmouseleave", "data-onleave"),
+            ("onmousedown", "data-onmousedown"),
+            ("onmouseup", "data-onmouseup"),
+            ("onmousemove", "data-onmousemove"),
+        ] {
+            let out = codegen(&format!("div {{ {name}: || {{}} }}"));
+            assert!(!is_error(&out), "{name}: {out}");
+            assert!(out.contains(&format!("\"{attr}\"")), "{name} -> {attr}: {out}");
+        }
+    }
+
+    /// #1590: an `on*` name the macro does not support was silently a click
+    /// handler. It is a compile error now, naming the supported events.
+    #[test]
+    fn an_unsupported_event_is_a_compile_error_not_a_click() {
+        for name in ["onkeydown", "onkeyup", "onfocus", "onblur", "ondblclick"] {
+            let out = codegen(&format!("div {{ {name}: || {{}} }}"));
+            assert!(is_error(&out), "{name}: {out}");
+            assert!(!out.contains("\"data-rid\""), "{name}: {out}");
+            assert!(out.contains("onclick") && out.contains("onsubmit"), "{name} must list the supported events: {out}");
+        }
+    }
+
+    /// A typo gets a suggestion, like an unknown tag (#528).
+    #[test]
+    fn a_misspelt_event_suggests_the_real_one() {
+        let out = codegen("div { onclik: || {} }");
+        assert!(is_error(&out) && out.contains("did you mean `onclick`"), "{out}");
+        let out = codegen("input { onsumbit: || {} }");
+        assert!(is_error(&out) && out.contains("did you mean `onsubmit`"), "{out}");
+        // And a name close to nothing suggests nothing.
+        let out = codegen("div { onkeydown: || {} }");
+        assert!(!out.contains("did you mean"), "{out}");
+    }
+
+    /// #1591: `value_fn:` / `checked_fn:` are component prop conventions; on a
+    /// raw element they used to become a `value_fn` attribute nothing reads.
+    #[test]
+    fn a_fn_prop_on_an_html_element_is_a_compile_error_naming_the_attribute() {
+        for (tag, name, attr) in [
+            ("input", "value_fn", "value"),
+            ("textarea", "value_fn", "value"),
+            ("select", "value_fn", "value"),
+            ("input", "checked_fn", "checked"),
+            ("div", "opened_fn", "opened"),
+        ] {
+            let out = codegen(&format!("{tag} {{ {name}: move || String::new() }}"));
+            assert!(is_error(&out), "{tag} {name}: {out}");
+            assert!(!out.contains(&format!("\"{name}\"")), "no phantom attribute: {out}");
+            assert!(out.contains(&format!("`{attr}: {{|| …}}`")), "{tag} {name} must name `{attr}:`: {out}");
+        }
+    }
+
+    /// The other half: a reactive `value:` / `checked:` is still an attribute.
+    #[test]
+    fn a_reactive_value_or_checked_is_still_an_attribute() {
+        for name in ["value", "checked"] {
+            let out = codegen(&format!("input {{ {name}: {{|| true}} }}"));
+            assert!(!is_error(&out) && out.contains(&format!("\"{name}\"")), "{out}");
+        }
+    }
+}
