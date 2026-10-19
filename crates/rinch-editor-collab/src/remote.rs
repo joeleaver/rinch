@@ -295,7 +295,25 @@ fn changed_middle(
         AtomMatch::Positional => None,
     };
     let inline_before: usize = (0..diff.prefix).map(|i| inline_atoms(old.child(i))).sum();
+    // An identity two chars carry (two copies of one picture that split apart:
+    // `crate::atoms`, *What is left*) names neither of them.
+    let shared = inline
+        .map(|i| {
+            let mut seen = std::collections::HashSet::new();
+            let mut shared = std::collections::HashSet::new();
+            for list in [i.old, i.new] {
+                seen.clear();
+                for id in list.iter().flatten() {
+                    if !seen.insert(id.as_str()) {
+                        shared.insert(id.clone());
+                    }
+                }
+            }
+            shared
+        })
+        .unwrap_or_default();
     let mut walk = MiddleWalk {
+        shared,
         edits: Vec::new(),
         atoms,
         ko: before,
@@ -325,6 +343,8 @@ struct MiddleWalk<'a> {
     inline: Option<InlineIds<'a>>,
     io: usize,
     in_: usize,
+    /// Identities more than one inline atom carries, on either side.
+    shared: std::collections::HashSet<String>,
 }
 
 impl MiddleWalk<'_> {
@@ -367,6 +387,21 @@ impl MiddleWalk<'_> {
         {
             return None;
         }
+        // One node twice in the block (a picture copied and moved in one editor:
+        // the two copies are one `Rc`) is no atom the model can tell from the
+        // other; the projection cannot either, so the next local edit of either
+        // may write the other's char. Replaced, the block is read afresh.
+        let atoms: Vec<&Node> = (0..a.child_count())
+            .map(|i| a.child(i))
+            .filter(|c| is_inline_atom(c))
+            .collect();
+        if atoms
+            .iter()
+            .enumerate()
+            .any(|(i, x)| atoms[..i].iter().any(|y| y.same_ref(x)))
+        {
+            return None;
+        }
         let mut changes = Vec::new();
         let mut child_pos = pos + 1;
         let mut k = 0;
@@ -385,7 +420,7 @@ impl MiddleWalk<'_> {
                     }
                     return None;
                 };
-                if ox != ny {
+                if ox != ny || self.shared.contains(ox) {
                     return None;
                 }
                 for (key, value) in y.attrs().iter() {
