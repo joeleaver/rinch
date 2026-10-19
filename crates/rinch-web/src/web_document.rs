@@ -216,6 +216,17 @@ pub(crate) fn node_by_nid(nid: usize) -> Option<web_sys::Node> {
         .filter(|n| n.is_connected())
 }
 
+/// The browser element behind `handle`.
+///
+/// Attached or not: a node view is mounted on its host while the editor's
+/// container is still being built, before it joins the page.
+pub(crate) fn element_of(handle: &rinch_core::dom::NodeHandle) -> Option<web_sys::Element> {
+    NODE_REGISTRY
+        .with(|m| m.borrow().get(&handle.node_id().0).cloned())?
+        .dyn_into::<web_sys::Element>()
+        .ok()
+}
+
 /// Set the `__nid` JS property on a browser node for reverse lookups.
 fn set_nid(node: &web_sys::Node, id: NodeId) {
     let _ = js_sys::Reflect::set(node, &"__nid".into(), &JsValue::from(id.0 as u32));

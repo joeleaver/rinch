@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 use crate::handle::ScrollAlign;
+use crate::node_views::{Registry, Slot, Work};
 use rinch_core::dom::{CaretAffinity, DomDocument, NodeFont, NodeHandle};
 use rinch_editor_core::decoration::DecorationSet;
 use rinch_editor_core::serialize::{mark_dom_tag, node_dom_tag};
@@ -388,6 +389,76 @@ pub(crate) struct ViewDesc {
     ///
     /// [`TableMap`]: rinch_editor_core::tables::TableMap
     grid_placement: Option<GridPlacement>,
+    /// The node-view slot of a leaf node a registered
+    /// [`NodeViewSpec`](crate::NodeViewSpec) may draw: the app's component is
+    /// mounted inside [`Self::dom`] (see [`crate::node_views`]). `None` for every
+    /// other node.
+    slot: Option<Rc<Slot>>,
+    /// Whether this subtree holds any [`Self::slot`]. A subtree that does is
+    /// taken out of the host by [`retire`] (detached, its views disposed, then
+    /// discarded) rather than discarded on the spot, and a changed stretch that
+    /// holds one is diffed by node identity ([`ViewDesc::diff_children`]).
+    has_view: bool,
+}
+
+/// What the descriptor diff needs beside the host document: the editor's node
+/// views and where to queue their work, and which nodes a `SetNodeAttrStep`
+/// proved to be the same node with other attributes.
+pub(crate) struct Cx<'a> {
+    doc: &'a DocRef,
+    /// The editor's registered node views, while any is registered.
+    views: Option<&'a Registry>,
+    /// Positions (in the new document) of nodes the transaction changed the
+    /// attributes of — the only nodes a node view keeps its mount through when
+    /// they are not the same `Rc` (decision (d): never hand a view another node).
+    kept: &'a [usize],
+    work: &'a mut Vec<Work>,
+    slots: &'a mut Vec<Rc<Slot>>,
+}
+
+impl Cx<'_> {
+    /// A slot for `node`'s host `dom`, when a registered spec draws its type.
+    fn slot_for(&mut self, node: &Node, dom: &NodeHandle) -> Option<Rc<Slot>> {
+        let views = self.views?;
+        if node.is_text() || !node.is_leaf() || !views.claims(node.type_name()) {
+            return None;
+        }
+        let slot = Slot::new(dom.clone(), self.doc.clone(), node.clone());
+        self.work.push(Work::Sync(slot.clone()));
+        self.slots.push(slot.clone());
+        Some(slot)
+    }
+}
+
+/// Take `desc`'s host out of the document for good, replacing it with
+/// `replacement` when given. A subtree without node views is discarded at once
+/// (issue #719); one with views is detached and its views marked removed, and the
+/// discard waits for [`crate::node_views::run`] to dispose them first — their
+/// cleanups run with no editor borrow held and still see their own nodes.
+fn retire(desc: ViewDesc, cx: &mut Cx, replacement: Option<&NodeHandle>) {
+    if let Some(r) = replacement {
+        desc.outer.replace_with(r);
+    }
+    if !desc.has_view {
+        desc.outer.discard();
+        return;
+    }
+    fn mark(desc: &ViewDesc, work: &mut Vec<Work>) {
+        if let Some(slot) = &desc.slot {
+            slot.mark_removed();
+            work.push(Work::Sync(slot.clone()));
+        }
+        for c in &desc.children {
+            if c.has_view {
+                mark(c, work);
+            }
+        }
+    }
+    mark(&desc, cx.work);
+    if replacement.is_none() {
+        desc.outer.remove();
+    }
+    cx.work.push(Work::Discard(desc.outer));
 }
 
 /// Where a table cell sits in its table's CSS grid: the [`TableMap`] rectangle,
@@ -484,7 +555,8 @@ fn same_table_spans(a: &Node, b: &Node) -> bool {
 impl ViewDesc {
     /// Build a descriptor (and its host subtree, including inline mark wrappers)
     /// for `node`.
-    fn build(node: &Node, doc: &DocRef) -> Option<ViewDesc> {
+    fn build(node: &Node, cx: &mut Cx) -> Option<ViewDesc> {
+        let doc = cx.doc;
         let (dom, children, is_text) = if let Some(text) = node.text() {
             (create_text(doc, text)?, Vec::new(), true)
         } else {
@@ -492,7 +564,7 @@ impl ViewDesc {
             apply_element_attrs(&el, node, None);
             let mut children = Vec::with_capacity(node.child_count());
             for i in 0..node.child_count() {
-                if let Some(child) = ViewDesc::build(node.child(i), doc) {
+                if let Some(child) = ViewDesc::build(node.child(i), cx) {
                     el.append_child(&child.outer);
                     children.push(child);
                 }
@@ -502,7 +574,15 @@ impl ViewDesc {
         // Inline marks (on a text run or inline leaf) wrap the node's own host
         // node; blocks are unmarked, so `outer == dom` there.
         let outer = wrap_marks(&dom, node.marks(), doc);
+        let slot = if is_text {
+            None
+        } else {
+            cx.slot_for(node, &dom)
+        };
+        let has_view = slot.is_some() || children.iter().any(|c| c.has_view);
         Some(ViewDesc {
+            slot,
+            has_view,
             node: node.clone(),
             dom,
             outer,
@@ -517,7 +597,7 @@ impl ViewDesc {
             grid_placement: None,
         })
         .map(|mut desc| {
-            desc.sync_trailing_break(doc);
+            desc.sync_trailing_break(cx.doc);
             if rinch_editor_core::tables::is_table(&desc.node) {
                 desc.sync_table_spans();
             }
@@ -622,9 +702,29 @@ impl ViewDesc {
     /// kinds are incompatible (text vs element, a different element tag, or a
     /// changed mark set whose wrapper chain differs) and the caller must replace
     /// the whole subtree instead.
-    fn update(&mut self, new: &Node, doc: &DocRef) -> bool {
+    ///
+    /// `pos` is the position just before `new` in the new document. A node a
+    /// view is mounted for ([`Self::slot`]) is patched in place only when it is
+    /// the same node: the same `Rc`, or one whose attributes a `SetNodeAttrStep`
+    /// changed ([`Cx::kept`]) — never a different node that happens to stand at
+    /// its place (decision (d)); then `false` rebuilds it, and its view is
+    /// remounted.
+    fn update(&mut self, new: &Node, cx: &mut Cx, pos: usize) -> bool {
         // Fast path: same persistent subtree — nothing changed (design A12).
         if self.node.same_ref(new) {
+            return true;
+        }
+        if let Some(slot) = &self.slot {
+            if self.node.type_name() != new.type_name()
+                || self.node.marks() != new.marks()
+                || !cx.kept.contains(&pos)
+            {
+                return false;
+            }
+            apply_element_attrs(&self.dom, new, Some(&self.node));
+            slot.set_node(new.clone());
+            cx.work.push(Work::Sync(slot.clone()));
+            self.node = new.clone();
             return true;
         }
         // A changed mark set alters the wrapper chain (`outer`), which can't be
@@ -668,7 +768,8 @@ impl ViewDesc {
         // built by this diff has no placement yet.
         let replace_spans =
             rinch_editor_core::tables::is_table(new) && !same_table_spans(&self.node, new);
-        self.diff_children(new, doc);
+        self.diff_children(new, cx, pos + 1);
+        self.has_view = self.slot.is_some() || self.children.iter().any(|c| c.has_view);
         self.node = new.clone();
         if rinch_editor_core::tables::is_table(new)
             && (replace_spans
@@ -680,7 +781,7 @@ impl ViewDesc {
         {
             self.sync_table_spans();
         }
-        self.sync_trailing_break(doc);
+        self.sync_trailing_break(cx.doc);
         true
     }
 
@@ -698,7 +799,16 @@ impl ViewDesc {
     /// long document re-shaped every paragraph below the caret on the desktop.
     /// A keyed/LIS pass is still not needed: an edit typically changes one contiguous
     /// stretch of siblings, which is exactly what prefix + suffix isolate.
-    fn diff_children(&mut self, new: &Node, doc: &DocRef) {
+    ///
+    /// `content_start` is the position just inside `new`'s content (0 for the
+    /// document), so each child's position is known for [`Self::update`].
+    ///
+    /// A changed stretch holding a node view is diffed by **node identity**
+    /// instead ([`Self::diff_stretch_keyed`]): a view's node that only moved
+    /// within the stretch (a block inserted before it and another removed after
+    /// it in one transaction) keeps its mount rather than being matched by
+    /// position against another node and remounted.
+    fn diff_children(&mut self, new: &Node, cx: &mut Cx, content_start: usize) {
         let new_count = new.child_count();
         let old_count = self.children.len();
         let mut start = 0;
@@ -719,24 +829,34 @@ impl ViewDesc {
             new_end -= 1;
         }
         // The changed stretch: `old[start..old_end]` becomes `new[start..new_end]`.
+        let mut pos = content_start
+            + new.content().children()[..start]
+                .iter()
+                .map(Node::node_size)
+                .sum::<usize>();
+        if self.children[start..old_end].iter().any(|c| c.has_view) {
+            self.diff_stretch_keyed(new, cx, start, old_end, new_end, pos);
+            return;
+        }
         let common = (old_end - start).min(new_end - start);
         for i in start..start + common {
             let new_child = new.child(i);
-            if self.children[i].update(new_child, doc) {
+            let at = pos;
+            pos += new_child.node_size();
+            if self.children[i].update(new_child, cx, at) {
                 continue;
             }
             // Kind changed — build a replacement and swap it into the host
             // (by the placed `outer` node, which differs from `dom` for a
             // mark-wrapped run).
-            if let Some(replacement) = ViewDesc::build(new_child, doc) {
-                self.children[i].outer.replace_with(&replacement.outer);
+            if let Some(replacement) = ViewDesc::build(new_child, cx) {
                 // `replace_with` *detaches* the node it displaces (issue
-                // #719); the `ViewDesc` holding it is overwritten on the
-                // next line, so nothing can show it again. Say so, or the
+                // #719); the `ViewDesc` holding it is overwritten here, so
+                // nothing can show it again. `retire` says so, or the
                 // browser backend pins it for the life of the page — this
                 // is a per-keystroke path.
-                self.children[i].outer.discard();
-                self.children[i] = replacement;
+                let old = std::mem::replace(&mut self.children[i], replacement);
+                retire(old, cx, Some(&self.children[i].outer));
             }
         }
         let at = start + common;
@@ -744,7 +864,7 @@ impl ViewDesc {
             // New children go in before the unchanged suffix (or at the end).
             let mut built = Vec::with_capacity(new_end - at);
             for i in at..new_end {
-                if let Some(new_desc) = ViewDesc::build(new.child(i), doc) {
+                if let Some(new_desc) = ViewDesc::build(new.child(i), cx) {
                     // At the end, still before the trailing-break placeholder,
                     // which stays last until `sync_trailing_break` drops it.
                     match self
@@ -762,10 +882,83 @@ impl ViewDesc {
             self.children.splice(at..at, built);
         } else if old_end > at {
             // Dropped for good — `discard`, not `remove` (issue #719).
-            for extra in self.children.drain(at..old_end) {
-                extra.outer.discard();
+            let extras: Vec<ViewDesc> = self.children.drain(at..old_end).collect();
+            for extra in extras {
+                retire(extra, cx, None);
             }
         }
+    }
+
+    /// [`Self::diff_children`]'s changed stretch `old[start..old_end]` →
+    /// `new[start..new_end]` (the new children starting at `pos`), matched by node
+    /// identity: a new child that is the same `Rc` as an old one anywhere in the
+    /// stretch takes that descriptor (its host is moved, a view in it stays
+    /// mounted); any other is patched over the old descriptor at its own index,
+    /// if that one is free and [`Self::update`] accepts it, or built. The old
+    /// descriptors nobody took are retired.
+    fn diff_stretch_keyed(
+        &mut self,
+        new: &Node,
+        cx: &mut Cx,
+        start: usize,
+        old_end: usize,
+        new_end: usize,
+        mut pos: usize,
+    ) {
+        let mut old: Vec<Option<ViewDesc>> =
+            self.children.drain(start..old_end).map(Some).collect();
+        // An old descriptor some new child is the same node as is that child's,
+        // and is never patched over another.
+        let reserved: Vec<bool> = old
+            .iter()
+            .map(|o| {
+                o.as_ref()
+                    .is_some_and(|o| (start..new_end).any(|j| o.node.same_ref(new.child(j))))
+            })
+            .collect();
+        let mut placed: Vec<ViewDesc> = Vec::with_capacity(new_end - start);
+        for j in start..new_end {
+            let child = new.child(j);
+            let at = pos;
+            pos += child.node_size();
+            let same = old
+                .iter()
+                .position(|o| o.as_ref().is_some_and(|o| o.node.same_ref(child)));
+            if let Some(k) = same {
+                placed.extend(old[k].take());
+                continue;
+            }
+            let free = reserved.get(j - start) == Some(&false);
+            if let Some(mut desc) = old
+                .get_mut(j - start)
+                .filter(|_| free)
+                .and_then(Option::take)
+            {
+                if desc.update(child, cx, at) {
+                    placed.push(desc);
+                    continue;
+                }
+                retire(desc, cx, None);
+            }
+            placed.extend(ViewDesc::build(child, cx));
+        }
+        for desc in old.into_iter().flatten() {
+            retire(desc, cx, None);
+        }
+        // Place them in order before the unchanged suffix (or the trailing-break
+        // placeholder, or at the end); a kept host is moved, not rebuilt.
+        let anchor = self
+            .children
+            .get(start)
+            .map(|c| c.outer.clone())
+            .or(self.trailing_break.clone());
+        for desc in &placed {
+            match &anchor {
+                Some(next) => self.dom.insert_before(&desc.outer, next),
+                None => self.dom.append_child(&desc.outer),
+            }
+        }
+        self.children.splice(start..start, placed);
     }
 
     /// The placed host node of the first block child, if any (the placeholder is
@@ -868,6 +1061,25 @@ pub struct RinchDomEditorView {
     /// (`textblock_flat_byte` / `ifc_byte_to_char`) counts them so a caret after
     /// a break (#1099) or a tab (#1109) is drawn after it.
     flat: FlatWidths,
+    /// The editor's node views ([`crate::node_views`]), shared with its handle.
+    node_views: Rc<Registry>,
+    /// Node-view work the diff queued, run by the handle once its borrow is
+    /// released ([`Self::take_node_view_work`]).
+    node_view_work: Vec<Work>,
+    /// Every live node-view slot, in no particular order.
+    slots: Vec<Rc<Slot>>,
+    /// The slot of the node-selected node, while that node has one.
+    selected_slot: Option<Rc<Slot>>,
+    /// The next [`EditorView::update_dom`]'s proof of which nodes are the same
+    /// node with other attributes ([`Cx::kept`]); taken by it.
+    kept: Vec<usize>,
+    /// Set once the editor unmounted ([`Self::dispose_node_views`]): no slot is
+    /// made after that.
+    node_views_off: bool,
+    /// Each mounted view's host box as the last caret pass saw it, so a view
+    /// that grew or shrank re-runs the selection overlay
+    /// ([`Self::node_view_hosts_moved`]).
+    view_boxes: Vec<(usize, (i32, i32, i32, i32))>,
 }
 
 /// How far above and below a revealed range [`RinchDomEditorView::position_reveal`]
@@ -880,6 +1092,18 @@ impl RinchDomEditorView {
     /// element standing in for the `doc` node). `container` is owned by the caller
     /// and never replaced.
     pub fn new(container: NodeHandle, doc: DocRef, state: &EditorState) -> RinchDomEditorView {
+        Self::with_node_views(container, doc, state, Rc::default())
+    }
+
+    /// [`Self::new`] for an editor whose node views are `node_views`: a node a
+    /// registered spec draws gets a slot, and its view is mounted by the work
+    /// [`Self::take_node_view_work`] hands back.
+    pub(crate) fn with_node_views(
+        container: NodeHandle,
+        doc: DocRef,
+        state: &EditorState,
+        node_views: Rc<Registry>,
+    ) -> RinchDomEditorView {
         // Ship the default editor stylesheet (light + dark) so the editor looks
         // polished out of the box — injected once per document.
         super::styles::ensure_default_styles(&doc);
@@ -892,13 +1116,27 @@ impl RinchDomEditorView {
         // selection rects (`z-index: -1`) then paint *behind* the in-flow text and
         // the caret (`z-index: 1`) in front.
         let mut children = Vec::with_capacity(state.doc.child_count());
-        for i in 0..state.doc.child_count() {
-            if let Some(child) = ViewDesc::build(state.doc.child(i), &doc) {
-                container.append_child(&child.outer);
-                children.push(child);
+        let mut node_view_work = Vec::new();
+        let mut slots = Vec::new();
+        {
+            let mut cx = Cx {
+                doc: &doc,
+                views: (!node_views.is_empty()).then_some(&*node_views),
+                kept: &[],
+                work: &mut node_view_work,
+                slots: &mut slots,
+            };
+            for i in 0..state.doc.child_count() {
+                if let Some(child) = ViewDesc::build(state.doc.child(i), &mut cx) {
+                    container.append_child(&child.outer);
+                    children.push(child);
+                }
             }
         }
+        let has_view = children.iter().any(|c| c.has_view);
         let root = ViewDesc {
+            slot: None,
+            has_view,
             node: state.doc.clone(),
             outer: container.clone(),
             dom: container,
@@ -935,8 +1173,16 @@ impl RinchDomEditorView {
             decorations: DecorationSet::empty(),
             overlay_dirty: false,
             reveal_probes: Vec::new(),
+            node_views,
+            node_view_work,
+            slots,
+            selected_slot: None,
+            kept: Vec::new(),
+            node_views_off: false,
+            view_boxes: Vec::new(),
         };
         view.sync_decorations(state);
+        view.sync_selected_slot(state);
         view
     }
 
@@ -1000,14 +1246,35 @@ impl EditorView for RinchDomEditorView {
     fn update_dom(&mut self, _prev: &EditorState, next: &EditorState) -> Vec<ViewRequest> {
         // Phase 1 (before layout): diff the document and patch the host. The root's
         // host element is fixed, so only its children reconcile.
-        self.root.diff_children(&next.doc, &self.doc);
+        let kept = std::mem::take(&mut self.kept);
+        let registry = self.node_views.clone();
+        {
+            let mut cx = Cx {
+                doc: &self.doc,
+                views: (!self.node_views_off && !registry.is_empty()).then_some(&*registry),
+                kept: &kept,
+                work: &mut self.node_view_work,
+                slots: &mut self.slots,
+            };
+            self.root.diff_children(&next.doc, &mut cx, 0);
+        }
+        self.root.has_view = self.root.children.iter().any(|c| c.has_view);
         self.root.node = next.doc.clone();
+        if self.slots.iter().any(|s| s.is_removed()) {
+            self.slots.retain(|s| !s.is_removed());
+        }
+        self.sync_selected_slot(next);
         // Decoration diff, independent of the document diff (A4).
         self.sync_decorations(next);
         Vec::new()
     }
 
     fn update_caret(&mut self, next: &EditorState) -> Vec<ViewRequest> {
+        // A node view that grew or shrank moved everything below it: the
+        // selection highlight is keyed by position, so it is drawn again.
+        if self.node_view_hosts_moved() {
+            self.last_selection = None;
+        }
         // Phase 2 (after layout): render the selection from `next.selection`.
         //
         // Every request below is emitted only when the selection overlay actually
@@ -1117,6 +1384,175 @@ impl RinchDomEditorView {
     /// The editor container (the `doc` node's element).
     pub(crate) fn container(&self) -> &NodeHandle {
         &self.root.dom
+    }
+
+    /// The node-view work queued since the last call ([`crate::node_views::run`]).
+    pub(crate) fn take_node_view_work(&mut self) -> Vec<Work> {
+        std::mem::take(&mut self.node_view_work)
+    }
+
+    /// Prove, for the next [`EditorView::update_dom`], which nodes are the same
+    /// node with other attributes: positions in the new document ([`Cx::kept`]).
+    pub(crate) fn set_kept(&mut self, kept: Vec<usize>) {
+        self.kept = kept;
+    }
+
+    /// Re-read which nodes the registered specs draw (a spec was registered or
+    /// released): a node of a newly drawn type gets a slot, and every slot is
+    /// matched again.
+    pub(crate) fn rescan_node_views(&mut self) {
+        if self.node_views_off {
+            return;
+        }
+        let registry = self.node_views.clone();
+        fn walk(desc: &mut ViewDesc, cx: &mut Cx) {
+            match &desc.slot {
+                Some(slot) => cx.work.push(Work::Sync(slot.clone())),
+                None if !desc.is_text => desc.slot = cx.slot_for(&desc.node, &desc.dom),
+                None => {}
+            }
+            for c in &mut desc.children {
+                walk(c, cx);
+            }
+            desc.has_view = desc.slot.is_some() || desc.children.iter().any(|c| c.has_view);
+        }
+        let mut cx = Cx {
+            doc: &self.doc,
+            views: Some(&*registry),
+            kept: &[],
+            work: &mut self.node_view_work,
+            slots: &mut self.slots,
+        };
+        for c in &mut self.root.children {
+            walk(c, &mut cx);
+        }
+        self.root.has_view = self.root.children.iter().any(|c| c.has_view);
+        let selected = self.selected_slot.clone();
+        if let Some(slot) = selected {
+            self.node_view_work.push(Work::Sync(slot));
+        }
+    }
+
+    /// Queue a refresh of every view's read-only and dark-mode memos.
+    pub(crate) fn node_view_flags_changed(&mut self) {
+        if !self.slots.is_empty() {
+            self.node_view_work.push(Work::Flags(self.slots.clone()));
+        }
+    }
+
+    /// The editor is unmounting: hand back every slot for disposal, and make no
+    /// more.
+    pub(crate) fn dispose_node_views(&mut self) -> Vec<Rc<Slot>> {
+        self.node_views_off = true;
+        self.selected_slot = None;
+        self.node_view_work.clear();
+        std::mem::take(&mut self.slots)
+    }
+
+    /// The model position just before the node `slot` is for.
+    pub(crate) fn slot_pos(&self, slot: &Rc<Slot>) -> Option<usize> {
+        fn walk(desc: &ViewDesc, slot: &Rc<Slot>, content_start: usize) -> Option<usize> {
+            let mut pos = content_start;
+            for child in &desc.children {
+                if child.slot.as_ref().is_some_and(|s| Rc::ptr_eq(s, slot)) {
+                    return Some(pos);
+                }
+                if child.has_view
+                    && let Some(found) = walk(child, slot, pos + 1)
+                {
+                    return Some(found);
+                }
+                pos += child.node.node_size();
+            }
+            None
+        }
+        walk(&self.root, slot, 0)
+    }
+
+    /// The slot of the node starting at `pos`, if it has one.
+    pub(crate) fn slot_at(&self, doc: &Node, pos: Pos) -> Option<Rc<Slot>> {
+        let r = doc.resolve(pos).ok()?;
+        let mut desc = &self.root;
+        for d in 0..r.depth() {
+            desc = desc.children.get(r.index(d))?;
+        }
+        desc.children.get(r.index(r.depth()))?.slot.clone()
+    }
+
+    /// The slot whose host is the element `host_id`.
+    pub(crate) fn slot_by_host(&self, host_id: usize) -> Option<Rc<Slot>> {
+        self.slots
+            .iter()
+            .find(|s| s.host.node_id().0 == host_id)
+            .cloned()
+    }
+
+    /// Whether `pos` names a node with a mounted view.
+    pub(crate) fn has_mounted_view_at(&self, doc: &Node, pos: Pos) -> bool {
+        self.slot_at(doc, pos).is_some_and(|s| s.is_mounted())
+    }
+
+    /// Follow the selection onto the node-view slot it node-selects.
+    fn sync_selected_slot(&mut self, state: &EditorState) {
+        if self.slots.is_empty() && self.selected_slot.is_none() {
+            return;
+        }
+        let now = match &state.selection {
+            Selection::Node(n) => self.slot_at(&state.doc, n.anchor),
+            _ => None,
+        };
+        let same = match (&now, &self.selected_slot) {
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        if let Some(old) = self.selected_slot.take()
+            && old.set_selected(false)
+        {
+            self.node_view_work.push(Work::Flags(vec![old]));
+        }
+        if let Some(new) = &now
+            && new.set_selected(true)
+        {
+            self.node_view_work.push(Work::Flags(vec![new.clone()]));
+        }
+        self.selected_slot = now;
+    }
+
+    /// Whether a mounted view's host box changed since the last call.
+    fn node_view_hosts_moved(&mut self) -> bool {
+        if self.view_boxes.is_empty() && !self.slots.iter().any(|s| s.is_mounted()) {
+            return false;
+        }
+        let Some(doc) = self.doc.upgrade() else {
+            return false;
+        };
+        let boxes: Vec<(usize, (i32, i32, i32, i32))> = {
+            let d = doc.borrow();
+            self.slots
+                .iter()
+                .filter(|s| s.is_mounted())
+                .filter_map(|s| {
+                    let id = s.host.node_id().0;
+                    let (x, y, w, h) = d.query_node_layout(id as u64)?;
+                    Some((
+                        id,
+                        (
+                            x.round() as i32,
+                            y.round() as i32,
+                            w.round() as i32,
+                            h.round() as i32,
+                        ),
+                    ))
+                })
+                .collect()
+        };
+        let moved = boxes != self.view_boxes;
+        self.view_boxes = boxes;
+        moved
     }
 
     /// The host id of the editor container (the `doc` node's element).

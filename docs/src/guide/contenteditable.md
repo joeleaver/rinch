@@ -540,12 +540,13 @@ handle.update(|state| {
 });
 ```
 
-It is edited as a horizontal rule is: a click or an arrow selects it whole,
-Backspace or Delete on it removes it, and its host element is an empty
-`<div data-pm-type="embed" data-sheet="sheet-42">` that the default stylesheet gives
-a line of height and a dashed outline while it is empty. Drawing the app's content
-in that element (node views) is the next step of this feature and not in this
-release.
+`handle.insert_embed(attrs)` does the same in one call. It is edited as a
+horizontal rule is: a click or an arrow selects it whole, Backspace at the start of
+the paragraph after it (or Delete at the end of the one before) selects it, and
+Backspace or Delete on it removes it. Its host element is
+`<div data-pm-type="embed" data-sheet="sheet-42">`; with nothing drawn in it the
+default stylesheet gives it a line of height and a dashed outline. What is drawn in
+it is a [node view](#node-views-your-component-in-the-document).
 
 **HTML.** An embed is written as that `<div>` and read back from it, wherever a
 block can stand. The default paste reads the element as an embed only from rinch's
@@ -576,6 +577,81 @@ is unregistered when the guard is dropped; registrations stack, so dropping a la
 one brings an earlier one back. **Markdown** writes the bare element as an HTML
 block, which both of its readers take back, and a `DocNode` keeps the attributes
 like any others.
+
+### Node views: your component in the document
+
+A node view draws one of your components in place of an embed: a live sheet, a
+canvas, a counter. Register it on the handle:
+
+```rust
+use rinch::prelude::*;
+use rinch_editor_core::AttrValue;
+
+let view = NodeViewSpec::new("embed", |__scope, ctx: NodeViewCtx| {
+    let clicks = Signal::new(0);
+    let sheet = ctx.attrs;
+    let ctx_for_button = ctx.clone();
+    rsx! {
+        div { class: "sheet",
+            p { {move || format!("Sheet {}", sheet.get().get_str("data-sheet").unwrap_or("?"))} }
+            input { placeholder: "a cell" }
+            button {
+                onclick: move || {
+                    clicks.update(|n| *n += 1);
+                    ctx_for_button.set_attrs(|a| *a = a.with("data-rev", AttrValue::from(clicks.get().to_string())));
+                },
+                "Save"
+            }
+        }
+    }
+})
+.matches(|attrs| attrs.get_str("data-sheet").is_some());
+handle.register_node_view(view).keep();
+```
+
+- **Which nodes.** Every node of the spec's type (a **leaf** type: `embed`, or an
+  app schema's own) whose attributes `matches` accepts; the first registered spec
+  that matches wins. Releasing a registration (dropping it, or the component that
+  registered it unmounting, after `.keep()`) unmounts its views, and the next spec
+  that matches takes over.
+- **Lifetime.** A view is mounted when its node's host is built and disposed when the
+  node leaves the document — its scope, with every signal, effect and handler it
+  made, goes with it. Typing anywhere else never touches it, and its own state
+  (`clicks` above) survives. It is also disposed when the editor unmounts.
+- **One node, for good.** A view is never handed a different node. Its context
+  follows its node's attributes — `ctx.set_attrs` (one undo step, sent to
+  collaborators key by key), its undo and redo, and a collaborator's change all
+  arrive in `ctx.attrs` without a remount. Anything else that puts a node where its
+  node stood — a replace, an undo of a delete, a move, a paste of a copy, even an
+  identical twin — is another node and gets a fresh mount. Key your app's state to
+  the node's attributes, not to its position.
+- **Context.** `ctx.attrs`, `ctx.selected` (node-selected), `ctx.read_only` and
+  `ctx.dark_mode` are memos; `ctx.pos()`, `ctx.set_attrs(..)`, `ctx.delete()`,
+  `ctx.select()`, `ctx.return_focus()` and `ctx.editor()` act on the node. A
+  read-only editor refuses `set_attrs` and `delete`.
+- **Events.** A press or a key inside the component is the component's: an `<input>`
+  in it takes the keyboard (the editor's caret goes), a button in it clicks. A press
+  on the host's frame — the padding the default stylesheet gives a host with a view
+  — node-selects the node, as an arrow onto it does.
+- **Keys.** While the keyboard is inside the view, `.on_key(|key| bool)` sees every
+  key first; `true` consumes it. An Escape it does not consume gives the keyboard
+  back to the editor with the caret right after the node (`ctx.return_focus()` does
+  the same from code). An arrow that lands on the node calls
+  `.on_caret_enter(|from: CaretFrom| bool)` with the side it came from; answer
+  `true` when the view took the keyboard (it focused something of its own),
+  `false` to leave the node selected. Up and Down node-select a node with a view
+  (they step over a horizontal rule).
+- **Layout.** The host's height follows the component's, and the caret and
+  selection below it follow when it grows or shrinks.
+- **Collaboration.** A collaborator's attribute change keeps the view mounted; a
+  collaborator moving the node (or swapping two embeds) remounts it. Every peer must
+  run a build with node views: a peer built before them writes an embed it moved
+  into the place of the node that stood there, which a newer peer cannot tell from
+  an attribute change.
+
+Your code (`matches`, the render, `on_key`, `on_caret_enter`) runs with no editor
+state borrowed, after the edit that caused it has been applied: it may read the
+editor, dispatch to it and write signals.
 
 ### Dark mode
 

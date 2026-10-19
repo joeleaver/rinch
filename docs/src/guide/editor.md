@@ -182,6 +182,19 @@ element as an HTML block. Collaboration projects it as a leaf block atom (empty 
 whose attrs merge per key, like any block's
 (`rinch-editor-collab/tests/embed.rs`).
 
+**Node views.** An app draws a component in place of a leaf node with
+`EditorHandle::register_node_view` ([the guide](contenteditable.md#node-views-your-component-in-the-document)).
+The view crate gives each node of a claimed type a slot on its `ViewDesc`; the diff
+only queues work, run after the core borrow is released. A slotted node keeps its
+mount only while it is the same `Rc` or a node a `SetNodeAttrStep` of the
+transaction changed (the transaction's *kept* positions); anything else at its place
+is remounted. On the collaboration side `CollabSession::integrate_incremental_transaction`
+turns a peer's attribute-only change of a leaf block atom that is the same CRDT block
+into `SetNodeAttrStep`s, and `record_local_keeping` writes an atom put in another
+node's place as a new CRDT block unless the editor proved it the same, so CRDT block
+identity and editor identity agree. Backspace at the start of the block after a
+selectable leaf atom (and Delete before one) selects it.
+
 Each node spec carries a **content expression** (e.g. `blockquote > block+`,
 `list_item > block+`, `bullet_list > list_item+`). These compile to a **ContentMatch
 NFA** that the transform engine consults to decide whether a step's result is valid —
