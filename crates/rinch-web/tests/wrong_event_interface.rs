@@ -442,7 +442,11 @@ fn a_plain_event_named_contextmenu_runs_its_handler_without_throwing() {
     init.set_client_y(65);
     let menu = web_sys::MouseEvent::new_with_mouse_event_init_dict("contextmenu", &init).unwrap();
     target.dispatch_event(&menu).unwrap();
-    assert_eq!(menus.get(), 1, "a genuine contextmenu must dispatch the handler");
+    assert_eq!(
+        menus.get(),
+        1,
+        "a genuine contextmenu must dispatch the handler"
+    );
     assert_eq!(rinch_core::events::get_click_context().mouse_x, 205.0);
 
     dispatch_plain(&target, "contextmenu");

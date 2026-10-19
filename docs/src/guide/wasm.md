@@ -396,6 +396,18 @@ tested by hiding the first in Chrome, where the two give the same positions; it 
 not been run in Firefox, and neither has the rest of the editor's input there
 (#1461).
 
+**Events dispatched by script.** rinch's document listeners (and a
+`RenderSurface` canvas's) check an event's interface before reading it, so an
+event dispatched by page script, a polyfill or an extension under a name rinch
+listens for — `document.dispatchEvent(new Event("pointerup"))` — throws nothing
+(#810, #811). A key, pointer or paste event of the wrong interface is ignored: a
+plain `Event("pointerup")` does not end a live `Drag`, and a plain `Event("paste")`
+does not reach `set_paste_interceptor`. `click` and `contextmenu` are the
+exceptions: a plain `Event("click")` still activates the `data-rid` element it is
+dispatched at, as untrusted clicks always have, and a plain `Event("contextmenu")`
+still runs a live `data-oncontextmenu` handler; both are read as having no
+position (the element's centre) and no modifier held.
+
 ## What Doesn't (Yet)
 
 - **Custom painting** — Vello and tiny-skia don't run in the browser. The browser paints for you instead.

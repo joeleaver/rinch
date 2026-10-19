@@ -2291,8 +2291,7 @@ fn setup_canvas_events(
 
     // Pointer closures are collected (not forgotten) so they can be removed on
     // unmount. Each is stored with its event-type string for removeEventListener.
-    let mut pointer_listeners: Vec<(&'static str, Closure<dyn FnMut(web_sys::Event)>)> =
-        Vec::new();
+    let mut pointer_listeners: Vec<(&'static str, Closure<dyn FnMut(web_sys::Event)>)> = Vec::new();
 
     // Pointer events (deref to MouseEvent) cover mouse, touch, and pen on one
     // path — so a game/custom-render surface receives input on touch devices too.
