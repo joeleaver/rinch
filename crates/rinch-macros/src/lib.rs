@@ -9,6 +9,7 @@
 
 mod dom_codegen;
 mod element;
+mod events;
 mod helpers;
 mod node;
 mod prop;
