@@ -191,11 +191,13 @@ fn the_dismiss_entry_is_pushed_on_open_and_released_on_close() {
     );
 
     m.click(FIELD);
+    // Two: the Escape entry, and the key entry whose focus-leave closes the
+    // dropdown (#1572), which takes no key. The stack counts both kinds.
     assert_eq!(
         dismiss_handler_count(),
-        before + 1,
-        "opening the dropdown pushes exactly one entry, on top of whatever \
-         overlay is already there"
+        before + 2,
+        "opening the dropdown pushes its Escape entry and its focus-leave \
+         entry, on top of whatever overlay is already there"
     );
 
     m.click(FIELD);
