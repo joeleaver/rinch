@@ -526,3 +526,89 @@ fn a_plain_event_named_paste_reaches_no_paste_interceptor() {
     drop(watch);
     mounted.teardown();
 }
+
+/// Issue #811, the `RenderSurface` canvas: its own pointer and wheel listeners
+/// had the same unchecked typed cast. A plain `Event("pointerdown")` at the
+/// canvas read `offsetX` / `button` / `pointerId` as `undefined` — a throw
+/// under debug glue, a `MouseDown` at (0, 0) under release — and a plain
+/// `Event("pointerleave")` reached the app as a `MouseLeave`.
+#[wasm_bindgen_test]
+async fn a_non_pointer_event_at_a_render_surface_reaches_no_surface_handler() {
+    use rinch::render_surface::{RenderSurface, SurfaceEvent, create_render_surface};
+    use rinch_core::Component;
+
+    let surface = create_render_surface();
+    let seen: Rc<RefCell<Vec<String>>> = Rc::default();
+    let sink = seen.clone();
+    surface.set_event_handler(move |e| {
+        let s = match e {
+            SurfaceEvent::MouseDown { x, y, .. } => format!("down {x},{y}"),
+            SurfaceEvent::MouseMove { x, y } => format!("move {x},{y}"),
+            SurfaceEvent::MouseUp { x, y, .. } => format!("up {x},{y}"),
+            SurfaceEvent::MouseEnter { .. } => "enter".to_string(),
+            SurfaceEvent::MouseLeave => "leave".to_string(),
+            SurfaceEvent::MouseWheel { .. } => "wheel".to_string(),
+            _ => return,
+        };
+        sink.borrow_mut().push(s);
+    });
+    let id = surface.id();
+    let host = document().create_element("div").unwrap();
+    host.set_attribute(
+        "style",
+        "position: fixed; left: 50px; top: 50px; width: 200px; height: 100px;",
+    )
+    .unwrap();
+    document().body().unwrap().append_child(&host).unwrap();
+    let root = rinch_web::mount_into(&host, ThemeProviderProps::default(), move |scope| {
+        RenderSurface {
+            surface: Some(surface.clone()),
+        }
+        .render(scope, &[])
+    });
+    // The canvas's listeners are installed from a microtask after mount.
+    let _ = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&JsValue::NULL)).await;
+    let canvas: web_sys::EventTarget = document()
+        .get_element_by_id(&format!("rinch-surface-{id}"))
+        .expect("the surface's canvas")
+        .into();
+
+    let watch = ErrorWatch::install();
+
+    // Positive control: the canvas listeners are installed and run.
+    dispatch_pointer(&canvas, "pointerdown", (60, 70), 1);
+    dispatch_pointer(&canvas, "pointerup", (60, 70), 0);
+    assert_eq!(
+        *seen.borrow(),
+        vec!["down 10,20".to_string(), "up 10,20".to_string()],
+        "genuine pointer events must reach the surface, or nothing below is under test"
+    );
+    seen.borrow_mut().clear();
+
+    for name in [
+        "pointerdown",
+        "pointermove",
+        "pointerup",
+        "pointercancel",
+        "pointerenter",
+        "pointerleave",
+        "wheel",
+    ] {
+        dispatch_plain(&canvas, name);
+    }
+
+    let reported = watch.take();
+    assert!(
+        reported.is_empty(),
+        "a plain Event at the canvas must not raise: {reported:?}"
+    );
+    assert!(
+        seen.borrow().is_empty(),
+        "a plain Event is not pointer input: {:?}",
+        seen.borrow()
+    );
+
+    drop(watch);
+    root.unmount();
+    host.remove();
+}
