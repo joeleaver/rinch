@@ -2510,6 +2510,16 @@ impl RinchApp {
         if cmd.mutates_text() && self.focused_input_is_readonly() {
             return;
         }
+        // Without the `clipboard` feature there is nowhere to cut *to*: a Cut
+        // would delete the selection and copy it nowhere (issue #823). It does
+        // nothing instead — the rich-text editor's Cut arms, and the context
+        // menu's greyed Cut row, say the same. Every route to a plain
+        // control's Cut (the chord, the menu item, `perform_text_edit`) ends
+        // here.
+        #[cfg(not(feature = "clipboard"))]
+        if matches!(cmd, EditCommand::Cut) {
+            return;
+        }
         // The edit applies to what the field displays: adopt any `value` write
         // that landed since the last sync (issue #238).
         self.adopt_focused_input_value_from_dom();
