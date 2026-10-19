@@ -255,6 +255,37 @@ impl Net {
     }
 }
 
+/// Delete every top-level task list of `p`'s document; whether there was one.
+fn remove_task_lists(p: &Peer) -> bool {
+    let mut any = false;
+    loop {
+        let doc = p.handle.doc();
+        let mut pos = 0;
+        let mut found = None;
+        for i in 0..doc.child_count() {
+            let c = doc.child(i);
+            if c.type_name() == "task_list" {
+                found = Some((pos, pos + c.node_size()));
+                break;
+            }
+            pos += c.node_size();
+        }
+        let Some((from, to)) = found else { return any };
+        any = true;
+        let last = doc.child_count() == 1;
+        assert!(p.handle.update(|st| {
+            let mut tr = st.tr();
+            if last {
+                let para = st.schema().branch("paragraph", Fragment::empty()).ok()?;
+                tr.replace(from, to, Slice::new(Fragment::from_node(para), 0, 0)).ok()?;
+            } else {
+                tr.delete(from, to).ok()?;
+            }
+            Some(tr)
+        }));
+    }
+}
+
 fn run_seed(seed: u64, n: usize, steps: usize) {
     let html = r#"<p>aa</p><div data-pm-type="embed" data-eid="e0" data-k="x"></div><p>bb</p><div data-pm-type="embed" data-eid="e1"></div><p>cc</p><div data-pm-type="embed" data-eid="e2" data-k="x"></div><p>dd</p>"#;
     let ps = peers(html, n);
@@ -266,7 +297,7 @@ fn run_seed(seed: u64, n: usize, steps: usize) {
         let p = &ps[who];
         let doc = p.handle.doc();
         let (embeds, texts) = top(&doc);
-        let op = rng.below(12);
+        let op = rng.below(13);
         let label = format!("seed {seed} step {step} {} op {op}", p.name);
         match op {
             0 | 1 => {
@@ -350,6 +381,16 @@ fn run_seed(seed: u64, n: usize, steps: usize) {
                     p.handle.collab_receive(&diff);
                 }
             }
+            11 => {
+                // an outbound stall (#220) and its cure: a task list is outside
+                // collaboration's scope (review 2 of #1575, N1)
+                if !remove_task_lists(p) {
+                    if let Some((pos, _)) = texts.get(rng.below(texts.len().max(1))) {
+                        p.handle.set_selection(Selection::cursor(Pos(pos + 1)));
+                        p.handle.command("toggleTaskList");
+                    }
+                }
+            }
             _ => {}
         }
         net.collect(&ps);
@@ -376,6 +417,19 @@ fn run_seed(seed: u64, n: usize, steps: usize) {
                 q.name
             );
         }
+    }
+    // cure every stall: no task list, and one projectable edit
+    for q in &ps {
+        remove_task_lists(q);
+        if q.handle.collab_outbound_stall().is_some() {
+            q.handle.set_selection(Selection::cursor(Pos(1)));
+            q.handle.insert_text("q");
+        }
+        assert!(
+            q.handle.collab_outbound_stall().is_none(),
+            "seed {seed}: {} still stalled",
+            q.name
+        );
     }
     // quiesce
     loop {

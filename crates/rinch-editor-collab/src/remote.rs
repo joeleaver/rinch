@@ -165,6 +165,18 @@ pub(crate) fn block_atoms(node: &Node) -> usize {
     }
 }
 
+/// The leaf block atoms `node` is or holds, in the order [`block_atoms`] counts
+/// them (document order).
+pub(crate) fn atom_nodes(node: &Node, out: &mut Vec<Node>) {
+    if is_block_atom(node) {
+        out.push(node.clone());
+    } else if !(node.is_textblock() || node.is_leaf()) {
+        for child in node.content().children() {
+            atom_nodes(child, out);
+        }
+    }
+}
+
 /// How a pair of leaf block atoms at one place, of one type, is told apart.
 #[derive(Clone, Copy)]
 enum AtomMatch<'a> {

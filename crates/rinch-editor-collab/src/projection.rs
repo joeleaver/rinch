@@ -1497,6 +1497,16 @@ pub(crate) fn kept_atoms_scope(kept: Option<&[Node]>) -> KeptAtomsScope {
     KeptAtomsScope(previous)
 }
 
+/// Whether the [`kept_atoms_scope`] held now names `node`: the editor proved it is
+/// the atom that stood at its place before the change, with other attributes.
+pub(crate) fn is_kept_atom(node: &Node) -> bool {
+    KEPT_ATOMS.with(|k| {
+        k.borrow()
+            .as_ref()
+            .is_some_and(|kept| kept.iter().any(|n| n.same_ref(node)))
+    })
+}
+
 /// Whether reconciling the model pair `model` (a node before and after the change,
 /// at one place) would hand a leaf block atom's CRDT block to **another atom**: the
 /// two are different model nodes, and the editor did not prove the new one is the

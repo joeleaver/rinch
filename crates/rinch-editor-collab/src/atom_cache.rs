@@ -74,3 +74,32 @@ pub(crate) fn store(uid: u64, generation: u64, doc: Node, ids: Vec<BlockId>) {
 pub(crate) fn forget(uid: u64) {
     let _ = CACHE.try_with(|c| c.borrow_mut().remove(&uid));
 }
+
+/// A [`BlockId`] that names no CRDT block and equals no other: what a leaf block
+/// atom the model holds is said to be when nothing proves which block it is (one
+/// a refused local edit wrote while outbound is stalled, #220). A remote change
+/// compares it with the converged document's blocks and finds no match, so the
+/// atom is replaced and a node view drawn for it remounted — never re-pointed at
+/// a block it was not mounted for. yrs client ids stay below 2^53, so the client
+/// `u64::MAX` is never a real one.
+pub(crate) fn unproven() -> BlockId {
+    thread_local! {
+        static NEXT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+    let clock = NEXT.with(|n| {
+        let c = n.get();
+        n.set(c.wrapping_add(1));
+        c
+    });
+    (u64::MAX, clock)
+}
+
+/// Whether `id` is an [`unproven`] one.
+pub(crate) fn is_unproven(id: BlockId) -> bool {
+    id.0 == u64::MAX
+}
+
+/// `n` [`unproven`] ids.
+pub(crate) fn unproven_ids(n: usize) -> Vec<BlockId> {
+    (0..n).map(|_| unproven()).collect()
+}
