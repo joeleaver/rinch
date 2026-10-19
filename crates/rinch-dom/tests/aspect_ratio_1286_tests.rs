@@ -539,3 +539,53 @@ fn a_change_of_ratio_relays_out() {
         assert_eq!(size(&doc, e), back, "<{tag}> after aspect-ratio: auto");
     }
 }
+
+/// `aspect-ratio` does not apply to internal table boxes (css-sizing-4 §5.1;
+/// css-tables-3: a row, a row group, a cell, a column, a column group). A
+/// caption is not one, and neither is the table: both take the ratio.
+/// Chrome 155 for each row; the element `#t` in a 400x300 div.
+#[test]
+fn internal_table_boxes_take_no_ratio() {
+    let rows: &[(&str, (f32, f32))] = &[
+        (
+            r#"<div style="display:table"><div id=t style="display:table-cell;width:100px;aspect-ratio:2"></div></div>"#,
+            (100.0, 0.0),
+        ),
+        (
+            r#"<div style="display:table"><div id=t style="display:table-cell;height:40px;aspect-ratio:2"></div></div>"#,
+            (0.0, 40.0),
+        ),
+        (
+            r#"<div style="display:table;width:100px"><div id=t style="display:table-row;aspect-ratio:2"><div style="display:table-cell">x</div></div></div>"#,
+            (100.0, 20.0),
+        ),
+        (
+            r#"<div style="display:table;width:100px"><div id=t style="display:table-row-group;aspect-ratio:2"><div style="display:table-row"><div style="display:table-cell">x</div></div></div></div>"#,
+            (100.0, 20.0),
+        ),
+        // Not internal: a caption and the table itself keep the ratio.
+        (
+            r#"<div style="display:table"><div id=t style="display:table-caption;width:100px;aspect-ratio:2"></div><div style="display:table-cell">x</div></div>"#,
+            (100.0, 50.0),
+        ),
+        (
+            r#"<div id=t style="display:table;width:100px;aspect-ratio:2"></div>"#,
+            (100.0, 50.0),
+        ),
+    ];
+    for &(html, want) in rows {
+        let mut doc = document();
+        let body = doc.body();
+        let c = doc.create_element("div");
+        doc.set_attribute(
+            c,
+            "style",
+            "width: 400px; height: 300px; font: 16px/20px ProbeFace",
+        );
+        doc.append_child(body, c);
+        doc.set_inner_html(c, html);
+        doc.resolve_layout(800.0, 600.0);
+        let t = doc.query_selector_all("#t")[0];
+        assert_eq!(size(&doc, t), want, "{html}");
+    }
+}

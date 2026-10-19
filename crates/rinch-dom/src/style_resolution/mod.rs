@@ -1947,6 +1947,16 @@ impl RinchDocument {
         if crate::replaced::measures_aspect_ratio(&self.tree.nodes[node_id]) {
             style.aspect_ratio = None;
         }
+        // Nor does an internal table box take one (css-sizing-4 §5.1): a
+        // cell, a row, a row group (Chrome 155: a `table-cell` 100px wide
+        // with `aspect-ratio: 2` is 100x0). A caption and the table do.
+        if self.tree.nodes[node_id]
+            .computed_style
+            .table_part
+            .is_internal()
+        {
+            style.aspect_ratio = None;
+        }
         if let Some(dir) = Self::table_flex_direction(&self.tree, node_id) {
             style.flex_direction = dir;
         }

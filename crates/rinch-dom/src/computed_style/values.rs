@@ -118,9 +118,10 @@ pub enum TablePart {
     RowGroup,
     /// `table-row`.
     Row,
-    /// Any other table-internal box: a cell, a caption, a column or a
-    /// column group.
+    /// Any other table-internal box: a cell, a column or a column group.
     Other,
+    /// `table-caption`: a table part, but not an internal table box.
+    Caption,
 }
 
 impl TablePart {
@@ -134,6 +135,14 @@ impl TablePart {
     /// row of its own — stacked, not sharing an anonymous row with bare cells.
     pub fn is_row_like(self) -> bool {
         matches!(self, Self::RowGroup | Self::Row)
+    }
+
+    /// Whether this is an internal table box (css-tables-3: a row, a row
+    /// group, a cell, a column or a column group — not the table and not a
+    /// caption). `aspect-ratio` does not apply to one (css-sizing-4 §5.1,
+    /// #1286; Chrome 155).
+    pub fn is_internal(self) -> bool {
+        matches!(self, Self::RowGroup | Self::Row | Self::Other)
     }
 }
 

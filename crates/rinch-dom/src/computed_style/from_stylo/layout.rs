@@ -85,7 +85,8 @@ pub(super) fn table_part_from_stylo(display: &style::values::computed::Display) 
         | (DisplayOutside::InternalTable, DisplayInside::TableHeaderGroup)
         | (DisplayOutside::InternalTable, DisplayInside::TableFooterGroup) => TablePart::RowGroup,
         (DisplayOutside::InternalTable, DisplayInside::TableRow) => TablePart::Row,
-        (DisplayOutside::InternalTable, _) | (DisplayOutside::TableCaption, _) => TablePart::Other,
+        (DisplayOutside::InternalTable, _) => TablePart::Other,
+        (DisplayOutside::TableCaption, _) => TablePart::Caption,
         _ => TablePart::None,
     }
 }
