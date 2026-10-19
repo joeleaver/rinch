@@ -15,10 +15,13 @@ use rinch_core::element::ValueCallback;
 const VIEWPORT: (f32, f32) = (800.0, 600.0);
 const INDENT: f32 = 20.0;
 
+/// Every `ondropchange` report, in order.
+type Offers = Rc<RefCell<Vec<Option<(TreeDrop, DropVerdict)>>>>;
+
 struct Fixture {
     app: RinchApp,
     drops: Rc<RefCell<Vec<TreeDrop>>>,
-    offers: Rc<RefCell<Vec<Option<(TreeDrop, DropVerdict)>>>>,
+    offers: Offers,
     started: Rc<RefCell<Vec<Vec<String>>>>,
 }
 
@@ -29,7 +32,7 @@ struct Fixture {
 /// Drops into `b` are refused by the app.
 fn fixture() -> Fixture {
     let drops: Rc<RefCell<Vec<TreeDrop>>> = Rc::default();
-    let offers: Rc<RefCell<Vec<Option<(TreeDrop, DropVerdict)>>>> = Rc::default();
+    let offers: Offers = Rc::default();
     let started: Rc<RefCell<Vec<Vec<String>>>> = Rc::default();
     let (d, o, s) = (drops.clone(), offers.clone(), started.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
