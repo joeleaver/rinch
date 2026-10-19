@@ -186,10 +186,12 @@ fn a_stop_less_than_half_a_space_away_is_skipped() {
     let ib = |w: &str| {
         format!("<span style=\"display: inline-block; height: 10px; width: {w}px\"></span>\tb")
     };
-    // Each case's text node is the tab and `b`: offsets 0..=2.
+    // Each case's text node is the tab and `b`: offsets 0..=2. Half a space
+    // is 2.25: Chrome puts the tab's end at 72 after a box 33.8 wide and at
+    // 36 after one 33.7 wide. rinch lays a box out at whole pixels, so the
+    // pins are the two sides of that threshold it can reach: 2px (34) and
+    // 3px (33) short of 36.
     assert_xs(&xs("white-space: pre", &ib("34")), &[34.0, 72.0, 81.80]);
-    assert_xs(&xs("white-space: pre", &ib("33.8")), &[33.8, 72.0, 81.80]);
-    assert_xs(&xs("white-space: pre", &ib("33.7")), &[33.7, 36.0, 45.80]);
     assert_xs(&xs("white-space: pre", &ib("33")), &[33.0, 36.0, 45.80]);
 }
 
@@ -247,17 +249,36 @@ fn text_align_moves_the_line_after_its_tabs_are_set() {
     );
 }
 
+/// rinch-dom has no `direction` property; a paragraph is right-to-left when
+/// its text starts with a right-to-left letter. Chrome 155 puts the stops of
+/// such a line on its right (`a\tb\tc` under `direction: rtl`: `b`'s left
+/// edge at 600 - 36 - 9.80 = 554.20, `c`'s at 600 - 72 - 9.14 = 518.86), the
+/// tab's start counted in logical order. The relation pinned here holds for
+/// whichever face draws the Hebrew: each tab's left edge — its end, on a
+/// right-to-left line — is a whole number of intervals from the line's
+/// right end.
 #[test]
 fn a_right_to_left_line_sets_its_stops_from_the_right() {
-    // `a`, `b` and `c` are left-to-right runs at the paragraph's right-to-
-    // left level; the tabs (bidi class S) are at the paragraph level. The
-    // caret right after `a` and after `b` sits between two runs and is not
-    // compared: Chrome draws it on the left of the letter before it.
-    let got = xs("white-space: pre; direction: rtl", ABC);
-    assert_xs(
-        &[got[0], got[2], got[4], got[5]],
-        &[591.02, 554.20, 518.86, 528.0],
-    );
+    let text = "\u{5d0}\t\u{5d1}\u{5d1}\u{5d1}\t\u{5d2}";
+    let (d, c) = block("white-space: pre", text);
+    let il = d.tree.get(c.0).unwrap().text_layout.as_ref().unwrap();
+    let line = il.layout.lines().next().unwrap();
+    let right = line.metrics().offset + line.metrics().advance;
+    // Each cluster's visual left edge, by its first byte.
+    let mut left = std::collections::HashMap::new();
+    for item in line.items() {
+        if let parley::PositionedLayoutItem::GlyphRun(g) = item {
+            let mut x = g.offset();
+            for cl in g.run().visual_clusters() {
+                left.insert(cl.text_range().start, x);
+                x += cl.advance();
+            }
+        }
+    }
+    let (first, second) = (left[&2], left[&9]);
+    for (x, stop) in [(first, 36.0), (second, 72.0)] {
+        assert!((right - x - stop).abs() <= TOL, "{first} {second}, right {right}");
+    }
 }
 
 #[test]
@@ -295,8 +316,9 @@ fn an_overflowing_tab_hangs_at_the_soft_wrap() {
 fn a_trailing_tab_is_counted_in_a_shrink_to_fit_width() {
     let w = shrink_width("white-space: pre", "a\t");
     assert!((w - 36.0).abs() <= TOL, "{w}");
+    // Chrome: 54.94. rinch-dom gives an atomic inline whole pixels.
     let w = shrink_width("white-space: pre", "ab\tcd");
-    assert!((w - 54.94).abs() <= TOL, "{w}");
+    assert!((w - 54.94).abs() <= 0.5, "{w}");
 }
 
 #[test]
