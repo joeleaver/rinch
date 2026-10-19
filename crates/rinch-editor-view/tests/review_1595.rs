@@ -50,6 +50,16 @@ fn moved(seen: &Seen) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The `data-ref`s the live mounts were drawn for.
+fn live(seen: &Seen) -> Vec<String> {
+    seen.mounts
+        .borrow()
+        .iter()
+        .filter(|(_, _, alive)| *alive)
+        .map(|(at, _, _)| at.clone())
+        .collect()
+}
+
 struct Page {
     _doc: Rc<RefCell<MockDomDocument>>,
     _scope: RenderScope,
@@ -159,6 +169,7 @@ fn r1_a_fresh_same_src_picture_put_over_a_claimed_one_is_another_mount_on_the_pe
         Some(tr)
     }));
     assert!(moved(&p.seen_a).is_empty(), "local: {:?}", moved(&p.seen_a));
+    let renders_b = p.seen_b.renders.get();
     p.send();
     assert_eq!(html(&p.b.handle), html(&p.a.handle));
     assert!(
@@ -166,6 +177,19 @@ fn r1_a_fresh_same_src_picture_put_over_a_claimed_one_is_another_mount_on_the_pe
         "peer: a mount drawn for one picture now shows another: {:?} (renders {})",
         moved(&p.seen_b),
         p.seen_b.renders.get()
+    );
+    // Decision (f): the pasted picture is a new char, so the peer's mount drawn for
+    // "one" goes and a new one is drawn for what was pasted — remounted, never handed
+    // it. (The remote path replaces the block holding a replaced char, so the other
+    // picture of the paragraph is remounted too: `renders` grows by two.)
+    assert!(
+        p.seen_b.renders.get() > renders_b,
+        "the peer remounts the view for the pasted picture"
+    );
+    assert!(
+        !live(&p.seen_b).iter().any(|r| r == "one"),
+        "no live mount on the peer is the one drawn for the picture pasted over: {:?}",
+        live(&p.seen_b)
     );
 }
 
@@ -180,6 +204,7 @@ fn r1b_a_copied_same_src_picture_pasted_over_a_claimed_one() {
     a.set_selection(Selection::Node(NodeSelection { anchor: Pos(3), head: Pos(4) }));
     assert!(a.replace_selection_with_html(&copied), "pasted");
     assert!(moved(&p.seen_a).is_empty(), "local: {:?}", moved(&p.seen_a));
+    let renders_b = p.seen_b.renders.get();
     p.send();
     assert_eq!(html(&p.b.handle), html(&p.a.handle));
     assert!(
@@ -188,6 +213,19 @@ fn r1b_a_copied_same_src_picture_pasted_over_a_claimed_one() {
         moved(&p.seen_b),
         p.seen_b.renders.get(),
         html(&p.b.handle)
+    );
+    // Decision (f): the pasted picture is a new char, so the peer's mount drawn for
+    // "one" goes and a new one is drawn for what was pasted — remounted, never handed
+    // it. (The remote path replaces the block holding a replaced char, so the other
+    // picture of the paragraph is remounted too: `renders` grows by two.)
+    assert!(
+        p.seen_b.renders.get() > renders_b,
+        "the peer remounts the view for the pasted picture"
+    );
+    assert!(
+        !live(&p.seen_b).iter().any(|r| r == "one"),
+        "no live mount on the peer is the one drawn for the picture pasted over: {:?}",
+        live(&p.seen_b)
     );
 }
 
