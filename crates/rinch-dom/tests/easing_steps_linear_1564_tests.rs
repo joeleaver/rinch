@@ -109,11 +109,26 @@ fn steps_tick_at_the_jumps_chrome_takes() {
         ("k1564 1000ms steps(4, start) -999ms forwards paused", 100.0),
         ("k1564 1000ms steps(4) -300ms forwards paused", 55.0),
         // A reversed iteration feeds the step its directed progress.
-        ("k1564 1000ms steps(4, start) -300ms reverse forwards paused", 85.0),
-        ("k1564 1000ms steps(4, start) -999ms reverse forwards paused", 55.0),
-        ("k1564 1000ms steps(4, end) -300ms reverse forwards paused", 70.0),
-        ("k1564 1000ms steps(4, start) -1300ms alternate 2 forwards paused", 85.0),
-        ("k1564 1000ms steps(4, end) -1300ms alternate 2 forwards paused", 70.0),
+        (
+            "k1564 1000ms steps(4, start) -300ms reverse forwards paused",
+            85.0,
+        ),
+        (
+            "k1564 1000ms steps(4, start) -999ms reverse forwards paused",
+            55.0,
+        ),
+        (
+            "k1564 1000ms steps(4, end) -300ms reverse forwards paused",
+            70.0,
+        ),
+        (
+            "k1564 1000ms steps(4, start) -1300ms alternate 2 forwards paused",
+            85.0,
+        ),
+        (
+            "k1564 1000ms steps(4, end) -1300ms alternate 2 forwards paused",
+            70.0,
+        ),
     ]);
 }
 
@@ -137,12 +152,27 @@ fn the_before_flag_holds_a_jump_start_step_back() {
         ("k1564 1000ms steps(4, start) 1000ms backwards paused", 40.0),
         ("k1564 1000ms steps(4, start) 1000ms both paused", 40.0),
         // Before phase going backwards: no flag, directed progress 1.
-        ("k1564 1000ms steps(4, start) reverse 1000ms both paused", 100.0),
-        ("k1564 1000ms steps(4, end) reverse 1000ms both paused", 100.0),
+        (
+            "k1564 1000ms steps(4, start) reverse 1000ms both paused",
+            100.0,
+        ),
+        (
+            "k1564 1000ms steps(4, end) reverse 1000ms both paused",
+            100.0,
+        ),
         // After phase going backwards: the flag.
-        ("k1564 1000ms steps(4, start) -2000ms reverse forwards paused", 40.0),
-        ("k1564 1000ms steps(4, start) -5000ms alternate 2 forwards paused", 40.0),
-        ("k1564 1000ms steps(4, end) -5000ms alternate 2 forwards paused", 40.0),
+        (
+            "k1564 1000ms steps(4, start) -2000ms reverse forwards paused",
+            40.0,
+        ),
+        (
+            "k1564 1000ms steps(4, start) -5000ms alternate 2 forwards paused",
+            40.0,
+        ),
+        (
+            "k1564 1000ms steps(4, end) -5000ms alternate 2 forwards paused",
+            40.0,
+        ),
     ]);
 }
 
@@ -150,8 +180,14 @@ fn the_before_flag_holds_a_jump_start_step_back() {
 #[test]
 fn the_before_flag_is_not_set_in_the_after_phase_going_forwards() {
     check(&[
-        ("k1564 1000ms steps(3, start) 1.5 -5000ms forwards paused", 80.0),
-        ("k1564 1000ms steps(4, start) -2000ms forwards paused", 100.0),
+        (
+            "k1564 1000ms steps(3, start) 1.5 -5000ms forwards paused",
+            80.0,
+        ),
+        (
+            "k1564 1000ms steps(4, start) -2000ms forwards paused",
+            100.0,
+        ),
     ]);
 }
 
@@ -174,33 +210,93 @@ fn an_iteration_boundary_is_eased_not_snapped_to_a_keyframe() {
 #[test]
 fn linear_function_stops_and_positions() {
     check(&[
-        ("k1564 1000ms linear(0, 0.25, 1) -250ms forwards paused", 47.5),
-        ("k1564 1000ms linear(0, 0.25, 1) -500ms forwards paused", 55.0),
-        ("k1564 1000ms linear(0, 0.25, 1) -750ms forwards paused", 77.5),
-        ("k1564 1000ms linear(0, 0.5 25%, 1) -100ms forwards paused", 52.0),
-        ("k1564 1000ms linear(0, 0.5 25%, 1) -250ms forwards paused", 70.0),
-        ("k1564 1000ms linear(0, 0.5 25%, 1) -500ms forwards paused", 80.0),
+        (
+            "k1564 1000ms linear(0, 0.25, 1) -250ms forwards paused",
+            47.5,
+        ),
+        (
+            "k1564 1000ms linear(0, 0.25, 1) -500ms forwards paused",
+            55.0,
+        ),
+        (
+            "k1564 1000ms linear(0, 0.25, 1) -750ms forwards paused",
+            77.5,
+        ),
+        (
+            "k1564 1000ms linear(0, 0.5 25%, 1) -100ms forwards paused",
+            52.0,
+        ),
+        (
+            "k1564 1000ms linear(0, 0.5 25%, 1) -250ms forwards paused",
+            70.0,
+        ),
+        (
+            "k1564 1000ms linear(0, 0.5 25%, 1) -500ms forwards paused",
+            80.0,
+        ),
         // Two positions hold the output flat between them.
-        ("k1564 1000ms linear(0, 0.2 20% 40%, 1) -100ms forwards paused", 46.0),
-        ("k1564 1000ms linear(0, 0.2 20% 40%, 1) -300ms forwards paused", 52.0),
-        ("k1564 1000ms linear(0, 0.2 20% 40%, 1) -500ms forwards paused", 60.0),
-        ("k1564 1000ms linear(0, 0.2 20% 40%, 1) -700ms forwards paused", 76.0),
+        (
+            "k1564 1000ms linear(0, 0.2 20% 40%, 1) -100ms forwards paused",
+            46.0,
+        ),
+        (
+            "k1564 1000ms linear(0, 0.2 20% 40%, 1) -300ms forwards paused",
+            52.0,
+        ),
+        (
+            "k1564 1000ms linear(0, 0.2 20% 40%, 1) -500ms forwards paused",
+            60.0,
+        ),
+        (
+            "k1564 1000ms linear(0, 0.2 20% 40%, 1) -700ms forwards paused",
+            76.0,
+        ),
         // A stop with no position is spread evenly between its neighbours
         // (0.3 lands at 40%).
-        ("k1564 1000ms linear(0, 0.3, 0.6 80%, 1) -200ms forwards paused", 49.0),
-        ("k1564 1000ms linear(0, 0.3, 0.6 80%, 1) -400ms forwards paused", 58.0),
-        ("k1564 1000ms linear(0, 0.3, 0.6 80%, 1) -600ms forwards paused", 67.0),
-        ("k1564 1000ms linear(0, 0.3, 0.6 80%, 1) -900ms forwards paused", 88.0),
+        (
+            "k1564 1000ms linear(0, 0.3, 0.6 80%, 1) -200ms forwards paused",
+            49.0,
+        ),
+        (
+            "k1564 1000ms linear(0, 0.3, 0.6 80%, 1) -400ms forwards paused",
+            58.0,
+        ),
+        (
+            "k1564 1000ms linear(0, 0.3, 0.6 80%, 1) -600ms forwards paused",
+            67.0,
+        ),
+        (
+            "k1564 1000ms linear(0, 0.3, 0.6 80%, 1) -900ms forwards paused",
+            88.0,
+        ),
         ("k1564 1000ms linear(0.5, 1) -500ms forwards paused", 85.0),
         ("k1564 1000ms linear(0, 0.5) -500ms forwards paused", 55.0),
         // Outputs past 1 extrapolate the value.
-        ("k1564 1000ms linear(0, 1.5 50%, 1) -250ms forwards paused", 85.0),
-        ("k1564 1000ms linear(0, 1.5 50%, 1) -500ms forwards paused", 130.0),
-        ("k1564 1000ms linear(0, 1.5 50%, 1) -750ms forwards paused", 115.0),
+        (
+            "k1564 1000ms linear(0, 1.5 50%, 1) -250ms forwards paused",
+            85.0,
+        ),
+        (
+            "k1564 1000ms linear(0, 1.5 50%, 1) -500ms forwards paused",
+            130.0,
+        ),
+        (
+            "k1564 1000ms linear(0, 1.5 50%, 1) -750ms forwards paused",
+            115.0,
+        ),
         // Two stops at one input: a jump, and the later stop wins at it.
-        ("k1564 1000ms linear(0, 0.9 50%, 0.1 50%, 1) -250ms forwards paused", 67.0),
-        ("k1564 1000ms linear(0, 0.9 50%, 0.1 50%, 1) -500ms forwards paused", 46.0),
-        ("k1564 1000ms linear(0, 0.9 50%, 0.1 50%, 1) -750ms forwards paused", 73.0),
+        (
+            "k1564 1000ms linear(0, 0.9 50%, 0.1 50%, 1) -250ms forwards paused",
+            67.0,
+        ),
+        (
+            "k1564 1000ms linear(0, 0.9 50%, 0.1 50%, 1) -500ms forwards paused",
+            46.0,
+        ),
+        (
+            "k1564 1000ms linear(0, 0.9 50%, 0.1 50%, 1) -750ms forwards paused",
+            73.0,
+        ),
     ]);
 }
 
@@ -229,10 +325,22 @@ fn a_keyframes_own_timing_function_eases_its_interval() {
 fn cubic_bezier_matches_chrome() {
     check_tol(
         &[
-            ("k1564 1000ms cubic-bezier(0.1, 0.7, 1, 0.1) -300ms forwards paused", 62.140625),
-            ("k1564 1000ms cubic-bezier(0.1, 0.7, 1, 0.1) -600ms forwards paused", 66.34375),
-            ("k1564 1000ms cubic-bezier(0.5, -0.5, 0.5, 1.5) -200ms forwards paused", 35.734375),
-            ("k1564 1000ms cubic-bezier(0.5, -0.5, 0.5, 1.5) -800ms forwards paused", 104.25),
+            (
+                "k1564 1000ms cubic-bezier(0.1, 0.7, 1, 0.1) -300ms forwards paused",
+                62.140625,
+            ),
+            (
+                "k1564 1000ms cubic-bezier(0.1, 0.7, 1, 0.1) -600ms forwards paused",
+                66.34375,
+            ),
+            (
+                "k1564 1000ms cubic-bezier(0.5, -0.5, 0.5, 1.5) -200ms forwards paused",
+                35.734375,
+            ),
+            (
+                "k1564 1000ms cubic-bezier(0.5, -0.5, 0.5, 1.5) -800ms forwards paused",
+                104.25,
+            ),
         ],
         1.0 / 64.0,
     );
@@ -263,7 +371,9 @@ fn jump_positions_follow_css_easing_2() {
     for &(pos, t, chrome) in cases {
         let got = 40.0 + 60.0 * TimingFunction::Steps(4, pos).apply(t);
         if (got - chrome).abs() > 0.01 {
-            wrong.push(format!("steps(4, {pos:?}) at {t}: rinch {got}, Chrome {chrome}"));
+            wrong.push(format!(
+                "steps(4, {pos:?}) at {t}: rinch {got}, Chrome {chrome}"
+            ));
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
@@ -335,7 +445,9 @@ fn a_transition_eases_with_steps_and_linear_functions() {
         let (doc, node) = start_transition(transition);
         let got = transition_width_at(&doc, node, t);
         if got.map(|w| (w - chrome).abs() > 0.01).unwrap_or(true) {
-            wrong.push(format!("{transition} at {t}ms: rinch {got:?}, Chrome 155 {chrome}px"));
+            wrong.push(format!(
+                "{transition} at {t}ms: rinch {got:?}, Chrome 155 {chrome}px"
+            ));
         }
     }
     assert!(wrong.is_empty(), "transition widths:\n{}", wrong.join("\n"));
@@ -369,6 +481,9 @@ fn a_stepped_transition_reverses_from_its_output_progress() {
             .get_mut(&TransitionProperty::Width)
             .unwrap()
             .start_time_ms -= 600.0;
+        // The before-change style is the running transition's current value.
+        doc.tick_transitions();
+        doc.resolve_layout(VP.0 + 3.0, VP.1);
         doc.set_style(node, "width", "40px");
         doc.resolve_layout(VP.0 + 2.0, VP.1);
         let tr = &doc.tree.active_transitions[&node.0][&TransitionProperty::Width];
