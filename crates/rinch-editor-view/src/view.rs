@@ -706,9 +706,9 @@ impl ViewDesc {
     }
 
     /// Patch this descriptor in place to project `new`. Returns `false` if the
-    /// kinds are incompatible (text vs element, a different element tag, or a
-    /// changed mark set whose wrapper chain differs) and the caller must replace
-    /// the whole subtree instead.
+    /// kinds are incompatible (text vs element, a different node type or element
+    /// tag, or a changed mark set whose wrapper chain differs) and the caller
+    /// must replace the whole subtree instead.
     ///
     /// `pos` is the position just before `new` in the new document. A node a
     /// view is mounted for ([`Self::slot`]) is patched in place only when it is
@@ -765,8 +765,16 @@ impl ViewDesc {
             self.node = new.clone();
             return true;
         }
-        // Element: the tag must match to patch in place.
-        if self.is_text || node_dom_tag(&self.node) != node_dom_tag(new) {
+        // Element: the node type and the tag must match to patch in place. The
+        // type, not only the tag: `div` hosts several types (a task list, a
+        // task item, an embed no view claims, an app's block leaf), and a host
+        // patched into another type would keep its `data-pm-type` — the attrs
+        // are rewritten only when they differ, and are empty on both sides
+        // (review 3 of #1575, F2).
+        if self.is_text
+            || self.node.type_name() != new.type_name()
+            || node_dom_tag(&self.node) != node_dom_tag(new)
+        {
             return false;
         }
         // Re-apply element attrs when the node's own attrs changed, OR when it is a
