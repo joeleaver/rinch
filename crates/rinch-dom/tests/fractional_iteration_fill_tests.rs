@@ -20,10 +20,15 @@
 //!
 //! | mutant | killed by |
 //! |---|---|
-//! | `main`: last iteration `ceil(n) - 1` at progress 1 | every fixture with a fractional or zero count |
-//! | progress `fract(n)` but iteration `ceil(n) - 1` | `alternate_takes_its_direction_from_the_iteration_it_stopped_in` |
-//! | fractional progress, but a whole count also takes `fract` (0) | `whole_counts_still_fill_at_the_end_of_the_last_iteration` |
-//! | a count of 0 treated as a whole count (iteration −1 → 0, progress 1) | `a_count_of_zero_fills_at_the_start` |
+//! | `main`: iteration `ceil(n) - 1` at progress 1 | every fixture with a fractional or zero count (5 of 6) |
+//! | progress `fract(n)`, iteration always 0 | `alternate_takes_its_direction_from_the_iteration_it_stopped_in` |
+//! | progress `fract(n)`, iteration `floor(n) + 1` | that, and `a_count_below_one_fills_inside_the_first_iteration` |
+//! | a whole count ends at progress 0 of its last iteration | `whole_counts_still_fill_at_the_end_of_the_last_iteration` |
+//! | a count of 0 ends at progress 1 | `a_count_of_zero_fills_at_the_start` |
+//! | an infinite (zero-duration) count ends in an odd iteration | `a_zero_duration_fills_where_its_count_ends`, and `reverse_directions_fill_at_the_from_value` in `zero_duration_infinite_animation_tests` |
+//!
+//! (`ceil(n) - 1` for the iteration with `fract(n)` progress is *not* a
+//! mutant: for a fractional `n` it equals `floor(n)`.)
 
 #![cfg(feature = "software-renderer")]
 
