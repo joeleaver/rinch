@@ -491,8 +491,8 @@ fn a_plain_event_named_paste_reaches_no_paste_interceptor() {
         // Firefox's constructor drops the member (see support/clipboard.rs).
         let desc = js_sys::Object::new();
         js_sys::Reflect::set(&desc, &"value".into(), &dt).unwrap();
-        js_sys::Reflect::define_property(paste.unchecked_ref(), &"clipboardData".into(), &desc)
-            .unwrap();
+        let target: &js_sys::Object = paste.unchecked_ref();
+        js_sys::Reflect::define_property(target, &"clipboardData".into(), &desc).unwrap();
     }
     document().dispatch_event(&paste).unwrap();
     assert_eq!(*pastes.borrow(), vec![Some("real".to_string())]);
@@ -505,7 +505,8 @@ fn a_plain_event_named_paste_reaches_no_paste_interceptor() {
     dt.set_data("text/plain", "fake").unwrap();
     let desc = js_sys::Object::new();
     js_sys::Reflect::set(&desc, &"value".into(), &dt).unwrap();
-    js_sys::Reflect::define_property(fake.unchecked_ref(), &"clipboardData".into(), &desc).unwrap();
+    let target: &js_sys::Object = fake.unchecked_ref();
+    js_sys::Reflect::define_property(target, &"clipboardData".into(), &desc).unwrap();
     document().dispatch_event(&fake).unwrap();
     dispatch_plain(document().as_ref(), "copy");
     dispatch_plain(document().as_ref(), "cut");
