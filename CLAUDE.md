@@ -127,9 +127,12 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     one space, one flat byte, recorded in `IfcText::tabs`; `IfcText::replay`
     gives each its own span of `word-spacing: 0` and a `letter-spacing` that
     widens it to its stop, and `build_inline_layout` builds and breaks again
-    until every tab ends at one (`ifc::TabStops::deltas`, at most
+    while a tab is off its stop (`ifc::TabStops::deltas`), at most
     `MAX_TAB_BUILDS` = 4 builds; `ifc_tab_rebuilds` counts the extra ones: 1 for
-    lines that do not wrap). The rule is Chrome 155's: stops every `TAB_SIZE`
+    lines that do not wrap. Each build settles one more moved soft wrap, so a
+    long soft-wrapped `pre-wrap` paragraph can stop at the cap with some tabs
+    off their stops, 3.8–5px from Chrome's, from about its fifth line on (Refs
+    #1593; `review_1587_tests.rs` pins a paragraph that needs all four). The rule is Chrome 155's: stops every `TAB_SIZE`
     (8) spaces of the **block's** font, its letter- and word-spacing included,
     from the line's start edge in logical order before `text-align`; the first
     stop strictly past the tab's start, or the next when that is under half a

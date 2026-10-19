@@ -9162,7 +9162,10 @@ const TAB_STOP_TOLERANCE: f32 = 0.01;
 /// paragraph to put its tabs at their stops. A tab's width moves what follows
 /// it on its line, and on a wrapping line can move the line break, which
 /// moves the tabs after it; a line of tabs that does not wrap is settled by
-/// the second build. A paragraph that has not settled by the last keeps it.
+/// the second build. Each build settles one more moved soft wrap, so a long
+/// soft-wrapped `pre-wrap` paragraph can stop here with some tabs off their
+/// stops, 3.8–5px from Chrome's, from about its fifth line on: it keeps the
+/// last build (Refs #1593).
 const MAX_TAB_BUILDS: u32 = 4;
 
 /// The tab stops of one block container (css-text-3 §4.2), and how far each

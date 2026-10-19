@@ -175,7 +175,9 @@ Four things about that set are worth knowing before they surprise you.
   holds under `pre-wrap` and `break-spaces`; `normal`, `nowrap` and `pre-line`
   collapse a tab to a space. `tab-size` is not read yet, so the stops are
   always 8 spaces apart (#1584), and a flex or grid item's own text and the
-  text of a form control do not set tabs to stops yet (#1585).
+  text of a form control do not set tabs to stops yet (#1585). In a long
+  soft-wrapped `pre-wrap` paragraph some tabs from about the fifth line on can
+  stay a few pixels off their stops (#1593).
 - **rinch does not copy Chrome's monospace font-*size* quirk.** Chrome renders a
   `medium`-sized monospace element at 13px rather than 16px; rinch has no
   per-family default size, so `<code>` keeps the size it inherits. Only the
