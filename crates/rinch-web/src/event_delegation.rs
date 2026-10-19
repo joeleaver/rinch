@@ -809,9 +809,9 @@ struct PendingPressFocus {
     pointer_id: i32,
     start_x: f32,
     start_y: f32,
-    /// The focused element when the press was recorded, after its handler ran:
-    /// a handler that moved the focus itself (an overlay's `focus_into`) is
-    /// not overruled on release.
+    /// The focused element when the press landed, before its handler ran: a
+    /// focus move made since — by the handler (an overlay's `focus_into`) or
+    /// anything else before the release — is not overruled.
     active: Option<web_sys::Element>,
 }
 
@@ -820,14 +820,21 @@ fn clear_pending_press_focus() {
     PENDING_PRESS_FOCUS.with(|c| *c.borrow_mut() = None);
 }
 
-/// Hold `target`'s focus move until `event`'s pointer is released.
-fn defer_press_focus(target: web_sys::Element, event: &web_sys::MouseEvent) {
+/// The element holding the focus in `el`'s document.
+fn active_in(el: &web_sys::Element) -> Option<web_sys::Element> {
+    el.owner_document().and_then(|d| d.active_element())
+}
+
+/// Hold `target`'s focus move until `event`'s pointer is released. `active` is
+/// the focused element when the press landed.
+fn defer_press_focus(
+    target: web_sys::Element,
+    active: Option<web_sys::Element>,
+    event: &web_sys::MouseEvent,
+) {
     let pointer_id = event
         .dyn_ref::<web_sys::PointerEvent>()
         .map_or(0, |p| p.pointer_id());
-    let active = target
-        .owner_document()
-        .and_then(|d| d.active_element());
     PENDING_PRESS_FOCUS.with(|c| {
         *c.borrow_mut() = Some(PendingPressFocus {
             target,
@@ -853,7 +860,7 @@ fn apply_pending_press_focus(event: &web_sys::PointerEvent) {
     if !p.target.is_connected() {
         return;
     }
-    let now = p.target.owner_document().and_then(|d| d.active_element());
+    let now = active_in(&p.target);
     let unchanged = match (&now, &p.active) {
         (Some(a), Some(b)) => a.is_same_node(Some(b)),
         (None, None) => true,
@@ -1531,12 +1538,14 @@ fn dispatch_click_at(
             // move the handler makes itself is not undone afterwards.
             focus_press_target(target);
         }
+        let active = active_in(el);
         let ran = dispatch_rid(rid);
         if let PressFocus::Focus(target) = press_focus.clone()
             && touch
         {
-            // Recorded after the handler, so its own focus move is seen.
-            defer_press_focus(target, event);
+            // With the focus from before the handler, so a move the handler
+            // makes itself is seen and kept.
+            defer_press_focus(target, active, event);
         }
         if ran && !matches!(press_focus, PressFocus::Browser) {
             event.prevent_default();
@@ -2310,7 +2319,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                     if !event.default_prevented()
                         && let PressFocus::Focus(target) = press_focus_for(&el)
                     {
-                        defer_press_focus(target, event);
+                        defer_press_focus(target, active_in(&el), event);
                     }
                     PENDING_CLICK.with(|c| {
                         *c.borrow_mut() = Some(PendingClick {
