@@ -486,3 +486,113 @@ fn an_empty_clipboard_leaves_the_selection_alone() {
     assert_eq!(field(&app, ids.input), state("hello world", 2, 5));
     assert!(log.borrow().is_empty(), "no oninput");
 }
+
+// ── Line breaks in a single-line field (#824) ────────────────────────────────
+
+/// A paste of several lines into an `<input>` goes in as one line: every
+/// inner `\r\n`, `\r` and `\n` is one space and the trailing one is dropped
+/// — Chrome 155's answer for the same text (`single_line_insert`). It used
+/// to go in verbatim, and the field painted three lines, two of them outside
+/// its box. The caret lands after the pasted text, and one `oninput` carries
+/// the folded value.
+#[test]
+fn a_multi_line_paste_into_an_input_goes_in_as_one_line() {
+    let _lock = clipboard_lock();
+    let (mut app, ids, log) = page(&[]);
+    focus_and_select(&mut app, ids.input);
+    clip("A\nB\r\nC\rD\n");
+    log.borrow_mut().clear();
+    ctrl_v(&mut app);
+    assert_eq!(settle(&mut app), 1);
+    assert_eq!(field(&app, ids.input), state("heA B C D world", 9, 9));
+    assert_eq!(*log.borrow(), vec!["input:heA B C D world".to_string()]);
+    // One undo step puts the selection's text back, as for any paste.
+    key_with(&mut app, KeyCode::KeyZ, primary());
+    assert_eq!(field(&app, ids.input).0, "hello world");
+}
+
+/// A `<textarea>` holds lines, so its paste keeps them.
+#[test]
+fn a_multi_line_paste_into_a_textarea_keeps_its_lines() {
+    let _lock = clipboard_lock();
+    let (mut app, ids, _log) = page(&[]);
+    focus_and_select(&mut app, ids.textarea);
+    clip("A\nB\n");
+    ctrl_v(&mut app);
+    assert_eq!(settle(&mut app), 1);
+    assert_eq!(field(&app, ids.textarea), state("heA\nB\n world", 7, 7));
+}
+
+/// A paste that is nothing but line breaks still replaces the selection
+/// (with nothing), as Chrome's does, and fires `oninput`.
+#[test]
+fn a_paste_of_only_line_breaks_deletes_the_selection() {
+    let _lock = clipboard_lock();
+    let (mut app, ids, log) = page(&[]);
+    focus_and_select(&mut app, ids.input);
+    clip("\r\n\n");
+    log.borrow_mut().clear();
+    ctrl_v(&mut app);
+    assert_eq!(settle(&mut app), 1);
+    assert_eq!(field(&app, ids.input), state("he world", 2, 2));
+    assert_eq!(*log.borrow(), vec!["input:he world".to_string()]);
+}
+
+/// The IME commit path reaches the same insertion: a committed `\n` in an
+/// `<input>` is a space, in a `<textarea>` a line break.
+#[test]
+fn an_ime_commit_with_a_line_break_is_one_line_in_an_input() {
+    let (mut app, ids, _log) = page(&[]);
+    focus(&mut app, ids.input);
+    key(&mut app, KeyCode::End);
+    ev(&mut app, PlatformEvent::Ime(ImeEvent::Commit("x\ny".into())));
+    assert_eq!(field(&app, ids.input).0, "hello worldx y");
+
+    focus(&mut app, ids.textarea);
+    key(&mut app, KeyCode::End);
+    ev(&mut app, PlatformEvent::Ime(ImeEvent::Commit("x\ny".into())));
+    assert_eq!(field(&app, ids.textarea).0, "hello worldx\ny");
+}
+
+/// A lone `\n` as a key's text — what Android's soft keyboard commits one
+/// character at a time (`apply_ime_action`) — inserts nothing into an
+/// `<input>` and leaves no undo step behind: Ctrl+Z after it undoes the
+/// keystroke before it.
+#[test]
+fn a_lone_newline_typed_into_an_input_inserts_nothing() {
+    let (mut app, ids, log) = page(&[]);
+    focus(&mut app, ids.input);
+    key(&mut app, KeyCode::End);
+    let typed = |app: &mut RinchApp, t: &str| {
+        ev(
+            app,
+            PlatformEvent::KeyDown {
+                key: KeyCode::Other,
+                logical_key: None,
+                text: Some(t.into()),
+                modifiers: Modifiers::default(),
+                repeat: KeyRepeat::Fresh,
+            },
+        );
+    };
+    typed(&mut app, "!");
+    log.borrow_mut().clear();
+    typed(&mut app, "\n");
+    assert_eq!(field(&app, ids.input), state("hello world!", 12, 12));
+    assert!(log.borrow().is_empty(), "no oninput: nothing changed");
+    key_with(&mut app, KeyCode::KeyZ, primary());
+    assert_eq!(field(&app, ids.input).0, "hello world");
+}
+
+/// What Android's soft keyboard path folds a whole committed text with,
+/// before it splits it into one key per character (`apply_ime_action`, which
+/// no host test compiles): line breaks in an `<input>`, untouched in a
+/// `<textarea>`.
+#[test]
+fn a_committed_text_is_folded_for_the_focused_field() {
+    let (mut app, ids, _log) = page(&[]);
+    focus(&mut app, ids.input);
+    assert_eq!(app.insertable_text("a\r\nb\n".into()), "a b");
+    focus(&mut app, ids.textarea);
+    assert_eq!(app.insertable_text("a\r\nb\n".into()), "a\r\nb\n");
+}
