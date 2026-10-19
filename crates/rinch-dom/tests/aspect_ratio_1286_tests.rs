@@ -481,6 +481,33 @@ fn known_differences_from_chrome() {
             (120.0, 57.0),
             1278,
         ),
+        // A fixed box with one vertical inset and an auto height is given
+        // its content height after Taffy laid it out, which drops the ratio
+        // (pre-existing: a fixed `<img>`/`<video>` with `top: 0` is 0 tall
+        // too). #1569.
+        (
+            "position: fixed; top: 0; left: 0; width: 100px; aspect-ratio: 2",
+            "",
+            (100.0, 0.0),
+            (100.0, 50.0),
+            1569,
+        ),
+        (
+            "position: fixed; bottom: 16px; right: 16px; width: 320px; aspect-ratio: 16/9",
+            "",
+            (320.0, 0.0),
+            (320.0, 180.0),
+            1569,
+        ),
+        // A flex item grown from a 0 basis does not take its cross size
+        // from the ratio. #1571.
+        (
+            "flex: 1; aspect-ratio: 4",
+            "display: flex; align-items: center",
+            (400.0, 0.0),
+            (400.0, 100.0),
+            1571,
+        ),
     ];
     for &(style, container, rinch, chrome, issue) in rows {
         let (doc, _, e) = build(container, "div", &[], style, "");
@@ -502,6 +529,33 @@ fn known_differences_from_chrome() {
         let (doc, _, e) = build("", "div", &[], style, "aaaaaaaa bbbbbbbb cccccccc");
         assert_eq!(size(&doc, e), (100.0, 25.0), "{style}");
     }
+    // A shrink-to-fit box whose width comes from its content does not take
+    // its height from that width: a 30x10 block inside. Chrome 155: 30x30
+    // for each. #1570.
+    for html in [
+        r#"<span id=t style="display:inline-block;aspect-ratio:1"><div style="width:30px;height:10px"></div></span>"#,
+        r#"<div style="display:flex"><div><span id=t style="display:inline-block;aspect-ratio:1"><div style="width:30px;height:10px"></div></span></div></div>"#,
+        r#"<div style="position:relative"><div id=t style="position:absolute;top:0;left:0;aspect-ratio:1"><div style="width:30px;height:10px"></div></div></div>"#,
+    ] {
+        assert_eq!(measure_html(html), (30.0, 10.0), "{html}");
+    }
+}
+
+/// `body > div(400x300) > html`, laid out; the size of `#t`.
+fn measure_html(html: &str) -> (f32, f32) {
+    let mut doc = document();
+    let body = doc.body();
+    let c = doc.create_element("div");
+    doc.set_attribute(
+        c,
+        "style",
+        "width: 400px; height: 300px; font: 16px/20px ProbeFace",
+    );
+    doc.append_child(body, c);
+    doc.set_inner_html(c, html);
+    doc.resolve_layout(800.0, 600.0);
+    let t = doc.query_selector_all("#t")[0];
+    size(&doc, t)
 }
 
 /// A restyle that changes only `aspect-ratio` moves no other Taffy input:
@@ -574,18 +628,6 @@ fn internal_table_boxes_take_no_ratio() {
         ),
     ];
     for &(html, want) in rows {
-        let mut doc = document();
-        let body = doc.body();
-        let c = doc.create_element("div");
-        doc.set_attribute(
-            c,
-            "style",
-            "width: 400px; height: 300px; font: 16px/20px ProbeFace",
-        );
-        doc.append_child(body, c);
-        doc.set_inner_html(c, html);
-        doc.resolve_layout(800.0, 600.0);
-        let t = doc.query_selector_all("#t")[0];
-        assert_eq!(size(&doc, t), want, "{html}");
+        assert_eq!(measure_html(html), want, "{html}");
     }
 }

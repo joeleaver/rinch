@@ -4210,7 +4210,12 @@ kept by `replaced::sync_replaced_measure` on each cascade, which owes a layout
 when it moves) and `replaced::measure` takes `AspectRatioValue::used_ratio`:
 a `<ratio>` without `auto` replaces the natural ratio, `auto <ratio>` is used
 only when there is none, and a `<ratio>` without `auto` relates the
-`box-sizing` box's sizes, any other the content box's. `aspect-ratio` does not transition. Not Chrome's (pinned in
+`box-sizing` box's sizes (always the border box today, since `box-sizing`
+is not read — #1278), any other the content box's. An internal table box (a
+cell, a row, a row group — `TablePart::is_internal`; not the table or a
+caption) takes no ratio, as in Chrome 155. `aspect-ratio` does not
+transition (Chrome interpolates it) and an `@keyframes` stop of it is
+ignored. Not Chrome's (pinned in
 `tests/aspect_ratio_1286_tests.rs`, `known_differences_from_chrome`): Taffy
 transfers the other axis's `min-*`/`max-*` onto a definite size
 (`width: 100px; aspect-ratio: 2; max-height: 30px` is 60x30, Chrome 100x30 —
@@ -4218,7 +4223,16 @@ transfers the other axis's `min-*`/`max-*` onto a definite size
 so text taller than the ratio overflows a visible box and a stretched flex
 item shrinks (#1562); and Taffy applies a non-replaced box's `auto <ratio>`
 to its border box too, where Chrome uses the content box (visible only with
-padding or a border, every rinch box being `border-box` — #1278). Also not
+padding or a border, every rinch box being `border-box` — #1278). Three gaps
+the ratio does not reach: a `position: fixed` box with one vertical inset
+and an auto height is given its content height afterwards, so it is 0 tall
+(`top: 0; width: 100px; aspect-ratio: 2` is 100x0, Chrome 100x50 — a fixed
+`<img>`/`<video>` with `top: 0` was 0 tall before `aspect-ratio` too; #1569);
+a shrink-to-fit box (an `auto`-width `inline-block` or absolute box) whose
+width comes from its content does not take its height from it (30x10 around
+a 30x10 child with `aspect-ratio: 1`, Chrome 30x30 — #1570); and a flex item
+grown from a 0 basis (`flex: 1`) under `align-items: center` takes no cross
+size from the ratio (400x0, Chrome 400x100 — #1571). Also not
 Chrome's: an unloaded or failed image with a non-empty `alt` reserves its
 attributes' 100x50 where Chrome lays out the alt text (48x18, both attributes
 ignored), and a failed one with one attribute and no `alt` is 100x0 where
