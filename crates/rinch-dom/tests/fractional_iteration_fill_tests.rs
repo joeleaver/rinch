@@ -97,7 +97,10 @@ fn alternate_takes_its_direction_from_the_iteration_it_stopped_in() {
     check(&[
         ("k785 40ms linear 1.25 -1000ms alternate forwards", 85.0),
         ("k785 40ms linear 3.75 -1000ms alternate forwards", 55.0),
-        ("k785 40ms linear 3.75 -1000ms alternate-reverse forwards", 85.0),
+        (
+            "k785 40ms linear 3.75 -1000ms alternate-reverse forwards",
+            85.0,
+        ),
     ]);
 }
 
@@ -107,7 +110,10 @@ fn a_count_below_one_fills_inside_the_first_iteration() {
     check(&[
         ("k785 40ms linear 0.25 -1000ms forwards", 55.0),
         ("k785 40ms linear 0.25 -1000ms reverse forwards", 85.0),
-        ("k785 40ms linear 0.25 -1000ms alternate-reverse forwards", 85.0),
+        (
+            "k785 40ms linear 0.25 -1000ms alternate-reverse forwards",
+            85.0,
+        ),
     ]);
 }
 
@@ -128,7 +134,10 @@ fn whole_counts_still_fill_at_the_end_of_the_last_iteration() {
     check(&[
         ("k785 40ms linear 2 -1000ms forwards", 100.0),
         ("k785 40ms linear 2 -1000ms alternate forwards", 40.0),
-        ("k785 40ms linear 2 -1000ms alternate-reverse forwards", 100.0),
+        (
+            "k785 40ms linear 2 -1000ms alternate-reverse forwards",
+            100.0,
+        ),
         ("k785 0s linear 2 alternate forwards", 40.0),
     ]);
 }
