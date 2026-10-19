@@ -2132,11 +2132,18 @@ each entry whose owner lost the focus: desktop calls it from
 `RinchApp::fire_focus_work` after every arbiter transition (callers fire that
 work after installing the new owner, so `focused_node` is already the new one),
 rinch-web from a document `focusin` and from a `focusout` with no
-`relatedTarget` (with key 0, which reaches every island). A window blur closes
-nothing on either backend: desktop keeps the claim, and on the web the
-`focusout` it fires has no `relatedTarget` but `activeElement` is still the
-trigger while it runs (measured, Chrome 153). A native `<select>` and Mantine
-both close on window blur; that is #1171. Push a key entry at **open** and release it at close
+`relatedTarget` (with key 0, which reaches every island). A window blur moves
+no focus — desktop keeps the claim, and on the web the `focusout` it fires has
+no `relatedTarget` but `activeElement` is still the trigger while it runs
+(measured, Chrome 153) — so it is told apart (#1171):
+`rinch_core::notify_window_blurred(doc_key)` calls **every** key entry's
+`on_focus_leave` of that document, focus or not, from desktop's
+`WindowFocus(false)` arm and from a rinch-web `window` capture `blur` listener
+(at-target phase only: element blurs pass through it too). So an open `Select`
+list closes on window blur, as a native `<select>` and Mantine's do, and the
+trigger keeps the focus; desktop's native `<select>` popup closes there too
+(`close_select_popup_returning_focus`). `ColorInput`'s and `DropdownMenu`'s
+dismiss-only entries are not told. Push a key entry at **open** and release it at close
 and unmount (`overlay_dismiss::arm_keys_while_open`). `MockDomDocument` now
 records `focus_element` and answers it from `active_element`, so a component
 test has to focus the owner before its keys reach an entry.

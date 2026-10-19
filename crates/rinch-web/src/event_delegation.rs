@@ -2730,7 +2730,8 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // left it. `focusin` names the new focus; a `focusout` with no
     // `relatedTarget` is focus going nowhere (a click on the page background),
     // for which no `focusin` follows. The window losing focus fires one too, but
-    // `activeElement` is unchanged while it runs, so it closes nothing (#1171).
+    // `activeElement` is unchanged while it runs, so it closes nothing; the
+    // `window` `blur` listener below does that (#1171).
     // A `focusout`
     // that does have one is followed by that element's `focusin`, and asking
     // then would see the transient `<body>` in between. Document key 0: this
@@ -2744,6 +2745,19 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             rinch_core::notify_focus_moved(0);
         }
     });
+    // The window losing the keyboard (#1171): a native `<select>`'s popup
+    // closes then, and so does Mantine's `Select` dropdown, though the focused
+    // element stays focused. A capture listener on `window` also sees every
+    // element's `blur` on its way down, so only the event aimed at `window`
+    // itself (the at-target phase) counts.
+    if let Some(win) = web_sys::window() {
+        let target: web_sys::EventTarget = win.into();
+        add_capture_on(&target, "blur", |event: web_sys::Event| {
+            if event.event_phase() == web_sys::Event::AT_TARGET {
+                rinch_core::notify_window_blurred(0);
+            }
+        });
+    }
 
     // Change delegation (issue #226): find [data-onchange] on the target or
     // ancestors. The browser fires `change` exactly at the commit boundary the

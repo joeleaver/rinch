@@ -1469,6 +1469,16 @@ impl RinchApp {
                         // keyboard; so does the built-in text menu (#813). The
                         // field's claim itself is kept, as below.
                         self.close_text_context_menu();
+                        // So does a native `<select>`'s popup, in a browser as
+                        // on every desktop toolkit; the control keeps the
+                        // keyboard, as a closed one would (#1171). And a popup
+                        // built on a key entry (the `Select` component's list):
+                        // the claim is kept, so `notify_focus_moved` would see
+                        // focus still inside it and close nothing.
+                        if self.is_select_open() {
+                            self.close_select_popup_returning_focus();
+                        }
+                        rinch_core::notify_window_blurred(self.doc_key());
                         // The matching `KeyUp` of anything held across the blur
                         // goes to the window that took the keyboard, so the
                         // Enter/Space activation latch (issue #228) would stay
