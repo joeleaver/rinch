@@ -151,7 +151,22 @@ impl CollabSession {
             model_ahead: false,
             uid: atom_cache::next_uid(),
             generation: 0,
-        })
+        }
+        .with_atom_ids(state))
+    }
+
+    /// Note which CRDT block each leaf block atom of `state`'s document became
+    /// ([`atom_cache`]), so the first peer's update needs no read of its own to
+    /// tell them apart. One read of the new CRDT, paid only when the document holds
+    /// such an atom.
+    fn with_atom_ids(self, state: &EditorState) -> CollabSession {
+        if block_atoms(&state.doc) > 0
+            && let Ok((read, Some(ids))) = self.cdoc.to_doc_with_atom_ids(state.schema())
+            && read == state.doc
+        {
+            atom_cache::store(self.uid, self.generation, state.doc.clone(), ids);
+        }
+        self
     }
 
     /// Join an existing collaboration from a peer's saved CRDT bytes.
@@ -194,7 +209,8 @@ impl CollabSession {
             model_ahead: false,
             uid: atom_cache::next_uid(),
             generation: 0,
-        })
+        }
+        .with_atom_ids(state))
     }
 
     /// [`CollabSession::from_bytes`] with this replica's yrs client id pinned — the
