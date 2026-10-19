@@ -1940,6 +1940,13 @@ impl RinchDocument {
         // #788 for an `<img>`).
         style.item_is_replaced =
             crate::replaced::is_unstretched_replaced(&self.tree.nodes[node_id]);
+        // A replaced element's `aspect-ratio` is weighed against its natural
+        // ratio by its measure (`AspectRatioValue::used`, #1286): Taffy, which
+        // knows no natural ratio, would apply `auto <ratio>`'s even where the
+        // element has its own.
+        if crate::replaced::measures_aspect_ratio(&self.tree.nodes[node_id]) {
+            style.aspect_ratio = None;
+        }
         if let Some(dir) = Self::table_flex_direction(&self.tree, node_id) {
             style.flex_direction = dir;
         }

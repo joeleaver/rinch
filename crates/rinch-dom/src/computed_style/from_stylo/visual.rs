@@ -29,6 +29,25 @@ pub(super) fn object_fit_from_stylo(
     }
 }
 
+pub(super) fn aspect_ratio_from_stylo(
+    ar: &style::values::computed::position::AspectRatio,
+) -> AspectRatioValue {
+    use style::values::generics::position::PreferredRatio;
+    let ratio = match &ar.ratio {
+        PreferredRatio::None => None,
+        PreferredRatio::Ratio(r) => {
+            let (w, h) = ((r.0).0, (r.1).0);
+            let v = w / h;
+            // A degenerate ratio behaves as `auto` (css-sizing-4 §2).
+            (w > 0.0 && h > 0.0 && v.is_finite() && v > 0.0).then_some(v)
+        }
+    };
+    AspectRatioValue {
+        auto: ar.auto,
+        ratio,
+    }
+}
+
 pub(super) fn cursor_from_stylo(cursor: &style::values::specified::ui::CursorKind) -> CursorValue {
     use style::values::specified::ui::CursorKind;
     match *cursor {

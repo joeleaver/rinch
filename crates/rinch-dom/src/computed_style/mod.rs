@@ -176,6 +176,11 @@ pub struct ComputedStyle {
     // Object fit (for <img> elements)
     pub object_fit: ObjectFitValue,
 
+    /// `aspect-ratio` (#1286). A non-replaced box hands it to Taffy
+    /// ([`Self::to_taffy_style`]); a replaced element's measure reads it
+    /// through [`AspectRatioValue::used`] (`crate::replaced`).
+    pub aspect_ratio: AspectRatioValue,
+
     // Cursor
     pub cursor: CursorValue,
 
@@ -355,6 +360,7 @@ impl Default for ComputedStyle {
             filter_hue_rotate: 0.0,
 
             object_fit: ObjectFitValue::default(),
+            aspect_ratio: AspectRatioValue::default(),
 
             cursor: CursorValue::default(),
             pointer_events: PointerEventsValue::default(),

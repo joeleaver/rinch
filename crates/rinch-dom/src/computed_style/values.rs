@@ -1170,6 +1170,65 @@ impl ObjectFitValue {
     }
 }
 
+/// CSS `aspect-ratio` (css-sizing-4 §2, #1286): `auto`, `<ratio>`, or
+/// `auto <ratio>`. `ratio` is width / height, `None` for `auto` alone and for
+/// a degenerate ratio (`0 / 1`, `1 / 0`), which behaves as `auto`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct AspectRatioValue {
+    /// The `auto` keyword: a box with a natural aspect ratio uses that one.
+    pub auto: bool,
+    /// The preferred ratio, width / height.
+    pub ratio: Option<f32>,
+}
+
+impl Default for AspectRatioValue {
+    fn default() -> Self {
+        Self {
+            auto: true,
+            ratio: None,
+        }
+    }
+}
+
+impl AspectRatioValue {
+    /// The ratio a box with natural ratio `natural` (a replaced element's;
+    /// `None` for everything else) is laid out with: a `<ratio>` without
+    /// `auto` replaces the natural one, `auto <ratio>` is used only when there
+    /// is no natural one.
+    pub fn used(&self, natural: Option<f32>) -> Option<f32> {
+        self.used_ratio(natural).map(|r| r.value)
+    }
+
+    /// [`Self::used`], saying where the ratio came from: a natural ratio
+    /// relates content-box sizes, a declared one sizes of the `box-sizing`
+    /// box (css-sizing-4 §2).
+    pub fn used_ratio(&self, natural: Option<f32>) -> Option<UsedRatio> {
+        let declared = |value| UsedRatio {
+            value,
+            declared: true,
+        };
+        match (self.auto, self.ratio, natural) {
+            (false, Some(r), _) => Some(declared(r)),
+            (_, _, Some(value)) => Some(UsedRatio {
+                value,
+                declared: false,
+            }),
+            (_, r, None) => r.map(declared),
+        }
+    }
+}
+
+/// The aspect ratio a replaced element is laid out with
+/// ([`AspectRatioValue::used_ratio`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UsedRatio {
+    /// Width / height.
+    pub value: f32,
+    /// Declared by `aspect-ratio` rather than the element's natural ratio:
+    /// it relates the sizes of the `box-sizing` box, not of the content box.
+    pub declared: bool,
+}
+
 /// CSS `user-select` property values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub enum UserSelectValue {

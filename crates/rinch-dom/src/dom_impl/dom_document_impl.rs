@@ -64,7 +64,7 @@ impl DomDocument for RinchDocument {
                 src: String::new(),
                 width: 0,
                 height: 0,
-                hint_ratio: None,
+                aspect: Default::default(),
             };
             self.tree
                 .taffy
