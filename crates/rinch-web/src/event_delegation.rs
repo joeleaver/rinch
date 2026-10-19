@@ -2136,7 +2136,13 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     pointerdown_closure.forget();
 
     // Pointermove delegation: feed active drag operations.
-    let pointermove_closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
+    let pointermove_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // Not a pointer event, not a move (issue #811; see `pointerup`). A
+        // plain `Event` read `buttons` as 0 and healed a live `Drag` through
+        // `on_cancel`, as though its release had been swallowed.
+        let Some(event) = event.dyn_ref::<web_sys::PointerEvent>() else {
+            return;
+        };
         // Tell the pointer-capture `Drag` whether the primary contact is still
         // down. `buttons & 1 == 0` on a move means the release that should have
         // ended the drag was swallowed (a native context menu, a print dialog,
@@ -2164,14 +2170,14 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             event.prevent_default();
         }
 
-        if let Some(el) = pointer_hit_element(&event) {
-            dispatch_mouse_attr(&el, "data-onmousemove", &event);
+        if let Some(el) = pointer_hit_element(event) {
+            dispatch_mouse_attr(&el, "data-onmousemove", event);
 
             // Element drag-and-drop: if a drag is pending/active, advance it and
             // skip hover — an active drag owns the move (mirrors desktop). A live
             // captured touch/pen drag asks us to block the browser's scroll.
             if WEB_DRAG.with(|d| d.borrow().is_some()) {
-                if handle_web_pointer_move(&event) {
+                if handle_web_pointer_move(event) {
                     event.prevent_default();
                 }
                 return;
@@ -2238,7 +2244,17 @@ pub fn setup_event_delegation(doc: &WebDocument) {
 
     // Pointerup delegation: stop active drag operations and fire data-onmouseup.
     let browser_doc_for_up = browser_doc.clone();
-    let pointerup_closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
+    let pointerup_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // Registered by hand, so a typed closure parameter here was cast
+        // unchecked (see the keydown listener). A plain `Event("pointerup")`
+        // from page script read `clientX`/`clientY` as `undefined`: release
+        // glue coerced them to 0 and committed a live `Drag` through
+        // `on_end(0, 0)`, debug glue threw (issue #811). A `MouseEvent` under
+        // that name would commit at whatever position it carried. Only a
+        // pointer release ends a pointer gesture.
+        let Some(event) = event.dyn_ref::<web_sys::PointerEvent>() else {
+            return;
+        };
         // Finish (not cancel) any pointer-capture Drag so its `on_end` fires with
         // the release position. Desktop ends it on the release of the button
         // that armed it (`finish_drag_for_button`, issue #1087); a browser's
@@ -2247,8 +2263,8 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         // still uses `Drag::cancel()` (no commit).
         rinch_core::finish_drag(event.client_x() as f32, event.client_y() as f32);
         release_drag_pointer_capture();
-        if let Some(el) = pointer_hit_element(&event) {
-            dispatch_mouse_attr(&el, "data-onmouseup", &event);
+        if let Some(el) = pointer_hit_element(event) {
+            dispatch_mouse_attr(&el, "data-onmouseup", event);
         }
 
         // Element drag-and-drop: only the owning pointer finishes the drag (a
@@ -2272,7 +2288,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                 // click on the draggable, which only the primary button makes
                 // (issue #1093), as on the pointerdown path.
                 if event.button() == 0 {
-                    dispatch_click_at(&state.source, &browser_doc_for_up, &event);
+                    dispatch_click_at(&state.source, &browser_doc_for_up, event);
                 }
             }
         }
@@ -2288,7 +2304,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             }
         });
         if let Some(target) = deferred {
-            dispatch_click_at(&target, &browser_doc_for_up, &event);
+            dispatch_click_at(&target, &browser_doc_for_up, event);
         }
     }) as Box<dyn FnMut(_)>);
     browser_doc
@@ -2300,7 +2316,11 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // gesture, or scrolling won out). Cancel the owning drag like Escape — an
     // active drag fires dragend, a pending one is just cleared — and release any
     // slider drag too.
-    let pointercancel_closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
+    let pointercancel_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // Not a pointer event: nothing took a pointer away (issue #811).
+        let Some(event) = event.dyn_ref::<web_sys::PointerEvent>() else {
+            return;
+        };
         let owns = WEB_DRAG.with(|d| {
             d.borrow()
                 .as_ref()
@@ -2334,7 +2354,15 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // acted at all (GESTURE_ACTED, issue #272). No `prevent_default`
     // here: it would cancel link navigation, the label→control toggle and
     // native form submit for keyboard users only.
-    let click_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+    let click_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // Deliberately NOT narrowed to `MouseEvent` (issue #811): a plain
+        // `Event("click")` from page script or automation activates a
+        // `data-rid` element, as an untrusted click always has here (#240).
+        // It carries no position and no modifiers, so it is read as the
+        // pointer-less click it is — the element's centre, nothing held —
+        // rather than through `MouseEvent` getters that read `undefined`
+        // (a throw under wasm-bindgen's debug glue).
+        let mouse = event.dyn_ref::<web_sys::MouseEvent>();
         let trusted = event.is_trusted() || FORCE_TRUSTED.with(|t| t.get());
         let acted_gesture = POINTER_GESTURE.with(|p| p.get()) && GESTURE_ACTED.with(|a| a.get());
         if !activation::click_should_dispatch(acted_gesture, trusted) {
@@ -2367,9 +2395,11 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             // A synthesised click (keyboard, AT, label activation) carries
             // `detail == 0` and `clientX = clientY = 0`: activate at the
             // element's centre. A real pointer position is kept.
-            let cursor =
-                (event.detail() != 0).then(|| (event.client_x() as f32, event.client_y() as f32));
-            if let Some(rid) = dispatch_activation(&el, cursor, modifiers_from_event(&event))
+            let cursor = mouse
+                .filter(|m| m.detail() != 0)
+                .map(|m| (m.client_x() as f32, m.client_y() as f32));
+            let modifiers = mouse.map(modifiers_from_event).unwrap_or_default();
+            if let Some(rid) = dispatch_activation(&el, cursor, modifiers)
                 && el.closest("label").ok().flatten().is_some()
             {
                 LABEL_FORWARD.with(|l| l.set(Some(rid)));
@@ -2416,9 +2446,10 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         //
         // `dyn_ref` is the instanceof check that was missing. `add_capture` does
         // the same for the listeners registered through it; this one is
-        // registered by hand, as are `keyup` and `pointerdown`, which carry the
-        // same guard. The other hand-registered listeners in this function that
-        // still take a typed parameter are #811.
+        // registered by hand, as is every other listener in this function, and
+        // each takes a plain `Event` (issue #811): the pointer family and
+        // `paste` ignore one of the wrong interface, `click` and `contextmenu`
+        // read it as an event with no position.
         //
         // Because it is `instanceof`, a `KeyboardEvent` built from another
         // realm's constructor (an iframe's `KeyboardEvent`, dispatched on this
@@ -2760,7 +2791,11 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // are separated here: prevent the default when a handler was found **or**
     // [`set_suppress_native_context_menu`] is on and the target is not in an
     // editing context (issue #812), dispatch only when one was found.
-    let contextmenu_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+    let contextmenu_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // Like `click`, not narrowed (issue #811): a `contextmenu` that is no
+        // `MouseEvent` still runs a live handler, at the element's centre with
+        // nothing held, rather than reading `undefined` positions.
+        let mouse = event.dyn_ref::<web_sys::MouseEvent>();
         let target = event
             .target()
             .and_then(|target| target.dyn_into::<web_sys::Element>().ok());
@@ -2792,10 +2827,10 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         if let Some((menu_el, id)) = handler {
             set_click_context_for(
                 &menu_el,
-                Some((event.client_x() as f32, event.client_y() as f32)),
+                mouse.map(|m| (m.client_x() as f32, m.client_y() as f32)),
                 Default::default(),
                 events::MouseButton::Right,
-                modifiers_from_event(&event),
+                mouse.map(modifiers_from_event).unwrap_or_default(),
             );
             events::dispatch_event(id);
         }
@@ -2825,7 +2860,14 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // A `defaultPrevented` event is skipped throughout: that is the built-in
     // editor's hidden capture textarea having already claimed it (`editor_input.rs`),
     // and it reads `clipboardData` itself.
-    let paste_closure = Closure::wrap(Box::new(move |event: web_sys::ClipboardEvent| {
+    let paste_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // A `paste` that is no `ClipboardEvent` is not a paste, even with a
+        // `clipboardData` hung on it by page script (issue #811): the typed
+        // parameter this took was an unchecked cast, which read that property
+        // and fed it to the app's paste interceptor.
+        let Some(event) = event.dyn_ref::<web_sys::ClipboardEvent>() else {
+            return;
+        };
         if event.default_prevented() {
             return;
         }
@@ -2853,7 +2895,9 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // copy-then-paste round trip inside the app behaves like `copy_text()` did.
     // `clipboardData` is empty during a copy (the page writes to it, it does not
     // read), so the selection is the honest source.
-    let copy_closure = Closure::wrap(Box::new(move |event: web_sys::ClipboardEvent| {
+    // It reads nothing a `ClipboardEvent` adds, so it takes a plain `Event`
+    // rather than a typed parameter wasm-bindgen would cast unchecked (#811).
+    let copy_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
         if event.default_prevented() {
             return;
         }

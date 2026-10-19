@@ -917,6 +917,13 @@ fn apply_ime_action(
     } else {
         0
     };
+    // A single-line field folds a committed text's line breaks as a whole
+    // (issue #824) before it is split into one key per character below: one
+    // character at a time, an inner `\n` would look trailing and vanish.
+    let action = match action {
+        ImeAction::Insert(text) => ImeAction::Insert(app.insertable_text(text)),
+        other => other,
+    };
     let mut dispatch = |event: PlatformEvent, running: &mut bool| {
         let actions = app.handle_event(event, window_size, scale_factor);
         process_actions(&actions, running);

@@ -2521,7 +2521,9 @@ decided by reading the clipboard** (#149 — so it stays enabled over an empty
 clipboard); Select all = content. **All three clipboard rows — Cut, Copy and
 Paste — are greyed when `rinch` is built without the `clipboard` feature**:
 there is no clipboard for Copy or Paste to reach, and an enabled Cut would
-delete text it never copied. The press applies the native caret rule:
+delete text it never copied — and the Ctrl+X chord and `perform_text_edit`
+do nothing on a plain control then too (`handle_input_edit_command`, #823;
+the editor's Cut arms were already compiled out). The press applies the native caret rule:
 outside the selection it moves the caret, inside it keeps the selection. The
 field keeps the keyboard throughout. The platform-neutral half is a seam for a
 shell with its own toolbar: `RinchApp::text_edit_state()`,
@@ -4552,6 +4554,20 @@ paste lands later in the same loop iteration. Pins: `app/input_paste_async_tests
 `rinch/tests/embed_input_paste.rs` (the embed host step). Desktop's and Android's host
 calls have no fixture.
 
+**A single-line field folds the line breaks of what is inserted into it** (#824): every
+`InsertText`/`Paste` that reaches `handle_input_edit_command` (a paste, an IME commit, a
+key's text) for a field that is not a `<textarea>` goes through
+`RinchApp::insertable_text` → `rinch_editable::single_line_insert`, Chrome 155's rule for
+text inserted into an `<input>` (measured with `execCommand('insertText')`, which runs the
+same insertion filter a paste does): line breaks at the end are dropped, every other
+`\r\n`, `\r` or `\n` is one space (`"a\nb"` → `"a b"`, `"a\n"` → `"a"`). What folds to
+nothing still replaces a selection and is no edit at a caret. Android's soft keyboard folds a
+whole committed text before `apply_ime_action` splits it into one key per character. A
+`<textarea>` keeps its line breaks. Not covered: a programmatic `value` holding a line
+break, which HTML's value sanitization *strips* and desktop still paints as extra lines.
+Pins: `app/single_line_insert_824_tests.rs`, the `#824` section of
+`app/input_paste_async_tests.rs`.
+
 ### System Tray (optional)
 
 Enable with `features = ["system-tray"]`. Uses the same unified `Menu`/`MenuItem` types as native menus:
@@ -5887,7 +5903,9 @@ Three things it deliberately does not do.
   `forwards`/`both` animation is the same shape (**#782**): the tick that
   finishes it writes the fill and dirties the node once
   (`ActiveAnimation::fill_settled`), and after that it is kept, re-applied and
-  not counted. **The component library declares the pause itself** (#912):
+  not counted. That includes a zero-duration **infinite** one
+  (`0s infinite forwards`): its active duration is `0 × ∞ = 0`, so it is
+  finished at its delay's end, as in Chrome 155 (#786). **The component library declares the pause itself** (#912):
   `.rinch-drawer__root--hidden *`, a closed `.rinch-popover__dropdown`'s
   subtree and an unhovered `.rinch-hover-card__dropdown`'s subtree all carry
   `animation-play-state: paused !important` — every descendant rather than a

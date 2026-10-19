@@ -486,3 +486,54 @@ fn an_empty_clipboard_leaves_the_selection_alone() {
     assert_eq!(field(&app, ids.input), state("hello world", 2, 5));
     assert!(log.borrow().is_empty(), "no oninput");
 }
+
+// ── Line breaks in a single-line field (#824) ────────────────────────────────
+
+/// A paste of several lines into an `<input>` goes in as one line: every
+/// inner `\r\n`, `\r` and `\n` is one space and the trailing one is dropped
+/// — Chrome 155's answer for the same text (`single_line_insert`). It used
+/// to go in verbatim, and the field painted three lines, two of them outside
+/// its box. The caret lands after the pasted text, and one `oninput` carries
+/// the folded value.
+#[test]
+fn a_multi_line_paste_into_an_input_goes_in_as_one_line() {
+    let _lock = clipboard_lock();
+    let (mut app, ids, log) = page(&[]);
+    focus_and_select(&mut app, ids.input);
+    clip("A\nB\r\nC\rD\n");
+    log.borrow_mut().clear();
+    ctrl_v(&mut app);
+    assert_eq!(settle(&mut app), 1);
+    assert_eq!(field(&app, ids.input), state("heA B C D world", 9, 9));
+    assert_eq!(*log.borrow(), vec!["input:heA B C D world".to_string()]);
+    // One undo step puts the selection's text back, as for any paste.
+    key_with(&mut app, KeyCode::KeyZ, primary());
+    assert_eq!(field(&app, ids.input).0, "hello world");
+}
+
+/// A `<textarea>` holds lines, so its paste keeps them.
+#[test]
+fn a_multi_line_paste_into_a_textarea_keeps_its_lines() {
+    let _lock = clipboard_lock();
+    let (mut app, ids, _log) = page(&[]);
+    focus_and_select(&mut app, ids.textarea);
+    clip("A\nB\n");
+    ctrl_v(&mut app);
+    assert_eq!(settle(&mut app), 1);
+    assert_eq!(field(&app, ids.textarea), state("heA\nB\n world", 6, 6));
+}
+
+/// A paste that is nothing but line breaks still replaces the selection
+/// (with nothing), as Chrome's does, and fires `oninput`.
+#[test]
+fn a_paste_of_only_line_breaks_deletes_the_selection() {
+    let _lock = clipboard_lock();
+    let (mut app, ids, log) = page(&[]);
+    focus_and_select(&mut app, ids.input);
+    clip("\r\n\n");
+    log.borrow_mut().clear();
+    ctrl_v(&mut app);
+    assert_eq!(settle(&mut app), 1);
+    assert_eq!(field(&app, ids.input), state("he world", 2, 2));
+    assert_eq!(*log.borrow(), vec!["input:he world".to_string()]);
+}

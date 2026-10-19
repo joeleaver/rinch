@@ -987,7 +987,8 @@ transparent window, and follows the theme's palette when there is one.
   Cut and Copy; Select all needs content; a `disabled` field takes no focus and
   gets no menu. Without the `clipboard` feature Cut, Copy and Paste are all
   greyed — there is no clipboard for them to reach, and an enabled Cut would
-  delete text it never copied. **Paste is not decided by reading the clipboard** — a read can
+  delete text it never copied. The chords agree: without the feature, Ctrl+X
+  (Cmd+X) on an `<input>`/`<textarea>` does nothing, as in the editor. **Paste is not decided by reading the clipboard** — a read can
   block for up to four seconds on X11 — so it stays enabled over an empty
   clipboard, where a native menu would grey it out; pasting nothing does
   nothing.
