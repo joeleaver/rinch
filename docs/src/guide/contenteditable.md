@@ -633,7 +633,12 @@ handle.register_node_view(view).keep();
   the node's attributes, not to its position. A render may set its own node's
   attributes (a default): the view is mounted once and `ctx.attrs` follows. If
   that write makes `matches` refuse the node, the view is unmounted (or another
-  matching spec's mounted) right after, as for any other change of the node.
+  matching spec's mounted) right after, as for any other change of the node —
+  up to 8 such re-matches inside one another. Renders that keep changing which
+  spec matches (spec A's render writes what only B matches, and B's what only
+  A matches) stop there: the last view stays mounted, with its `ctx.attrs`
+  refreshed, although its spec no longer matches the node, until the node next
+  changes.
 - **Context.** `ctx.attrs`, `ctx.selected` (node-selected), `ctx.read_only` and
   `ctx.dark_mode` are memos; `ctx.pos()`, `ctx.set_attrs(..)`, `ctx.delete()`,
   `ctx.select()`, `ctx.return_focus()` and `ctx.editor()` act on the node. A

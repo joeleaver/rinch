@@ -820,6 +820,11 @@ impl CollabSession {
                     .ok()
                     .filter(|(read, _)| *read == state.doc)
                     .and_then(|(_, ids)| ids)
+                    // A read that differs from the model (a previous integrate
+                    // failed after yrs applied part of an out-of-order update)
+                    // proves nothing: every atom is remounted rather than paired
+                    // by value with an equal one (review 3 of #1575, F1).
+                    .or_else(|| Some(atom_cache::unproven_ids(block_atoms(&state.doc))))
             })
         } else {
             // The model is not the CRDT's read (outbound stalled, a refused edit
