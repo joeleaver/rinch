@@ -6146,7 +6146,7 @@ at 0 with the flag, not always `from`), and an iteration's start and end
 are eased at interval distance 0 and 1 (`ActiveAnimation::interval`), not
 snapped to the keyframe. `TimingFunction` is not `Copy` (a `linear()` holds an
 `Arc`). The `jump-*` positions do not parse in Stylo's servo build, so such a
-declaration is dropped. Pins: `crates/rinch-dom/tests/easing_steps_linear_1564_tests.rs`
+declaration is dropped (#1581). Pins: `crates/rinch-dom/tests/easing_steps_linear_1564_tests.rs`
 (Chrome 155).
 
 **The 3D transform functions are drawn flat** (#405; they used to compute to the

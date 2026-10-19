@@ -480,7 +480,7 @@ half way. A reversal's shortening reads the stepped output, so reversing
 `steps(4, end)` at 600ms takes half the duration. Not Chrome's: the `jump-*`
 step positions do not parse in Stylo's servo build, so a declaration naming
 one is dropped like any invalid one (an `animation` shorthand with
-`steps(4, jump-none)` starts no animation).
+`steps(4, jump-none)` starts no animation; #1581).
 
 **A `transform` is interpolated as a function list, not matrix entry by entry**
 (#414). A computed transform keeps the list it was composed from

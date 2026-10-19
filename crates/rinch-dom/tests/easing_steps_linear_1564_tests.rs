@@ -16,18 +16,26 @@
 //!
 //! # Mutants, and what kills each
 //!
+//! Each run against the fix, with this file, `transition_tests`,
+//! `transform_3d_tests` and `fractional_iteration_fill_tests`:
+//!
 //! | mutant | killed by |
 //! |---|---|
-//! | `main`: `steps()`/`linear()` convert to `Linear` | every fixture but the cubic-bézier one |
-//! | per-keyframe converter left at `Linear` | `a_keyframes_own_timing_function_eases_its_interval` |
-//! | `start` not incremented (`start` ≡ `end`) | `steps_tick_at_the_jumps_chrome_takes`, `step_start_and_step_end` |
-//! | before flag ignored | `the_before_flag_holds_a_jump_start_step_back` |
-//! | before flag set in the after phase going forwards | `..._after_phase` row `steps(3, start) 1.5` |
-//! | before flag from the iteration-0 direction at the end | `alternate 2 forwards` row |
-//! | an iteration's start/end snaps to the keyframe (old `find_surrounding_stops`) | `an_iteration_boundary_is_eased_not_snapped_to_a_keyframe` |
-//! | `linear()` input positions ignored (evenly spaced) | `linear_function_stops_and_positions` |
-//! | `jump-none` divides by `steps`, `jump-both` by `steps` | `jump_positions_follow_css_easing_2` |
-//! | reversal shortened by input progress, not output | `a_stepped_transition_reverses_from_its_output_progress` |
+//! | `steps()` converts to `Linear` (`main`) | 8 fixtures here |
+//! | `linear()` converts to `Linear` (`main`) | 5 fixtures here |
+//! | per-keyframe converter answers `Linear` | `a_keyframes_own_timing_function_eases_its_interval`, `an_iteration_boundary_is_eased_not_snapped_to_a_keyframe` |
+//! | `start` not incremented (`start` ≡ `end`) | `steps_tick_at_the_jumps_chrome_takes`, `step_start_and_step_end`, and 6 more |
+//! | before flag ignored | `the_before_flag_holds_a_jump_start_step_back`, the two transition fixtures |
+//! | before flag set in every after phase | `step_start_and_step_end` (`step-end` filled forwards) |
+//! | after-phase flag from iteration 0's direction | `the_before_flag_holds_a_jump_start_step_back` (`alternate 2`) |
+//! | before-phase flag never set | `the_before_flag_holds_a_jump_start_step_back` |
+//! | an iteration's start snaps to the keyframe (`main`) | `an_iteration_boundary_is_eased_not_snapped_to_a_keyframe` |
+//! | an iteration's end snaps to the keyframe (`main`) | `an_iteration_boundary_is_eased_not_snapped_to_a_keyframe` |
+//! | `linear()` input positions ignored | `linear_function_stops_and_positions`, and 4 more |
+//! | `jump-none` / `jump-both` divide by `steps` | `jump_positions_follow_css_easing_2` |
+//! | a transition's delay always shows `from` (`main`) | `a_transition_eases_with_steps_and_linear_functions`, `reversing_a_reversal_in_its_delay_reads_the_before_flag` |
+//! | a transition's output progress in its delay without the flag | `reversing_a_reversal_in_its_delay_reads_the_before_flag` |
+//! | an eased 0 / 1 interpolated rather than the keyframe's value | `transform_3d_tests::a_scale_z_meets_a_perspective` |
 
 #![cfg(feature = "software-renderer")]
 
@@ -379,7 +387,7 @@ fn jump_positions_follow_css_easing_2() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
-/// Known difference, pinned: Stylo's servo build does not parse the `jump-*`
+/// Known difference, pinned (#1581): Stylo's servo build does not parse the `jump-*`
 /// keywords, so the whole `animation` shorthand is dropped and the box keeps
 /// its 10px. Chrome 155 animates it (60px here, as above).
 #[test]
