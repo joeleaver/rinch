@@ -1890,11 +1890,16 @@ impl<'a> HtmlParser<'a> {
                     }
                     // An inline atom the writer wrote as a `<span>` (a claimed
                     // image's export fallback): the atom; what is inside it is
-                    // the app's markup, not content.
-                    if let Some(nt) = self.span_atom(tag, attributes) {
-                        if let Some(leaf) = self.build_inline_leaf(nt, attributes, active)? {
-                            self.push_inline(out, leaf)?;
-                        }
+                    // the app's markup, not content. A span that names the atom
+                    // but makes none (an image with no usable `src` — what a live
+                    // editor's own DOM holds for a claimed image, whose `src` is
+                    // in the model, not on the host) is read as the inline
+                    // element it is, so its text is kept: the reader is total
+                    // about text (#1397), and an image with no source is none.
+                    if let Some(nt) = self.span_atom(tag, attributes)
+                        && let Some(leaf) = self.build_inline_leaf(nt, attributes, active)?
+                    {
+                        self.push_inline(out, leaf)?;
                         continue;
                     }
                     match self.inline_marks(tag, attributes, active, out)? {
