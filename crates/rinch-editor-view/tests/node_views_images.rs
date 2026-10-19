@@ -494,7 +494,11 @@ mod collab {
             Some(tr)
         }));
         assert!(p.a.handle.command("undo"));
-        p.send();
+        // One update carrying both (a reconnect's catch-up), not one per change.
+        p.to_b.borrow_mut().clear();
+        let sv = p.b.handle.collab_state_vector().unwrap();
+        let diff = p.a.handle.collab_sync_diff(&sv).unwrap();
+        assert!(p.b.handle.collab_receive(&diff));
         assert_eq!(html(&p.b.handle), html(&p.a.handle));
         assert_eq!(p.seen_b.renders.get(), 2, "another picture, another mount");
         assert_eq!(p.seen_b.cleanups.get(), 1);
