@@ -900,27 +900,24 @@ impl RinchDocument {
                                 Some(NodeContext::Image {
                                     width,
                                     height,
-                                    hint_ratio,
+                                    aspect,
                                     ..
                                 }) => {
-                                    // A loaded image's own ratio; before it loads (or when
-                                    // it failed), the one its `width` and `height`
-                                    // attributes map to (#684); with neither, nothing.
+                                    // A loaded image's own ratio unless `aspect-ratio`
+                                    // declares one without `auto`; before it loads (or when
+                                    // it failed), the declared one, which is the one its
+                                    // `width` and `height` attributes map to (#684) unless an
+                                    // author rule replaced it (#1286); with neither, none.
                                     let (natural, ratio) = crate::replaced::image_natural_size(
-                                        *width,
-                                        *height,
-                                        *hint_ratio,
+                                        *width, *height, *aspect,
                                     );
-                                    let Some(ratio) = ratio else {
-                                        return taffy::Size::ZERO;
-                                    };
                                     // A replaced element with a natural size and
                                     // ratio (#788, #1150): a style width or height
                                     // gives the other through the ratio, and so do
                                     // `min-*`/`max-*` clamps.
                                     crate::replaced::measure(
                                         natural,
-                                        Some(ratio),
+                                        ratio,
                                         known_dims,
                                         style,
                                         inputs.parent_size,
@@ -1026,9 +1023,10 @@ impl RinchDocument {
                                     width,
                                     height,
                                     ratio,
+                                    aspect,
                                 }) => crate::replaced::measure(
                                     (*width, *height),
-                                    *ratio,
+                                    aspect.used_ratio(*ratio),
                                     known_dims,
                                     style,
                                     inputs.parent_size,

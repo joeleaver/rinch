@@ -82,11 +82,14 @@ pub enum NodeContext {
         width: u32,
         /// Intrinsic height (0 while loading).
         height: u32,
-        /// The ratio the `width` and `height` attributes map to (#684,
-        /// [`crate::replaced::attribute_ratio`]), which sizes the image while
-        /// it has no natural size; a loaded image's own ratio replaces it.
-        /// Kept current by [`crate::replaced::sync_replaced_measure`].
-        hint_ratio: Option<f32>,
+        /// The element's computed `aspect-ratio` (#1286), which carries the
+        /// ratio its `width` and `height` attributes map to (#684,
+        /// `aspect-ratio: auto w / h`, [`crate::replaced::attribute_ratio`])
+        /// unless an author rule replaced it: it sizes the image while it has
+        /// no natural size, and a `<ratio>` without `auto` replaces a loaded
+        /// image's own ratio. Kept current by
+        /// [`crate::replaced::sync_replaced_measure`].
+        aspect: crate::computed_style::AspectRatioValue,
     },
     /// IFC root that needs Parley TreeBuilder measurement.
     ///
@@ -139,10 +142,12 @@ pub enum NodeContext {
         width: f32,
         /// Natural content-box height.
         height: f32,
-        /// The aspect ratio (width / height): a canvas's natural one when
-        /// both dimensions are non-zero, the one a video's `width` and
-        /// `height` attributes map to (#684); an iframe has none.
+        /// The natural aspect ratio (width / height): a canvas's when both
+        /// dimensions are non-zero; a video and an iframe have none.
         ratio: Option<f32>,
+        /// The element's computed `aspect-ratio` (#1286; a video's carries
+        /// the ratio its `width` and `height` attributes map to, #684).
+        aspect: crate::computed_style::AspectRatioValue,
     },
 }
 

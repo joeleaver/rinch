@@ -122,6 +122,12 @@ impl ComputedStyle {
             grid_column: self.grid_column.clone(),
             grid_row: self.grid_row.clone(),
 
+            // `aspect-ratio` (#1286). `auto` matters only to a box with a
+            // natural ratio, which this is not: a replaced element's ratio is
+            // its measure's business (`taffy_style_from_computed` clears this
+            // for one, `crate::replaced`).
+            aspect_ratio: self.aspect_ratio.ratio,
+
             ..Default::default()
         }
     }
