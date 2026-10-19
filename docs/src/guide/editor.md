@@ -155,10 +155,10 @@ written as HTML keeps both. Like every attr of an inline atom they merge per
 attribute when collaborating: two peers changing different attrs of one image at
 once both keep their change, two changing the same one converge on one value, and a
 peer's attribute follows its picture through Enter, Backspace, drags and pictures
-inserted beside it, and never shows on another picture (one pasted over it with the
-same `src` counts as the same picture: identity is type and `src`). A change of an
-image's `src` (or a picture with another `src` pasted over it, which the editor cannot
-tell from one) makes a new picture, and a concurrent change of the old one is dropped;
+inserted beside it, and never shows on another picture. A picture keeps its identity
+only through a change the editor can prove only set its attributes; a change of an
+image's `src`, and any picture pasted over it (with the same `src` too), makes a new
+picture, and a concurrent change of the old one is dropped;
 so does cutting and pasting a picture, undoing its delete, or dragging it after an
 in-editor copy of it. Chosen by Joe (2026-10-09): a wrong attribution is worse than a
 lost one — app data keyed to a picture would show on the wrong picture

@@ -464,9 +464,9 @@ mod collab {
 
     /// A peer's move of the picture is another place: the view is remounted,
     /// never moved with app state it may have keyed to its old place. (An equal
-    /// copy a peer pastes over a picture **with the same `src`** is the same
-    /// picture to collaboration, #1503 — identity is type + `src` — and keeps the
-    /// peers' mounts; the local view, which sees a new node, is remounted.)
+    /// copy a peer pastes over a picture, **with the same `src`** too, is another
+    /// picture — decision (f) — and remounts the peers' views as well:
+    /// `review_1595::r1*`.)
     #[test]
     fn a_collaborators_move_of_a_claimed_image_remounts() {
         let p = pair();
@@ -488,9 +488,8 @@ mod collab {
 
     /// A picture a peer deleted and put back (undo) in one batch is equal to it,
     /// at its place, and is another picture (a new char): the view is remounted,
-    /// never handed it. (An equal picture a peer *pastes* over one, or two equal
-    /// pictures it swaps, are the same pictures to collaboration — #1503's
-    /// identity is type + `src` at a place — and keep the peers' mounts.)
+    /// never handed it. (So is an equal picture a peer *pastes* over one —
+    /// decision (f); `review_1595::r1*`.)
     #[test]
     fn a_picture_a_collaborator_deleted_and_put_back_is_remounted() {
         let p = pair();

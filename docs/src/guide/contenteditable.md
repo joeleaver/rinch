@@ -708,10 +708,11 @@ handle.register_node_view(badge).keep();
   `ctx.select()` node-selects it, and `ctx.selected` says when it is.
 - **Identity** is an `embed`'s: `ctx.set_attrs`, its undo and a collaborator's
   change of the picture's attributes reach `ctx.attrs` with no remount; a picture
-  moved, or another (even an equal one) put in its place, is a fresh mount. In a
-  collaboration "the same picture" is the shared document's notion: a picture a
-  collaborator pastes over another one **with the same `src`**, or two equal
-  pictures they swap, are the same pictures there, and keep their views.
+  moved, or another (even an equal one) put in its place, is a fresh mount — on
+  every collaborator too: a picture pasted over another, **with the same `src`
+  included**, is a new picture in the shared document, so each peer's view of the
+  old one is remounted, never handed the pasted one. Two pictures swapped in one
+  edit are each the same picture moved, and no view is handed the other one.
 
 ### Node views, step by step
 
@@ -1779,12 +1780,11 @@ dropped. A change to an image's attributes is kept while someone else types besi
 presses Enter or Backspace anywhere in its line, drags it, inserts or deletes another
 image next to it (an identical one included), copies it elsewhere, makes the line bold
 or turns it into a heading; if they delete the image, it is deleted. Such a change
-never shows on another image; pasting a picture **with the same `src`** over it counts
-as the same image, so the change shows on the pasted one. Some cases lose it, and both
-editors still end up with the same document when they do: **changing the image's
-`src`**, or **pasting a picture with another `src` over it**, at that moment (the
-editor cannot tell the two apart, and a change dropped is better than a change shown
-on the wrong picture); **moving the image into or out of a table cell**; **cutting the
+never shows on another image. Some cases lose it, and both editors still end up with
+the same document when they do: **changing the image's `src`**, or **pasting any
+picture over it** — one with the same `src` included — at that moment (a pasted
+picture is a new one, and a change dropped is better than a change shown on the wrong
+picture); **moving the image into or out of a table cell**; **cutting the
 image and pasting it back**, or **deleting it and undoing the delete** (the image comes
 back as a new one: only a move made in one step, such as a drag, keeps it);
 **dragging an image after copying it within the editor**, until either copy is changed
