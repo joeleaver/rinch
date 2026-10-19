@@ -795,6 +795,19 @@ The view, on each transaction:
    second phase), converting the model's char `Pos` to a byte offset for the platform's
    text layout only at this render edge.
 
+**Node views** (an app's component drawn for a leaf node: an `embed`, or an
+`image` a spec claims) ride on the same diff. A node a registered spec may draw
+gets a *slot* on its descriptor; the diff only queues work for it, and the view
+mounts, updates and disposes components after the transaction, with no editor
+state borrowed. A slot keeps its mount only while its node is the same node: the
+same `Rc`, or one a `SetNodeAttrStep` of the transaction changed (the editor
+proves which, from the steps). A claimed image's host is an inline-block `<span>`
+swapped in for its `<img>` while a component is mounted in it; to the caret map
+it is still the image — one position, no text bytes. A collaborator's change
+arrives as `SetNodeAttrStep`s when the shared document proves the atom is the same
+one (a block atom by its CRDT block, an inline atom by its identity), and as a
+replace otherwise. See [the guide](contenteditable.md#node-views-your-component-in-the-document).
+
 Around that, the platform crates own block virtualization (skipping layout for
 off-screen blocks while keeping their real height), IME positioning, and — under the
 opt-in `a11y` feature — pushing an accessibility tree derived from the state.

@@ -675,6 +675,116 @@ Your code (`matches`, the render, `on_key`, `on_caret_enter`) runs with no edito
 state borrowed, after the edit that caused it has been applied: it may read the
 editor, dispatch to it and write signals.
 
+### Drawing an image
+
+A spec for `"image"` draws the images it matches with your component, on the
+line, in place of the picture: a status chip, a live preview, a mention.
+
+```rust
+let badge = NodeViewSpec::new("image", |__scope, ctx: NodeViewCtx| {
+    let attrs = ctx.attrs;
+    rsx! {
+        span { class: "badge", {move || attrs.get().get_str("data-badge").unwrap_or("").to_string()} }
+    }
+})
+.matches(|attrs| attrs.get_str("data-badge").is_some());
+handle.register_node_view(badge).keep();
+```
+
+- **Only the images it matches.** Every other image keeps its `<img>`, and
+  `set_image_source`, `on_image_hover` and `on_image_input` work for it as before.
+  An image that stops matching (its `data-badge` removed) gets its `<img>` back.
+- **One character of the line.** A drawn image's host is a
+  `<span data-pm-type="image" data-…>` laid out as an inline-block, as wide and
+  tall as your component, with no frame. The caret treats it exactly as a picture:
+  one position, drawn at its left edge before it and its right edge after it; an
+  arrow steps over it, Home and End go past it, a press on the text beside it
+  places the caret there, and a press on your component is your component's.
+  `ctx.select()` node-selects it, and `ctx.selected` says when it is.
+- **Identity** is an `embed`'s: `ctx.set_attrs`, its undo and a collaborator's
+  change of the picture's attributes reach `ctx.attrs` with no remount; a picture
+  moved, or another (even an equal one) put in its place, is a fresh mount. In a
+  collaboration "the same picture" is the shared document's notion: a picture a
+  collaborator pastes over another one **with the same `src`**, or two equal
+  pictures they swap, are the same pictures there, and keep their views.
+
+### Node views, step by step
+
+`examples/editor-node-views` (desktop) and `examples/editor-node-views-web` (the
+same `views.rs`, in the browser) draw three views. Each one keeps everything it
+needs in its node's `data-*` attributes, so a change is an edit like any other:
+undone with Ctrl+Z, saved with the document, sent to collaborators.
+
+**A counter.** The count is `data-count`; the buttons write it.
+
+```rust
+NodeViewSpec::new("embed", |__scope, ctx: NodeViewCtx| {
+    let attrs = ctx.attrs; // a Memo: Copy, so every closure can have it
+    let count = move || attrs.get().get_str("data-count").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+    let add = ctx.clone();
+    rsx! {
+        div {
+            span { {move || count().to_string()} }
+            button {
+                onclick: move || {
+                    let n = count() + 1;
+                    add.set_attrs(|a| *a = a.with("data-count", AttrValue::from(n.to_string())));
+                },
+                "+"
+            }
+        }
+    }
+})
+.matches(|a| a.get_str("data-kind") == Some("counter"))
+```
+
+`handle.insert_embed(Attrs::from_iter([("data-kind", AttrValue::from("counter"))]))`
+puts one at the caret.
+
+**An editable table.** A grid of `<input>`s, each cell's text in
+`data-c-<row>-<col>`:
+
+- rinch has no HTML table layout (`<table>`/`<tr>`/`<td>` are laid out as plain
+  boxes), so the grid is a CSS grid, `grid-template-columns: repeat(N, …)`,
+  whose rows are `display: contents` (each row's cells become the grid's items).
+- A cell shows its attribute with a reactive `value: {|| …}` and writes it back in
+  `onchange` (Enter, or leaving the cell): one `set_attrs`, one undo step, the one
+  key sent to collaborators.
+- On a raw `<input>`, write `value: {|| …}` — `value_fn:` is a component prop
+  (`TextInput`), and on a raw input it becomes a stray attribute (#1591) — and
+  handle Enter in `onchange` or `on_key`: `onsubmit:` on a raw input is wired as a
+  click (#1590).
+- **Keys.** While a cell has the keyboard, `.on_key(|key| bool)` hears each key
+  **press** first (never a release), before the input and before Tab moves the
+  keyboard. The example claims Up and Down to move between rows and leaves every
+  other key to the input: Left and Right move its caret, Enter commits it, **Tab**
+  and Shift+Tab go to the next (previous) tabbable element in document order — the
+  next cell, and from the last cell on to the next focusable element of the page —
+  and an Escape it leaves gives the keyboard back to the editor, the caret right
+  after the table. To keep Tab inside the view, claim it in `on_key` and focus the
+  next cell yourself. A page-level `set_keyboard_interceptor`, and a registered
+  node's `on_key`, also see key **releases**: there, return early on
+  `k.is_up()`, or an arrow moves twice.
+
+**A badge** is the image view above, its click cycling `data-badge`.
+
+**Exporting.** Another application has nothing to draw a view with, so the
+example gives exported HTML a static stand-in for each
+(`set_html_fallback`): a `<table>` of the cells inside the table's
+`<div data-pm-type="embed">`, and for a badged image a
+`<span data-pm-type="image" src=… data-badge=…><b>[hot]</b></span>` written
+**in place of** its `<img>` (an `<img>` cannot hold anything). rinch reads both
+back as the same atoms. An image's markup must be inline content (it is inside a
+`<span>`); answer `None` for an image to keep its plain `<img>`.
+
+**Copy and paste.** A copied embed or drawn image pastes back as the same kind of
+atom with its attributes (rinch's copy-out marks it, and the default paste keeps
+the attributes only beside that mark), and the copy gets a view of its own. If
+your views key app state to an attribute (a sheet id), give the copy a new one in
+`Plugin::handle_paste`: read the html with `slice_from_pasted_html`, rewrite the
+attribute on the atoms, and `tr.replace_selection(slice)`
+(`rinch-editor-view/tests/node_view_paste.rs` does exactly this).
+
 ### Dark mode
 
 The editor's built-in stylesheet has light and dark color schemes; toggle between
