@@ -971,31 +971,24 @@ fn render_tree_node(
     if config.draggable {
         wire_drag(__scope, &content, &node_value, tree_state, &config);
     }
-    if config.keyboard && untracked(|| tree_state.cursor.get()).as_deref() == Some(node_value.as_str()) {
-        content.add_class(CURSOR_CLASS);
-        *config.keys.drawn.borrow_mut() = Some(node_value.clone());
-        // Drawn again while it had the keyboard: it keeps it, unless the
-        // keyboard has gone somewhere else in the tree meanwhile (a rename
-        // box the app opened in this very row).
-        if config.keys.focused.get() {
-            let row = content.clone();
-            let container = config.keys.container.borrow().clone();
-            let _ = set_timeout(0, move || {
-                let elsewhere_in_tree = container.as_ref().is_some_and(|tree| {
-                    let mut at = row.active_element();
-                    while let Some(node) = at {
-                        if node.node_id() == tree.node_id() {
-                            return true;
-                        }
-                        at = node.parent_node();
-                    }
-                    false
-                });
-                if !elsewhere_in_tree {
-                    row.focus();
-                }
-            });
+    if config.keyboard {
+        if untracked(|| tree_state.cursor.get()).as_deref() == Some(node_value.as_str()) {
+            content.add_class(CURSOR_CLASS);
+            *config.keys.drawn.borrow_mut() = Some(node_value.clone());
         }
+        // The cursor row removed while it has the keyboard (drawn again: its
+        // data changed, or it moved): the focus falling from it stays the
+        // tree's, and the row as drawn now takes it back (`wire_keyboard`).
+        let cfg = Rc::downgrade(&config);
+        let value = node_value.clone();
+        __scope.on_cleanup(move || {
+            if let Some(cfg) = cfg.upgrade() {
+                let is_cursor = untracked(|| tree_state.cursor.get()).as_deref() == Some(value.as_str());
+                if cfg.keys.focused.get() && is_cursor {
+                    cfg.keys.lost_row.set(true);
+                }
+            }
+        });
     }
 
     // Reactive class for content (selection only — `disabled` is not reactive)
@@ -1737,6 +1730,9 @@ struct KeyState {
     drawn: RefCell<Option<String>>,
     /// Whether one of the rows has the keyboard.
     focused: Cell<bool>,
+    /// The cursor row was removed while it had the keyboard (it was drawn
+    /// again): the focus that fell from it is still the tree's.
+    lost_row: Cell<bool>,
     /// Letters typed for type-ahead, and the timer that forgets them.
     typed: RefCell<String>,
     typed_timer: RefCell<Option<TimeoutHandle>>,
@@ -2015,22 +2011,17 @@ fn wire_keyboard(__scope: &mut RenderScope, container: &NodeHandle, tree_state: 
         container,
         move |key| on_tree_key(&cfg, tree_state, &owner, key),
         move || {
-            // Focus that fell to nothing (the row that had it was redrawn and
-            // its old box removed) is still the tree's: its cursor row takes
-            // it back. Focus that went to another element has left.
+            // Focus that fell from a cursor row the tree removed (it was drawn
+            // again) is still the tree's: the row as drawn now takes it back.
+            // Any other focus that left the tree has left: to an editor, a
+            // field, or nothing at all.
             let Some(cfg) = leave_cfg.upgrade() else { return };
             let weak = Rc::downgrade(&cfg);
             let _ = set_timeout(0, move || {
                 let Some(cfg) = weak.upgrade() else { return };
-                let container = cfg.keys.container.borrow().clone();
-                let Some(container) = container else { return };
-                let fell_to_nothing = match container.active_element() {
-                    None => true,
-                    Some(active) => matches!(active.tag_name().as_deref(), Some("body" | "html" | "BODY" | "HTML")),
-                };
                 let cursor = untracked(|| tree_state.cursor.get());
                 let row = cursor.and_then(|c| cfg.drag.rows.borrow().get(&c).cloned());
-                match (fell_to_nothing, row) {
+                match (cfg.keys.lost_row.replace(false), row) {
                     (true, Some(row)) => row.focus(),
                     _ => set_focused(&cfg, false),
                 }
