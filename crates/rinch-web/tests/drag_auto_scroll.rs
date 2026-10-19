@@ -344,6 +344,7 @@ async fn review_a_locked_page_is_not_auto_scrolled() {
         pointer(&target, "pointerup", 600, vh - 2);
         root.unmount();
         host.remove();
+        rinch_web::__reset_scroll_lock();
         web_sys::window().unwrap().scroll_to_with_x_and_y(0.0, 0.0);
         if lock {
             assert_eq!(y, 0.0, "the locked page scrolled behind the overlay");
@@ -380,4 +381,100 @@ async fn review_a_list_ending_between_pixels_lets_the_loop_stop() {
     root.unmount();
     host.remove();
     assert!(!running, "the loop still runs at the list's end: {info}");
+}
+
+/// Who holds the page's scroll lock in [`mount_lock_case`].
+#[derive(Clone, Copy, Debug)]
+enum LockCase {
+    /// Nobody: the positive control.
+    None,
+    /// A separate overlay; the list is outside it.
+    Overlay,
+    /// A separate overlay, and the list carries `data-scroll-lock-exempt`.
+    OverlayListExempt,
+    /// The list itself is the locking root.
+    List,
+}
+
+/// The fixture's list and source, plus an empty fixed overlay, with the lock
+/// held as `case` says.
+fn mount_lock_case(case: LockCase) -> (web_sys::Element, rinch_web::RootHandle) {
+    let host = document().create_element("div").unwrap();
+    document().body().unwrap().append_child(&host).unwrap();
+    let root = rinch_web::mount_into(
+        &host,
+        ThemeProviderProps::default(),
+        move |scope: &mut RenderScope| {
+            let wrap = scope.create_element("div");
+            let source = scope.create_element("div");
+            source.set_attribute("id", "das-src");
+            source.set_attribute("draggable", "true");
+            source.set_attribute(
+                "style",
+                "position: fixed; left: 500px; top: 40px; width: 100px; height: 40px",
+            );
+            wrap.append_child(&source);
+            let overlay = scope.create_element("div");
+            overlay.set_attribute(
+                "style",
+                "position: fixed; left: 700px; top: 0px; width: 10px; height: 10px",
+            );
+            wrap.append_child(&overlay);
+            let list = scope.create_element("div");
+            list.set_attribute("id", "das-list");
+            list.set_attribute(
+                "style",
+                &format!(
+                    "position: fixed; left: 0px; top: {LIST_TOP}px; width: 300px; \
+                     height: 200px; overflow-y: auto; margin: 0; padding: 0"
+                ),
+            );
+            for _ in 0..ROWS {
+                let row = scope.create_element("div");
+                row.set_attribute("style", &format!("height: {ROW_HEIGHT}px"));
+                list.append_child(&row);
+            }
+            wrap.append_child(&list);
+            match case {
+                LockCase::None => {}
+                LockCase::Overlay => overlay.set_scroll_locked(true),
+                LockCase::OverlayListExempt => {
+                    list.set_attribute("data-scroll-lock-exempt", "");
+                    overlay.set_scroll_locked(true);
+                }
+                LockCase::List => list.set_scroll_locked(true),
+            }
+            wrap
+        },
+    );
+    (host, root)
+}
+
+/// While the page is locked, a list outside the locking overlay is not
+/// auto-scrolled; one inside it (the root itself), or one marked
+/// `data-scroll-lock-exempt`, is — desktop's `scroll_locked_out` rule.
+#[wasm_bindgen_test]
+async fn a_lock_stops_containers_outside_the_overlay_unless_exempt() {
+    for (case, scrolls) in [
+        (LockCase::None, true),
+        (LockCase::Overlay, false),
+        (LockCase::OverlayListExempt, true),
+        (LockCase::List, true),
+    ] {
+        let (host, root) = mount_lock_case(case);
+        let list = document().get_element_by_id("das-list").unwrap();
+        let source = document().get_element_by_id("das-src").unwrap();
+        pointer(&source, "pointerdown", 520, 55);
+        pointer(&source, "pointermove", 540, 70);
+        let y = LIST_TOP + 198;
+        let target = document().element_from_point(X as f32, y as f32).unwrap();
+        pointer(&target, "pointermove", X, y);
+        sleep_ms(200).await;
+        let top = list.scroll_top();
+        pointer(&target, "pointerup", X, y);
+        root.unmount();
+        host.remove();
+        rinch_web::__reset_scroll_lock();
+        assert_eq!(top > 0, scrolls, "{case:?}: the list is at {top}");
+    }
 }
