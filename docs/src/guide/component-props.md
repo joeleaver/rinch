@@ -501,6 +501,7 @@ Text input with inline color preview and dropdown ColorPicker.
 | `swatches_per_row` | `Option<usize>` | `7` | Swatches per row |
 | `disallow_input` | `bool` | `false` | Disallow typing (picker only) |
 | `close_on_click_outside` | `bool` | `true` | Dismiss the dropdown when a click lands outside it (#465). Off mounts no backdrop at all, so no click outside the field dismisses it — the pointer half of the pre-#465 behaviour. Escape closes the dropdown either way |
+| `z_index` | `Option<i32>` | `None` | Stacking level of the open picker's panel; its click-catching backdrop stays one below and the field one above (defaults 100 / 99 / 101, #801) |
 
 `size` and `radius` were declared but unread until #263. **`size` always
 resolves to a step, `radius` does not**: an unrecognised `size` falls back to
@@ -509,6 +510,14 @@ and `md` reproduces the geometry the field was hard-coded to before, so nothing
 resizes by upgrading. An unrecognised `radius` emits no class at all and leaves
 the base `--rinch-radius-sm` standing, which is what `DropdownMenu`, `Modal` and
 `Card` do.
+
+**The open picker sits at the library's overlay level** (#801): panel 100,
+backdrop 99, field 101 — `DropdownMenu`'s and `Popover`'s numbers. It used to
+be 1000 / 999 / 1001, which put the backdrop above every `Modal`, `Drawer`,
+`Notification` and `Select` popup, so one of those appearing without a click
+while the picker was open lost its first press to the backdrop. A `ColorInput`
+opened *inside* a modal still orders, because the three levels are compared in
+the modal's stacking context. `z_index` raises all three together.
 
 **The dropdown is dismissed three ways** (#465): clicking the field again,
 clicking anywhere outside it, and Escape. The outside click is the one that is
@@ -855,7 +864,7 @@ Custom Default: `animate` and `visible` default to `true`.
 ## Overlays
 
 **`z_index` on an overlay** (issue #474). `Modal`, `Drawer`, `Popover`,
-`DropdownMenu` and `Notification` each paint more than one box, and the boxes
+`DropdownMenu`, `Notification` and `ColorInput` (#801) each paint more than one box, and the boxes
 have to stay ordered against each other: a modal's panel above its overlay, a
 menu's backdrop below its panel. `z_index` therefore names the level of the
 component's *base* layer — the one whose stylesheet number the per-component

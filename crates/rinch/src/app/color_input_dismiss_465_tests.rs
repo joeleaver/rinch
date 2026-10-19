@@ -12,10 +12,14 @@
 //! The three boxes, and what decides between them:
 //!
 //! ```text
-//!   z 1001   .rinch-color-input__input-group   (while open)
-//!   z 1000   .rinch-color-input__dropdown
-//!   z  999   .rinch-color-input__backdrop      position: fixed
+//!   z + 1   .rinch-color-input__input-group   (while open)
+//!   z       .rinch-color-input__dropdown
+//!   z - 1   .rinch-color-input__backdrop      position: fixed
 //! ```
+//!
+//! with `z` = `--rinch-color-input-z-index`, 100 unless `ColorInput::z_index`
+//! says otherwise (#801 — it was a literal 1000, which put the backdrop above
+//! every `Modal`; the `#801` section at the end measures that).
 //!
 //! The field is *above* the backdrop deliberately, and that is the one place
 //! this differs from `DropdownMenu`, whose trigger is a button: here the trigger
