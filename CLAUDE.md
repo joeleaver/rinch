@@ -4549,6 +4549,20 @@ paste lands later in the same loop iteration. Pins: `app/input_paste_async_tests
 `rinch/tests/embed_input_paste.rs` (the embed host step). Desktop's and Android's host
 calls have no fixture.
 
+**A single-line field folds the line breaks of what is inserted into it** (#824): every
+`InsertText`/`Paste` that reaches `handle_input_edit_command` (a paste, an IME commit, a
+key's text) for a field that is not a `<textarea>` goes through
+`RinchApp::insertable_text` → `rinch_editable::single_line_insert`, Chrome 155's rule for
+text inserted into an `<input>` (measured with `execCommand('insertText')`, which runs the
+same insertion filter a paste does): line breaks at the end are dropped, every other
+`\r\n`, `\r` or `\n` is one space (`"a\nb"` → `"a b"`, `"a\n"` → `"a"`). What folds to
+nothing still replaces a selection and is no edit at a caret. Android's soft keyboard folds a
+whole committed text before `apply_ime_action` splits it into one key per character. A
+`<textarea>` keeps its line breaks. Not covered: a programmatic `value` holding a line
+break, which HTML's value sanitization *strips* and desktop still paints as extra lines.
+Pins: `app/single_line_insert_824_tests.rs`, the `#824` section of
+`app/input_paste_async_tests.rs`.
+
 ### System Tray (optional)
 
 Enable with `features = ["system-tray"]`. Uses the same unified `Menu`/`MenuItem` types as native menus:

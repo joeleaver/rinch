@@ -10,6 +10,7 @@
 //! - [`EditableState`] for orchestrating editing operations
 //! - [`RewriteDiff`] for adopting an external rewrite of the text without losing the caret
 //! - [`InputHandler`] for mapping keyboard input to commands
+//! - [`single_line_insert`] for what a single-line field makes of inserted line breaks
 
 mod command;
 mod document;
@@ -18,6 +19,7 @@ mod operation;
 mod position;
 mod rewrite;
 mod selection;
+mod single_line;
 mod state;
 mod string_doc;
 mod undo;
@@ -29,6 +31,7 @@ pub use operation::TextOperation;
 pub use position::{Position, Range};
 pub use rewrite::RewriteDiff;
 pub use selection::Selection;
+pub use single_line::single_line_insert;
 pub use state::EditableState;
 pub use string_doc::StringDocument;
 pub use undo::{Invertible, UndoMark, UndoStack};
