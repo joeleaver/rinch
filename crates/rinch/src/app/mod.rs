@@ -26,9 +26,19 @@ mod click_handling;
 #[cfg(test)]
 mod color_input_dismiss_465_tests;
 #[cfg(test)]
-mod tree_drop_tests;
-#[cfg(test)]
 mod review_1589_tests;
+#[cfg(test)]
+mod tree_drop_tests;
+
+/// Serializes the tests that install a timer backend
+/// ([`rinch_core::set_timer_backend`] writes a process-global static).
+#[cfg(test)]
+pub(crate) fn timer_backend_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 #[cfg(all(test, feature = "desktop"))]
 mod component_attrs_433_tests;
 #[cfg(test)]

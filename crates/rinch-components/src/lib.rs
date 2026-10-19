@@ -237,8 +237,8 @@ pub use textarea::Textarea;
 pub use title::Title;
 pub use tooltip::Tooltip;
 pub use tree::{
-    DragValues, DropVerdict, DropZone, JudgeDrop, RenderTreeNode, RenderTreeNodePayload, Tree,
-    TreeController, TreeDrop, TreeNodeData, TreeSlot, UseTreeOptions,
+    AcceptsChildren, DragValues, DropVerdict, DropZone, JudgeDrop, RenderTreeNode,
+    RenderTreeNodePayload, Tree, TreeController, TreeDrop, TreeNodeData, TreeSlot, UseTreeOptions,
     UseTreeReturn, get_tree_expanded_state,
 };
 

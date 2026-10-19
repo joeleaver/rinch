@@ -1,12 +1,14 @@
-//! Review fixtures for PR #1589 (Tree drop places). Each test pins a finding
-//! of the review; the ones marked FINDING fail at the PR head.
+//! Fixtures from the review of PR #1589 (Tree drop places). Each test pins a
+//! finding of the review; the ones marked FINDING failed at the PR's first
+//! head.
 
 use super::*;
 use std::cell::RefCell;
 use std::collections::HashSet;
 
 use rinch_components::{
-    DropVerdict, Tree, TreeDrop, TreeNodeData, TreeSlot, UseTreeOptions, UseTreeReturn,
+    AcceptsChildren, DropVerdict, DropZone, Tree, TreeDrop, TreeNodeData, TreeSlot, UseTreeOptions,
+    UseTreeReturn,
 };
 use rinch_core::Component;
 use rinch_core::element::ValueCallback;
@@ -16,6 +18,16 @@ const VP: (f32, f32) = (800.0, 600.0);
 type Offers = Rc<RefCell<Vec<Option<(TreeDrop, DropVerdict)>>>>;
 
 fn mount(data: Vec<TreeNodeData>, open: &[&str], indent: Option<f32>, offers: Offers) -> RinchApp {
+    mount_accepting(data, open, indent, None, offers)
+}
+
+fn mount_accepting(
+    data: Vec<TreeNodeData>,
+    open: &[&str],
+    indent: Option<f32>,
+    accepts_children: Option<AcceptsChildren>,
+    offers: Offers,
+) -> RinchApp {
     let open: HashSet<String> = open.iter().map(|s| s.to_string()).collect();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let o = offers.clone();
@@ -26,6 +38,7 @@ fn mount(data: Vec<TreeNodeData>, open: &[&str], indent: Option<f32>, offers: Of
                 ..Default::default()
             })),
             indent,
+            accepts_children: accepts_children.clone(),
             draggable: true,
             ondropchange: Some(ValueCallback::new(move |offer| o.borrow_mut().push(offer))),
             ..Default::default()
@@ -208,6 +221,29 @@ fn crossing_between_adjacent_rows_reports_no_none_in_between() {
     );
 }
 
+/// The other half of finding 3: a pointer that leaves the rows for somewhere
+/// that is no row of the tree is reported as `None` in that same move.
+#[test]
+fn leaving_the_rows_reports_none_in_the_same_move() {
+    let offers: Offers = Rc::default();
+    let data = vec![TreeNodeData::new("p", "Pea"), TreeNodeData::new("q", "Cue")];
+    let mut app = mount(data, &[], Some(20.0), offers.clone());
+    start(&mut app, "p");
+    move_to(&mut app, "q", 120.0, 0.9);
+    assert!(
+        offers.borrow().last().cloned().flatten().is_some(),
+        "positive control: an offer over q"
+    );
+    // Well right of the 300px-wide tree.
+    let (_, y) = at(&app, "q", 0.0, 0.5);
+    send(&mut app, PlatformEvent::MouseMove { x: 600.0, y });
+    assert_eq!(
+        offers.borrow().last().cloned(),
+        Some(None),
+        "the app was not told the drop went"
+    );
+}
+
 /// FINDING 4 (claim): "Nothing changes for a Tree that does not set
 /// `draggable`". Every row is now `position: relative`, draggable or not.
 #[test]
@@ -254,14 +290,20 @@ fn a_plain_tree_row_is_not_positioned() {
     }
 }
 
-/// Measurement only (prints): a 1000-row plain (non-draggable) Tree in a
-/// scroller, second wheel notch and a warm pointer move, with the PR's
-/// component CSS and with its `position: relative` row rule removed.
+/// A tree that does not drag costs what it cost before drops existed: its
+/// rows are not positioned, so a scroll clips nothing more. Measured on
+/// main (e7314860) as the same scroller with the unscoped
+/// `position: relative` row rule removed; with that rule every row became
+/// positioned and the second wheel notch's clip masks grew from 245,640 px to
+/// 367,044 px. A draggable tree's rows are positioned and pay it (the
+/// positive control).
 #[cfg(software_shell)]
 #[test]
-fn measure_plain_tree_1000_rows_with_and_without_positioned_rows() {
+fn a_plain_tree_scrolls_at_mains_cost_and_a_draggable_one_pays_for_its_rows() {
     use super::perf_expect::*;
-    for strip in [false, true] {
+    use rinch_dom::perf::{Counter, FrameStats};
+    let mut notches = Vec::new();
+    for draggable in [false, true] {
         let mut app = new_app(move |scope: &mut RenderScope| {
             let data: Vec<TreeNodeData> = (0..1000)
                 .map(|i| TreeNodeData::new(format!("v{i}"), format!("row {i}")))
@@ -269,11 +311,15 @@ fn measure_plain_tree_1000_rows_with_and_without_positioned_rows() {
             let tree = Tree {
                 data,
                 tree: Some(UseTreeReturn::new(UseTreeOptions::default())),
+                draggable,
                 ..Default::default()
             }
             .render(scope, &[]);
             let root = scope.create_element("div");
-            root.set_attribute("style", "width: 300px; height: 400px; overflow-y: auto; font-family: sans-serif; line-height: 20px");
+            root.set_attribute(
+                "style",
+                "width: 300px; height: 400px; overflow-y: auto; font-family: sans-serif; line-height: 20px",
+            );
             root.append_child(&tree);
             root
         });
@@ -284,16 +330,7 @@ fn measure_plain_tree_1000_rows_with_and_without_positioned_rows() {
             d.load_css(&rinch_theme::generate_theme_css(
                 &rinch_theme::Theme::default(),
             ));
-            let mut css = rinch_components::generate_component_css();
-            if strip {
-                let rule = ".rinch-tree__node-content {\n    position: relative;\n}";
-                assert!(
-                    css.contains(rule),
-                    "positive control: the rule is there to strip"
-                );
-                css = css.replace(rule, "");
-            }
-            d.load_css(&css);
+            d.load_css(&rinch_components::generate_component_css());
             d.recompute_all_styles_full();
         }
         settle(&mut app);
@@ -311,15 +348,36 @@ fn measure_plain_tree_1000_rows_with_and_without_positioned_rows() {
         };
         interaction(&mut app, wheel);
         let notch = interaction(&mut app, wheel);
-        interaction(&mut app, |a| {
-            a.handle_event(PlatformEvent::MouseMove { x: 60.0, y: 150.0 }, SIZE, 1.0);
-        });
-        let mv = interaction(&mut app, |a| {
-            a.handle_event(PlatformEvent::MouseMove { x: 61.0, y: 151.0 }, SIZE, 1.0);
-        });
-        println!("strip={strip} NOTCH:\n{}", baseline_text(&notch));
-        println!("strip={strip} MOVE:\n{}", baseline_text(&mv));
+        notches.push(notch);
     }
+    let px = |f: &FrameStats| f.get(Counter::ClipMaskPx);
+    // The whole frame, as on main.
+    expect_frame(
+        "a plain tree's second wheel notch",
+        &notches[0],
+        &[
+            (Counter::LayoutResolves, 1),
+            (Counter::LayoutSkippedPaintOnly, 1),
+            (Counter::PaintFrames, 1),
+            (Counter::RepaintPartial, 1),
+            (Counter::DamageRects, 1),
+            (Counter::RepaintedPx, 122816),
+            (Counter::SurfacePx, 480000),
+            (Counter::PaintNodesVisited, 46),
+            (Counter::StackingOrderBuilds, 2),
+            (Counter::GlyphCacheHits, 55),
+            (Counter::ClipMasks, 2),
+            (Counter::ClipMaskPx, 245640),
+            (Counter::HitTests, 1),
+            (Counter::HitTestNodesVisited, 5),
+        ],
+    );
+    assert!(
+        px(&notches[1]) > px(&notches[0]),
+        "positive control: a draggable tree's positioned rows clip more ({} vs {})",
+        px(&notches[1]),
+        px(&notches[0])
+    );
 }
 
 /// Kills M8 (the shape is not rebuilt when the data changes mid-drag): a row
@@ -381,8 +439,7 @@ fn a_row_that_arrives_mid_drag_offers_drops() {
 
 mod hover_expand {
     //! Kills M9: resting inside a collapsed row with children expands it.
-    //! Uses a manual timer backend (process-global; run filtered, or share
-    //! `overlay_dismiss_tests::auto_close`'s lock when landing this).
+    //! Uses a manual timer backend, under the crate's timer-backend lock.
     use super::*;
 
     thread_local! {
@@ -394,6 +451,7 @@ mod hover_expand {
 
     #[test]
     fn resting_inside_a_collapsed_row_expands_it() {
+        let _guard = crate::app::timer_backend_lock();
         rinch_core::set_timer_backend(manual);
         let state_out: Rc<RefCell<Option<UseTreeReturn>>> = Rc::default();
         let s_out = state_out.clone();
@@ -446,4 +504,38 @@ mod hover_expand {
             "expanded at the deadline"
         );
     }
+}
+
+/// `accepts_children`: a row that takes no children has only before and
+/// after, half each; a row that does keeps its middle "inside".
+#[test]
+fn a_row_that_takes_no_children_offers_no_inside() {
+    let offers: Offers = Rc::default();
+    let data = vec![
+        TreeNodeData::new("dir", "Folder"),
+        TreeNodeData::new("file", "File"),
+        TreeNodeData::new("last", "Last"),
+    ];
+    let accepts: AcceptsChildren = Rc::new(|node: &TreeNodeData| node.value == "dir");
+    let mut app = mount_accepting(data, &[], Some(20.0), Some(accepts), offers.clone());
+    start(&mut app, "last");
+    let offer_at = |app: &mut RinchApp, value: &str, f: f32| {
+        move_to(app, value, 120.0, f);
+        let got = offers.borrow().last().cloned().flatten();
+        let (drop, _) = got.expect("an offer");
+        (drop.zone, drop.parent, drop.slot)
+    };
+    assert_eq!(
+        offer_at(&mut app, "dir", 0.5),
+        (DropZone::Inside, Some("dir".into()), TreeSlot::Last),
+        "positive control: a row that takes children has an inside"
+    );
+    assert_eq!(
+        offer_at(&mut app, "file", 0.4),
+        (DropZone::Before, None, TreeSlot::After("dir".into()))
+    );
+    assert_eq!(
+        offer_at(&mut app, "file", 0.6),
+        (DropZone::After, None, TreeSlot::After("file".into()))
+    );
 }
