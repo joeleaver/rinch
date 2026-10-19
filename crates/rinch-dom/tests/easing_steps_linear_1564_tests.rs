@@ -449,6 +449,9 @@ fn a_transition_eases_with_steps_and_linear_functions() {
         ("width 1000ms linear(0, 0.25, 1)", 250.0, 47.5),
         ("width 1000ms linear(0, 0.25, 1)", 500.0, 55.0),
         ("width 1000ms linear(0, 0.25, 1)", 750.0, 77.5),
+        // Through the delay the easing is sampled at 0 with the before
+        // flag: `linear(0.5, 1)` is half way there before it starts.
+        ("width 1000ms linear(0.5, 1) 1000ms", 500.0, 70.0),
         ("width 1000ms linear(0.5, 1) 1000ms", 1000.0, 70.0),
     ];
     let mut wrong = Vec::new();
@@ -510,5 +513,86 @@ fn a_stepped_transition_reverses_from_its_output_progress() {
                 "{transition} reversed, at {t}ms: rinch {got:?}, Chrome 155 {chrome}px"
             );
         }
+    }
+}
+
+/// Reversing a reversal while it is still in its (unshortened, positive)
+/// delay: the factor folds in the running transition's output progress there,
+/// which is its easing at 0 with the before flag set. Chrome 155, on
+/// `width 1000ms <easing> 500ms` sent 40 → 100, back to 40 at `currentTime`
+/// 1100, and to 100 again 200ms into that reversal's delay:
+///
+/// | easing | first reversal | value in its delay | second reversal |
+/// |---|---|---|---|
+/// | `steps(4, start)` | 750ms | 85px | 250ms (`apply(0)` without the flag: 437.5) |
+/// | `steps(4, end)` | 500ms | 70px | 500ms |
+/// | `linear(0.5, 1)` | 800ms | 64px | 600ms |
+///
+/// Driven on an explicit clock through `start_transitions`, with each easing
+/// taken from a transition the document converted.
+#[test]
+fn reversing_a_reversal_in_its_delay_reads_the_before_flag() {
+    use rinch_dom::transition::types::{PropertyChange, TransitionSpec};
+    use std::collections::HashMap;
+
+    let lp = |v: f32| AnimatableValue::Dimension(DimensionValue::Length(v));
+    let cases: &[(&str, f64, f32, f64)] = &[
+        ("steps(4, start)", 750.0, 85.0, 250.0),
+        ("steps(4, end)", 500.0, 70.0, 500.0),
+        ("linear(0.5, 1)", 800.0, 64.0, 600.0),
+    ];
+    for &(easing, chrome_first, chrome_in_delay, chrome_second) in cases {
+        let (doc, node) = start_transition(&format!("width 1000ms {easing} 500ms"));
+        let timing = doc.tree.active_transitions[&node.0][&TransitionProperty::Width]
+            .timing
+            .clone();
+        let spec = TransitionSpec {
+            property: TransitionProperty::Width,
+            duration_ms: 1000.0,
+            delay_ms: 500.0,
+            timing,
+        };
+        let change = |old: f32, new: f32| PropertyChange {
+            property: TransitionProperty::Width,
+            old_value: lp(old),
+            new_value: lp(new),
+        };
+        let mut active = HashMap::new();
+        rinch_dom::transition::start_transitions(
+            &mut active,
+            std::slice::from_ref(&spec),
+            &[change(40.0, 100.0)],
+            0.0,
+        );
+        let now = px(active[&TransitionProperty::Width].value_at(1100.0)).unwrap();
+        rinch_dom::transition::start_transitions(
+            &mut active,
+            std::slice::from_ref(&spec),
+            &[change(now, 40.0)],
+            1100.0,
+        );
+        let first = &active[&TransitionProperty::Width];
+        assert!(
+            (first.duration_ms - chrome_first).abs() < 0.01,
+            "{easing}: first reversal {} where Chrome 155 takes {chrome_first}",
+            first.duration_ms
+        );
+        let in_delay = px(first.value_at(1300.0)).unwrap();
+        assert!(
+            (in_delay - chrome_in_delay).abs() < 0.01,
+            "{easing}: {in_delay}px in the reversal's delay where Chrome 155 shows {chrome_in_delay}px"
+        );
+        rinch_dom::transition::start_transitions(
+            &mut active,
+            std::slice::from_ref(&spec),
+            &[change(in_delay, 100.0)],
+            1300.0,
+        );
+        let second = &active[&TransitionProperty::Width];
+        assert!(
+            (second.duration_ms - chrome_second).abs() < 0.01,
+            "{easing}: second reversal {} where Chrome 155 takes {chrome_second}",
+            second.duration_ms
+        );
     }
 }
