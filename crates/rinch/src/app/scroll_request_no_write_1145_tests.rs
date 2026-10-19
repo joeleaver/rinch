@@ -90,7 +90,11 @@ fn scroll_to_fraction_from_a_handler_that_writes_nothing_scrolls() {
     let (mut app, scroller, target) = mount();
     click_turn(&mut app, move || target.scroll_to_fraction(0.25, 0.0));
     // The target's top at a quarter of the 100px view: 1000 - 25.
-    assert_eq!(scroll_top(&app, scroller), 975.0, "the placement was applied");
+    assert_eq!(
+        scroll_top(&app, scroller),
+        975.0,
+        "the placement was applied"
+    );
 }
 
 /// The control the issue was found with: the same request beside a DOM write
@@ -115,8 +119,14 @@ fn a_queued_request_is_pending_work_until_it_is_applied() {
     assert!(!app.has_dirty_nodes() && !app.has_pending_layout(), "idle");
     target.scroll_into_view();
     assert!(app.has_dirty_nodes(), "has_dirty_nodes counts the queue");
-    assert!(app.has_pending_layout(), "has_pending_layout counts the queue");
-    assert!(app.resolve_and_repaint(W, H), "the resolve does not short-circuit");
+    assert!(
+        app.has_pending_layout(),
+        "has_pending_layout counts the queue"
+    );
+    assert!(
+        app.resolve_and_repaint(W, H),
+        "the resolve does not short-circuit"
+    );
     assert_eq!(scroll_top(&app, scroller), 920.0);
     // The applied scroll dirties paint, which the next frame consumes; the
     // queue itself is empty now.
@@ -153,5 +163,8 @@ fn a_request_with_no_scroller_does_not_stay_pending() {
     n.scroll_into_view();
     assert!(app.has_dirty_nodes());
     app.handle_event(PlatformEvent::AboutToWait, (W as u32, H as u32), 1.0);
-    assert!(!app.has_dirty_nodes() && !app.has_pending_layout(), "idle again");
+    assert!(
+        !app.has_dirty_nodes() && !app.has_pending_layout(),
+        "idle again"
+    );
 }

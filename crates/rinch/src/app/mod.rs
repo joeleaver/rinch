@@ -208,6 +208,8 @@ mod screenshot_capture_tests;
 #[cfg(test)]
 mod scroll_device_snap_1543_tests;
 #[cfg(test)]
+mod scroll_request_no_write_1145_tests;
+#[cfg(test)]
 mod scrollbar_corner_444_tests;
 #[cfg(test)]
 mod scrollbar_thumb_press_443_tests;
@@ -252,8 +254,6 @@ mod textarea_newline_tests;
 mod textarea_text_child_tests;
 #[cfg(test)]
 mod textarea_vertical_arrow_tests;
-#[cfg(test)]
-mod scroll_request_no_write_1145_tests;
 #[cfg(test)]
 mod trap_focus_tests;
 #[cfg(test)]
@@ -1388,9 +1388,12 @@ impl RinchApp {
         // Short-circuit when nothing needs resolving — avoids redundant tree walks
         // when a ReRender event arrives after the drag handler already resolved.
         //
-        // A finished image decode is the one thing that needs resolving without
-        // any node being dirty: the decoding thread cannot know which nodes
-        // carry that `src`, so it queues the result and leaves the matching to
+        // Some work needs resolving with no node dirty, and the test below
+        // names each: a theme change, an owed editor overlay pass, a queued
+        // `scroll_into_view` / `scroll_to_fraction` (`has_owed_scroll`,
+        // drained by `apply_scroll_into_view` below — #1145), and a finished
+        // image decode: the decoding thread cannot know which nodes carry that
+        // `src`, so it queues the result and leaves the matching to
         // `resolve_layout`'s `drain_pending_images`. Returning early here means
         // that drain never happens, and an `<img>` loaded into an otherwise
         // idle screen keeps the 0x0 intrinsic size it was created with — laid
