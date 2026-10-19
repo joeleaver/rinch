@@ -213,6 +213,10 @@ pub struct HangStats {
     /// a hung NBSP (#1218): a few per such line, logarithmic in the length
     /// of a glued chain.
     pub unglue_rebreaks: u32,
+    /// Builds of a paragraph after the first, made to put its preserved
+    /// tabs at their stops (#1122): one for a line of tabs that do not wrap,
+    /// at most [`MAX_TAB_BUILDS`]` - 1`.
+    pub tab_rebuilds: u32,
 }
 
 impl HangStats {
@@ -222,6 +226,7 @@ impl HangStats {
         self.lines += other.lines;
         self.phantom_rebreaks += other.phantom_rebreaks;
         self.unglue_rebreaks += other.unglue_rebreaks;
+        self.tab_rebuilds += other.tab_rebuilds;
     }
 
     /// Add these to `perf`'s `ifc_hang_*` counters.
@@ -235,6 +240,10 @@ impl HangStats {
         perf.add(
             crate::perf::Counter::IfcUnglueRebreaks,
             u64::from(self.unglue_rebreaks),
+        );
+        perf.add(
+            crate::perf::Counter::IfcTabRebuilds,
+            u64::from(self.tab_rebuilds),
         );
     }
 }
@@ -703,8 +712,9 @@ enum IfcOp<'a> {
 /// the `offset_map` records like any collapsed run.
 ///
 /// Text under `pre` or `pre-wrap`, and all the text of a `contenteditable`
-/// root, is pushed verbatim, a tab as [`TAB_SPACES`] and the characters
-/// above as their substitutes. It is content to the collapsible text around
+/// root, is pushed verbatim, a tab as one space that the replay widens to
+/// its tab stop ([`TabStops`], #1122) and the characters above as their
+/// substitutes. It is content to the collapsible text around
 /// it: a preserved space confirms a held space before
 /// it and is not collapsible, so a collapsible space right after it is kept,
 /// and a preserved newline is a forced break, as a `<br>` is. `pre-line`
@@ -733,6 +743,10 @@ pub(crate) struct IfcText<'a> {
     /// The out-of-flow boxes met ([`Self::note_out_of_flow`]), their offsets
     /// in [`Self::len`]'s terms and no position yet.
     out_of_flow: Vec<crate::node::OutOfFlowMark>,
+    /// Every preserved tab, in order: `(op, byte in the op's text, flat
+    /// offset in [`Self::len`]'s terms)`. A tab is pushed as one space and
+    /// widened to its tab stop when replayed ([`Self::replay`], #1122).
+    tabs: Vec<(usize, usize, usize)>,
 }
 
 /// Start a new stretch of a DOM↔flat `offset_map` at `(flat, dom)` when the
@@ -864,6 +878,7 @@ impl<'a> IfcText<'a> {
             dropped: Vec::new(),
             last_box: None,
             out_of_flow: Vec::new(),
+            tabs: Vec::new(),
         }
     }
 
@@ -997,11 +1012,15 @@ impl<'a> IfcText<'a> {
                 self.len += n;
                 return (n, map);
             }
-            let mut out = String::with_capacity(raw.len() + 3 * TAB_SPACES.len());
+            let op = self.ops.len();
+            let mut out = String::with_capacity(raw.len() + 6);
             for (i, c) in raw.char_indices() {
                 note(&mut map, out.len(), i);
                 if c == '\t' {
-                    out.push_str(TAB_SPACES);
+                    // One space, one flat byte, as the DOM's tab is one
+                    // byte; widened to its stop at replay.
+                    self.tabs.push((op, out.len(), self.len + out.len()));
+                    out.push(' ');
                 } else if let Some(sub) = laid_out_as(c, true) {
                     push_substitute(&mut out, &mut map, sub, i + c.len_utf8());
                 } else {
@@ -1087,44 +1106,86 @@ impl<'a> IfcText<'a> {
         (n, map)
     }
 
-    /// Remove a space held at the IFC's end and replay the ops into
-    /// `builder`, all under `Preserve`: the text is already collapsed.
+    /// Remove a space held at the IFC's end. Called once, after the walk
+    /// and before [`Self::replay`].
+    pub(crate) fn finish(&mut self) {
+        self.drop_pending();
+    }
+
+    /// The flat offsets of the preserved tabs in the final text (after
+    /// [`Self::finish`]), ascending.
+    pub(crate) fn tab_offsets(&self) -> Vec<usize> {
+        self.tabs.iter().map(|&(_, _, f)| self.remap(f)).collect()
+    }
+
+    /// Replay the ops into `builder`, all under `Preserve`: the text is
+    /// already collapsed. May be called again with other `tab_spacing`.
     ///
     /// With `emoji_family`, each emoji-presentation cluster of a text is
     /// pushed in a span of that family ([`crate::fonts::TextFamily`], #1204).
     /// A cluster is found within one text op; one split across two (an emoji
     /// and its U+FE0F in two text nodes) is not.
-    pub(crate) fn finish(
-        &mut self,
+    ///
+    /// Each preserved tab is its one space in a span of its own, with no
+    /// `word-spacing` and `tab_spacing[i]` (CSS px) of `letter-spacing` for
+    /// the `i`th tab ([`set_tab_stops`], #1122): what widens it to its stop.
+    pub(crate) fn replay(
+        &self,
         builder: &mut parley::TreeBuilder<'_, Brush>,
-        emoji_family: Option<parley::style::FontFamily<'static>>,
+        emoji_family: Option<&parley::style::FontFamily<'static>>,
+        tab_spacing: &[f32],
     ) {
-        self.drop_pending();
         builder.set_white_space_mode(parley::style::WhiteSpaceCollapse::Preserve);
-        let emoji_span = emoji_family.map(|f| [parley::style::StyleProperty::FontFamily(f)]);
-        for op in self.ops.drain(..) {
+        use parley::style::StyleProperty as P;
+        let emoji_span = emoji_family.map(|f| [P::FontFamily(f.clone())]);
+        let push_plain =
+            |builder: &mut parley::TreeBuilder<'_, Brush>, text: &str| match &emoji_span {
+                Some(span) => {
+                    let mut at = 0;
+                    for range in crate::fonts::emoji_presentation_ranges(text) {
+                        if range.start > at {
+                            builder.push_text(&text[at..range.start]);
+                        }
+                        builder.push_style_modification_span(span.iter());
+                        builder.push_text(&text[range.clone()]);
+                        builder.pop_style_span();
+                        at = range.end;
+                    }
+                    if at < text.len() {
+                        builder.push_text(&text[at..]);
+                    }
+                }
+                None => builder.push_text(text),
+            };
+        let mut tab = 0usize;
+        for (i, op) in self.ops.iter().enumerate() {
             match op {
                 IfcOp::Span(props) => builder.push_style_modification_span(props.iter()),
                 IfcOp::Pop => builder.pop_style_span(),
-                IfcOp::Text(text) => match &emoji_span {
-                    Some(span) => {
-                        let mut at = 0;
-                        for range in crate::fonts::emoji_presentation_ranges(&text) {
-                            if range.start > at {
-                                builder.push_text(&text[at..range.start]);
-                            }
-                            builder.push_style_modification_span(span.iter());
-                            builder.push_text(&text[range.clone()]);
-                            builder.pop_style_span();
-                            at = range.end;
+                IfcOp::Text(text) => {
+                    let mut at = 0;
+                    while let Some(&(op, byte, _)) = self.tabs.get(tab) {
+                        if op != i {
+                            break;
                         }
-                        if at < text.len() {
-                            builder.push_text(&text[at..]);
+                        if byte > at {
+                            push_plain(builder, &text[at..byte]);
                         }
+                        let spacing = [
+                            P::LetterSpacing(tab_spacing.get(tab).copied().unwrap_or(0.0)),
+                            P::WordSpacing(0.0),
+                        ];
+                        builder.push_style_modification_span(spacing.iter());
+                        builder.push_text(&text[byte..byte + 1]);
+                        builder.pop_style_span();
+                        at = byte + 1;
+                        tab += 1;
                     }
-                    None => builder.push_text(&text),
-                },
-                IfcOp::InlineBox(b) => builder.push_inline_box(b),
+                    if at < text.len() || at == 0 {
+                        push_plain(builder, &text[at..]);
+                    }
+                }
+                IfcOp::InlineBox(b) => builder.push_inline_box(b.clone()),
             }
         }
     }
@@ -7357,8 +7418,7 @@ impl RinchDocument {
         } else {
             None
         };
-        let mut builder = layout_cx.tree_builder(font_cx, scale, true, &root_text_style);
-        ifc_text.finish(&mut builder, emoji_family);
+        ifc_text.finish();
         // Every offset the walk recorded counted a held space `finish` has
         // since removed; take them all to the final text.
         for r in &mut text_ranges {
@@ -7391,8 +7451,6 @@ impl RinchDocument {
             });
         }
 
-        let (text_layout, text_content) = builder.build();
-        let mut text_layout = text_layout;
         // A paragraph none of whose text may wrap is broken unconstrained:
         // only forced breaks end its lines. One that holds wrapping text — a
         // wrapping root, or a `normal`/`pre-wrap`/`pre-line` element inside a
@@ -7429,13 +7487,47 @@ impl RinchDocument {
         } else {
             Vec::new()
         };
-        let hang = break_lines_hanging_spaces(
-            &mut text_layout,
-            &text_content,
-            effective_max_width,
-            preserves_spaces,
-            &unhung,
-        );
+        // Build and break; with preserved tabs, again until each tab ends at
+        // its stop (#1122): a tab's width depends on where its line puts it.
+        let tabs = ifc_text.tab_offsets();
+        let mut tab_spacing = vec![0.0f32; tabs.len()];
+        let stops = (!tabs.is_empty()).then(|| {
+            TabStops::of_block(
+                font_cx,
+                layout_cx,
+                &root_text_style,
+                root_computed.letter_spacing,
+                root_computed.word_spacing,
+                scale,
+            )
+        });
+        let mut hang = HangStats::default();
+        let mut builds = 0u32;
+        let (text_layout, text_content) = loop {
+            let mut builder = layout_cx.tree_builder(font_cx, scale, true, &root_text_style);
+            ifc_text.replay(&mut builder, emoji_family.as_ref(), &tab_spacing);
+            let (mut text_layout, text_content) = builder.build();
+            builds += 1;
+            hang.add(break_lines_hanging_spaces(
+                &mut text_layout,
+                &text_content,
+                effective_max_width,
+                preserves_spaces,
+                &unhung,
+            ));
+            let Some(stops) = &stops else {
+                break (text_layout, text_content);
+            };
+            let deltas = stops.deltas(&text_layout, &tabs);
+            if deltas.iter().all(|d| d.abs() < TAB_STOP_TOLERANCE) || builds >= MAX_TAB_BUILDS {
+                break (text_layout, text_content);
+            }
+            for (spacing, d) in tab_spacing.iter_mut().zip(&deltas) {
+                *spacing += d / scale;
+            }
+            hang.tab_rebuilds += 1;
+        };
+        let mut text_layout = text_layout;
 
         // Apply text-align from computed style
         let alignment = root_computed.text_align.to_parley();
@@ -7508,6 +7600,19 @@ impl RinchDocument {
             return false;
         }
         let root = &nodes[root_id].computed_style;
+        // A preserved tab is a space widened to its stop by the layout's own
+        // replay (#1122); the flat rebuild would draw it one space wide.
+        let has_preserved_tab = il.text_ranges.iter().filter(|r| !r.is_br).any(|r| {
+            nodes.get(r.node_id).is_some_and(|t| {
+                matches!(&t.kind, crate::node::NodeKind::Text(td) if td.content.contains('\t'))
+                    && t.parent.and_then(|el| nodes.get(el)).is_some_and(|el| {
+                        SpaceCollapse::of(el.computed_style.white_space) == SpaceCollapse::Preserve
+                    })
+            })
+        });
+        if has_preserved_tab {
+            return false;
+        }
         // The kept lines are joined by hard breaks, and a line ended by one is
         // not justified: `text-align: justify` would be lost on every one.
         if matches!(
@@ -8309,8 +8414,8 @@ impl RinchDocument {
                                 None => text_data.content.as_str().into(),
                             };
                         let dom_text_len = raw.len();
-                        // Collapsed (#1180), or verbatim with a tab as
-                        // `TAB_SPACES` (Parley has no tab stops), by the
+                        // Collapsed (#1180), or verbatim with a tab as a
+                        // space widened to its stop (#1122), by the
                         // `white-space` of the element the text is in: its
                         // DOM parent, which inside an anonymous box is not
                         // `parent_id` (#1192).
@@ -9046,8 +9151,119 @@ mod ellipsis_layout_tests {
     }
 }
 
-/// What the inline formatting context lays a tab (`'\t'`) out as: four spaces,
-/// since Parley has no tab stops. So a tab is `TAB_SPACES.len()` bytes of the
-/// flat offsets every text query takes (`text_query`'s DOM↔flat maps,
-/// `DomDocument::tab_flat_bytes`), and they must all read this one constant.
-pub(crate) const TAB_SPACES: &str = "    ";
+/// `tab-size`'s initial value. Stylo parses `tab-size` for Gecko only, so
+/// no other value reaches rinch-dom (#1122).
+pub(crate) const TAB_SIZE: f32 = 8.0;
+
+/// How close a tab's end has to be to its stop to count as there.
+const TAB_STOP_TOLERANCE: f32 = 0.01;
+
+/// The most builds [`RinchDocument::build_inline_layout`] makes of a
+/// paragraph to put its tabs at their stops. A tab's width moves what follows
+/// it on its line, and on a wrapping line can move the line break, which
+/// moves the tabs after it; a line of tabs that does not wrap is settled by
+/// the second build. A paragraph that has not settled by the last keeps it.
+const MAX_TAB_BUILDS: u32 = 4;
+
+/// The tab stops of one block container (css-text-3 §4.2), and how far each
+/// preserved tab of a laid-out paragraph is from ending at its stop.
+///
+/// Measured in Chrome 155 (`tests/tab_stop_1122_tests.rs`): the stops are
+/// [`TAB_SIZE`] times the advance of a space in the block's own font, its
+/// `letter-spacing` and `word-spacing` included — not the font or spacing of
+/// the element the tab is in — from the line's start edge, the tab's start
+/// measured in logical order before `text-align` moves the line; the tab's
+/// end is the first stop strictly past its start, or the one after it when
+/// that is less than half a space (the font's own, unspaced) away.
+pub(crate) struct TabStops {
+    interval: f32,
+    min_width: f32,
+}
+
+impl TabStops {
+    /// The stops of a block of `style` (its `letter_spacing` and
+    /// `word_spacing` in CSS px; `style` resolves them at `scale`).
+    pub(crate) fn of_block(
+        font_cx: &mut parley::FontContext,
+        layout_cx: &mut parley::LayoutContext<Brush>,
+        style: &parley::style::TextStyle<'_, '_, Brush>,
+        letter_spacing: f32,
+        word_spacing: f32,
+        scale: f32,
+    ) -> Self {
+        let mut builder = layout_cx.tree_builder(font_cx, scale, true, style);
+        builder.set_white_space_mode(parley::style::WhiteSpaceCollapse::Preserve);
+        builder.push_text(" ");
+        let (mut layout, _) = builder.build();
+        layout.break_all_lines(None);
+        let space: f32 = layout
+            .lines()
+            .flat_map(|line| line.runs().collect::<Vec<_>>())
+            .flat_map(|run| run.clusters().map(|c| c.advance()).collect::<Vec<_>>())
+            .sum();
+        Self {
+            interval: TAB_SIZE * space,
+            min_width: ((space - (letter_spacing + word_spacing) * scale) / 2.0).max(0.0),
+        }
+    }
+
+    /// How wide a tab starting `x` from its line's start edge is.
+    pub(crate) fn width_at(&self, x: f32) -> f32 {
+        if !self.interval.is_finite() || self.interval <= 0.0 {
+            return 0.0;
+        }
+        let mut w = self.interval - x.rem_euclid(self.interval);
+        if w < self.min_width {
+            w += self.interval;
+        }
+        w
+    }
+
+    /// For each tab of `layout` (`tabs`: their flat offsets, ascending), how
+    /// much wider it must be to end at its stop. A tab's start counts the
+    /// widths the tabs before it on its line are to take.
+    pub(crate) fn deltas(&self, layout: &parley::Layout<Brush>, tabs: &[usize]) -> Vec<f32> {
+        use parley::PositionedLayoutItem;
+        let mut deltas = vec![0.0f32; tabs.len()];
+        let boxes = layout.inline_boxes();
+        /// (byte, 0 = inline box / 1 = cluster, order), advance, tab index.
+        type Unit = ((usize, u8, usize), f32, Option<usize>);
+        let mut units: Vec<Unit> = Vec::new();
+        for line in layout.lines() {
+            units.clear();
+            for run in line.runs() {
+                for c in run.clusters() {
+                    let start = c.text_range().start;
+                    let n = units.len();
+                    units.push(((start, 1, n), c.advance(), tabs.binary_search(&start).ok()));
+                }
+            }
+            for item in line.items() {
+                if let PositionedLayoutItem::InlineBox(b) = item {
+                    let Some(ib) = boxes.iter().find(|ib| ib.id == b.id) else {
+                        continue;
+                    };
+                    let advance = if matches!(ib.kind, parley::InlineBoxKind::InFlow) {
+                        ib.width
+                    } else {
+                        0.0
+                    };
+                    let n = units.len();
+                    units.push(((ib.index, 0, n), advance, None));
+                }
+            }
+            // A box at byte `i` comes before the text at `i`.
+            units.sort_unstable_by_key(|u| u.0);
+            let mut x = 0.0f32;
+            for &(_, advance, tab) in &units {
+                if let Some(t) = tab {
+                    let delta = self.width_at(x) - advance;
+                    deltas[t] = delta;
+                    x += delta;
+                }
+                x += advance;
+            }
+        }
+        deltas
+    }
+}

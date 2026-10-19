@@ -166,10 +166,7 @@ fn a_collapsing_white_space_makes_a_tab_one_space() {
 
 #[test]
 fn tabs_at_the_line_start_take_a_whole_interval_each() {
-    assert_xs(
-        &xs("white-space: pre", "\t\tb"),
-        &[0.0, 36.0, 72.0, 81.80],
-    );
+    assert_xs(&xs("white-space: pre", "\t\tb"), &[0.0, 36.0, 72.0, 81.80]);
 }
 
 #[test]
@@ -277,7 +274,10 @@ fn a_right_to_left_line_sets_its_stops_from_the_right() {
     }
     let (first, second) = (left[&2], left[&9]);
     for (x, stop) in [(first, 36.0), (second, 72.0)] {
-        assert!((right - x - stop).abs() <= TOL, "{first} {second}, right {right}");
+        assert!(
+            (right - x - stop).abs() <= TOL,
+            "{first} {second}, right {right}"
+        );
     }
 }
 
@@ -346,5 +346,56 @@ fn a_selected_tab_is_highlighted_to_its_stop() {
     let rects = d.query_selection_rects(c.0 as u64, 1, 2);
     assert_eq!(rects.len(), 1, "{rects:?}");
     let (x, _, w, _) = rects[0];
-    assert!((x - 8.98).abs() <= TOL && (x + w - 36.0).abs() <= TOL, "{rects:?}");
+    assert!(
+        (x - 8.98).abs() <= TOL && (x + w - 36.0).abs() <= TOL,
+        "{rects:?}"
+    );
+}
+
+/// A line cut by `text-overflow: ellipsis` is drawn from a flat rebuild of
+/// the paragraph's text, where a tab would be one space wide; a paragraph
+/// holding a preserved tab is clipped instead, its tabs at their stops.
+#[test]
+fn an_ellipsis_cut_keeps_its_tabs_at_their_stops() {
+    let got = xs(
+        "white-space: pre-wrap; width: 100px; overflow: hidden; text-overflow: ellipsis",
+        "a\tb bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    );
+    // The first line, `a`, the tab and `b`, fits; the second is cut.
+    assert_xs(&got[..4], &[0.0, 8.98, 36.0, 45.80]);
+}
+/// Sixteen `xxx\t` words in a 400px `pre-wrap` block: each ends at a stop
+/// 36px on, so the first line holds eleven and ends at 396, and the second
+/// starts with `lll` — Chrome 155's carets, every one. Laid out with each
+/// tab one space wide, the whole text fits one line; only once the tabs are
+/// at their stops does it wrap, and the second line's tabs are set again
+/// from where the wrap leaves them.
+#[test]
+fn tabs_are_set_again_on_the_lines_their_widths_make() {
+    let words = "aaa\tbbb\tccc\tddd\teee\tfff\tggg\thhh\tiii\tjjj\tkkk\tlll\tmmm\tnnn\tooo\tppp";
+    let got = carets("white-space: pre-wrap; width: 400px", words);
+    #[rustfmt::skip]
+    let chrome: [f32; 64] = [
+        0.0, 8.98, 17.97, 26.95, 36.0, 45.80, 55.59, 65.39, 72.0, 81.14, 90.28, 99.42,
+        108.0, 117.80, 127.59, 137.39, 144.0, 153.33, 162.66, 171.98, 180.0, 185.30,
+        190.59, 196.52, 216.0, 225.81, 235.63, 245.44, 252.0, 261.45, 270.92, 280.38,
+        288.0, 291.88, 295.75, 299.63, 324.0, 327.88, 331.75, 335.63, 360.0, 368.78,
+        377.56, 386.34, 396.0, 3.88, 7.75, 11.63, 36.0, 50.02, 64.03, 78.05, 108.0,
+        117.45, 126.91, 136.36, 144.0, 153.59, 163.19, 172.78, 180.0, 189.80, 199.59,
+        209.39,
+    ];
+    assert_eq!(got.len(), chrome.len());
+    for (i, (g, w)) in got.iter().zip(chrome).enumerate() {
+        // Char 44 starts the second line; Chrome draws its caret at the end
+        // of the first, rinch at the start of the second.
+        if i == 44 {
+            assert_eq!(g, &(0.0, 24.0), "char 44: {got:?}");
+            continue;
+        }
+        let line = if i < 44 { 0.0 } else { 24.0 };
+        assert!(
+            (g.0 - w).abs() <= TOL && g.1 == line,
+            "char {i} at {g:?}, Chrome 155 ({w}, {line}): {got:?}"
+        );
+    }
 }
