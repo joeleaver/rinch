@@ -945,7 +945,16 @@ shape (issue **#782**): its fill is as constant as a paused sample. The tick tha
 finishes it writes the fill and marks the node dirty — that frame shows the end —
 and records it in `ActiveAnimation::fill_settled`; later ticks re-apply it
 without dirtying anything, and neither `tick_animations` nor
-`has_running_animations()` counts it.
+`has_running_animations()` counts it. A zero-duration infinite animation
+(`0s infinite forwards`) is one of these: its active duration is `0 × ∞ = 0`, so
+it finishes when its delay ends, as in Chrome (issue **#786**).
+
+The fill is the value at the end of the active duration (`duration × count`):
+iteration `floor(count)` at progress `fract(count)`, in that iteration's
+direction, so `2.5 forwards` over `40px → 100px` holds 70px and
+`1.25 alternate forwards` 85px; a whole count holds the end of its last
+iteration and a count of 0 its start (issue **#785**,
+`tests/fractional_iteration_fill_tests.rs`, Chrome 155's values).
 
 The component library declares the pause itself (issue **#912**). `Drawer`'s
 closed rule, and the closed states of `Popover`'s and `HoverCard`'s dropdowns —

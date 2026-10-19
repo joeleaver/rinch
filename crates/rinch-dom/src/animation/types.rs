@@ -139,7 +139,7 @@ impl ActiveAnimation {
                 if current_iteration >= n {
                     return match self.fill_mode {
                         AnimationFillMode::Forwards | AnimationFillMode::Both => {
-                            self.values_at_progress(self.end_progress(n))
+                            self.values_at_progress(self.end_progress())
                         }
                         _ => AnimationResult::Complete,
                     };
@@ -187,17 +187,22 @@ impl ActiveAnimation {
     }
 
     /// Whether this animation has completed all iterations.
+    ///
+    /// Its active duration is `duration × iterations`, and a zero duration makes
+    /// that zero whatever the count — `0s infinite` included (Web Animations
+    /// §4.6; Chrome 155 reports such an animation `finished` at its delay's
+    /// end, #786). Only an infinite animation with a positive duration never
+    /// completes.
     pub fn is_complete(&self, current_time_ms: f64) -> bool {
         if self.paused_elapsed_ms.is_some() {
             return false; // Paused animations are never "complete"
         }
-        if let IterationCount::Finite(n) = self.iteration_count {
-            let elapsed = current_time_ms - self.start_time_ms;
-            let total = self.delay_ms + self.duration_ms * n;
-            elapsed >= total
-        } else {
-            false // Infinite animations never complete
-        }
+        let active_duration = match self.iteration_count {
+            IterationCount::Finite(n) => self.duration_ms * n,
+            IterationCount::Infinite if self.duration_ms <= 0.0 => 0.0,
+            IterationCount::Infinite => return false,
+        };
+        current_time_ms - self.start_time_ms >= self.delay_ms + active_duration
     }
 
     /// Whether this animation is filling (complete but fill-mode keeps it active).
@@ -218,9 +223,33 @@ impl ActiveAnimation {
         }
     }
 
-    fn end_progress(&self, iterations: f64) -> f32 {
-        let last_iter = (iterations.ceil() as u64).saturating_sub(1);
-        self.apply_direction(1.0, last_iter)
+    /// The directed progress at the end of the active duration — what a
+    /// `forwards` fill holds (Web Animations §4.8.4, #785).
+    ///
+    /// The active duration is `duration × count`, so it ends in iteration
+    /// `floor(count)` at progress `fract(count)`: 2.5 iterations stop half way
+    /// through the third, and the direction is that iteration's. A whole count
+    /// above zero ends at progress 1 of its last iteration (`count - 1`), and a
+    /// count of 0 at progress 0 of iteration 0. This holds for a zero duration
+    /// too, whose overall progress is its count. An infinite count (reachable
+    /// only with a zero duration, which is finished at once, #786) ends at
+    /// progress 1 of an infinite iteration, which Chrome 155 does not count as
+    /// odd: `alternate` fills forwards, `alternate-reverse` backwards, as
+    /// iteration 0 does.
+    fn end_progress(&self) -> f32 {
+        let (progress, iteration) = match self.iteration_count {
+            IterationCount::Finite(n) if n <= 0.0 => (0.0, 0),
+            IterationCount::Finite(n) => {
+                let whole = n.floor();
+                if n > whole {
+                    (n - whole, whole as u64)
+                } else {
+                    (1.0, whole as u64 - 1)
+                }
+            }
+            IterationCount::Infinite => (1.0, 0),
+        };
+        self.apply_direction(progress, iteration)
     }
 
     fn apply_direction(&self, progress: f64, iteration: u64) -> f32 {
@@ -240,11 +269,7 @@ impl ActiveAnimation {
     fn final_values(&self) -> AnimationResult {
         match self.fill_mode {
             AnimationFillMode::Forwards | AnimationFillMode::Both => {
-                let n = match self.iteration_count {
-                    IterationCount::Finite(n) => n,
-                    IterationCount::Infinite => 1.0,
-                };
-                self.values_at_progress(self.end_progress(n))
+                self.values_at_progress(self.end_progress())
             }
             _ => AnimationResult::Complete,
         }

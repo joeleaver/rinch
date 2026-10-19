@@ -12,10 +12,14 @@
 //! The three boxes, and what decides between them:
 //!
 //! ```text
-//!   z 1001   .rinch-color-input__input-group   (while open)
-//!   z 1000   .rinch-color-input__dropdown
-//!   z  999   .rinch-color-input__backdrop      position: fixed
+//!   z + 1   .rinch-color-input__input-group   (while open)
+//!   z       .rinch-color-input__dropdown
+//!   z - 1   .rinch-color-input__backdrop      position: fixed
 //! ```
+//!
+//! with `z` = `--rinch-color-input-z-index`, 100 unless `ColorInput::z_index`
+//! says otherwise (#801 — it was a literal 1000, which put the backdrop above
+//! every `Modal`; the `#801` section at the end measures that).
 //!
 //! The field is *above* the backdrop deliberately, and that is the one place
 //! this differs from `DropdownMenu`, whose trigger is a button: here the trigger
@@ -463,5 +467,387 @@ fn escape_closes_the_dropdown_before_the_modal_behind_it() {
         1,
         "the second Escape falls through to the modal — a closed picker does \
          not go on swallowing the key"
+    );
+}
+
+// ── an open picker that is no longer rendered (issue #802) ───────────────────
+
+/// A dismiss entry pushed under everything the fixture opens later, counting
+/// the Escapes that reach it — "the key fell through" as an observation.
+fn count_escapes_behind(app: &RinchApp) -> (Rc<Cell<usize>>, rinch_core::DismissHandle) {
+    let reached: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let r = reached.clone();
+    let key = app.doc.as_ref().unwrap().borrow().doc_key();
+    let handle = rinch_core::push_dismiss_handler(key, move || {
+        r.set(r.get() + 1);
+        true
+    });
+    (reached, handle)
+}
+
+/// **An ancestor that stops rendering the open picker takes its Escape with
+/// it.** `Modal`'s closed state is `display: none` and its subtree stays
+/// mounted, so a picker that was open when the app closed the modal keeps its
+/// open state and its entry. That entry used to consume the next Escape,
+/// invisibly (#802); it declines now, so the key reaches what is behind.
+#[test]
+fn escape_passes_a_picker_its_closed_modal_no_longer_renders() {
+    let modal_open: Rc<Cell<Option<Signal<bool>>>> = Rc::new(Cell::new(None));
+    let open_in = modal_open.clone();
+    let mut app = mount(move |scope: &mut RenderScope| {
+        let open = Signal::new(true);
+        open_in.set(Some(open));
+        let field = ColorInput {
+            value: "#000000".into(),
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        Modal {
+            opened_fn: Some(Rc::new(move || open.get())),
+            onclose: Some(Callback::new(move || open.set(false))),
+            ..Default::default()
+        }
+        .render(scope, &[field])
+    });
+    let (behind, _keep) = count_escapes_behind(&app);
+
+    let swatch = find_by_class(&app, "rinch-color-input__swatch-preview");
+    let (x, y) = centre(&app, swatch);
+    tap(&mut app, x, y);
+    let root = find_by_class(&app, "rinch-color-input");
+    assert!(
+        has_class(&app, root, "rinch-color-input--opened"),
+        "precondition: the picker is open"
+    );
+
+    // The app closes the modal on its own — a "cancel", a network event — and
+    // the frame is laid out before the next key arrives.
+    modal_open.get().unwrap().set(false);
+    app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    assert!(
+        has_class(&app, root, "rinch-color-input--opened"),
+        "precondition: closing the modal leaves the picker's own state open"
+    );
+
+    escape(&mut app);
+    assert_eq!(
+        behind.get(),
+        1,
+        "the Escape must reach what is behind the hidden picker, not be \
+         swallowed by it"
+    );
+}
+
+/// The same for `visibility: hidden` — the closed state of `Drawer` and
+/// `Popover`, which keeps the box but shows nothing. Set directly on a wrapper
+/// so the fixture does not depend on a 300ms transition.
+#[test]
+fn escape_passes_a_picker_under_a_visibility_hidden_ancestor() {
+    let wrapper_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let wrapper_in = wrapper_id.clone();
+    let mut app = mount(move |scope: &mut RenderScope| {
+        let wrapper = scope.create_element("div");
+        wrapper_in.set(Some(wrapper.node_id().0));
+        let field = ColorInput {
+            value: "#000000".into(),
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        wrapper.append_child(&field);
+        wrapper
+    });
+    let (behind, _keep) = count_escapes_behind(&app);
+
+    let swatch = find_by_class(&app, "rinch-color-input__swatch-preview");
+    let (x, y) = centre(&app, swatch);
+    tap(&mut app, x, y);
+
+    {
+        let doc = app.doc.as_ref().unwrap();
+        doc.borrow_mut().set_style(
+            rinch_core::dom::NodeId(wrapper_id.get().unwrap()),
+            "visibility",
+            "hidden",
+        );
+    }
+    app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+
+    escape(&mut app);
+    assert_eq!(behind.get(), 1, "a hidden picker must not answer Escape");
+}
+
+/// The control: the same picker, rendered, still takes its Escape first. Without
+/// it the two fixtures above pass against an entry that never consumes.
+#[test]
+fn escape_is_still_the_rendered_pickers() {
+    let mut f = mount_field(true);
+    let (behind, _keep) = count_escapes_behind(&f.app);
+    f.open();
+    escape(&mut f.app);
+    assert!(!f.is_open(), "the picker answers the first Escape");
+    assert_eq!(behind.get(), 0, "and the key goes no further");
+}
+
+// ── the backdrop's level against the library's other overlays (#801) ────────
+
+/// What `mount_with_modal` hands a test.
+struct WithModal {
+    app: RinchApp,
+    /// The modal's `opened_fn` source, so the modal can appear without a
+    /// click — a background error dialog, a shortcut, a network event. A click
+    /// that opened it would be eaten by the backdrop first and close the picker.
+    show_modal: Signal<bool>,
+    /// Presses of the button inside the modal's body.
+    presses: Rc<Cell<usize>>,
+}
+
+/// A `ColorInput` beside (not inside) a `Modal` that starts closed, with one
+/// button in the modal's body. `color_input_z` is the input's `z_index` prop.
+fn mount_with_modal(color_input_z: Option<i32>) -> WithModal {
+    let presses: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let show: Rc<Cell<Option<Signal<bool>>>> = Rc::new(Cell::new(None));
+
+    let presses_in = presses.clone();
+    let show_in = show.clone();
+    let app = mount(move |scope: &mut RenderScope| {
+        let open = Signal::new(false);
+        show_in.set(Some(open));
+
+        let page = scope.create_element("div");
+        let field = ColorInput {
+            value: "#000000".into(),
+            z_index: color_input_z,
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        page.append_child(&field);
+
+        let button = scope.create_element("button");
+        button.set_attribute("class", "probe-801-button");
+        button.set_attribute("style", "width: 120px; height: 30px");
+        let id = scope.register_handler(move || presses_in.set(presses_in.get() + 1));
+        button.set_attribute("data-rid", &id.0.to_string());
+
+        let modal = Modal {
+            title: "Dialog".into(),
+            opened_fn: Some(Rc::new(move || open.get())),
+            ..Default::default()
+        }
+        .render(scope, &[button]);
+        page.append_child(&modal);
+        page
+    });
+
+    WithModal {
+        app,
+        show_modal: show.get().expect("the modal's signal"),
+        presses,
+    }
+}
+
+impl WithModal {
+    fn picker_open(&self) -> bool {
+        let root = find_by_class(&self.app, "rinch-color-input");
+        has_class(&self.app, root, "rinch-color-input--opened")
+    }
+
+    fn open_picker(&mut self) {
+        let swatch = find_by_class(&self.app, "rinch-color-input__swatch-preview");
+        let (x, y) = centre(&self.app, swatch);
+        tap(&mut self.app, x, y);
+        assert!(self.picker_open(), "precondition: the picker is open");
+    }
+
+    /// The modal appears with no click, while the picker is still open.
+    fn show_modal(&mut self) {
+        self.show_modal.set(true);
+        self.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+        let modal = find_by_class(&self.app, "rinch-modal");
+        let b = box_of(&self.app, modal);
+        assert!(
+            b.2 > b.0 && b.3 > b.1,
+            "precondition: the modal is laid out, got {b:?}"
+        );
+    }
+
+    /// Whether the topmost node at `(x, y)` is `class` or inside it.
+    fn hit_is_inside(&self, x: f32, y: f32, class: &str) -> bool {
+        let doc = self.app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        let mut at = hit_testing::hit_test(&d.tree, x, y);
+        while let Some(id) = at {
+            let node = d.tree.get(id).expect("a hit node is in the tree");
+            if node
+                .attributes
+                .get("class")
+                .is_some_and(|c| c.split_whitespace().any(|one| one == class))
+            {
+                return true;
+            }
+            at = node.parent;
+        }
+        false
+    }
+}
+
+/// **The fault (#801):** a `Modal` that appears over an open picker is
+/// click-blocked — the picker's backdrop, at `z-index: 999`, sat above the
+/// modal's 200/201 and took the first press anywhere on the dialog.
+///
+/// With the backdrop at the library's level (`var(--rinch-color-input-z-index,
+/// 100) - 1`, the shape `DropdownMenu` and `Popover` use) the press reaches
+/// the dialog's own button, and the picker stays open behind the modal, as it
+/// would under a `DropdownMenu` (the modal is not "outside the picker" in the
+/// sense of a press on the page: it is above the page).
+#[test]
+fn a_modal_that_opens_over_an_open_picker_takes_its_own_press() {
+    let mut w = mount_with_modal(None);
+    w.open_picker();
+    w.show_modal();
+
+    let title = find_by_class(&w.app, "rinch-modal__title");
+    let (tx, ty) = centre(&w.app, title);
+    assert!(
+        w.hit_is_inside(tx, ty, "rinch-modal__title"),
+        "the modal's title must be the topmost box at its own centre, not the \
+         picker's backdrop"
+    );
+
+    // The panel's level too, not only the backdrop's: where the open picker
+    // and the modal overlap, the modal is on top. At the old literal 1000 the
+    // picker panel painted over the dialog and took presses there.
+    let panel = box_of(&w.app, find_by_class(&w.app, "rinch-color-input__dropdown"));
+    let modal = box_of(&w.app, find_by_class(&w.app, "rinch-modal"));
+    let overlap = (
+        panel.0.max(modal.0),
+        panel.1.max(modal.1),
+        panel.2.min(modal.2),
+        panel.3.min(modal.3),
+    );
+    assert!(
+        overlap.2 > overlap.0 && overlap.3 > overlap.1,
+        "precondition: the open picker {panel:?} and the modal {modal:?} overlap"
+    );
+    let (ox, oy) = ((overlap.0 + overlap.2) / 2.0, (overlap.1 + overlap.3) / 2.0);
+    assert!(
+        w.hit_is_inside(ox, oy, "rinch-modal"),
+        "at ({ox}, {oy}), inside both, the modal must be the topmost box"
+    );
+
+    let button = find_by_class(&w.app, "probe-801-button");
+    let (bx, by) = centre(&w.app, button);
+    tap(&mut w.app, bx, by);
+    assert_eq!(
+        w.presses.get(),
+        1,
+        "the first press on the modal's button must run it — the backdrop \
+         must not swallow it"
+    );
+    assert!(
+        w.picker_open(),
+        "and the press went to the modal, so it did not dismiss the picker"
+    );
+}
+
+/// The picker's own outside-press dismissal is untouched by the lower level:
+/// with no other overlay up, a press elsewhere on the page still closes it.
+/// (Off the shell's fixed point: this page has no clipping shell at all, and
+/// the sample point is the far corner, nowhere near the field.)
+#[test]
+fn with_the_modal_closed_an_outside_press_still_dismisses_the_picker() {
+    let mut w = mount_with_modal(None);
+    w.open_picker();
+
+    tap(&mut w.app, 700.0, 500.0);
+    assert!(
+        !w.picker_open(),
+        "a press elsewhere must dismiss the picker"
+    );
+}
+
+/// **`z_index` moves all three levels together.** Raised past the modal's
+/// 200/201, the picker's backdrop outranks the modal again — the old order,
+/// now an explicit choice — and the press on the dialog is the backdrop's: it
+/// dismisses the picker and does not run the modal's button.
+///
+/// This is the fixture that kills a prop that is read and never published, or
+/// a backdrop rule that keeps a literal level instead of deriving from the
+/// custom property.
+#[test]
+fn a_raised_z_index_puts_the_picker_back_above_the_modal() {
+    let mut w = mount_with_modal(Some(500));
+    w.open_picker();
+    w.show_modal();
+
+    let button = find_by_class(&w.app, "probe-801-button");
+    let (bx, by) = centre(&w.app, button);
+    assert!(
+        w.hit_is_inside(bx, by, "rinch-color-input__backdrop"),
+        "at z_index 500 the backdrop (499) is above the modal (200/201)"
+    );
+    tap(&mut w.app, bx, by);
+    assert_eq!(w.presses.get(), 0, "the backdrop took the press");
+    assert!(!w.picker_open(), "and dismissed the picker");
+}
+
+/// **Inside a `Modal` the three levels still order** — field over panel over
+/// backdrop — because the modal panel is a stacking context and they are
+/// compared inside it (#545). A swatch tap picks, a tap elsewhere in the
+/// dialog dismisses.
+#[test]
+fn inside_a_modal_the_picker_still_orders_above_its_backdrop() {
+    let picks: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let picks_in = picks.clone();
+    let mut app = mount(move |scope: &mut RenderScope| {
+        let open = Signal::new(true);
+        let field = ColorInput {
+            value: "#000000".into(),
+            swatches: vec!["#ff0000".into()],
+            swatches_per_row: Some(1),
+            onchange: Some(InputCallback::new(move |v: String| {
+                picks_in.borrow_mut().push(v)
+            })),
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        // Tall enough to hold the open picker (`0,40 → 218,440` under the
+        // field, as in the shell above): the modal is `overflow-y: auto`, and
+        // a picker that hangs past its bottom is clipped there — in a browser
+        // too — while the `fixed` backdrop is not, so a swatch below the
+        // modal's edge would be answered by the backdrop whatever the levels.
+        let content = scope.create_element("div");
+        content.set_attribute("style", "height: 440px");
+        content.append_child(&field);
+        Modal {
+            title: "Dialog".into(),
+            opened_fn: Some(Rc::new(move || open.get())),
+            ..Default::default()
+        }
+        .render(scope, &[content])
+    });
+
+    let preview = find_by_class(&app, "rinch-color-input__swatch-preview");
+    let (x, y) = centre(&app, preview);
+    tap(&mut app, x, y);
+    let root = find_by_class(&app, "rinch-color-input");
+    assert!(has_class(&app, root, "rinch-color-input--opened"));
+
+    let swatch = {
+        let grid = find_by_class(&app, "rinch-color-picker__swatches");
+        let doc = app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        *d.tree.get(grid).unwrap().children.first().unwrap()
+    };
+    let (sx, sy) = centre(&app, swatch);
+    tap(&mut app, sx, sy);
+    assert_eq!(picks.borrow().len(), 1, "the swatch took the tap");
+    assert!(has_class(&app, root, "rinch-color-input--opened"));
+
+    let title = find_by_class(&app, "rinch-modal__title");
+    let (tx, ty) = centre(&app, title);
+    tap(&mut app, tx, ty);
+    assert!(
+        !has_class(&app, root, "rinch-color-input--opened"),
+        "a tap on the dialog's title, outside the picker, dismisses it"
     );
 }

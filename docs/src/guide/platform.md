@@ -506,6 +506,11 @@ from the same focus gesture; if focus moved on while the read was in flight,
 the paste is dropped rather than aimed at a field the user did not paste into.
 A read-only field starts no read at all.
 
+A single-line field (an `<input>`, anything but a `<textarea>`) folds the line
+breaks of pasted or IME-committed text the way Chrome does: line breaks at the
+end are dropped and every other one becomes a space, so `"a\nb"` pastes as
+`"a b"`. A `<textarea>` keeps them.
+
 ### Web: reaching content copied outside the app
 
 The browser has no synchronous system-clipboard read, so on `wasm32`

@@ -1094,9 +1094,9 @@ reached desktop or the web's theme `<style>` (PR #1134 review; Android never
 applies a theme-only change at all, #1144). The change is *owed* until the
 next notification, so one made outside any batch is delivered by the next
 handler of any kind. State a host polls itself (dirty nodes, focus requests,
-the editor's owed overlay pass, image decodes) does not need it; a desktop
-`NodeHandle::scroll_into_view` from a handler that dirties nothing is **not**
-polled and is never applied (#1145). Thread-local save/restore guards go through
+the editor's owed overlay pass, image decodes, a queued
+`NodeHandle::scroll_into_view` / `scroll_to_fraction` — #1145, which used to
+wait for an unrelated layout) does not need it. Thread-local save/restore guards go through
 `reactive::restore` (`RestoreCell<K: Slot>` over a `restore_slot!`, and
 `with_runtime_on_drop`) — a new one should too; the slots dispatch statically
 because a `fn`-pointer selector cost the effect-run path +2.4% instructions. A handler's
@@ -2373,9 +2373,14 @@ register_focus_target(
   close — the `<select>` popup's shape (#671), spelled for components as
   `rinch_components::overlay_dismiss::arm_close_on_escape_while_open` and used by
   `ColorInput`'s dropdown (whose outside-click backdrop is `DropdownMenu`'s,
-  `position: fixed` and all). Such a handler consumes unconditionally, since it
-  exists only while the overlay is open, and its release has to cover
-  unmount-while-open as well as close. It shares the
+  `position: fixed` and all). Such a handler has no closed state to decline
+  in, since it exists only while the overlay is open, but it declines while its
+  root is not rendered (`NodeHandle::is_rendered`: connected, no `display: none`
+  on it or an ancestor, not `visibility: hidden`/`collapse`; #802) — a picker
+  left open inside a `Modal` the app closed (`display: none`, still mounted)
+  used to swallow the next Escape. It is declined, not closed. Desktop answers
+  from the last resolve's styles, the web from `getComputedStyle`; the mock
+  answers `true`. Its release has to cover unmount-while-open as well as close. It shares the
   *lifetime* rule though (#183):
   registering it during a render releases it on unmount, ownerless registration
   keeps app lifetime, and an earlier unmount never clobbers a later
@@ -4579,6 +4584,20 @@ paste lands later in the same loop iteration. Pins: `app/input_paste_async_tests
 `rinch/tests/embed_input_paste.rs` (the embed host step). Desktop's and Android's host
 calls have no fixture.
 
+**A single-line field folds the line breaks of what is inserted into it** (#824): every
+`InsertText`/`Paste` that reaches `handle_input_edit_command` (a paste, an IME commit, a
+key's text) for a field that is not a `<textarea>` goes through
+`RinchApp::insertable_text` → `rinch_editable::single_line_insert`, Chrome 155's rule for
+text inserted into an `<input>` (measured with `execCommand('insertText')`, which runs the
+same insertion filter a paste does): line breaks at the end are dropped, every other
+`\r\n`, `\r` or `\n` is one space (`"a\nb"` → `"a b"`, `"a\n"` → `"a"`). What folds to
+nothing still replaces a selection and is no edit at a caret. Android's soft keyboard folds a
+whole committed text before `apply_ime_action` splits it into one key per character. A
+`<textarea>` keeps its line breaks. Not covered: a programmatic `value` holding a line
+break, which HTML's value sanitization *strips* and desktop still paints as extra lines.
+Pins: `app/single_line_insert_824_tests.rs`, the `#824` section of
+`app/input_paste_async_tests.rs`.
+
 ### System Tray (optional)
 
 Enable with `features = ["system-tray"]`. Uses the same unified `Menu`/`MenuItem` types as native menus:
@@ -5914,7 +5933,9 @@ Three things it deliberately does not do.
   `forwards`/`both` animation is the same shape (**#782**): the tick that
   finishes it writes the fill and dirties the node once
   (`ActiveAnimation::fill_settled`), and after that it is kept, re-applied and
-  not counted. **The component library declares the pause itself** (#912):
+  not counted. That includes a zero-duration **infinite** one
+  (`0s infinite forwards`): its active duration is `0 × ∞ = 0`, so it is
+  finished at its delay's end, as in Chrome 155 (#786). **The component library declares the pause itself** (#912):
   `.rinch-drawer__root--hidden *`, a closed `.rinch-popover__dropdown`'s
   subtree and an unhovered `.rinch-hover-card__dropdown`'s subtree all carry
   `animation-play-state: paused !important` — every descendant rather than a
