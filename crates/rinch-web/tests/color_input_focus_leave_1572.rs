@@ -125,6 +125,22 @@ fn keydown(el: &web_sys::Element, key: &str) -> web_sys::KeyboardEvent {
     ev
 }
 
+fn pointerdown(el: &web_sys::Element) -> web_sys::PointerEvent {
+    let init = web_sys::PointerEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_is_primary(true);
+    init.set_button(0);
+    init.set_buttons(1);
+    init.set_pointer_type("mouse");
+    let down = web_sys::PointerEvent::new_with_event_init_dict("pointerdown", &init).unwrap();
+    el.dispatch_event(&down).unwrap();
+    // Release it, so no press is left pending for the next one.
+    let up = web_sys::PointerEvent::new_with_event_init_dict("pointerup", &init).unwrap();
+    el.dispatch_event(&up).unwrap();
+    down
+}
+
 /// Open the dropdown with a click on the input group, through rinch's
 /// delegation — the positive control — and check that opening put the focus on
 /// the text field (Mantine: a press on the field's section focuses the field).
@@ -193,20 +209,18 @@ fn a_press_in_the_panel_takes_no_focus_and_keeps_it_open_in_chrome_1572() {
     let swatch = one(&doc, ".rinch-color-picker__swatches")
         .first_element_child()
         .expect("one preset swatch");
-    let init = web_sys::PointerEventInit::new();
-    init.set_bubbles(true);
-    init.set_cancelable(true);
-    init.set_is_primary(true);
-    init.set_button(0);
-    init.set_buttons(1);
-    init.set_pointer_type("mouse");
-    let down = web_sys::PointerEvent::new_with_event_init_dict("pointerdown", &init).unwrap();
-    swatch.dispatch_event(&down).unwrap();
+    // A press on the panel itself — its padding, between the controls —
+    // reaches no click handler, so nothing else prevents its default: that is
+    // `data-nofocus`'s alone. (A press on a swatch is prevented by the click
+    // dispatch whatever the attribute says.)
+    let panel = one(&doc, ".rinch-color-input__dropdown");
     assert!(
-        down.default_prevented(),
-        "rinch prevents the press's default, which is the browser moving focus"
+        pointerdown(&panel).default_prevented(),
+        "rinch prevents a press in the panel's default, which is the browser \
+         moving focus"
     );
-    html(&swatch).click();
+    assert!(is_open(&doc), "the press on the panel closes nothing");
+    assert!(pointerdown(&swatch).default_prevented());
     assert!(!picks.borrow().is_empty(), "the click reached the swatch");
     assert!(is_open(&doc), "and the dropdown stays open");
     assert_eq!(doc.active_element().as_ref(), Some(&input));
