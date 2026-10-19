@@ -479,4 +479,25 @@ mod collab {
         assert_eq!(p.seen_b.cleanups.get(), 1);
         assert_eq!(p.seen_b.state.borrow()[1].get(), 0, "fresh state");
     }
+
+    /// A picture a peer deleted and put back (undo) in one batch is equal to it,
+    /// at its place, and is another picture (a new char): the view is remounted,
+    /// never handed it. (An equal picture a peer *pastes* over one, or two equal
+    /// pictures it swaps, are the same pictures to collaboration — #1503's
+    /// identity is type + `src` at a place — and keep the peers' mounts.)
+    #[test]
+    fn a_picture_a_collaborator_deleted_and_put_back_is_remounted() {
+        let p = pair();
+        assert!(p.a.handle.update(|st| {
+            let mut tr = st.tr();
+            tr.delete(BADGED, BADGED + 1).ok()?;
+            Some(tr)
+        }));
+        assert!(p.a.handle.command("undo"));
+        p.send();
+        assert_eq!(html(&p.b.handle), html(&p.a.handle));
+        assert_eq!(p.seen_b.renders.get(), 2, "another picture, another mount");
+        assert_eq!(p.seen_b.cleanups.get(), 1);
+        assert_eq!(p.seen_b.state.borrow()[1].get(), 0, "fresh state");
+    }
 }
