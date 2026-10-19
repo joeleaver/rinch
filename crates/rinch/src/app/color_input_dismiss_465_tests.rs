@@ -183,6 +183,9 @@ struct Field {
     /// Every colour the input reported, so "the tap reached the picker" is an
     /// observation rather than an inference from "it stayed open".
     picks: Rc<RefCell<Vec<String>>>,
+    /// Presses that reached the shell's own click handler — the page under
+    /// the field. A backdrop swallows them; without one they arrive.
+    shell_presses: Rc<Cell<usize>>,
 }
 
 impl Field {
@@ -214,12 +217,17 @@ fn mount_field(close_on_click_outside: bool) -> Field {
     let picks: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let shell_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
 
+    let shell_presses: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+
     let picks_in = picks.clone();
     let shell_in = shell_id.clone();
+    let presses_in = shell_presses.clone();
     let app = mount(move |scope: &mut RenderScope| {
         let shell = scope.create_element("div");
         shell.set_attribute("style", SHELL_SMALL);
         shell_in.set(Some(shell.node_id().0));
+        let id = scope.register_handler(move || presses_in.set(presses_in.get() + 1));
+        shell.set_attribute("data-rid", &id.0.to_string());
 
         let field = ColorInput {
             value: "#000000".into(),
@@ -241,6 +249,7 @@ fn mount_field(close_on_click_outside: bool) -> Field {
         shell: shell_id.get().expect("the shell's node id"),
         app,
         picks,
+        shell_presses,
     }
 }
 
@@ -263,6 +272,11 @@ fn a_tap_elsewhere_on_the_page_dismisses() {
     tap(&mut f.app, x, y);
 
     assert!(!f.is_open(), "a tap outside the field must dismiss");
+    assert_eq!(
+        f.shell_presses.get(),
+        0,
+        "the backdrop takes the tap: the page under it does not see it"
+    );
     assert!(
         f.picks.borrow().is_empty(),
         "and must not report a colour: {:?}",
@@ -307,20 +321,31 @@ fn a_tap_outside_the_clipping_shell_dismisses() {
     assert!(!f.is_open());
 }
 
-/// The off switch, measured through the same path. Without it the suite passes
-/// against a fix that ignores the prop and dismisses unconditionally, which is a
-/// different bug with the same headline.
+/// The off switch, measured through the same path: with no backdrop the tap
+/// reaches the page under it. Without this the suite passes against a fix that
+/// ignores the prop and mounts the backdrop unconditionally.
+///
+/// The dropdown still closes, and that is #1572, not the backdrop: opening put
+/// the keyboard on the text field, the tap on the page releases it, and focus
+/// leaving the field closes the dropdown, as Mantine's `onBlur` does whatever
+/// its popover's `closeOnClickOutside` says. A press that takes no focus (a
+/// `data-nofocus` toolbar) leaves it open.
 #[test]
-fn close_on_click_outside_false_leaves_an_outside_tap_inert() {
+fn close_on_click_outside_false_lets_an_outside_tap_through() {
     let mut f = mount_field(false);
     f.open();
 
     let (x, y) = IN_SHELL_OUTSIDE_FIELD;
     tap(&mut f.app, x, y);
 
+    assert_eq!(
+        f.shell_presses.get(),
+        1,
+        "close_on_click_outside: false mounts no backdrop, so the page gets the tap"
+    );
     assert!(
-        f.is_open(),
-        "close_on_click_outside: false must leave the dropdown open"
+        !f.is_open(),
+        "and the tap moved the focus out of the field, which closes it (#1572)"
     );
 }
 
@@ -696,9 +721,9 @@ impl WithModal {
 ///
 /// With the backdrop at the library's level (`var(--rinch-color-input-z-index,
 /// 100) - 1`, the shape `DropdownMenu` and `Popover` use) the press reaches
-/// the dialog's own button, and the picker stays open behind the modal, as it
-/// would under a `DropdownMenu` (the modal is not "outside the picker" in the
-/// sense of a press on the page: it is above the page).
+/// the dialog's own button. Since #1572 that press also closes the picker,
+/// because it moves the focus out of the field (Mantine's `onBlur`); the
+/// picker is still open while the modal is merely shown over it.
 #[test]
 fn a_modal_that_opens_over_an_open_picker_takes_its_own_press() {
     let mut w = mount_with_modal(None);
@@ -743,9 +768,12 @@ fn a_modal_that_opens_over_an_open_picker_takes_its_own_press() {
         "the first press on the modal's button must run it — the backdrop \
          must not swallow it"
     );
+    // The press focused the modal's button, so the focus left the field and
+    // the picker closed (#1572) — a focus leave, not the backdrop: the press
+    // count above is what says the backdrop did not take it.
     assert!(
-        w.picker_open(),
-        "and the press went to the modal, so it did not dismiss the picker"
+        !w.picker_open(),
+        "the press moved the focus out of the field, which closes the picker"
     );
 }
 
@@ -911,6 +939,7 @@ fn mount_flanked() -> Flanked {
             shell: shell_id.get().expect("the shell's node id"),
             app,
             picks,
+            shell_presses: Rc::new(Cell::new(0)),
         },
         after,
     }
