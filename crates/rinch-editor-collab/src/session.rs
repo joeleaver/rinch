@@ -976,7 +976,9 @@ fn carry_ids(
     let (prefix, suffix) = crate::projection::identity_runs(before, after);
     let (bn, an) = (before.child_count(), after.child_count());
     let head: usize = (0..prefix).map(|i| block_atoms(before.child(i))).sum();
-    let tail: usize = (bn - suffix..bn).map(|i| block_atoms(before.child(i))).sum();
+    let tail: usize = (bn - suffix..bn)
+        .map(|i| block_atoms(before.child(i)))
+        .sum();
     let mut old_mid = Vec::new();
     for i in prefix..bn - suffix {
         atom_nodes(before.child(i), &mut old_mid);

@@ -824,7 +824,11 @@ fn n5_two_specs_that_flip_each_other_settle() {
             )
             .keep();
     }
-    assert!(renders.get() < 40, "settled after {} renders", renders.get());
+    assert!(
+        renders.get() < 40,
+        "settled after {} renders",
+        renders.get()
+    );
 }
 
 /// Review 2 — a task list's host is a `div`, as an embed's is: an embed put in
@@ -845,8 +849,12 @@ fn an_embed_replacing_a_task_list_at_its_place_gets_a_view() {
             .create_node("embed", embed_attrs("s9"), Fragment::empty())
             .ok()?;
         let mut tr = st.tr();
-        tr.replace(4, 4 + list.node_size(), Slice::new(Fragment::from_node(embed), 0, 0))
-            .ok()?;
+        tr.replace(
+            4,
+            4 + list.node_size(),
+            Slice::new(Fragment::from_node(embed), 0, 0),
+        )
+        .ok()?;
         Some(tr)
     }));
     assert_eq!(p.handle.doc().child(1).type_name(), "embed");

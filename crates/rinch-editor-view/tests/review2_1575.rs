@@ -277,7 +277,8 @@ fn remove_task_lists(p: &Peer) -> bool {
             let mut tr = st.tr();
             if last {
                 let para = st.schema().branch("paragraph", Fragment::empty()).ok()?;
-                tr.replace(from, to, Slice::new(Fragment::from_node(para), 0, 0)).ok()?;
+                tr.replace(from, to, Slice::new(Fragment::from_node(para), 0, 0))
+                    .ok()?;
             } else {
                 tr.delete(from, to).ok()?;
             }
@@ -1053,7 +1054,11 @@ fn s11_a_stall_that_moves_no_embed_remounts_none() {
     a.handle.set_selection(Selection::cursor(Pos(7)));
     assert!(a.handle.insert_text("y"));
     deliver_all(&ps);
-    assert_eq!(b.views.renders(), 1, "B: no remount on the peer's keystroke");
+    assert_eq!(
+        b.views.renders(),
+        1,
+        "B: no remount on the peer's keystroke"
+    );
     // A peer's change brings a stalled replica's model back to the shared
     // document, local edits included (#220); the view's own change again:
     let ctx = b.views.mounts.borrow()[0].ctx.clone();
@@ -1063,7 +1068,11 @@ fn s11_a_stall_that_moves_no_embed_remounts_none() {
     assert_eq!(a.views.renders(), 1, "A: no remount");
     assert_eq!(b.views.renders(), 1, "B: no remount");
     assert_eq!(
-        a.views.mounts.borrow()[0].ctx.attrs.get().get_str("data-sheet"),
+        a.views.mounts.borrow()[0]
+            .ctx
+            .attrs
+            .get()
+            .get_str("data-sheet"),
         Some("s2")
     );
 }
