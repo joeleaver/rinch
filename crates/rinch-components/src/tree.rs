@@ -1464,6 +1464,9 @@ mod drop_tests {
         assert_eq!(zone_at(0.5), DropZone::Inside);
         assert_eq!(zone_at(0.76), DropZone::After);
         assert_eq!(zone_at(1.0), DropZone::After);
+        // Review of #1589: off the fixed points, so a half/half split fails.
+        assert_eq!(zone_at(0.3), DropZone::Inside);
+        assert_eq!(zone_at(0.7), DropZone::Inside);
     }
 
     #[test]
