@@ -766,6 +766,17 @@ impl NodeHandle {
         Some(NodeHandle::new(id, self.doc.clone()))
     }
 
+    /// Whether this node is on screen as far as CSS is concerned — connected,
+    /// no `display: none` on it or an ancestor, and not `visibility: hidden` /
+    /// `collapse`. See [`DomDocument::is_rendered`]; `false` once the document
+    /// is gone.
+    pub fn is_rendered(&self) -> bool {
+        match self.accessed_doc() {
+            Some(doc) => doc.borrow().is_rendered(self.node_id),
+            None => false,
+        }
+    }
+
     /// Move keyboard focus into this subtree the way a browser's `showModal()`
     /// does (issue #695): the `autofocus` descendant if there is one, else —
     /// under [`FocusIntoPolicy::FirstFocusable`] — the first focusable one.

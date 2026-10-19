@@ -89,9 +89,18 @@ pub fn arm_close_on_escape(
 /// prop-driven overlays have no such edge to hang a release on and keep the
 /// simpler policy.
 ///
-/// `onclose` is invoked and the key is **consumed unconditionally**: the entry
-/// exists only while the overlay is open, so there is no closed state for it to
-/// decline in. The effect is idempotent — a `Signal::set` notifies on every
+/// `onclose` is invoked and the key is consumed **while `root` is rendered**
+/// ([`NodeHandle::is_rendered`]). The entry exists only while the overlay is
+/// open, so there is no closed state for it to decline in — but an ancestor
+/// can stop rendering the overlay without touching its open state: a `Modal`
+/// the app closes is `display: none` with its subtree still mounted, a closed
+/// `Drawer` or `Popover` is `visibility: hidden`. Such an entry declines, and
+/// the Escape reaches what is on screen (issue #802). It does not close the
+/// hidden overlay: the overlay is still open when its ancestor shows it again,
+/// and Escape closes it then. On desktop "rendered" is read from the styles of
+/// the last resolve, so a hide not yet laid out still consumes one Escape.
+///
+/// The effect is idempotent — a `Signal::set` notifies on every
 /// write, equal value or not — so a redundant `true` does not push a second
 /// entry.
 ///
@@ -107,6 +116,7 @@ pub fn arm_close_on_escape_while_open(
     onclose: Callback,
 ) {
     let doc_key = root.doc_key();
+    let root = root.clone();
     let slot: Rc<RefCell<Option<DismissHandle>>> = Rc::new(RefCell::new(None));
 
     let slot_effect = slot.clone();
@@ -119,7 +129,14 @@ pub fn arm_close_on_escape_while_open(
         // line.
         if open && !held {
             let cb = onclose.clone();
+            let shown = root.clone();
             let handle = rinch_core::push_dismiss_handler(doc_key, move || {
+                // Open but not on screen: an ancestor stopped rendering the
+                // overlay without closing it (#802). Decline, so the key
+                // reaches what the user can see.
+                if !shown.is_rendered() {
+                    return false;
+                }
                 cb.invoke();
                 true
             });

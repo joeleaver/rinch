@@ -627,6 +627,31 @@ pub trait DomDocument {
         false
     }
 
+    /// Whether `node` is on screen as far as CSS is concerned: connected to
+    /// this document, neither it nor any ancestor `display: none`, and its own
+    /// `visibility` not `hidden` or `collapse` (issue #802).
+    ///
+    /// `visibility` is asked of the node alone because it inherits: a
+    /// `visibility: hidden` ancestor reaches the node through its computed
+    /// value, and a descendant that declares `visibility: visible` *is* shown,
+    /// in CSS and here. `display` does not inherit, hence the walk. A
+    /// `display: contents` node counts as rendered — it has no box of its own,
+    /// but its children do.
+    ///
+    /// The question an open-time Escape entry asks before it consumes the key:
+    /// an overlay whose ancestor stopped rendering it without closing it (a
+    /// `ColorInput` picker inside a `Modal` the app closed) must not swallow an
+    /// Escape the user cannot see it answer.
+    ///
+    /// Desktop answers from the styles of the **last resolve**, so a class
+    /// change made since then and not yet laid out is not seen; the web asks
+    /// the browser, which resolves style on demand. The default answers `true`
+    /// — every caller of this question treats "rendered" as "behave as before"
+    /// — which is what `MockDomDocument`, with no CSS engine, answers.
+    fn is_rendered(&self, _node: NodeId) -> bool {
+        true
+    }
+
     /// Move keyboard focus *into* the subtree at `root`, the way a browser's
     /// `showModal()` does (issue #695).
     ///

@@ -2343,6 +2343,53 @@ impl DomDocument for WebDocument {
         }
     }
 
+    /// Whether `node` is shown, asked of the browser (issue #802; see
+    /// [`DomDocument::is_rendered`]).
+    ///
+    /// The same three questions desktop asks, from `getComputedStyle`, which
+    /// resolves style on demand: `isConnected`, no `display: none` on the
+    /// element or an ancestor (`display` does not inherit, hence the walk), and
+    /// the element's own — inherited — `visibility`. An unknown node, or one
+    /// with no element to ask, answers `true`, as the trait's default does.
+    fn is_rendered(&self, node: NodeId) -> bool {
+        let Some(n) = self.nodes.get(&node.0) else {
+            return true;
+        };
+        if !n.is_connected() {
+            return false;
+        }
+        let el = match n.clone().dyn_into::<web_sys::Element>() {
+            Ok(el) => el,
+            Err(n) => match n.parent_element() {
+                Some(el) => el,
+                None => return true,
+            },
+        };
+        let Some(win) = web_sys::window() else {
+            return true;
+        };
+        let prop = |el: &web_sys::Element, name: &str| -> Option<String> {
+            win.get_computed_style(el)
+                .ok()
+                .flatten()
+                .and_then(|s| s.get_property_value(name).ok())
+        };
+        if matches!(
+            prop(&el, "visibility").as_deref(),
+            Some("hidden") | Some("collapse")
+        ) {
+            return false;
+        }
+        let mut cur = Some(el);
+        while let Some(e) = cur {
+            if prop(&e, "display").as_deref() == Some("none") {
+                return false;
+            }
+            cur = e.parent_element();
+        }
+        true
+    }
+
     /// `document.activeElement`, mapped back through the `__nid` expando
     /// (issue #695).
     ///
