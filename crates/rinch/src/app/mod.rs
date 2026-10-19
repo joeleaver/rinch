@@ -227,6 +227,8 @@ mod shared_hit_tests;
 #[cfg(test)]
 mod single_line_insert_824_tests;
 #[cfg(all(test, software_shell))]
+mod input_value_sanitization_1554_tests;
+#[cfg(all(test, software_shell))]
 mod stacking_flip_damage_1384_review_tests;
 #[cfg(all(test, software_shell))]
 mod stacking_flip_damage_1384_tests;
