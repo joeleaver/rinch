@@ -302,3 +302,163 @@ fn an_anchor_survives_an_attr_only_change() {
         Some(Selection::cursor(Pos(1)))
     );
 }
+
+/// Review of #1575, F1: two **equal** embeds a peer swapped. The converged
+/// document equals the receiver's by value, so a diff by value saw no change and
+/// left the receiver's atoms — and the node views drawn for them — on CRDT blocks
+/// that no longer exist. The atoms are other blocks now, so they are replaced.
+#[test]
+fn a_peer_swapping_two_equal_embeds_is_a_change() {
+    let schema = Rc::new(Schema::starter_kit());
+    let d = doc(
+        &schema,
+        vec![
+            para(&schema, "ab"),
+            embed(&schema, &[("data-k", "1")]),
+            embed(&schema, &[("data-k", "1")]),
+            para(&schema, "cd"),
+        ],
+    );
+    let (mut a, mut b) = two_peers(&schema, d);
+    let old: Vec<Node> = (1..3).map(|i| b.state.doc.child(i).clone()).collect();
+    a.local(&[], |tr| {
+        let first = tr.doc().child(1).clone();
+        tr.delete(4, 5).unwrap();
+        tr.replace(5, 5, Slice::new(Fragment::from_node(first), 0, 0))
+            .unwrap();
+    });
+    let steps = b.receive(&a);
+    assert!(!steps.is_empty());
+    for (i, o) in old.iter().enumerate() {
+        assert!(
+            !b.state.doc.child(i + 1).same_ref(o),
+            "embed {i} stands on a deleted block"
+        );
+    }
+    // The paragraphs around them are untouched.
+    assert_eq!(b.state.doc.child(0), a.state.doc.child(0));
+}
+
+/// Review of #1575, F3 (R4): an embed with no attributes yet, given its first by a
+/// peer, is the same atom with an attribute set — not a replace.
+#[test]
+fn a_peer_giving_an_attrless_embed_its_first_attr_is_an_attr_step() {
+    let schema = Rc::new(Schema::starter_kit());
+    let d = doc(
+        &schema,
+        vec![para(&schema, "ab"), embed(&schema, &[]), para(&schema, "cd")],
+    );
+    let (mut a, mut b) = two_peers(&schema, d);
+    a.local(&[4], |tr| {
+        tr.step(Box::new(SetNodeAttrStep::new(
+            4,
+            "data-k",
+            AttrValue::from("1"),
+        )))
+        .unwrap();
+    });
+    let steps = b.receive(&a);
+    assert_eq!(
+        attr_steps(&steps),
+        Some(vec![(4, "data-k".into(), Some("1".into()))])
+    );
+}
+
+/// Review of #1575, F3 (R5): a document holding a table. The atoms' CRDT blocks are
+/// noted in the order the model is built, so a table (whose read places cells by
+/// grid slot and adds fillers the CRDT does not hold) no longer hides them.
+#[test]
+fn an_attr_change_in_a_document_with_a_table_is_an_attr_step() {
+    let schema = Rc::new(Schema::starter_kit());
+    let cell = |t: &str| {
+        schema
+            .branch("table_cell", Fragment::from_node(para(&schema, t)))
+            .unwrap()
+    };
+    let row = schema
+        .branch("table_row", Fragment::from_children(vec![cell("a"), cell("b")]))
+        .unwrap();
+    let table = schema
+        .branch("table", Fragment::from_node(row))
+        .unwrap();
+    let d = doc(
+        &schema,
+        vec![
+            table,
+            para(&schema, "ab"),
+            embed(&schema, &[("data-k", "1")]),
+        ],
+    );
+    let (mut a, mut b) = two_peers(&schema, d);
+    let at = a.state.doc.child(0).node_size() + 4;
+    a.local(&[at], |tr| {
+        tr.step(Box::new(SetNodeAttrStep::new(
+            at,
+            "data-k",
+            AttrValue::from("2"),
+        )))
+        .unwrap();
+    });
+    let steps = b.receive(&a);
+    assert_eq!(
+        attr_steps(&steps),
+        Some(vec![(at, "data-k".into(), Some("2".into()))])
+    );
+}
+
+/// After the receiver's own edits (its atoms' blocks then come from `atom_cache`,
+/// carried across the edits rather than read), a peer's swap of two equal embeds
+/// is still a change, and a peer's attr change still an attr step.
+#[test]
+fn identity_holds_across_the_receivers_own_edits() {
+    let schema = Rc::new(Schema::starter_kit());
+    let d = doc(
+        &schema,
+        vec![
+            para(&schema, "ab"),
+            embed(&schema, &[("data-k", "1")]),
+            embed(&schema, &[("data-k", "1")]),
+            para(&schema, "cd"),
+            embed(&schema, &[("data-k", "3")]),
+        ],
+    );
+    let (mut a, mut b) = two_peers(&schema, d);
+    // B types before and after the embeds, and deletes the last one.
+    b.local(&[], |tr| {
+        let t = schema.text("x").unwrap();
+        tr.replace(1, 1, Slice::new(Fragment::from_node(t), 0, 0)).unwrap();
+    });
+    b.local(&[], |tr| {
+        let t = schema.text("y").unwrap();
+        tr.replace(8, 8, Slice::new(Fragment::from_node(t), 0, 0)).unwrap();
+    });
+    let end = b.state.doc.content_size();
+    b.local(&[], |tr| {
+        tr.delete(end - 1, end).unwrap();
+    });
+    a.receive(&b);
+    a.local(&[], |tr| {
+        let first = tr.doc().child(1).clone();
+        tr.delete(5, 6).unwrap();
+        tr.replace(6, 6, Slice::new(Fragment::from_node(first), 0, 0))
+            .unwrap();
+    });
+    let old: Vec<Node> = (1..3).map(|i| b.state.doc.child(i).clone()).collect();
+    b.receive(&a);
+    for (i, o) in old.iter().enumerate() {
+        assert!(!b.state.doc.child(i + 1).same_ref(o), "embed {i}");
+    }
+    a.local(&[6], |tr| {
+        tr.step(Box::new(SetNodeAttrStep::new(
+            6,
+            "data-k",
+            AttrValue::from("9"),
+        )))
+        .unwrap();
+    });
+    let steps = b.receive(&a);
+    assert_eq!(
+        attr_steps(&steps),
+        Some(vec![(6, "data-k".into(), Some("9".into()))])
+    );
+}

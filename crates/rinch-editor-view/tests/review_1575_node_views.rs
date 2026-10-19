@@ -645,25 +645,40 @@ mod collab {
             "B receive results {changed:?}, B renders {}",
             seen_b.renders.get()
         );
-        assert!(
-            seen_b.ctx.borrow()[0].set_attrs(|x| *x = x.with("data-tag", AttrValue::from("B")))
+        // The CRDT holds no move: A wrote the embeds it put in each other's
+        // place as new blocks, so B cannot know which is which and must not keep a
+        // view on a block that is gone. Its view of E1 is not live any more (the
+        // fix-round's reading of this fixture: the review asked for it to survive,
+        // which the concurrent R10 rules out — there it must not).
+        assert_eq!(
+            seen_b.ctx.borrow()[0].pos(),
+            None,
+            "B's view of E1 stands on a deleted CRDT block"
         );
-        flush(&pr.to_a, &pr.a);
-        let tag_a: Vec<Option<String>> = seen_a
+        // Every view B still has edits, on A, the node A's view at the same place
+        // is mounted for.
+        let live: Vec<(usize, Pos)> = seen_b
             .ctx
             .borrow()
             .iter()
-            .map(|c| c.attrs.get().get_str("data-tag").map(str::to_string))
+            .enumerate()
+            .filter_map(|(i, c)| c.pos().map(|p| (i, p)))
             .collect();
-        eprintln!(
-            "A views' tags {tag_a:?}; B renders {}",
-            seen_b.renders.get()
-        );
-        assert_eq!(
-            tag_a,
-            [Some("B".to_string()), None],
-            "B's view of E1 edits A's E1, not A's E2"
-        );
+        assert_eq!(live.len(), 2, "B shows both embeds");
+        for (i, _) in &live {
+            let tag = format!("B{i}");
+            assert!(seen_b.ctx.borrow()[*i].set_attrs(|x| *x = x.with("data-tag", AttrValue::from(tag.as_str()))));
+        }
+        flush(&pr.to_a, &pr.a);
+        for c in seen_a.ctx.borrow().iter() {
+            let pa = c.pos().expect("A keeps both mounts");
+            let (i, _) = live.iter().find(|(_, pb)| *pb == pa).unwrap();
+            assert_eq!(
+                c.attrs.get().get_str("data-tag"),
+                Some(format!("B{i}").as_str()),
+                "B's view at {pa:?} edits A's view at the same node"
+            );
+        }
     }
 
     /// R11 — an older-build peer (plain `record_local`, the positional rule)
