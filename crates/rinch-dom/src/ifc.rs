@@ -6117,11 +6117,8 @@ impl RinchDocument {
                                 // it failed), the declared one, which is the one its
                                 // `width` and `height` attributes map to (#684) unless an
                                 // author rule replaced it (#1286); with neither, none.
-                                let (natural, ratio) = crate::replaced::image_natural_size(
-                                    *width,
-                                    *height,
-                                    *aspect,
-                                );
+                                let (natural, ratio) =
+                                    crate::replaced::image_natural_size(*width, *height, *aspect);
                                 // As the root compute measures one (#788, #1150).
                                 crate::replaced::measure(
                                     natural,

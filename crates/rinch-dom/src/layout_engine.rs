@@ -909,9 +909,7 @@ impl RinchDocument {
                                     // `width` and `height` attributes map to (#684) unless an
                                     // author rule replaced it (#1286); with neither, none.
                                     let (natural, ratio) = crate::replaced::image_natural_size(
-                                        *width,
-                                        *height,
-                                        *aspect,
+                                        *width, *height, *aspect,
                                     );
                                     // A replaced element with a natural size and
                                     // ratio (#788, #1150): a style width or height
