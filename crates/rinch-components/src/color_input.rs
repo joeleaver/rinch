@@ -85,11 +85,14 @@ pub struct ColorInput {
     /// with. An input that alone stays open when you click away is the odd one
     /// out, and that is the whole of the defect.
     ///
-    /// Turning it off mounts no backdrop at all, so no click outside the field
-    /// dismisses the dropdown. **Escape closes it either way** — it rides the
-    /// dismiss stack, not the backdrop — so `false` is the pointer half of the
-    /// pre-#465 behaviour and not a return to it in full. A closed dropdown
-    /// leaves the key to whatever is behind it.
+    /// Turning it off mounts no backdrop at all, so a click outside the field
+    /// reaches whatever is under it instead of being taken by the backdrop.
+    /// That click still closes the dropdown when it moves the focus out of the
+    /// field (#1572: the dropdown closes when the focus leaves the
+    /// `ColorInput`, as Mantine's closes in the input's `onBlur`); a press on a
+    /// `data-nofocus` region leaves it open. **Escape closes it either way** —
+    /// it rides the dismiss stack, not the backdrop. A closed dropdown leaves
+    /// the key to whatever is behind it.
     pub close_on_click_outside: bool,
     /// The open picker's stacking level (issue #801), published as
     /// `--rinch-color-input-z-index` on the root, as `DropdownMenu`'s and

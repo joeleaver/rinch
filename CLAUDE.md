@@ -2142,8 +2142,15 @@ no `relatedTarget` but `activeElement` is still the trigger while it runs
 (at-target phase only: element blurs pass through it too). So an open `Select`
 list closes on window blur, as a native `<select>` and Mantine's do, and the
 trigger keeps the focus; desktop's native `<select>` popup closes there too
-(`close_select_popup_returning_focus`). `ColorInput`'s and `DropdownMenu`'s
-dismiss-only entries are not told. Push a key entry at **open** and release it at close
+(`close_select_popup_returning_focus`). `ColorInput`'s dropdown holds a key
+entry too while open (#1572), owned by the input's root, taking no key, whose
+`on_focus_leave` closes it — so Tab away, a programmatic focus elsewhere, a
+press outside that moves the focus, and a window blur close it, as Mantine's
+input `onBlur` does; its panel and preview swatch are `data-nofocus`, so a
+press in the picker keeps the keyboard on the field, and opening focuses the
+field when it does not already hold it. With `close_on_click_outside: false`
+an outside press reaches the page under it and still closes the dropdown by
+moving the focus. `DropdownMenu`'s dismiss-only entry is not told. Push a key entry at **open** and release it at close
 and unmount (`overlay_dismiss::arm_keys_while_open`). `MockDomDocument` now
 records `focus_element` and answers it from `active_element`, so a component
 test has to focus the owner before its keys reach an entry.
