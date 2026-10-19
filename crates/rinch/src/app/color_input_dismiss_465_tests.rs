@@ -641,7 +641,10 @@ fn with_the_modal_closed_an_outside_press_still_dismisses_the_picker() {
     w.open_picker();
 
     tap(&mut w.app, 700.0, 500.0);
-    assert!(!w.picker_open(), "a press elsewhere must dismiss the picker");
+    assert!(
+        !w.picker_open(),
+        "a press elsewhere must dismiss the picker"
+    );
 }
 
 /// **`z_index` moves all three levels together.** Raised past the modal's
