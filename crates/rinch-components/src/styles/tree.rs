@@ -5,6 +5,9 @@ pub fn styles() -> String {
 /* Tree container */
 .rinch-tree {
     --tree-level-offset: var(--rinch-spacing-md);
+    /* Where a guide sits in its level: the middle of the chevron above it.
+       A stylesheet that resizes the chevron moves this with it. */
+    --tree-guide-offset: 0.625rem;
     list-style: none;
     margin: 0;
     padding: 0;

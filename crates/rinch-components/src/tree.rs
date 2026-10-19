@@ -1040,7 +1040,7 @@ fn render_tree_node(
             let guide = rinch_macros::rsx! { div { class: "rinch-tree__guide" } };
             guide.set_attribute(
                 "style",
-                &format!("left: calc(var(--tree-level-offset) * {level} + 0.625rem)"),
+                &format!("left: calc(var(--tree-level-offset) * {level} + var(--tree-guide-offset))"),
             );
             wrap.append_child(&guide);
             wrap.append_child(&children_ul);
