@@ -253,6 +253,8 @@ mod textarea_text_child_tests;
 #[cfg(test)]
 mod textarea_vertical_arrow_tests;
 #[cfg(test)]
+mod scroll_request_no_write_1145_tests;
+#[cfg(test)]
 mod trap_focus_tests;
 #[cfg(test)]
 mod ua_block_defaults_components_tests;
