@@ -1726,6 +1726,13 @@ pub struct TreeKey {
 }
 
 impl TreeKey {
+    /// What the key acts on: the selection top to bottom when the cursor
+    /// row is one of several selected rows (rows inside other selected rows
+    /// left out), the cursor row alone otherwise; through `drag_values`.
+    pub fn carried(&self) -> &[String] {
+        &self.carried
+    }
+
     /// The drop that would make `movement` of the cursor row (what a drag of
     /// it would carry, [`Tree::drag_values`]), for the app to judge and
     /// deliver as it does a dropped one. `None` when there is nowhere to go:
