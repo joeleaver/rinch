@@ -1468,9 +1468,11 @@ pub(crate) const PRESS_FOCUSABLE_SELECTOR: &str = "button, a[href], input, selec
 /// `change` uncommitted, and a text field inside a clickable (`ColorInput`'s,
 /// inside its input group) could not be focused by a click.
 enum PressFocus {
-    /// Moves no focus: nothing focusable on the press's chain, or
-    /// `data-nofocus` on it, or not a `pointerdown` press. Desktop releases
-    /// the focus for the first; this keeps it, as it always has.
+    /// Moves no focus: nothing focusable on the press's chain, or a default
+    /// already prevented (`data-nofocus` on the chain, an app's own listener),
+    /// or not a `pointerdown` press. With nothing focusable on the chain a
+    /// browser (and desktop) would release the focus; this keeps it, as it
+    /// always has — an editor relies on it (`editor_input`).
     Untouched,
     /// A form control or editable content is the nearest focusable: the
     /// default is not prevented, so the browser focuses it, places the caret
@@ -1481,15 +1483,10 @@ enum PressFocus {
     Focus(web_sys::HtmlElement),
 }
 
+/// Where a press at `el` puts the focus. Not asked of a press whose default
+/// is already prevented — a `data-nofocus` one is, by the same listener, before
+/// the click is dispatched.
 fn press_focus_for(el: &web_sys::Element) -> PressFocus {
-    if el
-        .closest("[data-nofocus]:not([data-nofocus=\"false\" i])")
-        .ok()
-        .flatten()
-        .is_some()
-    {
-        return PressFocus::Untouched;
-    }
     let Some(target) = el.closest(PRESS_FOCUSABLE_SELECTOR).ok().flatten() else {
         return PressFocus::Untouched;
     };
