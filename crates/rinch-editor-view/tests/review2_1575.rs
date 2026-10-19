@@ -201,8 +201,11 @@ impl Rng {
     }
 }
 
+/// Nodes with the positions they start at.
+type Placed = Vec<(usize, Node)>;
+
 /// Top-level positions of the embeds and the textblocks of `doc`.
-fn top(doc: &Node) -> (Vec<(usize, Node)>, Vec<(usize, Node)>) {
+fn top(doc: &Node) -> (Placed, Placed) {
     let (mut embeds, mut texts) = (Vec::new(), Vec::new());
     let mut pos = 0;
     for i in 0..doc.child_count() {
@@ -410,11 +413,11 @@ fn run_seed(seed: u64, n: usize, steps: usize) {
             11 => {
                 // an outbound stall (#220) and its cure: a task list is outside
                 // collaboration's scope (review 2 of #1575, N1)
-                if !remove_task_lists(p) {
-                    if let Some((pos, _)) = texts.get(rng.below(texts.len().max(1))) {
-                        p.handle.set_selection(Selection::cursor(Pos(pos + 1)));
-                        p.handle.command("toggleTaskList");
-                    }
+                if !remove_task_lists(p)
+                    && let Some((pos, _)) = texts.get(rng.below(texts.len().max(1)))
+                {
+                    p.handle.set_selection(Selection::cursor(Pos(pos + 1)));
+                    p.handle.command("toggleTaskList");
                 }
             }
             _ => {}
