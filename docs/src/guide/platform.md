@@ -509,7 +509,11 @@ A read-only field starts no read at all.
 A single-line field (an `<input>`, anything but a `<textarea>`) folds the line
 breaks of pasted or IME-committed text the way Chrome does: line breaks at the
 end are dropped and every other one becomes a space, so `"a\nb"` pastes as
-`"a b"`. A `<textarea>` keeps them.
+`"a b"`. A `<textarea>` keeps them. A value the *app* writes (a `value`
+attribute, `value_fn`) follows HTML's value sanitization instead, on desktop as
+in a browser: an `<input>` of a text type strips its line breaks, so `"a\nb"`
+shows and edits as `"ab"` (`url` and `email` also trim surrounding
+whitespace), while the attribute keeps what was written.
 
 ### Web: reaching content copied outside the app
 

@@ -4570,10 +4570,26 @@ same insertion filter a paste does): line breaks at the end are dropped, every o
 `\r\n`, `\r` or `\n` is one space (`"a\nb"` → `"a b"`, `"a\n"` → `"a"`). What folds to
 nothing still replaces a selection and is no edit at a caret. Android's soft keyboard folds a
 whole committed text before `apply_ime_action` splits it into one key per character. A
-`<textarea>` keeps its line breaks. Not covered: a programmatic `value` holding a line
-break, which HTML's value sanitization *strips* and desktop still paints as extra lines.
-Pins: `app/single_line_insert_824_tests.rs`, the `#824` section of
-`app/input_paste_async_tests.rs`.
+`<textarea>` keeps its line breaks. Pins: `app/single_line_insert_824_tests.rs`, the
+`#824` section of `app/input_paste_async_tests.rs`.
+
+**A programmatic `<input>` value is sanitized, not folded** (#1554): an `<input>`'s value
+is its `value` attribute run through HTML's value sanitization for its type
+(`rinch_dom::form_control::input_value`, reached through `form_control::control_value`,
+which paint, focus, the adoption of a programmatic write, the `onchange` payload,
+`live_value` and `:placeholder-shown` all read). Chrome 155's rule: the Text state (no
+`type`, `text`, an unknown type), `search`, `tel` and `password` **strip** every `\r` and
+`\n` (`"p\nq\r\nr"` → `"pqr"`); `url` and `email` strip them and trim ASCII whitespace,
+a `multiple` email per address. `number`, the date/time family, `color` and `range` have
+rules of their own that are not applied (their value is answered as written); `hidden`,
+`checkbox`, `radio`, `file` and the buttons have none. The **attribute keeps what was
+written**, as in a browser: `sync_input_cursor_to_dom` writes the engine text into
+`value` only when the attribute does not already read as it, so focusing a field holding
+`"a\nb"` leaves the attribute alone and the first edit that changes the text writes it
+(`"abX"`). A `value_fn` binding writing `"a\nb"` sees `live_value` `"ab"` and writes the
+same attribute again, which is an identical write and changes nothing. Pins:
+`rinch-dom/tests/input_value_sanitization_1554_tests.rs` (Chrome 155's table),
+`app/input_value_sanitization_1554_tests.rs` (nothing painted below the box).
 
 ### System Tray (optional)
 
