@@ -781,7 +781,10 @@ close on a window blur, so the `Select` list does too, on both backends — desk
 from `PlatformEvent::WindowFocus(false)`, `rinch-web` from a `window` `blur`
 (`rinch_core::notify_window_blurred`). The trigger keeps the focus. Desktop's
 native `<select>` popup closes the same way, handing the keyboard back to the
-control.
+control. `ColorInput`'s dropdown holds such an entry while it is open (issue
+#1572), owned by the input's root and taking no key, so it closes when the
+focus leaves the field or the window blurs, as Mantine's does in the input's
+`onBlur`.
 
 Register it **at open** and release it at close and on unmount —
 `rinch_components::overlay_dismiss::arm_keys_while_open` is that policy.

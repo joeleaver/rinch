@@ -500,7 +500,7 @@ Text input with inline color preview and dropdown ColorPicker.
 | `swatches` | `Vec<String>` | `[]` | Preset swatch colors |
 | `swatches_per_row` | `Option<usize>` | `7` | Swatches per row |
 | `disallow_input` | `bool` | `false` | Disallow typing (picker only) |
-| `close_on_click_outside` | `bool` | `true` | Dismiss the dropdown when a click lands outside it (#465). Off mounts no backdrop at all, so no click outside the field dismisses it — the pointer half of the pre-#465 behaviour. Escape closes the dropdown either way |
+| `close_on_click_outside` | `bool` | `true` | Mount a backdrop that takes a click outside the field and dismisses the dropdown (#465). Off mounts none, so the click reaches the page under it; the dropdown still closes if that click moves the focus out of the field (#1572). Escape closes the dropdown either way |
 | `z_index` | `Option<i32>` | `None` | Stacking level of the open picker's panel; its click-catching backdrop stays one below and the field one above (defaults 100 / 99 / 101, #801) |
 
 `size` and `radius` were declared but unread until #263. **`size` always
@@ -519,13 +519,17 @@ while the picker was open lost its first press to the backdrop. A `ColorInput`
 opened *inside* a modal still orders, because the three levels are compared in
 the modal's stacking context. `z_index` raises all three together.
 
-**The dropdown is dismissed three ways** (#465): clicking the field again,
-clicking anywhere outside it, and Escape. The outside click is the one that is
-optional — `close_on_click_outside` is `true` by default, matching every other
-popover in the library, and turning it off mounts no backdrop at all, so the
-field is the only thing a *click* dismisses the dropdown with. Escape is not
-gated by it, so `false` is the pointer half of the behaviour `ColorInput` had
-until #465 rather than a return to it in full. (The prop was
+**The dropdown is dismissed four ways**: clicking the field again, clicking
+anywhere outside it, and Escape (#465), and the focus leaving the field —
+Tab away, a programmatic focus elsewhere, or the window losing focus (#1572),
+as Mantine closes it in the input's `onBlur`. Opening puts the keyboard on the
+text field, and a press inside the picker panel or on the preview swatch takes
+the click but not the keyboard, so picking a colour does not count as leaving.
+`close_on_click_outside` is `true` by default, matching every other popover in
+the library; turning it off mounts no backdrop at all, so a click outside
+reaches whatever is under it rather than being swallowed — and that click still
+closes the dropdown when it moves the focus out of the field (a press on a
+`data-nofocus` region leaves it open). Escape is not gated by it. (The prop was
 declared and read by nothing before that; #263 *removed* it rather than wire it,
 because unlike `size` and `radius` there was no behaviour behind it to connect,
 and it came back here with the interaction it names.)

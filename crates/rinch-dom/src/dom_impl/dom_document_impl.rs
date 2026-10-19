@@ -825,9 +825,13 @@ impl DomDocument for RinchDocument {
 
     /// The `value` attribute, as the trait's default answers — except that a
     /// `<textarea>` with none answers its text children, its default value
-    /// (#1159), as the web's `.value` property does.
+    /// (#1159), and an `<input>` answers it sanitized for its type (line
+    /// breaks stripped, #1554), as the web's `.value` property does.
     fn live_value(&self, node: NodeId) -> Option<String> {
-        if self.tree.nodes.get(node.0)?.tag() == Some("textarea") {
+        if matches!(
+            self.tree.nodes.get(node.0)?.tag(),
+            Some("textarea" | "input")
+        ) {
             return crate::form_control::control_value(&self.tree.nodes, node.0)
                 .map(|v| v.into_owned());
         }

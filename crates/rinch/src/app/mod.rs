@@ -129,6 +129,8 @@ mod input_commit_tests;
 mod input_ime_tests;
 #[cfg(all(test, feature = "clipboard"))]
 mod input_paste_async_tests;
+#[cfg(all(test, software_shell))]
+mod input_value_sanitization_1554_tests;
 #[cfg(test)]
 mod key_event_data_tests;
 #[cfg(test)]
@@ -3307,13 +3309,19 @@ impl RinchApp {
 
         let mut d = doc.borrow_mut();
         let text = state.document.to_text();
-        let keeps_default = d.tree.nodes.get(node_id).is_some_and(|node| {
-            rinch_dom::form_control::is_pristine_textarea(node)
+        // Leave the field's `value` as it is when it already reads as the
+        // engine text: a pristine textarea keeps showing its children
+        // (#1186), and an `<input>` keeps the attribute as written while its
+        // sanitized value is the text (`"a\nb"` reads `"ab"`, #1554) — the
+        // first edit that changes the text writes it.
+        let keeps_value = d.tree.nodes.get(node_id).is_some_and(|node| {
+            (rinch_dom::form_control::is_pristine_textarea(node)
+                || node.attributes.contains_key("value"))
                 && rinch_dom::form_control::control_value(&d.tree.nodes, node_id).as_deref()
                     == Some(text.as_str())
         });
         if let Some(node) = d.tree.nodes.get_mut(node_id) {
-            if !keeps_default {
+            if !keeps_value {
                 node.attributes.insert("value".to_string(), text);
             }
             node.attributes
