@@ -517,6 +517,59 @@ person would lose the app. With no callback a pasted image is a `data:` URL,
 as before, and a file drop is the browser's (which opens the file; that is
 [#1458](https://github.com/joeleaver/rinch/issues/1458)).
 
+### Embeds: blocks an app draws
+
+The starter kit has an `embed` node: a block of its own, holding no text, that
+stands for something the app draws — a sheet, a canvas, a counter. The document
+holds only the block and the app's own `data-*` attributes (the same rules as an
+image's: valid custom data attribute names, no name rinch reserves, at most 32 of
+at most 1024 bytes each); those attributes are what the app keys its own state to.
+
+```rust
+use rinch::prelude::*;
+
+let sheet = AttrValue::from("sheet-42");
+handle.update(|state| {
+    let embed = state
+        .schema()
+        .create_node("embed", Attrs::from_iter([("data-sheet", sheet)]), Fragment::empty())
+        .ok()?;
+    let mut tr = state.tr();
+    tr.insert_block(embed).ok()?;
+    Some(tr)
+});
+```
+
+It is edited as a horizontal rule is: a click or an arrow selects it whole,
+Backspace or Delete on it removes it, and its host element is an empty
+`<div data-pm-type="embed" data-sheet="sheet-42">` that the default stylesheet gives
+a line of height and a dashed outline while it is empty. Drawing the app's content
+in that element (node views) is the next step of this feature and not in this
+release.
+
+**HTML.** An embed is written as that `<div>` and read back from it, wherever a
+block can stand; the default paste keeps its data attributes only from rinch's own
+copy-out, as for an image. Another application has nothing to show for it, so an
+app can give exported HTML markup to put inside the element:
+
+```rust
+use rinch_editor_core::serialize::set_html_fallback;
+
+let _guard = set_html_fallback(|node| {
+    let sheet = node.attrs().get_str("data-sheet")?;
+    Some(format!("<table><tr><td>Sheet {sheet}</td></tr></table>"))
+});
+```
+
+`node_to_html` and the clipboard copy-out then write
+`<div data-pm-type="embed" data-sheet="…"><table>…</table></div>`; rinch reads that
+element back as the same embed and ignores what is inside it. The markup is written
+as given (well-formed, and the app's to make safe). The callback is per thread and
+is unregistered when the guard is dropped; registrations stack, so dropping a later
+one brings an earlier one back. **Markdown** writes the bare element as an HTML
+block, which both of its readers take back, and a `DocNode` keeps the attributes
+like any others.
+
 ### Dark mode
 
 The editor's built-in stylesheet has light and dark color schemes; toggle between
@@ -1438,17 +1491,18 @@ for a *late*-joining peer to `start_collaboration_guest` from), and
 text-blocks + marks** (paragraphs, headings, code blocks, bold/italic/link/…),
 list containers (bullet/ordered lists and list items) and block quotes, nested
 into each other to any depth, tables (merged cells included, anything above inside a
-cell), horizontal rules, and the inline atoms inside a line — images and hard breaks
-(Shift+Enter). Task lists, and a pasted table whose rows are ragged, are still outside
+cell), horizontal rules, embeds ([an app's own block](#embeds-blocks-an-app-draws)), and the inline atoms inside a
+line — images and hard breaks (Shift+Enter). Task lists, and a pasted table whose rows are ragged, are still outside
 it: an edit
 outside that scope fails loud rather than silently diverging —
 `collab_take_error()` surfaces it, and the CRDT is left untouched (the local edit is
-not projected). Horizontal rules, images, hard breaks, block quotes and tables all
+not projected). Horizontal rules, embeds, images, hard breaks, block quotes and tables all
 joined that scope without a new format tag, so **every peer on a document must be upgraded
-together**: an older build accepts a rule, an image, a hard break, a quote or a table from a newer
-peer and then cannot read it, which poisons its session (see below) in both
-directions for as long as that content remains in the document — for a rule, an
-image or a hard break it heals when the last one is deleted. A quote may never
+together**: an older build accepts a rule, an embed, an image, a hard break, a quote or a table
+from a newer peer and then cannot read it, which poisons its session (see below) in both
+directions for as long as that content remains in the document — for a rule, an embed, an
+image or a hard break it heals when the last one is deleted. (An embed is new in a build
+that has node views: before any peer inserts one, every peer must run such a build.) A quote may never
 leave: one emptied by two people deleting its contents at the same time is no
 longer shown, but it stays in the shared document for good (deleting it could race
 a third person typing into it), so once that has happened an older build stays
@@ -1490,6 +1544,11 @@ two people adding hundreds of rows and hundreds of columns at the same moment co
 A table you make yourself whose merged cells span far more rows and columns than it
 has cells (thousands of them) is refused before it is shared, and the session reports
 it as not syncing until you remove it.
+
+An embed's `data-*` attributes merge one by one as well: two people changing different
+attributes of one embed at the same moment both keep their change, two changing the same
+one end up with one of the two values, and one removed while someone else changes another
+stays removed. Deleting an embed wins over a change to it made at the same moment.
 
 An image's attributes merge one by one: two people changing different attributes of
 one image at the same moment (one its `alt`, the other its `title` or an app's

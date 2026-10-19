@@ -42,8 +42,8 @@ diff in the view.
 
 - **`Node`** — a value in the tree. It has a schema node type, typed attrs, a
   `Fragment` of children (empty for leaves), marks (on inline/text leaves), and
-  optional text (for the `text` node). `hard_break`, `horizontal_rule`, and `image`
-  are first-class nodes, not strings.
+  optional text (for the `text` node). `hard_break`, `horizontal_rule`, `embed` and
+  `image` are first-class nodes, not strings.
 - **`Mark`** — an inline annotation (`bold`, `italic`, `link{href}`, …) carried on
   text and inline leaves, with typed attrs.
 - **`Fragment`** — an ordered, sized, `Rc`-shared child list with the cut / append /
@@ -81,8 +81,8 @@ The **schema** defines which nodes and marks exist and what content each node ma
 contain. The starter-kit catalogue:
 
 - **Nodes:** `doc`, `paragraph`, `heading{level}`, `blockquote`, `code_block`,
-  `bullet_list`, `ordered_list`, `list_item`, `horizontal_rule`, `hard_break`,
-  `text`, `image{src, alt, title, width, data-*}`, plus the table nodes.
+  `bullet_list`, `ordered_list`, `list_item`, `horizontal_rule`, `embed{data-*}`,
+  `hard_break`, `text`, `image{src, alt, title, width, data-*}`, plus the table nodes.
 - **Marks:** `bold`, `italic`, `underline`, `strike`, `code`, `link{href}`,
   `highlight{color?}`, `text_color{color}`, `subscript`, `superscript`. Every mark
   is inclusive except `link` (see [inherited marks](#state-selection-stored-marks)).
@@ -140,9 +140,10 @@ handle.update(|state| {
 ```
 
 The opt-in is the node spec's: `NodeSpec::data_attrs` (`NodeSpecBuilder::data_attrs(true)`).
-The starter kit's `image` sets it and nothing else does. Only a **leaf** node type
-(an atom: `<img>`, `<hr>`, `<br>`) may set it — `SchemaBuilder::build` panics for one
-with content — because HTML carries the attributes on a void element only. An
+The starter kit's `image` and `embed` set it, and nothing else does. Only a **leaf**
+node type (an atom: `<img>`, `<hr>`, `<br>`, an embed's `<div>`) may set it —
+`SchemaBuilder::build` panics for one with content — because HTML carries the
+attributes only on an element that holds none of the document's content. An
 attribute a node's spec neither declares nor keeps is dropped by validation
 (`to_doc`, `node_from_doc`), and the HTML writer does not write it.
 
@@ -163,6 +164,21 @@ in-editor copy of it. Chosen by Joe (2026-10-09): a wrong attribution is worse t
 lost one — app data keyed to a picture would show on the wrong picture
 (`rinch-editor-collab/tests/image_attrs.rs`, `atom_attr_merge.rs`,
 `atom_identity_differential.rs`).
+
+**`embed`** is a selectable block-level leaf atom with no attrs of its own and the
+app's `data-*` attributes (the same reserved names, bounds and paste rule as an
+image's): a block an app draws itself, which the document stores only as the atom and
+those attributes. Commands, arrows and selection treat it exactly as a
+`horizontal_rule` (`tests/embed_node.rs` runs the two side by side). It has no HTML
+tag: a block leaf whose spec has no `parse_html_tags` — `embed`, or an app schema's
+own — is written as `<div data-pm-type="NAME" data-…></div>` and read back from a
+`<div>` carrying that marker (a `<div>` without it is a container as before), and
+`serialize::set_html_fallback` gives the HTML export markup to write inside it (the
+reader ignores what is inside; see
+[the guide](contenteditable.md#embeds-blocks-an-app-draws)). Markdown writes the bare
+element as an HTML block. Collaboration projects it as a leaf block atom (empty text)
+whose attrs merge per key, like any block's
+(`rinch-editor-collab/tests/embed.rs`).
 
 Each node spec carries a **content expression** (e.g. `blockquote > block+`,
 `list_item > block+`, `bullet_list > list_item+`). These compile to a **ContentMatch

@@ -362,3 +362,52 @@ fn a_peers_data_attrs_past_the_bounds_are_bounded_on_receive() {
     assert_eq!(got.attrs().get("data-k32"), None);
     assert_eq!(b.state.doc, b.session.projected_doc(&kit).unwrap());
 }
+
+/// An older peer — one whose schema has no `embed` — cannot read one: its join
+/// from a snapshot holding one fails, and a live update inserting one is an error
+/// it surfaces rather than a silent drop. (Why every peer must be upgraded before
+/// any of them inserts an embed.)
+#[test]
+fn a_peer_without_embed_in_its_schema_fails_loud_on_one() {
+    let kit = Rc::new(Schema::starter_kit());
+    let mut b = Schema::builder();
+    for (name, spec) in kit.nodes.iter().filter(|(n, _)| n.as_str() != "embed") {
+        b = b.node(name, spec.clone());
+    }
+    for (name, spec) in kit.marks.iter() {
+        b = b.mark(name, spec.clone());
+    }
+    let old = Rc::new(b.build());
+    assert!(!old.has_node("embed"));
+
+    // A join from a snapshot that holds an embed fails.
+    let with = EditorState::create(kit.clone(), three(&kit, &[("data-k", "v")]), plugins());
+    let host = session_with_client_id(&with, 11).unwrap();
+    let joiner = session_from_bytes_with_client_id(&host.snapshot(), 22).unwrap();
+    assert!(joiner.projected_doc(&old).is_err());
+
+    // A live peer that integrates an inserted embed reports an error.
+    let plain = kit
+        .branch("doc", Fragment::from_children(vec![para(&kit, "ab"), para(&kit, "cd")]))
+        .unwrap();
+    let mut new_peer = Peer {
+        state: EditorState::create(kit.clone(), plain.clone(), plugins()),
+        session: session_with_client_id(
+            &EditorState::create(kit.clone(), plain.clone(), plugins()),
+            11,
+        )
+        .unwrap(),
+    };
+    let snapshot = new_peer.session.snapshot();
+    let mut old_session = session_from_bytes_with_client_id(&snapshot, 22).unwrap();
+    let old_state = EditorState::create(old.clone(), old_session.projected_doc(&old).unwrap(), plugins());
+    let embed = kit
+        .create_node("embed", Attrs::new(), Fragment::empty())
+        .unwrap();
+    new_peer.local(|tr| {
+        tr.replace(4, 4, rinch_editor_core::Slice::new(Fragment::from_node(embed), 0, 0))
+            .unwrap();
+    });
+    let delta = new_peer.session.save_incremental().unwrap();
+    assert!(old_session.integrate_incremental(&old_state, &delta).is_err());
+}

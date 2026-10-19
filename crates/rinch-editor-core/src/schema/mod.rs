@@ -498,7 +498,8 @@ impl SchemaBuilder {
     ///
     /// When a node type that is not a leaf (one with content) sets
     /// [`NodeSpec::data_attrs`]: app data attributes are carried through HTML
-    /// on a void element only.
+    /// only on an element that holds none of the document's content (a void
+    /// element, or a block atom's `<div>`).
     pub fn build(self) -> Schema {
         let groups = compute_groups(&self.nodes);
         // A node-type name must not collide with a group name, or content
@@ -508,7 +509,7 @@ impl SchemaBuilder {
             "a node-type name collides with a group name"
         );
         let node_types = compile_node_types(&self.nodes, &groups);
-        // App data attributes go through HTML on a void element only, so a
+        // App data attributes go through HTML only on a leaf's element, so a
         // container that kept them would lose them on every copy and paste.
         for (name, spec) in &self.nodes {
             assert!(
