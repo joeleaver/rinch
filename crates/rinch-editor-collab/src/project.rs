@@ -127,9 +127,15 @@ impl CollabDoc {
         // before and after that share no block at all carry no identity (a load while
         // collaborating, a re-base on the CRDT's read-back): there the runs are taken by
         // the blocks' values, as a nested list does (`reconcile_child_list`).
+        //
+        // A before and after that share no block but share an inline node (a one-block
+        // document whose block an edit rebuilt) are one document edited too: matched by
+        // value, a picture pasted over an equal one would read as no change at all and
+        // the old char would keep its identity (decision (f)).
         let mut runs = identity_runs(before, after);
         let shares_a_block = runs != (0, 0)
-            || (0..an).any(|j| (0..bn).any(|i| before.child(i).same_ref(after.child(j))));
+            || (0..an).any(|j| (0..bn).any(|i| before.child(i).same_ref(after.child(j))))
+            || shares_any_inline_node(before, after);
         if !shares_a_block {
             runs = common_runs(bn, an, |i, j| before.child(i) == after.child(j));
         }
@@ -285,6 +291,31 @@ impl CollabDoc {
         }
         Ok(())
     }
+}
+
+/// Whether `before` and `after` hold one inline node (`Node::same_ref`) anywhere:
+/// one pass over each, by node key.
+fn shares_any_inline_node(before: &Node, after: &Node) -> bool {
+    fn inline(n: &Node, out: &mut dyn FnMut(&Node) -> bool) -> bool {
+        for i in 0..n.child_count() {
+            let c = n.child(i);
+            let hit = if c.node_type().is_block() {
+                inline(c, out)
+            } else {
+                out(c)
+            };
+            if hit {
+                return true;
+            }
+        }
+        false
+    }
+    let mut keys = std::collections::HashSet::new();
+    inline(before, &mut |c| {
+        keys.insert(crate::projection::node_key(c));
+        false
+    });
+    !keys.is_empty() && inline(after, &mut |c| keys.contains(&crate::projection::node_key(c)))
 }
 
 /// Whether two blocks hold one inline node (`Node::same_ref`) anywhere below them: a
