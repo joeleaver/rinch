@@ -975,6 +975,18 @@ fn render_tree_node(
         if untracked(|| tree_state.cursor.get()).as_deref() == Some(node_value.as_str()) {
             content.add_class(CURSOR_CLASS);
             *config.keys.drawn.borrow_mut() = Some(node_value.clone());
+            // The tree is waiting for this row to give it back the keyboard.
+            if config.keys.lost_row.get() {
+                let cfg = Rc::downgrade(&config);
+                let row = content.clone();
+                let _ = set_timeout(0, move || {
+                    if let Some(cfg) = cfg.upgrade() {
+                        if cfg.keys.lost_row.replace(false) {
+                            row.focus();
+                        }
+                    }
+                });
+            }
         }
         // The cursor row removed while it has the keyboard (drawn again: its
         // data changed, or it moved): the focus falling from it stays the
@@ -2019,11 +2031,17 @@ fn wire_keyboard(__scope: &mut RenderScope, container: &NodeHandle, tree_state: 
             let weak = Rc::downgrade(&cfg);
             let _ = set_timeout(0, move || {
                 let Some(cfg) = weak.upgrade() else { return };
+                if !cfg.keys.lost_row.get() {
+                    set_focused(&cfg, false);
+                    return;
+                }
+                // The row as drawn now, when it is drawn already; otherwise
+                // it takes the keyboard as it is drawn (`render_tree_node`).
                 let cursor = untracked(|| tree_state.cursor.get());
                 let row = cursor.and_then(|c| cfg.drag.rows.borrow().get(&c).cloned());
-                match (cfg.keys.lost_row.replace(false), row) {
-                    (true, Some(row)) => row.focus(),
-                    _ => set_focused(&cfg, false),
+                if let Some(row) = row.filter(|row| row.is_rendered()) {
+                    cfg.keys.lost_row.set(false);
+                    row.focus();
                 }
             });
         },
