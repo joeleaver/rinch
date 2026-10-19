@@ -238,7 +238,7 @@ pub use title::Title;
 pub use tooltip::Tooltip;
 pub use tree::{
     DragValues, DropVerdict, DropZone, JudgeDrop, RenderTreeNode, RenderTreeNodePayload, Tree,
-    TreeController, TreeDrop, TreeNodeData, TreeSlot, UseTreeOptions,
+    TreeController, TreeDrop, TreeKey, TreeMove, OnTreeKey, LabelOf, TreeNodeData, TreeSlot, UseTreeOptions,
     UseTreeReturn, get_tree_expanded_state,
 };
 

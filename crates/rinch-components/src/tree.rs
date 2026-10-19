@@ -27,7 +27,7 @@
 //! ```
 
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -159,6 +159,9 @@ pub struct UseTreeReturn {
     pub expanded: Signal<HashSet<String>>,
     /// Signal containing selected node values.
     pub selected: Signal<HashSet<String>>,
+    /// The row the keyboard is on ([`Tree::keyboard`]): moved by the arrow
+    /// keys and type-ahead, and by a click.
+    pub cursor: Signal<Option<String>>,
     /// Controller for programmatic tree manipulation.
     pub controller: TreeController,
 }
@@ -168,16 +171,21 @@ impl UseTreeReturn {
     pub fn new(options: UseTreeOptions) -> Self {
         let expanded = Signal::new(options.initial_expanded);
         let selected = Signal::new(options.initial_selected);
+        let cursor = Signal::new(None);
+        let focus_requests = Signal::new(0u64);
 
         let controller = TreeController {
             expanded,
             selected,
+            cursor,
+            focus_requests,
             multiple: options.multiple,
         };
 
         Self {
             expanded,
             selected,
+            cursor,
             controller,
         }
     }
@@ -188,10 +196,28 @@ impl UseTreeReturn {
 pub struct TreeController {
     expanded: Signal<HashSet<String>>,
     selected: Signal<HashSet<String>>,
+    cursor: Signal<Option<String>>,
+    focus_requests: Signal<u64>,
     multiple: bool,
 }
 
 impl TreeController {
+    /// Put the keyboard's cursor on a row, without moving the keyboard.
+    pub fn set_cursor(&self, value: &str) {
+        self.cursor.set(Some(value.to_string()));
+    }
+
+    /// The row the keyboard's cursor is on.
+    pub fn cursor(&self) -> Option<String> {
+        self.cursor.get()
+    }
+
+    /// Give the tree the keyboard: its cursor row, or its first row when it
+    /// has none ([`Tree::keyboard`]).
+    pub fn focus(&self) {
+        self.focus_requests.update(|n| *n += 1);
+    }
+
     /// Expand a node by its value.
     pub fn expand(&self, value: &str) {
         self.expanded.update(|set| {
@@ -609,6 +635,12 @@ struct TreeConfig {
     hover_expand_ms: u32,
     guides: bool,
     drag: Rc<DragState>,
+    keyboard: bool,
+    onkey: Option<OnTreeKey>,
+    oncursor: Option<ValueCallback<String>>,
+    cursor_delay_ms: u32,
+    label_of: Option<LabelOf>,
+    keys: KeyState,
 }
 
 // =============================================================================
@@ -693,6 +725,22 @@ pub struct Tree {
     pub hover_expand_ms: u32,
     /// Draw a faint vertical line down each expanded row's children.
     pub guides: bool,
+    /// Keyboard navigation (needs `tree`): while one of the rows has the
+    /// keyboard, the arrow keys move a cursor (Right expands or steps in,
+    /// Left collapses or steps out), Home, End, PageUp and PageDown jump,
+    /// `*` expands the cursor row's siblings, and typed letters find the next
+    /// row that starts with them. The cursor row is selected as it moves.
+    pub keyboard: bool,
+    /// Every key the tree's rows get, before the tree's own; `true` consumes
+    /// it. [`TreeKey::drop_for`] turns a key into a structural move.
+    pub onkey: Option<OnTreeKey>,
+    /// The cursor came to rest on a row (after `cursor_delay_ms`): for an
+    /// app that opens what the cursor is on, once, not on every row it
+    /// passed.
+    pub oncursor: Option<ValueCallback<String>>,
+    pub cursor_delay_ms: u32,
+    /// The text type-ahead matches for a row (its label when not given).
+    pub label_of: Option<LabelOf>,
 }
 
 impl std::fmt::Debug for Tree {
@@ -729,6 +777,11 @@ impl Default for Tree {
             ondragend: None,
             hover_expand_ms: 600,
             guides: false,
+            keyboard: false,
+            onkey: None,
+            oncursor: None,
+            cursor_delay_ms: 120,
+            label_of: None,
         }
     }
 }
@@ -777,12 +830,21 @@ impl Component for Tree {
             hover_expand_ms: self.hover_expand_ms,
             guides: self.guides,
             drag: Rc::new(DragState::default()),
+            keyboard: self.keyboard && self.tree.is_some(),
+            onkey: self.onkey.clone(),
+            oncursor: self.oncursor.clone(),
+            cursor_delay_ms: self.cursor_delay_ms,
+            label_of: self.label_of.clone(),
+            keys: KeyState::default(),
         });
 
 
         if let Some(ref tree_state) = self.tree {
             let tree_state = *tree_state;
             let cfg = config.clone();
+            if config.keyboard {
+                wire_keyboard(__scope, &container, tree_state, &config);
+            }
 
             // Use for_each_dom_typed for reactive root-level rendering
             let collection: Rc<dyn Fn() -> Vec<TreeNodeData>> =
@@ -795,7 +857,7 @@ impl Component for Tree {
             // A drag resolves its drop against the data the rows were drawn
             // from, so the tree keeps the last of it.
             let drag = config.drag.clone();
-            let draggable = config.draggable;
+            let draggable = config.draggable || config.keyboard;
 
             for_each_dom_typed(
                 __scope,
@@ -894,8 +956,29 @@ fn render_tree_node(
         &format!("padding-left: calc(var(--tree-level-offset) * {})", level),
     );
 
+    if config.draggable || config.keyboard {
+        // A row drawn again replaces the old box, which keeps nothing of a
+        // drag. (No borrow of the tree's state is held across a DOM call
+        // anywhere here: one can run pending effects, which can draw rows,
+        // which come back here.)
+        let old = config.drag.rows.borrow_mut().insert(node_value.clone(), content.clone());
+        if let Some(old) = old {
+            clear_drawn(&old);
+            old.remove_class(DRAGGING_CLASS);
+            old.remove_class(CURSOR_CLASS);
+        }
+    }
     if config.draggable {
         wire_drag(__scope, &content, &node_value, tree_state, &config);
+    }
+    if config.keyboard && untracked(|| tree_state.cursor.get()).as_deref() == Some(node_value.as_str()) {
+        content.add_class(CURSOR_CLASS);
+        *config.keys.drawn.borrow_mut() = Some(node_value.clone());
+        // Drawn again while it had the keyboard: it keeps it.
+        if config.keys.focused.get() {
+            let row = content.clone();
+            let _ = set_timeout(0, move || row.focus());
+        }
     }
 
     // Reactive class for content (selection only — `disabled` is not reactive)
@@ -1001,7 +1084,12 @@ fn render_tree_node(
         let onexpand = config.onexpand.clone();
         let oncollapse = config.oncollapse.clone();
 
+        let cfg = config.clone();
         let handler_id = __scope.register_handler(move || {
+            if cfg.keyboard {
+                tree_state.cursor.set(Some(value.clone()));
+                set_focused(&cfg, true);
+            }
             if expand_on_click {
                 let was_expanded = expanded_signal.get().contains(&value);
                 controller.toggle(&value);
@@ -1086,14 +1174,6 @@ fn wire_drag(
     tree_state: UseTreeReturn,
     config: &Rc<TreeConfig>,
 ) {
-    // A row drawn again replaces the old box, which keeps nothing of a drag.
-    // (No borrow of the drag state is held across a DOM call anywhere here:
-    // one can run pending effects, which can draw rows, which come back here.)
-    let old = config.drag.rows.borrow_mut().insert(value.to_string(), content.clone());
-    if let Some(old) = old {
-        clear_drawn(&old);
-        old.remove_class(DRAGGING_CLASS);
-    }
     content.set_attribute("draggable", "true");
     // A row redrawn while it is being dragged (its children arrived, say)
     // is still being dragged, and still shows the drop on offer.
@@ -1539,5 +1619,517 @@ mod drop_tests {
         assert!(shape.is_within(i("a"), i("a")));
         assert!(!shape.is_within(i("a"), i("a1")));
         assert!(!shape.is_within(i("b"), i("a")));
+    }
+}
+
+// =============================================================================
+// Keyboard
+// =============================================================================
+
+/// A structural move of the cursor row, for an app that binds keys to them
+/// ([`TreeKey::drop_for`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TreeMove {
+    /// Into the previous sibling, as its last child.
+    Indent,
+    /// Out of its parent, right after it.
+    Outdent,
+    /// Before its previous sibling.
+    Up,
+    /// After its next sibling.
+    Down,
+}
+
+/// A key pressed while one of the tree's rows has the keyboard, offered to
+/// the app before the tree's own keys ([`Tree::onkey`]).
+pub struct TreeKey {
+    /// The key, as `KeyEventData::key` names it (`"ArrowDown"`, `"F2"`, `"a"`).
+    pub key: String,
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub meta: bool,
+    /// The row the keyboard is on.
+    pub cursor: String,
+    /// The cursor row's parent; `None` at the top level.
+    pub parent: Option<String>,
+    shape: Rc<Shape>,
+    carried: Vec<String>,
+}
+
+impl TreeKey {
+    /// The drop that would make `movement` of the cursor row (what a drag of
+    /// it would carry, [`Tree::drag_values`]), for the app to judge and
+    /// deliver as it does a dropped one. `None` when there is nowhere to go:
+    /// no previous sibling to indent into, no parent to outdent from, no
+    /// sibling above or below.
+    pub fn drop_for(&self, movement: TreeMove) -> Option<TreeDrop> {
+        let shape = &self.shape;
+        let row = shape.index(&self.cursor)?;
+        let siblings = shape.siblings(row);
+        let at = siblings.iter().position(|&s| s == row)?;
+        let value = |row: usize| shape.rows[row].value.clone();
+        let (parent, slot, zone) = match movement {
+            TreeMove::Indent => {
+                let before = *siblings.get(at.checked_sub(1)?)?;
+                (Some(value(before)), TreeSlot::Last, DropZone::Inside)
+            }
+            TreeMove::Outdent => {
+                let parent = shape.rows[row].parent?;
+                (shape.rows[parent].parent.map(value), TreeSlot::After(value(parent)), DropZone::After)
+            }
+            TreeMove::Up => {
+                at.checked_sub(1)?;
+                let slot = match at.checked_sub(2) {
+                    Some(two_up) => TreeSlot::After(value(siblings[two_up])),
+                    None => TreeSlot::First,
+                };
+                (shape.rows[row].parent.map(value), slot, DropZone::Before)
+            }
+            TreeMove::Down => {
+                let below = *siblings.get(at + 1)?;
+                (shape.rows[row].parent.map(value), TreeSlot::After(value(below)), DropZone::After)
+            }
+        };
+        Some(TreeDrop { dragged: self.carried.clone(), parent, slot, over: self.cursor.clone(), zone })
+    }
+}
+
+/// How the app reads keys first ([`Tree::onkey`]); `true` consumes the key.
+pub type OnTreeKey = Rc<dyn Fn(&TreeKey) -> bool>;
+/// The text type-ahead matches for a row ([`Tree::label_of`]).
+pub type LabelOf = Rc<dyn Fn(&str) -> String>;
+
+/// The class the cursor row carries; drawn while the tree has the keyboard.
+const CURSOR_CLASS: &str = "rinch-tree__node-content--cursor";
+/// The class the tree carries while one of its rows has the keyboard.
+const FOCUSED_CLASS: &str = "rinch-tree--focused";
+/// How far PageUp and PageDown move the cursor, in rows.
+const PAGE_ROWS: usize = 10;
+/// How long typed letters are remembered for type-ahead.
+const TYPE_AHEAD_MS: u32 = 700;
+
+/// One tree's keyboard state.
+#[derive(Default)]
+struct KeyState {
+    /// The row drawn as the cursor, by value.
+    drawn: RefCell<Option<String>>,
+    /// Whether one of the rows has the keyboard.
+    focused: Cell<bool>,
+    /// Letters typed for type-ahead, and the timer that forgets them.
+    typed: RefCell<String>,
+    typed_timer: RefCell<Option<TimeoutHandle>>,
+    /// The cursor's rest timer, before `oncursor`.
+    rest_timer: RefCell<Option<TimeoutHandle>>,
+    /// The tree's own list, for its focused class.
+    container: RefCell<Option<NodeHandle>>,
+}
+
+impl Shape {
+    /// The rows drawn, top to bottom, given what is expanded.
+    fn visible(&self, expanded: &HashSet<String>) -> Vec<usize> {
+        fn walk(shape: &Shape, rows: &[usize], expanded: &HashSet<String>, out: &mut Vec<usize>) {
+            for &row in rows {
+                out.push(row);
+                if shape.is_open(row, expanded) {
+                    walk(shape, &shape.rows[row].children, expanded, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(self, &self.roots, expanded, &mut out);
+        out
+    }
+}
+
+/// What a navigation key does to the cursor, given the rows drawn.
+#[derive(Debug, PartialEq, Eq)]
+enum Nav {
+    /// Put the cursor on this row.
+    To(usize),
+    Expand(usize),
+    Collapse(usize),
+    /// Expand these rows (`*`: the cursor row's siblings).
+    ExpandAll(Vec<usize>),
+}
+
+/// The tree's own answer to `key` with the cursor on `cursor`; `None` for a
+/// key it does not handle.
+fn nav(shape: &Shape, expanded: &HashSet<String>, cursor: usize, key: &str) -> Option<Nav> {
+    let visible = shape.visible(expanded);
+    let at = visible.iter().position(|&r| r == cursor)?;
+    let last = visible.len().checked_sub(1)?;
+    let has_children = !shape.rows[cursor].children.is_empty();
+    Some(match key {
+        "ArrowDown" => Nav::To(visible[(at + 1).min(last)]),
+        "ArrowUp" => Nav::To(visible[at.saturating_sub(1)]),
+        "Home" => Nav::To(visible[0]),
+        "End" => Nav::To(visible[last]),
+        "PageDown" => Nav::To(visible[(at + PAGE_ROWS).min(last)]),
+        "PageUp" => Nav::To(visible[at.saturating_sub(PAGE_ROWS)]),
+        "ArrowRight" if has_children && !shape.is_open(cursor, expanded) => Nav::Expand(cursor),
+        "ArrowRight" if has_children => Nav::To(shape.rows[cursor].children[0]),
+        "ArrowRight" => return None,
+        "ArrowLeft" if shape.is_open(cursor, expanded) => Nav::Collapse(cursor),
+        "ArrowLeft" => Nav::To(shape.rows[cursor].parent?),
+        "*" => Nav::ExpandAll(
+            shape.siblings(cursor).iter().copied().filter(|&s| !shape.rows[s].children.is_empty()).collect(),
+        ),
+        _ => return None,
+    })
+}
+
+/// The next drawn row after `cursor` (wrapping) whose text starts with
+/// `typed`, case-insensitively. Typing one letter again and again steps
+/// through the rows that start with it.
+fn type_ahead(shape: &Shape, expanded: &HashSet<String>, cursor: usize, typed: &str, text: &dyn Fn(&str) -> String) -> Option<usize> {
+    let visible = shape.visible(expanded);
+    let at = visible.iter().position(|&r| r == cursor).unwrap_or(0);
+    let typed = typed.to_lowercase();
+    let mut chars = typed.chars();
+    let first = chars.next()?;
+    let repeated = chars.all(|c| c == first);
+    let matches = |row: usize, prefix: &str| text(&shape.rows[row].value).to_lowercase().starts_with(prefix);
+    let visible = &visible;
+    // A longer prefix may still match the cursor row itself; one letter
+    // moves on from it.
+    let from = |start: usize| (0..visible.len()).map(move |i| visible[(start + i) % visible.len()]);
+    if typed.chars().count() > 1 {
+        if let Some(row) = from(at).find(|&r| matches(r, &typed)) {
+            return Some(row);
+        }
+        if !repeated {
+            return None;
+        }
+    }
+    let one = first.to_string();
+    from(at + 1).find(|&r| matches(r, &one))
+}
+
+/// Draw the cursor on the row of `value` (and off the one it was on).
+fn draw_cursor(config: &Rc<TreeConfig>, value: Option<&str>) {
+    let previous = config.keys.drawn.borrow_mut().take();
+    let previous = previous.and_then(|v| config.drag.rows.borrow().get(&v).cloned());
+    if let Some(row) = previous {
+        row.remove_class(CURSOR_CLASS);
+    }
+    if let Some(value) = value {
+        let row = config.drag.rows.borrow().get(value).cloned();
+        if let Some(row) = row {
+            *config.keys.drawn.borrow_mut() = Some(value.to_string());
+            row.add_class(CURSOR_CLASS);
+        }
+    }
+}
+
+fn set_focused(config: &Rc<TreeConfig>, focused: bool) {
+    config.keys.focused.set(focused);
+    let container = config.keys.container.borrow().clone();
+    if let Some(container) = container {
+        if focused {
+            container.add_class(FOCUSED_CLASS);
+        } else {
+            container.remove_class(FOCUSED_CLASS);
+        }
+    }
+}
+
+/// Move the cursor to `value` from the keyboard: select it, give its row the
+/// keyboard, show it, and tell the app once it rests.
+fn move_cursor(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, value: &str) {
+    tree_state.cursor.set(Some(value.to_string()));
+    tree_state.controller.select(value);
+    let row = config.drag.rows.borrow().get(value).cloned();
+    if let Some(row) = row {
+        row.focus();
+        row.scroll_into_view();
+    }
+    if let Some(handle) = config.keys.rest_timer.borrow_mut().take() {
+        clear_timeout(handle);
+    }
+    if let Some(oncursor) = config.oncursor.clone() {
+        let v = value.to_string();
+        let fire = move || oncursor.invoke(v.clone());
+        if config.cursor_delay_ms == 0 {
+            fire();
+        } else {
+            let cfg = Rc::downgrade(config);
+            let handle = set_timeout(config.cursor_delay_ms, move || {
+                if let Some(cfg) = cfg.upgrade() {
+                    cfg.keys.rest_timer.borrow_mut().take();
+                }
+                fire();
+            });
+            *config.keys.rest_timer.borrow_mut() = Some(handle);
+        }
+    }
+}
+
+fn expand(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, value: &str) {
+    tree_state.controller.expand(value);
+    if let Some(cb) = &config.onexpand {
+        cb.invoke(value.to_string());
+    }
+}
+
+/// A key pressed while focus is inside the tree.
+fn on_tree_key(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, container: &NodeHandle, key: &rinch_core::KeyEventData) -> bool {
+    // Only a row's own keys: a field inside a row (a rename box) keeps its.
+    let Some(active) = container.active_element() else { return false };
+    let on_a_row = active
+        .get_attribute("class")
+        .is_some_and(|c| c.split_whitespace().any(|one| one == "rinch-tree__node-content"));
+    if !on_a_row {
+        return false;
+    }
+    let Some(row_value) = active.parent_node().and_then(|li| li.get_attribute("data-value")) else { return false };
+    set_focused(config, true);
+    let cursor = untracked(|| tree_state.cursor.get()).filter(|c| config.drag.rows.borrow().contains_key(c)).unwrap_or(row_value);
+    let shape = config.drag.shape();
+    let Some(cursor_row) = shape.index(&cursor) else { return false };
+
+    if let Some(onkey) = &config.onkey {
+        let carried = match &config.drag_values {
+            Some(values) => values(&cursor),
+            None => vec![cursor.clone()],
+        };
+        let offered = TreeKey {
+            key: key.key.clone(),
+            ctrl: key.ctrl,
+            shift: key.shift,
+            alt: key.alt,
+            meta: key.meta,
+            parent: shape.rows[cursor_row].parent.map(|p| shape.rows[p].value.clone()),
+            cursor: cursor.clone(),
+            shape: shape.clone(),
+            carried,
+        };
+        if onkey(&offered) {
+            return true;
+        }
+    }
+    if key.ctrl || key.alt || key.meta {
+        return false;
+    }
+
+    let expanded = untracked(|| tree_state.expanded.get());
+    if !key.shift {
+        if let Some(step) = nav(&shape, &expanded, cursor_row, &key.key) {
+            match step {
+                Nav::To(row) => move_cursor(config, tree_state, &shape.rows[row].value),
+                Nav::Expand(row) => expand(config, tree_state, &shape.rows[row].value),
+                Nav::Collapse(row) => {
+                    let value = shape.rows[row].value.clone();
+                    tree_state.controller.collapse(&value);
+                    if let Some(cb) = &config.oncollapse {
+                        cb.invoke(value);
+                    }
+                }
+                Nav::ExpandAll(rows) => {
+                    for row in rows {
+                        expand(config, tree_state, &shape.rows[row].value);
+                    }
+                }
+            }
+            return true;
+        }
+    }
+
+    // Type-ahead: a printable character.
+    let mut letters = key.key.chars();
+    let (Some(letter), None) = (letters.next(), letters.next()) else { return false };
+    if letter.is_control() || (letter == ' ' && config.keys.typed.borrow().is_empty()) {
+        return false;
+    }
+    config.keys.typed.borrow_mut().push(letter);
+    if let Some(handle) = config.keys.typed_timer.borrow_mut().take() {
+        clear_timeout(handle);
+    }
+    let cfg = Rc::downgrade(config);
+    let handle = set_timeout(TYPE_AHEAD_MS, move || {
+        if let Some(cfg) = cfg.upgrade() {
+            cfg.keys.typed.borrow_mut().clear();
+            cfg.keys.typed_timer.borrow_mut().take();
+        }
+    });
+    *config.keys.typed_timer.borrow_mut() = Some(handle);
+    let typed = config.keys.typed.borrow().clone();
+    // The app's text for a row, or its label.
+    let mut labels = HashMap::new();
+    if config.label_of.is_none() {
+        fn collect(nodes: &[TreeNodeData], labels: &mut HashMap<String, String>) {
+            for node in nodes {
+                labels.insert(node.value.clone(), node.label.clone());
+                collect(&node.children, labels);
+            }
+        }
+        collect(&config.drag.data.borrow(), &mut labels);
+    }
+    let text_of = |value: &str| match &config.label_of {
+        Some(label_of) => label_of(value),
+        None => labels.get(value).cloned().unwrap_or_default(),
+    };
+    if let Some(row) = type_ahead(&shape, &expanded, cursor_row, &typed, &text_of) {
+        move_cursor(config, tree_state, &shape.rows[row].value);
+    }
+    true
+}
+
+/// The tree's keyboard: its key handler while focus is inside it, the
+/// cursor drawn on its row, and focus requests.
+fn wire_keyboard(__scope: &mut RenderScope, container: &NodeHandle, tree_state: UseTreeReturn, config: &Rc<TreeConfig>) {
+    container.add_class("rinch-tree--keyboard");
+    *config.keys.container.borrow_mut() = Some(container.clone());
+
+    let cfg = config.clone();
+    let owner = container.clone();
+    let leave_cfg = Rc::downgrade(config);
+    let handle = rinch_core::push_key_handler(
+        container,
+        move |key| on_tree_key(&cfg, tree_state, &owner, key),
+        move || {
+            if let Some(cfg) = leave_cfg.upgrade() {
+                set_focused(&cfg, false);
+            }
+        },
+    );
+    __scope.on_cleanup(move || drop(handle));
+
+    let cfg = config.clone();
+    __scope.create_effect(move || {
+        let cursor = tree_state.cursor.get();
+        untracked(|| draw_cursor(&cfg, cursor.as_deref()));
+    });
+
+    let cfg = config.clone();
+    let first = Cell::new(true);
+    __scope.create_effect(move || {
+        let _ = tree_state.controller.focus_requests.get();
+        if first.replace(false) {
+            return;
+        }
+        untracked(|| {
+            let cursor = tree_state.cursor.get().filter(|c| cfg.drag.rows.borrow().contains_key(c));
+            let target = cursor.or_else(|| {
+                let shape = cfg.drag.shape();
+                shape.roots.first().map(|&r| shape.rows[r].value.clone())
+            });
+            if let Some(value) = target {
+                tree_state.cursor.set(Some(value.clone()));
+                let row = cfg.drag.rows.borrow().get(&value).cloned();
+                if let Some(row) = row {
+                    set_focused(&cfg, true);
+                    row.focus();
+                    row.scroll_into_view();
+                }
+            }
+        });
+    });
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+
+    /// a (open: a1, a2), b, c (closed: c1)
+    fn shape() -> Shape {
+        Shape::of(&[
+            TreeNodeData::new("a", "Apples").with_children(vec![
+                TreeNodeData::new("a1", "Avocado"),
+                TreeNodeData::new("a2", "Banana"),
+            ]),
+            TreeNodeData::new("b", "Beets"),
+            TreeNodeData::new("c", "Carrots").with_child(TreeNodeData::new("c1", "Celery")),
+        ])
+    }
+
+    fn open() -> HashSet<String> {
+        ["a".to_string()].into_iter().collect()
+    }
+
+    fn to(shape: &Shape, step: Option<Nav>) -> String {
+        match step {
+            Some(Nav::To(row)) => shape.rows[row].value.clone(),
+            other => panic!("expected a move, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn arrows_walk_the_rows_drawn() {
+        let s = shape();
+        let i = |v: &str| s.index(v).unwrap();
+        assert_eq!(to(&s, nav(&s, &open(), i("a"), "ArrowDown")), "a1");
+        assert_eq!(to(&s, nav(&s, &open(), i("a2"), "ArrowDown")), "b");
+        assert_eq!(to(&s, nav(&s, &open(), i("c"), "ArrowDown")), "c", "the last row stays");
+        assert_eq!(to(&s, nav(&s, &open(), i("b"), "ArrowUp")), "a2");
+        assert_eq!(to(&s, nav(&s, &open(), i("a"), "ArrowUp")), "a");
+        assert_eq!(to(&s, nav(&s, &open(), i("a1"), "End")), "c");
+        assert_eq!(to(&s, nav(&s, &open(), i("c"), "Home")), "a");
+        assert_eq!(to(&s, nav(&s, &open(), i("a"), "PageDown")), "c");
+    }
+
+    #[test]
+    fn right_and_left_open_close_and_step() {
+        let s = shape();
+        let i = |v: &str| s.index(v).unwrap();
+        assert_eq!(nav(&s, &open(), i("c"), "ArrowRight"), Some(Nav::Expand(i("c"))));
+        assert_eq!(to(&s, nav(&s, &open(), i("a"), "ArrowRight")), "a1");
+        assert_eq!(nav(&s, &open(), i("b"), "ArrowRight"), None, "a leaf has nowhere to go");
+        assert_eq!(nav(&s, &open(), i("a"), "ArrowLeft"), Some(Nav::Collapse(i("a"))));
+        assert_eq!(to(&s, nav(&s, &open(), i("a2"), "ArrowLeft")), "a");
+        assert_eq!(nav(&s, &open(), i("a1"), "Enter"), None);
+        assert_eq!(nav(&s, &open(), i("b"), "*"), Some(Nav::ExpandAll(vec![i("a"), i("c")])));
+    }
+
+    #[test]
+    fn type_ahead_finds_the_next_row_and_steps_on_one_letter() {
+        let s = shape();
+        let labels: HashMap<String, String> =
+            [("a", "Apples"), ("a1", "Avocado"), ("a2", "Banana"), ("b", "Beets"), ("c", "Carrots"), ("c1", "Celery")]
+                .into_iter()
+                .map(|(v, l)| (v.to_string(), l.to_string()))
+                .collect();
+        let text = |v: &str| labels[v].clone();
+        let i = |v: &str| s.index(v).unwrap();
+        let name = |row: Option<usize>| row.map(|r| s.rows[r].value.clone());
+        assert_eq!(name(type_ahead(&s, &open(), i("a"), "b", &text)), Some("a2".into()));
+        assert_eq!(name(type_ahead(&s, &open(), i("a2"), "b", &text)), Some("b".into()));
+        assert_eq!(name(type_ahead(&s, &open(), i("a2"), "be", &text)), Some("b".into()));
+        assert_eq!(name(type_ahead(&s, &open(), i("a"), "aa", &text)), Some("a1".into()), "a repeated letter steps on");
+        assert_eq!(name(type_ahead(&s, &open(), i("a"), "ce", &text)), None, "Celery is not drawn");
+    }
+
+    fn key(cursor: &str) -> TreeKey {
+        let s = Rc::new(shape());
+        let parent = s.rows[s.index(cursor).unwrap()].parent.map(|p| s.rows[p].value.clone());
+        TreeKey {
+            key: String::new(),
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: false,
+            cursor: cursor.into(),
+            parent,
+            shape: s,
+            carried: vec![cursor.into()],
+        }
+    }
+
+    fn place(drop: Option<TreeDrop>) -> Option<(Option<String>, TreeSlot)> {
+        drop.map(|d| (d.parent, d.slot))
+    }
+
+    #[test]
+    fn structural_moves_are_drops() {
+        let after = |v: &str| TreeSlot::After(v.into());
+        assert_eq!(place(key("a2").drop_for(TreeMove::Indent)), Some((Some("a1".into()), TreeSlot::Last)));
+        assert_eq!(place(key("a1").drop_for(TreeMove::Indent)), None, "no sibling above");
+        assert_eq!(place(key("a2").drop_for(TreeMove::Outdent)), Some((None, after("a"))));
+        assert_eq!(place(key("b").drop_for(TreeMove::Outdent)), None, "the top level");
+        assert_eq!(place(key("a2").drop_for(TreeMove::Up)), Some((Some("a".into()), TreeSlot::First)));
+        assert_eq!(place(key("c").drop_for(TreeMove::Up)), Some((None, after("a"))));
+        assert_eq!(place(key("a").drop_for(TreeMove::Up)), None);
+        assert_eq!(place(key("a1").drop_for(TreeMove::Down)), Some((Some("a".into()), after("a2"))));
+        assert_eq!(place(key("c").drop_for(TreeMove::Down)), None);
     }
 }

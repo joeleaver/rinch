@@ -27,6 +27,8 @@ mod click_handling;
 mod color_input_dismiss_465_tests;
 #[cfg(test)]
 mod tree_drop_tests;
+#[cfg(test)]
+mod tree_key_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod component_attrs_433_tests;
 #[cfg(test)]

@@ -172,6 +172,16 @@ pub fn styles() -> String {
     background-color: transparent;
 }
 
+/* Keyboard: the cursor row carries a ring while the tree has the keyboard,
+   in place of the browser's own focus outline. */
+.rinch-tree--keyboard .rinch-tree__node-content:focus-visible {
+    outline: none;
+}
+.rinch-tree--focused .rinch-tree__node-content--cursor {
+    outline: 1px solid var(--rinch-primary-color);
+    outline-offset: -1px;
+}
+
 /* Indent guides: one line down each expanded row's children */
 .rinch-tree__subtree-wrap {
     position: relative;
