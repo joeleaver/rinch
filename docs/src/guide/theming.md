@@ -169,6 +169,15 @@ Four things about that set are worth knowing before they surprise you.
 - **Whitespace in `<pre>` is preserved now**, which means a `<pre>` whose source
   was indented in your `rsx!` will show that indentation. That is the element
   doing its job; `white-space: normal` on it opts out.
+- **A tab in `<pre>` advances to the next tab stop**, as in a browser: the
+  stops fall every 8 spaces of the block's font (its `letter-spacing` and
+  `word-spacing` included), measured from the line's start (#1122). The same
+  holds under `pre-wrap` and `break-spaces`; `normal`, `nowrap` and `pre-line`
+  collapse a tab to a space. `tab-size` is not read yet, so the stops are
+  always 8 spaces apart (#1584), and a flex or grid item's own text and the
+  text of a form control do not set tabs to stops yet (#1585). In a long
+  soft-wrapped `pre-wrap` paragraph some tabs from about the fifth line on can
+  stay a few pixels off their stops (#1593).
 - **rinch does not copy Chrome's monospace font-*size* quirk.** Chrome renders a
   `medium`-sized monospace element at 13px rather than 16px; rinch has no
   per-family default size, so `<code>` keeps the size it inherits. Only the

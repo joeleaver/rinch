@@ -114,7 +114,7 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     change; `letter-spacing`/`word-spacing` on the substitutes still differ from Chrome's).
     The rich-text editor's caret map counts the same bytes for each through
     `DomDocument::substituted_char_flat_bytes`, answered from the table `laid_out_as` reads
-    (`ifc::PRESERVED_SUBSTITUTES`) — as it counts a tab through `tab_flat_bytes` (#1109). Only in an IFC: a flex or grid item's own text (a text leaf) still breaks at
+    (`ifc::PRESERVED_SUBSTITUTES`) — as it counts a tab through `tab_flat_bytes` (#1109; 1 since #1122). Only in an IFC: a flex or grid item's own text (a text leaf) still breaks at
     U+2028/U+2029 and draws U+0085 (#1268).
     **The flat offsets index that collapsed text** — the caret maps,
     inline backgrounds and decorations, the visibility mask; they used to count the pushed text,
@@ -122,6 +122,26 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     DOM↔flat correspondence. Since parley counts a trailing NBSP in `trailing_whitespace`,
     `measured_width` keeps it (`width_keeping_nbsp`), whatever else the IFC holds.
     `crates/rinch-dom/tests/inline_edge_space_tests.rs` and `nbsp_line_box_tests.rs` are the pins.
+  - **Parley has no tab stops; rinch sets them** (#1122). A preserved tab
+    (`pre`, `pre-wrap`, `break-spaces`, a contenteditable root) is pushed as
+    one space, one flat byte, recorded in `IfcText::tabs`; `IfcText::replay`
+    gives each its own span of `word-spacing: 0` and a `letter-spacing` that
+    widens it to its stop, and `build_inline_layout` builds and breaks again
+    while a tab is off its stop (`ifc::TabStops::deltas`), at most
+    `MAX_TAB_BUILDS` = 4 builds; `ifc_tab_rebuilds` counts the extra ones: 1 for
+    lines that do not wrap. Each build settles one more moved soft wrap, so a
+    long soft-wrapped `pre-wrap` paragraph can stop at the cap with some tabs
+    off their stops, 3.8–5px from Chrome's, from about its fifth line on (Refs
+    #1593; `review_1587_tests.rs` pins a paragraph that needs all four). The rule is Chrome 155's: stops every `TAB_SIZE`
+    (8) spaces of the **block's** font, its letter- and word-spacing included,
+    from the line's start edge in logical order before `text-align`; the first
+    stop strictly past the tab's start, or the next when that is under half a
+    space away; an overflowing tab hangs. `tab-size` is Gecko-only in Stylo and
+    not read (#1584). Since the tab is one byte, `tab_flat_bytes` is 1 on
+    rinch-dom as in a browser. Not done: a text leaf's and a form control's tab
+    (#1585), and the `text-overflow: ellipsis` rebuild, which refuses the
+    per-line cut for a paragraph with a tab and draws it one space wide in the
+    whole cut (#1586). `tests/tab_stop_1122_tests.rs` is the pin.
 - **skrifa** - read directly by rinch-dom only to size a text control from its font's OS/2 and `head` tables (#1177). Pinned at **0.44**, the version parley 0.11.1 depends on; parley does not re-export it, so a parley bump that moves skrifa silently builds a second copy unless this pin moves with it.
 - **vello** - 2D GPU rendering via wgpu (GPU mode, enabled with `features = ["gpu"]`)
 - **tiny-skia** - 2D software rendering (default mode, no GPU required)
@@ -2098,6 +2118,40 @@ so the claim stays out of both. The right/middle path
 used to run no claim, so a right press on a nested focusable released the
 outer claim and nothing took the keyboard.
 
+**On `rinch-web` a press on a `data-rid` element resolves focus the same way**
+(#1146). `dispatch_click_at` `preventDefault`s the `pointerdown` of a press
+whose handler ran, and that cancels the browser's own focus change, so before
+#1146 no such press moved focus: a `Button` took none, the field that had it
+was not blurred (its `change` uncommitted), and a text field inside a
+clickable (`ColorInput`'s, in its input group) could not be focused by a click
+at all. Now (`PressFocus`, `event_delegation.rs`): when the nearest focusable
+ancestor-or-self (`PRESS_FOCUSABLE_SELECTOR`) is a form control or editable
+content the default is not prevented, so the browser focuses it and places
+the caret; any other focusable is focused by rinch (`preventScroll`) **before**
+the handler runs, so the old field blurs first and a focus move the handler
+makes wins; a press already prevented (`data-nofocus`) or with nothing
+focusable on its chain moves no focus (desktop releases for the latter). The
+selector is a superset (a `disabled` button, a `contenteditable="false"`
+island match it and refuse `focus()`), so `focus_press_target` asks the
+browser and walks on to the next match, as Chrome focuses the `tabindex` row
+around a disabled button. A **touch/pen** press holds its focus move until the
+owning pointer's `pointerup` (`PendingPressFocus`): a `pointercancel` (Chrome's
+pan), a move past the scroll slop or the next primary press drops it, and a
+focus move made since the press landed (the handler's own) wins — a pan that
+starts on a button used to blur the field and drop a phone's soft keyboard.
+(The click itself still fires on contact outside a scroller, #1582.) In a
+`data-nofocus` region a press whose nearest focusable is a form control or
+editable content strictly inside the region is not prevented (#1579), as on
+desktop. Behaviour changes for web apps: an editor toolbar needs
+`data-nofocus`, as on desktop; any focused field blurs and commits `onchange`
+on a press of a focusable `data-rid`; a `trap_focus` overlay opened from a
+`Button` restores focus to that `Button`; a native `<select>`/range inside a
+clickable is no longer prevented, so it works natively beside the handler.
+Safari and macOS Firefox do not focus a `<button>` on a click; rinch-web does
+(Chrome's and desktop's rule). Measured with trusted CDP input in Chrome 155;
+pins: `rinch-web/tests/press_focus_1146.rs`, `press_focus_1580_review.rs`,
+`press_focus_1580_round2.rs`.
+
 A focused **`<select>` is closed**, like a browser's — Enter/Space/Alt+Down
 opens its popup, which then owns the keyboard (issue #314). A pointer opens and
 picks with the primary button only (issue #1111): a right or middle press on the
@@ -2307,9 +2361,11 @@ toolbar needs so Bold does not blur the editor it acts on. Same boolean rule as
 attributes keep and the HTML pair does not — read **anywhere on the pressed
 node's ancestor chain** so a toolbar carries it once; it protects whatever holds
 the keyboard (editor, input, surface, node), the `data-rid` click still fires,
-and a text field *inside* the
-region still focuses normally. Both backends — on web it becomes
-`preventDefault()` on the `pointerdown`.
+and a form control *inside* the
+region (any `<input>`, `<textarea>`, `<select>`, editable content — a checkbox
+too) still focuses normally (the web since #1579). Both backends — on web it
+becomes `preventDefault()` on the `pointerdown`, skipped when the press's
+nearest focusable is a form control strictly inside the region.
 
 A custom component that takes keyboard input registers for the lifecycle
 (issue #147, `crates/rinch/src/focus_registry.rs`, in the prelude):
@@ -6135,6 +6191,19 @@ its size mid-turn, `rotate(0deg)` → `rotate(360deg)` is a change that spins,
 and `none` → `rotate(0deg)` starts nothing. `@keyframes` stops use the same
 path; `crates/rinch-dom/tests/transform_interpolation_tests.rs` pins Chrome
 153's numbers. Guide: `docs/src/architecture/rendering-pipeline.md`.
+
+**Every easing function eases** (#1564): `steps()`, `step-start`/`step-end`
+and `linear(<stops>)` reach `transition::types::TimingFunction` as themselves
+(they used to become `linear`), in transitions, `@keyframes` and a keyframe's
+own `animation-timing-function`, through one converter. A step reads CSS
+Easing 2's before flag (`apply_with_before_flag`: set in the before phase going
+forwards and the after phase going backwards; a transition's delay is its easing
+at 0 with the flag, not always `from`), and an iteration's start and end
+are eased at interval distance 0 and 1 (`ActiveAnimation::interval`), not
+snapped to the keyframe. `TimingFunction` is not `Copy` (a `linear()` holds an
+`Arc`). The `jump-*` positions do not parse in Stylo's servo build, so such a
+declaration is dropped (#1581). Pins: `crates/rinch-dom/tests/easing_steps_linear_1564_tests.rs`
+(Chrome 155).
 
 **The 3D transform functions are drawn flat** (#405; they used to compute to the
 identity, `translate3d` aside). A list holding any of them is composed as 4×4

@@ -115,7 +115,7 @@ pub fn start_animations(
             existing_anim.direction = spec.direction;
             existing_anim.fill_mode = spec.fill_mode;
             existing_anim.iteration_count = spec.iteration_count;
-            existing_anim.default_timing = spec.timing;
+            existing_anim.default_timing = spec.timing.clone();
 
             // The full restyle keeps the clock and nothing else (see the doc
             // above). Neither `start_time_ms` nor `paused_elapsed_ms` nor
@@ -149,7 +149,7 @@ pub fn start_animations(
                 new_active.push(ActiveAnimation {
                     name: spec.name.clone(),
                     keyframe_stops: stops,
-                    default_timing: spec.timing,
+                    default_timing: spec.timing.clone(),
                     duration_ms: spec.duration_ms,
                     delay_ms: spec.delay_ms,
                     direction: spec.direction,

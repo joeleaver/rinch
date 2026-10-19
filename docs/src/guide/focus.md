@@ -141,6 +141,28 @@ Focus arrives three ways, and all three go through the same arbiter:
   browser. A control that must **not** steal focus from the field it sits
   beside — a toolbar button over a rich-text editor, a spinner next to a number
   input — needs [`data-nofocus`](#taking-the-click-without-the-keyboard).
+
+  On `rinch-web` the browser moves focus on a press, and rinch keeps that
+  true for a press on an `onclick` element too (issue #1146): a text field
+  inside a clickable is focused by the browser with the caret where the press
+  landed, and any other focusable (a `<button>`, a `tabindex` row) is focused
+  before the handler runs, so the field that had the focus commits its
+  `onchange` first. A press with nothing focusable above it leaves the focus
+  where it was on the web, where desktop releases it. When the browser refuses
+  the nearest candidate (a `disabled` button inside a `tabindex` row), the
+  next focusable ancestor takes it, as Chrome does. A **touch or pen** press
+  moves the focus on release, and only if it was a tap: a finger that starts a
+  scroll on a button leaves the field (and the phone's keyboard) alone.
+
+  Two things follow that web apps used to see differently. An overlay with
+  `trap_focus` opened from a `Button` gives the focus back to that `Button` on
+  close (it was the field focused before the press). And a native `<select>`
+  or `<input type="range">` inside a clickable works natively alongside the
+  handler — its press is no longer prevented.
+
+  "The way a browser does" is Chrome's and desktop rinch's: Safari, and Firefox
+  on macOS, do not focus a `<button>` on a click, and rinch-web focuses it
+  there too.
 - **`node.focus()` / `request_focus(node_id)`** — programmatic, also no ring.
 
 ### Selecting a text control's text programmatically
@@ -249,14 +271,19 @@ The rules:
 - It protects **whatever holds the keyboard** — the rich-text editor, an
   `<input>`, a render surface, another focusable node — not just the editor.
 - The **click still fires**. `data-rid` dispatch is untouched.
-- A **text field inside** a `data-nofocus` region still focuses normally. A
-  link-URL field in a toolbar has to be usable, so the field's own claim wins
-  over the region's opt-out.
+- A **form control inside** a `data-nofocus` region (an `<input>` of any type,
+  a `<textarea>`, a `<select>`, or editable content) still focuses normally, on
+  both backends (the web since issue #1579). A link-URL field in a toolbar has
+  to be usable, so the control's own claim wins over the region's opt-out. That
+  includes a checkbox or `<input type="button">`: pressed inside an editor
+  toolbar, it takes the keyboard from the editor. Use a `<button>` (or any
+  element that is not a form control) for a toolbar action that must not.
 - Boolean attribute, same rule as `data-disabled`: present means on whatever
   the value, and the explicit `"false"` opts out — one of rinch's own three
   attributes where that escape exists.
 - It works on **both backends**. On the web it becomes `preventDefault()` on
-  the `pointerdown`.
+  the `pointerdown` — except a press whose nearest focusable is a form control
+  inside the region, which is left to the browser.
 
 ### Containing Tab inside an overlay
 

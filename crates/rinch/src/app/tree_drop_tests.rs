@@ -15,10 +15,13 @@ use rinch_core::element::ValueCallback;
 const VIEWPORT: (f32, f32) = (800.0, 600.0);
 const INDENT: f32 = 20.0;
 
+/// Every `ondropchange` report, in order.
+type Offers = Rc<RefCell<Vec<Option<(TreeDrop, DropVerdict)>>>>;
+
 struct Fixture {
     app: RinchApp,
     drops: Rc<RefCell<Vec<TreeDrop>>>,
-    offers: Rc<RefCell<Vec<Option<(TreeDrop, DropVerdict)>>>>,
+    offers: Offers,
     started: Rc<RefCell<Vec<Vec<String>>>>,
 }
 
@@ -29,7 +32,7 @@ struct Fixture {
 /// Drops into `b` are refused by the app.
 fn fixture() -> Fixture {
     let drops: Rc<RefCell<Vec<TreeDrop>>> = Rc::default();
-    let offers: Rc<RefCell<Vec<Option<(TreeDrop, DropVerdict)>>>> = Rc::default();
+    let offers: Offers = Rc::default();
     let started: Rc<RefCell<Vec<Vec<String>>>> = Rc::default();
     let (d, o, s) = (drops.clone(), offers.clone(), started.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -58,7 +61,9 @@ fn fixture() -> Fixture {
             })),
             ondropchange: Some(ValueCallback::new(move |offer| o.borrow_mut().push(offer))),
             ondrop: Some(ValueCallback::new(move |drop| d.borrow_mut().push(drop))),
-            ondragstart: Some(ValueCallback::new(move |values| s.borrow_mut().push(values))),
+            ondragstart: Some(ValueCallback::new(move |values| {
+                s.borrow_mut().push(values)
+            })),
             ..Default::default()
         }
         .render(scope, &[]);
@@ -71,12 +76,19 @@ fn fixture() -> Fixture {
     {
         let doc = app.doc.as_ref().unwrap();
         let mut d = doc.borrow_mut();
-        d.load_css(&rinch_theme::generate_theme_css(&rinch_theme::Theme::default()));
+        d.load_css(&rinch_theme::generate_theme_css(
+            &rinch_theme::Theme::default(),
+        ));
         d.load_css(&rinch_components::generate_component_css());
         d.recompute_all_styles_full();
     }
     app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
-    Fixture { app, drops, offers, started }
+    Fixture {
+        app,
+        drops,
+        offers,
+        started,
+    }
 }
 
 fn send(app: &mut RinchApp, event: PlatformEvent) {
@@ -98,7 +110,9 @@ fn row(app: &RinchApp, value: &str) -> usize {
         .tree
         .nodes
         .iter()
-        .find(|(id, n)| n.attributes.get("data-value").map(String::as_str) == Some(value) && in_tree(&d, *id))
+        .find(|(id, n)| {
+            n.attributes.get("data-value").map(String::as_str) == Some(value) && in_tree(&d, *id)
+        })
         .map(|(id, _)| id)
         .unwrap_or_else(|| panic!("no row for {value}"));
     d.tree.nodes[li]
@@ -152,15 +166,31 @@ fn indicator(app: &RinchApp) -> Option<(usize, String)> {
         })
         .map(|(id, n)| (id, n.attributes.get("class").cloned().unwrap_or_default()))
         .collect();
-    assert!(drawing.len() <= 1, "one row draws the drop at a time: {drawing:?}");
+    assert!(
+        drawing.len() <= 1,
+        "one row draws the drop at a time: {drawing:?}"
+    );
     drawing.into_iter().next()
 }
 
 /// Press on `from`'s row and move far enough to start a drag.
 fn start(f: &mut Fixture, from: &str) {
     let (x, y) = at(&f.app, from, 120.0, 0.5);
-    send(&mut f.app, PlatformEvent::MouseDown { x, y, button: MouseButton::Left });
-    send(&mut f.app, PlatformEvent::MouseMove { x: x + 20.0, y: y + 1.0 });
+    send(
+        &mut f.app,
+        PlatformEvent::MouseDown {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
+    );
+    send(
+        &mut f.app,
+        PlatformEvent::MouseMove {
+            x: x + 20.0,
+            y: y + 1.0,
+        },
+    );
     assert!(f.app.active_dnd.is_some(), "the drag went live");
 }
 
@@ -184,36 +214,81 @@ fn the_offer_follows_the_part_of_the_row_under_the_pointer() {
     // itself; the tree offers it as it is.
     move_to(&mut f, "a2", 120.0, 0.1);
     let (drop, verdict) = last_offer(&f).expect("an offer");
-    assert_eq!((drop.parent.as_deref(), drop.slot.clone(), drop.zone), (Some("a"), TreeSlot::After("a1".into()), DropZone::Before));
+    assert_eq!(
+        (drop.parent.as_deref(), drop.slot.clone(), drop.zone),
+        (Some("a"), TreeSlot::After("a1".into()), DropZone::Before)
+    );
     assert_eq!(verdict, DropVerdict::Allowed);
     let (host, class) = indicator(&f.app).expect("the indicator is drawn");
     assert_eq!(host, row(&f.app, "a2"));
-    assert!(class.contains("rinch-tree__node-content--drop-before"), "{class}");
+    assert!(
+        class.contains("rinch-tree__node-content--drop-before"),
+        "{class}"
+    );
 
     // The middle of a2: into it, last; drawn as an outline.
     move_to(&mut f, "a2", 120.0, 0.5);
     let (drop, _) = last_offer(&f).expect("an offer");
-    assert_eq!((drop.parent.as_deref(), drop.slot.clone()), (Some("a2"), TreeSlot::Last));
-    assert!(indicator(&f.app).unwrap().1.contains("rinch-tree__node-content--drop-inside"));
+    assert_eq!(
+        (drop.parent.as_deref(), drop.slot.clone()),
+        (Some("a2"), TreeSlot::Last)
+    );
+    assert!(
+        indicator(&f.app)
+            .unwrap()
+            .1
+            .contains("rinch-tree__node-content--drop-inside")
+    );
 
     // The bottom of a2, the last row of a, with the pointer at the first
     // indent column: out of a, after it.
     move_to(&mut f, "a2", INDENT * 0.5, 0.9);
     let (drop, _) = last_offer(&f).expect("an offer");
-    assert_eq!((drop.parent.clone(), drop.slot.clone()), (None, TreeSlot::After("a".into())));
+    assert_eq!(
+        (drop.parent.clone(), drop.slot.clone()),
+        (None, TreeSlot::After("a".into()))
+    );
     // And with the pointer further in: after a2, inside a.
     move_to(&mut f, "a2", 120.0, 0.9);
     let (drop, _) = last_offer(&f).expect("an offer");
-    assert_eq!((drop.parent.as_deref(), drop.slot.clone()), (Some("a"), TreeSlot::After("a2".into())));
+    assert_eq!(
+        (drop.parent.as_deref(), drop.slot.clone()),
+        (Some("a"), TreeSlot::After("a2".into()))
+    );
 
     // Released there: delivered once, as offered.
     let (x, y) = at(&f.app, "a2", 120.0, 0.9);
-    send(&mut f.app, PlatformEvent::MouseUp { x, y, button: MouseButton::Left });
+    send(
+        &mut f.app,
+        PlatformEvent::MouseUp {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
+    );
     let drops = f.drops.borrow();
     assert_eq!(drops.len(), 1);
-    assert_eq!((drops[0].dragged.clone(), drops[0].parent.as_deref(), drops[0].slot.clone()), (vec!["a1".to_string()], Some("a"), TreeSlot::After("a2".into())));
-    assert!(indicator(&f.app).is_none(), "the indicator is gone after the drop");
-    assert_eq!(f.offers.borrow().last().cloned(), Some(None), "the app was told the offer ended");
+    assert_eq!(
+        (
+            drops[0].dragged.clone(),
+            drops[0].parent.as_deref(),
+            drops[0].slot.clone()
+        ),
+        (
+            vec!["a1".to_string()],
+            Some("a"),
+            TreeSlot::After("a2".into())
+        )
+    );
+    assert!(
+        indicator(&f.app).is_none(),
+        "the indicator is gone after the drop"
+    );
+    assert_eq!(
+        f.offers.borrow().last().cloned(),
+        Some(None),
+        "the app was told the offer ended"
+    );
 }
 
 #[test]
@@ -224,10 +299,25 @@ fn a_refused_drop_is_drawn_as_refused_and_not_delivered() {
     let (drop, verdict) = last_offer(&f).expect("an offer");
     assert_eq!(drop.parent.as_deref(), Some("b"));
     assert_eq!(verdict, DropVerdict::Refused);
-    assert!(indicator(&f.app).unwrap().1.contains("rinch-tree__node-content--drop-refused"));
+    assert!(
+        indicator(&f.app)
+            .unwrap()
+            .1
+            .contains("rinch-tree__node-content--drop-refused")
+    );
     let (x, y) = at(&f.app, "b", 120.0, 0.5);
-    send(&mut f.app, PlatformEvent::MouseUp { x, y, button: MouseButton::Left });
-    assert!(f.drops.borrow().is_empty(), "a refused drop is not delivered");
+    send(
+        &mut f.app,
+        PlatformEvent::MouseUp {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
+    );
+    assert!(
+        f.drops.borrow().is_empty(),
+        "a refused drop is not delivered"
+    );
 }
 
 #[test]
@@ -245,14 +335,27 @@ fn a_row_cannot_go_into_its_own_subtree_and_its_own_rows_offer_nothing() {
     {
         let doc = f.app.doc.as_ref().unwrap();
         let d = doc.borrow();
-        assert!(has_class(&d.tree.nodes[row(&f.app, "a")], "rinch-tree__node-content--dragging"));
+        assert!(has_class(
+            &d.tree.nodes[row(&f.app, "a")],
+            "rinch-tree__node-content--dragging"
+        ));
     }
     let (x, y) = at(&f.app, "a2", 120.0, 0.5);
-    send(&mut f.app, PlatformEvent::MouseUp { x, y, button: MouseButton::Left });
+    send(
+        &mut f.app,
+        PlatformEvent::MouseUp {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
+    );
     assert!(f.drops.borrow().is_empty());
     let doc = f.app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    assert!(!has_class(&d.tree.nodes[row(&f.app, "a")], "rinch-tree__node-content--dragging"));
+    assert!(!has_class(
+        &d.tree.nodes[row(&f.app, "a")],
+        "rinch-tree__node-content--dragging"
+    ));
 }
 
 /// The last row of a group is dragged out of it over itself: its own bottom
@@ -263,9 +366,19 @@ fn the_last_row_of_a_group_outdents_over_itself() {
     start(&mut f, "a2");
     move_to(&mut f, "a2", INDENT * 0.5, 0.9);
     let (drop, verdict) = last_offer(&f).expect("an offer");
-    assert_eq!((drop.parent.clone(), drop.slot.clone(), verdict), (None, TreeSlot::After("a".into()), DropVerdict::Allowed));
+    assert_eq!(
+        (drop.parent.clone(), drop.slot.clone(), verdict),
+        (None, TreeSlot::After("a".into()), DropVerdict::Allowed)
+    );
     let (x, y) = at(&f.app, "a2", INDENT * 0.5, 0.9);
-    send(&mut f.app, PlatformEvent::MouseUp { x, y, button: MouseButton::Left });
+    send(
+        &mut f.app,
+        PlatformEvent::MouseUp {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
+    );
     assert_eq!(f.drops.borrow().len(), 1);
 }
 
@@ -274,7 +387,10 @@ fn the_last_row_of_a_group_outdents_over_itself() {
 /// left dimmed or drawn.
 #[test]
 fn a_drop_that_moves_the_dragged_row_still_ends_the_drag() {
-    let data = rinch_core::Signal::new(vec![TreeNodeData::new("x", "Ex"), TreeNodeData::new("y", "Why")]);
+    let data = rinch_core::Signal::new(vec![
+        TreeNodeData::new("x", "Ex"),
+        TreeNodeData::new("y", "Why"),
+    ]);
     let ends = Rc::new(std::cell::Cell::new(0u32));
     let ends_in = ends.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -289,7 +405,9 @@ fn a_drop_that_moves_the_dragged_row_still_ends_the_drag() {
             draggable: true,
             // The app moves x into y as the drop asks, at once.
             ondrop: Some(ValueCallback::new(move |_drop: TreeDrop| {
-                data.set(vec![TreeNodeData::new("y", "Why").with_child(TreeNodeData::new("x", "Ex"))]);
+                data.set(vec![
+                    TreeNodeData::new("y", "Why").with_child(TreeNodeData::new("x", "Ex")),
+                ]);
             })),
             ondragend: Some(ValueCallback::new(move |()| ends.set(ends.get() + 1))),
             ..Default::default()
@@ -304,20 +422,37 @@ fn a_drop_that_moves_the_dragged_row_still_ends_the_drag() {
     {
         let doc = app.doc.as_ref().unwrap();
         let mut d = doc.borrow_mut();
-        d.load_css(&rinch_theme::generate_theme_css(&rinch_theme::Theme::default()));
+        d.load_css(&rinch_theme::generate_theme_css(
+            &rinch_theme::Theme::default(),
+        ));
         d.load_css(&rinch_components::generate_component_css());
         d.recompute_all_styles_full();
     }
     app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
-    let mut f = Fixture { app, drops: Rc::default(), offers: Rc::default(), started: Rc::default() };
+    let mut f = Fixture {
+        app,
+        drops: Rc::default(),
+        offers: Rc::default(),
+        started: Rc::default(),
+    };
 
     start(&mut f, "x");
     move_to(&mut f, "y", 120.0, 0.5);
     let (x, y) = at(&f.app, "y", 120.0, 0.5);
-    send(&mut f.app, PlatformEvent::MouseUp { x, y, button: MouseButton::Left });
+    send(
+        &mut f.app,
+        PlatformEvent::MouseUp {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
+    );
 
     assert_eq!(ends.get(), 1, "the drag ended once");
-    assert!(indicator(&f.app).is_none(), "nothing is drawn after the drop");
+    assert!(
+        indicator(&f.app).is_none(),
+        "nothing is drawn after the drop"
+    );
     let moved = row(&f.app, "x");
     let doc = f.app.doc.as_ref().unwrap();
     let d = doc.borrow();
@@ -332,7 +467,10 @@ fn a_drop_that_moves_the_dragged_row_still_ends_the_drag() {
 /// dragged row stays dimmed when it is redrawn too.
 #[test]
 fn a_row_redrawn_mid_drag_still_draws_the_drop() {
-    let data = rinch_core::Signal::new(vec![TreeNodeData::new("x", "Ex"), TreeNodeData::new("y", "Why")]);
+    let data = rinch_core::Signal::new(vec![
+        TreeNodeData::new("x", "Ex"),
+        TreeNodeData::new("y", "Why"),
+    ]);
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let tree = Tree {
             tree: Some(UseTreeReturn::new(UseTreeOptions::default())),
@@ -351,12 +489,19 @@ fn a_row_redrawn_mid_drag_still_draws_the_drop() {
     {
         let doc = app.doc.as_ref().unwrap();
         let mut d = doc.borrow_mut();
-        d.load_css(&rinch_theme::generate_theme_css(&rinch_theme::Theme::default()));
+        d.load_css(&rinch_theme::generate_theme_css(
+            &rinch_theme::Theme::default(),
+        ));
         d.load_css(&rinch_components::generate_component_css());
         d.recompute_all_styles_full();
     }
     app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
-    let mut f = Fixture { app, drops: Rc::default(), offers: Rc::default(), started: Rc::default() };
+    let mut f = Fixture {
+        app,
+        drops: Rc::default(),
+        offers: Rc::default(),
+        started: Rc::default(),
+    };
 
     start(&mut f, "x");
     move_to(&mut f, "y", 120.0, 0.5);
@@ -375,9 +520,15 @@ fn a_row_redrawn_mid_drag_still_draws_the_drop() {
     let after = row(&f.app, "y");
     let (host, class) = indicator(&f.app).expect("the redrawn row draws the drop");
     assert_eq!(host, after);
-    assert!(class.contains("rinch-tree__node-content--drop-inside"), "{class}");
+    assert!(
+        class.contains("rinch-tree__node-content--drop-inside"),
+        "{class}"
+    );
     let x = row(&f.app, "x");
     let doc = f.app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    assert!(has_class(&d.tree.nodes[x], "rinch-tree__node-content--dragging"));
+    assert!(has_class(
+        &d.tree.nodes[x],
+        "rinch-tree__node-content--dragging"
+    ));
 }

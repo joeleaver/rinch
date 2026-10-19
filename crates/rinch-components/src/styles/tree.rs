@@ -126,8 +126,10 @@ pub fn styles() -> String {
 
 /* Drag and drop: the row under the pointer draws where the drop lands, a
    line before or after it at the indent of --tree-drop-level, or an outline
-   for "inside". */
-.rinch-tree__node-content {
+   for "inside". Only a draggable tree's rows are positioned: a row's own
+   absolutely positioned content (a badge, an action) keeps resolving against
+   whatever it did in a tree that does not drag. */
+.rinch-tree--draggable .rinch-tree__node-content {
     position: relative;
 }
 /* The dragged row's contents fade, not the row: a drop line drawn on the
