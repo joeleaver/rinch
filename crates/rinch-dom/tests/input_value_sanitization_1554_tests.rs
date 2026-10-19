@@ -85,6 +85,8 @@ fn url_and_email_also_trim_ascii_whitespace() {
     check(Some("url"), "  http://x\n/y  ", "http://x/y");
     check(Some("url"), "\t a b \u{c}", "a b");
     check(Some("url"), "a\u{a0}", "a\u{a0}");
+    // `type` is ASCII case-insensitive.
+    check(Some("URL"), " a ", "a");
     check(Some("email"), " a@b \n", "a@b");
     check(Some("email"), "\u{c} a@b,  c@d \t", "a@b,  c@d");
 }

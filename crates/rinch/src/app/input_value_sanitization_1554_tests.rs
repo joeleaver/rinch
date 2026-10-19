@@ -164,6 +164,7 @@ fn focus_edits_the_stripped_value() {
 fn a_write_to_the_focused_input_is_adopted_stripped() {
     let (mut app, id, log) = page("input", "hello");
     focus(&mut app, id);
+    key(&mut app, KeyCode::End);
     set_value(&app, id, "x\ny\r\n");
     app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
     assert_eq!(app.focused_input_value, "xy");
