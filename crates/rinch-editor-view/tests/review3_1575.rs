@@ -44,7 +44,10 @@ fn run_traced(seed: u64, n: usize, steps: usize) -> Option<String> {
     let e = r.err()?;
     let dump = TRACE.with(|t| t.borrow().join("\n"));
     let _ = std::fs::write(
-        format!("{}/../../.scratch/fail-{seed}.log", env!("CARGO_MANIFEST_DIR")),
+        format!(
+            "{}/../../.scratch/fail-{seed}.log",
+            env!("CARGO_MANIFEST_DIR")
+        ),
         dump,
     );
     Some(
@@ -63,7 +66,11 @@ fn run_all(range: std::ops::Range<u64>, n: usize) {
         }
     }
     eprintln!("R3 STATS {n} peers {:?}", STATS.with(|s| s.get()));
-    assert!(failed.is_empty(), "{} histories failed: {failed:#?}", failed.len());
+    assert!(
+        failed.is_empty(),
+        "{} histories failed: {failed:#?}",
+        failed.len()
+    );
 }
 
 thread_local! {
@@ -232,16 +239,49 @@ fn check(p: &Peer, seen: &RefCell<Seen>, step: &str) {
         let mut row = Vec::new();
         for (i, m) in p.views.mounts.borrow().iter().enumerate() {
             if let Some(pos) = m.ctx.pos() {
-                row.push(format!("m{i}@{}{:?}{}", pos.0, m.block.get().map(|b| b.1), if m.local_mark.get().is_some() { "L" } else { "" }));
+                row.push(format!(
+                    "m{i}@{}{:?}{}",
+                    pos.0,
+                    m.block.get().map(|b| b.1),
+                    if m.local_mark.get().is_some() {
+                        "L"
+                    } else {
+                        ""
+                    }
+                ));
             }
         }
-        let line = format!("{step}: stall={} {:?} doc={}", p.handle.collab_outbound_stall().is_some(), row, doc.content().children().iter().map(|c| match c.type_name() { "embed" => format!("E{:?}", c.attrs().iter().map(|(k, v)| format!("{k}={v:?}")).collect::<Vec<_>>()), "paragraph" => format!("p{}", c.content_size()), t => t.to_string() }).collect::<Vec<_>>().join(" "));
+        let line = format!(
+            "{step}: stall={} {:?} doc={}",
+            p.handle.collab_outbound_stall().is_some(),
+            row,
+            doc.content()
+                .children()
+                .iter()
+                .map(|c| match c.type_name() {
+                    "embed" => format!(
+                        "E{:?}",
+                        c.attrs()
+                            .iter()
+                            .map(|(k, v)| format!("{k}={v:?}"))
+                            .collect::<Vec<_>>()
+                    ),
+                    "paragraph" => format!("p{}", c.content_size()),
+                    t => t.to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
         TRACE.with(|t| t.borrow_mut().push(line));
     }
     let doc = p.handle.doc();
     for (i, m) in p.views.mounts.borrow().iter().enumerate() {
         let Some(pos) = m.ctx.pos() else { continue };
-        assert!(!m.disposed.get(), "{} {step}: mount {i} disposed but live", p.name);
+        assert!(
+            !m.disposed.get(),
+            "{} {step}: mount {i} disposed but live",
+            p.name
+        );
         let node = doc
             .node_at(pos.0)
             .unwrap_or_else(|| panic!("{} {step}: mount {i} at {pos:?}: no node", p.name));
@@ -266,7 +306,8 @@ fn check(p: &Peer, seen: &RefCell<Seen>, step: &str) {
     let schema: Schema = p.handle.state().schema().clone();
     // A replica holding updates parked on missing dependencies may not project
     // yet (transient, as the live session treats it): no checkpoint then.
-    let Ok(projected) = CollabSession::from_bytes(&snap).and_then(|s| s.projected_doc(&schema)) else {
+    let Ok(projected) = CollabSession::from_bytes(&snap).and_then(|s| s.projected_doc(&schema))
+    else {
         return;
     };
     if shape(&projected) != shape(&doc) {
@@ -440,7 +481,11 @@ fn quiesce(net: &mut Net, ps: &[Peer], seen: &RefCell<Seen>, label: &str) {
         for (i, j) in pend {
             while let Some(d) = net.q[i][j].pop_front() {
                 ps[j].handle.collab_receive(&d);
-                check(&ps[j], seen, &format!("{label} quiesce {}→{}", ps[i].name, ps[j].name));
+                check(
+                    &ps[j],
+                    seen,
+                    &format!("{label} quiesce {}→{}", ps[i].name, ps[j].name),
+                );
             }
         }
     }
@@ -450,7 +495,11 @@ fn quiesce(net: &mut Net, ps: &[Peer], seen: &RefCell<Seen>, label: &str) {
                 let sv = ps[j].handle.collab_state_vector().unwrap();
                 let diff = ps[i].handle.collab_sync_diff(&sv).unwrap();
                 ps[j].handle.collab_receive(&diff);
-                check(&ps[j], seen, &format!("{label} sync {}→{}", ps[i].name, ps[j].name));
+                check(
+                    &ps[j],
+                    seen,
+                    &format!("{label} sync {}→{}", ps[i].name, ps[j].name),
+                );
             }
         }
     }
@@ -504,7 +553,11 @@ fn run_seed(seed: u64, n: usize, steps: usize) {
                 let live = p.views.live();
                 if !live.is_empty() {
                     let (i, _) = live[rng.below(live.len())];
-                    let key = if rng.below(2) == 0 { "data-k" } else { "data-j" };
+                    let key = if rng.below(2) == 0 {
+                        "data-k"
+                    } else {
+                        "data-j"
+                    };
                     let val = if rng.below(2) == 0 { "x" } else { "y" };
                     let ctx = p.views.mounts.borrow()[i].ctx.clone();
                     ctx.set_attrs(|a| *a = a.with(key, AttrValue::from(val)));
@@ -684,7 +737,13 @@ fn views_on_blocks(p: &Peer) -> Vec<(usize, usize, BlockId)> {
     let blocks = embed_blocks(&snap);
     let embeds = embed_positions(&p.handle.doc());
     if blocks.len() != embeds.len() {
-        eprintln!("{}: NOT mappable: model {} embeds, CRDT {} {:?}", p.name, embeds.len(), blocks.len(), blocks);
+        eprintln!(
+            "{}: NOT mappable: model {} embeds, CRDT {} {:?}",
+            p.name,
+            embeds.len(),
+            blocks.len(),
+            blocks
+        );
         return Vec::new();
     }
     p.views
@@ -704,7 +763,10 @@ fn views_on_blocks(p: &Peer) -> Vec<(usize, usize, BlockId)> {
 /// recovery (it waits on B's update), then B's.
 fn t1(stall: bool) {
     let e = r#"<div data-pm-type="embed" data-k="x"></div>"#;
-    let ps = peers(&format!("<p>aa</p>{e}<p>bb</p>{e}{e}<p>cc</p>{e}<p>dd</p>"), 3);
+    let ps = peers(
+        &format!("<p>aa</p>{e}<p>bb</p>{e}{e}<p>cc</p>{e}<p>dd</p>"),
+        3,
+    );
     let (a, b, c) = (&ps[0], &ps[1], &ps[2]);
     let a_before = views_on_blocks(a);
     eprintln!("A before {a_before:?}");
@@ -759,7 +821,11 @@ fn t1(stall: bool) {
         let ds: Vec<_> = c.out.borrow_mut().drain(..).collect();
         for d in &ds {
             let ok = a.handle.collab_receive(d);
-            eprintln!("A receives C: {ok} err={:?} model embeds={}", a.handle.collab_take_error(), embed_positions(&a.handle.doc()).len());
+            eprintln!(
+                "A receives C: {ok} err={:?} model embeds={}",
+                a.handle.collab_take_error(),
+                embed_positions(&a.handle.doc()).len()
+            );
         }
     }
     eprintln!("A after C (pending) {:?}", views_on_blocks(a));
@@ -770,7 +836,10 @@ fn t1(stall: bool) {
     eprintln!("A after B {a_after:?}");
     for (i, _, block) in &a_after {
         if let Some((_, _, was)) = a_before.iter().find(|(j, _, _)| j == i) {
-            assert_eq!(block, was, "A's view {i} was mounted for block {was:?}, now on {block:?}");
+            assert_eq!(
+                block, was,
+                "A's view {i} was mounted for block {was:?}, now on {block:?}"
+            );
         }
     }
     assert_eq!(shape(&a.handle.doc()), shape(&c.handle.doc()));
@@ -791,7 +860,10 @@ fn t1_out_of_order_without_a_stall() {
 #[test]
 fn t2_out_of_order_a_move_of_a_move() {
     let e = r#"<div data-pm-type="embed" data-k="x"></div>"#;
-    let ps = peers(&format!("<p>aa</p>{e}<p>bb</p>{e}{e}<p>cc</p>{e}<p>dd</p>"), 3);
+    let ps = peers(
+        &format!("<p>aa</p>{e}<p>bb</p>{e}{e}<p>cc</p>{e}<p>dd</p>"),
+        3,
+    );
     let (a, b, c) = (&ps[0], &ps[1], &ps[2]);
     let a_before = views_on_blocks(a);
     // B moves the embed at 10 to after p(cc) (11..15 → boundary 15)
@@ -832,7 +904,10 @@ fn t2_out_of_order_a_move_of_a_move() {
     eprintln!("A after B {a_after:?}");
     for (i, _, block) in &a_after {
         if let Some((_, _, was)) = a_before.iter().find(|(j, _, _)| j == i) {
-            assert_eq!(block, was, "A's view {i} was mounted for block {was:?}, now on {block:?}");
+            assert_eq!(
+                block, was,
+                "A's view {i} was mounted for block {was:?}, now on {block:?}"
+            );
         }
     }
     assert_eq!(shape(&a.handle.doc()), shape(&c.handle.doc()));
@@ -847,7 +922,10 @@ fn t2_out_of_order_a_move_of_a_move() {
 #[test]
 fn t3_out_of_order_partial_apply_hands_a_view_another_embed() {
     let e = r#"<div data-pm-type="embed" data-k="x"></div>"#;
-    let ps = peers(&format!("<p>aa</p>{e}<p>bb</p>{e}{e}<p>cc</p>{e}<p>dd</p>"), 3);
+    let ps = peers(
+        &format!("<p>aa</p>{e}<p>bb</p>{e}{e}<p>cc</p>{e}<p>dd</p>"),
+        3,
+    );
     let (a, b, c) = (&ps[0], &ps[1], &ps[2]);
     let a_before = views_on_blocks(a);
     assert!(b.handle.update(|st| {
@@ -895,7 +973,10 @@ fn t3_out_of_order_partial_apply_hands_a_view_another_embed() {
     eprintln!("A before {a_before:?}\nA after {a_after:?}");
     for (i, _, block) in &a_after {
         if let Some((_, _, was)) = a_before.iter().find(|(j, _, _)| j == i) {
-            assert_eq!(block, was, "A's view {i} was mounted for block {was:?}, now on {block:?}");
+            assert_eq!(
+                block, was,
+                "A's view {i} was mounted for block {was:?}, now on {block:?}"
+            );
         }
     }
     assert_eq!(shape(&a.handle.doc()), shape(&c.handle.doc()));
@@ -944,9 +1025,14 @@ fn model_types(p: &Page2) -> Vec<String> {
         .collect()
 }
 
-const TASKS: &str = r#"<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><p>t</p></li></ul>"#;
+const TASKS: &str =
+    r#"<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><p>t</p></li></ul>"#;
 
-fn replace_child(p: &Page2, i: usize, html_node: impl Fn(&rinch_editor_core::EditorState) -> Option<Node>) {
+fn replace_child(
+    p: &Page2,
+    i: usize,
+    html_node: impl Fn(&rinch_editor_core::EditorState) -> Option<Node>,
+) {
     assert!(p.handle.update(|st| {
         let mut from = 0;
         for k in 0..i {
@@ -973,17 +1059,29 @@ fn d1_an_unclaimed_embed_replacing_a_task_list_gets_its_own_host() {
             .ok()
     });
     assert_eq!(model_types(&p)[1], "embed");
-    assert_eq!(host_types(&p), model_types(&p), "DOM hosts follow the model");
+    assert_eq!(
+        host_types(&p),
+        model_types(&p),
+        "DOM hosts follow the model"
+    );
 }
 
 /// D2 — the reverse: a task list replacing an unclaimed embed at its place.
 #[test]
 fn d2_a_task_list_replacing_an_unclaimed_embed_gets_its_own_host() {
     let p = page2(r#"<p>ab</p><div data-pm-type="embed"></div><p>cd</p>"#);
-    let tasks = page2(&format!("<p>x</p>{TASKS}")).handle.doc().child(1).clone();
+    let tasks = page2(&format!("<p>x</p>{TASKS}"))
+        .handle
+        .doc()
+        .child(1)
+        .clone();
     replace_child(&p, 1, move |_| Some(tasks.clone()));
     assert_eq!(model_types(&p)[1], "task_list");
-    assert_eq!(host_types(&p), model_types(&p), "DOM hosts follow the model");
+    assert_eq!(
+        host_types(&p),
+        model_types(&p),
+        "DOM hosts follow the model"
+    );
 }
 
 /// D3 — with a view registered: a task list replacing a CLAIMED embed (a
@@ -994,7 +1092,11 @@ fn d3_claimed_embed_and_task_list_swap_places() {
     let views = Rc::new(Views::default());
     p.handle.register_node_view(spec(&views)).keep();
     assert_eq!(views.live().len(), 1);
-    let tasks = page2(&format!("<p>x</p>{TASKS}")).handle.doc().child(1).clone();
+    let tasks = page2(&format!("<p>x</p>{TASKS}"))
+        .handle
+        .doc()
+        .child(1)
+        .clone();
     replace_child(&p, 1, move |_| Some(tasks.clone()));
     assert_eq!(views.live().len(), 0, "the view goes with its embed");
     assert_eq!(host_types(&p), model_types(&p));
@@ -1040,14 +1142,24 @@ fn n5_at_the_cap() {
             )
             .keep();
     }
-    let k = p.handle.doc().child(1).attrs().get_str("data-k").map(str::to_string);
+    let k = p
+        .handle
+        .doc()
+        .child(1)
+        .attrs()
+        .get_str("data-k")
+        .map(str::to_string);
     eprintln!(
         "renders {} cleanups {} last spec {:?} node data-k {k:?}",
         renders.get(),
         cleanups.get(),
         live_spec.borrow().last()
     );
-    assert_eq!(renders.get() - cleanups.get(), 1, "one live view, no leaked scope");
+    assert_eq!(
+        renders.get() - cleanups.get(),
+        1,
+        "one live view, no leaked scope"
+    );
     assert!(renders.get() <= 10, "bounded: {}", renders.get());
     // typing elsewhere does not touch the stranded view
     let before = renders.get();
@@ -1073,6 +1185,13 @@ fn n5_at_the_cap() {
             .keep();
     }
     p.handle.set_selection(Selection::cursor(Pos(6)));
-    assert!(p.handle.insert_embed(Attrs::from_iter([("data-k", AttrValue::from("c"))])));
-    assert_eq!(live_spec.borrow().last(), Some(&"d"), "the chain re-matched to d");
+    assert!(
+        p.handle
+            .insert_embed(Attrs::from_iter([("data-k", AttrValue::from("c"))]))
+    );
+    assert_eq!(
+        live_spec.borrow().last(),
+        Some(&"d"),
+        "the chain re-matched to d"
+    );
 }
