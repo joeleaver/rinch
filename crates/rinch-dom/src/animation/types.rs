@@ -187,17 +187,22 @@ impl ActiveAnimation {
     }
 
     /// Whether this animation has completed all iterations.
+    ///
+    /// Its active duration is `duration × iterations`, and a zero duration makes
+    /// that zero whatever the count — `0s infinite` included (Web Animations
+    /// §4.6; Chrome 155 reports such an animation `finished` at its delay's
+    /// end, #786). Only an infinite animation with a positive duration never
+    /// completes.
     pub fn is_complete(&self, current_time_ms: f64) -> bool {
         if self.paused_elapsed_ms.is_some() {
             return false; // Paused animations are never "complete"
         }
-        if let IterationCount::Finite(n) = self.iteration_count {
-            let elapsed = current_time_ms - self.start_time_ms;
-            let total = self.delay_ms + self.duration_ms * n;
-            elapsed >= total
-        } else {
-            false // Infinite animations never complete
-        }
+        let active_duration = match self.iteration_count {
+            IterationCount::Finite(n) => self.duration_ms * n,
+            IterationCount::Infinite if self.duration_ms <= 0.0 => 0.0,
+            IterationCount::Infinite => return false,
+        };
+        current_time_ms - self.start_time_ms >= self.delay_ms + active_duration
     }
 
     /// Whether this animation is filling (complete but fill-mode keeps it active).
