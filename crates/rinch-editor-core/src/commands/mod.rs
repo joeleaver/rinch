@@ -1186,11 +1186,16 @@ fn selectable_atom(node: &Node) -> bool {
 
 /// Backspace at the start of the block after an atom (`backward`), or Delete at
 /// the end of the block before one, across `cut` (from [`find_cut_before`] /
-/// [`find_cut_after`]): **select** the atom (ProseMirror's `selectNodeBackward` /
-/// `selectNodeForward`), so the next press removes it. When the caret's block is
-/// empty and sits right beside the atom, that block is removed first (its
-/// `joinBackward` "delete the empty block, select the atom" branch). `None` when
-/// the node across the cut is not a [`selectable_atom`].
+/// [`find_cut_after`]): **select** the atom, so the next press removes it. When the
+/// caret's block is empty and sits right beside the atom, that block is removed
+/// first. `None` when the node across the cut is not a [`selectable_atom`].
+///
+/// A decision, and deliberately **unlike ProseMirror**, whose base keymap runs
+/// `joinBackward` / `joinForward` before `selectNodeBackward` /
+/// `selectNodeForward`: those delete the atom in one press when the caret's block
+/// is not empty (and `joinForward` from an empty one too). An atom can be an
+/// `embed` holding an app's component and its state, so rinch selects it first —
+/// for every selectable atom alike (`tests/backspace_selects_atom.rs`).
 fn select_atom_across(
     state: &EditorState,
     r: &ResolvedPos,
