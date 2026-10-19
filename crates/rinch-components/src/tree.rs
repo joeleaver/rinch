@@ -636,7 +636,7 @@ struct TreeConfig {
     guides: bool,
     drag: Rc<DragState>,
     keyboard: bool,
-    onkey: Option<OnTreeKey>,
+    handle_key: Option<TreeKeyHandler>,
     oncursor: Option<ValueCallback<String>>,
     cursor_delay_ms: u32,
     label_of: Option<LabelOf>,
@@ -733,7 +733,7 @@ pub struct Tree {
     pub keyboard: bool,
     /// Every key the tree's rows get, before the tree's own; `true` consumes
     /// it. [`TreeKey::drop_for`] turns a key into a structural move.
-    pub onkey: Option<OnTreeKey>,
+    pub handle_key: Option<TreeKeyHandler>,
     /// The cursor came to rest on a row (after `cursor_delay_ms`): for an
     /// app that opens what the cursor is on, once, not on every row it
     /// passed.
@@ -778,7 +778,7 @@ impl Default for Tree {
             hover_expand_ms: 600,
             guides: false,
             keyboard: false,
-            onkey: None,
+            handle_key: None,
             oncursor: None,
             cursor_delay_ms: 120,
             label_of: None,
@@ -831,7 +831,7 @@ impl Component for Tree {
             guides: self.guides,
             drag: Rc::new(DragState::default()),
             keyboard: self.keyboard && self.tree.is_some(),
-            onkey: self.onkey.clone(),
+            handle_key: self.handle_key.clone(),
             oncursor: self.oncursor.clone(),
             cursor_delay_ms: self.cursor_delay_ms,
             label_of: self.label_of.clone(),
@@ -1641,7 +1641,7 @@ pub enum TreeMove {
 }
 
 /// A key pressed while one of the tree's rows has the keyboard, offered to
-/// the app before the tree's own keys ([`Tree::onkey`]).
+/// the app before the tree's own keys ([`Tree::handle_key`]).
 pub struct TreeKey {
     /// The key, as `KeyEventData::key` names it (`"ArrowDown"`, `"F2"`, `"a"`).
     pub key: String,
@@ -1699,8 +1699,8 @@ impl TreeKey {
     }
 }
 
-/// How the app reads keys first ([`Tree::onkey`]); `true` consumes the key.
-pub type OnTreeKey = Rc<dyn Fn(&TreeKey) -> bool>;
+/// How the app reads keys first ([`Tree::handle_key`]); `true` consumes the key.
+pub type TreeKeyHandler = Rc<dyn Fn(&TreeKey) -> bool>;
 /// The text type-ahead matches for a row ([`Tree::label_of`]).
 pub type LabelOf = Rc<dyn Fn(&str) -> String>;
 
@@ -1892,7 +1892,7 @@ fn on_tree_key(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, container: &N
     let shape = config.drag.shape();
     let Some(cursor_row) = shape.index(&cursor) else { return false };
 
-    if let Some(onkey) = &config.onkey {
+    if let Some(handle_key) = &config.handle_key {
         let expanded = untracked(|| tree_state.expanded.get());
         let visible = shape.visible(&expanded);
         let at = visible.iter().position(|&r| r == cursor_row);
@@ -1914,7 +1914,7 @@ fn on_tree_key(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, container: &N
             shape: shape.clone(),
             carried,
         };
-        if onkey(&offered) {
+        if handle_key(&offered) {
             return true;
         }
     }

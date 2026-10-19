@@ -49,7 +49,7 @@ fn fixture() -> Fixture {
             keyboard: true,
             cursor_delay_ms: 0,
             oncursor: Some(ValueCallback::new(move |v| r.borrow_mut().push(v))),
-            onkey: Some(Rc::new(move |key: &TreeKey| {
+            handle_key: Some(Rc::new(move |key: &TreeKey| {
                 s.borrow_mut().push(key.key.clone());
                 if key.key == "F2" {
                     return true;
@@ -196,5 +196,5 @@ fn keys_typed_elsewhere_are_not_the_trees() {
     let seen_before = f.seen.borrow().len();
     press(&mut f, KeyCode::ArrowDown, None, Modifiers::default());
     assert_eq!(f.state.cursor.get().as_deref(), Some("a1"), "the cursor stays");
-    assert_eq!(f.seen.borrow().len(), seen_before, "the app's onkey was not offered it either");
+    assert_eq!(f.seen.borrow().len(), seen_before, "the app's handle_key was not offered it either");
 }
