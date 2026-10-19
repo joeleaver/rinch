@@ -422,12 +422,15 @@ fn a_box_holding_text_takes_the_ratio() {
     assert_eq!(size(&doc, e), (100.0, 100.0));
 }
 
+/// (style, container, rinch, Chrome 155, issue)
+type KnownRow = (&'static str, &'static str, (f32, f32), (f32, f32), u32);
+
 /// Where rinch is not Chrome yet. Each row asserts rinch's answer, with
 /// Chrome 155's beside it, so a fix shows up here.
 #[test]
 fn known_differences_from_chrome() {
     // (style, container, rinch, Chrome, issue)
-    let rows: &[(&str, &str, (f32, f32), (f32, f32), u32)] = &[
+    let rows: &[KnownRow] = &[
         // `box-sizing` is never read: every box is `border-box` (#1278).
         (
             "width: 100px; padding: 10px; aspect-ratio: 2",
