@@ -974,10 +974,27 @@ fn render_tree_node(
     if config.keyboard && untracked(|| tree_state.cursor.get()).as_deref() == Some(node_value.as_str()) {
         content.add_class(CURSOR_CLASS);
         *config.keys.drawn.borrow_mut() = Some(node_value.clone());
-        // Drawn again while it had the keyboard: it keeps it.
+        // Drawn again while it had the keyboard: it keeps it, unless the
+        // keyboard has gone somewhere else in the tree meanwhile (a rename
+        // box the app opened in this very row).
         if config.keys.focused.get() {
             let row = content.clone();
-            let _ = set_timeout(0, move || row.focus());
+            let container = config.keys.container.borrow().clone();
+            let _ = set_timeout(0, move || {
+                let elsewhere_in_tree = container.as_ref().is_some_and(|tree| {
+                    let mut at = row.active_element();
+                    while let Some(node) = at {
+                        if node.node_id() == tree.node_id() {
+                            return true;
+                        }
+                        at = node.parent_node();
+                    }
+                    false
+                });
+                if !elsewhere_in_tree {
+                    row.focus();
+                }
+            });
         }
     }
 
