@@ -204,6 +204,20 @@ impl Schema {
             spec
         });
 
+        // embed — a block an app draws itself (a sheet, a canvas, a counter: a
+        // node view). The document holds the atom and the app's own `data-*`
+        // attributes, which are what the app keys its state to. It has no HTML
+        // tag of its own: it is written as `<div data-pm-type="embed" data-…>`
+        // and read back from that element (`serialize::html`), and an app can
+        // give the HTML export markup to put inside it
+        // (`serialize::set_html_fallback`).
+        builder = builder.node("embed", {
+            let mut spec = NodeSpec::atom("embed");
+            spec.group = Some("block".into());
+            spec.data_attrs = true;
+            spec
+        });
+
         // hard_break
         builder = builder.node("hard_break", {
             let mut spec = NodeSpec::atom("hard_break");
@@ -594,6 +608,7 @@ mod tests {
             "task_list",
             "task_item",
             "horizontal_rule",
+            "embed",
             "hard_break",
             "text",
             "image",

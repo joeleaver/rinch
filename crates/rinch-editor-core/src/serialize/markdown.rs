@@ -56,7 +56,8 @@ use crate::EditorError;
 use crate::model::{AttrValue, Attrs, Fragment, Mark, Node};
 use crate::schema::Schema;
 use crate::serialize::html::{
-    DroppedAttr, dropped_table_attr, is_safe_css_color, is_safe_url, node_to_html, slice_from_html,
+    DroppedAttr, dropped_table_attr, is_safe_css_color, is_safe_url, node_to_html_bare,
+    slice_from_html, writes_as_div,
 };
 use pulldown_cmark::{
     Alignment, CodeBlockKind, Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd,
@@ -538,6 +539,10 @@ impl<'a> MdBuilder<'a> {
                         self.flush_inline()?;
                         return Ok(());
                     }
+                    if let Some(atoms) = self.html_div_atoms(&html) {
+                        self.top_mut().children.extend(atoms);
+                        return Ok(());
+                    }
                     match self.html_tables(&html, &range)? {
                         Some(tables) => self.top_mut().children.extend(tables),
                         None => self.refuse_at(Construct::HtmlBlock, range)?,
@@ -634,6 +639,33 @@ impl<'a> MdBuilder<'a> {
 
     // ── HTML tables ──
 
+    /// The block atoms an HTML block holds when it is nothing but their
+    /// elements (`<div data-pm-type="embed" …></div>`, what the writer writes
+    /// for an `embed`), or `None`. Strict, only when the block is exactly what
+    /// the writer writes for them, so nothing in it is dropped: no text inside
+    /// an element, no attribute the atom does not keep.
+    fn html_div_atoms(&self, html: &str) -> Option<Vec<Node>> {
+        let trimmed = html.trim();
+        if !trimmed.to_ascii_lowercase().starts_with("<div") {
+            return None;
+        }
+        let slice = slice_from_html(self.schema, trimmed).ok()?;
+        let atoms: Vec<Node> = slice.content.children().to_vec();
+        if atoms.is_empty() || !atoms.iter().all(|n| writes_as_div(n.node_type())) {
+            return None;
+        }
+        if self.strict {
+            let written: String = atoms
+                .iter()
+                .map(|n| node_to_html_bare(n).replace('\n', "&#10;"))
+                .collect();
+            if written != trimmed {
+                return None;
+            }
+        }
+        Some(atoms)
+    }
+
     /// The tables an HTML block holds (with, lenient, the blocks read from
     /// what they hold outside their cells), or `None` if it is not tables.
     /// Strict, it refuses (at `range`) an attribute the tables would lose: an
@@ -655,12 +687,7 @@ impl<'a> MdBuilder<'a> {
         // blank line never ends the HTML block early.
         let decoded = trimmed.replace("&#10;", "\n");
         if self.strict
-            && let Some(dropped) = dropped_table_attr(
-                &decoded,
-                self.schema
-                    .node("image")
-                    .is_some_and(|image| image.data_attrs),
-            )
+            && let Some(dropped) = dropped_table_attr(&decoded, self.schema)
         {
             let construct = match dropped {
                 DroppedAttr::UnsafeLink => Construct::UnsafeLink,
@@ -1348,6 +1375,9 @@ fn html_tags_allowed(html: &str) -> bool {
         "img",
         "hr",
         "blockquote",
+        // Only as a block atom's element (`embed`): `dropped_table_attr` refuses
+        // any other `<div>`.
+        "div",
     ];
     let bytes = html.as_bytes();
     let mut i = 0;
@@ -1475,6 +1505,12 @@ fn block_to_md(node: &Node, bullet: char) -> String {
             ListKind::Ordered(node.attrs().get_int("start").unwrap_or(1)),
         ),
         "horizontal_rule" => "---\n\n".to_string(),
+        // An `embed` (any block atom with no tag): its HTML element as an HTML
+        // block. A blank line would end the block, so a newline in an attribute
+        // is written as a character reference.
+        _ if writes_as_div(node.node_type()) => {
+            format!("{}\n\n", node_to_html_bare(node).replace('\n', "&#10;"))
+        }
         "table" => table_to_md(node),
         // paragraph and any other textblock-ish node.
         _ => format!("{}\n\n", inline_to_md(node, Ctx::Block)),
@@ -1635,7 +1671,7 @@ fn pipe_row(cells: &[String]) -> String {
 /// An HTML table block. A blank line would end the block, so newlines in cell
 /// text (a code block) are written as `&#10;`; each row gets a line of its own.
 fn html_table(table: &Node) -> String {
-    let html = node_to_html(table)
+    let html = node_to_html_bare(table)
         .replace('\n', "&#10;")
         .replace("</tr>", "</tr>\n");
     let html = match html.strip_prefix("<table>") {

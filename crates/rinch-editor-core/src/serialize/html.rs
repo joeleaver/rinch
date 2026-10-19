@@ -37,7 +37,10 @@ use crate::model::{AttrValue, Attrs, Fragment, Mark, MarkType, Node, NodeType, S
 use crate::pos::Pos;
 use crate::schema::{IMAGE_MAX_WIDTH, Schema, app_data_attrs, kept_data_attrs};
 use crate::tables;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::marker::PhantomData;
+use std::rc::Rc;
 
 // ─── Copy-out: model → HTML ──────────────────────────────────────────────────
 
@@ -47,11 +50,19 @@ pub fn node_to_html(node: &Node) -> String {
     let mut out = String::new();
     if node.type_name() == "doc" {
         for child in node.content().children() {
-            write_node(child, &mut out, false);
+            write_node(child, &mut out, Mode::EXPORT);
         }
     } else {
-        write_node(node, &mut out, false);
+        write_node(node, &mut out, Mode::EXPORT);
     }
+    out
+}
+
+/// [`node_to_html`] with no [`set_html_fallback`] markup: what Markdown writes
+/// (an app's markup could hold a blank line, which ends an HTML block there).
+pub(crate) fn node_to_html_bare(node: &Node) -> String {
+    let mut out = String::new();
+    write_node(node, &mut out, Mode::BARE);
     out
 }
 
@@ -73,7 +84,7 @@ pub fn node_to_html(node: &Node) -> String {
 pub fn slice_to_html(slice: &Slice) -> String {
     let mut out = String::new();
     for child in slice.content.children() {
-        write_node(child, &mut out, true);
+        write_node(child, &mut out, Mode::CLIPBOARD);
     }
     out
 }
@@ -113,9 +124,33 @@ pub fn clipboard_slice(doc: &Node, from: usize, to: usize) -> Result<Slice, Edit
     Ok(slice)
 }
 
-/// `clipboard`: mark an element that carries app data attributes with
-/// [`CLIPBOARD_MARK`] (the copy-out, [`slice_to_html`]).
-fn write_node(node: &Node, out: &mut String, clipboard: bool) {
+/// How [`write_node`] writes.
+#[derive(Clone, Copy)]
+struct Mode {
+    /// Mark an element that carries app data attributes with
+    /// [`CLIPBOARD_MARK`] (the copy-out, [`slice_to_html`]).
+    clipboard: bool,
+    /// Ask [`set_html_fallback`]'s callback for markup to put inside a block
+    /// atom written as a `<div>` ([`writes_as_div`]).
+    fallback: bool,
+}
+
+impl Mode {
+    const EXPORT: Mode = Mode {
+        clipboard: false,
+        fallback: true,
+    };
+    const CLIPBOARD: Mode = Mode {
+        clipboard: true,
+        fallback: true,
+    };
+    const BARE: Mode = Mode {
+        clipboard: false,
+        fallback: false,
+    };
+}
+
+fn write_node(node: &Node, out: &mut String, mode: Mode) {
     // Text node: escaped text wrapped in its marks (innermost = marks[0]).
     if let Some(text) = node.text() {
         let mut s = escape_text(text);
@@ -125,9 +160,14 @@ fn write_node(node: &Node, out: &mut String, clipboard: bool) {
         out.push_str(&s);
         return;
     }
+    // A block atom with no tag of its own (`embed`): a `<div>` naming it.
+    if writes_as_div(node.node_type()) {
+        out.push_str(&div_atom_element(node, mode));
+        return;
+    }
     // Leaf non-text node (atom: hr / image / hard_break) → void element.
     if node.is_leaf() {
-        let mut s = void_element(node, clipboard);
+        let mut s = void_element(node, mode.clipboard);
         for mark in node.marks() {
             s = wrap_mark(mark, &s);
         }
@@ -138,7 +178,7 @@ fn write_node(node: &Node, out: &mut String, clipboard: bool) {
     let (open, close) = block_tags(node);
     out.push_str(&open);
     for child in node.content().children() {
-        write_node(child, out, clipboard);
+        write_node(child, out, mode);
     }
     out.push_str(&close);
 }
@@ -268,6 +308,126 @@ fn void_element(node: &Node, clipboard: bool) -> String {
 /// `data-v-…`, a lazy loader's `data-src`) are not stored, synced and stamped.
 /// It is reserved (`data-rinch-*`), so it never reaches a document itself.
 pub const CLIPBOARD_MARK: &str = "data-rinch-clip";
+
+/// The attribute naming the node type of a block atom written as a `<div>`
+/// ([`writes_as_div`]); the view writes it on every host element too.
+pub(super) const PM_TYPE: &str = "data-pm-type";
+
+/// Whether nodes of type `nt` are written as `<div data-pm-type="…">` and read
+/// back from that element: a block-level leaf with no HTML tag of its own (the
+/// starter kit's `embed`, or an app schema's own block atom). A tagless type
+/// would otherwise be written as a bare `<div>`, which reads back as nothing.
+pub(super) fn writes_as_div(nt: &NodeType) -> bool {
+    nt.is_block() && nt.is_leaf() && nt.spec().parse_html_tags.is_empty()
+}
+
+/// A block atom written as a `<div>` ([`writes_as_div`]): its type in
+/// [`PM_TYPE`], the app data attributes it keeps ([`app_data_attrs`], bounded)
+/// with [`CLIPBOARD_MARK`] beside them on the copy-out, and inside it whatever
+/// [`set_html_fallback`]'s callback gives for it (the reader ignores what is
+/// inside). An attribute the spec declares is not written: the starter kit's
+/// `embed` declares none.
+fn div_atom_element(node: &Node, mode: Mode) -> String {
+    let mut s = format!("<div {PM_TYPE}=\"{}\"", escape_attr(node.type_name()));
+    let mut any_data = false;
+    if node.node_type().spec().data_attrs {
+        for (k, v) in app_data_attrs(node.attrs()) {
+            s.push_str(&format!(" {k}=\"{}\"", escape_attr(v)));
+            any_data = true;
+        }
+    }
+    if mode.clipboard && any_data {
+        s.push_str(&format!(" {CLIPBOARD_MARK}=\"\""));
+    }
+    s.push('>');
+    if mode.fallback
+        && let Some(markup) = html_fallback_for(node)
+    {
+        s.push_str(&markup);
+    }
+    s.push_str("</div>");
+    s
+}
+
+// ─── The export fallback ─────────────────────────────────────────────────────
+
+type HtmlFallbackFn = Rc<dyn Fn(&Node) -> Option<String>>;
+
+thread_local! {
+    /// The registered fallbacks, oldest first; the last one answers.
+    static HTML_FALLBACKS: RefCell<Vec<(u64, HtmlFallbackFn)>> = const { RefCell::new(Vec::new()) };
+    static NEXT_FALLBACK: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Give exported HTML markup for an `embed`: `fallback` is asked about every
+/// block atom the writer writes as `<div data-pm-type="…">` (the starter kit's
+/// `embed`), and what it answers is written **inside** that element — a static
+/// table for a sheet, an `<img>` of a canvas — so another application shows
+/// something where the app drew a node view. `None` leaves the element empty.
+///
+/// It applies to [`node_to_html`] and to the clipboard copy-out
+/// ([`slice_to_html`]); the element still carries the atom and its data
+/// attributes, and rinch's reader ignores what is inside it, so a copy pasted
+/// back into an editor, or exported HTML loaded again, is the same embed.
+/// Markdown writes the bare element. The markup is written as given, not
+/// escaped: it must be well-formed (an unclosed `<div>` in it would take the
+/// element's end tag) and is the app's to make safe.
+///
+/// Per thread. The returned guard unregisters it when dropped (`mem::forget`
+/// it to keep it for the thread's life). Registrations stack: while a later
+/// one lives it answers, and dropping it brings the earlier one back; dropping
+/// an earlier one never removes a later one. The callback runs with nothing
+/// borrowed, so it may itself export HTML.
+pub fn set_html_fallback(
+    fallback: impl Fn(&Node) -> Option<String> + 'static,
+) -> HtmlFallbackGuard {
+    let token = NEXT_FALLBACK.with(|n| {
+        let t = n.get();
+        n.set(t + 1);
+        t
+    });
+    HTML_FALLBACKS.with(|f| f.borrow_mut().push((token, Rc::new(fallback))));
+    HtmlFallbackGuard {
+        token,
+        _not_send: PhantomData,
+    }
+}
+
+/// Unregisters a [`set_html_fallback`] callback when dropped.
+#[must_use = "dropping the guard unregisters the fallback at once"]
+pub struct HtmlFallbackGuard {
+    token: u64,
+    /// The registry is per thread.
+    _not_send: PhantomData<*const ()>,
+}
+
+impl std::fmt::Debug for HtmlFallbackGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HtmlFallbackGuard")
+            .field("token", &self.token)
+            .finish()
+    }
+}
+
+impl Drop for HtmlFallbackGuard {
+    fn drop(&mut self) {
+        // `try_with`: a guard kept in a thread local can drop after the registry.
+        let _ = HTML_FALLBACKS.try_with(|f| {
+            if let Ok(mut f) = f.try_borrow_mut() {
+                f.retain(|(t, _)| *t != self.token);
+            }
+        });
+    }
+}
+
+/// The current fallback's markup for `node`, called with the registry not
+/// borrowed.
+fn html_fallback_for(node: &Node) -> Option<String> {
+    let fallback = HTML_FALLBACKS
+        .try_with(|f| f.borrow().last().map(|(_, cb)| cb.clone()))
+        .ok()??;
+    fallback(node)
+}
 
 /// Which data attributes the HTML reader keeps on a node whose spec keeps
 /// them ([`NodeSpec::data_attrs`]).
@@ -643,6 +803,19 @@ impl<'a> HtmlParser<'a> {
             .collect()
     }
 
+    /// The block atom a `<div data-pm-type="…">` names ([`writes_as_div`]), if
+    /// it is one: any other element, or a type that is not such an atom, is
+    /// read as it always was.
+    fn div_atom(&self, tag: &str, attributes: &[(String, String)]) -> Option<&'a NodeType> {
+        if tag != "div" {
+            return None;
+        }
+        let name = attr(attributes, PM_TYPE)?;
+        self.schema
+            .node_type(name.trim())
+            .filter(|nt| writes_as_div(nt))
+    }
+
     /// Whether `tag` is a block: one of the schema's, or an HTML element that
     /// is a line (or more) of its own.
     fn is_block_tag(&self, tag: &str) -> bool {
@@ -835,6 +1008,15 @@ impl<'a> HtmlParser<'a> {
         else {
             return Ok(());
         };
+        if let Some(nt) = self.div_atom(tag, attributes) {
+            // A block atom the writer wrote as a `<div>` (`embed`). What is
+            // inside it is an app's export fallback, not content.
+            self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
+            let attrs = Attrs::from_iter(self.data_attr_pairs(nt, attributes));
+            let atom = self.make_node(nt, attrs, Fragment::empty())?;
+            self.push_blocks(b, [atom]);
+            return Ok(());
+        }
         match self.block.get(tag.as_str()) {
             Some(nt) if nt.name() == "table" => {
                 if let Some(tables) = &self.tables {
@@ -2143,7 +2325,8 @@ pub(crate) enum DroppedAttr {
 /// a paragraph or heading, `start` on `<ol>`, and a `style` of safe colours on
 /// `<span>` (`color`, `background-color`) and `<mark>` (`background-color`).
 #[cfg(feature = "markdown")]
-pub(crate) fn dropped_table_attr(html: &str, img_data_attrs: bool) -> Option<DroppedAttr> {
+pub(crate) fn dropped_table_attr(html: &str, schema: &Schema) -> Option<DroppedAttr> {
+    let img_data_attrs = schema.node("image").is_some_and(|image| image.data_attrs);
     fn style_is(style: &str, ok: &dyn Fn(&str, &str) -> bool) -> bool {
         super::style_scan::style_declarations(style)
             .into_iter()
@@ -2154,8 +2337,20 @@ pub(crate) fn dropped_table_attr(html: &str, img_data_attrs: bool) -> Option<Dro
         attributes: &[(String, String)],
         in_task_list: bool,
         img_data_attrs: bool,
+        schema: &Schema,
     ) -> Option<DroppedAttr> {
         let mut data_seen = 0usize;
+        // A `<div>` is kept only as a block atom's element ([`writes_as_div`]),
+        // with the data attributes that atom keeps.
+        let div_atom = (tag == "div")
+            .then(|| attr(attributes, PM_TYPE))
+            .flatten()
+            .and_then(|name| schema.node_type(name.trim()))
+            .filter(|nt| writes_as_div(nt));
+        if tag == "div" && div_atom.is_none() {
+            return Some(DroppedAttr::Other);
+        }
+        let div_data_attrs = div_atom.is_some_and(|nt| nt.spec().data_attrs);
         for (name, value) in attributes {
             let kept = match (tag, name.as_str()) {
                 ("ul", TASK_TYPE) => value.trim() == TASK_LIST,
@@ -2178,6 +2373,12 @@ pub(crate) fn dropped_table_attr(html: &str, img_data_attrs: bool) -> Option<Dro
                         && data_seen <= crate::schema::MAX_DATA_ATTRS
                 }
                 ("img", "width") => image_width(value).is_some(),
+                ("div", PM_TYPE) => true,
+                ("div", name) if div_data_attrs && crate::schema::is_app_data_attr(name) => {
+                    data_seen += 1;
+                    value.len() <= crate::schema::MAX_DATA_ATTR_VALUE
+                        && data_seen <= crate::schema::MAX_DATA_ATTRS
+                }
                 ("td" | "th", "colspan") => value
                     .trim()
                     .parse::<u32>()
@@ -2212,7 +2413,12 @@ pub(crate) fn dropped_table_attr(html: &str, img_data_attrs: bool) -> Option<Dro
         }
     }
     /// `in_task_list`: `nodes` are the children of a task list's `<ul>`.
-    fn walk(nodes: &[ParsedNode], in_task_list: bool, img_data: bool) -> Option<DroppedAttr> {
+    fn walk(
+        nodes: &[ParsedNode],
+        in_task_list: bool,
+        img_data: bool,
+        schema: &Schema,
+    ) -> Option<DroppedAttr> {
         nodes.iter().find_map(|n| match n {
             ParsedNode::Text(_) => None,
             ParsedNode::Element {
@@ -2223,14 +2429,14 @@ pub(crate) fn dropped_table_attr(html: &str, img_data_attrs: bool) -> Option<Dro
             } => {
                 let tag = tag.to_ascii_lowercase();
                 let task_list = tag == "ul" && is_task_list(attributes);
-                element(&tag, attributes, in_task_list, img_data)
-                    .or_else(|| walk(children, task_list, img_data))
+                element(&tag, attributes, in_task_list, img_data, schema)
+                    .or_else(|| walk(children, task_list, img_data, schema))
             }
         })
     }
     let mut parser = HtmlFragmentParser::new(html);
     parser.all_attributes = true;
-    walk(&parser.parse(), false, img_data_attrs)
+    walk(&parser.parse(), false, img_data_attrs, schema)
 }
 
 #[cfg(test)]

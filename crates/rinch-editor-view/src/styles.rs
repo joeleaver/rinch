@@ -155,6 +155,12 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
 /* ── Horizontal rule ───────────────────────────────────────────────────── */
 [data-pm-editor] hr { border: none; border-top: 2px solid #e1e4e8; margin: 1.2em 0; height: 0; }
 
+/* ── Embed (a block an app draws: a node view) ───────────────────────────
+   A block atom whose host the app fills. Empty, it still has a line of height,
+   so it can be clicked (a click node-selects it, as for an hr). */
+[data-pm-editor] [data-pm-type="embed"] { min-height: 1lh; margin: 0.85em 0; }
+[data-pm-editor] [data-pm-type="embed"]:empty { border: 1px dashed #d0d7de; border-radius: 6px; }
+
 /* ── Tables (CSS grid — rinch-dom has no display:table) ─────────────────
    The <table> is a grid; the view sets `grid-template-columns: repeat(N, …)`
    inline (N = column count). <tr> is `display: contents`, so its cells become
@@ -211,6 +217,7 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
 [data-pm-editor][data-pm-theme="dark"] [data-pm-type="task_item"][data-checked="true"]::before { color: #3fb950; }
 [data-pm-editor][data-pm-theme="dark"] [data-pm-type="task_item"][data-checked="true"] > :not([data-pm-type="task_list"]) { color: #6e7681; }
 [data-pm-editor][data-pm-theme="dark"] hr { border-top-color: #30363d; }
+[data-pm-editor][data-pm-theme="dark"] [data-pm-type="embed"]:empty { border-color: #30363d; }
 [data-pm-editor][data-pm-theme="dark"] table,
 [data-pm-editor][data-pm-theme="dark"] td,
 [data-pm-editor][data-pm-theme="dark"] th { border-color: #30363d; }

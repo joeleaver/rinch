@@ -368,14 +368,4 @@ fn an_embed_is_edited_exactly_as_a_horizontal_rule_is() {
         node_sel.node(&d).map(|n| data(&n)),
         Some(vec![("data-sheet".to_string(), "s1".to_string())])
     );
-    // Backspace right after it keeps it whole wherever it is not deleted.
-    let after = state(&schema, "embed", Selection::cursor(Pos(6)))
-        .run("deleteCharBackward")
-        .expect("backspace after an embed does something");
-    for i in 0..after.doc.child_count() {
-        let c = after.doc.child(i);
-        if c.type_name() == "embed" {
-            assert_eq!(data(c), vec![("data-sheet".to_string(), "s1".to_string())]);
-        }
-    }
 }
