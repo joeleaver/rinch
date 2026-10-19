@@ -18,11 +18,14 @@
 //!
 //! # Mutants, and what kills each
 //!
+//! Measured over this file, `filled_animation_frame_tests` and
+//! `paused_animation_frame_tests` (`--no-fail-fast`).
+//!
 //! | mutant | killed by |
 //! |---|---|
-//! | `main`: `is_complete` is `false` for every infinite animation | every fixture that settles (all but the `none` one) |
-//! | `is_complete` ignores the delay for zero duration (complete at once) | `a_positive_delay_runs_until_it_ends_then_settles` |
-//! | `is_complete` treats any infinite animation as complete | `a_non_zero_infinite_animation_still_runs` |
+//! | `main`: `is_complete` is `false` for every infinite animation | 5: every fixture here that settles |
+//! | a zero-duration infinite animation is complete at once, delay ignored | `a_positive_delay_runs_until_it_ends_then_settles`, **alone** |
+//! | every infinite animation has an active duration of 0 | `a_non_zero_infinite_animation_still_runs`, and 5 in `paused_animation_frame_tests` |
 
 #![cfg(feature = "software-renderer")]
 
