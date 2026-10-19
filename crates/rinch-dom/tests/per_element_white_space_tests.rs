@@ -328,18 +328,18 @@ fn offsets_across_mixed_modes_round_trip() {
     d.append_child(p, t3);
     d.resolve_layout(800.0, 600.0);
     let il = d.tree.get(p.0).unwrap().text_layout.as_ref().unwrap();
-    // `a ` + `b` + a tab as four spaces + ` ` + ` c` (kept: after a
-    // preserved space).
-    assert_eq!(il.text_content, "a b      c");
+    // `a ` + `b` + a tab as one space (widened to its stop, #1122) + ` ` +
+    // ` c` (kept: after a preserved space).
+    assert_eq!(il.text_content, "a b   c");
     let d2f = |node: NodeId, n: usize| -> Vec<usize> {
         (0..=n)
             .map(|o| dom_cursor_to_ifc_offset(&il.text_ranges, node.0, o).unwrap())
             .collect()
     };
     assert_eq!(d2f(t1, 4), vec![0, 1, 2, 2, 2]);
-    assert_eq!(d2f(t2, 3), vec![2, 3, 7, 8]);
-    assert_eq!(d2f(t3, 3), vec![8, 9, 9, 10]);
-    let f2d: Vec<(usize, usize)> = (0..=10)
+    assert_eq!(d2f(t2, 3), vec![2, 3, 4, 5]);
+    assert_eq!(d2f(t3, 3), vec![5, 6, 6, 7]);
+    let f2d: Vec<(usize, usize)> = (0..=7)
         .map(|f| {
             let (node, off) = ifc_offset_to_dom_cursor(&il.text_ranges, f, false).unwrap();
             (node, off)
@@ -348,9 +348,9 @@ fn offsets_across_mixed_modes_round_trip() {
     // Flat 2 is the end of `t1` and the start of `t2`; a forward lookup takes
     // the later node.
     assert_eq!(f2d[3], (t2.0, 1));
-    assert_eq!(f2d[7], (t2.0, 2));
-    assert_eq!(f2d[9], (t3.0, 2));
-    assert_eq!(f2d[10], (t3.0, 3));
+    assert_eq!(f2d[4], (t2.0, 2));
+    assert_eq!(f2d[6], (t3.0, 2));
+    assert_eq!(f2d[7], (t3.0, 3));
 }
 
 /// Restyling a span's `white-space` re-collapses its text on the next layout

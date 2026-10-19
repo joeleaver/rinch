@@ -114,7 +114,7 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     change; `letter-spacing`/`word-spacing` on the substitutes still differ from Chrome's).
     The rich-text editor's caret map counts the same bytes for each through
     `DomDocument::substituted_char_flat_bytes`, answered from the table `laid_out_as` reads
-    (`ifc::PRESERVED_SUBSTITUTES`) — as it counts a tab through `tab_flat_bytes` (#1109). Only in an IFC: a flex or grid item's own text (a text leaf) still breaks at
+    (`ifc::PRESERVED_SUBSTITUTES`) — as it counts a tab through `tab_flat_bytes` (#1109; 1 since #1122). Only in an IFC: a flex or grid item's own text (a text leaf) still breaks at
     U+2028/U+2029 and draws U+0085 (#1268).
     **The flat offsets index that collapsed text** — the caret maps,
     inline backgrounds and decorations, the visibility mask; they used to count the pushed text,
@@ -122,6 +122,26 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     DOM↔flat correspondence. Since parley counts a trailing NBSP in `trailing_whitespace`,
     `measured_width` keeps it (`width_keeping_nbsp`), whatever else the IFC holds.
     `crates/rinch-dom/tests/inline_edge_space_tests.rs` and `nbsp_line_box_tests.rs` are the pins.
+  - **Parley has no tab stops; rinch sets them** (#1122). A preserved tab
+    (`pre`, `pre-wrap`, `break-spaces`, a contenteditable root) is pushed as
+    one space, one flat byte, recorded in `IfcText::tabs`; `IfcText::replay`
+    gives each its own span of `word-spacing: 0` and a `letter-spacing` that
+    widens it to its stop, and `build_inline_layout` builds and breaks again
+    while a tab is off its stop (`ifc::TabStops::deltas`), at most
+    `MAX_TAB_BUILDS` = 4 builds; `ifc_tab_rebuilds` counts the extra ones: 1 for
+    lines that do not wrap. Each build settles one more moved soft wrap, so a
+    long soft-wrapped `pre-wrap` paragraph can stop at the cap with some tabs
+    off their stops, 3.8–5px from Chrome's, from about its fifth line on (Refs
+    #1593; `review_1587_tests.rs` pins a paragraph that needs all four). The rule is Chrome 155's: stops every `TAB_SIZE`
+    (8) spaces of the **block's** font, its letter- and word-spacing included,
+    from the line's start edge in logical order before `text-align`; the first
+    stop strictly past the tab's start, or the next when that is under half a
+    space away; an overflowing tab hangs. `tab-size` is Gecko-only in Stylo and
+    not read (#1584). Since the tab is one byte, `tab_flat_bytes` is 1 on
+    rinch-dom as in a browser. Not done: a text leaf's and a form control's tab
+    (#1585), and the `text-overflow: ellipsis` rebuild, which refuses the
+    per-line cut for a paragraph with a tab and draws it one space wide in the
+    whole cut (#1586). `tests/tab_stop_1122_tests.rs` is the pin.
 - **skrifa** - read directly by rinch-dom only to size a text control from its font's OS/2 and `head` tables (#1177). Pinned at **0.44**, the version parley 0.11.1 depends on; parley does not re-export it, so a parley bump that moves skrifa silently builds a second copy unless this pin moves with it.
 - **vello** - 2D GPU rendering via wgpu (GPU mode, enabled with `features = ["gpu"]`)
 - **tiny-skia** - 2D software rendering (default mode, no GPU required)

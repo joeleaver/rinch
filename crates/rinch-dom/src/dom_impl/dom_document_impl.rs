@@ -1075,10 +1075,12 @@ impl DomDocument for RinchDocument {
         1
     }
 
-    /// The inline formatting context lays a tab out as four spaces
-    /// (`ifc::TAB_SPACES`), four bytes of the same flat offsets (#1109).
+    /// The inline formatting context lays a preserved tab out as one space
+    /// widened to its tab stop (`ifc::TabStops`, #1122), one byte of the
+    /// same flat offsets — as the DOM counts it. (It was four spaces, four
+    /// bytes, until then: #1109.)
     fn tab_flat_bytes(&self) -> usize {
-        crate::ifc::TAB_SPACES.len()
+        1
     }
 
     /// U+2028, U+2029, U+0085 and U+000C as the inline formatting context
