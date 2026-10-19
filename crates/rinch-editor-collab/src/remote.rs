@@ -95,6 +95,31 @@ fn block_diff_with(old: &Node, target: &Node, ids: Option<&AtomIds>) -> Option<B
             k += c;
         }
     }
+    if let Some(inline) = ids.and_then(|ids| ids.inline_fitting(old, target))
+        && inline.old != inline.new
+    {
+        // The same for inline atoms, where both sides are known to differ.
+        let differ = |a: &Option<String>, b: &Option<String>| a.is_some() && b.is_some() && a != b;
+        let mut k = 0;
+        for i in 0..prefix {
+            let c = inline_atoms(old.child(i));
+            if (k..k + c).any(|j| differ(&inline.old[j], &inline.new[j])) {
+                prefix = i;
+                break;
+            }
+            k += c;
+        }
+        let (ol, nl) = (inline.old.len(), inline.new.len());
+        let mut k = 0;
+        for s in 0..suffix {
+            let c = inline_atoms(old.child(on - 1 - s));
+            if (0..c).any(|j| differ(&inline.old[ol - k - c + j], &inline.new[nl - k - c + j])) {
+                suffix = s;
+                break;
+            }
+            k += c;
+        }
+    }
     if prefix == on && nn == on {
         return None; // identical
     }
@@ -140,12 +165,63 @@ type AttrChange = (usize, String, Option<AttrValue>);
 pub(crate) struct AtomIds<'a> {
     pub(crate) old: &'a [BlockId],
     pub(crate) new: &'a [BlockId],
+    /// The identity of every **inline atom** (an `image`, a `hard_break`) of the
+    /// old document and the converged one, in document order, when known
+    /// ([`InlineIds`]).
+    pub(crate) inline: Option<InlineIds<'a>>,
+}
+
+/// The identity (`crate::atoms`) of every inline atom of the old document and of
+/// the converged one, in document order: `None` where it is not known (an atom
+/// the model made since the last read). A picture whose attributes a peer changed
+/// is the same identity on both sides, and gets `SetNodeAttrStep`s, so a node
+/// view drawn for it stays mounted; another identity at its place — a moved,
+/// re-inserted or replaced picture — is replaced, and the view remounted. An
+/// unknown identity never proves sameness for an attribute change: on doubt the
+/// block is replaced.
+#[derive(Clone, Copy)]
+pub(crate) struct InlineIds<'a> {
+    pub(crate) old: &'a [Option<String>],
+    pub(crate) new: &'a [Option<String>],
 }
 
 impl AtomIds<'_> {
     /// Whether the lists describe `old` and `target`: one id per leaf block atom.
     pub(crate) fn fits(&self, old: &Node, target: &Node) -> bool {
         self.old.len() == block_atoms(old) && self.new.len() == block_atoms(target)
+    }
+
+    /// The inline identities, when they describe `old` and `target`.
+    fn inline_fitting(&self, old: &Node, target: &Node) -> Option<InlineIds<'_>> {
+        self.inline
+            .filter(|i| i.old.len() == inline_atoms(old) && i.new.len() == inline_atoms(target))
+    }
+}
+
+/// Whether `node` is an inline atom (an inline leaf that is not text).
+fn is_inline_atom(node: &Node) -> bool {
+    node.is_inline() && node.is_leaf() && !node.is_text()
+}
+
+/// How many inline atoms `node` is or holds, in document order.
+pub(crate) fn inline_atoms(node: &Node) -> usize {
+    if is_inline_atom(node) {
+        1
+    } else if node.is_leaf() {
+        0
+    } else {
+        node.content().children().iter().map(inline_atoms).sum()
+    }
+}
+
+/// The inline atoms `node` is or holds, in document order.
+pub(crate) fn inline_atom_nodes(node: &Node, out: &mut Vec<Node>) {
+    if is_inline_atom(node) {
+        out.push(node.clone());
+    } else if !node.is_leaf() {
+        for child in node.content().children() {
+            inline_atom_nodes(child, out);
+        }
     }
 }
 
@@ -214,11 +290,19 @@ fn changed_middle(
         return None;
     }
     let before: usize = (0..diff.prefix).map(|i| block_atoms(old.child(i))).sum();
+    let inline = match atoms {
+        AtomMatch::Ids(ids) => ids.inline_fitting(old, target),
+        AtomMatch::Positional => None,
+    };
+    let inline_before: usize = (0..diff.prefix).map(|i| inline_atoms(old.child(i))).sum();
     let mut walk = MiddleWalk {
         edits: Vec::new(),
         atoms,
         ko: before,
         kn: before,
+        inline,
+        io: inline_before,
+        in_: inline_before,
     };
     let mut pos = diff.start;
     for i in diff.prefix..on - diff.suffix {
@@ -236,6 +320,11 @@ struct MiddleWalk<'a> {
     /// The document-order index of the next leaf block atom, old and new.
     ko: usize,
     kn: usize,
+    /// The inline atoms' identities, when known, and the index of the next one,
+    /// old and new.
+    inline: Option<InlineIds<'a>>,
+    io: usize,
+    in_: usize,
 }
 
 impl MiddleWalk<'_> {
@@ -250,11 +339,88 @@ impl MiddleWalk<'_> {
         }
     }
 
+    /// Whether the inline atoms of `a` and `b` (counted `ia`, `ib`) are not shown
+    /// to be other atoms: no pair of them is two known, different identities.
+    fn same_inline(&self, ia: usize, ib: usize) -> bool {
+        let Some(inline) = self.inline else {
+            return true;
+        };
+        ia == ib
+            && (0..ia).all(|k| {
+                match (&inline.old[self.io + k], &inline.new[self.in_ + k]) {
+                    (Some(x), Some(y)) => x == y,
+                    _ => true,
+                }
+            })
+    }
+
+    /// The attribute changes that turn textblock `a` into `b` when the two differ
+    /// only in the attributes of inline atoms each **known** to be the same atom
+    /// on both sides (identity). `None` otherwise.
+    fn inline_attr_changes(&self, a: &Node, b: &Node, pos: usize) -> Option<Vec<AttrChange>> {
+        let inline = self.inline?;
+        if !(a.is_textblock()
+            && a.type_name() == b.type_name()
+            && a.marks() == b.marks()
+            && a.attrs() == b.attrs()
+            && a.child_count() == b.child_count())
+        {
+            return None;
+        }
+        let mut changes = Vec::new();
+        let mut child_pos = pos + 1;
+        let mut k = 0;
+        for i in 0..a.child_count() {
+            let (x, y) = (a.child(i), b.child(i));
+            if is_inline_atom(x) {
+                if !is_inline_atom(y) || x.type_name() != y.type_name() || x.marks() != y.marks() {
+                    return None;
+                }
+                let (Some(ox), Some(ny)) = (&inline.old[self.io + k], &inline.new[self.in_ + k])
+                else {
+                    if x == y {
+                        k += 1;
+                        child_pos += 1;
+                        continue;
+                    }
+                    return None;
+                };
+                if ox != ny {
+                    return None;
+                }
+                for (key, value) in y.attrs().iter() {
+                    if x.attrs().get(key) != Some(value) {
+                        changes.push((child_pos, key.to_string(), Some(value.clone())));
+                    }
+                }
+                for (key, _) in x.attrs().iter() {
+                    if y.attrs().get(key).is_none() {
+                        changes.push((child_pos, key.to_string(), None));
+                    }
+                }
+                k += 1;
+            } else if x != y {
+                return None;
+            }
+            child_pos += x.node_size();
+        }
+        (!changes.is_empty()).then_some(changes)
+    }
+
     fn pair(&mut self, a: &Node, b: &Node, pos: usize) {
         let (ca, cb) = (block_atoms(a), block_atoms(b));
-        if (a.same_ref(b) || a == b) && self.same_atoms(ca, cb) {
+        let (ia, ib) = (inline_atoms(a), inline_atoms(b));
+        if (a.same_ref(b) || a == b) && self.same_atoms(ca, cb) && self.same_inline(ia, ib) {
             self.ko += ca;
             self.kn += cb;
+            self.io += ia;
+            self.in_ += ib;
+            return;
+        }
+        if let Some(changes) = self.inline_attr_changes(a, b, pos) {
+            self.edits.push(Edit::Attrs(changes));
+            self.io += ia;
+            self.in_ += ib;
             return;
         }
         let same_shape = a.type_name() == b.type_name() && a.marks() == b.marks();
@@ -294,6 +460,8 @@ impl MiddleWalk<'_> {
         }
         self.ko += ca;
         self.kn += cb;
+        self.io += ia;
+        self.in_ += ib;
     }
 }
 

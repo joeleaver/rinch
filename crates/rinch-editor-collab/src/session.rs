@@ -102,7 +102,8 @@ use crate::atom_cache;
 use crate::error::{CollabError, Result};
 use crate::projection::{BlockId, CollabDoc};
 use crate::remote::{
-    AtomIds, atom_nodes, block_atoms, build_remote_transaction, build_remote_transaction_with,
+    AtomIds, InlineIds, atom_nodes, block_atoms, build_remote_transaction,
+    build_remote_transaction_with, inline_atoms,
 };
 use crate::table::OversizedTable;
 
@@ -162,13 +163,29 @@ impl CollabSession {
     /// tell them apart. One read of the new CRDT, paid only when the document holds
     /// such an atom.
     fn with_atom_ids(self, state: &EditorState) -> CollabSession {
-        if block_atoms(&state.doc) > 0
-            && let Ok((read, Some(ids))) = self.cdoc.to_doc_with_atom_ids(state.schema())
+        let (blocks, inline) = (block_atoms(&state.doc) > 0, inline_atoms(&state.doc) > 0);
+        if (blocks || inline)
+            && let Ok((read, ids, inline_ids)) = self.cdoc.to_doc_with_all_atom_ids(state.schema())
             && read == state.doc
         {
-            atom_cache::store(self.uid, self.generation, state.doc.clone(), ids);
+            if blocks && let Some(ids) = ids {
+                atom_cache::store(self.uid, self.generation, state.doc.clone(), ids);
+            }
+            if let Some(inline_ids) = &inline_ids {
+                atom_cache::inline_store(self.uid, &state.doc, inline_ids);
+            }
         }
         self
+    }
+
+    /// A local change the session recorded only set the attributes of these inline
+    /// atoms (`(before, after)` nodes, as an editor's `SetNodeAttrStep`s prove): each
+    /// `after` is still the CRDT char its `before` was, so a peer's change of its
+    /// attributes arriving next is told from another picture at its place, and a
+    /// node view drawn for it stays mounted. Without it such a node is unknown
+    /// until the next update arrives, and a peer's change of it remounts its view.
+    pub fn note_kept_inline_atoms(&self, pairs: &[(Node, Node)]) {
+        atom_cache::inline_carry(self.uid, pairs);
     }
 
     /// Join an existing collaboration from a peer's saved CRDT bytes.
@@ -484,6 +501,10 @@ impl CollabSession {
                 Err(e) => e,
             },
         };
+        // The caller's `before` did not describe the CRDT. Re-base on what does — a
+        // write that pairs the model's inline atoms with chars by value, so which
+        // char each is cannot be carried through it.
+        atom_cache::inline_forget(self.uid);
         // The caller's `before` did not describe the CRDT. Re-base on what does.
         // `to_doc` failing means the shared document is unprojectable — report it, but
         // do not poison: poison is for *inbound* damage (issue #196), and this path has
@@ -826,10 +847,15 @@ impl CollabSession {
         }
         // The converged rebuild — the projectability verdict for these bytes.
         // Noting the atoms' blocks costs no read of its own.
-        let (target, new_ids) = match self.cdoc.to_doc_with_atom_ids(state.schema()) {
-            Ok(read) => read,
-            Err(cause) => return Err(self.classify_unprojectable(cause)),
-        };
+        // Which char each inline atom of the model is, from what the last read
+        // left (`atom_cache::inline_lookup`): a picture the model made since is
+        // unknown, and a peer's attribute change of it is a replace.
+        let old_inline = atom_cache::inline_lookup(self.uid, &state.doc);
+        let (target, new_ids, new_inline) =
+            match self.cdoc.to_doc_with_all_atom_ids(state.schema()) {
+                Ok(read) => read,
+                Err(cause) => return Err(self.classify_unprojectable(cause)),
+            };
         // The document is projectable: a previously-poisoned session is healed by
         // exactly this — a full inbound integration whose rebuild succeeds (the
         // returned state below is what brings the model back in step).
@@ -852,11 +878,26 @@ impl CollabSession {
         // the model transaction reads only the validated rebuild (and is unreachable
         // in practice for a doc `to_doc` admitted). Defense in depth, not a supported
         // failure path.
+        let inline = new_inline.as_deref().map(|new| InlineIds {
+            old: &old_inline,
+            new,
+        });
         let ids = match (&old_ids, &new_ids) {
-            (Some(old), Some(new)) => Some(AtomIds { old, new }),
+            (Some(old), Some(new)) => Some(AtomIds { old, new, inline }),
             _ => None,
         };
         let tr = build_remote_transaction_with(state, &target, ids.as_ref())?;
+        // The document the editor holds next is the read, atom for atom: note
+        // which char each of its inline atoms is.
+        match &new_inline {
+            Some(new_inline) => {
+                let doc = tr
+                    .as_ref()
+                    .map_or_else(|| state.doc.clone(), |tr| tr.doc().clone());
+                atom_cache::inline_store(self.uid, &doc, new_inline);
+            }
+            None => atom_cache::inline_forget(self.uid),
+        }
         // The document the editor holds next, and its atoms' blocks — for the next
         // operation (`atom_cache`). Only when this one knew which atom was which.
         if ids.is_some()
@@ -913,11 +954,15 @@ impl CollabSession {
     /// sticky error rather than re-deriving the underlying read failure.
     pub fn projected_doc(&self, schema: &Schema) -> Result<Node> {
         self.guard()?;
-        let (doc, ids) = self.cdoc.to_doc_with_atom_ids(schema)?;
+        let (doc, ids, inline) = self.cdoc.to_doc_with_all_atom_ids(schema)?;
         // An editor built on this document (a guest joining) then knows its atoms'
-        // blocks without another read.
+        // blocks, and which char each of its inline atoms is, without another read.
         if let Some(ids) = ids {
             atom_cache::store(self.uid, self.generation, doc.clone(), ids);
+        }
+        match &inline {
+            Some(inline) => atom_cache::inline_store(self.uid, &doc, inline),
+            None => atom_cache::inline_forget(self.uid),
         }
         Ok(doc)
     }

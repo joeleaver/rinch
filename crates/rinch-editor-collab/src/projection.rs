@@ -361,6 +361,10 @@ pub(crate) struct BlockData {
     /// content are equal wherever they came from. Read by [`build_block`] for a
     /// leaf block atom while [`CollabDoc::to_doc_with_atom_ids`] records.
     pub id: Option<BlockId>,
+    /// The identity (`crate::atoms`) of each inline atom of the text, by char
+    /// offset — read only while [`CollabDoc::to_doc_with_all_atom_ids`] records
+    /// ([`INLINE_IDS`]), empty otherwise. Not part of equality.
+    pub atom_idents: Vec<(usize, Option<String>)>,
 }
 
 impl PartialEq for BlockData {
@@ -765,6 +769,48 @@ impl CollabDoc {
         &self,
         schema: &Schema,
     ) -> Result<(Node, Option<Vec<BlockId>>)> {
+        self.to_doc_with_ids(schema, false).map(|(doc, ids, _)| (doc, ids))
+    }
+
+    /// [`Self::to_doc_with_atom_ids`], with the identity of every **inline atom**
+    /// too (an `image`, a `hard_break`: `crate::atoms`), in document order — `None`
+    /// in the list for one whose char yrs cannot locate, and `None` for the list
+    /// when the read's atoms could not be counted. What tells a picture whose
+    /// attributes a peer changed from another picture at its place (node views C).
+    pub(crate) fn to_doc_with_all_atom_ids(
+        &self,
+        schema: &Schema,
+    ) -> Result<(Node, Option<Vec<BlockId>>, Option<Vec<Option<String>>>)> {
+        self.to_doc_with_ids(schema, true)
+    }
+
+    fn to_doc_with_ids(
+        &self,
+        schema: &Schema,
+        inline: bool,
+    ) -> Result<(Node, Option<Vec<BlockId>>, Option<Vec<Option<String>>>)> {
+        struct InlineRecording;
+        impl Drop for InlineRecording {
+            fn drop(&mut self) {
+                INLINE_IDS.with(|ids| *ids.borrow_mut() = None);
+            }
+        }
+        let inline_recording = inline.then(|| {
+            INLINE_IDS.with(|ids| *ids.borrow_mut() = Some(Vec::new()));
+            InlineRecording
+        });
+        let (doc, ids) = self.to_doc_with_block_ids(schema)?;
+        let inline_ids = INLINE_IDS
+            .with(|ids| ids.borrow_mut().take())
+            .filter(|list| list.len() == crate::remote::inline_atoms(&doc));
+        drop(inline_recording);
+        Ok((doc, ids, inline_ids))
+    }
+
+    fn to_doc_with_block_ids(
+        &self,
+        schema: &Schema,
+    ) -> Result<(Node, Option<Vec<BlockId>>)> {
         struct Recording;
         impl Drop for Recording {
             fn drop(&mut self) {
@@ -876,6 +922,27 @@ thread_local! {
     /// `Err` once one had no id.
     static ATOM_IDS: std::cell::RefCell<Option<std::result::Result<Vec<BlockId>, ()>>> =
         const { std::cell::RefCell::new(None) };
+}
+
+thread_local! {
+    /// While [`CollabDoc::to_doc_with_all_atom_ids`] reads: the identity of every
+    /// inline atom [`build_block`] builds, in document order.
+    static INLINE_IDS: std::cell::RefCell<Option<Vec<Option<String>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Whether [`INLINE_IDS`] records (the read then looks inline atoms' identities up).
+fn inline_ids_recording() -> bool {
+    INLINE_IDS.with(|ids| ids.borrow().is_some())
+}
+
+/// Note an inline atom's identity while [`INLINE_IDS`] records.
+fn note_inline_id(id: Option<String>) {
+    INLINE_IDS.with(|ids| {
+        if let Some(list) = ids.borrow_mut().as_mut() {
+            list.push(id);
+        }
+    });
 }
 
 /// Note a leaf block atom's id while [`ATOM_IDS`] records.
@@ -2120,7 +2187,26 @@ fn resync_atoms(
 /// value, which is outside the staged scope (A22) and fails loud rather than being
 /// dropped.
 fn read_text_data<T: ReadTxn>(txn: &T, text: &TextRef) -> Result<(String, Vec<SpanMark>)> {
+    read_text_data_with_idents(txn, text, None)
+}
+
+/// [`read_text_data`], noting each inline atom's identity by char offset in
+/// `idents` when given.
+fn read_text_data_with_idents<T: ReadTxn>(
+    txn: &T,
+    text: &TextRef,
+    idents: Option<&mut Vec<(usize, Option<String>)>>,
+) -> Result<(String, Vec<SpanMark>)> {
     let scanned = scan_text(txn, text)?;
+    if let Some(idents) = idents {
+        idents.extend(
+            scanned
+                .atoms
+                .iter()
+                .filter(|a| a.placeholder)
+                .map(|a| (a.index, a.identity(txn, text))),
+        );
+    }
     let mut marks: Vec<SpanMark> = Vec::new();
     for (name, attrs, start, end) in &scanned.spans {
         push_mark_span(&mut marks, name, attrs.clone(), *start, *end);
@@ -2160,8 +2246,14 @@ fn read_map_data<T: ReadTxn>(txn: &T, node: &MapRef) -> Result<NodeData> {
     let type_name = node_type(txn, node).ok_or_else(|| CollabError::schema("node has no type"))?;
     let attrs = node_attrs(txn, node);
     if let Some(text_obj) = block_text(txn, node) {
-        let (text, marks) = read_text_data(txn, &text_obj)?;
+        let mut atom_idents = Vec::new();
+        let (text, marks) = read_text_data_with_idents(
+            txn,
+            &text_obj,
+            inline_ids_recording().then_some(&mut atom_idents),
+        )?;
         Ok(NodeData::Block(BlockData {
+            atom_idents,
             id: block_id(node),
             type_name,
             attrs,
@@ -2259,6 +2351,7 @@ pub(crate) fn read_block(block: &Node) -> Result<BlockData> {
             )));
         }
         return Ok(BlockData {
+            atom_idents: Vec::new(),
             id: None,
             type_name: block.type_name().to_string(),
             attrs: block.attrs().clone(),
@@ -2315,6 +2408,7 @@ pub(crate) fn read_block(block: &Node) -> Result<BlockData> {
     }
     marks.sort_by(|a, b| (a.start, a.end, &a.name).cmp(&(b.start, b.end, &b.name)));
     Ok(BlockData {
+        atom_idents: Vec::new(),
         id: None,
         type_name: block.type_name().to_string(),
         attrs: block.attrs().clone(),
@@ -2540,6 +2634,14 @@ fn build_block(schema: &Schema, b: &BlockData) -> Result<Node> {
         // and those are two nodes.
         if is_atom_char(&b.marks, &chars, i) {
             let span = atom_span_at(&b.marks, i).expect("is_atom_char found one");
+            if inline_ids_recording() {
+                note_inline_id(
+                    b.atom_idents
+                        .iter()
+                        .find(|(at, _)| *at == i)
+                        .and_then(|(_, id)| id.clone()),
+                );
+            }
             runs.push(build_inline_atom(
                 schema,
                 span,
@@ -2830,6 +2932,7 @@ mod tests {
         // silently materialized.
         let s = schema();
         let bad = BlockData {
+            atom_idents: Vec::new(),
             id: None,
             type_name: "blockquote".into(),
             attrs: Attrs::new(),
@@ -2840,6 +2943,7 @@ mod tests {
         assert!(matches!(err, CollabError::Unsupported(_)), "got {err:?}");
 
         let unknown = BlockData {
+            atom_idents: Vec::new(),
             id: None,
             type_name: "not_a_real_type".into(),
             attrs: Attrs::new(),
@@ -2853,6 +2957,7 @@ mod tests {
 
         // a flat textblock is accepted
         let good = BlockData {
+            atom_idents: Vec::new(),
             id: None,
             type_name: "paragraph".into(),
             attrs: Attrs::new(),
@@ -2908,6 +3013,7 @@ mod tests {
         assert_eq!(
             data,
             BlockData {
+                atom_idents: Vec::new(),
                 id: None,
                 type_name: "horizontal_rule".into(),
                 attrs: Attrs::new(),
@@ -2927,6 +3033,7 @@ mod tests {
         // a shape no model can express, so it must fail loud rather than be dropped.
         let s = schema();
         let with_text = BlockData {
+            atom_idents: Vec::new(),
             id: None,
             type_name: "horizontal_rule".into(),
             attrs: Attrs::new(),
@@ -3113,6 +3220,7 @@ mod tests {
         // text. Erroring would poison a live session for it.
         let s = schema();
         let stray = BlockData {
+            atom_idents: Vec::new(),
             id: None,
             type_name: "paragraph".into(),
             attrs: Attrs::new(),
@@ -3136,6 +3244,7 @@ mod tests {
         // be silently dropped or silently invented (A22).
         let s = schema();
         let block = |attrs: Attrs| BlockData {
+            atom_idents: Vec::new(),
             id: None,
             type_name: "paragraph".into(),
             attrs: Attrs::new(),
@@ -3243,6 +3352,7 @@ mod tests {
         let err = build_block(
             &hostile,
             &BlockData {
+                atom_idents: Vec::new(),
                 id: None,
                 type_name: "paragraph".into(),
                 attrs: Attrs::new(),
@@ -3390,6 +3500,7 @@ mod tests {
     /// projection.
     fn plausible_block() -> NodeData {
         NodeData::Block(BlockData {
+            atom_idents: Vec::new(),
             id: None,
             type_name: "paragraph".into(),
             attrs: Attrs::new(),

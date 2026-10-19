@@ -510,6 +510,14 @@ impl EditorCore {
             .filter_map(|k| next.doc.node_at(k.pos))
             .filter(|n| n.is_leaf() && n.is_block())
             .collect();
+        // The inline atoms (a picture) it only set attributes of, before and after:
+        // still their CRDT chars (`CollabSession::note_kept_inline_atoms`).
+        #[cfg(feature = "collaboration")]
+        let kept_inline: Vec<(Node, Node)> = kept
+            .iter()
+            .filter_map(|k| Some((k.old.clone(), next.doc.node_at(k.pos)?)))
+            .filter(|(_, n)| n.is_leaf() && n.is_inline() && !n.is_text())
+            .collect();
         if let Some(view) = self.view.as_mut() {
             view.set_kept(kept);
             view.update_dom(&prev, &next);
@@ -523,7 +531,14 @@ impl EditorCore {
             }
         }
         #[cfg(feature = "collaboration")]
-        self.record_local(&prev, &next, &kept_nodes);
+        {
+            self.record_local(&prev, &next, &kept_nodes);
+            if !kept_inline.is_empty()
+                && let Some(bridge) = self.collab.as_ref()
+            {
+                bridge.session.note_kept_inline_atoms(&kept_inline);
+            }
+        }
         Some(doc_changed)
     }
 

@@ -336,3 +336,147 @@ fn set_image_source_still_reaches_unclaimed_images() {
     assert_eq!(attr(&p, hosts[0], "src"), None);
     rinch_editor_view::clear_image_source();
 }
+
+#[cfg(feature = "collaboration")]
+mod collab {
+    use super::*;
+
+    /// Two collaborating pages: `a` hosts `DOC`, `b` joins; `b` draws the badge
+    /// view. `send` delivers `a`'s pending deltas to `b`, `back` `b`'s to `a`.
+    struct Pair {
+        a: Page,
+        b: Page,
+        to_b: Rc<RefCell<Vec<Vec<u8>>>>,
+        to_a: Rc<RefCell<Vec<Vec<u8>>>>,
+        seen_b: Rc<Seen>,
+    }
+
+    impl Pair {
+        fn send(&self) {
+            for d in self.to_b.borrow_mut().drain(..) {
+                assert!(
+                    self.b.handle.collab_receive(&d),
+                    "{:?}",
+                    self.b.handle.collab_take_error()
+                );
+            }
+        }
+        fn back(&self) {
+            for d in self.to_a.borrow_mut().drain(..) {
+                assert!(self.a.handle.collab_receive(&d));
+            }
+        }
+        fn a_sets(&self, key: &str, value: &str) {
+            let (k, v) = (key.to_string(), value.to_string());
+            assert!(self.a.handle.update(move |st| {
+                let mut tr = st.tr();
+                let pos = image_pos(&st.doc, 0)?;
+                tr.step(Box::new(rinch_editor_core::SetNodeAttrStep::new(
+                    pos,
+                    &k,
+                    AttrValue::from(v.as_str()),
+                )))
+                .ok()?;
+                Some(tr)
+            }));
+        }
+    }
+
+    fn html(h: &EditorHandle) -> String {
+        rinch_editor_core::serialize::html::node_to_html(&h.doc())
+    }
+
+    /// The position of the `n`-th image of `doc`.
+    fn image_pos(doc: &rinch_editor_core::Node, n: usize) -> Option<usize> {
+        let mut found = Vec::new();
+        doc.nodes_between(0, doc.content().size(), &mut |node, pos, _| {
+            if node.type_name() == "image" {
+                found.push(pos);
+            }
+            true
+        });
+        found.get(n).copied()
+    }
+
+    fn pair() -> Pair {
+        let a = page(DOC);
+        let b = page("<p></p>");
+        let to_b: Rc<RefCell<Vec<Vec<u8>>>> = Rc::default();
+        let to_a: Rc<RefCell<Vec<Vec<u8>>>> = Rc::default();
+        let sink = to_b.clone();
+        let snapshot = a
+            .handle
+            .start_collaboration_host(move |d| sink.borrow_mut().push(d))
+            .unwrap();
+        let sink = to_a.clone();
+        b.handle
+            .start_collaboration_guest(&snapshot, move |d| sink.borrow_mut().push(d))
+            .unwrap();
+        let seen_b = register(&b);
+        assert_eq!(seen_b.renders.get(), 1);
+        seen_b.state.borrow()[0].set(3);
+        Pair {
+            a,
+            b,
+            to_b,
+            to_a,
+            seen_b,
+        }
+    }
+
+    #[test]
+    fn a_collaborators_attr_change_of_a_claimed_image_keeps_the_mount() {
+        let p = pair();
+        p.a_sets("data-badge", "hot");
+        p.send();
+        assert_eq!(*p.seen_b.badges.borrow(), ["new", "hot"]);
+        assert_eq!(p.seen_b.renders.get(), 1, "not remounted");
+        assert_eq!(p.seen_b.state.borrow()[0].get(), 3);
+        assert_eq!(html(&p.b.handle), html(&p.a.handle), "converged on the attribute");
+        // Again after the guest typed beside it (its node kept, so still known).
+        p.b.handle.set_selection(Selection::cursor(Pos(2)));
+        assert!(p.b.handle.insert_text("x"));
+        p.back();
+        p.a_sets("data-badge", "cold");
+        p.send();
+        assert_eq!(p.seen_b.renders.get(), 1, "still the same mount");
+        // And after the guest changed its attributes itself (a SetNodeAttrStep:
+        // the same char, carried).
+        let ctx = p.seen_b.ctx.borrow()[0].clone();
+        assert!(ctx.set_attrs(|a| *a = a.with("data-note", AttrValue::from("x"))));
+        p.back();
+        p.a_sets("data-badge", "warm");
+        p.send();
+        assert_eq!(p.seen_b.renders.get(), 1, "still the same mount");
+        assert_eq!(
+            p.seen_b.badges.borrow().last().map(String::as_str),
+            Some("warm")
+        );
+        // (Two editors' nodes are told apart by their schemas: compare markup.)
+        assert_eq!(html(&p.b.handle), html(&p.a.handle));
+    }
+
+    /// A peer's move of the picture is another place: the view is remounted,
+    /// never moved with app state it may have keyed to its old place. (An equal
+    /// copy a peer pastes over a picture **with the same `src`** is the same
+    /// picture to collaboration, #1503 — identity is type + `src` — and keeps the
+    /// peers' mounts; the local view, which sees a new node, is remounted.)
+    #[test]
+    fn a_collaborators_move_of_a_claimed_image_remounts() {
+        let p = pair();
+        // Move it after "ef".
+        let image = p.a.handle.doc().node_at(BADGED).unwrap().clone();
+        assert!(p.a.handle.update(|st| {
+            let mut tr = st.tr();
+            tr.delete(BADGED, BADGED + 1).ok()?;
+            tr.replace(8, 8, Slice::new(Fragment::from_node(image.clone()), 0, 0))
+                .ok()?;
+            Some(tr)
+        }));
+        p.send();
+        assert_eq!(html(&p.b.handle), html(&p.a.handle));
+        assert_eq!(p.seen_b.renders.get(), 2, "moved: remounted");
+        assert_eq!(p.seen_b.cleanups.get(), 1);
+        assert_eq!(p.seen_b.state.borrow()[1].get(), 0, "fresh state");
+    }
+}
