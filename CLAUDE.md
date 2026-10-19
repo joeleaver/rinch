@@ -1094,9 +1094,9 @@ reached desktop or the web's theme `<style>` (PR #1134 review; Android never
 applies a theme-only change at all, #1144). The change is *owed* until the
 next notification, so one made outside any batch is delivered by the next
 handler of any kind. State a host polls itself (dirty nodes, focus requests,
-the editor's owed overlay pass, image decodes) does not need it; a desktop
-`NodeHandle::scroll_into_view` from a handler that dirties nothing is **not**
-polled and is never applied (#1145). Thread-local save/restore guards go through
+the editor's owed overlay pass, image decodes, a queued
+`NodeHandle::scroll_into_view` / `scroll_to_fraction` — #1145, which used to
+wait for an unrelated layout) does not need it. Thread-local save/restore guards go through
 `reactive::restore` (`RestoreCell<K: Slot>` over a `restore_slot!`, and
 `with_runtime_on_drop`) — a new one should too; the slots dispatch statically
 because a `fn`-pointer selector cost the effect-run path +2.4% instructions. A handler's

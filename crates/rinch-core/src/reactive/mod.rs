@@ -1198,10 +1198,9 @@ fn host_change_owed() -> bool {
 /// other notification — an unbatched signal write — pays it along the way.
 ///
 /// State a host polls on its own (a dirty DOM node, a pending focus request,
-/// the editor's owed overlay pass, a finished image decode) does not need it.
-/// A `NodeHandle::scroll_into_view` request from a handler that dirties
-/// nothing is **not** such state on desktop — it is applied only by a resolve
-/// that something else triggers (#1145).
+/// the editor's owed overlay pass, a finished image decode, a queued
+/// `NodeHandle::scroll_into_view` / `scroll_to_fraction` request — #1145)
+/// does not need it.
 pub fn note_host_change() {
     HOST_CHANGE_OWED.with(|c| c.set(true));
 }
