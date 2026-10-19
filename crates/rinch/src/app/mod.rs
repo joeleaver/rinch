@@ -129,6 +129,8 @@ mod input_commit_tests;
 mod input_ime_tests;
 #[cfg(all(test, feature = "clipboard"))]
 mod input_paste_async_tests;
+#[cfg(all(test, software_shell))]
+mod input_value_sanitization_1554_tests;
 #[cfg(test)]
 mod key_event_data_tests;
 #[cfg(test)]
@@ -226,8 +228,6 @@ mod select_widget;
 mod shared_hit_tests;
 #[cfg(test)]
 mod single_line_insert_824_tests;
-#[cfg(all(test, software_shell))]
-mod input_value_sanitization_1554_tests;
 #[cfg(all(test, software_shell))]
 mod stacking_flip_damage_1384_review_tests;
 #[cfg(all(test, software_shell))]

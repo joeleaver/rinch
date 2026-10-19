@@ -312,8 +312,7 @@ pub fn input_value(node: &Node) -> Option<std::borrow::Cow<'_, str>> {
         None | Some("text" | "search" | "tel" | "password") => false,
         Some(
             "hidden" | "checkbox" | "radio" | "file" | "submit" | "image" | "reset" | "button"
-            | "number" | "range" | "color" | "date" | "month" | "week" | "time"
-            | "datetime-local",
+            | "number" | "range" | "color" | "date" | "month" | "week" | "time" | "datetime-local",
         ) => return Some(Cow::Borrowed(raw)),
         // An unknown type is the Text state.
         Some(_) => false,
@@ -333,7 +332,11 @@ pub fn input_value(node: &Node) -> Option<std::borrow::Cow<'_, str>> {
             .map(|a| a.trim_matches(is_ascii_ws))
             .collect::<Vec<_>>()
             .join(",");
-        return Some(if joined == stripped { stripped } else { Cow::Owned(joined) });
+        return Some(if joined == stripped {
+            stripped
+        } else {
+            Cow::Owned(joined)
+        });
     }
     Some(match stripped {
         Cow::Borrowed(s) => Cow::Borrowed(s.trim_matches(is_ascii_ws)),
