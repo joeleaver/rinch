@@ -315,7 +315,10 @@ fn shares_any_inline_node(before: &Node, after: &Node) -> bool {
         keys.insert(crate::projection::node_key(c));
         false
     });
-    !keys.is_empty() && inline(after, &mut |c| keys.contains(&crate::projection::node_key(c)))
+    !keys.is_empty()
+        && inline(after, &mut |c| {
+            keys.contains(&crate::projection::node_key(c))
+        })
 }
 
 /// Whether two blocks hold one inline node (`Node::same_ref`) anywhere below them: a

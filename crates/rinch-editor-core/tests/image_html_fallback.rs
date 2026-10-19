@@ -186,7 +186,11 @@ fn review_1595_block_markup_in_an_image_fallback_round_trip() {
         &s,
         vec![para(
             &s,
-            vec![s.text("a").unwrap(), image(&s, Some("x")), s.text("b").unwrap()],
+            vec![
+                s.text("a").unwrap(),
+                image(&s, Some("x")),
+                s.text("b").unwrap(),
+            ],
         )],
     );
     let _guard = set_html_fallback(|_n: &Node| Some("<div>block</div>".to_string()));
@@ -196,6 +200,9 @@ fn review_1595_block_markup_in_an_image_fallback_round_trip() {
     for c in back.content.children() {
         texts(c, &mut t, &mut n);
     }
-    eprintln!("REVIEW-1595 block fallback: {html} -> blocks={} text={t:?} images={n}", back.content.child_count());
+    eprintln!(
+        "REVIEW-1595 block fallback: {html} -> blocks={} text={t:?} images={n}",
+        back.content.child_count()
+    );
     assert_eq!(n, 1, "the image survives its own export: {html}");
 }

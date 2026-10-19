@@ -302,13 +302,11 @@ fn target_flags(
         end = m.map(end, -1);
     }
     if end == start + 1
-        && let Some(i) = pics
-            .iter()
-            .position(|(p, n)| {
-                *p == start
-                    && n.attrs().get("src") == target.attrs().get("src")
-                    && kept.iter().any(|k| k.same_ref(n))
-            })
+        && let Some(i) = pics.iter().position(|(p, n)| {
+            *p == start
+                && n.attrs().get("src") == target.attrs().get("src")
+                && kept.iter().any(|k| k.same_ref(n))
+        })
     {
         flags[i] = true;
     }
@@ -726,7 +724,13 @@ fn run2(seed: u64, ids: (u64, u64), v: bool, t: &mut T2) {
     let expected: Vec<(Node, bool)> = imgs(&b.state.doc)
         .into_iter()
         .map(|(_, n)| n)
-        .zip(target_flags(&target_b, target_pos, &b.state.doc, &maps, &kept))
+        .zip(target_flags(
+            &target_b,
+            target_pos,
+            &b.state.doc,
+            &maps,
+            &kept,
+        ))
         .collect();
     let n_t = expected.iter().filter(|x| x.1).count();
     sync3(&mut a, &mut b, &mut c);

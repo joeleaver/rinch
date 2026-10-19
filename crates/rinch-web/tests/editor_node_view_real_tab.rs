@@ -105,13 +105,19 @@ async fn a_real_tab_leaves_the_view_from_its_last_input_and_shift_tab_from_its_f
         ))
         .keep();
     let h = handle.clone();
-    let root = rinch_web::mount_into(&host, ThemeProviderProps::default(), move |scope: &mut RenderScope| {
-        h.mount(scope)
-    });
+    let root = rinch_web::mount_into(
+        &host,
+        ThemeProviderProps::default(),
+        move |scope: &mut RenderScope| h.mount(scope),
+    );
     LIVE_ROOT.with(|r| r.set(Some(root)));
     sleep(50).await;
     let input = |id: &str| -> web_sys::HtmlElement {
-        document().get_element_by_id(id).unwrap().dyn_into().unwrap()
+        document()
+            .get_element_by_id(id)
+            .unwrap()
+            .dyn_into()
+            .unwrap()
     };
 
     // Tab inside the view goes from its first input to its last: the browser's.
@@ -132,22 +138,29 @@ async fn a_real_tab_leaves_the_view_from_its_last_input_and_shift_tab_from_its_f
     let left = now
         .as_ref()
         .is_some_and(|e| e.closest("[data-pm-node-view]").ok().flatten().is_none());
-    assert!(left, "Tab from the last input leaves the view: {}", describe(now));
+    assert!(
+        left,
+        "Tab from the last input leaves the view: {}",
+        describe(now)
+    );
 
     // Shift+Tab from the first input, out of it backwards.
     input("first").focus().unwrap();
     real_key(3, "Tab", true).await;
     let now = document().active_element();
-    console_log!("REAL-TAB shift from the first input: {}", describe(now.clone()));
+    console_log!(
+        "REAL-TAB shift from the first input: {}",
+        describe(now.clone())
+    );
     let left = now
         .as_ref()
         .is_some_and(|e| e.closest("[data-pm-node-view]").ok().flatten().is_none());
-    assert!(left, "Shift+Tab from the first input leaves the view: {}", describe(now));
-    assert_eq!(
-        handle.doc().child_count(),
-        3,
-        "no key edited the document"
+    assert!(
+        left,
+        "Shift+Tab from the first input leaves the view: {}",
+        describe(now)
     );
+    assert_eq!(handle.doc().child_count(), 3, "no key edited the document");
     before.remove();
     after.remove();
 }

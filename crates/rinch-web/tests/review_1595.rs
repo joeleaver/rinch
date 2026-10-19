@@ -31,7 +31,10 @@ fn mount(doc: &str, claim: bool) -> EditorHandle {
     }
     if let Ok(stale) = document().query_selector_all(&format!("[{HOST_MARKER}]")) {
         for i in 0..stale.length() {
-            if let Some(el) = stale.item(i).and_then(|n| n.dyn_into::<web_sys::Element>().ok()) {
+            if let Some(el) = stale
+                .item(i)
+                .and_then(|n| n.dyn_into::<web_sys::Element>().ok())
+            {
                 el.remove();
             }
         }
@@ -64,9 +67,11 @@ fn mount(doc: &str, claim: bool) -> EditorHandle {
             .keep();
     }
     let h = handle.clone();
-    let root = rinch_web::mount_into(&host, ThemeProviderProps::default(), move |scope: &mut RenderScope| {
-        h.mount(scope)
-    });
+    let root = rinch_web::mount_into(
+        &host,
+        ThemeProviderProps::default(),
+        move |scope: &mut RenderScope| h.mount(scope),
+    );
     LIVE_ROOT.with(|r| r.set(Some(root)));
     handle
 }
@@ -105,7 +110,11 @@ fn toggle(handle: &EditorHandle, on: bool) {
         let v = if on { Some(AttrValue::from("n")) } else { None };
         let step = match v {
             Some(v) => SetNodeAttrStep::new(3, "data-badge", v),
-            None => SetNodeAttrStep { pos: 3, attr: "data-badge".into(), value: None },
+            None => SetNodeAttrStep {
+                pos: 3,
+                attr: "data-badge".into(),
+                value: None,
+            },
         };
         tr.step(Box::new(step)).ok()?;
         Some(tr)
@@ -135,7 +144,10 @@ fn claim_unclaim_churn_grows_no_registry() {
 }
 
 fn end_and_press_past(claim: bool) -> (Pos, Pos) {
-    let handle = mount(r#"<p>ab<img src="x.png" data-badge="n" style="width: 20px; height: 20px"></p><p>gh</p>"#, claim);
+    let handle = mount(
+        r#"<p>ab<img src="x.png" data-badge="n" style="width: 20px; height: 20px"></p><p>gh</p>"#,
+        claim,
+    );
     let c = handle.caret_rect(Pos(2)).unwrap();
     press(c.x as f64 + 1.0, (c.y + c.height / 2.0) as f64);
     assert_eq!(handle.selection().head(), Pos(2));
@@ -167,15 +179,21 @@ fn a_spec_registered_after_mount_claims_without_a_panic() {
         NodeViewSpec::new("image", |s: &mut RenderScope, _ctx| s.create_element("b"))
             .matches(|a| a.get_str("data-badge").is_some()),
     );
-    assert!(document()
-        .query_selector(&format!("[{HOST_MARKER}] span[data-pm-type='image'][data-pm-node-view]"))
-        .unwrap()
-        .is_some());
+    assert!(
+        document()
+            .query_selector(&format!(
+                "[{HOST_MARKER}] span[data-pm-type='image'][data-pm-node-view]"
+            ))
+            .unwrap()
+            .is_some()
+    );
     drop(reg);
-    assert!(document()
-        .query_selector(&format!("[{HOST_MARKER}] img[data-pm-type='image']"))
-        .unwrap()
-        .is_some());
+    assert!(
+        document()
+            .query_selector(&format!("[{HOST_MARKER}] img[data-pm-type='image']"))
+            .unwrap()
+            .is_some()
+    );
 }
 
 /// A claiming spec registered and dropped after mount, 50 times: each swap of the
@@ -187,7 +205,9 @@ fn registering_and_dropping_a_claiming_spec_after_mount_grows_no_registry() {
     let handle = mount(r#"<p>ab<img src="x.png" data-badge="n">cd</p>"#, false);
     let claimed = || {
         document()
-            .query_selector(&format!("[{HOST_MARKER}] span[data-pm-type='image'][data-pm-node-view]"))
+            .query_selector(&format!(
+                "[{HOST_MARKER}] span[data-pm-type='image'][data-pm-node-view]"
+            ))
             .unwrap()
             .is_some()
     };

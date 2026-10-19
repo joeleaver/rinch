@@ -778,18 +778,11 @@ impl CollabDoc {
     /// in the list for one whose char yrs cannot locate, and `None` for the list
     /// when the read's atoms could not be counted. What tells a picture whose
     /// attributes a peer changed from another picture at its place (node views C).
-    pub(crate) fn to_doc_with_all_atom_ids(
-        &self,
-        schema: &Schema,
-    ) -> Result<AllAtomIds> {
+    pub(crate) fn to_doc_with_all_atom_ids(&self, schema: &Schema) -> Result<AllAtomIds> {
         self.to_doc_with_ids(schema, true)
     }
 
-    fn to_doc_with_ids(
-        &self,
-        schema: &Schema,
-        inline: bool,
-    ) -> Result<AllAtomIds> {
+    fn to_doc_with_ids(&self, schema: &Schema, inline: bool) -> Result<AllAtomIds> {
         struct InlineRecording;
         impl Drop for InlineRecording {
             fn drop(&mut self) {

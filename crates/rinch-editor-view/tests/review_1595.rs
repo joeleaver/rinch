@@ -25,7 +25,10 @@ fn spec(seen: &Rc<Seen>) -> NodeViewSpec {
     NodeViewSpec::new("image", move |scope: &mut RenderScope, ctx: NodeViewCtx| {
         s.renders.set(s.renders.get() + 1);
         let idx = s.mounts.borrow().len();
-        let r = rinch_core::reactive::untracked(|| ctx.attrs.get()).get_str("data-ref").unwrap_or("").to_string();
+        let r = rinch_core::reactive::untracked(|| ctx.attrs.get())
+            .get_str("data-ref")
+            .unwrap_or("")
+            .to_string();
         s.mounts.borrow_mut().push((r.clone(), r, true));
         let attrs = ctx.attrs;
         let seen = s.clone();
@@ -165,7 +168,8 @@ fn r1_a_fresh_same_src_picture_put_over_a_claimed_one_is_another_mount_on_the_pe
     let fresh = image(&p.a.handle, "a.png", "new", "three");
     assert!(p.a.handle.update(|st| {
         let mut tr = st.tr();
-        tr.replace(3, 4, Slice::new(Fragment::from_node(fresh.clone()), 0, 0)).ok()?;
+        tr.replace(3, 4, Slice::new(Fragment::from_node(fresh.clone()), 0, 0))
+            .ok()?;
         Some(tr)
     }));
     assert!(moved(&p.seen_a).is_empty(), "local: {:?}", moved(&p.seen_a));
@@ -199,9 +203,15 @@ fn r1_a_fresh_same_src_picture_put_over_a_claimed_one_is_another_mount_on_the_pe
 fn r1b_a_copied_same_src_picture_pasted_over_a_claimed_one() {
     let p = pair(TWO);
     let a = &p.a.handle;
-    a.set_selection(Selection::Node(NodeSelection { anchor: Pos(6), head: Pos(7) }));
+    a.set_selection(Selection::Node(NodeSelection {
+        anchor: Pos(6),
+        head: Pos(7),
+    }));
     let (copied, _text) = a.selection_clipboard().expect("copy");
-    a.set_selection(Selection::Node(NodeSelection { anchor: Pos(3), head: Pos(4) }));
+    a.set_selection(Selection::Node(NodeSelection {
+        anchor: Pos(3),
+        head: Pos(4),
+    }));
     assert!(a.replace_selection_with_html(&copied), "pasted");
     assert!(moved(&p.seen_a).is_empty(), "local: {:?}", moved(&p.seen_a));
     let renders_b = p.seen_b.renders.get();
@@ -235,11 +245,16 @@ fn r1b_a_copied_same_src_picture_pasted_over_a_claimed_one() {
 fn r2_two_same_src_pictures_swapped_in_one_transaction() {
     let p = pair(TWO);
     let doc = p.a.handle.doc();
-    let (one, two) = (doc.node_at(3).unwrap().clone(), doc.node_at(6).unwrap().clone());
+    let (one, two) = (
+        doc.node_at(3).unwrap().clone(),
+        doc.node_at(6).unwrap().clone(),
+    );
     assert!(p.a.handle.update(|st| {
         let mut tr = st.tr();
-        tr.replace(6, 7, Slice::new(Fragment::from_node(one.clone()), 0, 0)).ok()?;
-        tr.replace(3, 4, Slice::new(Fragment::from_node(two.clone()), 0, 0)).ok()?;
+        tr.replace(6, 7, Slice::new(Fragment::from_node(one.clone()), 0, 0))
+            .ok()?;
+        tr.replace(3, 4, Slice::new(Fragment::from_node(two.clone()), 0, 0))
+            .ok()?;
         Some(tr)
     }));
     assert!(moved(&p.seen_a).is_empty(), "local: {:?}", moved(&p.seen_a));
@@ -261,13 +276,20 @@ fn r3_a_src_change_on_the_peer() {
     let p = pair(TWO);
     assert!(p.a.handle.update(|st| {
         let mut tr = st.tr();
-        tr.step(Box::new(rinch_editor_core::SetNodeAttrStep::new(3, "src", AttrValue::from("z.png"))))
-            .ok()?;
+        tr.step(Box::new(rinch_editor_core::SetNodeAttrStep::new(
+            3,
+            "src",
+            AttrValue::from("z.png"),
+        )))
+        .ok()?;
         Some(tr)
     }));
     p.send();
     assert_eq!(html(&p.b.handle), html(&p.a.handle));
-    eprintln!("R3 renders on b: {} (2 = kept, 3 = remount)", p.seen_b.renders.get());
+    eprintln!(
+        "R3 renders on b: {} (2 = kept, 3 = remount)",
+        p.seen_b.renders.get()
+    );
     assert!(moved(&p.seen_b).is_empty());
 }
 
@@ -277,7 +299,10 @@ fn r3_a_src_change_on_the_peer() {
 fn r4_cut_and_paste_then_a_concurrent_attr_change() {
     let p = pair(TWO);
     let a = &p.a.handle;
-    a.set_selection(Selection::Node(NodeSelection { anchor: Pos(3), head: Pos(4) }));
+    a.set_selection(Selection::Node(NodeSelection {
+        anchor: Pos(3),
+        head: Pos(4),
+    }));
     let (cut, _) = a.selection_clipboard().unwrap();
     assert!(a.command("deleteSelection"));
     a.set_selection(Selection::cursor(Pos(7)));
@@ -285,8 +310,12 @@ fn r4_cut_and_paste_then_a_concurrent_attr_change() {
     // B, concurrently, changes picture one's badge.
     let ctx_changed = p.b.handle.update(|st| {
         let mut tr = st.tr();
-        tr.step(Box::new(rinch_editor_core::SetNodeAttrStep::new(3, "data-badge", AttrValue::from("x"))))
-            .ok()?;
+        tr.step(Box::new(rinch_editor_core::SetNodeAttrStep::new(
+            3,
+            "data-badge",
+            AttrValue::from("x"),
+        )))
+        .ok()?;
         Some(tr)
     });
     assert!(ctx_changed);
@@ -319,7 +348,8 @@ fn r6_replace_then_undo() {
     let fresh = image(&p.a.handle, "a.png", "new", "three");
     assert!(p.a.handle.update(|st| {
         let mut tr = st.tr();
-        tr.replace(3, 4, Slice::new(Fragment::from_node(fresh.clone()), 0, 0)).ok()?;
+        tr.replace(3, 4, Slice::new(Fragment::from_node(fresh.clone()), 0, 0))
+            .ok()?;
         Some(tr)
     }));
     p.send();
@@ -338,7 +368,8 @@ fn r7_a_different_src_picture_put_over_a_claimed_one() {
     let fresh = image(&p.a.handle, "z.png", "new", "three");
     assert!(p.a.handle.update(|st| {
         let mut tr = st.tr();
-        tr.replace(3, 4, Slice::new(Fragment::from_node(fresh.clone()), 0, 0)).ok()?;
+        tr.replace(3, 4, Slice::new(Fragment::from_node(fresh.clone()), 0, 0))
+            .ok()?;
         Some(tr)
     }));
     p.send();
