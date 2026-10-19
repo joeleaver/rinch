@@ -286,6 +286,31 @@ fn remove_task_lists(p: &Peer) -> bool {
     }
 }
 
+/// Deliver everything in flight, then reconcile every pair.
+fn quiesce(net: &mut Net, ps: &[Peer]) {
+    loop {
+        net.collect(ps);
+        let pend = net.pending();
+        if pend.is_empty() {
+            break;
+        }
+        for (i, j) in pend {
+            while let Some(d) = net.q[i][j].pop_front() {
+                ps[j].handle.collab_receive(&d);
+            }
+        }
+    }
+    for i in 0..ps.len() {
+        for j in 0..ps.len() {
+            if i != j {
+                let sv = ps[j].handle.collab_state_vector().unwrap();
+                let diff = ps[i].handle.collab_sync_diff(&sv).unwrap();
+                ps[j].handle.collab_receive(&diff);
+            }
+        }
+    }
+}
+
 fn run_seed(seed: u64, n: usize, steps: usize) {
     let html = r#"<p>aa</p><div data-pm-type="embed" data-eid="e0" data-k="x"></div><p>bb</p><div data-pm-type="embed" data-eid="e1"></div><p>cc</p><div data-pm-type="embed" data-eid="e2" data-k="x"></div><p>dd</p>"#;
     let ps = peers(html, n);
@@ -418,6 +443,9 @@ fn run_seed(seed: u64, n: usize, steps: usize) {
             );
         }
     }
+    // everything delivered first: a replica whose CRDT waits on a missing
+    // update cannot re-base, so it cannot recover until that update arrives
+    quiesce(&mut net, &ps);
     // cure every stall: no task list, and one projectable edit
     for q in &ps {
         remove_task_lists(q);
@@ -435,28 +463,7 @@ fn run_seed(seed: u64, n: usize, steps: usize) {
             shape(&q.handle.doc())
         );
     }
-    // quiesce
-    loop {
-        net.collect(&ps);
-        let pend = net.pending();
-        if pend.is_empty() {
-            break;
-        }
-        for (i, j) in pend {
-            while let Some(d) = net.q[i][j].pop_front() {
-                ps[j].handle.collab_receive(&d);
-            }
-        }
-    }
-    for i in 0..n {
-        for j in 0..n {
-            if i != j {
-                let sv = ps[j].handle.collab_state_vector().unwrap();
-                let diff = ps[i].handle.collab_sync_diff(&sv).unwrap();
-                ps[j].handle.collab_receive(&diff);
-            }
-        }
-    }
+    quiesce(&mut net, &ps);
     for q in &ps {
         check(q, &format!("seed {seed} end"));
         check_projection(q);
