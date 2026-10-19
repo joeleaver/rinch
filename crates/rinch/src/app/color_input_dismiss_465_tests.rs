@@ -1153,3 +1153,55 @@ fn opening_from_the_preview_focuses_the_field_1572() {
     assert_eq!(f.field.app.focus_target, FocusTarget::Node(f.after_id()));
     assert!(!f.field.is_open(), "Tab away closes it");
 }
+
+/// A focus move from the field into the panel is not a leave: the entry is
+/// owned by the `ColorInput`'s root, which holds both. The picker ships no
+/// focusable control (its own hex input is off inside a `ColorInput`), so one
+/// is made here — a swatch given a `tabindex` — and focused by code. An entry
+/// owned by the text field alone would close the dropdown on that move.
+#[test]
+fn a_focus_move_into_the_panel_keeps_the_dropdown_open_1572() {
+    let mut f = mount_flanked();
+    f.open_from_the_field();
+
+    let swatch = {
+        let grid = find_by_class(&f.field.app, "rinch-color-picker__swatches");
+        let doc = f.field.app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        let id = *d.tree.get(grid).unwrap().children.first().unwrap();
+        rinch_core::dom::DomDocument::set_attribute(
+            &mut *d,
+            rinch_core::dom::NodeId(id),
+            "tabindex",
+            "0",
+        );
+        id
+    };
+    f.field
+        .app
+        .resolve_and_repaint(VIEWPORT.0 + 1.0, VIEWPORT.1);
+    {
+        let doc = f.field.app.doc.as_ref().unwrap();
+        rinch_core::dom::DomDocument::focus_element(
+            &mut *doc.borrow_mut(),
+            rinch_core::dom::NodeId(swatch),
+        );
+    }
+    f.field.app.drain_focus_requests(true);
+    f.field.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+
+    assert_eq!(
+        f.field.app.focus_target,
+        FocusTarget::Node(swatch),
+        "precondition: the swatch in the panel holds the keyboard"
+    );
+    assert!(
+        f.field.is_open(),
+        "a focus move inside the ColorInput keeps it open"
+    );
+
+    // And leaving from there still closes it.
+    f.key(KeyCode::Tab);
+    assert_eq!(f.field.app.focus_target, FocusTarget::Node(f.after_id()));
+    assert!(!f.field.is_open(), "Tab out of the panel closes it");
+}

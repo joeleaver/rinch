@@ -215,3 +215,30 @@ fn a_press_in_the_panel_takes_no_focus_and_keeps_it_open_in_chrome_1572() {
     keydown(&input, "Escape");
     assert!(!is_open(&doc), "Escape closes the dropdown");
 }
+
+/// A focus move from the field into the panel is not a leave: the entry is
+/// owned by the `ColorInput`'s root. The picker ships no focusable control, so
+/// one is made — a swatch given a `tabindex` — and focused by code.
+#[wasm_bindgen_test]
+fn a_focus_move_into_the_panel_keeps_the_dropdown_open_in_chrome_1572() {
+    let (doc, _) = mount();
+    open(&doc);
+
+    let swatch = one(&doc, ".rinch-color-picker__swatches")
+        .first_element_child()
+        .expect("one preset swatch");
+    swatch.set_attribute("tabindex", "0").unwrap();
+    html(&swatch).focus().unwrap();
+    assert_eq!(
+        doc.active_element().as_ref(),
+        Some(&swatch),
+        "precondition: the swatch holds the focus"
+    );
+    assert!(
+        is_open(&doc),
+        "a focus move inside the ColorInput keeps it open"
+    );
+
+    html(&one(&doc, ".after-1572")).focus().unwrap();
+    assert!(!is_open(&doc), "and leaving from there closes it");
+}
