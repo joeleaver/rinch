@@ -17,7 +17,10 @@ use crate::handle::EditorHandle;
 /// editor.load_html("<p>Hello</p>");
 /// rsx! {
 ///     div {
-///         button { onclick: move || { editor.command("toggleBold"); }, "Bold" }
+///         // `data-nofocus`: the press keeps the keyboard in the editor.
+///         div { data-nofocus: "",
+///             button { onclick: move || { editor.command("toggleBold"); }, "Bold" }
+///         }
 ///         Editor { editor: editor.clone() }
 ///     }
 /// }
