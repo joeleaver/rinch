@@ -222,6 +222,8 @@ mod select_value_order_757_tests;
 mod select_widget;
 #[cfg(test)]
 mod shared_hit_tests;
+#[cfg(test)]
+mod single_line_insert_824_tests;
 #[cfg(all(test, software_shell))]
 mod stacking_flip_damage_1384_review_tests;
 #[cfg(all(test, software_shell))]
@@ -2513,10 +2515,25 @@ impl RinchApp {
         // The edit applies to what the field displays: adopt any `value` write
         // that landed since the last sync (issue #238).
         self.adopt_focused_input_value_from_dom();
+        // A single-line field folds the line breaks of what is inserted into
+        // it, as Chrome's `<input>` does (issue #824); a `<textarea>` keeps
+        // them. What folds away entirely (a lone `\n`) still replaces a
+        // selection, and at a caret is no edit at all.
+        let cmd = match cmd {
+            EditCommand::InsertText(text) => EditCommand::InsertText(self.insertable_text(text)),
+            EditCommand::Paste(text) => EditCommand::Paste(self.insertable_text(text)),
+            other => other,
+        };
         let edited_node = self.focused_input_node_id;
         let Some(state) = self.focused_input_state.as_mut() else {
             return;
         };
+        if let EditCommand::InsertText(text) | EditCommand::Paste(text) = &cmd
+            && text.is_empty()
+            && state.selection.is_cursor()
+        {
+            return;
+        }
 
         // The command and whatever its own `oninput` rewrites in answer to it
         // are one undo step (issue #288). Otherwise undoing a keystroke in a
@@ -2579,6 +2596,30 @@ impl RinchApp {
                     state.group_undo_since(group);
                 }
             }
+        }
+    }
+
+    /// The text the focused field takes when the user inserts `text` — a
+    /// paste, an IME commit, a key's text (issue #824). A single-line field
+    /// (anything but a `<textarea>`, the one control whose value holds a
+    /// line break — [`Self::node_is_textarea`]) folds line breaks the way
+    /// Chrome does: an inner `\r\n`, `\r` or `\n` is one space, trailing
+    /// ones are dropped ([`rinch_editable::single_line_insert`]). A
+    /// `<textarea>`, or no focused field, takes `text` as it is.
+    ///
+    /// [`Self::handle_input_edit_command`] applies it to every insertion, so
+    /// the clipboard, the IME and typed text all reach it. Android's soft
+    /// keyboard also applies it to a whole committed text before splitting
+    /// it into one key per character (`apply_ime_action`): one character at
+    /// a time, an inner `\n` would look trailing and vanish.
+    pub(crate) fn insertable_text(&self, text: String) -> String {
+        if !matches!(self.focus_target, FocusTarget::Input(_)) || self.focused_input_is_multiline()
+        {
+            return text;
+        }
+        match rinch_editable::single_line_insert(&text) {
+            std::borrow::Cow::Borrowed(_) => text,
+            std::borrow::Cow::Owned(folded) => folded,
         }
     }
 
