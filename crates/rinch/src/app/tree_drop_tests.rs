@@ -269,6 +269,64 @@ fn the_last_row_of_a_group_outdents_over_itself() {
     assert_eq!(f.drops.borrow().len(), 1);
 }
 
+/// The usual drop moves the dragged row, and its old box is gone before the
+/// drag's end could be sent to it: the drag still ends, once, with nothing
+/// left dimmed or drawn.
+#[test]
+fn a_drop_that_moves_the_dragged_row_still_ends_the_drag() {
+    let data = rinch_core::Signal::new(vec![TreeNodeData::new("x", "Ex"), TreeNodeData::new("y", "Why")]);
+    let ends = Rc::new(std::cell::Cell::new(0u32));
+    let ends_in = ends.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let ends = ends_in.clone();
+        let tree = Tree {
+            tree: Some(UseTreeReturn::new(UseTreeOptions {
+                initial_expanded: ["y".to_string()].into_iter().collect(),
+                ..Default::default()
+            })),
+            data_source: Some(Rc::new(move || data.get())),
+            indent: Some(INDENT),
+            draggable: true,
+            // The app moves x into y as the drop asks, at once.
+            ondrop: Some(ValueCallback::new(move |_drop: TreeDrop| {
+                data.set(vec![TreeNodeData::new("y", "Why").with_child(TreeNodeData::new("x", "Ex"))]);
+            })),
+            ondragend: Some(ValueCallback::new(move |()| ends.set(ends.get() + 1))),
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        let root = scope.create_element("div");
+        root.set_attribute("style", "width: 300px");
+        root.append_child(&tree);
+        root
+    });
+    app.mount_component(VIEWPORT.0, VIEWPORT.1);
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        d.load_css(&rinch_theme::generate_theme_css(&rinch_theme::Theme::default()));
+        d.load_css(&rinch_components::generate_component_css());
+        d.recompute_all_styles_full();
+    }
+    app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    let mut f = Fixture { app, drops: Rc::default(), offers: Rc::default(), started: Rc::default() };
+
+    start(&mut f, "x");
+    move_to(&mut f, "y", 120.0, 0.5);
+    let (x, y) = at(&f.app, "y", 120.0, 0.5);
+    send(&mut f.app, PlatformEvent::MouseUp { x, y, button: MouseButton::Left });
+
+    assert_eq!(ends.get(), 1, "the drag ended once");
+    assert!(indicator(&f.app).is_none(), "nothing is drawn after the drop");
+    let moved = row(&f.app, "x");
+    let doc = f.app.doc.as_ref().unwrap();
+    let d = doc.borrow();
+    assert!(
+        !has_class(&d.tree.nodes[moved], "rinch-tree__node-content--dragging"),
+        "the moved row is not left dimmed"
+    );
+}
+
 /// A row redrawn in the middle of a drag (its children arrived after a
 /// hover-to-expand asked for them) keeps drawing the drop on offer, and the
 /// dragged row stays dimmed when it is redrawn too.

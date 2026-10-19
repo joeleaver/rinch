@@ -1087,20 +1087,29 @@ fn wire_drag(
     config: &Rc<TreeConfig>,
 ) {
     // A row drawn again replaces the old box, which keeps nothing of a drag.
-    if let Some(old) = config.drag.rows.borrow_mut().insert(value.to_string(), content.clone()) {
+    // (No borrow of the drag state is held across a DOM call anywhere here:
+    // one can run pending effects, which can draw rows, which come back here.)
+    let old = config.drag.rows.borrow_mut().insert(value.to_string(), content.clone());
+    if let Some(old) = old {
         clear_drawn(&old);
         old.remove_class(DRAGGING_CLASS);
     }
     content.set_attribute("draggable", "true");
     // A row redrawn while it is being dragged (its children arrived, say)
     // is still being dragged, and still shows the drop on offer.
-    if config.drag.dragged.borrow().iter().any(|d| d == value) {
+    let carried = config.drag.dragged.borrow().iter().any(|d| d == value);
+    if carried {
         content.add_class(DRAGGING_CLASS);
     }
-    if let Some((drop, placement, verdict)) = config.drag.candidate.borrow().as_ref() {
-        if drop.over == value {
-            draw(content, drop.zone, placement.line_level, *verdict);
-        }
+    let drawn_here = config
+        .drag
+        .candidate
+        .borrow()
+        .as_ref()
+        .filter(|(drop, _, _)| drop.over == value)
+        .map(|(drop, placement, verdict)| (drop.zone, placement.line_level, *verdict));
+    if let Some((zone, level, verdict)) = drawn_here {
+        draw(content, zone, level, verdict);
     }
 
     let cfg = config.clone();
@@ -1119,14 +1128,7 @@ fn wire_drag(
     content.set_attribute("data-ondragstart", &start.0.to_string());
 
     let cfg = config.clone();
-    let end = __scope.register_handler(move || {
-        let carried = std::mem::take(&mut *cfg.drag.dragged.borrow_mut());
-        mark_dragging(&cfg, &carried, false);
-        offer(&cfg, None);
-        if let Some(cb) = &cfg.ondragend {
-            cb.invoke(());
-        }
-    });
+    let end = __scope.register_handler(move || end_drag(&cfg));
     content.set_attribute("data-ondragend", &end.0.to_string());
 
     let cfg = config.clone();
@@ -1153,14 +1155,35 @@ fn wire_drag(
                 ondrop.invoke(drop);
             }
         }
+        // The drop usually moves the dragged rows, and the source row a
+        // drag's end is sent to may be gone by then: the drag ends here.
+        end_drag(&cfg);
     });
     content.set_attribute("data-ondrop", &drop.0.to_string());
 }
 
+/// The drag is over, dropped or not: undim its rows, take down the drop on
+/// offer, tell the app. Once: a drop ends it, and the source row's own end
+/// (when the row is still there) finds nothing left to do.
+fn end_drag(config: &Rc<TreeConfig>) {
+    let carried = std::mem::take(&mut *config.drag.dragged.borrow_mut());
+    if carried.is_empty() {
+        return;
+    }
+    mark_dragging(config, &carried, false);
+    offer(config, None);
+    if let Some(cb) = &config.ondragend {
+        cb.invoke(());
+    }
+}
+
 /// Dim (or stop dimming) the rows a drag carries.
 fn mark_dragging(config: &Rc<TreeConfig>, values: &[String], on: bool) {
-    let rows = config.drag.rows.borrow();
-    for row in values.iter().filter_map(|v| rows.get(v)) {
+    let rows: Vec<NodeHandle> = {
+        let rows = config.drag.rows.borrow();
+        values.iter().filter_map(|v| rows.get(v).cloned()).collect()
+    };
+    for row in &rows {
         if on {
             row.add_class(DRAGGING_CLASS);
         } else {
@@ -1299,18 +1322,16 @@ fn offer(config: &Rc<TreeConfig>, candidate: Option<(TreeDrop, Placement, DropVe
             return;
         }
     }
-    {
-        let rows = drag.rows.borrow();
-        if let Some(previous) = drag.drawn.borrow_mut().take() {
-            if let Some(row) = rows.get(&previous) {
-                clear_drawn(row);
-            }
-        }
-        if let Some((drop, placement, verdict)) = &candidate {
-            if let Some(row) = rows.get(&drop.over) {
-                draw(row, drop.zone, placement.line_level, *verdict);
-                *drag.drawn.borrow_mut() = Some(drop.over.clone());
-            }
+    let previous = drag.drawn.borrow_mut().take();
+    let previous = previous.and_then(|value| drag.rows.borrow().get(&value).cloned());
+    if let Some(row) = previous {
+        clear_drawn(&row);
+    }
+    if let Some((drop, placement, verdict)) = &candidate {
+        let row = drag.rows.borrow().get(&drop.over).cloned();
+        if let Some(row) = row {
+            *drag.drawn.borrow_mut() = Some(drop.over.clone());
+            draw(&row, drop.zone, placement.line_level, *verdict);
         }
     }
     let told = candidate.as_ref().map(|(drop, _, verdict)| (drop.clone(), *verdict));

@@ -130,7 +130,10 @@ pub fn styles() -> String {
 .rinch-tree__node-content {
     position: relative;
 }
-.rinch-tree__node-content--dragging {
+/* The dragged row's contents fade, not the row: a drop line drawn on the
+   row itself (its own edge, when it is dragged out of its group) stays
+   bright. */
+.rinch-tree__node-content--dragging > * {
     opacity: 0.4;
 }
 .rinch-tree__node-content--drop-before::after,
