@@ -3849,14 +3849,20 @@ pub fn node_is_read_write(node: &Node) -> bool {
 /// which the desktop runtime mirrors every edit into before dispatching
 /// `oninput` (see `value_fn`/`live_value` in CLAUDE.md), so this also tracks
 /// a live edit, not only the initial markup.
+///
+/// An `<input>`'s value is read sanitized for its type
+/// ([`crate::form_control::input_value`], #1554), so a `value` of only line
+/// breaks shows the placeholder, as in Chrome 155.
 pub fn node_is_placeholder_shown(node: &Node) -> bool {
-    tag_is_readonly_capable(node.tag())
-        && node.attributes.contains_key("placeholder")
-        && node
-            .attributes
-            .get("value")
-            .map(|v| v.is_empty())
-            .unwrap_or(true)
+    if !tag_is_readonly_capable(node.tag()) || !node.attributes.contains_key("placeholder") {
+        return false;
+    }
+    let value = if node.tag() == Some("input") {
+        crate::form_control::input_value(node)
+    } else {
+        node.attributes.get("value").map(|v| v.as_str().into())
+    };
+    value.is_none_or(|v| v.is_empty())
 }
 
 /// What a node was last painted with, besides its box ([`Node::painted`]).
