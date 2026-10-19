@@ -132,7 +132,11 @@ fn a_document_that_does_not_hold_the_source_costs_nothing() {
     let mut holder = RinchDocument::new();
     let stranger = RinchDocument::new();
     hold(&mut holder, "held", 300);
-    assert_eq!(steps_for("held", 300), 300, "control: the holder is reached");
+    assert_eq!(
+        steps_for("held", 300),
+        300,
+        "control: the holder is reached"
+    );
     assert_eq!(pending_reload_count(holder.doc_key()), 300);
     assert_eq!(pending_reload_count(stranger.doc_key()), 0);
     assert!(!has_pending(stranger.doc_key()));
