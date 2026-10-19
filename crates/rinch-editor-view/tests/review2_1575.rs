@@ -422,13 +422,17 @@ fn run_seed(seed: u64, n: usize, steps: usize) {
     for q in &ps {
         remove_task_lists(q);
         if q.handle.collab_outbound_stall().is_some() {
-            q.handle.set_selection(Selection::cursor(Pos(1)));
+            let (_, texts) = top(&q.handle.doc());
+            let at = texts.first().map_or(1, |(pos, _)| pos + 1);
+            q.handle.set_selection(Selection::cursor(Pos(at)));
             q.handle.insert_text("q");
         }
         assert!(
             q.handle.collab_outbound_stall().is_none(),
-            "seed {seed}: {} still stalled",
-            q.name
+            "seed {seed}: {} still stalled: {:?} {:?}",
+            q.name,
+            q.handle.collab_outbound_stall(),
+            shape(&q.handle.doc())
         );
     }
     // quiesce

@@ -418,10 +418,16 @@ pub(crate) struct Cx<'a> {
 }
 
 impl Cx<'_> {
+    /// Whether a registered spec draws `node`'s type: its descriptor needs a slot.
+    fn claims(&self, node: &Node) -> bool {
+        self.views.is_some_and(|views| {
+            !node.is_text() && node.is_leaf() && views.claims(node.type_name())
+        })
+    }
+
     /// A slot for `node`'s host `dom`, when a registered spec draws its type.
     fn slot_for(&mut self, node: &Node, dom: &NodeHandle) -> Option<Rc<Slot>> {
-        let views = self.views?;
-        if node.is_text() || !node.is_leaf() || !views.claims(node.type_name()) {
+        if !self.claims(node) {
             return None;
         }
         let slot = Slot::new(dom.clone(), self.doc.clone(), node.clone());
@@ -714,6 +720,13 @@ impl ViewDesc {
         // Fast path: same persistent subtree — nothing changed (design A12).
         if self.node.same_ref(new) {
             return true;
+        }
+        // A descriptor with no view is never patched into a node a view draws: it
+        // would get no slot, and the node no view (a task list, whose host is a
+        // `div` as an embed's is, replaced by an embed at its place — review 2 of
+        // #1575).
+        if self.slot.is_none() && cx.claims(new) {
+            return false;
         }
         if let Some(slot) = &self.slot {
             if self.node.type_name() != new.type_name()
