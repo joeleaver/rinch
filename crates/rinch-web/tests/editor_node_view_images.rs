@@ -35,7 +35,7 @@ thread_local! {
 }
 
 /// `ab` 1..3, the badged image at 3, `cd` 4..6; then an embed with two inputs.
-const DOC: &str = r#"<p>ab<img src="data:," data-badge="n">cd</p><div data-pm-type="embed" data-x="1"></div><p>ef</p>"#;
+const DOC: &str = r#"<p>ab<img src="x.png" data-badge="n">cd</p><div data-pm-type="embed" data-x="1"></div><p>ef</p>"#;
 const IMAGE: usize = 3;
 
 #[derive(Default)]
@@ -113,7 +113,14 @@ fn q(sel: &str) -> web_sys::Element {
     document()
         .query_selector(&format!("[{HOST_MARKER}] {sel}"))
         .unwrap()
-        .unwrap_or_else(|| panic!("no {sel}"))
+        .unwrap_or_else(|| {
+            let html = document()
+                .query_selector(&format!("[{HOST_MARKER}]"))
+                .unwrap()
+                .map(|h| h.inner_html())
+                .unwrap_or_default();
+            panic!("no {sel} in {html}")
+        })
 }
 
 fn press(x: f64, y: f64) {
