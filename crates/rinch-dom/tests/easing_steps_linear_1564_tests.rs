@@ -482,7 +482,9 @@ fn a_transition_eases_with_steps_and_linear_functions() {
 /// fixture off the wall clock the transition is started on.
 #[test]
 fn a_stepped_transition_reverses_from_its_output_progress() {
-    let cases: &[(&str, f64, &[(f64, f32)])] = &[
+    /// (transition, Chrome's reversed duration, samples of the reversal)
+    type Case<'a> = (&'a str, f64, &'a [(f64, f32)]);
+    let cases: &[Case] = &[
         (
             "width 1000ms steps(4, end)",
             500.0,
