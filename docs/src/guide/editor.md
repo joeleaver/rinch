@@ -187,13 +187,18 @@ whose attrs merge per key, like any block's
 The view crate gives each node of a claimed type a slot on its `ViewDesc`; the diff
 only queues work, run after the core borrow is released. A slotted node keeps its
 mount only while it is the same `Rc` or a node a `SetNodeAttrStep` of the
-transaction changed (the transaction's *kept* positions); anything else at its place
-is remounted. On the collaboration side `CollabSession::integrate_incremental_transaction`
-turns a peer's attribute-only change of a leaf block atom that is the same CRDT block
-into `SetNodeAttrStep`s, and `record_local_keeping` writes an atom put in another
-node's place as a new CRDT block unless the editor proved it the same, so CRDT block
-identity and editor identity agree. Backspace at the start of the block after a
-selectable leaf atom (and Delete before one) selects it.
+transaction changed (the transaction's *kept* nodes: where each stands now and the
+node it was, so a node a step put in place is not one of them); anything else at its
+place is remounted. On the collaboration side `CollabSession::integrate_incremental_transaction`
+compares the CRDT block of every leaf block atom before and after the update: an atom
+that is another block is replaced even when equal by value, one that is the same block
+with other attributes gets `SetNodeAttrStep`s, and every other changed block is
+replaced on its own. `record_local_keeping` writes an atom put in another node's place
+as a new CRDT block unless the editor proved it the same, so CRDT block identity and
+editor identity agree. Backspace at the start of the block after a selectable leaf atom
+(and Delete before one) selects it, and the next press removes it — deliberately
+unlike ProseMirror, whose `joinBackward` deletes the atom in one press when the
+block is not empty.
 
 Each node spec carries a **content expression** (e.g. `blockquote > block+`,
 `list_item > block+`, `bullet_list > list_item+`). These compile to a **ContentMatch

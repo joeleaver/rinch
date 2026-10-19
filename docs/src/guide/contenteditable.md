@@ -543,7 +543,12 @@ handle.update(|state| {
 `handle.insert_embed(attrs)` does the same in one call. It is edited as a
 horizontal rule is: a click or an arrow selects it whole, Backspace at the start of
 the paragraph after it (or Delete at the end of the one before) selects it, and
-Backspace or Delete on it removes it. Its host element is
+Backspace or Delete on it removes it. Removing an atom always takes two presses,
+which is a deliberate difference from ProseMirror: there, when the paragraph is not
+empty, one Backspace deletes the rule or embed before it (and one Delete the one
+after it). An embed can hold an app's component and its state, so rinch selects it
+first and lets the next press delete it — the same for a horizontal rule. An empty
+paragraph beside the atom goes in the first press. Its host element is
 `<div data-pm-type="embed" data-sheet="sheet-42">`; with nothing drawn in it the
 default stylesheet gives it a line of height and a dashed outline. What is drawn in
 it is a [node view](#node-views-your-component-in-the-document).
@@ -621,10 +626,12 @@ handle.register_node_view(view).keep();
 - **One node, for good.** A view is never handed a different node. Its context
   follows its node's attributes — `ctx.set_attrs` (one undo step, sent to
   collaborators key by key), its undo and redo, and a collaborator's change all
-  arrive in `ctx.attrs` without a remount. Anything else that puts a node where its
+  arrive in `ctx.attrs` without a remount — also when the same transaction inserts
+  or removes blocks around it. Anything else that puts a node where its
   node stood — a replace, an undo of a delete, a move, a paste of a copy, even an
   identical twin — is another node and gets a fresh mount. Key your app's state to
-  the node's attributes, not to its position.
+  the node's attributes, not to its position. A render may set its own node's
+  attributes (a default): the view is mounted once and `ctx.attrs` follows.
 - **Context.** `ctx.attrs`, `ctx.selected` (node-selected), `ctx.read_only` and
   `ctx.dark_mode` are memos; `ctx.pos()`, `ctx.set_attrs(..)`, `ctx.delete()`,
   `ctx.select()`, `ctx.return_focus()` and `ctx.editor()` act on the node. A
@@ -640,14 +647,19 @@ handle.register_node_view(view).keep();
   `.on_caret_enter(|from: CaretFrom| bool)` with the side it came from; answer
   `true` when the view took the keyboard (it focused something of its own),
   `false` to leave the node selected. Up and Down node-select a node with a view
-  (they step over a horizontal rule).
+  (they step over a horizontal rule), from the last (first) line of a list, a list
+  item or a quote too when the view is right after (before) it.
 - **Layout.** The host's height follows the component's, and the caret and
   selection below it follow when it grows or shrinks.
-- **Collaboration.** A collaborator's attribute change keeps the view mounted; a
-  collaborator moving the node (or swapping two embeds) remounts it. Every peer must
-  run a build with node views: a peer built before them writes an embed it moved
-  into the place of the node that stood there, which a newer peer cannot tell from
-  an attribute change.
+- **Collaboration.** A collaborator's attribute change keeps the view mounted —
+  alone, beside their typing in the same update (a reconnect catching up), on an
+  embed that had no attributes yet, and in a document holding a table. Which embed
+  is which is the shared document's: an embed a collaborator moved, or two embeds
+  they swapped — equal ones included — arrive as other embeds, and the views on
+  them are remounted. Every peer must run a build with node views: a peer built
+  before them writes an embed it moved into the place of the node that stood there,
+  which a newer peer cannot tell from an attribute change, and the newer peer's
+  view then shows the other embed's attributes.
 
 Your code (`matches`, the render, `on_key`, `on_caret_enter`) runs with no editor
 state borrowed, after the edit that caused it has been applied: it may read the
