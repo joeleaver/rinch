@@ -2576,7 +2576,8 @@ impl EditorHandle {
         // whatever now happens to sit at those offsets.
         // A load is the app replacing the document, not the user moving the
         // caret: it scrolls nothing.
-        core.commit(prev, next, None, Scroll::No, Vec::new()).is_some()
+        core.commit(prev, next, None, Scroll::No, Vec::new())
+            .is_some()
     }
 
     /// Parse `html` (schema-whitelisted) and load it as the document. Empty or
@@ -2726,7 +2727,9 @@ impl EditorHandle {
             return false;
         };
         let prev = core.state.clone();
-        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), Scroll::IfChanged, Vec::new()) else {
+        let Some(doc_changed) =
+            core.commit(prev, next, Some(&mapping), Scroll::IfChanged, Vec::new())
+        else {
             return false;
         };
         drop(core);
@@ -3035,7 +3038,9 @@ impl EditorHandle {
             return false;
         };
         let prev = core.state.clone();
-        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), Scroll::IfChanged, Vec::new()) else {
+        let Some(doc_changed) =
+            core.commit(prev, next, Some(&mapping), Scroll::IfChanged, Vec::new())
+        else {
             return false;
         };
         drop(core);

@@ -98,10 +98,12 @@ use yrs::{StateVector, Update};
 
 use rinch_editor_core::{EditorState, Node, Pos, Schema};
 
+use crate::atom_cache;
 use crate::error::{CollabError, Result};
 use crate::projection::CollabDoc;
-use crate::atom_cache;
-use crate::remote::{AtomIds, block_atoms, build_remote_transaction, build_remote_transaction_with};
+use crate::remote::{
+    AtomIds, block_atoms, build_remote_transaction, build_remote_transaction_with,
+};
 use crate::table::OversizedTable;
 
 /// An update that carries nothing, in the lib0 v1 encoding: zero blocks followed by a
@@ -733,7 +735,9 @@ impl CollabSession {
         if ids.is_some()
             && let Some(new_ids) = new_ids
         {
-            let doc = tr.as_ref().map_or_else(|| state.doc.clone(), |tr| tr.doc().clone());
+            let doc = tr
+                .as_ref()
+                .map_or_else(|| state.doc.clone(), |tr| tr.doc().clone());
             atom_cache::store(self.uid, self.generation, doc, new_ids);
         }
         Ok(tr)
@@ -799,7 +803,11 @@ impl CollabSession {
 /// afresh. `None` — read the CRDT next time — when the middle of `after` holds a
 /// leaf block atom (its block is new, or was rewritten in place), or the two share
 /// no block (the projection then matches by value).
-fn atoms_after(before: &Node, after: &Node, ids: Vec<crate::projection::BlockId>) -> Option<Vec<crate::projection::BlockId>> {
+fn atoms_after(
+    before: &Node,
+    after: &Node,
+    ids: Vec<crate::projection::BlockId>,
+) -> Option<Vec<crate::projection::BlockId>> {
     let (prefix, suffix) = crate::projection::identity_runs(before, after);
     if (prefix, suffix) == (0, 0) {
         return None;
@@ -808,7 +816,9 @@ fn atoms_after(before: &Node, after: &Node, ids: Vec<crate::projection::BlockId>
     if (prefix..an - suffix).any(|i| block_atoms(after.child(i)) > 0) {
         return None;
     }
-    let gone: usize = (prefix..bn - suffix).map(|i| block_atoms(before.child(i))).sum();
+    let gone: usize = (prefix..bn - suffix)
+        .map(|i| block_atoms(before.child(i)))
+        .sum();
     if gone == 0 {
         return Some(ids);
     }

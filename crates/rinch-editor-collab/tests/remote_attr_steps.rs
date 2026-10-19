@@ -346,7 +346,11 @@ fn a_peer_giving_an_attrless_embed_its_first_attr_is_an_attr_step() {
     let schema = Rc::new(Schema::starter_kit());
     let d = doc(
         &schema,
-        vec![para(&schema, "ab"), embed(&schema, &[]), para(&schema, "cd")],
+        vec![
+            para(&schema, "ab"),
+            embed(&schema, &[]),
+            para(&schema, "cd"),
+        ],
     );
     let (mut a, mut b) = two_peers(&schema, d);
     a.local(&[4], |tr| {
@@ -376,11 +380,12 @@ fn an_attr_change_in_a_document_with_a_table_is_an_attr_step() {
             .unwrap()
     };
     let row = schema
-        .branch("table_row", Fragment::from_children(vec![cell("a"), cell("b")]))
+        .branch(
+            "table_row",
+            Fragment::from_children(vec![cell("a"), cell("b")]),
+        )
         .unwrap();
-    let table = schema
-        .branch("table", Fragment::from_node(row))
-        .unwrap();
+    let table = schema.branch("table", Fragment::from_node(row)).unwrap();
     let d = doc(
         &schema,
         vec![
@@ -426,11 +431,13 @@ fn identity_holds_across_the_receivers_own_edits() {
     // B types before and after the embeds, and deletes the last one.
     b.local(&[], |tr| {
         let t = schema.text("x").unwrap();
-        tr.replace(1, 1, Slice::new(Fragment::from_node(t), 0, 0)).unwrap();
+        tr.replace(1, 1, Slice::new(Fragment::from_node(t), 0, 0))
+            .unwrap();
     });
     b.local(&[], |tr| {
         let t = schema.text("y").unwrap();
-        tr.replace(8, 8, Slice::new(Fragment::from_node(t), 0, 0)).unwrap();
+        tr.replace(8, 8, Slice::new(Fragment::from_node(t), 0, 0))
+            .unwrap();
     });
     let end = b.state.doc.content_size();
     b.local(&[], |tr| {

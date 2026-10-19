@@ -667,7 +667,10 @@ mod collab {
         assert_eq!(live.len(), 2, "B shows both embeds");
         for (i, _) in &live {
             let tag = format!("B{i}");
-            assert!(seen_b.ctx.borrow()[*i].set_attrs(|x| *x = x.with("data-tag", AttrValue::from(tag.as_str()))));
+            assert!(
+                seen_b.ctx.borrow()[*i]
+                    .set_attrs(|x| *x = x.with("data-tag", AttrValue::from(tag.as_str())))
+            );
         }
         flush(&pr.to_a, &pr.a);
         for c in seen_a.ctx.borrow().iter() {

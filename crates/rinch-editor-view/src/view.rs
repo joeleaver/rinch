@@ -938,14 +938,10 @@ impl ViewDesc {
             }
             // The same node with other attributes, moved within the stretch (a
             // block inserted before it in the same transaction).
-            let was = cx
-                .kept
-                .iter()
-                .find(|k| k.pos == at)
-                .and_then(|k| {
-                    old.iter()
-                        .position(|o| o.as_ref().is_some_and(|o| o.node.same_ref(&k.old)))
-                });
+            let was = cx.kept.iter().find(|k| k.pos == at).and_then(|k| {
+                old.iter()
+                    .position(|o| o.as_ref().is_some_and(|o| o.node.same_ref(&k.old)))
+            });
             if let Some(k) = was
                 && let Some(mut desc) = old[k].take()
             {
