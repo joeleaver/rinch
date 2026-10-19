@@ -60,6 +60,7 @@ pub fn node_to_html(node: &Node) -> String {
 
 /// [`node_to_html`] with no [`set_html_fallback`] markup: what Markdown writes
 /// (an app's markup could hold a blank line, which ends an HTML block there).
+#[cfg(feature = "markdown")]
 pub(crate) fn node_to_html_bare(node: &Node) -> String {
     let mut out = String::new();
     write_node(node, &mut out, Mode::BARE);
@@ -144,6 +145,7 @@ impl Mode {
         clipboard: true,
         fallback: true,
     };
+    #[cfg(feature = "markdown")]
     const BARE: Mode = Mode {
         clipboard: false,
         fallback: false,
