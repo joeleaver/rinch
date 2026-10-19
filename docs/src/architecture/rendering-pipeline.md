@@ -471,7 +471,9 @@ alike, a keyframe's own `animation-timing-function` included:
 plain `linear`). A step function reads CSS Easing 2's **before flag**, set in
 the before phase going forwards and the after phase going backwards, so
 `steps(4, start)` shows its `from` value through a backwards-filled delay and
-at the end of a `reverse` run. An iteration's start and end are eased too (the
+at the end of a `reverse` run. A transition fills its delay the same way (its
+easing at 0 with the flag), so `linear(0.5, 1)` sits half way through it, and
+a reversal taken there is shortened by that output. An iteration's start and end are eased too (the
 first interval at distance 0, the last at distance 1), not snapped to the
 keyframe there: `steps(4, start)` begins a step in and `linear(0, 0.5)` ends
 half way. A reversal's shortening reads the stepped output, so reversing

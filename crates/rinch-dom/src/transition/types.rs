@@ -989,9 +989,15 @@ impl ActiveTransition {
     pub fn value_at(&self, current_time_ms: f64) -> Option<AnimatableValue> {
         let elapsed = current_time_ms - self.start_time_ms;
 
-        // Still in delay period
+        // Still in delay period: a transition fills backwards, sampling its
+        // easing at 0 with the before flag (#1564) — `from` for every easing
+        // but one whose output at 0 is not 0, such as `linear(0.5, 1)`.
         if elapsed < self.delay_ms {
-            return Some(self.from.clone());
+            let eased = self.timing.apply_with_before_flag(0.0, true);
+            if eased == 0.0 {
+                return Some(self.from.clone());
+            }
+            return self.from.interpolate(&self.to, eased);
         }
 
         let active_elapsed = elapsed - self.delay_ms;
