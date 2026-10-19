@@ -591,6 +591,27 @@ fn a_modal_that_opens_over_an_open_picker_takes_its_own_press() {
          picker's backdrop"
     );
 
+    // The panel's level too, not only the backdrop's: where the open picker
+    // and the modal overlap, the modal is on top. At the old literal 1000 the
+    // picker panel painted over the dialog and took presses there.
+    let panel = box_of(&w.app, find_by_class(&w.app, "rinch-color-input__dropdown"));
+    let modal = box_of(&w.app, find_by_class(&w.app, "rinch-modal"));
+    let overlap = (
+        panel.0.max(modal.0),
+        panel.1.max(modal.1),
+        panel.2.min(modal.2),
+        panel.3.min(modal.3),
+    );
+    assert!(
+        overlap.2 > overlap.0 && overlap.3 > overlap.1,
+        "precondition: the open picker {panel:?} and the modal {modal:?} overlap"
+    );
+    let (ox, oy) = ((overlap.0 + overlap.2) / 2.0, (overlap.1 + overlap.3) / 2.0);
+    assert!(
+        w.hit_is_inside(ox, oy, "rinch-modal"),
+        "at ({ox}, {oy}), inside both, the modal must be the topmost box"
+    );
+
     let button = find_by_class(&w.app, "probe-801-button");
     let (bx, by) = centre(&w.app, button);
     tap(&mut w.app, bx, by);
