@@ -465,3 +465,118 @@ fn escape_closes_the_dropdown_before_the_modal_behind_it() {
          not go on swallowing the key"
     );
 }
+
+// ── an open picker that is no longer rendered (issue #802) ───────────────────
+
+/// A dismiss entry pushed under everything the fixture opens later, counting
+/// the Escapes that reach it — "the key fell through" as an observation.
+fn count_escapes_behind(app: &RinchApp) -> (Rc<Cell<usize>>, rinch_core::DismissHandle) {
+    let reached: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let r = reached.clone();
+    let key = app.doc.as_ref().unwrap().borrow().doc_key();
+    let handle = rinch_core::push_dismiss_handler(key, move || {
+        r.set(r.get() + 1);
+        true
+    });
+    (reached, handle)
+}
+
+/// **An ancestor that stops rendering the open picker takes its Escape with
+/// it.** `Modal`'s closed state is `display: none` and its subtree stays
+/// mounted, so a picker that was open when the app closed the modal keeps its
+/// open state and its entry. That entry used to consume the next Escape,
+/// invisibly (#802); it declines now, so the key reaches what is behind.
+#[test]
+fn escape_passes_a_picker_its_closed_modal_no_longer_renders() {
+    let modal_open: Rc<Cell<Option<Signal<bool>>>> = Rc::new(Cell::new(None));
+    let open_in = modal_open.clone();
+    let mut app = mount(move |scope: &mut RenderScope| {
+        let open = Signal::new(true);
+        open_in.set(Some(open));
+        let field = ColorInput {
+            value: "#000000".into(),
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        Modal {
+            opened_fn: Some(Rc::new(move || open.get())),
+            onclose: Some(Callback::new(move || open.set(false))),
+            ..Default::default()
+        }
+        .render(scope, &[field])
+    });
+    let (behind, _keep) = count_escapes_behind(&app);
+
+    let swatch = find_by_class(&app, "rinch-color-input__swatch-preview");
+    let (x, y) = centre(&app, swatch);
+    tap(&mut app, x, y);
+    let root = find_by_class(&app, "rinch-color-input");
+    assert!(
+        has_class(&app, root, "rinch-color-input--opened"),
+        "precondition: the picker is open"
+    );
+
+    // The app closes the modal on its own — a "cancel", a network event — and
+    // the frame is laid out before the next key arrives.
+    modal_open.get().unwrap().set(false);
+    app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    assert!(
+        has_class(&app, root, "rinch-color-input--opened"),
+        "precondition: closing the modal leaves the picker's own state open"
+    );
+
+    escape(&mut app);
+    assert_eq!(
+        behind.get(),
+        1,
+        "the Escape must reach what is behind the hidden picker, not be \
+         swallowed by it"
+    );
+}
+
+/// The same for `visibility: hidden` — the closed state of `Drawer` and
+/// `Popover`, which keeps the box but shows nothing. Set directly on a wrapper
+/// so the fixture does not depend on a 300ms transition.
+#[test]
+fn escape_passes_a_picker_under_a_visibility_hidden_ancestor() {
+    let wrapper_id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let wrapper_in = wrapper_id.clone();
+    let mut app = mount(move |scope: &mut RenderScope| {
+        let wrapper = scope.create_element("div");
+        wrapper_in.set(Some(wrapper.node_id().0));
+        let field = ColorInput {
+            value: "#000000".into(),
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        wrapper.append_child(&field);
+        wrapper
+    });
+    let (behind, _keep) = count_escapes_behind(&app);
+
+    let swatch = find_by_class(&app, "rinch-color-input__swatch-preview");
+    let (x, y) = centre(&app, swatch);
+    tap(&mut app, x, y);
+
+    {
+        let doc = app.doc.as_ref().unwrap();
+        doc.borrow_mut()
+            .set_style(rinch_core::dom::NodeId(wrapper_id.get().unwrap()), "visibility", "hidden");
+    }
+    app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+
+    escape(&mut app);
+    assert_eq!(behind.get(), 1, "a hidden picker must not answer Escape");
+}
+
+/// The control: the same picker, rendered, still takes its Escape first. Without
+/// it the two fixtures above pass against an entry that never consumes.
+#[test]
+fn escape_is_still_the_rendered_pickers() {
+    let mut f = mount_field(true);
+    let (behind, _keep) = count_escapes_behind(&f.app);
+    f.open();
+    escape(&mut f.app);
+    assert!(!f.is_open(), "the picker answers the first Escape");
+    assert_eq!(behind.get(), 0, "and the key goes no further");
+}
