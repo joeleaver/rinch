@@ -9648,6 +9648,72 @@ mod pending_image_tests {
         }
         assert_eq!(img_box(&app, &img), (3.0, 2.0));
     }
+
+    /// Issue #1493: a reload asked for by one document's picture leaves every
+    /// other document asleep. `reload_image` reaches every live document in
+    /// the process, and it used to queue the source for each of them, so an
+    /// idle app that never named it laid itself out and asked for a redraw at
+    /// its next `AboutToWait`, to find nothing to reload. Under `cargo test`
+    /// that was the `paused_animation_frames_tests` flake: another test's
+    /// reload, on another thread, landing between two idle frames.
+    #[test]
+    fn a_reload_of_another_documents_picture_asks_an_idle_app_for_no_frame() {
+        crate::image::register_image_scheme("app-1493-reload", |src: &str| {
+            ImageLoadResult::Failed(format!("{src} is not here yet"))
+        });
+        let mut holder = RinchApp::new(|scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let img = scope.create_element("img");
+            img.set_attribute("src", "app-1493-reload:picture");
+            root.append_child(&img);
+            root
+        });
+        holder.mount_component(800.0, 600.0);
+        let failed = |app: &RinchApp| {
+            app.doc
+                .as_ref()
+                .expect("mounted")
+                .borrow()
+                .tree
+                .image_cache
+                .is_failed("app-1493-reload:picture")
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !failed(&holder) && Instant::now() < deadline {
+            holder.resolve_and_repaint(800.0, 600.0);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(failed(&holder), "precondition: the miss is cached");
+
+        let mut idle = RinchApp::new(|scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_text("no pictures here");
+            root
+        });
+        idle.mount_component(800.0, 600.0);
+        for _ in 0..4 {
+            idle.resolve_and_repaint(800.0, 600.0);
+        }
+        let about_to_wait = |app: &mut RinchApp| {
+            app.handle_event(PlatformEvent::AboutToWait, (800, 600), 1.0)
+                .contains(&AppAction::RequestRedraw)
+        };
+        assert!(!about_to_wait(&mut idle), "precondition: idle");
+
+        crate::image::reload_image("app-1493-reload:picture");
+        assert!(
+            holder.has_dirty_nodes(),
+            "control: the app showing the picture is told"
+        );
+        assert!(
+            !idle.has_dirty_nodes() && !idle.has_pending_layout(),
+            "an app that never named the source has nothing to do"
+        );
+        assert!(
+            !about_to_wait(&mut idle),
+            "so its frame clock asks for no frame"
+        );
+    }
 }
 
 #[cfg(test)]

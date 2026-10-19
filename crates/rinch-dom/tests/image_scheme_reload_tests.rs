@@ -14,7 +14,7 @@
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_core::image::{ImageLoadResult, ImageLoader, register_image_scheme, reload_image};
 use rinch_dom::RinchDocument;
-use rinch_dom::image_cache::has_pending;
+use rinch_dom::image_cache::{has_pending, pending_reload_count};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -324,6 +324,46 @@ fn reloading_a_source_nothing_asked_for_starts_nothing() {
             .contains("scheme-test-unknown:never-named")
     );
     assert!(!has_pending(doc.doc_key()));
+}
+
+/// Issue #1493: a reload is queued only for a document that holds the
+/// source. Every other live document used to be handed it too: its frame
+/// gate (`has_pending`) opened, the host laid it out and asked for a redraw,
+/// and the drain then found nothing to reload. Asked here before any layout,
+/// because the drain hides the entry again.
+#[test]
+fn a_reload_reaches_only_the_documents_that_hold_the_source() {
+    let _alone = alone();
+    let blobs = Arc::new(Blobs::default());
+    register_image_scheme("scheme-test-1493", BlobLoader(blobs.clone()));
+    let (mut holder, _, _) = doc_with_img("scheme-test-1493:held");
+    assert!(settle(&mut holder, |d| d
+        .tree
+        .image_cache
+        .is_failed("scheme-test-1493:held")));
+    let (mut stranger, _, _) = doc_with_img("scheme-test-1493:other");
+    assert!(settle(&mut stranger, |d| d
+        .tree
+        .image_cache
+        .is_failed("scheme-test-1493:other")));
+    assert!(!has_pending(holder.doc_key()) && !has_pending(stranger.doc_key()));
+
+    reload_image("scheme-test-1493:held");
+    assert!(
+        has_pending(holder.doc_key()),
+        "control: the document that shows the source is told"
+    );
+    assert_eq!(pending_reload_count(holder.doc_key()), 1);
+    assert!(
+        !has_pending(stranger.doc_key()),
+        "a document that never named the source is not woken for it"
+    );
+    assert_eq!(pending_reload_count(stranger.doc_key()), 0);
+
+    // A source named by no document reaches none.
+    reload_image("scheme-test-1493:never-named");
+    assert_eq!(pending_reload_count(holder.doc_key()), 1);
+    assert!(!has_pending(stranger.doc_key()));
 }
 
 #[test]

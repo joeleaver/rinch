@@ -19,6 +19,17 @@ fn alone() -> std::sync::MutexGuard<'static, ()> {
     ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Have `doc`'s cache hold the sources [`steps_for`] names for `tag`: a
+/// reload reaches only a document that holds the source (#1493), and these
+/// tests measure the queue of one that does.
+fn hold(doc: &mut RinchDocument, tag: &str, calls: usize) {
+    for i in 0..calls {
+        doc.tree
+            .image_cache
+            .mark_failed(format!("q1473:{tag}/{i:06}"), "held for the test".into());
+    }
+}
+
 /// The steps `calls` reloads of distinct sources cost, cumulatively on top of
 /// whatever the queue already holds.
 fn steps_for(tag: &str, calls: usize) -> u64 {
@@ -32,8 +43,11 @@ fn steps_for(tag: &str, calls: usize) -> u64 {
 #[test]
 fn a_reload_looks_at_one_entry_however_long_the_queue_is() {
     let _alone = alone();
-    let doc = RinchDocument::new();
+    let mut doc = RinchDocument::new();
     let key = doc.doc_key();
+    for (tag, calls) in [("a", 300), ("b", 1_200), ("c", 2_700)] {
+        hold(&mut doc, tag, calls);
+    }
 
     // Three batches, never drained: the queue is 0, 300 and 1,500 long when
     // each starts. A scan costs 44,850, then 990,600, then 6,121,500.
@@ -49,8 +63,9 @@ fn a_reload_looks_at_one_entry_however_long_the_queue_is() {
 #[test]
 fn a_source_queued_already_costs_one_step_and_is_not_queued_twice() {
     let _alone = alone();
-    let doc = RinchDocument::new();
+    let mut doc = RinchDocument::new();
     let key = doc.doc_key();
+    hold(&mut doc, "dup", 500);
     assert_eq!(steps_for("dup", 500), 500);
 
     // The first source, the last, and one in the middle, again: a scan finds
@@ -67,9 +82,13 @@ fn a_source_queued_already_costs_one_step_and_is_not_queued_twice() {
 #[test]
 fn each_live_document_costs_one_step_a_call() {
     let _alone = alone();
-    let a = RinchDocument::new();
-    let b = RinchDocument::new();
-    let c = RinchDocument::new();
+    let mut a = RinchDocument::new();
+    let mut b = RinchDocument::new();
+    let mut c = RinchDocument::new();
+    for doc in [&mut a, &mut b, &mut c] {
+        hold(doc, "docs", 400);
+        hold(doc, "docs-2", 400);
+    }
     assert_eq!(steps_for("docs", 400), 1_200, "three documents");
     for doc in [&a, &b, &c] {
         assert_eq!(pending_reload_count(doc.doc_key()), 400);
@@ -91,8 +110,10 @@ fn each_live_document_costs_one_step_a_call() {
 #[test]
 fn a_reload_with_no_live_document_queues_nothing_and_costs_nothing() {
     let _alone = alone();
-    let doc = RinchDocument::new();
+    let mut doc = RinchDocument::new();
     let key = doc.doc_key();
+    hold(&mut doc, "live", 10);
+    hold(&mut doc, "none", 1_000);
     assert_eq!(
         steps_for("live", 10),
         10,
@@ -101,4 +122,24 @@ fn a_reload_with_no_live_document_queues_nothing_and_costs_nothing() {
     drop(doc);
     assert_eq!(steps_for("none", 1_000), 0);
     assert_eq!(pending_reload_count(key), 0);
+}
+
+/// Issue #1493: a live document that does not hold the source costs no step
+/// and is queued nothing, however many sources the call names.
+#[test]
+fn a_document_that_does_not_hold_the_source_costs_nothing() {
+    let _alone = alone();
+    let mut holder = RinchDocument::new();
+    let stranger = RinchDocument::new();
+    hold(&mut holder, "held", 300);
+    assert_eq!(
+        steps_for("held", 300),
+        300,
+        "control: the holder is reached"
+    );
+    assert_eq!(pending_reload_count(holder.doc_key()), 300);
+    assert_eq!(pending_reload_count(stranger.doc_key()), 0);
+    assert!(!has_pending(stranger.doc_key()));
+    assert_eq!(steps_for("held-by-none", 300), 0);
+    drop((holder, stranger));
 }

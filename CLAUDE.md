@@ -4268,10 +4268,15 @@ returns **encoded** bytes (`ImageLoadResult::Loaded`) and runs on a thread spawn
 that load, so it may block; a closure `Fn(&str) -> ImageLoadResult + Send + Sync` is
 one. **A failed load is cached by source** (`ImageState::Failed`) and never retried on
 its own: `rinch::image::reload_image(src)` (any thread; `RinchDocument::reload_image`
-for a host holding the document) queues the source for every live document, counted by
-`image_cache::has_pending` so idle hosts wake, and `drain_pending_images` restarts it.
-The queue is per document, each with the set of what it holds, so a call costs one
-lookup per live document however many sources a document has not drained (#1473: it
+for a host holding the document) queues the source for every live document whose
+cache holds it, counted by `image_cache::has_pending` so idle hosts wake, and
+`drain_pending_images` restarts it. Each `ImageCache` records the sources it comes to
+hold under its document's key in `LIVE_DOCUMENTS` (`ImageCache::put`, every entry is
+made there), so a document that never named the source is not woken (#1493: it was laid
+out and asked for a redraw per reload, for nothing — the `paused_animation_frames_tests`
+flake, another test's reload landing between two idle frames). The queue is per
+document, each with the set of what it holds, so a call costs one lookup per live
+document holding the source however many sources a document has not drained (#1473: it
 scanned the whole queue; `tests/reload_queue_cost_1473_tests.rs` pins the count,
 `image_cache::reload_queue_steps`). A document that never lays out still keeps one
 entry per distinct source reloaded, until it drains or drops.

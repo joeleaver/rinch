@@ -190,7 +190,7 @@ rinch::image::reload_image("asset:photo-42");
 Every `<img>` and `background-image` naming that source, in every window, loads
 it again and takes its size. The same call refreshes a picture whose bytes
 changed under an unchanged source: the old picture stays on screen until the new
-one has decoded.
+one has decoded. A window that never named the source is not woken by the call.
 
 - **Pass the source exactly as the element spelled it.** The source string is
   the key, scheme case included: `reload_image("asset:photo-42")` does not reach
