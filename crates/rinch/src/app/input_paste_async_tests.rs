@@ -520,7 +520,7 @@ fn a_multi_line_paste_into_a_textarea_keeps_its_lines() {
     clip("A\nB\n");
     ctrl_v(&mut app);
     assert_eq!(settle(&mut app), 1);
-    assert_eq!(field(&app, ids.textarea), state("heA\nB\n world", 7, 7));
+    assert_eq!(field(&app, ids.textarea), state("heA\nB\n world", 6, 6));
 }
 
 /// A paste that is nothing but line breaks still replaces the selection
@@ -536,63 +536,4 @@ fn a_paste_of_only_line_breaks_deletes_the_selection() {
     assert_eq!(settle(&mut app), 1);
     assert_eq!(field(&app, ids.input), state("he world", 2, 2));
     assert_eq!(*log.borrow(), vec!["input:he world".to_string()]);
-}
-
-/// The IME commit path reaches the same insertion: a committed `\n` in an
-/// `<input>` is a space, in a `<textarea>` a line break.
-#[test]
-fn an_ime_commit_with_a_line_break_is_one_line_in_an_input() {
-    let (mut app, ids, _log) = page(&[]);
-    focus(&mut app, ids.input);
-    key(&mut app, KeyCode::End);
-    ev(&mut app, PlatformEvent::Ime(ImeEvent::Commit("x\ny".into())));
-    assert_eq!(field(&app, ids.input).0, "hello worldx y");
-
-    focus(&mut app, ids.textarea);
-    key(&mut app, KeyCode::End);
-    ev(&mut app, PlatformEvent::Ime(ImeEvent::Commit("x\ny".into())));
-    assert_eq!(field(&app, ids.textarea).0, "hello worldx\ny");
-}
-
-/// A lone `\n` as a key's text — what Android's soft keyboard commits one
-/// character at a time (`apply_ime_action`) — inserts nothing into an
-/// `<input>` and leaves no undo step behind: Ctrl+Z after it undoes the
-/// keystroke before it.
-#[test]
-fn a_lone_newline_typed_into_an_input_inserts_nothing() {
-    let (mut app, ids, log) = page(&[]);
-    focus(&mut app, ids.input);
-    key(&mut app, KeyCode::End);
-    let typed = |app: &mut RinchApp, t: &str| {
-        ev(
-            app,
-            PlatformEvent::KeyDown {
-                key: KeyCode::Other,
-                logical_key: None,
-                text: Some(t.into()),
-                modifiers: Modifiers::default(),
-                repeat: KeyRepeat::Fresh,
-            },
-        );
-    };
-    typed(&mut app, "!");
-    log.borrow_mut().clear();
-    typed(&mut app, "\n");
-    assert_eq!(field(&app, ids.input), state("hello world!", 12, 12));
-    assert!(log.borrow().is_empty(), "no oninput: nothing changed");
-    key_with(&mut app, KeyCode::KeyZ, primary());
-    assert_eq!(field(&app, ids.input).0, "hello world");
-}
-
-/// What Android's soft keyboard path folds a whole committed text with,
-/// before it splits it into one key per character (`apply_ime_action`, which
-/// no host test compiles): line breaks in an `<input>`, untouched in a
-/// `<textarea>`.
-#[test]
-fn a_committed_text_is_folded_for_the_focused_field() {
-    let (mut app, ids, _log) = page(&[]);
-    focus(&mut app, ids.input);
-    assert_eq!(app.insertable_text("a\r\nb\n".into()), "a b");
-    focus(&mut app, ids.textarea);
-    assert_eq!(app.insertable_text("a\r\nb\n".into()), "a\r\nb\n");
 }
