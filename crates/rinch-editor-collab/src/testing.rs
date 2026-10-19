@@ -136,3 +136,12 @@ pub fn grow_first_table_update(snapshot: &[u8], n: usize) -> Option<Vec<u8>> {
     }
     Some(doc.transact().encode_state_as_update_v1(&sv))
 }
+
+/// How many times this **thread** has walked a local change's top-level blocks to
+/// carry the CRDT blocks of its leaf block atoms forward (the `atom_cache` of the
+/// node views, #1575). Take the difference across an operation: a local keystroke
+/// in a document holding no leaf block atom walks none, before or after the
+/// session has integrated a peer's change (review 2 of #1575, N3).
+pub fn atom_id_walks() -> u64 {
+    crate::atom_cache::walks()
+}

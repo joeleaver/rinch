@@ -18,7 +18,7 @@
 use std::rc::Rc;
 
 use rinch_editor_collab::testing::{
-    node_reads, session_from_bytes_with_client_id, session_with_client_id,
+    atom_id_walks, node_reads, session_from_bytes_with_client_id, session_with_client_id,
 };
 use rinch_editor_collab::{CollabPlugin, CollabSession};
 use rinch_editor_core::{
@@ -372,5 +372,50 @@ fn a_remote_keystroke_beside_an_embed_reads_the_crdt_once() {
         let per_block = without[0] / n as u64;
         let plus_one: Vec<u64> = without.iter().map(|r| r + per_block).collect();
         assert_eq!(with, plus_one, "n = {n}");
+    }
+}
+
+/// What a **local** keystroke pays for the node views' atom-id cache in a live
+/// session, i.e. after the session has integrated a peer's change. In a document
+/// with no leaf block atom it walks nothing: it used to walk every top-level block
+/// a second time and rewrite the cache entry the integrate left, about 19% of a
+/// keystroke's `record_local` at 2000 paragraphs, a cost the `collab_keystroke`
+/// bench (which never integrates) could not see (review 2 of #1575, N3). With an
+/// embed it walks the blocks once, which is what spares the next remote change a
+/// second read of the CRDT (`a_remote_keystroke_beside_an_embed_reads_the_crdt_once`).
+#[test]
+fn a_local_keystroke_after_a_remote_change_walks_no_block_without_an_embed() {
+    use rinch_editor_core::{AttrValue, Attrs};
+    for embed in [false, true] {
+        let s = Rc::new(Schema::starter_kit());
+        let mut blocks = paragraphs(&s, BLOCKS);
+        if embed {
+            let e = s
+                .create_node(
+                    "embed",
+                    Attrs::from_iter([("data-sheet", AttrValue::from("s1"))]),
+                    Fragment::empty(),
+                )
+                .unwrap();
+            blocks.insert(BLOCKS / 2, e);
+        }
+        let mut a = Peer::host(&s, blocks, 1);
+        let mut b = a.join(2);
+        let mut walks = Vec::new();
+        for round in 0..3 {
+            let last = b.state.doc.child_count() - 1;
+            let at = start_of_block(&b.state.doc, last) + 2;
+            b.type_at(at, "b");
+            a.exchange(&mut b);
+            let at = start_of_block(&a.state.doc, round) + 2;
+            let before = atom_id_walks();
+            a.type_at(at, "a");
+            walks.push(atom_id_walks() - before);
+        }
+        let want = if embed { [1, 1, 1] } else { [0, 0, 0] };
+        assert_eq!(walks, want, "embed: {embed}");
+        a.exchange(&mut b);
+        a.assert_model_is_projection();
+        assert_eq!(a.state.doc, b.state.doc);
     }
 }

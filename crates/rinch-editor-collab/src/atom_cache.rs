@@ -103,3 +103,19 @@ pub(crate) fn is_unproven(id: BlockId) -> bool {
 pub(crate) fn unproven_ids(n: usize) -> Vec<BlockId> {
     (0..n).map(|_| unproven()).collect()
 }
+
+thread_local! {
+    /// The count behind [`walks`].
+    static WALKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Note one walk of a change's blocks to carry atom ids forward.
+pub(crate) fn note_walk() {
+    WALKS.with(|w| w.set(w.get() + 1));
+}
+
+/// The running count behind `crate::testing::atom_id_walks`.
+#[cfg_attr(not(feature = "test-util"), allow(dead_code))]
+pub(crate) fn walks() -> u64 {
+    WALKS.with(|w| w.get())
+}

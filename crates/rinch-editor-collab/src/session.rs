@@ -931,6 +931,7 @@ fn atoms_after(
     after: &Node,
     ids: Vec<crate::projection::BlockId>,
 ) -> Option<Vec<crate::projection::BlockId>> {
+    atom_cache::note_walk();
     let (prefix, suffix) = crate::projection::identity_runs(before, after);
     if (prefix, suffix) == (0, 0) {
         return None;
@@ -967,6 +968,7 @@ fn carry_ids(
     after: &Node,
     ids: &[crate::projection::BlockId],
 ) -> Vec<crate::projection::BlockId> {
+    atom_cache::note_walk();
     let (prefix, suffix) = crate::projection::identity_runs(before, after);
     let (bn, an) = (before.child_count(), after.child_count());
     let head: usize = (0..prefix).map(|i| block_atoms(before.child(i))).sum();
