@@ -631,7 +631,9 @@ handle.register_node_view(view).keep();
   node stood — a replace, an undo of a delete, a move, a paste of a copy, even an
   identical twin — is another node and gets a fresh mount. Key your app's state to
   the node's attributes, not to its position. A render may set its own node's
-  attributes (a default): the view is mounted once and `ctx.attrs` follows.
+  attributes (a default): the view is mounted once and `ctx.attrs` follows. If
+  that write makes `matches` refuse the node, the view is unmounted (or another
+  matching spec's mounted) right after, as for any other change of the node.
 - **Context.** `ctx.attrs`, `ctx.selected` (node-selected), `ctx.read_only` and
   `ctx.dark_mode` are memos; `ctx.pos()`, `ctx.set_attrs(..)`, `ctx.delete()`,
   `ctx.select()`, `ctx.return_focus()` and `ctx.editor()` act on the node. A
@@ -656,7 +658,15 @@ handle.register_node_view(view).keep();
   embed that had no attributes yet, and in a document holding a table. Which embed
   is which is the shared document's: an embed a collaborator moved, or two embeds
   they swapped — equal ones included — arrive as other embeds, and the views on
-  them are remounted. Every peer must run a build with node views: a peer built
+  them are remounted. While this editor's own changes are not reaching the
+  others (`collab_outbound_stall()` is `Some`, e.g. it holds a task list), the
+  same holds: a collaborator's attribute change keeps the view mounted, and a
+  view whose embed the editor cannot prove is the same one is remounted rather
+  than kept — and when the stall ends, an embed this editor reordered or copied
+  meanwhile reaches the others as a new embed, so their views of it remount. A
+  collaborator's change that arrives during a stall brings every block that
+  differs from the shared document back to it, so the unsent edits in those
+  blocks are dropped — a view's own attribute change included. Every peer must run a build with node views: a peer built
   before them writes an embed it moved into the place of the node that stood there,
   which a newer peer cannot tell from an attribute change, and the newer peer's
   view then shows the other embed's attributes.
