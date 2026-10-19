@@ -1263,6 +1263,10 @@ fn wire_drag(
     let v = value.to_string();
     let start = __scope.register_handler(move || {
         let carried = carried_from(&cfg, tree_state, &v);
+        // The tree shows the drag itself (the carried rows fade, the row
+        // under the pointer draws the drop); the built-in snapshot of the
+        // source row would sit over the very row the drop is drawn on.
+        rinch_core::suppress_drag_ghost();
         mark_dragging(&cfg, &carried, true);
         *cfg.drag.dragged.borrow_mut() = carried.clone();
         if let Some(cb) = &cfg.ondragstart {
