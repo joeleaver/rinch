@@ -1,4 +1,13 @@
-pub const CASES: &[(&str, &str, &str, &[(f32, f32)])] = &[
+/// A probe case: name, block style, inner HTML, and Chrome 155's carets as
+/// `(x, line)` per DOM offset.
+pub type Case = (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static [(f32, f32)],
+);
+
+pub const CASES: &[Case] = &[
     (
         "abc_pre",
         "white-space:pre",
