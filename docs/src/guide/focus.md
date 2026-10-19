@@ -271,9 +271,13 @@ The rules:
 - It protects **whatever holds the keyboard** — the rich-text editor, an
   `<input>`, a render surface, another focusable node — not just the editor.
 - The **click still fires**. `data-rid` dispatch is untouched.
-- A **text field inside** a `data-nofocus` region still focuses normally, on
+- A **form control inside** a `data-nofocus` region (an `<input>` of any type,
+  a `<textarea>`, a `<select>`, or editable content) still focuses normally, on
   both backends (the web since issue #1579). A link-URL field in a toolbar has
-  to be usable, so the field's own claim wins over the region's opt-out.
+  to be usable, so the control's own claim wins over the region's opt-out. That
+  includes a checkbox or `<input type="button">`: pressed inside an editor
+  toolbar, it takes the keyboard from the editor. Use a `<button>` (or any
+  element that is not a form control) for a toolbar action that must not.
 - Boolean attribute, same rule as `data-disabled`: present means on whatever
   the value, and the explicit `"false"` opts out — one of rinch's own three
   attributes where that escape exists.

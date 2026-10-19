@@ -2341,8 +2341,9 @@ toolbar needs so Bold does not blur the editor it acts on. Same boolean rule as
 attributes keep and the HTML pair does not — read **anywhere on the pressed
 node's ancestor chain** so a toolbar carries it once; it protects whatever holds
 the keyboard (editor, input, surface, node), the `data-rid` click still fires,
-and a text field *inside* the
-region still focuses normally (the web since #1579). Both backends — on web it
+and a form control *inside* the
+region (any `<input>`, `<textarea>`, `<select>`, editable content — a checkbox
+too) still focuses normally (the web since #1579). Both backends — on web it
 becomes `preventDefault()` on the `pointerdown`, skipped when the press's
 nearest focusable is a form control strictly inside the region.
 
