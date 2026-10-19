@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 use crate::handle::ScrollAlign;
-use crate::node_views::{Registry, Slot, Work};
+use crate::node_views::{Kept, Registry, Slot, Work};
 use rinch_core::dom::{CaretAffinity, DomDocument, NodeFont, NodeHandle};
 use rinch_editor_core::decoration::DecorationSet;
 use rinch_editor_core::serialize::{mark_dom_tag, node_dom_tag};
@@ -408,10 +408,11 @@ pub(crate) struct Cx<'a> {
     doc: &'a DocRef,
     /// The editor's registered node views, while any is registered.
     views: Option<&'a Registry>,
-    /// Positions (in the new document) of nodes the transaction changed the
-    /// attributes of — the only nodes a node view keeps its mount through when
-    /// they are not the same `Rc` (decision (d): never hand a view another node).
-    kept: &'a [usize],
+    /// The nodes the transaction only changed the attributes of
+    /// ([`crate::handle::kept_nodes`]) — the only nodes a node view keeps its
+    /// mount through when they are not the same `Rc` (decision (d): never hand a
+    /// view another node).
+    kept: &'a [Kept],
     work: &'a mut Vec<Work>,
     slots: &'a mut Vec<Rc<Slot>>,
 }
@@ -717,7 +718,10 @@ impl ViewDesc {
         if let Some(slot) = &self.slot {
             if self.node.type_name() != new.type_name()
                 || self.node.marks() != new.marks()
-                || !cx.kept.contains(&pos)
+                || !cx
+                    .kept
+                    .iter()
+                    .any(|k| k.pos == pos && k.old.same_ref(&self.node))
             {
                 return false;
             }
@@ -909,11 +913,15 @@ impl ViewDesc {
             self.children.drain(start..old_end).map(Some).collect();
         // An old descriptor some new child is the same node as is that child's,
         // and is never patched over another.
+        // So is one a kept node was before the transaction (the same node with
+        // other attributes, wherever it stands now).
         let reserved: Vec<bool> = old
             .iter()
             .map(|o| {
-                o.as_ref()
-                    .is_some_and(|o| (start..new_end).any(|j| o.node.same_ref(new.child(j))))
+                o.as_ref().is_some_and(|o| {
+                    (start..new_end).any(|j| o.node.same_ref(new.child(j)))
+                        || cx.kept.iter().any(|k| k.old.same_ref(&o.node))
+                })
             })
             .collect();
         let mut placed: Vec<ViewDesc> = Vec::with_capacity(new_end - start);
@@ -927,6 +935,25 @@ impl ViewDesc {
             if let Some(k) = same {
                 placed.extend(old[k].take());
                 continue;
+            }
+            // The same node with other attributes, moved within the stretch (a
+            // block inserted before it in the same transaction).
+            let was = cx
+                .kept
+                .iter()
+                .find(|k| k.pos == at)
+                .and_then(|k| {
+                    old.iter()
+                        .position(|o| o.as_ref().is_some_and(|o| o.node.same_ref(&k.old)))
+                });
+            if let Some(k) = was
+                && let Some(mut desc) = old[k].take()
+            {
+                if desc.update(child, cx, at) {
+                    placed.push(desc);
+                    continue;
+                }
+                retire(desc, cx, None);
             }
             let free = reserved.get(j - start) == Some(&false);
             if let Some(mut desc) = old
@@ -1072,7 +1099,7 @@ pub struct RinchDomEditorView {
     selected_slot: Option<Rc<Slot>>,
     /// The next [`EditorView::update_dom`]'s proof of which nodes are the same
     /// node with other attributes ([`Cx::kept`]); taken by it.
-    kept: Vec<usize>,
+    kept: Vec<Kept>,
     /// Set once the editor unmounted ([`Self::dispose_node_views`]): no slot is
     /// made after that.
     node_views_off: bool,
@@ -1393,7 +1420,7 @@ impl RinchDomEditorView {
 
     /// Prove, for the next [`EditorView::update_dom`], which nodes are the same
     /// node with other attributes: positions in the new document ([`Cx::kept`]).
-    pub(crate) fn set_kept(&mut self, kept: Vec<usize>) {
+    pub(crate) fn set_kept(&mut self, kept: Vec<Kept>) {
         self.kept = kept;
     }
 

@@ -411,6 +411,12 @@ struct SlotState {
     removed: bool,
     selected: bool,
     mount: Option<Mount>,
+    /// `render` is running for this slot. A sync it causes (the component
+    /// setting its own node's attributes, a default) must not mount the slot a
+    /// second time under it: it is noted in `resync`, and the mount refreshes the
+    /// memos once it is stored (review of #1575, F7).
+    mounting: bool,
+    resync: bool,
 }
 
 /// A mounted view: its scope, root, and the signals behind its context's memos
@@ -439,6 +445,8 @@ impl Slot {
                 removed: false,
                 selected: false,
                 mount: None,
+                mounting: false,
+                resync: false,
             }),
         })
     }
@@ -476,6 +484,15 @@ impl Slot {
 }
 
 /// Work the view's diff queues for when no borrow is held — see [`run`].
+/// A node a transaction only set attributes of ([`crate::handle::kept_nodes`]):
+/// where it stands in the new document, and the node it was before. A node view's
+/// descriptor holding `old` may be patched with the node at `pos` — the one way a
+/// view's node changes without a remount.
+pub(crate) struct Kept {
+    pub(crate) pos: usize,
+    pub(crate) old: Node,
+}
+
 pub(crate) enum Work {
     /// Mount, re-match, update or (once removed) dispose this slot's view.
     Sync(Rc<Slot>),
@@ -528,6 +545,13 @@ fn sync(editor: &EditorHandle, registry: &Registry, slot: &Rc<Slot>, host_cx: Op
     if slot.is_removed() {
         unmount(slot, false, host_cx);
         return;
+    }
+    {
+        let mut st = slot.state.borrow_mut();
+        if st.mounting {
+            st.resync = true;
+            return;
+        }
     }
     let node = slot.state.borrow().node.clone();
     let matched = registry
@@ -582,7 +606,14 @@ fn mount(
         })
     });
     let render = entry.spec.render.clone();
-    let Some(content) = entry.invoke(|| scope.build(|s| render(s, ctx))) else {
+    slot.state.borrow_mut().mounting = true;
+    let content = entry.invoke(|| scope.build(|s| render(s, ctx)));
+    let resync = {
+        let mut st = slot.state.borrow_mut();
+        st.mounting = false;
+        std::mem::take(&mut st.resync)
+    };
+    let Some(content) = content else {
         scope.dispose();
         return;
     };
@@ -607,6 +638,12 @@ fn mount(
     });
     if let Some(cx) = host_cx {
         crate::registry::notify_node_view_host(cx.doc_key, cx.container, &slot.host, true);
+    }
+    // What `render` itself changed (its node's attributes, say) reaches the memos
+    // now — a refresh, not another render: a render that changed them every time
+    // would otherwise never settle.
+    if resync {
+        refresh(registry, slot);
     }
 }
 

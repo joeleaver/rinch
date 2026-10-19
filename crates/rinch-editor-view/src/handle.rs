@@ -41,7 +41,7 @@ use super::images::ImageHover;
 use super::images::{ImageInput, ImageInputSource};
 use super::keys::EditorKey;
 use super::links::{LinkClick, LinkHover, LinkSpan};
-use super::node_views::{self, CaretFrom, NodeViewRegistration, NodeViewSpec};
+use super::node_views::{self, CaretFrom, Kept, NodeViewRegistration, NodeViewSpec};
 use super::registry;
 use super::view::RinchDomEditorView;
 
@@ -168,31 +168,45 @@ struct EditorCore {
     /// The registered node views ([`EditorHandle::register_node_view`]), shared
     /// with the view.
     node_views: Rc<node_views::Registry>,
-    /// The next [`Self::commit`]'s proof of which nodes are the same node with
-    /// other attributes — positions in the new document of the nodes its
-    /// transaction's `SetNodeAttrStep`s changed ([`kept_positions`]). Set by the
-    /// dispatch paths that have the transaction, taken by `commit`; empty means
-    /// "nothing proven", and a node view whose node is not the same `Rc` is
-    /// remounted.
-    kept: Vec<usize>,
 }
 
-/// Where the nodes `steps` set attributes of stand after all of them: the
-/// positions (in the transaction's final document) of the nodes its
-/// `SetNodeAttrStep`s changed and no later step replaced. What proves a node
-/// view's node is the same node with other attributes (node views, decision
-/// (d)).
-fn kept_positions(steps: &[Box<dyn rinch_editor_core::Step>], mapping: &Mapping) -> Vec<usize> {
-    let mut out = Vec::new();
+/// The nodes `tr` only set attributes of: for each node a `SetNodeAttrStep`
+/// changed, where it stands in the transaction's final document and the node it
+/// was when the transaction started. A node an earlier step put in place (a
+/// replace, then an attribute set on what replaced it) or a later step removed is
+/// not one of them. What proves a node view's node is the same node with other
+/// attributes (node views, decision (d)).
+pub(crate) fn kept_nodes(tr: &Transaction) -> Vec<Kept> {
+    let (steps, mapping) = (tr.steps(), tr.mapping());
+    let mut out: Vec<Kept> = Vec::new();
     for (i, step) in steps.iter().enumerate() {
-        if let Some(a) = step
+        let Some(a) = step
             .as_any()
             .downcast_ref::<rinch_editor_core::SetNodeAttrStep>()
-        {
-            let r = mapping.slice(i + 1, mapping.len()).map_result(a.pos, 1);
-            if !r.deleted_after() && !out.contains(&r.pos) {
-                out.push(r.pos);
-            }
+        else {
+            continue;
+        };
+        let after = mapping.slice(i + 1, mapping.len()).map_result(a.pos, 1);
+        if after.deleted_after() || out.iter().any(|k| k.pos == after.pos) {
+            continue;
+        }
+        // Back to the transaction's start, step by step (`Mapping::invert` takes
+        // every map, not a slice's): a node an earlier step inserted is not kept.
+        let mut before = a.pos;
+        let mut inserted = false;
+        for map in mapping.maps()[..i].iter().rev() {
+            let r = map.invert().map_result(before, 1);
+            inserted |= r.deleted_after();
+            before = r.pos;
+        }
+        if inserted {
+            continue;
+        }
+        if let Some(old) = tr.docs().first().and_then(|d| d.node_at(before)) {
+            out.push(Kept {
+                pos: after.pos,
+                old,
+            });
         }
     }
     out
@@ -455,12 +469,17 @@ impl EditorCore {
     /// `scroll` says whether this change should bring the caret into view (see
     /// [`ScrollGate`]): [`Scroll::IfChanged`] arms the gate when the document or
     /// the selection changed. A refused change arms nothing.
+    ///
+    /// `kept` is the transaction's proof of which nodes are the same node with
+    /// other attributes ([`kept_nodes`]) — passed in, never left behind: a refused
+    /// change must not hand its proof to the next one (review of #1575, F2).
     fn commit(
         &mut self,
         prev: EditorState,
         next: EditorState,
         mapping: Option<&Mapping>,
         scroll: Scroll,
+        kept: Vec<Kept>,
     ) -> Option<bool> {
         if self.refuses(&prev, &next, mapping.is_none()) {
             return None;
@@ -485,11 +504,10 @@ impl EditorCore {
         }
         self.note_selection(&prev.selection, &next.selection);
         self.state = next.clone();
-        let kept = std::mem::take(&mut self.kept);
         #[cfg(feature = "collaboration")]
         let kept_nodes: Vec<Node> = kept
             .iter()
-            .filter_map(|&p| next.doc.node_at(p))
+            .filter_map(|k| next.doc.node_at(k.pos))
             .filter(|n| n.is_leaf() && n.is_block())
             .collect();
         if let Some(view) = self.view.as_mut() {
@@ -702,7 +720,7 @@ impl EditorCore {
     #[cfg(feature = "collaboration")]
     ///
     /// `kept` are the leaf block atoms of `next` the change only set attributes
-    /// of ([`kept_positions`]): any other leaf block atom put where a different
+    /// of ([`kept_nodes`]): any other leaf block atom put where a different
     /// node stood is written as a new CRDT block, so a peer's node view for the
     /// old one is not handed it (`CollabSession::record_local_keeping`).
     fn record_local(&mut self, prev: &EditorState, next: &EditorState, kept: &[Node]) {
@@ -1062,7 +1080,6 @@ impl EditorHandle {
                 #[cfg(feature = "collaboration")]
                 collab: None,
                 node_views: Rc::default(),
-                kept: Vec::new(),
             })),
         }
     }
@@ -1123,7 +1140,6 @@ impl EditorHandle {
                 #[cfg(feature = "collaboration")]
                 collab: None,
                 node_views,
-                kept: Vec::new(),
             })),
         }
     }
@@ -1259,14 +1275,14 @@ impl EditorHandle {
         let prev = core.state.clone();
         // The mapping has to be taken before `apply` consumes the transaction.
         let mapping = tr.mapping().clone();
-        core.kept = kept_positions(tr.steps(), &mapping);
+        let kept = kept_nodes(&tr);
         let scroll = if input || tr.selection_set() {
             Scroll::IfChanged
         } else {
             Scroll::No
         };
         let next = core.state.apply(tr);
-        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), scroll) else {
+        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), scroll, kept) else {
             return false;
         };
         drop(core);
@@ -1317,7 +1333,7 @@ impl EditorHandle {
         // and every retry refused too (review of #836).
         // Not an edit, so it never scrolls the caret into view.
         if core
-            .commit(prev, next, Some(&Mapping::new()), Scroll::No)
+            .commit(prev, next, Some(&Mapping::new()), Scroll::No, Vec::new())
             .is_none()
         {
             return false;
@@ -1336,12 +1352,12 @@ impl EditorHandle {
         };
         // `run_command_mapped`, keeping the attribute proof of the transaction
         // (an undo of a node view's `set_attrs` keeps the view mounted).
-        let mut result: Option<(EditorState, Mapping, Vec<usize>)> = None;
+        let mut result: Option<(EditorState, Mapping, Vec<Kept>)> = None;
         let applied = {
             let state = &core.state;
             let mut dispatch = |tr: Transaction| {
                 let mapping = tr.mapping().clone();
-                let kept = kept_positions(tr.steps(), &mapping);
+                let kept = kept_nodes(&tr);
                 result = Some((state.apply(tr), mapping, kept));
             };
             let dispatch: rinch_editor_core::Dispatch = &mut dispatch;
@@ -1350,9 +1366,9 @@ impl EditorHandle {
         let Some((next, mapping, kept)) = result.filter(|_| applied) else {
             return false;
         };
-        core.kept = kept;
         let prev = core.state.clone();
-        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), Scroll::IfChanged) else {
+        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), Scroll::IfChanged, kept)
+        else {
             return false;
         };
         drop(core);
@@ -2424,7 +2440,7 @@ impl EditorHandle {
             let mapping = tr.mapping().clone();
             let next = prev.apply(tr);
             // Clears stored marks only: nothing moves, so nothing to scroll to.
-            core.commit(prev, next, Some(&mapping), Scroll::No);
+            core.commit(prev, next, Some(&mapping), Scroll::No, Vec::new());
         }
         core.read_only = read_only;
         core.node_views.read_only.set(read_only);
@@ -2560,7 +2576,7 @@ impl EditorHandle {
         // whatever now happens to sit at those offsets.
         // A load is the app replacing the document, not the user moving the
         // caret: it scrolls nothing.
-        core.commit(prev, next, None, Scroll::No).is_some()
+        core.commit(prev, next, None, Scroll::No, Vec::new()).is_some()
     }
 
     /// Parse `html` (schema-whitelisted) and load it as the document. Empty or
@@ -2710,7 +2726,7 @@ impl EditorHandle {
             return false;
         };
         let prev = core.state.clone();
-        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), Scroll::IfChanged) else {
+        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), Scroll::IfChanged, Vec::new()) else {
             return false;
         };
         drop(core);
@@ -2959,7 +2975,7 @@ impl EditorHandle {
         // The person's own selection did not change, so there is nothing of
         // theirs to bring into view.
         let scroll = if moved { Scroll::No } else { Scroll::IfChanged };
-        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), scroll) else {
+        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), scroll, Vec::new()) else {
             return false;
         };
         drop(core);
@@ -3019,7 +3035,7 @@ impl EditorHandle {
             return false;
         };
         let prev = core.state.clone();
-        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), Scroll::IfChanged) else {
+        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), Scroll::IfChanged, Vec::new()) else {
             return false;
         };
         drop(core);
@@ -3614,7 +3630,7 @@ impl EditorHandle {
                 // A peer's change to a node view's attributes is a
                 // `SetNodeAttrStep` (the collab adapter proves it is the same
                 // atom), so the view stays mounted.
-                let kept = kept_positions(tr.steps(), tr.mapping());
+                let kept = kept_nodes(&tr);
                 let next = prev.apply(tr);
                 core.carry_anchors_remote(&prev, &next.doc);
                 if !prev.doc.same_ref(&next.doc) {
@@ -4012,12 +4028,14 @@ impl EditorHandle {
     /// block right above or below the caret's textblock (or the selected node) is
     /// a node with a **mounted view**: vertical motion steps over a horizontal rule
     /// ([`Selection::near_text`]), but must not step over an app's component, or
-    /// it could not be reached from the keyboard. `None` otherwise.
+    /// it could not be reached from the keyboard. At the last (first) block of a
+    /// list item, a quote or a list, the block below (above) is the one after
+    /// (before) that container. `None` otherwise.
     pub fn vertical_node_view(&self, down: bool) -> Option<Selection> {
         let core = self.core();
         let doc = &core.state.doc;
         let sel = &core.state.selection;
-        let edge = match sel {
+        let mut edge = match sel {
             Selection::Node(n) if down => n.head.0,
             Selection::Node(n) => n.anchor.0,
             _ => {
@@ -4032,12 +4050,28 @@ impl EditorHandle {
                 }
             }
         };
-        let r = doc.resolve(Pos(edge)).ok()?;
-        let at = if down {
-            r.node_after()?;
-            edge
-        } else {
-            edge - r.node_before()?.node_size()
+        // The block right below (above): at the edge of a list item, a quote or
+        // a list, the next one out — Down from a list's last line reaches the
+        // node after the list (review of #1575, F6).
+        let at = loop {
+            let r = doc.resolve(Pos(edge)).ok()?;
+            let next = if down {
+                r.node_after()
+            } else {
+                r.node_before()
+            };
+            match next {
+                Some(_) if down => break edge,
+                Some(n) => break edge - n.node_size(),
+                None if r.depth() > 0 => {
+                    edge = if down {
+                        r.after(r.depth())?
+                    } else {
+                        r.before(r.depth())?
+                    };
+                }
+                None => return None,
+            }
         };
         let view = core.view.as_ref()?;
         view.has_mounted_view_at(doc, Pos(at))
