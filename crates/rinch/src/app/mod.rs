@@ -59,6 +59,8 @@ mod disabled_input_tests;
 #[cfg(test)]
 mod dnd_teardown_tests;
 #[cfg(test)]
+mod drag_auto_scroll_tests;
+#[cfg(test)]
 mod drawer_open_animation_tests;
 #[cfg(test)]
 mod drawer_scroll_overflow_tests;
@@ -612,6 +614,10 @@ pub struct RinchApp {
     /// Surface currently being dragged over (for DragEnter/DragLeave dispatch).
     /// Stores (surface_id, dom_node_id).
     pub(crate) drag_over_surface: Option<(usize, usize)>,
+    /// When the last drag auto-scroll tick scrolled
+    /// ([`Self::tick_drag_auto_scroll`]); `None` while the pointer of the drag
+    /// in flight is in no band, and with no drag.
+    pub(crate) drag_auto_scroll_at: Option<Instant>,
     /// The [`ThemeKey`] of the theme CSS last loaded into the document (for
     /// change detection).
     #[cfg(feature = "theme")]
@@ -905,6 +911,7 @@ impl RinchApp {
             pending_drag: None,
             active_dnd: None,
             drag_over_surface: None,
+            drag_auto_scroll_at: None,
             #[cfg(feature = "theme")]
             last_theme_key: None,
             owned_theme_css: None,

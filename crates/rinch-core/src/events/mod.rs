@@ -6,6 +6,7 @@
 mod configuration;
 mod dismiss;
 mod drag;
+mod drag_auto_scroll;
 mod drag_context;
 mod handlers;
 mod keyboard;
@@ -17,6 +18,7 @@ mod selection;
 pub use configuration::*;
 pub use dismiss::*;
 pub use drag::*;
+pub use drag_auto_scroll::*;
 pub use drag_context::*;
 pub use handlers::*;
 pub use keyboard::*;
