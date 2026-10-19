@@ -2098,6 +2098,40 @@ so the claim stays out of both. The right/middle path
 used to run no claim, so a right press on a nested focusable released the
 outer claim and nothing took the keyboard.
 
+**On `rinch-web` a press on a `data-rid` element resolves focus the same way**
+(#1146). `dispatch_click_at` `preventDefault`s the `pointerdown` of a press
+whose handler ran, and that cancels the browser's own focus change, so before
+#1146 no such press moved focus: a `Button` took none, the field that had it
+was not blurred (its `change` uncommitted), and a text field inside a
+clickable (`ColorInput`'s, in its input group) could not be focused by a click
+at all. Now (`PressFocus`, `event_delegation.rs`): when the nearest focusable
+ancestor-or-self (`PRESS_FOCUSABLE_SELECTOR`) is a form control or editable
+content the default is not prevented, so the browser focuses it and places
+the caret; any other focusable is focused by rinch (`preventScroll`) **before**
+the handler runs, so the old field blurs first and a focus move the handler
+makes wins; a press already prevented (`data-nofocus`) or with nothing
+focusable on its chain moves no focus (desktop releases for the latter). The
+selector is a superset (a `disabled` button, a `contenteditable="false"`
+island match it and refuse `focus()`), so `focus_press_target` asks the
+browser and walks on to the next match, as Chrome focuses the `tabindex` row
+around a disabled button. A **touch/pen** press holds its focus move until the
+owning pointer's `pointerup` (`PendingPressFocus`): a `pointercancel` (Chrome's
+pan), a move past the scroll slop or the next primary press drops it, and a
+focus move made since the press landed (the handler's own) wins — a pan that
+starts on a button used to blur the field and drop a phone's soft keyboard.
+(The click itself still fires on contact outside a scroller, #1582.) In a
+`data-nofocus` region a press whose nearest focusable is a form control or
+editable content strictly inside the region is not prevented (#1579), as on
+desktop. Behaviour changes for web apps: an editor toolbar needs
+`data-nofocus`, as on desktop; any focused field blurs and commits `onchange`
+on a press of a focusable `data-rid`; a `trap_focus` overlay opened from a
+`Button` restores focus to that `Button`; a native `<select>`/range inside a
+clickable is no longer prevented, so it works natively beside the handler.
+Safari and macOS Firefox do not focus a `<button>` on a click; rinch-web does
+(Chrome's and desktop's rule). Measured with trusted CDP input in Chrome 155;
+pins: `rinch-web/tests/press_focus_1146.rs`, `press_focus_1580_review.rs`,
+`press_focus_1580_round2.rs`.
+
 A focused **`<select>` is closed**, like a browser's — Enter/Space/Alt+Down
 opens its popup, which then owns the keyboard (issue #314). A pointer opens and
 picks with the primary button only (issue #1111): a right or middle press on the
@@ -2307,9 +2341,11 @@ toolbar needs so Bold does not blur the editor it acts on. Same boolean rule as
 attributes keep and the HTML pair does not — read **anywhere on the pressed
 node's ancestor chain** so a toolbar carries it once; it protects whatever holds
 the keyboard (editor, input, surface, node), the `data-rid` click still fires,
-and a text field *inside* the
-region still focuses normally. Both backends — on web it becomes
-`preventDefault()` on the `pointerdown`.
+and a form control *inside* the
+region (any `<input>`, `<textarea>`, `<select>`, editable content — a checkbox
+too) still focuses normally (the web since #1579). Both backends — on web it
+becomes `preventDefault()` on the `pointerdown`, skipped when the press's
+nearest focusable is a form control strictly inside the region.
 
 A custom component that takes keyboard input registers for the lifecycle
 (issue #147, `crates/rinch/src/focus_registry.rs`, in the prelude):
@@ -6135,6 +6171,19 @@ its size mid-turn, `rotate(0deg)` → `rotate(360deg)` is a change that spins,
 and `none` → `rotate(0deg)` starts nothing. `@keyframes` stops use the same
 path; `crates/rinch-dom/tests/transform_interpolation_tests.rs` pins Chrome
 153's numbers. Guide: `docs/src/architecture/rendering-pipeline.md`.
+
+**Every easing function eases** (#1564): `steps()`, `step-start`/`step-end`
+and `linear(<stops>)` reach `transition::types::TimingFunction` as themselves
+(they used to become `linear`), in transitions, `@keyframes` and a keyframe's
+own `animation-timing-function`, through one converter. A step reads CSS
+Easing 2's before flag (`apply_with_before_flag`: set in the before phase going
+forwards and the after phase going backwards; a transition's delay is its easing
+at 0 with the flag, not always `from`), and an iteration's start and end
+are eased at interval distance 0 and 1 (`ActiveAnimation::interval`), not
+snapped to the keyframe. `TimingFunction` is not `Copy` (a `linear()` holds an
+`Arc`). The `jump-*` positions do not parse in Stylo's servo build, so such a
+declaration is dropped (#1581). Pins: `crates/rinch-dom/tests/easing_steps_linear_1564_tests.rs`
+(Chrome 155).
 
 **The 3D transform functions are drawn flat** (#405; they used to compute to the
 identity, `translate3d` aside). A list holding any of them is composed as 4×4
