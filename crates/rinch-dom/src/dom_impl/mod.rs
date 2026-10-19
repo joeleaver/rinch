@@ -239,8 +239,10 @@ impl RinchDocument {
             style_bloom_filled: Vec::new(),
         };
 
-        // `reload_image` reaches every live document by its key.
+        // `reload_image` reaches every live document that holds the source,
+        // by its key: the cache records its sources under it (#1493).
         crate::image_cache::register_document(doc.doc_key);
+        doc.tree.image_cache.set_doc_key(doc.doc_key);
 
         // Set up default file-based image loader
         doc.tree.image_loader = Some(std::sync::Arc::new(crate::image_cache::FileImageLoader));
