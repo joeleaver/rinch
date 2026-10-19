@@ -1224,6 +1224,41 @@ impl DomDocument for RinchDocument {
         rinch_core::post_text_selection_request(self.doc_key, node_id.0, start, end, direction);
     }
 
+    /// Whether `node` is shown, from the computed styles of the last resolve
+    /// (issue #802; see [`DomDocument::is_rendered`]).
+    ///
+    /// rinch styles hidden subtrees (#703), so a node under a `display: none`
+    /// ancestor has its own `display` and the walk up is what finds the
+    /// ancestor; its `visibility` is the inherited one, so the node's own value
+    /// answers for `visibility: hidden` ancestors.
+    fn is_rendered(&self, node: NodeId) -> bool {
+        use crate::computed_style::values::DisplayValue;
+        use crate::computed_style::values::VisibilityValue;
+        if !self.is_connected(node) {
+            return false;
+        }
+        let Some(n) = self.tree.get(node.0) else {
+            return false;
+        };
+        if matches!(
+            n.computed_style.visibility,
+            VisibilityValue::Hidden | VisibilityValue::Collapse
+        ) {
+            return false;
+        }
+        let mut current = Some(node.0);
+        while let Some(id) = current {
+            let Some(n) = self.tree.get(id) else {
+                return false;
+            };
+            if n.computed_style.display == DisplayValue::None {
+                return false;
+            }
+            current = n.parent;
+        }
+        true
+    }
+
     /// The DOM mirror of the focus arbiter's claim (issue #695).
     ///
     /// `focused_node` is what `RinchApp::set_focus_target` and its teardown keep
