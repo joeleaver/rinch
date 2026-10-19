@@ -508,7 +508,7 @@ impl EditorCore {
         let kept_nodes: Vec<Node> = kept
             .iter()
             .filter_map(|k| next.doc.node_at(k.pos))
-            .filter(|n| n.is_leaf() && n.is_block())
+            .filter(|n| n.is_leaf() && !n.is_text())
             .collect();
         // The inline atoms (a picture) it only set attributes of, before and after:
         // still their CRDT chars (`CollabSession::note_kept_inline_atoms`).
@@ -735,9 +735,11 @@ impl EditorCore {
     #[cfg(feature = "collaboration")]
     ///
     /// `kept` are the leaf block atoms of `next` the change only set attributes
-    /// of ([`kept_nodes`]): any other leaf block atom put where a different
-    /// node stood is written as a new CRDT block, so a peer's node view for the
-    /// old one is not handed it (`CollabSession::record_local_keeping`).
+    /// of, and the inline atoms (pictures) likewise ([`kept_nodes`]): any other
+    /// leaf block atom put where a different node stood is written as a new CRDT
+    /// block, and any other picture as a new CRDT char (same `src` or not —
+    /// decision (f)), so a peer's node view for the old one is not handed it
+    /// (`CollabSession::record_local_keeping`).
     fn record_local(&mut self, prev: &EditorState, next: &EditorState, kept: &[Node]) {
         let Some(bridge) = self.collab.as_mut() else {
             return;
@@ -4154,6 +4156,9 @@ impl EditorHandle {
         if swapped {
             // The caret beside it and the node outline are drawn from its box.
             crate::registry::owe_overlay_pass(view.doc_key());
+        }
+        drop(core);
+        if swapped {
             crate::registry::request_overlay_refresh();
         }
         swapped

@@ -430,19 +430,22 @@ impl CollabSession {
         self.record_local_inner(schema, before, after)
     }
 
-    /// [`Self::record_local`] for an editor that knows which leaf block atoms the
-    /// change kept: `kept` holds every leaf block atom of `after` that is the same
-    /// atom as the node at its place in `before` with other attributes (the editor
-    /// proves it with the `SetNodeAttrStep`s of the transaction). Any **other** leaf
-    /// block atom the change put where a different node stood is written as a new
-    /// CRDT block rather than by rewriting the old one's attributes, so a peer can
+    /// [`Self::record_local`] for an editor that knows which atoms the change kept:
+    /// `kept` holds every leaf block atom and inline atom (a picture) of `after` that
+    /// is the same atom as the node at its place in `before` with other attributes
+    /// (the editor proves it with the `SetNodeAttrStep`s of the transaction). Any
+    /// **other** inline atom the change put where a different node stood is written as
+    /// a new CRDT char — even one with the old one's `src` (a picture pasted over
+    /// another; decision (f)) — and any other leaf block atom as a new CRDT block,
+    /// rather than by rewriting the old one's attributes, so a peer can
     /// tell an embed whose attributes changed (one block, the same on both sides —
     /// [`Self::integrate_incremental_transaction`] makes that `SetNodeAttrStep`s)
     /// from an embed that came to stand where another stood (a move, an undo of a
     /// delete), which a node view keyed to the old one must not be handed.
     ///
     /// [`Self::record_local`] is the positional rule: a leaf atom put in another's
-    /// place takes over its block, attributes and all.
+    /// place takes over its block, attributes and all, and a picture put in the place
+    /// of one with the same `src` takes over its char.
     pub fn record_local_keeping(
         &mut self,
         schema: &Schema,

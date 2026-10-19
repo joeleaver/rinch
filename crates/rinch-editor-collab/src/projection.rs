@@ -1364,7 +1364,7 @@ impl Drop for ModelAtomScope {
 /// A key for a model node's identity: two nodes have one key exactly when they are
 /// `Node::same_ref`, while both live. (The address of the attrs inside the node's
 /// shared allocation; the model exposes no pointer of its own.)
-fn node_key(node: &Node) -> usize {
+pub(crate) fn node_key(node: &Node) -> usize {
     std::ptr::from_ref(node.attrs()) as usize
 }
 
@@ -1407,10 +1407,12 @@ pub(crate) fn model_atoms(node: &Node, out: &mut Vec<ModelAtom>) {
 /// one before it is that atom. An atom changed in place (its attrs set: a new node) is
 /// `same_ref` to nothing; it is taken to be the atom at its place before when that one
 /// is `same_ref` to no atom after the change either, both have one type and both the
-/// same `src` (or neither has one): an attr change, kept in place. A `src` change (and a
-/// picture pasted over a selected one, which the model cannot tell from it) makes a new
-/// atom, and a peer's concurrent change of the old one is lost rather than shown on
-/// another picture (the reason is with `same_place` below). Without a
+/// same `src` (or neither has one), and — when the caller proves which atoms the change
+/// only set attributes of ([`kept_atoms_scope`], what an editor does) — it is one of
+/// those: an attr change, kept in place. Anything else makes a new atom, and a peer's
+/// concurrent change of the old one is lost rather than shown on another picture: a
+/// `src` change (the reason is with `same_place` below), and, with the proof, a picture
+/// pasted over a selected one, `src` and all (decision (f)). Without a
 /// model that reads as the CRDT's text, or when the before and after share no node (a
 /// load, a re-base: two documents, not one edited), an atom matches only one with an
 /// equal value: an attr change there replaces the atom (a peer's concurrent change of
@@ -1491,6 +1493,15 @@ fn text_splice_bounds(
     // on the pasted one.
     let same_place =
         |a: &Attrs, b: &Attrs| a.get(ATOM_TYPE) == b.get(ATOM_TYPE) && a.get("src") == b.get("src");
+    // An editor that proves which nodes a change only set attributes of
+    // (`CollabSession::record_local_keeping`, the `SetNodeAttrStep`s of its
+    // transaction) keeps an atom's identity for those alone (decision (f), Joe
+    // 2026-10-19): any other new node at the old one's place — a picture pasted over
+    // another with the same `src` included — is a new char, so a peer's node view
+    // drawn for the old picture is remounted rather than handed the pasted one, and a
+    // peer's concurrent change of the old picture is lost rather than shown on it.
+    // Without that proof (`CollabSession::record_local`) the `src` rule alone decides.
+    let proven_in_place = |q: &Node| !kept_atoms_known() || is_kept_atom(q);
     common_runs(o.len(), n.len(), |i, j| {
         if o[i] != n[j] {
             return false;
@@ -1507,7 +1518,8 @@ fn text_splice_bounds(
                     p.same_ref(q)
                         || (!after_set.contains(&node_key(p))
                             && !before_set.contains(&node_key(q))
-                            && same_place(a, b))
+                            && same_place(a, b)
+                            && proven_in_place(q))
                 }
                 _ => false,
             },
@@ -1540,10 +1552,11 @@ fn text_splice_bounds(
 pub(crate) type Model<'a> = Option<(&'a Node, &'a Node)>;
 
 thread_local! {
-    /// While a [`kept_atoms_scope`] is held with `Some`: the leaf block atoms of the
-    /// change's `after` document that are the **same atom** as the node standing at
-    /// their place before it (an attribute change the editor proved with a
-    /// `SetNodeAttrStep`). See [`changed_atom_identity`].
+    /// While a [`kept_atoms_scope`] is held with `Some`: the atoms — leaf block atoms
+    /// and inline atoms — of the change's `after` document that are the **same atom**
+    /// as the node standing at their place before it (an attribute change the editor
+    /// proved with a `SetNodeAttrStep`). See [`changed_atom_identity`] and
+    /// [`text_splice_bounds`].
     static KEPT_ATOMS: RefCell<Option<Vec<Node>>> = const { RefCell::new(None) };
 }
 
@@ -1564,6 +1577,12 @@ impl Drop for KeptAtomsScope {
 pub(crate) fn kept_atoms_scope(kept: Option<&[Node]>) -> KeptAtomsScope {
     let previous = KEPT_ATOMS.with(|k| k.replace(kept.map(<[Node]>::to_vec)));
     KeptAtomsScope(previous)
+}
+
+/// Whether a [`kept_atoms_scope`] with `Some` is held now: the change's caller
+/// proved which atoms it only set attributes of.
+pub(crate) fn kept_atoms_known() -> bool {
+    KEPT_ATOMS.with(|k| k.borrow().is_some())
 }
 
 /// Whether the [`kept_atoms_scope`] held now names `node`: the editor proved it is

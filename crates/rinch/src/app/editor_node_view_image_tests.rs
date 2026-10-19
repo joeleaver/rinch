@@ -296,3 +296,75 @@ fn keys_in_a_views_input_reach_on_key_then_the_input() {
         "on_key heard every press, and no release"
     );
 }
+
+// ── review of #1595 ─────────────────────────────────────────────────────────
+
+/// A claimed image last on its line: End lands after it, Home before "ab", and
+/// Shift+ArrowRight selects across it as one position; the caret after it is
+/// at its right edge; a press just past its right edge, on no text, lands after
+/// it.
+#[test]
+fn review_1595_claimed_image_at_the_end_of_its_line() {
+    let view = Rc::new(View::default());
+    let mut p = page(r#"<p>ab<img src="x.png" data-badge="n"></p><p>gh</p>"#, view.clone());
+    let span = span(&p);
+    let (sx, sy, sw, sh) = box_of(&p, span);
+    let (ax, ay, ah) = caret(&p, 2);
+    press(&mut p.app, (ax + 1.0, ay + ah / 2.0));
+    assert_eq!(p.handle.selection(), Selection::cursor(Pos(2)));
+    key(&mut p.app, KeyCode::End);
+    eprintln!("REVIEW-1595 claimed End -> {:?} (pre-existing for any image, see control)", p.handle.selection());
+    let (after, _, _) = caret(&p, 4);
+    assert!((after - (sx + sw)).abs() < 1.0, "{after} vs {}", sx + sw);
+    key(&mut p.app, KeyCode::Home);
+    assert_eq!(p.handle.selection(), Selection::cursor(Pos(1)));
+    let shift = Modifiers { shift: true, ..Modifiers::default() };
+    for _ in 0..3 {
+        key_mod(&mut p.app, KeyCode::ArrowRight, None, shift);
+    }
+    let sel = p.handle.selection();
+    assert_eq!((sel.from(), sel.to()), (Pos(1), Pos(4)), "{sel:?}");
+    key(&mut p.app, KeyCode::ArrowLeft);
+    // Past the right edge of the line's last box, on no text: after it.
+    press(&mut p.app, (sx + sw + 20.0, sy + sh / 2.0));
+    eprintln!("REVIEW-1595 claimed press past its edge -> {:?}", p.handle.selection());
+    // caret_rect agrees with the overlay point.
+    let r = p.handle.caret_rect(Pos(4)).expect("a rect");
+    assert!((r.x - (sx + sw)).abs() < 1.5, "caret_rect {r:?} vs {}", sx + sw);
+    assert_eq!(view.renders.get(), 1);
+}
+
+/// Tab from a view's last input leaves the view; Escape after that is nobody's
+/// business of the view.
+#[test]
+fn review_1595_tab_out_of_the_last_input_leaves_the_view() {
+    let view = Rc::new(View::default());
+    let mut p = page(
+        r#"<p>ab</p><div data-pm-type="embed" data-x="1"></div><p>cd</p>"#,
+        view.clone(),
+    );
+    let b = view.inputs.borrow()[1].node_id().0;
+    let (x, y, _, _) = box_of(&p, b);
+    press(&mut p.app, (x + 5.0, y + 5.0));
+    assert_eq!(p.app.focus_target, FocusTarget::Input(b));
+    key(&mut p.app, KeyCode::Tab);
+    eprintln!("REVIEW-1595 after Tab from last input: {:?} (inputs {:?})", p.app.focus_target, view.inputs.borrow().iter().map(|i| i.node_id().0).collect::<Vec<_>>());
+    assert_ne!(p.app.focus_target, FocusTarget::Input(b));
+}
+
+/// Control for the above: an unclaimed image last on its line.
+#[test]
+fn review_1595_control_unclaimed_image_at_the_end_of_its_line() {
+    let view = Rc::new(View::default());
+    let mut p = page(r#"<p>ab<img src="x.png" data-y="n" style="width:20px;height:20px"></p><p>gh</p>"#, view.clone());
+    assert_eq!(view.renders.get(), 0);
+    let (ax, ay, ah) = caret(&p, 2);
+    press(&mut p.app, (ax + 1.0, ay + ah / 2.0));
+    key(&mut p.app, KeyCode::End);
+    eprintln!("REVIEW-1595 control End -> {:?}", p.handle.selection());
+    let ib = { let doc = p.app.doc.as_ref().unwrap(); let d = doc.borrow(); (0..d.tree.nodes.len()).find(|&id| d.tree.nodes.get(id).is_some_and(|n| n.attributes.get("data-pm-type").map(String::as_str) == Some("image"))).unwrap() };
+    let (ix, iy, iw, ih) = box_of(&p, ib);
+    press(&mut p.app, (ix + iw + 20.0, iy + ih / 2.0));
+    eprintln!("REVIEW-1595 control press past its edge -> {:?}", p.handle.selection());
+    assert_eq!(p.handle.selection(), Selection::cursor(Pos(4)), "End: after the image");
+}

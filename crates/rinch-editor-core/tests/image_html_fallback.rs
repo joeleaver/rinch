@@ -142,3 +142,60 @@ fn a_linked_claimed_image_keeps_its_link() {
         d.content().clone()
     );
 }
+
+// ── review of #1595 ─────────────────────────────────────────────────────────
+
+fn texts(n: &Node, t: &mut String, images: &mut usize) {
+    if n.type_name() == "image" {
+        *images += 1;
+    }
+    if let Some(x) = n.text() {
+        t.push_str(x);
+    }
+    for c in n.content().children() {
+        texts(c, t, images);
+    }
+}
+
+/// A `<span data-pm-type="image">` that names no picture (no `src`, an unsafe
+/// one) is not an image — but its text must not be lost either (the reader is
+/// total about text, #1397). The editor's own rendered DOM of a claimed image is
+/// exactly such a span (marker and data attributes, no `src`).
+#[test]
+fn review_1595_a_span_naming_an_image_without_a_src_keeps_its_text_on_load() {
+    let s = Schema::starter_kit();
+    for html in [
+        r#"<p>a<span data-pm-type="image" data-badge="new" data-pm-node-view=""><b>chip</b></span>b</p>"#,
+        r#"<p>a<span data-pm-type="image" src="javascript:alert(1)"><b>chip</b></span>b</p>"#,
+    ] {
+        let slice = slice_from_html(&s, html).unwrap();
+        let (mut t, mut n) = (String::new(), 0);
+        for c in slice.content.children() {
+            texts(c, &mut t, &mut n);
+        }
+        assert_eq!((t.as_str(), n), ("achipb", 0), "{html}");
+    }
+}
+
+/// A fallback that answers a block (documented as not allowed): does the image
+/// still read back? Informational: prints what a round trip gives.
+#[test]
+fn review_1595_block_markup_in_an_image_fallback_round_trip() {
+    let s = Schema::starter_kit();
+    let d = doc(
+        &s,
+        vec![para(
+            &s,
+            vec![s.text("a").unwrap(), image(&s, Some("x")), s.text("b").unwrap()],
+        )],
+    );
+    let _guard = set_html_fallback(|_n: &Node| Some("<div>block</div>".to_string()));
+    let html = node_to_html(&d);
+    let back = slice_from_html(&s, &html).unwrap();
+    let (mut t, mut n) = (String::new(), 0);
+    for c in back.content.children() {
+        texts(c, &mut t, &mut n);
+    }
+    eprintln!("REVIEW-1595 block fallback: {html} -> blocks={} text={t:?} images={n}", back.content.child_count());
+    assert_eq!(n, 1, "the image survives its own export: {html}");
+}

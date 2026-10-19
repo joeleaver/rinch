@@ -225,6 +225,16 @@ pub(crate) fn inline_atom_nodes(node: &Node, out: &mut Vec<Node>) {
     }
 }
 
+/// Whether `node` holds one inline atom node (`Node::same_ref`) at two places.
+fn holds_an_inline_atom_twice(node: &Node) -> bool {
+    let mut atoms = Vec::new();
+    inline_atom_nodes(node, &mut atoms);
+    let mut seen = std::collections::HashSet::with_capacity(atoms.len());
+    !atoms
+        .iter()
+        .all(|a| seen.insert(crate::projection::node_key(a)))
+}
+
 /// Whether `node` is a leaf block atom (the projection's predicate).
 fn is_block_atom(node: &Node) -> bool {
     crate::projection::is_leaf_block_atom(node.node_type())
@@ -294,6 +304,12 @@ fn changed_middle(
         AtomMatch::Ids(ids) => ids.inline_fitting(old, target),
         AtomMatch::Positional => None,
     };
+    // A model holding one picture `Rc` at two places (an in-editor copy and paste,
+    // in two blocks or one) cannot say which of the two a char is: a patch of
+    // attributes would keep the shared `Rc` alive where the whole-block replace
+    // splits it, and the next local edit's identity match pairs the wrong char
+    // (seed 975 of `atom_identity_identical_pictures`). Replace instead.
+    let inline = inline.filter(|_| !holds_an_inline_atom_twice(old));
     let inline_before: usize = (0..diff.prefix).map(|i| inline_atoms(old.child(i))).sum();
     // An identity two chars carry (two copies of one picture that split apart:
     // `crate::atoms`, *What is left*) names neither of them.

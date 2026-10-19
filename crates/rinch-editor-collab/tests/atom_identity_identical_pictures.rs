@@ -122,10 +122,11 @@ impl Peer {
     fn local(&mut self, f: impl FnOnce(&mut Transaction)) {
         let mut tr = self.state.tr();
         f(&mut tr);
+        let kept = rinch_editor_collab::testing::kept_atoms(&tr);
         let before = self.state.doc.clone();
         let after = self.state.apply(tr);
         self.session
-            .record_local(self.state.schema(), &before, &after.doc)
+            .record_local_keeping(self.state.schema(), &before, &after.doc, &kept)
             .expect("project local");
         self.state = after;
     }
@@ -264,14 +265,32 @@ fn take_mappings() -> Vec<Mapping> {
     MAPPINGS.with(|m| std::mem::take(&mut *m.borrow_mut()))
 }
 
+thread_local! {
+    /// The atoms the transactions since the last [`take_kept`] proved they only set
+    /// attributes of.
+    static KEPT: std::cell::RefCell<Vec<Node>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn take_kept() -> Vec<Node> {
+    KEPT.with(|k| std::mem::take(&mut *k.borrow_mut()))
+}
+
 /// Which of `after`'s pictures is the target, the node at `pos` before a peer's edit
 /// whose transactions' mappings are `maps`: the node `same_ref` to it (an edit that
 /// kept it, wherever it moved), else the picture its position maps to, when the edit
-/// kept that one position's worth of content there and the picture has the target's
-/// `src` (an edit that rebuilt it in place: an attr change, an undo of one, a paste-over
-/// with its `src`). Mapping the position, not taking "the picture at its index", is
-/// what keeps a reorder in the same edit from naming another picture (review 3).
-fn target_flags(target: &Node, pos: usize, after: &Node, maps: &[Mapping]) -> Vec<bool> {
+/// kept that one position's worth of content there, the picture has the target's
+/// `src`, and the edit proved it only set that picture's attributes (`kept`: an attr
+/// change, an undo of one). A picture pasted over the target, `src` and all, is
+/// another picture (decision (f)): TARGET on it is wrong. Mapping the position, not
+/// taking "the picture at its index", is what keeps a reorder in the same edit from
+/// naming another picture (review 3).
+fn target_flags(
+    target: &Node,
+    pos: usize,
+    after: &Node,
+    maps: &[Mapping],
+    kept: &[Node],
+) -> Vec<bool> {
     let pics = imgs(after);
     let mut flags: Vec<bool> = pics.iter().map(|(_, n)| n.same_ref(target)).collect();
     if flags.iter().any(|f| *f) {
@@ -285,7 +304,11 @@ fn target_flags(target: &Node, pos: usize, after: &Node, maps: &[Mapping]) -> Ve
     if end == start + 1
         && let Some(i) = pics
             .iter()
-            .position(|(p, n)| *p == start && n.attrs().get("src") == target.attrs().get("src"))
+            .position(|(p, n)| {
+                *p == start
+                    && n.attrs().get("src") == target.attrs().get("src")
+                    && kept.iter().any(|k| k.same_ref(n))
+            })
     {
         flags[i] = true;
     }
@@ -296,12 +319,19 @@ impl Peer {
     fn try_local(&mut self, f: impl FnOnce(&mut Transaction)) -> bool {
         let mut tr = self.state.tr();
         f(&mut tr);
+        self.commit(tr)
+    }
+    /// Apply `tr` and record it as an editor does: with the proof of which atoms it
+    /// only set attributes of (decision (f)).
+    fn commit(&mut self, tr: Transaction) -> bool {
         MAPPINGS.with(|m| m.borrow_mut().push(tr.mapping().clone()));
+        let kept = rinch_editor_collab::testing::kept_atoms(&tr);
+        KEPT.with(|k| k.borrow_mut().extend(kept.iter().cloned()));
         let before = self.state.doc.clone();
         let after = self.state.apply(tr);
         let ok = self
             .session
-            .record_local(self.state.schema(), &before, &after.doc)
+            .record_local_keeping(self.state.schema(), &before, &after.doc, &kept)
             .is_ok();
         self.state = after;
         ok
@@ -310,17 +340,12 @@ impl Peer {
         let Some(c) = self.state.command(name) else {
             return false;
         };
-        let Some((next, mapping)) = self.state.run_command_mapped(&c) else {
-            return false;
-        };
-        MAPPINGS.with(|m| m.borrow_mut().push(mapping));
-        let before = self.state.doc.clone();
-        let ok = self
-            .session
-            .record_local(self.state.schema(), &before, &next.doc)
-            .is_ok();
-        self.state = next;
-        ok
+        let mut taken: Option<Transaction> = None;
+        let applied = c(&self.state, Some(&mut |tr| taken = Some(tr)));
+        match taken {
+            Some(tr) if applied => self.commit(tr),
+            _ => false,
+        }
     }
 }
 
@@ -682,8 +707,10 @@ fn run2(seed: u64, ids: (u64, u64), v: bool, t: &mut T2) {
     }
     let target_pos = all[k].0;
     take_mappings();
+    take_kept();
     let op = op2(&mut r, &s, &mut b, Some(&target_b));
     let maps = take_mappings();
+    let kept = take_kept();
     if v {
         eprintln!("B after {op}: {:?}", b.state.doc);
     }
@@ -699,7 +726,7 @@ fn run2(seed: u64, ids: (u64, u64), v: bool, t: &mut T2) {
     let expected: Vec<(Node, bool)> = imgs(&b.state.doc)
         .into_iter()
         .map(|(_, n)| n)
-        .zip(target_flags(&target_b, target_pos, &b.state.doc, &maps))
+        .zip(target_flags(&target_b, target_pos, &b.state.doc, &maps, &kept))
         .collect();
     let n_t = expected.iter().filter(|x| x.1).count();
     sync3(&mut a, &mut b, &mut c);
@@ -1108,6 +1135,7 @@ fn a_rebuild_and_a_reorder_in_one_transaction_never_move_the_data_ref() {
         });
         let (p1, n1) = all[1].clone();
         take_mappings();
+        take_kept();
         b.try_local(|tr| {
             tr.step(Box::new(SetNodeAttrStep::new(
                 target_pos,
@@ -1119,7 +1147,13 @@ fn a_rebuild_and_a_reorder_in_one_transaction_never_move_the_data_ref() {
             tr.replace(1, 1, Slice::new(Fragment::from_node(n1.clone()), 0, 0))
                 .unwrap();
         });
-        let flags = target_flags(&target, target_pos, &b.state.doc, &take_mappings());
+        let flags = target_flags(
+            &target,
+            target_pos,
+            &b.state.doc,
+            &take_mappings(),
+            &take_kept(),
+        );
         let after: Vec<String> = imgs(&b.state.doc)
             .iter()
             .map(|(_, n)| n.attrs().get_str("alt").unwrap_or("").to_string())
