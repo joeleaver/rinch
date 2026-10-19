@@ -565,8 +565,8 @@ struct DragState {
     dragged: RefCell<Vec<String>>,
     /// The drop on offer, its placement and the app's verdict.
     candidate: RefCell<Option<(TreeDrop, Placement, DropVerdict)>>,
-    /// The one indicator, moved into whichever row it is drawn on.
-    indicator: RefCell<Option<NodeHandle>>,
+    /// The row the indicator is drawn on, by value.
+    drawn: RefCell<Option<String>>,
     /// The row a hover-to-expand is waiting on.
     hover: RefCell<Option<(String, TimeoutHandle)>>,
 }
@@ -778,10 +778,7 @@ impl Component for Tree {
             guides: self.guides,
             drag: Rc::new(DragState::default()),
         });
-        if config.draggable {
-            let indicator = rinch_macros::rsx! { div { class: "rinch-tree__drop-indicator" } };
-            *config.drag.indicator.borrow_mut() = Some(indicator);
-        }
+
 
         if let Some(ref tree_state) = self.tree {
             let tree_state = *tree_state;
@@ -1089,8 +1086,22 @@ fn wire_drag(
     tree_state: UseTreeReturn,
     config: &Rc<TreeConfig>,
 ) {
-    config.drag.rows.borrow_mut().insert(value.to_string(), content.clone());
+    // A row drawn again replaces the old box, which keeps nothing of a drag.
+    if let Some(old) = config.drag.rows.borrow_mut().insert(value.to_string(), content.clone()) {
+        clear_drawn(&old);
+        old.remove_class(DRAGGING_CLASS);
+    }
     content.set_attribute("draggable", "true");
+    // A row redrawn while it is being dragged (its children arrived, say)
+    // is still being dragged, and still shows the drop on offer.
+    if config.drag.dragged.borrow().iter().any(|d| d == value) {
+        content.add_class(DRAGGING_CLASS);
+    }
+    if let Some((drop, placement, verdict)) = config.drag.candidate.borrow().as_ref() {
+        if drop.over == value {
+            draw(content, drop.zone, placement.line_level, *verdict);
+        }
+    }
 
     let cfg = config.clone();
     let v = value.to_string();
@@ -1169,15 +1180,19 @@ fn drag_over(config: &Rc<TreeConfig>, value: &str, tree_state: UseTreeReturn) {
     let shape = config.drag.shape();
     let Some(over) = shape.index(value) else { return };
     let dragged_rows: Vec<usize> = dragged.iter().filter_map(|d| shape.index(d)).collect();
-    // Nothing is drawn over the dragged rows themselves.
-    if dragged_rows.iter().any(|&d| shape.is_within(over, d)) {
-        offer(config, None);
-        return;
-    }
 
     let ctx = get_click_context();
     let height = ctx.element_height.max(1.0);
     let zone = zone_at((ctx.mouse_y - ctx.element_y) / height);
+    // Nothing is offered under a dragged row, or inside one. A dragged row's
+    // own edges are places, which is how the last row of a group is dragged
+    // out of it: left, over itself.
+    let on_dragged_row = dragged_rows.contains(&over);
+    let under_dragged = dragged_rows.iter().any(|&d| d != over && shape.is_within(over, d));
+    if under_dragged || (on_dragged_row && zone == DropZone::Inside) {
+        offer(config, None);
+        return;
+    }
     let pointer_level = config
         .indent
         .filter(|px| *px > 0.0)
@@ -1245,7 +1260,37 @@ fn drag_over(config: &Rc<TreeConfig>, value: &str, tree_state: UseTreeReturn) {
     offer(config, Some((drop, placement, verdict)));
 }
 
-/// Make `candidate` the drop on offer: move the indicator, tell the app.
+/// The indicator's classes on a row: a line (`before`, `after`) or an
+/// outline (`inside`), drawn by the stylesheet's `::after` at the indent of
+/// `--tree-drop-level`. On the row itself, so a row redrawn mid-drag (its
+/// children arrived) is simply drawn again, never stranded.
+const DROP_CLASSES: [&str; 4] = [
+    "rinch-tree__node-content--drop-before",
+    "rinch-tree__node-content--drop-inside",
+    "rinch-tree__node-content--drop-after",
+    "rinch-tree__node-content--drop-refused",
+];
+
+fn draw(row: &NodeHandle, zone: DropZone, line_level: usize, verdict: DropVerdict) {
+    clear_drawn(row);
+    row.add_class(match zone {
+        DropZone::Before => DROP_CLASSES[0],
+        DropZone::Inside => DROP_CLASSES[1],
+        DropZone::After => DROP_CLASSES[2],
+    });
+    if verdict == DropVerdict::Refused {
+        row.add_class(DROP_CLASSES[3]);
+    }
+    row.set_style("--tree-drop-level", &line_level.to_string());
+}
+
+fn clear_drawn(row: &NodeHandle) {
+    for class in DROP_CLASSES {
+        row.remove_class(class);
+    }
+}
+
+/// Make `candidate` the drop on offer: draw it, tell the app.
 fn offer(config: &Rc<TreeConfig>, candidate: Option<(TreeDrop, Placement, DropVerdict)>) {
     let drag = &config.drag;
     if candidate.is_none() {
@@ -1254,33 +1299,18 @@ fn offer(config: &Rc<TreeConfig>, candidate: Option<(TreeDrop, Placement, DropVe
             return;
         }
     }
-    if let Some(indicator) = drag.indicator.borrow().as_ref() {
-        match &candidate {
-            Some((drop, placement, verdict)) => {
-                if let Some(row) = drag.rows.borrow().get(&drop.over) {
-                    let kind = if drop.zone == DropZone::Inside { "inside" } else { "line" };
-                    let refused = if *verdict == DropVerdict::Refused {
-                        " rinch-tree__drop-indicator--refused"
-                    } else {
-                        ""
-                    };
-                    indicator.set_attribute(
-                        "class",
-                        &format!("rinch-tree__drop-indicator rinch-tree__drop-indicator--{kind}{refused}"),
-                    );
-                    let edge = match drop.zone {
-                        DropZone::Before => "top: -1px;",
-                        DropZone::Inside => "top: 0; bottom: 0;",
-                        DropZone::After => "bottom: -1px;",
-                    };
-                    indicator.set_attribute(
-                        "style",
-                        &format!("left: calc(var(--tree-level-offset) * {}); {edge}", placement.line_level),
-                    );
-                    row.append_child(indicator);
-                }
+    {
+        let rows = drag.rows.borrow();
+        if let Some(previous) = drag.drawn.borrow_mut().take() {
+            if let Some(row) = rows.get(&previous) {
+                clear_drawn(row);
             }
-            None => indicator.remove(),
+        }
+        if let Some((drop, placement, verdict)) = &candidate {
+            if let Some(row) = rows.get(&drop.over) {
+                draw(row, drop.zone, placement.line_level, *verdict);
+                *drag.drawn.borrow_mut() = Some(drop.over.clone());
+            }
         }
     }
     let told = candidate.as_ref().map(|(drop, _, verdict)| (drop.clone(), *verdict));

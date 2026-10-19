@@ -124,32 +124,49 @@ pub fn styles() -> String {
     color: var(--rinch-primary-color);
 }
 
-/* Drag and drop: the one indicator, drawn inside the row under the pointer */
+/* Drag and drop: the row under the pointer draws where the drop lands, a
+   line before or after it at the indent of --tree-drop-level, or an outline
+   for "inside". */
 .rinch-tree__node-content {
     position: relative;
 }
 .rinch-tree__node-content--dragging {
     opacity: 0.4;
 }
-.rinch-tree__drop-indicator {
+.rinch-tree__node-content--drop-before::after,
+.rinch-tree__node-content--drop-after::after,
+.rinch-tree__node-content--drop-inside::after {
+    content: "";
     position: absolute;
+    left: calc(var(--tree-level-offset) * var(--tree-drop-level, 0));
     right: 0;
     pointer-events: none;
+    z-index: 2;
 }
-.rinch-tree__drop-indicator--line {
+.rinch-tree__node-content--drop-before::after,
+.rinch-tree__node-content--drop-after::after {
     height: 2px;
-    background-color: var(--rinch-primary-color);
     border-radius: 1px;
+    background-color: var(--rinch-primary-color);
 }
-.rinch-tree__drop-indicator--inside {
+.rinch-tree__node-content--drop-before::after {
+    top: -1px;
+}
+.rinch-tree__node-content--drop-after::after {
+    bottom: -1px;
+}
+.rinch-tree__node-content--drop-inside::after {
+    top: 0;
+    bottom: 0;
     border: 2px solid var(--rinch-primary-color);
     border-radius: var(--rinch-radius-sm);
 }
-.rinch-tree__drop-indicator--line.rinch-tree__drop-indicator--refused {
+.rinch-tree__node-content--drop-refused::after {
     background-color: var(--rinch-color-red-6);
-}
-.rinch-tree__drop-indicator--inside.rinch-tree__drop-indicator--refused {
     border-color: var(--rinch-color-red-6);
+}
+.rinch-tree__node-content--drop-inside.rinch-tree__node-content--drop-refused::after {
+    background-color: transparent;
 }
 
 /* Indent guides: one line down each expanded row's children */

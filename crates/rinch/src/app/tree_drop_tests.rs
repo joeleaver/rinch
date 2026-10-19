@@ -98,7 +98,7 @@ fn row(app: &RinchApp, value: &str) -> usize {
         .tree
         .nodes
         .iter()
-        .find(|(_, n)| n.attributes.get("data-value").map(String::as_str) == Some(value))
+        .find(|(id, n)| n.attributes.get("data-value").map(String::as_str) == Some(value) && in_tree(&d, *id))
         .map(|(id, _)| id)
         .unwrap_or_else(|| panic!("no row for {value}"));
     d.tree.nodes[li]
@@ -121,15 +121,39 @@ fn at(app: &RinchApp, value: &str, x: f32, fraction: f32) -> (f32, f32) {
     (bx + x, by + h * fraction)
 }
 
-/// The indicator's host row and its classes, when it is drawn.
+/// Whether `id` is still in the tree (under its `rinch-tree` list), not a
+/// row a redraw took out.
+fn in_tree(d: &RinchDocument, mut id: usize) -> bool {
+    loop {
+        if has_class(&d.tree.nodes[id], "rinch-tree") {
+            return true;
+        }
+        match d.tree.nodes[id].parent {
+            Some(parent) => id = parent,
+            None => return false,
+        }
+    }
+}
+
+/// The row drawing the drop on offer, and its classes, when one does. Only
+/// ever one.
 fn indicator(app: &RinchApp) -> Option<(usize, String)> {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    d.tree
+    let drawing: Vec<(usize, String)> = d
+        .tree
         .nodes
         .iter()
-        .find(|(_, n)| has_class(n, "rinch-tree__drop-indicator") && n.parent.is_some())
-        .map(|(_, n)| (n.parent.unwrap(), n.attributes.get("class").cloned().unwrap_or_default()))
+        .filter(|(id, _)| in_tree(&d, *id))
+        .filter(|(_, n)| {
+            ["before", "inside", "after"]
+                .iter()
+                .any(|zone| has_class(n, &format!("rinch-tree__node-content--drop-{zone}")))
+        })
+        .map(|(id, n)| (id, n.attributes.get("class").cloned().unwrap_or_default()))
+        .collect();
+    assert!(drawing.len() <= 1, "one row draws the drop at a time: {drawing:?}");
+    drawing.into_iter().next()
 }
 
 /// Press on `from`'s row and move far enough to start a drag.
@@ -164,13 +188,13 @@ fn the_offer_follows_the_part_of_the_row_under_the_pointer() {
     assert_eq!(verdict, DropVerdict::Allowed);
     let (host, class) = indicator(&f.app).expect("the indicator is drawn");
     assert_eq!(host, row(&f.app, "a2"));
-    assert!(class.contains("rinch-tree__drop-indicator--line"), "{class}");
+    assert!(class.contains("rinch-tree__node-content--drop-before"), "{class}");
 
     // The middle of a2: into it, last; drawn as an outline.
     move_to(&mut f, "a2", 120.0, 0.5);
     let (drop, _) = last_offer(&f).expect("an offer");
     assert_eq!((drop.parent.as_deref(), drop.slot.clone()), (Some("a2"), TreeSlot::Last));
-    assert!(indicator(&f.app).unwrap().1.contains("rinch-tree__drop-indicator--inside"));
+    assert!(indicator(&f.app).unwrap().1.contains("rinch-tree__node-content--drop-inside"));
 
     // The bottom of a2, the last row of a, with the pointer at the first
     // indent column: out of a, after it.
@@ -200,7 +224,7 @@ fn a_refused_drop_is_drawn_as_refused_and_not_delivered() {
     let (drop, verdict) = last_offer(&f).expect("an offer");
     assert_eq!(drop.parent.as_deref(), Some("b"));
     assert_eq!(verdict, DropVerdict::Refused);
-    assert!(indicator(&f.app).unwrap().1.contains("rinch-tree__drop-indicator--refused"));
+    assert!(indicator(&f.app).unwrap().1.contains("rinch-tree__node-content--drop-refused"));
     let (x, y) = at(&f.app, "b", 120.0, 0.5);
     send(&mut f.app, PlatformEvent::MouseUp { x, y, button: MouseButton::Left });
     assert!(f.drops.borrow().is_empty(), "a refused drop is not delivered");
@@ -214,6 +238,9 @@ fn a_row_cannot_go_into_its_own_subtree_and_its_own_rows_offer_nothing() {
     move_to(&mut f, "a2", 120.0, 0.5);
     assert!(last_offer(&f).is_none());
     assert!(indicator(&f.app).is_none());
+    // Inside a itself: nothing either.
+    move_to(&mut f, "a", 120.0, 0.5);
+    assert!(last_offer(&f).is_none());
     // The dragged row is dimmed while it is carried.
     {
         let doc = f.app.doc.as_ref().unwrap();
@@ -226,4 +253,73 @@ fn a_row_cannot_go_into_its_own_subtree_and_its_own_rows_offer_nothing() {
     let doc = f.app.doc.as_ref().unwrap();
     let d = doc.borrow();
     assert!(!has_class(&d.tree.nodes[row(&f.app, "a")], "rinch-tree__node-content--dragging"));
+}
+
+/// The last row of a group is dragged out of it over itself: its own bottom
+/// edge, with the pointer at a shallower indent column.
+#[test]
+fn the_last_row_of_a_group_outdents_over_itself() {
+    let mut f = fixture();
+    start(&mut f, "a2");
+    move_to(&mut f, "a2", INDENT * 0.5, 0.9);
+    let (drop, verdict) = last_offer(&f).expect("an offer");
+    assert_eq!((drop.parent.clone(), drop.slot.clone(), verdict), (None, TreeSlot::After("a".into()), DropVerdict::Allowed));
+    let (x, y) = at(&f.app, "a2", INDENT * 0.5, 0.9);
+    send(&mut f.app, PlatformEvent::MouseUp { x, y, button: MouseButton::Left });
+    assert_eq!(f.drops.borrow().len(), 1);
+}
+
+/// A row redrawn in the middle of a drag (its children arrived after a
+/// hover-to-expand asked for them) keeps drawing the drop on offer, and the
+/// dragged row stays dimmed when it is redrawn too.
+#[test]
+fn a_row_redrawn_mid_drag_still_draws_the_drop() {
+    let data = rinch_core::Signal::new(vec![TreeNodeData::new("x", "Ex"), TreeNodeData::new("y", "Why")]);
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let tree = Tree {
+            tree: Some(UseTreeReturn::new(UseTreeOptions::default())),
+            data_source: Some(Rc::new(move || data.get())),
+            indent: Some(INDENT),
+            draggable: true,
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        let root = scope.create_element("div");
+        root.set_attribute("style", "width: 300px");
+        root.append_child(&tree);
+        root
+    });
+    app.mount_component(VIEWPORT.0, VIEWPORT.1);
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        d.load_css(&rinch_theme::generate_theme_css(&rinch_theme::Theme::default()));
+        d.load_css(&rinch_components::generate_component_css());
+        d.recompute_all_styles_full();
+    }
+    app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    let mut f = Fixture { app, drops: Rc::default(), offers: Rc::default(), started: Rc::default() };
+
+    start(&mut f, "x");
+    move_to(&mut f, "y", 120.0, 0.5);
+    let before = row(&f.app, "y");
+    assert_eq!(indicator(&f.app).map(|(host, _)| host), Some(before));
+
+    // Both rows are redrawn: y gains a child, and x's label changes.
+    data.set(vec![
+        TreeNodeData::new("x", "Ex, renamed"),
+        TreeNodeData::new("y", "Why").with_child(TreeNodeData::new("y1", "Child")),
+    ]);
+    f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    // Positive control: y was drawn again (a row draws its children only
+    // when it is drawn), so its old box, and any class on it, are gone.
+    let _ = row(&f.app, "y1");
+    let after = row(&f.app, "y");
+    let (host, class) = indicator(&f.app).expect("the redrawn row draws the drop");
+    assert_eq!(host, after);
+    assert!(class.contains("rinch-tree__node-content--drop-inside"), "{class}");
+    let x = row(&f.app, "x");
+    let doc = f.app.doc.as_ref().unwrap();
+    let d = doc.borrow();
+    assert!(has_class(&d.tree.nodes[x], "rinch-tree__node-content--dragging"));
 }
