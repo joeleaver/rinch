@@ -790,6 +790,20 @@ fn run2(seed: u64, ids: (u64, u64), v: bool, t: &mut T2) {
     }
 }
 
+/// Seed 975 (review of #1595, F2): B's model holds one picture `Rc` in two blocks (an
+/// in-editor copy and paste), and a remote attribute patch kept the shared `Rc` alive
+/// where a whole-block replace split it, so B's next edit paired the wrong char and the
+/// TARGET landed on image #0. Pinned on its own: the default seed count stops below it.
+#[test]
+fn seed_975_one_picture_rc_in_two_blocks_names_no_other_picture() {
+    let mut t = T2::default();
+    for ids in ID_ORDERS {
+        run2(975, ids, false, &mut t);
+    }
+    assert_eq!(t.checks, 2, "positive control");
+    assert!(t.wrong.is_empty(), "{:?}", t.wrong);
+}
+
 #[test]
 fn a_data_ref_never_shows_on_another_identical_picture() {
     let seeds: u64 = std::env::var("R2_SEEDS")
