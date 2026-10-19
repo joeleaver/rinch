@@ -315,3 +315,59 @@ fn a_key_entry_is_not_offered_a_key_typed_outside_its_owner_in_chrome() {
     assert_eq!(hits.get(), 1, "and the entry is not asked");
     KEY_ENTRY.with(|k| k.borrow_mut().take());
 }
+
+fn focus_event(target: &web_sys::EventTarget, name: &str, bubbles: bool) {
+    // A plain `Event`: the listener reads only the type and the target.
+    let init = web_sys::EventInit::new();
+    init.set_bubbles(bubbles);
+    let ev = web_sys::Event::new_with_event_init_dict(name, &init).unwrap();
+    target.dispatch_event(&ev).unwrap();
+}
+
+/// Issue #1171: the window losing focus closes the list, as it closes a native
+/// `<select>`'s popup and Mantine's dropdown. Chrome fires, in order, a `blur`
+/// and a `focusout` (no `relatedTarget`) on the focused trigger — while
+/// `document.activeElement` is still the trigger, so neither moves focus out
+/// of the `Select` (measured, #1165's review) — and then a `blur` on `window`.
+/// That sequence is replayed here with synthetic events (a test cannot take
+/// the keyboard away from the browser window).
+///
+/// The first half is the control for the listener's target check: the
+/// element `blur` and `focusout` reach rinch's `window` capture listener too,
+/// and must not close the list, since the same events fire for every focus
+/// move inside the page.
+#[wasm_bindgen_test]
+fn a_window_blur_closes_the_list_in_chrome_1171() {
+    let (doc, picks) = mount("banana");
+    let trigger = open(&doc);
+    keydown(&trigger, "ArrowDown");
+    assert_eq!(highlighted(&doc), Some(2), "precondition: Cherry highlighted");
+
+    focus_event(trigger.as_ref(), "blur", false);
+    focus_event(trigger.as_ref(), "focusout", true);
+    assert_eq!(
+        doc.active_element().as_ref(),
+        Some(&trigger),
+        "the trigger is still the active element"
+    );
+    assert!(
+        is_open(&trigger),
+        "an element's blur and focusout alone close nothing while it keeps focus"
+    );
+
+    let window: web_sys::EventTarget = web_sys::window().unwrap().into();
+    focus_event(&window, "blur", false);
+    assert!(!is_open(&trigger), "the window's blur closes the list");
+    assert!(picks.borrow().is_empty(), "and commits nothing");
+    assert_eq!(
+        doc.active_element().as_ref(),
+        Some(&trigger),
+        "the trigger keeps the focus"
+    );
+
+    // Coming back: Enter on the still-focused trigger opens it again.
+    focus_event(&window, "focus", false);
+    assert!(!is_open(&trigger));
+    keydown(&trigger, "Enter");
+    assert!(is_open(&trigger), "Enter reopens the list");
+}

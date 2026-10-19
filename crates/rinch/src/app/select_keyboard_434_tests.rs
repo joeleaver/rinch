@@ -405,3 +405,50 @@ fn end_scrolls_the_highlighted_option_into_view() {
         "End must scroll the list to show the last option"
     );
 }
+
+impl Fixture {
+    fn window_focus(&mut self, focused: bool) {
+        self.app
+            .handle_event(PlatformEvent::WindowFocus(focused), (800, 600), 1.0);
+        self.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    }
+}
+
+/// Issue #1171: the window losing the keyboard closes the open list, as it
+/// closes a native `<select>`'s popup and Mantine's dropdown — without
+/// committing the highlighted option, and with the trigger keeping its claim
+/// (notify-and-retain, #147/#226), so coming back and pressing Enter reopens it.
+/// The highlight is moved off the selection first, so a commit would show.
+#[test]
+fn a_window_blur_closes_the_list_without_committing_1171() {
+    let mut f = mount("banana");
+    f.open_by_keyboard();
+    f.key(KeyCode::ArrowDown, None);
+    assert_eq!(f.highlighted(), Some(2), "precondition: Cherry highlighted");
+
+    f.window_focus(false);
+    assert!(!f.is_open(), "the window losing focus closes the list");
+    assert!(f.picks.borrow().is_empty(), "and commits nothing");
+    assert_eq!(
+        f.app.focus_target,
+        FocusTarget::Node(f.trigger()),
+        "the trigger keeps its claim across the blur"
+    );
+
+    f.window_focus(true);
+    assert!(!f.is_open(), "coming back does not reopen it");
+    f.key(KeyCode::Enter, None);
+    assert!(f.is_open(), "Enter on the still-focused trigger reopens it");
+    assert_eq!(f.highlighted(), Some(1), "starting at the selection");
+}
+
+/// The window *gaining* focus closes nothing: an open list stays open across a
+/// `WindowFocus(true)` that arrives while it is open (a spurious or repeated
+/// report), so only the blur is wired.
+#[test]
+fn a_window_focus_gain_leaves_the_list_open_1171() {
+    let mut f = mount("banana");
+    f.open_by_keyboard();
+    f.window_focus(true);
+    assert!(f.is_open(), "a focus gain closes nothing");
+}
