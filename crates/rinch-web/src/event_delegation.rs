@@ -1430,9 +1430,75 @@ fn dispatch_click_at(
         // nothing dispatched would be strictly worse than doing nothing —
         // text selection, `<label>` activation, native form submit and the
         // context menu are all cancelled while nothing is dispatched.
-        if dispatch_rid(rid) {
+        //
+        // That prevented default is also the browser's focus change on a
+        // press, so the press is resolved here the way the browser resolves
+        // it (issue #1146; desktop's `claim_press_focus`) — see
+        // [`PressFocus`].
+        let press_focus = if event.type_() == "pointerdown" && !event.default_prevented() {
+            press_focus_for(el)
+        } else {
+            PressFocus::Untouched
+        };
+        if let PressFocus::Focus(target) = &press_focus {
+            // Before the handler: the field that had the focus is blurred
+            // (and commits its `change`) before the click runs, and a focus
+            // move the handler makes itself is not undone afterwards.
+            let opts = web_sys::FocusOptions::new();
+            opts.set_prevent_scroll(true);
+            let _ = target.focus_with_options(&opts);
+        }
+        if dispatch_rid(rid) && !matches!(press_focus, PressFocus::Browser) {
             event.prevent_default();
         }
+    }
+}
+
+/// What browsers move focus to on a press: the nearest ancestor-or-self that
+/// is one of these. A superset is harmless where it is used: it decides only
+/// where a press stops looking, and a `focus()` the browser refuses changes
+/// nothing. `editor_input` asks the same question of a press outside every
+/// editor.
+pub(crate) const PRESS_FOCUSABLE_SELECTOR: &str = "button, a[href], input, select, textarea, \
+     [tabindex], [contenteditable], summary, iframe, audio[controls], video[controls]";
+
+/// How a `pointerdown` that dispatches a `data-rid` click moves focus (issue
+/// #1146). Before it, every such press was `preventDefault`ed and so moved no
+/// focus at all: a `Button` took none, the field that had it kept it with its
+/// `change` uncommitted, and a text field inside a clickable (`ColorInput`'s,
+/// inside its input group) could not be focused by a click.
+enum PressFocus {
+    /// Moves no focus: nothing focusable on the press's chain, or
+    /// `data-nofocus` on it, or not a `pointerdown` press. Desktop releases
+    /// the focus for the first; this keeps it, as it always has.
+    Untouched,
+    /// A form control or editable content is the nearest focusable: the
+    /// default is not prevented, so the browser focuses it, places the caret
+    /// at the press and starts a selection drag.
+    Browser,
+    /// Any other focusable (a `<button>`, an `<a href>`, a `tabindex` row):
+    /// rinch focuses it, since the prevented default cannot.
+    Focus(web_sys::HtmlElement),
+}
+
+fn press_focus_for(el: &web_sys::Element) -> PressFocus {
+    if el
+        .closest("[data-nofocus]:not([data-nofocus=\"false\" i])")
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return PressFocus::Untouched;
+    }
+    let Some(target) = el.closest(PRESS_FOCUSABLE_SELECTOR).ok().flatten() else {
+        return PressFocus::Untouched;
+    };
+    if target.matches("input, textarea, select").unwrap_or(false) || in_content_editable(&target) {
+        return PressFocus::Browser;
+    }
+    match target.dyn_into::<web_sys::HtmlElement>() {
+        Ok(html) => PressFocus::Focus(html),
+        Err(_) => PressFocus::Untouched,
     }
 }
 
