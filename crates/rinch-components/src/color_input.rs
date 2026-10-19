@@ -85,11 +85,14 @@ pub struct ColorInput {
     /// with. An input that alone stays open when you click away is the odd one
     /// out, and that is the whole of the defect.
     ///
-    /// Turning it off mounts no backdrop at all, so no click outside the field
-    /// dismisses the dropdown. **Escape closes it either way** — it rides the
-    /// dismiss stack, not the backdrop — so `false` is the pointer half of the
-    /// pre-#465 behaviour and not a return to it in full. A closed dropdown
-    /// leaves the key to whatever is behind it.
+    /// Turning it off mounts no backdrop at all, so a click outside the field
+    /// reaches whatever is under it instead of being taken by the backdrop.
+    /// That click still closes the dropdown when it moves the focus out of the
+    /// field (#1572: the dropdown closes when the focus leaves the
+    /// `ColorInput`, as Mantine's closes in the input's `onBlur`); a press on a
+    /// `data-nofocus` region leaves it open. **Escape closes it either way** —
+    /// it rides the dismiss stack, not the backdrop. A closed dropdown leaves
+    /// the key to whatever is behind it.
     pub close_on_click_outside: bool,
     /// The open picker's stacking level (issue #801), published as
     /// `--rinch-color-input-z-index` on the root, as `DropdownMenu`'s and
@@ -245,14 +248,6 @@ impl Component for ColorInput {
         // Input group (swatch + text input)
         let input_group = rinch_macros::rsx! { div { class: "rinch-color-input__input-group" } };
 
-        // Toggle open on click
-        {
-            let handler_id = __scope.register_handler(move || {
-                opened.update(|v| *v = !*v);
-            });
-            input_group.set_attribute("data-rid", &handler_id.to_string());
-        }
-
         // Preview swatch. Painted in the alpha-carrying spelling of the
         // display format (`swatch_spelling`): `parse_color` accepts notations
         // CSS does not — a bare `ff0000`, a legacy `hsl(200, 3, 49)` — which
@@ -270,6 +265,12 @@ impl Component for ColorInput {
             "class",
             "rinch-color-swatch rinch-color-input__swatch-preview",
         );
+        // A press on the preview takes the click but not the keyboard (#1572):
+        // it toggles the dropdown, and moving the focus off the field would
+        // close the dropdown through the focus-leave entry below before the
+        // toggle reopened it. Opening focuses the field instead (the toggle
+        // handler), as a press on a Mantine input's section does.
+        preview_node.set_attribute("data-nofocus", "");
         input_group.append_child(&preview_node);
 
         // Text input. Its text is not written here: the display effect
@@ -375,8 +376,33 @@ impl Component for ColorInput {
         input_group.append_child(&text_input);
         wrapper.append_child(&input_group);
 
+        // Toggle open on click. Opening puts the keyboard on the text field
+        // when it is not already there (a press on the preview swatch, which
+        // takes no focus): the dropdown closes when focus leaves the
+        // `ColorInput` (#1572), so the focus has to be inside it to leave.
+        {
+            let field = text_input.clone();
+            let handler_id = __scope.register_handler(move || {
+                opened.update(|v| *v = !*v);
+                if opened.get() {
+                    let focused = field
+                        .active_element()
+                        .is_some_and(|a| a.node_id() == field.node_id());
+                    if !focused {
+                        field.focus();
+                    }
+                }
+            });
+            input_group.set_attribute("data-rid", &handler_id.to_string());
+        }
+
         // Dropdown containing the ColorPicker
         let dropdown = rinch_macros::rsx! { div { class: "rinch-color-input__dropdown" } };
+        // A press in the panel (a swatch, the saturation area, a slider) takes
+        // the click but not the keyboard, so the text field keeps the focus and
+        // the dropdown is not closed by focus leaving the field (#1572). This is
+        // Mantine's `onMouseDown={e => e.preventDefault()}` on its dropdown.
+        dropdown.set_attribute("data-nofocus", "");
 
         // The picker is bound to `current_value` (GH #237): it starts on the
         // same string the signal was seeded with — never the raw `value` prop,
@@ -514,6 +540,25 @@ impl Component for ColorInput {
                 &root,
                 is_open,
                 Callback::new(move || opened.set(false)),
+            );
+        }
+
+        // Focus leaving the `ColorInput`, and the window losing the keyboard,
+        // close the dropdown (#1572), as Mantine's `onBlur` on the input does.
+        // A key entry for as long as the dropdown is open, owned by the root —
+        // the element holding both the field and the panel, so a focus move
+        // between them is not a leave. It takes no key: Escape is the dismiss
+        // entry's above, and every other key is the field's. Its
+        // `on_focus_leave` is called by `notify_focus_moved` when the focus is
+        // no longer inside the root, and by `notify_window_blurred` (#1171).
+        {
+            let is_open: crate::overlay_dismiss::ReactiveBool = Rc::new(move || opened.get());
+            crate::overlay_dismiss::arm_keys_while_open(
+                __scope,
+                &root,
+                is_open,
+                Rc::new(|_| false),
+                Rc::new(move || opened.set(false)),
             );
         }
 
