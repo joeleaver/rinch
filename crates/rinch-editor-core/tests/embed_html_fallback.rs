@@ -56,7 +56,10 @@ fn the_export_writes_the_apps_markup_inside_the_embeds_element() {
         );
         // Read back by rinch it is the same document: the element is the embed,
         // and what the app wrote inside it is not content.
-        assert_eq!(slice_from_html(&schema, &html).unwrap().content, d.content().clone());
+        assert_eq!(
+            slice_from_html(&schema, &html).unwrap().content,
+            d.content().clone()
+        );
 
         // The copy-out carries it too, beside the clipboard mark, and pastes
         // back as the same embed.

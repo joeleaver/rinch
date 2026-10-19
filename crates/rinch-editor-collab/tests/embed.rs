@@ -18,8 +18,8 @@ use std::rc::Rc;
 use rinch_editor_collab::testing::{session_from_bytes_with_client_id, session_with_client_id};
 use rinch_editor_collab::{CollabPlugin, CollabSession};
 use rinch_editor_core::{
-    AttrValue, Attrs, EditorState, Fragment, Node, Plugin, Pos, Schema, Selection, SetNodeAttrStep, Transaction,
-    default_plugins,
+    AttrValue, Attrs, EditorState, Fragment, Node, Plugin, Pos, Schema, Selection, SetNodeAttrStep,
+    Transaction, default_plugins,
 };
 
 struct Peer {
@@ -140,7 +140,10 @@ fn converged(a: &Peer, b: &Peer, schema: &Schema) {
             "a peer's document is not what its CRDT holds"
         );
     }
-    assert_eq!(a.state.doc, b.state.doc, "the peers hold different documents");
+    assert_eq!(
+        a.state.doc, b.state.doc,
+        "the peers hold different documents"
+    );
 }
 
 fn kv(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -160,7 +163,10 @@ fn an_embeds_data_attrs_round_trip_through_a_snapshot_and_a_live_update() {
         three(&schema, &[("data-sheet", "s1"), ("data-view", "grid")]),
         (11, 22),
     );
-    assert_eq!(b.embed(), kv(&[("data-sheet", "s1"), ("data-view", "grid")]));
+    assert_eq!(
+        b.embed(),
+        kv(&[("data-sheet", "s1"), ("data-view", "grid")])
+    );
 
     a.set("data-view", AttrValue::from("chart"));
     sync(&mut a, &mut b);
@@ -191,7 +197,11 @@ fn concurrent_changes_of_different_keys_of_one_embed_both_survive() {
         converged(&a, &b, &schema);
         assert_eq!(
             a.embed(),
-            kv(&[("data-sheet", "s1"), ("data-view", "chart"), ("data-zoom", "2")]),
+            kv(&[
+                ("data-sheet", "s1"),
+                ("data-view", "chart"),
+                ("data-zoom", "2")
+            ]),
             "ids {ids:?}"
         );
     }
@@ -388,7 +398,10 @@ fn a_peer_without_embed_in_its_schema_fails_loud_on_one() {
 
     // A live peer that integrates an inserted embed reports an error.
     let plain = kit
-        .branch("doc", Fragment::from_children(vec![para(&kit, "ab"), para(&kit, "cd")]))
+        .branch(
+            "doc",
+            Fragment::from_children(vec![para(&kit, "ab"), para(&kit, "cd")]),
+        )
         .unwrap();
     let mut new_peer = Peer {
         state: EditorState::create(kit.clone(), plain.clone(), plugins()),
@@ -400,14 +413,26 @@ fn a_peer_without_embed_in_its_schema_fails_loud_on_one() {
     };
     let snapshot = new_peer.session.snapshot();
     let mut old_session = session_from_bytes_with_client_id(&snapshot, 22).unwrap();
-    let old_state = EditorState::create(old.clone(), old_session.projected_doc(&old).unwrap(), plugins());
+    let old_state = EditorState::create(
+        old.clone(),
+        old_session.projected_doc(&old).unwrap(),
+        plugins(),
+    );
     let embed = kit
         .create_node("embed", Attrs::new(), Fragment::empty())
         .unwrap();
     new_peer.local(|tr| {
-        tr.replace(4, 4, rinch_editor_core::Slice::new(Fragment::from_node(embed), 0, 0))
-            .unwrap();
+        tr.replace(
+            4,
+            4,
+            rinch_editor_core::Slice::new(Fragment::from_node(embed), 0, 0),
+        )
+        .unwrap();
     });
     let delta = new_peer.session.save_incremental().unwrap();
-    assert!(old_session.integrate_incremental(&old_state, &delta).is_err());
+    assert!(
+        old_session
+            .integrate_incremental(&old_state, &delta)
+            .is_err()
+    );
 }

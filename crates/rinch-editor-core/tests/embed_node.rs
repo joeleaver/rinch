@@ -68,7 +68,10 @@ fn the_starter_kits_embed_is_a_selectable_block_leaf_atom_that_keeps_data_attrs(
     assert_eq!(spec.group.as_deref(), Some("block"));
     // The doc and every block container take it.
     for parent in ["doc", "blockquote", "list_item", "table_cell"] {
-        assert!(schema.allows_child(parent, "embed"), "{parent} takes an embed");
+        assert!(
+            schema.allows_child(parent, "embed"),
+            "{parent} takes an embed"
+        );
     }
     // It keeps valid, unreserved app data attributes and nothing else.
     let kept = nt
@@ -136,7 +139,10 @@ fn the_html_reader_reads_an_embed_only_from_its_marker_and_bounds_its_data_attrs
     let names: Vec<String> = data(e).into_iter().map(|(k, _)| k).collect();
     assert_eq!(names.len(), MAX_DATA_ATTRS, "{names:?}");
     assert!(names.iter().all(|n| is_app_data_attr(n)), "{names:?}");
-    assert!(names.contains(&"data-on".to_string()), "data-on is an app's name");
+    assert!(
+        names.contains(&"data-on".to_string()),
+        "data-on is an app's name"
+    );
     assert!(!names.contains(&"data-rid".to_string()));
 
     // A plain div is a container, not an embed; a marker naming another type is
@@ -167,7 +173,10 @@ fn an_embed_is_read_wherever_a_block_is() {
     for (html, path) in [
         (format!("<ul><li>{e}</li></ul>"), vec![0usize, 0, 0]),
         (format!("<blockquote>{e}</blockquote>"), vec![0, 0]),
-        (format!("<table><tr><td>{e}</td></tr></table>"), vec![0, 0, 0, 0]),
+        (
+            format!("<table><tr><td>{e}</td></tr></table>"),
+            vec![0, 0, 0, 0],
+        ),
         (format!("<b>{e}</b>"), vec![0]),
         (format!("<h2>a{e}b</h2>"), vec![1]),
     ] {
@@ -334,15 +343,27 @@ fn an_embed_is_edited_exactly_as_a_horizontal_rule_is() {
         head: Pos(5),
     });
     let cases: Vec<(&str, Selection, &str)> = vec![
-        ("deleteCharBackward", Selection::cursor(Pos(6)), "Backspace after"),
-        ("deleteCharForward", Selection::cursor(Pos(3)), "Delete before"),
+        (
+            "deleteCharBackward",
+            Selection::cursor(Pos(6)),
+            "Backspace after",
+        ),
+        (
+            "deleteCharForward",
+            Selection::cursor(Pos(3)),
+            "Delete before",
+        ),
         ("deleteCharBackward", node_sel.clone(), "Backspace on it"),
         ("deleteCharForward", node_sel.clone(), "Delete on it"),
         ("deleteSelection", node_sel.clone(), "delete selection"),
         ("splitBlock", node_sel.clone(), "split on it"),
         ("enter", node_sel.clone(), "Enter on it"),
         ("wrapInBlockquote", node_sel.clone(), "quote it"),
-        ("deleteWordBackward", Selection::cursor(Pos(6)), "Ctrl+Backspace after"),
+        (
+            "deleteWordBackward",
+            Selection::cursor(Pos(6)),
+            "Ctrl+Backspace after",
+        ),
         ("selectAll", Selection::cursor(Pos(2)), "select all"),
     ];
     for (command, sel, what) in cases {
