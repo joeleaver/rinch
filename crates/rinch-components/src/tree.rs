@@ -978,12 +978,9 @@ fn render_tree_node(
             // The tree is waiting for this row to give it back the keyboard.
             if config.keys.lost_row.get() {
                 let cfg = Rc::downgrade(&config);
-                let row = content.clone();
                 let _ = set_timeout(0, move || {
                     if let Some(cfg) = cfg.upgrade() {
-                        if cfg.keys.lost_row.replace(false) {
-                            row.focus();
-                        }
+                        restore_keyboard(&cfg, tree_state);
                     }
                 });
             }
@@ -998,6 +995,14 @@ fn render_tree_node(
                 let is_cursor = untracked(|| tree_state.cursor.get()).as_deref() == Some(value.as_str());
                 if cfg.keys.focused.get() && is_cursor {
                     cfg.keys.lost_row.set(true);
+                    // A browser says nothing when the focused element goes,
+                    // so the tree gives the keyboard back itself.
+                    let weak = Rc::downgrade(&cfg);
+                    let _ = set_timeout(0, move || {
+                        if let Some(cfg) = weak.upgrade() {
+                            restore_keyboard(&cfg, tree_state);
+                        }
+                    });
                 }
             }
         });
@@ -1851,6 +1856,41 @@ fn draw_cursor(config: &Rc<TreeConfig>, value: Option<&str>) {
     }
 }
 
+/// Whether the keyboard is on one of the tree's elements (a row, or a field
+/// the app put in one).
+fn focus_inside(config: &Rc<TreeConfig>) -> bool {
+    let container = config.keys.container.borrow().clone();
+    let Some(container) = container else { return false };
+    let mut at = container.active_element();
+    while let Some(node) = at {
+        if node.node_id() == container.node_id() {
+            return true;
+        }
+        at = node.parent_node();
+    }
+    false
+}
+
+/// Give the keyboard back to the cursor row as drawn now, after the box that
+/// had it was removed. Not when the keyboard is somewhere in the tree
+/// already (a rename box the app opened), and not before the row is drawn
+/// (it asks again then).
+fn restore_keyboard(config: &Rc<TreeConfig>, tree_state: UseTreeReturn) {
+    if !config.keys.lost_row.get() {
+        return;
+    }
+    if focus_inside(config) {
+        config.keys.lost_row.set(false);
+        return;
+    }
+    let cursor = untracked(|| tree_state.cursor.get());
+    let row = cursor.and_then(|c| config.drag.rows.borrow().get(&c).cloned());
+    if let Some(row) = row.filter(|row| row.is_rendered()) {
+        config.keys.lost_row.set(false);
+        row.focus();
+    }
+}
+
 fn set_focused(config: &Rc<TreeConfig>, focused: bool) {
     config.keys.focused.set(focused);
     let container = config.keys.container.borrow().clone();
@@ -2031,18 +2071,13 @@ fn wire_keyboard(__scope: &mut RenderScope, container: &NodeHandle, tree_state: 
             let weak = Rc::downgrade(&cfg);
             let _ = set_timeout(0, move || {
                 let Some(cfg) = weak.upgrade() else { return };
-                if !cfg.keys.lost_row.get() {
-                    set_focused(&cfg, false);
+                // A removed cursor row's keyboard is being given back
+                // (`restore_keyboard`), or the keyboard is inside the tree
+                // after all: the tree still has it.
+                if cfg.keys.lost_row.get() || focus_inside(&cfg) {
                     return;
                 }
-                // The row as drawn now, when it is drawn already; otherwise
-                // it takes the keyboard as it is drawn (`render_tree_node`).
-                let cursor = untracked(|| tree_state.cursor.get());
-                let row = cursor.and_then(|c| cfg.drag.rows.borrow().get(&c).cloned());
-                if let Some(row) = row.filter(|row| row.is_rendered()) {
-                    cfg.keys.lost_row.set(false);
-                    row.focus();
-                }
+                set_focused(&cfg, false);
             });
         },
     );
