@@ -262,6 +262,20 @@ impl WgpuRenderer {
     /// present to the window surface: that is a configuration error in the
     /// app, not a missing GPU.
     pub fn try_new(window: &dyn Window, width: u32, height: u32) -> Result<Self, String> {
+        Self::try_new_transparent(window, width, height, false)
+    }
+
+    /// [`Self::try_new`] for a window that may be transparent
+    /// (`WindowProps::transparent`): the surface is then composited with its
+    /// alpha, where the platform allows, so what the app leaves unpainted
+    /// shows the desktop behind it. `wgpu::CompositeAlphaMode::Auto` picks
+    /// `Opaque` on Vulkan, which painted it black.
+    pub fn try_new_transparent(
+        window: &dyn Window,
+        width: u32,
+        height: u32,
+        transparent: bool,
+    ) -> Result<Self, String> {
         let width = width.max(1);
         let height = height.max(1);
 
@@ -330,6 +344,7 @@ impl WgpuRenderer {
         };
 
         let caps = surface.get_capabilities(&adapter);
+        let alpha_mode = surface_alpha_mode(transparent, &caps.alpha_modes);
 
         let format = if caps.formats.contains(&TextureFormat::Rgba8Unorm) {
             TextureFormat::Rgba8Unorm
@@ -397,7 +412,7 @@ impl WgpuRenderer {
             height,
             present_mode: PresentMode::AutoVsync,
             desired_maximum_frame_latency: 2,
-            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            alpha_mode,
             view_formats: vec![],
         };
 
@@ -800,5 +815,58 @@ impl WgpuRenderer {
     /// the upload step — the compositor reads the TextureView directly.
     pub fn set_gpu_layers(&mut self, layers: Vec<GpuTextureLayer>) {
         self.gpu_layers = layers;
+    }
+}
+
+/// The surface's alpha mode: opaque (`Auto`) unless the window is
+/// transparent, then one that blends with what is behind it. Vello writes
+/// straight (not premultiplied) alpha, so `PostMultiplied` is right where
+/// offered; `PreMultiplied` (what Vulkan on Wayland usually offers) still
+/// shows the desktop where nothing is painted, and brightens only partly
+/// transparent edges a little.
+fn surface_alpha_mode(
+    transparent: bool,
+    offered: &[wgpu::CompositeAlphaMode],
+) -> wgpu::CompositeAlphaMode {
+    use wgpu::CompositeAlphaMode as A;
+    if !transparent {
+        return A::Auto;
+    }
+    [A::PostMultiplied, A::PreMultiplied, A::Inherit]
+        .into_iter()
+        .find(|m| offered.contains(m))
+        .unwrap_or(A::Auto)
+}
+
+#[cfg(test)]
+mod alpha_mode_tests {
+    use super::surface_alpha_mode;
+    use wgpu::CompositeAlphaMode as A;
+
+    #[test]
+    fn an_opaque_window_keeps_auto() {
+        assert_eq!(
+            surface_alpha_mode(false, &[A::Opaque, A::PreMultiplied]),
+            A::Auto
+        );
+    }
+
+    /// Vulkan on Wayland (RADV, KWin) offers `Opaque` and `PreMultiplied`;
+    /// `Auto` took `Opaque` and a transparent overlay came out black.
+    #[test]
+    fn a_transparent_window_blends_where_it_can() {
+        assert_eq!(
+            surface_alpha_mode(true, &[A::Opaque, A::PreMultiplied]),
+            A::PreMultiplied
+        );
+        assert_eq!(
+            surface_alpha_mode(true, &[A::Opaque, A::PreMultiplied, A::PostMultiplied]),
+            A::PostMultiplied
+        );
+        assert_eq!(
+            surface_alpha_mode(true, &[A::Opaque, A::Inherit]),
+            A::Inherit
+        );
+        assert_eq!(surface_alpha_mode(true, &[A::Opaque]), A::Auto);
     }
 }

@@ -250,9 +250,98 @@ pub(crate) fn surface_kind_of(window: &dyn winit::window::Window) -> WindowSurfa
     WindowSurfaceKind::Toplevel
 }
 
+/// A layer gesture's move, until the compositor has drawn it (#1523).
+///
+/// The pointer's position comes over the surface where the compositor last
+/// drew it. A move sets the surface's margins at once, but pointer events
+/// already on their way, and those until the next frame, are still over
+/// the old place: a gesture that moved again on each of them added the
+/// last move again every time, and a fast drag swung further each way
+/// until the window was off every screen. So after a move the gesture waits
+/// for the frame after the paint that follows it (by then the compositor
+/// has the new margins), or for [`Settle::CAP`] should no frame come (a
+/// paint with nothing to present asks for none).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Settle {
+    /// When the last move was made, and whether it has been painted since.
+    moved: Option<(std::time::Instant, bool)>,
+}
+
+impl Settle {
+    /// About a frame and a half at 60 Hz.
+    pub(crate) const CAP: std::time::Duration = std::time::Duration::from_millis(24);
+
+    /// The surface was just moved.
+    pub(crate) fn moved(&mut self, now: std::time::Instant) {
+        self.moved = Some((now, false));
+    }
+
+    /// A redraw came. `true` when another is needed: the one after the
+    /// paint this one makes.
+    pub(crate) fn redraw(&mut self) -> bool {
+        match self.moved {
+            Some((at, false)) => {
+                self.moved = Some((at, true));
+                true
+            }
+            Some((_, true)) => {
+                self.moved = None;
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Whether a pointer position at `now` is still over where the surface was.
+    pub(crate) fn waiting(&mut self, now: std::time::Instant) -> bool {
+        match self.moved {
+            Some((at, _)) if now.duration_since(at) < Self::CAP => true,
+            Some(_) => {
+                self.moved = None;
+                false
+            }
+            None => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_move_waits_for_the_frame_after_its_paint() {
+        use std::time::{Duration, Instant};
+        let t = Instant::now();
+        let mut settle = Settle::default();
+        assert!(!settle.waiting(t), "no move, nothing to wait for");
+        settle.moved(t);
+        assert!(settle.waiting(t + Duration::from_millis(1)));
+        assert!(
+            settle.redraw(),
+            "the paint after the move asks for the next frame"
+        );
+        assert!(settle.waiting(t + Duration::from_millis(5)));
+        assert!(
+            !settle.redraw(),
+            "that frame came: the compositor has the move"
+        );
+        assert!(!settle.waiting(t + Duration::from_millis(6)));
+    }
+
+    #[test]
+    fn a_move_waits_no_longer_than_the_cap() {
+        use std::time::Instant;
+        let t = Instant::now();
+        let mut settle = Settle::default();
+        settle.moved(t);
+        assert!(settle.waiting(t + Settle::CAP / 2));
+        assert!(!settle.waiting(t + Settle::CAP));
+        assert!(
+            !settle.redraw(),
+            "and a redraw after that is an ordinary one"
+        );
+    }
 
     fn props(non_activating: bool, layer: Option<bool>) -> WindowProps {
         WindowProps {

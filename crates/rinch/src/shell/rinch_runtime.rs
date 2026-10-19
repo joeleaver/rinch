@@ -44,7 +44,7 @@ use crate::render_surface::{SurfacePointer, SurfacePointerKind};
 
 #[cfg(feature = "gpu")]
 use super::desktop::WgpuRenderer;
-use super::layer_shell::{Gesture, GestureKind, LayerRequest, WindowSurfaceKind};
+use super::layer_shell::{Gesture, GestureKind, LayerRequest, Settle, WindowSurfaceKind};
 use super::overlay_window::{self, Backend, WindowSteps};
 use super::window::WinitWindow;
 use super::window_geometry::{self, SavedGeometry};
@@ -65,6 +65,8 @@ struct LayerWindow {
     position: Option<(f64, f64)>,
     /// A move or resize following the pointer.
     gesture: Option<Gesture>,
+    /// The gesture's last move, until the compositor has drawn it.
+    settle: Settle,
 }
 
 #[cfg(feature = "debug")]
@@ -1123,6 +1125,7 @@ impl RinchRuntime {
             LayerWindow {
                 position,
                 gesture: None,
+                settle: Settle::default(),
             }
         });
     }
@@ -1210,6 +1213,15 @@ impl RinchRuntime {
         else {
             return false;
         };
+        // Over where the surface was until its last move is drawn: taken,
+        // not followed (see `Settle`).
+        if self
+            .layer
+            .as_mut()
+            .is_some_and(|l| l.settle.waiting(std::time::Instant::now()))
+        {
+            return true;
+        }
         let (new_position, new_size) = gesture.update(local, position);
         if let GestureKind::Resize(_) = gesture.kind {
             let current = self.window.as_ref().map(|w| {
@@ -1228,6 +1240,12 @@ impl RinchRuntime {
         }
         if new_position != position {
             self.place_layer(new_position);
+            if let Some(layer) = self.layer.as_mut() {
+                layer.settle.moved(std::time::Instant::now());
+            }
+            if let Some(w) = &self.window {
+                w.raw().request_redraw();
+            }
         }
         true
     }
@@ -1292,7 +1310,7 @@ impl RinchRuntime {
         // creates.
         #[cfg(feature = "gpu")]
         if !hidden {
-            self.renderer = start_gpu_renderer(&*window);
+            self.renderer = start_gpu_renderer(&*window, self.app.is_transparent());
         }
         #[cfg(not(feature = "gpu"))]
         announce_software_renderer();
@@ -1420,7 +1438,7 @@ impl RinchRuntime {
 
         #[cfg(feature = "gpu")]
         {
-            self.renderer = start_gpu_renderer(&*window);
+            self.renderer = start_gpu_renderer(&*window, self.app.is_transparent());
         }
 
         // The new window gets the menu bar the first one had (#1533: on
@@ -2645,6 +2663,13 @@ impl ApplicationHandler for RinchRuntime {
                 PlatformEvent::ScaleFactorChanged(scale_factor)
             }
             WindowEvent::RedrawRequested => {
+                // A layer gesture's move (#1523): this paint commits after
+                // it, and the redraw after it comes once that frame is done.
+                if self.layer.as_mut().is_some_and(|l| l.settle.redraw())
+                    && let Some(w) = &self.window
+                {
+                    w.raw().request_redraw();
+                }
                 // Drain queued native events (debug commands, injected input)
                 // before painting so a command that arrived while the loop was
                 // busy isn't serialized behind a full paint (#153). Pre-paint
@@ -3630,7 +3655,10 @@ fn black_backdrop_layer(
 /// When the GPU would not start and the choice does not allow a fallback
 /// (`Renderer::Gpu`, or a device the app configured itself).
 #[cfg(feature = "gpu")]
-fn start_gpu_renderer(window: &dyn winit::window::Window) -> Option<WgpuRenderer> {
+fn start_gpu_renderer(
+    window: &dyn winit::window::Window,
+    transparent: bool,
+) -> Option<WgpuRenderer> {
     use super::renderer::{OnGpuFailure, on_gpu_failure, resolved, set_gpu_presenting, tries_gpu};
 
     let choice = resolved();
@@ -3640,7 +3668,12 @@ fn start_gpu_renderer(window: &dyn winit::window::Window) -> Option<WgpuRenderer
         return None;
     }
     let size = window.surface_size();
-    match WgpuRenderer::try_new(window, size.width.max(1), size.height.max(1)) {
+    match WgpuRenderer::try_new_transparent(
+        window,
+        size.width.max(1),
+        size.height.max(1),
+        transparent,
+    ) {
         Ok(gpu) => {
             set_gpu_presenting(true);
             Some(gpu)
