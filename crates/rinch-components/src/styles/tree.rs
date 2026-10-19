@@ -121,6 +121,47 @@ pub fn styles() -> String {
     color: var(--rinch-primary-color);
 }
 
+/* Drag and drop: the one indicator, drawn inside the row under the pointer */
+.rinch-tree__node-content {
+    position: relative;
+}
+.rinch-tree__node-content--dragging {
+    opacity: 0.4;
+}
+.rinch-tree__drop-indicator {
+    position: absolute;
+    right: 0;
+    pointer-events: none;
+}
+.rinch-tree__drop-indicator--line {
+    height: 2px;
+    background-color: var(--rinch-primary-color);
+    border-radius: 1px;
+}
+.rinch-tree__drop-indicator--inside {
+    border: 2px solid var(--rinch-primary-color);
+    border-radius: var(--rinch-radius-sm);
+}
+.rinch-tree__drop-indicator--line.rinch-tree__drop-indicator--refused {
+    background-color: var(--rinch-color-red-6);
+}
+.rinch-tree__drop-indicator--inside.rinch-tree__drop-indicator--refused {
+    border-color: var(--rinch-color-red-6);
+}
+
+/* Indent guides: one line down each expanded row's children */
+.rinch-tree__subtree-wrap {
+    position: relative;
+}
+.rinch-tree__guide {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background-color: var(--rinch-color-border);
+    pointer-events: none;
+}
+
 /* Selected node chevron color */
 .rinch-tree__node-content--selected .rinch-tree__chevron {
     color: var(--rinch-primary-color);

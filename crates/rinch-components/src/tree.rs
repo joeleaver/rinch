@@ -27,20 +27,25 @@
 //! ```
 
 use std::any::Any;
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use rinch_core::Component;
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::element::ValueCallback;
+use rinch_core::get_click_context;
 use rinch_core::for_each_dom_typed;
-use rinch_core::reactive::Signal;
+use rinch_core::reactive::{Signal, untracked};
+use rinch_core::timer::{TimeoutHandle, clear_timeout, set_timeout};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
 /// The class selection adds to a tree row's content box.
 const SELECTED_CLASS: &str = "rinch-tree__node-content--selected";
 /// The class the expanded state adds to a tree row's chevron.
 const CHEVRON_EXPANDED_CLASS: &str = "rinch-tree__chevron--expanded";
+/// The class a drag adds to the rows it carries.
+const DRAGGING_CLASS: &str = "rinch-tree__node-content--dragging";
 
 // =============================================================================
 // TreeNodeData
@@ -338,6 +343,250 @@ impl<'a> RenderTreeNodePayload<'a> {
 pub type RenderTreeNode = Rc<dyn Fn(&RenderTreeNodePayload, &mut RenderScope) -> NodeHandle>;
 
 // =============================================================================
+// Drag and drop
+// =============================================================================
+
+/// The part of a row the pointer is over while dragging: its top quarter,
+/// its middle half, or its bottom quarter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropZone {
+    /// Before the row, among its siblings.
+    Before,
+    /// Into the row, as its last child.
+    Inside,
+    /// After the row: among its siblings, as the first child of an expanded
+    /// row with children, or (at the end of a group, by the pointer's
+    /// horizontal position) after one of its ancestors.
+    After,
+}
+
+/// Where among a parent's children a drop lands. An anchor, not an index:
+/// what the app does with it is its own business.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TreeSlot {
+    /// First among the parent's children.
+    First,
+    /// Last among the parent's children.
+    Last,
+    /// Right after this child of the parent.
+    After(String),
+}
+
+/// A drop the tree offers while a drag is over it, and delivers when the
+/// pointer is released. `parent` and `slot` are where the dragged rows
+/// would land; `over` and `zone` are the row under the pointer and which
+/// part of it, for an app that describes the drop in words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TreeDrop {
+    /// The values being dragged, in the order the drag started with.
+    pub dragged: Vec<String>,
+    /// The new parent's value; `None` for the top level.
+    pub parent: Option<String>,
+    /// Where among the new parent's children.
+    pub slot: TreeSlot,
+    /// The row under the pointer.
+    pub over: String,
+    /// Which part of that row.
+    pub zone: DropZone,
+}
+
+/// Whether a drop may happen, as the app judges it ([`Tree::judge_drop`]).
+/// A refused drop is drawn as refused and is not delivered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropVerdict {
+    Allowed,
+    Refused,
+}
+
+/// What a drag from a row carries ([`Tree::drag_values`]).
+pub type DragValues = Rc<dyn Fn(&str) -> Vec<String>>;
+/// How the app judges a drop ([`Tree::judge_drop`]).
+pub type JudgeDrop = Rc<dyn Fn(&TreeDrop) -> DropVerdict>;
+
+/// The tree's rows as structure, for resolving a drop: each row's parent,
+/// level and children, by index. Built from the data the tree last drew.
+#[derive(Default)]
+struct Shape {
+    rows: Vec<ShapeRow>,
+    by_value: HashMap<String, usize>,
+    roots: Vec<usize>,
+}
+
+struct ShapeRow {
+    value: String,
+    parent: Option<usize>,
+    level: usize,
+    children: Vec<usize>,
+}
+
+/// Where a drop lands, by row index, and where its indicator is drawn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Placement {
+    parent: Option<usize>,
+    slot: Slot,
+    /// The level whose indent the indicator starts at.
+    line_level: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Slot {
+    First,
+    Last,
+    After(usize),
+}
+
+impl Shape {
+    fn of(data: &[TreeNodeData]) -> Self {
+        fn walk(shape: &mut Shape, nodes: &[TreeNodeData], parent: Option<usize>, level: usize) -> Vec<usize> {
+            let mut ids = Vec::with_capacity(nodes.len());
+            for node in nodes {
+                let id = shape.rows.len();
+                shape.rows.push(ShapeRow { value: node.value.clone(), parent, level, children: Vec::new() });
+                shape.by_value.insert(node.value.clone(), id);
+                ids.push(id);
+                let children = walk(shape, &node.children, Some(id), level + 1);
+                shape.rows[id].children = children;
+            }
+            ids
+        }
+        let mut shape = Shape::default();
+        shape.roots = walk(&mut shape, data, None, 0);
+        shape
+    }
+
+    fn index(&self, value: &str) -> Option<usize> {
+        self.by_value.get(value).copied()
+    }
+
+    fn siblings(&self, row: usize) -> &[usize] {
+        match self.rows[row].parent {
+            Some(parent) => &self.rows[parent].children,
+            None => &self.roots,
+        }
+    }
+
+    fn prev_sibling(&self, row: usize) -> Option<usize> {
+        let siblings = self.siblings(row);
+        let at = siblings.iter().position(|&s| s == row)?;
+        at.checked_sub(1).map(|before| siblings[before])
+    }
+
+    /// Whether `row` is `ancestor` or under it.
+    fn is_within(&self, mut row: usize, ancestor: usize) -> bool {
+        loop {
+            if row == ancestor {
+                return true;
+            }
+            match self.rows[row].parent {
+                Some(parent) => row = parent,
+                None => return false,
+            }
+        }
+    }
+
+    fn is_open(&self, row: usize, expanded: &HashSet<String>) -> bool {
+        !self.rows[row].children.is_empty() && expanded.contains(&self.rows[row].value)
+    }
+
+    /// The row drawn right below `row`, given what is expanded.
+    fn next_visible(&self, row: usize, expanded: &HashSet<String>) -> Option<usize> {
+        if self.is_open(row, expanded) {
+            return self.rows[row].children.first().copied();
+        }
+        let mut at = row;
+        loop {
+            let siblings = self.siblings(at);
+            let position = siblings.iter().position(|&s| s == at)?;
+            if let Some(&next) = siblings.get(position + 1) {
+                return Some(next);
+            }
+            at = self.rows[at].parent?;
+        }
+    }
+
+    /// `row`'s ancestor at `level` (`row` itself at its own level).
+    fn ancestor_at(&self, mut row: usize, level: usize) -> usize {
+        while self.rows[row].level > level {
+            match self.rows[row].parent {
+                Some(parent) => row = parent,
+                None => break,
+            }
+        }
+        row
+    }
+
+    /// Where a drop over `over`'s `zone` lands. `pointer_level` is the indent
+    /// column under the pointer, when the tree knows its indent in pixels: it
+    /// picks the depth of an "after" at the end of a group, from `over`'s own
+    /// level up to the level of the row drawn below it.
+    fn placement(&self, over: usize, zone: DropZone, pointer_level: Option<usize>, expanded: &HashSet<String>) -> Placement {
+        let row = &self.rows[over];
+        match zone {
+            DropZone::Before => Placement {
+                parent: row.parent,
+                slot: self.prev_sibling(over).map_or(Slot::First, Slot::After),
+                line_level: row.level,
+            },
+            DropZone::Inside => Placement { parent: Some(over), slot: Slot::Last, line_level: row.level },
+            DropZone::After if self.is_open(over, expanded) => {
+                Placement { parent: Some(over), slot: Slot::First, line_level: row.level + 1 }
+            }
+            DropZone::After => {
+                let deepest = row.level;
+                let shallowest = self.next_visible(over, expanded).map_or(0, |next| self.rows[next].level).min(deepest);
+                let level = pointer_level.map_or(deepest, |level| level.clamp(shallowest, deepest));
+                let anchor = self.ancestor_at(over, level);
+                Placement { parent: self.rows[anchor].parent, slot: Slot::After(anchor), line_level: level }
+            }
+        }
+    }
+}
+
+/// The zone of a row a pointer `fraction` of the way down it is over.
+fn zone_at(fraction: f32) -> DropZone {
+    if fraction < 0.25 {
+        DropZone::Before
+    } else if fraction > 0.75 {
+        DropZone::After
+    } else {
+        DropZone::Inside
+    }
+}
+
+/// One tree's drag state, shared by every row it draws.
+#[derive(Default)]
+struct DragState {
+    /// The data the tree last drew, and its shape once a drag needed it.
+    data: RefCell<Vec<TreeNodeData>>,
+    shape: RefCell<Option<Rc<Shape>>>,
+    /// Each row's content box, by value: where the indicator goes.
+    rows: RefCell<HashMap<String, NodeHandle>>,
+    /// What the drag in progress carries; empty when none started here.
+    dragged: RefCell<Vec<String>>,
+    /// The drop on offer, its placement and the app's verdict.
+    candidate: RefCell<Option<(TreeDrop, Placement, DropVerdict)>>,
+    /// The one indicator, moved into whichever row it is drawn on.
+    indicator: RefCell<Option<NodeHandle>>,
+    /// The row a hover-to-expand is waiting on.
+    hover: RefCell<Option<(String, TimeoutHandle)>>,
+}
+
+impl DragState {
+    fn shape(&self) -> Rc<Shape> {
+        self.shape
+            .borrow_mut()
+            .get_or_insert_with(|| Rc::new(Shape::of(&self.data.borrow())))
+            .clone()
+    }
+
+    fn cancel_hover(&self) {
+        if let Some((_, handle)) = self.hover.borrow_mut().take() {
+            clear_timeout(handle);
+        }
+    }
+}
+
+// =============================================================================
 // Internal TreeConfig (shared across recursive renders)
 // =============================================================================
 
@@ -348,6 +597,18 @@ struct TreeConfig {
     onselect: Option<ValueCallback<String>>,
     onexpand: Option<ValueCallback<String>>,
     oncollapse: Option<ValueCallback<String>>,
+    draggable: bool,
+    drag_values: Option<DragValues>,
+    judge_drop: Option<JudgeDrop>,
+    ondropchange: Option<ValueCallback<Option<(TreeDrop, DropVerdict)>>>,
+    ondrop: Option<ValueCallback<TreeDrop>>,
+    ondragstart: Option<ValueCallback<Vec<String>>>,
+    ondragend: Option<ValueCallback<()>>,
+    /// Pixels per level, when the tree was given them ([`Tree::indent`]).
+    indent: Option<f32>,
+    hover_expand_ms: u32,
+    guides: bool,
+    drag: Rc<DragState>,
 }
 
 // =============================================================================
@@ -401,6 +662,37 @@ pub struct Tree {
     pub oncollapse: Option<ValueCallback<String>>,
     /// Reactive data source. When provided, root nodes update when this changes.
     pub data_source: Option<Rc<dyn Fn() -> Vec<TreeNodeData>>>,
+    /// Indentation per level in pixels. Overrides `level_offset`, and is what
+    /// lets a drag at the end of a group choose its depth by the pointer's
+    /// horizontal position.
+    pub indent: Option<f32>,
+    /// Whether rows can be dragged to rearrange the tree (needs `tree`).
+    /// While a drag is over the tree it shows where the rows would land: a
+    /// line before or after a row, at the depth they would take, or an
+    /// outline around a row they would go into.
+    pub draggable: bool,
+    /// What a drag from a row carries (its own value when not given), for
+    /// an app that drags its whole selection.
+    pub drag_values: Option<DragValues>,
+    /// The app's judgement of each drop on offer. A refused drop is drawn in
+    /// the error color and is not delivered. Drops into a dragged row's own
+    /// subtree are always refused. Allowed when not given.
+    pub judge_drop: Option<JudgeDrop>,
+    /// The drop on offer and its verdict, each time it changes; `None` when
+    /// the pointer leaves the rows or the drag ends.
+    pub ondropchange: Option<ValueCallback<Option<(TreeDrop, DropVerdict)>>>,
+    /// An allowed drop, when the pointer is released.
+    pub ondrop: Option<ValueCallback<TreeDrop>>,
+    /// A drag from a row started, carrying these values: for an app whose
+    /// other drop targets take rows dragged out of the tree.
+    pub ondragstart: Option<ValueCallback<Vec<String>>>,
+    /// The drag ended, dropped anywhere or cancelled; after any drop.
+    pub ondragend: Option<ValueCallback<()>>,
+    /// How long a drag rests inside a collapsed row before it expands, in
+    /// milliseconds; 0 never expands.
+    pub hover_expand_ms: u32,
+    /// Draw a faint vertical line down each expanded row's children.
+    pub guides: bool,
 }
 
 impl std::fmt::Debug for Tree {
@@ -427,6 +719,16 @@ impl Default for Tree {
             onexpand: None,
             oncollapse: None,
             data_source: None,
+            indent: None,
+            draggable: false,
+            drag_values: None,
+            judge_drop: None,
+            ondropchange: None,
+            ondrop: None,
+            ondragstart: None,
+            ondragend: None,
+            hover_expand_ms: 600,
+            guides: false,
         }
     }
 }
@@ -450,6 +752,10 @@ impl Component for Tree {
             "xl" => "var(--rinch-spacing-xl)",
             custom => custom,
         };
+        let offset_value = match self.indent {
+            Some(px) => format!("{px}px"),
+            None => offset_value.to_string(),
+        };
         container.set_attribute("style", &format!("--tree-level-offset: {}", offset_value));
 
         // Build shared config
@@ -460,7 +766,22 @@ impl Component for Tree {
             onselect: self.onselect.clone(),
             onexpand: self.onexpand.clone(),
             oncollapse: self.oncollapse.clone(),
+            draggable: self.draggable && self.tree.is_some(),
+            drag_values: self.drag_values.clone(),
+            judge_drop: self.judge_drop.clone(),
+            ondropchange: self.ondropchange.clone(),
+            ondrop: self.ondrop.clone(),
+            ondragstart: self.ondragstart.clone(),
+            ondragend: self.ondragend.clone(),
+            indent: self.indent,
+            hover_expand_ms: self.hover_expand_ms,
+            guides: self.guides,
+            drag: Rc::new(DragState::default()),
         });
+        if config.draggable {
+            let indicator = rinch_macros::rsx! { div { class: "rinch-tree__drop-indicator" } };
+            *config.drag.indicator.borrow_mut() = Some(indicator);
+        }
 
         if let Some(ref tree_state) = self.tree {
             let tree_state = *tree_state;
@@ -474,11 +795,22 @@ impl Component for Tree {
                     let data = self.data.clone();
                     Rc::new(move || data.clone())
                 };
+            // A drag resolves its drop against the data the rows were drawn
+            // from, so the tree keeps the last of it.
+            let drag = config.drag.clone();
+            let draggable = config.draggable;
 
             for_each_dom_typed(
                 __scope,
                 &container,
-                move || collection(),
+                move || {
+                    let data = collection();
+                    if draggable {
+                        *drag.data.borrow_mut() = data.clone();
+                        drag.shape.borrow_mut().take();
+                    }
+                    data
+                },
                 |node: &TreeNodeData| node.value.clone(),
                 move |node: TreeNodeData, __scope: &mut RenderScope| {
                     render_tree_node(__scope, &node, 0, tree_state, cfg.clone())
@@ -564,6 +896,10 @@ fn render_tree_node(
         "style",
         &format!("padding-left: calc(var(--tree-level-offset) * {})", level),
     );
+
+    if config.draggable {
+        wire_drag(__scope, &content, &node_value, tree_state, &config);
+    }
 
     // Reactive class for content (selection only — `disabled` is not reactive)
     {
@@ -654,6 +990,7 @@ fn render_tree_node(
     } else {
         let label =
             rinch_macros::rsx! { span { class: "rinch-tree__label", {node.label.clone()} } };
+        label.set_attribute("title", &node.label);
         content.append_child(&label);
     }
 
@@ -696,8 +1033,24 @@ fn render_tree_node(
         let children_ul = rinch_macros::rsx! { ul { class: "rinch-tree__subtree" } };
         children_ul.set_attribute("role", "group");
 
+        // With guides the children sit in a box with their guide beside
+        // them, and the box is what shows and hides.
+        let shown = if config.guides {
+            let wrap = rinch_macros::rsx! { div { class: "rinch-tree__subtree-wrap" } };
+            let guide = rinch_macros::rsx! { div { class: "rinch-tree__guide" } };
+            guide.set_attribute(
+                "style",
+                &format!("left: calc(var(--tree-level-offset) * {level} + 0.625rem)"),
+            );
+            wrap.append_child(&guide);
+            wrap.append_child(&children_ul);
+            wrap
+        } else {
+            children_ul.clone()
+        };
+
         // Reactive display toggle — preserves all child DOM and Effects
-        let children_ul_vis = children_ul.clone();
+        let children_ul_vis = shown.clone();
         let nv = node_value.clone();
         __scope.create_effect(move || {
             if expanded_signal.get().contains(&nv) {
@@ -722,10 +1075,219 @@ fn render_tree_node(
             },
         );
 
-        li.append_child(&children_ul);
+        li.append_child(&shown);
     }
 
     li
+}
+
+/// Make `content` (the row of `value`) a drag source and a drop target.
+fn wire_drag(
+    __scope: &mut RenderScope,
+    content: &NodeHandle,
+    value: &str,
+    tree_state: UseTreeReturn,
+    config: &Rc<TreeConfig>,
+) {
+    config.drag.rows.borrow_mut().insert(value.to_string(), content.clone());
+    content.set_attribute("draggable", "true");
+
+    let cfg = config.clone();
+    let v = value.to_string();
+    let start = __scope.register_handler(move || {
+        let carried = match &cfg.drag_values {
+            Some(values) => values(&v),
+            None => vec![v.clone()],
+        };
+        mark_dragging(&cfg, &carried, true);
+        *cfg.drag.dragged.borrow_mut() = carried.clone();
+        if let Some(cb) = &cfg.ondragstart {
+            cb.invoke(carried);
+        }
+    });
+    content.set_attribute("data-ondragstart", &start.0.to_string());
+
+    let cfg = config.clone();
+    let end = __scope.register_handler(move || {
+        let carried = std::mem::take(&mut *cfg.drag.dragged.borrow_mut());
+        mark_dragging(&cfg, &carried, false);
+        offer(&cfg, None);
+        if let Some(cb) = &cfg.ondragend {
+            cb.invoke(());
+        }
+    });
+    content.set_attribute("data-ondragend", &end.0.to_string());
+
+    let cfg = config.clone();
+    let v = value.to_string();
+    let over = __scope.register_handler(move || drag_over(&cfg, &v, tree_state));
+    content.set_attribute("data-ondragover", &over.0.to_string());
+
+    let cfg = config.clone();
+    let v = value.to_string();
+    let leave = __scope.register_handler(move || {
+        let here = cfg.drag.candidate.borrow().as_ref().is_some_and(|(drop, _, _)| drop.over == v);
+        if here {
+            offer(&cfg, None);
+        }
+    });
+    content.set_attribute("data-ondragleave", &leave.0.to_string());
+
+    let cfg = config.clone();
+    let drop = __scope.register_handler(move || {
+        let candidate = cfg.drag.candidate.borrow().clone();
+        offer(&cfg, None);
+        if let Some((drop, _, DropVerdict::Allowed)) = candidate {
+            if let Some(ondrop) = &cfg.ondrop {
+                ondrop.invoke(drop);
+            }
+        }
+    });
+    content.set_attribute("data-ondrop", &drop.0.to_string());
+}
+
+/// Dim (or stop dimming) the rows a drag carries.
+fn mark_dragging(config: &Rc<TreeConfig>, values: &[String], on: bool) {
+    let rows = config.drag.rows.borrow();
+    for row in values.iter().filter_map(|v| rows.get(v)) {
+        if on {
+            row.add_class(DRAGGING_CLASS);
+        } else {
+            row.remove_class(DRAGGING_CLASS);
+        }
+    }
+}
+
+/// A drag moved over the row of `value`: work out the drop on offer, show it,
+/// and arm a hover-to-expand.
+fn drag_over(config: &Rc<TreeConfig>, value: &str, tree_state: UseTreeReturn) {
+    let dragged = config.drag.dragged.borrow().clone();
+    if dragged.is_empty() {
+        // Not a drag that started in this tree.
+        return;
+    }
+    let shape = config.drag.shape();
+    let Some(over) = shape.index(value) else { return };
+    let dragged_rows: Vec<usize> = dragged.iter().filter_map(|d| shape.index(d)).collect();
+    // Nothing is drawn over the dragged rows themselves.
+    if dragged_rows.iter().any(|&d| shape.is_within(over, d)) {
+        offer(config, None);
+        return;
+    }
+
+    let ctx = get_click_context();
+    let height = ctx.element_height.max(1.0);
+    let zone = zone_at((ctx.mouse_y - ctx.element_y) / height);
+    let pointer_level = config
+        .indent
+        .filter(|px| *px > 0.0)
+        .map(|px| ((ctx.mouse_x - ctx.element_x).max(0.0) / px) as usize);
+    let expanded = untracked(|| tree_state.expanded.get());
+    let placement = shape.placement(over, zone, pointer_level, &expanded);
+
+    // Hover to expand: resting inside a collapsed row with children.
+    let wants_hover = zone == DropZone::Inside
+        && config.hover_expand_ms > 0
+        && !shape.rows[over].children.is_empty()
+        && !expanded.contains(value);
+    let waiting_here = config.drag.hover.borrow().as_ref().is_some_and(|(v, _)| v == value);
+    if !wants_hover {
+        config.drag.cancel_hover();
+    } else if !waiting_here {
+        config.drag.cancel_hover();
+        let v = value.to_string();
+        let onexpand = config.onexpand.clone();
+        let cfg = Rc::downgrade(config);
+        let handle = set_timeout(config.hover_expand_ms, move || {
+            let Some(cfg) = cfg.upgrade() else { return };
+            cfg.drag.hover.borrow_mut().take();
+            if cfg.drag.dragged.borrow().is_empty() {
+                return;
+            }
+            tree_state.controller.expand(&v);
+            if let Some(cb) = &onexpand {
+                cb.invoke(v.clone());
+            }
+        });
+        *config.drag.hover.borrow_mut() = Some((value.to_string(), handle));
+    }
+
+    let unchanged = config
+        .drag
+        .candidate
+        .borrow()
+        .as_ref()
+        .is_some_and(|(drop, p, _)| drop.over == value && drop.zone == zone && *p == placement);
+    if unchanged {
+        return;
+    }
+    let row_value = |row: usize| shape.rows[row].value.clone();
+    let drop = TreeDrop {
+        dragged,
+        parent: placement.parent.map(row_value),
+        slot: match placement.slot {
+            Slot::First => TreeSlot::First,
+            Slot::Last => TreeSlot::Last,
+            Slot::After(row) => TreeSlot::After(row_value(row)),
+        },
+        over: value.to_string(),
+        zone,
+    };
+    // A row can never go into its own subtree, whatever the app says.
+    let cycle = placement
+        .parent
+        .is_some_and(|parent| dragged_rows.iter().any(|&d| shape.is_within(parent, d)));
+    let verdict = if cycle {
+        DropVerdict::Refused
+    } else {
+        config.judge_drop.as_ref().map_or(DropVerdict::Allowed, |judge| judge(&drop))
+    };
+    offer(config, Some((drop, placement, verdict)));
+}
+
+/// Make `candidate` the drop on offer: move the indicator, tell the app.
+fn offer(config: &Rc<TreeConfig>, candidate: Option<(TreeDrop, Placement, DropVerdict)>) {
+    let drag = &config.drag;
+    if candidate.is_none() {
+        drag.cancel_hover();
+        if drag.candidate.borrow().is_none() {
+            return;
+        }
+    }
+    if let Some(indicator) = drag.indicator.borrow().as_ref() {
+        match &candidate {
+            Some((drop, placement, verdict)) => {
+                if let Some(row) = drag.rows.borrow().get(&drop.over) {
+                    let kind = if drop.zone == DropZone::Inside { "inside" } else { "line" };
+                    let refused = if *verdict == DropVerdict::Refused {
+                        " rinch-tree__drop-indicator--refused"
+                    } else {
+                        ""
+                    };
+                    indicator.set_attribute(
+                        "class",
+                        &format!("rinch-tree__drop-indicator rinch-tree__drop-indicator--{kind}{refused}"),
+                    );
+                    let edge = match drop.zone {
+                        DropZone::Before => "top: -1px;",
+                        DropZone::Inside => "top: 0; bottom: 0;",
+                        DropZone::After => "bottom: -1px;",
+                    };
+                    indicator.set_attribute(
+                        "style",
+                        &format!("left: calc(var(--tree-level-offset) * {}); {edge}", placement.line_level),
+                    );
+                    row.append_child(indicator);
+                }
+            }
+            None => indicator.remove(),
+        }
+    }
+    let told = candidate.as_ref().map(|(drop, _, verdict)| (drop.clone(), *verdict));
+    *drag.candidate.borrow_mut() = candidate;
+    if let Some(cb) = &config.ondropchange {
+        cb.invoke(told);
+    }
 }
 
 /// Render a tree node without reactive state (fallback when no tree state provided).
@@ -790,4 +1352,141 @@ fn render_tree_node_static(
     }
 
     li
+}
+
+#[cfg(test)]
+mod drop_tests {
+    use super::*;
+
+    /// a
+    /// ├ a1
+    /// │ ├ a1x
+    /// │ └ a1y
+    /// └ a2
+    /// b
+    /// c
+    /// └ c1
+    fn data() -> Vec<TreeNodeData> {
+        vec![
+            TreeNodeData::new("a", "a").with_children(vec![
+                TreeNodeData::new("a1", "a1").with_children(vec![
+                    TreeNodeData::new("a1x", "a1x"),
+                    TreeNodeData::new("a1y", "a1y"),
+                ]),
+                TreeNodeData::new("a2", "a2"),
+            ]),
+            TreeNodeData::new("b", "b"),
+            TreeNodeData::new("c", "c").with_child(TreeNodeData::new("c1", "c1")),
+        ]
+    }
+
+    fn expanded(values: &[&str]) -> HashSet<String> {
+        values.iter().map(|v| v.to_string()).collect()
+    }
+
+    /// The placement as values: (parent, slot, line level).
+    fn place(
+        shape: &Shape,
+        over: &str,
+        zone: DropZone,
+        pointer: Option<usize>,
+        open: &HashSet<String>,
+    ) -> (Option<String>, TreeSlot, usize) {
+        let p = shape.placement(shape.index(over).unwrap(), zone, pointer, open);
+        let name = |row: usize| shape.rows[row].value.clone();
+        let slot = match p.slot {
+            Slot::First => TreeSlot::First,
+            Slot::Last => TreeSlot::Last,
+            Slot::After(row) => TreeSlot::After(name(row)),
+        };
+        (p.parent.map(name), slot, p.line_level)
+    }
+
+    fn after(v: &str) -> TreeSlot {
+        TreeSlot::After(v.to_string())
+    }
+
+    #[test]
+    fn zones_split_a_row_into_quarter_half_quarter() {
+        assert_eq!(zone_at(0.0), DropZone::Before);
+        assert_eq!(zone_at(0.24), DropZone::Before);
+        assert_eq!(zone_at(0.5), DropZone::Inside);
+        assert_eq!(zone_at(0.76), DropZone::After);
+        assert_eq!(zone_at(1.0), DropZone::After);
+    }
+
+    #[test]
+    fn before_lands_after_the_previous_sibling_or_first() {
+        let shape = Shape::of(&data());
+        let open = expanded(&["a", "a1", "c"]);
+        assert_eq!(place(&shape, "a2", DropZone::Before, None, &open), (Some("a".into()), after("a1"), 1));
+        assert_eq!(place(&shape, "a1", DropZone::Before, None, &open), (Some("a".into()), TreeSlot::First, 1));
+        assert_eq!(place(&shape, "a", DropZone::Before, None, &open), (None, TreeSlot::First, 0));
+    }
+
+    #[test]
+    fn inside_lands_last() {
+        let shape = Shape::of(&data());
+        let open = expanded(&[]);
+        assert_eq!(place(&shape, "b", DropZone::Inside, None, &open), (Some("b".into()), TreeSlot::Last, 0));
+        assert_eq!(place(&shape, "a", DropZone::Inside, None, &open), (Some("a".into()), TreeSlot::Last, 0));
+    }
+
+    #[test]
+    fn after_an_open_row_with_children_lands_first_inside_it() {
+        let shape = Shape::of(&data());
+        let open = expanded(&["a"]);
+        assert_eq!(place(&shape, "a", DropZone::After, None, &open), (Some("a".into()), TreeSlot::First, 1));
+        // Closed, the same zone is after it among its siblings.
+        let closed = expanded(&[]);
+        assert_eq!(place(&shape, "a", DropZone::After, None, &closed), (None, after("a"), 0));
+    }
+
+    /// The drag that outdents: after the last row of a group, the pointer's
+    /// indent column picks the depth, between the row's own level and the
+    /// level of the row drawn below it.
+    #[test]
+    fn after_the_end_of_a_group_takes_its_depth_from_the_pointer() {
+        let shape = Shape::of(&data());
+        let open = expanded(&["a", "a1"]);
+        // a1y is the last of a1, which is not the last of a; below it is a2
+        // (level 1), so levels 1..=2 are on offer.
+        assert_eq!(place(&shape, "a1y", DropZone::After, Some(9), &open), (Some("a1".into()), after("a1y"), 2));
+        assert_eq!(place(&shape, "a1y", DropZone::After, Some(2), &open), (Some("a1".into()), after("a1y"), 2));
+        assert_eq!(place(&shape, "a1y", DropZone::After, Some(1), &open), (Some("a".into()), after("a1"), 1));
+        assert_eq!(place(&shape, "a1y", DropZone::After, Some(0), &open), (Some("a".into()), after("a1"), 1));
+        // Without a pointer column, the row's own depth.
+        assert_eq!(place(&shape, "a1y", DropZone::After, None, &open), (Some("a1".into()), after("a1y"), 2));
+        // a2 ends a, and b (level 0) is below: level 0 means after a.
+        assert_eq!(place(&shape, "a2", DropZone::After, Some(0), &open), (None, after("a"), 0));
+        // The last row of the tree can go all the way out.
+        let open = expanded(&["c"]);
+        assert_eq!(place(&shape, "c1", DropZone::After, Some(0), &open), (None, after("c"), 0));
+        // A row in the middle of its siblings offers only its own level.
+        let open = expanded(&["a", "a1"]);
+        assert_eq!(place(&shape, "a1x", DropZone::After, Some(0), &open), (Some("a1".into()), after("a1x"), 2));
+    }
+
+    #[test]
+    fn next_visible_follows_what_is_expanded() {
+        let shape = Shape::of(&data());
+        let next = |v: &str, open: &[&str]| {
+            shape.next_visible(shape.index(v).unwrap(), &expanded(open)).map(|r| shape.rows[r].value.clone())
+        };
+        assert_eq!(next("a", &[]), Some("b".into()));
+        assert_eq!(next("a", &["a"]), Some("a1".into()));
+        assert_eq!(next("a1y", &["a", "a1"]), Some("a2".into()));
+        assert_eq!(next("a2", &["a"]), Some("b".into()));
+        assert_eq!(next("c1", &["c"]), None);
+    }
+
+    #[test]
+    fn within_is_the_row_or_under_it() {
+        let shape = Shape::of(&data());
+        let i = |v: &str| shape.index(v).unwrap();
+        assert!(shape.is_within(i("a1x"), i("a")));
+        assert!(shape.is_within(i("a"), i("a")));
+        assert!(!shape.is_within(i("a"), i("a1")));
+        assert!(!shape.is_within(i("b"), i("a")));
+    }
 }
