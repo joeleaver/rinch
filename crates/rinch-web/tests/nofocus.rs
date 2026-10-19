@@ -12,17 +12,14 @@
 //! the focus change" — while a `data-rid` handler under it still fires. A
 //! press anywhere else is untouched.
 //!
-//! **A `data-rid` element was already covered, incidentally.** `dispatch_rid`
-//! calls `prevent_default()` on the pointerdown whenever a handler actually
-//! ran — for text selection and `<label>` reasons, not for focus — and that
-//! suppresses the compatibility mouse events, and so the focus change with
-//! them. So a rinch editor toolbar button on the web has never had #312's
-//! defect, unlike its desktop twin. What was *not* covered is everything with
-//! no live handler under the press: the toolbar chrome around the buttons, a
-//! custom focusable that routes its activation some other way, a button whose
-//! handler was freed with its scope. `data-nofocus` states the intent instead
-//! of inheriting it from an unrelated mechanism, and makes the attribute mean
-//! the same thing on both backends.
+//! **A `data-rid` element is not covered by its handler.** `dispatch_rid`
+//! still calls `prevent_default()` on the pointerdown whenever a handler ran
+//! (text selection and `<label>` reasons), which suppresses the browser's
+//! focus change; until #1146 that made every handler press take no focus. Now
+//! rinch makes that focus change itself unless the press was already
+//! prevented (`tests/press_focus_1146.rs`), so a toolbar button over an editor
+//! takes the keyboard on the web as it does on desktop, and `data-nofocus` is
+//! what keeps it from doing so on both backends.
 #![cfg(target_arch = "wasm32")]
 
 use rinch_core::dom::{NodeHandle, RenderScope};

@@ -141,6 +141,14 @@ Focus arrives three ways, and all three go through the same arbiter:
   browser. A control that must **not** steal focus from the field it sits
   beside — a toolbar button over a rich-text editor, a spinner next to a number
   input — needs [`data-nofocus`](#taking-the-click-without-the-keyboard).
+
+  On `rinch-web` the browser moves focus on a press, and rinch keeps that
+  true for a press on an `onclick` element too (issue #1146): a text field
+  inside a clickable is focused by the browser with the caret where the press
+  landed, and any other focusable (a `<button>`, a `tabindex` row) is focused
+  before the handler runs, so the field that had the focus commits its
+  `onchange` first. A press with nothing focusable above it leaves the focus
+  where it was on the web, where desktop releases it.
 - **`node.focus()` / `request_focus(node_id)`** — programmatic, also no ring.
 
 ### Selecting a text control's text programmatically

@@ -2098,6 +2098,23 @@ so the claim stays out of both. The right/middle path
 used to run no claim, so a right press on a nested focusable released the
 outer claim and nothing took the keyboard.
 
+**On `rinch-web` a press on a `data-rid` element resolves focus the same way**
+(#1146). `dispatch_click_at` `preventDefault`s the `pointerdown` of a press
+whose handler ran, and that cancels the browser's own focus change, so before
+#1146 no such press moved focus: a `Button` took none, the field that had it
+was not blurred (its `change` uncommitted), and a text field inside a
+clickable (`ColorInput`'s, in its input group) could not be focused by a click
+at all. Now (`PressFocus`, `event_delegation.rs`): when the nearest focusable
+ancestor-or-self (`PRESS_FOCUSABLE_SELECTOR`) is a form control or editable
+content the default is not prevented, so the browser focuses it and places
+the caret; any other focusable is focused by rinch (`preventScroll`) **before**
+the handler runs, so the old field blurs first and a focus move the handler
+makes wins; a press already prevented (`data-nofocus`) or with nothing
+focusable on its chain moves no focus (desktop releases for the latter). An
+editor toolbar on the web therefore needs `data-nofocus`, as on desktop.
+Measured with trusted CDP input in Chrome 155; pins:
+`rinch-web/tests/press_focus_1146.rs`.
+
 A focused **`<select>` is closed**, like a browser's — Enter/Space/Alt+Down
 opens its popup, which then owns the keyboard (issue #314). A pointer opens and
 picks with the primary button only (issue #1111): a right or middle press on the
