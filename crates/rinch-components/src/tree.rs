@@ -1653,6 +1653,10 @@ pub struct TreeKey {
     pub cursor: String,
     /// The cursor row's parent; `None` at the top level.
     pub parent: Option<String>,
+    /// The rows drawn right above and below the cursor row, for an app that
+    /// moves the cursor off a row it is about to remove.
+    pub above: Option<String>,
+    pub below: Option<String>,
     shape: Rc<Shape>,
     carried: Vec<String>,
 }
@@ -1889,6 +1893,10 @@ fn on_tree_key(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, container: &N
     let Some(cursor_row) = shape.index(&cursor) else { return false };
 
     if let Some(onkey) = &config.onkey {
+        let expanded = untracked(|| tree_state.expanded.get());
+        let visible = shape.visible(&expanded);
+        let at = visible.iter().position(|&r| r == cursor_row);
+        let neighbor = |i: Option<usize>| i.and_then(|i| visible.get(i)).map(|&r| shape.rows[r].value.clone());
         let carried = match &config.drag_values {
             Some(values) => values(&cursor),
             None => vec![cursor.clone()],
@@ -1900,6 +1908,8 @@ fn on_tree_key(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, container: &N
             alt: key.alt,
             meta: key.meta,
             parent: shape.rows[cursor_row].parent.map(|p| shape.rows[p].value.clone()),
+            above: neighbor(at.and_then(|i| i.checked_sub(1))),
+            below: neighbor(at.map(|i| i + 1)),
             cursor: cursor.clone(),
             shape: shape.clone(),
             carried,
@@ -2110,6 +2120,8 @@ mod key_tests {
             meta: false,
             cursor: cursor.into(),
             parent,
+            above: None,
+            below: None,
             shape: s,
             carried: vec![cursor.into()],
         }
