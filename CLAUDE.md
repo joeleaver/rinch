@@ -5882,7 +5882,9 @@ Three things it deliberately does not do.
   `forwards`/`both` animation is the same shape (**#782**): the tick that
   finishes it writes the fill and dirties the node once
   (`ActiveAnimation::fill_settled`), and after that it is kept, re-applied and
-  not counted. **The component library declares the pause itself** (#912):
+  not counted. That includes a zero-duration **infinite** one
+  (`0s infinite forwards`): its active duration is `0 × ∞ = 0`, so it is
+  finished at its delay's end, as in Chrome 155 (#786). **The component library declares the pause itself** (#912):
   `.rinch-drawer__root--hidden *`, a closed `.rinch-popover__dropdown`'s
   subtree and an unhovered `.rinch-hover-card__dropdown`'s subtree all carry
   `animation-play-state: paused !important` — every descendant rather than a
