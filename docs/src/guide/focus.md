@@ -724,9 +724,17 @@ LIFO puts the entry where the user expects it with no precedence rule anywhere.
 This is what the native `<select>` popup does (issue #671) and what
 `ColorInput`'s dropdown does (issue #465); in a component,
 `rinch_components::overlay_dismiss::arm_close_on_escape_while_open` is that
-policy written out. Such a handler consumes unconditionally — it exists only
-while the overlay is open, so it has no closed state to decline in — and the
-release must cover **unmount-while-open** as well as close.
+policy written out. Such a handler has no closed state to decline in — it
+exists only while the overlay is open — but an ancestor can stop *rendering* the
+overlay without closing it: a `ColorInput` whose picker was open when the app
+closed the `Modal` around it is `display: none`, still mounted, still open. So
+the handler first asks `NodeHandle::is_rendered()` (connected, no
+`display: none` on the node or an ancestor, and not `visibility: hidden` or
+`collapse`) and declines while it answers `false`, letting the Escape reach what
+is on screen (issue #802). The overlay stays open, and Escape closes it once its
+ancestor shows it again. On desktop the answer comes from the styles of the last
+layout, so a hide made in the same turn as the key press, before a layout ran,
+is not yet seen. The release must cover **unmount-while-open** as well as close.
 
 `Modal`, `Drawer` and `Popover` already do all of this for you through their
 `close_on_escape` prop — reach for `push_dismiss_handler` when you are building

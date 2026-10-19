@@ -2373,9 +2373,14 @@ register_focus_target(
   close — the `<select>` popup's shape (#671), spelled for components as
   `rinch_components::overlay_dismiss::arm_close_on_escape_while_open` and used by
   `ColorInput`'s dropdown (whose outside-click backdrop is `DropdownMenu`'s,
-  `position: fixed` and all). Such a handler consumes unconditionally, since it
-  exists only while the overlay is open, and its release has to cover
-  unmount-while-open as well as close. It shares the
+  `position: fixed` and all). Such a handler has no closed state to decline
+  in, since it exists only while the overlay is open, but it declines while its
+  root is not rendered (`NodeHandle::is_rendered`: connected, no `display: none`
+  on it or an ancestor, not `visibility: hidden`/`collapse`; #802) — a picker
+  left open inside a `Modal` the app closed (`display: none`, still mounted)
+  used to swallow the next Escape. It is declined, not closed. Desktop answers
+  from the last resolve's styles, the web from `getComputedStyle`; the mock
+  answers `true`. Its release has to cover unmount-while-open as well as close. It shares the
   *lifetime* rule though (#183):
   registering it during a render releases it on unmount, ownerless registration
   keeps app lifetime, and an earlier unmount never clobbers a later
