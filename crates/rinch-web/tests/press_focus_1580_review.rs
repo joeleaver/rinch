@@ -46,7 +46,8 @@ fn mount() -> Fixture {
     }
     let host = document().create_element("div").unwrap();
     host.set_attribute(HOST_MARKER, "").unwrap();
-    host.set_attribute("style", "width: 300px; margin: 20px").unwrap();
+    host.set_attribute("style", "width: 300px; margin: 20px")
+        .unwrap();
     document().body().unwrap().append_child(&host).unwrap();
     let log: Log = Rc::new(RefCell::new(Vec::new()));
     let sink = log.clone();
@@ -105,7 +106,11 @@ fn mount() -> Fixture {
 impl Fixture {
     fn focus_field(&self) {
         by_id("field").focus().unwrap();
-        assert_eq!(active_id(), "field", "positive control: the field is focused");
+        assert_eq!(
+            active_id(),
+            "field",
+            "positive control: the field is focused"
+        );
         self.log.borrow_mut().clear();
     }
     fn teardown(self) {
@@ -116,11 +121,18 @@ impl Fixture {
 }
 
 fn by_id(id: &str) -> web_sys::HtmlElement {
-    document().get_element_by_id(id).unwrap().dyn_into().unwrap()
+    document()
+        .get_element_by_id(id)
+        .unwrap()
+        .dyn_into()
+        .unwrap()
 }
 
 fn active_id() -> String {
-    document().active_element().map(|a| a.id()).unwrap_or_default()
+    document()
+        .active_element()
+        .map(|a| a.id())
+        .unwrap_or_default()
 }
 
 fn press(el: &web_sys::Element) -> web_sys::PointerEvent {
@@ -151,7 +163,11 @@ fn a_press_on_a_disabled_button_in_a_tabindex_row_focuses_the_row() {
     let f = mount();
     f.focus_field();
     press(&by_id("dis"));
-    assert_eq!(*f.log.borrow(), ["dis"], "positive control: the handler ran");
+    assert_eq!(
+        *f.log.borrow(),
+        ["dis"],
+        "positive control: the handler ran"
+    );
     assert_eq!(active_id(), "row");
     f.teardown();
 }

@@ -59,7 +59,8 @@ fn mount() -> Fixture {
     }
     let host = document().create_element("div").unwrap();
     host.set_attribute(HOST_MARKER, "").unwrap();
-    host.set_attribute("style", "width: 300px; margin: 20px").unwrap();
+    host.set_attribute("style", "width: 300px; margin: 20px")
+        .unwrap();
     document().body().unwrap().append_child(&host).unwrap();
     let log: Log = Rc::new(RefCell::new(Vec::new()));
     let sink = log.clone();
@@ -153,11 +154,18 @@ impl Fixture {
 }
 
 fn by_id(id: &str) -> web_sys::HtmlElement {
-    document().get_element_by_id(id).unwrap().dyn_into().unwrap()
+    document()
+        .get_element_by_id(id)
+        .unwrap()
+        .dyn_into()
+        .unwrap()
 }
 
 fn active_id() -> String {
-    document().active_element().map(|a| a.id()).unwrap_or_default()
+    document()
+        .active_element()
+        .map(|a| a.id())
+        .unwrap_or_default()
 }
 
 fn pointer(
@@ -174,7 +182,11 @@ fn pointer(
     init.set_is_primary(true);
     init.set_pointer_type(pointer_type);
     init.set_button(if kind == "pointermove" { -1 } else { 0 });
-    init.set_buttons(if kind == "pointerdown" || kind == "pointermove" { 1 } else { 0 });
+    init.set_buttons(if kind == "pointerdown" || kind == "pointermove" {
+        1
+    } else {
+        0
+    });
     init.set_client_x((r.x() + r.width() / 2.0) as i32);
     init.set_client_y((r.y() + r.height() / 2.0 + dy) as i32);
     let ev = web_sys::PointerEvent::new_with_event_init_dict(kind, &init).unwrap();
@@ -200,7 +212,11 @@ fn a_touch_pan_that_starts_on_a_button_leaves_the_focus_alone() {
     f.focus("field");
     let btn = by_id("btn");
     down(&btn, "touch");
-    assert_eq!(*f.log.borrow(), ["btn"], "positive control: the handler ran");
+    assert_eq!(
+        *f.log.borrow(),
+        ["btn"],
+        "positive control: the handler ran"
+    );
     assert_eq!(active_id(), "field", "nothing moves on contact");
     pointer(&btn, "pointercancel", "touch", 0.0);
     up(&btn, "touch");
@@ -318,7 +334,10 @@ fn the_password_toggle_leaves_the_field_focused() {
     let ev = down(&toggle, "mouse");
     up(&toggle, "mouse");
     assert_eq!(*f.log.borrow(), ["toggle"]);
-    assert!(ev.default_prevented(), "the browser's own focus change is cancelled");
+    assert!(
+        ev.default_prevented(),
+        "the browser's own focus change is cancelled"
+    );
     assert_eq!(active_id(), "pwfield");
     f.teardown();
 }
