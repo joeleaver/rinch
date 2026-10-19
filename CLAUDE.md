@@ -2516,7 +2516,9 @@ decided by reading the clipboard** (#149 — so it stays enabled over an empty
 clipboard); Select all = content. **All three clipboard rows — Cut, Copy and
 Paste — are greyed when `rinch` is built without the `clipboard` feature**:
 there is no clipboard for Copy or Paste to reach, and an enabled Cut would
-delete text it never copied. The press applies the native caret rule:
+delete text it never copied — and the Ctrl+X chord and `perform_text_edit`
+do nothing on a plain control then too (`handle_input_edit_command`, #823;
+the editor's Cut arms were already compiled out). The press applies the native caret rule:
 outside the selection it moves the caret, inside it keeps the selection. The
 field keeps the keyboard throughout. The platform-neutral half is a seam for a
 shell with its own toolbar: `RinchApp::text_edit_state()`,

@@ -346,6 +346,11 @@ if delete {
 
 Enable with: `features = ["clipboard"]`
 
+Without it, the built-in text fields and the rich-text editor have no
+clipboard either: Cut and Copy (the chords and the context menu alike) do
+nothing — a Cut does not delete text it could not copy — and Paste inserts
+nothing. (`android` turns the feature on.)
+
 Cross-platform clipboard support for text and images.
 
 ### Text Operations
