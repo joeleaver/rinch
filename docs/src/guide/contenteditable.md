@@ -548,8 +548,11 @@ in that element (node views) is the next step of this feature and not in this
 release.
 
 **HTML.** An embed is written as that `<div>` and read back from it, wherever a
-block can stand; the default paste keeps its data attributes only from rinch's own
-copy-out, as for an image. Another application has nothing to show for it, so an
+block can stand. The default paste reads the element as an embed only from rinch's
+own copy-out, which marks it (`data-rinch-clip`): another application's
+`<div data-pm-type="embed">` — say, a browser copy of a page showing an app's
+export — is read as an ordinary `<div>`, so its content arrives as content.
+Another application has nothing to show for an embed, so an
 app can give exported HTML markup to put inside the element:
 
 ```rust
@@ -563,8 +566,12 @@ let _guard = set_html_fallback(|node| {
 
 `node_to_html` and the clipboard copy-out then write
 `<div data-pm-type="embed" data-sheet="…"><table>…</table></div>`; rinch reads that
-element back as the same embed and ignores what is inside it. The markup is written
-as given (well-formed, and the app's to make safe). The callback is per thread and
+element back as the same embed (a load always, a paste when it is rinch's copy) and
+ignores what is inside it. The markup is written as given, and is the app's to make
+safe. It must be valid inside a `<div>`: well-formed, and with no bare `<li>`,
+`<td>` or `<tr>` outside its own list or table — in an embed inside a list item or
+a table cell those would close the outer item or cell when read back, and become a
+new one. A whole `<table>` or `<ul>` is fine. The callback is per thread and
 is unregistered when the guard is dropped; registrations stack, so dropping a later
 one brings an earlier one back. **Markdown** writes the bare element as an HTML
 block, which both of its readers take back, and a `DocNode` keeps the attributes

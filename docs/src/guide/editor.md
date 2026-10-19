@@ -172,7 +172,9 @@ those attributes. Commands, arrows and selection treat it exactly as a
 `horizontal_rule` (`tests/embed_node.rs` runs the two side by side). It has no HTML
 tag: a block leaf whose spec has no `parse_html_tags` — `embed`, or an app schema's
 own — is written as `<div data-pm-type="NAME" data-…></div>` and read back from a
-`<div>` carrying that marker (a `<div>` without it is a container as before), and
+`<div>` carrying that marker (a `<div>` without it is a container as before; the
+default paste needs rinch's copy-out mark `data-rinch-clip` beside it too, and reads
+another application's marked `<div>` as a container), and
 `serialize::set_html_fallback` gives the HTML export markup to write inside it (the
 reader ignores what is inside; see
 [the guide](contenteditable.md#embeds-blocks-an-app-draws)). Markdown writes the bare

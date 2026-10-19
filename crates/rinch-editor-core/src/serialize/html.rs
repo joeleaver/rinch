@@ -308,7 +308,9 @@ fn void_element(node: &Node, clipboard: bool) -> String {
 /// ([`slice_from_pasted_html`]) keeps an element's data attributes only beside
 /// it, so another application's (Slack's `data-stringify-type`, a framework's
 /// `data-v-…`, a lazy loader's `data-src`) are not stored, synced and stamped.
-/// It is reserved (`data-rinch-*`), so it never reaches a document itself.
+/// The copy-out also puts it on every block atom written as a `<div>` (an
+/// `embed`), data attributes or not, since the default paste reads such an
+/// element as the atom only beside it. It is reserved (`data-rinch-*`), so it never reaches a document itself.
 pub const CLIPBOARD_MARK: &str = "data-rinch-clip";
 
 /// The attribute naming the node type of a block atom written as a `<div>`
@@ -324,21 +326,22 @@ pub(super) fn writes_as_div(nt: &NodeType) -> bool {
 }
 
 /// A block atom written as a `<div>` ([`writes_as_div`]): its type in
-/// [`PM_TYPE`], the app data attributes it keeps ([`app_data_attrs`], bounded)
-/// with [`CLIPBOARD_MARK`] beside them on the copy-out, and inside it whatever
+/// [`PM_TYPE`], the app data attributes it keeps ([`app_data_attrs`], bounded),
+/// [`CLIPBOARD_MARK`] on the copy-out (always: it is what makes the default
+/// paste read the element as the atom), and inside it whatever
 /// [`set_html_fallback`]'s callback gives for it (the reader ignores what is
 /// inside). An attribute the spec declares is not written: the starter kit's
 /// `embed` declares none.
 fn div_atom_element(node: &Node, mode: Mode) -> String {
     let mut s = format!("<div {PM_TYPE}=\"{}\"", escape_attr(node.type_name()));
-    let mut any_data = false;
     if node.node_type().spec().data_attrs {
         for (k, v) in app_data_attrs(node.attrs()) {
             s.push_str(&format!(" {k}=\"{}\"", escape_attr(v)));
-            any_data = true;
         }
     }
-    if mode.clipboard && any_data {
+    // Always, data attributes or not: the default paste reads the element as
+    // the atom only beside the mark ([`HtmlParser::div_atom`]).
+    if mode.clipboard {
         s.push_str(&format!(" {CLIPBOARD_MARK}=\"\""));
     }
     s.push('>');
@@ -370,10 +373,17 @@ thread_local! {
 /// It applies to [`node_to_html`] and to the clipboard copy-out
 /// ([`slice_to_html`]); the element still carries the atom and its data
 /// attributes, and rinch's reader ignores what is inside it, so a copy pasted
-/// back into an editor, or exported HTML loaded again, is the same embed.
+/// back into an editor, or exported HTML loaded again, is the same embed. (A
+/// browser's copy of a page showing the export carries no [`CLIPBOARD_MARK`],
+/// so pasted into an editor it is the fallback's content, not an embed.)
 /// Markdown writes the bare element. The markup is written as given, not
-/// escaped: it must be well-formed (an unclosed `<div>` in it would take the
-/// element's end tag) and is the app's to make safe.
+/// escaped, and is the app's to make safe. It must be markup that is valid
+/// inside a `<div>`: well-formed (an unclosed `<div>` in it would take the
+/// element's end tag), and no bare table or list parts — a `<li>`, `<td>` or
+/// `<tr>` not inside its own `<ul>`/`<table>` — since in an embed inside a list
+/// item or a table cell the reader's implied end tags close the *outer* item
+/// or cell there, and the markup reads back as a new item, cell or row. A
+/// whole `<table>…</table>` or `<ul>…</ul>` is fine.
 ///
 /// Per thread. The returned guard unregisters it when dropped (`mem::forget`
 /// it to keep it for the thread's life). Registrations stack: while a later
@@ -414,11 +424,19 @@ impl std::fmt::Debug for HtmlFallbackGuard {
 impl Drop for HtmlFallbackGuard {
     fn drop(&mut self) {
         // `try_with`: a guard kept in a thread local can drop after the registry.
-        let _ = HTML_FALLBACKS.try_with(|f| {
-            if let Ok(mut f) = f.try_borrow_mut() {
-                f.retain(|(t, _)| *t != self.token);
-            }
-        });
+        // The entry is taken out under the borrow and dropped after it: the
+        // callback may own another registration's guard, whose own drop needs
+        // the registry (dropped inside `retain`, it found it borrowed and its
+        // registration stayed for good).
+        let gone = HTML_FALLBACKS
+            .try_with(|f| {
+                let mut f = f.try_borrow_mut().ok()?;
+                let i = f.iter().position(|(t, _)| *t == self.token)?;
+                Some(f.remove(i))
+            })
+            .ok()
+            .flatten();
+        drop(gone);
     }
 }
 
@@ -808,8 +826,22 @@ impl<'a> HtmlParser<'a> {
     /// The block atom a `<div data-pm-type="…">` names ([`writes_as_div`]), if
     /// it is one: any other element, or a type that is not such an atom, is
     /// read as it always was.
+    ///
+    /// Under [`DataAttrSource::MarkedOnly`] (the default paste) only rinch's own
+    /// copy-out names an atom: the element must carry [`CLIPBOARD_MARK`], which
+    /// the copy-out writes on every such element. Another application's
+    /// `<div data-pm-type="embed">` — a browser copy of a page showing an app's
+    /// export fallback — is read as the plain `<div>` it is, so its content
+    /// (the fallback a user meant to copy) arrives as content. A load
+    /// ([`DataAttrSource::Any`]) reads the element as the atom whatever is
+    /// inside it, which is how exported HTML loads back as the same embed.
     fn div_atom(&self, tag: &str, attributes: &[(String, String)]) -> Option<&'a NodeType> {
         if tag != "div" {
+            return None;
+        }
+        if self.data_attrs == DataAttrSource::MarkedOnly
+            && !attributes.iter().any(|(name, _)| name == CLIPBOARD_MARK)
+        {
             return None;
         }
         let name = attr(attributes, PM_TYPE)?;
