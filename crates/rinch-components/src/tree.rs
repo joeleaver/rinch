@@ -2015,9 +2015,26 @@ fn wire_keyboard(__scope: &mut RenderScope, container: &NodeHandle, tree_state: 
         container,
         move |key| on_tree_key(&cfg, tree_state, &owner, key),
         move || {
-            if let Some(cfg) = leave_cfg.upgrade() {
-                set_focused(&cfg, false);
-            }
+            // Focus that fell to nothing (the row that had it was redrawn and
+            // its old box removed) is still the tree's: its cursor row takes
+            // it back. Focus that went to another element has left.
+            let Some(cfg) = leave_cfg.upgrade() else { return };
+            let weak = Rc::downgrade(&cfg);
+            let _ = set_timeout(0, move || {
+                let Some(cfg) = weak.upgrade() else { return };
+                let container = cfg.keys.container.borrow().clone();
+                let Some(container) = container else { return };
+                let fell_to_nothing = match container.active_element() {
+                    None => true,
+                    Some(active) => matches!(active.tag_name().as_deref(), Some("body" | "html" | "BODY" | "HTML")),
+                };
+                let cursor = untracked(|| tree_state.cursor.get());
+                let row = cursor.and_then(|c| cfg.drag.rows.borrow().get(&c).cloned());
+                match (fell_to_nothing, row) {
+                    (true, Some(row)) => row.focus(),
+                    _ => set_focused(&cfg, false),
+                }
+            });
         },
     );
     __scope.on_cleanup(move || drop(handle));
