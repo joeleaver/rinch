@@ -109,21 +109,26 @@ fn a_block_takes_its_other_dimension_from_the_ratio() {
     check("width: 100px; aspect-ratio: 0/1", (100.0, 0.0));
 }
 
+/// A declared ratio relates the sizes of the `box-sizing` box. (rinch
+/// sizes every box as `border-box`, #1278: the `content-box` row is in
+/// [`known_differences_from_chrome`].)
 #[test]
 fn the_ratio_is_of_the_box_sizing_box() {
-    check("width: 100px; padding: 10px; aspect-ratio: 2", (120.0, 70.0));
     check(
         "width: 100px; padding: 10px; box-sizing: border-box; aspect-ratio: 2",
         (100.0, 50.0),
+    );
+    check(
+        "width: 120px; padding: 10px 30px 20px 10px; box-sizing: border-box; aspect-ratio: 3",
+        (120.0, 40.0),
     );
 }
 
 #[test]
 fn min_and_max_clamp_the_transferred_size() {
-    check("width: 100px; aspect-ratio: 2; max-height: 30px", (100.0, 30.0));
-    check("width: 100px; aspect-ratio: 2; min-height: 80px", (100.0, 80.0));
     check("aspect-ratio: 2; max-width: 120px", (120.0, 60.0));
-    check("height: 20px; aspect-ratio: 2; min-width: 60px", (60.0, 20.0));
+    // The other three Chrome rows (a definite size and the other axis's
+    // clamp) are in `known_differences_from_chrome` (#1561).
 }
 
 #[test]
@@ -133,8 +138,6 @@ fn a_flex_item_takes_the_ratio() {
     // width stays and the stretch wins over the ratio.
     check_in(ROW, "div", &[], "width: 100px; aspect-ratio: 2", (100.0, 300.0));
     check_in(ROW, "div", &[], "height: 40px; aspect-ratio: 2", (80.0, 40.0));
-    // Nothing declared: stretched to 300 tall, so 600 wide.
-    check_in(ROW, "div", &[], "aspect-ratio: 2", (600.0, 300.0));
     check_in(
         "display: flex; align-items: flex-start",
         "div",
@@ -206,8 +209,24 @@ fn a_video_with_no_natural_ratio_takes_the_declared_one() {
         (100.0, 50.0),
     );
     check_in("", "video", &[], "height: 60px; aspect-ratio: 2", (120.0, 60.0));
-    // A 4px iframe border (the UA's `2px inset`) around a 100x50 content box.
-    check_in("", "iframe", &[], "width: 100px; aspect-ratio: 2", (104.0, 54.0));
+    // A declared ratio is the `box-sizing` box's: the iframe's 2px UA border
+    // is inside the 100x50.
+    check_in(
+        "",
+        "iframe",
+        &[],
+        "box-sizing: border-box; width: 100px; aspect-ratio: 2",
+        (100.0, 50.0),
+    );
+    // A natural ratio is the content box's, whatever `box-sizing` says: a
+    // 300x150 canvas with a 10px border is 120 + 20 wide, 60 + 20 tall.
+    check_in(
+        "",
+        "canvas",
+        &[],
+        "display: block; box-sizing: border-box; width: 140px; border: 10px solid; aspect-ratio: auto 1",
+        (140.0, 80.0),
+    );
 }
 
 #[test]
@@ -292,19 +311,81 @@ fn a_loaded_image_keeps_its_ratio_unless_one_without_auto_is_declared() {
 }
 
 #[test]
-fn content_taller_than_the_ratio_grows_a_visible_box() {
+fn a_box_holding_text_takes_the_ratio() {
     let text = |style: &str, want: (f32, f32)| {
         let (doc, _, e) = build("", "div", &[], style, "aaaaaaaa bbbbbbbb cccccccc");
         assert_eq!(size(&doc, e), want, "{style} (Chrome 155, Inter 16px/20px)");
     };
-    // Three 20px lines: `min-height: auto` is the content height.
-    text("width: 100px; aspect-ratio: 4", (100.0, 60.0));
-    text("display: inline-block; width: 100px; aspect-ratio: 4", (100.0, 60.0));
-    // A scroll container's, or an explicit `min-height: 0`, is not.
+    // Three 20px lines overflow 25px. A scroll container's automatic minimum
+    // height, and an explicit `min-height: 0`, are not its content's, so the
+    // ratio holds. (A visible box grows to its content in Chrome:
+    // `known_differences_from_chrome`, #1562.)
     text("width: 100px; aspect-ratio: 4; overflow: hidden", (100.0, 25.0));
     text("width: 100px; aspect-ratio: 4; min-height: 0", (100.0, 25.0));
     let (doc, _, e) = build("", "div", &[], "width: 100px; aspect-ratio: 1", "aa");
     assert_eq!(size(&doc, e), (100.0, 100.0));
+}
+
+/// Where rinch is not Chrome yet. Each row asserts rinch's answer, with
+/// Chrome 155's beside it, so a fix shows up here.
+#[test]
+fn known_differences_from_chrome() {
+    // (style, container, rinch, Chrome, issue)
+    let rows: &[(&str, &str, (f32, f32), (f32, f32), u32)] = &[
+        // `box-sizing` is never read: every box is `border-box` (#1278).
+        (
+            "width: 100px; padding: 10px; aspect-ratio: 2",
+            "",
+            (100.0, 50.0),
+            (120.0, 70.0),
+            1278,
+        ),
+        // Taffy transfers the other axis's min/max onto a definite size.
+        (
+            "width: 100px; aspect-ratio: 2; max-height: 30px",
+            "",
+            (60.0, 30.0),
+            (100.0, 30.0),
+            1561,
+        ),
+        (
+            "width: 100px; aspect-ratio: 2; min-height: 80px",
+            "",
+            (160.0, 80.0),
+            (100.0, 80.0),
+            1561,
+        ),
+        (
+            "height: 20px; aspect-ratio: 2; min-width: 60px",
+            "",
+            (60.0, 30.0),
+            (60.0, 20.0),
+            1561,
+        ),
+        // No automatic minimum size from the ratio: a stretched flex item
+        // 300 tall is 600 wide in Chrome, and does not shrink.
+        ("aspect-ratio: 2", "display: flex", (400.0, 300.0), (600.0, 300.0), 1562),
+    ];
+    for &(style, container, rinch, chrome, issue) in rows {
+        let (doc, _, e) = build(container, "div", &[], style, "");
+        assert_eq!(
+            size(&doc, e),
+            rinch,
+            "{style} in \"{container}\": rinch's known answer (Chrome 155: {chrome:?}, #{issue})"
+        );
+    }
+    let (doc, _, e) = build("", "iframe", &[], "width: 100px; aspect-ratio: 2", "");
+    // Chrome 155: 104x54 (content-box: the 2px border outside 100x50). #1278.
+    assert_eq!(size(&doc, e), (100.0, 50.0));
+    // Content taller than the ratio: Chrome 155 grows a visible box to its
+    // three 20px lines, 100x60, block and inline-block alike. #1562.
+    for style in [
+        "width: 100px; aspect-ratio: 4",
+        "display: inline-block; width: 100px; aspect-ratio: 4",
+    ] {
+        let (doc, _, e) = build("", "div", &[], style, "aaaaaaaa bbbbbbbb cccccccc");
+        assert_eq!(size(&doc, e), (100.0, 25.0), "{style}");
+    }
 }
 
 /// A restyle that changes only `aspect-ratio` moves no other Taffy input:
@@ -315,6 +396,7 @@ fn a_change_of_ratio_relays_out() {
         ("div", (100.0, 50.0), (100.0, 25.0)),
         ("canvas", (100.0, 50.0), (100.0, 25.0)),
         ("video", (100.0, 50.0), (100.0, 25.0)),
+        ("img", (100.0, 50.0), (100.0, 25.0)),
     ] {
         let (mut doc, _, e) = build(
             "",
@@ -329,7 +411,9 @@ fn a_change_of_ratio_relays_out() {
         assert_eq!(size(&doc, e), after, "<{tag}> after aspect-ratio: 4");
         doc.set_style(e, "aspect-ratio", "auto");
         doc.resolve_layout(800.0, 600.0);
-        let back = if tag == "div" {
+        // No ratio left: a div and an unloaded image are empty, a canvas
+        // has its own, a video the default object height.
+        let back = if tag == "div" || tag == "img" {
             (100.0, 0.0)
         } else if tag == "canvas" {
             (100.0, 50.0)
