@@ -2,6 +2,7 @@
 //! `EditorState` onto rinch-dom (design §6).
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::{Rc, Weak};
 
 use crate::handle::ScrollAlign;
@@ -9,6 +10,7 @@ use crate::node_views::{Kept, Registry, Slot, Work};
 use rinch_core::dom::{CaretAffinity, DomDocument, NodeFont, NodeHandle};
 use rinch_editor_core::decoration::DecorationSet;
 use rinch_editor_core::serialize::{mark_dom_tag, node_dom_tag};
+use rinch_editor_core::transform::Mapping;
 use rinch_editor_core::{EditorState, EditorView, Mark, Node, Pos, Selection, ViewRequest};
 
 /// A weak handle to the host document. The view upgrades + borrows it briefly to
@@ -43,6 +45,14 @@ fn create_text(doc: &DocRef, text: &str) -> Option<NodeHandle> {
 /// number and size), so one can never overwrite or take away a name rinch
 /// reserves (`data-pm-type`, `data-rid`, …).
 fn apply_element_attrs(dom: &NodeHandle, node: &Node, old: Option<&Node>) {
+    apply_marker_attrs(dom, node, old);
+    apply_type_attrs(dom, node);
+}
+
+/// The attributes every host of `node` carries, its own element or the `<span>`
+/// a node view of an inline leaf is mounted in ([`apply_view_host_attrs`]): the
+/// `data-pm-type` marker and the app's `data-*` attributes the node keeps.
+fn apply_marker_attrs(dom: &NodeHandle, node: &Node, old: Option<&Node>) {
     dom.set_attribute("data-pm-type", node.type_name());
     let kept: Vec<(&str, &str)> = if node.node_type().spec().data_attrs {
         rinch_editor_core::app_data_attrs(node.attrs()).collect()
@@ -59,6 +69,20 @@ fn apply_element_attrs(dom: &NodeHandle, node: &Node, old: Option<&Node>) {
     for (name, value) in kept {
         dom.set_attribute(name, value);
     }
+}
+
+/// The `<span>` a node view of an inline leaf (a claimed `image`) is mounted in:
+/// the marker and the app's data attributes, none of the picture's own (`src`,
+/// `alt`, `width` belong to an `<img>`), and `display: inline-block`, so the
+/// span is one atomic inline on its line, sized by the app's component.
+fn apply_view_host_attrs(dom: &NodeHandle, node: &Node, old: Option<&Node>) {
+    apply_marker_attrs(dom, node, old);
+    dom.set_style("display", "inline-block");
+}
+
+/// The attributes `node`'s type writes on its own element (an `<img>`'s source, a
+/// list's `start`, a table's grid, …).
+fn apply_type_attrs(dom: &NodeHandle, node: &Node) {
     match node.type_name() {
         "image" => {
             // The source the picture is loaded from: the node's `src`, unless
@@ -413,11 +437,38 @@ pub(crate) struct Cx<'a> {
     /// mount through when they are not the same `Rc` (decision (d): never hand a
     /// view another node).
     kept: &'a [Kept],
+    /// A **remote** transaction's mapping ([`RinchDomEditorView::set_remote_mapping`]):
+    /// which old node survives where. Set only for a peer's change, whose steps the
+    /// collaboration adapter built from the CRDT's own block identities, so a node
+    /// no step touched is the same CRDT block. Read only where the model cannot
+    /// tell two nodes apart: an `Rc` that stands more than once among one parent's
+    /// children (an in-editor copy pasted beside its original), where the first
+    /// match by `same_ref` could hand one copy's view the other's place (the
+    /// round-3 review of #1595, F3).
+    mapping: Option<&'a Mapping>,
     work: &'a mut Vec<Work>,
     slots: &'a mut Vec<Rc<Slot>>,
 }
 
 impl Cx<'_> {
+    /// Whether the old child at `old_pos` may be taken as the new child at `new_pos`
+    /// when both are one `Rc` that stands more than once among the parent's old or
+    /// new children (`ambiguous`), for a descriptor holding a view: only when the
+    /// remote mapping carries it there untouched. Without a remote mapping, a local
+    /// edit keeps the first match by `same_ref`, which is the pairing the collaboration
+    /// projection makes for the same edit (its identity runs).
+    fn same_place(&self, ambiguous: bool, old_pos: usize, old_end: usize, new_pos: usize) -> bool {
+        if !ambiguous {
+            return true;
+        }
+        // REVIEW4: both ends, and the end checked for deletion (an insertion right
+        // before the node sets `deleted_after` at its start).
+        self.mapping.is_none_or(|m| {
+            let s = m.map_result(old_pos, 1);
+            let e = m.map_result(old_end, -1);
+            s.pos == new_pos && e.pos == new_pos + (old_end - old_pos) && !e.deleted_before()
+        })
+    }
     /// Whether a registered spec draws `node`'s type: its descriptor needs a slot.
     fn claims(&self, node: &Node) -> bool {
         self.views.is_some_and(|views| {
@@ -435,6 +486,36 @@ impl Cx<'_> {
         self.slots.push(slot.clone());
         Some(slot)
     }
+}
+
+/// A node's identity as a number: the address of its shared allocation (its attrs
+/// live in it), equal for two handles exactly when they are `same_ref`, while both
+/// are alive.
+fn node_key(node: &Node) -> usize {
+    std::ptr::from_ref(node.attrs()) as usize
+}
+
+/// The nodes ([`node_key`]) that stand more than once among `old` (a parent's
+/// descriptors) or among `new`'s children: one `Rc` in two places (an in-editor
+/// copy pasted beside its original), which `same_ref` cannot tell apart. One pass
+/// over each list per child-list diff, so a remote change costs O(children), not
+/// O(views × children) (the round-4 review of #1595, G2).
+fn twice_keys(old: &[ViewDesc], new: &Node) -> HashSet<usize> {
+    let mut twice = HashSet::new();
+    let mut seen = HashSet::new();
+    for n in old.iter().map(|o| &o.node) {
+        if !seen.insert(node_key(n)) {
+            twice.insert(node_key(n));
+        }
+    }
+    seen.clear();
+    for j in 0..new.child_count() {
+        let k = node_key(new.child(j));
+        if !seen.insert(k) {
+            twice.insert(k);
+        }
+    }
+    twice
 }
 
 /// Take `desc`'s host out of the document for good, replacing it with
@@ -716,7 +797,10 @@ impl ViewDesc {
     /// changed ([`Cx::kept`]) — never a different node that happens to stand at
     /// its place (decision (d)); then `false` rebuilds it, and its view is
     /// remounted.
-    fn update(&mut self, new: &Node, cx: &mut Cx, pos: usize) -> bool {
+    ///
+    /// `old_pos` is the position just before this descriptor's node in the old
+    /// document, for [`Cx::same_place`].
+    fn update(&mut self, new: &Node, cx: &mut Cx, pos: usize, old_pos: usize) -> bool {
         // Fast path: same persistent subtree — nothing changed (design A12).
         if self.node.same_ref(new) {
             return true;
@@ -734,11 +818,15 @@ impl ViewDesc {
                 || !cx
                     .kept
                     .iter()
-                    .any(|k| k.pos == pos && k.old.same_ref(&self.node))
+                    .any(|k| k.pos == pos && k.old_pos == old_pos && k.old.same_ref(&self.node))
             {
                 return false;
             }
-            apply_element_attrs(&self.dom, new, Some(&self.node));
+            if slot.has_view_host() {
+                apply_view_host_attrs(&self.dom, new, Some(&self.node));
+            } else {
+                apply_element_attrs(&self.dom, new, Some(&self.node));
+            }
             slot.set_node(new.clone());
             cx.work.push(Work::Sync(slot.clone()));
             self.node = new.clone();
@@ -793,7 +881,7 @@ impl ViewDesc {
         // built by this diff has no placement yet.
         let replace_spans =
             rinch_editor_core::tables::is_table(new) && !same_table_spans(&self.node, new);
-        self.diff_children(new, cx, pos + 1);
+        self.diff_children(new, cx, pos + 1, old_pos + 1);
         self.has_view = self.slot.is_some() || self.children.iter().any(|c| c.has_view);
         self.node = new.clone();
         if rinch_editor_core::tables::is_table(new)
@@ -833,42 +921,71 @@ impl ViewDesc {
     /// within the stretch (a block inserted before it and another removed after
     /// it in one transaction) keeps its mount rather than being matched by
     /// position against another node and remounted.
-    fn diff_children(&mut self, new: &Node, cx: &mut Cx, content_start: usize) {
+    fn diff_children(
+        &mut self,
+        new: &Node,
+        cx: &mut Cx,
+        content_start: usize,
+        old_content_start: usize,
+    ) {
         let new_count = new.child_count();
         let old_count = self.children.len();
+        // Where each old child stood in the old document, for `Cx::same_place`.
+        let mut old_at = Vec::with_capacity(old_count + 1);
+        old_at.push(old_content_start);
+        for c in &self.children {
+            old_at.push(old_at[old_at.len() - 1] + c.node.node_size());
+        }
+        let mut new_at = Vec::with_capacity(new_count + 1);
+        new_at.push(content_start);
+        for i in 0..new_count {
+            new_at.push(new_at[i] + new.child(i).node_size());
+        }
+        // Only a peer's change asks which copy is which, and only of a view's node.
+        let twice = if cx.mapping.is_some() && self.children.iter().any(|c| c.has_view) {
+            twice_keys(&self.children, new)
+        } else {
+            HashSet::new()
+        };
+        // A run matched by `same_ref` stops at a view's node that the model cannot
+        // tell from another copy of it unless the remote mapping says it is this one
+        // (`Cx::same_place`).
+        let keeps = |this: &Self, i: usize, j: usize| {
+            let old = &this.children[i];
+            old.node.same_ref(new.child(j))
+                && (!old.has_view
+                    || cx.mapping.is_none()
+                    || cx.same_place(
+                        twice.contains(&node_key(&old.node)),
+                        old_at[i],
+                        old_at[i + 1],
+                        new_at[j],
+                    ))
+        };
         let mut start = 0;
-        while start < old_count
-            && start < new_count
-            && self.children[start].node.same_ref(new.child(start))
-        {
+        while start < old_count && start < new_count && keeps(self, start, start) {
             start += 1;
         }
         let (mut old_end, mut new_end) = (old_count, new_count);
-        while old_end > start
-            && new_end > start
-            && self.children[old_end - 1]
-                .node
-                .same_ref(new.child(new_end - 1))
-        {
+        while old_end > start && new_end > start && keeps(self, old_end - 1, new_end - 1) {
             old_end -= 1;
             new_end -= 1;
         }
         // The changed stretch: `old[start..old_end]` becomes `new[start..new_end]`.
-        let mut pos = content_start
-            + new.content().children()[..start]
-                .iter()
-                .map(Node::node_size)
-                .sum::<usize>();
         if self.children[start..old_end].iter().any(|c| c.has_view) {
-            self.diff_stretch_keyed(new, cx, start, old_end, new_end, pos);
+            self.diff_stretch_keyed(new, cx, start, old_end, new_end, &old_at, &new_at, &twice);
             return;
         }
         let common = (old_end - start).min(new_end - start);
-        for i in start..start + common {
+        for (i, (&at, &old_pos)) in new_at
+            .iter()
+            .zip(&old_at)
+            .enumerate()
+            .take(start + common)
+            .skip(start)
+        {
             let new_child = new.child(i);
-            let at = pos;
-            pos += new_child.node_size();
-            if self.children[i].update(new_child, cx, at) {
+            if self.children[i].update(new_child, cx, at, old_pos) {
                 continue;
             }
             // Kind changed — build a replacement and swap it into the host
@@ -921,6 +1038,7 @@ impl ViewDesc {
     /// mounted); any other is patched over the old descriptor at its own index,
     /// if that one is free and [`Self::update`] accepts it, or built. The old
     /// descriptors nobody took are retired.
+    #[allow(clippy::too_many_arguments)]
     fn diff_stretch_keyed(
         &mut self,
         new: &Node,
@@ -928,8 +1046,18 @@ impl ViewDesc {
         start: usize,
         old_end: usize,
         new_end: usize,
-        mut pos: usize,
+        old_at: &[usize],
+        new_at: &[usize],
+        twice_set: &HashSet<usize>,
     ) {
+        // Whether a view's node stands more than once among the old or the new
+        // children (`twice_keys`, read before the drain): then `same_ref` alone does
+        // not say which copy is which, and its descriptor goes where the remote
+        // mapping carries it.
+        let twice: Vec<bool> = self.children[start..old_end]
+            .iter()
+            .map(|o| o.has_view && twice_set.contains(&node_key(&o.node)))
+            .collect();
         let mut old: Vec<Option<ViewDesc>> =
             self.children.drain(start..old_end).map(Some).collect();
         // An old descriptor some new child is the same node as is that child's,
@@ -948,25 +1076,31 @@ impl ViewDesc {
         let mut placed: Vec<ViewDesc> = Vec::with_capacity(new_end - start);
         for j in start..new_end {
             let child = new.child(j);
-            let at = pos;
-            pos += child.node_size();
-            let same = old
-                .iter()
-                .position(|o| o.as_ref().is_some_and(|o| o.node.same_ref(child)));
+            let at = new_at[j];
+            let same = (0..old.len()).find(|&k| {
+                old[k].as_ref().is_some_and(|o| {
+                    o.node.same_ref(child)
+                        && cx.same_place(twice[k], old_at[start + k], old_at[start + k + 1], at)
+                })
+            });
             if let Some(k) = same {
                 placed.extend(old[k].take());
                 continue;
             }
             // The same node with other attributes, moved within the stretch (a
-            // block inserted before it in the same transaction).
-            let was = cx.kept.iter().find(|k| k.pos == at).and_then(|k| {
-                old.iter()
-                    .position(|o| o.as_ref().is_some_and(|o| o.node.same_ref(&k.old)))
+            // block inserted before it in the same transaction): the one that
+            // stood where the transaction's `SetNodeAttrStep` found it.
+            let was = cx.kept.iter().find(|k| k.pos == at).and_then(|kept| {
+                (0..old.len()).find(|&k| {
+                    old[k].as_ref().is_some_and(|o| {
+                        o.node.same_ref(&kept.old) && old_at[start + k] == kept.old_pos
+                    })
+                })
             });
             if let Some(k) = was
                 && let Some(mut desc) = old[k].take()
             {
-                if desc.update(child, cx, at) {
+                if desc.update(child, cx, at, old_at[start + k]) {
                     placed.push(desc);
                     continue;
                 }
@@ -978,7 +1112,7 @@ impl ViewDesc {
                 .filter(|_| free)
                 .and_then(Option::take)
             {
-                if desc.update(child, cx, at) {
+                if desc.update(child, cx, at, old_at[j]) {
                     placed.push(desc);
                     continue;
                 }
@@ -1117,6 +1251,9 @@ pub struct RinchDomEditorView {
     /// The next [`EditorView::update_dom`]'s proof of which nodes are the same
     /// node with other attributes ([`Cx::kept`]); taken by it.
     kept: Vec<Kept>,
+    /// The mapping of a peer's change, for the next diff ([`Self::set_remote_mapping`]);
+    /// taken by it.
+    remote_mapping: Option<Mapping>,
     /// Set once the editor unmounted ([`Self::dispose_node_views`]): no slot is
     /// made after that.
     node_views_off: bool,
@@ -1167,6 +1304,7 @@ impl RinchDomEditorView {
                 doc: &doc,
                 views: (!node_views.is_empty()).then_some(&*node_views),
                 kept: &[],
+                mapping: None,
                 work: &mut node_view_work,
                 slots: &mut slots,
             };
@@ -1222,6 +1360,7 @@ impl RinchDomEditorView {
             slots,
             selected_slot: None,
             kept: Vec::new(),
+            remote_mapping: None,
             node_views_off: false,
             view_boxes: Vec::new(),
         };
@@ -1291,16 +1430,18 @@ impl EditorView for RinchDomEditorView {
         // Phase 1 (before layout): diff the document and patch the host. The root's
         // host element is fixed, so only its children reconcile.
         let kept = std::mem::take(&mut self.kept);
+        let mapping = self.remote_mapping.take();
         let registry = self.node_views.clone();
         {
             let mut cx = Cx {
                 doc: &self.doc,
                 views: (!self.node_views_off && !registry.is_empty()).then_some(&*registry),
                 kept: &kept,
+                mapping: mapping.as_ref(),
                 work: &mut self.node_view_work,
                 slots: &mut self.slots,
             };
-            self.root.diff_children(&next.doc, &mut cx, 0);
+            self.root.diff_children(&next.doc, &mut cx, 0, 0);
         }
         self.root.has_view = self.root.children.iter().any(|c| c.has_view);
         self.root.node = next.doc.clone();
@@ -1441,6 +1582,13 @@ impl RinchDomEditorView {
         self.kept = kept;
     }
 
+    /// For the next [`EditorView::update_dom`], which applies a **peer's** change:
+    /// that transaction's mapping ([`Cx::mapping`]).
+    #[cfg(feature = "collaboration")]
+    pub(crate) fn set_remote_mapping(&mut self, mapping: Mapping) {
+        self.remote_mapping = Some(mapping);
+    }
+
     /// Re-read which nodes the registered specs draw (a spec was registered or
     /// released): a node of a newly drawn type gets a slot, and every slot is
     /// matched again.
@@ -1464,6 +1612,7 @@ impl RinchDomEditorView {
             doc: &self.doc,
             views: Some(&*registry),
             kept: &[],
+            mapping: None,
             work: &mut self.node_view_work,
             slots: &mut self.slots,
         };
@@ -1513,6 +1662,52 @@ impl RinchDomEditorView {
         walk(&self.root, slot, 0)
     }
 
+    /// Swap the host element of the inline leaf `slot` is for: for an inline-block
+    /// `<span>` a node view is mounted in (`view_host`), or back for the node's own
+    /// element (an `<img>`). The descriptor, any mark wrapper around it and the
+    /// slot all name the new element; the old one is discarded. `false` when the
+    /// slot is not in this view or the document is gone.
+    pub(crate) fn swap_inline_host(&mut self, slot: &Rc<Slot>, view_host: bool) -> bool {
+        fn find<'a>(desc: &'a mut ViewDesc, slot: &Rc<Slot>) -> Option<&'a mut ViewDesc> {
+            if desc.slot.as_ref().is_some_and(|s| Rc::ptr_eq(s, slot)) {
+                return Some(desc);
+            }
+            if !desc.has_view {
+                return None;
+            }
+            desc.children.iter_mut().find_map(|c| find(c, slot))
+        }
+        let doc = self.doc.clone();
+        let Some(desc) = find(&mut self.root, slot) else {
+            return false;
+        };
+        let tag = if view_host {
+            "span".to_string()
+        } else {
+            node_dom_tag(&desc.node)
+        };
+        let Some(el) = create_element(&doc, &tag) else {
+            return false;
+        };
+        if view_host {
+            apply_view_host_attrs(&el, &desc.node, None);
+        } else {
+            apply_element_attrs(&el, &desc.node, None);
+        }
+        let old = desc.dom.clone();
+        let unmarked = desc.outer.node_id() == old.node_id();
+        old.replace_with(&el);
+        if unmarked {
+            desc.outer = el.clone();
+        }
+        desc.dom = el.clone();
+        old.discard();
+        slot.set_host(el, view_host);
+        // The box the caret and the node outline are drawn from moved.
+        self.view_boxes.clear();
+        true
+    }
+
     /// The slot of the node starting at `pos`, if it has one.
     pub(crate) fn slot_at(&self, doc: &Node, pos: Pos) -> Option<Rc<Slot>> {
         let r = doc.resolve(pos).ok()?;
@@ -1527,7 +1722,7 @@ impl RinchDomEditorView {
     pub(crate) fn slot_by_host(&self, host_id: usize) -> Option<Rc<Slot>> {
         self.slots
             .iter()
-            .find(|s| s.host.node_id().0 == host_id)
+            .find(|s| s.host().node_id().0 == host_id)
             .cloned()
     }
 
@@ -1580,7 +1775,7 @@ impl RinchDomEditorView {
                 .iter()
                 .filter(|s| s.is_mounted())
                 .filter_map(|s| {
-                    let id = s.host.node_id().0;
+                    let id = s.host().node_id().0;
                     let (x, y, w, h) = d.query_node_layout(id as u64)?;
                     Some((
                         id,

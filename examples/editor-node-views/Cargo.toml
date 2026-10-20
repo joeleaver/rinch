@@ -1,0 +1,10 @@
+[package]
+name = "editor-node-views"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Node views: an app's own components (a counter, an editable table, a badge on an image) drawn inside the rich-text editor's document"
+
+[dependencies]
+rinch = { workspace = true, features = ["desktop", "debug", "clipboard"] }
+rinch-editor-core = { workspace = true }

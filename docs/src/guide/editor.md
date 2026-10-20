@@ -155,10 +155,10 @@ written as HTML keeps both. Like every attr of an inline atom they merge per
 attribute when collaborating: two peers changing different attrs of one image at
 once both keep their change, two changing the same one converge on one value, and a
 peer's attribute follows its picture through Enter, Backspace, drags and pictures
-inserted beside it, and never shows on another picture (one pasted over it with the
-same `src` counts as the same picture: identity is type and `src`). A change of an
-image's `src` (or a picture with another `src` pasted over it, which the editor cannot
-tell from one) makes a new picture, and a concurrent change of the old one is dropped;
+inserted beside it, and never shows on another picture. A picture keeps its identity
+only through a change the editor can prove only set its attributes; a change of an
+image's `src`, and any picture pasted over it (with the same `src` too), makes a new
+picture, and a concurrent change of the old one is dropped;
 so does cutting and pasting a picture, undoing its delete, or dragging it after an
 in-editor copy of it. Chosen by Joe (2026-10-09): a wrong attribution is worse than a
 lost one — app data keyed to a picture would show on the wrong picture
@@ -193,9 +193,12 @@ place is remounted. On the collaboration side `CollabSession::integrate_incremen
 compares the CRDT block of every leaf block atom before and after the update: an atom
 that is another block is replaced even when equal by value, one that is the same block
 with other attributes gets `SetNodeAttrStep`s, and every other changed block is
-replaced on its own. `record_local_keeping` writes an atom put in another node's place
-as a new CRDT block unless the editor proved it the same, so CRDT block identity and
-editor identity agree. Backspace at the start of the block after a selectable leaf atom
+replaced on its own. `record_local_edit` writes an atom put in another node's place
+as a new CRDT block (a picture as a new char) unless the editor proved it the same:
+the editor hands each atom a transaction only set attributes of together with the
+node it was, so a kept atom right after one the transaction deleted is matched with
+its own old node, never with the deleted one's block. CRDT block identity and editor
+identity therefore agree. Backspace at the start of the block after a selectable leaf atom
 (and Delete before one) selects it, and the next press removes it — deliberately
 unlike ProseMirror, whose `joinBackward` deletes the atom in one press when the
 block is not empty.
@@ -794,6 +797,19 @@ The view, on each transaction:
 3. **Renders the caret and selection from `state.selection`** (after layout, in the
    second phase), converting the model's char `Pos` to a byte offset for the platform's
    text layout only at this render edge.
+
+**Node views** (an app's component drawn for a leaf node: an `embed`, or an
+`image` a spec claims) ride on the same diff. A node a registered spec may draw
+gets a *slot* on its descriptor; the diff only queues work for it, and the view
+mounts, updates and disposes components after the transaction, with no editor
+state borrowed. A slot keeps its mount only while its node is the same node: the
+same `Rc`, or one a `SetNodeAttrStep` of the transaction changed (the editor
+proves which, from the steps). A claimed image's host is an inline-block `<span>`
+swapped in for its `<img>` while a component is mounted in it; to the caret map
+it is still the image — one position, no text bytes. A collaborator's change
+arrives as `SetNodeAttrStep`s when the shared document proves the atom is the same
+one (a block atom by its CRDT block, an inline atom by its identity), and as a
+replace otherwise. See [the guide](contenteditable.md#node-views-your-component-in-the-document).
 
 Around that, the platform crates own block virtualization (skipping layout for
 off-screen blocks while keeping their real height), IME positioning, and — under the

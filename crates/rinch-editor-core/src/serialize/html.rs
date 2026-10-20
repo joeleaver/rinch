@@ -167,9 +167,17 @@ fn write_node(node: &Node, out: &mut String, mode: Mode) {
         out.push_str(&div_atom_element(node, mode));
         return;
     }
-    // Leaf non-text node (atom: hr / image / hard_break) → void element.
+    // Leaf non-text node (atom: hr / image / hard_break) → void element, or —
+    // an inline atom the export fallback answers for (a claimed image) — a
+    // `<span>` naming it, holding the app's markup.
     if node.is_leaf() {
-        let mut s = void_element(node, mode.clipboard);
+        let fallback = (mode.fallback && asks_fallback(node))
+            .then(|| html_fallback_for(node))
+            .flatten();
+        let mut s = match fallback {
+            Some(markup) => span_atom_element(node, mode.clipboard, &markup),
+            None => void_element(node, mode.clipboard),
+        };
         for mark in node.marks() {
             s = wrap_mark(mark, &s);
         }
@@ -270,6 +278,42 @@ fn align_style_attr(node: &Node) -> String {
 /// [`NodeSpec::data_attrs`]: crate::schema::NodeSpec::data_attrs
 fn void_element(node: &Node, clipboard: bool) -> String {
     let tag = primary_tag(node.node_type());
+    format!("<{tag}{}>", leaf_attributes(node, clipboard))
+}
+
+/// Whether the export fallback ([`set_html_fallback`]) is asked about leaf
+/// `node` written as a void element: an inline atom that keeps app data
+/// attributes (the starter kit's `image`) — what a node view can claim.
+fn asks_fallback(node: &Node) -> bool {
+    node.is_inline() && !node.is_text() && node.node_type().spec().data_attrs
+}
+
+/// An inline atom the export fallback answered `markup` for (a claimed image,
+/// node views C): `<span data-pm-type="image" …>markup</span>`, carrying every
+/// attribute its `<img>` would ([`void_element`]) and, on the copy-out, the
+/// clipboard mark (always: the default paste reads the span as the atom only
+/// beside it, as it reads an `embed`'s `<div>`). An `<img>` cannot hold
+/// children, and what another application shows in the picture's place is the
+/// app's markup, as the editor showed its component; rinch reads the span back
+/// as the atom and ignores what is inside it ([`HtmlParser::span_atom`]).
+fn span_atom_element(node: &Node, clipboard: bool, markup: &str) -> String {
+    let mut s = format!(
+        "<span {PM_TYPE}=\"{}\"{}",
+        escape_attr(node.type_name()),
+        leaf_attributes(node, false)
+    );
+    if clipboard {
+        s.push_str(&format!(" {CLIPBOARD_MARK}=\"\""));
+    }
+    s.push('>');
+    s.push_str(markup);
+    s.push_str("</span>");
+    s
+}
+
+/// The attributes of a leaf's void element ([`void_element`]), each with its
+/// leading space.
+fn leaf_attributes(node: &Node, clipboard: bool) -> String {
     let image = node.type_name() == "image";
     let spec = node.node_type().spec();
     let data: Vec<&str> = if spec.data_attrs {
@@ -277,7 +321,7 @@ fn void_element(node: &Node, clipboard: bool) -> String {
     } else {
         Vec::new()
     };
-    let mut s = format!("<{tag}");
+    let mut s = String::new();
     for (k, v) in node.attrs().iter() {
         if image && k == "width" {
             if let Some(width) = v.as_int().filter(|w| *w > 0) {
@@ -299,7 +343,6 @@ fn void_element(node: &Node, clipboard: bool) -> String {
     if clipboard && !data.is_empty() {
         s.push_str(&format!(" {CLIPBOARD_MARK}=\"\""));
     }
-    s.push('>');
     s
 }
 
@@ -369,6 +412,18 @@ thread_local! {
 /// `embed`), and what it answers is written **inside** that element — a static
 /// table for a sheet, an `<img>` of a canvas — so another application shows
 /// something where the app drew a node view. `None` leaves the element empty.
+///
+/// It is asked about every inline atom that keeps app data attributes too (the
+/// starter kit's `image`), for an image an app draws with a node view (node
+/// views C). An `<img>` cannot hold children, so an image it answers `Some`
+/// for is written as `<span data-pm-type="image" …>markup</span>` **in place
+/// of** the `<img>`, carrying the same attributes (`src`, `alt`, `title`,
+/// `width`, its data attributes): another application shows the app's markup
+/// where the editor showed its component, and rinch reads the span back as the
+/// same image. An image it answers `None` for is the plain `<img>`. That markup
+/// must be phrasing content (valid inside a `<span>`: text, `<b>`, `<img>`, a
+/// `<span>`): a block in it (`<div>`, `<table>`, `<p>`) would make the reader
+/// split the paragraph around it.
 ///
 /// It applies to [`node_to_html`] and to the clipboard copy-out
 /// ([`slice_to_html`]); the element still carries the atom and its data
@@ -848,6 +903,24 @@ impl<'a> HtmlParser<'a> {
         self.schema
             .node_type(name.trim())
             .filter(|nt| writes_as_div(nt))
+    }
+
+    /// The inline atom a `<span data-pm-type="…">` names, if it is one the
+    /// writer writes so ([`span_atom_element`]: an inline leaf that keeps app
+    /// data attributes), under the same clipboard rule as [`Self::div_atom`].
+    fn span_atom(&self, tag: &str, attributes: &[(String, String)]) -> Option<&'a NodeType> {
+        if tag != "span" {
+            return None;
+        }
+        if self.data_attrs == DataAttrSource::MarkedOnly
+            && !attributes.iter().any(|(name, _)| name == CLIPBOARD_MARK)
+        {
+            return None;
+        }
+        let name = attr(attributes, PM_TYPE)?;
+        self.schema
+            .node_type(name.trim())
+            .filter(|nt| nt.is_inline() && nt.is_leaf() && nt.spec().data_attrs)
     }
 
     /// Whether `tag` is a block: one of the schema's, or an HTML element that
@@ -1813,6 +1886,20 @@ impl<'a> HtmlParser<'a> {
                     ..
                 } => {
                     if is_dropped(tag) {
+                        continue;
+                    }
+                    // An inline atom the writer wrote as a `<span>` (a claimed
+                    // image's export fallback): the atom; what is inside it is
+                    // the app's markup, not content. A span that names the atom
+                    // but makes none (an image with no usable `src` — what a live
+                    // editor's own DOM holds for a claimed image, whose `src` is
+                    // in the model, not on the host) is read as the inline
+                    // element it is, so its text is kept: the reader is total
+                    // about text (#1397), and an image with no source is none.
+                    if let Some(nt) = self.span_atom(tag, attributes)
+                        && let Some(leaf) = self.build_inline_leaf(nt, attributes, active)?
+                    {
+                        self.push_inline(out, leaf)?;
                         continue;
                     }
                     match self.inline_marks(tag, attributes, active, out)? {

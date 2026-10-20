@@ -401,7 +401,15 @@ impl Registry {
 /// A node that a spec may draw: its host element, the model node it shows now,
 /// and the mounted view, if any. Owned by the node's descriptor in the view.
 pub(crate) struct Slot {
-    pub(crate) host: NodeHandle,
+    /// The node's host element. An inline leaf's (an `image`'s) is swapped for an
+    /// inline-block `<span>` while a view is mounted, and back when it unmounts
+    /// ([`EditorHandle::swap_node_view_host`]): an `<img>` cannot hold children.
+    host: RefCell<NodeHandle>,
+    /// Whether the node is inline — its host is swapped while a view is mounted.
+    inline: bool,
+    /// Whether [`Self::host`] is the `<span>` a view is mounted in, not the
+    /// node's own element.
+    view_host: Cell<bool>,
     doc: Weak<RefCell<dyn DomDocument>>,
     state: RefCell<SlotState>,
 }
@@ -437,8 +445,11 @@ impl Slot {
         doc: Weak<RefCell<dyn DomDocument>>,
         node: Node,
     ) -> Rc<Slot> {
+        let inline = node.is_inline();
         Rc::new(Slot {
-            host,
+            host: RefCell::new(host),
+            inline,
+            view_host: Cell::new(false),
             doc,
             state: RefCell::new(SlotState {
                 node,
@@ -449,6 +460,22 @@ impl Slot {
                 resync: false,
             }),
         })
+    }
+
+    /// The node's host element now.
+    pub(crate) fn host(&self) -> NodeHandle {
+        self.host.borrow().clone()
+    }
+
+    /// The host is now `host` (an inline leaf's swap).
+    pub(crate) fn set_host(&self, host: NodeHandle, view_host: bool) {
+        *self.host.borrow_mut() = host;
+        self.view_host.set(view_host);
+    }
+
+    /// Whether the host is the `<span>` a view of an inline leaf is mounted in.
+    pub(crate) fn has_view_host(&self) -> bool {
+        self.view_host.get()
     }
 
     /// The model node now shown (an attribute change of the same node).
@@ -491,6 +518,9 @@ impl Slot {
 pub(crate) struct Kept {
     pub(crate) pos: usize,
     pub(crate) old: Node,
+    /// Where `old` stood in the transaction's first document: one `Rc` can stand in
+    /// two places (an in-editor copy), and only this says which of them changed.
+    pub(crate) old_pos: usize,
 }
 
 pub(crate) enum Work {
@@ -564,8 +594,9 @@ fn sync(editor: &EditorHandle, registry: &Registry, slot: &Rc<Slot>, host_cx: Op
             if current.is_some() {
                 unmount(slot, true, host_cx);
             }
-            if let Some(entry) = matched {
-                mount(editor, registry, slot, &entry, host_cx);
+            match matched {
+                Some(entry) => mount(editor, registry, slot, &entry, host_cx),
+                None => give_back_host(editor, slot),
             }
         }
     }
@@ -587,7 +618,12 @@ fn mount(
         (st.node.clone(), st.selected)
     };
     let (read_only, dark) = (registry.read_only.get(), registry.dark.get());
-    let mut scope = RenderScope::new(doc, slot.host.node_id());
+    // An inline leaf's own element (an `<img>`) cannot hold the component: it is
+    // swapped for an inline-block `<span>` first, and back if the mount fails.
+    if slot.inline && !slot.has_view_host() && !editor.swap_node_view_host(slot, true) {
+        return;
+    }
+    let mut scope = RenderScope::new(doc, slot.host().node_id());
     let (signals, ctx) = untracked_handler(|| {
         scope.build(|_| {
             let attrs = Signal::new(node.attrs().clone());
@@ -615,6 +651,7 @@ fn mount(
     };
     let Some(content) = content else {
         scope.dispose();
+        give_back_host(editor, slot);
         return;
     };
     // The render is app code: it may have removed its own node, or (re-entering
@@ -622,10 +659,14 @@ fn mount(
     if slot.is_removed() || slot.is_mounted() {
         scope.dispose();
         content.discard();
+        if !slot.is_mounted() {
+            give_back_host(editor, slot);
+        }
         return;
     }
-    slot.host.append_child(&content);
-    slot.host.set_attribute(NODE_VIEW_ATTR, "");
+    let host = slot.host();
+    host.append_child(&content);
+    host.set_attribute(NODE_VIEW_ATTR, "");
     let (attrs, sel, ro, dk) = signals;
     slot.state.borrow_mut().mount = Some(Mount {
         token: entry.token,
@@ -637,7 +678,7 @@ fn mount(
         dark: (dk, dark),
     });
     if let Some(cx) = host_cx {
-        crate::registry::notify_node_view_host(cx.doc_key, cx.container, &slot.host, true);
+        crate::registry::notify_node_view_host(cx.doc_key, cx.container, &slot.host(), true);
     }
     // What `render` itself changed (its node's attributes, say) is matched now,
     // as any other change of the node is: the same spec still matching is a
@@ -662,6 +703,14 @@ fn mount(
     }
 }
 
+/// An inline leaf's `<span>` host back to its own element, unless the node left
+/// the document (its host goes with it).
+fn give_back_host(editor: &EditorHandle, slot: &Rc<Slot>) {
+    if slot.has_view_host() && !slot.is_removed() {
+        editor.swap_node_view_host(slot, false);
+    }
+}
+
 /// How many re-matches a render's own change may cause inside one another.
 const MAX_RESYNC_DEPTH: u32 = 8;
 
@@ -678,12 +727,13 @@ fn unmount(slot: &Rc<Slot>, discard_content: bool, host_cx: Option<&HostCx>) {
         return;
     };
     mount.scope.dispose();
+    let host = slot.host();
     if discard_content {
         mount.content.discard();
-        slot.host.remove_attribute(NODE_VIEW_ATTR);
+        host.remove_attribute(NODE_VIEW_ATTR);
     }
     if let Some(cx) = host_cx {
-        crate::registry::notify_node_view_host(cx.doc_key, cx.container, &slot.host, false);
+        crate::registry::notify_node_view_host(cx.doc_key, cx.container, &host, false);
     }
 }
 

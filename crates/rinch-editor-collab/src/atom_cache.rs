@@ -75,6 +75,7 @@ pub(crate) fn store(uid: u64, generation: u64, doc: Node, ids: Vec<BlockId>) {
 /// Forget session `uid` (it is dropped).
 pub(crate) fn forget(uid: u64) {
     let _ = CACHE.try_with(|c| c.borrow_mut().remove(&uid));
+    inline_forget(uid);
 }
 
 /// A [`BlockId`] that names no CRDT block and equals no other: what a leaf block
@@ -120,4 +121,96 @@ pub(crate) fn note_walk() {
 #[cfg_attr(not(feature = "test-util"), allow(dead_code))]
 pub(crate) fn walks() -> u64 {
     WALKS.with(|w| w.get())
+}
+
+// ─── Inline atoms (node views C) ─────────────────────────────────────────────
+
+thread_local! {
+    /// Per session: the identity (`crate::atoms`) of each inline atom node of the
+    /// editor's document as of the last read, by node (`Rc` identity), in document
+    /// order. Unlike the block atoms' list it is not tied to one document: an
+    /// inline atom node the model keeps through a local edit (typing beside a
+    /// picture) is the same CRDT char, so its identity holds while its `Rc` does;
+    /// a node the model made since (an inserted, pasted, moved or re-set picture)
+    /// is not in the list, and is unknown until the next read.
+    static INLINE: RefCell<HashMap<u64, Vec<(Node, String)>>> = RefCell::new(HashMap::new());
+}
+
+/// The identity of each inline atom of `doc` session `uid` knows, in document
+/// order (`None` for one it does not).
+pub(crate) fn inline_lookup(uid: u64, doc: &Node) -> Vec<Option<String>> {
+    let mut atoms = Vec::new();
+    crate::remote::inline_atom_nodes(doc, &mut atoms);
+    INLINE
+        .try_with(|c| {
+            let c = c.borrow();
+            let Some(known) = c.get(&uid) else {
+                return vec![None; atoms.len()];
+            };
+            // Both lists are in document order, and an edit keeps the order of the
+            // nodes it keeps: one pass, each known node taken once.
+            let mut from = 0;
+            atoms
+                .iter()
+                .map(|a| {
+                    let found = known[from..].iter().position(|(n, _)| n.same_ref(a))?;
+                    from += found + 1;
+                    Some(known[from - 1].1.clone())
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Remember that `doc`'s inline atoms are, in document order, `ids`.
+pub(crate) fn inline_store(uid: u64, doc: &Node, ids: &[Option<String>]) {
+    let mut atoms = Vec::new();
+    crate::remote::inline_atom_nodes(doc, &mut atoms);
+    if atoms.len() != ids.len() {
+        inline_forget(uid);
+        return;
+    }
+    let known: Vec<(Node, String)> = atoms
+        .into_iter()
+        .zip(ids)
+        .filter_map(|(n, id)| Some((n, id.clone()?)))
+        .collect();
+    let _ = INLINE.try_with(|c| c.borrow_mut().insert(uid, known));
+}
+
+/// A local change only set the attributes of these inline atoms (`old` → `new`, `old`
+/// standing at `pos` of `doc`, the change's first document): each `new` is the CRDT
+/// char `old` was. When `doc` holds `old`'s `Rc` in more than one place (an in-editor
+/// copy), the entry carried is the copy at `pos`: the k-th entry for that `Rc`, `pos`
+/// being its k-th place — and nothing is carried unless every copy is known, since
+/// only then do the two lists line up.
+pub(crate) fn inline_carry(uid: u64, doc: &Node, pairs: &[(Node, Node, usize)]) {
+    let _ = INLINE.try_with(|c| {
+        if let Some(known) = c.borrow_mut().get_mut(&uid) {
+            for (old, new, pos) in pairs {
+                let mut places = Vec::new();
+                doc.nodes_between(0, doc.content_size(), &mut |n: &Node, at, _| {
+                    if n.same_ref(old) {
+                        places.push(at);
+                    }
+                    true
+                });
+                let Some(k) = places.iter().position(|at| at == pos) else {
+                    continue;
+                };
+                let entries: Vec<usize> = (0..known.len())
+                    .filter(|&i| known[i].0.same_ref(old))
+                    .collect();
+                if entries.len() == places.len() {
+                    known[entries[k]].0 = new.clone();
+                }
+            }
+        }
+    });
+}
+
+/// Forget session `uid`'s inline identities (a re-base may have paired its atoms
+/// with other chars, or the session is dropped).
+pub(crate) fn inline_forget(uid: u64) {
+    let _ = INLINE.try_with(|c| c.borrow_mut().remove(&uid));
 }

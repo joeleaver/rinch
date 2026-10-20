@@ -206,10 +206,45 @@ pub(crate) fn kept_nodes(tr: &Transaction) -> Vec<Kept> {
             out.push(Kept {
                 pos: after.pos,
                 old,
+                old_pos: before,
             });
         }
     }
     out
+}
+
+/// Whether the kept atom `k` names one place of the transaction's first document
+/// `prev`: its old `Rc` stands nowhere else there, or every other copy of it is
+/// still in place in `next`, untouched by the transaction (`mapping`), and none
+/// was added. After an in-editor copy one `Rc` stands in two places, and a proof
+/// naming only the `Rc` would let the collaboration projection pair the kept atom
+/// with the other copy's CRDT char or block when that copy was deleted or moved in
+/// the same transaction (the round-3 review of #1595, F2): such a pair proves
+/// nothing, and the atom is written as a new one (lost, never misattributed).
+#[cfg(feature = "collaboration")]
+fn names_one_place(k: &Kept, prev: &Node, next: &Node, mapping: Option<&Mapping>) -> bool {
+    let at = |doc: &Node| {
+        let mut at = Vec::new();
+        doc.nodes_between(0, doc.content_size(), &mut |n: &Node, pos, _| {
+            if n.same_ref(&k.old) {
+                at.push(pos);
+            }
+            !n.is_leaf()
+        });
+        at
+    };
+    let others: Vec<usize> = at(prev).into_iter().filter(|&p| p != k.old_pos).collect();
+    if others.is_empty() {
+        return true;
+    }
+    let Some(m) = mapping else {
+        return false;
+    };
+    at(next).len() == others.len()
+        && others.iter().all(|&p| {
+            let r = m.map_result(p, 1);
+            !r.deleted_after() && next.node_at(r.pos).is_some_and(|n| n.same_ref(&k.old))
+        })
 }
 
 /// A weak [`EditorHandle`]: what a node view's context holds, so a view never
@@ -504,11 +539,28 @@ impl EditorCore {
         }
         self.note_selection(&prev.selection, &next.selection);
         self.state = next.clone();
+        // The atoms it only set attributes of, each with its node before and after
+        // and where it stood: a proof for the collaboration projection. One whose old
+        // `Rc` the document held at another place too is a proof only when every
+        // other copy is still where it was (`names_one_place`).
         #[cfg(feature = "collaboration")]
-        let kept_nodes: Vec<Node> = kept
+        let kept_atoms: Vec<(Node, Node, usize)> = kept
             .iter()
-            .filter_map(|k| next.doc.node_at(k.pos))
-            .filter(|n| n.is_leaf() && n.is_block())
+            .filter(|k| names_one_place(k, &prev.doc, &next.doc, mapping))
+            .filter_map(|k| Some((k.old.clone(), next.doc.node_at(k.pos)?, k.old_pos)))
+            .filter(|(_, n, _)| n.is_leaf() && !n.is_text())
+            .collect();
+        #[cfg(feature = "collaboration")]
+        let kept_nodes: Vec<(Node, Node)> = kept_atoms
+            .iter()
+            .map(|(o, n, _)| (o.clone(), n.clone()))
+            .collect();
+        // The inline atoms (a picture) among them: still their CRDT chars
+        // (`CollabSession::note_kept_inline_atoms`).
+        #[cfg(feature = "collaboration")]
+        let kept_inline: Vec<(Node, Node, usize)> = kept_atoms
+            .into_iter()
+            .filter(|(_, n, _)| n.is_inline())
             .collect();
         if let Some(view) = self.view.as_mut() {
             view.set_kept(kept);
@@ -523,7 +575,16 @@ impl EditorCore {
             }
         }
         #[cfg(feature = "collaboration")]
-        self.record_local(&prev, &next, &kept_nodes);
+        {
+            self.record_local(&prev, &next, &kept_nodes, mapping.is_none());
+            if !kept_inline.is_empty()
+                && let Some(bridge) = self.collab.as_ref()
+            {
+                bridge
+                    .session
+                    .note_kept_inline_atoms(&prev.doc, &kept_inline);
+            }
+        }
         Some(doc_changed)
     }
 
@@ -720,20 +781,37 @@ impl EditorCore {
     #[cfg(feature = "collaboration")]
     ///
     /// `kept` are the leaf block atoms of `next` the change only set attributes
-    /// of ([`kept_nodes`]): any other leaf block atom put where a different
-    /// node stood is written as a new CRDT block, so a peer's node view for the
-    /// old one is not handed it (`CollabSession::record_local_keeping`).
-    fn record_local(&mut self, prev: &EditorState, next: &EditorState, kept: &[Node]) {
+    /// of, and the inline atoms (pictures) likewise ([`kept_nodes`]): any other
+    /// leaf block atom put where a different node stood is written as a new CRDT
+    /// block, and any other picture as a new CRDT char (same `src` or not —
+    /// decision (f)), so a peer's node view for the old one is not handed it
+    /// (`CollabSession::record_local_edit`). Each comes with the node it was
+    /// before the change, so it matches only that node (review 2 of #1595, G1).
+    /// A `load` (no mapping: two documents, not one edited) proves no atom and
+    /// keeps the value rule for what the load did not change.
+    fn record_local(
+        &mut self,
+        prev: &EditorState,
+        next: &EditorState,
+        kept: &[(Node, Node)],
+        load: bool,
+    ) {
         let Some(bridge) = self.collab.as_mut() else {
             return;
         };
         if prev.doc.same_ref(&next.doc) {
             return;
         }
-        match bridge
-            .session
-            .record_local_keeping(next.schema(), &prev.doc, &next.doc, kept)
-        {
+        let recorded = if load {
+            bridge
+                .session
+                .record_local_keeping(next.schema(), &prev.doc, &next.doc, &[])
+        } else {
+            bridge
+                .session
+                .record_local_edit(next.schema(), &prev.doc, &next.doc, kept)
+        };
+        match recorded {
             // An empty delta means the projection produced no CRDT change at all, so
             // there is nothing for peers to apply.
             Ok(()) => match bridge.session.save_incremental() {
@@ -3546,11 +3624,25 @@ impl EditorHandle {
         &self,
         outbound: impl Fn(Vec<u8>) + 'static,
     ) -> Result<Vec<u8>, CollabError> {
-        let mut core = self.core_mut();
-        let session = CollabSession::new(&core.state)?;
+        let session = CollabSession::new(&self.core().state)?;
+        Ok(self.start_collaboration_host_with(session, outbound))
+    }
+
+    /// [`Self::start_collaboration_host`] with a session the caller built over this
+    /// editor's current document (`CollabSession::new(&handle.state())`). **Test
+    /// seam**: a test builds the session with a pinned yrs client id
+    /// (`rinch_editor_collab::testing`, behind that crate's `test-util` feature, which
+    /// no release build enables), so a multi-peer fuzz replays a seed bit for bit. A
+    /// session over another document makes the editor and its CRDT disagree.
+    #[doc(hidden)]
+    pub fn start_collaboration_host_with(
+        &self,
+        session: CollabSession,
+        outbound: impl Fn(Vec<u8>) + 'static,
+    ) -> Vec<u8> {
         let snapshot = session.snapshot();
-        core.collab = Some(CollabBridge::new(session, Box::new(outbound)));
-        Ok(snapshot)
+        self.core_mut().collab = Some(CollabBridge::new(session, Box::new(outbound)));
+        snapshot
     }
 
     /// Join an existing collaboration as a **guest** from a host's `snapshot` (from
@@ -3570,6 +3662,18 @@ impl EditorHandle {
         outbound: impl Fn(Vec<u8>) + 'static,
     ) -> Result<(), CollabError> {
         let session = CollabSession::from_bytes(snapshot)?;
+        self.start_collaboration_guest_with(session, outbound)
+    }
+
+    /// [`Self::start_collaboration_guest`] with a session the caller joined from the
+    /// host's snapshot (`CollabSession::from_bytes`). **Test seam**, like
+    /// [`Self::start_collaboration_host_with`]: a test joins with a pinned yrs client id.
+    #[doc(hidden)]
+    pub fn start_collaboration_guest_with(
+        &self,
+        session: CollabSession,
+        outbound: impl Fn(Vec<u8>) + 'static,
+    ) -> Result<(), CollabError> {
         // Adopt the host's document first, with **no** session attached, so the load
         // is not recorded onto a CRDT — the new session already holds this content,
         // and a session left attached from an earlier document must not have this
@@ -3636,6 +3740,7 @@ impl EditorHandle {
                 // `SetNodeAttrStep` (the collab adapter proves it is the same
                 // atom), so the view stays mounted.
                 let kept = kept_nodes(&tr);
+                let mapping = tr.mapping().clone();
                 let next = prev.apply(tr);
                 core.carry_anchors_remote(&prev, &next.doc);
                 if !prev.doc.same_ref(&next.doc) {
@@ -3645,6 +3750,7 @@ impl EditorHandle {
                 core.state = next.clone();
                 if let Some(view) = core.view.as_mut() {
                     view.set_kept(kept);
+                    view.set_remote_mapping(mapping);
                     view.update_dom(&prev, &next);
                 }
                 true
@@ -4123,6 +4229,28 @@ impl EditorHandle {
             doc_key: view.doc_key(),
             container: view.container_id(),
         })
+    }
+
+    /// Swap the host element of the inline leaf `slot` is for (see
+    /// [`RinchDomEditorView::swap_inline_host`]). Called with no borrow held, from
+    /// [`node_views::run`]; `false` when the editor is busy or the slot is gone.
+    pub(crate) fn swap_node_view_host(&self, slot: &Rc<node_views::Slot>, view_host: bool) -> bool {
+        let Ok(mut core) = self.try_core_mut() else {
+            return false;
+        };
+        let Some(view) = core.view.as_mut() else {
+            return false;
+        };
+        let swapped = view.swap_inline_host(slot, view_host);
+        if swapped {
+            // The caret beside it and the node outline are drawn from its box.
+            crate::registry::owe_overlay_pass(view.doc_key());
+        }
+        drop(core);
+        if swapped {
+            crate::registry::request_overlay_refresh();
+        }
+        swapped
     }
 
     /// The position just before the node `slot` is for.

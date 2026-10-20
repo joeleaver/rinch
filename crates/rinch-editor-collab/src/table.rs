@@ -357,6 +357,7 @@ fn without_spans(attrs: &Attrs) -> Attrs {
 /// The empty paragraph a filler cell holds, and that an emptied cell reads as.
 fn empty_block() -> NodeData {
     NodeData::Block(BlockData {
+        atom_idents: Vec::new(),
         id: None,
         type_name: FILLER_BLOCK.into(),
         attrs: Attrs::new(),
@@ -1079,7 +1080,12 @@ pub(crate) fn reconcile_table(
     per_char: &BTreeSet<String>,
 ) -> Result<()> {
     let before = read_table(txn, node)?;
-    if before.data == *target {
+    // Equal by value is no change, except that under an editor's proof a picture an
+    // edit replaced by an equal fresh copy is a change (`equal_under_proof`; the
+    // round-3 review of #1595, F5).
+    if before.data == *target
+        && model.is_none_or(|(b, a)| crate::projection::equal_under_proof(b, a))
+    {
         return Ok(());
     }
     if before.data.attrs != target.attrs {
@@ -1228,6 +1234,14 @@ pub(crate) fn reconcile_table(
                 }
                 None => false,
             };
+            // And, under an editor's proof, the cell's atoms are the ones it had.
+            let unchanged = unchanged
+                && match (was.get(&key), model) {
+                    (Some((_, _, Some(old))), Some((_, new))) => {
+                        crate::projection::equal_under_proof(old, new.child(i).child(k))
+                    }
+                    _ => true,
+                };
             anchors.insert(key.clone());
             if unchanged {
                 continue;

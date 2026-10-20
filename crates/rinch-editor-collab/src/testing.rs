@@ -145,3 +145,51 @@ pub fn grow_first_table_update(snapshot: &[u8], n: usize) -> Option<Vec<u8>> {
 pub fn atom_id_walks() -> u64 {
     crate::atom_cache::walks()
 }
+
+/// The atoms `tr` only set attributes of, as they stand in its final document, each
+/// with the node it was in `tr`'s first document: what an editor hands
+/// [`CollabSession::record_local_edit`] (the view's `kept_nodes`, restated for a test
+/// that drives a session itself). A node an earlier step put in place, or a later
+/// step removed, is not one of them.
+pub fn kept_atom_pairs(
+    tr: &rinch_editor_core::Transaction,
+) -> Vec<(rinch_editor_core::Node, rinch_editor_core::Node)> {
+    let (steps, mapping) = (tr.steps(), tr.mapping());
+    let mut out: Vec<(usize, rinch_editor_core::Node, rinch_editor_core::Node)> = Vec::new();
+    for (i, step) in steps.iter().enumerate() {
+        let Some(a) = step
+            .as_any()
+            .downcast_ref::<rinch_editor_core::SetNodeAttrStep>()
+        else {
+            continue;
+        };
+        let after = mapping.slice(i + 1, mapping.len()).map_result(a.pos, 1);
+        if after.deleted_after() || out.iter().any(|(p, _, _)| *p == after.pos) {
+            continue;
+        }
+        let mut inserted = false;
+        let mut before = a.pos;
+        for map in mapping.maps()[..i].iter().rev() {
+            let r = map.invert().map_result(before, 1);
+            inserted |= r.deleted_after();
+            before = r.pos;
+        }
+        if inserted {
+            continue;
+        }
+        if let Some(node) = tr.doc().node_at(after.pos)
+            && node.is_leaf()
+            && !node.is_text()
+            && let Some(old) = tr.docs().first().and_then(|d| d.node_at(before))
+        {
+            out.push((after.pos, old, node));
+        }
+    }
+    out.into_iter().map(|(_, o, n)| (o, n)).collect()
+}
+
+/// The new halves of [`kept_atom_pairs`]: what [`CollabSession::record_local_keeping`]
+/// takes.
+pub fn kept_atoms(tr: &rinch_editor_core::Transaction) -> Vec<rinch_editor_core::Node> {
+    kept_atom_pairs(tr).into_iter().map(|(_, n)| n).collect()
+}

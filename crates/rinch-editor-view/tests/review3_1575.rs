@@ -149,13 +149,66 @@ fn page(html: &str) -> (Rc<RefCell<MockDomDocument>>, RenderScope, EditorHandle)
 }
 
 fn peers(html: &str, n: usize) -> Vec<Peer> {
+    peers_seeded(html, n, None)
+}
+
+thread_local! {
+    /// A test's own `R_ID_SALT` ([`client_id`]), for a history pinned by a test.
+    static ID_SALT: Cell<Option<u64>> = const { Cell::new(None) };
+}
+
+/// A 53-bit yrs client id for peer `i` of fuzz seed `seed` (splitmix64), so the
+/// merge order, and with it the whole run, is the same every time the seed runs,
+/// while the order of the peers' ids (which breaks yrs's ties) varies from seed to
+/// seed as random ids would. The peers of one seed never share one.
+fn client_id(seed: u64, i: usize) -> u64 {
+    let mix = |x: u64| {
+        let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    };
+    // `R_ID_SALT` picks another set of ids for the same seeds (a search for an
+    // order that fails); unset, the ids are a function of the seed alone.
+    let salt: u64 = ID_SALT.with(Cell::get).unwrap_or_else(|| {
+        std::env::var("R_ID_SALT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
+    });
+    let id = |i: u64| {
+        (mix(seed.wrapping_mul(4).wrapping_add(i) ^ salt.wrapping_mul(0xA24B_AED4_963E_E407))
+            & ((1 << 53) - 1))
+            | 1
+    };
+    let mine = id(i as u64);
+    assert!(
+        (0..i as u64).all(|j| id(j) != mine),
+        "seed {seed}: two peers share an id"
+    );
+    mine
+}
+
+/// [`peers`], with every session's yrs client id pinned from `seed` when given
+/// (`rinch_editor_collab::testing`): a seed then replays bit for bit.
+fn peers_seeded(html: &str, n: usize, seed: Option<u64>) -> Vec<Peer> {
     const NAMES: [&str; 3] = ["A", "B", "C"];
     let (d, s, h) = page(html);
     let out: Rc<RefCell<Vec<Vec<u8>>>> = Rc::default();
     let o = out.clone();
-    let snapshot = h
-        .start_collaboration_host(move |x| o.borrow_mut().push(x))
-        .unwrap();
+    let snapshot = match seed {
+        Some(seed) => {
+            let session = rinch_editor_collab::testing::session_with_client_id(
+                &h.state(),
+                client_id(seed, 0),
+            )
+            .unwrap();
+            h.start_collaboration_host_with(session, move |x| o.borrow_mut().push(x))
+        }
+        None => h
+            .start_collaboration_host(move |x| o.borrow_mut().push(x))
+            .unwrap(),
+    };
     let views = Rc::new(Views::default());
     h.register_node_view(spec(&views)).keep();
     let mut v = vec![Peer {
@@ -166,12 +219,22 @@ fn peers(html: &str, n: usize) -> Vec<Peer> {
         out,
         name: NAMES[0],
     }];
-    for name in NAMES.iter().take(n).skip(1) {
+    for (i, name) in NAMES.iter().enumerate().take(n).skip(1) {
         let (d, s, h) = page("<p></p>");
         let out: Rc<RefCell<Vec<Vec<u8>>>> = Rc::default();
         let o = out.clone();
-        h.start_collaboration_guest(&snapshot, move |x| o.borrow_mut().push(x))
-            .unwrap();
+        match seed {
+            Some(seed) => {
+                let session = rinch_editor_collab::testing::session_from_bytes_with_client_id(
+                    &snapshot,
+                    client_id(seed, i),
+                )
+                .unwrap();
+                h.start_collaboration_guest_with(session, move |x| o.borrow_mut().push(x))
+            }
+            None => h.start_collaboration_guest(&snapshot, move |x| o.borrow_mut().push(x)),
+        }
+        .unwrap();
         let views = Rc::new(Views::default());
         h.register_node_view(spec(&views)).keep();
         v.push(Peer {
@@ -525,7 +588,7 @@ fn shape(doc: &Node) -> Vec<String> {
 fn run_seed(seed: u64, n: usize, steps: usize) {
     let e = r#"<div data-pm-type="embed" data-k="x"></div>"#;
     let html = format!("<p>aa</p>{e}<p>bb</p>{e}{e}<p>cc</p>{e}<p>dd</p>");
-    let ps = peers(&html, n);
+    let ps = peers_seeded(&html, n, Some(seed));
     let seen: RefCell<Seen> = RefCell::default();
     for q in &ps {
         check(q, &seen, &format!("seed {seed} start"));
@@ -674,9 +737,27 @@ fn run_seed(seed: u64, n: usize, steps: usize) {
         remove_task_lists(q);
         if q.handle.collab_outbound_stall().is_some() {
             let (_, texts) = top(&q.handle.doc());
-            let at = texts.first().map_or(1, |(pos, _)| pos + 1);
-            q.handle.set_selection(Selection::cursor(Pos(at)));
-            q.handle.insert_text("q");
+            match texts.first() {
+                Some((pos, _)) => {
+                    q.handle.set_selection(Selection::cursor(Pos(pos + 1)));
+                    q.handle.insert_text("q");
+                }
+                // A document of embeds only has no line to type in (as review2_1575's
+                // seed 1546 met): append a paragraph instead.
+                None => {
+                    assert!(q.handle.update(|st| {
+                        let s = st.schema();
+                        let para = s
+                            .branch("paragraph", Fragment::from_node(s.text("q").ok()?))
+                            .ok()?;
+                        let mut tr = st.tr();
+                        let end = st.doc.content_size();
+                        tr.replace(end, end, Slice::new(Fragment::from_node(para), 0, 0))
+                            .ok()?;
+                        Some(tr)
+                    }));
+                }
+            }
         }
         assert!(
             q.handle.collab_outbound_stall().is_none(),
@@ -1194,4 +1275,22 @@ fn n5_at_the_cap() {
         Some(&"d"),
         "the chain re-matched to d"
     );
+}
+
+/// The round-3 review of #1595, F3, pinned: seed 5730 with the client ids of salt 1
+/// (`R_ID_SALT=1`), the order of the three peers' ids under which it failed every
+/// time. C is stalled (a task list) and integrates B's change: the remote
+/// transaction replaces the embed C's view stood on (an in-editor copy, one `Rc`
+/// with another embed further down) and leaves the other copy alone. Matched by
+/// `same_ref` alone, the view diff took the first copy's descriptor for the second
+/// copy, so C's view moved onto another embed's CRDT block, which the cure of the
+/// stall then showed. The diff now follows the remote mapping for a node that
+/// stands twice (`Cx::same_place`). Before the fix 158 of salts 1..=300 failed this
+/// seed; after it none.
+#[test]
+fn f3_seed_5730_a_stalled_peer_keeps_its_view_off_another_copys_block() {
+    ID_SALT.with(|s| s.set(Some(1)));
+    let failed = run_traced(5730, 3, 60);
+    ID_SALT.with(|s| s.set(None));
+    assert!(failed.is_none(), "{failed:?}");
 }
