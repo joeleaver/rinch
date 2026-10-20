@@ -615,8 +615,9 @@ impl RinchDocument {
         // `Node::computed_style`, which this loop leaves alone, so it still
         // sees the style the old layout was built from. Clearing them all made
         // a dark-mode toggle that changes one variable no text reads re-shape
-        // every paragraph in the window. Regenerated `::before`/`::after`
-        // content still invalidates its root regardless, in the cascade.
+        // every paragraph in the window. Generated `::before`/`::after`
+        // content that is minted or freed still invalidates its root
+        // regardless, in the cascade; a box that still generates is kept.
         let node_ids: Vec<usize> = self.tree.nodes.iter().map(|(id, _)| id).collect();
         for &nid in &node_ids {
             // A generated box keeps its pseudo style: its originator's cascade
