@@ -114,6 +114,9 @@ fn clear_stale() {
         }
     }
     rinch_web::__reset_activation_state();
+    // A test that panicked with its `Modal` open never gave the page's scroll
+    // lock back; removing `<html>`'s style would not reset the count.
+    rinch_web::__reset_scroll_lock();
     let _ = document()
         .document_element()
         .unwrap()
@@ -209,6 +212,21 @@ async fn a_real_pan_that_starts_on_a_button_does_not_click_it() {
 #[wasm_bindgen_test]
 #[ignore = "needs trusted touches: run tests/support/run_real_keys.sh"]
 async fn a_real_tap_that_opens_a_modal_from_a_scroller_leaves_the_focus_in_it() {
+    tap_opener_of_a_modal("button").await;
+}
+
+/// The same from a plain clickable row (a `div` with a handler and nothing
+/// focusable): its press moves no focus, and is prevented all the same, or the
+/// compatibility `mousedown` blurs the modal's field (review of #1609, F3).
+#[wasm_bindgen_test]
+#[ignore = "needs trusted touches: run tests/support/run_real_keys.sh"]
+async fn a_real_tap_on_a_plain_row_that_opens_a_modal_leaves_the_focus_in_it() {
+    tap_opener_of_a_modal("div").await;
+}
+
+/// A scroller holding `opener_tag#opener`, whose handler opens a `Modal` with
+/// one field; a real tap on the opener must leave the focus in that field.
+async fn tap_opener_of_a_modal(opener_tag: &'static str) {
     require_helper();
     clear_stale();
     let host = document().create_element("div").unwrap();
@@ -228,13 +246,13 @@ async fn a_real_tap_that_opens_a_modal_from_a_scroller_leaves_the_focus_in_it() 
             let scroller = s.create_element("div");
             scroller.set_attribute("id", "scroller");
             scroller.set_attribute("style", "height: 150px; overflow: auto");
-            let btn = s.create_element("button");
-            btn.set_attribute("id", "opener");
-            btn.set_attribute("style", "display: block; width: 200px; height: 60px");
-            btn.append_child(&s.create_text("open"));
+            let opener = s.create_element(opener_tag);
+            opener.set_attribute("id", "opener");
+            opener.set_attribute("style", "display: block; width: 200px; height: 60px");
+            opener.append_child(&s.create_text("open"));
             let rid = s.register_handler(move || open.set(true));
-            btn.set_attribute("data-rid", &rid.0.to_string());
-            scroller.append_child(&btn);
+            opener.set_attribute("data-rid", &rid.0.to_string());
+            scroller.append_child(&opener);
             let filler = s.create_element("div");
             filler.set_attribute("style", "height: 600px");
             scroller.append_child(&filler);
@@ -260,7 +278,7 @@ async fn a_real_tap_that_opens_a_modal_from_a_scroller_leaves_the_focus_in_it() 
     assert_eq!(
         active.as_ref().map(|e| e.id()).unwrap_or_default(),
         "in-modal",
-        "focus after the tap: {:?}",
+        "focus after the tap on a <{opener_tag}>: {:?}",
         active.map(|e| e.tag_name())
     );
     open.set(false);
