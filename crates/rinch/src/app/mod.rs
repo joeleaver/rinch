@@ -5058,8 +5058,13 @@ impl RinchApp {
                         // `overflow-x: clip; overflow-y: visible` ancestor
                         // would come back rounded where paint draws it square.
                         let (n_clips_x, n_clips_y) = n.clip_axes();
+                        //
+                        // The compositor's corner mask is circular, so an
+                        // elliptical corner (#977) is handed over as its
+                        // smaller radius — a hole that stays inside the shape
+                        // paint draws. Exact for circular corners.
                         if clip_radii == [0.0; 4] && n_clips_x && n_clips_y {
-                            let r = rinch_dom::paint::padding_box_radii(n, 1.0);
+                            let r = rinch_dom::paint::padding_box_radii(n, 1.0).circular_within();
                             if r.top_left > 0.0
                                 || r.top_right > 0.0
                                 || r.bottom_right > 0.0

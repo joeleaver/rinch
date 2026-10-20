@@ -435,6 +435,16 @@ impl TransitionSpec {
                                     TransitionProperty::BackgroundPositionY,
                                 ];
                                 None
+                            } else if name == "border-radius" {
+                                // #977: like `background-position`, the
+                                // spelling everyone writes started nothing.
+                                expanded = &[
+                                    TransitionProperty::BorderRadiusTopLeft,
+                                    TransitionProperty::BorderRadiusTopRight,
+                                    TransitionProperty::BorderRadiusBottomRight,
+                                    TransitionProperty::BorderRadiusBottomLeft,
+                                ];
+                                None
                             } else {
                                 // For shorthands like "border-color", "padding", etc.
                                 // we skip them — individual longhands will be listed
@@ -529,6 +539,10 @@ pub enum AnimatableValue {
     Transform(AnimatableTransform),
     /// A `visibility` value — discrete, see [`interpolate_visibility`].
     Visibility(VisibilityValue),
+    /// A `border-*-radius` corner: its horizontal and vertical radius (#977),
+    /// each interpolated as a `LengthPercentage`. One value, so the two halves
+    /// of a corner start, retarget and finish together.
+    CornerRadius(LengthPercentageValue, LengthPercentageValue),
 }
 
 /// A transform captured for interpolation: the computed **function list**
@@ -694,6 +708,19 @@ impl AnimatableValue {
             (AnimatableValue::Visibility(a), AnimatableValue::Visibility(b)) => Some(
                 AnimatableValue::Visibility(interpolate_visibility(*a, *b, t)),
             ),
+            // Each axis as a length-percentage; a pair whose one axis cannot
+            // interpolate (a length against a percentage) snaps whole.
+            (AnimatableValue::CornerRadius(ax, ay), AnimatableValue::CornerRadius(bx, by)) => {
+                let lp = |a: &LengthPercentageValue, b: &LengthPercentageValue| {
+                    match AnimatableValue::LengthPercentage(*a)
+                        .interpolate(&AnimatableValue::LengthPercentage(*b), t)
+                    {
+                        Some(AnimatableValue::LengthPercentage(v)) => Some(v),
+                        _ => None,
+                    }
+                };
+                Some(AnimatableValue::CornerRadius(lp(ax, bx)?, lp(ay, by)?))
+            }
             // Incompatible types — snap immediately.
             //
             // A length against a percentage lands here on purpose: CSS
@@ -741,6 +768,9 @@ impl AnimatableValue {
                 lists_equivalent(&a.functions, &b.functions)
             }
             (AnimatableValue::Visibility(a), AnimatableValue::Visibility(b)) => a == b,
+            (AnimatableValue::CornerRadius(ax, ay), AnimatableValue::CornerRadius(bx, by)) => {
+                length_percentage_eq(ax, bx) && length_percentage_eq(ay, by)
+            }
             _ => false,
         }
     }

@@ -81,7 +81,13 @@ impl Shape {
     /// The spec's used radii (§5.5): a corner with a zero radius on either
     /// axis is square, then every radius is scaled by `min(1, L / S)`.
     fn new(x0: f64, y0: f64, w: f64, h: f64, raw: [(f64, f64); 4]) -> Self {
-        let mut r = raw.map(|(a, b)| if a <= 0.0 || b <= 0.0 { (0.0, 0.0) } else { (a, b) });
+        let mut r = raw.map(|(a, b)| {
+            if a <= 0.0 || b <= 0.0 {
+                (0.0, 0.0)
+            } else {
+                (a, b)
+            }
+        });
         let sums = [
             (w, r[0].0 + r[1].0),
             (h, r[1].1 + r[2].1),
@@ -132,10 +138,26 @@ impl Shape {
         let [tl, tr, br, bl] = self.r;
         // (corner radius, ellipse centre, is the point in the corner's quadrant)
         let corners = [
-            (tl, (self.x0 + tl.0, self.y0 + tl.1), x < self.x0 + tl.0 && y < self.y0 + tl.1),
-            (tr, (self.x1 - tr.0, self.y0 + tr.1), x > self.x1 - tr.0 && y < self.y0 + tr.1),
-            (br, (self.x1 - br.0, self.y1 - br.1), x > self.x1 - br.0 && y > self.y1 - br.1),
-            (bl, (self.x0 + bl.0, self.y1 - bl.1), x < self.x0 + bl.0 && y > self.y1 - bl.1),
+            (
+                tl,
+                (self.x0 + tl.0, self.y0 + tl.1),
+                x < self.x0 + tl.0 && y < self.y0 + tl.1,
+            ),
+            (
+                tr,
+                (self.x1 - tr.0, self.y0 + tr.1),
+                x > self.x1 - tr.0 && y < self.y0 + tr.1,
+            ),
+            (
+                br,
+                (self.x1 - br.0, self.y1 - br.1),
+                x > self.x1 - br.0 && y > self.y1 - br.1,
+            ),
+            (
+                bl,
+                (self.x0 + bl.0, self.y1 - bl.1),
+                x < self.x0 + bl.0 && y > self.y1 - bl.1,
+            ),
         ];
         for ((rx, ry), (cx, cy), in_quadrant) in corners {
             if in_quadrant && rx > 0.0 && ry > 0.0 {
@@ -185,14 +207,22 @@ fn mismatches(p: &TinySkiaPainter, inside: impl Fn(f64, f64) -> bool) -> (usize,
 
 fn assert_fill(p: &TinySkiaPainter, shape: Shape, what: &str) {
     let (wrong, n_in, n_out) = mismatches(p, |x, y| shape.contains(x, y));
-    assert!(n_in > 1000 && n_out > 1000, "{what}: the oracle judged too little");
-    assert_eq!(wrong, 0, "{what}: {wrong} pixels differ from the spec's shape {shape:?}");
+    assert!(
+        n_in > 1000 && n_out > 1000,
+        "{what}: the oracle judged too little"
+    );
+    assert_eq!(
+        wrong, 0,
+        "{what}: {wrong} pixels differ from the spec's shape {shape:?}"
+    );
 }
 
 fn assert_ring(p: &TinySkiaPainter, outer: Shape, inner: Shape, what: &str) {
-    let (wrong, n_in, n_out) =
-        mismatches(p, |x, y| outer.contains(x, y) && !inner.contains(x, y));
-    assert!(n_in > 200 && n_out > 1000, "{what}: the oracle judged too little");
+    let (wrong, n_in, n_out) = mismatches(p, |x, y| outer.contains(x, y) && !inner.contains(x, y));
+    assert!(
+        n_in > 200 && n_out > 1000,
+        "{what}: the oracle judged too little"
+    );
     assert_eq!(
         wrong, 0,
         "{what}: {wrong} pixels differ from the spec's ring {outer:?} - {inner:?}"
@@ -203,7 +233,12 @@ fn assert_ring(p: &TinySkiaPainter, outer: Shape, inner: Shape, what: &str) {
 /// the corner drawn as a 40px circle.
 #[test]
 fn an_elliptical_radius_rounds_each_axis_by_its_own_radius() {
-    let p = painted(200.0, 100.0, "background: black; border-radius: 40px / 12px", None);
+    let p = painted(
+        200.0,
+        100.0,
+        "background: black; border-radius: 40px / 12px",
+        None,
+    );
     assert_fill(
         &p,
         Shape::new(LEFT, TOP, 200.0, 100.0, [(40.0, 12.0); 4]),
@@ -229,7 +264,12 @@ fn a_percentage_radius_resolves_against_each_axis() {
 /// side, 30.
 #[test]
 fn overlapping_radii_are_scaled_down_together() {
-    let p = painted(200.0, 60.0, "background: black; border-radius: 100px 0 0 0", None);
+    let p = painted(
+        200.0,
+        60.0,
+        "background: black; border-radius: 100px 0 0 0",
+        None,
+    );
     assert_fill(
         &p,
         Shape::new(
@@ -296,9 +336,19 @@ fn overflow_clips_to_the_elliptical_padding_shape() {
 /// padding box's, both elliptical.
 #[test]
 fn a_uniform_border_is_the_elliptical_ring() {
-    let p = painted(200.0, 100.0, "border: 6px solid black; border-radius: 50px / 20px", None);
+    let p = painted(
+        200.0,
+        100.0,
+        "border: 6px solid black; border-radius: 50px / 20px",
+        None,
+    );
     let outer = Shape::new(LEFT, TOP, 200.0, 100.0, [(50.0, 20.0); 4]);
-    assert_ring(&p, outer, outer.inset(6.0, 6.0, 6.0, 6.0), "border: 6px solid");
+    assert_ring(
+        &p,
+        outer,
+        outer.inset(6.0, 6.0, 6.0, 6.0),
+        "border: 6px solid",
+    );
 }
 
 /// The per-side path (one colour per side, the spinner shape) rounds
@@ -312,14 +362,24 @@ fn a_per_side_border_rounds_elliptically() {
         None,
     );
     let outer = Shape::new(LEFT, TOP, 240.0, 100.0, [(120.0, 50.0); 4]);
-    assert_ring(&p, outer, outer.inset(6.0, 6.0, 6.0, 6.0), "per-side border, 50%");
+    assert_ring(
+        &p,
+        outer,
+        outer.inset(6.0, 6.0, 6.0, 6.0),
+        "per-side border, 50%",
+    );
 }
 
 /// The issue's measurement shape: a spread shadow outlining the element
 /// follows its scaled radii (here the overlap case, grown by the spread).
 #[test]
 fn a_spread_shadow_follows_the_scaled_radii() {
-    let p = painted(200.0, 60.0, "border-radius: 100px 0 0 0; box-shadow: 0 0 0 10px black", None);
+    let p = painted(
+        200.0,
+        60.0,
+        "border-radius: 100px 0 0 0; box-shadow: 0 0 0 10px black",
+        None,
+    );
     let outer = Shape::new(
         LEFT - 10.0,
         TOP - 10.0,
@@ -341,7 +401,12 @@ fn a_spread_shadow_follows_the_scaled_radii() {
 /// axis (§7.1.1, `r >= spread` on both).
 #[test]
 fn an_elliptical_spread_shadow_grows_each_axis() {
-    let p = painted(200.0, 100.0, "border-radius: 40px / 12px; box-shadow: 0 0 0 8px black", None);
+    let p = painted(
+        200.0,
+        100.0,
+        "border-radius: 40px / 12px; box-shadow: 0 0 0 8px black",
+        None,
+    );
     let outer = Shape::new(LEFT - 8.0, TOP - 8.0, 216.0, 116.0, [(48.0, 20.0); 4]);
     let element = Shape::new(LEFT, TOP, 200.0, 100.0, [(40.0, 12.0); 4]);
     assert_ring(&p, outer, element, "0 0 0 8px over 40px / 12px");
@@ -366,7 +431,61 @@ fn a_circular_radius_that_fits_is_unchanged() {
 /// round (outer 23, inner 17 here, for 20 and 14).
 #[test]
 fn a_uniform_circular_border_has_the_outer_radius_outside() {
-    let p = painted(200.0, 100.0, "border: 6px solid black; border-radius: 20px", None);
+    let p = painted(
+        200.0,
+        100.0,
+        "border: 6px solid black; border-radius: 20px",
+        None,
+    );
     let outer = Shape::new(LEFT, TOP, 200.0, 100.0, [(20.0, 20.0); 4]);
-    assert_ring(&p, outer, outer.inset(6.0, 6.0, 6.0, 6.0), "border: 6px, 20px");
+    assert_ring(
+        &p,
+        outer,
+        outer.inset(6.0, 6.0, 6.0, 6.0),
+        "border: 6px, 20px",
+    );
+}
+
+/// A `border-radius` transition moves both radii of a corner together. Only
+/// the horizontal radius was transitioned (it was the only one rinch kept), so
+/// with the vertical one written straight to its end value a circular corner
+/// went elliptical for the whole transition.
+#[test]
+fn a_radius_transition_interpolates_both_axes() {
+    use rinch_dom::transition::TransitionProperty;
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let style_el = doc.create_element("style");
+    let text = doc.create_text(
+        ".b { width: 200px; height: 100px; border-radius: 10px; \
+              transition: border-radius 100ms linear; } \
+         .b.on { border-radius: 30px / 50px; }",
+    );
+    doc.append_child(style_el, text);
+    doc.append_child(body, style_el);
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "class", "b");
+    doc.append_child(body, div);
+    doc.tree.transitions_enabled = true;
+    doc.resolve_layout(800.0, 600.0);
+
+    doc.set_attribute(div, "class", "b on");
+    doc.resolve_layout(800.0, 600.0);
+    let start = doc
+        .tree
+        .active_transitions
+        .get(&div.0)
+        .and_then(|t| t.get(&TransitionProperty::BorderRadiusTopLeft))
+        .expect("the class change should start a border-radius transition")
+        .start_time_ms;
+    rinch_dom::transition::tick_transitions(&mut doc.tree, start + 50.0);
+    let cs = &doc.tree.nodes[div.0].computed_style;
+    let (x, y) = (
+        cs.border_radius_top_left.to_px(),
+        cs.border_radius_top_left_y.to_px(),
+    );
+    assert!(
+        (x - 20.0).abs() < 0.01 && (y - 30.0).abs() < 0.01,
+        "half-way from 10px to 30px / 50px the corner is 20 / 30, got {x} / {y}"
+    );
 }
