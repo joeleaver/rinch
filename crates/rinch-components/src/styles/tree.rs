@@ -139,8 +139,7 @@ pub fn styles() -> String {
     opacity: 0.4;
 }
 .rinch-tree__node-content--drop-before::after,
-.rinch-tree__node-content--drop-after::after,
-.rinch-tree__node-content--drop-inside::after {
+.rinch-tree__node-content--drop-after::after {
     content: "";
     position: absolute;
     left: calc(var(--tree-level-offset) * var(--tree-drop-level, 0));
@@ -160,18 +159,17 @@ pub fn styles() -> String {
 .rinch-tree__node-content--drop-after::after {
     bottom: -1px;
 }
-.rinch-tree__node-content--drop-inside::after {
-    top: 0;
-    bottom: 0;
-    border: 2px solid var(--rinch-primary-color);
-    border-radius: var(--rinch-radius-sm);
+/* "Inside" outlines the row itself: a full-height positioned box over the
+   row hid the row's contents when painted. */
+.rinch-tree .rinch-tree__node-content.rinch-tree__node-content--drop-inside {
+    outline: 2px solid var(--rinch-primary-color);
+    outline-offset: -2px;
 }
 .rinch-tree__node-content--drop-refused::after {
     background-color: var(--rinch-color-red-6);
-    border-color: var(--rinch-color-red-6);
 }
-.rinch-tree__node-content--drop-inside.rinch-tree__node-content--drop-refused::after {
-    background-color: transparent;
+.rinch-tree .rinch-tree__node-content--drop-inside.rinch-tree__node-content--drop-refused {
+    outline-color: var(--rinch-color-red-6);
 }
 
 /* Keyboard: the cursor row carries a ring while the tree has the keyboard,
