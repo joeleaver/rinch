@@ -132,8 +132,14 @@ impl CollabDoc {
         // document whose block an edit rebuilt) are one document edited too: matched by
         // value, a picture pasted over an equal one would read as no change at all and
         // the old char would keep its identity (decision (f)).
+        //
+        // An editor that hands its proof for a transaction (`record_local_edit`) says
+        // so outright: then the two are related even when they share nothing at all
+        // (the picture that was a one-paragraph document's only content, replaced by
+        // an equal fresh copy — review 2 of #1595, G3).
         let mut runs = identity_runs(before, after);
         let shares_a_block = runs != (0, 0)
+            || crate::projection::proof_is_an_edit()
             || (0..an).any(|j| (0..bn).any(|i| before.child(i).same_ref(after.child(j))))
             || shares_any_inline_node(before, after);
         if !shares_a_block {

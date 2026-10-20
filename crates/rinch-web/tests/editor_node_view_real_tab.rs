@@ -11,8 +11,8 @@
 //! CHROMEDRIVER=/path/to/chromedriver crates/rinch-web/tests/support/run_real_keys.sh
 //! ```
 //!
-//! Built without `RINCH_REAL_KEYS` (every ordinary run, CI's included) the test says
-//! so and returns: nothing would send the keys.
+//! An ordinary run reports it **ignored**, never `ok`: nothing would send the keys.
+//! CI's Chrome job runs it through the script.
 #![cfg(target_arch = "wasm32")]
 
 use rinch_core::dom::RenderScope;
@@ -71,11 +71,12 @@ fn describe(el: Option<web_sys::Element>) -> String {
 }
 
 #[wasm_bindgen_test]
+#[ignore = "needs trusted keys: run tests/support/run_real_keys.sh"]
 async fn a_real_tab_leaves_the_view_from_its_last_input_and_shift_tab_from_its_first() {
-    if option_env!("RINCH_REAL_KEYS").is_none() {
-        console_log!("skipped: needs trusted keys (support/run_real_keys.sh)");
-        return;
-    }
+    assert!(
+        option_env!("RINCH_REAL_KEYS").is_some(),
+        "built without RINCH_REAL_KEYS: run tests/support/run_real_keys.sh, which sends the keys"
+    );
     let before = document().create_element("button").unwrap();
     before.set_id("before");
     before.set_text_content(Some("before"));

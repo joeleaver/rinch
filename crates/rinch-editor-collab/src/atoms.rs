@@ -43,8 +43,9 @@
 //!   before another for that other (review of #1503, F2). An atom changed in place (a new
 //!   node) is the atom at its place only when the editor **proves** it: the change only
 //!   set its attributes (a `SetNodeAttrStep`, which the editor hands over through
-//!   `CollabSession::record_local_keeping`), neither node is in the change otherwise,
-//!   and both have one type and one `src`. Anything else is a new char with a new
+//!   `CollabSession::record_local_edit` as the pair of the node before and after it,
+//!   so the new node matches only its own old one — review 2 of #1595, G1), and both
+//!   have one type and one `src`. Anything else is a new char with a new
 //!   identity — a `src` change, and a picture pasted over a selected one even with the
 //!   same `src` (decision (f), Joe 2026-10-19; before it, "same type and `src`" alone
 //!   made a pasted picture the old one, and a peer's node view drawn for the old picture

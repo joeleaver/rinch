@@ -122,11 +122,11 @@ impl Peer {
     fn local(&mut self, f: impl FnOnce(&mut Transaction)) {
         let mut tr = self.state.tr();
         f(&mut tr);
-        let kept = rinch_editor_collab::testing::kept_atoms(&tr);
+        let kept = rinch_editor_collab::testing::kept_atom_pairs(&tr);
         let before = self.state.doc.clone();
         let after = self.state.apply(tr);
         self.session
-            .record_local_keeping(self.state.schema(), &before, &after.doc, &kept)
+            .record_local_edit(self.state.schema(), &before, &after.doc, &kept)
             .expect("project local");
         self.state = after;
     }
@@ -323,13 +323,13 @@ impl Peer {
     /// only set attributes of (decision (f)).
     fn commit(&mut self, tr: Transaction) -> bool {
         MAPPINGS.with(|m| m.borrow_mut().push(tr.mapping().clone()));
-        let kept = rinch_editor_collab::testing::kept_atoms(&tr);
-        KEPT.with(|k| k.borrow_mut().extend(kept.iter().cloned()));
+        let kept = rinch_editor_collab::testing::kept_atom_pairs(&tr);
+        KEPT.with(|k| k.borrow_mut().extend(kept.iter().map(|(_, n)| n.clone())));
         let before = self.state.doc.clone();
         let after = self.state.apply(tr);
         let ok = self
             .session
-            .record_local_keeping(self.state.schema(), &before, &after.doc, &kept)
+            .record_local_edit(self.state.schema(), &before, &after.doc, &kept)
             .is_ok();
         self.state = after;
         ok

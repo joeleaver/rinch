@@ -443,6 +443,11 @@ impl CollabSession {
     /// from an embed that came to stand where another stood (a move, an undo of a
     /// delete), which a node view keyed to the old one must not be handed.
     ///
+    /// `kept` names the new nodes only, so each matches whatever node stood at its
+    /// place: an editor's transaction should use [`Self::record_local_edit`], which
+    /// also names the old ones. This form is for a load (`kept` empty) and for a
+    /// caller that cannot name them.
+    ///
     /// [`Self::record_local`] is the positional rule: a leaf atom put in another's
     /// place takes over its block, attributes and all, and a picture put in the place
     /// of one with the same `src` takes over its char.
@@ -454,6 +459,28 @@ impl CollabSession {
         kept: &[Node],
     ) -> Result<()> {
         let _kept = crate::projection::kept_atoms_scope(Some(kept));
+        self.record_local_inner(schema, before, after)
+    }
+
+    /// [`Self::record_local_keeping`] for an editor's **transaction**: `kept` pairs each
+    /// atom the transaction only set attributes of with the node it was before
+    /// (`(old, new)`), and `before` and `after` are one document edited, never a load.
+    ///
+    /// The old half is what makes the proof sound: proved by its new node alone, an
+    /// atom kept right after one the same transaction deleted (delete one picture or
+    /// embed, renumber its neighbour, in one `update`) was paired with the deleted one's
+    /// char or block, and a peer's concurrent change of the deleted one showed on it
+    /// (review 2 of #1595, G1). And with it a proved pair keeps its char even where the
+    /// model holds one of its `Rc`s twice (an in-editor copy, G2). A load, or a caller
+    /// that cannot name the old nodes, uses [`Self::record_local_keeping`].
+    pub fn record_local_edit(
+        &mut self,
+        schema: &Schema,
+        before: &Node,
+        after: &Node,
+        kept: &[(Node, Node)],
+    ) -> Result<()> {
+        let _kept = crate::projection::kept_pairs_scope(kept);
         self.record_local_inner(schema, before, after)
     }
 
@@ -544,6 +571,11 @@ impl CollabSession {
             self.carry_unprojected(before, after, before_ids);
             return Err(frozen);
         }
+        // The re-base's `before` is the CRDT's read, which holds none of the caller's
+        // old nodes and is not the document the caller edited: keep the proof's new
+        // nodes only (`review2_1575::s11` otherwise remounts a view the stall did not
+        // move).
+        let _rebase_kept = crate::projection::rebase_proof_scope();
         match self.cdoc.project_change(&base, after) {
             Ok(()) => {
                 self.stalled = None;

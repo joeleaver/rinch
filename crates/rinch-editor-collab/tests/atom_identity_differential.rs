@@ -127,11 +127,11 @@ impl Peer {
         f(&mut tr);
         // What an editor proves (decision (f)): the atoms the change only set
         // attributes of keep their identity, nothing else does.
-        let kept = rinch_editor_collab::testing::kept_atoms(&tr);
+        let kept = rinch_editor_collab::testing::kept_atom_pairs(&tr);
         let before = self.state.doc.clone();
         let after = self.state.apply(tr);
         self.session
-            .record_local_keeping(self.state.schema(), &before, &after.doc, &kept)
+            .record_local_edit(self.state.schema(), &before, &after.doc, &kept)
             .expect("project local");
         self.state = after;
     }

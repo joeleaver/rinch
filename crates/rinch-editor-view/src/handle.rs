@@ -505,10 +505,10 @@ impl EditorCore {
         self.note_selection(&prev.selection, &next.selection);
         self.state = next.clone();
         #[cfg(feature = "collaboration")]
-        let kept_nodes: Vec<Node> = kept
+        let kept_nodes: Vec<(Node, Node)> = kept
             .iter()
-            .filter_map(|k| next.doc.node_at(k.pos))
-            .filter(|n| n.is_leaf() && !n.is_text())
+            .filter_map(|k| Some((k.old.clone(), next.doc.node_at(k.pos)?)))
+            .filter(|(_, n)| n.is_leaf() && !n.is_text())
             .collect();
         // The inline atoms (a picture) it only set attributes of, before and after:
         // still their CRDT chars (`CollabSession::note_kept_inline_atoms`).
@@ -532,7 +532,7 @@ impl EditorCore {
         }
         #[cfg(feature = "collaboration")]
         {
-            self.record_local(&prev, &next, &kept_nodes);
+            self.record_local(&prev, &next, &kept_nodes, mapping.is_none());
             if !kept_inline.is_empty()
                 && let Some(bridge) = self.collab.as_ref()
             {
@@ -739,18 +739,33 @@ impl EditorCore {
     /// leaf block atom put where a different node stood is written as a new CRDT
     /// block, and any other picture as a new CRDT char (same `src` or not —
     /// decision (f)), so a peer's node view for the old one is not handed it
-    /// (`CollabSession::record_local_keeping`).
-    fn record_local(&mut self, prev: &EditorState, next: &EditorState, kept: &[Node]) {
+    /// (`CollabSession::record_local_edit`). Each comes with the node it was
+    /// before the change, so it matches only that node (review 2 of #1595, G1).
+    /// A `load` (no mapping: two documents, not one edited) proves no atom and
+    /// keeps the value rule for what the load did not change.
+    fn record_local(
+        &mut self,
+        prev: &EditorState,
+        next: &EditorState,
+        kept: &[(Node, Node)],
+        load: bool,
+    ) {
         let Some(bridge) = self.collab.as_mut() else {
             return;
         };
         if prev.doc.same_ref(&next.doc) {
             return;
         }
-        match bridge
-            .session
-            .record_local_keeping(next.schema(), &prev.doc, &next.doc, kept)
-        {
+        let recorded = if load {
+            bridge
+                .session
+                .record_local_keeping(next.schema(), &prev.doc, &next.doc, &[])
+        } else {
+            bridge
+                .session
+                .record_local_edit(next.schema(), &prev.doc, &next.doc, kept)
+        };
+        match recorded {
             // An empty delta means the projection produced no CRDT change at all, so
             // there is nothing for peers to apply.
             Ok(()) => match bridge.session.save_incremental() {

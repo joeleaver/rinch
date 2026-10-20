@@ -193,9 +193,12 @@ place is remounted. On the collaboration side `CollabSession::integrate_incremen
 compares the CRDT block of every leaf block atom before and after the update: an atom
 that is another block is replaced even when equal by value, one that is the same block
 with other attributes gets `SetNodeAttrStep`s, and every other changed block is
-replaced on its own. `record_local_keeping` writes an atom put in another node's place
-as a new CRDT block unless the editor proved it the same, so CRDT block identity and
-editor identity agree. Backspace at the start of the block after a selectable leaf atom
+replaced on its own. `record_local_edit` writes an atom put in another node's place
+as a new CRDT block (a picture as a new char) unless the editor proved it the same:
+the editor hands each atom a transaction only set attributes of together with the
+node it was, so a kept atom right after one the transaction deleted is matched with
+its own old node, never with the deleted one's block. CRDT block identity and editor
+identity therefore agree. Backspace at the start of the block after a selectable leaf atom
 (and Delete before one) selects it, and the next press removes it — deliberately
 unlike ProseMirror, whose `joinBackward` deletes the atom in one press when the
 block is not empty.

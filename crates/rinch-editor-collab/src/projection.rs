@@ -1487,14 +1487,14 @@ fn text_splice_bounds(
     let same_place =
         |a: &Attrs, b: &Attrs| a.get(ATOM_TYPE) == b.get(ATOM_TYPE) && a.get("src") == b.get("src");
     // An editor that proves which nodes a change only set attributes of
-    // (`CollabSession::record_local_keeping`, the `SetNodeAttrStep`s of its
+    // (`CollabSession::record_local_edit`, the `SetNodeAttrStep`s of its
     // transaction) keeps an atom's identity for those alone (decision (f), Joe
     // 2026-10-19): any other new node at the old one's place — a picture pasted over
     // another with the same `src` included — is a new char, so a peer's node view
     // drawn for the old picture is remounted rather than handed the pasted one, and a
     // peer's concurrent change of the old picture is lost rather than shown on it.
     // Without that proof (`CollabSession::record_local`) the `src` rule alone decides.
-    let proven_in_place = |q: &Node| !kept_atoms_known() || is_kept_atom(q);
+    let proven_in_place = |p: &Node, q: &Node| !kept_atoms_known() || is_kept_pair(p, q);
     common_runs(o.len(), n.len(), |i, j| {
         if o[i] != n[j] {
             return false;
@@ -1508,11 +1508,18 @@ fn text_splice_bounds(
         match &pair {
             Some((on, nn)) => match (&on[i], &nn[j]) {
                 (Some(p), Some(q)) => {
+                    // A pair the editor proved with its old node is its own char even
+                    // where the model holds one of the two `Rc`s twice (an in-editor
+                    // copy): the set checks below would refuse it and write the
+                    // proved edit as a new char, beside a peer's concurrent paste over
+                    // the same picture, which is a new char too — two pictures where
+                    // there was one (review 2 of #1595, G2, identical-pictures seed 785).
                     p.same_ref(q)
+                        || (has_old_proof(q) && is_kept_pair(p, q) && same_place(a, b))
                         || (!after_set.contains(&node_key(p))
                             && !before_set.contains(&node_key(q))
                             && same_place(a, b)
-                            && proven_in_place(q))
+                            && proven_in_place(p, q))
                 }
                 _ => false,
             },
@@ -1544,17 +1551,30 @@ fn text_splice_bounds(
 /// matches by value, and still hands the model down, since a level below may share.
 pub(crate) type Model<'a> = Option<(&'a Node, &'a Node)>;
 
+/// What the caller of a change proved about its atoms ([`kept_atoms_scope`],
+/// [`kept_pairs_scope`]).
+#[derive(Clone)]
+pub(crate) struct Proof {
+    /// The atoms — leaf block atoms and inline atoms — of the change's `after`
+    /// document that are the **same atom** as the node standing at their place before
+    /// it (an attribute change the editor proved with a `SetNodeAttrStep`), each with
+    /// that old node when the caller knows it. A pair with its old node matches only
+    /// that old node (review 2 of #1595, G1: proved by its new half alone, a kept atom
+    /// right after a deleted one was paired with the deleted one's char or block).
+    pairs: Vec<(Option<Node>, Node)>,
+    /// The before and after are one document edited (a transaction), not two
+    /// documents (a load): see [`proof_is_an_edit`].
+    edit: bool,
+}
+
 thread_local! {
-    /// While a [`kept_atoms_scope`] is held with `Some`: the atoms — leaf block atoms
-    /// and inline atoms — of the change's `after` document that are the **same atom**
-    /// as the node standing at their place before it (an attribute change the editor
-    /// proved with a `SetNodeAttrStep`). See [`changed_atom_identity`] and
+    /// The [`Proof`] held now, if any. See [`changed_atom_identity`] and
     /// [`text_splice_bounds`].
-    static KEPT_ATOMS: RefCell<Option<Vec<Node>>> = const { RefCell::new(None) };
+    static KEPT_ATOMS: RefCell<Option<Proof>> = const { RefCell::new(None) };
 }
 
 /// Restores [`KEPT_ATOMS`] when dropped.
-pub(crate) struct KeptAtomsScope(Option<Vec<Node>>);
+pub(crate) struct KeptAtomsScope(Option<Proof>);
 
 impl Drop for KeptAtomsScope {
     fn drop(&mut self) {
@@ -1565,11 +1585,45 @@ impl Drop for KeptAtomsScope {
 
 /// While the returned guard lives, a reconcile pairing a leaf block atom of the
 /// model's `after` with a **different** model node at its place writes it as a new
-/// CRDT block unless it is one of `kept` ([`changed_atom_identity`]). `None` is the
-/// positional rule a change always had: the pair is reconciled in place.
+/// CRDT block unless it is one of `kept` ([`changed_atom_identity`]), and a picture
+/// likewise as a new char. `kept` names only the new nodes, so each one matches
+/// whatever node stood at its place. `None` is the positional rule a change always
+/// had: the pair is reconciled in place.
 pub(crate) fn kept_atoms_scope(kept: Option<&[Node]>) -> KeptAtomsScope {
-    let previous = KEPT_ATOMS.with(|k| k.replace(kept.map(<[Node]>::to_vec)));
-    KeptAtomsScope(previous)
+    set_proof(kept.map(|k| Proof {
+        pairs: k.iter().map(|n| (None, n.clone())).collect(),
+        edit: false,
+    }))
+}
+
+/// [`kept_atoms_scope`] for an editor's transaction: each kept atom with the node it
+/// was before the change, and the before and after one document edited.
+pub(crate) fn kept_pairs_scope(kept: &[(Node, Node)]) -> KeptAtomsScope {
+    set_proof(Some(Proof {
+        pairs: kept
+            .iter()
+            .map(|(o, n)| (Some(o.clone()), n.clone()))
+            .collect(),
+        edit: true,
+    }))
+}
+
+fn set_proof(proof: Option<Proof>) -> KeptAtomsScope {
+    KeptAtomsScope(KEPT_ATOMS.with(|k| k.replace(proof)))
+}
+
+/// While the returned guard lives, the proof held now is weakened for a re-base on
+/// the CRDT's read-back (a stalled outbound, #220): that `before` holds none of the
+/// caller's old nodes, so each pair keeps its new node only, and the two documents
+/// are not one edited.
+pub(crate) fn rebase_proof_scope() -> KeptAtomsScope {
+    let now = KEPT_ATOMS.with(|k| {
+        k.borrow().as_ref().map(|p| Proof {
+            pairs: p.pairs.iter().map(|(_, n)| (None, n.clone())).collect(),
+            edit: false,
+        })
+    });
+    set_proof(now)
 }
 
 /// Whether a [`kept_atoms_scope`] with `Some` is held now: the change's caller
@@ -1578,13 +1632,44 @@ pub(crate) fn kept_atoms_known() -> bool {
     KEPT_ATOMS.with(|k| k.borrow().is_some())
 }
 
-/// Whether the [`kept_atoms_scope`] held now names `node`: the editor proved it is
-/// the atom that stood at its place before the change, with other attributes.
+/// Whether the proof held now says the change's before and after are one document
+/// edited ([`kept_pairs_scope`]). Then they are related even when they share no node
+/// (a one-paragraph document whose only content, a picture, an edit replaced: matched
+/// by value, an equal fresh copy would read as no change and keep the old char —
+/// review 2 of #1595, G3). A load keeps the value rule, or every load while
+/// collaborating would rewrite every picture as a new char.
+pub(crate) fn proof_is_an_edit() -> bool {
+    KEPT_ATOMS.with(|k| k.borrow().as_ref().is_some_and(|p| p.edit))
+}
+
+/// Whether the proof held now names `node`: the editor proved it is the atom that
+/// stood at its place before the change, with other attributes.
 pub(crate) fn is_kept_atom(node: &Node) -> bool {
     KEPT_ATOMS.with(|k| {
         k.borrow()
             .as_ref()
-            .is_some_and(|kept| kept.iter().any(|n| n.same_ref(node)))
+            .is_some_and(|p| p.pairs.iter().any(|(_, n)| n.same_ref(node)))
+    })
+}
+
+/// Whether the proof held now pairs `old` (a node before the change) with `new` (one
+/// after it): it names `new`, with `old` as its old node or with no old node.
+pub(crate) fn is_kept_pair(old: &Node, new: &Node) -> bool {
+    KEPT_ATOMS.with(|k| {
+        k.borrow().as_ref().is_some_and(|p| {
+            p.pairs
+                .iter()
+                .any(|(o, n)| n.same_ref(new) && o.as_ref().is_none_or(|o| o.same_ref(old)))
+        })
+    })
+}
+
+/// Whether the proof held now names `new` together with its old node.
+fn has_old_proof(new: &Node) -> bool {
+    KEPT_ATOMS.with(|k| {
+        k.borrow()
+            .as_ref()
+            .is_some_and(|p| p.pairs.iter().any(|(o, n)| o.is_some() && n.same_ref(new)))
     })
 }
 
@@ -1603,11 +1688,7 @@ fn changed_atom_identity(model: Model<'_>) -> bool {
     if !(after.is_leaf() && after.is_block()) || before.same_ref(after) {
         return false;
     }
-    KEPT_ATOMS.with(|k| {
-        k.borrow()
-            .as_ref()
-            .is_some_and(|kept| !kept.iter().any(|n| n.same_ref(after)))
-    })
+    kept_atoms_known() && !is_kept_pair(before, after)
 }
 
 /// The `i`-th children of a [`Model`] pair, given the before and after index.
@@ -1676,11 +1757,14 @@ pub(crate) fn reconcile_child_list(
     // always do: the model is the projection).
     let model = model.filter(|(b, a)| b.child_count() == cn && a.child_count() == tn);
     // A before and after that share no child carry no identity at this level (a load,
-    // a re-base); their children may still.
+    // a re-base); their children may still. An editor's transaction says it is one
+    // document edited (`proof_is_an_edit`), at every level: a list item whose only
+    // content was replaced by an equal copy is an edit, not "no change" (G3).
     let runs = model.and_then(|(b, a)| {
         let runs = identity_runs(b, a);
-        let related =
-            runs != (0, 0) || (0..tn).any(|j| (0..cn).any(|i| b.child(i).same_ref(a.child(j))));
+        let related = runs != (0, 0)
+            || proof_is_an_edit()
+            || (0..tn).any(|j| (0..cn).any(|i| b.child(i).same_ref(a.child(j))));
         related.then_some(runs)
     });
     let (prefix, suffix) = match runs {

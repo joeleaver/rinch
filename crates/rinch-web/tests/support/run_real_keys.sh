@@ -20,4 +20,4 @@ JSON
 node "$here/real_keys.mjs" "$port" &
 helper=$!
 cd "$tmp"
-CHROMEDRIVER="$CHROMEDRIVER" wasm-bindgen-test-runner "$wasm" "$@"
+CHROMEDRIVER="$CHROMEDRIVER" wasm-bindgen-test-runner "$wasm" --include-ignored "$@"
