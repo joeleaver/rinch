@@ -30,7 +30,7 @@ pub enum Unit {
 
 impl Unit {
     /// Whether the unit is a whitespace char (a [`Unit::Break`] is not).
-    pub fn is_space(self) -> bool {
+    fn is_space(self) -> bool {
         matches!(self, Unit::Char(c) if c.is_whitespace())
     }
 }
@@ -279,14 +279,24 @@ fn split_by_dictionary(
 /// but the whole paragraph in CJK or Thai written without spaces (measured in
 /// the review of #1613, one Ctrl+Right in a 65k-char Thai paragraph with no
 /// spaces: 30.5 ms with the dictionary, 13.1 ms without; CJK 60k: 5.0 / 1.6 ms).
-pub fn segment_around(units: &[Unit], i: usize) -> (usize, usize) {
+fn segment_around(units: &[Unit], i: usize) -> (usize, usize) {
+    // A break is a segment of its own and joins nothing on either side (the
+    // extend, apostrophe and number rules need other neighbours), so the
+    // stretch segmented ends at one too: a textarea's line, an editor's line.
+    // Without that, a value of unspaced lines was segmented whole on every
+    // keystroke (review of #1625: 1 MiB of 76-char lines, 9.2 → 1.36 ms per
+    // Ctrl+Right; CJK lines with the dictionary 39.7 → 0.43 ms). One long
+    // unbroken CJK run is still superlinear in ICU's dictionary (#1626).
+    if units[i] == Unit::Break {
+        return (i, i + 1);
+    }
     let space = units[i].is_space();
     let mut lo = i;
-    while lo > 0 && units[lo - 1].is_space() == space {
+    while lo > 0 && units[lo - 1].is_space() == space && units[lo - 1] != Unit::Break {
         lo -= 1;
     }
     let mut hi = i + 1;
-    while hi < units.len() && units[hi].is_space() == space {
+    while hi < units.len() && units[hi].is_space() == space && units[hi] != Unit::Break {
         hi += 1;
     }
     if space {
@@ -362,7 +372,7 @@ pub fn word_range(units: &[Unit], off: usize) -> (usize, usize) {
 
 /// Whether a unit is a word character: a letter, digit or `_` of any script
 /// (CJK included), not whitespace, punctuation, an atom or a break.
-pub fn is_word_char(unit: Unit) -> bool {
+fn is_word_char(unit: Unit) -> bool {
     matches!(unit, Unit::Char(c) if matches!(class_of(c), Class::Word | Class::Cjk))
 }
 
@@ -375,7 +385,7 @@ pub fn is_word_char(unit: Unit) -> bool {
 /// hard break is in the editor (Chrome 155: Ctrl+Right at a line's end moves
 /// past the break and no further). Also returns the byte offset of each unit,
 /// plus the string's length at the end.
-pub fn text_units(text: &str) -> (Vec<Unit>, Vec<usize>) {
+fn text_units(text: &str) -> (Vec<Unit>, Vec<usize>) {
     let mut units = Vec::with_capacity(text.len());
     let mut bytes = Vec::with_capacity(text.len() + 1);
     for (b, c) in text.char_indices() {
@@ -402,16 +412,27 @@ fn unit_at(bytes: &[usize], byte: usize) -> usize {
 /// `|path/to/file` → `path|/to/file`, and `3.14`, `1,000`, `don't` and
 /// `snake_case` are one word each.
 ///
-/// A line break is one stop both ways: Ctrl+Right at a line's end lands just
-/// past it, Ctrl+Left at a line's start just before it (the previous line's
-/// end), and the next press goes on to the next word. That backward half is
-/// rinch's, not Chrome's: Chrome 155's `<textarea>` never takes Ctrl+Left out
-/// of the caret's line (`ab-\n|cd` stays put), and rinch makes it the mirror
-/// of Ctrl+Right instead (Joe's decision, #1619).
+/// A line break is one stop: Ctrl+Right at a line's end lands just past it.
+/// Ctrl+Left never leaves the caret's line — from an indented line it stops at
+/// the line's start (Chrome 155: `ab cd\n  |ef` → `ab cd\n|  ef`) — except
+/// from exactly a line's start, where it lands just before the break (the
+/// previous line's end) and the next press goes on to the previous word. That
+/// last rule is rinch's, not Chrome's: Chrome 155's `<textarea>` leaves the
+/// caret at a line's start (`ab-\n|cd` stays put); Joe's decision, #1619.
 pub fn text_word_boundary(text: &str, byte: usize, forward: bool) -> usize {
     let (units, bytes) = text_units(text);
     let i = unit_at(&bytes, byte.min(text.len()));
-    bytes[word_boundary(&units, i, forward)]
+    if forward {
+        return bytes[word_boundary(&units, i, true)];
+    }
+    if i > 0 && units[i - 1] == Unit::Break {
+        return bytes[i - 1];
+    }
+    let line_start = units[..i]
+        .iter()
+        .rposition(|&u| u == Unit::Break)
+        .map_or(0, |nl| nl + 1);
+    bytes[word_boundary(&units[line_start..i], i - line_start, false) + line_start]
 }
 
 /// The word around a caret at byte `byte` of a plain string, as a byte range

@@ -495,10 +495,11 @@ A word is the rich-text editor's word (issue #1619): a run of punctuation is a
 word apart from the letters beside it, so `foo-bar|` + Ctrl+Backspace leaves
 `foo-` and Ctrl+Right from `|path/to/file` stops at `path|`, while `3.14`,
 `1,000`, `don't` and `snake_case` are one word each. In a `<textarea>` a line
-break is one stop both ways: Ctrl+Right at a line's end moves just past it and
-Ctrl+Left at a line's start just before it, to the previous line's end (Chrome's
-textarea leaves the caret there; rinch makes Ctrl+Left the mirror of
-Ctrl+Right). A word delete still never crosses a line break: beside one it
+break is one stop: Ctrl+Right at a line's end moves just past it. Ctrl+Left
+does not leave the caret's line (from an indented line it stops at the line's
+start, as in Chrome) unless the caret is exactly at the line's start, where it
+moves just before the break, to the previous line's end (Chrome's textarea
+leaves the caret there). A word delete still never crosses a line break: beside one it
 deletes just the break.
 
 Shift extends with each of them. On macOS Home and End leave the caret where it
