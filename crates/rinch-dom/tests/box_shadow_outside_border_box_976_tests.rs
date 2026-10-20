@@ -310,3 +310,24 @@ fn a_rotated_box_keeps_its_shadow_outside() {
     }
     assert_eq!(inside, 0, "tiny-skia painted shadow inside the rotated box");
 }
+
+/// The clip cuts only the box: the shadow's own anti-aliased outer edge is
+/// not cut by it too. A half-pixel offset puts the shadow's right and bottom
+/// edges through the middle of a pixel column and row, which a clip whose
+/// outer edge sat on the shadow's would cover at a quarter, not a half.
+#[test]
+fn the_clip_leaves_the_shadows_outer_edge_alone() {
+    let p = skia("box-shadow: 20.5px 20.5px 0 rgb(0, 0, 0)");
+    for (x, y) in [
+        (LEFT + BOX + 20.0, TOP + 60.0),
+        (LEFT + 60.0, TOP + BOX + 20.0),
+    ] {
+        let a = alpha(&p, x, y);
+        assert!(
+            (118..=138).contains(&a),
+            "the shadow's half-covered edge pixel ({x}, {y}) has alpha {a}, not about 128"
+        );
+    }
+    assert_eq!(alpha(&p, LEFT + BOX + 19.0, TOP + 60.0), 255);
+    assert_eq!(skia_inside(&p, 0.0), 0);
+}
