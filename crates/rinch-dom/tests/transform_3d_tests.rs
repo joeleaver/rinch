@@ -679,15 +679,15 @@ fn a_percentage_translate_rides_a_3d_decomposition() {
             (0.5, [0.965346, 0.258664, -0.258664, 0.930691, 25.0, 5.0]),
         ],
     );
-    // The same after a paired `rotateY`, which turns the remainder's z into
-    // x: in front of the perspective, the translation would meet its `-1/d`
-    // and move that z.
+    // With a z translation behind the perspective the decomposed perspective
+    // has a `w` other than 1, so the translation must come after it, not in
+    // front of it (which would scale it by that `w`).
     check_transition(
-        "rotateY(30deg) perspective(100px) translate(50%, 25%) rotateX(30deg)",
-        "rotateY(30deg) rotate(30deg)",
+        "perspective(100px) translate(50%, 25%) translateZ(10px) rotateX(30deg)",
+        "rotate(30deg)",
         &[
-            (0.2, [0.872222, 0.103325, 0.114378, 0.907242, 34.641, 8.0]),
-            (0.5, [0.853341, 0.258664, -0.0946774, 0.930691, 21.6506, 5.0]),
+            (0.2, [1.06387, 0.110544, -0.110544, 0.970628, 43.668, 8.73361]),
+            (0.5, [0.991438, 0.265654, -0.265654, 0.955843, 27.027, 5.4054]),
         ],
     );
 }
