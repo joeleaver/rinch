@@ -560,8 +560,8 @@ fn subtree_has_partially_escaping_absolute(
 /// kept, `replace_node` does the same to the node it displaces, and
 /// `set_inner_html` frees children without recording their rects. Such a
 /// node, attached again, has its old rect placed along its new parents.
-/// `Frame::Painted` also places a box by its *current* `position` (a
-/// same-frame static↔fixed change, #961).
+/// `Frame::Painted` places a box by the `position` it was painted with, so a
+/// same-frame static↔fixed change clears where the box was (#961).
 ///
 /// Without `painted` the question is the next paint's, and the current state
 /// is exactly what that paint clips with.
@@ -1734,6 +1734,16 @@ impl Frame {
         }
     }
 
+    /// The `position` the node was placed with in this frame: as painted, for
+    /// a painted node in [`Frame::Painted`] — a box that went static → fixed
+    /// this frame was painted in flow, not hoisted (#961).
+    fn position(self, node: &Node) -> PositionValue {
+        match self.painted(node) {
+            Some(p) => p.position,
+            None => node.box_position(),
+        }
+    }
+
     fn is_identity(self, node: &Node) -> bool {
         match self.painted(node) {
             Some(p) => p.transform.is_none(),
@@ -1851,7 +1861,7 @@ fn position_and_transform_in(
     while let Some(id) = current {
         let Some(node) = tree.get(id) else { break };
         any_transform |= !frame.is_identity(node);
-        if node.box_position() == PositionValue::Fixed {
+        if frame.position(node) == PositionValue::Fixed {
             hoisted_fixed = true;
             break;
         }
@@ -1875,7 +1885,7 @@ fn position_and_transform_in(
             let (nx, ny) = painted_origin_step(tree, node, x, y, scale, frame);
             x = nx;
             y = ny;
-            if node.box_position() == PositionValue::Fixed || id == tree.body_id {
+            if frame.position(node) == PositionValue::Fixed || id == tree.body_id {
                 break;
             }
             // The **box** tree (#566): a run's member is positioned by the
@@ -1900,7 +1910,7 @@ fn position_and_transform_in(
     while let Some(id) = current {
         let Some(node) = tree.get(id) else { break };
         chain.push(id);
-        if node.box_position() == PositionValue::Fixed || id == tree.body_id {
+        if frame.position(node) == PositionValue::Fixed || id == tree.body_id {
             break;
         }
         current = crate::RinchDocument::box_tree_parent(&tree.nodes, id);
