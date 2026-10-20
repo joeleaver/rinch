@@ -328,6 +328,12 @@ impl DomDocument for RinchDocument {
         self.invalidate_ifc_for_node(new.0);
         self.clear_ifc_root_recursive(new.0);
         if let Some(parent_id) = self.tree.nodes[old.0].parent {
+            // `old` leaves the document: its pixels are recorded where it was
+            // painted, under the chain it was painted under, and its painted
+            // state is forgotten, as `remove_node` does (#966). Otherwise only
+            // the parent's box was repainted, and an `old` appended elsewhere
+            // later had its old rect placed along its new parents.
+            self.mark_subtree_paint_dirty(old.0);
             let new_moved = self.record_pixels_left_by_move(new.0, parent_id);
             // Remove new from its old parent if any — the node's
             // contribution, not just its own id (#517)
@@ -550,6 +556,10 @@ impl DomDocument for RinchDocument {
                 // For elements: remove all children and add a text child
                 let old_children: Vec<_> = self.tree.nodes[n].children.clone();
                 for child in old_children {
+                    // Its pixels are recorded and its painted state forgotten
+                    // while it is still under the parent it was painted under,
+                    // as `remove_node` does (#966).
+                    self.mark_subtree_paint_dirty(child);
                     self.tree.nodes[child].parent = None;
                     // The fourth detach route, and the one that does not look
                     // like one (#699). These children are orphaned but **not
@@ -1030,6 +1040,10 @@ impl DomDocument for RinchDocument {
         // Clear existing children (including taffy sync)
         let old_children: Vec<_> = self.tree.nodes[node.0].children.clone();
         for child in old_children {
+            // The child's pixels are recorded where it was painted before it
+            // is freed, as `remove_node` does (#966): nothing can reach its
+            // rects once `remove_subtree` has dropped it.
+            self.mark_subtree_paint_dirty(child);
             self.clear_ifc_root_recursive(child);
             // Remove each child's contribution from taffy — for a spliced
             // `display: contents` child that is its children's slots, not
