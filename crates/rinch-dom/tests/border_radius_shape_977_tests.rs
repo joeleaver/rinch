@@ -489,3 +489,20 @@ fn a_radius_transition_interpolates_both_axes() {
         "half-way from 10px to 30px / 50px the corner is 20 / 30, got {x} / {y}"
     );
 }
+
+/// With unequal borders each inner radius loses the border **on its own
+/// axis**: `30px` less a 12px left/right and a 2px top/bottom border is
+/// `18 / 28`, an ellipse. It was one circle less the average of the two
+/// widths, 23.
+#[test]
+fn overflow_clip_inner_radii_lose_each_axis_border() {
+    let p = painted(
+        200.0,
+        100.0,
+        "overflow: hidden; border-radius: 30px; border-style: solid; \
+         border-color: transparent; border-width: 2px 12px",
+        Some("width: 300px; height: 300px; background: black"),
+    );
+    let outer = Shape::new(LEFT, TOP, 200.0, 100.0, [(30.0, 30.0); 4]);
+    assert_fill(&p, outer.inset(2.0, 12.0, 2.0, 12.0), "the clip");
+}
