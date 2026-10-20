@@ -1180,6 +1180,11 @@ pub struct Node {
     /// Pseudo-element nodes are synthetic children created during style resolution
     /// and are cleaned up before re-resolution to avoid duplicates.
     pub is_pseudo_element: bool,
+    /// Whether this generated box is an `::after` — its element's **last**
+    /// child box. Every other generated box (a `::before`, a list marker)
+    /// is the first. The insertion verbs read it to keep a child they insert
+    /// between the two (#1629, `RinchDocument::clamp_between_generated`).
+    pub(crate) is_generated_after: bool,
     /// Typed computed style derived from Stylo.
     /// This is the primary source for layout and paint after Stylo migration.
     pub computed_style: ComputedStyle,
@@ -1525,6 +1530,7 @@ impl Node {
             abs_ancestor_baked: false,
             abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
             is_pseudo_element: false,
+            is_generated_after: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
             animation_specs: Vec::new(),
@@ -1601,6 +1607,7 @@ impl Node {
             abs_ancestor_baked: false,
             abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
             is_pseudo_element: false,
+            is_generated_after: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
             animation_specs: Vec::new(),
@@ -1676,6 +1683,7 @@ impl Node {
             abs_ancestor_baked: false,
             abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
             is_pseudo_element: false,
+            is_generated_after: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
             animation_specs: Vec::new(),
@@ -1749,6 +1757,7 @@ impl Node {
             abs_ancestor_baked: false,
             abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
             is_pseudo_element: false,
+            is_generated_after: false,
             computed_style: ComputedStyle::default(),
             transition_specs: Vec::new(),
             animation_specs: Vec::new(),

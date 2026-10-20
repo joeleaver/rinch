@@ -153,12 +153,21 @@ impl DomDocument for RinchDocument {
             self.detach_subtree_styles_if_moved_out(c, old_parent, p);
         }
         self.tree.nodes[c].parent = Some(p);
-        self.tree.nodes[p].children.push(c);
+        // At the end of the element's own children: before an `::after` box
+        // (#1629).
+        let len = self.tree.nodes[p].children.len();
+        let pos = self.clamp_between_generated(p, c, len);
+        self.tree.nodes[p].children.insert(pos, c);
         // Sync taffy
         if let (Some(parent_taffy), Some(child_taffy)) =
             (self.tree.nodes[p].taffy_id, self.tree.nodes[c].taffy_id)
         {
-            self.taffy_add_child_checked(parent_taffy, child_taffy);
+            if pos == len {
+                self.taffy_add_child_checked(parent_taffy, child_taffy);
+            } else {
+                let taffy_idx = self.compute_taffy_child_index(p, pos);
+                self.attach_taffy_child_at(parent_taffy, taffy_idx, child_taffy, p, c);
+            }
             // Mark child as dirty so it gets measured during next layout pass
             let _ = self.tree.taffy.mark_dirty(child_taffy);
         }
@@ -253,8 +262,17 @@ impl DomDocument for RinchDocument {
             self.detach_subtree_styles_if_moved_out(c, old_parent, p);
         }
         self.tree.nodes[c].parent = Some(p);
-        let insert_pos = if let Some(pos) = self.tree.nodes[p].children.iter().position(|&x| x == r)
-        {
+        // A reference that is no child of `p` is an append. Either way the
+        // child stays between the generated boxes (#1629): a reference that
+        // is the `::before` box itself puts it after that box.
+        let len = self.tree.nodes[p].children.len();
+        let asked = self.tree.nodes[p]
+            .children
+            .iter()
+            .position(|&x| x == r)
+            .unwrap_or(len);
+        let pos = self.clamp_between_generated(p, c, asked);
+        let insert_pos = if pos < len {
             self.tree.nodes[p].children.insert(pos, c);
             Some(pos)
         } else {
@@ -949,13 +967,10 @@ impl DomDocument for RinchDocument {
         }
         self.tree.nodes[c].parent = Some(p);
         let len = self.tree.nodes[p].children.len();
-        let actual_index = if index >= len {
-            self.tree.nodes[p].children.push(c);
-            len
-        } else {
-            self.tree.nodes[p].children.insert(index, c);
-            index
-        };
+        // Counted among the element's children as `get_children` lists them,
+        // generated boxes included, and kept between those boxes (#1629).
+        let actual_index = self.clamp_between_generated(p, c, index.min(len));
+        self.tree.nodes[p].children.insert(actual_index, c);
         // Sync taffy
         if let (Some(parent_taffy), Some(child_taffy)) =
             (self.tree.nodes[p].taffy_id, self.tree.nodes[c].taffy_id)
