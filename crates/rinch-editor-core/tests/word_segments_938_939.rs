@@ -10,7 +10,7 @@
 //!   `word-dictionary` feature, which the desktop build turns on — a run of
 //!   CJK text is split by ICU's dictionary (`漢字です` is `漢字` `です`).
 //!
-//! Notation: `|` is the caret, `@` an image. The paragraph's content starts at
+//! Notation: `|` is the caret, `@` an image, `/` a hard break (`<br>`). The paragraph's content starts at
 //! position 1 and every char and atom is one position.
 
 use rinch_editor_core::motion::{CursorMotion, resolve_cursor_motion, word_range_at};
@@ -29,6 +29,7 @@ fn editor(notation: &str) -> (EditorState, Pos) {
         .filter(|&c| c != '|')
         .map(|c| match c {
             '@' => r#"<img src="x.png">"#.to_string(),
+            '/' => "<br>".to_string(),
             c => c.to_string(),
         })
         .collect();
@@ -51,6 +52,7 @@ fn notation_of(doc: &Node, caret: Option<Pos>) -> String {
         let child = p.child(i);
         let units: Vec<char> = match child.text() {
             Some(t) => t.chars().collect(),
+            None if child.type_name() == "hard_break" => vec!['/'],
             None => vec!['@'],
         };
         for c in units {
@@ -169,7 +171,8 @@ fn word_delete_is_the_motions_range_everywhere_938() {
     }
 }
 
-/// Double-click selects the same segments.
+/// Double-click selects the same segments, except that on a run of ASCII
+/// punctuation it selects the one char (Chrome 155).
 #[test]
 fn double_click_selects_one_segment_939() {
     let at = |notation: &str| {
@@ -182,7 +185,8 @@ fn double_click_selects_one_segment_939() {
     };
     assert_eq!(at("foo.b|ar"), "bar");
     assert_eq!(at("fo|o.bar"), "foo");
-    assert_eq!(at("foo.|..bar"), "...");
+    // Chrome 155 selects one char of a punctuation run (review of #1613, F4).
+    assert_eq!(at("foo|...bar"), ".");
     assert_eq!(at("do|n't"), "don't");
     assert_eq!(at("ab|@cd"), "@");
 }
@@ -216,4 +220,61 @@ fn without_the_dictionary_a_cjk_run_is_one_word_939() {
     // But it still ends at punctuation and at a change of script.
     assert_eq!(deleted("abc漢字です|", "deleteWordBackward"), "abc");
     assert_eq!(deleted("漢字。です|", "deleteWordBackward"), "漢字。");
+}
+
+/// Review of #1613, F1 (Chrome 155): a `.` `,` `;` `'` `’` between two digits is
+/// part of a number (UAX #29's MidNum), in delete, motion and double-click —
+/// but not between letters, which Chrome splits.
+#[test]
+fn a_separator_between_digits_stays_in_the_number_1613() {
+    let at = |notation: &str| {
+        let (state, pos) = editor(notation);
+        let (a, b) = word_range_at(&state.doc, pos);
+        let chars: Vec<char> = notation_of(&state.doc, None).chars().collect();
+        chars[a.0 - 1..b.0 - 1].iter().collect::<String>()
+    };
+    assert_eq!(deleted("3.14|", "deleteWordBackward"), "");
+    assert_eq!(deleted("x 3.14|", "deleteWordBackward"), "x ");
+    assert_eq!(deleted("1,000|", "deleteWordBackward"), "");
+    assert_eq!(moved("|3.14", CursorMotion::WordRight), "3.14|");
+    assert_eq!(moved("3.14|", CursorMotion::WordLeft), "|3.14");
+    assert_eq!(at("3.1|4"), "3.14");
+    assert_eq!(at("1,0|00"), "1,000");
+    // Letters around a dot are still split.
+    assert_eq!(deleted("a.b.c|", "deleteWordBackward"), "a.b.");
+}
+
+/// Review of #1613, F3 (Chrome 155): adjacent images are one word; a hard
+/// break is a stop of its own, one per break.
+#[test]
+fn adjacent_images_are_one_word_breaks_are_not_1613() {
+    assert_eq!(deleted("foo@@|", "deleteWordBackward"), "foo");
+    assert_eq!(moved("|@@bar", CursorMotion::WordRight), "@@|bar");
+    assert_eq!(moved("foo@@|bar", CursorMotion::WordLeft), "foo|@@bar");
+    assert_eq!(deleted("x foo//|bar", "deleteWordBackward"), "x foo/bar");
+    assert_eq!(moved("|foo//bar", CursorMotion::WordRight), "foo|//bar");
+}
+
+/// Review of #1613, F6 (Chrome 155): a ZWNJ or ZWJ between letters (format
+/// chars, Cf) and a curly apostrophe keep the word whole.
+#[test]
+fn format_chars_and_a_curly_apostrophe_keep_the_word_1613() {
+    assert_eq!(deleted("x می\u{200c}خواهم|", "deleteWordBackward"), "x ");
+    assert_eq!(deleted("x a\u{200d}b|", "deleteWordBackward"), "x ");
+    assert_eq!(deleted("x don\u{2019}t|", "deleteWordBackward"), "x ");
+}
+
+/// A combining mark right after a space starts a unit of its own (it does not
+/// join the whitespace run): rinch's choice, not measured in Chrome.
+#[test]
+fn a_mark_after_a_space_is_not_whitespace_1613() {
+    assert_eq!(deleted("a \u{301}|", "deleteWordBackward"), "a ");
+}
+
+/// Review of #1613, F5 (Chrome 155): with the dictionary a Latin run going
+/// straight into Thai is still one word; only the Thai is split by ICU.
+#[cfg(feature = "word-dictionary")]
+#[test]
+fn a_latin_run_into_thai_is_one_word_1613() {
+    assert_eq!(deleted("abcไทย|", "deleteWordBackward"), "");
 }
