@@ -55,7 +55,12 @@ fn before_input(input_type: &str, data: Option<&str>) {
 }
 
 fn text(editor: &web_sys::Element) -> String {
-    editor.query_selector("p").unwrap().unwrap().text_content().unwrap_or_default()
+    editor
+        .query_selector("p")
+        .unwrap()
+        .unwrap()
+        .text_content()
+        .unwrap_or_default()
 }
 
 #[wasm_bindgen_test]
@@ -70,7 +75,10 @@ async fn a_pause_past_the_window_starts_a_new_undo_step_in_a_browser() {
         ThemeProviderProps::default(),
         move |scope: &mut RenderScope| mounted.mount(scope),
     );
-    let editor = document().query_selector("[data-pm-editor]").unwrap().unwrap();
+    let editor = document()
+        .query_selector("[data-pm-editor]")
+        .unwrap()
+        .unwrap();
     handle.set_selection(Selection::cursor(Pos(2)));
     handle.focus();
     assert!(

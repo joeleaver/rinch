@@ -53,7 +53,11 @@ fn a_pause_separates_two_runs_of_backspace() {
     assert_eq!(html(&handle), "<p>abc</p>");
 
     assert!(handle.command("undo"));
-    assert_eq!(html(&handle), "<p>abcd</p>", "undo restores only the last delete");
+    assert_eq!(
+        html(&handle),
+        "<p>abcd</p>",
+        "undo restores only the last delete"
+    );
     assert!(handle.command("undo"));
     assert_eq!(html(&handle), "<p>abcdef</p>");
 }
@@ -137,13 +141,18 @@ fn an_apps_own_time_is_kept() {
     // The app says this keystroke came 2 s later, though the clock says 1000.
     assert!(handle.update(|state| {
         let mut tr = state.tr();
-        tr.insert_text("b").expect("a caret in a paragraph takes text");
+        tr.insert_text("b")
+            .expect("a caret in a paragraph takes text");
         tr.set_time(3_000);
         Some(tr)
     }));
     assert_eq!(html(&handle), "<p>xab</p>");
     assert!(handle.command("undo"));
-    assert_eq!(html(&handle), "<p>xa</p>", "the app's time put `b` in a step of its own");
+    assert_eq!(
+        html(&handle),
+        "<p>xa</p>",
+        "the app's time put `b` in a step of its own"
+    );
 }
 
 /// `insert_image` and `toggle_link` run their command through the handle too and
@@ -167,5 +176,9 @@ fn a_picture_is_stamped_like_a_keystroke() {
     assert!(handle.command("undo"));
     assert_eq!(html(&handle), r#"<p>xa<img src="p.png">b</p>"#);
     assert!(handle.command("undo"));
-    assert_eq!(html(&handle), "<p>x</p>", "`a`, the picture and `b` were one step");
+    assert_eq!(
+        html(&handle),
+        "<p>x</p>",
+        "`a`, the picture and `b` were one step"
+    );
 }
