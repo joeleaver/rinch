@@ -71,6 +71,8 @@ mod css_hook_778_tests;
 mod css_hook_936_tests;
 #[cfg(all(test, software_shell))]
 mod damage_clip_chain_tests;
+#[cfg(all(test, software_shell))]
+mod damage_position_change_961_tests;
 #[cfg(feature = "debug")]
 mod debug_commands;
 #[cfg(test)]
