@@ -289,3 +289,85 @@ fn a_box_under_a_transform_that_stops_being_fixed_clears_its_viewport_pixels() {
     resolve(&mut app);
     check(&mut app, "fixed -> static under a transform", old, true);
 }
+
+/// An ancestor goes static → fixed in the frame its child is recoloured: the
+/// child's own old rect is placed through the ancestor's painted position.
+#[test]
+fn an_ancestor_that_becomes_fixed_with_a_recoloured_child_clears_both() {
+    let (mut app, h) = mount(Box::new(|s, o| {
+        let c = el(s, o, "width: 200px; height: 100px; margin-left: 50px;");
+        let w = el(s, &c, "width: 60px; height: 60px;");
+        let r = el(s, &w, BLUE);
+        vec![c, w, r]
+    }));
+    let old = (50, 0, 90, 40);
+    let before = full_frame(&mut app);
+    assert!(ink_in(&before, old) > 1000, "positive control");
+    h[1].set_style("position", "fixed");
+    h[1].set_style("left", "400px");
+    h[1].set_style("top", "300px");
+    h[2].set_style("background", "rgb(0, 200, 0)");
+    resolve(&mut app);
+    check(
+        &mut app,
+        "ancestor static -> fixed, child recoloured",
+        old,
+        true,
+    );
+}
+
+/// The reverse: an ancestor goes fixed → static while its child is recoloured.
+#[test]
+fn an_ancestor_that_stops_being_fixed_with_a_recoloured_child_clears_both() {
+    let (mut app, h) = mount(Box::new(|s, o| {
+        let c = el(s, o, "width: 200px; height: 100px; margin-left: 50px;");
+        let w = el(
+            s,
+            &c,
+            "width: 60px; height: 60px; position: fixed; left: 400px; top: 300px;",
+        );
+        let r = el(s, &w, BLUE);
+        vec![c, w, r]
+    }));
+    let old = (400, 300, 440, 340);
+    let before = full_frame(&mut app);
+    assert!(ink_in(&before, old) > 1000, "positive control");
+    h[1].set_style("position", "static");
+    h[2].set_style("background", "rgb(0, 200, 0)");
+    resolve(&mut app);
+    check(
+        &mut app,
+        "ancestor fixed -> static, child recoloured",
+        old,
+        true,
+    );
+}
+
+/// A box loses its `box-shadow` in the frame it becomes fixed: the old shadow
+/// is cleared with the ink it was painted with, at the place it was painted.
+#[test]
+fn a_box_that_becomes_fixed_and_drops_its_shadow_clears_the_old_shadow() {
+    let (mut app, h) = mount(Box::new(|s, o| {
+        let c = el(
+            s,
+            o,
+            "width: 200px; height: 100px; margin-left: 50px; margin-top: 50px;",
+        );
+        let r = el(
+            s,
+            &c,
+            "width: 40px; height: 40px; background: rgb(200, 0, 0); box-shadow: 20px 20px 0 rgb(0, 0, 200);",
+        );
+        vec![c, r]
+    }));
+    // The shadow's part outside the box.
+    let old = (90, 90, 110, 110);
+    let before = full_frame(&mut app);
+    assert!(ink_in(&before, old) > 300, "positive control");
+    h[1].set_style("position", "fixed");
+    h[1].set_style("left", "400px");
+    h[1].set_style("top", "300px");
+    h[1].set_style("box-shadow", "none");
+    resolve(&mut app);
+    check(&mut app, "static -> fixed dropping its shadow", old, true);
+}
