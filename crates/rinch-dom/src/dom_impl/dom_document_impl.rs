@@ -205,6 +205,9 @@ impl DomDocument for RinchDocument {
         self.tree.hit_cache.invalidate();
         let p = parent.0;
         let c = child.0;
+        // Its pixels are recorded where it was painted and its painted state
+        // forgotten, as `remove_node` does (#966).
+        self.mark_subtree_paint_dirty(c);
         // Clear IFC state on removed child
         self.clear_ifc_root_recursive(c);
         // The subtree is leaving the document, so it has no before-change style
