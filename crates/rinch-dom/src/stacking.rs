@@ -244,6 +244,12 @@ impl ClipSpan {
     }
 }
 
+/// How many clips, from the outside in, two chains have in common: the ones a
+/// painter can leave open going from one entry to the next.
+pub fn shared_clip_prefix(a: &[ClipRect], b: &[ClipRect]) -> usize {
+    a.iter().zip(b).take_while(|(x, y)| x == y).count()
+}
+
 /// One child of a stacking-context root, in paint order.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PaintEntry {
@@ -282,7 +288,12 @@ pub struct PaintOrder {
 impl PaintOrder {
     /// The clipping ancestors `entry` was hoisted past, outermost first.
     pub fn clips_for(&self, entry: &PaintEntry) -> &[ClipRect] {
-        &self.clips[entry.clips.start as usize..entry.clips.end as usize]
+        self.clips_for_span(entry.clips)
+    }
+
+    /// The clip chain a [`ClipSpan`] names, outermost first.
+    pub fn clips_for_span(&self, span: ClipSpan) -> &[ClipRect] {
+        &self.clips[span.start as usize..span.end as usize]
     }
 }
 
@@ -605,5 +616,43 @@ impl Collector<'_> {
         if pushed {
             self.live.pop();
         }
+    }
+}
+
+#[cfg(test)]
+mod shared_clip_prefix_tests {
+    use super::{ClipRect, shared_clip_prefix};
+    use peniko::kurbo::{Rect, RoundedRectRadii};
+
+    fn clip(x0: f64, y0: f64, x1: f64, y1: f64) -> ClipRect {
+        ClipRect {
+            rect: Rect::new(x0, y0, x1, y1),
+            radii: RoundedRectRadii::from_single_radius(0.0),
+        }
+    }
+
+    #[test]
+    fn the_outer_clips_two_chains_share_stay_open() {
+        let window = clip(0.0, 0.0, 1200.0, 800.0);
+        let content = clip(0.0, 36.0, 1200.0, 776.0);
+        let tree = clip(0.0, 79.0, 260.0, 776.0);
+        let pane = clip(261.0, 79.0, 1200.0, 776.0);
+        assert_eq!(
+            shared_clip_prefix(&[window, content, tree], &[window, content, pane]),
+            2
+        );
+        assert_eq!(
+            shared_clip_prefix(&[window, content], &[window, content, pane]),
+            2
+        );
+        assert_eq!(shared_clip_prefix(&[window, content, pane], &[window]), 1);
+        assert_eq!(shared_clip_prefix(&[tree], &[pane]), 0);
+        assert_eq!(shared_clip_prefix(&[], &[window]), 0);
+        // A chain that diverges and then agrees again shares only the prefix:
+        // clips are nested, so nothing after the first difference can stay.
+        assert_eq!(
+            shared_clip_prefix(&[window, tree, content], &[window, pane, content]),
+            1
+        );
     }
 }

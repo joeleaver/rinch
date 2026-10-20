@@ -50,7 +50,8 @@ use crate::computed_style::{
 };
 use crate::node::{Node, NodeKind, NodeTree, RawNodeId};
 use crate::stacking::{
-    ClipSpan, PaintKind, PaintOrderKey, paints_at_stacking_root, stacking_paint_order,
+    ClipSpan, PaintKind, PaintOrderKey, paints_at_stacking_root, shared_clip_prefix,
+    stacking_paint_order,
 };
 
 /// The fraction of the surface at or above which a dirty region is not worth
@@ -2256,6 +2257,11 @@ pub fn paint_document(
 /// intersection with the enclosing mask over the clip's bounds. (It used to
 /// cost a freshly allocated full-surface `Mask` as well; the painter pools its
 /// masks now, but a push is still not free.)
+///
+/// Entries whose chains differ still share their outer clips: only the part
+/// after the common prefix is popped and pushed. On vello every clip layer
+/// allocates tiles over its whole bounds, so re-pushing a window-sized outer
+/// clip for each positioned box is what overflows its fixed tile buffer.
 #[allow(clippy::too_many_arguments)]
 fn paint_children_with_stacking(
     tree: &NodeTree,
@@ -2331,11 +2337,21 @@ fn paint_children_with_stacking(
                 continue;
             }
             if entry.clips != open {
-                for _ in 0..open.len() {
+                // Keep the outer clips the two chains share open and change
+                // only what differs. Popping and pushing the whole chain for
+                // every entry pushed hundreds of window-sized clip layers a
+                // frame in an app with many positioned boxes under a few
+                // full-size clipping ancestors, which overflowed vello's tile
+                // buffer: the frame was dropped, and a transparent window went
+                // blank as soon as a resize made a fresh texture.
+                let open_chain = order.clips_for_span(open);
+                let new_chain = order.clips_for(entry);
+                let shared = shared_clip_prefix(open_chain, new_chain);
+                for _ in shared..open_chain.len() {
                     painter.pop_layer();
                 }
                 open = entry.clips;
-                for clip in order.clips_for(entry) {
+                for clip in &new_chain[shared..] {
                     let shape: PaintShape = if clip.radii.top_left > 0.0
                         || clip.radii.top_right > 0.0
                         || clip.radii.bottom_right > 0.0
