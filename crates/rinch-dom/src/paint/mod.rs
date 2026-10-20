@@ -554,12 +554,11 @@ fn subtree_has_partially_escaping_absolute(
 /// right for a node still under the parents it was painted under. The moves
 /// see to that: a move from one parent to another records the subtree's old
 /// rects under the old chain and forgets its painted state first
-/// (`record_pixels_left_by_move`), as a removal does. **Not every detach
-/// forgets**, and these are gaps, all pre-existing (#966): `set_text_content`
-/// orphans an element's children with `parent = None` and their painted state
-/// kept, `replace_node` does the same to the node it displaces, and
-/// `set_inner_html` frees children without recording their rects. Such a
-/// node, attached again, has its old rect placed along its new parents.
+/// (`record_pixels_left_by_move`), as a removal does, and so does every
+/// detach: `remove_child`, `replace_node`'s displaced node,
+/// `set_text_content`'s orphans, and what `set_inner_html` and the
+/// pseudo-element pruning free (#966). So no node sits under parents it was
+/// not painted under while it carries a painted state.
 /// `Frame::Painted` places a box by the `position` it was painted with, so a
 /// same-frame static↔fixed change clears where the box was (#961).
 ///

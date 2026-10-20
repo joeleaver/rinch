@@ -78,6 +78,8 @@ mod debug_commands;
 #[cfg(test)]
 mod decorative_pseudo_773_tests;
 mod deferred_work;
+#[cfg(all(test, software_shell))]
+mod detach_damage_966_tests;
 mod text_keymap;
 #[cfg(all(test, feature = "desktop"))]
 mod text_keymap_951_tests;

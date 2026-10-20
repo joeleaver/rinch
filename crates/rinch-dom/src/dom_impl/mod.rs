@@ -894,13 +894,13 @@ impl RinchDocument {
     /// A reorder within one parent pays nothing: the chain is the same. Nor
     /// does a node with no parent, or one that was never painted, which keeps
     /// building a tree (`rsx!` adopting a component site's children out of its
-    /// scratch template) free. That is exact for the removal and move verbs,
-    /// which forget the painted state of everything they take out, so an
-    /// unpainted root has nothing painted below it. It is not exact for the
-    /// three detaches that do not forget — `set_text_content`'s orphans,
-    /// `replace_node`'s displaced node, `set_inner_html`'s freed children —
-    /// whose old pixels this does not reach when they come back (#966,
-    /// pre-existing).
+    /// scratch template) free. That is exact because every verb that takes a
+    /// subtree out — `remove_node`, `remove_child`, `replace_node` for the node
+    /// it displaces, `set_text_content` for the children it orphans,
+    /// `set_inner_html` and the pseudo-element pruning for what they free, and
+    /// the moves — records its pixels and forgets its painted state
+    /// (`mark_subtree_paint_dirty`, #966), so an unpainted root has nothing
+    /// painted below it.
     pub(crate) fn record_pixels_left_by_move(&mut self, child: usize, new_parent: usize) -> bool {
         let Some(node) = self.tree.nodes.get(child) else {
             return false;
