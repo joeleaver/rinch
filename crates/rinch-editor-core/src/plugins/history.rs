@@ -217,6 +217,9 @@ impl Plugin for HistoryPlugin {
                 }
                 hist.done.events.push(event);
                 // Typing right after a redo must not join the redone group.
+                // Already true today (a redo needs an undo before it, which set
+                // it, and only a recorded edit, which empties `undone`, clears
+                // it); set here so the rule does not rest on that.
                 hist.break_group = true;
             }
             None => {
