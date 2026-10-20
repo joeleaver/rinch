@@ -1311,6 +1311,7 @@ fn filter_attributes(attrs: Vec<(String, String)>) -> Vec<(String, String)> {
                         | "rowspan"
                         | "width"
                         | super::html::TASK_TYPE
+                        | super::html::PM_TYPE
                         | super::html::TASK_CHECKED
                 )
         })

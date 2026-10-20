@@ -41,11 +41,20 @@
 //!   rebuild, so an atom `Node::same_ref` to one before the change is that atom. Every
 //!   atom is the same U+FFFC, so a diff by chars alone took a picture inserted right
 //!   before another for that other (review of #1503, F2). An atom changed in place (a new
-//!   node) is the atom at its place when neither is in the change otherwise and both
-//!   have one type and one `src`: a `src` change makes a new atom, so a picture pasted
-//!   over a selected one (which the model cannot tell from a `src` change) never takes
-//!   the old one's identity. Chosen by Joe (2026-10-09): a wrong attribution is worse
-//!   than a lost one.
+//!   node) is the atom at its place only when the editor **proves** it: the change only
+//!   set its attributes (a `SetNodeAttrStep`, which the editor hands over through
+//!   `CollabSession::record_local_edit` as the pair of the node before and after it,
+//!   so the new node matches only its own old one — review 2 of #1595, G1; when the
+//!   document holds the old `Rc` in two places, only while the change left every other
+//!   copy where it was — round-3 review of #1595, F2), and both
+//!   have one type and one `src`. Anything else is a new char with a new
+//!   identity — a `src` change, and a picture pasted over a selected one even with the
+//!   same `src` (decision (f), Joe 2026-10-19; before it, "same type and `src`" alone
+//!   made a pasted picture the old one, and a peer's node view drawn for the old picture
+//!   was handed the pasted one). A peer's concurrent change of the old picture is then
+//!   lost, never shown on the pasted one: a wrong attribution is worse than a lost one
+//!   (Joe, 2026-10-09). A caller with no proof (`CollabSession::record_local`) keeps the
+//!   older rule, type and `src`.
 //! * **A move** writes a new char, since yrs has no move: Enter before an image in its
 //!   line deletes the image's char and inserts one in the new block, and Backspace
 //!   joining the line back does the same. [`carry_over`] hands the new char the old

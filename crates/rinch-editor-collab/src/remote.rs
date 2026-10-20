@@ -21,9 +21,12 @@
 //! session. It can be rebuilt on yrs observer deltas (`TextRef::observe` → `TextEvent`)
 //! if a future refinement wants it.
 
-use rinch_editor_core::{EditorState, Fragment, Node, Pos, Selection, Slice, Transaction};
+use rinch_editor_core::{
+    AttrValue, EditorState, Fragment, Node, Pos, Selection, SetNodeAttrStep, Slice, Transaction,
+};
 
 use crate::error::Result;
+use crate::projection::BlockId;
 
 /// Transaction meta key marking a transaction as a remote (collab) application, so the
 /// history plugin and any origin-sensitive logic can tell it apart from local typing.
@@ -43,6 +46,14 @@ struct BlockDiff {
 
 /// `None` when `old` and `target` are the same document.
 fn block_diff(old: &Node, target: &Node) -> Option<BlockDiff> {
+    block_diff_with(old, target, None)
+}
+
+/// [`block_diff`], where with `ids` a top-level block holding a leaf block atom that
+/// is another CRDT block on the two sides is changed even when equal by value
+/// ([`AtomIds`]): `None` only when the documents are equal **and** every atom is
+/// the same block.
+fn block_diff_with(old: &Node, target: &Node, ids: Option<&AtomIds>) -> Option<BlockDiff> {
     let on = old.child_count();
     let nn = target.child_count();
 
@@ -58,6 +69,56 @@ fn block_diff(old: &Node, target: &Node) -> Option<BlockDiff> {
         && old.child(on - 1 - suffix) == target.child(nn - 1 - suffix)
     {
         suffix += 1;
+    }
+    if let Some(ids) = ids
+        && ids.old != ids.new
+    {
+        // The equal blocks at either end hold the same number of atoms on both
+        // sides; stop each run at the first block whose atoms are other blocks.
+        let mut k = 0;
+        for i in 0..prefix {
+            let c = block_atoms(old.child(i));
+            if ids.old[k..k + c] != ids.new[k..k + c] {
+                prefix = i;
+                break;
+            }
+            k += c;
+        }
+        let (ol, nl) = (ids.old.len(), ids.new.len());
+        let mut k = 0;
+        for s in 0..suffix {
+            let c = block_atoms(old.child(on - 1 - s));
+            if ids.old[ol - k - c..ol - k] != ids.new[nl - k - c..nl - k] {
+                suffix = s;
+                break;
+            }
+            k += c;
+        }
+    }
+    if let Some(inline) = ids.and_then(|ids| ids.inline_fitting(old, target))
+        && inline.old != inline.new
+    {
+        // The same for inline atoms, where both sides are known to differ.
+        let differ = |a: &Option<String>, b: &Option<String>| a.is_some() && b.is_some() && a != b;
+        let mut k = 0;
+        for i in 0..prefix {
+            let c = inline_atoms(old.child(i));
+            if (k..k + c).any(|j| differ(&inline.old[j], &inline.new[j])) {
+                prefix = i;
+                break;
+            }
+            k += c;
+        }
+        let (ol, nl) = (inline.old.len(), inline.new.len());
+        let mut k = 0;
+        for s in 0..suffix {
+            let c = inline_atoms(old.child(on - 1 - s));
+            if (0..c).any(|j| differ(&inline.old[ol - k - c + j], &inline.new[nl - k - c + j])) {
+                suffix = s;
+                break;
+            }
+            k += c;
+        }
     }
     if prefix == on && nn == on {
         return None; // identical
@@ -92,25 +153,448 @@ fn replace_changed_blocks(
     Ok(tr)
 }
 
+/// One attribute a remote change sets (`Some`) or removes (`None`) on the node
+/// that starts at a position of the old document.
+type AttrChange = (usize, String, Option<AttrValue>);
+
+/// The CRDT block of every **leaf block atom** (an `embed`, a `horizontal_rule`) of
+/// the old document and of the converged one, in document order — what proves a
+/// leaf block atom is the same atom on both sides, whether its attributes changed
+/// or not. Read by `CollabDoc::to_doc_with_atom_ids`; each list is as long as its
+/// document has leaf block atoms ([`AtomIds::fits`]).
+pub(crate) struct AtomIds<'a> {
+    pub(crate) old: &'a [BlockId],
+    pub(crate) new: &'a [BlockId],
+    /// The identity of every **inline atom** (an `image`, a `hard_break`) of the
+    /// old document and the converged one, in document order, when known
+    /// ([`InlineIds`]).
+    pub(crate) inline: Option<InlineIds<'a>>,
+}
+
+/// The identity (`crate::atoms`) of every inline atom of the old document and of
+/// the converged one, in document order: `None` where it is not known (an atom
+/// the model made since the last read). A picture whose attributes a peer changed
+/// is the same identity on both sides, and gets `SetNodeAttrStep`s, so a node
+/// view drawn for it stays mounted; another identity at its place — a moved,
+/// re-inserted or replaced picture — is replaced, and the view remounted. An
+/// unknown identity never proves sameness for an attribute change: on doubt the
+/// block is replaced.
+#[derive(Clone, Copy)]
+pub(crate) struct InlineIds<'a> {
+    pub(crate) old: &'a [Option<String>],
+    pub(crate) new: &'a [Option<String>],
+}
+
+impl AtomIds<'_> {
+    /// Whether the lists describe `old` and `target`: one id per leaf block atom.
+    pub(crate) fn fits(&self, old: &Node, target: &Node) -> bool {
+        self.old.len() == block_atoms(old) && self.new.len() == block_atoms(target)
+    }
+
+    /// The inline identities, when they describe `old` and `target`.
+    fn inline_fitting(&self, old: &Node, target: &Node) -> Option<InlineIds<'_>> {
+        self.inline
+            .filter(|i| i.old.len() == inline_atoms(old) && i.new.len() == inline_atoms(target))
+    }
+}
+
+/// Whether `node` is an inline atom (an inline leaf that is not text).
+fn is_inline_atom(node: &Node) -> bool {
+    node.is_inline() && node.is_leaf() && !node.is_text()
+}
+
+/// How many inline atoms `node` is or holds, in document order.
+pub(crate) fn inline_atoms(node: &Node) -> usize {
+    if is_inline_atom(node) {
+        1
+    } else if node.is_leaf() {
+        0
+    } else {
+        node.content().children().iter().map(inline_atoms).sum()
+    }
+}
+
+/// The inline atoms `node` is or holds, in document order.
+pub(crate) fn inline_atom_nodes(node: &Node, out: &mut Vec<Node>) {
+    if is_inline_atom(node) {
+        out.push(node.clone());
+    } else if !node.is_leaf() {
+        for child in node.content().children() {
+            inline_atom_nodes(child, out);
+        }
+    }
+}
+
+/// Whether `node` holds one inline atom node (`Node::same_ref`) at two places.
+fn holds_an_inline_atom_twice(node: &Node) -> bool {
+    let mut atoms = Vec::new();
+    inline_atom_nodes(node, &mut atoms);
+    let mut seen = std::collections::HashSet::with_capacity(atoms.len());
+    !atoms
+        .iter()
+        .all(|a| seen.insert(crate::projection::node_key(a)))
+}
+
+/// Whether `node` is a leaf block atom (the projection's predicate).
+fn is_block_atom(node: &Node) -> bool {
+    crate::projection::is_leaf_block_atom(node.node_type())
+}
+
+/// How many leaf block atoms `node` is or holds.
+pub(crate) fn block_atoms(node: &Node) -> usize {
+    if is_block_atom(node) {
+        1
+    } else if node.is_textblock() || node.is_leaf() {
+        0 // a textblock's inline content holds no block
+    } else {
+        node.content().children().iter().map(block_atoms).sum()
+    }
+}
+
+/// The leaf block atoms `node` is or holds, in the order [`block_atoms`] counts
+/// them (document order).
+pub(crate) fn atom_nodes(node: &Node, out: &mut Vec<Node>) {
+    if is_block_atom(node) {
+        out.push(node.clone());
+    } else if !(node.is_textblock() || node.is_leaf()) {
+        for child in node.content().children() {
+            atom_nodes(child, out);
+        }
+    }
+}
+
+/// How a pair of leaf block atoms at one place, of one type, is told apart.
+#[derive(Clone, Copy)]
+enum AtomMatch<'a> {
+    /// By their CRDT blocks: the same block is the same atom (its attributes may
+    /// differ); another block is another atom, equal values or not.
+    Ids(&'a AtomIds<'a>),
+    /// By place alone: an atom whose attributes differ is that atom changed —
+    /// right for asking whether any position moved, wrong for identity.
+    Positional,
+}
+
+/// One change [`changed_middle`] found, at a position of the old document.
+enum Edit {
+    /// Replace the node at `from..to` with `node`.
+    Replace { from: usize, to: usize, node: Node },
+    /// Set or remove attributes of the leaf block atom at a position.
+    Attrs(Vec<AttrChange>),
+}
+
+/// The changes that turn `old`'s changed middle (`diff`) into `target`'s, child by
+/// child: a changed textblock (or any node that changed shape) is replaced on its
+/// own, a container of the same shape is walked into, a leaf block atom that is the
+/// same atom ([`AtomMatch`]) gets its attributes set, and one that is another atom —
+/// even an equal one — is replaced, so a view drawn for the old one is remounted.
+/// `None` when the middle's top-level block count changed: then the whole middle is
+/// one replace.
+fn changed_middle(
+    old: &Node,
+    target: &Node,
+    diff: &BlockDiff,
+    atoms: AtomMatch,
+) -> Option<Vec<Edit>> {
+    let (on, nn) = (old.child_count(), target.child_count());
+    if on != nn {
+        return None;
+    }
+    let before: usize = (0..diff.prefix).map(|i| block_atoms(old.child(i))).sum();
+    let inline = match atoms {
+        AtomMatch::Ids(ids) => ids.inline_fitting(old, target),
+        AtomMatch::Positional => None,
+    };
+    // A model holding one picture `Rc` at two places (an in-editor copy and paste,
+    // in two blocks or one) cannot say which of the two a char is: a patch of
+    // attributes would keep the shared `Rc` alive where the whole-block replace
+    // splits it, and the next local edit's identity match pairs the wrong char
+    // (seed 975 of `atom_identity_identical_pictures`). Replace instead.
+    let inline = inline.filter(|_| !holds_an_inline_atom_twice(old));
+    let inline_before: usize = (0..diff.prefix).map(|i| inline_atoms(old.child(i))).sum();
+    // An identity two chars carry (two copies of one picture that split apart:
+    // `crate::atoms`, *What is left*) names neither of them.
+    let shared = inline
+        .map(|i| {
+            let mut seen = std::collections::HashSet::new();
+            let mut shared = std::collections::HashSet::new();
+            for list in [i.old, i.new] {
+                seen.clear();
+                for id in list.iter().flatten() {
+                    if !seen.insert(id.as_str()) {
+                        shared.insert(id.clone());
+                    }
+                }
+            }
+            shared
+        })
+        .unwrap_or_default();
+    let mut walk = MiddleWalk {
+        shared,
+        edits: Vec::new(),
+        atoms,
+        ko: before,
+        kn: before,
+        inline,
+        io: inline_before,
+        in_: inline_before,
+    };
+    let mut pos = diff.start;
+    for i in diff.prefix..on - diff.suffix {
+        let (a, b) = (old.child(i), target.child(i));
+        walk.pair(a, b, pos);
+        pos += a.node_size();
+    }
+    Some(walk.edits)
+}
+
+/// The walk behind [`changed_middle`].
+struct MiddleWalk<'a> {
+    edits: Vec<Edit>,
+    atoms: AtomMatch<'a>,
+    /// The document-order index of the next leaf block atom, old and new.
+    ko: usize,
+    kn: usize,
+    /// The inline atoms' identities, when known, and the index of the next one,
+    /// old and new.
+    inline: Option<InlineIds<'a>>,
+    io: usize,
+    in_: usize,
+    /// Identities more than one inline atom carries, on either side.
+    shared: std::collections::HashSet<String>,
+}
+
+impl MiddleWalk<'_> {
+    /// Whether the leaf block atoms of `a` and `b` (counted `ca`, `cb`) are the same
+    /// atoms, in order.
+    fn same_atoms(&self, ca: usize, cb: usize) -> bool {
+        match self.atoms {
+            AtomMatch::Ids(ids) => {
+                ca == cb && ids.old[self.ko..self.ko + ca] == ids.new[self.kn..self.kn + cb]
+            }
+            AtomMatch::Positional => ca == cb,
+        }
+    }
+
+    /// Whether the inline atoms of `a` and `b` (counted `ia`, `ib`) are not shown
+    /// to be other atoms: no pair of them is two known, different identities.
+    fn same_inline(&self, ia: usize, ib: usize) -> bool {
+        let Some(inline) = self.inline else {
+            return true;
+        };
+        ia == ib
+            && (0..ia).all(
+                |k| match (&inline.old[self.io + k], &inline.new[self.in_ + k]) {
+                    (Some(x), Some(y)) => x == y,
+                    _ => true,
+                },
+            )
+    }
+
+    /// The attribute changes that turn textblock `a` into `b` when the two differ
+    /// only in the attributes of inline atoms each **known** to be the same atom
+    /// on both sides (identity). `None` otherwise.
+    fn inline_attr_changes(&self, a: &Node, b: &Node, pos: usize) -> Option<Vec<AttrChange>> {
+        let inline = self.inline?;
+        if !(a.is_textblock()
+            && a.type_name() == b.type_name()
+            && a.marks() == b.marks()
+            && a.attrs() == b.attrs()
+            && a.child_count() == b.child_count())
+        {
+            return None;
+        }
+        // One node twice in the block (a picture copied and moved in one editor:
+        // the two copies are one `Rc`) is no atom the model can tell from the
+        // other; the projection cannot either, so the next local edit of either
+        // may write the other's char. Replaced, the block is read afresh.
+        let atoms: Vec<&Node> = (0..a.child_count())
+            .map(|i| a.child(i))
+            .filter(|c| is_inline_atom(c))
+            .collect();
+        if atoms
+            .iter()
+            .enumerate()
+            .any(|(i, x)| atoms[..i].iter().any(|y| y.same_ref(x)))
+        {
+            return None;
+        }
+        let mut changes = Vec::new();
+        let mut child_pos = pos + 1;
+        let mut k = 0;
+        for i in 0..a.child_count() {
+            let (x, y) = (a.child(i), b.child(i));
+            if is_inline_atom(x) {
+                if !is_inline_atom(y) || x.type_name() != y.type_name() || x.marks() != y.marks() {
+                    return None;
+                }
+                let (Some(ox), Some(ny)) = (&inline.old[self.io + k], &inline.new[self.in_ + k])
+                else {
+                    if x == y {
+                        k += 1;
+                        child_pos += 1;
+                        continue;
+                    }
+                    return None;
+                };
+                if ox != ny || self.shared.contains(ox) {
+                    return None;
+                }
+                for (key, value) in y.attrs().iter() {
+                    if x.attrs().get(key) != Some(value) {
+                        changes.push((child_pos, key.to_string(), Some(value.clone())));
+                    }
+                }
+                for (key, _) in x.attrs().iter() {
+                    if y.attrs().get(key).is_none() {
+                        changes.push((child_pos, key.to_string(), None));
+                    }
+                }
+                k += 1;
+            } else if x != y {
+                return None;
+            }
+            child_pos += x.node_size();
+        }
+        (!changes.is_empty()).then_some(changes)
+    }
+
+    fn pair(&mut self, a: &Node, b: &Node, pos: usize) {
+        let (ca, cb) = (block_atoms(a), block_atoms(b));
+        let (ia, ib) = (inline_atoms(a), inline_atoms(b));
+        if (a.same_ref(b) || a == b) && self.same_atoms(ca, cb) && self.same_inline(ia, ib) {
+            self.ko += ca;
+            self.kn += cb;
+            self.io += ia;
+            self.in_ += ib;
+            return;
+        }
+        if let Some(changes) = self.inline_attr_changes(a, b, pos) {
+            self.edits.push(Edit::Attrs(changes));
+            self.io += ia;
+            self.in_ += ib;
+            return;
+        }
+        let same_shape = a.type_name() == b.type_name() && a.marks() == b.marks();
+        if same_shape && is_block_atom(a) && is_block_atom(b) && self.same_atoms(1, 1) {
+            let mut changes = Vec::new();
+            for (key, value) in b.attrs().iter() {
+                if a.attrs().get(key) != Some(value) {
+                    changes.push((pos, key.to_string(), Some(value.clone())));
+                }
+            }
+            for (key, _) in a.attrs().iter() {
+                if b.attrs().get(key).is_none() {
+                    changes.push((pos, key.to_string(), None));
+                }
+            }
+            self.edits.push(Edit::Attrs(changes));
+        } else if same_shape
+            && !a.is_leaf()
+            && !a.is_textblock()
+            && !b.is_textblock()
+            && a.attrs() == b.attrs()
+            && a.child_count() == b.child_count()
+        {
+            let mut child_pos = pos + 1;
+            for i in 0..a.child_count() {
+                let ca = a.child(i);
+                self.pair(ca, b.child(i), child_pos);
+                child_pos += ca.node_size();
+            }
+            return; // the children advanced the counts
+        } else {
+            self.edits.push(Edit::Replace {
+                from: pos,
+                to: pos + a.node_size(),
+                node: b.clone(),
+            });
+        }
+        self.ko += ca;
+        self.kn += cb;
+        self.io += ia;
+        self.in_ += ib;
+    }
+}
+
 /// Build the transaction that brings `state`'s model up to the converged CRDT
 /// document `target`, as a minimal block-level replace. Returns `None` if nothing
 /// changed. The transaction is tagged remote + non-undoable.
 pub fn build_remote_transaction(state: &EditorState, target: &Node) -> Result<Option<Transaction>> {
+    build_remote_transaction_with(state, target, None)
+}
+
+/// [`build_remote_transaction`], told the CRDT block of every leaf block atom on
+/// both sides ([`AtomIds`]). Then:
+///
+/// * an atom that is **another CRDT block** than the one at its place is a change
+///   even when the two are equal by value (two equal embeds a peer swapped), and is
+///   replaced, so a node view drawn for the old one is remounted — never handed
+///   the other node (decision (d) of the node views);
+/// * an atom that is the **same block** with other attributes gets
+///   `SetNodeAttrStep`s, so it keeps its identity in the model and a view stays
+///   mounted — beside other changes in the same update too (a reconnect's batch);
+/// * every other changed block is replaced on its own.
+///
+/// Without `ids` it is the one block-level replace of the changed middle.
+pub(crate) fn build_remote_transaction_with(
+    state: &EditorState,
+    target: &Node,
+    ids: Option<&AtomIds>,
+) -> Result<Option<Transaction>> {
     let old = &state.doc;
-    let Some(diff) = block_diff(old, target) else {
+    let ids = ids.filter(|ids| ids.fits(old, target));
+    let Some(diff) = block_diff_with(old, target, ids) else {
         return Ok(None);
     };
     let (prefix, suffix, start) = (diff.prefix, diff.suffix, diff.start);
+    let edits = ids.and_then(|ids| changed_middle(old, target, &diff, AtomMatch::Ids(ids)));
+
+    // Only atoms' attributes changed: say so, attribute by attribute, and leave
+    // the selection where it is — no position moves.
+    if let Some(edits) = &edits
+        && edits.iter().all(|e| matches!(e, Edit::Attrs(_)))
+    {
+        let mut tr = state.tr();
+        for edit in edits {
+            if let Edit::Attrs(changes) = edit {
+                set_attrs(&mut tr, changes)?;
+            }
+        }
+        tr.set_add_to_history(false);
+        tr.set_meta(ORIGIN_REMOTE, true);
+        return Ok(Some(tr));
+    }
 
     // Where the selection's ends belong afterwards, worked out against the old
-    // document before it is replaced (see `carried_position`).
+    // document before it is replaced (see `carried_position`). The result of the
+    // edits below is the same document, position for position, as one replace of
+    // the changed middle, so the same answer holds for either.
     let old_selection = &state.selection;
     let carried = (
         carried_position(old, target, prefix, suffix, start, old_selection.anchor().0),
         carried_position(old, target, prefix, suffix, start, old_selection.head().0),
     );
 
-    let mut tr = replace_changed_blocks(state, target, &diff)?;
+    let mut tr = match edits {
+        Some(edits) => {
+            // Back to front, so every edit's old position is still its position.
+            let mut tr = state.tr();
+            for edit in edits.iter().rev() {
+                match edit {
+                    Edit::Replace { from, to, node } => {
+                        tr.replace(
+                            *from,
+                            *to,
+                            Slice::new(Fragment::from_node(node.clone()), 0, 0),
+                        )?;
+                    }
+                    Edit::Attrs(changes) => set_attrs(&mut tr, changes)?,
+                }
+            }
+            tr
+        }
+        None => replace_changed_blocks(state, target, &diff)?,
+    };
     let new_doc = tr.doc().clone();
     match carried {
         // Both ends sat in changed textblocks that are still there: put them back
@@ -133,6 +617,19 @@ pub fn build_remote_transaction(state: &EditorState, target: &Node) -> Result<Op
     Ok(Some(tr))
 }
 
+/// One `SetNodeAttrStep` per change.
+fn set_attrs(tr: &mut Transaction, changes: &[AttrChange]) -> Result<()> {
+    for (pos, attr, value) in changes {
+        tr.step(Box::new(SetNodeAttrStep {
+            pos: *pos,
+            attr: attr.clone(),
+            value: value.clone(),
+        }))
+        .map_err(|e| crate::error::CollabError::Schema(e.to_string()))?;
+    }
+    Ok(())
+}
+
 /// Carries selections **other than the live one** across a remote change: a
 /// selection captured for work that finishes later (an editor's
 /// `SelectionAnchor`: an asynchronous paste, a picture being uploaded) must
@@ -146,6 +643,9 @@ pub fn build_remote_transaction(state: &EditorState, target: &Node) -> Result<Op
 /// answer is `None`: the block it was in was deleted, split, joined or changed
 /// kind by the peer, and inserting "nearby" would be a guess.
 pub struct RemoteCarry {
+    /// Only atoms' attributes changed ([`changed_middle`]): no position
+    /// moved, and every selection stands as it is.
+    attrs_only: bool,
     old: Node,
     new_doc: Node,
     diff: BlockDiff,
@@ -158,8 +658,13 @@ impl RemoteCarry {
     /// selection stands as it is) or the replace cannot be built.
     pub fn new(state: &EditorState, target: &Node) -> Option<RemoteCarry> {
         let diff = block_diff(&state.doc, target)?;
+        // Positional is enough here: whichever atom stands where, no position
+        // moved.
+        let attrs_only = changed_middle(&state.doc, target, &diff, AtomMatch::Positional)
+            .is_some_and(|edits| edits.iter().all(|e| matches!(e, Edit::Attrs(_))));
         let tr = replace_changed_blocks(state, target, &diff).ok()?;
         Some(RemoteCarry {
+            attrs_only,
             old: state.doc.clone(),
             new_doc: tr.doc().clone(),
             mapping: tr.mapping().clone(),
@@ -181,6 +686,9 @@ impl RemoteCarry {
     /// `selection`, taken in the old document, in the converged one; `None`
     /// when the content it named is gone.
     pub fn selection(&self, selection: &Selection) -> Option<Selection> {
+        if self.attrs_only {
+            return Some(selection.clone());
+        }
         let d = &self.diff;
         let inside = |pos: usize| pos > d.start && pos < d.end;
         let (anchor, head) = (selection.anchor().0, selection.head().0);

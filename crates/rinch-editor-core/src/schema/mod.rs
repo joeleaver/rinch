@@ -204,6 +204,20 @@ impl Schema {
             spec
         });
 
+        // embed — a block an app draws itself (a sheet, a canvas, a counter: a
+        // node view). The document holds the atom and the app's own `data-*`
+        // attributes, which are what the app keys its state to. It has no HTML
+        // tag of its own: it is written as `<div data-pm-type="embed" data-…>`
+        // and read back from that element (`serialize::html`), and an app can
+        // give the HTML export markup to put inside it
+        // (`serialize::set_html_fallback`).
+        builder = builder.node("embed", {
+            let mut spec = NodeSpec::atom("embed");
+            spec.group = Some("block".into());
+            spec.data_attrs = true;
+            spec
+        });
+
         // hard_break
         builder = builder.node("hard_break", {
             let mut spec = NodeSpec::atom("hard_break");
@@ -484,7 +498,8 @@ impl SchemaBuilder {
     ///
     /// When a node type that is not a leaf (one with content) sets
     /// [`NodeSpec::data_attrs`]: app data attributes are carried through HTML
-    /// on a void element only.
+    /// only on an element that holds none of the document's content (a void
+    /// element, or a block atom's `<div>`).
     pub fn build(self) -> Schema {
         let groups = compute_groups(&self.nodes);
         // A node-type name must not collide with a group name, or content
@@ -494,7 +509,7 @@ impl SchemaBuilder {
             "a node-type name collides with a group name"
         );
         let node_types = compile_node_types(&self.nodes, &groups);
-        // App data attributes go through HTML on a void element only, so a
+        // App data attributes go through HTML only on a leaf's element, so a
         // container that kept them would lose them on every copy and paste.
         for (name, spec) in &self.nodes {
             assert!(
@@ -594,6 +609,7 @@ mod tests {
             "task_list",
             "task_item",
             "horizontal_rule",
+            "embed",
             "hard_break",
             "text",
             "image",

@@ -59,9 +59,10 @@ pub struct NodeSpec {
     /// name rinch does not reserve ([`is_app_data_attr`]), with a string
     /// value, at most [`MAX_DATA_ATTRS`] of them and each value at most
     /// [`MAX_DATA_ATTR_VALUE`] bytes ([`kept_data_attrs`]). Kept by attribute
-    /// validation, `DocNode`, HTML (as themselves on the node's void element),
-    /// collaboration and the view (which writes them on the host element).
-    /// Off by default; the starter kit's `image` opts in. Only a **leaf** node
+    /// validation, `DocNode`, HTML (as themselves on the node's void element, or
+    /// on the `<div>` a tagless block atom is written as), collaboration and the
+    /// view (which writes them on the host element). Off by default; the
+    /// starter kit's `image` and `embed` opt in. Only a **leaf** node
     /// type may set it: [`SchemaBuilder::build`] panics for one with content.
     ///
     /// [`is_app_data_attr`]: crate::schema::is_app_data_attr

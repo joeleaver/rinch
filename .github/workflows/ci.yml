@@ -432,6 +432,20 @@ jobs:
           cargo test -p rinch-web --target wasm32-unknown-unknown \
             --features collaboration --test editor_read_only
 
+      # `editor_node_view_real_tab` is `#[ignore]`d above (a synthetic keydown moves
+      # no focus): this step builds it with RINCH_REAL_KEYS=1 and runs it with
+      # trusted keys sent over the DevTools protocol by `real_keys.mjs`, which needs
+      # node >= 22 for its global `WebSocket`. Chrome only: Firefox has no CDP
+      # `Input.dispatchKeyEvent` here. The real Tab is the only evidence that focus
+      # actually leaves a node view (review 2 of #1595).
+      - name: Set up Node (trusted-key test)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run the trusted-key test (headless Chrome)
+        run: bash crates/rinch-web/tests/support/run_real_keys.sh
+
       # The drag auto-scroll fixtures again at a fractional devicePixelRatio
       # (#1592): at DPR 1 a scroll offset is always whole, so the loop's
       # end-of-list test was right there and spun for ever at 1.5. The runner

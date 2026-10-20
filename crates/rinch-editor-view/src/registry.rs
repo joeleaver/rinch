@@ -73,6 +73,44 @@ thread_local! {
     static OVERLAY_PASSES_OWED: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     /// See [`set_overlay_pass_scheduler`].
     static OVERLAY_PASS_SCHEDULER: Cell<Option<fn()>> = const { Cell::new(None) };
+    /// See [`set_node_view_host_listener`].
+    static NODE_VIEW_HOST_LISTENER: Cell<Option<NodeViewHostListener>> = const { Cell::new(None) };
+}
+
+/// What [`set_node_view_host_listener`] takes: `(doc_key, container id, the
+/// view's host element, mounted)`.
+pub type NodeViewHostListener = fn(u64, usize, &rinch_core::dom::NodeHandle, bool);
+
+/// Tell the node-view code whom to notify when an editor's node view is mounted
+/// (`true`) or unmounted (`false`) on a host element — after the fact, with no
+/// borrow held. The web registers one: it watches each host's box with a
+/// `ResizeObserver` and owes the editor an overlay pass when one changes size, so
+/// the caret and the selection highlight below a view that grew follow it.
+/// Desktop registers none: its post-layout overlay pass compares the hosts'
+/// boxes itself.
+///
+/// Per thread, like the rest of this registry; setting it again replaces it.
+pub fn set_node_view_host_listener(listener: NodeViewHostListener) {
+    NODE_VIEW_HOST_LISTENER.with(|slot| slot.set(Some(listener)));
+}
+
+/// Tell the [`set_node_view_host_listener`] listener about a host.
+pub(crate) fn notify_node_view_host(
+    doc_key: u64,
+    container: usize,
+    host: &rinch_core::dom::NodeHandle,
+    mounted: bool,
+) {
+    if let Some(listener) = NODE_VIEW_HOST_LISTENER.with(|slot| slot.get()) {
+        listener(doc_key, container, host, mounted);
+    }
+}
+
+/// Owe the editors of document `doc_key` an overlay pass because something
+/// outside the document's own changes moved them — a node view's host resized.
+/// What a [`set_node_view_host_listener`] listener calls.
+pub fn owe_overlay_pass_for(doc_key: u64) {
+    owe_overlay_pass(doc_key);
 }
 
 /// Tell [`EditorHandle::focus`] how this platform gives an editor the keyboard,

@@ -558,11 +558,18 @@ impl RinchApp {
     pub(super) fn text_target_at(&self, x: f32, y: f32) -> Option<TextTarget> {
         let doc = self.doc.as_ref()?;
         let d = doc.borrow();
-        let mut cur = self.shared_hit(&d, x, y);
+        let hit = self.shared_hit(&d, x, y);
+        let mut cur = hit;
         while let Some(nid) = cur {
             let node = d.tree.get(nid)?;
             if Self::is_text_like_field(node) {
                 return Some(TextTarget::Input(nid));
+            }
+            // Past a node view's host from inside its component: the press is the
+            // component's, not the editor's.
+            #[cfg(feature = "desktop")]
+            if Some(nid) != hit && node.attributes.contains_key(crate::editor::NODE_VIEW_ATTR) {
+                return None;
             }
             #[cfg(feature = "desktop")]
             if node.attributes.get("data-pm-editor").map(String::as_str) == Some("true") {

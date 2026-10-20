@@ -18,7 +18,7 @@
 use std::rc::Rc;
 
 use rinch_editor_collab::testing::{
-    node_reads, session_from_bytes_with_client_id, session_with_client_id,
+    atom_id_walks, node_reads, session_from_bytes_with_client_id, session_with_client_id,
 };
 use rinch_editor_collab::{CollabPlugin, CollabSession};
 use rinch_editor_core::{
@@ -306,4 +306,116 @@ fn a_keystroke_reads_the_atom_entries_once() {
     // The guest reads the changed map once, then not again until it changes.
     assert_eq!((first_50, first_100), (50, 100));
     assert_eq!((second_50, second_100), (0, 0));
+}
+
+// --- a remote keystroke beside an embed (review of #1575, F5) ---
+
+/// CRDT nodes read by integrating each of a peer's keystrokes, both ways, in live
+/// collaboration (each side types between the other's), with `n` paragraphs and —
+/// when `embed` — an attributed embed in the middle.
+fn remote_keystroke_reads(n: usize, embed: bool) -> Vec<u64> {
+    use rinch_editor_core::{AttrValue, Attrs};
+    let s = Rc::new(Schema::starter_kit());
+    let mut blocks = paragraphs(&s, n);
+    if embed {
+        let e = s
+            .create_node(
+                "embed",
+                Attrs::from_iter([("data-sheet", AttrValue::from("s1"))]),
+                Fragment::empty(),
+            )
+            .unwrap();
+        blocks.insert(n / 2, e);
+    }
+    let a = Peer::host(&s, blocks, 1);
+    let b = a.join(2);
+    let mut peers = [a, b];
+    let mut reads = Vec::new();
+    for round in 0..3 {
+        for f in [0, 1] {
+            let [p0, p1] = &mut peers;
+            let (from, to) = if f == 0 { (p0, p1) } else { (p1, p0) };
+            let last = from.state.doc.child_count() - 1;
+            let at = start_of_block(&from.state.doc, last) + 2 + round;
+            from.type_at(at, "x");
+            let delta = from.session.save_incremental().unwrap();
+            let before = node_reads();
+            let next = to
+                .session
+                .integrate_incremental(&to.state, &delta)
+                .unwrap()
+                .expect("the keystroke changes the peer");
+            reads.push(node_reads() - before);
+            to.state = next;
+        }
+    }
+    let [a, b] = peers;
+    a.assert_model_is_projection();
+    assert_eq!(a.state.doc, b.state.doc);
+    reads
+}
+
+/// A peer's keystroke reads the CRDT once (its converged rebuild) whether or not
+/// the document holds an embed: the embed costs what one more paragraph costs and nothing more. It
+/// used to cost a second whole read — the old document's atoms' blocks, read again
+/// before every update to tell an embed whose attributes a peer changed from
+/// another — about 50% more at any size (6003 nodes against 4000 at 2000
+/// paragraphs). Those blocks are now kept from the previous operation
+/// (`atom_cache`), on the host from the session's start and on a guest from the
+/// read it joined with.
+#[test]
+fn a_remote_keystroke_beside_an_embed_reads_the_crdt_once() {
+    for n in [50, 100] {
+        let without = remote_keystroke_reads(n, false);
+        let with = remote_keystroke_reads(n, true);
+        // What one more block costs: a paragraph's share of the read.
+        let per_block = without[0] / n as u64;
+        let plus_one: Vec<u64> = without.iter().map(|r| r + per_block).collect();
+        assert_eq!(with, plus_one, "n = {n}");
+    }
+}
+
+/// What a **local** keystroke pays for the node views' atom-id cache in a live
+/// session, i.e. after the session has integrated a peer's change. In a document
+/// with no leaf block atom it walks nothing: it used to walk every top-level block
+/// a second time and rewrite the cache entry the integrate left, about 19% of a
+/// keystroke's `record_local` at 2000 paragraphs, a cost the `collab_keystroke`
+/// bench (which never integrates) could not see (review 2 of #1575, N3). With an
+/// embed it walks the blocks once, which is what spares the next remote change a
+/// second read of the CRDT (`a_remote_keystroke_beside_an_embed_reads_the_crdt_once`).
+#[test]
+fn a_local_keystroke_after_a_remote_change_walks_no_block_without_an_embed() {
+    use rinch_editor_core::{AttrValue, Attrs};
+    for embed in [false, true] {
+        let s = Rc::new(Schema::starter_kit());
+        let mut blocks = paragraphs(&s, BLOCKS);
+        if embed {
+            let e = s
+                .create_node(
+                    "embed",
+                    Attrs::from_iter([("data-sheet", AttrValue::from("s1"))]),
+                    Fragment::empty(),
+                )
+                .unwrap();
+            blocks.insert(BLOCKS / 2, e);
+        }
+        let mut a = Peer::host(&s, blocks, 1);
+        let mut b = a.join(2);
+        let mut walks = Vec::new();
+        for round in 0..3 {
+            let last = b.state.doc.child_count() - 1;
+            let at = start_of_block(&b.state.doc, last) + 2;
+            b.type_at(at, "b");
+            a.exchange(&mut b);
+            let at = start_of_block(&a.state.doc, round) + 2;
+            let before = atom_id_walks();
+            a.type_at(at, "a");
+            walks.push(atom_id_walks() - before);
+        }
+        let want = if embed { [1, 1, 1] } else { [0, 0, 0] };
+        assert_eq!(walks, want, "embed: {embed}");
+        a.exchange(&mut b);
+        a.assert_model_is_projection();
+        assert_eq!(a.state.doc, b.state.doc);
+    }
 }

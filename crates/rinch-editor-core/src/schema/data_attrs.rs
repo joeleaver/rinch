@@ -5,7 +5,7 @@
 //! attribute an app sets on it, as a string, through every edit, copy and
 //! paste (HTML), the durable [`DocNode`](crate::serialize) shape, collaboration
 //! (one CRDT entry per attribute) and the view, which writes it on the node's
-//! host element. The starter kit's `image` opts in, so an app can keep what it
+//! host element. The starter kit's `image` and `embed` opt in, so an app can keep what it
 //! needs to find again — an annotation id, a reference into its own store —
 //! on the picture itself.
 //!

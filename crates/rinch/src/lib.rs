@@ -272,8 +272,8 @@ pub mod prelude {
     // New ProseMirror-style rich-text editor (M5+)
     #[cfg(feature = "desktop")]
     pub use crate::editor::{
-        Editor, EditorHandle, EditorKey, ImageHover, LinkClick, LinkHover, LinkSpan, ScrollAlign,
-        create_editor,
+        CaretFrom, Editor, EditorHandle, EditorKey, ImageHover, LinkClick, LinkHover, LinkSpan,
+        NodeViewCtx, NodeViewRegistration, NodeViewSpec, ScrollAlign, create_editor,
     };
 
     // Collaborative editing (M9): the editor's collab error type + the thread-safe
