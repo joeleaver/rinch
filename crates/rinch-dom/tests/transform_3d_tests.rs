@@ -22,11 +22,10 @@
 //! written here flattened, `[m11, m12, m21, m22, m41, m42] / m44`; where
 //! Chrome printed a `matrix()` it is copied verbatim.
 //!
-//! Two things are **not** Chrome's, and each has a fixture below saying so:
-//! a projective transform (a `perspective()` acting on a rotation out of the
+//! One thing is **not** Chrome's, and has a fixture below saying so: a
+//! projective transform (a `perspective()` acting on a rotation out of the
 //! page, which draws a trapezoid) is drawn with its perspective's `x`/`y`
-//! terms dropped, and a mismatched pair of lists is decomposed as flattened 2D
-//! matrices where Chrome decomposes in 3D (#989).
+//! terms dropped.
 
 // The expected matrices are Chrome's printed numbers, `0.707107` among them.
 #![allow(clippy::approx_constant)]
@@ -513,19 +512,163 @@ fn a_mixed_3d_pair_interpolates_by_function() {
     );
 }
 
-/// **Not Chrome's (#989).** `rotateX(60deg)` and `translate(10px)` do not
-/// pair, so each list is composed and the two decomposed. Chrome decomposes the
-/// 4×4 matrices, which recovers the rotation and draws `rotateX(30deg)` half
-/// way (`d` = 0.866025); rinch decomposes the flattened 2D matrices, which sees
-/// only a y scale of 0.5 and lerps it to 0.75.
+/// #989: a pair of lists that stops pairing is composed and interpolated by
+/// **decomposition**, and when either remainder is not a 2D matrix the
+/// decomposition is css-transforms-2's 3D one (translation, scale, three
+/// shears, perspective, a quaternion slerped the shorter way), as Chrome does.
+/// It used to be the flattened 2D matrices', which see only a y scale of 0.5
+/// in `rotateX(60deg)` and lerp it (0.75 half way, where Chrome recovers the
+/// rotation and draws `rotateX(30deg)`, 0.866025). The numbers from here to
+/// `keyframes_carry_a_translate_z_and_a_perspective` were measured in **Chrome
+/// 155**, the same way as the rest.
 #[test]
-fn a_mismatched_3d_pair_decomposes_flat() {
+fn a_mismatched_3d_pair_decomposes_in_3d() {
     check_transition(
         "rotateX(60deg)",
         "translate(10px)",
         &[
-            (0.2, [1.0, 0.0, 0.0, 0.6, 2.0, 0.0]),
-            (0.5, [1.0, 0.0, 0.0, 0.75, 5.0, 0.0]),
+            (0.2, [1.0, 0.0, 0.0, 0.669131, 2.0, 0.0]),
+            (0.5, [1.0, 0.0, 0.0, 0.866025, 5.0, 0.0]),
+            (0.8, [1.0, 0.0, 0.0, 0.978148, 8.0, 0.0]),
+        ],
+    );
+    check_keyframes(
+        "rotateX(60deg)",
+        "translate(10px)",
+        &[(0.2, [1.0, 0.0, 0.0, 0.669131, 2.0, 0.0])],
+    );
+    // A rotation out of the page against one in it: one quaternion slerp.
+    check_transition(
+        "rotateY(150deg)",
+        "rotate(170deg) translate(5px)",
+        &[
+            (
+                0.3,
+                [-0.856529, 0.239101, -0.239101, 0.601527, -1.28479, 0.358651],
+            ),
+            (
+                0.5,
+                [-0.882942, 0.337055, -0.337055, 0.0294885, -2.20735, 0.842638],
+            ),
+        ],
+    );
+}
+
+/// The interpolated remainder keeps its z: a `translateZ` interpolated after a
+/// paired `rotateY` is turned into x by it, where a remainder flattened before
+/// the prefix met it had lost the z (0.6 and 1.2 are the scale; 34.641 is the
+/// z of 40px times `sin 60°`).
+#[test]
+fn a_remainder_keeps_its_z_for_the_prefix() {
+    check_transition(
+        "rotateY(60deg) translateZ(50px)",
+        "rotateY(60deg) scale(2)",
+        &[
+            (0.2, [0.6, 0.0, 0.0, 1.2, 34.641, 0.0]),
+            (0.5, [0.75, 0.0, 0.0, 1.5, 21.6506, 0.0]),
+        ],
+    );
+}
+
+/// A paired `matrix3d()` that is not a 2D matrix is decomposed in 3D too.
+#[test]
+fn a_matrix3d_pair_decomposes_in_3d() {
+    check_transition(
+        "matrix3d(1,0,0,0, 0,0.5,0.866025,0, 0,-0.866025,0.5,0, 0,0,0,1)",
+        "matrix3d(1,0,0,0, 0,1,0,0, 0,0,1,0, 10,0,0,1)",
+        &[
+            (0.2, [1.0, 0.0, 0.0, 0.669131, 2.0, 0.0]),
+            (0.5, [1.0, 0.0, 0.0, 0.866025, 5.0, 0.0]),
+        ],
+    );
+}
+
+/// Each end is decomposed on its own, and a 2D end by the 2D decomposition: a
+/// reflection is one negative scale (the x scale when `a < d`, else the y
+/// one), not the 3D decomposition's three negated scales and a half turn. So
+/// `scaleX(-1)` against `rotateX(60deg)` passes through an x scale of 0.
+#[test]
+fn a_2d_end_is_decomposed_in_2d() {
+    check_transition(
+        "scaleX(-1)",
+        "rotateX(60deg)",
+        &[
+            (0.2, [-0.6, 0.0, 0.0, 0.978148, 0.0, 0.0]),
+            (0.5, [0.0, 0.0, 0.0, 0.866025, 0.0, 0.0]),
+            (0.8, [0.6, 0.0, 0.0, 0.669131, 0.0, 0.0]),
+        ],
+    );
+    check_transition(
+        "scaleY(-1) translate(5px)",
+        "rotateY(60deg)",
+        &[
+            (0.3, [0.951057, 0.0, 0.0, -0.4, 3.5, 0.0]),
+            (0.5, [0.866025, 0.0, 0.0, 0.0, 2.5, 0.0]),
+        ],
+    );
+}
+
+/// The shear and perspective parts of the 3D decomposition.
+#[test]
+fn a_3d_decomposition_interpolates_shear_and_perspective() {
+    check_transition(
+        "rotateX(60deg) skewX(20deg)",
+        "scale(2, 0.5)",
+        &[
+            (0.2, [1.2, 0.0, 0.262059, 0.602218, 0.0, 0.0]),
+            (0.5, [1.5, 0.0, 0.136489, 0.649519, 0.0, 0.0]),
+        ],
+    );
+    check_transition(
+        "perspective(100px) translateZ(10px) rotateX(30deg)",
+        "rotate(30deg)",
+        &[
+            (0.2, [1.06387, 0.110544, -0.110544, 0.970628, 0.0, 0.0]),
+            (0.5, [0.991438, 0.265654, -0.265654, 0.955843, 0.0, 0.0]),
+        ],
+    );
+}
+
+/// A percentage translate interpolates linearly beside the decomposition, as
+/// in 2D: `translate(50%, 25%)` of the 100×40 box is (50, 10) at the start.
+#[test]
+fn a_percentage_translate_rides_a_3d_decomposition() {
+    check_transition(
+        "translate(50%, 25%) rotateX(60deg)",
+        "scale(2) rotate(10deg)",
+        &[
+            (0.2, [1.1992, 0.0399823, -0.0399823, 0.801819, 40.0, 8.0]),
+            (0.5, [1.49388, 0.130698, -0.130698, 1.29257, 25.0, 5.0]),
+        ],
+    );
+}
+
+/// `scaleY(0.5)` and `rotateX(60deg)` flatten to the same matrix, but they are
+/// different transforms and Chrome runs a transition between them, which
+/// leaves the plane (half way it is `rotateX(30deg)` at a y scale of 0.75).
+/// "Holds still" is asked of the 4×4s, not of their flattenings.
+#[test]
+fn equal_flattenings_of_different_3d_transforms_transition() {
+    check_transition(
+        "scaleY(0.5)",
+        "rotateX(60deg)",
+        &[
+            (0.2, [1.0, 0.0, 0.0, 0.586889, 0.0, 0.0]),
+            (0.5, [1.0, 0.0, 0.0, 0.649519, 0.0, 0.0]),
+        ],
+    );
+}
+
+/// An end with a singular 3×3 has no decomposition, and the pair flips from
+/// one end to the other half way, as in 2D.
+#[test]
+fn a_singular_3d_end_flips_half_way() {
+    check_transition(
+        "rotateX(60deg) scale(0)",
+        "translate(10px)",
+        &[
+            (0.3, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            (0.7, [1.0, 0.0, 0.0, 1.0, 10.0, 0.0]),
         ],
     );
 }
