@@ -2496,6 +2496,14 @@ pub struct IfcRootMeasures {
     /// looked at it, or `None` if it has not seen it since the entry was
     /// created. See `RinchDocument::refresh_ifc_signatures`.
     pub signature: Option<u64>,
+    /// `signature` no longer describes what `sizes` were measured from: an
+    /// atomic inline in the root changed size outside a structural pass, and
+    /// the root was measured again against the new size while `signature`
+    /// still records the old one. The next structural pass treats the root as
+    /// changed whatever it computes, or a chip that goes back to its earlier
+    /// size makes the signature match again and the sizes measured at the
+    /// size in between are served (review of #1627).
+    pub stale: bool,
     /// `(available-width bits, measure)`, one per available space the
     /// measure function was asked about, newest last, at most
     /// [`IfcRootMeasures::MAX_SIZES`].
@@ -3588,6 +3596,17 @@ impl NodeTree {
     /// Keeps the entry's content signature — this is a *style or content*
     /// invalidation, and whether the root's structure moved is still the
     /// structural pass's question to answer.
+    /// [`Self::forget_ifc_measures`] for a root whose **content signature**
+    /// moved since the structural pass last signed it — an atomic inline in it
+    /// resized — so that pass sees the root as changed
+    /// ([`IfcRootMeasures::stale`]).
+    pub fn forget_ifc_measures_and_signature(&mut self, root: RawNodeId) {
+        self.forget_ifc_measures(root);
+        if let Some(entry) = self.ifc_measure_cache.get_mut(&root) {
+            entry.stale = true;
+        }
+    }
+
     pub fn forget_ifc_measures(&mut self, root: RawNodeId) {
         self.perf
             .bump(crate::perf::Counter::IfcMeasureInvalidations);

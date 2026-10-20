@@ -1704,8 +1704,6 @@ fn unglue(
     Some(result)
 }
 
-/// One cluster or inline box of a paragraph, in logical order: what the line
-/// breaker adds to a line's advance, and what [`hanging_after`] needs to know.
 /// An anonymous block box `cleanup_anonymous_block_boxes` took out of its
 /// container but kept in the slab, with the run it was minted for (#964).
 /// `create_anonymous_block_boxes` mints that run's box into it, or frees it.
@@ -1715,6 +1713,8 @@ pub(crate) struct RetiredAnonBox {
     run_members: Vec<usize>,
 }
 
+/// One cluster or inline box of a paragraph, in logical order: what the line
+/// breaker adds to a line's advance, and what [`hanging_after`] needs to know.
 struct LineUnit {
     advance: f32,
     /// A space or tab that hangs at a soft wrap: one whose element wraps
@@ -6086,7 +6086,9 @@ impl RinchDocument {
                 root.text_layout = None;
             }
             self.tree.dirty_ifc_text_roots.insert(root_id);
-            self.tree.forget_ifc_measures(root_id);
+            // The root's signature hashes the box's size, which has just moved
+            // with no structural pass to sign it.
+            self.tree.forget_ifc_measures_and_signature(root_id);
             if let Some(root_taffy) = self.tree.nodes.get(root_id).and_then(|n| n.taffy_id) {
                 let _ = self.tree.taffy.mark_dirty(root_taffy);
             }
@@ -9077,11 +9079,12 @@ impl RinchDocument {
         let mut atomic_changed = false;
         for (root, sig) in sigs {
             let entry = self.tree.ifc_measure_cache.entry(root).or_default();
-            if entry.signature == Some(sig) {
+            if entry.signature == Some(sig) && !entry.stale {
                 continue;
             }
             let seen_before = entry.signature.is_some();
             entry.signature = Some(sig);
+            entry.stale = false;
             entry.sizes.clear();
             changed += 1;
             let Some(node) = self.tree.nodes.get_mut(root) else {

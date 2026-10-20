@@ -2212,20 +2212,41 @@ fn rv_anon_invariants(doc: &RinchDocument, name: &str) {
     for (id, n) in t.nodes.iter() {
         if n.is_anonymous_block_box {
             anon.push(id);
-            let p = n.parent.unwrap_or_else(|| panic!("{name}: anon box {id} has no parent (retired box left in slab)"));
-            assert!(t.nodes[p].run_boxes.contains(&id), "{name}: anon box {id} not listed by its container {p}");
-            assert!(t.anonymous_block_boxes.contains(&id), "{name}: anon box {id} not tracked");
-            assert!(!n.run_members.is_empty(), "{name}: anon box {id} has no members");
+            let p = n.parent.unwrap_or_else(|| {
+                panic!("{name}: anon box {id} has no parent (retired box left in slab)")
+            });
+            assert!(
+                t.nodes[p].run_boxes.contains(&id),
+                "{name}: anon box {id} not listed by its container {p}"
+            );
+            assert!(
+                t.anonymous_block_boxes.contains(&id),
+                "{name}: anon box {id} not tracked"
+            );
+            assert!(
+                !n.run_members.is_empty(),
+                "{name}: anon box {id} has no members"
+            );
             for &m in &n.run_members {
-                assert_eq!(t.nodes.get(m).and_then(|mm| mm.run_box), Some(id), "{name}: member {m} of {id}");
+                assert_eq!(
+                    t.nodes.get(m).and_then(|mm| mm.run_box),
+                    Some(id),
+                    "{name}: member {m} of {id}"
+                );
             }
         }
     }
     for &b in &t.anonymous_block_boxes {
-        assert!(t.nodes.get(b).is_some_and(|n| n.is_anonymous_block_box), "{name}: tracked box {b} is not a live anon box");
+        assert!(
+            t.nodes.get(b).is_some_and(|n| n.is_anonymous_block_box),
+            "{name}: tracked box {b} is not a live anon box"
+        );
     }
     for k in t.ifc_measure_cache.keys() {
-        assert!(t.nodes.get(*k).is_some(), "{name}: measure cache entry for freed id {k}");
+        assert!(
+            t.nodes.get(*k).is_some(),
+            "{name}: measure cache entry for freed id {k}"
+        );
     }
 }
 
@@ -2262,7 +2283,11 @@ fn rv_twin<H>(
                 diff.push_str(&format!("  #{i}\n    inc:   {a}\n    fresh: {b}\n"));
             }
         }
-        panic!("{name}: incremental != fresh (len {} vs {})\n{diff}", inc.len(), fresh.len());
+        panic!(
+            "{name}: incremental != fresh (len {} vs {})\n{diff}",
+            inc.len(),
+            fresh.len()
+        );
     }
     // A second layout must also move nothing.
     doc.resolve_layout(VP.0 + 1.0, VP.1);
@@ -2306,29 +2331,48 @@ fn rv_grow(doc: &mut RinchDocument, a: NodeId) {
 
 #[test]
 fn rv_member_restyled_in_a_scoped_pass() {
-    rv_twin("rv_member_restyled_in_a_scoped_pass", RV_CSS,
+    rv_twin(
+        "rv_member_restyled_in_a_scoped_pass",
+        RV_CSS,
         |doc, on| {
             let h = rv_doc(doc, "a");
-            if on { doc.set_attribute(h.1, "class", "s on"); rv_grow(doc, h.0); }
+            if on {
+                doc.set_attribute(h.1, "class", "s on");
+                rv_grow(doc, h.0);
+            }
             h
         },
-        |doc, h| { doc.set_attribute(h.1, "class", "s on"); rv_grow(doc, h.0); });
+        |doc, h| {
+            doc.set_attribute(h.1, "class", "s on");
+            rv_grow(doc, h.0);
+        },
+    );
 }
 
 #[test]
 fn rv_member_restyled_in_a_whole_document_pass() {
-    rv_twin("rv_member_restyled_in_a_whole_document_pass", RV_CSS,
+    rv_twin(
+        "rv_member_restyled_in_a_whole_document_pass",
+        RV_CSS,
         |doc, on| {
             let h = rv_doc(doc, "a");
-            if on { doc.set_attribute(h.1, "class", "s on"); }
+            if on {
+                doc.set_attribute(h.1, "class", "s on");
+            }
             h
         },
-        |doc, h| { doc.set_attribute(h.1, "class", "s on"); doc.recompute_all_styles_full(); });
+        |doc, h| {
+            doc.set_attribute(h.1, "class", "s on");
+            doc.recompute_all_styles_full();
+        },
+    );
 }
 
 #[test]
 fn rv_member_text_edited_in_a_scoped_pass() {
-    rv_twin("rv_member_text_edited_in_a_scoped_pass", RV_CSS,
+    rv_twin(
+        "rv_member_text_edited_in_a_scoped_pass",
+        RV_CSS,
         |doc, on| {
             let h = rv_doc(doc, "a");
             if on {
@@ -2342,15 +2386,20 @@ fn rv_member_text_edited_in_a_scoped_pass() {
             let st = doc.tree.get(h.1.0).unwrap().children[0];
             doc.set_text_content(NodeId(st), "x");
             rv_grow(doc, h.0);
-        });
+        },
+    );
 }
 
 #[test]
 fn rv_member_moved_out_and_back() {
-    rv_twin("rv_member_moved_out_and_back", RV_CSS,
+    rv_twin(
+        "rv_member_moved_out_and_back",
+        RV_CSS,
         |doc, on| {
             let h = rv_doc(doc, "a");
-            if on { rv_grow(doc, h.0); }
+            if on {
+                rv_grow(doc, h.0);
+            }
             h
         },
         |doc, h| {
@@ -2362,17 +2411,22 @@ fn rv_member_moved_out_and_back() {
             doc.insert_before(h.0, h.1, NodeId(t1));
             doc.remove_node(other);
             rv_grow(doc, h.0);
-        });
+        },
+    );
 }
 
 #[test]
 fn rv_member_moved_out_and_back_across_a_layout() {
     // Out, lay out (the box re-mints for [t0, t1]), back in, lay out.
     let name = "rv_member_moved_out_and_back_across_a_layout";
-    rv_twin(name, RV_CSS,
+    rv_twin(
+        name,
+        RV_CSS,
         |doc, on| {
             let h = rv_doc(doc, "a");
-            if on { rv_grow(doc, h.0); }
+            if on {
+                rv_grow(doc, h.0);
+            }
             h
         },
         |doc, h| {
@@ -2386,26 +2440,36 @@ fn rv_member_moved_out_and_back_across_a_layout() {
             doc.insert_before(h.0, h.1, NodeId(t1));
             doc.remove_node(other);
             rv_grow(doc, h.0);
-        });
+        },
+    );
 }
 
 #[test]
 fn rv_member_becomes_block() {
-    rv_twin("rv_member_becomes_block", RV_CSS,
+    rv_twin(
+        "rv_member_becomes_block",
+        RV_CSS,
         |doc, on| {
             let h = rv_doc(doc, "a");
-            if on { doc.set_attribute(h.1, "class", "s blk"); }
+            if on {
+                doc.set_attribute(h.1, "class", "s blk");
+            }
             h
         },
-        |doc, h| doc.set_attribute(h.1, "class", "s blk"));
+        |doc, h| doc.set_attribute(h.1, "class", "s blk"),
+    );
 }
 
 #[test]
 fn rv_member_becomes_block_and_back_across_layouts() {
-    rv_twin("rv_member_becomes_block_and_back_across_layouts", RV_CSS,
+    rv_twin(
+        "rv_member_becomes_block_and_back_across_layouts",
+        RV_CSS,
         |doc, on| {
             let h = rv_doc(doc, "a");
-            if on { rv_grow(doc, h.0); }
+            if on {
+                rv_grow(doc, h.0);
+            }
             h
         },
         |doc, h| {
@@ -2413,39 +2477,53 @@ fn rv_member_becomes_block_and_back_across_layouts() {
             doc.resolve_layout(VP.0, VP.1);
             doc.set_attribute(h.1, "class", "s");
             rv_grow(doc, h.0);
-        });
+        },
+    );
 }
 
 #[test]
 fn rv_container_loses_its_block() {
-    rv_twin("rv_container_loses_its_block", RV_CSS,
+    rv_twin(
+        "rv_container_loses_its_block",
+        RV_CSS,
         |doc, on| {
             let h = rv_doc(doc, "a");
-            if on { doc.remove_node(h.2); }
+            if on {
+                doc.remove_node(h.2);
+            }
             h
         },
-        |doc, h| doc.remove_node(h.2));
+        |doc, h| doc.remove_node(h.2),
+    );
 }
 
 #[test]
 fn rv_container_loses_its_block_then_gets_one_back() {
-    rv_twin("rv_container_loses_its_block_then_gets_one_back", RV_CSS,
+    rv_twin(
+        "rv_container_loses_its_block_then_gets_one_back",
+        RV_CSS,
         |doc, on| {
             let h = rv_doc(doc, "a");
-            if on { doc.remove_node(h.2); rv_grow(doc, h.0); }
+            if on {
+                doc.remove_node(h.2);
+                rv_grow(doc, h.0);
+            }
             h
         },
         |doc, h| {
             doc.remove_node(h.2);
             doc.resolve_layout(VP.0, VP.1);
             rv_grow(doc, h.0);
-        });
+        },
+    );
 }
 
 #[test]
 fn rv_split_inline_in_a_run_through_a_whole_document_pass() {
     // span.s holds a block: a split inline (#513) inside a container with anon boxes.
-    rv_twin("rv_split_inline_in_a_run_through_a_whole_document_pass", RV_CSS,
+    rv_twin(
+        "rv_split_inline_in_a_run_through_a_whole_document_pass",
+        RV_CSS,
         |doc, on| {
             let h = rv_doc(doc, "a");
             let d = doc.create_element("div");
@@ -2454,15 +2532,23 @@ fn rv_split_inline_in_a_run_through_a_whole_document_pass() {
             doc.append_child(d, dt);
             let after = doc.create_text(" after the block inside the span");
             doc.append_child(h.1, after);
-            if on { doc.set_attribute(h.1, "class", "s on"); }
+            if on {
+                doc.set_attribute(h.1, "class", "s on");
+            }
             h
         },
-        |doc, h| { doc.set_attribute(h.1, "class", "s on"); doc.recompute_all_styles_full(); });
+        |doc, h| {
+            doc.set_attribute(h.1, "class", "s on");
+            doc.recompute_all_styles_full();
+        },
+    );
 }
 
 #[test]
 fn rv_split_inline_in_a_run_through_a_scoped_pass() {
-    rv_twin("rv_split_inline_in_a_run_through_a_scoped_pass", RV_CSS,
+    rv_twin(
+        "rv_split_inline_in_a_run_through_a_scoped_pass",
+        RV_CSS,
         |doc, on| {
             let h = rv_doc(doc, "a");
             let d = doc.create_element("div");
@@ -2471,10 +2557,15 @@ fn rv_split_inline_in_a_run_through_a_scoped_pass() {
             doc.append_child(d, dt);
             let after = doc.create_text(" after the block inside the span");
             doc.append_child(h.1, after);
-            if on { rv_grow(doc, h.0); }
+            if on {
+                rv_grow(doc, h.0);
+            }
             h
         },
-        |doc, h| { rv_grow(doc, h.0); });
+        |doc, h| {
+            rv_grow(doc, h.0);
+        },
+    );
 }
 
 fn rv_abs_doc(doc: &mut RinchDocument, hoisted: bool) -> (NodeId, NodeId, NodeId) {
@@ -2494,41 +2585,92 @@ fn rv_abs_doc(doc: &mut RinchDocument, hoisted: bool) -> (NodeId, NodeId, NodeId
 
 #[test]
 fn rv_hoisted_abs_through_a_scoped_pass() {
-    rv_twin("rv_hoisted_abs_through_a_scoped_pass", RV_CSS,
-        |doc, on| { let h = rv_abs_doc(doc, true); if on { rv_grow(doc, h.0); } h },
-        |doc, h| rv_grow(doc, h.0));
+    rv_twin(
+        "rv_hoisted_abs_through_a_scoped_pass",
+        RV_CSS,
+        |doc, on| {
+            let h = rv_abs_doc(doc, true);
+            if on {
+                rv_grow(doc, h.0);
+            }
+            h
+        },
+        |doc, h| rv_grow(doc, h.0),
+    );
 }
 
 #[test]
 fn rv_hoisted_abs_through_a_whole_document_pass_with_a_restyle() {
-    rv_twin("rv_hoisted_abs_through_a_whole_document_pass_with_a_restyle", RV_CSS,
-        |doc, on| { let h = rv_abs_doc(doc, true); if on { doc.set_attribute(h.1, "class", "s on"); } h },
-        |doc, h| { doc.set_attribute(h.1, "class", "s on"); doc.recompute_all_styles_full(); });
+    rv_twin(
+        "rv_hoisted_abs_through_a_whole_document_pass_with_a_restyle",
+        RV_CSS,
+        |doc, on| {
+            let h = rv_abs_doc(doc, true);
+            if on {
+                doc.set_attribute(h.1, "class", "s on");
+            }
+            h
+        },
+        |doc, h| {
+            doc.set_attribute(h.1, "class", "s on");
+            doc.recompute_all_styles_full();
+        },
+    );
 }
 
 #[test]
 fn rv_run_abs_through_a_scoped_pass() {
-    rv_twin("rv_run_abs_through_a_scoped_pass", RV_CSS,
-        |doc, on| { let h = rv_abs_doc(doc, false); if on { rv_grow(doc, h.0); } h },
-        |doc, h| rv_grow(doc, h.0));
+    rv_twin(
+        "rv_run_abs_through_a_scoped_pass",
+        RV_CSS,
+        |doc, on| {
+            let h = rv_abs_doc(doc, false);
+            if on {
+                rv_grow(doc, h.0);
+            }
+            h
+        },
+        |doc, h| rv_grow(doc, h.0),
+    );
 }
 
 #[test]
 fn rv_run_abs_turns_block_level_before_blockify() {
-    rv_twin("rv_run_abs_turns_block_level_before_blockify", RV_CSS,
+    rv_twin(
+        "rv_run_abs_turns_block_level_before_blockify",
+        RV_CSS,
         |doc, on| {
             let h = rv_abs_doc(doc, false);
-            if on { doc.set_attribute(h.2, "class", "abs blk"); rv_grow(doc, h.0); }
+            if on {
+                doc.set_attribute(h.2, "class", "abs blk");
+                rv_grow(doc, h.0);
+            }
             h
         },
-        |doc, h| { doc.set_attribute(h.2, "class", "abs blk"); rv_grow(doc, h.0); });
+        |doc, h| {
+            doc.set_attribute(h.2, "class", "abs blk");
+            rv_grow(doc, h.0);
+        },
+    );
 }
 
 #[test]
 fn rv_run_abs_removed_through_a_whole_document_pass() {
-    rv_twin("rv_run_abs_removed_through_a_whole_document_pass", RV_CSS,
-        |doc, on| { let h = rv_abs_doc(doc, false); if on { doc.remove_node(h.2); } h },
-        |doc, h| { doc.remove_node(h.2); doc.recompute_all_styles_full(); });
+    rv_twin(
+        "rv_run_abs_removed_through_a_whole_document_pass",
+        RV_CSS,
+        |doc, on| {
+            let h = rv_abs_doc(doc, false);
+            if on {
+                doc.remove_node(h.2);
+            }
+            h
+        },
+        |doc, h| {
+            doc.remove_node(h.2);
+            doc.recompute_all_styles_full();
+        },
+    );
 }
 
 /// Runs of spans only, so only the container's `run_boxes` reach the boxes
@@ -2554,38 +2696,70 @@ fn rv_span_runs(doc: &mut RinchDocument, cls: &str) -> NodeId {
 
 #[test]
 fn rv_container_ellipsis_toggled_spans_only() {
-    rv_twin("rv_container_ellipsis_toggled_spans_only", RV_CSS,
+    rv_twin(
+        "rv_container_ellipsis_toggled_spans_only",
+        RV_CSS,
         |doc, on| rv_span_runs(doc, if on { "a ell on" } else { "a ell" }),
-        |doc, a| doc.set_attribute(*a, "class", "a ell on"));
+        |doc, a| doc.set_attribute(*a, "class", "a ell on"),
+    );
 }
 
 #[test]
 fn rv_container_ellipsis_toggled_spans_only_with_a_scoped_pass() {
-    rv_twin("rv_container_ellipsis_toggled_spans_only_with_a_scoped_pass", RV_CSS,
-        |doc, on| { let a = rv_span_runs(doc, if on { "a ell on" } else { "a ell" }); if on { rv_grow(doc, a); } a },
-        |doc, a| { doc.set_attribute(*a, "class", "a ell on"); rv_grow(doc, *a); });
+    rv_twin(
+        "rv_container_ellipsis_toggled_spans_only_with_a_scoped_pass",
+        RV_CSS,
+        |doc, on| {
+            let a = rv_span_runs(doc, if on { "a ell on" } else { "a ell" });
+            if on {
+                rv_grow(doc, a);
+            }
+            a
+        },
+        |doc, a| {
+            doc.set_attribute(*a, "class", "a ell on");
+            rv_grow(doc, *a);
+        },
+    );
 }
 
 #[test]
 fn rv_container_moved_under_a_bigger_font() {
-    rv_twin("rv_container_moved_under_a_bigger_font", ".big { font-size: 25px; } .a { width: 200px; } .b { width: 2em; }",
+    rv_twin(
+        "rv_container_moved_under_a_bigger_font",
+        ".big { font-size: 25px; } .a { width: 200px; } .b { width: 2em; }",
         |doc, on| {
             let body = doc.body();
             let big = doc.create_element("div");
             doc.set_attribute(big, "class", "big");
             let h = rv_doc(doc, "a");
             doc.append_child(body, big);
-            if on { doc.append_child(big, h.0); }
+            if on {
+                doc.append_child(big, h.0);
+            }
             (h.0, big)
         },
-        |doc, h| doc.append_child(h.1, h.0));
+        |doc, h| doc.append_child(h.1, h.0),
+    );
 }
 
 #[test]
 fn rv_container_width_and_structure_in_one_frame() {
-    rv_twin("rv_container_width_and_structure_in_one_frame", ".a { width: 200px; } .a.w { width: 120px; } .b { width: 2em; }",
-        |doc, on| { let h = rv_doc(doc, if on { "a w" } else { "a" }); if on { rv_grow(doc, h.0); } h },
-        |doc, h| { doc.set_attribute(h.0, "class", "a w"); rv_grow(doc, h.0); });
+    rv_twin(
+        "rv_container_width_and_structure_in_one_frame",
+        ".a { width: 200px; } .a.w { width: 120px; } .b { width: 2em; }",
+        |doc, on| {
+            let h = rv_doc(doc, if on { "a w" } else { "a" });
+            if on {
+                rv_grow(doc, h.0);
+            }
+            h
+        },
+        |doc, h| {
+            doc.set_attribute(h.0, "class", "a w");
+            rv_grow(doc, h.0);
+        },
+    );
 }
 
 // seed-1733 shape: an anonymous box whose only member is an inline-block that
@@ -2632,26 +2806,54 @@ fn rv_chip_twin(name: &str, inner_block: bool, whole: bool, how: u8) {
             doc.append_child(p, pt);
         }
     };
-    rv_twin(name, RV_CHIP_CSS,
+    rv_twin(
+        name,
+        RV_CHIP_CSS,
         move |doc, on| {
             let h = rv_chip_doc(doc, inner_block);
-            if on { apply(doc, &h); }
+            if on {
+                apply(doc, &h);
+            }
             h
         },
-        move |doc, h| apply(doc, h));
+        move |doc, h| apply(doc, h),
+    );
 }
 
-#[test] fn rv_chip_block_hidden_scoped() { rv_chip_twin("rv_chip_block_hidden_scoped", true, false, 0); }
-#[test] fn rv_chip_block_hidden_whole() { rv_chip_twin("rv_chip_block_hidden_whole", true, true, 0); }
-#[test] fn rv_chip_block_text_scoped() { rv_chip_twin("rv_chip_block_text_scoped", true, false, 1); }
-#[test] fn rv_chip_block_text_whole() { rv_chip_twin("rv_chip_block_text_whole", true, true, 1); }
-#[test] fn rv_chip_inline_hidden_scoped() { rv_chip_twin("rv_chip_inline_hidden_scoped", false, false, 0); }
-#[test] fn rv_chip_inline_text_scoped() { rv_chip_twin("rv_chip_inline_text_scoped", false, false, 1); }
-#[test] fn rv_chip_inline_text_whole() { rv_chip_twin("rv_chip_inline_text_whole", false, true, 1); }
+#[test]
+fn rv_chip_block_hidden_scoped() {
+    rv_chip_twin("rv_chip_block_hidden_scoped", true, false, 0);
+}
+#[test]
+fn rv_chip_block_hidden_whole() {
+    rv_chip_twin("rv_chip_block_hidden_whole", true, true, 0);
+}
+#[test]
+fn rv_chip_block_text_scoped() {
+    rv_chip_twin("rv_chip_block_text_scoped", true, false, 1);
+}
+#[test]
+fn rv_chip_block_text_whole() {
+    rv_chip_twin("rv_chip_block_text_whole", true, true, 1);
+}
+#[test]
+fn rv_chip_inline_hidden_scoped() {
+    rv_chip_twin("rv_chip_inline_hidden_scoped", false, false, 0);
+}
+#[test]
+fn rv_chip_inline_text_scoped() {
+    rv_chip_twin("rv_chip_inline_text_scoped", false, false, 1);
+}
+#[test]
+fn rv_chip_inline_text_whole() {
+    rv_chip_twin("rv_chip_inline_text_whole", false, true, 1);
+}
 
 fn rv_s(doc: &mut RinchDocument, parent: NodeId, tag: &str, style: &str) -> NodeId {
     let e = doc.create_element(tag);
-    if !style.is_empty() { doc.set_attribute(e, "style", style); }
+    if !style.is_empty() {
+        doc.set_attribute(e, "style", style);
+    }
     doc.append_child(parent, e);
     e
 }
@@ -2661,12 +2863,21 @@ fn rv_t(doc: &mut RinchDocument, parent: NodeId, s: &str) {
 }
 
 /// Seed 1733 of `scoped_pass_matches_the_whole_document_pass_long`, by hand.
-fn rv_seed1733(doc: &mut RinchDocument, hidden: bool, appended: bool, contents: bool) -> (NodeId, NodeId) {
+fn rv_seed1733(
+    doc: &mut RinchDocument,
+    hidden: bool,
+    appended: bool,
+    contents: bool,
+) -> (NodeId, NodeId) {
     let body = doc.body();
     let d = rv_s(doc, body, "div", "width: 360px; line-height: 20px");
     let sec = rv_s(doc, d, "section", "display: flex");
     rv_t(doc, sec, "a");
-    let w = if contents { rv_s(doc, d, "ul", "display: contents") } else { d };
+    let w = if contents {
+        rv_s(doc, d, "ul", "display: contents")
+    } else {
+        d
+    };
     rv_s(doc, w, "div", "display: flex; flex-direction: column");
     let chip = rv_s(doc, w, "ul", "display: inline-block; padding: 1px");
     rv_t(doc, chip, "plain text");
@@ -2675,7 +2886,11 @@ fn rv_seed1733(doc: &mut RinchDocument, hidden: bool, appended: bool, contents: 
     let x = rv_s(doc, inner, "div", if hidden { "display: none" } else { "" });
     rv_t(doc, x, "x y z");
     let after = rv_s(doc, w, "ul", "");
-    rv_t(doc, after, "a rather longer run of text that wraps somewhere");
+    rv_t(
+        doc,
+        after,
+        "a rather longer run of text that wraps somewhere",
+    );
     rv_s(doc, d, "span", "display: flex");
     if appended {
         let p = rv_s(doc, d, "p", "display: inline-flex");
@@ -2685,7 +2900,9 @@ fn rv_seed1733(doc: &mut RinchDocument, hidden: bool, appended: bool, contents: 
 }
 
 fn rv_seed1733_twin(name: &str, contents: bool, whole: bool) {
-    rv_twin(name, "",
+    rv_twin(
+        name,
+        "",
         move |doc, on| rv_seed1733(doc, on, on && !whole, contents),
         move |doc, h| {
             doc.set_attribute(h.1, "style", "display: none");
@@ -2695,16 +2912,28 @@ fn rv_seed1733_twin(name: &str, contents: bool, whole: bool) {
                 let p = rv_s(doc, h.0, "p", "display: inline-flex");
                 rv_t(doc, p, "x y z");
             }
-        });
+        },
+    );
 }
 
-#[test] fn rv_seed1733_scoped_contents() { rv_seed1733_twin("rv_seed1733_scoped_contents", true, false); }
-#[test] fn rv_seed1733_scoped_plain() { rv_seed1733_twin("rv_seed1733_scoped_plain", false, false); }
-#[test] fn rv_seed1733_whole_contents() { rv_seed1733_twin("rv_seed1733_whole_contents", true, true); }
+#[test]
+fn rv_seed1733_scoped_contents() {
+    rv_seed1733_twin("rv_seed1733_scoped_contents", true, false);
+}
+#[test]
+fn rv_seed1733_scoped_plain() {
+    rv_seed1733_twin("rv_seed1733_scoped_plain", false, false);
+}
+#[test]
+fn rv_seed1733_whole_contents() {
+    rv_seed1733_twin("rv_seed1733_whole_contents", true, true);
+}
 
 /// As [`rv_seed1733`], the chip's block inserted one frame before step 9.
 fn rv_seed1733_hist(contents: bool, whole: bool, name: &str) {
-    rv_twin(name, "",
+    rv_twin(
+        name,
+        "",
         move |doc, on| {
             let (d, x) = rv_seed1733(doc, on, on && !whole, contents);
             if !on {
@@ -2718,9 +2947,20 @@ fn rv_seed1733_hist(contents: bool, whole: bool, name: &str) {
             // Re-insert the block (step 8), lay out, then step 9.
             let x = h.1;
             let chip = {
-                let w = if contents { NodeId(doc.tree.get(h.0.0).unwrap().children[1]) } else { h.0 };
+                let w = if contents {
+                    NodeId(doc.tree.get(h.0.0).unwrap().children[1])
+                } else {
+                    h.0
+                };
                 let kids: Vec<usize> = doc.tree.get(w.0).unwrap().children.clone();
-                NodeId(kids.into_iter().find(|&k| doc.tree.get(k).unwrap().children.len() == 1 && doc.tree.get(k).unwrap().tag() == Some("ul")).unwrap())
+                NodeId(
+                    kids.into_iter()
+                        .find(|&k| {
+                            doc.tree.get(k).unwrap().children.len() == 1
+                                && doc.tree.get(k).unwrap().tag() == Some("ul")
+                        })
+                        .unwrap(),
+                )
             };
             let inner = doc.tree.get(x.0).unwrap().parent.unwrap();
             doc.append_child(chip, NodeId(inner));
@@ -2732,12 +2972,22 @@ fn rv_seed1733_hist(contents: bool, whole: bool, name: &str) {
                 let p = rv_s(doc, h.0, "p", "display: inline-flex");
                 rv_t(doc, p, "x y z");
             }
-        });
+        },
+    );
 }
 
-#[test] fn rv_seed1733_hist_scoped_contents() { rv_seed1733_hist(true, false, "rv_seed1733_hist_scoped_contents"); }
-#[test] fn rv_seed1733_hist_scoped_plain() { rv_seed1733_hist(false, false, "rv_seed1733_hist_scoped_plain"); }
-#[test] fn rv_seed1733_hist_whole_contents() { rv_seed1733_hist(true, true, "rv_seed1733_hist_whole_contents"); }
+#[test]
+fn rv_seed1733_hist_scoped_contents() {
+    rv_seed1733_hist(true, false, "rv_seed1733_hist_scoped_contents");
+}
+#[test]
+fn rv_seed1733_hist_scoped_plain() {
+    rv_seed1733_hist(false, false, "rv_seed1733_hist_scoped_plain");
+}
+#[test]
+fn rv_seed1733_hist_whole_contents() {
+    rv_seed1733_hist(true, true, "rv_seed1733_hist_whole_contents");
+}
 
 /// The seed-1733 chip history in a plain IFC root (no anonymous box): is the
 /// stale measure the anonymous box's alone?
@@ -2745,7 +2995,9 @@ fn rv_chip_hist_plain(name: &str, structural: bool, sibling_text: bool) {
     let build = move |doc: &mut RinchDocument, hidden: bool, appended: bool| {
         let body = doc.body();
         let d = rv_s(doc, body, "div", "width: 360px; line-height: 20px");
-        if sibling_text { rv_t(doc, d, "before "); }
+        if sibling_text {
+            rv_t(doc, d, "before ");
+        }
         let chip = rv_s(doc, d, "ul", "display: inline-block; padding: 1px");
         rv_t(doc, chip, "plain text");
         let inner = rv_s(doc, chip, "ul", "display: block");
@@ -2758,7 +3010,9 @@ fn rv_chip_hist_plain(name: &str, structural: bool, sibling_text: bool) {
         }
         (d, chip, x)
     };
-    rv_twin(name, "",
+    rv_twin(
+        name,
+        "",
         move |doc, on| {
             let h = build(doc, on, on && structural);
             if !on {
@@ -2778,7 +3032,14 @@ fn rv_chip_hist_plain(name: &str, structural: bool, sibling_text: bool) {
             } else {
                 doc.recompute_all_styles_full();
             }
-        });
+        },
+    );
 }
-#[test] fn rv_chip_hist_plain_whole() { rv_chip_hist_plain("rv_chip_hist_plain_whole", false, true); }
-#[test] fn rv_chip_hist_plain_structural() { rv_chip_hist_plain("rv_chip_hist_plain_structural", true, true); }
+#[test]
+fn rv_chip_hist_plain_whole() {
+    rv_chip_hist_plain("rv_chip_hist_plain_whole", false, true);
+}
+#[test]
+fn rv_chip_hist_plain_structural() {
+    rv_chip_hist_plain("rv_chip_hist_plain_structural", true, true);
+}

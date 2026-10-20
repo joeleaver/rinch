@@ -1435,6 +1435,7 @@ fn run_random(seeds: std::ops::Range<u64>, steps: usize) -> Result<RandomStats, 
                         // a pre-existing defect the scoped pass does not
                         // reach. The histories part here; next seed.
                         stats.scoped_better += 1;
+                        stats.scoped_better_seeds.push(seed);
                         if trace_on() {
                             eprintln!(
                                 "seed {seed} step {step}: scoped right, whole-document wrong:\n{d}"
@@ -1482,6 +1483,8 @@ struct RandomStats {
     /// Seeds where the twins differed and the scoped one matched a fresh layout
     /// — the whole-document pass was the one wrong.
     scoped_better: usize,
+    /// Which seeds those were, to replay with `SCOPED_ORACLE_SEED`.
+    scoped_better_seeds: Vec<u64>,
 }
 
 /// The fixed seed set that runs in CI.
@@ -1523,6 +1526,7 @@ fn scoped_pass_matches_the_whole_document_pass_long() {
         total.fresh_divergent += s.fresh_divergent;
         total.control_broken += s.control_broken;
         total.scoped_better += s.scoped_better;
+        total.scoped_better_seeds.extend(s.scoped_better_seeds);
     }
     eprintln!("not the scoped pass's: {total:?}");
 }
