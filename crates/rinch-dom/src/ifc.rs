@@ -5476,8 +5476,9 @@ impl RinchDocument {
                         // A member is no text leaf: its root lays out and
                         // paints its text. A leaf layout left from when it was
                         // a flex or grid item's text answered the caret and
-                        // glyph queries (#970). Text takes this arm only; the
-                        // contents wrapper above is an element and has none.
+                        // glyph queries (#970). Only a text node can hold one;
+                        // for an element taking this arm (a span, an atomic
+                        // inline) the clear is a no-op.
                         c.cached_text_parley = None;
                         if c.display_mode.is_atomic_inline() {
                             self.tree.atomic_inline_registry.insert(child_id);
