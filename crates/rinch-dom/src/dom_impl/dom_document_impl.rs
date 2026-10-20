@@ -64,7 +64,7 @@ impl DomDocument for RinchDocument {
                 src: String::new(),
                 width: 0,
                 height: 0,
-                hint_ratio: None,
+                aspect: Default::default(),
             };
             self.tree
                 .taffy
@@ -825,9 +825,13 @@ impl DomDocument for RinchDocument {
 
     /// The `value` attribute, as the trait's default answers — except that a
     /// `<textarea>` with none answers its text children, its default value
-    /// (#1159), as the web's `.value` property does.
+    /// (#1159), and an `<input>` answers it sanitized for its type (line
+    /// breaks stripped, #1554), as the web's `.value` property does.
     fn live_value(&self, node: NodeId) -> Option<String> {
-        if self.tree.nodes.get(node.0)?.tag() == Some("textarea") {
+        if matches!(
+            self.tree.nodes.get(node.0)?.tag(),
+            Some("textarea" | "input")
+        ) {
             return crate::form_control::control_value(&self.tree.nodes, node.0)
                 .map(|v| v.into_owned());
         }
@@ -1071,10 +1075,12 @@ impl DomDocument for RinchDocument {
         1
     }
 
-    /// The inline formatting context lays a tab out as four spaces
-    /// (`ifc::TAB_SPACES`), four bytes of the same flat offsets (#1109).
+    /// The inline formatting context lays a preserved tab out as one space
+    /// widened to its tab stop (`ifc::TabStops`, #1122), one byte of the
+    /// same flat offsets — as the DOM counts it. (It was four spaces, four
+    /// bytes, until then: #1109.)
     fn tab_flat_bytes(&self) -> usize {
-        crate::ifc::TAB_SPACES.len()
+        1
     }
 
     /// U+2028, U+2029, U+0085 and U+000C as the inline formatting context
@@ -1222,6 +1228,41 @@ impl DomDocument for RinchDocument {
         direction: rinch_core::dom::SelectionDirection,
     ) {
         rinch_core::post_text_selection_request(self.doc_key, node_id.0, start, end, direction);
+    }
+
+    /// Whether `node` is shown, from the computed styles of the last resolve
+    /// (issue #802; see [`DomDocument::is_rendered`]).
+    ///
+    /// rinch styles hidden subtrees (#703), so a node under a `display: none`
+    /// ancestor has its own `display` and the walk up is what finds the
+    /// ancestor; its `visibility` is the inherited one, so the node's own value
+    /// answers for `visibility: hidden` ancestors.
+    fn is_rendered(&self, node: NodeId) -> bool {
+        use crate::computed_style::values::DisplayValue;
+        use crate::computed_style::values::VisibilityValue;
+        if !self.is_connected(node) {
+            return false;
+        }
+        let Some(n) = self.tree.get(node.0) else {
+            return false;
+        };
+        if matches!(
+            n.computed_style.visibility,
+            VisibilityValue::Hidden | VisibilityValue::Collapse
+        ) {
+            return false;
+        }
+        let mut current = Some(node.0);
+        while let Some(id) = current {
+            let Some(n) = self.tree.get(id) else {
+                return false;
+            };
+            if n.computed_style.display == DisplayValue::None {
+                return false;
+            }
+            current = n.parent;
+        }
+        true
     }
 
     /// The DOM mirror of the focus arbiter's claim (issue #695).

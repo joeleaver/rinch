@@ -501,9 +501,10 @@ if ctx.wants_keyboard() {
 > `pointer-events: auto; background: transparent;` from the UA stylesheet, so both
 > `GameViewport { name: "main" }` and `GameViewport { name: "main", style: "flex: 1;" }`
 > route correctly. Because those defaults are a UA rule rather than an inline
-> style, restyling the hole cannot strip them — worth knowing, since a component's
-> universal `style:` prop **replaces** the component's inline style rather than
-> merging with it. Being a UA declaration, it also survives `pointer-events: none`
+> style, restyling the hole cannot strip them. (A component's universal `style:`
+> prop is merged over the component's inline style per property since #647, so
+> it would only displace an inline default by declaring that same property.)
+> Being a UA declaration, it also survives `pointer-events: none`
 > inherited from a HUD root, and still loses to any `pointer-events` you declare on
 > the viewport yourself (which is how you deliberately hand a region back to the
 > UI).

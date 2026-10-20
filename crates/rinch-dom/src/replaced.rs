@@ -48,13 +48,20 @@
 //! ([`attribute_ratio`]) when both are lengths above zero: the ratio of an
 //! image with no natural size (not loaded, or failed) and of a video, so
 //! `<img width=100 height=50 style="width: 200px; height: auto">` is 200x100
-//! before its image arrives. A loaded image's own ratio replaces it. rinch
-//! has no `aspect-ratio` property; the ratio goes from the attributes to the
-//! measure context, and an author `aspect-ratio` declaration still does
-//! nothing (#1286) — so it cannot switch the mapped ratio off either, where
-//! Chrome 153 gives `aspect-ratio: auto; width: 200px; height: auto` on an
-//! unloaded hinted image 200x0. The hints sit below every author rule and
-//! above the UA sheet's normal rules. An unloaded or failed image with `alt`
+//! before its image arrives. A loaded image's own ratio replaces it. The
+//! ratio is a hint like the sizes (#1286), so an author `aspect-ratio`
+//! replaces it: `aspect-ratio: auto; width: 200px; height: auto` on an
+//! unloaded hinted image is 200x0, as in Chrome. The hints sit below every
+//! author rule and above the UA sheet's normal rules.
+//!
+//! **`aspect-ratio`** (#1286) reaches the four elements' measure, not
+//! Taffy ([`measures_aspect_ratio`]): the measure context carries the
+//! computed value and [`measure`] weighs it against the natural ratio
+//! (`AspectRatioValue::used_ratio`) — a `<ratio>` without `auto` replaces
+//! it, `auto <ratio>` is used only when there is none (a video, an iframe,
+//! an image not loaded). A `<ratio>` without `auto` relates the
+//! `box-sizing` box's sizes; a natural ratio and `auto <ratio>`'s (the
+//! attributes' hint included) the content box's. An unloaded or failed image with `alt`
 //! text still reserves its attributes' box (Chrome lays out the alt text).
 //!
 //! [`is_unstretched_replaced`] also covers a line-sized `<input>` /
@@ -71,6 +78,7 @@
 //! `vspace`, `border`, `align` on an image; `<hr width>`; a table's) map to
 //! nothing (#1419).
 
+use crate::computed_style::{AspectRatioValue, UsedRatio};
 use crate::node::{Node, NodeContext, NodeTree};
 use taffy::{MaybeResolve, ResolveOrZero};
 
@@ -88,6 +96,13 @@ pub fn has_default_object_size(tag: &str) -> bool {
 /// render none of their children.
 pub fn is_replaced_without_content(node: &Node) -> bool {
     node.tag().is_some_and(has_default_object_size)
+}
+
+/// Whether `node`'s `aspect-ratio` is read by [`measure`] (an `<img>` and
+/// [`is_replaced_without_content`]'s three) rather than by Taffy (#1286).
+pub fn measures_aspect_ratio(node: &Node) -> bool {
+    node.tag()
+        .is_some_and(|tag| tag == "img" || has_default_object_size(tag))
 }
 
 /// Whether `node` renders none of its children and so has no inner display
@@ -146,6 +161,15 @@ pub(crate) fn dimension_hints_css(node: &Node) -> Option<String> {
             None => {}
         }
     }
+    // The pair's ratio, `aspect-ratio: auto w / h` (#684), cascaded like the
+    // sizes so that an author `aspect-ratio` replaces it (#1286).
+    if let (Some(HtmlDimension::Length(w)), Some(HtmlDimension::Length(h))) = (
+        dimension_attribute(node, "width"),
+        dimension_attribute(node, "height"),
+    ) && attribute_ratio(node).is_some()
+    {
+        write!(css, "aspect-ratio: auto {w} / {h};").unwrap();
+    }
     (!css.is_empty()).then_some(css)
 }
 
@@ -170,17 +194,18 @@ pub fn attribute_ratio(node: &Node) -> Option<f32> {
 }
 
 /// An `<img>`'s natural size and the ratio it is measured with: its own once
-/// loaded, else `hint_ratio` with no natural size.
+/// loaded, with no natural size before, and the ratio its computed
+/// `aspect-ratio` makes of that ([`AspectRatioValue::used_ratio`]).
 pub(crate) fn image_natural_size(
     width: u32,
     height: u32,
-    hint_ratio: Option<f32>,
-) -> ((f32, f32), Option<f32>) {
+    aspect: AspectRatioValue,
+) -> ((f32, f32), Option<UsedRatio>) {
     if width == 0 || height == 0 {
-        ((0.0, 0.0), hint_ratio)
+        ((0.0, 0.0), aspect.used_ratio(None))
     } else {
         let (w, h) = (width as f32, height as f32);
-        ((w, h), Some(w / h))
+        ((w, h), aspect.used_ratio(Some(w / h)))
     }
 }
 
@@ -191,11 +216,15 @@ pub fn replaced_context(node: &Node) -> Option<NodeContext> {
         return None;
     }
     let (dw, dh) = DEFAULT_OBJECT_SIZE;
+    let aspect = node.computed_style.aspect_ratio;
     if tag != "canvas" {
+        // No natural ratio: a video's `width`/`height` attributes reach its
+        // computed `aspect-ratio` as a presentational hint (#684, #1286).
         return Some(NodeContext::Replaced {
             width: dw,
             height: dh,
-            ratio: attribute_ratio(node),
+            ratio: None,
+            aspect,
         });
     }
     // HTML: a canvas's `width`/`height` content attributes are parsed with
@@ -212,6 +241,7 @@ pub fn replaced_context(node: &Node) -> Option<NodeContext> {
         width,
         height,
         ratio: (width > 0.0 && height > 0.0).then(|| width / height),
+        aspect,
     })
 }
 
@@ -219,8 +249,9 @@ pub fn replaced_context(node: &Node) -> Option<NodeContext> {
 /// says, and answer whether it had to change (the caller then owes a layout:
 /// `set_node_context` has already marked the Taffy node dirty). Called when
 /// the element is created and by every cascade of it, which a `width` or
-/// `height` write asks for. For an `<img>` it keeps the context's
-/// `hint_ratio` current instead.
+/// `height` write asks for, and whatever moves the element's computed
+/// `aspect-ratio` (#1286). For an `<img>` it keeps the context's `aspect`
+/// current instead.
 pub(crate) fn sync_replaced_measure(tree: &mut NodeTree, node_id: usize) -> bool {
     let Some(node) = tree.nodes.get(node_id) else {
         return false;
@@ -229,15 +260,15 @@ pub(crate) fn sync_replaced_measure(tree: &mut NodeTree, node_id: usize) -> bool
         return false;
     };
     if node.tag() == Some("img") {
-        let want = attribute_ratio(node);
-        let Some(NodeContext::Image { hint_ratio, .. }) = tree.taffy.get_node_context_mut(taffy_id)
+        let want = node.computed_style.aspect_ratio;
+        let Some(NodeContext::Image { aspect, .. }) = tree.taffy.get_node_context_mut(taffy_id)
         else {
             return false;
         };
-        if *hint_ratio == want {
+        if *aspect == want {
             return false;
         }
-        *hint_ratio = want;
+        *aspect = want;
         let _ = tree.taffy.mark_dirty(taffy_id);
         return true;
     }
@@ -250,13 +281,15 @@ pub(crate) fn sync_replaced_measure(tree: &mut NodeTree, node_id: usize) -> bool
                 width: aw,
                 height: ah,
                 ratio: ar,
+                aspect: aa,
             },
             Some(NodeContext::Replaced {
                 width: bw,
                 height: bh,
                 ratio: br,
+                aspect: ba,
             }),
-        ) => aw == bw && ah == bh && ar == br,
+        ) => aw == bw && ah == bh && ar == br && aa == ba,
         _ => false,
     };
     if same {
@@ -268,8 +301,11 @@ pub(crate) fn sync_replaced_measure(tree: &mut NodeTree, node_id: usize) -> bool
 
 /// The measure answer for [`NodeContext::Replaced`]: the **content-box** size
 /// of a replaced element with natural size `natural` and aspect ratio `ratio`
-/// (width / height; an unloaded image with a mapped ratio has one and a
-/// `(0, 0)` natural size), shared by the root compute and the atomic-inline
+/// (width / height, [`AspectRatioValue::used_ratio`]: the natural one unless
+/// `aspect-ratio` declares one without `auto`, #1286; an unloaded image with a
+/// mapped or declared ratio has one and a `(0, 0)` natural size; a `<ratio>`
+/// without `auto` relates the `box-sizing` box's sizes, any other the content
+/// box's), shared by the root compute and the atomic-inline
 /// sizer. Taffy adds the padding and border, and keeps any dimension it
 /// already knows.
 ///
@@ -284,7 +320,7 @@ pub(crate) fn sync_replaced_measure(tree: &mut NodeTree, node_id: usize) -> bool
 /// against an indefinite size being `auto`.
 pub(crate) fn measure(
     natural: (f32, f32),
-    ratio: Option<f32>,
+    ratio: Option<UsedRatio>,
     known: taffy::Size<Option<f32>>,
     style: &taffy::Style,
     parent: taffy::Size<Option<f32>>,
@@ -333,17 +369,31 @@ pub(crate) fn measure(
     let clamp_h = |v: f32| clamp(v, min.height, max.height);
 
     let (nw, nh) = natural;
-    let (width, height) = if let Some(r) = ratio {
+    let (width, height) = if let Some(UsedRatio {
+        value: r,
+        box_sizing_box,
+    }) = ratio
+    {
+        // A `<ratio>` without `auto` relates sizes of the `box-sizing` box
+        // (css-sizing-4 §2), which with `border-box` is the content box grown
+        // by `pb`; a natural ratio, or `auto <ratio>`'s, the content box's.
+        let (ox, oy) = if box_sizing_box && border_box {
+            (pb.width, pb.height)
+        } else {
+            (0.0, 0.0)
+        };
+        let h_of = |w: f32| ((w + ox) / r - oy).max(0.0);
+        let w_of = |h: f32| ((h + oy) * r - ox).max(0.0);
         match (w, h) {
             (Some(w), Some(h)) => (w, h),
-            (Some(w), None) => (w, clamp_h(clamp_w(w) / r)),
-            (None, Some(h)) => (clamp_w(clamp_h(h) * r), h),
+            (Some(w), None) => (w, clamp_h(h_of(clamp_w(w)))),
+            (None, Some(h)) => (clamp_w(w_of(clamp_h(h))), h),
             (None, None) => {
                 let w = clamp_w(nw);
-                let h = w / r;
+                let h = h_of(w);
                 let hc = clamp_h(h);
                 if hc != h {
-                    (clamp_w(hc * r), hc)
+                    (clamp_w(w_of(hc)), hc)
                 } else {
                     (w, h)
                 }

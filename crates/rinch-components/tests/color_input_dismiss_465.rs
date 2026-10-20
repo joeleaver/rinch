@@ -191,11 +191,13 @@ fn the_dismiss_entry_is_pushed_on_open_and_released_on_close() {
     );
 
     m.click(FIELD);
+    // Two: the Escape entry, and the key entry whose focus-leave closes the
+    // dropdown (#1572), which takes no key. The stack counts both kinds.
     assert_eq!(
         dismiss_handler_count(),
-        before + 1,
-        "opening the dropdown pushes exactly one entry, on top of whatever \
-         overlay is already there"
+        before + 2,
+        "opening the dropdown pushes its Escape entry and its focus-leave \
+         entry, on top of whatever overlay is already there"
     );
 
     m.click(FIELD);
@@ -321,13 +323,45 @@ fn the_backdrop_rules_are_in_the_shipped_stylesheet() {
 }
 
 /// The one `z-index` an exactly-`selector` rule declares, as an integer.
+///
+/// Since #801 the three levels derive from `--rinch-color-input-z-index`, so a
+/// declaration is a bare integer, `var(--p, N)` (read at its fallback `N`, the
+/// level an unset `z_index` gets) or `calc(var(--p, N) ± k)`.
 fn z_index_of(css: &str, selector: &str) -> i32 {
     let decls = declarations_for(css, selector);
     let z = decls
         .iter()
         .find_map(|d| d.strip_prefix("z-index: "))
         .unwrap_or_else(|| panic!("`{selector}` declares no z-index; got {decls:?}"));
-    z.trim()
-        .parse()
-        .unwrap_or_else(|_| panic!("`{selector}` has a non-integer z-index {z:?}"))
+    let z = z.trim().trim_end_matches(';');
+    fn bad(selector: &str, z: &str) -> ! {
+        panic!("`{selector}` has a z-index this reader cannot evaluate: {z:?}")
+    }
+    if let Ok(n) = z.parse() {
+        return n;
+    }
+    let (inner, offset) = match z.strip_prefix("calc(").and_then(|r| r.strip_suffix(')')) {
+        Some(body) => {
+            let close = body.find(')').unwrap_or_else(|| bad(selector, z));
+            let rest: String = body[close + 1..]
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            let k: i32 = rest
+                .strip_prefix('+')
+                .unwrap_or(&rest)
+                .parse()
+                .unwrap_or_else(|_| bad(selector, z));
+            (&body[..=close], k)
+        }
+        None => (z, 0),
+    };
+    let fallback = inner
+        .strip_prefix("var(")
+        .and_then(|r| r.strip_suffix(')'))
+        .and_then(|r| r.split_once(','))
+        .map(|(_, n)| n.trim())
+        .unwrap_or_else(|| bad(selector, z));
+    let base: i32 = fallback.parse().unwrap_or_else(|_| bad(selector, z));
+    base + offset
 }

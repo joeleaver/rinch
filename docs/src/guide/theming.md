@@ -169,6 +169,15 @@ Four things about that set are worth knowing before they surprise you.
 - **Whitespace in `<pre>` is preserved now**, which means a `<pre>` whose source
   was indented in your `rsx!` will show that indentation. That is the element
   doing its job; `white-space: normal` on it opts out.
+- **A tab in `<pre>` advances to the next tab stop**, as in a browser: the
+  stops fall every 8 spaces of the block's font (its `letter-spacing` and
+  `word-spacing` included), measured from the line's start (#1122). The same
+  holds under `pre-wrap` and `break-spaces`; `normal`, `nowrap` and `pre-line`
+  collapse a tab to a space. `tab-size` is not read yet, so the stops are
+  always 8 spaces apart (#1584), and a flex or grid item's own text and the
+  text of a form control do not set tabs to stops yet (#1585). In a long
+  soft-wrapped `pre-wrap` paragraph some tabs from about the fifth line on can
+  stay a few pixels off their stops (#1593).
 - **rinch does not copy Chrome's monospace font-*size* quirk.** Chrome renders a
   `medium`-sized monospace element at 13px rather than 16px; rinch has no
   per-family default size, so `<code>` keeps the size it inherits. Only the
@@ -433,7 +442,7 @@ Measured on the desktop engine:
 | `:indeterminate`, `:valid`, `:invalid`, `:in-range`, `:out-of-range`, `:default`, `:target`, `:fullscreen`, `:modal`, `:popover-open`, `:autofill`, `:user-valid`, `:user-invalid` | **never match** | they parse, then fall through to a catch-all `false` — rinch has no constraint validation, no document/fragment concept, and no "default" tracking distinct from current state |
 | `::before`, `::after` | works | |
 | camelCase SVG type selectors (`linearGradient`, `clipPath`) | works (#683) | `is_html_element_in_html_document` answers `false` for SVG content tags (`attr_name::is_svg_content_tag`), so the selector keeps the author's exact spelling instead of being lowercased as if every element were HTML |
-| `width` / `height` attributes on `<img>`, `<video>`, `<iframe>` | works | mapped to `width` / `height` below every author rule and above the UA sheet's normal rules, plus the pair's aspect ratio on an image or video (#684) |
+| `width` / `height` attributes on `<img>`, `<video>`, `<iframe>` | works | mapped to `width` / `height` below every author rule and above the UA sheet's normal rules, plus the pair's aspect ratio on an image or video (#684), as `aspect-ratio: auto w / h`, so an author `aspect-ratio` replaces it (#1286) |
 | Other presentational attributes (`<td bgcolor>`, `<img hspace>`, `<hr width>`, `<table width>`) | **no effect** | no hint is synthesized for them (#1419) |
 
 Reach for a class where the table says a selector does not match — that is the

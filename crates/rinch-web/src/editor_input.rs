@@ -1214,12 +1214,6 @@ fn editor_owns_keyboard(doc: &web_sys::Document) -> bool {
     on_capture && focused_handle().is_some()
 }
 
-/// What a browser moves focus to on a press: the nearest ancestor that is one
-/// of these. (A superset is harmless here — it only decides that a press is
-/// left to the browser.)
-const FOCUSABLE_SELECTOR: &str = "button, a[href], input, select, textarea, [tabindex], \
-     [contenteditable], summary, iframe, audio[controls], video[controls]";
-
 /// Whether a press at `target` lands on a `data-rid` handler with nothing
 /// focusable anywhere on its ancestor chain — a DOM menu-bar item, a
 /// `div { onclick }` toolbar button. (A `DropdownMenu` item is a `<button>`, so it is focusable.) The
@@ -1234,7 +1228,11 @@ fn is_non_focusable_handler_press(target: &web_sys::Element) -> bool {
     // Any focusable on the chain — the handler itself, inside it, or an
     // ancestor of it (a `Tree` chevron inside its `tabindex` row) — is what
     // the browser focuses, as desktop does: leave the press alone.
-    target.closest(FOCUSABLE_SELECTOR).ok().flatten().is_none()
+    target
+        .closest(crate::event_delegation::PRESS_FOCUSABLE_SELECTOR)
+        .ok()
+        .flatten()
+        .is_none()
 }
 
 // ── Clipboard (copy / cut / paste) ─────────────────────────────────────────────

@@ -178,3 +178,28 @@ fn a_right_or_middle_press_outside_an_open_select_still_dismisses_it() {
         assert!(f.picks.borrow().is_empty(), "dismissing picks nothing");
     }
 }
+
+/// Issue #1171: a native `<select>`'s popup closes when the window loses the
+/// keyboard, as a browser's does, picking nothing — and the control itself
+/// keeps the focus, so it is still the focused element when the window comes
+/// back.
+#[test]
+fn a_window_blur_closes_an_open_select_and_keeps_it_focused_1171() {
+    let mut f = mount();
+    open(&mut f);
+    f.app
+        .handle_event(PlatformEvent::WindowFocus(false), (800, 600), 1.0);
+    assert!(
+        !f.app.is_select_open(),
+        "the window losing focus closes the popup"
+    );
+    assert!(f.picks.borrow().is_empty(), "and picks nothing");
+    assert_eq!(
+        f.app.focus_target,
+        FocusTarget::Node(f.select),
+        "the select keeps the keyboard"
+    );
+    f.app
+        .handle_event(PlatformEvent::WindowFocus(true), (800, 600), 1.0);
+    assert!(!f.app.is_select_open(), "coming back does not reopen it");
+}

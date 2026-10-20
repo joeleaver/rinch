@@ -118,9 +118,10 @@ pub enum TablePart {
     RowGroup,
     /// `table-row`.
     Row,
-    /// Any other table-internal box: a cell, a caption, a column or a
-    /// column group.
+    /// Any other table-internal box: a cell, a column or a column group.
     Other,
+    /// `table-caption`: a table part, but not an internal table box.
+    Caption,
 }
 
 impl TablePart {
@@ -134,6 +135,14 @@ impl TablePart {
     /// row of its own — stacked, not sharing an anonymous row with bare cells.
     pub fn is_row_like(self) -> bool {
         matches!(self, Self::RowGroup | Self::Row)
+    }
+
+    /// Whether this is an internal table box (css-tables-3: a row, a row
+    /// group, a cell, a column or a column group — not the table and not a
+    /// caption). `aspect-ratio` does not apply to one (css-sizing-4 §5.1,
+    /// #1286; Chrome 155).
+    pub fn is_internal(self) -> bool {
+        matches!(self, Self::RowGroup | Self::Row | Self::Other)
     }
 }
 
@@ -1168,6 +1177,63 @@ impl ObjectFitValue {
             Self::ScaleDown => "scale-down",
         }
     }
+}
+
+/// CSS `aspect-ratio` (css-sizing-4 §2, #1286): `auto`, `<ratio>`, or
+/// `auto <ratio>`. `ratio` is width / height, `None` for `auto` alone and for
+/// a degenerate ratio (`0 / 1`, `1 / 0`), which behaves as `auto`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct AspectRatioValue {
+    /// The `auto` keyword: a box with a natural aspect ratio uses that one.
+    pub auto: bool,
+    /// The preferred ratio, width / height.
+    pub ratio: Option<f32>,
+}
+
+impl Default for AspectRatioValue {
+    fn default() -> Self {
+        Self {
+            auto: true,
+            ratio: None,
+        }
+    }
+}
+
+impl AspectRatioValue {
+    /// The ratio a box with natural ratio `natural` (a replaced element's;
+    /// `None` for everything else) is laid out with: a `<ratio>` without
+    /// `auto` replaces the natural one, `auto <ratio>` is used only when there
+    /// is no natural one.
+    pub fn used(&self, natural: Option<f32>) -> Option<f32> {
+        self.used_ratio(natural).map(|r| r.value)
+    }
+
+    /// [`Self::used`], saying which box it relates: a `<ratio>` without
+    /// `auto` the `box-sizing` box, a natural ratio and `auto <ratio>`'s the
+    /// content box (css-sizing-4 §2; Chrome 155).
+    pub fn used_ratio(&self, natural: Option<f32>) -> Option<UsedRatio> {
+        match (self.auto, self.ratio, natural) {
+            (false, Some(value), _) => Some(UsedRatio {
+                value,
+                box_sizing_box: true,
+            }),
+            (_, r, n) => n.or(r).map(|value| UsedRatio {
+                value,
+                box_sizing_box: false,
+            }),
+        }
+    }
+}
+
+/// The aspect ratio a replaced element is laid out with
+/// ([`AspectRatioValue::used_ratio`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UsedRatio {
+    /// Width / height.
+    pub value: f32,
+    /// A `<ratio>` declared without `auto`, which relates the sizes of the
+    /// `box-sizing` box; otherwise the content box's.
+    pub box_sizing_box: bool,
 }
 
 /// CSS `user-select` property values.

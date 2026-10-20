@@ -500,7 +500,8 @@ Text input with inline color preview and dropdown ColorPicker.
 | `swatches` | `Vec<String>` | `[]` | Preset swatch colors |
 | `swatches_per_row` | `Option<usize>` | `7` | Swatches per row |
 | `disallow_input` | `bool` | `false` | Disallow typing (picker only) |
-| `close_on_click_outside` | `bool` | `true` | Dismiss the dropdown when a click lands outside it (#465). Off mounts no backdrop at all, so no click outside the field dismisses it — the pointer half of the pre-#465 behaviour. Escape closes the dropdown either way |
+| `close_on_click_outside` | `bool` | `true` | Mount a backdrop that takes a click outside the field and dismisses the dropdown (#465). Off mounts none, so the click reaches the page under it; the dropdown still closes if that click moves the focus out of the field (#1572). Escape closes the dropdown either way |
+| `z_index` | `Option<i32>` | `None` | Stacking level of the open picker's panel; its click-catching backdrop stays one below and the field one above (defaults 100 / 99 / 101, #801) |
 
 `size` and `radius` were declared but unread until #263. **`size` always
 resolves to a step, `radius` does not**: an unrecognised `size` falls back to
@@ -510,13 +511,25 @@ resizes by upgrading. An unrecognised `radius` emits no class at all and leaves
 the base `--rinch-radius-sm` standing, which is what `DropdownMenu`, `Modal` and
 `Card` do.
 
-**The dropdown is dismissed three ways** (#465): clicking the field again,
-clicking anywhere outside it, and Escape. The outside click is the one that is
-optional — `close_on_click_outside` is `true` by default, matching every other
-popover in the library, and turning it off mounts no backdrop at all, so the
-field is the only thing a *click* dismisses the dropdown with. Escape is not
-gated by it, so `false` is the pointer half of the behaviour `ColorInput` had
-until #465 rather than a return to it in full. (The prop was
+**The open picker sits at the library's overlay level** (#801): panel 100,
+backdrop 99, field 101 — `DropdownMenu`'s and `Popover`'s numbers. It used to
+be 1000 / 999 / 1001, which put the backdrop above every `Modal`, `Drawer`,
+`Notification` and `Select` popup, so one of those appearing without a click
+while the picker was open lost its first press to the backdrop. A `ColorInput`
+opened *inside* a modal still orders, because the three levels are compared in
+the modal's stacking context. `z_index` raises all three together.
+
+**The dropdown is dismissed four ways**: clicking the field again, clicking
+anywhere outside it, and Escape (#465), and the focus leaving the field —
+Tab away, a programmatic focus elsewhere, or the window losing focus (#1572),
+as Mantine closes it in the input's `onBlur`. Opening puts the keyboard on the
+text field, and a press inside the picker panel or on the preview swatch takes
+the click but not the keyboard, so picking a colour does not count as leaving.
+`close_on_click_outside` is `true` by default, matching every other popover in
+the library; turning it off mounts no backdrop at all, so a click outside
+reaches whatever is under it rather than being swallowed — and that click still
+closes the dropdown when it moves the focus out of the field (a press on a
+`data-nofocus` region leaves it open). Escape is not gated by it. (The prop was
 declared and read by nothing before that; #263 *removed* it rather than wire it,
 because unlike `size` and `radius` there was no behaviour behind it to connect,
 and it came back here with the interaction it names.)
@@ -855,7 +868,7 @@ Custom Default: `animate` and `visible` default to `true`.
 ## Overlays
 
 **`z_index` on an overlay** (issue #474). `Modal`, `Drawer`, `Popover`,
-`DropdownMenu` and `Notification` each paint more than one box, and the boxes
+`DropdownMenu`, `Notification` and `ColorInput` (#801) each paint more than one box, and the boxes
 have to stay ordered against each other: a modal's panel above its overlay, a
 menu's backdrop below its panel. `z_index` therefore names the level of the
 component's *base* layer — the one whose stylesheet number the per-component
@@ -1418,6 +1431,32 @@ Custom Default: `level_offset` defaults to `"md"`, `expand_on_click` defaults to
 | `onexpand` | `Option<ValueCallback<String>>` | `None` | |
 | `oncollapse` | `Option<ValueCallback<String>>` | `None` | |
 | `data_source` | `Option<Rc<dyn Fn() -> Vec<TreeNodeData>>>` | `None` | Reactive data source — when provided, root nodes update when this changes |
+| `indent` | `Option<f32>` | `None` | Indentation per level in pixels; overrides `level_offset`. Also the unit the pointer's column is read in when a drag picks a depth. Without it the tree measures one level's width from its rendered rows, once per drag |
+| `draggable` | `bool` | `false` | Rows drag before, into or after other rows (needs `tree`). Only a draggable tree's rows are `position: relative` |
+| `drag_values` | `Option<DragValues>` | `None` | What a drag from a row carries (its own value when not given), e.g. the whole selection |
+| `judge_drop` | `Option<JudgeDrop>` | `None` | The app's verdict on each drop on offer; a refused drop is drawn in the error color and not delivered. Allowed when not given |
+| `accepts_children` | `Option<AcceptsChildren>` | `None` | Which rows take children by a drop. A row that does not has no "inside": its top half is before it, its bottom half after it, and hovering never expands it. Every row takes children when not given |
+| `ondropchange` | `Option<ValueCallback<Option<(TreeDrop, DropVerdict)>>>` | `None` | The drop on offer and its verdict, each time it changes; `None` when none is on offer (over a row that offers none, once the pointer has left the rows, at the drag's end). Moving from one row onto the next reports only the next row's drop |
+| `ondrop` | `Option<ValueCallback<TreeDrop>>` | `None` | An allowed drop, at the release |
+| `ondragstart` | `Option<ValueCallback<Vec<String>>>` | `None` | A drag from a row started, carrying these values |
+| `ondragend` | `Option<ValueCallback<()>>` | `None` | The drag ended, dropped anywhere or cancelled; after any drop |
+| `hover_expand_ms` | `u32` | **`600`** | How long a drag rests inside a collapsed row with children before it expands; `0` never expands |
+| `guides` | `bool` | `false` | A faint line down each expanded row's children, at `--tree-guide-offset` |
+
+`drag_values`, `judge_drop` and `accepts_children` are `Rc` closures and are
+not `on*` props, so `rsx!` does not wrap them: write
+`judge_drop: Some(Rc::new(|drop: &TreeDrop| …))`.
+
+**Drop types:**
+
+- `TreeDrop { dragged: Vec<String>, parent: Option<String>, slot: TreeSlot, over: String, zone: DropZone }` — where the dragged rows would land. `dragged` is in the order the drag started with (as `drag_values` returned it), not tree order. `parent` is `None` for the top level. `over` and `zone` are the row under the pointer and the part of it.
+- `TreeSlot` — `First`, `Last`, or `After(value)`: an anchor among `parent`'s children, not an index. `After(v)` can name a dragged row (a drop that leaves it where it is); it is delivered as allowed unless `judge_drop` refuses it.
+- `DropZone` — `Before`, `Inside`, `After`: the top quarter, middle half and bottom quarter of a row (halves without `Inside` for a row `accepts_children` refuses).
+- `DropVerdict` — `Allowed` or `Refused`. A drop into a dragged row's own subtree is always refused.
+- `DragValues` = `Rc<dyn Fn(&str) -> Vec<String>>`, `JudgeDrop` = `Rc<dyn Fn(&TreeDrop) -> DropVerdict>`, `AcceptsChildren` = `Rc<dyn Fn(&TreeNodeData) -> bool>`.
+
+A draggable row's click (select, expand) runs on the release, once the drag
+has failed to start, on both backends.
 
 **TreeNodeData:** `value: String`, `label: String`, `children: Vec<TreeNodeData>`, `disabled: bool`, `icon: Option<TablerIcon>`, `payload: Option<Rc<dyn Any>>`.
 

@@ -246,6 +246,7 @@ impl ComputedStyle {
 
             // Object fit
             object_fit: object_fit_from_stylo(&cv.clone_object_fit()),
+            aspect_ratio: aspect_ratio_from_stylo(&cv.clone_aspect_ratio()),
 
             // Cursor
             cursor: cursor_from_stylo(&inherited_ui.cursor.keyword),

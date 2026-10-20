@@ -64,7 +64,10 @@
 //! island is never touched. And each backend calls [`notify_focus_moved`]
 //! after focus moves, which calls an entry's `on_focus_leave` once focus is
 //! no longer inside its owner — so the popup closes when focus leaves it, as a
-//! native `<select>` does, rather than at the next key.
+//! native `<select>` does, rather than at the next key. The window losing the
+//! keyboard is told apart ([`notify_window_blurred`], #1171): the focused
+//! element stays focused then, but a native `<select>`'s popup still closes,
+//! so every key entry's `on_focus_leave` runs.
 //!
 //! One stack rather than two because the two kinds share every rule above —
 //! liveness, the document check, LIFO — and a popup's own Escape is still a
@@ -179,8 +182,10 @@ pub fn push_dismiss_handler(doc_key: u64, f: impl Fn() -> bool + 'static) -> Dis
 /// into another field goes to that field.
 ///
 /// `on_focus_leave` is called when focus moves and is no longer inside
-/// `owner` — see [`notify_focus_moved`]. A popup that should close when focus
-/// leaves it (a listbox) closes there; pass `|| {}` for one that should not.
+/// `owner` — see [`notify_focus_moved`] — and when the window loses the
+/// keyboard, wherever the focus is — see [`notify_window_blurred`] (#1171). A
+/// popup that should close when focus leaves it (a listbox) closes there; pass
+/// `|| {}` for one that should not.
 ///
 /// It is offered Escape like any key; a popup whose Escape is a dismiss entry
 /// should decline it and let the dismiss scan run.
@@ -297,6 +302,28 @@ pub fn notify_focus_moved(doc_key: u64) {
         } = handler
             && !focus_within(owner)
         {
+            on_focus_leave();
+        }
+        false
+    });
+}
+
+/// Tell the key handlers ([`push_key_handler`]) of the document `doc_key`
+/// names that the **window** has lost the keyboard: every live key entry of
+/// that document has its `on_focus_leave` called, whether or not its owner
+/// still holds the document's focus (issue #1171).
+///
+/// A window blur is not a focus move inside the document: the focused element
+/// stays focused (desktop keeps the arbiter's claim, #147/#226; a browser
+/// leaves `document.activeElement` alone), so [`notify_focus_moved`] closes
+/// nothing for it. But a popup that owns the keyboard while it is open — a
+/// native `<select>`'s list, Mantine's `Select` dropdown — closes when the
+/// window loses focus, and so does one built on a key entry. Called by the
+/// desktop runtime from `PlatformEvent::WindowFocus(false)` and by rinch-web
+/// from a `window` `blur`. Nothing is called when the window comes back.
+pub fn notify_window_blurred(doc_key: u64) {
+    scan(true, Some(doc_identity(doc_key)), |handler| {
+        if let Handler::Keys { on_focus_leave, .. } = handler {
             on_focus_leave();
         }
         false
@@ -856,5 +883,36 @@ mod tests {
         d.other.focus();
         notify_focus_moved(d.owner.doc_key());
         assert_eq!(left.get(), 1, "focus left the owner");
+    }
+
+    /// `notify_window_blurred` calls `on_focus_leave` for a key entry whose
+    /// owner still holds the focus (#1171), where `notify_focus_moved` does
+    /// not; a dismiss entry is not asked, and an entry of another document is
+    /// left alone.
+    #[test]
+    fn notify_window_blurred_calls_on_focus_leave_while_focus_stays_1171() {
+        clear_stack();
+        let d = doc();
+        let left = Rc::new(StdCell::new(0u32));
+        let l = left.clone();
+        let _k = push_key_handler(&d.owner, |_| true, move || l.set(l.get() + 1));
+        let dismissed = Rc::new(StdCell::new(0u32));
+        let dm = dismissed.clone();
+        let _e = push_dismiss_handler(d.owner.doc_key(), move || {
+            dm.set(dm.get() + 1);
+            true
+        });
+
+        d.owner.focus();
+        notify_focus_moved(d.owner.doc_key());
+        assert_eq!(left.get(), 0, "control: focus is still in the owner");
+
+        let other = doc();
+        notify_window_blurred(other.owner.doc_key());
+        assert_eq!(left.get(), 0, "another document's window blur");
+
+        notify_window_blurred(d.owner.doc_key());
+        assert_eq!(left.get(), 1, "the window lost the keyboard");
+        assert_eq!(dismissed.get(), 0, "a dismiss entry is not asked");
     }
 }

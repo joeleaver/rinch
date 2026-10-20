@@ -319,8 +319,8 @@ fn other_white_space_values() {
     assert_width("pre-line", w, 23.28);
     let (t, _, _) = measure("white-space:pre-wrap", &ib("a  <span> b\t</span>"));
     assert_eq!(
-        t, "a   b    ",
-        "pre-wrap is verbatim (a tab is four spaces)"
+        t, "a   b ",
+        "pre-wrap is verbatim (a tab is one space widened to its stop)"
     );
 }
 

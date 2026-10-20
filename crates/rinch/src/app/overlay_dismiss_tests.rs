@@ -847,12 +847,11 @@ mod auto_close {
     //! `Notification::auto_close`, driven by a manual timer backend.
     //!
     //! [`rinch_core::set_timer_backend`] writes a process-global static, so
-    //! these serialize against each other with a mutex. Nothing else in this
-    //! crate's test binary arms a timeout, so the installed backend is only
-    //! ever seen by the tests below.
+    //! these serialize, with every other test that installs one, on
+    //! [`timer_backend_lock`](super::super::timer_backend_lock).
 
     use super::*;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::sync::MutexGuard;
 
     thread_local! {
         static SCHEDULED: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
@@ -865,11 +864,7 @@ mod auto_close {
     /// Serialize the tests that own the global timer backend, and start each
     /// one from an empty schedule.
     fn timer_lock() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let guard = LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = super::super::timer_backend_lock();
         rinch_core::set_timer_backend(manual);
         SCHEDULED.with(|s| s.borrow_mut().clear());
         guard

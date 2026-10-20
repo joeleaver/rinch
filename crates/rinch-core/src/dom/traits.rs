@@ -627,6 +627,31 @@ pub trait DomDocument {
         false
     }
 
+    /// Whether `node` is on screen as far as CSS is concerned: connected to
+    /// this document, neither it nor any ancestor `display: none`, and its own
+    /// `visibility` not `hidden` or `collapse` (issue #802).
+    ///
+    /// `visibility` is asked of the node alone because it inherits: a
+    /// `visibility: hidden` ancestor reaches the node through its computed
+    /// value, and a descendant that declares `visibility: visible` *is* shown,
+    /// in CSS and here. `display` does not inherit, hence the walk. A
+    /// `display: contents` node counts as rendered — it has no box of its own,
+    /// but its children do.
+    ///
+    /// The question an open-time Escape entry asks before it consumes the key:
+    /// an overlay whose ancestor stopped rendering it without closing it (a
+    /// `ColorInput` picker inside a `Modal` the app closed) must not swallow an
+    /// Escape the user cannot see it answer.
+    ///
+    /// Desktop answers from the styles of the **last resolve**, so a class
+    /// change made since then and not yet laid out is not seen; the web asks
+    /// the browser, which resolves style on demand. The default answers `true`
+    /// — every caller of this question treats "rendered" as "behave as before"
+    /// — which is what `MockDomDocument`, with no CSS engine, answers.
+    fn is_rendered(&self, _node: NodeId) -> bool {
+        true
+    }
+
     /// Move keyboard focus *into* the subtree at `root`, the way a browser's
     /// `showModal()` does (issue #695).
     ///
@@ -919,8 +944,9 @@ pub trait DomDocument {
     /// [`Self::query_selection_rects`], and the byte a pointer hit resolves to).
     ///
     /// A flat byte offset counts the text of the text nodes under the element, in
-    /// document order, as the backend lays that text out — rinch-dom expands a tab
-    /// to four spaces ([`Self::tab_flat_bytes`]). A
+    /// document order, as the backend lays that text out — a host may lay a
+    /// character out as something of another length ([`Self::tab_flat_bytes`],
+    /// [`Self::substituted_char_flat_bytes`]). A
     /// `<br>` has no text node, so a backend that counts only
     /// text gives it none — the browser's DOM ranges, and this default — while one
     /// that lays inline content out as a single string may give it the line break
@@ -933,18 +959,17 @@ pub trait DomDocument {
 
     /// How many bytes a tab (`'\t'`) in a text node occupies in the same flat
     /// byte offsets as [`Self::line_break_flat_bytes`]. Its UTF-8 length, `1`, by
-    /// default — the browser's DOM ranges count the character. rinch-dom's inline
-    /// formatting context lays a tab out as four spaces, whatever the tab's
-    /// column, and answers `4`, so the rich-text editor's caret map counts each
-    /// tab as that many bytes (#1109).
+    /// default — the browser's DOM ranges count the character, and rinch-dom
+    /// lays a preserved tab out as one space widened to its tab stop (#1122).
+    /// A host that laid a tab out as several characters would answer their
+    /// bytes, so the rich-text editor's caret map counts each tab as that many
+    /// (#1109: rinch-dom laid a tab out as four spaces until #1122).
     ///
     /// The answer is per host, not per node, and it holds only where
-    /// `white-space` preserves the tab: measured on rinch-dom, a tab is four
-    /// bytes under `pre`, `pre-wrap` and `pre-line`, and under `normal`,
-    /// `nowrap` and `break-spaces` it collapses like a space — one byte, as
-    /// `a b` lays out. The editor's stylesheet sets `pre-wrap` on its container
-    /// and its code blocks, which is why the editor may use it; a caller mapping
-    /// text under collapsing `white-space` would have to count differently.
+    /// `white-space` preserves the tab (`pre`, `pre-wrap`, `break-spaces`);
+    /// under `normal`, `nowrap` and `pre-line` a tab collapses like a space.
+    /// The editor's stylesheet sets `pre-wrap` on its container and its code
+    /// blocks, which is why the editor may use it.
     fn tab_flat_bytes(&self) -> usize {
         1
     }

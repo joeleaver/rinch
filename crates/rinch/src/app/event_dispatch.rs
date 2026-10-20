@@ -299,112 +299,7 @@ impl RinchApp {
                 if let Some(ref mut drag) = self.active_dnd {
                     drag.cursor = (x, y);
 
-                    // Hit test for drop targets — check both DOM elements and surfaces
-                    let hit_id = self.move_hit(x, y);
-                    let Some(drag) = self.active_dnd.as_mut() else {
-                        return actions; // the enclosing `if let` matched it
-                    };
-
-                    // Check if mouse is over a render surface
-                    let surface_target = if let Some(doc) = &self.doc {
-                        hit_id.and_then(|hid| {
-                            let d = doc.borrow();
-                            Self::find_render_surface_at_full(&d.tree, hid, x, y)
-                        })
-                    } else {
-                        None
-                    };
-
-                    let new_surface = surface_target.as_ref().map(|(sid, nid, _, _)| (*sid, *nid));
-
-                    // Handle surface drag enter/leave transitions
-                    if new_surface != self.drag_over_surface {
-                        // Leave old surface
-                        if let Some((old_sid, _)) = self.drag_over_surface {
-                            crate::render_surface::dispatch_surface_event(
-                                old_sid,
-                                crate::render_surface::SurfaceEvent::DragLeave,
-                            );
-                        }
-                        // Enter new surface
-                        if let Some((sid, _, lx, ly)) = &surface_target {
-                            crate::render_surface::dispatch_surface_event(
-                                *sid,
-                                crate::render_surface::SurfaceEvent::DragEnter { x: *lx, y: *ly },
-                            );
-                        }
-                        self.drag_over_surface = new_surface;
-                    }
-
-                    // Dispatch DragOver to current surface, or DOM drag events
-                    if let Some((sid, _, lx, ly)) = surface_target {
-                        // Mouse is over a surface — dispatch DragOver
-                        crate::render_surface::dispatch_surface_event(
-                            sid,
-                            crate::render_surface::SurfaceEvent::DragOver { x: lx, y: ly },
-                        );
-
-                        // Clear DOM drop target since we're over a surface
-                        let old_target = drag.over_target.take();
-                        if let Some(doc) = &self.doc {
-                            if let Some(old_id) = old_target {
-                                Self::dispatch_drag_attr(doc, old_id, "data-ondragleave");
-                            }
-                        }
-                    } else {
-                        // Not over a surface — use DOM drop target system
-                        let new_target = hit_id.and_then(|hid| {
-                            self.doc.as_ref().and_then(|doc| {
-                                let d = doc.borrow();
-                                Self::find_drop_target(&d.tree, hid)
-                            })
-                        });
-
-                        let old_target = drag.over_target;
-                        if new_target != old_target {
-                            drag.over_target = new_target;
-                            if let Some(doc) = &self.doc {
-                                if let Some(old_id) = old_target {
-                                    Self::dispatch_drag_attr(doc, old_id, "data-ondragleave");
-                                }
-                                if let Some(new_id) = new_target {
-                                    Self::dispatch_drag_attr(doc, new_id, "data-ondragenter");
-                                }
-                            }
-                        }
-
-                        if let Some(target_id) = drag.over_target {
-                            if let Some(doc) = &self.doc {
-                                let (cx, cy) = drag.cursor;
-                                Self::dispatch_drag_attr_with_context(
-                                    doc,
-                                    target_id,
-                                    "data-ondragover",
-                                    cx,
-                                    cy,
-                                );
-                            }
-                        }
-                    }
-
-                    // Fire ondragmove on source so editor can track cursor position.
-                    if let Some(doc) = &self.doc {
-                        let (cx, cy) = drag.cursor;
-                        events::set_click_context(events::ClickContext {
-                            mouse_x: cx,
-                            mouse_y: cy,
-                            element_x: 0.0,
-                            element_y: 0.0,
-                            element_width: 0.0,
-                            element_height: 0.0,
-                            text_hit: Default::default(),
-                            viewport_width: vp_w,
-                            viewport_height: vp_h,
-                            button: events::MouseButton::Left,
-                            modifiers: events::ModifierState::default(),
-                        });
-                        Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragmove");
-                    }
+                    self.track_drag_pointer(vp_w, vp_h);
 
                     self.scene_dirty = true;
                     actions.push(AppAction::SetCursor(rinch_platform::CursorStyle::Grabbing));
@@ -1303,44 +1198,13 @@ impl RinchApp {
                                     .or_else(|| find_scroll_container_at_point(&doc_mut.tree, x, y))
                             && !doc_mut.tree.scroll_locked_out(scroll_node_id)
                         {
-                            let nid = rinch_core::dom::NodeId(scroll_node_id);
-                            let content_height = doc_mut.scroll_height(nid);
-                            let visible_height = doc_mut.client_height(nid);
-                            let max_scroll = (content_height - visible_height).max(0.0);
-
-                            // Read handler ID before mutable borrow
-                            let handler_id = doc_mut
-                                .tree
-                                .nodes
-                                .get(scroll_node_id)
-                                .and_then(|n| n.attributes.get("data-onscroll"))
-                                .and_then(|s| s.parse::<usize>().ok());
-                            let old_y = doc_mut.scroll_top(nid);
-                            // The offset is kept on the device pixel grid
-                            // (#1543); what a delta leaves below it is kept
-                            // too, so sub-pixel deltas still add up.
-                            let remainder = doc_mut
-                                .tree
-                                .nodes
-                                .get(scroll_node_id)
-                                .map_or((0.0, 0.0), |n| n.scroll_remainder);
-                            let precise = (old_y + remainder.1 - delta_y).clamp(0.0, max_scroll);
-                            let new_y = doc_mut.tree.snap_scroll_offset(precise);
-                            if new_y != old_y {
-                                if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
-                                    node.scroll_offset.1 = new_y;
-                                    doc_mut.tree.mark_scrolled(scroll_node_id);
-                                    self.scene_dirty = true;
-                                }
-                                doc_mut.tree.dirty_nodes.insert(scroll_node_id);
+                            let (moved, handler_id) =
+                                Self::scroll_vertically_by(&mut doc_mut, scroll_node_id, -delta_y);
+                            if moved {
+                                self.scene_dirty = true;
                                 if let Some(hid) = handler_id {
                                     scrolled.push((scroll_node_id, hid));
                                 }
-                            }
-                            // After `mark_scrolled`, which zeroes the remainder
-                            // every other writer leaves stale.
-                            if let Some(node) = doc_mut.tree.nodes.get_mut(scroll_node_id) {
-                                node.scroll_remainder = (remainder.0, precise - new_y);
                             }
                         }
 
@@ -1469,6 +1333,16 @@ impl RinchApp {
                         // keyboard; so does the built-in text menu (#813). The
                         // field's claim itself is kept, as below.
                         self.close_text_context_menu();
+                        // So does a native `<select>`'s popup, in a browser as
+                        // on every desktop toolkit; the control keeps the
+                        // keyboard, as a closed one would (#1171). And a popup
+                        // built on a key entry (the `Select` component's list):
+                        // the claim is kept, so `notify_focus_moved` would see
+                        // focus still inside it and close nothing.
+                        if self.is_select_open() {
+                            self.close_select_popup_returning_focus();
+                        }
+                        rinch_core::notify_window_blurred(self.doc_key());
                         // The matching `KeyUp` of anything held across the blur
                         // goes to the window that took the keyboard, so the
                         // Enter/Space activation latch (issue #228) would stay
@@ -2068,6 +1942,12 @@ impl RinchApp {
                     self.scene_dirty = true;
                 }
 
+                // A drag resting in an edge band scrolls a frame's worth, and
+                // keeps the clock turning for the next one.
+                if self.tick_drag_auto_scroll(Instant::now(), vp_w, vp_h, had_running) {
+                    actions.push(AppAction::RequestRedraw);
+                }
+
                 if self.has_dirty_nodes() {
                     if self.resolve_and_repaint(vp_w, vp_h) {
                         actions.push(AppAction::RequestRedraw);
@@ -2265,6 +2145,300 @@ impl RinchApp {
         false
     }
 
+    /// Move `id`'s vertical scroll offset by `dy` content pixels (positive
+    /// scrolls down), clamped to its range: the vertical scroll write of a
+    /// gesture, the wheel's and a drag's auto-scroll alike. The offset is kept
+    /// on the device pixel grid (#1543); what a delta leaves below it is kept
+    /// too, so sub-pixel deltas still add up.
+    ///
+    /// Answers whether the offset moved and, with it, the container's
+    /// `data-onscroll` handler, which the caller fires once no borrow of the
+    /// document is held.
+    pub(crate) fn scroll_vertically_by(
+        doc_mut: &mut RinchDocument,
+        id: usize,
+        dy: f64,
+    ) -> (bool, Option<usize>) {
+        let nid = rinch_core::dom::NodeId(id);
+        let content_height = doc_mut.scroll_height(nid);
+        let visible_height = doc_mut.client_height(nid);
+        let max_scroll = (content_height - visible_height).max(0.0);
+
+        // Read handler ID before mutable borrow
+        let handler_id = doc_mut
+            .tree
+            .nodes
+            .get(id)
+            .and_then(|n| n.attributes.get("data-onscroll"))
+            .and_then(|s| s.parse::<usize>().ok());
+        let old_y = doc_mut.scroll_top(nid);
+        let remainder = doc_mut
+            .tree
+            .nodes
+            .get(id)
+            .map_or((0.0, 0.0), |n| n.scroll_remainder);
+        let precise = (old_y + remainder.1 + dy).clamp(0.0, max_scroll);
+        let new_y = doc_mut.tree.snap_scroll_offset(precise);
+        let mut moved = false;
+        if new_y != old_y {
+            if let Some(node) = doc_mut.tree.nodes.get_mut(id) {
+                node.scroll_offset.1 = new_y;
+                doc_mut.tree.mark_scrolled(id);
+                moved = true;
+            }
+            doc_mut.tree.dirty_nodes.insert(id);
+        }
+        // After `mark_scrolled`, which zeroes the remainder every other writer
+        // leaves stale.
+        if let Some(node) = doc_mut.tree.nodes.get_mut(id) {
+            node.scroll_remainder = (remainder.0, precise - new_y);
+        }
+        (moved, handler_id.filter(|_| moved))
+    }
+
+    /// One frame of drag auto-scroll, run by the `AboutToWait` frame clock.
+    ///
+    /// While an element drag is live and its pointer is in the band along the
+    /// top or bottom edge of a scroll container under it
+    /// ([`events::drag_auto_scroll_velocity`]), that container scrolls by the
+    /// band's speed times the time since the last tick (capped; a first tick
+    /// counts one frame), fires its `data-onscroll`, and — since the content
+    /// under the still pointer moved — the drag is resolved again
+    /// ([`Self::track_drag_pointer`]), so the drop target there hears
+    /// `data-ondragover`. The nearest container that can still move that way
+    /// is the one that scrolls: a list at its top lets the page around it take
+    /// over.
+    ///
+    /// Answers whether the pointer is in such a band, which is whether the
+    /// clock must keep turning.
+    ///
+    /// The hit test it needs is the one the drag's last resolve made
+    /// ([`Self::track_drag_pointer`] keeps it in `drag_hit_memo`) whenever the
+    /// hit cache's generation and the pointer are unchanged since and nothing
+    /// was animating (`motion`: a transition or animation tick moves a
+    /// `transform` without moving the generation), so a drag frame whose
+    /// pointer is in no band costs no hit test.
+    pub(crate) fn tick_drag_auto_scroll(
+        &mut self,
+        now: Instant,
+        vp_w: f32,
+        vp_h: f32,
+        motion: bool,
+    ) -> bool {
+        let Some((x, y)) = self.active_dnd.as_ref().map(|drag| drag.cursor) else {
+            self.drag_auto_scroll_at = None;
+            return false;
+        };
+        let Some(doc) = self.doc.clone() else {
+            return false;
+        };
+        if !motion && self.hit_memo.get().is_none() {
+            // `shared_hit` checks the generation and the point itself.
+            self.hit_memo.set(self.drag_hit_memo);
+        }
+        let pick = {
+            let d = doc.borrow();
+            self.shared_hit(&d, x, y)
+                .and_then(|hit| Self::drag_auto_scroll_container(&d, hit, y, vp_h))
+        };
+        // A hit test made afresh here (after motion) is the newest answer.
+        self.drag_hit_memo = self.hit_memo.get();
+        let Some((container, velocity)) = pick else {
+            self.drag_auto_scroll_at = None;
+            return false;
+        };
+        let elapsed = self
+            .drag_auto_scroll_at
+            .map(|then| now.duration_since(then).as_secs_f32());
+        self.drag_auto_scroll_at = Some(now);
+        let dy = f64::from(velocity * events::drag_auto_scroll_step(elapsed));
+        let (moved, handler_id) = Self::scroll_vertically_by(&mut doc.borrow_mut(), container, dy);
+        if moved {
+            self.scene_dirty = true;
+            if let Some(handler_id) = handler_id {
+                let event = Self::scroll_event_for(&doc.borrow().tree, container);
+                rinch_core::events::dispatch_scroll_event(
+                    rinch_core::events::EventHandlerId(handler_id),
+                    event,
+                );
+            }
+            self.track_drag_pointer(vp_w, vp_h);
+        }
+        true
+    }
+
+    /// The container a drag's pointer at height `y` over `hit` auto-scrolls,
+    /// and how fast: the nearest ancestor of `hit` (or `hit`, or the body) that
+    /// overflows vertically, is not locked out (`lock_scroll`), has the
+    /// pointer in one of its bands and can still move toward that band's edge.
+    /// A container's bands are measured on the part of its painted box inside
+    /// the viewport; the body's on the viewport.
+    fn drag_auto_scroll_container(
+        d: &RinchDocument,
+        hit: usize,
+        y: f32,
+        vp_h: f32,
+    ) -> Option<(usize, f32)> {
+        use rinch_dom::paint::scrollbar::{ScrollbarAxis, overflows};
+        let tree = &d.tree;
+        let chain = std::iter::successors(Some(hit), |&id| tree.get(id).and_then(|n| n.parent))
+            .chain(std::iter::once(tree.body_id));
+        for id in chain {
+            if tree.get(id).is_none()
+                || !overflows(tree, id, ScrollbarAxis::Vertical)
+                || tree.scroll_locked_out(id)
+            {
+                continue;
+            }
+            let (top, bottom) = if id == tree.body_id {
+                (0.0, vp_h)
+            } else {
+                let (_, top, _, height) = painted_element_box(tree, id);
+                (top.max(0.0), (top + height).min(vp_h))
+            };
+            let velocity = events::drag_auto_scroll_velocity(y, top, bottom);
+            if velocity == 0.0 {
+                continue;
+            }
+            let nid = rinch_core::dom::NodeId(id);
+            let at = d.scroll_top(nid);
+            // The end the offset can reach, which is the range's end on the
+            // device pixel grid (#1543): at a fractional scale the last
+            // fraction of a device pixel of a range off the grid is never
+            // reached, and `at < max` held for ever there.
+            let max = d
+                .tree
+                .snap_scroll_offset((d.scroll_height(nid) - d.client_height(nid)).max(0.0));
+            if (velocity < 0.0 && at > 0.0) || (velocity > 0.0 && at < max) {
+                return Some((id, velocity));
+            }
+        }
+        None
+    }
+
+    /// Resolve what an element drag in flight is over, at its cursor
+    /// (`ActiveDrag::cursor`): a render surface hears `DragEnter`/`DragOver`/
+    /// `DragLeave`, a DOM drop target `data-ondragenter`/`data-ondragleave` on a
+    /// change and `data-ondragover` every time, and the source
+    /// `data-ondragmove`.
+    ///
+    /// A pointer move runs it, and so does a frame that auto-scrolled the
+    /// content under a still pointer ([`Self::tick_drag_auto_scroll`]): what is
+    /// under the pointer changed though the pointer did not.
+    fn track_drag_pointer(&mut self, vp_w: f32, vp_h: f32) {
+        let Some((x, y)) = self.active_dnd.as_ref().map(|drag| drag.cursor) else {
+            return;
+        };
+        // Hit test for drop targets — check both DOM elements and surfaces
+        let hit_id = self.move_hit(x, y);
+        // Kept for the frame's auto-scroll tick, which asks the same point.
+        self.drag_hit_memo = self.hit_memo.get();
+        let Some(drag) = self.active_dnd.as_mut() else {
+            return;
+        };
+
+        // Check if mouse is over a render surface
+        let surface_target = if let Some(doc) = &self.doc {
+            hit_id.and_then(|hid| {
+                let d = doc.borrow();
+                Self::find_render_surface_at_full(&d.tree, hid, x, y)
+            })
+        } else {
+            None
+        };
+
+        let new_surface = surface_target.as_ref().map(|(sid, nid, _, _)| (*sid, *nid));
+
+        // Handle surface drag enter/leave transitions
+        if new_surface != self.drag_over_surface {
+            // Leave old surface
+            if let Some((old_sid, _)) = self.drag_over_surface {
+                crate::render_surface::dispatch_surface_event(
+                    old_sid,
+                    crate::render_surface::SurfaceEvent::DragLeave,
+                );
+            }
+            // Enter new surface
+            if let Some((sid, _, lx, ly)) = &surface_target {
+                crate::render_surface::dispatch_surface_event(
+                    *sid,
+                    crate::render_surface::SurfaceEvent::DragEnter { x: *lx, y: *ly },
+                );
+            }
+            self.drag_over_surface = new_surface;
+        }
+
+        // Dispatch DragOver to current surface, or DOM drag events
+        if let Some((sid, _, lx, ly)) = surface_target {
+            // Mouse is over a surface — dispatch DragOver
+            crate::render_surface::dispatch_surface_event(
+                sid,
+                crate::render_surface::SurfaceEvent::DragOver { x: lx, y: ly },
+            );
+
+            // Clear DOM drop target since we're over a surface
+            let old_target = drag.over_target.take();
+            if let Some(doc) = &self.doc {
+                if let Some(old_id) = old_target {
+                    Self::dispatch_drag_attr(doc, old_id, "data-ondragleave");
+                }
+            }
+        } else {
+            // Not over a surface — use DOM drop target system
+            let new_target = hit_id.and_then(|hid| {
+                self.doc.as_ref().and_then(|doc| {
+                    let d = doc.borrow();
+                    Self::find_drop_target(&d.tree, hid)
+                })
+            });
+
+            let old_target = drag.over_target;
+            if new_target != old_target {
+                drag.over_target = new_target;
+                if let Some(doc) = &self.doc {
+                    if let Some(old_id) = old_target {
+                        Self::dispatch_drag_attr(doc, old_id, "data-ondragleave");
+                    }
+                    if let Some(new_id) = new_target {
+                        Self::dispatch_drag_attr(doc, new_id, "data-ondragenter");
+                    }
+                }
+            }
+
+            if let Some(target_id) = drag.over_target {
+                if let Some(doc) = &self.doc {
+                    let (cx, cy) = drag.cursor;
+                    Self::dispatch_drag_attr_with_context(
+                        doc,
+                        target_id,
+                        "data-ondragover",
+                        cx,
+                        cy,
+                    );
+                }
+            }
+        }
+
+        // Fire ondragmove on source so editor can track cursor position.
+        if let Some(doc) = &self.doc {
+            let (cx, cy) = drag.cursor;
+            events::set_click_context(events::ClickContext {
+                mouse_x: cx,
+                mouse_y: cy,
+                element_x: 0.0,
+                element_y: 0.0,
+                element_width: 0.0,
+                element_height: 0.0,
+                text_hit: Default::default(),
+                viewport_width: vp_w,
+                viewport_height: vp_h,
+                button: events::MouseButton::Left,
+                modifiers: events::ModifierState::default(),
+            });
+            Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragmove");
+        }
+    }
+
     /// Cancel an element-to-element drag in flight: a render surface under it
     /// hears `DragLeave`, a drop target `data-ondragleave`, and nothing hears
     /// that something dropped. Then [`Self::end_active_dnd`].
@@ -2318,6 +2492,8 @@ impl RinchApp {
             Self::dispatch_drag_attr(doc, drag.node_id, "data-ondragend");
         }
         events::reset_drag_ghost_visibility();
+        self.drag_auto_scroll_at = None;
+        self.drag_hit_memo = None;
         self.scene_dirty = true;
     }
 
@@ -3124,6 +3300,8 @@ impl RinchApp {
             cursor,
             over_target: None,
         });
+        self.drag_auto_scroll_at = None;
+        self.drag_hit_memo = None;
         // A drag starts with the built-in ghost visible, whatever the last one
         // left behind: a `suppress_drag_ghost` lasts exactly as long as its
         // own drag. Every ending resets it too (`end_active_dnd`); this is the

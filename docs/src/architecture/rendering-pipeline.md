@@ -463,6 +463,25 @@ close direction carries `transition-delay: 150ms` as a grace period for moving
 the pointer onto the card, and scaling that with the factor would halve the
 grace period for anyone who leaves part way through the fade-in.
 
+**Every easing function eases** (#1564), in transitions and `@keyframes`
+alike, a keyframe's own `animation-timing-function` included:
+`cubic-bezier()` and its keywords, `steps(<n>, start | end)`,
+`step-start`/`step-end` and `linear(<stops>)` with percentage positions
+(`transition::types::TimingFunction`; `steps()` and `linear()` used to run as
+plain `linear`). A step function reads CSS Easing 2's **before flag**, set in
+the before phase going forwards and the after phase going backwards, so
+`steps(4, start)` shows its `from` value through a backwards-filled delay and
+at the end of a `reverse` run. A transition fills its delay the same way (its
+easing at 0 with the flag), so `linear(0.5, 1)` sits half way through it, and
+a reversal taken there is shortened by that output. An iteration's start and end are eased too (the
+first interval at distance 0, the last at distance 1), not snapped to the
+keyframe there: `steps(4, start)` begins a step in and `linear(0, 0.5)` ends
+half way. A reversal's shortening reads the stepped output, so reversing
+`steps(4, end)` at 600ms takes half the duration. Not Chrome's: the `jump-*`
+step positions do not parse in Stylo's servo build, so a declaration naming
+one is dropped like any invalid one (an `animation` shorthand with
+`steps(4, jump-none)` starts no animation; #1581).
+
 **A `transform` is interpolated as a function list, not matrix entry by entry**
 (#414). A computed transform keeps the list it was composed from
 (`TransformValue::functions`), and `transition::transform::interpolate_lists`
@@ -945,7 +964,16 @@ shape (issue **#782**): its fill is as constant as a paused sample. The tick tha
 finishes it writes the fill and marks the node dirty — that frame shows the end —
 and records it in `ActiveAnimation::fill_settled`; later ticks re-apply it
 without dirtying anything, and neither `tick_animations` nor
-`has_running_animations()` counts it.
+`has_running_animations()` counts it. A zero-duration infinite animation
+(`0s infinite forwards`) is one of these: its active duration is `0 × ∞ = 0`, so
+it finishes when its delay ends, as in Chrome (issue **#786**).
+
+The fill is the value at the end of the active duration (`duration × count`):
+iteration `floor(count)` at progress `fract(count)`, in that iteration's
+direction, so `2.5 forwards` over `40px → 100px` holds 70px and
+`1.25 alternate forwards` 85px; a whole count holds the end of its last
+iteration and a count of 0 its start (issue **#785**,
+`tests/fractional_iteration_fill_tests.rs`, Chrome 155's values).
 
 The component library declares the pause itself (issue **#912**). `Drawer`'s
 closed rule, and the closed states of `Popover`'s and `HoverCard`'s dropdowns —

@@ -98,7 +98,7 @@ thread_local! {
     /// still relying on. Keyed by nothing for the same reason: the lock is a
     /// property of the page.
     static SCROLL_LOCK: std::cell::RefCell<ScrollLock> =
-        const { std::cell::RefCell::new(ScrollLock { held: 0, saved: None }) };
+        const { std::cell::RefCell::new(ScrollLock { held: 0, saved: None, roots: Vec::new() }) };
 }
 
 /// The inline declarations the page scroll lock overwrites, in the order they
@@ -126,6 +126,11 @@ struct ScrollLock {
     /// and a page whose `overflow` comes from a stylesheet must get that value
     /// back, not an empty inline override.
     saved: Option<[String; 3]>,
+    /// The overlays holding the lock, by node id with their element: what a
+    /// drag's auto-scroll may still scroll while the page is locked
+    /// ([`scroll_locked_out`]). The browser's own gestures are not gated by
+    /// them; only rinch's programmatic scroll asks.
+    roots: Vec<(usize, web_sys::Element)>,
 }
 
 /// `<html>` as an `HtmlElement`, the element the page's scroll lock acts on.
@@ -147,10 +152,11 @@ fn document_element_style() -> Option<web_sys::CssStyleDeclaration> {
 /// scrollbar as well as its scrolling, so a page with a classic (non-overlay)
 /// scrollbar shifts horizontally when an overlay opens. Desktop's scrollbars are
 /// overlays with no gutter and it gates the gesture instead, so it does not.
-fn set_page_scroll_locked(locked: bool) {
+fn set_page_scroll_locked(locked: bool, root: usize, root_el: Option<web_sys::Element>) {
     SCROLL_LOCK.with(|cell| {
         let mut lock = cell.borrow_mut();
         if locked {
+            lock.roots.extend(root_el.map(|el| (root, el)));
             lock.held += 1;
             if lock.held == 1
                 && let Some(style) = document_element_style()
@@ -164,6 +170,12 @@ fn set_page_scroll_locked(locked: bool) {
             // overlay's `on_cleanup` releases a lock its own effect may already
             // have released.
             lock.held = lock.held.saturating_sub(1);
+            if let Some(i) = lock.roots.iter().rposition(|(n, _)| *n == root) {
+                lock.roots.remove(i);
+            }
+            if lock.held == 0 {
+                lock.roots.clear();
+            }
             if lock.held == 0
                 && let Some(style) = document_element_style()
             {
@@ -183,6 +195,11 @@ fn set_page_scroll_locked(locked: bool) {
             }
         }
     });
+    // A drag whose pointer rests over a list the lock had kept still scrolls
+    // it now, as desktop's next frame does, not only after a pointer move.
+    if !locked {
+        crate::event_delegation::restart_drag_auto_scroll_if_dragging();
+    }
 }
 
 /// Reset the page scroll lock. Test-only: a fixture that fails between a lock
@@ -193,6 +210,7 @@ pub fn __reset_scroll_lock() {
         *cell.borrow_mut() = ScrollLock {
             held: 0,
             saved: None,
+            roots: Vec::new(),
         };
     });
     if let Some(style) = document_element_style() {
@@ -200,6 +218,43 @@ pub fn __reset_scroll_lock() {
             style.remove_property(prop).ok();
         }
     }
+}
+
+/// Whether rinch's own programmatic scrolling (a drag's auto-scroll) must leave
+/// `el` alone while the page is locked: desktop's `NodeTree::scroll_locked_out`
+/// rule. Nothing is locked out with no lock held. While one is, a container
+/// inside a locking overlay's root, or inside (or carrying) an element marked
+/// `data-scroll-lock-exempt` that holds no locking root, may scroll; anything
+/// else — the page's scrolling element included — is locked out.
+pub(crate) fn scroll_locked_out(el: &web_sys::Element) -> bool {
+    SCROLL_LOCK.with(|cell| {
+        let lock = cell.borrow();
+        if lock.held == 0 {
+            return false;
+        }
+        let mut current = Some(el.clone());
+        while let Some(node) = current {
+            if lock
+                .roots
+                .iter()
+                .any(|(_, root)| root.is_same_node(Some(&node)))
+            {
+                return false;
+            }
+            if node
+                .get_attribute(rinch_core::events::SCROLL_LOCK_EXEMPT_ATTRIBUTE)
+                .is_some_and(|v| rinch_core::dom::data_attr_is_on(&v))
+                && !lock
+                    .roots
+                    .iter()
+                    .any(|(_, root)| !root.is_same_node(Some(&node)) && node.contains(Some(root)))
+            {
+                return false;
+            }
+            current = node.parent_element();
+        }
+        true
+    })
 }
 
 /// How many overlays currently hold the page scroll lock. Test-only.
@@ -2343,6 +2398,53 @@ impl DomDocument for WebDocument {
         }
     }
 
+    /// Whether `node` is shown, asked of the browser (issue #802; see
+    /// [`DomDocument::is_rendered`]).
+    ///
+    /// The same three questions desktop asks, from `getComputedStyle`, which
+    /// resolves style on demand: `isConnected`, no `display: none` on the
+    /// element or an ancestor (`display` does not inherit, hence the walk), and
+    /// the element's own — inherited — `visibility`. An unknown node, or one
+    /// with no element to ask, answers `true`, as the trait's default does.
+    fn is_rendered(&self, node: NodeId) -> bool {
+        let Some(n) = self.nodes.get(&node.0) else {
+            return true;
+        };
+        if !n.is_connected() {
+            return false;
+        }
+        let el = match n.clone().dyn_into::<web_sys::Element>() {
+            Ok(el) => el,
+            Err(n) => match n.parent_element() {
+                Some(el) => el,
+                None => return true,
+            },
+        };
+        let Some(win) = web_sys::window() else {
+            return true;
+        };
+        let prop = |el: &web_sys::Element, name: &str| -> Option<String> {
+            win.get_computed_style(el)
+                .ok()
+                .flatten()
+                .and_then(|s| s.get_property_value(name).ok())
+        };
+        if matches!(
+            prop(&el, "visibility").as_deref(),
+            Some("hidden") | Some("collapse")
+        ) {
+            return false;
+        }
+        let mut cur = Some(el);
+        while let Some(e) = cur {
+            if prop(&e, "display").as_deref() == Some("none") {
+                return false;
+            }
+            cur = e.parent_element();
+        }
+        true
+    }
+
     /// `document.activeElement`, mapped back through the `__nid` expando
     /// (issue #695).
     ///
@@ -2448,10 +2550,15 @@ impl DomDocument for WebDocument {
         }));
     }
 
-    /// `root` is ignored here: the browser owns the wheel, so there is nothing to
-    /// gate per-subtree. See [`set_page_scroll_locked`].
-    fn set_scroll_locked(&mut self, locked: bool, _root: NodeId) {
-        set_page_scroll_locked(locked);
+    /// The browser owns the wheel, so `root` gates nothing the user does; it is
+    /// recorded for rinch's own programmatic scrolling (a drag's auto-scroll,
+    /// [`scroll_locked_out`]). See [`set_page_scroll_locked`].
+    fn set_scroll_locked(&mut self, locked: bool, root: NodeId) {
+        let el = self
+            .nodes
+            .get(&root.0)
+            .and_then(|n| n.clone().dyn_into::<web_sys::Element>().ok());
+        set_page_scroll_locked(locked, root.0, el);
     }
 
     fn resolve_layout(&mut self, _width: f32, _height: f32) {

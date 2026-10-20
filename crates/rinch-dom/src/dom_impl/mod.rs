@@ -239,8 +239,10 @@ impl RinchDocument {
             style_bloom_filled: Vec::new(),
         };
 
-        // `reload_image` reaches every live document by its key.
+        // `reload_image` reaches every live document that holds the source,
+        // by its key: the cache records its sources under it (#1493).
         crate::image_cache::register_document(doc.doc_key);
+        doc.tree.image_cache.set_doc_key(doc.doc_key);
 
         // Set up default file-based image loader
         doc.tree.image_loader = Some(std::sync::Arc::new(crate::image_cache::FileImageLoader));
@@ -1429,7 +1431,7 @@ impl RinchDocument {
         if let Some(img) = self.tree.image_cache.get(src) {
             // Already decoded — update intrinsic dimensions on the Taffy node
             let (iw, ih) = (img.width, img.height);
-            let hint_ratio = crate::replaced::attribute_ratio(&self.tree.nodes[node_id]);
+            let aspect = self.tree.nodes[node_id].computed_style.aspect_ratio;
             if let Some(taffy_id) = self.tree.nodes[node_id].taffy_id {
                 let _ = self.tree.taffy.set_node_context(
                     taffy_id,
@@ -1437,7 +1439,7 @@ impl RinchDocument {
                         src: src.to_string(),
                         width: iw,
                         height: ih,
-                        hint_ratio,
+                        aspect,
                     }),
                 );
                 let _ = self.tree.taffy.mark_dirty(taffy_id);
@@ -1459,7 +1461,7 @@ impl RinchDocument {
         self.tree.image_cache.mark_loading(src.to_string());
 
         // Update NodeContext with src (0x0 dims while loading)
-        let hint_ratio = crate::replaced::attribute_ratio(&self.tree.nodes[node_id]);
+        let aspect = self.tree.nodes[node_id].computed_style.aspect_ratio;
         if let Some(taffy_id) = self.tree.nodes[node_id].taffy_id {
             let _ = self.tree.taffy.set_node_context(
                 taffy_id,
@@ -1467,7 +1469,7 @@ impl RinchDocument {
                     src: src.to_string(),
                     width: 0,
                     height: 0,
-                    hint_ratio,
+                    aspect,
                 }),
             );
         }
@@ -1584,7 +1586,7 @@ impl RinchDocument {
                 .collect();
 
             for node_id in node_ids {
-                let hint_ratio = crate::replaced::attribute_ratio(&self.tree.nodes[node_id]);
+                let aspect = self.tree.nodes[node_id].computed_style.aspect_ratio;
                 if let Some(taffy_id) = self.tree.nodes[node_id].taffy_id {
                     let _ = self.tree.taffy.set_node_context(
                         taffy_id,
@@ -1592,7 +1594,7 @@ impl RinchDocument {
                             src: src.clone(),
                             width: iw,
                             height: ih,
-                            hint_ratio,
+                            aspect,
                         }),
                     );
                     let _ = self.tree.taffy.mark_dirty(taffy_id);

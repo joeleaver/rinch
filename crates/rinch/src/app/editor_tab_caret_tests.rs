@@ -1,24 +1,22 @@
-//! #1109: a tab in an editor textblock on desktop.
+//! A tab in an editor textblock on desktop (#1109, #1122).
 //!
-//! rinch-dom's inline formatting context lays a tab out as four spaces, so a
-//! tab is four bytes of the flat offsets its text queries take and its pointer
-//! hit answers (`DomDocument::tab_flat_bytes`). The editor view's caret map
-//! counted it as the one byte it is in the model, so every caret, highlight
-//! and press after a tab in the same textblock was three bytes off per tab.
+//! rinch-dom lays a preserved tab out as one space widened to its tab stop
+//! (#1122), so a tab is one byte of the flat offsets its text queries take
+//! and its pointer hit answers (`DomDocument::tab_flat_bytes`), as it is in
+//! the model. (It was four spaces, four bytes, until then; #1109 taught the
+//! caret map to count them.)
 //!
-//! **The oracle is the same line with the tabs spelled as four spaces**, which
-//! rinch-dom lays out identically: the caret after a tab is where the caret
-//! after the fourth space is, i.e. at the left edge of the glyph after the tab.
-//! That relation is Chrome's too — measured in Chrome 153 on
-//! `<pre contenteditable>a\tb\tc</pre>`, the caret after the tab is at `b`'s
-//! left edge, a press on the tab's left quarter lands before it (offset 1), on
-//! its right quarter after it (2), and on `b`'s right quarter after `b` (3).
-//! Chrome's tab is *wider* (it advances to the next `tab-size: 8` stop, where
-//! rinch-dom draws four spaces), so no absolute x here is Chrome's; every
-//! assertion is a relation both engines satisfy.
+//! **The oracle is Chrome 155** on the same text in a `pre-wrap` block of
+//! the bundled Inter at `16px/24px` — the editor's prose and code block are
+//! both `pre-wrap`, and both faces are Inter here. A space is 4.5 wide, so
+//! the stops fall every 36px: `a\tb\tc` draws its carets at
+//! 0, 8.98, 36, 45.80, 72, 81.14. Measured in Chrome 153 on
+//! `<pre contenteditable>a\tb\tc</pre>` (#1109), a press on the tab's left
+//! quarter lands before it (offset 1), on its right quarter after it (2),
+//! and on `b`'s right quarter after `b` (3).
 //!
-//! Two tabs per line, so the second tab's error (six bytes) is not the first's
-//! (three) — a map that corrected only one tab, or by a fixed amount, fails.
+//! Two tabs per line, so a caret map off by a byte per tab is off by two
+//! after the second.
 
 use super::hit_testing::painted_element_box;
 use super::*;
@@ -130,84 +128,59 @@ impl Page {
     }
 }
 
-/// `a\tb\tc` against `a    b    c`: the char offsets of the tab line and the
-/// ones of the spaces line that draw at the same place.
-const TAB_TO_SPACES: [(usize, usize); 6] = [(0, 0), (1, 1), (2, 5), (3, 6), (4, 10), (5, 11)];
+/// Chrome 155's caret x for each char offset of `a\tb\tc`.
+const CHROME: [f32; 6] = [0.0, 8.98, 36.0, 45.80, 72.0, 81.14];
 
-/// Every caret on a line with two tabs is drawn where the same caret on the
-/// four-spaces line is: after a tab is the next glyph's left edge. For both a
-/// code block and a paragraph, since both are `pre-wrap` in the editor.
+/// Every caret on a line with two tabs is drawn where Chrome draws it: after
+/// a tab is its stop, the next glyph's left edge. For both a code block and a
+/// paragraph, since both are `pre-wrap` in the editor.
 #[test]
-fn the_caret_after_a_tab_is_drawn_at_the_next_glyph() {
-    for (tabs, spaces) in [
-        (
-            "<pre><code>a\tb\tc</code></pre>",
-            "<pre><code>a    b    c</code></pre>",
-        ),
-        ("<p>a\tb\tc</p>", "<p>a    b    c</p>"),
-    ] {
+fn the_caret_after_a_tab_is_drawn_at_its_stop() {
+    for tabs in ["<pre><code>a\tb\tc</code></pre>", "<p>a\tb\tc</p>"] {
         let t = page(tabs);
-        let s = page(spaces);
         assert_eq!(
             t.text(),
             "a\tb\tc",
             "positive control: the tab survives the load"
         );
-        let (x5, _) = s.local(5);
-        assert!(
-            x5 > s.local(1).0 + 12.0,
-            "positive control: four spaces are wide: {x5}"
-        );
-        for (ti, si) in TAB_TO_SPACES {
-            let (tx, ty) = t.local(ti);
-            let (sx, sy) = s.local(si);
-            assert_eq!(ty, sy, "{tabs}: char {ti} on one line");
+        for (i, want) in CHROME.into_iter().enumerate() {
+            let (tx, ty) = t.local(i);
+            assert_eq!(ty, t.local(0).1, "{tabs}: char {i} on one line");
             assert!(
-                (tx - sx).abs() < 0.01,
-                "{tabs}: caret {ti} at {tx}, spaces caret {si} at {sx}"
+                (tx - want).abs() < 0.05,
+                "{tabs}: caret {i} at {tx}, Chrome {want}"
             );
         }
     }
 }
 
 /// A selection over `b\tc` (chars 2..5) highlights from `b`'s left edge to
-/// the end of `c`: the same rect as `b    c` on the spaces line.
+/// the end of `c`: 36 to 81.14, the overlay placed at whole pixels.
 #[test]
 fn a_selection_across_a_tab_highlights_the_tab_and_what_follows() {
     let mut t = page("<pre><code>a\tb\tc</code></pre>");
-    let mut s = page("<pre><code>a    b    c</code></pre>");
     t.handle.set_selection(Selection::text(Pos(3), Pos(6)));
-    s.handle.set_selection(Selection::text(Pos(6), Pos(12)));
     idle(&mut t.app);
-    idle(&mut s.app);
-    let (th, sh) = (t.highlights(), s.highlights());
+    let th = t.highlights();
     assert_eq!(th.len(), 1, "one line: {th:?}");
-    assert_eq!(sh.len(), 1, "positive control, one line: {sh:?}");
-    let (a, b) = (th[0], sh[0]);
+    let (bx, _, _, _) = t.block_box();
+    let a = th[0];
     assert!(
-        (a.0 - b.0).abs() < 0.01 && (a.2 - b.2).abs() < 0.01,
-        "tab highlight {a:?} vs spaces highlight {b:?}"
+        (a.0 - (bx + CHROME[2])).abs() <= 1.0 && (a.2 - (CHROME[5] - CHROME[2])).abs() <= 1.0,
+        "tab highlight {a:?}, block at {bx}"
     );
 }
 
 /// A press on a tab's left fifth lands before it and on its right fifth after
 /// it, and a press on the glyph after it lands on that glyph's nearer side —
 /// Chrome 153's answers (1, 2, 3 for the first tab; 3, 4, 5 for the second).
-/// Near the tab's middle rinch splits at 3/8, not 1/2 (`ifc_byte_to_char`), so
-/// the presses stay clear of that band. Where to press is read off the
-/// four-spaces line, not off the caret map under test. Each press is on a
-/// fresh page, so no two read as a double click.
+/// The presses stay clear of the tab's middle. Where to press is read off Chrome's
+/// carets, not off the caret map under test. Each press is on a fresh page,
+/// so no two read as a double click.
 #[test]
 fn a_press_on_or_after_a_tab_lands_on_the_side_hit() {
-    let spaces = page("<pre><code>a    b    c</code></pre>");
-    let x = |i: usize| spaces.local(TAB_TO_SPACES[i].1).0;
     let press = |from: usize, frac: f32| {
-        let (x0, x1) = (x(from), x(from + 1));
-        assert!(
-            x1 > x0 + 4.0,
-            "positive control: {from}..{} has width",
-            from + 1
-        );
+        let (x0, x1) = (CHROME[from], CHROME[from + 1]);
         let mut p = page("<pre><code>a\tb\tc</code></pre>");
         let (bx, by, _, _) = p.block_box();
         p.click(bx + x0 + (x1 - x0) * frac, by + LINE / 2.0);
@@ -221,26 +194,27 @@ fn a_press_on_or_after_a_tab_lands_on_the_side_hit() {
     assert_eq!(press(4, 0.75), 5, "`c`, right half: the end");
 }
 
-/// A press right after the first tab, then typing, inserts there: `a\tXb\tc`,
-/// and the caret after `X` is drawn at `b`'s left edge in the new layout.
+/// A press right after the first tab, then typing, inserts there: `a\tXb\tc`.
+/// The first tab still ends at 36 and the second, now after `Xb`, still at
+/// 72 — Chrome 155: 0, 8.98, 36, 46.91, 56.70, 72, 81.14.
 #[test]
 fn typing_after_a_press_behind_a_tab_inserts_after_the_tab() {
-    let s = page("<pre><code>a    Xb    c</code></pre>");
-    let before = page("<pre><code>a    b    c</code></pre>");
     let mut p = page("<pre><code>a\tb\tc</code></pre>");
     let (bx, by, _, _) = p.block_box();
-    let (x1, x2) = (before.local(1).0, before.local(5).0);
+    let (x1, x2) = (CHROME[1], CHROME[2]);
     p.click(bx + x1 + (x2 - x1) * 0.8, by + LINE / 2.0);
     assert_eq!(p.head(), 2, "after the first tab");
     assert!(p.handle.insert_text("X"));
     idle(&mut p.app);
     assert_eq!(p.text(), "a\tXb\tc");
     assert_eq!(p.head(), 3);
-    assert!((p.local(3).0 - s.local(6).0).abs() < 0.01, "after `X`");
-    assert!(
-        (p.local(5).0 - s.local(11).0).abs() < 0.01,
-        "after the second tab"
-    );
+    for (i, want) in [0.0, 8.98, 36.0, 46.91, 56.70, 72.0, 81.14]
+        .into_iter()
+        .enumerate()
+    {
+        let x = p.local(i).0;
+        assert!((x - want).abs() < 0.05, "caret {i} at {x}, Chrome {want}");
+    }
 }
 
 fn key(app: &mut RinchApp, key: KeyCode) {
@@ -258,55 +232,40 @@ fn key(app: &mut RinchApp, key: KeyCode) {
     idle(app);
 }
 
-/// End, Home, and ArrowDown then End on a wrapped line holding tabs land where
-/// the same keys land on the four-spaces line (#1107's Home/End read the
-/// caret's line from its layout, through the caret map). Fifteen tabs, so the
-/// first line's end is many tabs in and its error would be many bytes.
+/// End, Home, and ArrowDown then End on a wrapped line holding tabs land
+/// where Chrome 155 breaks it (#1107's Home/End read the caret's line from its
+/// layout, through the caret map). The code block is 358px wide (the
+/// editor's 400 less its padding) and each `xxx\t` ends at a stop 36px on,
+/// so the tenth tab ends at 360, past the edge: it hangs, and the first line
+/// ends after it, char 40. The second line starts with `kkk` and ends with
+/// the text, char 63. Chrome 155 at 358px draws char 20 at 180 and char 24
+/// at 216 on the first line, char 52 at 144 on the second.
 #[test]
-fn home_and_end_on_a_wrapped_line_with_tabs_match_the_spaces_line() {
-    let words_t = "aaa\tbbb\tccc\tddd\teee\tfff\tggg\thhh\tiii\tjjj\tkkk\tlll\tmmm\tnnn\tooo\tppp";
-    let words_s = words_t.replace('\t', "    ");
-    let mut t = page(&format!("<pre><code>{words_t}</code></pre>"));
-    let mut s = page(&format!("<pre><code>{words_s}</code></pre>"));
-    // The caret inside "bbb" on the first visual line: char 5 with tabs, 8
-    // with spaces.
+fn home_and_end_on_a_wrapped_line_with_tabs_land_where_chrome_wraps() {
+    let words = "aaa\tbbb\tccc\tddd\teee\tfff\tggg\thhh\tiii\tjjj\tkkk\tlll\tmmm\tnnn\tooo\tppp";
+    let mut t = page(&format!("<pre><code>{words}</code></pre>"));
+    // The caret inside "bbb" on the first visual line.
     t.handle.set_selection(Selection::cursor(Pos(1 + 5)));
-    s.handle.set_selection(Selection::cursor(Pos(1 + 8)));
     idle(&mut t.app);
-    idle(&mut s.app);
-    assert_eq!(t.local(5).1, s.local(8).1, "both carets on the first line");
-    // A char offset on the spaces line, as a char offset on the tabs line.
-    let s_to_t = |c: usize| {
-        let (mut sc, mut tc) = (0, 0);
-        for ch in words_t.chars() {
-            if sc >= c {
-                break;
-            }
-            sc += if ch == '\t' { 4 } else { 1 };
-            tc += 1;
-        }
-        tc
-    };
-    key(&mut t.app, KeyCode::End);
-    key(&mut s.app, KeyCode::End);
-    let (th, sh) = (t.head(), s.head());
-    assert!(
-        sh < words_s.chars().count(),
-        "positive control: the line wraps: {sh}"
-    );
-    assert_eq!(th, s_to_t(sh), "End: tabs {th}, spaces {sh}");
-    key(&mut t.app, KeyCode::Home);
-    key(&mut s.app, KeyCode::Home);
-    assert_eq!(t.head(), s_to_t(s.head()), "Home");
-    key(&mut t.app, KeyCode::ArrowDown);
-    key(&mut s.app, KeyCode::ArrowDown);
-    key(&mut t.app, KeyCode::End);
-    key(&mut s.app, KeyCode::End);
+    let line1 = t.local(5).1;
     assert_eq!(
-        t.head(),
-        s_to_t(s.head()),
-        "End on line 2: tabs {}, spaces {}",
-        t.head(),
-        s.head()
+        t.block_box().2,
+        358.0,
+        "positive control: the block's width"
     );
+    for (i, x, line) in [(20, 180.0, 0.0), (24, 216.0, 0.0), (52, 144.0, LINE)] {
+        let (cx, cy) = t.local(i);
+        assert!(
+            (cx - x).abs() < 0.05 && cy == line1 + line,
+            "char {i} at ({cx}, {cy}), Chrome ({x}, {})",
+            line1 + line
+        );
+    }
+    key(&mut t.app, KeyCode::End);
+    assert_eq!(t.head(), 40, "End");
+    key(&mut t.app, KeyCode::Home);
+    assert_eq!(t.head(), 0, "Home");
+    key(&mut t.app, KeyCode::ArrowDown);
+    key(&mut t.app, KeyCode::End);
+    assert_eq!(t.head(), 63, "End on line 2");
 }

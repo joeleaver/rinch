@@ -25,6 +25,20 @@ mod caret_visibility_paint_tests;
 mod click_handling;
 #[cfg(test)]
 mod color_input_dismiss_465_tests;
+#[cfg(test)]
+mod review_1589_tests;
+#[cfg(test)]
+mod tree_drop_tests;
+
+/// Serializes the tests that install a timer backend
+/// ([`rinch_core::set_timer_backend`] writes a process-global static).
+#[cfg(test)]
+pub(crate) fn timer_backend_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 #[cfg(all(test, feature = "desktop"))]
 mod component_attrs_433_tests;
 #[cfg(test)]
@@ -58,6 +72,8 @@ mod device_pixel_ratio_tests;
 mod disabled_input_tests;
 #[cfg(test)]
 mod dnd_teardown_tests;
+#[cfg(test)]
+mod drag_auto_scroll_tests;
 #[cfg(test)]
 mod drawer_open_animation_tests;
 #[cfg(test)]
@@ -129,6 +145,8 @@ mod input_commit_tests;
 mod input_ime_tests;
 #[cfg(all(test, feature = "clipboard"))]
 mod input_paste_async_tests;
+#[cfg(all(test, software_shell))]
+mod input_value_sanitization_1554_tests;
 #[cfg(test)]
 mod key_event_data_tests;
 #[cfg(test)]
@@ -208,6 +226,8 @@ mod screenshot_capture_tests;
 #[cfg(test)]
 mod scroll_device_snap_1543_tests;
 #[cfg(test)]
+mod scroll_request_no_write_1145_tests;
+#[cfg(test)]
 mod scrollbar_corner_444_tests;
 #[cfg(test)]
 mod scrollbar_thumb_press_443_tests;
@@ -222,6 +242,8 @@ mod select_value_order_757_tests;
 mod select_widget;
 #[cfg(test)]
 mod shared_hit_tests;
+#[cfg(test)]
+mod single_line_insert_824_tests;
 #[cfg(all(test, software_shell))]
 mod stacking_flip_damage_1384_review_tests;
 #[cfg(all(test, software_shell))]
@@ -606,6 +628,13 @@ pub struct RinchApp {
     /// Surface currently being dragged over (for DragEnter/DragLeave dispatch).
     /// Stores (surface_id, dom_node_id).
     pub(crate) drag_over_surface: Option<(usize, usize)>,
+    /// When the last drag auto-scroll tick scrolled
+    /// ([`Self::tick_drag_auto_scroll`]); `None` while the pointer of the drag
+    /// in flight is in no band, and with no drag.
+    pub(crate) drag_auto_scroll_at: Option<Instant>,
+    /// The hit test the element drag in flight last resolved its target with
+    /// ([`Self::track_drag_pointer`]), for the auto-scroll tick to reuse.
+    pub(crate) drag_hit_memo: Option<HitMemo>,
     /// The [`ThemeKey`] of the theme CSS last loaded into the document (for
     /// change detection).
     #[cfg(feature = "theme")]
@@ -899,6 +928,8 @@ impl RinchApp {
             pending_drag: None,
             active_dnd: None,
             drag_over_surface: None,
+            drag_auto_scroll_at: None,
+            drag_hit_memo: None,
             #[cfg(feature = "theme")]
             last_theme_key: None,
             owned_theme_css: None,
@@ -1386,9 +1417,12 @@ impl RinchApp {
         // Short-circuit when nothing needs resolving — avoids redundant tree walks
         // when a ReRender event arrives after the drag handler already resolved.
         //
-        // A finished image decode is the one thing that needs resolving without
-        // any node being dirty: the decoding thread cannot know which nodes
-        // carry that `src`, so it queues the result and leaves the matching to
+        // Some work needs resolving with no node dirty, and the test below
+        // names each: a theme change, an owed editor overlay pass, a queued
+        // `scroll_into_view` / `scroll_to_fraction` (`has_owed_scroll`,
+        // drained by `apply_scroll_into_view` below — #1145), and a finished
+        // image decode: the decoding thread cannot know which nodes carry that
+        // `src`, so it queues the result and leaves the matching to
         // `resolve_layout`'s `drain_pending_images`. Returning early here means
         // that drain never happens, and an `<img>` loaded into an otherwise
         // idle screen keeps the 0x0 intrinsic size it was created with — laid
@@ -1403,6 +1437,7 @@ impl RinchApp {
                 && !theme_changed
                 && !rinch_dom::image_cache::has_pending(d.doc_key())
                 && !self.has_owed_editor_overlay_pass()
+                && !Self::has_owed_scroll(&d)
             {
                 return false;
             }
@@ -2319,11 +2354,25 @@ impl RinchApp {
             .as_ref()
             .map(|doc| {
                 let d = doc.borrow();
-                !d.tree.dirty_nodes.is_empty() || d.tree.styles_dirty
+                !d.tree.dirty_nodes.is_empty() || d.tree.styles_dirty || Self::has_owed_scroll(&d)
             })
             .unwrap_or(false)
             || self.has_pending_images()
             || self.has_owed_editor_overlay_pass()
+    }
+
+    /// Whether a `NodeHandle::scroll_into_view` / `scroll_to_fraction` is
+    /// queued and not yet applied (#1145). The request only queues on the tree
+    /// and `apply_scroll_into_view` drains it inside `resolve_and_repaint`, so,
+    /// like a decoded image, it is folded into both "is there anything to do?"
+    /// predicates and the resolve short-circuit: a "jump to" button or a
+    /// find-next asks for a scroll and changes nothing else, and used to wait
+    /// for an unrelated change to lay the document out. The drain empties both
+    /// queues whether or not a request found a scroll container, so a request
+    /// that moves nothing does not keep a loop spinning.
+    fn has_owed_scroll(d: &RinchDocument) -> bool {
+        !d.tree.scroll_into_view_requests.is_empty()
+            || !d.tree.scroll_to_fraction_requests.is_empty()
     }
 
     /// Whether an editor in this document is owed an overlay pass
@@ -2358,7 +2407,10 @@ impl RinchApp {
             .as_ref()
             .map(|doc| {
                 let d = doc.borrow();
-                !d.tree.dirty_nodes.is_empty() || d.tree.styles_dirty || d.tree.layout_dirty
+                !d.tree.dirty_nodes.is_empty()
+                    || d.tree.styles_dirty
+                    || d.tree.layout_dirty
+                    || Self::has_owed_scroll(&d)
             })
             .unwrap_or(false)
             || self.has_pending_images()
@@ -2510,13 +2562,38 @@ impl RinchApp {
         if cmd.mutates_text() && self.focused_input_is_readonly() {
             return;
         }
+        // Without the `clipboard` feature there is nowhere to cut *to*: a Cut
+        // would delete the selection and copy it nowhere (issue #823). It does
+        // nothing instead — the rich-text editor's Cut arms, and the context
+        // menu's greyed Cut row, say the same. Every route to a plain
+        // control's Cut (the chord, the menu item, `perform_text_edit`) ends
+        // here.
+        #[cfg(not(feature = "clipboard"))]
+        if matches!(cmd, EditCommand::Cut) {
+            return;
+        }
         // The edit applies to what the field displays: adopt any `value` write
         // that landed since the last sync (issue #238).
         self.adopt_focused_input_value_from_dom();
+        // A single-line field folds the line breaks of what is inserted into
+        // it, as Chrome's `<input>` does (issue #824); a `<textarea>` keeps
+        // them. What folds away entirely (a lone `\n`) still replaces a
+        // selection, and at a caret is no edit at all.
+        let cmd = match cmd {
+            EditCommand::InsertText(text) => EditCommand::InsertText(self.insertable_text(text)),
+            EditCommand::Paste(text) => EditCommand::Paste(self.insertable_text(text)),
+            other => other,
+        };
         let edited_node = self.focused_input_node_id;
         let Some(state) = self.focused_input_state.as_mut() else {
             return;
         };
+        if let EditCommand::InsertText(text) | EditCommand::Paste(text) = &cmd
+            && text.is_empty()
+            && state.selection.is_cursor()
+        {
+            return;
+        }
 
         // The command and whatever its own `oninput` rewrites in answer to it
         // are one undo step (issue #288). Otherwise undoing a keystroke in a
@@ -2579,6 +2656,30 @@ impl RinchApp {
                     state.group_undo_since(group);
                 }
             }
+        }
+    }
+
+    /// The text the focused field takes when the user inserts `text` — a
+    /// paste, an IME commit, a key's text (issue #824). A single-line field
+    /// (anything but a `<textarea>`, the one control whose value holds a
+    /// line break — [`Self::node_is_textarea`]) folds line breaks the way
+    /// Chrome does: an inner `\r\n`, `\r` or `\n` is one space, trailing
+    /// ones are dropped ([`rinch_editable::single_line_insert`]). A
+    /// `<textarea>`, or no focused field, takes `text` as it is.
+    ///
+    /// [`Self::handle_input_edit_command`] applies it to every insertion, so
+    /// the clipboard, the IME and typed text all reach it. Android's soft
+    /// keyboard also applies it to a whole committed text before splitting
+    /// it into one key per character (`apply_ime_action`): one character at
+    /// a time, an inner `\n` would look trailing and vanish.
+    pub(crate) fn insertable_text(&self, text: String) -> String {
+        if !matches!(self.focus_target, FocusTarget::Input(_)) || self.focused_input_is_multiline()
+        {
+            return text;
+        }
+        match rinch_editable::single_line_insert(&text) {
+            std::borrow::Cow::Borrowed(_) => text,
+            std::borrow::Cow::Owned(folded) => folded,
         }
     }
 
@@ -3233,13 +3334,19 @@ impl RinchApp {
 
         let mut d = doc.borrow_mut();
         let text = state.document.to_text();
-        let keeps_default = d.tree.nodes.get(node_id).is_some_and(|node| {
-            rinch_dom::form_control::is_pristine_textarea(node)
+        // Leave the field's `value` as it is when it already reads as the
+        // engine text: a pristine textarea keeps showing its children
+        // (#1186), and an `<input>` keeps the attribute as written while its
+        // sanitized value is the text (`"a\nb"` reads `"ab"`, #1554) — the
+        // first edit that changes the text writes it.
+        let keeps_value = d.tree.nodes.get(node_id).is_some_and(|node| {
+            (rinch_dom::form_control::is_pristine_textarea(node)
+                || node.attributes.contains_key("value"))
                 && rinch_dom::form_control::control_value(&d.tree.nodes, node_id).as_deref()
                     == Some(text.as_str())
         });
         if let Some(node) = d.tree.nodes.get_mut(node_id) {
-            if !keeps_default {
+            if !keeps_value {
                 node.attributes.insert("value".to_string(), text);
             }
             node.attributes
@@ -9573,6 +9680,72 @@ mod pending_image_tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         assert_eq!(img_box(&app, &img), (3.0, 2.0));
+    }
+
+    /// Issue #1493: a reload asked for by one document's picture leaves every
+    /// other document asleep. `reload_image` reaches every live document in
+    /// the process, and it used to queue the source for each of them, so an
+    /// idle app that never named it laid itself out and asked for a redraw at
+    /// its next `AboutToWait`, to find nothing to reload. Under `cargo test`
+    /// that was the `paused_animation_frames_tests` flake: another test's
+    /// reload, on another thread, landing between two idle frames.
+    #[test]
+    fn a_reload_of_another_documents_picture_asks_an_idle_app_for_no_frame() {
+        crate::image::register_image_scheme("app-1493-reload", |src: &str| {
+            ImageLoadResult::Failed(format!("{src} is not here yet"))
+        });
+        let mut holder = RinchApp::new(|scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let img = scope.create_element("img");
+            img.set_attribute("src", "app-1493-reload:picture");
+            root.append_child(&img);
+            root
+        });
+        holder.mount_component(800.0, 600.0);
+        let failed = |app: &RinchApp| {
+            app.doc
+                .as_ref()
+                .expect("mounted")
+                .borrow()
+                .tree
+                .image_cache
+                .is_failed("app-1493-reload:picture")
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !failed(&holder) && Instant::now() < deadline {
+            holder.resolve_and_repaint(800.0, 600.0);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(failed(&holder), "precondition: the miss is cached");
+
+        let mut idle = RinchApp::new(|scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_text("no pictures here");
+            root
+        });
+        idle.mount_component(800.0, 600.0);
+        for _ in 0..4 {
+            idle.resolve_and_repaint(800.0, 600.0);
+        }
+        let about_to_wait = |app: &mut RinchApp| {
+            app.handle_event(PlatformEvent::AboutToWait, (800, 600), 1.0)
+                .contains(&AppAction::RequestRedraw)
+        };
+        assert!(!about_to_wait(&mut idle), "precondition: idle");
+
+        crate::image::reload_image("app-1493-reload:picture");
+        assert!(
+            holder.has_dirty_nodes(),
+            "control: the app showing the picture is told"
+        );
+        assert!(
+            !idle.has_dirty_nodes() && !idle.has_pending_layout(),
+            "an app that never named the source has nothing to do"
+        );
+        assert!(
+            !about_to_wait(&mut idle),
+            "so its frame clock asks for no frame"
+        );
     }
 }
 
