@@ -342,6 +342,16 @@ fn q5b_an_equal_fresh_picture_over_the_only_one_in_a_list() {
     );
 }
 
+/// Q5t (the round-3 review of #1595, F5): the same inside a one-cell table, whose
+/// reconcile matched the cell by value and kept the old char.
+#[test]
+fn q5t_an_equal_fresh_picture_over_the_only_one_in_a_table_cell() {
+    q5_shape(
+        r#"<table><tr><td><p><img src="a.png" data-badge="new" data-ref="one"></p></td></tr></table>"#,
+        4,
+    );
+}
+
 #[test]
 fn q5c_an_equal_fresh_picture_with_another_paragraph() {
     q5_shape(

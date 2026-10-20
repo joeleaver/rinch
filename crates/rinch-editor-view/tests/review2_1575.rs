@@ -80,13 +80,59 @@ fn page(html: &str) -> (Rc<RefCell<MockDomDocument>>, RenderScope, EditorHandle)
 }
 
 fn peers(html: &str, n: usize) -> Vec<Peer> {
+    peers_seeded(html, n, None)
+}
+
+/// A 53-bit yrs client id for peer `i` of fuzz seed `seed` (splitmix64), so the
+/// merge order, and with it the whole run, is the same every time the seed runs,
+/// while the order of the peers' ids (which breaks yrs's ties) varies from seed to
+/// seed as random ids would. The peers of one seed never share one.
+fn client_id(seed: u64, i: usize) -> u64 {
+    let mix = |x: u64| {
+        let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    };
+    // `R_ID_SALT` picks another set of ids for the same seeds (a search for an
+    // order that fails); unset, the ids are a function of the seed alone.
+    let salt: u64 = std::env::var("R_ID_SALT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let id = |i: u64| {
+        (mix(seed.wrapping_mul(4).wrapping_add(i) ^ salt.wrapping_mul(0xA24B_AED4_963E_E407))
+            & ((1 << 53) - 1))
+            | 1
+    };
+    let mine = id(i as u64);
+    assert!(
+        (0..i as u64).all(|j| id(j) != mine),
+        "seed {seed}: two peers share an id"
+    );
+    mine
+}
+
+/// [`peers`], with every session's yrs client id pinned from `seed` when given
+/// (`rinch_editor_collab::testing`): a seed then replays bit for bit.
+fn peers_seeded(html: &str, n: usize, seed: Option<u64>) -> Vec<Peer> {
     const NAMES: [&str; 3] = ["A", "B", "C"];
     let (d, s, h) = page(html);
     let out: Rc<RefCell<Vec<Vec<u8>>>> = Rc::default();
     let o = out.clone();
-    let snapshot = h
-        .start_collaboration_host(move |x| o.borrow_mut().push(x))
-        .unwrap();
+    let snapshot = match seed {
+        Some(seed) => {
+            let session = rinch_editor_collab::testing::session_with_client_id(
+                &h.state(),
+                client_id(seed, 0),
+            )
+            .unwrap();
+            h.start_collaboration_host_with(session, move |x| o.borrow_mut().push(x))
+        }
+        None => h
+            .start_collaboration_host(move |x| o.borrow_mut().push(x))
+            .unwrap(),
+    };
     let views = Rc::new(Views::default());
     h.register_node_view(spec(&views)).keep();
     let mut v = vec![Peer {
@@ -97,12 +143,22 @@ fn peers(html: &str, n: usize) -> Vec<Peer> {
         out,
         name: NAMES[0],
     }];
-    for name in NAMES.iter().take(n).skip(1) {
+    for (i, name) in NAMES.iter().enumerate().take(n).skip(1) {
         let (d, s, h) = page("<p></p>");
         let out: Rc<RefCell<Vec<Vec<u8>>>> = Rc::default();
         let o = out.clone();
-        h.start_collaboration_guest(&snapshot, move |x| o.borrow_mut().push(x))
-            .unwrap();
+        match seed {
+            Some(seed) => {
+                let session = rinch_editor_collab::testing::session_from_bytes_with_client_id(
+                    &snapshot,
+                    client_id(seed, i),
+                )
+                .unwrap();
+                h.start_collaboration_guest_with(session, move |x| o.borrow_mut().push(x))
+            }
+            None => h.start_collaboration_guest(&snapshot, move |x| o.borrow_mut().push(x)),
+        }
+        .unwrap();
         let views = Rc::new(Views::default());
         h.register_node_view(spec(&views)).keep();
         v.push(Peer {
@@ -317,7 +373,7 @@ fn quiesce(net: &mut Net, ps: &[Peer]) {
 
 fn run_seed(seed: u64, n: usize, steps: usize) {
     let html = r#"<p>aa</p><div data-pm-type="embed" data-eid="e0" data-k="x"></div><p>bb</p><div data-pm-type="embed" data-eid="e1"></div><p>cc</p><div data-pm-type="embed" data-eid="e2" data-k="x"></div><p>dd</p>"#;
-    let ps = peers(html, n);
+    let ps = peers_seeded(html, n, Some(seed));
     let mut net = Net::new(n);
     let mut rng = Rng(seed * 2654435761 + 1);
     let mut fresh = 0;
@@ -455,9 +511,27 @@ fn run_seed(seed: u64, n: usize, steps: usize) {
         remove_task_lists(q);
         if q.handle.collab_outbound_stall().is_some() {
             let (_, texts) = top(&q.handle.doc());
-            let at = texts.first().map_or(1, |(pos, _)| pos + 1);
-            q.handle.set_selection(Selection::cursor(Pos(at)));
-            q.handle.insert_text("q");
+            match texts.first() {
+                Some((pos, _)) => {
+                    q.handle.set_selection(Selection::cursor(Pos(pos + 1)));
+                    q.handle.insert_text("q");
+                }
+                // A document of embeds only has no line to type in: the cure is a
+                // paragraph appended (seed 1546, once the client ids were pinned).
+                None => {
+                    assert!(q.handle.update(|st| {
+                        let s = st.schema();
+                        let para = s
+                            .branch("paragraph", Fragment::from_node(s.text("q").ok()?))
+                            .ok()?;
+                        let mut tr = st.tr();
+                        let end = st.doc.content_size();
+                        tr.replace(end, end, Slice::new(Fragment::from_node(para), 0, 0))
+                            .ok()?;
+                        Some(tr)
+                    }));
+                }
+            }
         }
         assert!(
             q.handle.collab_outbound_stall().is_none(),

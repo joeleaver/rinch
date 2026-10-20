@@ -1633,13 +1633,40 @@ pub(crate) fn kept_atoms_known() -> bool {
 }
 
 /// Whether the proof held now says the change's before and after are one document
-/// edited ([`kept_pairs_scope`]). Then they are related even when they share no node
-/// (a one-paragraph document whose only content, a picture, an edit replaced: matched
-/// by value, an equal fresh copy would read as no change and keep the old char —
-/// review 2 of #1595, G3). A load keeps the value rule, or every load while
-/// collaborating would rewrite every picture as a new char.
+/// edited ([`kept_pairs_scope`]). A level that shares no node is still matched by
+/// value then (pairing it by index would move a peer's concurrent typing when a lone
+/// paragraph is split at its start — the round-3 review of #1595, F1), but an atom
+/// compares equal only to itself or a kept pair ([`equal_under_proof`]), so an
+/// equal fresh copy of a picture is a change, not "no change" (review 2 of #1595,
+/// G3). At the top level the model's atom pairing is kept for the changed run too.
+/// A load is not an edit: there an equal atom stays its old char, or every load
+/// while collaborating would rewrite every picture as a new char.
 pub(crate) fn proof_is_an_edit() -> bool {
     KEPT_ATOMS.with(|k| k.borrow().as_ref().is_some_and(|p| p.edit))
+}
+
+/// Equality by value for the value rule of a level that shares no node ([`Model`]),
+/// except that under an editor's proof ([`proof_is_an_edit`]) an atom (a leaf that
+/// is not text) is equal only to the same node or to the node a kept pair names it
+/// as ([`is_kept_pair`]): an equal fresh copy of a picture or an embed is a change
+/// there, so its CRDT char or block is written anew (review 2 of #1595, G3), while a
+/// paragraph split at its start still finds its text again by value (the round-3
+/// review of #1595, F1). Plain `==` for every other caller.
+pub(crate) fn equal_under_proof(b: &Node, a: &Node) -> bool {
+    if b.same_ref(a) {
+        return true;
+    }
+    if !proof_is_an_edit() || b.is_text() {
+        return b == a;
+    }
+    if b.is_leaf() {
+        return b == a && is_kept_pair(b, a);
+    }
+    b.type_name() == a.type_name()
+        && b.attrs() == a.attrs()
+        && b.marks() == a.marks()
+        && b.child_count() == a.child_count()
+        && (0..b.child_count()).all(|i| equal_under_proof(b.child(i), a.child(i)))
 }
 
 /// Whether the proof held now names `node`: the editor proved it is the atom that
@@ -1757,19 +1784,25 @@ pub(crate) fn reconcile_child_list(
     // always do: the model is the projection).
     let model = model.filter(|(b, a)| b.child_count() == cn && a.child_count() == tn);
     // A before and after that share no child carry no identity at this level (a load,
-    // a re-base); their children may still. An editor's transaction says it is one
-    // document edited (`proof_is_an_edit`), at every level: a list item whose only
-    // content was replaced by an equal copy is an edit, not "no change" (G3).
+    // a re-base, a lone item split at its start); their children may still. They are
+    // matched by value, with an editor's atoms compared by `equal_under_proof`: a list
+    // item whose only content was replaced by an equal copy is an edit, not "no
+    // change" (G3), and Enter at the start of a lone item keeps a peer's typing with
+    // its text (F1).
     let runs = model.and_then(|(b, a)| {
         let runs = identity_runs(b, a);
-        let related = runs != (0, 0)
-            || proof_is_an_edit()
-            || (0..tn).any(|j| (0..cn).any(|i| b.child(i).same_ref(a.child(j))));
+        let related =
+            runs != (0, 0) || (0..tn).any(|j| (0..cn).any(|i| b.child(i).same_ref(a.child(j))));
         related.then_some(runs)
     });
     let (prefix, suffix) = match runs {
         Some(runs) => runs,
-        None => common_runs(cn, tn, |i, j| cur[i] == target[j]),
+        // By value, but under an editor's proof an atom it does not keep is equal
+        // to nothing but itself (`equal_under_proof`).
+        None => common_runs(cn, tn, |i, j| {
+            cur[i] == target[j]
+                && model.is_none_or(|(b, a)| equal_under_proof(b.child(i), a.child(j)))
+        }),
     };
 
     let cur_mid = cn - prefix - suffix;

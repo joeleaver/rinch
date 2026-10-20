@@ -128,22 +128,32 @@ impl CollabDoc {
         // collaborating, a re-base on the CRDT's read-back): there the runs are taken by
         // the blocks' values, as a nested list does (`reconcile_child_list`).
         //
-        // A before and after that share no block but share an inline node (a one-block
-        // document whose block an edit rebuilt) are one document edited too: matched by
-        // value, a picture pasted over an equal one would read as no change at all and
-        // the old char would keep its identity (decision (f)).
+        // A caller that proves its atoms without naming their old nodes
+        // (`record_local_keeping`) and whose before and after share no block but share
+        // an inline node (a one-block document whose block an edit rebuilt) is taken as
+        // one document edited: matched by value, a picture pasted over an equal one
+        // would read as no change at all and the old char would keep its identity
+        // (decision (f)).
         //
-        // An editor that hands its proof for a transaction (`record_local_edit`) says
-        // so outright: then the two are related even when they share nothing at all
-        // (the picture that was a one-paragraph document's only content, replaced by
-        // an equal fresh copy — review 2 of #1595, G3).
+        // An editor's transaction (`record_local_edit`, `proof_is_an_edit`) keeps the
+        // value rule for a level that shares no block — Enter at the start of a lone
+        // paragraph shares only its text node, and pairing the two paragraphs by index
+        // would move a peer's concurrent typing to the new empty line (the round-3
+        // review of #1595, F1) — but under its proof an atom is equal only to itself or
+        // to a pair the proof keeps (`equal_under_proof`): the picture that was a
+        // one-paragraph document's only content, replaced by an equal fresh copy, is a
+        // change, not "no change" (review 2 of #1595, G3).
         let mut runs = identity_runs(before, after);
+        let edit = crate::projection::proof_is_an_edit();
         let shares_a_block = runs != (0, 0)
-            || crate::projection::proof_is_an_edit()
             || (0..an).any(|j| (0..bn).any(|i| before.child(i).same_ref(after.child(j))))
-            || shares_any_inline_node(before, after);
+            || (!edit
+                && crate::projection::kept_atoms_known()
+                && shares_any_inline_node(before, after));
         if !shares_a_block {
-            runs = common_runs(bn, an, |i, j| before.child(i) == after.child(j));
+            runs = common_runs(bn, an, |i, j| {
+                crate::projection::equal_under_proof(before.child(i), after.child(j))
+            });
         }
         let (prefix, suffix) = runs;
 
@@ -242,9 +252,11 @@ impl CollabDoc {
         // write a container's own content gets, addressed through the raw indices.
         let content = self.content.clone();
         // Whether `before` and `after` are one document edited (they share a block, or
-        // an inline node of the blocks the change touches) rather than two documents
-        // (a load, a re-base): only then does the model say which atom is which.
+        // an inline node of the blocks the change touches, or the editor says so —
+        // `record_local_edit`) rather than two documents (a load, a re-base): only then
+        // does the model say which atom is which.
         let related = shares_a_block
+            || edit
             || (prefix..prefix + pre_mid).any(|i| {
                 (prefix..prefix + post_mid)
                     .any(|j| shares_an_inline_node(before.child(i), after.child(j)))

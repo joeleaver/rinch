@@ -178,14 +178,31 @@ pub(crate) fn inline_store(uid: u64, doc: &Node, ids: &[Option<String>]) {
     let _ = INLINE.try_with(|c| c.borrow_mut().insert(uid, known));
 }
 
-/// A local change only set the attributes of these inline atoms (`old` → `new`):
-/// each `new` is the CRDT char `old` was.
-pub(crate) fn inline_carry(uid: u64, pairs: &[(Node, Node)]) {
+/// A local change only set the attributes of these inline atoms (`old` → `new`, `old`
+/// standing at `pos` of `doc`, the change's first document): each `new` is the CRDT
+/// char `old` was. When `doc` holds `old`'s `Rc` in more than one place (an in-editor
+/// copy), the entry carried is the copy at `pos`: the k-th entry for that `Rc`, `pos`
+/// being its k-th place — and nothing is carried unless every copy is known, since
+/// only then do the two lists line up.
+pub(crate) fn inline_carry(uid: u64, doc: &Node, pairs: &[(Node, Node, usize)]) {
     let _ = INLINE.try_with(|c| {
         if let Some(known) = c.borrow_mut().get_mut(&uid) {
-            for (old, new) in pairs {
-                if let Some(entry) = known.iter_mut().find(|(n, _)| n.same_ref(old)) {
-                    entry.0 = new.clone();
+            for (old, new, pos) in pairs {
+                let mut places = Vec::new();
+                doc.nodes_between(0, doc.content_size(), &mut |n: &Node, at, _| {
+                    if n.same_ref(old) {
+                        places.push(at);
+                    }
+                    true
+                });
+                let Some(k) = places.iter().position(|at| at == pos) else {
+                    continue;
+                };
+                let entries: Vec<usize> = (0..known.len())
+                    .filter(|&i| known[i].0.same_ref(old))
+                    .collect();
+                if entries.len() == places.len() {
+                    known[entries[k]].0 = new.clone();
                 }
             }
         }

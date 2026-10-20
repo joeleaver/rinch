@@ -179,13 +179,18 @@ impl CollabSession {
     }
 
     /// A local change the session recorded only set the attributes of these inline
-    /// atoms (`(before, after)` nodes, as an editor's `SetNodeAttrStep`s prove): each
+    /// atoms (`(before, after, pos)`: the nodes, as an editor's `SetNodeAttrStep`s
+    /// prove, and where `before` stood in the change's first document `doc`): each
     /// `after` is still the CRDT char its `before` was, so a peer's change of its
     /// attributes arriving next is told from another picture at its place, and a
     /// node view drawn for it stays mounted. Without it such a node is unknown
     /// until the next update arrives, and a peer's change of it remounts its view.
-    pub fn note_kept_inline_atoms(&self, pairs: &[(Node, Node)]) {
-        atom_cache::inline_carry(self.uid, pairs);
+    ///
+    /// The position says which copy changed when `doc` holds one `Rc` in two places
+    /// (an in-editor copy): the carry follows that copy, or carries nothing when not
+    /// every copy is known.
+    pub fn note_kept_inline_atoms(&self, doc: &Node, pairs: &[(Node, Node, usize)]) {
+        atom_cache::inline_carry(self.uid, doc, pairs);
     }
 
     /// Join an existing collaboration from a peer's saved CRDT bytes.
@@ -471,8 +476,12 @@ impl CollabSession {
     /// embed, renumber its neighbour, in one `update`) was paired with the deleted one's
     /// char or block, and a peer's concurrent change of the deleted one showed on it
     /// (review 2 of #1595, G1). And with it a proved pair keeps its char even where the
-    /// model holds one of its `Rc`s twice (an in-editor copy, G2). A load, or a caller
-    /// that cannot name the old nodes, uses [`Self::record_local_keeping`].
+    /// model holds one of its `Rc`s twice (an in-editor copy, G2) — while the edit took
+    /// no other copy away: a pair whose old `Rc` the change left with more than one copy
+    /// missing names no one place and is dropped ([`one_place_pairs`]; the editor also
+    /// checks every other copy stayed in place, which needs the transaction's mapping).
+    /// A load, or a caller that cannot name the old nodes, uses
+    /// [`Self::record_local_keeping`].
     pub fn record_local_edit(
         &mut self,
         schema: &Schema,
@@ -480,7 +489,8 @@ impl CollabSession {
         after: &Node,
         kept: &[(Node, Node)],
     ) -> Result<()> {
-        let _kept = crate::projection::kept_pairs_scope(kept);
+        let kept = one_place_pairs(before, after, kept);
+        let _kept = crate::projection::kept_pairs_scope(&kept);
         self.record_local_inner(schema, before, after)
     }
 
@@ -1125,4 +1135,32 @@ fn refresh_atoms(node: &Node, which: &[usize], next: &mut usize) -> Node {
     } else {
         node.clone()
     }
+}
+
+/// The pairs of `kept` (`(old, new)`, an editor's proof for `before` → `after`) that
+/// name one place: `old` stands once in `before`, or one copy fewer of it is left in
+/// `after` (the one that became `new`). After an in-editor copy one `Rc` stands in two
+/// places, and when the edit also took another copy away, a pair naming only the `Rc`
+/// could be matched with that copy's CRDT char or block, and a peer's concurrent change
+/// of it would show on `new` (the round-3 review of #1595, F2). Such a pair proves
+/// nothing: `new` is written as a new atom, its peer's change lost, never misattributed.
+/// The editor checks more than the count — that every other copy is still in place
+/// (`EditorHandle`'s own filter, which has the transaction's mapping) — so this is the
+/// floor for a caller driving the session directly.
+fn one_place_pairs(before: &Node, after: &Node, kept: &[(Node, Node)]) -> Vec<(Node, Node)> {
+    let count = |doc: &Node, old: &Node| {
+        let mut n = 0usize;
+        doc.nodes_between(0, doc.content_size(), &mut |m: &Node, _, _| {
+            n += usize::from(m.same_ref(old));
+            true
+        });
+        n
+    };
+    kept.iter()
+        .filter(|(old, _)| {
+            let was = count(before, old);
+            was <= 1 || count(after, old) + 1 == was
+        })
+        .cloned()
+        .collect()
 }

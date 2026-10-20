@@ -518,6 +518,9 @@ impl Slot {
 pub(crate) struct Kept {
     pub(crate) pos: usize,
     pub(crate) old: Node,
+    /// Where `old` stood in the transaction's first document: one `Rc` can stand in
+    /// two places (an in-editor copy), and only this says which of them changed.
+    pub(crate) old_pos: usize,
 }
 
 pub(crate) enum Work {

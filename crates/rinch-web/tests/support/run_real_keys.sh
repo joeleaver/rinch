@@ -8,10 +8,15 @@ crate="$(cd "$here/../.." && pwd)"
 port="${RINCH_REAL_KEYS_PORT:-9555}"
 : "${CHROMEDRIVER:?set CHROMEDRIVER to a chromedriver matching your Chrome}"
 cd "$crate"
+# Build first with the ordinary output, so a compile error reaches the log as the
+# compiler wrote it (the JSON run below would bury it in stdout). The JSON run then
+# compiles nothing and only names the test binary.
+RINCH_REAL_KEYS=1 cargo test -p rinch-web --target wasm32-unknown-unknown \
+  --test editor_node_view_real_tab --no-run
 wasm="$(RINCH_REAL_KEYS=1 cargo test -p rinch-web --target wasm32-unknown-unknown \
-  --test editor_node_view_real_tab --no-run --message-format=json 2>/dev/null \
+  --test editor_node_view_real_tab --no-run --message-format=json \
   | grep -o '"executable":"[^"]*editor_node_view_real_tab[^"]*\.wasm"' | head -1 | cut -d'"' -f4)"
-[ -n "$wasm" ] || { echo "build failed"; exit 1; }
+[ -n "$wasm" ] || { echo "the build named no editor_node_view_real_tab wasm"; exit 1; }
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"; [ -n "${helper:-}" ] && kill "$helper" 2>/dev/null || true' EXIT
 cat > "$tmp/webdriver.json" <<JSON

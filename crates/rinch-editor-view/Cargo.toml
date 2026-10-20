@@ -26,3 +26,9 @@ rinch-core = { workspace = true, features = ["test-util"] }
 # this only needs to speak the same lib0 v1 wire encoding as rinch-editor-collab's
 # pin — no types are shared.
 yrs = "0.27"
+# The collab adapter's test-only client-id seam (`rinch_editor_collab::testing`), so a
+# multi-peer fuzz builds its sessions with pinned yrs client ids and a seed replays
+# (`EditorHandle::start_collaboration_host_with`). A dev-dependency only: no build of
+# the view that an app links resolves it, and the lib's own collab dependency stays
+# behind the `collaboration` feature.
+rinch-editor-collab = { workspace = true, features = ["test-util"] }

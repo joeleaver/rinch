@@ -44,7 +44,9 @@
 //!   node) is the atom at its place only when the editor **proves** it: the change only
 //!   set its attributes (a `SetNodeAttrStep`, which the editor hands over through
 //!   `CollabSession::record_local_edit` as the pair of the node before and after it,
-//!   so the new node matches only its own old one — review 2 of #1595, G1), and both
+//!   so the new node matches only its own old one — review 2 of #1595, G1; when the
+//!   document holds the old `Rc` in two places, only while the change left every other
+//!   copy where it was — round-3 review of #1595, F2), and both
 //!   have one type and one `src`. Anything else is a new char with a new
 //!   identity — a `src` change, and a picture pasted over a selected one even with the
 //!   same `src` (decision (f), Joe 2026-10-19; before it, "same type and `src`" alone
