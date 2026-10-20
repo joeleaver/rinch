@@ -40,6 +40,7 @@ rinch-editor-collab = { path = "crates/rinch-editor-collab" }
 rinch-editor-view = { path = "crates/rinch-editor-view" }
 rinch-debug = { path = "crates/rinch-debug" }
 rinch-editable = { path = "crates/rinch-editable" }
+rinch-words = { path = "crates/rinch-words" }
 rinch-platform = { path = "crates/rinch-platform" }
 rinch-visual-test = { path = "crates/rinch-visual-test" }
 rinch-web = { path = "crates/rinch-web" }

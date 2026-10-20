@@ -21,6 +21,8 @@ tracing.workspace = true
 # Desktop-only rendering deps (optional, enabled by `desktop` feature)
 rinch-dom = { workspace = true, optional = true }
 rinch-editable = { workspace = true, optional = true }
+# The word segmentation text fields and the editor share (#1619).
+rinch-words = { workspace = true, optional = true }
 parley = { workspace = true, optional = true }
 peniko = { version = "0.6", optional = true }
 vello = { version = "0.7", optional = true }
@@ -186,6 +188,8 @@ desktop = [
     # dictionary (#939). parley already links that data here (its
     # `complex-scripts` feature), so it costs this build nothing.
     "rinch-editor-core/word-dictionary",
+    # The same dictionary for the text fields' word motion (#1619).
+    "dep:rinch-words", "rinch-editable/word-dictionary",
 ]
 android = [
     "dep:rinch-dom", "dep:rinch-editable", "dep:parley",
@@ -201,6 +205,9 @@ android = [
     "dep:android-activity", "dep:ndk",
     "dep:log", "dep:android_logger",
     "dep:rinch-android",
+    # Text fields split words as the editor does (#1619); parley's
+    # `complex-scripts` links the same ICU data, so the dictionary is free here.
+    "dep:rinch-words", "rinch-editable/word-dictionary",
     # Paste is not optional on a phone. On Android `rinch-clipboard` is only
     # the JNI bridge to `ClipboardManager` (no arboard), so this costs
     # nothing — and without it `handle_paste` reads an empty string, a
@@ -231,7 +238,7 @@ android-gpu = [
 # rinch-dom comes in with default-features off (workspace root), so tiny-skia/swash
 # (`software-renderer`) stay out — the embed path is Vello-only.
 embed = [
-    "dep:rinch-dom", "dep:rinch-editable", "dep:parley",
+    "dep:rinch-dom", "dep:rinch-editable", "dep:rinch-words", "dep:parley",
     "dep:peniko",
     "rinch-platform/renderer",
     "dep:vello", "dep:wgpu",
