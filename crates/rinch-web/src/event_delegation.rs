@@ -1105,6 +1105,7 @@ fn activate_web_drag() {
     // no ghost, so doing both here is fine.)
     let hit = element_from_point(cursor.0, cursor.1);
     process_drag_target(&source, hit, cursor.0, cursor.1);
+    ensure_drag_auto_scroll();
 }
 
 /// Advance an in-progress element drag on pointer move. Only the pointer that
@@ -1181,6 +1182,7 @@ fn handle_web_pointer_move(event: &web_sys::PointerEvent) -> bool {
         return false;
     };
     process_drag_target(&source, hit, x, y);
+    ensure_drag_auto_scroll();
 
     // While a captured touch/pen drag is live, block the browser from scrolling.
     captured
@@ -1211,6 +1213,7 @@ fn cancel_web_drag() -> bool {
 /// `data-ondragend` on the source. Shared by the pointerup (drop) and
 /// cancel/Escape (no drop) paths so the teardown stays in one place.
 fn finish_active_drag(state: &WebDragState, x: f32, y: f32, do_drop: bool) {
+    stop_drag_auto_scroll();
     if let Some(t) = &state.over_target {
         if do_drop {
             dispatch_plain_attr(t, "data-ondrop");
@@ -1218,6 +1221,258 @@ fn finish_active_drag(state: &WebDragState, x: f32, y: f32, do_drop: bool) {
         dispatch_plain_attr(t, "data-ondragleave");
     }
     dispatch_drag_cursor_only(&state.source, "data-ondragend", x, y);
+}
+
+// ── Drag auto-scroll ──────────────────────────────────────────────────────────
+//
+// While an element drag is active and its pointer rests in the band along the
+// top or bottom edge of a scroll container under it, that container scrolls a
+// frame at a time from `requestAnimationFrame`, at the speed
+// `events::drag_auto_scroll_velocity` gives (the curve desktop's `AboutToWait`
+// tick uses), and the drag target under the still pointer is resolved again
+// after each frame that scrolled, so the row arriving under it hears
+// `data-ondragenter`/`data-ondragover`. The loop stops itself when the pointer
+// is in no band (a pointer move starts it again) and when the drag ends. The
+// browser's own `scroll` event carries `data-onscroll`.
+
+/// The frame loop of a drag auto-scroll in flight.
+struct AutoScrollLoop {
+    /// The pending `requestAnimationFrame` handle.
+    handle: i32,
+    /// The timestamp of the last frame that scrolled, in ms; `None` before the
+    /// first.
+    last: Option<f64>,
+    /// What a frame's delta left below a whole pixel: `Element.scrollTop` is
+    /// written in whole pixels through web-sys, and a slow band must still add
+    /// up.
+    remainder: f64,
+    /// A container a frame's write did not move, and the direction it was
+    /// written in: it is at its end that way, whatever its sizes say (#1592:
+    /// `scrollHeight` and `clientHeight` are rounded, so at a fractional
+    /// device scale a list can stop short of `scrollHeight - clientHeight` by
+    /// more than any fixed slack). Later frames skip it in that direction, so
+    /// the loop moves on up the chain or stops. Cleared when the loop stops.
+    stuck: Option<(web_sys::Element, f32)>,
+}
+
+thread_local! {
+    static AUTO_SCROLL: std::cell::RefCell<Option<AutoScrollLoop>> =
+        const { std::cell::RefCell::new(None) };
+    /// The one frame callback every auto-scroll frame is scheduled with.
+    static AUTO_SCROLL_FRAME: Closure<dyn FnMut(f64)> =
+        Closure::wrap(Box::new(drag_auto_scroll_frame) as Box<dyn FnMut(f64)>);
+}
+
+/// Schedule `drag_auto_scroll_frame` with `requestAnimationFrame`.
+fn request_auto_scroll_frame() -> Option<i32> {
+    let win = web_sys::window()?;
+    AUTO_SCROLL_FRAME
+        .with(|cb| win.request_animation_frame(cb.as_ref().unchecked_ref()))
+        .ok()
+}
+
+/// Start the auto-scroll frame loop unless it is running. Called after every
+/// pointer move of an active drag; cheap when the loop is already scheduled.
+fn ensure_drag_auto_scroll() {
+    // A move while the loop runs lets a `stuck` container be tried again: its
+    // content may have grown since (a list loading more rows).
+    let running = AUTO_SCROLL.with(|a| a.borrow_mut().as_mut().map(|r| r.stuck = None).is_some());
+    if running {
+        return;
+    }
+    let Some(handle) = request_auto_scroll_frame() else {
+        return;
+    };
+    AUTO_SCROLL.with(|a| {
+        *a.borrow_mut() = Some(AutoScrollLoop {
+            handle,
+            last: None,
+            remainder: 0.0,
+            stuck: None,
+        })
+    });
+}
+
+/// Start the auto-scroll loop if a drag is active (the page scroll lock was
+/// released: a list it had locked out may be under a still pointer).
+pub(crate) fn restart_drag_auto_scroll_if_dragging() {
+    if WEB_DRAG.with(|d| d.borrow().as_ref().is_some_and(|s| s.active)) {
+        ensure_drag_auto_scroll();
+    }
+}
+
+/// Stop the auto-scroll frame loop. Idempotent.
+fn stop_drag_auto_scroll() {
+    if let Some(running) = AUTO_SCROLL.with(|a| a.borrow_mut().take())
+        && let Some(win) = web_sys::window()
+    {
+        let _ = win.cancel_animation_frame(running.handle);
+    }
+}
+
+/// Whether the drag auto-scroll frame loop is scheduled (tests).
+#[doc(hidden)]
+pub fn __drag_auto_scroll_running() -> bool {
+    AUTO_SCROLL.with(|a| a.borrow().is_some())
+}
+
+/// The element a drag's pointer at height `y` over `hit` auto-scrolls, and how
+/// fast: the nearest ancestor of `hit` (or `hit`) with a computed `overflow-y`
+/// of `auto`/`scroll` and content taller than its box, or the document's
+/// scrolling element, that has the pointer in one of its bands and can still
+/// move toward that band's edge, and is not locked out by a `lock_scroll`
+/// overlay ([`crate::web_document::scroll_locked_out`]). Bands are measured on
+/// the part of the box inside the viewport; the scrolling element's on the
+/// viewport. Clipping by an outer scroller is not taken into account.
+///
+/// `stuck` is a container a frame found at its end in one direction; it is
+/// not picked for that direction.
+fn drag_auto_scroll_container(
+    hit: &web_sys::Element,
+    y: f32,
+    stuck: Option<&(web_sys::Element, f32)>,
+) -> Option<(web_sys::Element, f32)> {
+    let win = web_sys::window()?;
+    let doc = win.document()?;
+    let viewport_h = win.inner_height().ok()?.as_f64()? as f32;
+    let scrolling = doc.scrolling_element();
+    // `scrollTop` read unrounded (web-sys's `scroll_top` is an `i32`) against
+    // a range of rounded sizes, with a pixel of slack: at a fractional device
+    // scale the browser keeps the offset on the device grid, and a container
+    // whose last fraction is out of reach must count as at its end, or the
+    // loop spins there and the page never takes over. The slack is not enough
+    // on its own (both sizes are rounded); a write that moves nothing marks
+    // the container `stuck`, which is what ends the loop in every case.
+    let can_move = |el: &web_sys::Element, velocity: f32| {
+        if stuck.is_some_and(|(s, v)| same_element(s, el) && same_direction(*v, velocity)) {
+            return false;
+        }
+        let top = scroll_top_f64(el);
+        let max = f64::from(el.scroll_height() - el.client_height());
+        (velocity < 0.0 && top > 1.0) || (velocity > 0.0 && top < max - 1.0)
+    };
+    let mut node = Some(hit.clone());
+    while let Some(el) = node {
+        let is_scrolling = scrolling.as_ref().is_some_and(|s| same_element(s, &el));
+        let scrolls = is_scrolling
+            || (el.scroll_height() > el.client_height()
+                && win
+                    .get_computed_style(&el)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|style| {
+                        matches!(
+                            style
+                                .get_property_value("overflow-y")
+                                .unwrap_or_default()
+                                .as_str(),
+                            "auto" | "scroll"
+                        )
+                    }));
+        // A page under a `lock_scroll` overlay, and any container outside the
+        // overlay, is not scrolled: desktop's rule (`scroll_locked_out`). A
+        // `scrollTop` write ignores `<html>`'s `overflow: hidden`.
+        if scrolls && !crate::web_document::scroll_locked_out(&el) {
+            let (top, bottom) = if is_scrolling {
+                (0.0, viewport_h)
+            } else {
+                let rect = el.get_bounding_client_rect();
+                (
+                    (rect.top() as f32).max(0.0),
+                    (rect.bottom() as f32).min(viewport_h),
+                )
+            };
+            let velocity = events::drag_auto_scroll_velocity(y, top, bottom);
+            if velocity != 0.0 && can_move(&el, velocity) {
+                return Some((el, velocity));
+            }
+        }
+        if is_scrolling {
+            return None;
+        }
+        node = el.parent_element();
+    }
+    // `hit` was outside the scrolling element's subtree (it never is in a
+    // document; kept so a detached hit still ends here).
+    let el = scrolling?;
+    if crate::web_document::scroll_locked_out(&el) {
+        return None;
+    }
+    let velocity = events::drag_auto_scroll_velocity(y, 0.0, viewport_h);
+    (velocity != 0.0 && can_move(&el, velocity)).then_some((el, velocity))
+}
+
+/// `Element.scrollTop` unrounded (web-sys's `scroll_top` is an `i32`).
+fn scroll_top_f64(el: &web_sys::Element) -> f64 {
+    js_sys::Reflect::get(el, &"scrollTop".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or_else(|| f64::from(el.scroll_top()))
+}
+
+/// Whether two velocities point the same way.
+fn same_direction(a: f32, b: f32) -> bool {
+    (a < 0.0) == (b < 0.0)
+}
+
+/// One auto-scroll frame: scroll the container under the drag's pointer by
+/// its band's speed times the time since the last frame, resolve the drag
+/// target again if that moved anything, and schedule the next frame — or stop
+/// when there is no active drag or its pointer is in no band. No `WEB_DRAG` or
+/// `AUTO_SCROLL` borrow is held across a DOM call or a handler.
+fn drag_auto_scroll_frame(timestamp: f64) {
+    let drag = WEB_DRAG.with(|d| {
+        d.borrow()
+            .as_ref()
+            .filter(|s| s.active)
+            .map(|s| (s.source.clone(), s.cursor))
+    });
+    let Some((source, (x, y))) = drag else {
+        AUTO_SCROLL.with(|a| *a.borrow_mut() = None);
+        return;
+    };
+    let Some((last, remainder, stuck)) = AUTO_SCROLL.with(|a| {
+        a.borrow()
+            .as_ref()
+            .map(|r| (r.last, r.remainder, r.stuck.clone()))
+    }) else {
+        return; // stopped since this frame was scheduled
+    };
+    let pick = element_from_point(x, y)
+        .and_then(|hit| drag_auto_scroll_container(&hit, y, stuck.as_ref()));
+    let Some((container, velocity)) = pick else {
+        AUTO_SCROLL.with(|a| *a.borrow_mut() = None);
+        return;
+    };
+    let elapsed = last.map(|then| ((timestamp - then) / 1000.0) as f32);
+    let precise = remainder + f64::from(velocity * events::drag_auto_scroll_step(elapsed));
+    let whole = precise.trunc();
+    let before = scroll_top_f64(&container);
+    if whole != 0.0 {
+        container.set_scroll_top(container.scroll_top() + whole as i32);
+    }
+    let moved = scroll_top_f64(&container) != before;
+    // A write that moved nothing: the container is at its end this way.
+    let stuck = if whole != 0.0 && !moved {
+        Some((container.clone(), velocity))
+    } else {
+        stuck
+    };
+    let Some(handle) = request_auto_scroll_frame() else {
+        AUTO_SCROLL.with(|a| *a.borrow_mut() = None);
+        return;
+    };
+    AUTO_SCROLL.with(|a| {
+        *a.borrow_mut() = Some(AutoScrollLoop {
+            handle,
+            last: Some(timestamp),
+            remainder: precise - whole,
+            stuck,
+        })
+    });
+    if moved {
+        process_drag_target(&source, element_from_point(x, y), x, y);
+    }
 }
 
 /// Convert a UTF-16 code unit offset within a string to a UTF-8 byte offset.
