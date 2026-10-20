@@ -2,6 +2,7 @@
 //! `EditorState` onto rinch-dom (design §6).
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::{Rc, Weak};
 
 use crate::handle::ScrollAlign;
@@ -456,13 +457,16 @@ impl Cx<'_> {
     /// remote mapping carries it there untouched. Without a remote mapping, a local
     /// edit keeps the first match by `same_ref`, which is the pairing the collaboration
     /// projection makes for the same edit (its identity runs).
-    fn same_place(&self, ambiguous: bool, old_pos: usize, new_pos: usize) -> bool {
+    fn same_place(&self, ambiguous: bool, old_pos: usize, old_end: usize, new_pos: usize) -> bool {
         if !ambiguous {
             return true;
         }
+        // REVIEW4: both ends, and the end checked for deletion (an insertion right
+        // before the node sets `deleted_after` at its start).
         self.mapping.is_none_or(|m| {
-            let r = m.map_result(old_pos, 1);
-            !r.deleted_after() && r.pos == new_pos
+            let s = m.map_result(old_pos, 1);
+            let e = m.map_result(old_end, -1);
+            s.pos == new_pos && e.pos == new_pos + (old_end - old_pos) && !e.deleted_before()
         })
     }
     /// Whether a registered spec draws `node`'s type: its descriptor needs a slot.
@@ -484,18 +488,34 @@ impl Cx<'_> {
     }
 }
 
-/// Whether `node` stands more than once among `old` (a parent's descriptors) or
-/// among `new`'s children: one `Rc` in two places (an in-editor copy pasted beside
-/// its original), which `same_ref` cannot tell apart.
-fn stands_twice(node: &Node, old: &[ViewDesc], new: &Node) -> bool {
-    old.iter()
-        .filter(|o| o.node.same_ref(node))
-        .nth(1)
-        .is_some()
-        || (0..new.child_count())
-            .filter(|&j| new.child(j).same_ref(node))
-            .nth(1)
-            .is_some()
+/// A node's identity as a number: the address of its shared allocation (its attrs
+/// live in it), equal for two handles exactly when they are `same_ref`, while both
+/// are alive.
+fn node_key(node: &Node) -> usize {
+    std::ptr::from_ref(node.attrs()) as usize
+}
+
+/// The nodes ([`node_key`]) that stand more than once among `old` (a parent's
+/// descriptors) or among `new`'s children: one `Rc` in two places (an in-editor
+/// copy pasted beside its original), which `same_ref` cannot tell apart. One pass
+/// over each list per child-list diff, so a remote change costs O(children), not
+/// O(views × children) (the round-4 review of #1595, G2).
+fn twice_keys(old: &[ViewDesc], new: &Node) -> HashSet<usize> {
+    let mut twice = HashSet::new();
+    let mut seen = HashSet::new();
+    for n in old.iter().map(|o| &o.node) {
+        if !seen.insert(node_key(n)) {
+            twice.insert(node_key(n));
+        }
+    }
+    seen.clear();
+    for j in 0..new.child_count() {
+        let k = node_key(new.child(j));
+        if !seen.insert(k) {
+            twice.insert(k);
+        }
+    }
+    twice
 }
 
 /// Take `desc`'s host out of the document for good, replacing it with
@@ -921,6 +941,12 @@ impl ViewDesc {
         for i in 0..new_count {
             new_at.push(new_at[i] + new.child(i).node_size());
         }
+        // Only a peer's change asks which copy is which, and only of a view's node.
+        let twice = if cx.mapping.is_some() && self.children.iter().any(|c| c.has_view) {
+            twice_keys(&self.children, new)
+        } else {
+            HashSet::new()
+        };
         // A run matched by `same_ref` stops at a view's node that the model cannot
         // tell from another copy of it unless the remote mapping says it is this one
         // (`Cx::same_place`).
@@ -930,8 +956,9 @@ impl ViewDesc {
                 && (!old.has_view
                     || cx.mapping.is_none()
                     || cx.same_place(
-                        stands_twice(&old.node, &this.children, new),
+                        twice.contains(&node_key(&old.node)),
                         old_at[i],
+                        old_at[i + 1],
                         new_at[j],
                     ))
         };
@@ -946,7 +973,7 @@ impl ViewDesc {
         }
         // The changed stretch: `old[start..old_end]` becomes `new[start..new_end]`.
         if self.children[start..old_end].iter().any(|c| c.has_view) {
-            self.diff_stretch_keyed(new, cx, start, old_end, new_end, &old_at, &new_at);
+            self.diff_stretch_keyed(new, cx, start, old_end, new_end, &old_at, &new_at, &twice);
             return;
         }
         let common = (old_end - start).min(new_end - start);
@@ -1021,13 +1048,15 @@ impl ViewDesc {
         new_end: usize,
         old_at: &[usize],
         new_at: &[usize],
+        twice_set: &HashSet<usize>,
     ) {
-        // Whether `node` stands more than once among the old or the new children
-        // (read before the drain): then `same_ref` alone does not say which copy is
-        // which, and a view's descriptor goes where the remote mapping carries it.
+        // Whether a view's node stands more than once among the old or the new
+        // children (`twice_keys`, read before the drain): then `same_ref` alone does
+        // not say which copy is which, and its descriptor goes where the remote
+        // mapping carries it.
         let twice: Vec<bool> = self.children[start..old_end]
             .iter()
-            .map(|o| o.has_view && stands_twice(&o.node, &self.children, new))
+            .map(|o| o.has_view && twice_set.contains(&node_key(&o.node)))
             .collect();
         let mut old: Vec<Option<ViewDesc>> =
             self.children.drain(start..old_end).map(Some).collect();
@@ -1050,7 +1079,8 @@ impl ViewDesc {
             let at = new_at[j];
             let same = (0..old.len()).find(|&k| {
                 old[k].as_ref().is_some_and(|o| {
-                    o.node.same_ref(child) && cx.same_place(twice[k], old_at[start + k], at)
+                    o.node.same_ref(child)
+                        && cx.same_place(twice[k], old_at[start + k], old_at[start + k + 1], at)
                 })
             });
             if let Some(k) = same {
