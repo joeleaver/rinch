@@ -351,3 +351,96 @@ fn a_for_and_an_if_reconcile_stay_between_the_generated_boxes() {
     );
     assert_eq!(flat(&d, pid), "PREFIX one two three shown SUFFIX");
 }
+
+// ── block, flex and grid containers ─────────────────────────────────────────
+//
+// In those the generated boxes are real Taffy children, not inline IFC
+// members, so where an insertion attaches the child in the parent's Taffy
+// list decides the layout (the inline fixtures above cannot see it). Each
+// fixture is a differential (from the review of #1633): the same tree filled
+// AFTER its parent was attached against filled BEFORE (generated boxes made
+// last, in their right place), element box by element box.
+
+const BOX_CSS: &str = "body { font-size: 16px; line-height: 20px; margin: 0 } \
+  .c { width: 600px; margin: 0 } \
+  .flex { display: flex } .grid { display: grid; grid-template-columns: repeat(6, 50px) } \
+  .item { width: 40px; height: 10px; display: block } \
+  .a::after { content: \"Z\"; display: block; width: 30px; height: 10px } \
+  .b::before { content: \"Y\"; display: block; width: 20px; height: 10px }";
+
+type Boxes = Vec<(bool, (f32, f32, f32, f32))>;
+
+/// Every element box under `p` in DOM order (generated ones included).
+fn boxes(d: &RinchDocument, p: usize, out: &mut Boxes) {
+    for &c in &d.tree.get(p).unwrap().children {
+        let n = d.tree.get(c).unwrap();
+        if n.is_element() {
+            let l = &n.layout;
+            out.push((n.is_pseudo_element, (l.x, l.y, l.width, l.height)));
+        }
+        boxes(d, c, out);
+    }
+}
+
+fn build_boxes(classes: &str, fill_first: bool) -> Boxes {
+    let mut d = RinchDocument::new();
+    d.load_css(BOX_CSS);
+    let body = d.body();
+    let p = d.create_element("div");
+    d.set_attribute(p, "class", classes);
+    let kids: Vec<NodeId> = (0..4)
+        .map(|i| {
+            let e = d.create_element("div");
+            d.set_attribute(e, "class", "item");
+            let t = d.create_text(&format!("w{i} "));
+            d.append_child(e, t);
+            e
+        })
+        .collect();
+    if fill_first {
+        for &k in &kids {
+            d.append_child(p, k);
+        }
+        d.append_child(body, p);
+        d.resolve_layout(800.0, 400.0);
+    } else {
+        d.append_child(body, p);
+        d.resolve_layout(800.0, 400.0);
+        for &k in &kids {
+            d.append_child(p, k);
+        }
+        d.resolve_layout(801.0, 400.0);
+        d.resolve_layout(800.0, 400.0);
+    }
+    let mut out = Vec::new();
+    boxes(&d, p.0, &mut out);
+    out
+}
+
+fn same_either_way(classes: &str) {
+    assert_eq!(
+        build_boxes(classes, true),
+        build_boxes(classes, false),
+        "{classes}: filled before attach vs after"
+    );
+}
+
+#[test]
+fn flex_after() {
+    same_either_way("c flex a")
+}
+
+#[test]
+fn flex_both() {
+    same_either_way("c flex a b")
+}
+
+#[test]
+fn grid_both() {
+    same_either_way("c grid a b")
+}
+
+#[test]
+fn block_both() {
+    same_either_way("c a b")
+}

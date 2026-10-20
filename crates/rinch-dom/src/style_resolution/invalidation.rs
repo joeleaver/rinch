@@ -683,10 +683,6 @@ impl RinchDocument {
         }
     }
 
-    /// Take `child` out of `parent`'s child list and answer the index it
-    /// held (the list's length if it was not there), for
-    /// [`Self::note_child_list_changed`]. One scan, where finding the index
-    /// and then `retain`ing the rest was two.
     /// Where an insertion verb may put `child` in `parent`'s child list, given
     /// the index `pos` it asked for (counted after `child` has left the list):
     /// never before a generated box at the start (a `::before`, a list marker)
@@ -715,6 +711,10 @@ impl RinchDocument {
         pos.clamp(lo, hi.max(lo))
     }
 
+    /// Take `child` out of `parent`'s child list and answer the index it
+    /// held (the list's length if it was not there), for
+    /// [`Self::note_child_list_changed`]. One scan, where finding the index
+    /// and then `retain`ing the rest was two.
     pub(crate) fn remove_from_children(&mut self, parent: usize, child: usize) -> usize {
         let children = &mut self.tree.nodes[parent].children;
         match children.iter().position(|&c| c == child) {
