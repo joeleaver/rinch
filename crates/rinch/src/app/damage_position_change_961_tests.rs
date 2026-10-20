@@ -106,7 +106,11 @@ fn check(app: &mut RinchApp, label: &str, old: (i32, i32, i32, i32), incremental
     let full = full_frame(app);
     assert_eq!(ink_in(&full, old), 0, "{label}: the old place is empty now");
     assert_eq!(ink_in(&inc, old), 0, "{label}: ghost at the old place");
-    assert_eq!(diff_in(&inc, &full, WHOLE), 0, "{label}: incremental != full");
+    assert_eq!(
+        diff_in(&inc, &full, WHOLE),
+        0,
+        "{label}: incremental != full"
+    );
 }
 
 /// static → fixed: the old in-flow rect inside a clipper is cleared.
