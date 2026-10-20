@@ -539,6 +539,14 @@ With `UseTreeOptions { multiple: true, .. }` and `select_on_click: true`:
   Shift run starts there. An anchor the data no longer has is replaced by
   the cursor row (from the keyboard) or the clicked row (Shift-click); one
   hidden inside a collapsed row counts as its shown ancestor.
+  `TreeController::set_anchor(Some(value))` sets it from code, and
+  `set_anchor(None)` clears it; `anchor()` reads it. An app whose selection
+  follows the cursor (it calls `set_selection([row])` from `oncursor`, the
+  file-manager model) sets the anchor there too, or the next Shift run
+  starts at the row last clicked. Setting it changes nothing else: no
+  selection change and no callback. A value no row has behaves as a
+  deleted anchor. The anchor lives on the `UseTreeReturn`, so it is kept
+  when the `Tree` re-renders.
 - The keys are the ones listed above; Shift+arrows move the cursor (and tell
   `oncursor`) as the plain arrows do.
 - **Disabled rows** are never selected: a run and Ctrl+A leave them out.

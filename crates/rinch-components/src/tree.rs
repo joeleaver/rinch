@@ -174,12 +174,14 @@ impl UseTreeReturn {
         let selected = Signal::new(options.initial_selected);
         let cursor = Signal::new(None);
         let focus_requests = Signal::new(0u64);
+        let anchor = Signal::new(None);
 
         let controller = TreeController {
             expanded,
             selected,
             cursor,
             focus_requests,
+            anchor,
             multiple: options.multiple,
         };
 
@@ -199,6 +201,8 @@ pub struct TreeController {
     selected: Signal<HashSet<String>>,
     cursor: Signal<Option<String>>,
     focus_requests: Signal<u64>,
+    /// Where a run of selected rows starts ([`set_anchor`](Self::set_anchor)).
+    anchor: Signal<Option<String>>,
     multiple: bool,
 }
 
@@ -219,6 +223,30 @@ impl TreeController {
     /// has none ([`Tree::keyboard`]).
     pub fn focus(&self) {
         self.focus_requests.update(|n| *n += 1);
+    }
+
+    /// Make `value` the row the next Shift run starts at (Shift-click,
+    /// Shift with a move key, Shift+Space in a `multiple` tree), or clear
+    /// it with `None`. The tree moves it itself to the row last clicked,
+    /// Ctrl-clicked, toggled with Space or entered with Enter, but not to a
+    /// row the cursor merely moved to; an app whose selection follows the
+    /// cursor (it calls [`set_selection`](Self::set_selection) from
+    /// [`Tree::oncursor`]) sets it there too, so the next run starts at the
+    /// row it selected.
+    ///
+    /// Nothing else changes: the selection, the cursor and the callbacks
+    /// ([`Tree::onselectionchange`], [`Tree::onselect`]) are untouched. A
+    /// value no row has is an anchor whose row was deleted, and `None` is no
+    /// anchor: either way the next run starts at the row it is made from
+    /// (the cursor row for a key, the clicked row for a click), which then
+    /// becomes the anchor.
+    pub fn set_anchor(&self, value: Option<&str>) {
+        self.anchor.set(value.map(str::to_string));
+    }
+
+    /// The row the next Shift run starts at ([`set_anchor`](Self::set_anchor)).
+    pub fn anchor(&self) -> Option<String> {
+        self.anchor.get()
     }
 
     /// Expand a node by its value.
@@ -830,7 +858,8 @@ pub struct Tree {
     /// row, and `onselect` is told). In a `multiple` tree a plain arrow
     /// selects nothing; Space toggles the cursor row; Shift with a move key
     /// (and Shift+Space) selects the run from the anchor (the row last
-    /// clicked, Ctrl-clicked or toggled) to the cursor row, replacing the
+    /// clicked, Ctrl-clicked or toggled, or the one the app named with
+    /// [`TreeController::set_anchor`]) to the cursor row, replacing the
     /// selection; Ctrl+A selects the cursor row's siblings; Enter adds the
     /// cursor row as a click would, keeping the rest. All of these only with
     /// `select_on_click`, and none selects a disabled row (see
@@ -854,7 +883,8 @@ pub struct Tree {
     /// Ctrl- (Cmd-) click adds or removes a row; Shift-click, Shift with a
     /// move key and Shift+Space select the run of drawn rows from the anchor
     /// (the row last clicked, Ctrl-clicked, toggled with Space or entered
-    /// with Enter, even when that unselected it; a hidden one counts as its
+    /// with Enter, even when that unselected it, or the one the app named
+    /// with [`TreeController::set_anchor`]; a hidden one counts as its
     /// shown ancestor) to that row, replacing the selection; Enter adds the
     /// cursor row, keeping the rest; Ctrl+A selects the cursor row's
     /// siblings; a collapse by a click or a key unselects the rows it hides
@@ -2221,10 +2251,6 @@ const TYPE_AHEAD_MS: u32 = 700;
 struct KeyState {
     /// The row drawn as the cursor, by value.
     drawn: RefCell<Option<String>>,
-    /// Where a run of selected rows starts: the row last clicked,
-    /// Ctrl-clicked or toggled with Space (the most recently selected row),
-    /// not one the cursor merely moved to.
-    anchor: RefCell<Option<String>>,
     /// Whether one of the rows has the keyboard.
     focused: Cell<bool>,
     /// The cursor row was removed while it had the keyboard (it was drawn
@@ -2561,7 +2587,7 @@ fn select_from_keyboard(
     if controller.multiple {
         // Space toggles the row and starts the next Shift run from it; a row
         // it selects is told to `onselect`, as a click on it is.
-        *config.keys.anchor.borrow_mut() = Some(value.to_string());
+        tree_state.controller.set_anchor(Some(value));
         if untracked(|| controller.is_selected(value)) {
             controller.deselect(value);
             selection_changed(config, tree_state);
@@ -3229,7 +3255,7 @@ fn activate_row(
                 if !next.remove(value) {
                     next.insert(value.to_string());
                 }
-                *config.keys.anchor.borrow_mut() = Some(value.to_string());
+                tree_state.controller.set_anchor(Some(value));
                 change_selection(config, tree_state, next);
                 return;
             }
@@ -3269,7 +3295,7 @@ fn activate_row(
             } else {
                 HashSet::from([value.to_string()])
             };
-            *config.keys.anchor.borrow_mut() = Some(value.to_string());
+            tree_state.controller.set_anchor(Some(value));
             change_selection(config, tree_state, next);
         } else {
             controller.select(value);
@@ -3297,12 +3323,12 @@ fn select_run(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, fallback: &str
     let Some(b) = shape.index(to) else {
         return;
     };
-    let anchor = config.keys.anchor.borrow().clone();
+    let anchor = untracked(|| tree_state.controller.anchor());
     let a = match anchor.as_deref().and_then(|v| shape.index(v)) {
         Some(a) => a,
         None => {
             let a = shape.index(fallback).unwrap_or(b);
-            *config.keys.anchor.borrow_mut() = Some(shape.rows[a].value.clone());
+            tree_state.controller.set_anchor(Some(&shape.rows[a].value));
             a
         }
     };
