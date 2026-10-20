@@ -153,6 +153,11 @@ Focus arrives three ways, and all three go through the same arbiter:
   next focusable ancestor takes it, as Chrome does. A **touch or pen** press
   moves the focus on release, and only if it was a tap: a finger that starts a
   scroll on a button leaves the field (and the phone's keyboard) alone.
+  A touch that could start a scroll also runs its handler on release; that
+  press is `preventDefault`ed like any other, so the browser sends no
+  compatibility `mousedown` after the tap to whatever the handler put under
+  the finger — an overlay opened from a button in a scroller keeps the focus
+  it moved inside (#1588).
 
   Two things follow that web apps used to see differently. An overlay with
   `trap_focus` opened from a `Button` gives the focus back to that `Button` on
