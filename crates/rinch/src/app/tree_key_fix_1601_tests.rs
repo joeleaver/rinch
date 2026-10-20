@@ -560,9 +560,21 @@ fn the_neighbour_never_takes_the_keyboard_from_a_field_the_user_went_to() {
     let away = find(&f.app, |n| has_class(n, "away"));
     let at = centre(&f.app, away);
     click(&mut f, at);
-    assert_eq!(focused(&f.app), Some(away), "control: the field has the keyboard");
+    assert_eq!(
+        focused(&f.app),
+        Some(away),
+        "control: the field has the keyboard"
+    );
     settle(&mut f);
-    assert_eq!(focused(&f.app), Some(away), "the neighbour took the keyboard");
+    assert_eq!(
+        focused(&f.app),
+        Some(away),
+        "the neighbour took the keyboard"
+    );
     assert!(!ring(&f.app));
-    assert_eq!(f.state.cursor.get().as_deref(), Some("c"), "the cursor still moved");
+    assert_eq!(
+        f.state.cursor.get().as_deref(),
+        Some("c"),
+        "the cursor still moved"
+    );
 }

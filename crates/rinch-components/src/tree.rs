@@ -160,7 +160,8 @@ pub struct UseTreeReturn {
     /// Signal containing selected node values.
     pub selected: Signal<HashSet<String>>,
     /// The row the keyboard is on ([`Tree::keyboard`]): moved by the arrow
-    /// keys and type-ahead, and by a click.
+    /// keys and type-ahead, and by a click. A cursor whose row the data
+    /// drops moves to the row drawn below it (above it at the end).
     pub cursor: Signal<Option<String>>,
     /// Controller for programmatic tree manipulation.
     pub controller: TreeController,
@@ -202,7 +203,9 @@ pub struct TreeController {
 }
 
 impl TreeController {
-    /// Put the keyboard's cursor on a row, without moving the keyboard.
+    /// Put the keyboard's cursor on a row. It does not give the tree the
+    /// keyboard ([`focus`](Self::focus) does); when one of the tree's rows
+    /// has it already, it moves to the cursor row.
     pub fn set_cursor(&self, value: &str) {
         self.cursor.set(Some(value.to_string()));
     }
@@ -808,7 +811,12 @@ pub struct Tree {
     /// keyboard, the arrow keys move a cursor (Right expands or steps in,
     /// Left collapses or steps out), Home, End, PageUp and PageDown jump,
     /// `*` expands the cursor row's siblings, and typed letters find the next
-    /// row that starts with them. The cursor row is selected as it moves.
+    /// row that starts with them. The tree is one Tab stop: the cursor row
+    /// (the first row before there is one) is `tabindex="0"`, every other
+    /// row `-1`. In a single-select tree the selection follows the cursor as
+    /// a click would select (only with `select_on_click`, never a disabled
+    /// row, and `onselect` is told); in a `multiple` tree the arrows select
+    /// nothing and Space toggles the cursor row.
     pub keyboard: bool,
     /// Every key the tree's rows get, before the tree's own; `true` consumes
     /// it. [`TreeKey::drop_for`] turns a key into a structural move.
@@ -817,6 +825,8 @@ pub struct Tree {
     /// app that opens what the cursor is on, once, not on every row it
     /// passed.
     pub oncursor: Option<ValueCallback<String>>,
+    /// How long the cursor rests on a row before `oncursor`, in
+    /// milliseconds (120 by default); 0 reports every move at once.
     pub cursor_delay_ms: u32,
     /// The text type-ahead matches for a row (its label when not given).
     pub label_of: Option<LabelOf>,
