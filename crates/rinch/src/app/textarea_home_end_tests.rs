@@ -515,7 +515,10 @@ fn the_toolbar_anchor_follows_an_upstream_caret() {
     let (_, line2, _, h) = caret_rect(&mut app, id, 5);
     let (_, line3, _, _) = caret_rect(&mut app, id, 10);
     assert!(line3 > line2 + h * 0.5, "control: 10 downstream is line 3");
-    let anchor = app.text_edit_state().expect("a text field holds the keyboard").anchor;
+    let anchor = app
+        .text_edit_state()
+        .expect("a text field holds the keyboard")
+        .anchor;
     assert!(
         (anchor.1 - line2).abs() < h * 0.5,
         "the anchor is on line 2: {anchor:?} (line 2 at {line2}, line 3 at {line3})"
