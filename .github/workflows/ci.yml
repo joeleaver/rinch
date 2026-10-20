@@ -431,6 +431,11 @@ jobs:
           # is not compiled and re-run a second time for one fixture.
           cargo test -p rinch-web --target wasm32-unknown-unknown \
             --features collaboration --test editor_read_only
+          # Likewise the opt-in ICU word dictionary (#939): the bare run above
+          # runs this file's no-dictionary half, this its dictionary half, and is
+          # the one place CI compiles rinch-web with `word-dictionary` on.
+          cargo test -p rinch-web --target wasm32-unknown-unknown \
+            --features word-dictionary --test editor_word_dictionary
 
       # `editor_node_view_real_tab` is `#[ignore]`d above (a synthetic keydown moves
       # no focus): this step builds it with RINCH_REAL_KEYS=1 and runs it with

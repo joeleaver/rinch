@@ -1549,6 +1549,7 @@ impl RinchApp {
                                     shift,
                                     ctrl,
                                     alt,
+                                    modifiers,
                                 );
                             }
                             // Position the caret against the current layout (dirtying
@@ -1613,6 +1614,7 @@ impl RinchApp {
                             ctrl,
                             alt,
                             modifiers.meta,
+                            modifiers,
                             repeat,
                             vp_w,
                             vp_h,
@@ -1645,6 +1647,7 @@ impl RinchApp {
                             ctrl,
                             alt,
                             modifiers.meta,
+                            modifiers,
                             repeat,
                             vp_w,
                             vp_h,
@@ -2065,6 +2068,7 @@ impl RinchApp {
         ctrl: bool,
         alt: bool,
         meta: bool,
+        modifiers: Modifiers,
         repeat: KeyRepeat,
         vp_w: f32,
         vp_h: f32,
@@ -2119,12 +2123,16 @@ impl RinchApp {
 
         match key {
             KeyCode::Tab => self.handle_tab(shift),
-            KeyCode::Backspace => self.handle_backspace(),
-            KeyCode::Delete => self.handle_delete(),
-            KeyCode::ArrowLeft => self.handle_arrow_left(shift, ctrl),
-            KeyCode::ArrowRight => self.handle_arrow_right(shift, ctrl),
-            KeyCode::Home => self.handle_line_edge(false, shift, ctrl),
-            KeyCode::End => self.handle_line_edge(true, shift, ctrl),
+            // The caret and delete keys follow the platform's text keymap
+            // (issue #951): on macOS Cmd+Left is the line's start and Option
+            // the word modifier, not Ctrl. ArrowUp/ArrowDown go the same way
+            // below, after Alt+Down has had its chance to open a `<select>`.
+            KeyCode::Backspace
+            | KeyCode::Delete
+            | KeyCode::ArrowLeft
+            | KeyCode::ArrowRight
+            | KeyCode::Home
+            | KeyCode::End => self.handle_text_key(key, modifiers),
             KeyCode::KeyA if ctrl => self.handle_select_all(),
             KeyCode::KeyC if ctrl => self.handle_copy(),
             KeyCode::KeyV if ctrl => {
@@ -2166,8 +2174,7 @@ impl RinchApp {
                     actions.push(AppAction::RequestRedraw);
                 }
             }
-            KeyCode::ArrowUp => self.handle_arrow_up(shift),
-            KeyCode::ArrowDown => self.handle_arrow_down(shift),
+            KeyCode::ArrowUp | KeyCode::ArrowDown => self.handle_text_key(key, modifiers),
             _ => {
                 if !ctrl
                     && let Some(t) = text
@@ -3655,63 +3662,41 @@ impl RinchApp {
         shift: bool,
         ctrl: bool,
         alt: bool,
+        modifiers: Modifiers,
     ) -> bool {
+        // 1. Cursor movement / selection extension — geometry-dependent (visual lines,
+        //    goal column), so it stays view-owned and never touches the keymap. Which
+        //    chord is which motion is the platform's text keymap (issue #951): Ctrl =
+        //    word / document on Windows and Linux; Option = word, Cmd = line /
+        //    document on macOS, where Home/End leave the caret alone. Backspace and
+        //    Delete are the editor keymap's below.
+        let motion = match text_key_action(self.text_keymap, key, modifiers) {
+            Some(TextKeyAction::Move { motion, extend }) => Some((motion, extend)),
+            Some(TextKeyAction::Inert) => {
+                self.editor_goal_x = None;
+                return false;
+            }
+            _ => None,
+        };
         // The vertical "goal column" survives only a run of Up/Down — any other key
         // (typing, horizontal arrows, Home/End, edits) abandons it.
-        if !matches!(key, KeyCode::ArrowUp | KeyCode::ArrowDown) {
+        if !matches!(motion, Some((TextMotion::LineUp | TextMotion::LineDown, _))) {
             self.editor_goal_x = None;
         }
-        // 1. Cursor movement / selection extension — geometry-dependent (visual lines,
-        //    goal column), so it stays view-owned and never touches the keymap. (Shift
-        //    extends, Ctrl = word/doc.)
-        match key {
-            KeyCode::ArrowLeft => {
-                return self.move_editor(
-                    handle,
-                    if ctrl {
-                        Motion::WordLeft
-                    } else {
-                        Motion::CharLeft
-                    },
-                    shift,
-                );
-            }
-            KeyCode::ArrowRight => {
-                return self.move_editor(
-                    handle,
-                    if ctrl {
-                        Motion::WordRight
-                    } else {
-                        Motion::CharRight
-                    },
-                    shift,
-                );
-            }
-            KeyCode::ArrowUp => return self.move_editor(handle, Motion::LineUp, shift),
-            KeyCode::ArrowDown => return self.move_editor(handle, Motion::LineDown, shift),
-            KeyCode::Home => {
-                return self.move_editor(
-                    handle,
-                    if ctrl {
-                        Motion::DocStart
-                    } else {
-                        Motion::LineStart
-                    },
-                    shift,
-                );
-            }
-            KeyCode::End => {
-                return self.move_editor(
-                    handle,
-                    if ctrl {
-                        Motion::DocEnd
-                    } else {
-                        Motion::LineEnd
-                    },
-                    shift,
-                );
-            }
-            _ => {}
+        if let Some((motion, extend)) = motion {
+            let motion = match motion {
+                TextMotion::CharLeft => Motion::CharLeft,
+                TextMotion::CharRight => Motion::CharRight,
+                TextMotion::WordLeft => Motion::WordLeft,
+                TextMotion::WordRight => Motion::WordRight,
+                TextMotion::LineStart => Motion::LineStart,
+                TextMotion::LineEnd => Motion::LineEnd,
+                TextMotion::LineUp => Motion::LineUp,
+                TextMotion::LineDown => Motion::LineDown,
+                TextMotion::DocStart => Motion::DocStart,
+                TextMotion::DocEnd => Motion::DocEnd,
+            };
+            return self.move_editor(handle, motion, extend);
         }
         // 2. Tab: navigate table cells when in a table (shared handle method); otherwise
         //    fall through to the keymap, which binds `Tab`→sinkListItem /

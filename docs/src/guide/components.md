@@ -711,6 +711,15 @@ transition with a `visible` end is `visible`), and unlike any other property
 there its animated value reaches the descendants that inherit it, so the panel's
 content stays on screen with it.
 
+**Show the open state with `visibility: inherit`, not `visible`.** A declared
+`visible` overrides an inherited `hidden`, so a panel shown that way paints
+through a closed container around it — an open `Popover` inside a closed
+`Drawer` did until issue #936. `inherit` is `visible` inside a visible
+container and `hidden` inside a hidden one. `Popover`, `HoverCard` and
+`LoadingOverlay` declare it. A panel nested in another overlay's panel then
+takes that panel's *animated* value too: when both open in the same pass, the
+inner one's own transition starts when the outer one's ends.
+
 A `visibility: hidden` subtree is excluded from paint, from hit testing and from
 the Tab order, which is most of what `display: none` was doing — but not all of
 it, and the difference is that the box is still **there**. Two consequences to

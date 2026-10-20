@@ -352,6 +352,10 @@ GECKODRIVER=/path/to/geckodriver \
 # One file, and the tests behind the `collaboration` feature:
 GECKODRIVER=/path/to/geckodriver \
   cargo test -p rinch-web --target wasm32-unknown-unknown --features collaboration --test editor_read_only
+
+# And the half of the editor's word-segmentation test behind `word-dictionary`:
+GECKODRIVER=/path/to/geckodriver \
+  cargo test -p rinch-web --target wasm32-unknown-unknown --features word-dictionary --test editor_word_dictionary
 ```
 
 When both variables are set, `GECKODRIVER` wins. To use a Firefox that is not
@@ -457,6 +461,26 @@ let theme = ThemeProviderProps {
 ## Binary Size
 
 A full UI Zoo demo (12 sections, 60+ components) compiles to ~3.3MB after `wasm-opt`. A minimal app is well under 500KB. The Rust compiler's dead code elimination is doing real work here — unused components, icons, and CSS don't make it into the binary.
+
+### Word segmentation for CJK and Thai (`word-dictionary`)
+
+The rich-text editor's word motion (Ctrl+Left/Right), word delete and
+double-click split text into words (#939). A run of Chinese, Japanese or Thai
+text has no spaces between its words, and only ICU's segmentation dictionaries
+can split it. The desktop build always has them (parley links them for line
+breaking); a web build links them only when asked:
+
+```toml
+rinch-web = { version = "...", features = ["word-dictionary"] }
+```
+
+It is off by default because of its size. Measured on `examples/editor-web`
+(release, `wasm32-unknown-unknown`, before `wasm-opt`): 4,440,944 bytes without
+the feature, 8,282,831 with it (+3.84 MB). Without it a CJK or Thai run is one
+word, ended by whitespace, punctuation or a change of script; with it
+`漢字です|` + Ctrl+Backspace deletes `です`, as on desktop and in Chrome. The
+`rinch` facade needs no feature for this: on wasm the editor comes from
+`rinch-web`.
 
 ## Reference
 

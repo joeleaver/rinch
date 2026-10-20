@@ -1347,9 +1347,11 @@ impl EditorHandle {
         if caller_build {
             core.untracked = Some(rinch_core::reactive::suspend_tracking());
         }
-        let Some(tr) = built else {
+        let Some(mut tr) = built else {
             return false;
         };
+        // The history's typing-merge window reads the time (#940).
+        crate::clock::stamp(&mut tr);
         let prev = core.state.clone();
         // The mapping has to be taken before `apply` consumes the transaction.
         let mapping = tr.mapping().clone();
@@ -1433,7 +1435,9 @@ impl EditorHandle {
         let mut result: Option<(EditorState, Mapping, Vec<Kept>)> = None;
         let applied = {
             let state = &core.state;
-            let mut dispatch = |tr: Transaction| {
+            let mut dispatch = |mut tr: Transaction| {
+                // The history's typing-merge window reads the time (#940).
+                crate::clock::stamp(&mut tr);
                 let mapping = tr.mapping().clone();
                 let kept = kept_nodes(&tr);
                 result = Some((state.apply(tr), mapping, kept));
@@ -2801,7 +2805,7 @@ impl EditorHandle {
     pub fn insert_image(&self, src: &str, alt: &str) -> bool {
         let cmd = rinch_editor_core::commands::insert_image(src.to_string(), alt.to_string());
         let mut core = self.core_mut();
-        let Some((next, mapping)) = core.state.run_command_mapped(&cmd) else {
+        let Some((next, mapping)) = run_stamped(&core.state, &cmd) else {
             return false;
         };
         let prev = core.state.clone();
@@ -3040,7 +3044,7 @@ impl EditorHandle {
         } else {
             prev.clone()
         };
-        let Some((mut next, mapping)) = aimed.run_command_mapped(&cmd) else {
+        let Some((mut next, mapping)) = run_stamped(&aimed, &cmd) else {
             return false;
         };
         if moved {
@@ -3112,7 +3116,7 @@ impl EditorHandle {
     pub fn toggle_link(&self, href: &str) -> bool {
         let cmd = rinch_editor_core::commands::toggle_link(href.to_string());
         let mut core = self.core_mut();
-        let Some((next, mapping)) = core.state.run_command_mapped(&cmd) else {
+        let Some((next, mapping)) = run_stamped(&core.state, &cmd) else {
             return false;
         };
         let prev = core.state.clone();
@@ -4275,6 +4279,25 @@ impl EditorHandle {
         };
         node_views::dispose_all(slots, host_cx.as_ref());
     }
+}
+
+/// [`EditorState::run_command_mapped`], with the transaction stamped for the
+/// history's typing-merge window (#940; see [`crate::clock`]).
+fn run_stamped(
+    state: &EditorState,
+    cmd: &rinch_editor_core::Command,
+) -> Option<(EditorState, Mapping)> {
+    let mut result: Option<(EditorState, Mapping)> = None;
+    let applied = {
+        let mut dispatch = |mut tr: Transaction| {
+            crate::clock::stamp(&mut tr);
+            let mapping = tr.mapping().clone();
+            result = Some((state.apply(tr), mapping));
+        };
+        let dispatch: rinch_editor_core::Dispatch = &mut dispatch;
+        cmd(state, Some(dispatch))
+    };
+    if applied { result } else { None }
 }
 
 #[cfg(test)]

@@ -182,6 +182,10 @@ desktop = [
     # (its rinch-dom view needs the desktop renderer; the web view reuses the same
     # renderer-agnostic rinch-editor-view crate).
     "dep:rinch-editor-core", "dep:rinch-editor-view",
+    # Word motion / delete / double-click split a CJK or Thai run by ICU's
+    # dictionary (#939). parley already links that data here (its
+    # `complex-scripts` feature), so it costs this build nothing.
+    "rinch-editor-core/word-dictionary",
 ]
 android = [
     "dep:rinch-dom", "dep:rinch-editable", "dep:parley",

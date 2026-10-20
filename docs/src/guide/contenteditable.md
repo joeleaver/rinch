@@ -122,9 +122,22 @@ Command names are case-sensitive. The full catalogue:
 > backward leaves `hello |ld`. A mark boundary is not a word boundary. Where there is
 > no word to take they are Backspace / Delete: a non-empty selection is deleted as it
 > stands, and at a textblock's start / end they join (or lift), as Backspace and
-> Delete do there. An inline atom — an image, a hard break — is a boundary of its
-> own: one right beside the caret goes alone, and a word beyond one is not taken
-> with it. There are no *line* delete commands. On the web the browser's
+> Delete do there. The word motion, the word deletes and double-click share one
+> word segmentation (`motion::word_segments`, #938, #939), Chrome's where it was
+> measured: a run of punctuation is a word apart from the letters beside it
+> (`foo.bar|` deletes `bar`, `foo...|` deletes `...`), an apostrophe between letters
+> stays in the word (`don't`), a `.` `,` `;` or apostrophe between decimal digits stays in
+> the number (`3.14`, `1,000`), and an inline atom is a word of its own — adjacent
+> images together, each hard break alone: the motion stops on either side of it,
+> one beside the caret goes alone (with any whitespace between them:
+> `foo<img>  |` leaves `foo`), and a word beyond one is not taken with it.
+> Double-click on a run of punctuation (not emoji) selects the one character, as Chrome
+> does. A CJK or Thai run is split into words by ICU's
+> dictionary on desktop (`漢字です|` deletes `です`). A web build does the same with
+> `rinch-web`'s opt-in `word-dictionary` feature (+3.8 MB of wasm, see
+> [Binary Size](./wasm.md#word-segmentation-for-cjk-and-thai-word-dictionary));
+> without it such a run is one word, ended by whitespace, punctuation or a change
+> of script. There are no *line* delete commands. On the web the browser's
 > `deleteSoftLine*` (a soft keyboard's line delete, Cmd+Backspace / Cmd+Delete)
 > deletes to the edge of the **visual** line the caret is drawn on — on a wrapped
 > paragraph, normally only the current line's prefix or rest — and
@@ -1255,6 +1268,15 @@ tools; Ctrl+Shift+R is the browser's hard reload; some Linux input methods
 (IBus's emoji picker) bind Ctrl+Shift+E. The commands themselves
 (`setTextAlignLeft` / `Center` / `Right` / `Justify`) always work from a toolbar.
 
+The caret keys are not keymap bindings; they are the platform's. On desktop
+Ctrl+Left / Ctrl+Right move by word, Home / End go to the visual line's edges and
+Ctrl+Home / Ctrl+End to the document's on Windows and Linux; on macOS Option+Left /
+Option+Right move by word, Cmd+Left / Cmd+Right go to the visual line's edges,
+Cmd+Up / Cmd+Down to the document's, and Home / End leave the caret where it is
+(Shift+Home / Shift+End extend to the document's ends) — the same keys a desktop
+`<input>` or `<textarea>` takes (issue #951). On the web the word modifier is Ctrl
+or Cmd on every platform.
+
 The word-delete chord is the one binding whose modifier differs by platform: on macOS Cmd+Backspace
 is the line delete, so the word deletes are Alt(Option)+Backspace / Alt+Delete
 there. The desktop binding is chosen at compile time. **On the web the keymap binds
@@ -1268,7 +1290,9 @@ paste and select all — are also on the built-in right-click menu of the editor
 (issue #813), and the menu items run exactly the code the chords run; see
 [Right-clicking a text field](focus.md#right-clicking-a-text-field). On the web the
 browser's own menu covers the editor surface. Undo/redo is a single, exact history: each undo
-reverses one logical edit (typing is merged into a group), because every edit is an
+reverses one logical edit (typing — and an inline picture or plain-text paste landing in
+it — is merged into a group until a pause of 500 ms, a caret move, an undo or redo, or a
+structural edit such as a split, a mark or a block change), because every edit is an
 invertible step.
 
 ### What a paste does

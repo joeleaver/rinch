@@ -42,6 +42,9 @@ fn mount(tag: &'static str, width: u32) -> (RinchApp, usize) {
         root
     });
     app.register_app_font(AppFont::sans_serif(INTER));
+    // The Windows/Linux keys on every host; macOS's are
+    // `text_keymap_951_tests` (#951).
+    app.text_keymap = TextKeymap::Standard;
     app.mount_component(800.0, 600.0);
     app.resolve_and_repaint(800.0, 600.0);
     let field_id = id.get().expect("node id captured at mount");
@@ -84,8 +87,6 @@ fn ctrl_key(app: &mut RinchApp, key: KeyCode, shift: bool) {
         Modifiers {
             shift,
             ctrl: true,
-            // `primary()` is Cmd on macOS.
-            meta: cfg!(target_os = "macos"),
             ..Modifiers::default()
         },
     );

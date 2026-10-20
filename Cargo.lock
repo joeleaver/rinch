@@ -5092,6 +5092,7 @@ name = "rinch-editor-core"
 version = "0.1.0"
 dependencies = [
  "accesskit",
+ "icu_segmenter",
  "pretty_assertions",
  "pulldown-cmark",
  "regex",
@@ -5108,6 +5109,7 @@ dependencies = [
  "rinch-core",
  "rinch-editor-collab",
  "rinch-editor-core",
+ "web-time",
  "yrs",
 ]
 
