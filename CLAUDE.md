@@ -3780,7 +3780,7 @@ with the outer radius, half a width too round). Still circular: the
 compositor's viewport-hole mask (`viewport_rect_with_radius`, each corner its
 smaller radius), an inline element's background (`border-top-left-radius`'s
 horizontal radius only), and hit testing, which ignores radii altogether
-(Refs #977's follow-ups). Every consumer of the shape
+(#1639). Every consumer of the shape
 agrees: `clip_shape` itself, `layer_bounds`' children-clip intersection and the
 `covers_target`/`clip_cuts_nothing` elision check in `paint_node` (both now
 read `clip`'s own rect rather than the node's plain border-box `rect`), hit
