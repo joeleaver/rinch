@@ -402,21 +402,16 @@ fn unit_at(bytes: &[usize], byte: usize) -> usize {
 /// `|path/to/file` → `path|/to/file`, and `3.14`, `1,000`, `don't` and
 /// `snake_case` are one word each.
 ///
-/// Backward it never crosses a line break: it stops at the start of the
-/// caret's line, and at a line's start it does not move (Chrome 155's
-/// `<textarea>`: `ab \n |cd` → `ab \n| cd`, `ab-\n|cd` stays). Forward a line
-/// break is a word, so Ctrl+Right at a line's end lands just past it.
+/// A line break is one stop both ways: Ctrl+Right at a line's end lands just
+/// past it, Ctrl+Left at a line's start just before it (the previous line's
+/// end), and the next press goes on to the next word. That backward half is
+/// rinch's, not Chrome's: Chrome 155's `<textarea>` never takes Ctrl+Left out
+/// of the caret's line (`ab-\n|cd` stays put), and rinch makes it the mirror
+/// of Ctrl+Right instead (Joe's decision, #1619).
 pub fn text_word_boundary(text: &str, byte: usize, forward: bool) -> usize {
     let (units, bytes) = text_units(text);
     let i = unit_at(&bytes, byte.min(text.len()));
-    if forward {
-        return bytes[word_boundary(&units, i, true)];
-    }
-    let line_start = units[..i]
-        .iter()
-        .rposition(|&u| u == Unit::Break)
-        .map_or(0, |nl| nl + 1);
-    bytes[word_boundary(&units[line_start..i], i - line_start, false) + line_start]
+    bytes[word_boundary(&units, i, forward)]
 }
 
 /// The word around a caret at byte `byte` of a plain string, as a byte range
@@ -459,7 +454,7 @@ mod tests {
     }
 
     /// A line break is a word of its own (a `<textarea>`'s, as the editor's
-    /// hard break), and backward motion stays on the caret's line.
+    /// hard break): one stop of the word motion in either direction.
     #[test]
     fn a_line_break_is_a_unit_of_its_own() {
         assert_eq!(
@@ -467,7 +462,7 @@ mod tests {
             vec![Unit::Char('a'), Unit::Break, Unit::Char('b')]
         );
         assert_eq!(text_word_boundary("ab\ncd", 2, true), 3);
-        assert_eq!(text_word_boundary("ab\ncd", 3, false), 3);
+        assert_eq!(text_word_boundary("ab\ncd", 3, false), 2);
         assert_eq!(text_word_boundary("ab\ncd", 5, false), 3);
     }
 }

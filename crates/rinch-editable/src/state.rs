@@ -587,7 +587,8 @@ impl<D: EditableDocument> EditableState<D> {
     /// Where Ctrl+Left lands from `pos`: the start of the word before it, a
     /// word being what the rich editor's word motion steps over
     /// ([`rinch_words::text_word_boundary`], #1619) — so `foo-bar|` stops at
-    /// `foo-|bar`. It never crosses a line break.
+    /// `foo-|bar`. A line break is one stop: at a line's start it lands just
+    /// before the break (the word *delete* still never crosses one, above).
     fn find_word_start(&self, pos: usize) -> usize {
         rinch_words::text_word_boundary(&self.document.to_text(), pos, false)
     }
