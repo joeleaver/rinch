@@ -1,6 +1,8 @@
 //! Review of #1613, F2: a word motion, word delete or double-click segments
 //! only the stretch between the whitespace around the caret, not the whole
-//! textblock, so its segmentation work does not grow with the paragraph.
+//! textblock: in spaced text its work is the word's, not the paragraph's. In
+//! text written without spaces (CJK, Thai) that stretch is the whole paragraph,
+//! and the second test says so.
 //! Counted by `motion::segmented_units` (the test-only `cost-counters`
 //! feature, which `cargo test --workspace` turns on through
 //! rinch-editor-collab's dev-dependency):
@@ -46,4 +48,19 @@ fn word_segmentation_work_does_not_grow_with_the_paragraph() {
     // Each of the four segments "ipsum," (6 units): 24.
     assert_eq!(small, 24);
     assert_eq!(large, small, "the work is the word's, not the block's");
+}
+
+/// The limit, stated: in a CJK paragraph with no whitespace the stretch is the
+/// whole paragraph (round-2 review of #1613, D1).
+#[test]
+fn in_text_without_spaces_the_stretch_is_the_paragraph() {
+    let s = Rc::new(Schema::starter_kit());
+    let text = "漢字です".repeat(150);
+    let p = s
+        .branch("paragraph", Fragment::from_node(s.text(&text).unwrap()))
+        .unwrap();
+    let doc = s.branch("doc", Fragment::from_node(p)).unwrap();
+    let before = segmented_units();
+    resolve_cursor_motion(&doc, Pos(301), Pos(301), CursorMotion::WordRight, false).unwrap();
+    assert_eq!(segmented_units() - before, 600);
 }

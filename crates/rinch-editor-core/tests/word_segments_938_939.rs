@@ -286,3 +286,39 @@ fn a_mark_after_a_space_is_not_whitespace_1613() {
 fn a_latin_run_into_thai_is_one_word_1613() {
     assert_eq!(deleted("abcไทย|", "deleteWordBackward"), "");
 }
+
+/// Round-2 review of #1613 (Chrome 155): the separator rule counts decimal
+/// digits only (General_Category Nd: `٣.١٤` yes, `½` no), takes `;`, and a
+/// double-click on a separator inside a number or word selects the whole of
+/// it; a soft hyphen stays in its word.
+#[test]
+fn numbers_are_decimal_digits_1613_round2() {
+    let at = |notation: &str| {
+        let (state, pos) = editor(notation);
+        let (a, b) = word_range_at(&state.doc, pos);
+        let chars: Vec<char> = notation_of(&state.doc, None).chars().collect();
+        chars[a.0 - 1..b.0 - 1].iter().collect::<String>()
+    };
+    assert_eq!(deleted("½.5|", "deleteWordBackward"), "½.");
+    assert_eq!(deleted("٣.١٤|", "deleteWordBackward"), "");
+    assert_eq!(deleted("1;2|", "deleteWordBackward"), "");
+    assert_eq!(at("3|.14"), "3.14");
+    assert_eq!(at("don|'t"), "don't");
+    assert_eq!(deleted("co\u{AD}op|", "deleteWordBackward"), "");
+}
+
+/// Round-2 review of #1613, D3 (Chrome 155): a double-click on any
+/// punctuation run selects one char, not only ASCII (`——`, `…`); an emoji run
+/// stays whole (round 1: `😀😀` is one word in Chrome's double-click).
+#[test]
+fn double_click_on_non_ascii_punctuation_is_one_char_1613_round2() {
+    let at = |notation: &str| {
+        let (state, pos) = editor(notation);
+        let (a, b) = word_range_at(&state.doc, pos);
+        let chars: Vec<char> = notation_of(&state.doc, None).chars().collect();
+        chars[a.0 - 1..b.0 - 1].iter().collect::<String>()
+    };
+    assert_eq!(at("foo|\u{2014}\u{2014}bar"), "\u{2014}");
+    assert_eq!(at("foo|\u{2026}bar"), "\u{2026}");
+    assert_eq!(at("x |😀😀 y"), "😀😀");
+}
