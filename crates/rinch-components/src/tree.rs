@@ -3440,6 +3440,13 @@ mod multi_tests {
         assert_eq!(place(key(&["a1", "b"]).drop_for(TreeMove::Up)), None);
         assert_eq!(place(key(&["a2", "b"]).drop_for(TreeMove::Up)), None);
         assert_eq!(place(key(&["a2", "b"]).drop_for(TreeMove::Indent)), None);
+        // First and last share a parent, a row between them does not.
+        assert_eq!(place(key(&["b", "a2x", "c"]).drop_for(TreeMove::Up)), None);
+        assert_eq!(
+            place(key(&["b", "c"]).drop_for(TreeMove::Up)),
+            Some((None, TreeSlot::First)),
+            "control: b and c alone move up"
+        );
         assert_eq!(
             place(key(&["a2"]).drop_for(TreeMove::Up)),
             Some((Some("a".into()), TreeSlot::First)),

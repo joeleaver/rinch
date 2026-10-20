@@ -585,11 +585,29 @@ fn below_an_open_parent_is_its_first_child() {
 #[test]
 fn a_non_contiguous_block_moves_down_as_one() {
     let mut p = build(MULTI, flat(&["a", "b", "c", "d", "e"]), &[]);
-    click(&mut p, "b", Modifiers::default());
-    click(&mut p, "d", ctrl());
+    // The cursor on b, the first of the block: the row below the block
+    // (e) is not the row drawn below b (c).
+    click(&mut p, "d", Modifiers::default());
+    click(&mut p, "b", ctrl());
+    assert_eq!(p.state.cursor.get().as_deref(), Some("b"));
     press(&mut p, KeyCode::F2, None, Modifiers::default());
     let seen = p.seen.borrow().last().cloned().unwrap();
     assert_eq!(seen.1.as_deref(), Some("e"));
     assert_eq!(seen.2, ["b", "d"]);
     assert_eq!(seen.3, Some((None, TreeSlot::After("e".into()))));
+}
+
+/// Shift+Space is the tree's own key, not the runtime's activation click: on
+/// a disabled cursor row (which takes no click) it still runs to it.
+#[test]
+fn shift_space_on_a_disabled_row_runs_up_to_it() {
+    let mut data = flat(&["a", "b", "c", "d"]);
+    data[2] = TreeNodeData::new("c", "C").disabled(true);
+    let mut p = build(MULTI, data, &[]);
+    click(&mut p, "a", Modifiers::default());
+    press(&mut p, KeyCode::ArrowDown, None, Modifiers::default());
+    press(&mut p, KeyCode::ArrowDown, None, Modifiers::default());
+    assert_eq!(p.state.cursor.get().as_deref(), Some("c"));
+    shift_space(&mut p);
+    assert_eq!(sel(&p), ["a", "b"]);
 }
