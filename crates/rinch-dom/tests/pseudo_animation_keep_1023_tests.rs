@@ -41,6 +41,7 @@ const CSS: &str = "\
     .w.gone::before { content: none; } \
     .w.attr::after { content: attr(data-label); } \
     .w.empty::after { content: ''; } \
+    .w.inl::after { content: attr(data-label); display: inline; } \
     .t::before { content: \"t\"; display: inline-block; color: rgb(255, 0, 0); \
                  transition: color 1s linear; } \
     .t.on::before { color: rgb(0, 0, 255); }";
@@ -175,10 +176,18 @@ fn a_pseudo_that_stops_and_starts_being_generated_restarts() {
 
     doc.set_attribute(w, "class", "w gone");
     doc.resolve_layout(VW, VH);
-    let pseudos = doc.tree.get(w.0).unwrap().children.iter()
+    let pseudos = doc
+        .tree
+        .get(w.0)
+        .unwrap()
+        .children
+        .iter()
         .filter(|&&c| doc.tree.get(c).unwrap().is_pseudo_element)
         .count();
-    assert_eq!(pseudos, 1, "content: none generates no ::before, the ::after stays");
+    assert_eq!(
+        pseudos, 1,
+        "content: none generates no ::before, the ::after stays"
+    );
     assert!(
         !doc.tree.active_animations.contains_key(&b) || doc.tree.get(b).is_none(),
         "the old box's animation is gone"
@@ -224,8 +233,31 @@ fn a_kept_after_takes_new_content_and_stays_last() {
     let a2 = generated(&doc, w, true).expect("an ::after");
     assert_eq!(a2, a, "the ::after is the same node");
     assert_eq!(text_of(&doc, a), "two", "it shows the new content");
+    // ...and lays it out: the inline-block's own inline layout holds the new
+    // text node, not a freed one.
+    let t = doc.tree.get(a).unwrap().children[0];
+    assert_eq!(
+        doc.tree.get(t).unwrap().ifc_root,
+        Some(a),
+        "the new text is in the box's IFC"
+    );
+    let layout = doc
+        .tree
+        .get(a)
+        .unwrap()
+        .text_layout
+        .as_ref()
+        .expect("the box lays its text out");
+    assert!(
+        layout.text_ranges.iter().any(|r| r.node_id == t),
+        "its layout names the new text node"
+    );
     let children = &doc.tree.get(w.0).unwrap().children;
-    assert_eq!(children.len(), 3, "::before, the text, ::after: {children:?}");
+    assert_eq!(
+        children.len(),
+        3,
+        "::before, the text, ::after: {children:?}"
+    );
     assert_eq!(*children.last().unwrap(), a);
 }
 
@@ -244,4 +276,46 @@ fn a_kept_after_gains_and_loses_its_text_child() {
     doc.resolve_layout(VW, VH);
     assert_eq!(generated(&doc, w, true), Some(a));
     assert!(doc.tree.get(a).unwrap().children.is_empty());
+}
+
+/// An inline `::after` is laid out in its originator's inline layout, which
+/// must name the new text node once the content changes.
+#[test]
+fn a_kept_inline_after_takes_new_content_into_the_originators_layout() {
+    let (mut doc, _p, w) = doc_with("w inl");
+    doc.set_attribute(w, "data-label", "one");
+    doc.resolve_layout(VW, VH);
+    let a = generated(&doc, w, true).expect("an ::after");
+
+    doc.set_attribute(w, "data-label", "two");
+    doc.resolve_layout(VW, VH);
+    assert_eq!(
+        generated(&doc, w, true),
+        Some(a),
+        "the ::after is the same node"
+    );
+    let t = doc.tree.get(a).unwrap().children[0];
+    assert_eq!(text_of(&doc, a), "two");
+    let root = doc
+        .tree
+        .get(t)
+        .unwrap()
+        .ifc_root
+        .expect("the text is laid out");
+    let layout = doc
+        .tree
+        .get(root)
+        .unwrap()
+        .text_layout
+        .as_ref()
+        .expect("inline layout");
+    assert!(
+        layout.text_content.ends_with("two"),
+        "got {:?}",
+        layout.text_content
+    );
+    assert!(
+        layout.text_ranges.iter().any(|r| r.node_id == t),
+        "its layout names the new text node"
+    );
 }

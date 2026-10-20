@@ -15,12 +15,26 @@ impl RinchDocument {
     /// Queries Stylo for the pseudo-element's computed styles, extracts the `content`
     /// property text, and creates synthetic DOM nodes (a wrapper span + text child)
     /// inserted as first child (::before) or last child (::after).
+    ///
+    /// `existing` is the box this pseudo-element generated on the element's
+    /// previous cascade. It is **kept** while the pseudo still generates
+    /// (#1023): its pseudo style is replaced in place and pushed for
+    /// `apply_stylo_styles_to_taffy`, which compares it with the box's last
+    /// `computed_style` as for any restyled element — so a running animation
+    /// keeps its clock (it restarts only when its name changes, as in
+    /// Chrome) and a declared `transition` runs. Its text child is replaced
+    /// only when the text changed. When the pseudo no longer generates the
+    /// box is removed.
+    ///
+    /// Answers whether the element's child list changed: a box generated or
+    /// removed, or a kept box's text child replaced.
     pub(crate) fn resolve_pseudo_element(
         &mut self,
         parent_id: usize,
         parent_style: &ServoArc<ComputedValues>,
         pseudo: style::selector_parser::PseudoElement,
-    ) {
+        existing: Option<usize>,
+    ) -> bool {
         use selectors::matching::{
             IncludeStartingStyle, MatchingContext, MatchingForInvalidation, MatchingMode,
             NeedsSelectorFlags, SelectorCaches, VisitedHandlingMode,
@@ -102,43 +116,46 @@ impl RinchDocument {
 
             // If no declarations matched, no pseudo-element defined
             if applicable_declarations.is_empty() {
-                return;
-            }
-
-            let rule_node = self
-                .stylist
-                .rule_tree()
-                .compute_rule_node(&mut applicable_declarations, &guards);
-
-            let mut rule_cache_conditions = RuleCacheConditions::default();
-
-            // A `display: contents` element's generated boxes are children of
-            // its layout parent's box, so that is what blockifies them (Stylo's
-            // `layout_parent_style_for_pseudo`; #998).
-            let layout_parent = if parent_style.clone_display().is_contents() {
-                let start = self.tree.nodes[parent_id].parent;
-                self.nearest_non_contents_style(start)
-                    .unwrap_or_else(|| parent_style.clone())
+                None
             } else {
-                parent_style.clone()
-            };
+                let rule_node = self
+                    .stylist
+                    .rule_tree()
+                    .compute_rule_node(&mut applicable_declarations, &guards);
 
-            self.stylist.cascade_style_and_visited(
-                Some(RinchNode::new(parent_id, &self.tree)),
-                Some(&pseudo),
-                CascadeInputs {
-                    rules: Some(rule_node),
-                    visited_rules: None,
-                    flags: matching_context.extra_data.cascade_input_flags,
-                },
-                &guards,
-                Some(parent_style),
-                Some(&layout_parent),
-                FirstLineReparenting::No,
-                &Default::default(),
-                None,
-                &mut rule_cache_conditions,
-            )
+                let mut rule_cache_conditions = RuleCacheConditions::default();
+
+                // A `display: contents` element's generated boxes are children of
+                // its layout parent's box, so that is what blockifies them (Stylo's
+                // `layout_parent_style_for_pseudo`; #998).
+                let layout_parent = if parent_style.clone_display().is_contents() {
+                    let start = self.tree.nodes[parent_id].parent;
+                    self.nearest_non_contents_style(start)
+                        .unwrap_or_else(|| parent_style.clone())
+                } else {
+                    parent_style.clone()
+                };
+
+                Some(self.stylist.cascade_style_and_visited(
+                    Some(RinchNode::new(parent_id, &self.tree)),
+                    Some(&pseudo),
+                    CascadeInputs {
+                        rules: Some(rule_node),
+                        visited_rules: None,
+                        flags: matching_context.extra_data.cascade_input_flags,
+                    },
+                    &guards,
+                    Some(parent_style),
+                    Some(&layout_parent),
+                    FirstLineReparenting::No,
+                    &Default::default(),
+                    None,
+                    &mut rule_cache_conditions,
+                ))
+            }
+        };
+        let Some(pseudo_computed) = pseudo_computed else {
+            return existing.is_some_and(|b| self.remove_generated_box(parent_id, b));
         };
 
         // A generated box sized in viewport units makes its element a
@@ -166,7 +183,7 @@ impl RinchDocument {
 
         // Check content property - if none/normal/empty, skip
         if pseudo_computed.ineffective_content_property() {
-            return;
+            return existing.is_some_and(|b| self.remove_generated_box(parent_id, b));
         }
 
         // Compute counter values for this element (needed for content: counter(...))
@@ -188,6 +205,15 @@ impl RinchDocument {
         // Convert pseudo computed style to our ComputedStyle
         let pseudo_style = ComputedStyle::from_stylo(&pseudo_computed);
         self.tree.note_background_image(&pseudo_style);
+
+        if let Some(span_raw) = existing {
+            return self.update_generated_box(
+                span_raw,
+                pseudo_computed,
+                &text,
+                layout_parent_is_flex_or_grid,
+            );
+        }
 
         // Create a wrapper span element for the pseudo-element
         use rinch_core::dom::DomDocument;
@@ -218,8 +244,8 @@ impl RinchDocument {
         // reads a node's `computed_style` back from there, and
         // `resolve_styles_recursive` recognises a box that carries a pseudo
         // style (`ComputedValues::is_pseudo_style`) and does not re-cascade it
-        // as the plain `<span>` it is in the tree (#1004). It is regenerated,
-        // with a fresh pseudo cascade, whenever its originator is cascaded.
+        // as the plain `<span>` it is in the tree (#1004). Each cascade of its
+        // originator gives it a fresh pseudo cascade, in place (#1023).
         {
             let span_raw = span_id.0;
             // #542 (perf review): read before `pseudo_style` moves into the
@@ -272,6 +298,99 @@ impl RinchDocument {
                 }
             }
         }
+        true
+    }
+
+    /// Give a kept generated box (`existing` in [`Self::resolve_pseudo_element`])
+    /// its new pseudo cascade and content, in place (#1023). Its
+    /// `computed_style` is left for `apply_stylo_styles_to_taffy`, which reads
+    /// the old one as the before-change style. Answers whether its text
+    /// child was replaced.
+    fn update_generated_box(
+        &mut self,
+        span_raw: usize,
+        pseudo_computed: ServoArc<ComputedValues>,
+        text: &str,
+        layout_parent_is_flex_or_grid: bool,
+    ) -> bool {
+        use rinch_core::dom::DomDocument;
+
+        self.tree.nodes[span_raw]
+            .is_flex_or_grid_item
+            .set(layout_parent_is_flex_or_grid);
+        if let Some(data) = self.tree.nodes[span_raw]
+            .stylo_element_data
+            .borrow_mut()
+            .as_mut()
+        {
+            data.styles.primary = Some(pseudo_computed);
+        }
+        self.tree.style_dirty_nodes.push(span_raw);
+        self.mark_restyled_for_paint(span_raw);
+
+        // The text child, when there is one, is the box's only child.
+        let old_text = self.tree.nodes[span_raw].children.first().copied();
+        let same = match old_text {
+            Some(t) => self.tree.nodes[t].text_content() == Some(text),
+            None => text.is_empty(),
+        };
+        if same {
+            return false;
+        }
+        if let Some(t) = old_text {
+            if let Some(span_taffy) = self.tree.nodes[span_raw].taffy_id {
+                self.taffy_detach_contribution(span_taffy, t);
+            }
+            self.mark_subtree_paint_dirty(t);
+            self.tree.remove_subtree(t);
+            self.tree.nodes[span_raw].children.retain(|&c| c != t);
+        }
+        if !text.is_empty() {
+            let text_raw = self.create_text(text).0;
+            self.tree.nodes[text_raw].parent = Some(span_raw);
+            self.tree.nodes[span_raw].children.push(text_raw);
+            if let (Some(parent_taffy), Some(child_taffy)) = (
+                self.tree.nodes[span_raw].taffy_id,
+                self.tree.nodes[text_raw].taffy_id,
+            ) {
+                let _ = self.tree.taffy.add_child(parent_taffy, child_taffy);
+            }
+        }
+        // The box's own child list changed: an `inline-block` box is a
+        // formatting container of its own, which the originator's seed does
+        // not reach, and its inline layout named the freed text node.
+        self.tree
+            .seed_ifc(span_raw, crate::ifc_scope::IfcSeed::Children);
+        self.invalidate_ifc_root(span_raw);
+        true
+    }
+
+    /// Take the generated box (or list marker) `cid` out of `parent_id` and
+    /// free it. Answers `true` (the child list changed).
+    pub(crate) fn remove_generated_box(&mut self, parent_id: usize, cid: usize) -> bool {
+        // The IFC the generated box was laid out in names it; the caller's
+        // structural seed re-sets the region up.
+        if let Some(root) = self.tree.nodes[cid].ifc_root {
+            self.invalidate_ifc_root(root);
+        }
+        // Detach the pseudo-element's whole Taffy contribution, not just its
+        // own id (#521): a `display: contents` pseudo has already had its own
+        // id spliced out of `parent_id`'s Taffy child list by
+        // `sync_display_contents`, with its *effective* children (any that
+        // are themselves genuine Taffy members) spliced in directly — the
+        // same shape `taffy_detach_contribution` (#515/#517) exists to detach
+        // everywhere else.
+        if let Some(parent_taffy) = self.tree.nodes[parent_id].taffy_id {
+            self.taffy_detach_contribution(parent_taffy, cid);
+        }
+        // Its pixels are recorded where it was painted before it is freed,
+        // as `remove_node` does (#966): a generated box that overflows its
+        // originator, or casts a shadow past it, left them on screen when its
+        // rule stopped matching.
+        self.mark_subtree_paint_dirty(cid);
+        self.tree.remove_subtree(cid);
+        self.tree.nodes[parent_id].children.retain(|&c| c != cid);
+        true
     }
 
     /// Extract text content from a Stylo ComputedValues `content` property.
@@ -432,15 +551,17 @@ impl RinchDocument {
     /// leaves it indented by the marker's own width instead. Filed as a
     /// follow-up (paint-side marker box, `list-style-position: inside`
     /// support) rather than landed here.
-    pub(crate) fn resolve_list_marker(&mut self, node_id: usize) {
+    ///
+    /// Answers whether a marker was generated.
+    pub(crate) fn resolve_list_marker(&mut self, node_id: usize) -> bool {
         let node = match self.tree.nodes.get(node_id) {
             Some(n) => n,
-            None => return,
+            None => return false,
         };
 
         // Only process <li> elements.
         if node.tag() != Some("li") {
-            return;
+            return false;
         }
 
         // Check Stylo's own freshly-cascaded data for `display: list-item`
@@ -461,17 +582,17 @@ impl RinchDocument {
                 Some(data) => match &data.styles.primary {
                     Some(primary) => {
                         if !primary.get_box().display.is_list_item() {
-                            return;
+                            return false;
                         }
                         let kw = primary.get_list().list_style_type;
                         if kw == ListStyleType::None {
-                            return;
+                            return false;
                         }
                         kw
                     }
-                    None => return,
+                    None => return false,
                 },
-                None => return,
+                None => return false,
             }
         };
 
@@ -483,12 +604,12 @@ impl RinchDocument {
                 .is_some_and(|n| n.is_pseudo_element)
         });
         if has_pseudo {
-            return;
+            return false;
         }
 
         let parent_id = match node.parent {
             Some(p) => p,
-            None => return,
+            None => return false,
         };
 
         let parent_tag = self
@@ -499,7 +620,7 @@ impl RinchDocument {
             .unwrap_or("");
 
         if parent_tag != "ol" && parent_tag != "ul" {
-            return; // Not inside a list
+            return false; // Not inside a list
         }
 
         // Pick the marker glyph from the keyword, not just the parent tag
@@ -561,5 +682,6 @@ impl RinchDocument {
                     .insert_child_at_index(parent_taffy, 0, child_taffy);
             }
         }
+        true
     }
 }

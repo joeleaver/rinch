@@ -646,52 +646,49 @@ impl RinchDocument {
             return;
         }
 
-        // Remove existing pseudo-element children before re-resolving styles
-        // to avoid duplicates when styles are recomputed.
-        let had_pseudo;
+        // The generated `::before` / `::after` boxes are **kept** (#1023):
+        // `resolve_pseudo_element` below updates each in place while its
+        // pseudo still generates, and removes it when it stops. A box minted
+        // again on every cascade of its originator restarted its `@keyframes`
+        // animation from t=0 on a new node at every class change, hover or
+        // inherited change, and a `transition` on it never ran (a new box has
+        // no before-change style); Chrome keeps both. A list marker (a
+        // pseudo-element node with no pseudo style) is still removed here and
+        // generated again by `resolve_list_marker`.
+        let mut children_changed = false;
+        let mut kept_before = None;
+        let mut kept_after = None;
         {
-            let children_to_remove: Vec<usize> = self.tree.nodes[node_id]
-                .children
-                .iter()
-                .filter(|&&cid| {
-                    self.tree
-                        .nodes
-                        .get(cid)
-                        .is_some_and(|n| n.is_pseudo_element)
-                })
-                .copied()
-                .collect();
-            had_pseudo = !children_to_remove.is_empty();
-            for cid in children_to_remove {
-                // The IFC the generated box was laid out in names it; see the
-                // invalidation after the pseudo-elements are re-resolved.
-                if let Some(root) = self.tree.nodes[cid].ifc_root {
-                    self.invalidate_ifc_root(root);
+            let mut markers: Vec<usize> = Vec::new();
+            let had_pseudo = self.tree.nodes[node_id].children.iter().any(|&cid| {
+                self.tree
+                    .nodes
+                    .get(cid)
+                    .is_some_and(|n| n.is_pseudo_element)
+            });
+            if had_pseudo {
+                for &cid in &self.tree.nodes[node_id].children {
+                    let Some(n) = self.tree.nodes.get(cid) else {
+                        continue;
+                    };
+                    if !n.is_pseudo_element {
+                        continue;
+                    }
+                    let generated = n
+                        .stylo_element_data
+                        .borrow()
+                        .as_ref()
+                        .and_then(|d| d.styles.primary.as_ref())
+                        .is_some_and(|s| s.is_pseudo_style());
+                    match (generated, n.is_generated_after) {
+                        (true, false) if kept_before.is_none() => kept_before = Some(cid),
+                        (true, true) if kept_after.is_none() => kept_after = Some(cid),
+                        _ => markers.push(cid),
+                    }
                 }
-                // Detach the pseudo-element's whole Taffy contribution, not
-                // just its own id (#521): a `display: contents` pseudo has
-                // already had its own id spliced out of `node_id`'s Taffy
-                // child list by `sync_display_contents`, with its *effective*
-                // children (any that are themselves genuine Taffy members)
-                // spliced in directly — the same shape `taffy_detach_contribution`
-                // (#515/#517) exists to detach everywhere else.
-                if let Some(parent_taffy) = self.tree.nodes[node_id].taffy_id {
-                    self.taffy_detach_contribution(parent_taffy, cid);
-                }
-                // Its pixels are recorded where it was painted before it is
-                // freed, as `remove_node` does (#966): a generated box that
-                // overflows its originator, or casts a shadow past it, left
-                // them on screen when its rule stopped matching. This
-                // pruning runs on every cascade of the originator (the box
-                // is regenerated whether or not its rule changed), so every
-                // hover or class change on an element with a `::before` /
-                // `::after` pays this walk too: a few steps per generated
-                // node, and the same damage it was already given.
-                self.mark_subtree_paint_dirty(cid);
-                // Remove the pseudo-element's subtree from the slab
-                self.tree.remove_subtree(cid);
-                // Remove from parent's children list
-                self.tree.nodes[node_id].children.retain(|&c| c != cid);
+            }
+            for cid in markers {
+                children_changed |= self.remove_generated_box(node_id, cid);
             }
         }
 
@@ -839,35 +836,38 @@ impl RinchDocument {
         // stylesheet has a rule for that pseudo at all. The UA sheet has none,
         // so an app that declares none pays nothing here.
         use style::selector_parser::PseudoElement;
-        if self.has_before_rules {
+        // A kept box whose rules went away with a stylesheet is removed by
+        // the same call.
+        if self.has_before_rules || kept_before.is_some() {
             self.tree
                 .perf
                 .bump(crate::perf::Counter::PseudoElementPasses);
-            self.resolve_pseudo_element(node_id, &computed, PseudoElement::Before);
+            children_changed |=
+                self.resolve_pseudo_element(node_id, &computed, PseudoElement::Before, kept_before);
         }
-        if self.has_after_rules {
+        if self.has_after_rules || kept_after.is_some() {
             self.tree
                 .perf
                 .bump(crate::perf::Counter::PseudoElementPasses);
-            self.resolve_pseudo_element(node_id, &computed, PseudoElement::After);
+            children_changed |=
+                self.resolve_pseudo_element(node_id, &computed, PseudoElement::After, kept_after);
         }
 
         // Generate list markers for <li> elements (if no CSS ::before exists)
-        self.resolve_list_marker(node_id);
+        children_changed |= self.resolve_list_marker(node_id);
 
-        // The pseudo-element children were just freed and minted again, so the
-        // inline layout that holds them — this node's own IFC, or the one it is
-        // an inline member of — names nodes that no longer exist, or that the
-        // slab has since handed to someone else. The cascade's per-node text
-        // comparison cannot see that: nothing about *this* node's style had to
-        // change for it to happen. It used to be covered by accident, by an
-        // eager drop of every text layout under any restyled node. Only nodes
-        // that actually carry generated content pay for it.
-        let has_pseudo = self.tree.nodes[node_id]
-            .children
-            .iter()
-            .any(|&c| self.tree.nodes.get(c).is_some_and(|n| n.is_pseudo_element));
-        if had_pseudo || has_pseudo {
+        // A generated box that was minted or freed (or whose text child was
+        // replaced) changes this node's child list, and the inline layout that
+        // holds it — this node's own IFC, or the one it is an inline member
+        // of — names nodes that no longer exist, or that the slab has since
+        // handed to someone else. The cascade's per-node text comparison
+        // cannot see that: nothing about *this* node's style had to change
+        // for it to happen. A box kept in place (#1023) is not such a change:
+        // its restyle reaches layout and paint through
+        // `apply_stylo_styles_to_taffy`, as any restyled element's does, so a
+        // hover on an element with a `::before` re-shapes nothing it did not
+        // change.
+        if children_changed {
             // The generated children are new nodes (or gone): a structural
             // change to this node's child list, which the structural pass has
             // to be told about like any other — and a layout owed, which is
@@ -889,8 +889,8 @@ impl RinchDocument {
         }
         // Generated content that went away and did not come back (an `attr()`
         // whose attribute was removed, a class that took the `content` rule
-        // away) is covered by the block above: `had_pseudo && !has_pseudo` is
-        // one of its cases, and it seeds this node's region and owes a layout.
+        // away) is covered by the block above: `remove_generated_box` answers
+        // `true`, and the block seeds this node's region and owes a layout.
         // #894 fixed the same case with a bare `ifc_dirty = true`, which is a
         // whole-document structural pass per removal; the seed is exact.
 
