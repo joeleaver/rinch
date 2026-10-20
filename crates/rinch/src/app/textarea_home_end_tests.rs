@@ -174,6 +174,24 @@ fn caret_rect(app: &mut RinchApp, id: usize, offset: usize) -> (f32, f32, f32, f
     .expect("a laid-out value has a caret rect")
 }
 
+/// The rect of the field's caret as paint draws it: its head, with the
+/// affinity the runtime wrote beside it (#941).
+fn head_rect(app: &mut RinchApp, id: usize) -> (f32, f32, f32, f32) {
+    let head = caret(app, id);
+    let doc = app.doc.clone().unwrap();
+    let d = doc.borrow();
+    let affinity = rinch_dom::form_control::caret_affinity(d.tree.get(id).unwrap());
+    RinchApp::input_caret_rect_with_affinity(
+        &d.tree,
+        &mut app.hit_test_font_cx,
+        &mut app.hit_test_layout_cx,
+        id,
+        head,
+        affinity,
+    )
+    .expect("a laid-out value has a caret rect")
+}
+
 /// The issue's own case: `abc`⏎`abc`⏎`abc`, caret at the end of line 2, Home
 /// goes to the start of line 2 (4), not of the value (0). End from mid line 2
 /// stops before its `\n` (7), not at the end of the value (11).
@@ -300,8 +318,8 @@ fn ctrl_home_and_ctrl_end_go_to_the_ends_of_the_text() {
 }
 
 /// Shift extends from the anchor: Shift+Home from 7 selects back to line 2's
-/// start, then Shift+End moves the head to line 2's end — one short of the
-/// wrap, per #941. (Chrome 153 on a wider fixture: Shift+Home from mid-line
+/// start, then Shift+End moves the head to line 2's end, its wrap point (10,
+/// drawn upstream, #941). (Chrome 153 on a wider fixture: Shift+Home from mid-line
 /// selects back to the line's start, Shift+End from there to its end.)
 #[test]
 fn shift_extends_the_selection() {
@@ -311,7 +329,10 @@ fn shift_extends_the_selection() {
     key(&mut app, KeyCode::Home, true);
     assert_eq!(sel(&app, id), (7, 5));
     key(&mut app, KeyCode::End, true);
-    assert_eq!(sel(&app, id), (7, 9));
+    assert_eq!(sel(&app, id), (7, 10));
+    let (_, y, _, h) = head_rect(&mut app, id);
+    let (_, line2, _, _) = caret_rect(&mut app, id, 5);
+    assert!((y - line2).abs() < h * 0.5, "the head is drawn on line 2");
 }
 
 /// Without Shift a selection collapses and moves from its **head**, not its
@@ -336,7 +357,7 @@ fn a_selection_moves_from_its_head() {
     assert_eq!(sel(&app, id), (5, 5), "Home from the head's line");
     forward(&mut app);
     key(&mut app, KeyCode::End, false);
-    assert_eq!(sel(&app, id), (9, 9), "End from the head's line");
+    assert_eq!(sel(&app, id), (10, 10), "End from the head's line");
 
     // Backward, 7 -> 2: head on line 1.
     let backward = |app: &mut RinchApp| {
@@ -351,7 +372,7 @@ fn a_selection_moves_from_its_head() {
     assert_eq!(sel(&app, id), (0, 0), "Home from the head's line");
     backward(&mut app);
     key(&mut app, KeyCode::End, false);
-    assert_eq!(sel(&app, id), (4, 4), "End from the head's line");
+    assert_eq!(sel(&app, id), (5, 5), "End from the head's line");
 }
 
 /// Home drops the vertical goal. `abcdef` x3: Up from the end (goal column 6)
@@ -421,9 +442,9 @@ fn a_single_line_input_goes_to_the_ends_of_its_value() {
 }
 
 /// End at a soft wrap between multi-byte characters (CJK wraps with no space):
-/// the caret lands on a char boundary and stays on the line it was on. Every
-/// other fixture wraps at a 1-byte space, where "one byte short" and "one
-/// character short" agree (review of #950).
+/// the caret lands on a char boundary — the wrap point, the next line's start
+/// (#941) — and is drawn on the line it was on. (Review of #950: every other
+/// fixture wraps at a 1-byte space.)
 #[test]
 fn end_at_a_cjk_soft_wrap_lands_on_a_char_boundary_on_the_same_line() {
     let (mut app, id) = mount("textarea", 70);
@@ -432,9 +453,11 @@ fn end_at_a_cjk_soft_wrap_lands_on_a_char_boundary_on_the_same_line() {
     caret_to(&mut app, 1);
     key(&mut app, KeyCode::End, false);
     let e = caret(&app, id);
-    let (_, ey, _, h) = caret_rect(&mut app, id, e);
+    let (_, ey, _, h) = head_rect(&mut app, id);
     let (_, y0, _, _) = caret_rect(&mut app, id, 0);
+    let (_, below, _, _) = caret_rect(&mut app, id, e);
     assert!(v.is_char_boundary(e), "End lands on a char boundary: {e}");
+    assert!(below > y0, "the wrap point: downstream it starts line 2");
     assert!((ey - y0).abs() < h * 0.5, "End stays on line 1");
     key(&mut app, KeyCode::End, false);
     assert_eq!(caret(&app, id), e, "a second End stays");
