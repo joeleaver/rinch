@@ -475,7 +475,9 @@ list fires the removal half too** (#1440): `NodeHandle::set_text` on an
 **element** (it orphans every child — the ones the element's own render built
 are discarded when its scope goes, #1487 below; told only when the list
 changed — an
-element whose only child is a text node loses none on any backend: `rinch-dom`
+element whose only child is a text node loses none on any backend (on
+`rinch-dom` "only" among its own children: its generated `::before` /
+`::after` boxes do not count, and stay, #1630): `rinch-dom`
 writes that node in place, where it used to orphan it and mint another per
 write, and the mock and a browser list no child for it) and
 `NodeHandle::set_inner_html` (it frees them; it also drops the
@@ -3131,8 +3133,9 @@ went stale on class toggles, insertions and removals. Now:
   boxes, so an index or reference read from them names a real slot: an insert
   before the `::before` box lands after it. An append used to land after the
   `::after` box — every `rsx!` row added after its parent was attached.
-  `set_text_content` / `set_inner_html` still drop the generated boxes until
-  the element is re-cascaded (#1630).
+  `set_text_content` / `set_inner_html` replace the element's own children
+  only (`RinchDocument::own_children_range`) and keep its generated boxes
+  (#1630); they used to drop them until the element was next re-cascaded.
 - **A move within one parent keeps its style and its own text layout** (#914)
   — a keyed `for` reorder, which moves a live row with `insert_before`. Its
   ancestor chain is unchanged, so only a positional selector can see the move,
