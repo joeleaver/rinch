@@ -204,6 +204,10 @@ impl Plugin for HistoryPlugin {
                     event.typing = prev.typing;
                 }
                 hist.undone.events.push(event);
+                // The next edit starts a step of its own, as ProseMirror's
+                // `prevTime = 0` makes it: otherwise typing within the window
+                // of the group now on top of `done` joins it.
+                hist.break_group = true;
             }
             Some(HistoryAction::Redo) => {
                 let reverted = hist.undone.events.pop();
@@ -212,6 +216,8 @@ impl Plugin for HistoryPlugin {
                     event.typing = prev.typing;
                 }
                 hist.done.events.push(event);
+                // Typing right after a redo must not join the redone group.
+                hist.break_group = true;
             }
             None => {
                 if tr.add_to_history() && tr.doc_changed() {
