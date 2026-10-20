@@ -236,3 +236,52 @@ fn a_box_inside_a_clipper_that_becomes_a_containing_block_clears_the_escaped_chi
     resolve(&mut app);
     check(&mut app, "wrapper becomes containing block", old, true);
 }
+
+/// static → fixed under a transformed clipper: the old rect is placed through
+/// the painted transform chain (the transformed path of the walk), and the
+/// fixed box, which rinch does not contain in a transformed ancestor (#1372),
+/// lands in the viewport.
+#[test]
+fn a_box_under_a_transform_that_becomes_fixed_clears_its_in_flow_pixels() {
+    let (mut app, h) = mount(Box::new(|s, o| {
+        let c = el(
+            s,
+            o,
+            "width: 200px; height: 100px; overflow: hidden; margin-left: 50px; transform: translateX(30px);",
+        );
+        let r = el(s, &c, BLUE);
+        vec![c, r]
+    }));
+    let old = (80, 0, 120, 40);
+    let before = full_frame(&mut app);
+    assert!(ink_in(&before, old) > 1000, "positive control");
+    h[1].set_style("position", "fixed");
+    h[1].set_style("left", "400px");
+    h[1].set_style("top", "300px");
+    resolve(&mut app);
+    check(&mut app, "static -> fixed under a transform", old, true);
+}
+
+/// fixed → static under a transformed clipper.
+#[test]
+fn a_box_under_a_transform_that_stops_being_fixed_clears_its_viewport_pixels() {
+    let (mut app, h) = mount(Box::new(|s, o| {
+        let c = el(
+            s,
+            o,
+            "width: 200px; height: 100px; overflow: hidden; margin-left: 50px; transform: translateX(30px);",
+        );
+        let r = el(
+            s,
+            &c,
+            &format!("{BLUE} position: fixed; left: 400px; top: 300px;"),
+        );
+        vec![c, r]
+    }));
+    let old = (400, 300, 440, 340);
+    let before = full_frame(&mut app);
+    assert!(ink_in(&before, old) > 1000, "positive control");
+    h[1].set_style("position", "static");
+    resolve(&mut app);
+    check(&mut app, "fixed -> static under a transform", old, true);
+}
