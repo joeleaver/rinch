@@ -269,6 +269,14 @@ fn format_chars_and_a_curly_apostrophe_keep_the_word_1613() {
 #[test]
 fn a_mark_after_a_space_is_not_whitespace_1613() {
     assert_eq!(deleted("a \u{301}|", "deleteWordBackward"), "a ");
+    // The motion segments only the stretch between whitespace, where the mark
+    // is the first unit; `word_segments` itself, over the whole run, keeps the
+    // mark out of the whitespace run too.
+    use rinch_editor_core::motion::{Unit, word_segments};
+    assert_eq!(
+        word_segments(&[Unit::Char('a'), Unit::Char(' '), Unit::Char('\u{301}')]),
+        vec![(0, 1), (1, 2), (2, 3)]
+    );
 }
 
 /// Review of #1613, F5 (Chrome 155): with the dictionary a Latin run going
