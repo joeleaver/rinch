@@ -301,3 +301,48 @@ fn a_displaced_node_moved_into_a_coincident_clipper_clears_its_overflow() {
     resolve(&mut app);
     check(&mut app, "displaced into coincident clipper", (0, 115, 40, 140));
 }
+
+/// `remove_child`, the fourth route the issue did not name: the removed
+/// child overflows its parent.
+#[test]
+fn a_removed_child_clears_its_overflow() {
+    let (mut app, h) = mount(Box::new(|s, o| {
+        let p = el(s, o, "width: 200px; height: 50px;");
+        let r = el(
+            s,
+            &p,
+            "width: 40px; height: 120px; background: rgb(200, 0, 0);",
+        );
+        vec![p, r]
+    }));
+    let before = full_frame(&mut app);
+    assert!(ink_in(&before, (0, 60, 40, 120)) > 2000, "positive control");
+    h[0].remove_child(&h[1]);
+    resolve(&mut app);
+    check(&mut app, "remove_child", (0, 60, 40, 120));
+}
+
+/// `remove_child`, then the child appended into a coincident clipper.
+#[test]
+fn a_removed_child_moved_into_a_coincident_clipper_clears_its_overflow() {
+    let (mut app, h) = mount(Box::new(|s, o| {
+        o.set_attribute(
+            "style",
+            "width: 600px; height: 400px; position: relative;",
+        );
+        let w = el(s, o, "width: 200px; height: 10px; margin-top: 100px;");
+        let r = el(s, &w, BLUE);
+        let c = el(
+            s,
+            o,
+            "position: absolute; left: 0; top: 100px; width: 200px; height: 10px; overflow: hidden;",
+        );
+        vec![w, r, c]
+    }));
+    let before = full_frame(&mut app);
+    assert!(ink_in(&before, (0, 115, 40, 140)) > 900, "positive control");
+    h[0].remove_child(&h[1]);
+    h[2].append_child(&h[1]);
+    resolve(&mut app);
+    check(&mut app, "remove_child into coincident clipper", (0, 115, 40, 140));
+}
