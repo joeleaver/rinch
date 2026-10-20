@@ -1472,6 +1472,7 @@ has failed to start, on both backends.
 - `TreeMove` — `Indent` (into the previous sibling, last), `Outdent` (out of the parent, right after it), `Up` (before the previous sibling), `Down` (after the next sibling). `#[non_exhaustive]`.
 - `TreeKeyHandler` = `Rc<dyn Fn(&TreeKey) -> bool>`, `LabelOf` = `Rc<dyn Fn(&str) -> String>`.
 - `TreeController::set_selection(values)` — make exactly these rows the selection (from code; `onselectionchange` is not called).
+- `TreeController::set_anchor(Option<&str>)` / `anchor()` — set, clear or read the row the next Shift run (Shift-click, Shift with a move key, Shift+Space) starts at; no selection change and no callback. A value not in the data behaves as a deleted anchor (the run starts at the cursor or clicked row).
 - `UseTreeReturn::cursor: Signal<Option<String>>`; `TreeController::set_cursor(value)` (when a row of the tree has the keyboard, it moves to the cursor row), `cursor()`, and `focus()` (gives the cursor row, or the first row, the keyboard).
 
 **TreeNodeData:** `value: String`, `label: String`, `children: Vec<TreeNodeData>`, `disabled: bool`, `icon: Option<TablerIcon>`, `payload: Option<Rc<dyn Any>>`.
