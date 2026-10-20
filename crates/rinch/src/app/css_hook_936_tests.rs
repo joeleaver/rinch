@@ -19,13 +19,10 @@
 //! *inherited* by the #759 hand-down, so a drawer closing over an open popover
 //! keeps the panel on screen for its slide and hides it at the end.
 
-// `rsx!` writes absolute `rinch::` paths, and this *is* the rinch crate.
 use super::*;
-use crate as rinch;
 
 use rinch_components::{
-    Drawer, HoverCard, HoverCardDropdown, HoverCardTarget, LoadingOverlay, Popover,
-    PopoverDropdown,
+    Drawer, HoverCard, HoverCardDropdown, HoverCardTarget, LoadingOverlay, Popover, PopoverDropdown,
 };
 use rinch_core::{Component, Signal};
 use rinch_dom::computed_style::VisibilityValue;
@@ -287,7 +284,11 @@ fn a_hovered_card_in_a_hidden_container_stays_hidden() {
         } else {
             VisibilityValue::Visible
         };
-        assert_eq!(visibility_of(&app, dd), expected, "hidden container: {hidden}");
+        assert_eq!(
+            visibility_of(&app, dd),
+            expected,
+            "hidden container: {hidden}"
+        );
         assert_eq!(
             visibility_of(&app, probe(&app, "card-content")),
             expected,
