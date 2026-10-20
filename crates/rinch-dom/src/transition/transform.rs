@@ -258,7 +258,7 @@ impl TransformOp {
             TransformOp::Rotate3D { axis, angle } => {
                 // css-transforms-2's `rotate3d()` matrix.
                 let [x, y, z] = *axis;
-                let (s, c) = angle.sin_cos();
+                let (s, c) = sin_cos_snapped(*angle);
                 let k = 1.0 - c;
                 Mat4 {
                     m: [
@@ -1179,6 +1179,23 @@ impl Mat4 {
     }
 }
 
+/// `sin_cos`, exact at a multiple of a quarter turn, as Chromium's
+/// `SinCosDegrees` is: `rotateX(360deg)` is then exactly the identity, so a
+/// list holding it can still be a 2D matrix ([`Mat4::is_2d`]).
+fn sin_cos_snapped(rad: f64) -> (f64, f64) {
+    let q = rad / std::f64::consts::FRAC_PI_2;
+    let n = q.round();
+    if (q - n).abs() > 1e-6 * n.abs().max(1.0) {
+        return rad.sin_cos();
+    }
+    match (n as i64).rem_euclid(4) {
+        0 => (0.0, 1.0),
+        1 => (1.0, 0.0),
+        2 => (0.0, -1.0),
+        _ => (-1.0, 0.0),
+    }
+}
+
 /// The inverse of a 3×3, or `None` for a singular one.
 fn invert3(a: &[[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
     let cof =
@@ -1237,6 +1254,16 @@ impl Interpolated4 {
     /// box-relative translation as a `matrix()` in front of the rest (and the
     /// perspective, when there is one, in front of that).
     fn push_ops(&self, out: &mut Vec<TransformOp>) {
+        // Two 2D ends interpolate to a 2D matrix: keep the list planar.
+        if self.perspective.m == Mat4::IDENTITY.m && self.rest.is_2d() {
+            let f = self.rest.flatten();
+            out.push(TransformOp::Matrix(Affine {
+                matrix: f.matrix,
+                pct_w: self.pct_w,
+                pct_h: self.pct_h,
+            }));
+            return;
+        }
         if !self.has_pct() {
             out.push(TransformOp::Matrix3D(self.whole().m));
             return;
