@@ -619,7 +619,11 @@ impl RinchDocument {
         // content still invalidates its root regardless, in the cascade.
         let node_ids: Vec<usize> = self.tree.nodes.iter().map(|(id, _)| id).collect();
         for &nid in &node_ids {
-            *self.tree.nodes[nid].stylo_element_data.borrow_mut() = None;
+            // A generated box keeps its pseudo style: its originator's cascade
+            // replaces it, and finds the box by it (#1023).
+            if !self.tree.nodes[nid].is_generated_box() {
+                *self.tree.nodes[nid].stylo_element_data.borrow_mut() = None;
+            }
         }
         // Disable transitions during full restyle — theme changes should apply
         // instantly. Without this, elements with `transition: color` would start

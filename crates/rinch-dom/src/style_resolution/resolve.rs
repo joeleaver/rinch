@@ -674,13 +674,7 @@ impl RinchDocument {
                     if !n.is_pseudo_element {
                         continue;
                     }
-                    let generated = n
-                        .stylo_element_data
-                        .borrow()
-                        .as_ref()
-                        .and_then(|d| d.styles.primary.as_ref())
-                        .is_some_and(|s| s.is_pseudo_style());
-                    match (generated, n.is_generated_after) {
+                    match (n.is_generated_box(), n.is_generated_after) {
                         (true, false) if kept_before.is_none() => kept_before = Some(cid),
                         (true, true) if kept_after.is_none() => kept_after = Some(cid),
                         _ => markers.push(cid),
@@ -951,7 +945,9 @@ impl RinchDocument {
         // old basis — clear them so the walk we're inside recascades them.
         let html_id = self.tree.html_id;
         for (node_id, _) in self.tree.nodes.iter() {
-            if node_id == html_id {
+            // A generated box keeps its pseudo style (see
+            // `recompute_all_styles_full`, #1023).
+            if node_id == html_id || self.tree.nodes[node_id].is_generated_box() {
                 continue;
             }
             *self.tree.nodes[node_id].stylo_element_data.borrow_mut() = None;

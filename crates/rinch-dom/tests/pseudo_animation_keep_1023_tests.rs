@@ -390,3 +390,42 @@ fn a_list_marker_that_comes_back_with_its_list_style_is_laid_out() {
         text(&doc)
     );
 }
+
+/// A theme change re-cascades the whole document (`recompute_all_styles_full`)
+/// and keeps every running animation's clock (#762); a `::before`'s is kept
+/// with its box.
+#[test]
+fn a_theme_restyle_keeps_the_before_and_its_clock() {
+    let (mut doc, _p, w) = doc_with("w");
+    let b = before(&doc, w);
+    let started = backdate(&mut doc, b, 400.0);
+
+    doc.recompute_all_styles_full();
+    doc.resolve_layout(VW + 10.0, VH);
+
+    assert_eq!(before(&doc, w), b, "the ::before is the same node");
+    assert_eq!(start_time(&doc, b), started, "the clock is kept");
+}
+
+/// So does a change of the root font size, which drops every cached style.
+#[test]
+fn a_root_font_size_change_keeps_the_before_and_its_clock() {
+    let (mut doc, _p, w) = doc_with("w");
+    let b = before(&doc, w);
+    let started = backdate(&mut doc, b, 400.0);
+
+    doc.tree.perf.reset();
+    let html = NodeId(doc.tree.html_id);
+    doc.set_style(html, "font-size", "20px");
+    doc.resolve_layout(VW, VH);
+    assert_eq!(
+        doc.tree
+            .perf
+            .get(rinch_dom::perf::Counter::FullRestyleRootFontSize),
+        1,
+        "positive control: the root font size changed"
+    );
+
+    assert_eq!(before(&doc, w), b, "the ::before is the same node");
+    assert_eq!(start_time(&doc, b), started, "the clock is kept");
+}
