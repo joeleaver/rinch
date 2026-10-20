@@ -263,7 +263,10 @@ pub(crate) fn surface_kind_of(window: &dyn winit::window::Window) -> WindowSurfa
 /// reported, and none is dropped or counted twice. Reading them against the
 /// position last *set* instead added each move again for every position
 /// already on its way, and a fast drag swung further each way until the
-/// window was off every screen.
+/// window was off every screen. That holds for a **move**. A west or north
+/// resize also changes the size, which the compositor applies with a later
+/// buffer than the margin commit the sync follows, so at high pointer rates
+/// (about 8 ms between events) it can still land off (#1604).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct LayerState {
     /// Top-left on its output, logical: its margins, as last set. `None`
