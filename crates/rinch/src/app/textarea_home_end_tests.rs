@@ -238,47 +238,49 @@ fn home_goes_to_the_start_of_a_soft_wrapped_line() {
     );
 }
 
-/// End on a soft-wrapped line. Chrome puts the caret at the wrap offset (10)
-/// with an *upstream* affinity, so it paints at the end of line 2. rinch's
-/// caret has no affinity (#941) and an offset-10 caret paints at the start of
-/// line 3, so End stops one character short — before the space the line broke
-/// at (9) — which is the same rule ArrowUp/ArrowDown follow (#307). The caret
-/// paints on line 2, a second End does not walk on to line 3, and Home comes
-/// back to line 2's start.
+/// End on a soft-wrapped line. Chrome 153 puts the caret at the wrap offset
+/// (10, after the space the line broke at) with an *upstream* affinity, so it
+/// is drawn at the end of line 2 (#941; before it rinch's caret had no
+/// affinity and End stopped one character short, at 9). A second End stays,
+/// and Home — measured from the upper line — returns to line 2's start.
 #[test]
-fn end_on_a_soft_wrapped_line_stays_on_it() {
+fn end_on_a_soft_wrapped_line_goes_to_its_wrap_point() {
     let (mut app, id) = mount("textarea", 70);
     type_str(&mut app, "abcd abcd abcd");
     caret_to(&mut app, 7);
     key(&mut app, KeyCode::End, false);
+    assert_eq!(caret(&app, id), 10, "the wrap point (Chrome 153)");
     assert_eq!(
-        caret(&app, id),
-        9,
-        "before the wrap's space (Chrome: 10, #941)"
-    );
-    let (_, end_y, _, h) = caret_rect(&mut app, id, 9);
-    let (_, line2_y, _, _) = caret_rect(&mut app, id, 5);
-    assert!(
-        (end_y - line2_y).abs() < h * 0.5,
-        "the caret paints on line 2: {end_y} vs {line2_y}"
+        attr(&app, id, "data-cursor-affinity"),
+        "upstream",
+        "drawn at the end of line 2"
     );
     key(&mut app, KeyCode::End, false);
-    assert_eq!(caret(&app, id), 9, "a second End stays on line 2");
+    assert_eq!(caret(&app, id), 10, "a second End stays on line 2");
     key(&mut app, KeyCode::Home, false);
     assert_eq!(caret(&app, id), 5, "and Home returns to line 2's start");
+    assert_eq!(
+        attr(&app, id, "data-cursor-affinity"),
+        "",
+        "a caret at a line's start is downstream"
+    );
 }
 
-/// The cost of #941, pinned so it is seen when affinity lands: a character
-/// typed after End at a soft wrap goes before the wrap's space. Chrome 153
-/// types `abcd abcd Xabcd`.
+/// A character typed after End at a soft wrap goes after the wrap's space.
+/// Chrome 153 types `abcd abcd Xabcd`.
 #[test]
-fn typing_after_end_at_a_soft_wrap_lands_before_the_space() {
+fn typing_after_end_at_a_soft_wrap_lands_after_the_space() {
     let (mut app, id) = mount("textarea", 70);
     type_str(&mut app, "abcd abcd abcd");
     caret_to(&mut app, 7);
     key(&mut app, KeyCode::End, false);
     type_str(&mut app, "X");
-    assert_eq!(value(&app, id), "abcd abcdX abcd");
+    assert_eq!(value(&app, id), "abcd abcd Xabcd");
+    assert_eq!(
+        attr(&app, id, "data-cursor-affinity"),
+        "",
+        "the edit's caret carries no affinity"
+    );
 }
 
 /// Ctrl+Home / Ctrl+End go to the ends of the whole value, from mid line 2.
