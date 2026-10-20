@@ -464,8 +464,9 @@ at a space the space hangs and nothing looks different; in text with no
 spaces (CJK) the caret is visibly one column short.
 
 Home and End in a `<textarea>` go to the start and end of the caret's
-**visual** line, soft-wrapped lines included; Ctrl+Home and Ctrl+End (Cmd on
-macOS) go to the start and end of the whole text. Shift extends the selection.
+**visual** line, soft-wrapped lines included; Ctrl+Home and Ctrl+End go to the
+start and end of the whole text. Shift extends the selection. These are the
+Windows and Linux keys; macOS has its own, below.
 Without Shift a selection collapses and moves from its head — the end the
 caret is at — rather than from its start or end as ArrowUp and ArrowDown do,
 which is what Chrome does. In a single-line `<input>` Home and End go to the
@@ -479,6 +480,32 @@ before the wrap point, a browser at the wrap point with the caret drawn at the
 end of the line. When the wrap is at a space, the caret sits before that space,
 so a character typed there goes before it — `abcd abcdX abcd` where Chrome
 types `abcd abcd Xabcd`.
+
+On macOS the desktop keys are the platform's (Cocoa's, which Chrome and Safari
+follow in their text controls), not Windows' with Cmd for Ctrl (issue #951):
+
+| Keys | Windows / Linux | macOS |
+|------|-----------------|-------|
+| Word left / right | Ctrl+Left / Ctrl+Right | Option+Left / Option+Right |
+| Visual line's start / end | Home / End | Cmd+Left / Cmd+Right |
+| Start / end of the text | Ctrl+Home / Ctrl+End | Cmd+Up / Cmd+Down |
+| Delete a word backward / forward | Ctrl+Backspace / Ctrl+Delete | Option+Backspace / Option+Delete |
+
+Shift extends with each of them. On macOS Home and End leave the caret where it
+is (they scroll the field there, and desktop does not scroll a field's text),
+and Shift+Home / Shift+End extend the selection to the start / end of the text.
+The rich-text editor's caret keys follow the same table on desktop. Not done on
+macOS: Ctrl+Left / Ctrl+Right (Cocoa's line moves) move one character, Option+Up /
+Option+Down (paragraph moves) move one line, Cmd+Backspace (delete to the line's
+start) deletes one character, and the Emacs keys (Ctrl+A / E / K / F / B / N / P)
+are not bound.
+
+A word delete in a `<textarea>` never crosses a line break: right after one it
+deletes just the break, as Chrome does. Words are split at whitespace only, so
+`foo-bar` is one word where a browser stops at the hyphen (#1619). In a password
+field a word is the whole value: a word delete removes everything before (or
+after) the caret and a word move goes to its start or end, so neither shows
+where its spaces are.
 
 ### Sizing a `<textarea>`
 

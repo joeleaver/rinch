@@ -283,7 +283,7 @@ impl<D: EditableDocument> EditableState<D> {
             self.delete_selection();
         } else {
             let pos = self.selection.head.0;
-            let word_start = self.find_word_start(pos);
+            let word_start = self.word_delete_start(pos);
             if word_start < pos {
                 let range = Range::new(word_start, pos);
                 let deleted = self.document.text_slice(range);
@@ -302,7 +302,7 @@ impl<D: EditableDocument> EditableState<D> {
             self.delete_selection();
         } else {
             let pos = self.selection.head.0;
-            let word_end = self.find_word_end(pos);
+            let word_end = self.word_delete_end(pos);
             if word_end > pos {
                 let range = Range::new(pos, word_end);
                 let deleted = self.document.text_slice(range);
@@ -559,6 +559,31 @@ impl<D: EditableDocument> EditableState<D> {
 
     // === Word boundary helpers ===
 
+    /// Where a backward word delete from `pos` stops: the word start, but
+    /// never across a line break. Right after one it deletes just the break
+    /// (Chrome 155: `"ab \n|"` → `"ab "`, `"a\n|b"` → `"ab"`).
+    fn word_delete_start(&self, pos: usize) -> usize {
+        let text = self.document.to_text();
+        let before = &text[..pos.min(text.len())];
+        match before.rfind('\n') {
+            Some(nl) if nl + 1 == before.len() => nl,
+            Some(nl) => self.find_word_start(pos).max(nl + 1),
+            None => self.find_word_start(pos),
+        }
+    }
+
+    /// Where a forward word delete from `pos` stops: the word end, but never
+    /// across a line break. Right before one it deletes just the break.
+    fn word_delete_end(&self, pos: usize) -> usize {
+        let text = self.document.to_text();
+        let pos = pos.min(text.len());
+        match text[pos..].find('\n') {
+            Some(0) => pos + 1,
+            Some(nl) => self.find_word_end(pos).min(pos + nl),
+            None => self.find_word_end(pos),
+        }
+    }
+
     fn find_word_start(&self, pos: usize) -> usize {
         let text = self.document.to_text();
         if pos == 0 {
@@ -716,5 +741,30 @@ mod tests {
         state.execute(EditCommand::SelectAll);
         assert_eq!(state.selection.start().0, 0);
         assert_eq!(state.selection.end().0, 5);
+    }
+
+    /// A word delete never crosses a line break (#951's review): right beside
+    /// one it takes the break alone, and further along it stops at it.
+    #[test]
+    fn a_word_delete_stops_at_a_line_break() {
+        let run = |text: &str, at: usize, cmd: EditCommand| {
+            let mut state = EditableState::new(StringDocument::with_text(text));
+            state.selection = Selection::cursor(at);
+            state.execute(cmd);
+            state.document.to_text()
+        };
+        assert_eq!(run("ab \n", 4, EditCommand::DeleteWordBackward), "ab ");
+        assert_eq!(run("a\nb", 2, EditCommand::DeleteWordBackward), "ab");
+        assert_eq!(
+            run("ab\n  cd", 7, EditCommand::DeleteWordBackward),
+            "ab\n  "
+        );
+        assert_eq!(run("ab\n   ", 6, EditCommand::DeleteWordBackward), "ab\n");
+        assert_eq!(run("ab\ncd", 2, EditCommand::DeleteWordForward), "abcd");
+        assert_eq!(
+            run("ab   \ncd", 2, EditCommand::DeleteWordForward),
+            "ab\ncd"
+        );
+        assert_eq!(run("one two", 7, EditCommand::DeleteWordBackward), "one ");
     }
 }

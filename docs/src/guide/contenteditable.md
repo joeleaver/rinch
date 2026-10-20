@@ -1268,6 +1268,15 @@ tools; Ctrl+Shift+R is the browser's hard reload; some Linux input methods
 (IBus's emoji picker) bind Ctrl+Shift+E. The commands themselves
 (`setTextAlignLeft` / `Center` / `Right` / `Justify`) always work from a toolbar.
 
+The caret keys are not keymap bindings; they are the platform's. On desktop
+Ctrl+Left / Ctrl+Right move by word, Home / End go to the visual line's edges and
+Ctrl+Home / Ctrl+End to the document's on Windows and Linux; on macOS Option+Left /
+Option+Right move by word, Cmd+Left / Cmd+Right go to the visual line's edges,
+Cmd+Up / Cmd+Down to the document's, and Home / End leave the caret where it is
+(Shift+Home / Shift+End extend to the document's ends) — the same keys a desktop
+`<input>` or `<textarea>` takes (issue #951). On the web the word modifier is Ctrl
+or Cmd on every platform.
+
 The word-delete chord is the one binding whose modifier differs by platform: on macOS Cmd+Backspace
 is the line delete, so the word deletes are Alt(Option)+Backspace / Alt+Delete
 there. The desktop binding is chosen at compile time. **On the web the keymap binds
