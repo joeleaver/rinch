@@ -335,6 +335,27 @@ fn shift_extends_the_selection() {
     assert!((y - line2).abs() < h * 0.5, "the head is drawn on line 2");
 }
 
+/// The head's affinity is the head's alone (#941): with `5..10` selected by
+/// Home then Shift+End (head 10, upstream), ArrowUp moves from the
+/// selection's start, 5, which is downstream — the start of line 2, column
+/// 0 — so it lands at 0 with the goal at column 0, and ArrowDown comes back
+/// to 5. Measured from 5 *upstream* (the end of line 1) the goal would be
+/// line 1's end, and Down would land at line 2's end.
+#[test]
+fn a_selections_other_end_takes_no_affinity_from_the_head() {
+    let (mut app, id) = mount("textarea", 70);
+    type_str(&mut app, "abcd abcd abcd");
+    caret_to(&mut app, 7);
+    key(&mut app, KeyCode::Home, false);
+    key(&mut app, KeyCode::End, true);
+    assert_eq!(sel(&app, id), (5, 10));
+    assert_eq!(attr(&app, id, "data-cursor-affinity"), "upstream");
+    key(&mut app, KeyCode::ArrowUp, false);
+    assert_eq!(caret(&app, id), 0);
+    key(&mut app, KeyCode::ArrowDown, false);
+    assert_eq!(caret(&app, id), 5, "the goal is column 0");
+}
+
 /// Without Shift a selection collapses and moves from its **head**, not its
 /// start or end — unlike ArrowUp/ArrowDown. Chrome 153: a forward selection
 /// `3..16` goes to 10 on Home and 20 on End; backwards (head 3) to 0 and 10.

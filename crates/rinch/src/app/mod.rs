@@ -3231,7 +3231,7 @@ impl RinchApp {
         } else {
             Selection::cursor(target)
         };
-        if moved == selection && affinity == head_affinity {
+        if moved == selection {
             return;
         }
         let Some(state) = self.focused_input_state.as_mut() else {
