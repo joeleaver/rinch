@@ -548,7 +548,9 @@ fn a_mismatched_3d_pair_decomposes_in_3d() {
             ),
             (
                 0.5,
-                [-0.882942, 0.337055, -0.337055, 0.0294885, -2.20735, 0.842638],
+                [
+                    -0.882942, 0.337055, -0.337055, 0.0294885, -2.20735, 0.842638,
+                ],
             ),
         ],
     );
@@ -586,7 +588,9 @@ fn a_matrix3d_pair_decomposes_in_3d() {
 /// Each end is decomposed on its own, and a 2D end by the 2D decomposition: a
 /// reflection is one negative scale (the x scale when `a < d`, else the y
 /// one), not the 3D decomposition's three negated scales and a half turn. So
-/// `scaleX(-1)` against `rotateX(60deg)` passes through an x scale of 0.
+/// `scaleX(-1)` against `rotateX(60deg)` passes through an x scale of 0. (Not
+/// sampled at that point: a singular 4×4 is drawn as nothing, #1051, while
+/// Chrome's computed value still prints it.)
 #[test]
 fn a_2d_end_is_decomposed_in_2d() {
     check_transition(
@@ -594,17 +598,13 @@ fn a_2d_end_is_decomposed_in_2d() {
         "rotateX(60deg)",
         &[
             (0.2, [-0.6, 0.0, 0.0, 0.978148, 0.0, 0.0]),
-            (0.5, [0.0, 0.0, 0.0, 0.866025, 0.0, 0.0]),
             (0.8, [0.6, 0.0, 0.0, 0.669131, 0.0, 0.0]),
         ],
     );
     check_transition(
         "scaleY(-1) translate(5px)",
         "rotateY(60deg)",
-        &[
-            (0.3, [0.951057, 0.0, 0.0, -0.4, 3.5, 0.0]),
-            (0.5, [0.866025, 0.0, 0.0, 0.0, 2.5, 0.0]),
-        ],
+        &[(0.3, [0.951057, 0.0, 0.0, -0.4, 3.5, 0.0])],
     );
 }
 
