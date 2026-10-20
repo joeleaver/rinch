@@ -133,19 +133,15 @@ fn walk(doc: &RinchDocument, id: usize, depth: usize, out: &mut Vec<String>) {
             }
         }
     }
-    // A text leaf that is no IFC member — a flex or grid item's text, in a
-    // block-level container or inside an `inline-flex` / `inline-grid` (#904)
-    // — is painted from the layout its measure built, cached on the node.
-    // Compared here, run by run, like an IFC root's — except the brush: paint
-    // draws a leaf in its parent's *current* colour, not the one it was shaped
-    // with (#904), so that colour is what is compared. An IFC member's is not:
-    // its root paints it, and a layout left from when it was a leaf is read by
-    // nothing that paints.
-    if let Some(cl) = node
-        .cached_text_parley
-        .as_ref()
-        .filter(|_| node.ifc_root.is_none())
-    {
+    // A text leaf — a flex or grid item's text, in a block-level container or
+    // inside an `inline-flex` / `inline-grid` (#904) — is painted from the
+    // layout its measure built, cached on the node. Compared here, run by run,
+    // like an IFC root's — except the brush: paint draws a leaf in its parent's
+    // *current* colour, not the one it was shaped with (#904), so that colour
+    // is what is compared. An IFC member is compared too: it has none in a
+    // fresh layout, and one left from when it was a leaf is the #970 leak
+    // (the caret and glyph queries read it).
+    if let Some(cl) = node.cached_text_parley.as_ref() {
         out.push(format!(
             "{:indent$}  leaf {}x{} lines={}",
             "",
@@ -1078,6 +1074,51 @@ fn a_root_that_was_briefly_flex_keeps_no_stale_layout() {
     f.set_text_content(t2, "short ");
     settle(&mut f);
     assert_eq!(incremental, snapshot(&f));
+}
+
+/// #970: a text node that was a flex item's leaf and becomes an IFC member
+/// keeps no leaf layout, so the caret and glyph queries on it answer as they
+/// do in a fresh layout (the IFC root answers for its text; the member itself
+/// has no layout of its own). The last text run is used: as a flex item it is
+/// narrow and wraps, so a stale leaf layout is several lines tall.
+#[test]
+fn a_text_node_that_stops_being_a_leaf_answers_no_stale_caret_970() {
+    use rinch_dom::text_query::{caret_position_for_offset, glyph_bounds_for_offset};
+    let css = ".on .box { display: flex; }";
+    let make = |on: bool| {
+        let mut d = RinchDocument::new();
+        d.load_css(BASE_CSS);
+        d.load_css(css);
+        let w = ifc_doc(&mut d, on);
+        settle(&mut d);
+        (d, w)
+    };
+    let last_text = |d: &RinchDocument, w: NodeId| {
+        let p = d.tree.get(w.0).unwrap().children[0];
+        *d.tree.get(p).unwrap().children.last().unwrap() as u64
+    };
+    let (mut d, w) = make(true);
+    let t = last_text(&d, w);
+    // Positive control: as a flex item's text the node is a leaf and answers.
+    assert!(
+        caret_position_for_offset(&d, t, 8).is_some(),
+        "counter-oracle: a flex item's text has a leaf layout"
+    );
+    d.set_attribute(w, "class", "wrap");
+    d.resolve_layout(VP.0, VP.1);
+    let (f, w2) = make(false);
+    let t2 = last_text(&f, w2);
+    assert_eq!(
+        caret_position_for_offset(&d, t, 8),
+        caret_position_for_offset(&f, t2, 8),
+        "caret on an IFC member that used to be a leaf"
+    );
+    assert_eq!(
+        glyph_bounds_for_offset(&d, t, 8).map(|g| (g.x, g.y, g.width, g.height)),
+        glyph_bounds_for_offset(&f, t2, 8).map(|g| (g.x, g.y, g.width, g.height)),
+        "glyph bounds on an IFC member that used to be a leaf"
+    );
+    assert!(d.tree.get(t as usize).unwrap().cached_text_parley.is_none());
 }
 
 // ── Width alone ──────────────────────────────────────────────────────────────
