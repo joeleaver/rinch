@@ -675,7 +675,12 @@ impl RinchDocument {
                 // Its pixels are recorded where it was painted before it is
                 // freed, as `remove_node` does (#966): a generated box that
                 // overflows its originator, or casts a shadow past it, left
-                // them on screen when its rule stopped matching.
+                // them on screen when its rule stopped matching. This
+                // pruning runs on every cascade of the originator (the box
+                // is regenerated whether or not its rule changed), so every
+                // hover or class change on an element with a `::before` /
+                // `::after` pays this walk too: a few steps per generated
+                // node, and the same damage it was already given.
                 self.mark_subtree_paint_dirty(cid);
                 // Remove the pseudo-element's subtree from the slab
                 self.tree.remove_subtree(cid);
