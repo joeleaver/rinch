@@ -92,7 +92,11 @@ fn set_text_keeps_both_generated_boxes() {
 /// between them — after the `::before`, before the `::after`.
 #[test]
 fn set_text_on_an_element_holding_only_generated_boxes() {
-    for (class, want) in [("a b", "PREFIX new SUFFIX"), ("a", "new SUFFIX"), ("b", "PREFIX new")] {
+    for (class, want) in [
+        ("a b", "PREFIX new SUFFIX"),
+        ("a", "new SUFFIX"),
+        ("b", "PREFIX new"),
+    ] {
         let (mut d, p) = doc(class, &[]);
         d.set_text_content(p, "new");
         d.resolve_layout(801.0, 400.0);
