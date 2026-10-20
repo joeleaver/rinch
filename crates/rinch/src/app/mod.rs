@@ -3117,7 +3117,10 @@ impl RinchApp {
                 x,
             );
         }
-        (Some((offset, rinch_core::dom::CaretAffinity::Downstream)), x)
+        (
+            Some((offset, rinch_core::dom::CaretAffinity::Downstream)),
+            x,
+        )
     }
 
     /// The start (`end = false`) or end (`end = true`) of the visual line a

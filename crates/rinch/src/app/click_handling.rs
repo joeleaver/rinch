@@ -704,6 +704,9 @@ impl RinchApp {
     /// [`Self::compute_input_cursor_from_click`], over the same layout, so a
     /// caret placed by a press and the rect reported for it agree glyph for
     /// glyph. `None` for an empty field (nothing to lay out) or a missing node.
+    /// (A downstream caret: the tests' question. The runtime asks
+    /// [`Self::input_caret_rect_with_affinity`] with the caret's own, #941.)
+    #[cfg(test)]
     pub(super) fn input_caret_rect_for_offset(
         tree: &rinch_dom::NodeTree,
         font_cx: &mut parley::FontContext,

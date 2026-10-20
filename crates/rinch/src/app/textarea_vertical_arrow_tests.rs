@@ -390,6 +390,7 @@ fn head_line_y(app: &mut RinchApp, id: usize) -> (f32, f32) {
 /// between a frame with the caret shown and one with it blinked off. A local
 /// pixel oracle for what paint does with the affinity, not what the runtime
 /// computes.
+#[cfg(software_shell)]
 fn painted_caret_rows(app: &mut RinchApp, id: usize) -> std::ops::RangeInclusive<usize> {
     fn frame(app: &mut RinchApp, id: usize, visible: &str) -> (Vec<u8>, u32) {
         {
@@ -519,6 +520,7 @@ fn up_onto_a_glyph_wrapped_line_loses_no_column() {
 /// The fixture's positive control is the caret at the end of the text, which
 /// paints on the second line.
 #[test]
+#[cfg(software_shell)]
 fn the_upstream_caret_is_painted_on_the_upper_line() {
     let (mut app, id) = mount("textarea", None, 130);
     type_str(&mut app, "iiii WWWWWWWW");
