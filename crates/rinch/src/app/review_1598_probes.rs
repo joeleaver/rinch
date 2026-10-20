@@ -486,3 +486,15 @@ fn p12_enter_keeps_a_multi_selection() {
     eprintln!("P12 selection after Enter {:?} onselect {:?}", sel(&p), p.selects.borrow());
     assert_eq!(sel(&p), ["a", "c"], "Enter collapsed the selection");
 }
+
+/// P13: a deleted selected row is not reported by onselectionchange.
+#[test]
+fn p13_a_deleted_row_is_not_reported() {
+    let mut p = build(MULTI, flat(&["a", "b", "c"]), &[]);
+    click(&mut p, "b", Modifiers::default());
+    p.data.set(flat(&["a", "c"]));
+    p.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    click(&mut p, "c", ctrl());
+    let last = p.changes.borrow().last().cloned().unwrap();
+    assert_eq!(last, ["c"], "reported {:?}", last);
+}
