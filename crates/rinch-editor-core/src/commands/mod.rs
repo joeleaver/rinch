@@ -1349,45 +1349,20 @@ pub fn delete_char_forward() -> Command {
 
 /// The range a word delete removes from a collapsed caret: from the caret to
 /// the previous (`forward = false`) or next word boundary of
-/// [`word_boundary`](crate::motion::word_boundary) — the boundary the word motion
-/// (Ctrl+Left / Right) lands on — clamped so it never takes an inline atom (an
-/// image, a hard break) along with text. `None` when the selection is not a
-/// collapsed text caret, or when the clamped range is empty: at a textblock edge,
-/// or with an atom right beside the caret.
+/// [`word_boundary`](crate::motion::word_boundary) — exactly what the word
+/// motion (Ctrl+Left / Right) moves over, so the two cannot disagree. An inline
+/// atom is a word of its own there (#938): beside the caret it goes alone,
+/// with any whitespace between them, and a word beyond it stays. `None` when
+/// the selection is not a collapsed text caret, or when the range is empty (at
+/// a textblock edge).
 fn word_delete_range(state: &EditorState, forward: bool) -> Option<(usize, usize)> {
     let sel = &state.selection;
     if matches!(sel, crate::selection::Selection::Cell(_)) || !sel.is_empty() {
         return None;
     }
     let head = sel.head();
-    let r = state.doc.resolve(head).ok()?;
-    let block = r.parent();
-    if !block.is_textblock() {
-        return None;
-    }
-    let head_off = r.parent_offset();
-    let start = head.0 - head_off;
-    let mut target = crate::motion::word_boundary(&state.doc, head, forward)?.0 - start;
-    // An atom is a placeholder space to the word motion, so a word delete would
-    // otherwise take it together with the word beyond it. It is a boundary of its
-    // own instead, as a block edge is: one keypress takes the atom alone.
-    let mut off = 0;
-    for i in 0..block.child_count() {
-        let child = block.child(i);
-        let size = child.node_size();
-        if child.text().is_none() {
-            if forward && off >= head_off && off < target {
-                target = off;
-            } else if !forward && off >= target && off + size <= head_off {
-                target = off + size;
-            }
-        }
-        off += size;
-    }
-    (target != head_off).then(|| {
-        let (a, b) = (start + target, head.0);
-        (a.min(b), a.max(b))
-    })
+    let target = crate::motion::word_boundary(&state.doc, head, forward)?;
+    (target != head).then(|| (target.0.min(head.0), target.0.max(head.0)))
 }
 
 /// Delete from the caret to a word boundary (see [`word_delete_range`]), when
@@ -1405,10 +1380,13 @@ fn delete_word_range(forward: bool) -> Command {
 /// from the caret back to the boundary the word motion (Ctrl+Left) lands on,
 /// taking any whitespace between them. A mark boundary is not a word boundary.
 ///
+/// A word is what [`word_segments`](crate::motion::word_segments) says: a run
+/// of punctuation is one apart from the letters beside it, and an inline atom
+/// is one of its own, so a word delete never takes an atom along with text.
+///
 /// Where that range is empty it is [`delete_char_backward`]: with a non-empty
-/// selection (deleted as it stands), at a textblock's start (join / lift, as
-/// Backspace does there), and with an inline atom right before the caret (the
-/// atom alone — a word delete never takes an atom along with text).
+/// selection (deleted as it stands) and at a textblock's start (join / lift, as
+/// Backspace does there).
 pub fn delete_word_backward() -> Command {
     chain(vec![delete_word_range(false), delete_char_backward()])
 }
@@ -3235,9 +3213,9 @@ mod tests {
         n
     }
 
-    /// An inline atom (an image, a hard break) is a boundary a word delete does
-    /// not cross, as a block edge is: an adjacent atom goes on its own, like
-    /// Backspace / Delete would take it, and a word beyond one stays.
+    /// An inline atom (an image, a hard break) is a word of its own (#938): an
+    /// adjacent atom goes on its own, like Backspace / Delete would take it, and
+    /// a word beyond one stays.
     /// `foo<img>bar`: "foo" 1..4, the image 4..5, "bar" 5..8.
     #[test]
     fn word_delete_stops_at_an_inline_atom() {
@@ -3261,12 +3239,13 @@ mod tests {
             assert_eq!(count_type(&word.doc, atom), 1, "{atom}: word after");
             assert_eq!(all_text(&word.doc), "bar", "{atom}: word after");
         }
-        // Whitespace between the caret and an atom goes, the atom stays:
-        // "foo" 1..4, the image 4..5, "  " 5..7, caret at 7.
+        // Whitespace between the caret and an atom goes with the atom, as it
+        // goes with a word (#938, Chrome 153): "foo" 1..4, the image 4..5,
+        // "  " 5..7, caret at 7.
         let gap = html_editor(r#"<p>foo<img src="x.png">  </p>"#, 7)
             .run("deleteWordBackward")
             .unwrap();
-        assert_eq!(count_type(&gap.doc, "image"), 1);
+        assert_eq!(count_type(&gap.doc, "image"), 0);
         assert_eq!(all_text(&gap.doc), "foo");
     }
 

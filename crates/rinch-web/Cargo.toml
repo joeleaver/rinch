@@ -120,3 +120,8 @@ web-sys = { version = "0.3", features = ["DragEventInit", "FilePropertyBag", "Ht
 # carries `fastrand/js` itself and builds for wasm32 with no feature shims — see
 # `examples/collab-editor-web`.
 collaboration = ["rinch-editor-view/collaboration"]
+# Split a CJK / Thai run into words with ICU's dictionary for the editor's word
+# motion, word delete and double-click (#939). Off by default: it links ICU's
+# segmentation dictionaries into the wasm (see `docs/src/guide/wasm.md`). Without
+# it such a run is one word, ended by whitespace, punctuation or a change of script.
+word-dictionary = ["rinch-editor-core/word-dictionary"]
