@@ -755,8 +755,15 @@ cursor; paste and IME preedit don't reach this path (an IME *commit* does).
 
 There is **one** history, implemented as a plugin. It stores **inverted steps** (not
 byte positions), groups them by transaction boundary, and **merges consecutive typing
-transactions** within a time/affinity window, so a burst of typing undoes as one
-step. On undo it pops a group, rebases its inverted steps over any intervening
+transactions** (text inserts and deletes, Backspace and the word deletes included)
+less than 500 ms apart, so a burst of typing undoes as one step and a pause starts the
+next. An explicit caret move or any other kind of edit ends the group too. The time is
+`Transaction::time`, which the core never reads a clock for: `EditorHandle` stamps
+every transaction it dispatches (`update`, the input paths, `command`, `insert_image`,
+`toggle_link`) with a
+millisecond clock (`web_time`, so `performance.now()` in a browser) unless its builder
+called `set_time` itself (#940; before, nothing stamped it and all typing merged into
+one step). On undo it pops a group, rebases its inverted steps over any intervening
 mappings, applies them as a transaction that doesn't re-enter history, and restores
 the recorded selection. `undo` / `redo` are the only history entry points.
 

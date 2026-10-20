@@ -129,8 +129,10 @@ impl Transaction {
         !self.steps.is_empty()
     }
 
-    /// The transaction's timestamp (history grouping). Defaults to `0`; the
-    /// platform sets it via [`Transaction::set_time`].
+    /// The transaction's timestamp in milliseconds (history grouping). Defaults
+    /// to `0`; `rinch-editor-view`'s `EditorHandle` stamps an unstamped one it
+    /// dispatches with its clock (#940), and a builder may set its own via
+    /// [`Transaction::set_time`].
     pub fn time(&self) -> u64 {
         self.time
     }
