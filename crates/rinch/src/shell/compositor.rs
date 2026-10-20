@@ -908,7 +908,13 @@ mod gpu_alpha_tests {
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         );
         let post_view = post.create_view(&TextureViewDescriptor::default());
-        let premultiplied = present_into(&device, &queue, &compositor, &frame, PresentAlpha::Premultiply);
+        let premultiplied = present_into(
+            &device,
+            &queue,
+            &compositor,
+            &frame,
+            PresentAlpha::Premultiply,
+        );
         let mut encoder = device.create_command_encoder(&Default::default());
         compositor.present(
             &device,

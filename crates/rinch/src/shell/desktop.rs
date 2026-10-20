@@ -969,11 +969,17 @@ mod alpha_mode_tests {
             "a Bgra8 surface is written whole, not blended over an uncleared image"
         );
         // The composited layers (premultiplied).
-        assert_eq!(present_step(A::PreMultiplied, true, true), PresentStep::Copy);
+        assert_eq!(
+            present_step(A::PreMultiplied, true, true),
+            PresentStep::Copy
+        );
         assert_eq!(present_step(A::Auto, true, true), PresentStep::Copy);
         #[cfg(not(target_os = "macos"))]
         {
-            assert_eq!(present_step(A::PostMultiplied, false, true), PresentStep::Copy);
+            assert_eq!(
+                present_step(A::PostMultiplied, false, true),
+                PresentStep::Copy
+            );
             assert_eq!(
                 present_step(A::PostMultiplied, false, false),
                 PresentStep::Pass(P::Straight)
@@ -989,7 +995,10 @@ mod alpha_mode_tests {
                 present_step(A::PostMultiplied, false, true),
                 PresentStep::Pass(P::Premultiply)
             );
-            assert_eq!(present_step(A::PostMultiplied, true, true), PresentStep::Copy);
+            assert_eq!(
+                present_step(A::PostMultiplied, true, true),
+                PresentStep::Copy
+            );
         }
     }
 }

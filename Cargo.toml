@@ -106,10 +106,13 @@ wgpu-types = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-p
 naga = { git = "https://github.com/joeleaver/wgpu-fork", branch = "rinch-patch" }
 # Patch winit to use our fork with Wayland DnD support
 # Upstream winit 0.31-beta.2 has no Wayland drag-and-drop implementation, and no
-# wlr-layer-shell window role (WindowAttributesWayland::with_layer_shell, #1523)
-winit = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
-winit-core = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
-winit-common = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
-winit-wayland = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
-winit-x11 = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
-dpi = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-patch" }
+# wlr-layer-shell window role (WindowAttributesWayland::with_layer_shell, #1523).
+# PR #1597 review branch: rinch-layer-move-confirm (bf5d1870, one commit on
+# rinch-patch 5b0534ce: a layer surface's move is confirmed by WindowEvent::Moved).
+# Fast-forward rinch-patch to it and point these back at rinch-patch before merging.
+winit = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-layer-move-confirm" }
+winit-core = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-layer-move-confirm" }
+winit-common = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-layer-move-confirm" }
+winit-wayland = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-layer-move-confirm" }
+winit-x11 = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-layer-move-confirm" }
+dpi = { git = "https://github.com/joeleaver/winit-fork", branch = "rinch-layer-move-confirm" }

@@ -413,7 +413,10 @@ mod tests {
         for lag in [0, 1, 2, 3, 7, 60] {
             let (end, worst) = drag(60, (10.0, 6.0), lag);
             assert_eq!(end, (680.0, 420.0), "lag {lag}");
-            assert_eq!(worst, 0.0, "lag {lag}: every move goes where the pointer is");
+            assert_eq!(
+                worst, 0.0,
+                "lag {lag}: every move goes where the pointer is"
+            );
         }
     }
 

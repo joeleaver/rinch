@@ -396,6 +396,13 @@ fn main() {
 }
 ```
 
+Both renderers composite a transparent window with its alpha where the
+platform can: the software renderer through softbuffer, the GPU renderer by
+configuring its surface with a blending alpha mode and converting Vello's
+straight alpha to what that mode reads. A translucent fill looks the same on
+either. On Windows the GPU surface offers no blending mode yet, so a
+transparent window renders opaque there (issue #89).
+
 ### Custom Resize Handles
 
 When creating borderless windows, native resize handles are not available. Rinch provides custom resize handle support through the `resize_inset` property.
