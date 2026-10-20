@@ -3192,6 +3192,15 @@ input a shaped layout is built from:
   whose invalidation reaches only the changed node's *parent*: text appended
   inside a `<span>` inside a paragraph, and a chip resized during a structural
   pass, both left the paragraph painting its old line before it.
+  **A chip resized outside a structural pass marks its root's signature
+  stale** (`IfcRootMeasures::stale`, set by `forget_ifc_measures_and_signature`
+  from `remeasure_dirty_atomic_inlines` and `invalidate_ifc_of_atomic_inline`):
+  the root is measured again at the new size while its signature still hashes
+  the old one, so a chip that went back to that size made the next pass's
+  signature match and the sizes measured in between were served. The next
+  pass that signs the root treats it as changed (review of #1627). A new path
+  that moves an atomic inline's size and drops its root's sizes must use that
+  call, not `forget_ifc_measures`.
 - **`invalidate_ifc_root` marks the root in Taffy on every route** (and its
   #466 measure leaf). An inline member is detached from Taffy, so a drop that
   came through one — a `span`'s own font change, `set_text_content` on text in a
