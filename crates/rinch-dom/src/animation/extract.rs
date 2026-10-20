@@ -2,7 +2,7 @@
 
 use style::properties::ComputedValues;
 
-use crate::transition::types::TimingFunction;
+use crate::transition::types::convert_timing_function;
 
 use super::types::{
     AnimationDirection, AnimationFillMode, AnimationPlayState, AnimationSpec, IterationCount,
@@ -88,27 +88,6 @@ impl AnimationSpec {
         }
 
         specs
-    }
-}
-
-/// Convert Stylo timing function to our TimingFunction.
-/// Reuses the same logic as transition/types.rs.
-pub(crate) fn convert_timing_function(
-    tf: &style::values::computed::easing::TimingFunction,
-) -> TimingFunction {
-    use style::values::generics::easing::TimingFunction as StyloTF;
-    use style::values::generics::easing::TimingKeyword;
-
-    match tf {
-        StyloTF::Keyword(kw) => match kw {
-            TimingKeyword::Linear => TimingFunction::Linear,
-            TimingKeyword::Ease => TimingFunction::Ease,
-            TimingKeyword::EaseIn => TimingFunction::EaseIn,
-            TimingKeyword::EaseOut => TimingFunction::EaseOut,
-            TimingKeyword::EaseInOut => TimingFunction::EaseInOut,
-        },
-        StyloTF::CubicBezier { x1, y1, x2, y2 } => TimingFunction::CubicBezier(*x1, *y1, *x2, *y2),
-        StyloTF::Steps(..) | StyloTF::LinearFunction(..) => TimingFunction::Linear,
     }
 }
 

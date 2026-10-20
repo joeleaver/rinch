@@ -123,8 +123,10 @@ impl ActiveAnimation {
         // Handle delay period
         if elapsed < self.delay_ms {
             return match self.fill_mode {
+                // The before phase: CSS Easing 2's before flag is set when
+                // the first iteration runs forwards.
                 AnimationFillMode::Backwards | AnimationFillMode::Both => {
-                    self.values_at_progress(self.start_progress())
+                    self.values_at_progress(self.start_progress(), !self.reversed(0))
                 }
                 _ => AnimationResult::NoValues,
             };
@@ -139,7 +141,8 @@ impl ActiveAnimation {
                 if current_iteration >= n {
                     return match self.fill_mode {
                         AnimationFillMode::Forwards | AnimationFillMode::Both => {
-                            self.values_at_progress(self.end_progress())
+                            let (progress, before_flag) = self.end_progress();
+                            self.values_at_progress(progress, before_flag)
                         }
                         _ => AnimationResult::Complete,
                     };
@@ -158,7 +161,7 @@ impl ActiveAnimation {
         // Apply direction
         let directed_progress = self.apply_direction(iteration_progress, current_iteration);
 
-        self.values_at_progress(directed_progress)
+        self.values_at_progress(directed_progress, false)
     }
 
     /// Whether this animation's clock is frozen (`animation-play-state: paused`).
@@ -236,7 +239,12 @@ impl ActiveAnimation {
     /// progress 1 of an infinite iteration, which Chrome 155 does not count as
     /// odd: `alternate` fills forwards, `alternate-reverse` backwards, as
     /// iteration 0 does.
-    fn end_progress(&self) -> f32 {
+    ///
+    /// The second value is CSS Easing 2's before flag, which Web Animations
+    /// sets in the after phase when that last iteration runs backwards (#1564:
+    /// `steps(4, start) reverse forwards` ends at its `from` value, not a
+    /// step past it).
+    fn end_progress(&self) -> (f32, bool) {
         let (progress, iteration) = match self.iteration_count {
             IterationCount::Finite(n) if n <= 0.0 => (0.0, 0),
             IterationCount::Finite(n) => {
@@ -249,17 +257,24 @@ impl ActiveAnimation {
             }
             IterationCount::Infinite => (1.0, 0),
         };
-        self.apply_direction(progress, iteration)
+        (
+            self.apply_direction(progress, iteration),
+            self.reversed(iteration),
+        )
     }
 
-    fn apply_direction(&self, progress: f64, iteration: u64) -> f32 {
-        let reversed = match self.direction {
+    /// Whether iteration `iteration` runs backwards.
+    fn reversed(&self, iteration: u64) -> bool {
+        match self.direction {
             AnimationDirection::Normal => false,
             AnimationDirection::Reverse => true,
             AnimationDirection::Alternate => iteration % 2 == 1,
             AnimationDirection::AlternateReverse => iteration.is_multiple_of(2),
-        };
-        if reversed {
+        }
+    }
+
+    fn apply_direction(&self, progress: f64, iteration: u64) -> f32 {
+        if self.reversed(iteration) {
             (1.0 - progress) as f32
         } else {
             progress as f32
@@ -269,19 +284,22 @@ impl ActiveAnimation {
     fn final_values(&self) -> AnimationResult {
         match self.fill_mode {
             AnimationFillMode::Forwards | AnimationFillMode::Both => {
-                self.values_at_progress(self.end_progress())
+                let (progress, before_flag) = self.end_progress();
+                self.values_at_progress(progress, before_flag)
             }
             _ => AnimationResult::Complete,
         }
     }
 
-    fn values_at_progress(&self, progress: f32) -> AnimationResult {
+    /// The values at directed progress `progress`, the interval's easing
+    /// evaluated with `before_flag` (CSS Easing 2's before flag).
+    fn values_at_progress(&self, progress: f32, before_flag: bool) -> AnimationResult {
         if self.keyframe_stops.is_empty() {
             return AnimationResult::NoValues;
         }
 
-        // Find surrounding keyframe stops
-        let (prev_idx, next_idx) = self.find_surrounding_stops(progress);
+        // Find the keyframe interval progress falls in
+        let (prev_idx, next_idx) = self.interval(progress);
 
         let prev = &self.keyframe_stops[prev_idx];
         let next = &self.keyframe_stops[next_idx];
@@ -296,14 +314,25 @@ impl ActiveAnimation {
         let local = ((progress - prev.percentage) / span).clamp(0.0, 1.0);
 
         // Apply timing function (from prev keyframe, or default)
-        let timing = prev.timing_function.unwrap_or(self.default_timing);
-        let eased = timing.apply(local);
+        let timing = prev
+            .timing_function
+            .as_ref()
+            .unwrap_or(&self.default_timing);
+        let eased = timing.apply_with_before_flag(local, before_flag);
 
         // Interpolate each property
         let mut result = Vec::new();
         for (prop, from_val) in &prev.values {
             if let Some((_, to_val)) = next.values.iter().find(|(p, _)| p == prop) {
-                if let Some(interpolated) = from_val.interpolate(to_val, eased) {
+                // An eased 0 or 1 is the keyframe's own value, as it was when
+                // an iteration's ends snapped to it: an interpolation there
+                // need not reproduce it (a `matrix3d` against `none` is
+                // decomposed flat, #989), and Chrome 153 shows the keyframe.
+                if eased == 0.0 {
+                    result.push((*prop, from_val.clone()));
+                } else if eased == 1.0 {
+                    result.push((*prop, to_val.clone()));
+                } else if let Some(interpolated) = from_val.interpolate(to_val, eased) {
                     result.push((*prop, interpolated));
                 } else {
                     // Snap to target at 50%
@@ -328,30 +357,26 @@ impl ActiveAnimation {
         AnimationResult::Values(result)
     }
 
-    /// Binary search for surrounding keyframe stops.
-    fn find_surrounding_stops(&self, progress: f32) -> (usize, usize) {
+    /// The keyframe interval `progress` falls in (Web Animations, "the
+    /// effect value of a keyframe effect"): it starts at the last stop at or
+    /// before `progress` that is below 100%, so an iteration's start (0) and end
+    /// (1) are the first and last interval at distances 0 and 1 and are
+    /// **eased**, not snapped to the keyframe there — `steps(4, start)` at 0 and
+    /// `linear(0, 0.5)` at 1 sit a step or half way off it (#1564). Only a
+    /// progress of 1 with more than one stop at 100% takes the last stop alone.
+    fn interval(&self, progress: f32) -> (usize, usize) {
         let stops = &self.keyframe_stops;
-        if stops.is_empty() {
+        let last = stops.len().saturating_sub(1);
+        if last == 0 {
             return (0, 0);
         }
-        if progress <= stops[0].percentage {
-            return (0, 0);
-        }
-        if progress >= stops[stops.len() - 1].percentage {
-            let last = stops.len() - 1;
+        if progress >= 1.0 && stops.iter().filter(|s| s.percentage >= 1.0).count() > 1 {
             return (last, last);
         }
-
-        // Find the last stop with percentage <= progress
-        let mut prev_idx = 0;
-        for (i, stop) in stops.iter().enumerate() {
-            if stop.percentage <= progress {
-                prev_idx = i;
-            } else {
-                break;
-            }
-        }
-        let next_idx = (prev_idx + 1).min(stops.len() - 1);
-        (prev_idx, next_idx)
+        let start = stops
+            .iter()
+            .rposition(|s| s.percentage <= progress && s.percentage < 1.0)
+            .unwrap_or(0);
+        (start, (start + 1).min(last))
     }
 }

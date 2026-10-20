@@ -355,6 +355,7 @@ Tooltip { label: "Top tooltip", position: "top",
 | `Divider` | Horizontal/vertical separator |
 | `Image` | Responsive image with fallback |
 | `List` / `ListItem` | Styled list |
+| `Tree` | Hierarchical rows with expand/collapse, selection, and drag-to-rearrange |
 
 ```rust
 // Avatar
@@ -411,6 +412,51 @@ List {
     ListItem { "Third item" }
 }
 ```
+
+#### Rearranging a Tree by dragging
+
+A `Tree` with `draggable: true` (and a `tree` state) makes every row a drag
+source and a drop target. The Tree knows rows, not what they mean: it offers
+a drop, the app judges it, and the app moves its own data when it arrives.
+
+```rust
+let tree = UseTreeReturn::new(UseTreeOptions::default());
+let data = Signal::new(initial_rows());
+rsx! {
+    Tree {
+        tree: Some(tree),
+        data_source: Some(Rc::new(move || data.get())),
+        draggable: true,
+        // Only folders take children; a file splits into before / after.
+        accepts_children: Some(Rc::new(|node: &TreeNodeData| node.has_children())),
+        judge_drop: Some(Rc::new(|drop: &TreeDrop| {
+            if drop.parent.as_deref() == Some("archive") { DropVerdict::Refused } else { DropVerdict::Allowed }
+        })),
+        ondrop: move |drop: TreeDrop| data.update(|rows| move_rows(rows, &drop)),
+    }
+}
+```
+
+- **Where a drop lands** follows the part of the row under the pointer: its
+  top quarter is before it, its middle half inside it (last), its bottom
+  quarter after it. After an expanded row with children is first inside it.
+  A row `accepts_children` refuses has no inside: half before, half after.
+- **Depth at the end of a group.** After the last row of a group, the
+  pointer's column picks how far out the drop goes, which is how a drag
+  outdents. The column is read in units of `indent` when it is set, and
+  otherwise in the indent the tree measures from its rendered rows. A dragged
+  row is placed as if collapsed, so its own bottom edge can take it out of its
+  group even when it is expanded and last.
+- **Drawing.** The row under the pointer draws the drop: a line before or
+  after it at the depth the drop takes, or an outline for "inside"; a refused
+  drop is drawn in the error color and is never delivered.
+- **Reporting.** `ondropchange` reports the drop on offer each time it
+  changes, for an app that says in words where the rows will land; `ondrop`
+  delivers an allowed one. Resting inside a collapsed row with children
+  expands it after `hover_expand_ms` (600 by default).
+
+See the Tree section of [Component Props](component-props.md#tree) for every
+prop and type.
 
 ### Navigation
 

@@ -7,7 +7,9 @@
 use super::*;
 use std::cell::RefCell;
 
-use rinch_components::{Tree, TreeDrop, TreeKey, TreeMove, TreeNodeData, TreeSlot, UseTreeOptions, UseTreeReturn};
+use rinch_components::{
+    Tree, TreeDrop, TreeKey, TreeMove, TreeNodeData, TreeSlot, UseTreeOptions, UseTreeReturn,
+};
 use rinch_core::Component;
 use rinch_core::element::ValueCallback;
 use rinch_platform::{KeyCode, KeyRepeat, Modifiers};
@@ -79,30 +81,52 @@ fn fixture() -> Fixture {
     {
         let doc = app.doc.as_ref().unwrap();
         let mut d = doc.borrow_mut();
-        d.load_css(&rinch_theme::generate_theme_css(&rinch_theme::Theme::default()));
+        d.load_css(&rinch_theme::generate_theme_css(
+            &rinch_theme::Theme::default(),
+        ));
         d.load_css(&rinch_components::generate_component_css());
         d.recompute_all_styles_full();
     }
     app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
-    Fixture { app, state, rested, moves, seen }
+    Fixture {
+        app,
+        state,
+        rested,
+        moves,
+        seen,
+    }
 }
 
 fn has_class(n: &rinch_dom::Node, class: &str) -> bool {
-    n.attributes.get("class").is_some_and(|c| c.split_whitespace().any(|one| one == class))
+    n.attributes
+        .get("class")
+        .is_some_and(|c| c.split_whitespace().any(|one| one == class))
 }
 
 fn find(app: &RinchApp, pred: impl Fn(&rinch_dom::Node) -> bool) -> usize {
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    d.tree.nodes.iter().find(|(_, n)| pred(n)).map(|(id, _)| id).expect("the node")
+    d.tree
+        .nodes
+        .iter()
+        .find(|(_, n)| pred(n))
+        .map(|(id, _)| id)
+        .expect("the node")
 }
 
 /// The content box (the row) of `value`.
 fn row(app: &RinchApp, value: &str) -> usize {
-    let li = find(app, |n| n.attributes.get("data-value").map(String::as_str) == Some(value));
+    let li = find(app, |n| {
+        n.attributes.get("data-value").map(String::as_str) == Some(value)
+    });
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    d.tree.nodes[li].children.iter().copied().find(|&c| has_class(&d.tree.nodes[c], "rinch-tree__node-content")).unwrap()
+    d.tree.nodes[li]
+        .children
+        .iter()
+        .copied()
+        .find(|&c| has_class(&d.tree.nodes[c], "rinch-tree__node-content"))
+        .unwrap()
 }
 
 fn centre(app: &RinchApp, id: usize) -> (f32, f32) {
@@ -114,8 +138,16 @@ fn centre(app: &RinchApp, id: usize) -> (f32, f32) {
 
 fn click(f: &mut Fixture, (x, y): (f32, f32)) {
     for event in [
-        PlatformEvent::MouseDown { x, y, button: MouseButton::Left },
-        PlatformEvent::MouseUp { x, y, button: MouseButton::Left },
+        PlatformEvent::MouseDown {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
+        PlatformEvent::MouseUp {
+            x,
+            y,
+            button: MouseButton::Left,
+        },
     ] {
         f.app.handle_event(event, (800, 600), 1.0);
     }
@@ -124,7 +156,13 @@ fn click(f: &mut Fixture, (x, y): (f32, f32)) {
 
 fn press(f: &mut Fixture, key: KeyCode, text: Option<&str>, modifiers: Modifiers) {
     f.app.handle_event(
-        PlatformEvent::KeyDown { key, logical_key: None, text: text.map(str::to_string), modifiers, repeat: KeyRepeat::Unknown },
+        PlatformEvent::KeyDown {
+            key,
+            logical_key: None,
+            text: text.map(str::to_string),
+            modifiers,
+            repeat: KeyRepeat::Unknown,
+        },
         (800, 600),
         1.0,
     );
@@ -135,7 +173,11 @@ fn cursor_row_classes(f: &Fixture, value: &str) -> String {
     let id = row(&f.app, value);
     let doc = f.app.doc.as_ref().unwrap();
     let d = doc.borrow();
-    d.tree.nodes[id].attributes.get("class").cloned().unwrap_or_default()
+    d.tree.nodes[id]
+        .attributes
+        .get("class")
+        .cloned()
+        .unwrap_or_default()
 }
 
 #[test]
@@ -147,21 +189,39 @@ fn a_clicked_row_takes_the_keyboard_and_the_arrows_move_the_cursor() {
 
     press(&mut f, KeyCode::ArrowDown, None, Modifiers::default());
     assert_eq!(f.state.cursor.get().as_deref(), Some("a2"));
-    assert!(f.state.selected.get().contains("a2"), "the cursor row is selected");
-    assert_eq!(f.rested.borrow().last().map(String::as_str), Some("a2"), "the app is told where it rests");
+    assert!(
+        f.state.selected.get().contains("a2"),
+        "the cursor row is selected"
+    );
+    assert_eq!(
+        f.rested.borrow().last().map(String::as_str),
+        Some("a2"),
+        "the app is told where it rests"
+    );
     assert!(cursor_row_classes(&f, "a2").contains("rinch-tree__node-content--cursor"));
     assert!(!cursor_row_classes(&f, "a1").contains("rinch-tree__node-content--cursor"));
 
     press(&mut f, KeyCode::ArrowDown, None, Modifiers::default());
     assert_eq!(f.state.cursor.get().as_deref(), Some("b"));
     press(&mut f, KeyCode::ArrowLeft, None, Modifiers::default());
-    assert_eq!(f.state.cursor.get().as_deref(), Some("b"), "a top-level leaf has no parent to go to");
+    assert_eq!(
+        f.state.cursor.get().as_deref(),
+        Some("b"),
+        "a top-level leaf has no parent to go to"
+    );
     press(&mut f, KeyCode::Home, None, Modifiers::default());
     assert_eq!(f.state.cursor.get().as_deref(), Some("a"));
     press(&mut f, KeyCode::ArrowLeft, None, Modifiers::default());
-    assert!(!f.state.expanded.get().contains("a"), "Left on an open row closes it");
+    assert!(
+        !f.state.expanded.get().contains("a"),
+        "Left on an open row closes it"
+    );
     press(&mut f, KeyCode::ArrowDown, None, Modifiers::default());
-    assert_eq!(f.state.cursor.get().as_deref(), Some("b"), "a closed row's children are skipped");
+    assert_eq!(
+        f.state.cursor.get().as_deref(),
+        Some("b"),
+        "a closed row's children are skipped"
+    );
 
     // Type-ahead: "c" finds Carrots.
     press(&mut f, KeyCode::KeyC, Some("c"), Modifiers::default());
@@ -175,14 +235,33 @@ fn the_app_sees_keys_first_and_moves_rows_with_them() {
     click(&mut f, b);
     press(&mut f, KeyCode::F2, None, Modifiers::default());
     assert_eq!(f.seen.borrow().last().map(String::as_str), Some("F2"));
-    assert_eq!(f.state.cursor.get().as_deref(), Some("b"), "a consumed key does nothing else");
+    assert_eq!(
+        f.state.cursor.get().as_deref(),
+        Some("b"),
+        "a consumed key does nothing else"
+    );
 
-    let alt_shift = Modifiers { alt: true, shift: true, ..Default::default() };
+    let alt_shift = Modifiers {
+        alt: true,
+        shift: true,
+        ..Default::default()
+    };
     press(&mut f, KeyCode::ArrowUp, None, alt_shift);
     let moves = f.moves.borrow();
     assert_eq!(moves.len(), 1, "Alt+Shift+Up became a move");
-    assert_eq!((moves[0].dragged.clone(), moves[0].parent.clone(), moves[0].slot.clone()), (vec!["b".to_string()], None, TreeSlot::First));
-    assert_eq!(f.state.cursor.get().as_deref(), Some("b"), "and not a cursor move");
+    assert_eq!(
+        (
+            moves[0].dragged.clone(),
+            moves[0].parent.clone(),
+            moves[0].slot.clone()
+        ),
+        (vec!["b".to_string()], None, TreeSlot::First)
+    );
+    assert_eq!(
+        f.state.cursor.get().as_deref(),
+        Some("b"),
+        "and not a cursor move"
+    );
 }
 
 /// A tree with `multiple` selection: a, b, c, d at the top level.
@@ -277,6 +356,14 @@ fn keys_typed_elsewhere_are_not_the_trees() {
     click(&mut f, away);
     let seen_before = f.seen.borrow().len();
     press(&mut f, KeyCode::ArrowDown, None, Modifiers::default());
-    assert_eq!(f.state.cursor.get().as_deref(), Some("a1"), "the cursor stays");
-    assert_eq!(f.seen.borrow().len(), seen_before, "the app's handle_key was not offered it either");
+    assert_eq!(
+        f.state.cursor.get().as_deref(),
+        Some("a1"),
+        "the cursor stays"
+    );
+    assert_eq!(
+        f.seen.borrow().len(),
+        seen_before,
+        "the app's handle_key was not offered it either"
+    );
 }

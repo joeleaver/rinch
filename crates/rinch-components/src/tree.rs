@@ -34,8 +34,8 @@ use std::rc::Rc;
 use rinch_core::Component;
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::element::ValueCallback;
-use rinch_core::get_click_context;
 use rinch_core::for_each_dom_typed;
+use rinch_core::get_click_context;
 use rinch_core::reactive::{Signal, untracked};
 use rinch_core::timer::{TimeoutHandle, clear_timeout, set_timeout};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
@@ -378,7 +378,9 @@ pub type RenderTreeNode = Rc<dyn Fn(&RenderTreeNodePayload, &mut RenderScope) ->
 // =============================================================================
 
 /// The part of a row the pointer is over while dragging: its top quarter,
-/// its middle half, or its bottom quarter.
+/// its middle half, or its bottom quarter. A row that takes no children
+/// ([`Tree::accepts_children`]) has no middle: its top half is before it
+/// and its bottom half after it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DropZone {
     /// Before the row, among its siblings.
@@ -431,6 +433,8 @@ pub enum DropVerdict {
 
 /// What a drag from a row carries ([`Tree::drag_values`]).
 pub type DragValues = Rc<dyn Fn(&str) -> Vec<String>>;
+/// Whether a row takes children by a drop ([`Tree::accepts_children`]).
+pub type AcceptsChildren = Rc<dyn Fn(&TreeNodeData) -> bool>;
 /// How the app judges a drop ([`Tree::judge_drop`]).
 pub type JudgeDrop = Rc<dyn Fn(&TreeDrop) -> DropVerdict>;
 
@@ -448,6 +452,8 @@ struct ShapeRow {
     parent: Option<usize>,
     level: usize,
     children: Vec<usize>,
+    /// Whether a drop may put rows into this one ([`Tree::accepts_children`]).
+    accepts: bool,
 }
 
 /// Where a drop lands, by row index, and where its indicator is drawn.
@@ -467,21 +473,33 @@ enum Slot {
 }
 
 impl Shape {
-    fn of(data: &[TreeNodeData]) -> Self {
-        fn walk(shape: &mut Shape, nodes: &[TreeNodeData], parent: Option<usize>, level: usize) -> Vec<usize> {
+    fn of(data: &[TreeNodeData], accepts: Option<&AcceptsChildren>) -> Self {
+        fn walk(
+            shape: &mut Shape,
+            nodes: &[TreeNodeData],
+            parent: Option<usize>,
+            level: usize,
+            accepts: Option<&AcceptsChildren>,
+        ) -> Vec<usize> {
             let mut ids = Vec::with_capacity(nodes.len());
             for node in nodes {
                 let id = shape.rows.len();
-                shape.rows.push(ShapeRow { value: node.value.clone(), parent, level, children: Vec::new() });
+                shape.rows.push(ShapeRow {
+                    value: node.value.clone(),
+                    parent,
+                    level,
+                    children: Vec::new(),
+                    accepts: accepts.is_none_or(|accepts| accepts(node)),
+                });
                 shape.by_value.insert(node.value.clone(), id);
                 ids.push(id);
-                let children = walk(shape, &node.children, Some(id), level + 1);
+                let children = walk(shape, &node.children, Some(id), level + 1, accepts);
                 shape.rows[id].children = children;
             }
             ids
         }
         let mut shape = Shape::default();
-        shape.roots = walk(&mut shape, data, None, 0);
+        shape.roots = walk(&mut shape, data, None, 0, accepts);
         shape
     }
 
@@ -550,7 +568,13 @@ impl Shape {
     /// column under the pointer, when the tree knows its indent in pixels: it
     /// picks the depth of an "after" at the end of a group, from `over`'s own
     /// level up to the level of the row drawn below it.
-    fn placement(&self, over: usize, zone: DropZone, pointer_level: Option<usize>, expanded: &HashSet<String>) -> Placement {
+    fn placement(
+        &self,
+        over: usize,
+        zone: DropZone,
+        pointer_level: Option<usize>,
+        expanded: &HashSet<String>,
+    ) -> Placement {
         let row = &self.rows[over];
         match zone {
             DropZone::Before => Placement {
@@ -558,24 +582,46 @@ impl Shape {
                 slot: self.prev_sibling(over).map_or(Slot::First, Slot::After),
                 line_level: row.level,
             },
-            DropZone::Inside => Placement { parent: Some(over), slot: Slot::Last, line_level: row.level },
-            DropZone::After if self.is_open(over, expanded) => {
-                Placement { parent: Some(over), slot: Slot::First, line_level: row.level + 1 }
-            }
+            DropZone::Inside => Placement {
+                parent: Some(over),
+                slot: Slot::Last,
+                line_level: row.level,
+            },
+            // After an open row with children is first inside it, unless it
+            // takes no children: then it is after it, at its own level.
+            DropZone::After if row.accepts && self.is_open(over, expanded) => Placement {
+                parent: Some(over),
+                slot: Slot::First,
+                line_level: row.level + 1,
+            },
             DropZone::After => {
                 let deepest = row.level;
-                let shallowest = self.next_visible(over, expanded).map_or(0, |next| self.rows[next].level).min(deepest);
+                let shallowest = self
+                    .next_visible(over, expanded)
+                    .map_or(0, |next| self.rows[next].level)
+                    .min(deepest);
                 let level = pointer_level.map_or(deepest, |level| level.clamp(shallowest, deepest));
                 let anchor = self.ancestor_at(over, level);
-                Placement { parent: self.rows[anchor].parent, slot: Slot::After(anchor), line_level: level }
+                Placement {
+                    parent: self.rows[anchor].parent,
+                    slot: Slot::After(anchor),
+                    line_level: level,
+                }
             }
         }
     }
 }
 
-/// The zone of a row a pointer `fraction` of the way down it is over.
-fn zone_at(fraction: f32) -> DropZone {
-    if fraction < 0.25 {
+/// The zone of a row a pointer `fraction` of the way down it is over;
+/// `accepts` is whether the row takes children (no middle zone when not).
+fn zone_at(fraction: f32, accepts: bool) -> DropZone {
+    if !accepts {
+        if fraction < 0.5 {
+            DropZone::Before
+        } else {
+            DropZone::After
+        }
+    } else if fraction < 0.25 {
         DropZone::Before
     } else if fraction > 0.75 {
         DropZone::After
@@ -600,13 +646,22 @@ struct DragState {
     drawn: RefCell<Option<String>>,
     /// The row a hover-to-expand is waiting on.
     hover: RefCell<Option<(String, TimeoutHandle)>>,
+    /// Whether the app's last `ondropchange` report was a drop.
+    told: Cell<bool>,
+    /// The pointer left the row on offer: unless the next row it reaches in
+    /// the same move offers a drop, the app is told `None` at the source's
+    /// drag move ([`withdraw`]).
+    pending_none: Cell<bool>,
+    /// Pixels per level measured from the rows, when the tree was given no
+    /// [`Tree::indent`]; once per drag.
+    level_px: Cell<Option<f32>>,
 }
 
 impl DragState {
-    fn shape(&self) -> Rc<Shape> {
+    fn shape(&self, accepts: Option<&AcceptsChildren>) -> Rc<Shape> {
         self.shape
             .borrow_mut()
-            .get_or_insert_with(|| Rc::new(Shape::of(&self.data.borrow())))
+            .get_or_insert_with(|| Rc::new(Shape::of(&self.data.borrow(), accepts)))
             .clone()
     }
 
@@ -631,6 +686,7 @@ struct TreeConfig {
     draggable: bool,
     drag_values: Option<DragValues>,
     judge_drop: Option<JudgeDrop>,
+    accepts_children: Option<AcceptsChildren>,
     ondropchange: Option<ValueCallback<Option<(TreeDrop, DropVerdict)>>>,
     ondrop: Option<ValueCallback<TreeDrop>>,
     ondragstart: Option<ValueCallback<Vec<String>>>,
@@ -700,9 +756,10 @@ pub struct Tree {
     pub oncollapse: Option<ValueCallback<String>>,
     /// Reactive data source. When provided, root nodes update when this changes.
     pub data_source: Option<Rc<dyn Fn() -> Vec<TreeNodeData>>>,
-    /// Indentation per level in pixels. Overrides `level_offset`, and is what
-    /// lets a drag at the end of a group choose its depth by the pointer's
-    /// horizontal position.
+    /// Indentation per level in pixels. Overrides `level_offset`. A drag at
+    /// the end of a group chooses its depth by the pointer's horizontal
+    /// position in units of this; without it, the tree measures the indent
+    /// of its rendered rows (from `level_offset`) once per drag.
     pub indent: Option<f32>,
     /// Whether rows can be dragged to rearrange the tree (needs `tree`).
     /// While a drag is over the tree it shows where the rows would land: a
@@ -716,8 +773,15 @@ pub struct Tree {
     /// the error color and is not delivered. Drops into a dragged row's own
     /// subtree are always refused. Allowed when not given.
     pub judge_drop: Option<JudgeDrop>,
-    /// The drop on offer and its verdict, each time it changes; `None` when
-    /// the pointer leaves the rows or the drag ends.
+    /// Which rows can take children by a drop. A row that does not has no
+    /// "inside" zone: its top half is before it, its bottom half after it
+    /// (and it is never expanded by hovering). Every row takes children when
+    /// not given.
+    pub accepts_children: Option<AcceptsChildren>,
+    /// The drop on offer and its verdict, each time it changes. `None` when
+    /// no drop is on offer: over a row that offers none, once the pointer
+    /// has left the rows, and when the drag ends. Moving from one row
+    /// straight onto the next reports only the next row's drop.
     pub ondropchange: Option<ValueCallback<Option<(TreeDrop, DropVerdict)>>>,
     /// An allowed drop, when the pointer is released.
     pub ondrop: Option<ValueCallback<TreeDrop>>,
@@ -782,6 +846,7 @@ impl Default for Tree {
             draggable: false,
             drag_values: None,
             judge_drop: None,
+            accepts_children: None,
             ondropchange: None,
             ondrop: None,
             ondragstart: None,
@@ -802,6 +867,9 @@ impl Component for Tree {
     fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
         let container = rinch_macros::rsx! { ul { class: "rinch-tree" } };
         container.set_attribute("role", "tree");
+        if self.draggable && self.tree.is_some() {
+            container.add_class("rinch-tree--draggable");
+        }
 
         // Apply level offset CSS variable
         let offset = if self.level_offset.is_empty() {
@@ -834,6 +902,7 @@ impl Component for Tree {
             draggable: self.draggable && self.tree.is_some(),
             drag_values: self.drag_values.clone(),
             judge_drop: self.judge_drop.clone(),
+            accepts_children: self.accepts_children.clone(),
             ondropchange: self.ondropchange.clone(),
             ondrop: self.ondrop.clone(),
             ondragstart: self.ondragstart.clone(),
@@ -850,7 +919,6 @@ impl Component for Tree {
             label_of: self.label_of.clone(),
             keys: KeyState::default(),
         });
-
 
         if let Some(ref tree_state) = self.tree {
             let tree_state = *tree_state;
@@ -974,7 +1042,11 @@ fn render_tree_node(
         // drag. (No borrow of the tree's state is held across a DOM call
         // anywhere here: one can run pending effects, which can draw rows,
         // which come back here.)
-        let old = config.drag.rows.borrow_mut().insert(node_value.clone(), content.clone());
+        let old = config
+            .drag
+            .rows
+            .borrow_mut()
+            .insert(node_value.clone(), content.clone());
         if let Some(old) = old {
             clear_drawn(&old);
             old.remove_class(DRAGGING_CLASS);
@@ -1005,7 +1077,8 @@ fn render_tree_node(
         let value = node_value.clone();
         __scope.on_cleanup(move || {
             if let Some(cfg) = cfg.upgrade() {
-                let is_cursor = untracked(|| tree_state.cursor.get()).as_deref() == Some(value.as_str());
+                let is_cursor =
+                    untracked(|| tree_state.cursor.get()).as_deref() == Some(value.as_str());
                 if cfg.keys.focused.get() && is_cursor {
                     cfg.keys.lost_row.set(true);
                     // A browser says nothing when the focused element goes,
@@ -1114,7 +1187,6 @@ fn render_tree_node(
     } else {
         let label =
             rinch_macros::rsx! { span { class: "rinch-tree__label", {node.label.clone()} } };
-        label.set_attribute("title", &node.label);
         content.append_child(&label);
     }
 
@@ -1148,7 +1220,12 @@ fn render_tree_node(
                     return;
                 }
                 if modifiers.shift {
-                    let anchor = cfg.keys.anchor.borrow().clone().unwrap_or_else(|| value.clone());
+                    let anchor = cfg
+                        .keys
+                        .anchor
+                        .borrow()
+                        .clone()
+                        .unwrap_or_else(|| value.clone());
                     select_run(&cfg, tree_state, &anchor, &value);
                     return;
                 }
@@ -1192,7 +1269,9 @@ fn render_tree_node(
             let guide = rinch_macros::rsx! { div { class: "rinch-tree__guide" } };
             guide.set_attribute(
                 "style",
-                &format!("left: calc(var(--tree-level-offset) * {level} + var(--tree-guide-offset))"),
+                &format!(
+                    "left: calc(var(--tree-level-offset) * {level} + var(--tree-guide-offset))"
+                ),
             );
             wrap.append_child(&guide);
             wrap.append_child(&children_ul);
@@ -1268,6 +1347,7 @@ fn wire_drag(
         // source row would sit over the very row the drop is drawn on.
         rinch_core::suppress_drag_ghost();
         mark_dragging(&cfg, &carried, true);
+        cfg.drag.level_px.set(None);
         *cfg.drag.dragged.borrow_mut() = carried.clone();
         if let Some(cb) = &cfg.ondragstart {
             cb.invoke(carried);
@@ -1287,12 +1367,23 @@ fn wire_drag(
     let cfg = config.clone();
     let v = value.to_string();
     let leave = __scope.register_handler(move || {
-        let here = cfg.drag.candidate.borrow().as_ref().is_some_and(|(drop, _, _)| drop.over == v);
+        let here = cfg
+            .drag
+            .candidate
+            .borrow()
+            .as_ref()
+            .is_some_and(|(drop, _, _)| drop.over == v);
         if here {
-            offer(&cfg, None);
+            withdraw(&cfg);
         }
     });
     content.set_attribute("data-ondragleave", &leave.0.to_string());
+
+    // Sent to the source row after every move, once the targets have heard
+    // it: the moment to tell the app a withdrawn drop was not replaced.
+    let cfg = config.clone();
+    let moved = __scope.register_handler(move || report_withdrawn(&cfg));
+    content.set_attribute("data-ondragmove", &moved.0.to_string());
 
     let cfg = config.clone();
     let drop = __scope.register_handler(move || {
@@ -1348,35 +1439,54 @@ fn drag_over(config: &Rc<TreeConfig>, value: &str, tree_state: UseTreeReturn) {
         // Not a drag that started in this tree.
         return;
     }
-    let shape = config.drag.shape();
-    let Some(over) = shape.index(value) else { return };
+    let shape = config.drag.shape(config.accepts_children.as_ref());
+    let Some(over) = shape.index(value) else {
+        return;
+    };
     let dragged_rows: Vec<usize> = dragged.iter().filter_map(|d| shape.index(d)).collect();
 
     let ctx = get_click_context();
     let height = ctx.element_height.max(1.0);
-    let zone = zone_at((ctx.mouse_y - ctx.element_y) / height);
+    let zone = zone_at(
+        (ctx.mouse_y - ctx.element_y) / height,
+        shape.rows[over].accepts,
+    );
     // Nothing is offered under a dragged row, or inside one. A dragged row's
     // own edges are places, which is how the last row of a group is dragged
     // out of it: left, over itself.
     let on_dragged_row = dragged_rows.contains(&over);
-    let under_dragged = dragged_rows.iter().any(|&d| d != over && shape.is_within(over, d));
+    let under_dragged = dragged_rows
+        .iter()
+        .any(|&d| d != over && shape.is_within(over, d));
     if under_dragged || (on_dragged_row && zone == DropZone::Inside) {
         offer(config, None);
         return;
     }
-    let pointer_level = config
-        .indent
+    let pointer_level = level_px(config, &shape, over)
         .filter(|px| *px > 0.0)
         .map(|px| ((ctx.mouse_x - ctx.element_x).max(0.0) / px) as usize);
     let expanded = untracked(|| tree_state.expanded.get());
-    let placement = shape.placement(over, zone, pointer_level, &expanded);
+    // The dragged rows are placed as if collapsed: their children travel
+    // with them, so the row drawn below an expanded dragged row is the one
+    // after its subtree, and its own bottom edge can take it out of its
+    // group.
+    let mut placing = expanded.clone();
+    for d in &dragged {
+        placing.remove(d);
+    }
+    let placement = shape.placement(over, zone, pointer_level, &placing);
 
     // Hover to expand: resting inside a collapsed row with children.
     let wants_hover = zone == DropZone::Inside
         && config.hover_expand_ms > 0
         && !shape.rows[over].children.is_empty()
         && !expanded.contains(value);
-    let waiting_here = config.drag.hover.borrow().as_ref().is_some_and(|(v, _)| v == value);
+    let waiting_here = config
+        .drag
+        .hover
+        .borrow()
+        .as_ref()
+        .is_some_and(|(v, _)| v == value);
     if !wants_hover {
         config.drag.cancel_hover();
     } else if !waiting_here {
@@ -1419,16 +1529,69 @@ fn drag_over(config: &Rc<TreeConfig>, value: &str, tree_state: UseTreeReturn) {
         over: value.to_string(),
         zone,
     };
-    // A row can never go into its own subtree, whatever the app says.
+    let verdict = judge(
+        &shape,
+        &placement,
+        &dragged_rows,
+        &drop,
+        config.judge_drop.as_ref(),
+    );
+    offer(config, Some((drop, placement, verdict)));
+}
+
+/// The verdict on a drop: refused when it would put a row into its own
+/// subtree, whatever the app says; otherwise the app's ([`Tree::judge_drop`]).
+/// The places a drag offers never reach the first case (rows under a dragged
+/// row offer nothing, and a dragged row is placed as if collapsed); it stays
+/// as a guard.
+fn judge(
+    shape: &Shape,
+    placement: &Placement,
+    dragged_rows: &[usize],
+    drop: &TreeDrop,
+    judge_drop: Option<&JudgeDrop>,
+) -> DropVerdict {
     let cycle = placement
         .parent
         .is_some_and(|parent| dragged_rows.iter().any(|&d| shape.is_within(parent, d)));
-    let verdict = if cycle {
+    if cycle {
         DropVerdict::Refused
     } else {
-        config.judge_drop.as_ref().map_or(DropVerdict::Allowed, |judge| judge(&drop))
+        judge_drop.map_or(DropVerdict::Allowed, |judge| judge(drop))
+    }
+}
+
+/// Pixels per level, for picking a depth by the pointer's column: the
+/// tree's [`Tree::indent`], else measured from the rendered rows once per
+/// drag. A row's first child (its chevron or spacer) starts its level's
+/// indent into the row, so the difference between `over`'s and a top-level
+/// row's, over `over`'s level, is one level's width. `None` over a top-level
+/// row before anything was measured (a depth is then never asked for).
+fn level_px(config: &Rc<TreeConfig>, shape: &Shape, over: usize) -> Option<f32> {
+    if config.indent.is_some() {
+        return config.indent;
+    }
+    if let Some(px) = config.drag.level_px.get() {
+        return Some(px);
+    }
+    let level = shape.rows[over].level;
+    let root = *shape.roots.first()?;
+    if level == 0 {
+        return None;
+    }
+    let inset = |row: usize| -> Option<f32> {
+        let handle = config
+            .drag
+            .rows
+            .borrow()
+            .get(&shape.rows[row].value)
+            .cloned()?;
+        let first = handle.children().into_iter().next()?;
+        first.get_layout_bounds().map(|(x, _, _, _)| x)
     };
-    offer(config, Some((drop, placement, verdict)));
+    let px = (inset(over)? - inset(root)?) / level as f32;
+    config.drag.level_px.set(Some(px));
+    Some(px)
 }
 
 /// The indicator's classes on a row: a line (`before`, `after`) or an
@@ -1464,17 +1627,14 @@ fn clear_drawn(row: &NodeHandle) {
 /// Make `candidate` the drop on offer: draw it, tell the app.
 fn offer(config: &Rc<TreeConfig>, candidate: Option<(TreeDrop, Placement, DropVerdict)>) {
     let drag = &config.drag;
+    drag.pending_none.set(false);
     if candidate.is_none() {
         drag.cancel_hover();
-        if drag.candidate.borrow().is_none() {
+        if drag.candidate.borrow().is_none() && !drag.told.get() {
             return;
         }
     }
-    let previous = drag.drawn.borrow_mut().take();
-    let previous = previous.and_then(|value| drag.rows.borrow().get(&value).cloned());
-    if let Some(row) = previous {
-        clear_drawn(&row);
-    }
+    take_down(drag);
     if let Some((drop, placement, verdict)) = &candidate {
         let row = drag.rows.borrow().get(&drop.over).cloned();
         if let Some(row) = row {
@@ -1482,10 +1642,46 @@ fn offer(config: &Rc<TreeConfig>, candidate: Option<(TreeDrop, Placement, DropVe
             draw(&row, drop.zone, placement.line_level, *verdict);
         }
     }
-    let told = candidate.as_ref().map(|(drop, _, verdict)| (drop.clone(), *verdict));
+    let told = candidate
+        .as_ref()
+        .map(|(drop, _, verdict)| (drop.clone(), *verdict));
     *drag.candidate.borrow_mut() = candidate;
+    drag.told.set(told.is_some());
     if let Some(cb) = &config.ondropchange {
         cb.invoke(told);
+    }
+}
+
+/// Clear the indicator from the row it is drawn on.
+fn take_down(drag: &DragState) {
+    let previous = drag.drawn.borrow_mut().take();
+    let previous = previous.and_then(|value| drag.rows.borrow().get(&value).cloned());
+    if let Some(row) = previous {
+        clear_drawn(&row);
+    }
+}
+
+/// The pointer left the row on offer. Its drop is no longer on offer, but
+/// the app is not told yet: both backends send the old row's leave before
+/// the new row's over, so a move from one row onto the next would report
+/// `None` between the two. The source row's drag move, which follows every
+/// move's targets, reports it if nothing replaced it ([`report_withdrawn`]).
+fn withdraw(config: &Rc<TreeConfig>) {
+    let drag = &config.drag;
+    drag.cancel_hover();
+    take_down(drag);
+    drag.candidate.borrow_mut().take();
+    drag.pending_none.set(true);
+}
+
+/// Tell the app a withdrawn drop was not replaced by another.
+fn report_withdrawn(config: &Rc<TreeConfig>) {
+    let drag = &config.drag;
+    if !drag.pending_none.replace(false) || !drag.told.replace(false) {
+        return;
+    }
+    if let Some(cb) = &config.ondropchange {
+        cb.invoke(None);
     }
 }
 
@@ -1607,38 +1803,62 @@ mod drop_tests {
 
     #[test]
     fn zones_split_a_row_into_quarter_half_quarter() {
-        assert_eq!(zone_at(0.0), DropZone::Before);
-        assert_eq!(zone_at(0.24), DropZone::Before);
-        assert_eq!(zone_at(0.5), DropZone::Inside);
-        assert_eq!(zone_at(0.76), DropZone::After);
-        assert_eq!(zone_at(1.0), DropZone::After);
+        assert_eq!(zone_at(0.0, true), DropZone::Before);
+        assert_eq!(zone_at(0.24, true), DropZone::Before);
+        assert_eq!(zone_at(0.5, true), DropZone::Inside);
+        assert_eq!(zone_at(0.76, true), DropZone::After);
+        assert_eq!(zone_at(1.0, true), DropZone::After);
+        // Review of #1589: off the fixed points, so a half/half split fails.
+        assert_eq!(zone_at(0.3, true), DropZone::Inside);
+        assert_eq!(zone_at(0.7, true), DropZone::Inside);
     }
 
     #[test]
     fn before_lands_after_the_previous_sibling_or_first() {
-        let shape = Shape::of(&data());
+        let shape = Shape::of(&data(), None);
         let open = expanded(&["a", "a1", "c"]);
-        assert_eq!(place(&shape, "a2", DropZone::Before, None, &open), (Some("a".into()), after("a1"), 1));
-        assert_eq!(place(&shape, "a1", DropZone::Before, None, &open), (Some("a".into()), TreeSlot::First, 1));
-        assert_eq!(place(&shape, "a", DropZone::Before, None, &open), (None, TreeSlot::First, 0));
+        assert_eq!(
+            place(&shape, "a2", DropZone::Before, None, &open),
+            (Some("a".into()), after("a1"), 1)
+        );
+        assert_eq!(
+            place(&shape, "a1", DropZone::Before, None, &open),
+            (Some("a".into()), TreeSlot::First, 1)
+        );
+        assert_eq!(
+            place(&shape, "a", DropZone::Before, None, &open),
+            (None, TreeSlot::First, 0)
+        );
     }
 
     #[test]
     fn inside_lands_last() {
-        let shape = Shape::of(&data());
+        let shape = Shape::of(&data(), None);
         let open = expanded(&[]);
-        assert_eq!(place(&shape, "b", DropZone::Inside, None, &open), (Some("b".into()), TreeSlot::Last, 0));
-        assert_eq!(place(&shape, "a", DropZone::Inside, None, &open), (Some("a".into()), TreeSlot::Last, 0));
+        assert_eq!(
+            place(&shape, "b", DropZone::Inside, None, &open),
+            (Some("b".into()), TreeSlot::Last, 0)
+        );
+        assert_eq!(
+            place(&shape, "a", DropZone::Inside, None, &open),
+            (Some("a".into()), TreeSlot::Last, 0)
+        );
     }
 
     #[test]
     fn after_an_open_row_with_children_lands_first_inside_it() {
-        let shape = Shape::of(&data());
+        let shape = Shape::of(&data(), None);
         let open = expanded(&["a"]);
-        assert_eq!(place(&shape, "a", DropZone::After, None, &open), (Some("a".into()), TreeSlot::First, 1));
+        assert_eq!(
+            place(&shape, "a", DropZone::After, None, &open),
+            (Some("a".into()), TreeSlot::First, 1)
+        );
         // Closed, the same zone is after it among its siblings.
         let closed = expanded(&[]);
-        assert_eq!(place(&shape, "a", DropZone::After, None, &closed), (None, after("a"), 0));
+        assert_eq!(
+            place(&shape, "a", DropZone::After, None, &closed),
+            (None, after("a"), 0)
+        );
     }
 
     /// The drag that outdents: after the last row of a group, the pointer's
@@ -1646,31 +1866,57 @@ mod drop_tests {
     /// level of the row drawn below it.
     #[test]
     fn after_the_end_of_a_group_takes_its_depth_from_the_pointer() {
-        let shape = Shape::of(&data());
+        let shape = Shape::of(&data(), None);
         let open = expanded(&["a", "a1"]);
         // a1y is the last of a1, which is not the last of a; below it is a2
         // (level 1), so levels 1..=2 are on offer.
-        assert_eq!(place(&shape, "a1y", DropZone::After, Some(9), &open), (Some("a1".into()), after("a1y"), 2));
-        assert_eq!(place(&shape, "a1y", DropZone::After, Some(2), &open), (Some("a1".into()), after("a1y"), 2));
-        assert_eq!(place(&shape, "a1y", DropZone::After, Some(1), &open), (Some("a".into()), after("a1"), 1));
-        assert_eq!(place(&shape, "a1y", DropZone::After, Some(0), &open), (Some("a".into()), after("a1"), 1));
+        assert_eq!(
+            place(&shape, "a1y", DropZone::After, Some(9), &open),
+            (Some("a1".into()), after("a1y"), 2)
+        );
+        assert_eq!(
+            place(&shape, "a1y", DropZone::After, Some(2), &open),
+            (Some("a1".into()), after("a1y"), 2)
+        );
+        assert_eq!(
+            place(&shape, "a1y", DropZone::After, Some(1), &open),
+            (Some("a".into()), after("a1"), 1)
+        );
+        assert_eq!(
+            place(&shape, "a1y", DropZone::After, Some(0), &open),
+            (Some("a".into()), after("a1"), 1)
+        );
         // Without a pointer column, the row's own depth.
-        assert_eq!(place(&shape, "a1y", DropZone::After, None, &open), (Some("a1".into()), after("a1y"), 2));
+        assert_eq!(
+            place(&shape, "a1y", DropZone::After, None, &open),
+            (Some("a1".into()), after("a1y"), 2)
+        );
         // a2 ends a, and b (level 0) is below: level 0 means after a.
-        assert_eq!(place(&shape, "a2", DropZone::After, Some(0), &open), (None, after("a"), 0));
+        assert_eq!(
+            place(&shape, "a2", DropZone::After, Some(0), &open),
+            (None, after("a"), 0)
+        );
         // The last row of the tree can go all the way out.
         let open = expanded(&["c"]);
-        assert_eq!(place(&shape, "c1", DropZone::After, Some(0), &open), (None, after("c"), 0));
+        assert_eq!(
+            place(&shape, "c1", DropZone::After, Some(0), &open),
+            (None, after("c"), 0)
+        );
         // A row in the middle of its siblings offers only its own level.
         let open = expanded(&["a", "a1"]);
-        assert_eq!(place(&shape, "a1x", DropZone::After, Some(0), &open), (Some("a1".into()), after("a1x"), 2));
+        assert_eq!(
+            place(&shape, "a1x", DropZone::After, Some(0), &open),
+            (Some("a1".into()), after("a1x"), 2)
+        );
     }
 
     #[test]
     fn next_visible_follows_what_is_expanded() {
-        let shape = Shape::of(&data());
+        let shape = Shape::of(&data(), None);
         let next = |v: &str, open: &[&str]| {
-            shape.next_visible(shape.index(v).unwrap(), &expanded(open)).map(|r| shape.rows[r].value.clone())
+            shape
+                .next_visible(shape.index(v).unwrap(), &expanded(open))
+                .map(|r| shape.rows[r].value.clone())
         };
         assert_eq!(next("a", &[]), Some("b".into()));
         assert_eq!(next("a", &["a"]), Some("a1".into()));
@@ -1681,12 +1927,79 @@ mod drop_tests {
 
     #[test]
     fn within_is_the_row_or_under_it() {
-        let shape = Shape::of(&data());
+        let shape = Shape::of(&data(), None);
         let i = |v: &str| shape.index(v).unwrap();
         assert!(shape.is_within(i("a1x"), i("a")));
         assert!(shape.is_within(i("a"), i("a")));
         assert!(!shape.is_within(i("a"), i("a1")));
         assert!(!shape.is_within(i("b"), i("a")));
+    }
+
+    /// A row that takes no children has no middle: half before, half after.
+    #[test]
+    fn a_row_that_takes_no_children_splits_in_half() {
+        assert_eq!(zone_at(0.3, false), DropZone::Before);
+        assert_eq!(zone_at(0.49, false), DropZone::Before);
+        assert_eq!(zone_at(0.5, false), DropZone::After);
+        assert_eq!(zone_at(0.7, false), DropZone::After);
+    }
+
+    /// The predicate reaches the shape, and after an open row that takes no
+    /// children is after it, not first inside it.
+    #[test]
+    fn after_an_open_row_that_takes_no_children_is_after_it() {
+        let only_a: AcceptsChildren = Rc::new(|node: &TreeNodeData| node.value == "a");
+        let shape = Shape::of(&data(), Some(&only_a));
+        assert!(shape.rows[shape.index("a").unwrap()].accepts);
+        assert!(!shape.rows[shape.index("c").unwrap()].accepts);
+        let open = expanded(&["a", "c"]);
+        assert_eq!(
+            place(&shape, "a", DropZone::After, None, &open),
+            (Some("a".into()), TreeSlot::First, 1)
+        );
+        assert_eq!(
+            place(&shape, "c", DropZone::After, None, &open),
+            (None, after("c"), 0)
+        );
+    }
+
+    /// A drop into a dragged row's own subtree is refused whatever the app
+    /// says. No drag reaches it any more (the guard); it is pinned here.
+    #[test]
+    fn a_drop_into_a_dragged_rows_subtree_is_refused() {
+        let shape = Shape::of(&data(), None);
+        let i = |v: &str| shape.index(v).unwrap();
+        let drop = TreeDrop {
+            dragged: vec!["a".into()],
+            parent: Some("a1".into()),
+            slot: TreeSlot::Last,
+            over: "a1".into(),
+            zone: DropZone::Inside,
+        };
+        let allow: JudgeDrop = Rc::new(|_: &TreeDrop| DropVerdict::Allowed);
+        let into = Placement {
+            parent: Some(i("a1")),
+            slot: Slot::Last,
+            line_level: 1,
+        };
+        assert_eq!(
+            judge(&shape, &into, &[i("a")], &drop, Some(&allow)),
+            DropVerdict::Refused
+        );
+        assert_eq!(
+            judge(&shape, &into, &[i("a")], &drop, None),
+            DropVerdict::Refused
+        );
+        // Positive control: the same drop of a row from elsewhere is the app's.
+        assert_eq!(
+            judge(&shape, &into, &[i("b")], &drop, Some(&allow)),
+            DropVerdict::Allowed
+        );
+        let refuse: JudgeDrop = Rc::new(|_: &TreeDrop| DropVerdict::Refused);
+        assert_eq!(
+            judge(&shape, &into, &[i("b")], &drop, Some(&refuse)),
+            DropVerdict::Refused
+        );
     }
 }
 
@@ -1766,7 +2079,11 @@ impl TreeKey {
             }
             TreeMove::Outdent => {
                 let parent = parent_of(first)?;
-                (shape.rows[parent].parent.map(value), TreeSlot::After(value(parent)), DropZone::After)
+                (
+                    shape.rows[parent].parent.map(value),
+                    TreeSlot::After(value(parent)),
+                    DropZone::After,
+                )
             }
             TreeMove::Up => {
                 at_first.checked_sub(1)?;
@@ -1778,10 +2095,20 @@ impl TreeKey {
             }
             TreeMove::Down => {
                 let below = *siblings.get(at_last + 1)?;
-                (parent_of(first).map(value), TreeSlot::After(value(below)), DropZone::After)
+                (
+                    parent_of(first).map(value),
+                    TreeSlot::After(value(below)),
+                    DropZone::After,
+                )
             }
         };
-        Some(TreeDrop { dragged: self.carried.clone(), parent, slot, over: self.cursor.clone(), zone })
+        Some(TreeDrop {
+            dragged: self.carried.clone(),
+            parent,
+            slot,
+            over: self.cursor.clone(),
+            zone,
+        })
     }
 }
 
@@ -1869,7 +2196,12 @@ fn nav(shape: &Shape, expanded: &HashSet<String>, cursor: usize, key: &str) -> O
         "ArrowLeft" if shape.is_open(cursor, expanded) => Nav::Collapse(cursor),
         "ArrowLeft" => Nav::To(shape.rows[cursor].parent?),
         "*" => Nav::ExpandAll(
-            shape.siblings(cursor).iter().copied().filter(|&s| !shape.rows[s].children.is_empty()).collect(),
+            shape
+                .siblings(cursor)
+                .iter()
+                .copied()
+                .filter(|&s| !shape.rows[s].children.is_empty())
+                .collect(),
         ),
         _ => return None,
     })
@@ -1878,14 +2210,24 @@ fn nav(shape: &Shape, expanded: &HashSet<String>, cursor: usize, key: &str) -> O
 /// The next drawn row after `cursor` (wrapping) whose text starts with
 /// `typed`, case-insensitively. Typing one letter again and again steps
 /// through the rows that start with it.
-fn type_ahead(shape: &Shape, expanded: &HashSet<String>, cursor: usize, typed: &str, text: &dyn Fn(&str) -> String) -> Option<usize> {
+fn type_ahead(
+    shape: &Shape,
+    expanded: &HashSet<String>,
+    cursor: usize,
+    typed: &str,
+    text: &dyn Fn(&str) -> String,
+) -> Option<usize> {
     let visible = shape.visible(expanded);
     let at = visible.iter().position(|&r| r == cursor).unwrap_or(0);
     let typed = typed.to_lowercase();
     let mut chars = typed.chars();
     let first = chars.next()?;
     let repeated = chars.all(|c| c == first);
-    let matches = |row: usize, prefix: &str| text(&shape.rows[row].value).to_lowercase().starts_with(prefix);
+    let matches = |row: usize, prefix: &str| {
+        text(&shape.rows[row].value)
+            .to_lowercase()
+            .starts_with(prefix)
+    };
     let visible = &visible;
     // A longer prefix may still match the cursor row itself; one letter
     // moves on from it.
@@ -1922,7 +2264,9 @@ fn draw_cursor(config: &Rc<TreeConfig>, value: Option<&str>) {
 /// the app put in one).
 fn focus_inside(config: &Rc<TreeConfig>) -> bool {
     let container = config.keys.container.borrow().clone();
-    let Some(container) = container else { return false };
+    let Some(container) = container else {
+        return false;
+    };
     let mut at = container.active_element();
     while let Some(node) = at {
         if node.node_id() == container.node_id() {
@@ -2008,24 +2352,46 @@ fn expand(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, value: &str) {
 }
 
 /// A key pressed while focus is inside the tree.
-fn on_tree_key(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, container: &NodeHandle, key: &rinch_core::KeyEventData) -> bool {
+fn on_tree_key(
+    config: &Rc<TreeConfig>,
+    tree_state: UseTreeReturn,
+    container: &NodeHandle,
+    key: &rinch_core::KeyEventData,
+) -> bool {
     // Only a row's own keys: a field inside a row (a rename box) keeps its.
-    let Some(active) = container.active_element() else { return false };
-    let on_a_row = active
-        .get_attribute("class")
-        .is_some_and(|c| c.split_whitespace().any(|one| one == "rinch-tree__node-content"));
+    let Some(active) = container.active_element() else {
+        return false;
+    };
+    let on_a_row = active.get_attribute("class").is_some_and(|c| {
+        c.split_whitespace()
+            .any(|one| one == "rinch-tree__node-content")
+    });
     if !on_a_row {
         return false;
     }
-    let Some(row_value) = active.parent_node().and_then(|li| li.get_attribute("data-value")) else { return false };
+    let Some(row_value) = active
+        .parent_node()
+        .and_then(|li| li.get_attribute("data-value"))
+    else {
+        return false;
+    };
     set_focused(config, true);
-    let cursor = untracked(|| tree_state.cursor.get()).filter(|c| config.drag.rows.borrow().contains_key(c)).unwrap_or(row_value);
-    let shape = config.drag.shape();
-    let Some(cursor_row) = shape.index(&cursor) else { return false };
+    let cursor = untracked(|| tree_state.cursor.get())
+        .filter(|c| config.drag.rows.borrow().contains_key(c))
+        .unwrap_or(row_value);
+    let shape = config.drag.shape(config.accepts_children.as_ref());
+    let Some(cursor_row) = shape.index(&cursor) else {
+        return false;
+    };
 
     if let Some(handle_key) = &config.handle_key {
         let expanded = untracked(|| tree_state.expanded.get());
-        let block = shape.carried(&expanded, &untracked(|| tree_state.selected.get()), cursor_row, tree_state.controller.multiple);
+        let block = shape.carried(
+            &expanded,
+            &untracked(|| tree_state.selected.get()),
+            cursor_row,
+            tree_state.controller.multiple,
+        );
         let (above, below) = shape.around(&expanded, &block);
         let neighbor = |row: Option<usize>| row.map(|r| shape.rows[r].value.clone());
         let carried = carried_from(config, tree_state, &cursor);
@@ -2035,7 +2401,9 @@ fn on_tree_key(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, container: &N
             shift: key.shift,
             alt: key.alt,
             meta: key.meta,
-            parent: shape.rows[cursor_row].parent.map(|p| shape.rows[p].value.clone()),
+            parent: shape.rows[cursor_row]
+                .parent
+                .map(|p| shape.rows[p].value.clone()),
             above: neighbor(above),
             below: neighbor(below),
             cursor: cursor.clone(),
@@ -2049,7 +2417,11 @@ fn on_tree_key(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, container: &N
     let multiple = tree_state.controller.multiple;
     // Ctrl+A: the cursor row and its siblings.
     if multiple && (key.ctrl || key.meta) && !key.alt && key.key.eq_ignore_ascii_case("a") {
-        let siblings: Vec<String> = shape.siblings(cursor_row).iter().map(|&r| shape.rows[r].value.clone()).collect();
+        let siblings: Vec<String> = shape
+            .siblings(cursor_row)
+            .iter()
+            .map(|&r| shape.rows[r].value.clone())
+            .collect();
         tree_state.controller.set_selection(siblings);
         selection_changed(config, tree_state);
         return true;
@@ -2062,7 +2434,12 @@ fn on_tree_key(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, container: &N
     // Shift with a move: a run from the anchor to where the cursor goes.
     if key.shift && multiple {
         if let Some(Nav::To(row)) = nav(&shape, &expanded, cursor_row, &key.key) {
-            let anchor = config.keys.anchor.borrow().clone().unwrap_or_else(|| cursor.clone());
+            let anchor = config
+                .keys
+                .anchor
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| cursor.clone());
             let to = shape.rows[row].value.clone();
             select_run(config, tree_state, &anchor, &to);
             tree_state.cursor.set(Some(to.clone()));
@@ -2099,7 +2476,9 @@ fn on_tree_key(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, container: &N
 
     // Type-ahead: a printable character.
     let mut letters = key.key.chars();
-    let (Some(letter), None) = (letters.next(), letters.next()) else { return false };
+    let (Some(letter), None) = (letters.next(), letters.next()) else {
+        return false;
+    };
     if letter.is_control() || (letter == ' ' && config.keys.typed.borrow().is_empty()) {
         return false;
     }
@@ -2139,7 +2518,12 @@ fn on_tree_key(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, container: &N
 
 /// The tree's keyboard: its key handler while focus is inside it, the
 /// cursor drawn on its row, and focus requests.
-fn wire_keyboard(__scope: &mut RenderScope, container: &NodeHandle, tree_state: UseTreeReturn, config: &Rc<TreeConfig>) {
+fn wire_keyboard(
+    __scope: &mut RenderScope,
+    container: &NodeHandle,
+    tree_state: UseTreeReturn,
+    config: &Rc<TreeConfig>,
+) {
     container.add_class("rinch-tree--keyboard");
     *config.keys.container.borrow_mut() = Some(container.clone());
 
@@ -2154,7 +2538,9 @@ fn wire_keyboard(__scope: &mut RenderScope, container: &NodeHandle, tree_state: 
             // again) is still the tree's: the row as drawn now takes it back.
             // Any other focus that left the tree has left: to an editor, a
             // field, or nothing at all.
-            let Some(cfg) = leave_cfg.upgrade() else { return };
+            let Some(cfg) = leave_cfg.upgrade() else {
+                return;
+            };
             let weak = Rc::downgrade(&cfg);
             let _ = set_timeout(0, move || {
                 let Some(cfg) = weak.upgrade() else { return };
@@ -2184,9 +2570,12 @@ fn wire_keyboard(__scope: &mut RenderScope, container: &NodeHandle, tree_state: 
             return;
         }
         untracked(|| {
-            let cursor = tree_state.cursor.get().filter(|c| cfg.drag.rows.borrow().contains_key(c));
+            let cursor = tree_state
+                .cursor
+                .get()
+                .filter(|c| cfg.drag.rows.borrow().contains_key(c));
             let target = cursor.or_else(|| {
-                let shape = cfg.drag.shape();
+                let shape = cfg.drag.shape(cfg.accepts_children.as_ref());
                 shape.roots.first().map(|&r| shape.rows[r].value.clone())
             });
             if let Some(value) = target {
@@ -2208,14 +2597,17 @@ mod key_tests {
 
     /// a (open: a1, a2), b, c (closed: c1)
     fn shape() -> Shape {
-        Shape::of(&[
-            TreeNodeData::new("a", "Apples").with_children(vec![
-                TreeNodeData::new("a1", "Avocado"),
-                TreeNodeData::new("a2", "Banana"),
-            ]),
-            TreeNodeData::new("b", "Beets"),
-            TreeNodeData::new("c", "Carrots").with_child(TreeNodeData::new("c1", "Celery")),
-        ])
+        Shape::of(
+            &[
+                TreeNodeData::new("a", "Apples").with_children(vec![
+                    TreeNodeData::new("a1", "Avocado"),
+                    TreeNodeData::new("a2", "Banana"),
+                ]),
+                TreeNodeData::new("b", "Beets"),
+                TreeNodeData::new("c", "Carrots").with_child(TreeNodeData::new("c1", "Celery")),
+            ],
+            None,
+        )
     }
 
     fn open() -> HashSet<String> {
@@ -2235,7 +2627,11 @@ mod key_tests {
         let i = |v: &str| s.index(v).unwrap();
         assert_eq!(to(&s, nav(&s, &open(), i("a"), "ArrowDown")), "a1");
         assert_eq!(to(&s, nav(&s, &open(), i("a2"), "ArrowDown")), "b");
-        assert_eq!(to(&s, nav(&s, &open(), i("c"), "ArrowDown")), "c", "the last row stays");
+        assert_eq!(
+            to(&s, nav(&s, &open(), i("c"), "ArrowDown")),
+            "c",
+            "the last row stays"
+        );
         assert_eq!(to(&s, nav(&s, &open(), i("b"), "ArrowUp")), "a2");
         assert_eq!(to(&s, nav(&s, &open(), i("a"), "ArrowUp")), "a");
         assert_eq!(to(&s, nav(&s, &open(), i("a1"), "End")), "c");
@@ -2247,36 +2643,74 @@ mod key_tests {
     fn right_and_left_open_close_and_step() {
         let s = shape();
         let i = |v: &str| s.index(v).unwrap();
-        assert_eq!(nav(&s, &open(), i("c"), "ArrowRight"), Some(Nav::Expand(i("c"))));
+        assert_eq!(
+            nav(&s, &open(), i("c"), "ArrowRight"),
+            Some(Nav::Expand(i("c")))
+        );
         assert_eq!(to(&s, nav(&s, &open(), i("a"), "ArrowRight")), "a1");
-        assert_eq!(nav(&s, &open(), i("b"), "ArrowRight"), None, "a leaf has nowhere to go");
-        assert_eq!(nav(&s, &open(), i("a"), "ArrowLeft"), Some(Nav::Collapse(i("a"))));
+        assert_eq!(
+            nav(&s, &open(), i("b"), "ArrowRight"),
+            None,
+            "a leaf has nowhere to go"
+        );
+        assert_eq!(
+            nav(&s, &open(), i("a"), "ArrowLeft"),
+            Some(Nav::Collapse(i("a")))
+        );
         assert_eq!(to(&s, nav(&s, &open(), i("a2"), "ArrowLeft")), "a");
         assert_eq!(nav(&s, &open(), i("a1"), "Enter"), None);
-        assert_eq!(nav(&s, &open(), i("b"), "*"), Some(Nav::ExpandAll(vec![i("a"), i("c")])));
+        assert_eq!(
+            nav(&s, &open(), i("b"), "*"),
+            Some(Nav::ExpandAll(vec![i("a"), i("c")]))
+        );
     }
 
     #[test]
     fn type_ahead_finds_the_next_row_and_steps_on_one_letter() {
         let s = shape();
-        let labels: HashMap<String, String> =
-            [("a", "Apples"), ("a1", "Avocado"), ("a2", "Banana"), ("b", "Beets"), ("c", "Carrots"), ("c1", "Celery")]
-                .into_iter()
-                .map(|(v, l)| (v.to_string(), l.to_string()))
-                .collect();
+        let labels: HashMap<String, String> = [
+            ("a", "Apples"),
+            ("a1", "Avocado"),
+            ("a2", "Banana"),
+            ("b", "Beets"),
+            ("c", "Carrots"),
+            ("c1", "Celery"),
+        ]
+        .into_iter()
+        .map(|(v, l)| (v.to_string(), l.to_string()))
+        .collect();
         let text = |v: &str| labels[v].clone();
         let i = |v: &str| s.index(v).unwrap();
         let name = |row: Option<usize>| row.map(|r| s.rows[r].value.clone());
-        assert_eq!(name(type_ahead(&s, &open(), i("a"), "b", &text)), Some("a2".into()));
-        assert_eq!(name(type_ahead(&s, &open(), i("a2"), "b", &text)), Some("b".into()));
-        assert_eq!(name(type_ahead(&s, &open(), i("a2"), "be", &text)), Some("b".into()));
-        assert_eq!(name(type_ahead(&s, &open(), i("a"), "aa", &text)), Some("a1".into()), "a repeated letter steps on");
-        assert_eq!(name(type_ahead(&s, &open(), i("a"), "ce", &text)), None, "Celery is not drawn");
+        assert_eq!(
+            name(type_ahead(&s, &open(), i("a"), "b", &text)),
+            Some("a2".into())
+        );
+        assert_eq!(
+            name(type_ahead(&s, &open(), i("a2"), "b", &text)),
+            Some("b".into())
+        );
+        assert_eq!(
+            name(type_ahead(&s, &open(), i("a2"), "be", &text)),
+            Some("b".into())
+        );
+        assert_eq!(
+            name(type_ahead(&s, &open(), i("a"), "aa", &text)),
+            Some("a1".into()),
+            "a repeated letter steps on"
+        );
+        assert_eq!(
+            name(type_ahead(&s, &open(), i("a"), "ce", &text)),
+            None,
+            "Celery is not drawn"
+        );
     }
 
     fn key(cursor: &str) -> TreeKey {
         let s = Rc::new(shape());
-        let parent = s.rows[s.index(cursor).unwrap()].parent.map(|p| s.rows[p].value.clone());
+        let parent = s.rows[s.index(cursor).unwrap()]
+            .parent
+            .map(|p| s.rows[p].value.clone());
         TreeKey {
             key: String::new(),
             ctrl: false,
@@ -2299,14 +2733,37 @@ mod key_tests {
     #[test]
     fn structural_moves_are_drops() {
         let after = |v: &str| TreeSlot::After(v.into());
-        assert_eq!(place(key("a2").drop_for(TreeMove::Indent)), Some((Some("a1".into()), TreeSlot::Last)));
-        assert_eq!(place(key("a1").drop_for(TreeMove::Indent)), None, "no sibling above");
-        assert_eq!(place(key("a2").drop_for(TreeMove::Outdent)), Some((None, after("a"))));
-        assert_eq!(place(key("b").drop_for(TreeMove::Outdent)), None, "the top level");
-        assert_eq!(place(key("a2").drop_for(TreeMove::Up)), Some((Some("a".into()), TreeSlot::First)));
-        assert_eq!(place(key("c").drop_for(TreeMove::Up)), Some((None, after("a"))));
+        assert_eq!(
+            place(key("a2").drop_for(TreeMove::Indent)),
+            Some((Some("a1".into()), TreeSlot::Last))
+        );
+        assert_eq!(
+            place(key("a1").drop_for(TreeMove::Indent)),
+            None,
+            "no sibling above"
+        );
+        assert_eq!(
+            place(key("a2").drop_for(TreeMove::Outdent)),
+            Some((None, after("a")))
+        );
+        assert_eq!(
+            place(key("b").drop_for(TreeMove::Outdent)),
+            None,
+            "the top level"
+        );
+        assert_eq!(
+            place(key("a2").drop_for(TreeMove::Up)),
+            Some((Some("a".into()), TreeSlot::First))
+        );
+        assert_eq!(
+            place(key("c").drop_for(TreeMove::Up)),
+            Some((None, after("a")))
+        );
         assert_eq!(place(key("a").drop_for(TreeMove::Up)), None);
-        assert_eq!(place(key("a1").drop_for(TreeMove::Down)), Some((Some("a".into()), after("a2"))));
+        assert_eq!(
+            place(key("a1").drop_for(TreeMove::Down)),
+            Some((Some("a".into()), after("a2")))
+        );
         assert_eq!(place(key("c").drop_for(TreeMove::Down)), None);
     }
 }
@@ -2319,7 +2776,10 @@ impl Shape {
     /// The rows drawn from `a` to `b` (either way round), top to bottom.
     fn run(&self, expanded: &HashSet<String>, a: usize, b: usize) -> Vec<usize> {
         let visible = self.visible(expanded);
-        let (Some(i), Some(j)) = (visible.iter().position(|&r| r == a), visible.iter().position(|&r| r == b)) else {
+        let (Some(i), Some(j)) = (
+            visible.iter().position(|&r| r == a),
+            visible.iter().position(|&r| r == b),
+        ) else {
             return vec![b];
         };
         let (from, to) = if i <= j { (i, j) } else { (j, i) };
@@ -2330,15 +2790,29 @@ impl Shape {
     /// when `row` is one of several selected rows (each selected row inside
     /// another selected one travels inside it, so it is left out); `row`
     /// alone otherwise.
-    fn carried(&self, expanded: &HashSet<String>, selected: &HashSet<String>, row: usize, multiple: bool) -> Vec<usize> {
+    fn carried(
+        &self,
+        expanded: &HashSet<String>,
+        selected: &HashSet<String>,
+        row: usize,
+        multiple: bool,
+    ) -> Vec<usize> {
         if !multiple || selected.len() < 2 || !selected.contains(&self.rows[row].value) {
             return vec![row];
         }
-        let chosen: Vec<usize> = self.visible(expanded).into_iter().filter(|&r| selected.contains(&self.rows[r].value)).collect();
+        let chosen: Vec<usize> = self
+            .visible(expanded)
+            .into_iter()
+            .filter(|&r| selected.contains(&self.rows[r].value))
+            .collect();
         chosen
             .iter()
             .copied()
-            .filter(|&r| !chosen.iter().any(|&other| other != r && self.is_within(r, other)))
+            .filter(|&r| {
+                !chosen
+                    .iter()
+                    .any(|&other| other != r && self.is_within(r, other))
+            })
             .collect()
     }
 
@@ -2358,7 +2832,7 @@ impl Shape {
 /// What a drag or a key move from the row of `value` carries, through the
 /// app's `drag_values`.
 fn carried_from(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, value: &str) -> Vec<String> {
-    let shape = config.drag.shape();
+    let shape = config.drag.shape(config.accepts_children.as_ref());
     let rows = match shape.index(value) {
         Some(row) => {
             let expanded = untracked(|| tree_state.expanded.get());
@@ -2367,7 +2841,11 @@ fn carried_from(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, value: &str)
         }
         None => Vec::new(),
     };
-    let values: Vec<String> = if rows.is_empty() { vec![value.to_string()] } else { rows.iter().map(|&r| shape.rows[r].value.clone()).collect() };
+    let values: Vec<String> = if rows.is_empty() {
+        vec![value.to_string()]
+    } else {
+        rows.iter().map(|&r| shape.rows[r].value.clone()).collect()
+    };
     match &config.drag_values {
         Some(each) => values.iter().flat_map(|v| each(v)).collect(),
         None => values,
@@ -2376,10 +2854,16 @@ fn carried_from(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, value: &str)
 
 /// Select the run of drawn rows from `anchor` to `to`.
 fn select_run(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, anchor: &str, to: &str) {
-    let shape = config.drag.shape();
-    let (Some(a), Some(b)) = (shape.index(anchor), shape.index(to)) else { return };
+    let shape = config.drag.shape(config.accepts_children.as_ref());
+    let (Some(a), Some(b)) = (shape.index(anchor), shape.index(to)) else {
+        return;
+    };
     let expanded = untracked(|| tree_state.expanded.get());
-    let run: Vec<String> = shape.run(&expanded, a, b).into_iter().map(|r| shape.rows[r].value.clone()).collect();
+    let run: Vec<String> = shape
+        .run(&expanded, a, b)
+        .into_iter()
+        .map(|r| shape.rows[r].value.clone())
+        .collect();
     tree_state.controller.set_selection(run);
     selection_changed(config, tree_state);
 }
@@ -2390,12 +2874,18 @@ fn unselect_hidden(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, value: &s
     if !tree_state.controller.multiple {
         return;
     }
-    let shape = config.drag.shape();
-    let Some(row) = shape.index(value) else { return };
+    let shape = config.drag.shape(config.accepts_children.as_ref());
+    let Some(row) = shape.index(value) else {
+        return;
+    };
     let selected = untracked(|| tree_state.selected.get());
     let kept: HashSet<String> = selected
         .iter()
-        .filter(|v| shape.index(v).is_none_or(|r| r == row || !shape.is_within(r, row)))
+        .filter(|v| {
+            shape
+                .index(v)
+                .is_none_or(|r| r == row || !shape.is_within(r, row))
+        })
         .cloned()
         .collect();
     if kept.len() != selected.len() {
@@ -2406,10 +2896,15 @@ fn unselect_hidden(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, value: &s
 
 /// Tell the app the selection, top to bottom.
 fn selection_changed(config: &Rc<TreeConfig>, tree_state: UseTreeReturn) {
-    let Some(cb) = &config.onselectionchange else { return };
-    let shape = config.drag.shape();
+    let Some(cb) = &config.onselectionchange else {
+        return;
+    };
+    let shape = config.drag.shape(config.accepts_children.as_ref());
     let selected = untracked(|| tree_state.selected.get());
-    let mut ordered: Vec<(usize, String)> = selected.into_iter().map(|v| (shape.index(&v).unwrap_or(usize::MAX), v)).collect();
+    let mut ordered: Vec<(usize, String)> = selected
+        .into_iter()
+        .map(|v| (shape.index(&v).unwrap_or(usize::MAX), v))
+        .collect();
     ordered.sort();
     cb.invoke(ordered.into_iter().map(|(_, v)| v).collect());
 }
@@ -2420,14 +2915,17 @@ mod multi_tests {
 
     /// a (open: a1, a2 (open: a2x)), b, c
     fn shape() -> Shape {
-        Shape::of(&[
-            TreeNodeData::new("a", "a").with_children(vec![
-                TreeNodeData::new("a1", "a1"),
-                TreeNodeData::new("a2", "a2").with_child(TreeNodeData::new("a2x", "a2x")),
-            ]),
-            TreeNodeData::new("b", "b"),
-            TreeNodeData::new("c", "c"),
-        ])
+        Shape::of(
+            &[
+                TreeNodeData::new("a", "a").with_children(vec![
+                    TreeNodeData::new("a1", "a1"),
+                    TreeNodeData::new("a2", "a2").with_child(TreeNodeData::new("a2x", "a2x")),
+                ]),
+                TreeNodeData::new("b", "b"),
+                TreeNodeData::new("c", "c"),
+            ],
+            None,
+        )
     }
 
     fn set(values: &[&str]) -> HashSet<String> {
@@ -2443,10 +2941,19 @@ mod multi_tests {
         let s = shape();
         let open = set(&["a", "a2"]);
         let i = |v: &str| s.index(v).unwrap();
-        assert_eq!(names(&s, &s.run(&open, i("a1"), i("b"))), ["a1", "a2", "a2x", "b"]);
-        assert_eq!(names(&s, &s.run(&open, i("b"), i("a1"))), ["a1", "a2", "a2x", "b"]);
+        assert_eq!(
+            names(&s, &s.run(&open, i("a1"), i("b"))),
+            ["a1", "a2", "a2x", "b"]
+        );
+        assert_eq!(
+            names(&s, &s.run(&open, i("b"), i("a1"))),
+            ["a1", "a2", "a2x", "b"]
+        );
         let closed = set(&["a"]);
-        assert_eq!(names(&s, &s.run(&closed, i("a1"), i("b"))), ["a1", "a2", "b"]);
+        assert_eq!(
+            names(&s, &s.run(&closed, i("a1"), i("b"))),
+            ["a1", "a2", "b"]
+        );
     }
 
     #[test]
@@ -2458,9 +2965,15 @@ mod multi_tests {
         let carried = s.carried(&open, &set(&["c", "a2x", "a2", "a1"]), i("c"), true);
         assert_eq!(names(&s, &carried), ["a1", "a2", "c"]);
         // A row outside the selection carries itself.
-        assert_eq!(names(&s, &s.carried(&open, &set(&["a1", "c"]), i("b"), true)), ["b"]);
+        assert_eq!(
+            names(&s, &s.carried(&open, &set(&["a1", "c"]), i("b"), true)),
+            ["b"]
+        );
         // Without multiple selection, always the row.
-        assert_eq!(names(&s, &s.carried(&open, &set(&["a1", "c"]), i("c"), false)), ["c"]);
+        assert_eq!(
+            names(&s, &s.carried(&open, &set(&["a1", "c"]), i("c"), false)),
+            ["c"]
+        );
     }
 
     #[test]
@@ -2471,9 +2984,15 @@ mod multi_tests {
         let name = |r: Option<usize>| r.map(|r| s.rows[r].value.clone());
         // a2 is open: the row below it is b, not its child.
         let (above, below) = s.around(&open, &[i("a2")]);
-        assert_eq!((name(above), name(below)), (Some("a1".into()), Some("b".into())));
+        assert_eq!(
+            (name(above), name(below)),
+            (Some("a1".into()), Some("b".into()))
+        );
         let (above, below) = s.around(&open, &[i("a1"), i("b")]);
-        assert_eq!((name(above), name(below)), (Some("a".into()), Some("c".into())));
+        assert_eq!(
+            (name(above), name(below)),
+            (Some("a".into()), Some("c".into()))
+        );
         let (above, below) = s.around(&open, &[i("c")]);
         assert_eq!((name(above), name(below)), (Some("b".into()), None));
     }
@@ -2497,8 +3016,14 @@ mod multi_tests {
         let place = |d: Option<TreeDrop>| d.map(|d| (d.parent, d.slot));
         // b and c: up goes before a; indent goes into a (the row above the
         // first); down has nowhere to go.
-        assert_eq!(place(key(&["b", "c"]).drop_for(TreeMove::Up)), Some((None, TreeSlot::First)));
-        assert_eq!(place(key(&["b", "c"]).drop_for(TreeMove::Indent)), Some((Some("a".into()), TreeSlot::Last)));
+        assert_eq!(
+            place(key(&["b", "c"]).drop_for(TreeMove::Up)),
+            Some((None, TreeSlot::First))
+        );
+        assert_eq!(
+            place(key(&["b", "c"]).drop_for(TreeMove::Indent)),
+            Some((Some("a".into()), TreeSlot::Last))
+        );
         assert_eq!(place(key(&["b", "c"]).drop_for(TreeMove::Down)), None);
         // Rows of different parents do not move as one.
         assert_eq!(place(key(&["a1", "b"]).drop_for(TreeMove::Up)), None);

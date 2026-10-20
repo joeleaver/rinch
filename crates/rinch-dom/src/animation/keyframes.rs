@@ -13,7 +13,7 @@ use crate::transition::transform::{Affine, TransformOp};
 use crate::transition::types::{AnimatableTransform, AnimatableValue, TransitionProperty};
 
 use super::types::KeyframeStop;
-use crate::transition::types::TimingFunction;
+use crate::transition::types::{TimingFunction, convert_timing_function};
 
 /// Extract KeyframeStops from a Stylo KeyframesAnimation.
 ///
@@ -629,25 +629,13 @@ fn transform_ops(
         .collect()
 }
 
-/// Convert a specified timing function to our TimingFunction.
+/// Convert a specified timing function to our TimingFunction (a keyframe's
+/// own `animation-timing-function`). Computing one needs no context, so it
+/// goes through the same converter as the computed values (#1564).
 fn convert_specified_timing_function(
     tf: &style::values::specified::easing::TimingFunction,
 ) -> Option<TimingFunction> {
-    use style::values::generics::easing::TimingFunction as StyloTF;
-    use style::values::generics::easing::TimingKeyword;
-
-    Some(match tf {
-        StyloTF::Keyword(kw) => match kw {
-            TimingKeyword::Linear => TimingFunction::Linear,
-            TimingKeyword::Ease => TimingFunction::Ease,
-            TimingKeyword::EaseIn => TimingFunction::EaseIn,
-            TimingKeyword::EaseOut => TimingFunction::EaseOut,
-            TimingKeyword::EaseInOut => TimingFunction::EaseInOut,
-        },
-        StyloTF::CubicBezier { x1, y1, x2, y2 } => {
-            // Specified CubicBezier uses Number type — extract f32 value
-            TimingFunction::CubicBezier(x1.get(), y1.get(), x2.get(), y2.get())
-        }
-        StyloTF::Steps(..) | StyloTF::LinearFunction(..) => TimingFunction::Linear,
-    })
+    Some(convert_timing_function(
+        &tf.to_computed_value_without_context(),
+    ))
 }
