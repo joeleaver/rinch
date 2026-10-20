@@ -59,14 +59,7 @@ fn document(style: &str) -> RinchDocument {
 
 fn paint_into(doc: &mut RinchDocument, painter: &mut dyn Painter) {
     let mut cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
-    rinch_dom::paint::paint_document(
-        &doc.tree,
-        painter,
-        1.0,
-        (VW, VH),
-        &mut doc.font_cx,
-        &mut cx,
-    );
+    rinch_dom::paint::paint_document(&doc.tree, painter, 1.0, (VW, VH), &mut doc.font_cx, &mut cx);
 }
 
 /// Pixel centres at least 1.5px inside the border-box shape of radius `r`
@@ -308,7 +301,10 @@ fn a_rotated_box_keeps_its_shadow_outside() {
             let pt = Point::new(x as f64 + 0.5, y as f64 + 0.5);
             if (pt - Point::new(cx, cy)).hypot() < 45.0 {
                 inside += alpha(&p, pt.x, pt.y) as u64;
-                assert!(!r.paints(pt), "painter commands fill {pt:?} inside the rotated box");
+                assert!(
+                    !r.paints(pt),
+                    "painter commands fill {pt:?} inside the rotated box"
+                );
             }
         }
     }
