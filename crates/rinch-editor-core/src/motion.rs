@@ -240,6 +240,32 @@ fn is_extend(c: char) -> bool {
     re.is_match(c.encode_utf8(&mut buf))
 }
 
+/// General_Category Nd (a decimal digit of any script: `3`, `٣`; not `½`).
+fn is_decimal_digit(c: char) -> bool {
+    use std::sync::OnceLock;
+    static ND: OnceLock<regex::Regex> = OnceLock::new();
+    if c.is_ascii() {
+        return c.is_ascii_digit();
+    }
+    let re = ND.get_or_init(|| regex::Regex::new(r"^\p{Nd}$").expect("a valid class"));
+    let mut buf = [0u8; 4];
+    re.is_match(c.encode_utf8(&mut buf))
+}
+
+/// An emoji (Extended_Pictographic): a run of them is one word to a
+/// double-click, where any other punctuation run gives one char.
+fn is_pictographic(c: char) -> bool {
+    use std::sync::OnceLock;
+    static PICTO: OnceLock<regex::Regex> = OnceLock::new();
+    if c.is_ascii() {
+        return false;
+    }
+    let re = PICTO
+        .get_or_init(|| regex::Regex::new(r"^\p{Extended_Pictographic}$").expect("a valid class"));
+    let mut buf = [0u8; 4];
+    re.is_match(c.encode_utf8(&mut buf))
+}
+
 fn class_of(c: char) -> Class {
     if c.is_whitespace() {
         Class::Space
@@ -287,7 +313,7 @@ pub fn word_segments(units: &[Unit]) -> Vec<(usize, usize)> {
         }
         classes.push(k);
     }
-    let digit = |i: usize| matches!(units[i], Unit::Char(c) if c.is_numeric());
+    let digit = |i: usize| matches!(units[i], Unit::Char(c) if is_decimal_digit(c));
     for i in 1..units.len().saturating_sub(1) {
         let Unit::Char(c) = units[i] else { continue };
         // An apostrophe between two word characters is part of the word.
@@ -403,7 +429,10 @@ fn split_by_dictionary(
 /// The segment holding unit `i` (inside the content). Segmentation never
 /// crosses whitespace (a segment is a whitespace run or holds none), so only
 /// the stretch between the whitespace on either side of `i` is segmented: the
-/// work is linear in the word, not the block.
+/// work is linear in that whitespace-free stretch — the word in spaced text,
+/// but the whole paragraph in CJK or Thai written without spaces (measured in
+/// the review of #1613, one Ctrl+Right in a 65k-char Thai paragraph with no
+/// spaces: 30.5 ms with the dictionary, 13.1 ms without; CJK 60k: 5.0 / 1.6 ms).
 fn segment_around(units: &[Unit], i: usize) -> (usize, usize) {
     let space = units[i].is_space();
     let mut lo = i;
@@ -426,8 +455,9 @@ fn segment_around(units: &[Unit], i: usize) -> (usize, usize) {
 /// segment](word_segments) under a double-click (a run of whitespace, a word,
 /// images, a hard break), chosen by the unit to the right of the gap, or the
 /// one to its left at block end and at a word's trailing edge (right unit
-/// whitespace, left not). On ASCII punctuation it is that one char, as in
-/// Chrome 155 (`foo|...bar` selects one `.`). Collapsed `(pos, pos)` outside a
+/// whitespace, left not). On a punctuation run it is that one char (with its
+/// marks), as in Chrome 155 (`foo|...bar` selects one `.`, `foo|——bar` one
+/// `—`); a run of emoji stays whole (`😀😀`). Collapsed `(pos, pos)` outside a
 /// textblock or in an empty block.
 pub fn word_range_at(doc: &Node, pos: Pos) -> (Pos, Pos) {
     let Ok(r) = doc.resolve(pos) else {
@@ -447,8 +477,13 @@ pub fn word_range_at(doc: &Node, pos: Pos) -> (Pos, Pos) {
     let idx = if classify_right { off } else { off - 1 };
     let (start, end) = segment_around(&units, idx);
     let (start, end) = match units[idx] {
-        Unit::Char(c) if c.is_ascii_punctuation() && is_punct_segment(&units[start..end]) => {
-            (idx, idx + 1)
+        Unit::Char(c) if !is_pictographic(c) && is_punct_segment(&units[start..end]) => {
+            // The char and any marks on it.
+            let mut e = idx + 1;
+            while e < end && matches!(units[e], Unit::Char(m) if is_extend(m)) {
+                e += 1;
+            }
+            (idx, e)
         }
         _ => (start, end),
     };

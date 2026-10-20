@@ -126,12 +126,12 @@ Command names are case-sensitive. The full catalogue:
 > word segmentation (`motion::word_segments`, #938, #939), Chrome's where it was
 > measured: a run of punctuation is a word apart from the letters beside it
 > (`foo.bar|` deletes `bar`, `foo...|` deletes `...`), an apostrophe between letters
-> stays in the word (`don't`), a `.` `,` `;` or apostrophe between digits stays in
+> stays in the word (`don't`), a `.` `,` `;` or apostrophe between decimal digits stays in
 > the number (`3.14`, `1,000`), and an inline atom is a word of its own — adjacent
 > images together, each hard break alone: the motion stops on either side of it,
 > one beside the caret goes alone (with any whitespace between them:
 > `foo<img>  |` leaves `foo`), and a word beyond one is not taken with it.
-> Double-click on a run of ASCII punctuation selects the one character, as Chrome
+> Double-click on a run of punctuation (not emoji) selects the one character, as Chrome
 > does. A CJK or Thai run is split into words by ICU's
 > dictionary on desktop (`漢字です|` deletes `です`). A web build does the same with
 > `rinch-web`'s opt-in `word-dictionary` feature (+3.8 MB of wasm, see
