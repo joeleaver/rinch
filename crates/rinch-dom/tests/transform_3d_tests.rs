@@ -1226,3 +1226,80 @@ fn a_singular_transform_hides_the_subtree() {
         assert!(!s.hits(s.parent, 450.0, 220.0));
     }
 }
+
+// ------------------------------------------------- review of #1642 (Chrome 155)
+
+/// A list holding a 3D function can still compose to a 2D matrix — exactly,
+/// in Chrome, whose sines and cosines are exact at a quarter turn — and such
+/// an end is decomposed in 2D: a reflection is one negative scale. With
+/// `sin(π)` ≈ 1.2e-16 the 4×4 failed `is_2d` and the 3D decomposition
+/// negated every scale (a y scale of 0.485 at 0.2 where Chrome keeps 1).
+#[test]
+fn a_3d_list_that_lands_in_the_plane_is_decomposed_in_2d() {
+    let flip = [
+        (0.2, [-0.6, 0.0, 0.0, 1.0, 1.0, 0.0]),
+        (0.8, [0.6, 0.0, 0.0, 1.0, 4.0, 0.0]),
+    ];
+    check_transition("rotateY(180deg) scaleZ(-1)", "translate(5px)", &flip);
+    check_transition("scaleX(-1) rotateX(360deg)", "rotateY(0deg) translate(5px)", &flip);
+    check_keyframes("rotateY(180deg) scaleZ(-1)", "translate(5px)", &flip);
+}
+
+/// The quaternion's sign and branch are Chromium's: rotations more than a
+/// half turn apart, and a pair whose quaternions are near orthogonal, go the
+/// way Chrome goes.
+#[test]
+fn the_quaternion_follows_chromium() {
+    check_transition(
+        "rotateX(190deg)",
+        "translate(0px) rotateY(170deg)",
+        &[
+            (0.2, [0.812226, -0.579469, -0.579469, -0.78823, 0.0, 0.0]),
+            (0.5, [0.0150777, -0.984922, -0.984922, 0.0150777, 0.0, 0.0]),
+        ],
+    );
+    check_transition(
+        "rotate3d(1,2,3,179deg)",
+        "translate(1px) rotate3d(-3,2,1,179deg)",
+        &[
+            (0.2, [-0.99841, 0.0483918, 0.0166827, -0.235936, 0.2, 0.0]),
+            (0.5, [-0.777567, -0.429881, -0.458903, -0.110979, 0.5, 0.0]),
+        ],
+    );
+    check_transition(
+        "rotate3d(1,1,0,90deg)",
+        "translate(0px) rotate3d(-1,-0.99,0.01,95deg)",
+        &[(0.2, [0.215188, 0.785326, 0.788239, 0.211232, 0.0, 0.0])],
+    );
+    check_transition(
+        "scale3d(-2,-1,1) rotateY(20deg)",
+        "translate(1px)",
+        &[
+            (0.2, [-1.37289, 1.0117, -0.585406, -0.809017, 0.2, 0.0]),
+            (0.8, [0.958123, 0.691979, -0.585406, 0.809017, 0.8, 0.0]),
+        ],
+    );
+    // A shear whose y scale is not 1 (the existing shear pin sits at 1).
+    check_transition(
+        "skew(20deg,10deg) rotateY(40deg)",
+        "rotateY(-30deg) translate(10px)",
+        &[(0.2, [0.901243, 0.085652, 0.310874, 0.988703, 1.73205, 0.0])],
+    );
+    // A 3D scale with a z other than 1 and a 2D-looking linear part.
+    check_transition(
+        "scale3d(2,-1,3) rotateZ(10deg)",
+        "translate3d(1px,2px,3px) rotateX(10deg)",
+        &[(0.2, [1.10812, -0.180031, -0.179626, -0.587176, 0.2, 0.4])],
+    );
+}
+
+/// Two 3D lists whose 4×4s differ only in their box-relative part do not
+/// hold still.
+#[test]
+fn a_box_relative_difference_between_3d_lists_transitions() {
+    check_transition(
+        "translate(10%) rotateX(30deg)",
+        "translate(20%) scale(1) rotateX(30deg)",
+        &[(0.2, [1.0, 0.0, 0.0, 0.866025, 12.0, 0.0])],
+    );
+}
