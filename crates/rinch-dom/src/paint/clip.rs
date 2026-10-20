@@ -159,14 +159,22 @@
 //! which reads [`padding_box_insets`] directly rather than re-deriving it
 //! (`crates/rinch/src/app/hit_testing.rs`). The radii shrink to match:
 //! [`padding_box_radii`] reduces each of [`border_radii`]'s (outer) corners by
-//! the two border widths that meet there. rinch's radii are one scalar per
-//! corner rather than CSS's per-axis elliptical pair (see
-//! [`peniko::kurbo::RoundedRectRadii`]), so each corner is reduced by the
-//! *average* of its two adjacent widths — exact when the border is uniform
-//! (the arc-per-side border painter in `paint/borders.rs` makes the same
-//! choice, there called `half`), an approximation otherwise.
+//! the border widths that meet there — the horizontal radius by the left or
+//! right width, the vertical one by the top or bottom width (css-backgrounds-3
+//! §5.5, #977). It used to take the *average* of the two widths off one
+//! circular radius, which was exact only for a uniform border.
+//!
+//! ## The radii (#977)
+//!
+//! [`border_radii`] is the one place `border-radius` is resolved: each corner
+//! is a `(horizontal, vertical)` pair, a percentage resolves against the
+//! border box's width for the horizontal radius and its height for the
+//! vertical one, and the four corners are scaled by CSS's overlap factor. See
+//! [`super::radii`].
 
-use peniko::kurbo::{Rect, RoundedRectRadii};
+use peniko::kurbo::{Rect, Vec2};
+
+use super::radii::BorderRadii;
 
 use crate::computed_style::LengthPercentageValue;
 use crate::node::Node;
@@ -186,22 +194,37 @@ use crate::node::Node;
 pub(crate) const AXIS_UNBOUNDED: f64 = 1.0e7;
 
 /// This box's **outer** `border-radius` — the border box's corners — resolved
-/// and scaled to painter units.
+/// and scaled to painter units, as CSS draws them (css-backgrounds-3 §5.5,
+/// #977): each corner's horizontal radius resolved against the border box's
+/// width and its vertical radius against its height, then every radius scaled
+/// by the overlap factor so the corners along a side never add up to more
+/// than the side.
 ///
-/// The percentage basis is the shorter side of the border box, which is what
-/// every corner of every rounded box in `paint_node` already resolved against.
-/// This is the radii the background and border paint with; [`clip_shape`]'s
-/// own (smaller, padding-box) radii come from [`padding_box_radii`].
-pub fn border_radii(node: &Node, scale: f64) -> RoundedRectRadii {
+/// This is the radii the background, border, outline and outer shadow paint
+/// with; [`clip_shape`]'s own (smaller, padding-box) radii come from
+/// [`padding_box_radii`].
+pub fn border_radii(node: &Node, scale: f64) -> BorderRadii {
     let cs = &node.computed_style;
-    let basis = node.layout.width.min(node.layout.height);
-    let r = |v: &LengthPercentageValue| v.resolve(basis).max(0.0) as f64 * scale;
-    RoundedRectRadii::new(
-        r(&cs.border_radius_top_left),
-        r(&cs.border_radius_top_right),
-        r(&cs.border_radius_bottom_right),
-        r(&cs.border_radius_bottom_left),
+    let (w, h) = (node.layout.width, node.layout.height);
+    let r = |x: &LengthPercentageValue, y: &LengthPercentageValue| {
+        Vec2::new(
+            x.resolve(w).max(0.0) as f64 * scale,
+            y.resolve(h).max(0.0) as f64 * scale,
+        )
+    };
+    BorderRadii::new(
+        r(&cs.border_radius_top_left, &cs.border_radius_top_left_y),
+        r(&cs.border_radius_top_right, &cs.border_radius_top_right_y),
+        r(
+            &cs.border_radius_bottom_right,
+            &cs.border_radius_bottom_right_y,
+        ),
+        r(
+            &cs.border_radius_bottom_left,
+            &cs.border_radius_bottom_left_y,
+        ),
     )
+    .fitted(w.max(0.0) as f64 * scale, h.max(0.0) as f64 * scale)
 }
 
 /// How far the padding box sits inside the border box on each side, in
@@ -255,26 +278,17 @@ pub fn padding_box_insets_for_size(node: &Node, width: f32, height: f32) -> (f32
     (left, top, right, bottom)
 }
 
-/// [`border_radii`] (the border box's corners) reduced to the padding box's —
-/// each corner shrunk by the average of the two border widths that meet
-/// there, clamped at zero. See the module doc's "The box: padding, not
-/// border" section for why an average: rinch's radii are circular, one scalar
-/// per corner, where CSS reduces each of two per-corner elliptical
-/// components by a single adjacent side's width.
-pub fn padding_box_radii(node: &Node, scale: f64) -> RoundedRectRadii {
-    let outer = border_radii(node, scale);
+/// [`border_radii`] (the border box's corners) reduced to the padding box's:
+/// each horizontal radius less the left or right border width and each
+/// vertical one less the top or bottom width, floored at zero
+/// (css-backgrounds-3 §5.5; [`BorderRadii::inner`]).
+pub fn padding_box_radii(node: &Node, scale: f64) -> BorderRadii {
     let (left, top, right, bottom) = padding_box_insets(node);
-    let (left, top, right, bottom) = (
-        left as f64 * scale,
+    border_radii(node, scale).inner(
         top as f64 * scale,
         right as f64 * scale,
         bottom as f64 * scale,
-    );
-    RoundedRectRadii::new(
-        (outer.top_left - (top + left) * 0.5).max(0.0),
-        (outer.top_right - (top + right) * 0.5).max(0.0),
-        (outer.bottom_right - (bottom + right) * 0.5).max(0.0),
-        (outer.bottom_left - (bottom + left) * 0.5).max(0.0),
+        left as f64 * scale,
     )
 }
 
@@ -292,8 +306,8 @@ pub fn padding_box_radii(node: &Node, scale: f64) -> RoundedRectRadii {
 /// drift back out of agreement with it.
 ///
 /// The radii come back alongside rather than baked in because the caller picks
-/// the shape: `paint_node` pushes a `RoundedRect` when any corner is rounded
-/// and a plain `Rect` otherwise, which is the branch it has always taken.
+/// the shape: `paint_node` pushes [`BorderRadii::shape`] of the two, which is
+/// a plain `Rect` when every corner is square.
 ///
 /// Per axis (#535): an axis whose own `overflow` computes to `visible` is left
 /// unbounded, extended by [`AXIS_UNBOUNDED`] on both sides rather than cut at
@@ -303,7 +317,7 @@ pub fn padding_box_radii(node: &Node, scale: f64) -> RoundedRectRadii {
 /// infinite strip with no actual box corner inside it, so there is nothing for
 /// a radius to round against on that axis — measured in Chrome 153, not
 /// assumed (see the module doc).
-pub fn clip_shape(node: &Node, scale: f64, x: f64, y: f64) -> Option<(Rect, RoundedRectRadii)> {
+pub fn clip_shape(node: &Node, scale: f64, x: f64, y: f64) -> Option<(Rect, BorderRadii)> {
     let (clip_x, clip_y) = node.clip_axes();
     if !clip_x && !clip_y {
         return None;
@@ -334,7 +348,7 @@ pub fn clip_shape(node: &Node, scale: f64, x: f64, y: f64) -> Option<(Rect, Roun
     let radii = if clip_x && clip_y {
         padding_box_radii(node, scale)
     } else {
-        RoundedRectRadii::new(0.0, 0.0, 0.0, 0.0)
+        BorderRadii::ZERO
     };
     Some((Rect::new(x0, y0, x1, y1), radii))
 }

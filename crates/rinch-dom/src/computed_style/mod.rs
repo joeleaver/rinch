@@ -90,11 +90,20 @@ pub struct ComputedStyle {
     pub border_bottom_width: LengthPercentageValue,
     pub border_left_width: LengthPercentageValue,
 
-    // Border radius (can be percentage, resolved at paint time)
+    // Border radius (can be percentage, resolved at paint time). Each corner
+    // is two radii (css-backgrounds-3 §5.5, #977): these four are the
+    // **horizontal** ones, resolved against the border box's width, and the
+    // `_y` four below the **vertical** ones, resolved against its height.
+    // `border-radius: 8px` sets both to 8px. `paint::border_radii` is the one
+    // place they are resolved and scaled for overlap.
     pub border_radius_top_left: LengthPercentageValue,
     pub border_radius_top_right: LengthPercentageValue,
     pub border_radius_bottom_right: LengthPercentageValue,
     pub border_radius_bottom_left: LengthPercentageValue,
+    pub border_radius_top_left_y: LengthPercentageValue,
+    pub border_radius_top_right_y: LengthPercentageValue,
+    pub border_radius_bottom_right_y: LengthPercentageValue,
+    pub border_radius_bottom_left_y: LengthPercentageValue,
 
     // Border styles (per-side)
     pub border_top_style: BorderStyleValue,
@@ -314,6 +323,10 @@ impl Default for ComputedStyle {
             border_radius_top_right: LengthPercentageValue::Zero,
             border_radius_bottom_right: LengthPercentageValue::Zero,
             border_radius_bottom_left: LengthPercentageValue::Zero,
+            border_radius_top_left_y: LengthPercentageValue::Zero,
+            border_radius_top_right_y: LengthPercentageValue::Zero,
+            border_radius_bottom_right_y: LengthPercentageValue::Zero,
+            border_radius_bottom_left_y: LengthPercentageValue::Zero,
 
             border_top_style: BorderStyleValue::None,
             border_right_style: BorderStyleValue::None,

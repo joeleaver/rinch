@@ -74,17 +74,21 @@ pub fn apply_value_to_style(
         (TransitionProperty::BorderLeftWidth, AnimatableValue::LengthPercentage(lp)) => {
             style.border_left_width = *lp;
         }
-        (TransitionProperty::BorderRadiusTopLeft, AnimatableValue::LengthPercentage(lp)) => {
-            style.border_radius_top_left = *lp;
+        (TransitionProperty::BorderRadiusTopLeft, AnimatableValue::CornerRadius(x, y)) => {
+            style.border_radius_top_left = *x;
+            style.border_radius_top_left_y = *y;
         }
-        (TransitionProperty::BorderRadiusTopRight, AnimatableValue::LengthPercentage(lp)) => {
-            style.border_radius_top_right = *lp;
+        (TransitionProperty::BorderRadiusTopRight, AnimatableValue::CornerRadius(x, y)) => {
+            style.border_radius_top_right = *x;
+            style.border_radius_top_right_y = *y;
         }
-        (TransitionProperty::BorderRadiusBottomRight, AnimatableValue::LengthPercentage(lp)) => {
-            style.border_radius_bottom_right = *lp;
+        (TransitionProperty::BorderRadiusBottomRight, AnimatableValue::CornerRadius(x, y)) => {
+            style.border_radius_bottom_right = *x;
+            style.border_radius_bottom_right_y = *y;
         }
-        (TransitionProperty::BorderRadiusBottomLeft, AnimatableValue::LengthPercentage(lp)) => {
-            style.border_radius_bottom_left = *lp;
+        (TransitionProperty::BorderRadiusBottomLeft, AnimatableValue::CornerRadius(x, y)) => {
+            style.border_radius_bottom_left = *x;
+            style.border_radius_bottom_left_y = *y;
         }
         (TransitionProperty::FontSize, AnimatableValue::Float(v)) => {
             style.font_size = *v;
