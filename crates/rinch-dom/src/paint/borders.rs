@@ -847,17 +847,6 @@ pub(super) fn paint_box_shadow(
     let element_box = Rect::new(x, y, x + w, y + h);
     let hole: BezPath = radii.path(element_box);
 
-    /// The layer's expanded shape with the element's border box cut out of it.
-    ///
-    /// `Fill::EvenOdd` over the two subpaths is what does the cutting: a point
-    /// inside both is crossed an even number of times and so is left alone,
-    /// which is the ring, and only the ring.
-    fn ring(outer: BezPath, hole: &BezPath) -> BezPath {
-        let mut path = outer;
-        path.extend(hole.iter());
-        path
-    }
-
     /// Whether the hole is wholly inside `outer` — the precondition the punch
     /// needs, and not a rounding detail.
     ///
@@ -869,8 +858,9 @@ pub(super) fn paint_box_shadow(
     /// expanded — the near edge of `0 4px 12px`, say, whose first layers are
     /// expanded by less than the 4px they are pushed down — and the strip it
     /// paints only stays hidden while the element's own background is fully
-    /// opaque. So the punch is applied only where it provably subtracts, and
-    /// the layer is filled whole (as it always was) where it does not.
+    /// opaque. So the punch is applied only where it provably subtracts; where
+    /// it does not, the shadow is filled through a clip that excludes the box
+    /// instead (`paint_shadow_layers`, #976).
     fn hole_fits(
         hole_rect: Rect,
         hole_radii: BorderRadii,
@@ -977,6 +967,9 @@ pub(super) fn paint_box_shadow(
 
     const SQUARE: BorderRadii = BorderRadii::ZERO;
 
+    // Every layer of every outer shadow, in paint order (#976).
+    let mut shadow_layers: Vec<ShadowLayer> = Vec::new();
+
     // css-backgrounds-3 §7.1: the first shadow is on top, so the list is
     // painted back to front (#1009) — as `paint_inset_box_shadow` paints its
     // own.
@@ -1056,16 +1049,8 @@ pub(super) fn paint_box_shadow(
                 } else {
                     (SQUARE, layer_rect.into_path(0.1))
                 };
-                if hole_fits(element_box, radii, layer_rect, outer_radii) {
-                    painter.fill_color(
-                        Fill::EvenOdd,
-                        transform,
-                        layer_color,
-                        &ring(outer, &hole).into(),
-                    );
-                } else {
-                    painter.fill_color(Fill::NonZero, transform, layer_color, &outer.into());
-                }
+                let fits = hole_fits(element_box, radii, layer_rect, outer_radii);
+                shadow_layers.push((layer_color, layer_rect, outer, fits));
             }
         } else {
             // No blur: simple offset shadow
@@ -1082,13 +1067,74 @@ pub(super) fn paint_box_shadow(
             } else {
                 (SQUARE, shadow_rect.into_path(0.1))
             };
-            if hole_fits(element_box, radii, shadow_rect, outer_radii) {
-                painter.fill_color(Fill::EvenOdd, transform, color, &ring(outer, &hole).into());
-            } else {
-                painter.fill_color(Fill::NonZero, transform, color, &outer.into());
-            }
+            let fits = hole_fits(element_box, radii, shadow_rect, outer_radii);
+            shadow_layers.push((color, shadow_rect, outer, fits));
         }
     }
+
+    paint_shadow_layers(painter, transform, &hole, shadow_layers);
+}
+
+/// One layer of an outer shadow: its colour, its rect, its shape, and whether
+/// the element's border box lies inside it (`hole_fits`).
+type ShadowLayer = (AlphaColor<Srgb>, Rect, BezPath, bool);
+
+/// Paint an element's outer-shadow layers, in paint order, outside its border
+/// box `hole` (#976).
+///
+/// Where the hole lies inside every layer, each layer is its ring — the
+/// layer's shape plus the hole under `Fill::EvenOdd`, which subtracts the
+/// hole and fills only the pixels the ring covers (see `hole_fits` for why
+/// that needs the hole inside the layer).
+///
+/// Where it does not — a shadow offset further than some layer is expanded,
+/// which is every hard offset shadow and the near edge of every blurred one —
+/// the even-odd fill would *add* the part of the hole outside the layer, so
+/// every layer is filled whole through **one** clip for the element that is
+/// everything but the hole: a rect around all the layers and the hole, plus
+/// the hole, under `Fill::EvenOdd`. They used to be filled whole with no clip,
+/// which painted the shadow through an element without an opaque background,
+/// where CSS clips an outer shadow to the outside of the border box. The hole
+/// is the same for every shadow of the element, so a shadow list costs one
+/// clip mask, not one per shadow, and all its layers share one edge along the
+/// hole.
+fn paint_shadow_layers(
+    painter: &mut dyn Painter,
+    transform: Affine,
+    hole: &BezPath,
+    layers: Vec<ShadowLayer>,
+) {
+    if layers.iter().all(|&(_, _, _, fits)| fits) {
+        for (color, _, mut ring, _) in layers {
+            // `Fill::EvenOdd` over the layer and the hole is what cuts: a
+            // point inside both is crossed twice and left alone.
+            ring.extend(hole.iter());
+            painter.fill_color(Fill::EvenOdd, transform, color, &ring.into());
+        }
+        return;
+    }
+    let Some(around) = layers
+        .iter()
+        .map(|(_, rect, _, _)| *rect)
+        .reduce(|a, b| a.union(b))
+    else {
+        return;
+    };
+    // Grown past the layers' anti-aliased edges and around the hole, so the
+    // clip has no edge but the hole's anywhere a layer paints. Two *device*
+    // pixels: the rect is in the element's own space, and under a downscale
+    // (`scale(0.125)`) a pad of two local pixels would sit inside the
+    // shadow's own edge pixel and dim it.
+    let linear = transform.determinant().abs().sqrt();
+    let pad = if linear > 1e-6 { 2.0 / linear } else { 2.0 };
+    let around = around.union(hole.bounding_box()).inflate(pad, pad);
+    let mut outside_hole = around.into_path(0.1);
+    outside_hole.extend(hole.iter());
+    painter.push_clip(Fill::EvenOdd, transform, &outside_hole.into());
+    for (color, _, outer, _) in layers {
+        painter.fill_color(Fill::NonZero, transform, color, &outer.into());
+    }
+    painter.pop_layer();
 }
 
 /// Paint the `inset` shadows of `shadows` (#974). Called after the element's

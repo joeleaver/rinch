@@ -2505,6 +2505,14 @@ pub struct IfcRootMeasures {
     /// looked at it, or `None` if it has not seen it since the entry was
     /// created. See `RinchDocument::refresh_ifc_signatures`.
     pub signature: Option<u64>,
+    /// `signature` no longer describes what `sizes` were measured from: an
+    /// atomic inline in the root changed size outside a structural pass, and
+    /// the root was measured again against the new size while `signature`
+    /// still records the old one. The next structural pass treats the root as
+    /// changed whatever it computes, or a chip that goes back to its earlier
+    /// size makes the signature match again and the sizes measured at the
+    /// size in between are served (review of #1627).
+    pub stale: bool,
     /// `(available-width bits, measure)`, one per available space the
     /// measure function was asked about, newest last, at most
     /// [`IfcRootMeasures::MAX_SIZES`].
@@ -2793,7 +2801,9 @@ pub struct NodeTree {
     /// Shared lock for Stylo CSS engine.
     pub guard: SharedRwLock,
     /// IDs of anonymous block box nodes created during layout.
-    /// Tracked for cleanup at the start of each layout pass.
+    /// Tracked for cleanup at the start of each layout pass. A box minted
+    /// again for the same run reuses the old box's slab id, and keeps its paint
+    /// layout and cached measures (#964, `ifc::RetiredAnonBoxes`).
     pub anonymous_block_boxes: Vec<RawNodeId>,
     /// The `display: inline` elements the last IFC pass **split** around
     /// block-level content (#513) — [`Node::is_split_inline`].
@@ -3600,6 +3610,20 @@ impl NodeTree {
             .bump(crate::perf::Counter::IfcMeasureInvalidations);
         if let Some(entry) = self.ifc_measure_cache.get_mut(&root) {
             entry.sizes.clear();
+        }
+    }
+
+    /// Drop the sizes cached for IFC root `root`, as
+    /// [`Self::forget_ifc_measures`] does, **and mark its content signature
+    /// stale** ([`IfcRootMeasures::stale`]): for a root an atomic inline in
+    /// which changed size outside a structural pass. The signature hashes that
+    /// size, so it no longer describes what the root is measured from next;
+    /// the next structural pass that signs the root treats it as changed
+    /// whatever signature it computes, and clears the mark.
+    pub fn forget_ifc_measures_and_signature(&mut self, root: RawNodeId) {
+        self.forget_ifc_measures(root);
+        if let Some(entry) = self.ifc_measure_cache.get_mut(&root) {
+            entry.stale = true;
         }
     }
 

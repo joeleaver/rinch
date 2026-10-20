@@ -496,13 +496,15 @@ impl DomDocument for RinchDocument {
         match &self.tree.nodes[n].kind {
             NodeKind::Text(t) if t.content == text => return,
             NodeKind::Element(_) => {
-                let children = &self.tree.nodes[n].children;
-                if children.len() == 1 {
-                    if let NodeKind::Text(t) = &self.tree.nodes[children[0]].kind {
-                        if t.content == text {
-                            return;
-                        }
-                    }
+                // The element's own children: its generated boxes are not
+                // replaced by a text write (#1630).
+                let (lo, hi) = self.own_children_range(n);
+                if hi - lo == 1
+                    && let NodeKind::Text(t) =
+                        &self.tree.nodes[self.tree.nodes[n].children[lo]].kind
+                    && t.content == text
+                {
+                    return;
                 }
             }
             _ => {}
@@ -514,11 +516,17 @@ impl DomDocument for RinchDocument {
         // every text rewrite (a removal observer above was told a child left
         // each time, #1440) and left one orphaned slab entry and Taffy leaf
         // behind per write.
-        if self.tree.nodes[n].is_element()
-            && let [only] = self.tree.nodes[n].children[..]
-            && matches!(self.tree.nodes[only].kind, NodeKind::Text(_))
-        {
-            return self.set_text_content(NodeId(only), text);
+        //
+        // "Only" among its own children: a generated `::before` / `::after`
+        // box beside the text does not count (#1630).
+        if self.tree.nodes[n].is_element() {
+            let (lo, hi) = self.own_children_range(n);
+            if hi - lo == 1 {
+                let only = self.tree.nodes[n].children[lo];
+                if matches!(self.tree.nodes[only].kind, NodeKind::Text(_)) {
+                    return self.set_text_content(NodeId(only), text);
+                }
+            }
         }
         // Past the no-op return: an identical write moves nothing, and must
         // not leave the next pointer move with a cold hit cache.
@@ -574,8 +582,13 @@ impl DomDocument for RinchDocument {
                 // for its inline children, but ifc_root points to it from children,
                 // not from itself, so invalidate_ifc_for_node misses it).
                 self.tree.nodes[n].text_layout = None;
-                // For elements: remove all children and add a text child
-                let old_children: Vec<_> = self.tree.nodes[n].children.clone();
+                // For elements: remove the element's own children and add a
+                // text child in their place. Its generated `::before` /
+                // `::after` boxes stay (#1630): they are not DOM children, and
+                // nothing would make them again until the element is next
+                // cascaded.
+                let (lo, hi) = self.own_children_range(n);
+                let old_children: Vec<_> = self.tree.nodes[n].children[lo..hi].to_vec();
                 for child in old_children {
                     // Its pixels are recorded and its painted state forgotten
                     // while it is still under the parent it was painted under,
@@ -609,7 +622,7 @@ impl DomDocument for RinchDocument {
                         self.taffy_detach_contribution(parent_taffy, child);
                     }
                 }
-                self.tree.nodes[n].children.clear();
+                self.tree.nodes[n].children.drain(lo..hi);
                 // Create text child with taffy node and context
                 let text_id = self.tree.nodes.vacant_key();
                 let mut text_node = Node::text(text_id, text, self.tree.guard.clone());
@@ -637,10 +650,17 @@ impl DomDocument for RinchDocument {
                 text_node.taffy_id = Some(taffy_id);
                 self.tree.taffy_map.insert(taffy_id, text_id);
                 self.tree.nodes.insert(text_node);
-                self.tree.nodes[n].children.push(text_id);
+                // Between the generated boxes, at `lo`.
+                let len = self.tree.nodes[n].children.len();
+                self.tree.nodes[n].children.insert(lo, text_id);
                 // Add to taffy parent
                 if let Some(parent_taffy) = self.tree.nodes[n].taffy_id {
-                    self.taffy_add_child_checked(parent_taffy, taffy_id);
+                    if lo == len {
+                        self.taffy_add_child_checked(parent_taffy, taffy_id);
+                    } else {
+                        let taffy_idx = self.compute_taffy_child_index(n, lo);
+                        self.attach_taffy_child_at(parent_taffy, taffy_idx, taffy_id, n, text_id);
+                    }
                 }
                 // Structural change (children replaced).
                 self.tree.seed_ifc(n, IfcSeed::Children);
@@ -1055,8 +1075,12 @@ impl DomDocument for RinchDocument {
         self.tree.hit_cache.invalidate();
         use crate::html_parser::parse_html_string;
 
-        // Clear existing children (including taffy sync)
-        let old_children: Vec<_> = self.tree.nodes[node.0].children.clone();
+        // Clear the element's own children (including taffy sync). Its
+        // generated `::before` / `::after` boxes stay (#1630); the parsed
+        // children are appended between them below (`append_child` keeps
+        // them there, #1629).
+        let (lo, hi) = self.own_children_range(node.0);
+        let old_children: Vec<_> = self.tree.nodes[node.0].children[lo..hi].to_vec();
         for child in old_children {
             // The child's pixels are recorded where it was painted before it
             // is freed, as `remove_node` does (#966): nothing can reach its
@@ -1073,7 +1097,7 @@ impl DomDocument for RinchDocument {
             self.tree.nodes[child].parent = None;
             self.tree.remove_subtree(child);
         }
-        self.tree.nodes[node.0].children.clear();
+        self.tree.nodes[node.0].children.drain(lo..hi);
         // `:empty` on the node, and whatever a structural selector ties to
         // its children, can have moved (each re-append below notes its own
         // insertion; a clear-to-empty has none).
