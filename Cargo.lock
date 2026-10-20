@@ -4930,6 +4930,7 @@ dependencies = [
  "rinch-tabler-icons",
  "rinch-theme",
  "rinch-video",
+ "rinch-words",
  "serde_json",
  "softbuffer",
  "tokio",
@@ -5075,6 +5076,9 @@ dependencies = [
 [[package]]
 name = "rinch-editable"
 version = "0.1.0"
+dependencies = [
+ "rinch-words",
+]
 
 [[package]]
 name = "rinch-editor-collab"
@@ -5092,11 +5096,11 @@ name = "rinch-editor-core"
 version = "0.1.0"
 dependencies = [
  "accesskit",
- "icu_segmenter",
  "pretty_assertions",
  "pulldown-cmark",
  "regex",
  "rinch-core",
+ "rinch-words",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -5327,6 +5331,14 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "rinch-words"
+version = "0.1.0"
+dependencies = [
+ "icu_segmenter",
+ "regex",
 ]
 
 [[package]]

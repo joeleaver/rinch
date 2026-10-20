@@ -271,7 +271,7 @@ jobs:
 
       - name: Run clippy (wasm32)
         run: |
-          for crate in rinch-core rinch-editor-core rinch-editor-collab \
+          for crate in rinch-core rinch-words rinch-editor-core rinch-editor-collab \
                        rinch-editor-view rinch-http rinch-ws rinch-web; do
             echo "::group::clippy $crate (wasm32)"
             cargo clippy -p "$crate" --target wasm32-unknown-unknown \

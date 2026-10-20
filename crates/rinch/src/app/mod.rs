@@ -5554,32 +5554,15 @@ fn selection_for_range(
 }
 
 /// The word around a caret, as `(start, end)` byte offsets, or `None` when
-/// the caret touches no word character on either side. A word character is
-/// alphanumeric or `_`; a caret *between* two characters belongs to the word
-/// on either side of it, so a caret at a word's start or end selects that
-/// word rather than its neighbour. `caret` is clamped to the text and snapped
-/// back to a char boundary.
+/// the caret touches no word character on either side. A word character is a
+/// letter, digit or `_`; a caret *between* two characters belongs to the word
+/// on either side of it (the right one first), so a caret at a word's start or
+/// end selects that word rather than its neighbour. The word is the rich
+/// editor's ([`rinch_words::text_word_at`], #1619): `3.14` and `don't` are one
+/// word, `foo-bar` two. `caret` is clamped to the text and snapped back to a
+/// char boundary.
 pub(crate) fn word_around(text: &str, caret: usize) -> Option<(usize, usize)> {
-    let is_word = |c: char| c.is_alphanumeric() || c == '_';
-    let caret = (0..=caret.min(text.len()))
-        .rev()
-        .find(|&i| text.is_char_boundary(i))?;
-    let touches_word = text[caret..].chars().next().is_some_and(is_word)
-        || text[..caret].chars().next_back().is_some_and(is_word);
-    if !touches_word {
-        return None;
-    }
-    let start = text[..caret]
-        .char_indices()
-        .rev()
-        .take_while(|&(_, c)| is_word(c))
-        .last()
-        .map_or(caret, |(i, _)| i);
-    let end = text[caret..]
-        .char_indices()
-        .find(|&(_, c)| !is_word(c))
-        .map_or(text.len(), |(i, _)| caret + i);
-    Some((start, end))
+    rinch_words::text_word_at(text, caret)
 }
 
 #[cfg(all(test, software_shell))]

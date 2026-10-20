@@ -6,4 +6,12 @@ license.workspace = true
 description = "Generic text editing primitives for rinch"
 
 [dependencies]
-# Minimal dependencies - this crate should be lightweight
+# Minimal dependencies - this crate should be lightweight.
+# Word motion / delete split words as the rich editor does (#1619): the shared
+# leaf segmenter, not the editor model.
+rinch-words.workspace = true
+
+[features]
+# Split a CJK / Thai run into words with ICU's dictionary, as the editor's
+# `word-dictionary` does. The desktop and Android `rinch` builds turn it on.
+word-dictionary = ["rinch-words/dictionary"]
