@@ -556,6 +556,34 @@ fn a_mismatched_3d_pair_decomposes_in_3d() {
     );
 }
 
+/// The quaternion is slerped the shorter way: `rotateX(300deg)` comes back
+/// to the plane through `rotateX(330deg)`, not through `rotateX(150deg)`.
+#[test]
+fn a_3d_decomposition_slerps_the_shorter_arc() {
+    check_transition(
+        "rotateX(300deg)",
+        "translate(10px)",
+        &[
+            (0.2, [1.0, 0.0, 0.0, 0.669131, 2.0, 0.0]),
+            (0.5, [1.0, 0.0, 0.0, 0.866025, 5.0, 0.0]),
+        ],
+    );
+}
+
+/// A 3D end that reflects is decomposed with every scale negated and a half
+/// turn in its rotation, the 3D decomposition's rule.
+#[test]
+fn a_3d_reflection_negates_every_scale() {
+    check_transition(
+        "scaleX(-1) rotateX(60deg)",
+        "translate(10px)",
+        &[
+            (0.2, [-0.6, 0.0, 0.0, 0.0627171, 2.0, 0.0]),
+            (0.4, [-0.2, 0.0, 0.0, -0.0618034, 4.0, 0.0]),
+        ],
+    );
+}
+
 /// The interpolated remainder keeps its z: a `translateZ` interpolated after a
 /// paired `rotateY` is turned into x by it, where a remainder flattened before
 /// the prefix met it had lost the z (0.6 and 1.2 are the scale; 34.641 is the
@@ -639,6 +667,15 @@ fn a_percentage_translate_rides_a_3d_decomposition() {
         &[
             (0.2, [1.1992, 0.0399823, -0.0399823, 0.801819, 40.0, 8.0]),
             (0.5, [1.49388, 0.130698, -0.130698, 1.29257, 25.0, 5.0]),
+        ],
+    );
+    // Behind a perspective, which the box-relative translation must follow.
+    check_transition(
+        "perspective(100px) translate(50%, 25%) rotateX(30deg)",
+        "rotate(30deg)",
+        &[
+            (0.2, [0.994402, 0.103325, -0.103325, 0.907242, 40.0, 8.0]),
+            (0.5, [0.965346, 0.258664, -0.258664, 0.930691, 25.0, 5.0]),
         ],
     );
 }
