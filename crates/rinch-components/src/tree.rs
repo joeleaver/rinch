@@ -2664,3 +2664,66 @@ mod key_tests {
         assert_eq!(place(key("c").drop_for(TreeMove::Down)), None);
     }
 }
+
+#[cfg(test)]
+mod review_1601_drop_for_tests {
+    use super::*;
+
+    /// a (a1, a2), b, c (c1)
+    fn data() -> Vec<TreeNodeData> {
+        vec![
+            TreeNodeData::new("a", "A").with_children(vec![
+                TreeNodeData::new("a1", "A1"),
+                TreeNodeData::new("a2", "A2"),
+            ]),
+            TreeNodeData::new("b", "B"),
+            TreeNodeData::new("c", "C").with_child(TreeNodeData::new("c1", "C1")),
+        ]
+    }
+
+    fn key(shape: Shape, cursor: &str, carried: &[&str]) -> TreeKey {
+        let s = Rc::new(shape);
+        TreeKey {
+            key: String::new(),
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: false,
+            cursor: cursor.into(),
+            parent: None,
+            above: None,
+            below: None,
+            shape: s,
+            carried: carried.iter().map(|c| c.to_string()).collect(),
+        }
+    }
+
+    /// RU1: a drag never offers Inside on a row `accepts_children` refuses;
+    /// the keyboard's Indent does.
+    #[test]
+    fn ru1_indent_into_a_row_that_takes_no_children_is_none() {
+        let leaves_take_none: AcceptsChildren = Rc::new(|n: &TreeNodeData| n.has_children());
+        let shape = Shape::of(&data(), Some(&leaves_take_none));
+        // c's previous sibling is b, a leaf that takes no children.
+        let drop = key(shape, "c", &["c"]).drop_for(TreeMove::Indent);
+        assert!(
+            drop.is_none(),
+            "Indent into b, which accepts no children: {:?}",
+            drop.map(|d| (d.parent, d.slot))
+        );
+    }
+
+    /// RU2: with drag_values carrying more than the cursor row (a
+    /// multi-selection), Indent can put a carried row into itself. A drag
+    /// refuses that (`judge`'s cycle check); the keyboard hands it over.
+    #[test]
+    fn ru2_indent_into_a_carried_row_is_none() {
+        let shape = Shape::of(&data(), None);
+        let drop = key(shape, "a2", &["a1", "a2"]).drop_for(TreeMove::Indent);
+        assert!(
+            drop.is_none(),
+            "a1 would move into itself: {:?}",
+            drop.map(|d| (d.dragged, d.parent, d.slot))
+        );
+    }
+}
