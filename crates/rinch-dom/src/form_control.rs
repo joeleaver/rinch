@@ -344,6 +344,24 @@ pub fn input_value(node: &Node) -> Option<std::borrow::Cow<'_, str>> {
     })
 }
 
+/// The attribute the desktop runtime writes beside `data-cursor-pos` when the
+/// focused field's caret is **upstream** (#941): at a soft-wrap point, drawn
+/// at the end of the upper line rather than the start of the lower one —
+/// where ArrowUp/ArrowDown onto a line's end and End put it, as a browser
+/// does. Absent means downstream. Every caret change the runtime syncs
+/// rewrites it, so it holds only for the caret that move left.
+pub const CARET_AFFINITY_ATTR: &str = "data-cursor-affinity";
+
+/// The affinity of a focused field's caret, read from
+/// [`CARET_AFFINITY_ATTR`]: paint draws the caret with it and the runtime
+/// measures the next vertical move or Home/End from it.
+pub fn caret_affinity(node: &Node) -> rinch_core::dom::CaretAffinity {
+    match node.attributes.get(CARET_AFFINITY_ATTR).map(String::as_str) {
+        Some("upstream") => rinch_core::dom::CaretAffinity::Upstream,
+        _ => rinch_core::dom::CaretAffinity::Downstream,
+    }
+}
+
 /// Whether `node` is a `<textarea>` whose value is still its default value —
 /// no `value` attribute and never had one removed, so its dirty value flag is
 /// clear (#1186, #1222).

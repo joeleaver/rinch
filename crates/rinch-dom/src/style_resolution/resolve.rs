@@ -308,6 +308,12 @@ impl RinchDocument {
         let parent_style = self.find_parent_computed_style(node_id);
         self.fill_style_bloom_for(node_id);
         self.resolve_styles_recursive(node_id, parent_style, ChildCascade::Skip, false);
+        // The subtree's style now describes its current state, so a snapshot
+        // one of its elements took earlier this frame describes nothing the
+        // invalidator should compare against (#956).
+        if !self.snapshot_ids.is_empty() {
+            self.forget_snapshots_in(node_id);
+        }
         self.tree
             .perf
             .add_elapsed(crate::perf::Counter::TimeStyleNs, t);
@@ -672,6 +678,16 @@ impl RinchDocument {
                 if let Some(parent_taffy) = self.tree.nodes[node_id].taffy_id {
                     self.taffy_detach_contribution(parent_taffy, cid);
                 }
+                // Its pixels are recorded where it was painted before it is
+                // freed, as `remove_node` does (#966): a generated box that
+                // overflows its originator, or casts a shadow past it, left
+                // them on screen when its rule stopped matching. This
+                // pruning runs on every cascade of the originator (the box
+                // is regenerated whether or not its rule changed), so every
+                // hover or class change on an element with a `::before` /
+                // `::after` pays this walk too: a few steps per generated
+                // node, and the same damage it was already given.
+                self.mark_subtree_paint_dirty(cid);
                 // Remove the pseudo-element's subtree from the slab
                 self.tree.remove_subtree(cid);
                 // Remove from parent's children list

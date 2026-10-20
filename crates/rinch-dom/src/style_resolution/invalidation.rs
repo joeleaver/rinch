@@ -364,6 +364,40 @@ impl RinchDocument {
         true
     }
 
+    /// Drop the snapshot of every element in `root`'s subtree that has one:
+    /// the subtree has just been cascaded from scratch, in its current state.
+    ///
+    /// A snapshot is the "before" of a frame's changes, taken once per element
+    /// per frame. An element re-inserted mid-frame is cascaded on the spot
+    /// ([`Self::resolve_inserted_subtree`]) with every change made so far, so
+    /// its snapshot no longer describes the style it has. Kept, it made the
+    /// next change compare against the state before the *first* one: a class
+    /// added, the element moved, the class removed again read as no change at
+    /// all, and the element kept the class's rules (#956). Without one, the
+    /// next change takes a fresh snapshot of the state the cascade saw. What
+    /// the earlier changes reached outside the subtree is the insertion's and
+    /// the removal's to restyle (`note_child_list_changed`).
+    pub(crate) fn forget_snapshots_in(&mut self, root: usize) {
+        let mut stack = vec![root];
+        let mut forgot = false;
+        while let Some(id) = stack.pop() {
+            let Some(node) = self.tree.nodes.get_mut(id) else {
+                continue;
+            };
+            if node.has_snapshot {
+                node.has_snapshot = false;
+                self.snapshots.remove(&style::dom::OpaqueNode(id));
+                forgot = true;
+            }
+            stack.extend(self.tree.nodes[id].children.iter().copied());
+        }
+        if forgot {
+            let tree = &self.tree;
+            self.snapshot_ids
+                .retain(|&id| tree.nodes.get(id).is_some_and(|n| n.has_snapshot));
+        }
+    }
+
     /// Run Stylo's invalidator for every element snapshotted since the last
     /// resolve, and turn its answers into style roots. Called at the top of
     /// `resolve_styles`, after the stylist is flushed (the invalidation maps

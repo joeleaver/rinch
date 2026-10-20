@@ -584,54 +584,19 @@ impl<D: EditableDocument> EditableState<D> {
         }
     }
 
+    /// Where Ctrl+Left lands from `pos`: the start of the word before it, a
+    /// word being what the rich editor's word motion steps over
+    /// ([`rinch_words::text_word_boundary`], #1619) — so `foo-bar|` stops at
+    /// `foo-|bar`. A line break is one stop: at a line's start it lands just
+    /// before the break (the word *delete* still never crosses one, above).
     fn find_word_start(&self, pos: usize) -> usize {
-        let text = self.document.to_text();
-        if pos == 0 {
-            return 0;
-        }
-
-        let before = &text[..pos.min(text.len())];
-        let mut chars = before.char_indices().rev();
-
-        // Skip whitespace backwards, then skip non-whitespace to find word start
-        for (_, ch) in &mut chars {
-            if !ch.is_whitespace() {
-                // Found a word char; now scan back past remaining word chars
-                for (j, ch2) in chars {
-                    if ch2.is_whitespace() {
-                        return j + ch2.len_utf8();
-                    }
-                }
-                return 0;
-            }
-        }
-
-        0
+        rinch_words::text_word_boundary(&self.document.to_text(), pos, false)
     }
 
+    /// Where Ctrl+Right lands from `pos`: the end of the word after it (a
+    /// line break is a word of its own).
     fn find_word_end(&self, pos: usize) -> usize {
-        let text = self.document.to_text();
-        let len = text.len();
-        if pos >= len {
-            return len;
-        }
-
-        let after = &text[pos.min(len)..];
-        let mut chars = after.char_indices();
-
-        // Skip non-whitespace (word chars) forwards, then skip whitespace
-        let mut found_word = false;
-        for (i, ch) in &mut chars {
-            if ch.is_whitespace() {
-                if found_word {
-                    return pos + i;
-                }
-            } else {
-                found_word = true;
-            }
-        }
-
-        len
+        rinch_words::text_word_boundary(&self.document.to_text(), pos, true)
     }
 }
 

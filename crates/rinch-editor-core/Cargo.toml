@@ -17,12 +17,9 @@ pulldown-cmark = { version = "0.12", optional = true, default-features = false }
 # wasm-clean, and carries NO platform/AT-SPI deps — those live in the desktop
 # `rinch` crate. Optional + feature-gated so it only compiles when a11y is wanted.
 accesskit = { version = "0.24", optional = true }
-# Word segmentation by ICU's dictionary for CJK and South-East Asian runs
-# (#939). The same crate and data parley links under `complex-scripts`, so a
-# build that has parley pays nothing for it; a build without parley (the web)
-# would pay the dictionaries (parley's `complex-scripts`, which links the same
-# data, measured +3.8 MB of stripped binary in #659), which is why it is optional.
-icu_segmenter = { version = "2.1.2", optional = true, default-features = false, features = ["compiled_data"] }
+# Word segmentation (motion.rs), shared with the desktop text fields (#1619).
+# Pure, wasm-clean; its ICU dictionary is the `word-dictionary` feature below.
+rinch-words.workspace = true
 
 [features]
 default = []
@@ -35,15 +32,16 @@ a11y = ["dep:accesskit"]
 # Split a CJK / Thai run into words with ICU's dictionary (motion.rs). Without
 # it such a run is one word, ended by whitespace, punctuation or a change of
 # script. The desktop `rinch` build turns it on.
-word-dictionary = ["dep:icu_segmenter"]
+word-dictionary = ["rinch-words/dictionary"]
 # Test-only cost counters (`model::attrs::attr_entries_copied`): off in every
 # release build; `rinch-editor-collab`'s dev-dependency turns it on for its
 # cost tests.
-cost-counters = []
+cost-counters = ["rinch-words/cost-counters"]
 
 [dev-dependencies]
 # Only to cross-check serialize/html_integer.rs, a private copy of its HTML
-# integer parser (#1164); the library itself depends on no rinch crate.
+# integer parser (#1164); the library itself depends on no rinch crate but
+# the leaf `rinch-words`.
 rinch-core.workspace = true
 pretty_assertions = "1"
 serde_json = "1"

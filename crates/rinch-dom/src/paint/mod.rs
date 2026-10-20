@@ -554,14 +554,13 @@ fn subtree_has_partially_escaping_absolute(
 /// right for a node still under the parents it was painted under. The moves
 /// see to that: a move from one parent to another records the subtree's old
 /// rects under the old chain and forgets its painted state first
-/// (`record_pixels_left_by_move`), as a removal does. **Not every detach
-/// forgets**, and these are gaps, all pre-existing (#966): `set_text_content`
-/// orphans an element's children with `parent = None` and their painted state
-/// kept, `replace_node` does the same to the node it displaces, and
-/// `set_inner_html` frees children without recording their rects. Such a
-/// node, attached again, has its old rect placed along its new parents.
-/// `Frame::Painted` also places a box by its *current* `position` (a
-/// same-frame static↔fixed change, #961).
+/// (`record_pixels_left_by_move`), as a removal does, and so does every
+/// detach: `remove_child`, `replace_node`'s displaced node,
+/// `set_text_content`'s orphans, and what `set_inner_html` and the
+/// pseudo-element pruning free (#966). So no node sits under parents it was
+/// not painted under while it carries a painted state.
+/// `Frame::Painted` places a box by the `position` it was painted with, so a
+/// same-frame static↔fixed change clears where the box was (#961).
 ///
 /// Without `painted` the question is the next paint's, and the current state
 /// is exactly what that paint clips with.
@@ -1734,6 +1733,16 @@ impl Frame {
         }
     }
 
+    /// The `position` the node was placed with in this frame: as painted, for
+    /// a painted node in [`Frame::Painted`] — a box that went static → fixed
+    /// this frame was painted in flow, not hoisted (#961).
+    fn position(self, node: &Node) -> PositionValue {
+        match self.painted(node) {
+            Some(p) => p.position,
+            None => node.box_position(),
+        }
+    }
+
     fn is_identity(self, node: &Node) -> bool {
         match self.painted(node) {
             Some(p) => p.transform.is_none(),
@@ -1851,7 +1860,7 @@ fn position_and_transform_in(
     while let Some(id) = current {
         let Some(node) = tree.get(id) else { break };
         any_transform |= !frame.is_identity(node);
-        if node.box_position() == PositionValue::Fixed {
+        if frame.position(node) == PositionValue::Fixed {
             hoisted_fixed = true;
             break;
         }
@@ -1875,7 +1884,7 @@ fn position_and_transform_in(
             let (nx, ny) = painted_origin_step(tree, node, x, y, scale, frame);
             x = nx;
             y = ny;
-            if node.box_position() == PositionValue::Fixed || id == tree.body_id {
+            if frame.position(node) == PositionValue::Fixed || id == tree.body_id {
                 break;
             }
             // The **box** tree (#566): a run's member is positioned by the
@@ -1900,7 +1909,7 @@ fn position_and_transform_in(
     while let Some(id) = current {
         let Some(node) = tree.get(id) else { break };
         chain.push(id);
-        if node.box_position() == PositionValue::Fixed || id == tree.body_id {
+        if frame.position(node) == PositionValue::Fixed || id == tree.body_id {
             break;
         }
         current = crate::RinchDocument::box_tree_parent(&tree.nodes, id);

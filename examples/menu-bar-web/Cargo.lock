@@ -939,6 +939,7 @@ dependencies = [
  "rinch-macros",
  "rinch-tabler-icons",
  "rinch-theme",
+ "web-time",
 ]
 
 [[package]]
@@ -953,12 +954,16 @@ dependencies = [
 [[package]]
 name = "rinch-editable"
 version = "0.1.0"
+dependencies = [
+ "rinch-words",
+]
 
 [[package]]
 name = "rinch-editor-core"
 version = "0.1.0"
 dependencies = [
  "regex",
+ "rinch-words",
  "thiserror 1.0.69",
 ]
 
@@ -968,6 +973,7 @@ version = "0.1.0"
 dependencies = [
  "rinch-core",
  "rinch-editor-core",
+ "web-time",
 ]
 
 [[package]]
@@ -1014,6 +1020,13 @@ dependencies = [
  "rinch-editor-view",
  "wasm-bindgen",
  "web-sys",
+]
+
+[[package]]
+name = "rinch-words"
+version = "0.1.0"
+dependencies = [
+ "regex",
 ]
 
 [[package]]

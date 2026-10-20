@@ -704,12 +704,36 @@ impl RinchApp {
     /// [`Self::compute_input_cursor_from_click`], over the same layout, so a
     /// caret placed by a press and the rect reported for it agree glyph for
     /// glyph. `None` for an empty field (nothing to lay out) or a missing node.
+    /// (A downstream caret: the tests' question. The runtime asks
+    /// [`Self::input_caret_rect_with_affinity`] with the caret's own, #941.)
+    #[cfg(test)]
     pub(super) fn input_caret_rect_for_offset(
         tree: &rinch_dom::NodeTree,
         font_cx: &mut parley::FontContext,
         layout_cx: &mut parley::LayoutContext<peniko::Brush>,
         node_id: usize,
         offset: usize,
+    ) -> Option<(f32, f32, f32, f32)> {
+        Self::input_caret_rect_with_affinity(
+            tree,
+            font_cx,
+            layout_cx,
+            node_id,
+            offset,
+            rinch_core::dom::CaretAffinity::Downstream,
+        )
+    }
+
+    /// [`Self::input_caret_rect_for_offset`] for a caret with `affinity`: an
+    /// upstream caret at a soft wrap is the end of the upper line, as paint
+    /// draws it (#941).
+    pub(super) fn input_caret_rect_with_affinity(
+        tree: &rinch_dom::NodeTree,
+        font_cx: &mut parley::FontContext,
+        layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+        node_id: usize,
+        offset: usize,
+        affinity: rinch_core::dom::CaretAffinity,
     ) -> Option<(f32, f32, f32, f32)> {
         let it = Self::input_text_layout(tree, font_cx, layout_cx, node_id)?;
         // A password field is laid out as bullets: the value's byte offset
@@ -720,13 +744,19 @@ impl RinchApp {
         } else {
             offset.min(it.value.len())
         };
-        let (lx, ly) =
-            rinch_dom::text_query::caret_position_for_offset_layout(&it.layout, display_offset);
+        let (lx, ly) = rinch_dom::text_query::caret_position_for_offset_layout_with_affinity(
+            &it.layout,
+            display_offset,
+            affinity,
+        );
         // The line box's height, from the same cursor geometry.
         let geometry = parley::layout::Cursor::from_byte_index(
             &it.layout,
             display_offset,
-            parley::layout::Affinity::Downstream,
+            match affinity {
+                rinch_core::dom::CaretAffinity::Downstream => parley::layout::Affinity::Downstream,
+                rinch_core::dom::CaretAffinity::Upstream => parley::layout::Affinity::Upstream,
+            },
         )
         .geometry(&it.layout, 0.0);
         let line_h = (geometry.y1 - geometry.y0).max(1.0) as f32;
