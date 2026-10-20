@@ -696,6 +696,15 @@ impl RinchDocument {
         if self.tree.nodes[child].is_pseudo_element {
             return pos;
         }
+        let (lo, hi) = self.own_children_range(parent);
+        pos.clamp(lo, hi)
+    }
+
+    /// The range of `parent`'s child list that holds its own (DOM) children:
+    /// everything but a generated box at the start (a `::before`, a list
+    /// marker) and an `::after` at the end. Reads the first and last child
+    /// only (#1629, #1630).
+    pub(crate) fn own_children_range(&self, parent: usize) -> (usize, usize) {
         let children = &self.tree.nodes[parent].children;
         let generated = |i: Option<&usize>, after: bool| {
             i.and_then(|&c| self.tree.nodes.get(c))
@@ -703,12 +712,13 @@ impl RinchDocument {
         };
         let len = children.len();
         let lo = usize::from(generated(children.first(), false));
+        // A lone `::before` is first, not last, so `hi >= lo` always.
         let hi = if generated(children.last(), true) {
             len - 1
         } else {
             len
         };
-        pos.clamp(lo, hi.max(lo))
+        (lo, hi)
     }
 
     /// Take `child` out of `parent`'s child list and answer the index it
