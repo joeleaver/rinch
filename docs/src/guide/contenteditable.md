@@ -130,10 +130,11 @@ Command names are case-sensitive. The full catalogue:
 > word of its own: the motion stops on either side of it, one beside the caret goes
 > alone (with any whitespace between them: `foo<img>  |` leaves `foo`), and a word
 > beyond one is not taken with it. A CJK or Thai run is split into words by ICU's
-> dictionary on desktop (`漢字です|` deletes `です`); the web build, which does not
-> link the dictionary, takes such a run as one word, ended by whitespace,
-> punctuation or a change of script (the `word-dictionary` feature of
-> `rinch-editor-core`). There are no *line* delete commands. On the web the browser's
+> dictionary on desktop (`漢字です|` deletes `です`). A web build does the same with
+> `rinch-web`'s opt-in `word-dictionary` feature (+3.8 MB of wasm, see
+> [Binary Size](./wasm.md#word-segmentation-for-cjk-and-thai-word-dictionary));
+> without it such a run is one word, ended by whitespace, punctuation or a change
+> of script. There are no *line* delete commands. On the web the browser's
 > `deleteSoftLine*` (a soft keyboard's line delete, Cmd+Backspace / Cmd+Delete)
 > deletes to the edge of the **visual** line the caret is drawn on — on a wrapped
 > paragraph, normally only the current line's prefix or rest — and

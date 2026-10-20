@@ -207,7 +207,7 @@ fn a_cjk_run_is_split_by_the_dictionary_939() {
     assert_eq!(deleted("ทุกสองสัปดาห์|", "deleteWordBackward"), "ทุกสอง");
 }
 
-/// Without the dictionary (a build that does not ask for it: the web's today),
+/// Without the dictionary (a build that does not ask for it: the web's default),
 /// a CJK run is one word, as it was before #939.
 #[cfg(not(feature = "word-dictionary"))]
 #[test]
