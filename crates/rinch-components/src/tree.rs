@@ -821,8 +821,14 @@ pub struct Tree {
     /// (the first row before there is one) is `tabindex="0"`, every other
     /// row `-1`. In a single-select tree the selection follows the cursor as
     /// a click would select (only with `select_on_click`, never a disabled
-    /// row, and `onselect` is told); in a `multiple` tree the arrows select
-    /// nothing and Space toggles the cursor row.
+    /// row, and `onselect` is told). In a `multiple` tree a plain arrow
+    /// selects nothing; Space toggles the cursor row; Shift with a move key
+    /// (and Shift+Space) selects the run from the anchor (the row last
+    /// clicked, Ctrl-clicked or toggled) to the cursor row, replacing the
+    /// selection; Ctrl+A selects the cursor row's siblings; Enter adds the
+    /// cursor row as a click would, keeping the rest. All of these only with
+    /// `select_on_click`, and none selects a disabled row (see
+    /// [`Tree::onselectionchange`]).
     pub keyboard: bool,
     /// Every key the tree's rows get, before the tree's own; `true` consumes
     /// it. [`TreeKey::drop_for`] turns a key into a structural move.
@@ -836,10 +842,26 @@ pub struct Tree {
     pub cursor_delay_ms: u32,
     /// The text type-ahead matches for a row (its label when not given).
     pub label_of: Option<LabelOf>,
-    /// The selection, top to bottom, each time a click or a key changes it
-    /// (with `UseTreeOptions::multiple`: Ctrl-click adds or removes a row,
-    /// Shift-click and Shift with the arrow keys select a run from the
-    /// anchor, Ctrl+A the cursor row's siblings).
+    /// The selection, top to bottom, each time a click or a key changes it,
+    /// in a `multiple` tree only (`UseTreeOptions::multiple`; a single-select
+    /// tree tells `onselect`). There a plain click selects the row alone;
+    /// Ctrl- (Cmd-) click adds or removes a row; Shift-click, Shift with a
+    /// move key and Shift+Space select the run of drawn rows from the anchor
+    /// (the row last clicked, Ctrl-clicked or toggled with Space; a hidden
+    /// one counts as its shown ancestor) to that row, replacing the
+    /// selection; Ctrl+A selects the cursor row's siblings; a collapse by a
+    /// click or a key unselects the rows it hides. Disabled rows are never
+    /// selected, and nothing is reported when the selection did not change.
+    /// A selected value whose row left the data is not reported, though it
+    /// stays in [`UseTreeReturn::selected`]: the tree does not prune the
+    /// selection when the data changes.
+    ///
+    /// Differences from the WAI-ARIA tree pattern: Ctrl+A selects the cursor
+    /// row's siblings, not every row; Shift with an arrow selects the run
+    /// from the anchor (the desktop file-manager model) where the pattern's
+    /// recommended model toggles the next row and keeps the rest; and
+    /// Ctrl+Shift-click toggles the row (Ctrl wins) rather than adding the
+    /// run.
     pub onselectionchange: Option<ValueCallback<Vec<String>>>,
 }
 
@@ -1248,65 +1270,22 @@ fn render_tree_node(
 
     // Click handler
     if !node.disabled {
-        let controller = tree_state.controller;
         let value = node.value.clone();
-        let expand_on_click = config.expand_on_click && has_children;
-        let select_on_click = config.select_on_click;
-        let onselect = config.onselect.clone();
-        let onexpand = config.onexpand.clone();
-        let oncollapse = config.oncollapse.clone();
-
         let cfg = config.clone();
         let handler_id = __scope.register_handler(move || {
             if cfg.keyboard {
                 tree_state.cursor.set(Some(value.clone()));
                 set_focused(&cfg, true);
             }
-            // Ctrl- and Shift-clicks change the selection and nothing else.
-            if controller.multiple && select_on_click {
-                let modifiers = get_click_context().modifiers;
-                if modifiers.ctrl || modifiers.meta {
-                    controller.selected.update(|set| {
-                        if !set.remove(&value) {
-                            set.insert(value.clone());
-                        }
-                    });
-                    *cfg.keys.anchor.borrow_mut() = Some(value.clone());
-                    selection_changed(&cfg, tree_state);
-                    return;
-                }
-                if modifiers.shift {
-                    let anchor = cfg
-                        .keys
-                        .anchor
-                        .borrow()
-                        .clone()
-                        .unwrap_or_else(|| value.clone());
-                    select_run(&cfg, tree_state, &anchor, &value);
-                    return;
-                }
-            }
-            if expand_on_click {
-                let was_expanded = expanded_signal.get().contains(&value);
-                controller.toggle(&value);
-                if !was_expanded {
-                    if let Some(ref cb) = onexpand {
-                        cb.invoke(value.clone());
-                    }
-                } else if let Some(ref cb) = oncollapse {
-                    cb.invoke(value.clone());
-                }
-            }
-            if select_on_click {
-                controller.set_selection([value.clone()]);
-                *cfg.keys.anchor.borrow_mut() = Some(value.clone());
-                if controller.multiple {
-                    selection_changed(&cfg, tree_state);
-                }
-                if let Some(ref cb) = onselect {
-                    cb.invoke(value.clone());
-                }
-            }
+            let modifiers = get_click_context().modifiers;
+            let pick = if modifiers.ctrl || modifiers.meta {
+                Pick::Toggle
+            } else if modifiers.shift {
+                Pick::Run
+            } else {
+                Pick::Replace
+            };
+            activate_row(&cfg, tree_state, &value, has_children, pick);
         });
         content.set_attribute("data-rid", &handler_id.0.to_string());
     }
@@ -2110,7 +2089,10 @@ pub struct TreeKey {
     /// The cursor row's parent; `None` at the top level.
     pub parent: Option<String>,
     /// The rows drawn right above and below the cursor row, for an app that
-    /// moves the cursor off a row it is about to remove.
+    /// moves the cursor off a row it is about to remove. When the cursor row
+    /// is one of several selected rows (what [`TreeKey::carried`] moves),
+    /// the rows drawn right above and below that block instead, the rows
+    /// inside it skipped.
     pub above: Option<String>,
     pub below: Option<String>,
     shape: Rc<Shape>,
@@ -2222,8 +2204,9 @@ const TYPE_AHEAD_MS: u32 = 700;
 struct KeyState {
     /// The row drawn as the cursor, by value.
     drawn: RefCell<Option<String>>,
-    /// Where a run of selected rows starts: the row last clicked or moved
-    /// to without Shift.
+    /// Where a run of selected rows starts: the row last clicked,
+    /// Ctrl-clicked or toggled with Space (the most recently selected row),
+    /// not one the cursor merely moved to.
     anchor: RefCell<Option<String>>,
     /// Whether one of the rows has the keyboard.
     focused: Cell<bool>,
@@ -2559,17 +2542,19 @@ fn select_from_keyboard(
     }
     let controller = tree_state.controller;
     if controller.multiple {
-        // Space toggles the row and starts the next Shift run from it.
+        // Space toggles the row and starts the next Shift run from it; a row
+        // it selects is told to `onselect`, as a click on it is.
+        *config.keys.anchor.borrow_mut() = Some(value.to_string());
         if untracked(|| controller.is_selected(value)) {
             controller.deselect(value);
-        } else {
-            controller.select(value);
+            selection_changed(config, tree_state);
+            return true;
         }
-        *config.keys.anchor.borrow_mut() = Some(value.to_string());
+        controller.select(value);
         selection_changed(config, tree_state);
-        return true;
+    } else {
+        controller.select(value);
     }
-    controller.select(value);
     if let Some(cb) = &config.onselect {
         cb.invoke(value.to_string());
     }
@@ -2579,15 +2564,19 @@ fn select_from_keyboard(
 /// Move the cursor to `value` from the keyboard: give its row the keyboard,
 /// show it, and tell the app once it rests. A single-select tree's
 /// selection follows the cursor (as a click would select); a `multiple`
-/// tree's does not: Space selects there.
+/// tree's does not: Space selects there. (Nor does a plain move change where
+/// the next Shift run starts: that is the row last clicked or toggled.)
 fn move_cursor(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, shape: &Shape, value: &str) {
     tree_state.cursor.set(Some(value.to_string()));
-    if tree_state.controller.multiple {
-        // Shift+arrows from here make a run that starts at this row.
-        *config.keys.anchor.borrow_mut() = Some(value.to_string());
-    } else {
+    if !tree_state.controller.multiple {
         select_from_keyboard(config, tree_state, shape, value);
     }
+    show_cursor(config, value);
+}
+
+/// The cursor has moved to `value`: its row takes the keyboard and is
+/// shown, and [`Tree::oncursor`] hears of it once it rests.
+fn show_cursor(config: &Rc<TreeConfig>, value: &str) {
     let row = config.drag.rows.borrow().get(value).cloned();
     if let Some(row) = row {
         row.focus();
@@ -2666,7 +2655,18 @@ fn on_tree_key(
             cursor_row,
             tree_state.controller.multiple,
         );
-        let (above, below) = shape.around(&expanded, &block);
+        // The cursor row alone: the rows drawn right above and below it
+        // (#1601). A block of selected rows: the rows around the block.
+        let (above, below) = if block == [cursor_row] {
+            let visible = shape.visible(&expanded);
+            let at = visible.iter().position(|&r| r == cursor_row);
+            (
+                at.and_then(|i| i.checked_sub(1)).map(|i| visible[i]),
+                at.and_then(|i| visible.get(i + 1).copied()),
+            )
+        } else {
+            shape.around(&expanded, &block)
+        };
         let neighbor = |row: Option<usize>| row.map(|r| shape.rows[r].value.clone());
         let carried = carried_from(config, tree_state, &cursor);
         let offered = TreeKey {
@@ -2690,15 +2690,18 @@ fn on_tree_key(
         }
     }
     let multiple = tree_state.controller.multiple;
-    // Ctrl+A: the cursor row and its siblings.
-    if multiple && (key.ctrl || key.meta) && !key.alt && key.key.eq_ignore_ascii_case("a") {
-        let siblings: Vec<String> = shape
+    // Selecting several rows from the keyboard, in a tree that selects
+    // (#1601: one that does not select on click selects nothing from it).
+    let selects_several = multiple && config.select_on_click;
+    // Ctrl+A: the cursor row and its siblings (not disabled ones).
+    if selects_several && (key.ctrl || key.meta) && !key.alt && key.key.eq_ignore_ascii_case("a") {
+        let siblings: HashSet<String> = shape
             .siblings(cursor_row)
             .iter()
+            .filter(|&&r| !shape.rows[r].disabled)
             .map(|&r| shape.rows[r].value.clone())
             .collect();
-        tree_state.controller.set_selection(siblings);
-        selection_changed(config, tree_state);
+        change_selection(config, tree_state, siblings);
         return true;
     }
     if key.ctrl || key.alt || key.meta {
@@ -2706,25 +2709,32 @@ fn on_tree_key(
     }
 
     let expanded = untracked(|| tree_state.expanded.get());
-    // Shift with a move: a run from the anchor to where the cursor goes.
+    // Shift with a move: a run from the anchor to where the cursor goes
+    // (only the cursor moves when the tree does not select).
     if key.shift && multiple {
         if let Some(Nav::To(row)) = nav(&shape, &expanded, cursor_row, &key.key) {
-            let anchor = config
-                .keys
-                .anchor
-                .borrow()
-                .clone()
-                .unwrap_or_else(|| cursor.clone());
             let to = shape.rows[row].value.clone();
-            select_run(config, tree_state, &anchor, &to);
-            tree_state.cursor.set(Some(to.clone()));
-            let row = config.drag.rows.borrow().get(&to).cloned();
-            if let Some(row) = row {
-                row.focus();
-                row.scroll_into_view();
+            if config.select_on_click {
+                select_run(config, tree_state, &cursor, &to);
             }
+            tree_state.cursor.set(Some(to.clone()));
+            show_cursor(config, &to);
             return true;
         }
+    }
+    // Shift+Space: the run from the anchor (the row last selected) to the
+    // cursor row.
+    if key.key == " " && key.shift && selects_several && config.keys.typed.borrow().is_empty() {
+        select_run(config, tree_state, &cursor, &cursor);
+        return true;
+    }
+    // Enter in a `multiple` tree: what a click does, except that the row
+    // joins the selection instead of replacing it (the runtime's activation
+    // would be a plain click, which replaces it).
+    if key.key == "Enter" && multiple && !shape.rows[cursor_row].disabled {
+        let has_children = !shape.rows[cursor_row].children.is_empty();
+        activate_row(config, tree_state, &cursor, has_children, Pick::Add);
+        return true;
     }
     // `*` is a shifted key on most layouts (Shift+8 on a US keyboard).
     if !key.shift || key.key == "*" {
@@ -3069,13 +3079,18 @@ mod key_tests {
 // =============================================================================
 
 impl Shape {
-    /// The rows drawn from `a` to `b` (either way round), top to bottom.
+    /// The rows drawn from `a` to `b` (either way round), top to bottom. An
+    /// end hidden inside a collapsed row counts as the nearest row drawn
+    /// above it, its shown ancestor.
     fn run(&self, expanded: &HashSet<String>, a: usize, b: usize) -> Vec<usize> {
         let visible = self.visible(expanded);
-        let (Some(i), Some(j)) = (
-            visible.iter().position(|&r| r == a),
-            visible.iter().position(|&r| r == b),
-        ) else {
+        let at = |mut row: usize| loop {
+            if let Some(i) = visible.iter().position(|&r| r == row) {
+                return Some(i);
+            }
+            row = self.rows[row].parent?;
+        };
+        let (Some(i), Some(j)) = (at(a), at(b)) else {
             return vec![b];
         };
         let (from, to) = if i <= j { (i, j) } else { (j, i) };
@@ -3148,20 +3163,118 @@ fn carried_from(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, value: &str)
     }
 }
 
-/// Select the run of drawn rows from `anchor` to `to`.
-fn select_run(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, anchor: &str, to: &str) {
+/// How a click (or Enter) on a row changes the selection.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pick {
+    /// A plain click: the row alone.
+    Replace,
+    /// Ctrl- (or Cmd-) click in a `multiple` tree: the row in or out.
+    Toggle,
+    /// Shift-click in a `multiple` tree: the run from the anchor.
+    Run,
+    /// Enter in a `multiple` tree: the row joins the selection, which is
+    /// otherwise kept (what a click did there before #1598).
+    Add,
+}
+
+/// A click on the row of `value`, or Enter on it (`Pick::Add`).
+fn activate_row(
+    config: &Rc<TreeConfig>,
+    tree_state: UseTreeReturn,
+    value: &str,
+    has_children: bool,
+    pick: Pick,
+) {
+    let controller = tree_state.controller;
+    let multiple = controller.multiple;
+    let select_on_click = config.select_on_click;
+    // Ctrl- and Shift-clicks change the selection and nothing else.
+    if multiple && select_on_click {
+        match pick {
+            Pick::Toggle => {
+                let mut next = untracked(|| controller.selected.get());
+                if !next.remove(value) {
+                    next.insert(value.to_string());
+                }
+                *config.keys.anchor.borrow_mut() = Some(value.to_string());
+                change_selection(config, tree_state, next);
+                return;
+            }
+            Pick::Run => {
+                select_run(config, tree_state, value, value);
+                return;
+            }
+            Pick::Replace | Pick::Add => {}
+        }
+    }
+    if config.expand_on_click && has_children {
+        let was_expanded = untracked(|| tree_state.expanded.get()).contains(value);
+        controller.toggle(value);
+        if !was_expanded {
+            if let Some(cb) = &config.onexpand {
+                cb.invoke(value.to_string());
+            }
+        } else {
+            unselect_hidden(config, tree_state, value);
+            if let Some(cb) = &config.oncollapse {
+                cb.invoke(value.to_string());
+            }
+        }
+    }
+    if select_on_click {
+        if multiple {
+            let next = if pick == Pick::Add {
+                let mut next = untracked(|| controller.selected.get());
+                next.insert(value.to_string());
+                next
+            } else {
+                HashSet::from([value.to_string()])
+            };
+            *config.keys.anchor.borrow_mut() = Some(value.to_string());
+            change_selection(config, tree_state, next);
+        } else {
+            controller.select(value);
+        }
+        if let Some(cb) = &config.onselect {
+            cb.invoke(value.to_string());
+        }
+    }
+}
+
+/// Make `next` the selection, and tell the app if that changed it.
+fn change_selection(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, next: HashSet<String>) {
+    if untracked(|| tree_state.selected.get()) == next {
+        return;
+    }
+    tree_state.controller.set_selection(next);
+    selection_changed(config, tree_state);
+}
+
+/// Select the run of drawn rows from the anchor to `to`, leaving out
+/// disabled rows. With no anchor, or one no longer in the data, the run
+/// starts at `fallback` (which becomes the anchor).
+fn select_run(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, fallback: &str, to: &str) {
     let shape = config.drag.shape(config.accepts_children.as_ref());
-    let (Some(a), Some(b)) = (shape.index(anchor), shape.index(to)) else {
+    let Some(b) = shape.index(to) else {
         return;
     };
+    let anchor = config.keys.anchor.borrow().clone();
+    let a = match anchor.as_deref().and_then(|v| shape.index(v)) {
+        Some(a) => a,
+        None => {
+            let a = shape.index(fallback).unwrap_or(b);
+            *config.keys.anchor.borrow_mut() = Some(shape.rows[a].value.clone());
+            a
+        }
+    };
     let expanded = untracked(|| tree_state.expanded.get());
-    let run: Vec<String> = shape
+    let run: HashSet<String> = shape
         .run(&expanded, a, b)
         .into_iter()
+        .filter(|&r| !shape.rows[r].disabled)
         .map(|r| shape.rows[r].value.clone())
         .collect();
-    tree_state.controller.set_selection(run);
-    selection_changed(config, tree_state);
+    change_selection(config, tree_state, run);
 }
 
 /// A collapsed row's descendants leave the selection: nothing hidden stays
@@ -3184,13 +3297,12 @@ fn unselect_hidden(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, value: &s
         })
         .cloned()
         .collect();
-    if kept.len() != selected.len() {
-        tree_state.controller.set_selection(kept);
-        selection_changed(config, tree_state);
-    }
+    change_selection(config, tree_state, kept);
 }
 
-/// Tell the app the selection, top to bottom.
+/// Tell the app the selection, top to bottom. A selected value with no row
+/// in the data (the app deleted it) is not reported, though the selection
+/// keeps it until it next changes.
 fn selection_changed(config: &Rc<TreeConfig>, tree_state: UseTreeReturn) {
     let Some(cb) = &config.onselectionchange else {
         return;
@@ -3199,7 +3311,7 @@ fn selection_changed(config: &Rc<TreeConfig>, tree_state: UseTreeReturn) {
     let selected = untracked(|| tree_state.selected.get());
     let mut ordered: Vec<(usize, String)> = selected
         .into_iter()
-        .map(|v| (shape.index(&v).unwrap_or(usize::MAX), v))
+        .filter_map(|v| Some((shape.index(&v)?, v)))
         .collect();
     ordered.sort();
     cb.invoke(ordered.into_iter().map(|(_, v)| v).collect());
@@ -3322,8 +3434,16 @@ mod multi_tests {
             Some((Some("a".into()), TreeSlot::Last))
         );
         assert_eq!(place(key(&["b", "c"]).drop_for(TreeMove::Down)), None);
-        // Rows of different parents do not move as one.
+        // Rows of different parents do not move as one, even where the first
+        // of them could move on its own (a2 has a1 above it).
         assert_eq!(place(key(&["a1", "b"]).drop_for(TreeMove::Up)), None);
+        assert_eq!(place(key(&["a2", "b"]).drop_for(TreeMove::Up)), None);
+        assert_eq!(place(key(&["a2", "b"]).drop_for(TreeMove::Indent)), None);
+        assert_eq!(
+            place(key(&["a2"]).drop_for(TreeMove::Up)),
+            Some((Some("a".into()), TreeSlot::First)),
+            "control: a2 alone moves up"
+        );
     }
 }
 

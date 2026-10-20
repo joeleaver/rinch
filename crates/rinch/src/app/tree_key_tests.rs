@@ -264,23 +264,33 @@ fn the_app_sees_keys_first_and_moves_rows_with_them() {
     );
 }
 
+type Log<T> = Rc<RefCell<Vec<T>>>;
+
 /// A tree with `multiple` selection: a, b, c, d at the top level.
-fn multi_fixture() -> (Fixture, Rc<RefCell<Vec<Vec<String>>>>, Rc<RefCell<Vec<String>>>) {
-    let changes: Rc<RefCell<Vec<Vec<String>>>> = Rc::default();
-    let opened: Rc<RefCell<Vec<String>>> = Rc::default();
-    let state = UseTreeReturn::new(UseTreeOptions { multiple: true, ..Default::default() });
+fn multi_fixture() -> (Fixture, Log<Vec<String>>, Log<String>) {
+    let changes: Log<Vec<String>> = Rc::default();
+    let opened: Log<String> = Rc::default();
+    let state = UseTreeReturn::new(UseTreeOptions {
+        multiple: true,
+        ..Default::default()
+    });
     let (c, o) = (changes.clone(), opened.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let (c, o) = (c.clone(), o.clone());
         let tree = Tree {
-            data: ["a", "b", "c", "d"].iter().map(|v| TreeNodeData::new(*v, v.to_uppercase())).collect(),
+            data: ["a", "b", "c", "d"]
+                .iter()
+                .map(|v| TreeNodeData::new(*v, v.to_uppercase()))
+                .collect(),
             tree: Some(state),
             select_on_click: true,
             keyboard: true,
             draggable: true,
             cursor_delay_ms: 0,
             onselect: Some(ValueCallback::new(move |v| o.borrow_mut().push(v))),
-            onselectionchange: Some(ValueCallback::new(move |values| c.borrow_mut().push(values))),
+            onselectionchange: Some(ValueCallback::new(move |values| {
+                c.borrow_mut().push(values)
+            })),
             ..Default::default()
         }
         .render(scope, &[]);
@@ -293,18 +303,35 @@ fn multi_fixture() -> (Fixture, Rc<RefCell<Vec<Vec<String>>>>, Rc<RefCell<Vec<St
     {
         let doc = app.doc.as_ref().unwrap();
         let mut d = doc.borrow_mut();
-        d.load_css(&rinch_theme::generate_theme_css(&rinch_theme::Theme::default()));
+        d.load_css(&rinch_theme::generate_theme_css(
+            &rinch_theme::Theme::default(),
+        ));
         d.load_css(&rinch_components::generate_component_css());
         d.recompute_all_styles_full();
     }
     app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
-    (Fixture { app, state, rested: Rc::default(), moves: Rc::default(), seen: Rc::default() }, changes, opened)
+    (
+        Fixture {
+            app,
+            state,
+            rested: Rc::default(),
+            moves: Rc::default(),
+            seen: Rc::default(),
+        },
+        changes,
+        opened,
+    )
 }
 
 fn click_with(f: &mut Fixture, at: (f32, f32), modifiers: Modifiers) {
-    f.app.handle_event(PlatformEvent::ModifiersChanged(modifiers), (800, 600), 1.0);
+    f.app
+        .handle_event(PlatformEvent::ModifiersChanged(modifiers), (800, 600), 1.0);
     click(f, at);
-    f.app.handle_event(PlatformEvent::ModifiersChanged(Modifiers::default()), (800, 600), 1.0);
+    f.app.handle_event(
+        PlatformEvent::ModifiersChanged(Modifiers::default()),
+        (800, 600),
+        1.0,
+    );
 }
 
 fn selection(f: &Fixture) -> Vec<String> {
@@ -320,23 +347,60 @@ fn ctrl_and_shift_clicks_select_several_rows_and_open_nothing() {
     let c = centre(&f.app, row(&f.app, "c"));
     let d = centre(&f.app, row(&f.app, "d"));
     click(&mut f, a);
-    assert_eq!(*opened.borrow(), vec!["a".to_string()], "a plain click selects and opens");
+    assert_eq!(
+        *opened.borrow(),
+        vec!["a".to_string()],
+        "a plain click selects and opens"
+    );
 
-    click_with(&mut f, c, Modifiers { ctrl: true, ..Default::default() });
+    click_with(
+        &mut f,
+        c,
+        Modifiers {
+            ctrl: true,
+            ..Default::default()
+        },
+    );
     assert_eq!(selection(&f), ["a", "c"]);
     assert_eq!(opened.borrow().len(), 1, "a Ctrl-click opens nothing");
-    assert_eq!(changes.borrow().last().cloned(), Some(vec!["a".to_string(), "c".to_string()]), "top to bottom");
+    assert_eq!(
+        changes.borrow().last().cloned(),
+        Some(vec!["a".to_string(), "c".to_string()]),
+        "top to bottom"
+    );
 
-    click_with(&mut f, a, Modifiers { ctrl: true, ..Default::default() });
+    click_with(
+        &mut f,
+        a,
+        Modifiers {
+            ctrl: true,
+            ..Default::default()
+        },
+    );
     assert_eq!(selection(&f), ["c"], "Ctrl-click again takes a row out");
 
     // The anchor is a now (the last Ctrl-click); Shift-click d runs a..d.
-    click_with(&mut f, d, Modifiers { shift: true, ..Default::default() });
+    click_with(
+        &mut f,
+        d,
+        Modifiers {
+            shift: true,
+            ..Default::default()
+        },
+    );
     assert_eq!(selection(&f), ["a", "b", "c", "d"]);
     assert_eq!(opened.borrow().len(), 1, "a Shift-click opens nothing");
 
     // Shift+Up from the cursor (d) shortens the run from the anchor.
-    press(&mut f, KeyCode::ArrowUp, None, Modifiers { shift: true, ..Default::default() });
+    press(
+        &mut f,
+        KeyCode::ArrowUp,
+        None,
+        Modifiers {
+            shift: true,
+            ..Default::default()
+        },
+    );
     assert_eq!(selection(&f), ["a", "b", "c"]);
     // A plain arrow moves the cursor and selects nothing.
     press(&mut f, KeyCode::ArrowUp, None, Modifiers::default());
@@ -345,11 +409,30 @@ fn ctrl_and_shift_clicks_select_several_rows_and_open_nothing() {
     // Space toggles the cursor row and anchors the next run there.
     press(&mut f, KeyCode::Space, Some(" "), Modifiers::default());
     assert_eq!(selection(&f), ["a", "c"]);
-    assert_eq!(changes.borrow().last().cloned(), Some(vec!["a".to_string(), "c".to_string()]));
-    press(&mut f, KeyCode::ArrowDown, None, Modifiers { shift: true, ..Default::default() });
+    assert_eq!(
+        changes.borrow().last().cloned(),
+        Some(vec!["a".to_string(), "c".to_string()])
+    );
+    press(
+        &mut f,
+        KeyCode::ArrowDown,
+        None,
+        Modifiers {
+            shift: true,
+            ..Default::default()
+        },
+    );
     assert_eq!(selection(&f), ["b", "c"], "a run from b, where Space was");
     // Ctrl+A: the cursor row's siblings.
-    press(&mut f, KeyCode::KeyA, Some("a"), Modifiers { ctrl: true, ..Default::default() });
+    press(
+        &mut f,
+        KeyCode::KeyA,
+        Some("a"),
+        Modifiers {
+            ctrl: true,
+            ..Default::default()
+        },
+    );
     assert_eq!(selection(&f), ["a", "b", "c", "d"]);
 }
 
