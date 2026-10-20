@@ -1713,6 +1713,47 @@ pub(crate) struct RetiredAnonBox {
     run_members: Vec<usize>,
 }
 
+/// The boxes one pass retired, found by the first member of their run — a
+/// node is a member of one run at most, so the key names one box — so that
+/// matching every run of a document to its old box is linear in the runs, not
+/// quadratic. A box whose run lost every member (they all moved away) can match
+/// nothing and waits in `unmatched` to be freed.
+#[derive(Default)]
+pub(crate) struct RetiredAnonBoxes {
+    by_first_member: HashMap<usize, RetiredAnonBox>,
+    unmatched: Vec<usize>,
+}
+
+impl RetiredAnonBoxes {
+    fn push(&mut self, r: RetiredAnonBox) {
+        match r.run_members.first() {
+            Some(&first) => {
+                if let Some(other) = self.by_first_member.insert(first, r) {
+                    self.unmatched.push(other.id);
+                }
+            }
+            None => self.unmatched.push(r.id),
+        }
+    }
+
+    /// The box retired from `parent` for exactly `run`, if there is one.
+    fn take(&mut self, parent: usize, run: &[usize]) -> Option<RetiredAnonBox> {
+        let first = *run.first()?;
+        let r = self.by_first_member.get(&first)?;
+        if r.parent != parent || r.run_members != run {
+            return None;
+        }
+        self.by_first_member.remove(&first)
+    }
+
+    fn into_ids(self) -> impl Iterator<Item = usize> {
+        self.by_first_member
+            .into_values()
+            .map(|r| r.id)
+            .chain(self.unmatched)
+    }
+}
+
 /// One cluster or inline box of a paragraph, in logical order: what the line
 /// breaker adds to a line's advance, and what [`hanging_after`] needs to know.
 struct LineUnit {
@@ -2511,17 +2552,17 @@ impl RinchDocument {
     ///
     /// **A box whose container still lists it is retired, not freed** (#964):
     /// it keeps its slab entry, its paint layout and its measured sizes (with
-    /// the content signature), and is handed back in a [`RetiredAnonBox`] for
-    /// `create_anonymous_block_boxes` to mint the same run's box into. A whole-document pass re-mints every
-    /// box in the document whatever changed (a theme change), and a scoped pass
-    /// every box of its containers; freeing them re-shaped each box's text,
-    /// because both the paint layout and the cached measures (with the content
-    /// signature `refresh_ifc_signatures` compares) went with the box. An
-    /// orphan is freed as before.
+    /// the content signature), and is handed back in [`RetiredAnonBoxes`] for
+    /// `create_anonymous_block_boxes` to mint the same run's box into. A
+    /// whole-document pass re-mints every box in the document whatever changed
+    /// (a theme change), and a scoped pass every box of its containers; freeing
+    /// them re-shaped each box's text, because both the paint layout and the
+    /// cached measures (with the content signature `refresh_ifc_signatures`
+    /// compares) went with the box. An orphan is freed as before.
     fn cleanup_anonymous_block_boxes(
         &mut self,
         scope: Option<&crate::ifc_scope::IfcScope>,
-    ) -> Vec<RetiredAnonBox> {
+    ) -> RetiredAnonBoxes {
         let all = std::mem::take(&mut self.tree.anonymous_block_boxes);
         let anon_ids = match scope {
             None => all,
@@ -2539,7 +2580,7 @@ impl RinchDocument {
                 go
             }
         };
-        let mut retired: Vec<RetiredAnonBox> = Vec::new();
+        let mut retired = RetiredAnonBoxes::default();
         if anon_ids.is_empty() {
             return retired;
         }
@@ -2632,12 +2673,12 @@ impl RinchDocument {
 
     /// Free the retired boxes `create_anonymous_block_boxes` did not mint a run
     /// into: their run is gone, or has changed.
-    fn free_retired_anonymous_boxes(&mut self, retired: Vec<RetiredAnonBox>) {
-        for r in retired {
-            self.tree.nodes.remove(r.id);
+    fn free_retired_anonymous_boxes(&mut self, retired: RetiredAnonBoxes) {
+        for id in retired.into_ids() {
+            self.tree.nodes.remove(id);
             // `remove_subtree`'s reason, as for a freed box above: the slab
             // recycles the id.
-            self.tree.ifc_measure_cache.remove(&r.id);
+            self.tree.ifc_measure_cache.remove(&id);
         }
     }
 
@@ -2876,7 +2917,7 @@ impl RinchDocument {
     fn create_anonymous_block_boxes(
         &mut self,
         scope: Option<&crate::ifc_scope::IfcScope>,
-        mut retired: Vec<RetiredAnonBox>,
+        mut retired: RetiredAnonBoxes,
     ) {
         // Phase 1: Detect mixed-content block containers
         // Each run with the out-of-flow boxes standing inside it
@@ -3062,10 +3103,7 @@ impl RinchDocument {
                 // box's `static_ifc_root` names — does not move. (Anything
                 // else the run's lines are built from, the out-of-flow boxes
                 // standing in it included, is in the content signature.)
-                let kept = retired
-                    .iter()
-                    .position(|r| r.parent == parent_id && r.run_members == run)
-                    .map(|i| retired.swap_remove(i));
+                let kept = retired.take(parent_id, &run);
                 // Create anonymous block box DOM node
                 let anon_id = match &kept {
                     Some(r) => r.id,

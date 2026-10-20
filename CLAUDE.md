@@ -3177,7 +3177,7 @@ input a shaped layout is built from:
   run (same container, same members) into the old box's slab entry and keeps
   its paint layout and measures, as a box outside the pass's scope keeps them;
   a container restyle drops them through `run_boxes`, and the content
-  signature drops them for a changed run (#964, `RetiredAnonBox`). Regenerated `::before`/`::after`/list-marker content is
+  signature drops them for a changed run (#964, `RetiredAnonBoxes`). Regenerated `::before`/`::after`/list-marker content is
   the one restyle that invalidates regardless, because the nodes an inline
   layout names were freed and minted again.
 - **A structural pass drops only the roots whose content moved**
