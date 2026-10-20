@@ -32,6 +32,8 @@ mod review_1601_tests;
 #[cfg(test)]
 mod tree_drop_tests;
 #[cfg(test)]
+mod tree_key_fix_1601_tests;
+#[cfg(test)]
 mod tree_key_tests;
 
 /// Serializes the tests that install a timer backend

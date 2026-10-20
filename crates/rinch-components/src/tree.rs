@@ -1050,8 +1050,8 @@ fn render_tree_node(
     );
     // A keyboard tree is one Tab stop: the row its cursor is on, or its first
     // row (roving tabindex, `set_stop`). Every row of any other tree is one.
-    let stop = !config.keyboard
-        || config.keys.stop.borrow().as_deref() == Some(node_value.as_str());
+    let stop =
+        !config.keyboard || config.keys.stop.borrow().as_deref() == Some(node_value.as_str());
     content.set_attribute("tabindex", if stop { "0" } else { "-1" });
     content.set_attribute(
         "style",
@@ -2086,7 +2086,11 @@ impl TreeKey {
             }
             TreeMove::Outdent => {
                 let parent = shape.rows[row].parent?;
-                (shape.rows[parent].parent, Slot::After(parent), DropZone::After)
+                (
+                    shape.rows[parent].parent,
+                    Slot::After(parent),
+                    DropZone::After,
+                )
             }
             TreeMove::Up => {
                 at.checked_sub(1)?;
@@ -2994,6 +2998,26 @@ mod review_1601_drop_for_tests {
             drop.is_none(),
             "Indent into b, which accepts no children: {:?}",
             drop.map(|d| (d.parent, d.slot))
+        );
+    }
+
+    /// A keyboard move the app's judge refuses is no move, as a dragged one
+    /// is not delivered; one it allows is the same drop as without a judge.
+    #[test]
+    fn a_move_the_app_refuses_is_none() {
+        let mut k = key(Shape::of(&data(), None), "c", &["c"]);
+        k.judge_drop = Some(Rc::new(|d: &TreeDrop| {
+            if d.parent.as_deref() == Some("b") {
+                DropVerdict::Refused
+            } else {
+                DropVerdict::Allowed
+            }
+        }));
+        assert!(k.drop_for(TreeMove::Indent).is_none(), "into b is refused");
+        assert_eq!(
+            k.drop_for(TreeMove::Up).map(|d| d.slot),
+            Some(TreeSlot::After("a".into())),
+            "control: another move is allowed"
         );
     }
 
