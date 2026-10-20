@@ -64,6 +64,7 @@ enum Page {
 /// Mounts, inside a box of `wrapper_style`:
 /// - `#btn`, a `<button>` with a handler;
 /// - `#track`, a `touch-action: none` div whose handler arms `Drag::percent`;
+/// - `#plaindrag`, the same handler on a div with no `touch-action`;
 /// - `#row`, a handled div holding `#field`, an `<input>`;
 ///
 /// and a 3000px spacer after it, so the page is taller than the viewport.
@@ -129,6 +130,23 @@ fn mount(page: Page, wrapper_style: &str) -> Fixture {
                 track.set_attribute("data-rid", &rid.0.to_string());
             }
             wrap.append_child(&track);
+            // The same handler on a div that lets a finger pan.
+            let plaindrag = scope.create_element("div");
+            plaindrag.set_attribute("id", "plaindrag");
+            plaindrag.set_attribute("style", "width: 200px; height: 20px");
+            {
+                let sink = sink.clone();
+                let rid = scope.register_handler(move || {
+                    sink.borrow_mut().push("plaindrag".into());
+                    let sink = sink.clone();
+                    rinch_core::Drag::percent()
+                        .on_move(|_, _| {})
+                        .on_end(move |_, _| sink.borrow_mut().push("end".into()))
+                        .start();
+                });
+                plaindrag.set_attribute("data-rid", &rid.0.to_string());
+            }
+            wrap.append_child(&plaindrag);
             let row = handled(scope, "div", "row");
             let field = scope.create_element("input");
             field.set_attribute("id", "field");
@@ -310,5 +328,20 @@ fn a_deferred_touch_press_on_a_field_in_a_clickable_row_is_left_to_the_browser()
     assert!(!ev.default_prevented());
     pointer(&by_id("field"), "pointerup", 0.0);
     assert_eq!(f.log(), ["row"], "positive control: the tap clicked the row");
+    f.teardown();
+}
+
+/// A deferred tap whose handler arms a `Drag` ends that drag at the release
+/// (through `on_end`), rather than leave it following a finger that has
+/// lifted. Kills dropping the `finish_drag` after the deferred dispatch.
+#[wasm_bindgen_test]
+fn a_deferred_tap_that_arms_a_drag_ends_it_at_the_release() {
+    let f = mount(Page::HtmlHidden, SCROLLER);
+    let el = by_id("plaindrag");
+    pointer(&el, "pointerdown", 0.0);
+    assert!(f.log().is_empty(), "positive control: the press was deferred");
+    pointer(&el, "pointerup", 0.0);
+    assert_eq!(f.log(), ["plaindrag", "end"]);
+    assert!(!rinch_core::Drag::is_active(), "the drag outlived the tap");
     f.teardown();
 }

@@ -79,7 +79,8 @@ fn mount() -> Fixture {
             root.append_child(&el(scope, "button", "btn", true));
             let track = el(scope, "div", "track", false);
             track.set_attribute("tabindex", "0");
-            track.set_attribute("style", "width: 200px; height: 20px");
+            // `touch-action: none`, as a `Slider` has: a finger on it drags.
+            track.set_attribute("style", "width: 200px; height: 20px; touch-action: none");
             {
                 let sink = sink.clone();
                 let rid = scope.register_handler(move || {
