@@ -4092,11 +4092,28 @@ fn install_wayland_icon(app_id: &str, png_data: &[u8]) {
         return;
     }
     let desktop_path = desktop_dir.join(format!("{app_id}.desktop"));
+    // An entry there that is not a stub is the app's own launcher (an installer
+    // that writes to the user's data directory, as an app that updates itself
+    // must): replacing it with a NoDisplay stub took the app out of the
+    // application menu on every start. That entry names the icon itself.
+    if !replaceable_icon_stub(&desktop_path) {
+        return;
+    }
     let desktop_content = format!(
         "[Desktop Entry]\nType=Application\nName={app_id}\nIcon={}\nNoDisplay=true\n",
         icon_path.display()
     );
     let _ = std::fs::write(&desktop_path, desktop_content);
+}
+
+/// Whether [`install_wayland_icon`] may write its stub at `path`: nothing is
+/// there, or a stub is (an entry that hides itself with `NoDisplay=true`).
+#[cfg(target_os = "linux")]
+fn replaceable_icon_stub(path: &std::path::Path) -> bool {
+    match std::fs::read_to_string(path) {
+        Ok(text) => text.lines().any(|l| l.trim() == "NoDisplay=true"),
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    }
 }
 
 /// Returns true if a `.desktop` entry for `app_id` exists in any system
@@ -4519,8 +4536,36 @@ mod letterbox_backdrop {
 #[cfg(all(test, target_os = "linux"))]
 mod app_id_tests {
     use super::{
-        app_id_from_exe_path, ensure_desktop_entry_in, resolved_app_id, write_desktop_entry_stub,
+        app_id_from_exe_path, ensure_desktop_entry_in, replaceable_icon_stub, resolved_app_id,
+        write_desktop_entry_stub,
     };
+
+    /// The icon stub never replaces the app's own launcher in the user's
+    /// applications directory (Pimble's installer writes one there; every
+    /// start replaced it with a NoDisplay stub and the app left the menu).
+    /// Nothing there, or an earlier stub, may be written.
+    #[test]
+    fn the_icon_stub_never_replaces_a_users_launcher() {
+        let root = std::env::temp_dir().join(format!("rinch-icon-stub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let launcher = root.join("notes.desktop");
+        std::fs::write(
+            &launcher,
+            "[Desktop Entry]\nType=Application\nName=Notes\nExec=/opt/notes\n",
+        )
+        .unwrap();
+        assert!(!replaceable_icon_stub(&launcher));
+        let stub = root.join("stub.desktop");
+        std::fs::write(
+            &stub,
+            "[Desktop Entry]\nType=Application\nName=stub\nIcon=/x.png\nNoDisplay=true\n",
+        )
+        .unwrap();
+        assert!(replaceable_icon_stub(&stub));
+        assert!(replaceable_icon_stub(&root.join("absent.desktop")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// A packaged launcher in a system directory is never shadowed: no stub
     /// is written for an app id one of them has.
