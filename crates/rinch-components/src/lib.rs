@@ -237,9 +237,9 @@ pub use textarea::Textarea;
 pub use title::Title;
 pub use tooltip::Tooltip;
 pub use tree::{
-    AcceptsChildren, DragValues, DropVerdict, DropZone, JudgeDrop, RenderTreeNode,
-    RenderTreeNodePayload, Tree, TreeController, TreeDrop, TreeNodeData, TreeSlot, UseTreeOptions,
-    UseTreeReturn, get_tree_expanded_state,
+    AcceptsChildren, DragValues, DropVerdict, DropZone, JudgeDrop, LabelOf, RenderTreeNode,
+    RenderTreeNodePayload, Tree, TreeController, TreeDrop, TreeKey, TreeKeyHandler, TreeMove,
+    TreeNodeData, TreeSlot, UseTreeOptions, UseTreeReturn, get_tree_expanded_state,
 };
 
 // Tier 4: Overlays

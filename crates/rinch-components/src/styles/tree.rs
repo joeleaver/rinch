@@ -172,6 +172,19 @@ pub fn styles() -> String {
     outline-color: var(--rinch-color-red-6);
 }
 
+/* Keyboard: the cursor row carries a ring while the tree has the keyboard,
+   in place of the browser's own focus outline. The ring is an inset shadow,
+   not an outline, so a row that is the cursor and the target of an "inside"
+   drop shows both: the drop's outline above, and the ring. The focus outline
+   is taken off every row but the "inside" drop target, whose outline is the
+   drop indicator. */
+.rinch-tree--keyboard .rinch-tree__node-content:focus-visible:not(.rinch-tree__node-content--drop-inside) {
+    outline: none;
+}
+.rinch-tree--focused .rinch-tree__node-content--cursor {
+    box-shadow: inset 0 0 0 1px var(--rinch-primary-color);
+}
+
 /* Indent guides: one line down each expanded row's children */
 .rinch-tree__subtree-wrap {
     position: relative;
