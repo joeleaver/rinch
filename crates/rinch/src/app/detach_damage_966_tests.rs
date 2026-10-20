@@ -216,7 +216,10 @@ fn an_orphan_clears_its_overflow() {
         vec![p]
     }));
     let before = full_frame(&mut app);
-    assert!(ink_in(&before, (300, 45, 340, 80)) > 1000, "positive control");
+    assert!(
+        ink_in(&before, (300, 45, 340, 80)) > 1000,
+        "positive control"
+    );
     h[0].set_text("");
     resolve(&mut app);
     check(&mut app, "orphan", (300, 45, 340, 80));
@@ -242,7 +245,10 @@ fn an_orphan_moved_into_a_clipper_clears_where_it_was() {
         vec![p, r, c]
     }));
     let before = full_frame(&mut app);
-    assert!(ink_in(&before, (300, 45, 340, 80)) > 1000, "positive control");
+    assert!(
+        ink_in(&before, (300, 45, 340, 80)) > 1000,
+        "positive control"
+    );
     h[0].set_text("");
     h[2].append_child(&h[1]);
     resolve(&mut app);
@@ -255,10 +261,7 @@ fn an_orphan_moved_into_a_clipper_clears_where_it_was() {
 #[test]
 fn an_orphan_moved_into_a_coincident_clipper_clears_its_overflow() {
     let (mut app, h) = mount(Box::new(|s, o| {
-        o.set_attribute(
-            "style",
-            "width: 600px; height: 400px; position: relative;",
-        );
+        o.set_attribute("style", "width: 600px; height: 400px; position: relative;");
         let w = el(s, o, "width: 200px; height: 10px; margin-top: 100px;");
         let r = el(s, &w, BLUE);
         let c = el(
@@ -273,17 +276,18 @@ fn an_orphan_moved_into_a_coincident_clipper_clears_its_overflow() {
     h[0].set_text("");
     h[2].append_child(&h[1]);
     resolve(&mut app);
-    check(&mut app, "orphan into coincident clipper", (0, 115, 40, 140));
+    check(
+        &mut app,
+        "orphan into coincident clipper",
+        (0, 115, 40, 140),
+    );
 }
 
 /// The same shape through `replace_with`'s displaced node.
 #[test]
 fn a_displaced_node_moved_into_a_coincident_clipper_clears_its_overflow() {
     let (mut app, h) = mount(Box::new(|s, o| {
-        o.set_attribute(
-            "style",
-            "width: 600px; height: 400px; position: relative;",
-        );
+        o.set_attribute("style", "width: 600px; height: 400px; position: relative;");
         let w = el(s, o, "width: 200px; height: 10px; margin-top: 100px;");
         let r = el(s, &w, BLUE);
         let c = el(
@@ -299,7 +303,11 @@ fn a_displaced_node_moved_into_a_coincident_clipper_clears_its_overflow() {
     h[1].replace_with(&h[3]);
     h[2].append_child(&h[1]);
     resolve(&mut app);
-    check(&mut app, "displaced into coincident clipper", (0, 115, 40, 140));
+    check(
+        &mut app,
+        "displaced into coincident clipper",
+        (0, 115, 40, 140),
+    );
 }
 
 /// `remove_child`, the fourth route the issue did not name: the removed
@@ -326,10 +334,7 @@ fn a_removed_child_clears_its_overflow() {
 #[test]
 fn a_removed_child_moved_into_a_coincident_clipper_clears_its_overflow() {
     let (mut app, h) = mount(Box::new(|s, o| {
-        o.set_attribute(
-            "style",
-            "width: 600px; height: 400px; position: relative;",
-        );
+        o.set_attribute("style", "width: 600px; height: 400px; position: relative;");
         let w = el(s, o, "width: 200px; height: 10px; margin-top: 100px;");
         let r = el(s, &w, BLUE);
         let c = el(
@@ -344,7 +349,11 @@ fn a_removed_child_moved_into_a_coincident_clipper_clears_its_overflow() {
     h[0].remove_child(&h[1]);
     h[2].append_child(&h[1]);
     resolve(&mut app);
-    check(&mut app, "remove_child into coincident clipper", (0, 115, 40, 140));
+    check(
+        &mut app,
+        "remove_child into coincident clipper",
+        (0, 115, 40, 140),
+    );
 }
 
 /// A generated box freed when its rule stops matching (the pseudo-element
