@@ -748,6 +748,9 @@ fn remove_one_row() {
             (TaffyMeasureCalls, 39),
             (PaintNodesVisited, 50),
             (StackingOrderBuilds, 1),
+            // #966: `remove_child` records the removed row's painted rect, as
+            // `remove_node` does: one clip-chain walk of 3 steps.
+            (RemovalDamageSteps, 3),
         ],
     );
 }
