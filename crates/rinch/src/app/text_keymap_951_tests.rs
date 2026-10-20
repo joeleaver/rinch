@@ -554,3 +554,12 @@ fn ctrl_alt_backspace_is_not_a_word_delete() {
     press(&mut app, KeyCode::Backspace, None, altgr);
     assert_eq!(value(&app, id), "hello worl");
 }
+
+/// `type` is an enumerated attribute, matched ASCII case-insensitively:
+/// `type="PASSWORD"` is a password field and takes its word rules.
+#[test]
+fn an_uppercase_password_type_is_a_password_field() {
+    let (mut app, id) = field_with(&[("type", "PASSWORD")], "input", "hunter2 secret");
+    press(&mut app, KeyCode::Backspace, None, CTRL);
+    assert_eq!(value(&app, id), "", "Ctrl+Backspace empties it");
+}
