@@ -3051,27 +3051,6 @@ impl RinchApp {
         (line, geometry.x0 as f32)
     }
 
-    /// Where End leaves the caret on a visual line whose text is `range` and
-    /// whose successor starts at `next_start` (#933, #941). A line a hard
-    /// break ends ends before its `\n` (Parley's line range includes it),
-    /// downstream. A soft-wrapped line ends at its wrap point — after any
-    /// space hung there, the same byte offset as the next line's start —
-    /// with an **upstream** caret, drawn at the end of this line, as Chrome
-    /// 153 puts it.
-    fn line_end_before(
-        text: &str,
-        range: &std::ops::Range<usize>,
-        next_start: usize,
-    ) -> (usize, rinch_core::dom::CaretAffinity) {
-        match text
-            .get(range.start..next_start)
-            .and_then(|line| line.char_indices().last())
-        {
-            Some((i, '\n')) => (range.start + i, rinch_core::dom::CaretAffinity::Downstream),
-            _ => (next_start, rinch_core::dom::CaretAffinity::Upstream),
-        }
-    }
-
     /// Where a vertical move from byte `origin` (drawn with
     /// `origin_affinity`) lands in `layout`: the byte offset nearest `goal_x`
     /// (or `origin`'s own x) on the visual line above or below, with the
@@ -3124,31 +3103,44 @@ impl RinchApp {
     }
 
     /// The start (`end = false`) or end (`end = true`) of the visual line a
-    /// caret at byte `origin` with `affinity` paints on, in `layout` laid out
-    /// over `text` (issue #933), with the affinity the caret takes there. A
-    /// line's start is downstream; its end is [`Self::line_end_before`] — a
-    /// hard break's `\n`, or a soft wrap's wrap point drawn upstream (#941);
-    /// the last line ends with the text. `None` for a layout with no lines.
+    /// caret at byte `origin` with `affinity` paints on, in `layout` (issue
+    /// #933), with the affinity the caret takes there. A line's start is
+    /// downstream. A line a hard break ends — decided by Parley's break
+    /// reason, as [`rinch_dom::text_query::visual_line_range`] decides it for
+    /// the rich editor (#1107): `\n`, U+2028, U+2029, a lone `\r`, … — ends
+    /// before its break, downstream. A soft-wrapped line ends at its wrap
+    /// point, after any hung space, which is the next line's start: an
+    /// upstream caret, drawn at the end of this line (#941, Chrome 153). The
+    /// last line ends with the text. `None` for a layout with no lines.
+    ///
+    /// The line is found by [`Self::input_caret_line`] (the caret's middle),
+    /// not `visual_line_range`'s caret-top test: with a declared
+    /// `line-height` the caret's top sits above its line box, which that test
+    /// reads as the line before.
     fn visual_line_edge(
         layout: &parley::layout::Layout<peniko::Brush>,
-        text: &str,
         origin: usize,
         affinity: rinch_core::dom::CaretAffinity,
         end: bool,
     ) -> Option<(usize, rinch_core::dom::CaretAffinity)> {
-        use rinch_core::dom::CaretAffinity::Downstream;
+        use parley::layout::{BreakReason, Cluster};
+        use rinch_core::dom::CaretAffinity::{Downstream, Upstream};
         let lines = Self::input_visual_lines(layout);
         let current = Self::input_caret_line(layout, &lines, origin, affinity).0?;
-        let (_, _, range) = lines.get(current)?;
+        let line = layout.get(current)?;
+        let range = line.text_range();
         if !end {
             return Some((range.start, Downstream));
         }
-        match lines.get(current + 1) {
-            Some((_, _, next)) if next.start > range.start => {
-                Some(Self::line_end_before(text, range, next.start))
-            }
-            _ => Some((range.end, Downstream)),
+        if line.break_reason() == BreakReason::Explicit
+            && range.end > range.start
+            && let Some(cluster) = Cluster::from_byte_index(layout, range.end - 1)
+            && cluster.is_hard_line_break()
+        {
+            return Some((cluster.text_range().start.max(range.start), Downstream));
         }
+        let wraps = range.end > range.start && current + 1 < lines.len();
+        Some((range.end, if wraps { Upstream } else { Downstream }))
     }
 
     /// The affinity of the focused field `node_id`'s caret, as the last sync
@@ -3222,9 +3214,7 @@ impl RinchApp {
                 &mut self.hit_test_layout_cx,
                 node_id,
             )
-            .and_then(|it| {
-                Self::visual_line_edge(&it.layout, &it.value, selection.head.0, head_affinity, end)
-            })
+            .and_then(|it| Self::visual_line_edge(&it.layout, selection.head.0, head_affinity, end))
             // An empty value: nothing to lay out, and both ends are 0.
             .unwrap_or((text_edge, rinch_core::dom::CaretAffinity::Downstream))
         };
