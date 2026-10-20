@@ -33,8 +33,11 @@ fn my_editor() -> NodeHandle {
 
     rsx! {
         div {
-            // Toolbar — each button runs a named command.
+            // Toolbar — each button runs a named command. `data-nofocus`
+            // keeps the keyboard (and the selection) in the editor when a
+            // button is pressed; without it the button takes the focus.
             div {
+                data-nofocus: "",
                 button { onclick: move || { ed_bold.command("toggleBold"); }, "Bold" }
                 button { onclick: move || { ed_italic.command("toggleItalic"); }, "Italic" }
                 button { onclick: move || { ed_h1.command("setHeading1"); }, "H1" }
@@ -83,8 +86,12 @@ applied. This is the single entry point for toolbar buttons and menu items:
 
 ```rust
 let ed = editor.clone();
-button { onclick: move || { ed.command("toggleBold"); }, "Bold" }
+button { data-nofocus: "", onclick: move || { ed.command("toggleBold"); }, "Bold" }
 ```
+
+A toolbar button needs `data-nofocus` (on itself or on the toolbar around it):
+a press on a `<button>` focuses it, on desktop and on the web alike, and the
+editor it acts on loses the keyboard.
 
 Command names are case-sensitive. The full catalogue:
 

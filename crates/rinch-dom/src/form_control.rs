@@ -260,12 +260,16 @@ pub fn is_value_control(node: &Node) -> bool {
 /// Removing the attribute is a write of `""` and leaves the field dirty
 /// ([`Node::value_dirty`], #1222): it answers `""`, not its children. An
 /// `<input>` has no default value in its children, so it answers only its
-/// attribute. `None` for any other element.
+/// attribute, **sanitized** for its type ([`input_value`], #1554). `None` for
+/// any other element.
 pub fn control_value(
     nodes: &slab::Slab<Node>,
     node_id: usize,
 ) -> Option<std::borrow::Cow<'_, str>> {
     let node = nodes.get(node_id)?;
+    if node.tag() == Some("input") {
+        return input_value(node);
+    }
     if let Some(v) = node.attributes.get("value") {
         return Some(std::borrow::Cow::Borrowed(v.as_str()));
     }
@@ -277,6 +281,67 @@ pub fn control_value(
         return Some(std::borrow::Cow::Borrowed(""));
     }
     Some(textarea_child_text(nodes, node))
+}
+
+/// An `<input>`'s value: its `value` attribute run through HTML's **value
+/// sanitization algorithm** for its type, as a browser's `.value` is (#1554).
+/// The attribute keeps what was written; this is what the field paints,
+/// edits, adopts and reports. Measured in Chrome 155:
+///
+/// - the Text state (no `type`, `text`, an unknown type), `search`, `tel`
+///   and `password` **strip** every `\r` and `\n` (`"p\nq\r\nr"` is `"pqr"`)
+///   and keep all other whitespace;
+/// - `url` and `email` strip them and then trim leading and trailing ASCII
+///   whitespace (tab, LF, FF, CR, space — not U+00A0); an `email` with
+///   `multiple` trims each comma-separated address and joins them with `,`.
+///
+/// `type` is matched ASCII case-insensitively and untrimmed, as a browser
+/// matches it (`" email"` is an unknown type). The other types' rules —
+/// `number`, the date/time family and `color` turn an invalid value into
+/// `""` or a default, `range` clamps — are not applied: those values are
+/// answered as written. `hidden`, `checkbox`, `radio`, `file` and the
+/// buttons have none. Not the rule for text the **user** inserts, which
+/// folds an inner line break into a space (`rinch_editable::single_line_insert`,
+/// #824).
+pub fn input_value(node: &Node) -> Option<std::borrow::Cow<'_, str>> {
+    use std::borrow::Cow;
+    let raw = node.attributes.get("value")?.as_str();
+    let ty = node.attributes.get("type").map(|t| t.to_ascii_lowercase());
+    let trims = match ty.as_deref() {
+        Some("url" | "email") => true,
+        None | Some("text" | "search" | "tel" | "password") => false,
+        Some(
+            "hidden" | "checkbox" | "radio" | "file" | "submit" | "image" | "reset" | "button"
+            | "number" | "range" | "color" | "date" | "month" | "week" | "time" | "datetime-local",
+        ) => return Some(Cow::Borrowed(raw)),
+        // An unknown type is the Text state.
+        Some(_) => false,
+    };
+    let is_ascii_ws = |c: char| matches!(c, '\t' | '\n' | '\u{c}' | '\r' | ' ');
+    let stripped: Cow<'_, str> = if raw.contains(['\r', '\n']) {
+        Cow::Owned(raw.chars().filter(|c| !matches!(c, '\r' | '\n')).collect())
+    } else {
+        Cow::Borrowed(raw)
+    };
+    if !trims {
+        return Some(stripped);
+    }
+    if ty.as_deref() == Some("email") && node.attributes.contains_key("multiple") {
+        let joined = stripped
+            .split(',')
+            .map(|a| a.trim_matches(is_ascii_ws))
+            .collect::<Vec<_>>()
+            .join(",");
+        return Some(if joined == stripped {
+            stripped
+        } else {
+            Cow::Owned(joined)
+        });
+    }
+    Some(match stripped {
+        Cow::Borrowed(s) => Cow::Borrowed(s.trim_matches(is_ascii_ws)),
+        Cow::Owned(s) => Cow::Owned(s.trim_matches(is_ascii_ws).to_owned()),
+    })
 }
 
 /// Whether `node` is a `<textarea>` whose value is still its default value —

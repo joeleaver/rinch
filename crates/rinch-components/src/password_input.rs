@@ -338,6 +338,9 @@ impl Component for PasswordInput {
                     tabindex: "-1"
                 }
             };
+            // The click, not the keyboard: the field keeps the focus and its
+            // caret, on both backends (Mantine `preventDefault`s this press).
+            toggle_btn.set_attribute("data-nofocus", "");
 
             let aria_label = if initial_visible {
                 "Hide password"

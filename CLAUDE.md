@@ -114,7 +114,7 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     change; `letter-spacing`/`word-spacing` on the substitutes still differ from Chrome's).
     The rich-text editor's caret map counts the same bytes for each through
     `DomDocument::substituted_char_flat_bytes`, answered from the table `laid_out_as` reads
-    (`ifc::PRESERVED_SUBSTITUTES`) — as it counts a tab through `tab_flat_bytes` (#1109). Only in an IFC: a flex or grid item's own text (a text leaf) still breaks at
+    (`ifc::PRESERVED_SUBSTITUTES`) — as it counts a tab through `tab_flat_bytes` (#1109; 1 since #1122). Only in an IFC: a flex or grid item's own text (a text leaf) still breaks at
     U+2028/U+2029 and draws U+0085 (#1268).
     **The flat offsets index that collapsed text** — the caret maps,
     inline backgrounds and decorations, the visibility mask; they used to count the pushed text,
@@ -122,6 +122,26 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     DOM↔flat correspondence. Since parley counts a trailing NBSP in `trailing_whitespace`,
     `measured_width` keeps it (`width_keeping_nbsp`), whatever else the IFC holds.
     `crates/rinch-dom/tests/inline_edge_space_tests.rs` and `nbsp_line_box_tests.rs` are the pins.
+  - **Parley has no tab stops; rinch sets them** (#1122). A preserved tab
+    (`pre`, `pre-wrap`, `break-spaces`, a contenteditable root) is pushed as
+    one space, one flat byte, recorded in `IfcText::tabs`; `IfcText::replay`
+    gives each its own span of `word-spacing: 0` and a `letter-spacing` that
+    widens it to its stop, and `build_inline_layout` builds and breaks again
+    while a tab is off its stop (`ifc::TabStops::deltas`), at most
+    `MAX_TAB_BUILDS` = 4 builds; `ifc_tab_rebuilds` counts the extra ones: 1 for
+    lines that do not wrap. Each build settles one more moved soft wrap, so a
+    long soft-wrapped `pre-wrap` paragraph can stop at the cap with some tabs
+    off their stops, 3.8–5px from Chrome's, from about its fifth line on (Refs
+    #1593; `review_1587_tests.rs` pins a paragraph that needs all four). The rule is Chrome 155's: stops every `TAB_SIZE`
+    (8) spaces of the **block's** font, its letter- and word-spacing included,
+    from the line's start edge in logical order before `text-align`; the first
+    stop strictly past the tab's start, or the next when that is under half a
+    space away; an overflowing tab hangs. `tab-size` is Gecko-only in Stylo and
+    not read (#1584). Since the tab is one byte, `tab_flat_bytes` is 1 on
+    rinch-dom as in a browser. Not done: a text leaf's and a form control's tab
+    (#1585), and the `text-overflow: ellipsis` rebuild, which refuses the
+    per-line cut for a paragraph with a tab and draws it one space wide in the
+    whole cut (#1586). `tests/tab_stop_1122_tests.rs` is the pin.
 - **skrifa** - read directly by rinch-dom only to size a text control from its font's OS/2 and `head` tables (#1177). Pinned at **0.44**, the version parley 0.11.1 depends on; parley does not re-export it, so a parley bump that moves skrifa silently builds a second copy unless this pin moves with it.
 - **vello** - 2D GPU rendering via wgpu (GPU mode, enabled with `features = ["gpu"]`)
 - **tiny-skia** - 2D software rendering (default mode, no GPU required)
@@ -1094,9 +1114,9 @@ reached desktop or the web's theme `<style>` (PR #1134 review; Android never
 applies a theme-only change at all, #1144). The change is *owed* until the
 next notification, so one made outside any batch is delivered by the next
 handler of any kind. State a host polls itself (dirty nodes, focus requests,
-the editor's owed overlay pass, image decodes) does not need it; a desktop
-`NodeHandle::scroll_into_view` from a handler that dirties nothing is **not**
-polled and is never applied (#1145). Thread-local save/restore guards go through
+the editor's owed overlay pass, image decodes, a queued
+`NodeHandle::scroll_into_view` / `scroll_to_fraction` — #1145, which used to
+wait for an unrelated layout) does not need it. Thread-local save/restore guards go through
 `reactive::restore` (`RestoreCell<K: Slot>` over a `restore_slot!`, and
 `with_runtime_on_drop`) — a new one should too; the slots dispatch statically
 because a `fn`-pointer selector cost the effect-run path +2.4% instructions. A handler's
@@ -1750,6 +1770,8 @@ section).
 
 Because there's no built-in drag ghost (the app renders its own from `data-ondragmove`), **set `pointer-events: none` on your ghost element** — on touch the drop target is resolved via `elementFromPoint`, so a ghost under the finger would otherwise intercept the hit and drops would silently fail.
 
+**A drag auto-scrolls the container it is near the edge of** (both backends). While the drag is active and its pointer is within `DRAG_AUTO_SCROLL_EDGE` (32px; a third of the box for one shorter than 96px) of the top or bottom of a scroll container under it, that container scrolls, at up to `DRAG_AUTO_SCROLL_MAX_SPEED` (1200 px/s) on the edge, falling off with the square of the distance into the band (`rinch_core::events::drag_auto_scroll_velocity`, one curve for both). It keeps scrolling while the pointer rests there, a frame at a time: desktop from the `AboutToWait` frame clock (`RinchApp::tick_drag_auto_scroll`, which asks for the next frame while it is in a band), rinch-web from `requestAnimationFrame` (a loop that a move of an active drag starts and that stops itself out of every band and on the drag's end). The container is the nearest ancestor of what is under the pointer (or the body / scrolling element) that overflows vertically, has the pointer in a band and can still move toward that edge, so a list at its end lets the page around it take over — "its end" is where a write moves the offset no further: on desktop the range's end on the device pixel grid (#1543), so at 125% a range ending off the grid is at its end when the offset cannot move any further, and the clock rests there; on the web a frame whose `scrollTop` write moves nothing marks that container at its end in that direction (`AutoScrollLoop::stuck`; a pointer move clears it), because `scrollHeight` and `clientHeight` are rounded and at DPR 1.5 a 200.4px list stops at 599.33 where they say 600 (CI runs `drag_auto_scroll` and `review2_1592` a second time in Chrome at `--force-device-scale-factor=1.5`). While a `lock_scroll` overlay holds the page, the page and every container outside the overlay's root are skipped on both backends, as desktop's `NodeTree::scroll_locked_out` decides (`data-scroll-lock-exempt` included); rinch-web records the locking roots for this (`web_document::scroll_locked_out`), since a `scrollTop` write ignores `<html>`'s `overflow: hidden`. The web lock is page-wide, so with two islands on one page an overlay open in one locks out the other's lists as well, where desktop's lock is per document. Closing the overlay during a drag scrolls a list under the still pointer from the next frame on both backends (rinch-web restarts its loop from the unlock). Bands are measured on the part of the box inside the viewport, not on the part an outer scroller clips: a scroller partly scrolled out of another keeps its band at its own hidden edge. A drag frame whose pointer is in no band costs no hit test on desktop: the tick reuses the hit the drag's last resolve (or the tick's own last fresh hit test) made while the hit cache's generation and the pointer are unchanged and nothing animates. A drag whose release went missing scrolls while its pointer rests in a band until it is ended — on desktop by the missed-release heal (the next left press or a window blur cancels it, #381/#1028), on the web by its next move reporting no button. After a frame that scrolled, the drag is resolved again at the still pointer, so the drop target scrolled under it hears `data-ondragenter`/`data-ondragover` (and the container its `data-onscroll`). Vertical only. The wheel and the auto-scroll share one vertical scroll write (`RinchApp::scroll_vertically_by`). Pins: `rinch/src/app/drag_auto_scroll_tests.rs`, `rinch-web/tests/drag_auto_scroll.rs`.
+
 Handlers can read `get_click_context()` for cursor position and element bounds. Use `DragContext<T>` to pass typed data between source and target:
 
 ```rust
@@ -2108,6 +2130,40 @@ so the claim stays out of both. The right/middle path
 used to run no claim, so a right press on a nested focusable released the
 outer claim and nothing took the keyboard.
 
+**On `rinch-web` a press on a `data-rid` element resolves focus the same way**
+(#1146). `dispatch_click_at` `preventDefault`s the `pointerdown` of a press
+whose handler ran, and that cancels the browser's own focus change, so before
+#1146 no such press moved focus: a `Button` took none, the field that had it
+was not blurred (its `change` uncommitted), and a text field inside a
+clickable (`ColorInput`'s, in its input group) could not be focused by a click
+at all. Now (`PressFocus`, `event_delegation.rs`): when the nearest focusable
+ancestor-or-self (`PRESS_FOCUSABLE_SELECTOR`) is a form control or editable
+content the default is not prevented, so the browser focuses it and places
+the caret; any other focusable is focused by rinch (`preventScroll`) **before**
+the handler runs, so the old field blurs first and a focus move the handler
+makes wins; a press already prevented (`data-nofocus`) or with nothing
+focusable on its chain moves no focus (desktop releases for the latter). The
+selector is a superset (a `disabled` button, a `contenteditable="false"`
+island match it and refuse `focus()`), so `focus_press_target` asks the
+browser and walks on to the next match, as Chrome focuses the `tabindex` row
+around a disabled button. A **touch/pen** press holds its focus move until the
+owning pointer's `pointerup` (`PendingPressFocus`): a `pointercancel` (Chrome's
+pan), a move past the scroll slop or the next primary press drops it, and a
+focus move made since the press landed (the handler's own) wins — a pan that
+starts on a button used to blur the field and drop a phone's soft keyboard.
+(The click itself still fires on contact outside a scroller, #1582.) In a
+`data-nofocus` region a press whose nearest focusable is a form control or
+editable content strictly inside the region is not prevented (#1579), as on
+desktop. Behaviour changes for web apps: an editor toolbar needs
+`data-nofocus`, as on desktop; any focused field blurs and commits `onchange`
+on a press of a focusable `data-rid`; a `trap_focus` overlay opened from a
+`Button` restores focus to that `Button`; a native `<select>`/range inside a
+clickable is no longer prevented, so it works natively beside the handler.
+Safari and macOS Firefox do not focus a `<button>` on a click; rinch-web does
+(Chrome's and desktop's rule). Measured with trusted CDP input in Chrome 155;
+pins: `rinch-web/tests/press_focus_1146.rs`, `press_focus_1580_review.rs`,
+`press_focus_1580_round2.rs`.
+
 A focused **`<select>` is closed**, like a browser's — Enter/Space/Alt+Down
 opens its popup, which then owns the keyboard (issue #314). A pointer opens and
 picks with the primary button only (issue #1111): a right or middle press on the
@@ -2142,11 +2198,25 @@ each entry whose owner lost the focus: desktop calls it from
 `RinchApp::fire_focus_work` after every arbiter transition (callers fire that
 work after installing the new owner, so `focused_node` is already the new one),
 rinch-web from a document `focusin` and from a `focusout` with no
-`relatedTarget` (with key 0, which reaches every island). A window blur closes
-nothing on either backend: desktop keeps the claim, and on the web the
-`focusout` it fires has no `relatedTarget` but `activeElement` is still the
-trigger while it runs (measured, Chrome 153). A native `<select>` and Mantine
-both close on window blur; that is #1171. Push a key entry at **open** and release it at close
+`relatedTarget` (with key 0, which reaches every island). A window blur moves
+no focus — desktop keeps the claim, and on the web the `focusout` it fires has
+no `relatedTarget` but `activeElement` is still the trigger while it runs
+(measured, Chrome 153) — so it is told apart (#1171):
+`rinch_core::notify_window_blurred(doc_key)` calls **every** key entry's
+`on_focus_leave` of that document, focus or not, from desktop's
+`WindowFocus(false)` arm and from a rinch-web `window` capture `blur` listener
+(at-target phase only: element blurs pass through it too). So an open `Select`
+list closes on window blur, as a native `<select>` and Mantine's do, and the
+trigger keeps the focus; desktop's native `<select>` popup closes there too
+(`close_select_popup_returning_focus`). `ColorInput`'s dropdown holds a key
+entry too while open (#1572), owned by the input's root, taking no key, whose
+`on_focus_leave` closes it — so Tab away, a programmatic focus elsewhere, a
+press outside that moves the focus, and a window blur close it, as Mantine's
+input `onBlur` does; its panel and preview swatch are `data-nofocus`, so a
+press in the picker keeps the keyboard on the field, and opening focuses the
+field when it does not already hold it. With `close_on_click_outside: false`
+an outside press reaches the page under it and still closes the dropdown by
+moving the focus. `DropdownMenu`'s dismiss-only entry is not told. Push a key entry at **open** and release it at close
 and unmount (`overlay_dismiss::arm_keys_while_open`). `MockDomDocument` now
 records `focus_element` and answers it from `active_element`, so a component
 test has to focus the owner before its keys reach an entry.
@@ -2303,9 +2373,11 @@ toolbar needs so Bold does not blur the editor it acts on. Same boolean rule as
 attributes keep and the HTML pair does not — read **anywhere on the pressed
 node's ancestor chain** so a toolbar carries it once; it protects whatever holds
 the keyboard (editor, input, surface, node), the `data-rid` click still fires,
-and a text field *inside* the
-region still focuses normally. Both backends — on web it becomes
-`preventDefault()` on the `pointerdown`.
+and a form control *inside* the
+region (any `<input>`, `<textarea>`, `<select>`, editable content — a checkbox
+too) still focuses normally (the web since #1579). Both backends — on web it
+becomes `preventDefault()` on the `pointerdown`, skipped when the press's
+nearest focusable is a form control strictly inside the region.
 
 A custom component that takes keyboard input registers for the lifecycle
 (issue #147, `crates/rinch/src/focus_registry.rs`, in the prelude):
@@ -2383,9 +2455,14 @@ register_focus_target(
   close — the `<select>` popup's shape (#671), spelled for components as
   `rinch_components::overlay_dismiss::arm_close_on_escape_while_open` and used by
   `ColorInput`'s dropdown (whose outside-click backdrop is `DropdownMenu`'s,
-  `position: fixed` and all). Such a handler consumes unconditionally, since it
-  exists only while the overlay is open, and its release has to cover
-  unmount-while-open as well as close. It shares the
+  `position: fixed` and all). Such a handler has no closed state to decline
+  in, since it exists only while the overlay is open, but it declines while its
+  root is not rendered (`NodeHandle::is_rendered`: connected, no `display: none`
+  on it or an ancestor, not `visibility: hidden`/`collapse`; #802) — a picker
+  left open inside a `Modal` the app closed (`display: none`, still mounted)
+  used to swallow the next Escape. It is declined, not closed. Desktop answers
+  from the last resolve's styles, the web from `getComputedStyle`; the mock
+  answers `true`. Its release has to cover unmount-while-open as well as close. It shares the
   *lifetime* rule though (#183):
   registering it during a render releases it on unmount, ownerless registration
   keeps app lifetime, and an earlier unmount never clobbers a later
@@ -2526,7 +2603,9 @@ decided by reading the clipboard** (#149 — so it stays enabled over an empty
 clipboard); Select all = content. **All three clipboard rows — Cut, Copy and
 Paste — are greyed when `rinch` is built without the `clipboard` feature**:
 there is no clipboard for Copy or Paste to reach, and an enabled Cut would
-delete text it never copied. The press applies the native caret rule:
+delete text it never copied — and the Ctrl+X chord and `perform_text_edit`
+do nothing on a plain control then too (`handle_input_edit_command`, #823;
+the editor's Cut arms were already compiled out). The press applies the native caret rule:
 outside the selection it moves the caret, inside it keeps the selection. The
 field keeps the keyboard throughout. The platform-neutral half is a seam for a
 shell with its own toolbar: `RinchApp::text_edit_state()`,
@@ -4200,18 +4279,48 @@ either attribute on one of the three rebuilds the block
 (`note_attribute_change`); any other attribute on them, and `width`/`height`
 on any other element, still cascades nothing. On an `<img>` and a `<video>`
 the pair also maps to `aspect-ratio: auto w / h` when both are lengths above
-zero (`replaced::attribute_ratio`): rinch has no `aspect-ratio` property
-(#1286), so the ratio goes from the attributes to the measure context
-(`NodeContext::Image::hint_ratio`, `NodeContext::Replaced::ratio`, kept by
-`replaced::sync_replaced_measure` on each cascade), where it is the ratio of
-an image with no natural size (not loaded, or failed) —
+zero (`replaced::attribute_ratio`), written into the same hint block, so an
+author `aspect-ratio` replaces it (#1286: `aspect-ratio: auto; width: 200px;
+height: auto` on an unloaded hinted image is 200x0, as in Chrome). It is the
+ratio of an image with no natural size (not loaded, or failed) —
 `<img width=100 height=50 style="width: 200px; height: auto">` is 200x100
 before the image arrives — and a loaded image's own ratio replaces it. A
 `<canvas>`'s two attributes stay its bitmap size, read as integers (#1173).
-Not Chrome's: the mapped ratio cannot be switched off — an author
-`aspect-ratio` is not read (#1286), so `aspect-ratio: auto; width: 200px;
-height: auto` on an unloaded hinted image is 200x100 where Chrome gives
-200x0; an unloaded or failed image with a non-empty `alt` reserves its
+**CSS `aspect-ratio`** (#1286) is `ComputedStyle::aspect_ratio`
+(`AspectRatioValue { auto, ratio }`, a degenerate ratio is `auto`): a
+non-replaced box hands it to Taffy's `Style::aspect_ratio` (block, flex,
+grid, an atomic inline's root compute, absolute boxes); an `<img>`,
+`<canvas>`, `<video>` and `<iframe>` do not (`replaced::measures_aspect_ratio`,
+cleared in `taffy_style_from_computed`) — their measure context carries the
+computed value (`NodeContext::Image::aspect`, `NodeContext::Replaced::aspect`,
+kept by `replaced::sync_replaced_measure` on each cascade, which owes a layout
+when it moves) and `replaced::measure` takes `AspectRatioValue::used_ratio`:
+a `<ratio>` without `auto` replaces the natural ratio, `auto <ratio>` is used
+only when there is none, and a `<ratio>` without `auto` relates the
+`box-sizing` box's sizes (always the border box today, since `box-sizing`
+is not read — #1278), any other the content box's. An internal table box (a
+cell, a row, a row group — `TablePart::is_internal`; not the table or a
+caption) takes no ratio, as in Chrome 155. `aspect-ratio` does not
+transition (Chrome interpolates it) and an `@keyframes` stop of it is
+ignored. Not Chrome's (pinned in
+`tests/aspect_ratio_1286_tests.rs`, `known_differences_from_chrome`): Taffy
+transfers the other axis's `min-*`/`max-*` onto a definite size
+(`width: 100px; aspect-ratio: 2; max-height: 30px` is 60x30, Chrome 100x30 —
+#1561), and a box with a ratio has no content-based automatic minimum size,
+so text taller than the ratio overflows a visible box and a stretched flex
+item shrinks (#1562); and Taffy applies a non-replaced box's `auto <ratio>`
+to its border box too, where Chrome uses the content box (visible only with
+padding or a border, every rinch box being `border-box` — #1278). Three gaps
+the ratio does not reach: a `position: fixed` box with one vertical inset
+and an auto height is given its content height afterwards, so it is 0 tall
+(`top: 0; width: 100px; aspect-ratio: 2` is 100x0, Chrome 100x50 — a fixed
+`<img>`/`<video>` with `top: 0` was 0 tall before `aspect-ratio` too; #1569);
+a shrink-to-fit box (an `auto`-width `inline-block` or absolute box) whose
+width comes from its content does not take its height from it (30x10 around
+a 30x10 child with `aspect-ratio: 1`, Chrome 30x30 — #1570); and a flex item
+grown from a 0 basis (`flex: 1`) under `align-items: center` takes no cross
+size from the ratio (400x0, Chrome 400x100 — #1571). Also not
+Chrome's: an unloaded or failed image with a non-empty `alt` reserves its
 attributes' 100x50 where Chrome lays out the alt text (48x18, both attributes
 ignored), and a failed one with one attribute and no `alt` is 100x0 where
 Chrome draws its 16x16 broken-image box; an out-of-flow image with an `auto`
@@ -4234,10 +4343,15 @@ returns **encoded** bytes (`ImageLoadResult::Loaded`) and runs on a thread spawn
 that load, so it may block; a closure `Fn(&str) -> ImageLoadResult + Send + Sync` is
 one. **A failed load is cached by source** (`ImageState::Failed`) and never retried on
 its own: `rinch::image::reload_image(src)` (any thread; `RinchDocument::reload_image`
-for a host holding the document) queues the source for every live document, counted by
-`image_cache::has_pending` so idle hosts wake, and `drain_pending_images` restarts it.
-The queue is per document, each with the set of what it holds, so a call costs one
-lookup per live document however many sources a document has not drained (#1473: it
+for a host holding the document) queues the source for every live document whose
+cache holds it, counted by `image_cache::has_pending` so idle hosts wake, and
+`drain_pending_images` restarts it. Each `ImageCache` records the sources it comes to
+hold under its document's key in `LIVE_DOCUMENTS` (`ImageCache::put`, every entry is
+made there), so a document that never named the source is not woken (#1493: it was laid
+out and asked for a redraw per reload, for nothing — the `paused_animation_frames_tests`
+flake, another test's reload landing between two idle frames). The queue is per
+document, each with the set of what it holds, so a call costs one lookup per live
+document holding the source however many sources a document has not drained (#1473: it
 scanned the whole queue; `tests/reload_queue_cost_1473_tests.rs` pins the count,
 `image_cache::reload_queue_steps`). A document that never lays out still keeps one
 entry per distinct source reloaded, until it drains or drops.
@@ -4557,6 +4671,36 @@ paste lands later in the same loop iteration. Pins: `app/input_paste_async_tests
 `rinch/tests/embed_input_paste.rs` (the embed host step). Desktop's and Android's host
 calls have no fixture.
 
+**A single-line field folds the line breaks of what is inserted into it** (#824): every
+`InsertText`/`Paste` that reaches `handle_input_edit_command` (a paste, an IME commit, a
+key's text) for a field that is not a `<textarea>` goes through
+`RinchApp::insertable_text` → `rinch_editable::single_line_insert`, Chrome 155's rule for
+text inserted into an `<input>` (measured with `execCommand('insertText')`, which runs the
+same insertion filter a paste does): line breaks at the end are dropped, every other
+`\r\n`, `\r` or `\n` is one space (`"a\nb"` → `"a b"`, `"a\n"` → `"a"`). What folds to
+nothing still replaces a selection and is no edit at a caret. Android's soft keyboard folds a
+whole committed text before `apply_ime_action` splits it into one key per character. A
+`<textarea>` keeps its line breaks. Pins: `app/single_line_insert_824_tests.rs`, the
+`#824` section of `app/input_paste_async_tests.rs`.
+
+**A programmatic `<input>` value is sanitized, not folded** (#1554): an `<input>`'s value
+is its `value` attribute run through HTML's value sanitization for its type
+(`rinch_dom::form_control::input_value`, reached through `form_control::control_value`,
+which paint, focus, the adoption of a programmatic write, the `onchange` payload,
+`live_value` and `:placeholder-shown` all read). Chrome 155's rule: the Text state (no
+`type`, `text`, an unknown type), `search`, `tel` and `password` **strip** every `\r` and
+`\n` (`"p\nq\r\nr"` → `"pqr"`); `url` and `email` strip them and trim ASCII whitespace,
+a `multiple` email per address. `number`, the date/time family, `color` and `range` have
+rules of their own that are not applied (their value is answered as written); `hidden`,
+`checkbox`, `radio`, `file` and the buttons have none. The **attribute keeps what was
+written**, as in a browser: `sync_input_cursor_to_dom` writes the engine text into
+`value` only when the attribute does not already read as it, so focusing a field holding
+`"a\nb"` leaves the attribute alone and the first edit that changes the text writes it
+(`"abX"`). A `value_fn` binding writing `"a\nb"` sees `live_value` `"ab"` and writes the
+same attribute again, which is an identical write and changes nothing. Pins:
+`rinch-dom/tests/input_value_sanitization_1554_tests.rs` (Chrome 155's table),
+`app/input_value_sanitization_1554_tests.rs` (nothing painted below the box).
+
 ### System Tray (optional)
 
 Enable with `features = ["system-tray"]`. Uses the same unified `Menu`/`MenuItem` types as native menus:
@@ -4822,7 +4966,7 @@ would break CSS semantics and make desktop diverge from rinch-web.
 
 ## Transparent Windows
 
-Transparent/borderless windows are configured via `WindowProps { transparent: true, borderless: true }`. The live renderer (`shell::desktop::WgpuRenderer`) uses `CompositeAlphaMode::Auto` + a transparent clear color, which the compositor honors on **Linux (Wayland/X11)**.
+Transparent/borderless windows are configured via `WindowProps { transparent: true, borderless: true }`. The software renderer presents premultiplied pixels through softbuffer. The GPU renderer (`shell::desktop::WgpuRenderer::try_new_transparent`, PR #1597) renders Vello over a transparent base and configures the surface with `surface_alpha_mode`: `Auto` for an opaque window (unchanged), and for a transparent one the first of `PreMultiplied`, `PostMultiplied`, `Inherit` the surface offers, else `Auto` (wgpu's `Auto` is `Opaque` on Vulkan, which drew every unpainted pixel black). **Vello 0.7 stores straight alpha** (`fine.wgsl` divides by alpha at its final store), so `present_step` converts on the way to the surface: a `PreMultiplied` (or `Inherit`) surface gets Vello's frame through the compositor's `fs_present_premultiply` pass, a straight copy of which showed 50% white over green as opaque white; a `PostMultiplied` one gets it as it is; an opaque window is copied as before (a Bgra8 surface goes through a `REPLACE` pass that writes every pixel, where it blended over an uncleared image). The layer compositor's `fs_ui` premultiplies Vello's colour before its `One, OneMinusSrcAlpha` blend, so translucent UI over a video or render-surface layer is no longer too bright, in opaque windows too, and the composited texture holds premultiplied pixels (copied to a premultiplied surface, made straight by `fs_present_unpremultiply` for a `PostMultiplied` one). Measured in a nested KWin on RADV (`Opaque | PreMultiplied` only; Mesa's Wayland and X11 WSI never offer `PostMultiplied`): `rgba(255,255,255,0.5)` over green reads `(128,228,128)` on GPU and software alike; pinned by the `#[ignore]`d `compositor::gpu_alpha_tests` (run with `--ignored gpu_alpha` on a host with a GPU) and `desktop::alpha_mode_tests`. **macOS** (not tested): Metal offers `Opaque | PostMultiplied`, and wgpu's `PostMultiplied` there is a `CAMetalLayer` with `opaque = false`, whose contents Core Animation composites as premultiplied, so `present_step` premultiplies for it on macOS only; a transparent window there used to be opaque and now blends. A layer's own pixels (a `RenderSurface` frame) are blitted as they are and read as premultiplied.
 
 > **Windows caveat:** true per-pixel transparency on Windows needs an alpha-capable presentation path (PreMultiplied alpha + DX12 DirectComposition + `WS_EX_NOREDIRECTIONBITMAP`) that is **not currently wired** into `WgpuRenderer` — so `transparent: true` renders opaque on Windows today. Tracked in **issue #89**. (The old `TransparentWindowRenderer` held that path but was never constructed by the runtime and has been removed as dead code.)
 
@@ -5073,7 +5217,19 @@ winit cannot make at creation is created hidden, adjusted, and then shown:
   any press or release ends, and that starts only while the primary button is
   held (so does a `start_window_*` call on any window); the fork commits a
   margin change at once and sends only requests the bound layer-shell version
-  has. The compositor closes a layer surface whose output went away: the
+  has. **A move is confirmed in the event stream** (PR #1597): after a
+  margin commit the fork sends a `wl_display.sync` and, when its callback is
+  done, pushes `WindowEvent::Moved` (the margins times the scale) in order
+  with the pointer's events; `LayerState` (`layer_shell.rs`) reads each
+  pointer position against the origin the last `Moved` reported
+  (`LayerState::applied`), never against the position last set, and drops
+  none. Reading against the last set position added each move again for
+  every position already on its way (one burst read in one batch ran the
+  window to 18380,11040); dropping positions until the compositor caught up
+  put fast drags 30–590 px off. Measured in a nested KWin with fake input:
+  60 moves at 0–16 ms apart all land exactly under the pointer, and nothing
+  moves after the release. Pins: `layer_shell::tests::a_drag_lands_under_the_pointer_at_every_lag`,
+  `rinch_runtime::layer_drag_tests`. The compositor closes a layer surface whose output went away: the
   shell's `CloseRequested` for a layer surface re-creates it
   (`layer_surface_closed`, output name dropped; with no output left it retries
   every second) instead of quitting. A
@@ -5892,7 +6048,9 @@ Three things it deliberately does not do.
   `forwards`/`both` animation is the same shape (**#782**): the tick that
   finishes it writes the fill and dirties the node once
   (`ActiveAnimation::fill_settled`), and after that it is kept, re-applied and
-  not counted. **The component library declares the pause itself** (#912):
+  not counted. That includes a zero-duration **infinite** one
+  (`0s infinite forwards`): its active duration is `0 × ∞ = 0`, so it is
+  finished at its delay's end, as in Chrome 155 (#786). **The component library declares the pause itself** (#912):
   `.rinch-drawer__root--hidden *`, a closed `.rinch-popover__dropdown`'s
   subtree and an unhovered `.rinch-hover-card__dropdown`'s subtree all carry
   `animation-play-state: paused !important` — every descendant rather than a
@@ -6057,6 +6215,19 @@ its size mid-turn, `rotate(0deg)` → `rotate(360deg)` is a change that spins,
 and `none` → `rotate(0deg)` starts nothing. `@keyframes` stops use the same
 path; `crates/rinch-dom/tests/transform_interpolation_tests.rs` pins Chrome
 153's numbers. Guide: `docs/src/architecture/rendering-pipeline.md`.
+
+**Every easing function eases** (#1564): `steps()`, `step-start`/`step-end`
+and `linear(<stops>)` reach `transition::types::TimingFunction` as themselves
+(they used to become `linear`), in transitions, `@keyframes` and a keyframe's
+own `animation-timing-function`, through one converter. A step reads CSS
+Easing 2's before flag (`apply_with_before_flag`: set in the before phase going
+forwards and the after phase going backwards; a transition's delay is its easing
+at 0 with the flag, not always `from`), and an iteration's start and end
+are eased at interval distance 0 and 1 (`ActiveAnimation::interval`), not
+snapped to the keyframe. `TimingFunction` is not `Copy` (a `linear()` holds an
+`Arc`). The `jump-*` positions do not parse in Stylo's servo build, so such a
+declaration is dropped (#1581). Pins: `crates/rinch-dom/tests/easing_steps_linear_1564_tests.rs`
+(Chrome 155).
 
 **The 3D transform functions are drawn flat** (#405; they used to compute to the
 identity, `translate3d` aside). A list holding any of them is composed as 4×4
@@ -6334,11 +6505,12 @@ Button { variant: "filled" }
 - `Callback` and `InputCallback` have built-in defaults (no-op), so custom components can use `on_toggle: Callback` instead of `Option<Callback>`.
 - Component text props (e.g., `variant`, `color`, `size`) are now `String` (not `Option<String>`). Empty string means "not set". The macro auto-converts string literals to `String::from(...)`.
 - `_fn` suffix props (e.g., `checked_fn`, `value_fn`) are auto-wrapped — just pass the closure directly, don't wrap in `Some(Rc::new(...))`
+- **The table above is for components.** On an HTML element, `on*` names are a closed list (`crates/rinch-macros/src/events.rs`: `onclick` → `data-rid`, `oninput`, `onchange`, `onsubmit`, `onscroll`, the mouse, context-menu, drag and file-drop events), and any other `on*` name — `onkeydown`, `onfocus`, a typo — is a **compile error** listing them, with a "did you mean" (#1590; it used to fall through to `data-rid` and become a *click* handler, so `input { onsubmit }` ran on a click and never on Enter). An `onsubmit`-only `<input>`/`<textarea>` gets the same desktop-only no-op `data-oninput` shim an `onchange`-only element gets, so it takes typed text; a wrapper `div { onsubmit }` does not. A `*_fn` prop (`value_fn`, `checked_fn`, …) on an HTML element is a compile error saying to write `value: {|| …}` (#1591; it used to be a `value_fn` attribute nothing reads): every HTML attribute already takes a reactive closure and updates surgically, so the component's `_fn` convention has nothing to add there. A raw reactive `value:` writes on every fire, with no #238 echo guard — the components' `bind_value_fn` is the guarded binding.
 - **Note:** ThemeProvider props (`primary_color_fn`, `dark_mode_fn`) use a different codegen path and still require manual `Rc::new()` wrapping
 
 **Component Props vs HTML Attributes:**
 
-- **HTML elements** (`div`, `span`, `p`, etc.) accept any attribute as a string: `style:`, `class:`, `id:`, custom `data-*`, etc. They also support reactive closures `{|| expr}` on any attribute. **An attribute *name* is ASCII case-insensitive in HTML content and case-SENSITIVE in SVG content** (issue #688), so `RinchDocument::set_attribute` stores it lowercased unless the element's tag is an SVG one: `<div ID="up">` is `id`, and `#up`, `[id]`, `.x` via `CLASS=` and `STYLE=`'s inline style all work, while `viewBox`, `preserveAspectRatio`, `gradientUnits`, `stdDeviation`, `markerWidth` and `startOffset` keep the author's spelling. The decision is keyed on the **tag**, not on an `<svg>` ancestor, and that is forced rather than chosen: `rsx!` and the `Element::Html` parser both write an element's attributes *before* appending it to its parent, so at the write there is no ancestor to walk and a walk would lowercase every SVG child's name. `crates/rinch-dom/src/attr_name.rs` holds the list and the four SVG names it deliberately omits — `a`, `script`, `style`, `title` are HTML element names too, and the HTML reading is the likely one. That is free for three of them, which carry no camelCase SVG attribute, and **not** free for `a`: SVG's `requiredExtensions` / `systemLanguage` apply to it, so those two fold on an `<a>` inside an `<svg>`. Inert today rather than harmless — nothing in the workspace reads either name and `paint/svg.rs` drops `<a>` through its `_ => {}` arm — but it is the one place the list trades correctness for the ambiguity, and worth weighing again if conditional processing lands. `get_attribute` and `remove_attribute` fold the same way (a fold on the write and not the remove could never turn a boolean attribute off again), and so does `is_boolean_attribute`, or a `CHECKED: {|| false}` would fall through to the literal writer as `checked="false"` — #551 under a different spelling. The **value** is never folded, so an `id` still matches case-sensitively outside quirks mode. `rinch-web` needs none of this fold for the stored **attribute**: the browser folds the name itself, per namespace, because `web_document.rs` creates SVG elements with `createElementNS`. It still needed its own fold for a narrower question the browser's storage fold does not answer — which of a handful of names its own Rust `match` on the literal name treats as a live-property mirror (`checked`/`selected`/`muted`, below): `set_attribute("CHECKED", "")` always set the (browser-folded) content attribute, but fell through every arm of that match and so never called `sync_presence_property`, leaving `.checked` unmirrored on the web alone — desktop already folded via the tag-keyed `fold_attribute_name` above (issue #758). An **HTML boolean attribute** is the exception to "as a string": its *presence* is its value, so `rsx!` writes the bare presence form for a truthy value and **removes** the attribute for a falsey one, through `NodeHandle::write_attribute` rather than `set_attribute` (issue #551). Writing `disabled="false"` would leave the attribute present, which HTML — and therefore the browser, measured — reads as *disabled*; a reactive `disabled: {|| busy.get()}` was disabled from the first render and never recovered, on **both** backends. The set is `rinch_core::dom::is_boolean_attribute`: the 30 rows the WHATWG attributes index marks "Boolean attribute", plus `hidden` (enumerated, but its invalid-value default is the hidden state, so `hidden="false"` hides) and rinch's own `data-disabled` / `data-nofocus` / `data-trap-focus` / `data-backdrop` / `data-scroll-lock-exempt`. **The rule keys on the attribute name, not the value's type**, and that is load-bearing: `draggable` is enumerated (`"true"`/`"false"`, invalid → `auto`) and desktop's drag dispatch matches the literal `"true"`, the ARIA states are tri-valued, and `data-viewport-ready`'s *absence* means ready — presence-mapping any of them loses or inverts it. A *string* yielded into a boolean attribute follows `attr_is_truthy` (on unless `"false"` in any case, or `"0"`), which is the **writer's** rule and nobody's reader: every desktop reader of the HTML set is presence-only, correctly, because a browser is (`:checked` matches on `checked="false"`, `:disabled` on `disabled="false"`, both measured) — which is why #551 reproduced on desktop and why the cure is a writer that removes rather than a reader that learns a falsey string. **`set_attribute` is not that writer.** It is the literal primitive on both backends — including for the `checked` family, which is issue #612's divergence over again and what **#622** closed: the web arm used to presence-map `checked` / `selected` through `attr_is_truthy`, so `set_attribute("checked", "false")` unchecked the box on web and checked it on desktop. It now writes the string, leaving the attribute *present*, which checks the box on both. Writing a `bool` is `write_attribute`'s job; meaning "off" is `remove_attribute`'s. On web the live IDL property (`.checked`, `<option>.selected`) is mirrored from that **presence** and not from the string, because a browser stops mirroring the attribute onto the property once the user has toggled the control (the dirty-checkedness flag) and rinch has no such flag — desktop's reader sees the attribute and nothing else, so the app's write has to win on both. `indeterminate` is the exception and stays truthiness-mapped: HTML has no such content attribute at all, so it has no presence for anyone to read. **The same names are the reason `write_attribute` cannot skip a falsey write** (issue #687, and #754 for the third): its removal is otherwise guarded on the attribute being present, since "already absent" reads as "already off" and costs no style invalidation — but a user's toggle (or, for `muted`, a `<video controls>`'s own mute button) leaves the property on and the attribute absent, so the guard skipped the one write that could have corrected it and the control stayed checked/muted against a binding saying `false`. `checked`, `selected` and `muted` (`rinch_core::dom::is_presence_reflected_attribute`) therefore go to the backend unconditionally; desktop pays nothing for the extra call, because `RinchDocument::remove_attribute` returns before invalidating anything when the node does not carry the attribute — what `removeAttribute` does in a browser. `muted` joined the other two in #754: HTML's `muted` content attribute has no dynamic effect at all (it only seeds `defaultMuted`, once, at the media element's load algorithm), but rinch mirrors its presence onto the live `.muted` IDL property anyway — deliberately more dynamic than plain HTML — because nothing else lets a reactive `muted: {|| m.get()}` binding mute or unmute a `<video>`/`<audio>` element; desktop has no media element that reads `muted` at all, so this is web-only. A `"false"` escape survives for exactly five attributes, rinch's own `data-disabled` / `data-nofocus` / `data-trap-focus` / `data-backdrop` (#1093) / `data-scroll-lock-exempt` (#701), spelled once as `rinch_core::dom::data_attr_is_on`; issue #612 retired it from `disabled` / `readonly`, where it had been desktop-only and so a pure divergence. It is a deliberate convention rather than a leftover, and `data-nofocus` / `data-trap-focus` / `data-backdrop` are what show that — the web reads them the same way, through `[data-nofocus]:not([data-nofocus="false" i])`, `[data-trap-focus]:not([data-trap-focus="false" i])` and `data_attr_is_on`, while `data-disabled` and `data-scroll-lock-exempt` have no web reader at all. Note `data_attr_is_on` is deliberately *narrower* than `attr_is_truthy`: `"0"` is on, matching those selectors, and `"0"` is therefore the only value that distinguishes the two rules — which is why every desktop reader pins it (`computed_style_tests::the_data_escape_excuses_only_false_at_the_reader`, `nofocus_tests::only_false_opts_out_not_zero`, `trap_focus_tests::the_false_escape_opts_out_and_zero_does_not`, `backdrop_any_button_1093_tests::data_backdrop_false_is_not_a_backdrop`, `overlay_scroll_lock_tests::scroll_lock_exempt_false_opts_out_and_zero_does_not`). **`oninput` and `onchange` on `<input>`/`<textarea>` elements** receive the input value as a `String` — use `Fn(String)` closures, not `Fn()`. They are **not aliases** (issue #226): `oninput` fires per keystroke with the live value; `onchange` fires once at the commit boundary — focus leaves the control after a modification, Enter (single-line inputs only; a `<textarea>` commits at blur), or a `<select>` pick — and only if the value actually changed since focus. On Enter, `onchange` fires before `onsubmit`:
+- **HTML elements** (`div`, `span`, `p`, etc.) accept any attribute as a string: `style:`, `class:`, `id:`, custom `data-*`, etc. — except an unsupported `on*` name and a `*_fn` name, which are compile errors (#1590, #1591; see the note above). They also support reactive closures `{|| expr}` on any attribute. **An attribute *name* is ASCII case-insensitive in HTML content and case-SENSITIVE in SVG content** (issue #688), so `RinchDocument::set_attribute` stores it lowercased unless the element's tag is an SVG one: `<div ID="up">` is `id`, and `#up`, `[id]`, `.x` via `CLASS=` and `STYLE=`'s inline style all work, while `viewBox`, `preserveAspectRatio`, `gradientUnits`, `stdDeviation`, `markerWidth` and `startOffset` keep the author's spelling. The decision is keyed on the **tag**, not on an `<svg>` ancestor, and that is forced rather than chosen: `rsx!` and the `Element::Html` parser both write an element's attributes *before* appending it to its parent, so at the write there is no ancestor to walk and a walk would lowercase every SVG child's name. `crates/rinch-dom/src/attr_name.rs` holds the list and the four SVG names it deliberately omits — `a`, `script`, `style`, `title` are HTML element names too, and the HTML reading is the likely one. That is free for three of them, which carry no camelCase SVG attribute, and **not** free for `a`: SVG's `requiredExtensions` / `systemLanguage` apply to it, so those two fold on an `<a>` inside an `<svg>`. Inert today rather than harmless — nothing in the workspace reads either name and `paint/svg.rs` drops `<a>` through its `_ => {}` arm — but it is the one place the list trades correctness for the ambiguity, and worth weighing again if conditional processing lands. `get_attribute` and `remove_attribute` fold the same way (a fold on the write and not the remove could never turn a boolean attribute off again), and so does `is_boolean_attribute`, or a `CHECKED: {|| false}` would fall through to the literal writer as `checked="false"` — #551 under a different spelling. The **value** is never folded, so an `id` still matches case-sensitively outside quirks mode. `rinch-web` needs none of this fold for the stored **attribute**: the browser folds the name itself, per namespace, because `web_document.rs` creates SVG elements with `createElementNS`. It still needed its own fold for a narrower question the browser's storage fold does not answer — which of a handful of names its own Rust `match` on the literal name treats as a live-property mirror (`checked`/`selected`/`muted`, below): `set_attribute("CHECKED", "")` always set the (browser-folded) content attribute, but fell through every arm of that match and so never called `sync_presence_property`, leaving `.checked` unmirrored on the web alone — desktop already folded via the tag-keyed `fold_attribute_name` above (issue #758). An **HTML boolean attribute** is the exception to "as a string": its *presence* is its value, so `rsx!` writes the bare presence form for a truthy value and **removes** the attribute for a falsey one, through `NodeHandle::write_attribute` rather than `set_attribute` (issue #551). Writing `disabled="false"` would leave the attribute present, which HTML — and therefore the browser, measured — reads as *disabled*; a reactive `disabled: {|| busy.get()}` was disabled from the first render and never recovered, on **both** backends. The set is `rinch_core::dom::is_boolean_attribute`: the 30 rows the WHATWG attributes index marks "Boolean attribute", plus `hidden` (enumerated, but its invalid-value default is the hidden state, so `hidden="false"` hides) and rinch's own `data-disabled` / `data-nofocus` / `data-trap-focus` / `data-backdrop` / `data-scroll-lock-exempt`. **The rule keys on the attribute name, not the value's type**, and that is load-bearing: `draggable` is enumerated (`"true"`/`"false"`, invalid → `auto`) and desktop's drag dispatch matches the literal `"true"`, the ARIA states are tri-valued, and `data-viewport-ready`'s *absence* means ready — presence-mapping any of them loses or inverts it. A *string* yielded into a boolean attribute follows `attr_is_truthy` (on unless `"false"` in any case, or `"0"`), which is the **writer's** rule and nobody's reader: every desktop reader of the HTML set is presence-only, correctly, because a browser is (`:checked` matches on `checked="false"`, `:disabled` on `disabled="false"`, both measured) — which is why #551 reproduced on desktop and why the cure is a writer that removes rather than a reader that learns a falsey string. **`set_attribute` is not that writer.** It is the literal primitive on both backends — including for the `checked` family, which is issue #612's divergence over again and what **#622** closed: the web arm used to presence-map `checked` / `selected` through `attr_is_truthy`, so `set_attribute("checked", "false")` unchecked the box on web and checked it on desktop. It now writes the string, leaving the attribute *present*, which checks the box on both. Writing a `bool` is `write_attribute`'s job; meaning "off" is `remove_attribute`'s. On web the live IDL property (`.checked`, `<option>.selected`) is mirrored from that **presence** and not from the string, because a browser stops mirroring the attribute onto the property once the user has toggled the control (the dirty-checkedness flag) and rinch has no such flag — desktop's reader sees the attribute and nothing else, so the app's write has to win on both. `indeterminate` is the exception and stays truthiness-mapped: HTML has no such content attribute at all, so it has no presence for anyone to read. **The same names are the reason `write_attribute` cannot skip a falsey write** (issue #687, and #754 for the third): its removal is otherwise guarded on the attribute being present, since "already absent" reads as "already off" and costs no style invalidation — but a user's toggle (or, for `muted`, a `<video controls>`'s own mute button) leaves the property on and the attribute absent, so the guard skipped the one write that could have corrected it and the control stayed checked/muted against a binding saying `false`. `checked`, `selected` and `muted` (`rinch_core::dom::is_presence_reflected_attribute`) therefore go to the backend unconditionally; desktop pays nothing for the extra call, because `RinchDocument::remove_attribute` returns before invalidating anything when the node does not carry the attribute — what `removeAttribute` does in a browser. `muted` joined the other two in #754: HTML's `muted` content attribute has no dynamic effect at all (it only seeds `defaultMuted`, once, at the media element's load algorithm), but rinch mirrors its presence onto the live `.muted` IDL property anyway — deliberately more dynamic than plain HTML — because nothing else lets a reactive `muted: {|| m.get()}` binding mute or unmute a `<video>`/`<audio>` element; desktop has no media element that reads `muted` at all, so this is web-only. A `"false"` escape survives for exactly five attributes, rinch's own `data-disabled` / `data-nofocus` / `data-trap-focus` / `data-backdrop` (#1093) / `data-scroll-lock-exempt` (#701), spelled once as `rinch_core::dom::data_attr_is_on`; issue #612 retired it from `disabled` / `readonly`, where it had been desktop-only and so a pure divergence. It is a deliberate convention rather than a leftover, and `data-nofocus` / `data-trap-focus` / `data-backdrop` are what show that — the web reads them the same way, through `[data-nofocus]:not([data-nofocus="false" i])`, `[data-trap-focus]:not([data-trap-focus="false" i])` and `data_attr_is_on`, while `data-disabled` and `data-scroll-lock-exempt` have no web reader at all. Note `data_attr_is_on` is deliberately *narrower* than `attr_is_truthy`: `"0"` is on, matching those selectors, and `"0"` is therefore the only value that distinguishes the two rules — which is why every desktop reader pins it (`computed_style_tests::the_data_escape_excuses_only_false_at_the_reader`, `nofocus_tests::only_false_opts_out_not_zero`, `trap_focus_tests::the_false_escape_opts_out_and_zero_does_not`, `backdrop_any_button_1093_tests::data_backdrop_false_is_not_a_backdrop`, `overlay_scroll_lock_tests::scroll_lock_exempt_false_opts_out_and_zero_does_not`). **`oninput` and `onchange` on `<input>`/`<textarea>` elements** receive the input value as a `String` — use `Fn(String)` closures, not `Fn()`. They are **not aliases** (issue #226): `oninput` fires per keystroke with the live value; `onchange` fires once at the commit boundary — focus leaves the control after a modification, Enter (single-line inputs only; a `<textarea>` commits at blur), or a `<select>` pick — and only if the value actually changed since focus. On Enter, `onchange` fires before `onsubmit`:
   ```rust
   input {
       oninput: move |value: String| name_signal.set(value),

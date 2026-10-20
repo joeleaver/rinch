@@ -75,7 +75,6 @@ fn key(app: &mut RinchApp, key: KeyCode) {
 }
 
 /// The primary chord modifier on the host the test runs on.
-#[cfg(any(feature = "clipboard", feature = "desktop"))]
 fn primary() -> Modifiers {
     Modifiers {
         ctrl: !cfg!(target_os = "macos"),
@@ -888,6 +887,48 @@ fn under_shell_presentation_the_gesture_prepares_and_emits_instead_of_opening() 
     let (px, py) = abs_center(&app, ids.plain);
     let actions = right_press(&mut app, px, py);
     assert!(!actions.contains(&AppAction::ShowTextContextMenu));
+}
+
+// ── No clipboard: Cut does nothing (issue #823) ──────────────────────────────
+
+/// Without the `clipboard` feature there is nowhere to cut *to*, so Cut on a
+/// plain `<input>`/`<textarea>` must leave the field alone — the chord, the
+/// shell seam (`perform_text_edit`, which the context menu's item also runs)
+/// alike. It used to delete the selection and copy it nowhere. Selection
+/// `2..5`, off the `0..n` fixed point; a Delete afterwards is the positive
+/// control that the keys reach the field at all.
+#[cfg(not(feature = "clipboard"))]
+#[test]
+fn without_a_clipboard_cut_leaves_the_field_alone_issue_823() {
+    for field in [|ids: &Ids| ids.input, |ids: &Ids| ids.textarea] {
+        let (mut app, ids, log) = page("hello world", &[]);
+        let id = field(&ids);
+        focus_and_select(&mut app, id);
+        let selected = ("hello world".into(), "2".into(), "5".into());
+        assert_eq!(field_state(&app, id), selected);
+
+        key_with(&mut app, KeyCode::KeyX, None, primary());
+        assert_eq!(field_state(&app, id), selected, "the chord cut nothing");
+        app.perform_text_edit(TextEditAction::Cut);
+        assert_eq!(field_state(&app, id), selected, "the seam cut nothing");
+        assert!(
+            log.borrow().is_empty(),
+            "no oninput fired: {:?}",
+            log.borrow()
+        );
+        // Nothing went on the undo stack either: Ctrl+Z has nothing of Cut's
+        // to undo, so the field is still as it was.
+        key_with(&mut app, KeyCode::KeyZ, None, primary());
+        assert_eq!(field_state(&app, id), selected, "no Cut step to undo");
+
+        // Positive control: an ordinary delete of the same selection lands.
+        key(&mut app, KeyCode::Delete);
+        assert_eq!(
+            field_state(&app, id),
+            ("he world".into(), "2".into(), "2".into()),
+            "a Delete still deletes the selection"
+        );
+    }
 }
 
 // ── Item versus chord: one code path ─────────────────────────────────────────

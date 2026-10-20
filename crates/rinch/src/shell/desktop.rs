@@ -262,6 +262,20 @@ impl WgpuRenderer {
     /// present to the window surface: that is a configuration error in the
     /// app, not a missing GPU.
     pub fn try_new(window: &dyn Window, width: u32, height: u32) -> Result<Self, String> {
+        Self::try_new_transparent(window, width, height, false)
+    }
+
+    /// [`Self::try_new`] for a window that may be transparent
+    /// (`WindowProps::transparent`): the surface is then composited with its
+    /// alpha, where the platform allows, so what the app leaves unpainted
+    /// shows the desktop behind it. `wgpu::CompositeAlphaMode::Auto` picks
+    /// `Opaque` on Vulkan, which painted it black.
+    pub fn try_new_transparent(
+        window: &dyn Window,
+        width: u32,
+        height: u32,
+        transparent: bool,
+    ) -> Result<Self, String> {
         let width = width.max(1);
         let height = height.max(1);
 
@@ -330,6 +344,7 @@ impl WgpuRenderer {
         };
 
         let caps = surface.get_capabilities(&adapter);
+        let alpha_mode = surface_alpha_mode(transparent, &caps.alpha_modes);
 
         let format = if caps.formats.contains(&TextureFormat::Rgba8Unorm) {
             TextureFormat::Rgba8Unorm
@@ -397,7 +412,7 @@ impl WgpuRenderer {
             height,
             present_mode: PresentMode::AutoVsync,
             desired_maximum_frame_latency: 2,
-            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            alpha_mode,
             view_formats: vec![],
         };
 
@@ -594,7 +609,9 @@ impl PlatformRenderer for WgpuRenderer {
                     sample_count: 1,
                     dimension: TextureDimension::D2,
                     format: self.surface_config.format,
-                    usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+                    usage: TextureUsages::RENDER_ATTACHMENT
+                        | TextureUsages::COPY_SRC
+                        | TextureUsages::TEXTURE_BINDING,
                     view_formats: &[],
                 })
             });
@@ -667,26 +684,41 @@ impl PlatformRenderer for WgpuRenderer {
                 &composited_view,
             );
 
-            // Copy composited result to swapchain for display
-            encoder.copy_texture_to_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: composited,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: &surface_texture.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                Extent3d {
-                    width: self.surface_config.width,
-                    height: self.surface_config.height,
-                    depth_or_array_layers: 1,
-                },
-            );
+            // Copy the composited result (premultiplied) to the swapchain,
+            // converted for the surface's alpha mode (#1523).
+            match present_step(self.surface_config.alpha_mode, true, true) {
+                PresentStep::Copy => encoder.copy_texture_to_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: composited,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &surface_texture.texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    Extent3d {
+                        width: self.surface_config.width,
+                        height: self.surface_config.height,
+                        depth_or_array_layers: 1,
+                    },
+                ),
+                PresentStep::Pass(alpha) => {
+                    let surface_view = surface_texture
+                        .texture
+                        .create_view(&wgpu::TextureViewDescriptor::default());
+                    compositor.present(
+                        &self.device,
+                        &mut encoder,
+                        composited,
+                        &surface_view,
+                        alpha,
+                    );
+                }
+            }
 
             self.queue.submit(Some(encoder.finish()));
             surface_texture.present();
@@ -698,11 +730,14 @@ impl PlatformRenderer for WgpuRenderer {
         }
 
         // Standard path (no layers). The render texture is always Rgba8Unorm
-        // (Vello's storage-texture requirement); a raw copy is only legal when
-        // the surface matches. Otherwise blit through the compositor's UI
-        // sampling pass — the sample/write does the channel-order conversion.
-        if self.surface_config.format == TextureFormat::Rgba8Unorm {
-            encoder.copy_texture_to_texture(
+        // (Vello's storage-texture requirement) and holds straight alpha; a
+        // raw copy is only legal when the surface matches and wants straight
+        // (or opaque) pixels. Otherwise one full-surface pass through the
+        // compositor converts the channel order and, for a premultiplied
+        // surface, the alpha (#1523).
+        let rgba_surface = self.surface_config.format == TextureFormat::Rgba8Unorm;
+        match present_step(self.surface_config.alpha_mode, false, rgba_surface) {
+            PresentStep::Copy => encoder.copy_texture_to_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &self.render_texture,
                     mip_level: 0,
@@ -720,23 +755,25 @@ impl PlatformRenderer for WgpuRenderer {
                     height: self.surface_config.height,
                     depth_or_array_layers: 1,
                 },
-            );
-        } else {
-            let compositor = self.layer_compositor.get_or_insert_with(|| {
-                super::compositor::LayerCompositor::new(&self.device, self.surface_config.format)
-            });
-            let surface_view = surface_texture
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor::default());
-            // Vello output is opaque here (base color is never transparent on
-            // this path), so the alpha-over fullscreen draw writes every pixel
-            // and the surface needs no clear.
-            compositor.overlay_ui(
-                &self.device,
-                &mut encoder,
-                &self.render_texture,
-                &surface_view,
-            );
+            ),
+            PresentStep::Pass(alpha) => {
+                let compositor = self.layer_compositor.get_or_insert_with(|| {
+                    super::compositor::LayerCompositor::new(
+                        &self.device,
+                        self.surface_config.format,
+                    )
+                });
+                let surface_view = surface_texture
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+                compositor.present(
+                    &self.device,
+                    &mut encoder,
+                    &self.render_texture,
+                    &surface_view,
+                    alpha,
+                );
+            }
         }
 
         self.queue.submit(Some(encoder.finish()));
@@ -800,5 +837,168 @@ impl WgpuRenderer {
     /// the upload step — the compositor reads the TextureView directly.
     pub fn set_gpu_layers(&mut self, layers: Vec<GpuTextureLayer>) {
         self.gpu_layers = layers;
+    }
+}
+
+/// The surface's alpha mode (#1523): opaque (`Auto`) unless the window is
+/// transparent, then one that blends with what is behind it. `Auto` picks
+/// `Opaque` on Vulkan, which painted a transparent window black.
+/// `PreMultiplied` is preferred: it is what Vulkan on Wayland and X11 offers
+/// (Mesa's WSI never offers `PostMultiplied`), and the composited layers are
+/// premultiplied already. Either way [`present_step`] converts Vello's
+/// straight alpha to what the mode reads.
+pub(crate) fn surface_alpha_mode(
+    transparent: bool,
+    offered: &[wgpu::CompositeAlphaMode],
+) -> wgpu::CompositeAlphaMode {
+    use wgpu::CompositeAlphaMode as A;
+    if !transparent {
+        return A::Auto;
+    }
+    [A::PreMultiplied, A::PostMultiplied, A::Inherit]
+        .into_iter()
+        .find(|m| offered.contains(m))
+        .unwrap_or(A::Auto)
+}
+
+/// How the frame reaches the window surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PresentStep {
+    /// `copy_texture_to_texture`: same format, same alpha encoding.
+    Copy,
+    /// A full-surface pass through the compositor.
+    Pass(super::compositor::PresentAlpha),
+}
+
+/// Whether a surface in `alpha_mode` reads premultiplied pixels. `Opaque`
+/// and `Auto` (an opaque window) ignore alpha, and an opaque frame is the
+/// same in either encoding. macOS's `PostMultiplied` is a `CAMetalLayer`
+/// with `opaque = false` (wgpu-hal `metal/surface.rs`), whose contents Core
+/// Animation composites as premultiplied, so it is read as premultiplied
+/// there too (reasoned from the code, not tested on a Mac).
+fn surface_reads_premultiplied(alpha_mode: wgpu::CompositeAlphaMode) -> Option<bool> {
+    use wgpu::CompositeAlphaMode as A;
+    match alpha_mode {
+        A::PreMultiplied | A::Inherit => Some(true),
+        A::PostMultiplied => Some(cfg!(target_os = "macos")),
+        A::Opaque | A::Auto => None,
+    }
+}
+
+/// The present step for a surface in `alpha_mode`: from the composited
+/// layers (`layered`: premultiplied, already in the surface's format) or
+/// from Vello's render texture (straight alpha, `Rgba8Unorm`, so a copy
+/// needs `rgba_surface`).
+pub(crate) fn present_step(
+    alpha_mode: wgpu::CompositeAlphaMode,
+    layered: bool,
+    rgba_surface: bool,
+) -> PresentStep {
+    use super::compositor::PresentAlpha as P;
+    let premultiplied = surface_reads_premultiplied(alpha_mode);
+    match (layered, premultiplied) {
+        (true, Some(false)) => PresentStep::Pass(P::Unpremultiply),
+        (true, _) => PresentStep::Copy,
+        (false, Some(true)) => PresentStep::Pass(P::Premultiply),
+        (false, _) if rgba_surface => PresentStep::Copy,
+        (false, _) => PresentStep::Pass(P::Straight),
+    }
+}
+
+#[cfg(test)]
+mod alpha_mode_tests {
+    use super::{PresentStep, present_step, surface_alpha_mode};
+    use crate::shell::compositor::PresentAlpha as P;
+    use wgpu::CompositeAlphaMode as A;
+
+    #[test]
+    fn an_opaque_window_keeps_auto() {
+        assert_eq!(
+            surface_alpha_mode(false, &[A::Opaque, A::PreMultiplied]),
+            A::Auto
+        );
+    }
+
+    /// Vulkan on Wayland (RADV, KWin) offers `Opaque` and `PreMultiplied`;
+    /// `Auto` took `Opaque` and a transparent overlay came out black.
+    #[test]
+    fn a_transparent_window_blends_where_it_can() {
+        assert_eq!(
+            surface_alpha_mode(true, &[A::Opaque, A::PreMultiplied]),
+            A::PreMultiplied
+        );
+        assert_eq!(
+            surface_alpha_mode(true, &[A::Opaque, A::PostMultiplied, A::PreMultiplied]),
+            A::PreMultiplied
+        );
+        assert_eq!(
+            surface_alpha_mode(true, &[A::Opaque, A::PostMultiplied]),
+            A::PostMultiplied
+        );
+        assert_eq!(
+            surface_alpha_mode(true, &[A::Opaque, A::Inherit]),
+            A::Inherit
+        );
+        assert_eq!(surface_alpha_mode(true, &[A::Opaque]), A::Auto);
+    }
+
+    /// Vello stores straight alpha: a premultiplied surface gets it
+    /// premultiplied (a straight copy showed 50% white over green as opaque
+    /// white), a straight one gets it as it is, and an opaque window's
+    /// frame is copied as before.
+    #[test]
+    fn the_present_step_matches_the_surfaces_alpha() {
+        // Vello's render texture.
+        assert_eq!(
+            present_step(A::PreMultiplied, false, true),
+            PresentStep::Pass(P::Premultiply)
+        );
+        assert_eq!(
+            present_step(A::PreMultiplied, false, false),
+            PresentStep::Pass(P::Premultiply)
+        );
+        assert_eq!(
+            present_step(A::Inherit, false, true),
+            PresentStep::Pass(P::Premultiply)
+        );
+        assert_eq!(present_step(A::Auto, false, true), PresentStep::Copy);
+        assert_eq!(present_step(A::Opaque, false, true), PresentStep::Copy);
+        assert_eq!(
+            present_step(A::Auto, false, false),
+            PresentStep::Pass(P::Straight),
+            "a Bgra8 surface is written whole, not blended over an uncleared image"
+        );
+        // The composited layers (premultiplied).
+        assert_eq!(
+            present_step(A::PreMultiplied, true, true),
+            PresentStep::Copy
+        );
+        assert_eq!(present_step(A::Auto, true, true), PresentStep::Copy);
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(
+                present_step(A::PostMultiplied, false, true),
+                PresentStep::Copy
+            );
+            assert_eq!(
+                present_step(A::PostMultiplied, false, false),
+                PresentStep::Pass(P::Straight)
+            );
+            assert_eq!(
+                present_step(A::PostMultiplied, true, true),
+                PresentStep::Pass(P::Unpremultiply)
+            );
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(
+                present_step(A::PostMultiplied, false, true),
+                PresentStep::Pass(P::Premultiply)
+            );
+            assert_eq!(
+                present_step(A::PostMultiplied, true, true),
+                PresentStep::Copy
+            );
+        }
     }
 }

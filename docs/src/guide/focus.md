@@ -141,6 +141,28 @@ Focus arrives three ways, and all three go through the same arbiter:
   browser. A control that must **not** steal focus from the field it sits
   beside — a toolbar button over a rich-text editor, a spinner next to a number
   input — needs [`data-nofocus`](#taking-the-click-without-the-keyboard).
+
+  On `rinch-web` the browser moves focus on a press, and rinch keeps that
+  true for a press on an `onclick` element too (issue #1146): a text field
+  inside a clickable is focused by the browser with the caret where the press
+  landed, and any other focusable (a `<button>`, a `tabindex` row) is focused
+  before the handler runs, so the field that had the focus commits its
+  `onchange` first. A press with nothing focusable above it leaves the focus
+  where it was on the web, where desktop releases it. When the browser refuses
+  the nearest candidate (a `disabled` button inside a `tabindex` row), the
+  next focusable ancestor takes it, as Chrome does. A **touch or pen** press
+  moves the focus on release, and only if it was a tap: a finger that starts a
+  scroll on a button leaves the field (and the phone's keyboard) alone.
+
+  Two things follow that web apps used to see differently. An overlay with
+  `trap_focus` opened from a `Button` gives the focus back to that `Button` on
+  close (it was the field focused before the press). And a native `<select>`
+  or `<input type="range">` inside a clickable works natively alongside the
+  handler — its press is no longer prevented.
+
+  "The way a browser does" is Chrome's and desktop rinch's: Safari, and Firefox
+  on macOS, do not focus a `<button>` on a click, and rinch-web focuses it
+  there too.
 - **`node.focus()` / `request_focus(node_id)`** — programmatic, also no ring.
 
 ### Selecting a text control's text programmatically
@@ -249,14 +271,19 @@ The rules:
 - It protects **whatever holds the keyboard** — the rich-text editor, an
   `<input>`, a render surface, another focusable node — not just the editor.
 - The **click still fires**. `data-rid` dispatch is untouched.
-- A **text field inside** a `data-nofocus` region still focuses normally. A
-  link-URL field in a toolbar has to be usable, so the field's own claim wins
-  over the region's opt-out.
+- A **form control inside** a `data-nofocus` region (an `<input>` of any type,
+  a `<textarea>`, a `<select>`, or editable content) still focuses normally, on
+  both backends (the web since issue #1579). A link-URL field in a toolbar has
+  to be usable, so the control's own claim wins over the region's opt-out. That
+  includes a checkbox or `<input type="button">`: pressed inside an editor
+  toolbar, it takes the keyboard from the editor. Use a `<button>` (or any
+  element that is not a form control) for a toolbar action that must not.
 - Boolean attribute, same rule as `data-disabled`: present means on whatever
   the value, and the explicit `"false"` opts out — one of rinch's own three
   attributes where that escape exists.
 - It works on **both backends**. On the web it becomes `preventDefault()` on
-  the `pointerdown`.
+  the `pointerdown` — except a press whose nearest focusable is a form control
+  inside the region, which is left to the browser.
 
 ### Containing Tab inside an overlay
 
@@ -591,7 +618,9 @@ windows.
 
 So the pair to expect is `on_focus_lost` on window blur, `on_focus_gained` on
 window refocus, with no key routing in between. Use it to hide a caret and idle
-a blink timer. While the window is blurred, rinch reports the OS IME disabled,
+a blink timer. An open popup that owns the keyboard (a `Select` list, a native
+`<select>`'s popup, the text context menu) closes on window blur, as in a browser
+(issue #1171); the claim it was opened from is kept. While the window is blurred, rinch reports the OS IME disabled,
 so a candidate box follows the window that actually has the keyboard.
 
 The runtime does the same for its own caret: the rich-text editor's caret stops
@@ -724,9 +753,17 @@ LIFO puts the entry where the user expects it with no precedence rule anywhere.
 This is what the native `<select>` popup does (issue #671) and what
 `ColorInput`'s dropdown does (issue #465); in a component,
 `rinch_components::overlay_dismiss::arm_close_on_escape_while_open` is that
-policy written out. Such a handler consumes unconditionally — it exists only
-while the overlay is open, so it has no closed state to decline in — and the
-release must cover **unmount-while-open** as well as close.
+policy written out. Such a handler has no closed state to decline in — it
+exists only while the overlay is open — but an ancestor can stop *rendering* the
+overlay without closing it: a `ColorInput` whose picker was open when the app
+closed the `Modal` around it is `display: none`, still mounted, still open. So
+the handler first asks `NodeHandle::is_rendered()` (connected, no
+`display: none` on the node or an ancestor, and not `visibility: hidden` or
+`collapse`) and declines while it answers `false`, letting the Escape reach what
+is on screen (issue #802). The overlay stays open, and Escape closes it once its
+ancestor shows it again. On desktop the answer comes from the styles of the last
+layout, so a hide made in the same turn as the key press, before a layout ran,
+is not yet seen. The release must cover **unmount-while-open** as well as close.
 
 `Modal`, `Drawer` and `Popover` already do all of this for you through their
 `close_on_escape` prop — reach for `push_dismiss_handler` when you are building
@@ -756,7 +793,17 @@ it.** A field focused while the popup is open — by a shortcut, a script, an
 `autofocus` — keeps its own keys, and on the web a key typed outside the rinch
 mount is never touched. When focus moves and is no longer inside the owner, the
 entry's `on_focus_leave` runs (the backends report every focus move), which is
-where a listbox closes; pass `|| {}` if yours should stay open.
+where a listbox closes; pass `|| {}` if yours should stay open. It also runs when
+the **window** loses the keyboard, though the focused element stays focused then
+(issue #1171): a native `<select>`'s popup and Mantine's `Select` dropdown both
+close on a window blur, so the `Select` list does too, on both backends — desktop
+from `PlatformEvent::WindowFocus(false)`, `rinch-web` from a `window` `blur`
+(`rinch_core::notify_window_blurred`). The trigger keeps the focus. Desktop's
+native `<select>` popup closes the same way, handing the keyboard back to the
+control. `ColorInput`'s dropdown holds such an entry while it is open (issue
+#1572), owned by the input's root and taking no key, so it closes when the
+focus leaves the field or the window blurs, as Mantine's does in the input's
+`onBlur`.
 
 Register it **at open** and release it at close and on unmount —
 `rinch_components::overlay_dismiss::arm_keys_while_open` is that policy.
@@ -979,7 +1026,8 @@ transparent window, and follows the theme's palette when there is one.
   Cut and Copy; Select all needs content; a `disabled` field takes no focus and
   gets no menu. Without the `clipboard` feature Cut, Copy and Paste are all
   greyed — there is no clipboard for them to reach, and an enabled Cut would
-  delete text it never copied. **Paste is not decided by reading the clipboard** — a read can
+  delete text it never copied. The chords agree: without the feature, Ctrl+X
+  (Cmd+X) on an `<input>`/`<textarea>` does nothing, as in the editor. **Paste is not decided by reading the clipboard** — a read can
   block for up to four seconds on X11 — so it stays enabled over an empty
   clipboard, where a native menu would grey it out; pasting nothing does
   nothing.

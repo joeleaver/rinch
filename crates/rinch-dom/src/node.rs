@@ -82,11 +82,14 @@ pub enum NodeContext {
         width: u32,
         /// Intrinsic height (0 while loading).
         height: u32,
-        /// The ratio the `width` and `height` attributes map to (#684,
-        /// [`crate::replaced::attribute_ratio`]), which sizes the image while
-        /// it has no natural size; a loaded image's own ratio replaces it.
-        /// Kept current by [`crate::replaced::sync_replaced_measure`].
-        hint_ratio: Option<f32>,
+        /// The element's computed `aspect-ratio` (#1286), which carries the
+        /// ratio its `width` and `height` attributes map to (#684,
+        /// `aspect-ratio: auto w / h`, [`crate::replaced::attribute_ratio`])
+        /// unless an author rule replaced it: it sizes the image while it has
+        /// no natural size, and a `<ratio>` without `auto` replaces a loaded
+        /// image's own ratio. Kept current by
+        /// [`crate::replaced::sync_replaced_measure`].
+        aspect: crate::computed_style::AspectRatioValue,
     },
     /// IFC root that needs Parley TreeBuilder measurement.
     ///
@@ -139,10 +142,12 @@ pub enum NodeContext {
         width: f32,
         /// Natural content-box height.
         height: f32,
-        /// The aspect ratio (width / height): a canvas's natural one when
-        /// both dimensions are non-zero, the one a video's `width` and
-        /// `height` attributes map to (#684); an iframe has none.
+        /// The natural aspect ratio (width / height): a canvas's when both
+        /// dimensions are non-zero; a video and an iframe have none.
         ratio: Option<f32>,
+        /// The element's computed `aspect-ratio` (#1286; a video's carries
+        /// the ratio its `width` and `height` attributes map to, #684).
+        aspect: crate::computed_style::AspectRatioValue,
     },
 }
 
@@ -3844,14 +3849,20 @@ pub fn node_is_read_write(node: &Node) -> bool {
 /// which the desktop runtime mirrors every edit into before dispatching
 /// `oninput` (see `value_fn`/`live_value` in CLAUDE.md), so this also tracks
 /// a live edit, not only the initial markup.
+///
+/// An `<input>`'s value is read sanitized for its type
+/// ([`crate::form_control::input_value`], #1554), so a `value` of only line
+/// breaks shows the placeholder, as in Chrome 155.
 pub fn node_is_placeholder_shown(node: &Node) -> bool {
-    tag_is_readonly_capable(node.tag())
-        && node.attributes.contains_key("placeholder")
-        && node
-            .attributes
-            .get("value")
-            .map(|v| v.is_empty())
-            .unwrap_or(true)
+    if !tag_is_readonly_capable(node.tag()) || !node.attributes.contains_key("placeholder") {
+        return false;
+    }
+    let value = if node.tag() == Some("input") {
+        crate::form_control::input_value(node)
+    } else {
+        node.attributes.get("value").map(|v| v.as_str().into())
+    };
+    value.is_none_or(|v| v.is_empty())
 }
 
 /// What a node was last painted with, besides its box ([`Node::painted`]).

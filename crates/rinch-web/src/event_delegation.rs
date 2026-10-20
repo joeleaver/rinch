@@ -254,6 +254,7 @@ pub fn __reset_activation_state() {
     DISPATCHING.with(|d| d.borrow_mut().clear());
     LABEL_FORWARD.with(|l| l.set(None));
     FORCE_TRUSTED.with(|t| t.set(false));
+    clear_pending_press_focus();
 }
 
 /// Map a browser `MouseEvent.button` index onto the core button enum.
@@ -784,6 +785,90 @@ thread_local! {
     /// pointerup/pointercancel. Independent of `WEB_DRAG` (the element-DnD suite).
     static DRAG_POINTER_CAPTURE: std::cell::RefCell<Option<(web_sys::Element, i32)>> =
         const { std::cell::RefCell::new(None) };
+
+    /// A touch/pen press's focus move, waiting for the press to turn out a tap.
+    /// See [`PendingPressFocus`].
+    static PENDING_PRESS_FOCUS: std::cell::RefCell<Option<PendingPressFocus>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The focus move of a touch or pen press on a `data-rid` element (issue
+/// #1146), held until the press is known to be a tap. A finger that lands on a
+/// button and pans the page has not pressed it, and Chrome moves no focus for
+/// it; focusing on contact blurred the field being typed in, which dismisses a
+/// phone's soft keyboard on every scroll that starts over a button. Applied on
+/// the owning pointer's `pointerup`; dropped by a `pointercancel` (Chrome sends
+/// one when it starts the pan), by a move past the scroll slop, and by the next
+/// primary press. A mouse press focuses at once, as before.
+///
+/// The same record shape as [`PendingClick`]; only the focus waits here — the
+/// click itself still fires on contact outside a scroller (#1582).
+struct PendingPressFocus {
+    /// Where the focus walk starts ([`focus_press_target`]).
+    target: web_sys::Element,
+    pointer_id: i32,
+    start_x: f32,
+    start_y: f32,
+    /// The focused element when the press landed, before its handler ran: a
+    /// focus move made since — by the handler (an overlay's `focus_into`) or
+    /// anything else before the release — is not overruled.
+    active: Option<web_sys::Element>,
+}
+
+/// Discard a pending touch focus. Idempotent.
+fn clear_pending_press_focus() {
+    PENDING_PRESS_FOCUS.with(|c| *c.borrow_mut() = None);
+}
+
+/// The element holding the focus in `el`'s document.
+fn active_in(el: &web_sys::Element) -> Option<web_sys::Element> {
+    el.owner_document().and_then(|d| d.active_element())
+}
+
+/// Hold `target`'s focus move until `event`'s pointer is released. `active` is
+/// the focused element when the press landed.
+fn defer_press_focus(
+    target: web_sys::Element,
+    active: Option<web_sys::Element>,
+    event: &web_sys::MouseEvent,
+) {
+    let pointer_id = event
+        .dyn_ref::<web_sys::PointerEvent>()
+        .map_or(0, |p| p.pointer_id());
+    PENDING_PRESS_FOCUS.with(|c| {
+        *c.borrow_mut() = Some(PendingPressFocus {
+            target,
+            pointer_id,
+            start_x: event.client_x() as f32,
+            start_y: event.client_y() as f32,
+            active,
+        })
+    });
+}
+
+/// The owning pointer's release: the press was a tap, so make its focus move —
+/// unless something else moved the focus since it was recorded.
+fn apply_pending_press_focus(event: &web_sys::PointerEvent) {
+    let pending = PENDING_PRESS_FOCUS.with(|c| {
+        let mut b = c.borrow_mut();
+        match b.as_ref() {
+            Some(p) if p.pointer_id == event.pointer_id() => b.take(),
+            _ => None,
+        }
+    });
+    let Some(p) = pending else { return };
+    if !p.target.is_connected() {
+        return;
+    }
+    let now = active_in(&p.target);
+    let unchanged = match (&now, &p.active) {
+        (Some(a), Some(b)) => a.is_same_node(Some(b)),
+        (None, None) => true,
+        _ => false,
+    };
+    if unchanged {
+        focus_press_target(&p.target);
+    }
 }
 
 /// Release any pointer capture taken for an active `Drag` (slider/panel/resize).
@@ -1020,6 +1105,7 @@ fn activate_web_drag() {
     // no ghost, so doing both here is fine.)
     let hit = element_from_point(cursor.0, cursor.1);
     process_drag_target(&source, hit, cursor.0, cursor.1);
+    ensure_drag_auto_scroll();
 }
 
 /// Advance an in-progress element drag on pointer move. Only the pointer that
@@ -1096,6 +1182,7 @@ fn handle_web_pointer_move(event: &web_sys::PointerEvent) -> bool {
         return false;
     };
     process_drag_target(&source, hit, x, y);
+    ensure_drag_auto_scroll();
 
     // While a captured touch/pen drag is live, block the browser from scrolling.
     captured
@@ -1126,6 +1213,7 @@ fn cancel_web_drag() -> bool {
 /// `data-ondragend` on the source. Shared by the pointerup (drop) and
 /// cancel/Escape (no drop) paths so the teardown stays in one place.
 fn finish_active_drag(state: &WebDragState, x: f32, y: f32, do_drop: bool) {
+    stop_drag_auto_scroll();
     if let Some(t) = &state.over_target {
         if do_drop {
             dispatch_plain_attr(t, "data-ondrop");
@@ -1133,6 +1221,258 @@ fn finish_active_drag(state: &WebDragState, x: f32, y: f32, do_drop: bool) {
         dispatch_plain_attr(t, "data-ondragleave");
     }
     dispatch_drag_cursor_only(&state.source, "data-ondragend", x, y);
+}
+
+// ── Drag auto-scroll ──────────────────────────────────────────────────────────
+//
+// While an element drag is active and its pointer rests in the band along the
+// top or bottom edge of a scroll container under it, that container scrolls a
+// frame at a time from `requestAnimationFrame`, at the speed
+// `events::drag_auto_scroll_velocity` gives (the curve desktop's `AboutToWait`
+// tick uses), and the drag target under the still pointer is resolved again
+// after each frame that scrolled, so the row arriving under it hears
+// `data-ondragenter`/`data-ondragover`. The loop stops itself when the pointer
+// is in no band (a pointer move starts it again) and when the drag ends. The
+// browser's own `scroll` event carries `data-onscroll`.
+
+/// The frame loop of a drag auto-scroll in flight.
+struct AutoScrollLoop {
+    /// The pending `requestAnimationFrame` handle.
+    handle: i32,
+    /// The timestamp of the last frame that scrolled, in ms; `None` before the
+    /// first.
+    last: Option<f64>,
+    /// What a frame's delta left below a whole pixel: `Element.scrollTop` is
+    /// written in whole pixels through web-sys, and a slow band must still add
+    /// up.
+    remainder: f64,
+    /// A container a frame's write did not move, and the direction it was
+    /// written in: it is at its end that way, whatever its sizes say (#1592:
+    /// `scrollHeight` and `clientHeight` are rounded, so at a fractional
+    /// device scale a list can stop short of `scrollHeight - clientHeight` by
+    /// more than any fixed slack). Later frames skip it in that direction, so
+    /// the loop moves on up the chain or stops. Cleared when the loop stops.
+    stuck: Option<(web_sys::Element, f32)>,
+}
+
+thread_local! {
+    static AUTO_SCROLL: std::cell::RefCell<Option<AutoScrollLoop>> =
+        const { std::cell::RefCell::new(None) };
+    /// The one frame callback every auto-scroll frame is scheduled with.
+    static AUTO_SCROLL_FRAME: Closure<dyn FnMut(f64)> =
+        Closure::wrap(Box::new(drag_auto_scroll_frame) as Box<dyn FnMut(f64)>);
+}
+
+/// Schedule `drag_auto_scroll_frame` with `requestAnimationFrame`.
+fn request_auto_scroll_frame() -> Option<i32> {
+    let win = web_sys::window()?;
+    AUTO_SCROLL_FRAME
+        .with(|cb| win.request_animation_frame(cb.as_ref().unchecked_ref()))
+        .ok()
+}
+
+/// Start the auto-scroll frame loop unless it is running. Called after every
+/// pointer move of an active drag; cheap when the loop is already scheduled.
+fn ensure_drag_auto_scroll() {
+    // A move while the loop runs lets a `stuck` container be tried again: its
+    // content may have grown since (a list loading more rows).
+    let running = AUTO_SCROLL.with(|a| a.borrow_mut().as_mut().map(|r| r.stuck = None).is_some());
+    if running {
+        return;
+    }
+    let Some(handle) = request_auto_scroll_frame() else {
+        return;
+    };
+    AUTO_SCROLL.with(|a| {
+        *a.borrow_mut() = Some(AutoScrollLoop {
+            handle,
+            last: None,
+            remainder: 0.0,
+            stuck: None,
+        })
+    });
+}
+
+/// Start the auto-scroll loop if a drag is active (the page scroll lock was
+/// released: a list it had locked out may be under a still pointer).
+pub(crate) fn restart_drag_auto_scroll_if_dragging() {
+    if WEB_DRAG.with(|d| d.borrow().as_ref().is_some_and(|s| s.active)) {
+        ensure_drag_auto_scroll();
+    }
+}
+
+/// Stop the auto-scroll frame loop. Idempotent.
+fn stop_drag_auto_scroll() {
+    if let Some(running) = AUTO_SCROLL.with(|a| a.borrow_mut().take())
+        && let Some(win) = web_sys::window()
+    {
+        let _ = win.cancel_animation_frame(running.handle);
+    }
+}
+
+/// Whether the drag auto-scroll frame loop is scheduled (tests).
+#[doc(hidden)]
+pub fn __drag_auto_scroll_running() -> bool {
+    AUTO_SCROLL.with(|a| a.borrow().is_some())
+}
+
+/// The element a drag's pointer at height `y` over `hit` auto-scrolls, and how
+/// fast: the nearest ancestor of `hit` (or `hit`) with a computed `overflow-y`
+/// of `auto`/`scroll` and content taller than its box, or the document's
+/// scrolling element, that has the pointer in one of its bands and can still
+/// move toward that band's edge, and is not locked out by a `lock_scroll`
+/// overlay ([`crate::web_document::scroll_locked_out`]). Bands are measured on
+/// the part of the box inside the viewport; the scrolling element's on the
+/// viewport. Clipping by an outer scroller is not taken into account.
+///
+/// `stuck` is a container a frame found at its end in one direction; it is
+/// not picked for that direction.
+fn drag_auto_scroll_container(
+    hit: &web_sys::Element,
+    y: f32,
+    stuck: Option<&(web_sys::Element, f32)>,
+) -> Option<(web_sys::Element, f32)> {
+    let win = web_sys::window()?;
+    let doc = win.document()?;
+    let viewport_h = win.inner_height().ok()?.as_f64()? as f32;
+    let scrolling = doc.scrolling_element();
+    // `scrollTop` read unrounded (web-sys's `scroll_top` is an `i32`) against
+    // a range of rounded sizes, with a pixel of slack: at a fractional device
+    // scale the browser keeps the offset on the device grid, and a container
+    // whose last fraction is out of reach must count as at its end, or the
+    // loop spins there and the page never takes over. The slack is not enough
+    // on its own (both sizes are rounded); a write that moves nothing marks
+    // the container `stuck`, which is what ends the loop in every case.
+    let can_move = |el: &web_sys::Element, velocity: f32| {
+        if stuck.is_some_and(|(s, v)| same_element(s, el) && same_direction(*v, velocity)) {
+            return false;
+        }
+        let top = scroll_top_f64(el);
+        let max = f64::from(el.scroll_height() - el.client_height());
+        (velocity < 0.0 && top > 1.0) || (velocity > 0.0 && top < max - 1.0)
+    };
+    let mut node = Some(hit.clone());
+    while let Some(el) = node {
+        let is_scrolling = scrolling.as_ref().is_some_and(|s| same_element(s, &el));
+        let scrolls = is_scrolling
+            || (el.scroll_height() > el.client_height()
+                && win
+                    .get_computed_style(&el)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|style| {
+                        matches!(
+                            style
+                                .get_property_value("overflow-y")
+                                .unwrap_or_default()
+                                .as_str(),
+                            "auto" | "scroll"
+                        )
+                    }));
+        // A page under a `lock_scroll` overlay, and any container outside the
+        // overlay, is not scrolled: desktop's rule (`scroll_locked_out`). A
+        // `scrollTop` write ignores `<html>`'s `overflow: hidden`.
+        if scrolls && !crate::web_document::scroll_locked_out(&el) {
+            let (top, bottom) = if is_scrolling {
+                (0.0, viewport_h)
+            } else {
+                let rect = el.get_bounding_client_rect();
+                (
+                    (rect.top() as f32).max(0.0),
+                    (rect.bottom() as f32).min(viewport_h),
+                )
+            };
+            let velocity = events::drag_auto_scroll_velocity(y, top, bottom);
+            if velocity != 0.0 && can_move(&el, velocity) {
+                return Some((el, velocity));
+            }
+        }
+        if is_scrolling {
+            return None;
+        }
+        node = el.parent_element();
+    }
+    // `hit` was outside the scrolling element's subtree (it never is in a
+    // document; kept so a detached hit still ends here).
+    let el = scrolling?;
+    if crate::web_document::scroll_locked_out(&el) {
+        return None;
+    }
+    let velocity = events::drag_auto_scroll_velocity(y, 0.0, viewport_h);
+    (velocity != 0.0 && can_move(&el, velocity)).then_some((el, velocity))
+}
+
+/// `Element.scrollTop` unrounded (web-sys's `scroll_top` is an `i32`).
+fn scroll_top_f64(el: &web_sys::Element) -> f64 {
+    js_sys::Reflect::get(el, &"scrollTop".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or_else(|| f64::from(el.scroll_top()))
+}
+
+/// Whether two velocities point the same way.
+fn same_direction(a: f32, b: f32) -> bool {
+    (a < 0.0) == (b < 0.0)
+}
+
+/// One auto-scroll frame: scroll the container under the drag's pointer by
+/// its band's speed times the time since the last frame, resolve the drag
+/// target again if that moved anything, and schedule the next frame — or stop
+/// when there is no active drag or its pointer is in no band. No `WEB_DRAG` or
+/// `AUTO_SCROLL` borrow is held across a DOM call or a handler.
+fn drag_auto_scroll_frame(timestamp: f64) {
+    let drag = WEB_DRAG.with(|d| {
+        d.borrow()
+            .as_ref()
+            .filter(|s| s.active)
+            .map(|s| (s.source.clone(), s.cursor))
+    });
+    let Some((source, (x, y))) = drag else {
+        AUTO_SCROLL.with(|a| *a.borrow_mut() = None);
+        return;
+    };
+    let Some((last, remainder, stuck)) = AUTO_SCROLL.with(|a| {
+        a.borrow()
+            .as_ref()
+            .map(|r| (r.last, r.remainder, r.stuck.clone()))
+    }) else {
+        return; // stopped since this frame was scheduled
+    };
+    let pick = element_from_point(x, y)
+        .and_then(|hit| drag_auto_scroll_container(&hit, y, stuck.as_ref()));
+    let Some((container, velocity)) = pick else {
+        AUTO_SCROLL.with(|a| *a.borrow_mut() = None);
+        return;
+    };
+    let elapsed = last.map(|then| ((timestamp - then) / 1000.0) as f32);
+    let precise = remainder + f64::from(velocity * events::drag_auto_scroll_step(elapsed));
+    let whole = precise.trunc();
+    let before = scroll_top_f64(&container);
+    if whole != 0.0 {
+        container.set_scroll_top(container.scroll_top() + whole as i32);
+    }
+    let moved = scroll_top_f64(&container) != before;
+    // A write that moved nothing: the container is at its end this way.
+    let stuck = if whole != 0.0 && !moved {
+        Some((container.clone(), velocity))
+    } else {
+        stuck
+    };
+    let Some(handle) = request_auto_scroll_frame() else {
+        AUTO_SCROLL.with(|a| *a.borrow_mut() = None);
+        return;
+    };
+    AUTO_SCROLL.with(|a| {
+        *a.borrow_mut() = Some(AutoScrollLoop {
+            handle,
+            last: Some(timestamp),
+            remainder: precise - whole,
+            stuck,
+        })
+    });
+    if moved {
+        process_drag_target(&source, element_from_point(x, y), x, y);
+    }
 }
 
 /// Convert a UTF-16 code unit offset within a string to a UTF-8 byte offset.
@@ -1430,9 +1770,120 @@ fn dispatch_click_at(
         // nothing dispatched would be strictly worse than doing nothing —
         // text selection, `<label>` activation, native form submit and the
         // context menu are all cancelled while nothing is dispatched.
-        if dispatch_rid(rid) {
+        //
+        // That prevented default is also the browser's focus change on a
+        // press, so the press is resolved here the way the browser resolves
+        // it (issue #1146; desktop's `claim_press_focus`) — see
+        // [`PressFocus`].
+        let press_focus = if event.type_() == "pointerdown" && !event.default_prevented() {
+            press_focus_for(el)
+        } else {
+            PressFocus::Untouched
+        };
+        // A touch or pen press focuses on release, once it is a tap and not
+        // the start of a pan ([`PendingPressFocus`]).
+        let touch = event
+            .dyn_ref::<web_sys::PointerEvent>()
+            .is_some_and(|p| PointerKind::from_type(&p.pointer_type()).uses_long_press());
+        if let PressFocus::Focus(target) = &press_focus
+            && !touch
+        {
+            // Before the handler: the field that had the focus is blurred
+            // (and commits its `change`) before the click runs, and a focus
+            // move the handler makes itself is not undone afterwards.
+            focus_press_target(target);
+        }
+        let active = active_in(el);
+        let ran = dispatch_rid(rid);
+        if let PressFocus::Focus(target) = press_focus.clone()
+            && touch
+        {
+            // With the focus from before the handler, so a move the handler
+            // makes itself is seen and kept.
+            defer_press_focus(target, active, event);
+        }
+        if ran && !matches!(press_focus, PressFocus::Browser) {
             event.prevent_default();
         }
+    }
+}
+
+/// The elements a press may move focus to: a browser focuses the nearest
+/// ancestor-or-self that can take focus, and every such element is one of
+/// these. It is a superset — a `disabled` button, a `contenteditable="false"`
+/// island and a `display: contents` link match and take no focus — so a match
+/// is where the walk *tries*, not where it stops: [`focus_press_target`] asks
+/// the browser and goes on to the next match when `focus()` is refused, as
+/// Chrome focuses the `tabindex` row around a disabled button. `editor_input`
+/// asks whether a press has any match at all.
+pub(crate) const PRESS_FOCUSABLE_SELECTOR: &str = "button, a[href], input, select, textarea, \
+     [tabindex], [contenteditable], summary, iframe, audio[controls], video[controls]";
+
+/// How a `pointerdown` that dispatches a `data-rid` click moves focus (issue
+/// #1146). Before it, every such press was `preventDefault`ed and so moved no
+/// focus at all: a `Button` took none, the field that had it kept it with its
+/// `change` uncommitted, and a text field inside a clickable (`ColorInput`'s,
+/// inside its input group) could not be focused by a click.
+#[derive(Clone)]
+enum PressFocus {
+    /// Moves no focus: nothing focusable on the press's chain, or a default
+    /// already prevented (`data-nofocus` on the chain, an app's own listener),
+    /// or not a `pointerdown` press. With nothing focusable on the chain a
+    /// browser (and desktop) would release the focus; this keeps it, as it
+    /// always has — an editor relies on it (`editor_input`).
+    Untouched,
+    /// A form control or editable content is the nearest focusable: the
+    /// default is not prevented, so the browser focuses it, places the caret
+    /// at the press and starts a selection drag.
+    Browser,
+    /// Any other focusable (a `<button>`, an `<a href>`, a `tabindex` row):
+    /// rinch focuses it — or the next match above it that the browser accepts
+    /// ([`focus_press_target`]) — since the prevented default cannot.
+    Focus(web_sys::Element),
+}
+
+/// Where a press at `el` puts the focus. Not asked of a press whose default
+/// is already prevented — a `data-nofocus` one is, by the same listener, before
+/// the click is dispatched.
+fn press_focus_for(el: &web_sys::Element) -> PressFocus {
+    let Some(target) = el.closest(PRESS_FOCUSABLE_SELECTOR).ok().flatten() else {
+        return PressFocus::Untouched;
+    };
+    if is_left_to_browser(&target) {
+        return PressFocus::Browser;
+    }
+    PressFocus::Focus(target)
+}
+
+/// A form control, or an element in editable content: the browser focuses it
+/// itself (caret at the press, selection drag), so its press is not prevented.
+fn is_left_to_browser(target: &web_sys::Element) -> bool {
+    target.matches("input, textarea, select").unwrap_or(false) || in_content_editable(target)
+}
+
+/// Focus the first element from `start` up that takes focus: `start`, then
+/// each [`PRESS_FOCUSABLE_SELECTOR`] match above it, asking the browser at each
+/// step whether it took it — the browser is the authority on focusability, as
+/// in `handle_trapped_tab`. Stops at a form control or editable content above
+/// a refusal (the browser's own business) and when no match is left, moving no
+/// focus. Never scrolls: a press is on something already on screen.
+fn focus_press_target(start: &web_sys::Element) {
+    let opts = web_sys::FocusOptions::new();
+    opts.set_prevent_scroll(true);
+    let mut next = Some(start.clone());
+    while let Some(target) = next {
+        if !target.is_same_node(Some(start)) && is_left_to_browser(&target) {
+            return;
+        }
+        if let Some(html) = target.dyn_ref::<web_sys::HtmlElement>() {
+            let _ = html.focus_with_options(&opts);
+            if target.matches(":focus").unwrap_or(false) {
+                return;
+            }
+        }
+        next = target
+            .parent_element()
+            .and_then(|p| p.closest(PRESS_FOCUSABLE_SELECTOR).ok().flatten());
     }
 }
 
@@ -2008,6 +2459,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         // was missed (e.g. a dropped release), so a stale tap can't fire later.
         if event.is_primary() {
             clear_pending_click();
+            clear_pending_press_focus();
         }
 
         if let Some(target) = event.target()
@@ -2028,13 +2480,29 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             // the boolean-attribute rule desktop's `node_is_nofocus` applies:
             // present means on whatever the value, and only the explicit
             // `"false"` (any case) opts out.
-            if el
+            //
+            // A text field *inside* the region still focuses (issue #1579), as
+            // on desktop, whose claim walk meets the field before the region:
+            // the press is left alone when the nearest focusable on its chain
+            // is a form control or editable content strictly below the region.
+            // One above it, or the region itself, does not count.
+            if let Some(region) = el
                 .closest("[data-nofocus]:not([data-nofocus=\"false\" i])")
                 .ok()
                 .flatten()
-                .is_some()
             {
-                event.prevent_default();
+                let field_inside = el
+                    .closest(PRESS_FOCUSABLE_SELECTOR)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|t| {
+                        !t.is_same_node(Some(&region))
+                            && region.contains(Some(&t))
+                            && is_left_to_browser(&t)
+                    });
+                if !field_inside {
+                    event.prevent_default();
+                }
             }
 
             // Clear render surface focus if click is outside any surface
@@ -2134,6 +2602,13 @@ pub fn setup_event_delegation(doc: &WebDocument) {
 
                 if defer_to_up {
                     mark_gesture_acted();
+                    // Its focus waits for the same release
+                    // ([`PendingPressFocus`]); a form control is the browser's.
+                    if !event.default_prevented()
+                        && let PressFocus::Focus(target) = press_focus_for(&el)
+                    {
+                        defer_press_focus(target, active_in(&el), event);
+                    }
                     PENDING_CLICK.with(|c| {
                         *c.borrow_mut() = Some(PendingClick {
                             target: el.clone(),
@@ -2169,7 +2644,13 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     pointerdown_closure.forget();
 
     // Pointermove delegation: feed active drag operations.
-    let pointermove_closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
+    let pointermove_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // Not a pointer event, not a move (issue #811; see `pointerup`). A
+        // plain `Event` read `buttons` as 0 and healed a live `Drag` through
+        // `on_cancel`, as though its release had been swallowed.
+        let Some(event) = event.dyn_ref::<web_sys::PointerEvent>() else {
+            return;
+        };
         // Tell the pointer-capture `Drag` whether the primary contact is still
         // down. `buttons & 1 == 0` on a move means the release that should have
         // ended the drag was swallowed (a native context menu, a print dialog,
@@ -2197,14 +2678,14 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             event.prevent_default();
         }
 
-        if let Some(el) = pointer_hit_element(&event) {
-            dispatch_mouse_attr(&el, "data-onmousemove", &event);
+        if let Some(el) = pointer_hit_element(event) {
+            dispatch_mouse_attr(&el, "data-onmousemove", event);
 
             // Element drag-and-drop: if a drag is pending/active, advance it and
             // skip hover — an active drag owns the move (mirrors desktop). A live
             // captured touch/pen drag asks us to block the browser's scroll.
             if WEB_DRAG.with(|d| d.borrow().is_some()) {
-                if handle_web_pointer_move(&event) {
+                if handle_web_pointer_move(event) {
                     event.prevent_default();
                 }
                 return;
@@ -2226,6 +2707,24 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                 )
             {
                 clear_pending_click();
+            }
+            // The same slop ends a pending touch focus: the press is a pan. Not
+            // while a pointer-capture `Drag` holds the contact (a slider
+            // dragged by a finger does not pan the page).
+            let focus_pending = PENDING_PRESS_FOCUS.with(|c| {
+                c.borrow()
+                    .as_ref()
+                    .map(|p| (p.pointer_id, p.start_x, p.start_y))
+            });
+            if let Some((pid, sx, sy)) = focus_pending
+                && pid == event.pointer_id()
+                && !drag_active
+                && drag_machine::pending_click_is_scroll(
+                    event.client_x() as f32 - sx,
+                    event.client_y() as f32 - sy,
+                )
+            {
+                clear_pending_press_focus();
             }
 
             // Hover: fire data-onleave on the old element and data-onenter on the
@@ -2271,7 +2770,17 @@ pub fn setup_event_delegation(doc: &WebDocument) {
 
     // Pointerup delegation: stop active drag operations and fire data-onmouseup.
     let browser_doc_for_up = browser_doc.clone();
-    let pointerup_closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
+    let pointerup_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // Registered by hand, so a typed closure parameter here was cast
+        // unchecked (see the keydown listener). A plain `Event("pointerup")`
+        // from page script read `clientX`/`clientY` as `undefined`: release
+        // glue coerced them to 0 and committed a live `Drag` through
+        // `on_end(0, 0)`, debug glue threw (issue #811). A `MouseEvent` under
+        // that name would commit at whatever position it carried. Only a
+        // pointer release ends a pointer gesture.
+        let Some(event) = event.dyn_ref::<web_sys::PointerEvent>() else {
+            return;
+        };
         // Finish (not cancel) any pointer-capture Drag so its `on_end` fires with
         // the release position. Desktop ends it on the release of the button
         // that armed it (`finish_drag_for_button`, issue #1087); a browser's
@@ -2280,8 +2789,8 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         // still uses `Drag::cancel()` (no commit).
         rinch_core::finish_drag(event.client_x() as f32, event.client_y() as f32);
         release_drag_pointer_capture();
-        if let Some(el) = pointer_hit_element(&event) {
-            dispatch_mouse_attr(&el, "data-onmouseup", &event);
+        if let Some(el) = pointer_hit_element(event) {
+            dispatch_mouse_attr(&el, "data-onmouseup", event);
         }
 
         // Element drag-and-drop: only the owning pointer finishes the drag (a
@@ -2305,10 +2814,15 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                 // click on the draggable, which only the primary button makes
                 // (issue #1093), as on the pointerdown path.
                 if event.button() == 0 {
-                    dispatch_click_at(&state.source, &browser_doc_for_up, &event);
+                    dispatch_click_at(&state.source, &browser_doc_for_up, event);
                 }
             }
         }
+
+        // A touch/pen press that ended without a pan: make the focus move it
+        // held back ([`PendingPressFocus`]), before a deferred click's handler
+        // runs, as a mouse press focuses before its handler.
+        apply_pending_press_focus(event);
 
         // A deferred (touch/pen) tap on a scrollable-contained element that never
         // became a scroll: fire its click now, on release, matching the browser's
@@ -2321,7 +2835,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             }
         });
         if let Some(target) = deferred {
-            dispatch_click_at(&target, &browser_doc_for_up, &event);
+            dispatch_click_at(&target, &browser_doc_for_up, event);
         }
     }) as Box<dyn FnMut(_)>);
     browser_doc
@@ -2333,7 +2847,11 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // gesture, or scrolling won out). Cancel the owning drag like Escape — an
     // active drag fires dragend, a pending one is just cleared — and release any
     // slider drag too.
-    let pointercancel_closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
+    let pointercancel_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // Not a pointer event: nothing took a pointer away (issue #811).
+        let Some(event) = event.dyn_ref::<web_sys::PointerEvent>() else {
+            return;
+        };
         let owns = WEB_DRAG.with(|d| {
             d.borrow()
                 .as_ref()
@@ -2345,6 +2863,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         // Scrolling won out (or a system gesture stole the contact): drop any
         // deferred click so it doesn't fire when the pointer is taken away.
         clear_pending_click();
+        clear_pending_press_focus();
         rinch_core::Drag::cancel();
         release_drag_pointer_capture();
     }) as Box<dyn FnMut(_)>);
@@ -2367,7 +2886,15 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // acted at all (GESTURE_ACTED, issue #272). No `prevent_default`
     // here: it would cancel link navigation, the label→control toggle and
     // native form submit for keyboard users only.
-    let click_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+    let click_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // Deliberately NOT narrowed to `MouseEvent` (issue #811): a plain
+        // `Event("click")` from page script or automation activates a
+        // `data-rid` element, as an untrusted click always has here (#240).
+        // It carries no position and no modifiers, so it is read as the
+        // pointer-less click it is — the element's centre, nothing held —
+        // rather than through `MouseEvent` getters that read `undefined`
+        // (a throw under wasm-bindgen's debug glue).
+        let mouse = event.dyn_ref::<web_sys::MouseEvent>();
         let trusted = event.is_trusted() || FORCE_TRUSTED.with(|t| t.get());
         let acted_gesture = POINTER_GESTURE.with(|p| p.get()) && GESTURE_ACTED.with(|a| a.get());
         if !activation::click_should_dispatch(acted_gesture, trusted) {
@@ -2405,9 +2932,11 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             // A synthesised click (keyboard, AT, label activation) carries
             // `detail == 0` and `clientX = clientY = 0`: activate at the
             // element's centre. A real pointer position is kept.
-            let cursor =
-                (event.detail() != 0).then(|| (event.client_x() as f32, event.client_y() as f32));
-            if let Some(rid) = dispatch_activation(&el, cursor, modifiers_from_event(&event))
+            let cursor = mouse
+                .filter(|m| m.detail() != 0)
+                .map(|m| (m.client_x() as f32, m.client_y() as f32));
+            let modifiers = mouse.map(modifiers_from_event).unwrap_or_default();
+            if let Some(rid) = dispatch_activation(&el, cursor, modifiers)
                 && el.closest("label").ok().flatten().is_some()
             {
                 LABEL_FORWARD.with(|l| l.set(Some(rid)));
@@ -2454,9 +2983,10 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         //
         // `dyn_ref` is the instanceof check that was missing. `add_capture` does
         // the same for the listeners registered through it; this one is
-        // registered by hand, as are `keyup` and `pointerdown`, which carry the
-        // same guard. The other hand-registered listeners in this function that
-        // still take a typed parameter are #811.
+        // registered by hand, as is every other listener in this function, and
+        // each takes a plain `Event` (issue #811): the pointer family and
+        // `paste` ignore one of the wrong interface, `click` and `contextmenu`
+        // read it as an event with no position.
         //
         // Because it is `instanceof`, a `KeyboardEvent` built from another
         // realm's constructor (an iframe's `KeyboardEvent`, dispatched on this
@@ -2737,7 +3267,8 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // left it. `focusin` names the new focus; a `focusout` with no
     // `relatedTarget` is focus going nowhere (a click on the page background),
     // for which no `focusin` follows. The window losing focus fires one too, but
-    // `activeElement` is unchanged while it runs, so it closes nothing (#1171).
+    // `activeElement` is unchanged while it runs, so it closes nothing; the
+    // `window` `blur` listener below does that (#1171).
     // A `focusout`
     // that does have one is followed by that element's `focusin`, and asking
     // then would see the transient `<body>` in between. Document key 0: this
@@ -2751,6 +3282,19 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             rinch_core::notify_focus_moved(0);
         }
     });
+    // The window losing the keyboard (#1171): a native `<select>`'s popup
+    // closes then, and so does Mantine's `Select` dropdown, though the focused
+    // element stays focused. A capture listener on `window` also sees every
+    // element's `blur` on its way down, so only the event aimed at `window`
+    // itself (the at-target phase) counts.
+    if let Some(win) = web_sys::window() {
+        let target: web_sys::EventTarget = win.into();
+        add_capture_on(&target, "blur", |event: web_sys::Event| {
+            if event.event_phase() == web_sys::Event::AT_TARGET {
+                rinch_core::notify_window_blurred(0);
+            }
+        });
+    }
 
     // Change delegation (issue #226): find [data-onchange] on the target or
     // ancestors. The browser fires `change` exactly at the commit boundary the
@@ -2798,7 +3342,11 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // are separated here: prevent the default when a handler was found **or**
     // [`set_suppress_native_context_menu`] is on and the target is not in an
     // editing context (issue #812), dispatch only when one was found.
-    let contextmenu_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+    let contextmenu_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // Like `click`, not narrowed (issue #811): a `contextmenu` that is no
+        // `MouseEvent` still runs a live handler, at the element's centre with
+        // nothing held, rather than reading `undefined` positions.
+        let mouse = event.dyn_ref::<web_sys::MouseEvent>();
         let target = event
             .target()
             .and_then(|target| target.dyn_into::<web_sys::Element>().ok());
@@ -2830,10 +3378,10 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         if let Some((menu_el, id)) = handler {
             set_click_context_for(
                 &menu_el,
-                Some((event.client_x() as f32, event.client_y() as f32)),
+                mouse.map(|m| (m.client_x() as f32, m.client_y() as f32)),
                 Default::default(),
                 events::MouseButton::Right,
-                modifiers_from_event(&event),
+                mouse.map(modifiers_from_event).unwrap_or_default(),
             );
             events::dispatch_event(id);
         }
@@ -2863,7 +3411,14 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // A `defaultPrevented` event is skipped throughout: that is the built-in
     // editor's hidden capture textarea having already claimed it (`editor_input.rs`),
     // and it reads `clipboardData` itself.
-    let paste_closure = Closure::wrap(Box::new(move |event: web_sys::ClipboardEvent| {
+    let paste_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // A `paste` that is no `ClipboardEvent` is not a paste, even with a
+        // `clipboardData` hung on it by page script (issue #811): the typed
+        // parameter this took was an unchecked cast, which read that property
+        // and fed it to the app's paste interceptor.
+        let Some(event) = event.dyn_ref::<web_sys::ClipboardEvent>() else {
+            return;
+        };
         if event.default_prevented() {
             return;
         }
@@ -2891,7 +3446,9 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // copy-then-paste round trip inside the app behaves like `copy_text()` did.
     // `clipboardData` is empty during a copy (the page writes to it, it does not
     // read), so the selection is the honest source.
-    let copy_closure = Closure::wrap(Box::new(move |event: web_sys::ClipboardEvent| {
+    // It reads nothing a `ClipboardEvent` adds, so it takes a plain `Event`
+    // rather than a typed parameter wasm-bindgen would cast unchecked (#811).
+    let copy_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
         if event.default_prevented() {
             return;
         }

@@ -61,10 +61,10 @@ fn a_range_starting_at_a_removed_space_stays_where_it_was() {
     assert_eq!((sp_range.flat_start, sp_range.flat_end), (1, 1));
 }
 
-/// Collapsed runs and expanded tabs, both directions: a DOM offset inside a
-/// collapsed run maps to the end of what was kept (`flat_for_dom`'s clamp),
-/// and a flat offset inside an expanded tab rounds up to after the tab, as the
-/// old tab walk did (`dom_for_flat`'s clamp).
+/// Collapsed runs and preserved tabs, both directions: a DOM offset inside a
+/// collapsed run maps to the end of what was kept (`flat_for_dom`'s clamp).
+/// A preserved tab is one flat byte, a space widened to its stop (#1122), so
+/// its offsets map one to one.
 #[test]
 fn offset_maps_clamp_inside_collapsed_runs_and_tabs() {
     let (mut d, p) = root("");
@@ -91,15 +91,15 @@ fn offset_maps_clamp_inside_collapsed_runs_and_tabs() {
     d.append_child(p, t);
     d.resolve_layout(800.0, 600.0);
     let il = d.tree.get(p.0).unwrap().text_layout.as_ref().unwrap();
-    assert_eq!(il.text_content, "a        b");
-    let f2d: Vec<_> = (0..=10)
+    assert_eq!(il.text_content, "a  b");
+    let f2d: Vec<_> = (0..=4)
         .map(|f| {
             ifc_offset_to_dom_cursor(&il.text_ranges, f, false)
                 .unwrap()
                 .1
         })
         .collect();
-    assert_eq!(f2d, vec![0, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4]);
+    assert_eq!(f2d, vec![0, 1, 2, 3, 4]);
 }
 
 /// The IFC root's own wavy underline ends at the end of the laid-out text,

@@ -44,7 +44,7 @@ use crate::render_surface::{SurfacePointer, SurfacePointerKind};
 
 #[cfg(feature = "gpu")]
 use super::desktop::WgpuRenderer;
-use super::layer_shell::{Gesture, GestureKind, LayerRequest, WindowSurfaceKind};
+use super::layer_shell::{Gesture, GestureKind, LayerRequest, LayerState, WindowSurfaceKind};
 use super::overlay_window::{self, Backend, WindowSteps};
 use super::window::WinitWindow;
 use super::window_geometry::{self, SavedGeometry};
@@ -55,16 +55,6 @@ fn arm_layer_output_retry() {
     rinch_core::set_timeout(1000, || {
         send_native_event(RinchNativeEvent::RetryLayerOutput)
     });
-}
-
-/// The main window's state while it is a Wayland layer surface (#1523).
-#[derive(Debug, Clone, Copy)]
-struct LayerWindow {
-    /// Top-left on its output, logical: its margins. `None` while the
-    /// compositor centres it (no position was given yet).
-    position: Option<(f64, f64)>,
-    /// A move or resize following the pointer.
-    gesture: Option<Gesture>,
 }
 
 #[cfg(feature = "debug")]
@@ -540,7 +530,7 @@ pub struct RinchRuntime {
     saved_geometry: SavedGeometry,
     /// The live main window's layer-shell state, while it is a Wayland
     /// layer surface (#1523).
-    layer: Option<LayerWindow>,
+    layer: Option<LayerState>,
     /// The output `set_current_window_output` named, over
     /// `WindowProps::output` (#1523).
     output_override: Option<Option<String>>,
@@ -1120,10 +1110,7 @@ impl RinchRuntime {
             if let Some((x, y)) = position {
                 self.saved_geometry.position = Some(Position::Logical(LogicalPosition::new(x, y)));
             }
-            LayerWindow {
-                position,
-                gesture: None,
-            }
+            LayerState::new(position)
         });
     }
 
@@ -1138,18 +1125,18 @@ impl RinchRuntime {
     /// Move the live layer surface to `position` (logical, on its output),
     /// anchored top-left.
     fn place_layer(&mut self, position: (f64, f64)) {
-        let (Some(layer), Some(w)) = (self.layer.as_mut(), self.window.as_ref()) else {
+        let Some(layer) = self.layer.as_mut() else {
             return;
         };
-        layer.position = Some(position);
+        layer.place(position);
         #[cfg(target_os = "linux")]
-        {
+        if let Some(w) = self.window.as_ref() {
             use winit::platform::wayland::{LayerShellAnchor, WindowExtWayland};
             let raw = w.raw();
             raw.set_layer_shell_anchor(LayerShellAnchor::TOP_LEFT);
+            // Confirmed by a `WindowEvent::Moved` (`layer_moved`).
             raw.set_layer_shell_margins(super::layer_shell::margins(position));
         }
-        let _ = w;
         self.saved_geometry.position = Some(Position::Logical(LogicalPosition::new(
             position.0, position.1,
         )));
@@ -1186,6 +1173,9 @@ impl RinchRuntime {
                 });
                 let p = super::layer_shell::centred_position(output.unwrap_or(size), size);
                 self.place_layer(p);
+                if let Some(layer) = self.layer.as_mut() {
+                    layer.place_centred(p);
+                }
                 p
             }
         };
@@ -1203,15 +1193,10 @@ impl RinchRuntime {
         local: (f64, f64),
         event_loop: &dyn ActiveEventLoop,
     ) -> bool {
-        let Some((gesture, position)) = self
-            .layer
-            .as_ref()
-            .and_then(|l| Some((l.gesture?, l.position?)))
-        else {
+        let Some(resize) = self.follow_layer_gesture(local) else {
             return false;
         };
-        let (new_position, new_size) = gesture.update(local, position);
-        if let GestureKind::Resize(_) = gesture.kind {
+        if let Some(new_size) = resize {
             let current = self.window.as_ref().map(|w| {
                 let s = w.raw().surface_size().to_logical::<f64>(w.scale_factor());
                 (s.width, s.height)
@@ -1226,10 +1211,39 @@ impl RinchRuntime {
                 }
             }
         }
-        if new_position != position {
+        true
+    }
+
+    /// The window-free half of [`Self::update_layer_gesture`]: move the
+    /// surface where the gesture puts the pointer at `local`, read against
+    /// where the compositor has the surface ([`LayerState`]). `None` when no
+    /// gesture runs; `Some(Some(size))` for a resize, which the caller asks
+    /// the window for.
+    fn follow_layer_gesture(&mut self, local: (f64, f64)) -> Option<Option<(f64, f64)>> {
+        let layer = self.layer.as_ref()?;
+        let kind = layer.gesture?.kind;
+        let (new_position, new_size) = layer.follow(local)?;
+        if Some(new_position) != layer.position {
             self.place_layer(new_position);
         }
-        true
+        Some(matches!(kind, GestureKind::Resize(_)).then_some(new_size))
+    }
+
+    /// Whether the GPU surface is made to composite with its alpha (#1523):
+    /// for a `WindowProps::transparent` window.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    fn gpu_surface_transparent(&self) -> bool {
+        self.app.is_transparent()
+    }
+
+    /// A layer surface's `WindowEvent::Moved` (#1523): the compositor has
+    /// processed the move to `physical`, and pointer positions after this
+    /// are over the surface there.
+    fn layer_moved(&mut self, physical: (i32, i32)) {
+        let scale = self.scale_factor();
+        if let Some(layer) = self.layer.as_mut() {
+            layer.moved(super::layer_shell::moved_origin(physical, scale));
+        }
     }
 
     /// The compositor closed the layer surface (#1523): its output was
@@ -1292,7 +1306,7 @@ impl RinchRuntime {
         // creates.
         #[cfg(feature = "gpu")]
         if !hidden {
-            self.renderer = start_gpu_renderer(&*window);
+            self.renderer = start_gpu_renderer(&*window, self.gpu_surface_transparent());
         }
         #[cfg(not(feature = "gpu"))]
         announce_software_renderer();
@@ -1420,7 +1434,7 @@ impl RinchRuntime {
 
         #[cfg(feature = "gpu")]
         {
-            self.renderer = start_gpu_renderer(&*window);
+            self.renderer = start_gpu_renderer(&*window, self.gpu_surface_transparent());
         }
 
         // The new window gets the menu bar the first one had (#1533: on
@@ -2600,6 +2614,10 @@ impl ApplicationHandler for RinchRuntime {
         }
         self.flush_pointer_move(event_loop);
 
+        // A layer surface's move reached the compositor (#1523).
+        if let WindowEvent::Moved(p) = &event {
+            self.layer_moved((p.x, p.y));
+        }
         // Keep the published geometry (#1546) current.
         if matches!(
             event,
@@ -3630,7 +3648,10 @@ fn black_backdrop_layer(
 /// When the GPU would not start and the choice does not allow a fallback
 /// (`Renderer::Gpu`, or a device the app configured itself).
 #[cfg(feature = "gpu")]
-fn start_gpu_renderer(window: &dyn winit::window::Window) -> Option<WgpuRenderer> {
+fn start_gpu_renderer(
+    window: &dyn winit::window::Window,
+    transparent: bool,
+) -> Option<WgpuRenderer> {
     use super::renderer::{OnGpuFailure, on_gpu_failure, resolved, set_gpu_presenting, tries_gpu};
 
     let choice = resolved();
@@ -3640,7 +3661,12 @@ fn start_gpu_renderer(window: &dyn winit::window::Window) -> Option<WgpuRenderer
         return None;
     }
     let size = window.surface_size();
-    match WgpuRenderer::try_new(window, size.width.max(1), size.height.max(1)) {
+    match WgpuRenderer::try_new_transparent(
+        window,
+        size.width.max(1),
+        size.height.max(1),
+        transparent,
+    ) {
         Ok(gpu) => {
             set_gpu_presenting(true);
             Some(gpu)
@@ -5383,5 +5409,95 @@ mod pointer_source_tests {
             surface_pointer_of_button(&ButtonSource::Mouse(MouseButton::Left), true, false);
         assert_eq!(released.pressure, 0.0);
         assert_eq!(released.id, 1);
+    }
+}
+
+#[cfg(test)]
+mod layer_drag_tests {
+    use super::*;
+    use rinch_core::element::WindowProps;
+
+    fn component(scope: &mut RenderScope) -> NodeHandle {
+        scope.create_element("div")
+    }
+
+    /// The runtime's half of a layer drag (#1523), with no window: each
+    /// pointer position is followed against where the compositor has the
+    /// surface, which only `layer_moved` changes. The compositor here holds
+    /// `lag` margin commits before it processes the oldest and reports it.
+    fn drag(lag: usize) -> (f64, f64) {
+        let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
+        let start = (80.0, 60.0);
+        let grab = (16.0, 22.0);
+        let mut layer = LayerState::new(Some(start));
+        layer.gesture = Some(Gesture::start(GestureKind::Move, grab, start, (84.0, 84.0)));
+        runtime.layer = Some(layer);
+        let mut origin = start;
+        let mut commits = std::collections::VecDeque::new();
+        let mut pointer = (start.0 + grab.0, start.1 + grab.1);
+        for _ in 0..60 {
+            pointer = (pointer.0 + 10.0, pointer.1 + 6.0);
+            let before = runtime.layer.unwrap().position;
+            let resize = runtime.follow_layer_gesture((pointer.0 - origin.0, pointer.1 - origin.1));
+            assert_eq!(resize, Some(None), "a move asks for no size");
+            let after = runtime.layer.unwrap().position;
+            if after != before {
+                commits.push_back(after.unwrap());
+            }
+            while commits.len() > lag {
+                origin = commits.pop_front().unwrap();
+                runtime.layer_moved((origin.0 as i32, origin.1 as i32));
+            }
+        }
+        while let Some(o) = commits.pop_front() {
+            origin = o;
+            runtime.layer_moved((o.0 as i32, o.1 as i32));
+        }
+        assert_eq!(runtime.layer.unwrap().position, Some(origin));
+        origin
+    }
+
+    #[test]
+    fn a_layer_drag_lands_under_the_pointer_at_every_lag() {
+        for lag in [0, 1, 4, 60] {
+            assert_eq!(drag(lag), (680.0, 420.0), "lag {lag}");
+        }
+    }
+
+    #[test]
+    fn no_gesture_follows_nothing() {
+        let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
+        assert_eq!(runtime.follow_layer_gesture((5.0, 5.0)), None, "no layer");
+        runtime.layer = Some(LayerState::new(Some((10.0, 10.0))));
+        assert_eq!(runtime.follow_layer_gesture((5.0, 5.0)), None, "no gesture");
+        assert_eq!(runtime.layer.unwrap().position, Some((10.0, 10.0)));
+    }
+
+    #[test]
+    fn a_layer_resize_asks_for_its_size() {
+        let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
+        let mut layer = LayerState::new(Some((100.0, 100.0)));
+        layer.gesture = Some(Gesture::start(
+            GestureKind::Resize(rinch_platform::ResizeDirection::East),
+            (84.0, 40.0),
+            (100.0, 100.0),
+            (84.0, 84.0),
+        ));
+        runtime.layer = Some(layer);
+        assert_eq!(
+            runtime.follow_layer_gesture((94.0, 40.0)),
+            Some(Some((94.0, 84.0)))
+        );
+    }
+
+    #[test]
+    fn only_a_transparent_window_gets_a_blending_gpu_surface() {
+        let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
+        assert!(!runtime.gpu_surface_transparent());
+        runtime.app.window_props = Some(WindowProps {
+            transparent: true,
+            ..Default::default()
+        });
+        assert!(runtime.gpu_surface_transparent());
     }
 }

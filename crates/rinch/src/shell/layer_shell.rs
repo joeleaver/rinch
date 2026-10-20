@@ -250,9 +250,202 @@ pub(crate) fn surface_kind_of(window: &dyn winit::window::Window) -> WindowSurfa
     WindowSurfaceKind::Toplevel
 }
 
+/// A layer surface's position state (#1523): where rinch has put it, and
+/// where the compositor has it.
+///
+/// A move sets the margins and commits at once, but the compositor keeps
+/// reporting the pointer over the surface's old place until it has processed
+/// that commit. The winit fork follows each margin commit with a
+/// `wl_display.sync` and delivers a `WindowEvent::Moved` when its callback
+/// is done, in order with the pointer's events: a pointer position before it
+/// is over the old place, one after it over the new one. So every position
+/// is read against [`LayerState::applied`], the origin the last `Moved`
+/// reported, and none is dropped or counted twice. Reading them against the
+/// position last *set* instead added each move again for every position
+/// already on its way, and a fast drag swung further each way until the
+/// window was off every screen. That holds for a **move**. A west or north
+/// resize also changes the size, which the compositor applies with a later
+/// buffer than the margin commit the sync follows, so at high pointer rates
+/// (about 8 ms between events) it can still land off (#1604).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct LayerState {
+    /// Top-left on its output, logical: its margins, as last set. `None`
+    /// while the compositor centres it (no position was given yet).
+    pub position: Option<(f64, f64)>,
+    /// Where the compositor has the surface: the origin pointer positions
+    /// are relative to. Follows [`Self::position`] once a `Moved` confirms it.
+    applied: Option<(f64, f64)>,
+    /// A move or resize following the pointer.
+    pub gesture: Option<Gesture>,
+}
+
+impl LayerState {
+    /// A surface created at `position` (`None`: centred by the compositor).
+    pub(crate) fn new(position: Option<(f64, f64)>) -> Self {
+        LayerState {
+            position,
+            applied: position,
+            gesture: None,
+        }
+    }
+
+    /// The surface is moved to `position`; the compositor has it once its
+    /// `Moved` arrives.
+    pub(crate) fn place(&mut self, position: (f64, f64)) {
+        self.position = Some(position);
+    }
+
+    /// A surface the compositor centred, found at `position` and anchored
+    /// there: it is where the compositor already has it.
+    pub(crate) fn place_centred(&mut self, position: (f64, f64)) {
+        self.position = Some(position);
+        self.applied = Some(position);
+    }
+
+    /// The compositor has processed a move: pointer positions from here on
+    /// are over the surface at `origin` (logical).
+    pub(crate) fn moved(&mut self, origin: (f64, f64)) {
+        self.applied = Some(origin);
+    }
+
+    /// Where the compositor has the surface.
+    pub(crate) fn applied(&self) -> Option<(f64, f64)> {
+        self.applied.or(self.position)
+    }
+
+    /// The position and size the gesture gives for the pointer at `local`
+    /// (logical, over the surface as the compositor has it); `None` when no
+    /// gesture is running.
+    pub(crate) fn follow(&self, local: (f64, f64)) -> Option<((f64, f64), (f64, f64))> {
+        Some(self.gesture?.update(local, self.applied()?))
+    }
+}
+
+/// The origin a `WindowEvent::Moved` reports for a layer surface, logical:
+/// the fork sends the margins times the scale, and margins are whole logical
+/// pixels.
+pub(crate) fn moved_origin(physical: (i32, i32), scale: f64) -> (f64, f64) {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    (
+        (physical.0 as f64 / scale).round(),
+        (physical.1 as f64 / scale).round(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A compositor model for [`LayerState`]: it holds the surface at an
+    /// origin, reports the pointer relative to it, and applies the client's
+    /// margin commits in order, each followed by its `Moved`.
+    struct Compositor {
+        origin: (f64, f64),
+        /// Margin commits not processed yet.
+        commits: std::collections::VecDeque<(f64, f64)>,
+    }
+
+    impl Compositor {
+        fn local(&self, pointer: (f64, f64)) -> (f64, f64) {
+            (pointer.0 - self.origin.0, pointer.1 - self.origin.1)
+        }
+        /// Process one commit; the client reads its `Moved`.
+        fn apply_one(&mut self, state: &mut LayerState) -> bool {
+            let Some(o) = self.commits.pop_front() else {
+                return false;
+            };
+            self.origin = o;
+            state.moved(moved_origin(
+                ((o.0 * 1.5).round() as i32, (o.1 * 1.5).round() as i32),
+                1.5,
+            ));
+            true
+        }
+    }
+
+    /// The client's side of one pointer position: follow it, commit a move.
+    fn pointer_at(state: &mut LayerState, comp: &mut Compositor, pointer: (f64, f64)) {
+        let (p, _) = state.follow(comp.local(pointer)).expect("a gesture");
+        if Some(p) != state.position {
+            state.place(p);
+            comp.commits.push_back(p);
+        }
+    }
+
+    /// Drag the grip at `grab` (over the surface at `start`) through `steps`
+    /// of `step`, the compositor processing `lag` commits behind; then the
+    /// rest. Returns where the surface ends and the largest distance it was
+    /// put from where the pointer wanted it.
+    fn drag(steps: usize, step: (f64, f64), lag: usize) -> ((f64, f64), f64) {
+        let start = (80.0, 60.0);
+        let grab = (16.0, 22.0);
+        let mut state = LayerState::new(Some(start));
+        state.gesture = Some(Gesture::start(GestureKind::Move, grab, start, (84.0, 84.0)));
+        let mut comp = Compositor {
+            origin: start,
+            commits: Default::default(),
+        };
+        let mut pointer = (start.0 + grab.0, start.1 + grab.1);
+        let mut worst: f64 = 0.0;
+        for _ in 0..steps {
+            pointer = (pointer.0 + step.0, pointer.1 + step.1);
+            pointer_at(&mut state, &mut comp, pointer);
+            let want = (pointer.0 - grab.0, pointer.1 - grab.1);
+            let p = state.position.unwrap();
+            worst = worst.max((p.0 - want.0).abs().max((p.1 - want.1).abs()));
+            while comp.commits.len() > lag {
+                comp.apply_one(&mut state);
+            }
+        }
+        while comp.apply_one(&mut state) {}
+        (comp.origin, worst)
+    }
+
+    /// Every position is read against where the compositor had the surface
+    /// when it sent it, so a drag lands where the pointer ends at every
+    /// lag between commit and `Moved`: none (a slow mouse), a few, and all
+    /// of them (one burst read in one batch). Reading against the position
+    /// last set put the burst at 18380,11040 (the runaway); dropping the
+    /// positions read before a `Moved` left it 590 px short.
+    #[test]
+    fn a_drag_lands_under_the_pointer_at_every_lag() {
+        for lag in [0, 1, 2, 3, 7, 60] {
+            let (end, worst) = drag(60, (10.0, 6.0), lag);
+            assert_eq!(end, (680.0, 420.0), "lag {lag}");
+            assert_eq!(
+                worst, 0.0,
+                "lag {lag}: every move goes where the pointer is"
+            );
+        }
+    }
+
+    #[test]
+    fn a_moved_origin_is_the_logical_margins() {
+        assert_eq!(moved_origin((150, 90), 1.5), (100.0, 60.0));
+        assert_eq!(moved_origin((101, 61), 1.0), (101.0, 61.0));
+        assert_eq!(moved_origin((250, 175), 1.25), (200.0, 140.0));
+        assert_eq!(moved_origin((7, 9), 0.0), (7.0, 9.0), "a zero scale is 1x");
+    }
+
+    #[test]
+    fn a_centred_surface_is_applied_where_it_is_found() {
+        let mut state = LayerState::new(None);
+        assert_eq!(state.applied(), None);
+        state.place_centred((598.0, 358.0));
+        assert_eq!(state.applied(), Some((598.0, 358.0)));
+        state.place((600.0, 360.0));
+        assert_eq!(
+            state.applied(),
+            Some((598.0, 358.0)),
+            "a move is not where the compositor has the surface until its Moved"
+        );
+        state.moved((600.0, 360.0));
+        assert_eq!(state.applied(), Some((600.0, 360.0)));
+    }
 
     fn props(non_activating: bool, layer: Option<bool>) -> WindowProps {
         WindowProps {

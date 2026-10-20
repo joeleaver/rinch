@@ -45,8 +45,9 @@ use rinch_core::dom::NodeId;
 ///
 /// **All three clipboard flags are `false` when `rinch` was built without the
 /// `clipboard` feature**: there is no clipboard for Copy or Paste to reach, and
-/// an enabled Cut would delete text it never copied. (The chord's own
-/// no-clipboard Cut is pre-existing and tracked as #823.)
+/// an enabled Cut would delete text it never copied. The chord and
+/// [`RinchApp::perform_text_edit`] agree: without the feature, Cut on an
+/// `<input>`/`<textarea>` does nothing (issue #823), as it does in the editor.
 ///
 /// A `disabled` field never takes the keyboard (issue #315), so it never
 /// reaches here; a `readonly` one does, with `can_cut` and `can_paste` off —

@@ -148,7 +148,8 @@ static PENDING_IMAGES: Mutex<Vec<PendingImage>> = Mutex::new(Vec::new());
 /// already" with one lookup however many are (issue #1473: it scanned the
 /// whole queue per live document, under this mutex). A document with nothing
 /// queued has no entry: only [`reload_image`] makes one, only for a document
-/// in [`LIVE_DOCUMENTS`], and the drain and [`purge_pending`] remove it whole.
+/// for a document in [`LIVE_DOCUMENTS`] whose cache holds the source, and the
+/// drain and [`purge_pending`] remove it whole.
 static PENDING_RELOADS: LazyLock<Mutex<HashMap<u64, ReloadQueue>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -173,14 +174,28 @@ impl ReloadQueue {
     }
 }
 
-/// The `doc_key` of every live [`RinchDocument`](crate::RinchDocument), so a
-/// reload asked for from any thread reaches each document's cache and no
+/// The `doc_key` of every live [`RinchDocument`](crate::RinchDocument), with
+/// the sources its [`ImageCache`] holds (`data:` ones aside), so a reload asked
+/// for from any thread reaches each document that knows the source, and no
 /// entry is ever queued for a document that can no longer drain it.
-static LIVE_DOCUMENTS: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+///
+/// A document whose cache does not hold a source has nothing to reload for it
+/// ([`ImageCache::begin_reload`] answers `false`), so it is not told (#1493):
+/// a queued entry opens its frame gate ([`has_pending`]), which made every
+/// other window or embedded context lay itself out and ask for a redraw on
+/// each reload, to find nothing to do. A source joins the set the first time
+/// the cache records it and stays for the document's life, as cache entries
+/// do.
+static LIVE_DOCUMENTS: LazyLock<Mutex<HashMap<u64, HashSet<Arc<str>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Cache of loaded images, keyed by source string (file path or URL).
 pub struct ImageCache {
     entries: HashMap<String, ImageState>,
+    /// The document this cache belongs to (`0`: none, as for a cache made on
+    /// its own), whose entry in [`LIVE_DOCUMENTS`] records each source the
+    /// cache comes to hold, so that [`reload_image`] reaches it.
+    doc_key: u64,
     /// Sources whose in-flight answer was discarded by [`Self::drain_pending`]
     /// because a reload was asked for meanwhile: the document starts them again.
     retries: Vec<String>,
@@ -204,9 +219,30 @@ impl ImageCache {
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            doc_key: 0,
             retries: Vec::new(),
             reloading: HashMap::new(),
         }
+    }
+
+    /// Bind the cache to its document, so [`reload_image`] reaches the
+    /// sources it comes to hold.
+    pub(crate) fn set_doc_key(&mut self, doc_key: u64) {
+        self.doc_key = doc_key;
+    }
+
+    /// Record `src` in `state`. Every entry is made here, so that a source
+    /// new to the cache is noted in [`LIVE_DOCUMENTS`] for [`reload_image`].
+    fn put(&mut self, src: String, state: ImageState) {
+        if self.doc_key != 0 && !src.starts_with("data:") && !self.entries.contains_key(&src) {
+            let mut live = LIVE_DOCUMENTS.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(held) = live.get_mut(&self.doc_key)
+                && !held.contains(src.as_str())
+            {
+                held.insert(Arc::from(src.as_str()));
+            }
+        }
+        self.entries.insert(src, state);
     }
 
     /// Get a decoded image if available.
@@ -224,8 +260,7 @@ impl ImageCache {
 
     /// Mark a source as currently loading.
     pub fn mark_loading(&mut self, src: String) {
-        self.entries
-            .insert(src, ImageState::Loading { reload: false });
+        self.put(src, ImageState::Loading { reload: false });
     }
 
     /// Whether loading or decoding `src` failed (and nothing has asked for it
@@ -287,12 +322,12 @@ impl ImageCache {
 
     /// Insert a decoded image into the cache.
     pub fn insert_decoded(&mut self, src: String, image: DecodedImage) {
-        self.entries.insert(src, ImageState::Decoded(image));
+        self.put(src, ImageState::Decoded(image));
     }
 
     /// Mark a source as failed.
     pub fn mark_failed(&mut self, src: String, error: String) {
-        self.entries.insert(src, ImageState::Failed(error));
+        self.put(src, ImageState::Failed(error));
     }
 
     /// Drain this document's entries from the pending images queue and insert
@@ -331,13 +366,13 @@ impl ImageCache {
             match item.result {
                 Ok(img) => {
                     newly_decoded.push(item.src.clone());
-                    self.entries.insert(item.src, ImageState::Decoded(img));
+                    self.put(item.src, ImageState::Decoded(img));
                 }
                 Err(e) => {
                     tracing::warn!("Image load failed for {}: {}", item.src, e);
                     // A reload of a picture that is on screen keeps it there.
                     if !matches!(self.entries.get(&item.src), Some(ImageState::Decoded(_))) {
-                        self.entries.insert(item.src, ImageState::Failed(e));
+                        self.put(item.src, ImageState::Failed(e));
                     }
                 }
             }
@@ -413,7 +448,7 @@ pub fn request_image_load(doc_key: u64, src: String, loader: Arc<dyn ImageLoader
             // push, and `purge_pending` leaves it first, so a document that
             // drops meanwhile either purges this answer or stops it here.
             let live = LIVE_DOCUMENTS.lock().unwrap_or_else(|e| e.into_inner());
-            if !live.contains(&doc_key) {
+            if !live.contains_key(&doc_key) {
                 return;
             }
             PENDING_IMAGES
@@ -486,7 +521,9 @@ pub fn has_pending(doc_key: u64) -> bool {
 /// for once more, so an answer that was already on its way cannot beat the
 /// reload, and any number of reloads asked for while one load is out cost one
 /// more load; a source no element has asked for is left alone (it loads fresh
-/// when one does). `data:` sources never change and are ignored.
+/// when one does) — and is not even queued for that document, so a reload
+/// wakes only the documents that hold the source (#1493). `data:` sources
+/// never change and are ignored.
 ///
 /// `src` is the cache key: it must be the source **exactly as the element or
 /// stylesheet spelled it**, scheme case included (`MyApp:x` and `myapp:x` go
@@ -498,8 +535,10 @@ pub fn reload_image(src: &str) {
     {
         let live = LIVE_DOCUMENTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut reloads = PENDING_RELOADS.lock().unwrap_or_else(|e| e.into_inner());
-        for &doc_key in live.iter() {
-            reloads.entry(doc_key).or_default().push(src);
+        for (&doc_key, held) in live.iter() {
+            if held.contains(src) {
+                reloads.entry(doc_key).or_default().push(src);
+            }
         }
     }
     // Promptness only, as for a finished decode: `has_pending` is what makes
@@ -519,7 +558,8 @@ fn note_reload_queue_step() {
 /// How many times [`reload_image`] has asked, on the calling thread, whether
 /// a source was already queued for a document: the cost of its
 /// de-duplication as a count (issue #1473). One set lookup per live document
-/// per call, where it was one per queue entry scanned.
+/// that holds the source (#1493), per call, where it was one per queue entry
+/// scanned.
 #[doc(hidden)]
 pub fn reload_queue_steps() -> u64 {
     RELOAD_QUEUE_STEPS.with(|steps| steps.get())
@@ -559,7 +599,8 @@ pub(crate) fn register_document(doc_key: u64) {
     LIVE_DOCUMENTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .push(doc_key);
+        .entry(doc_key)
+        .or_default();
 }
 
 /// Remove all queued entries for a document that is being torn down.
@@ -573,7 +614,7 @@ pub fn purge_pending(doc_key: u64) {
     LIVE_DOCUMENTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .retain(|key| *key != doc_key);
+        .remove(&doc_key);
     PENDING_IMAGES
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -618,6 +659,18 @@ mod reload_queue_tests {
             register_document(key);
             Live(key, mine)
         }
+        /// Say this key's (absent) cache holds `srcs`, as an `ImageCache`
+        /// bound to it would record them: a reload reaches only a document
+        /// that holds the source (#1493).
+        fn holding(self, srcs: &[&str]) -> Self {
+            let mut live = LIVE_DOCUMENTS.lock().unwrap_or_else(|e| e.into_inner());
+            let held = live.get_mut(&self.0).expect("registered");
+            for src in srcs {
+                held.insert(Arc::from(*src));
+            }
+            drop(live);
+            self
+        }
         fn taken(&self) -> Vec<String> {
             take_pending_reloads(self.0)
                 .iter()
@@ -642,7 +695,7 @@ mod reload_queue_tests {
     #[test]
     fn sources_are_taken_in_the_order_first_named_each_once() {
         let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-        let doc = Live::new(1, "q1:");
+        let doc = Live::new(1, "q1:").holding(&["q1:a", "q1:b", "q1:c"]);
         for src in ["q1:c", "q1:a", "q1:c", "q1:b", "q1:a", "q1:c"] {
             reload_image(src);
         }
@@ -657,7 +710,7 @@ mod reload_queue_tests {
     #[test]
     fn a_source_named_again_after_a_drain_is_queued_again() {
         let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-        let doc = Live::new(2, "q2:");
+        let doc = Live::new(2, "q2:").holding(&["q2:a", "q2:b"]);
         reload_image("q2:a");
         reload_image("q2:b");
         assert_eq!(doc.taken(), ["q2:a", "q2:b"]);
@@ -669,8 +722,8 @@ mod reload_queue_tests {
     #[test]
     fn each_document_holds_and_gives_up_its_own() {
         let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-        let a = Live::new(3, "q3:");
-        let b = Live::new(4, "q3:");
+        let a = Live::new(3, "q3:").holding(&["q3:x", "q3:y"]);
+        let b = Live::new(4, "q3:").holding(&["q3:x", "q3:y"]);
         reload_image("q3:x");
         assert_eq!(b.queued(), 1, "control: it was queued for both");
         let gone = b.0;

@@ -355,6 +355,7 @@ Tooltip { label: "Top tooltip", position: "top",
 | `Divider` | Horizontal/vertical separator |
 | `Image` | Responsive image with fallback |
 | `List` / `ListItem` | Styled list |
+| `Tree` | Hierarchical rows with expand/collapse, selection, drag-to-rearrange and keyboard navigation |
 
 ```rust
 // Avatar
@@ -411,6 +412,111 @@ List {
     ListItem { "Third item" }
 }
 ```
+
+#### Rearranging a Tree by dragging
+
+A `Tree` with `draggable: true` (and a `tree` state) makes every row a drag
+source and a drop target. The Tree knows rows, not what they mean: it offers
+a drop, the app judges it, and the app moves its own data when it arrives.
+
+```rust
+let tree = UseTreeReturn::new(UseTreeOptions::default());
+let data = Signal::new(initial_rows());
+rsx! {
+    Tree {
+        tree: Some(tree),
+        data_source: Some(Rc::new(move || data.get())),
+        draggable: true,
+        // Only folders take children; a file splits into before / after.
+        accepts_children: Some(Rc::new(|node: &TreeNodeData| node.has_children())),
+        judge_drop: Some(Rc::new(|drop: &TreeDrop| {
+            if drop.parent.as_deref() == Some("archive") { DropVerdict::Refused } else { DropVerdict::Allowed }
+        })),
+        ondrop: move |drop: TreeDrop| data.update(|rows| move_rows(rows, &drop)),
+    }
+}
+```
+
+- **Where a drop lands** follows the part of the row under the pointer: its
+  top quarter is before it, its middle half inside it (last), its bottom
+  quarter after it. After an expanded row with children is first inside it.
+  A row `accepts_children` refuses has no inside: half before, half after.
+- **Depth at the end of a group.** After the last row of a group, the
+  pointer's column picks how far out the drop goes, which is how a drag
+  outdents. The column is read in units of `indent` when it is set, and
+  otherwise in the indent the tree measures from its rendered rows. A dragged
+  row is placed as if collapsed, so its own bottom edge can take it out of its
+  group even when it is expanded and last.
+- **Drawing.** The row under the pointer draws the drop: a line before or
+  after it at the depth the drop takes, or an outline for "inside"; a refused
+  drop is drawn in the error color and is never delivered.
+- **Reporting.** `ondropchange` reports the drop on offer each time it
+  changes, for an app that says in words where the rows will land; `ondrop`
+  delivers an allowed one. Resting inside a collapsed row with children
+  expands it after `hover_expand_ms` (600 by default).
+
+#### The Tree's keyboard
+
+With `keyboard: true` (and a `tree` state) the Tree follows the WAI-ARIA
+tree pattern. It is **one Tab stop**: the cursor row (the first row before
+there is one) has `tabindex="0"` and every other row `-1`, so Tab moves into
+the tree and out of it in one press. While one of its rows has the keyboard
+(a click, Tab, or `TreeController::focus()`), the keys act from that row:
+
+- Up/Down, Home/End and PageUp/PageDown move the cursor over the rows drawn;
+  Right expands a closed row or steps into an open one; Left collapses an
+  open row or steps out to the parent; `*` (Shift+8 or the numpad's)
+  expands the cursor row's siblings; typed letters find the next row whose
+  text starts with them (`label_of` gives that text when labels carry
+  something else).
+- **Selection.** In a single-select tree the selection follows the cursor,
+  as a click would select: only with `select_on_click`, never a disabled row
+  (the cursor can rest on one), and `onselect` is told. In a `multiple` tree
+  the arrows select nothing; Space toggles the cursor row.
+- The cursor row takes the keyboard and is scrolled into view; `oncursor`
+  tells the app once it has rested `cursor_delay_ms` (120), for an app that
+  opens what the cursor is on without opening every row it passes.
+- `handle_key` sees every key first. `TreeKey::drop_for(TreeMove::Indent)`
+  (and `Outdent`, `Up`, `Down`) turns one into the `TreeDrop` a drag would
+  make, refused exactly as the drag would refuse it, so keyboard moves are
+  delivered by the same code as dropped ones:
+
+```rust
+Tree {
+    tree: Some(tree),
+    data_source: Some(Rc::new(move || data.get())),
+    keyboard: true,
+    select_on_click: true,
+    handle_key: Some(Rc::new(move |key: &TreeKey| {
+        if key.alt && key.shift && key.key == "ArrowUp" {
+            if let Some(drop) = key.drop_for(TreeMove::Up) {
+                data.update(|rows| move_rows(rows, &drop));
+            }
+            return true;
+        }
+        false
+    })),
+}
+```
+
+- Keys are the tree's only while one of its rows has the keyboard: a field
+  inside a row (a rename box) keeps its own, and so does everything outside.
+- A cursor row drawn again while it has the keyboard (its data changed, or
+  the app moved it) gets the keyboard back. A cursor row the app deletes
+  hands the cursor, and the keyboard, to the row drawn below it (above it at
+  the end). The tree never takes the keyboard back from a field it went to
+  in the meantime.
+- The row that has the keyboard is the `treeitem`, carrying `aria-selected`,
+  `aria-expanded`, `aria-level` and `aria-disabled`; its list item is
+  `role="none"` and its group is `aria-owns`ed. A `multiple` tree is
+  `aria-multiselectable`.
+- The cursor row carries a ring (`rinch-tree__node-content--cursor`, an inset
+  shadow) while the tree has the keyboard (`.rinch-tree--focused`), in place
+  of the focus outline. The row an "inside" drop is drawn on keeps its
+  outline, so a cursor row being dropped into shows both.
+
+See the Tree section of [Component Props](component-props.md#tree) for every
+prop and type.
 
 ### Navigation
 

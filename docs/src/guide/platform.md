@@ -51,10 +51,10 @@ CSS, so a stylesheet rule or an inline `style` for `width`/`height` wins (it
 still outranks the built-in browser-default sheet). Together they
 also give the image an aspect ratio until it loads, so the common responsive
 reset `img { width: 100%; height: auto }` keeps the right height from the
-first frame; once the image has loaded its own ratio is used. That ratio
-cannot be switched off: desktop reads no `aspect-ratio` property (#1286), so
-`aspect-ratio: auto` on such an image changes nothing, where a browser would
-drop the mapped ratio. And an image that has not loaded or failed reserves
+first frame; once the image has loaded its own ratio is used. The ratio is
+a hint too (`aspect-ratio: auto w / h`), so your own `aspect-ratio` replaces
+it: `aspect-ratio: auto` drops it, and `aspect-ratio: 1` makes even a loaded
+image square. And an image that has not loaded or failed reserves
 its attributes' box even with `alt` text, where a browser lays the alt text
 out instead. `<video>` reads
 the same two attributes with the same ratio, and `<iframe>` reads them with
@@ -190,7 +190,7 @@ rinch::image::reload_image("asset:photo-42");
 Every `<img>` and `background-image` naming that source, in every window, loads
 it again and takes its size. The same call refreshes a picture whose bytes
 changed under an unchanged source: the old picture stays on screen until the new
-one has decoded.
+one has decoded. A window that never named the source is not woken by the call.
 
 - **Pass the source exactly as the element spelled it.** The source string is
   the key, scheme case included: `reload_image("asset:photo-42")` does not reach
@@ -346,6 +346,11 @@ if delete {
 
 Enable with: `features = ["clipboard"]`
 
+Without it, the built-in text fields and the rich-text editor have no
+clipboard either: Cut and Copy (the chords and the context menu alike) do
+nothing — a Cut does not delete text it could not copy — and Paste inserts
+nothing. (`android` turns the feature on.)
+
 Cross-platform clipboard support for text and images.
 
 ### Text Operations
@@ -500,6 +505,15 @@ takes the paste at its **current** selection if it still holds the keyboard
 from the same focus gesture; if focus moved on while the read was in flight,
 the paste is dropped rather than aimed at a field the user did not paste into.
 A read-only field starts no read at all.
+
+A single-line field (an `<input>`, anything but a `<textarea>`) folds the line
+breaks of pasted or IME-committed text the way Chrome does: line breaks at the
+end are dropped and every other one becomes a space, so `"a\nb"` pastes as
+`"a b"`. A `<textarea>` keeps them. A value the *app* writes (a `value`
+attribute, `value_fn`) follows HTML's value sanitization instead, on desktop as
+in a browser: an `<input>` of a text type strips its line breaks, so `"a\nb"`
+shows and edits as `"ab"` (`url` and `email` also trim surrounding
+whitespace), while the attribute keeps what was written.
 
 ### Web: reaching content copied outside the app
 
