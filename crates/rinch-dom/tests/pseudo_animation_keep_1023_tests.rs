@@ -319,3 +319,39 @@ fn a_kept_inline_after_takes_new_content_into_the_originators_layout() {
         "its layout names the new text node"
     );
 }
+
+/// A list marker is still generated afresh, and one that appears on a
+/// restyle (an `<li>` back to `display: list-item`) is a structural change
+/// the item's inline layout has to see.
+#[test]
+fn a_list_marker_that_appears_on_a_restyle_is_laid_out() {
+    let mut doc = RinchDocument::new();
+    doc.load_css("li { font-size: 16px; line-height: 20px } .nomark { display: block }");
+    let body = doc.body();
+    let ul = doc.create_element("ul");
+    doc.append_child(body, ul);
+    let li = doc.create_element("li");
+    doc.set_attribute(li, "class", "nomark");
+    let t = doc.create_text("item");
+    doc.append_child(li, t);
+    doc.append_child(ul, li);
+    doc.resolve_layout(VW, VH);
+    let text = |doc: &RinchDocument| {
+        doc.tree
+            .get(li.0)
+            .unwrap()
+            .text_layout
+            .as_ref()
+            .map(|l| l.text_content.clone())
+            .unwrap_or_default()
+    };
+    assert_eq!(text(&doc), "item", "no marker while display: block");
+
+    doc.set_attribute(li, "class", "");
+    doc.resolve_layout(VW, VH);
+    assert!(
+        text(&doc).starts_with('\u{2022}') && text(&doc).ends_with("item"),
+        "the marker is laid out: {:?}",
+        text(&doc)
+    );
+}
