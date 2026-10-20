@@ -685,3 +685,262 @@ impl LayerCompositor {
         pass.draw(0..3, 0..1);
     }
 }
+
+#[cfg(test)]
+mod gpu_alpha_tests {
+    //! Real GPU fixtures for the present passes (#1523). They need an
+    //! adapter, so they are `#[ignore]`d: run them with
+    //! `cargo test -p rinch --features gpu --lib -- --ignored gpu_alpha`.
+    use super::*;
+    use vello::kurbo::{Affine, Rect};
+    use vello::peniko::{Color, Fill};
+
+    const W: u32 = 8;
+    const H: u32 = 4;
+
+    fn device() -> (Device, Queue) {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::default(),
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("a GPU adapter (these fixtures are #[ignore]d for hosts without one)");
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            .expect("a device")
+    }
+
+    fn texture(device: &Device, format: TextureFormat, usage: wgpu::TextureUsages) -> Texture {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("gpu_alpha_tests"),
+            size: wgpu::Extent3d {
+                width: W,
+                height: H,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage,
+            view_formats: &[],
+        })
+    }
+
+    /// Vello's straight-alpha output for a frame whose left half is
+    /// `rgba(255, 255, 255, 0.5)` and right half unpainted, over a
+    /// transparent base: what a transparent window renders.
+    fn vello_frame(device: &Device, queue: &Queue) -> Texture {
+        let target = texture(
+            device,
+            TextureFormat::Rgba8Unorm,
+            wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+        );
+        let mut renderer = vello::Renderer::new(
+            device,
+            vello::RendererOptions {
+                antialiasing_support: vello::AaSupport::area_only(),
+                use_cpu: false,
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
+        )
+        .expect("vello");
+        let mut scene = vello::Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::new([1.0, 1.0, 1.0, 0.5]),
+            None,
+            &Rect::new(0.0, 0.0, (W / 2) as f64, H as f64),
+        );
+        let view = target.create_view(&TextureViewDescriptor::default());
+        renderer
+            .render_to_texture(
+                device,
+                queue,
+                &scene,
+                &view,
+                &vello::RenderParams {
+                    base_color: Color::TRANSPARENT,
+                    width: W,
+                    height: H,
+                    antialiasing_method: vello::AaConfig::Area,
+                },
+            )
+            .expect("render");
+        target
+    }
+
+    /// Read `texture` back as RGBA8 rows (no padding: `W * 4` = 32 bytes,
+    /// padded to wgpu's 256-byte row alignment).
+    fn read(device: &Device, queue: &Queue, texture: &Texture) -> Vec<[u8; 4]> {
+        let row = 256u32;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (row * H) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(H),
+                },
+            },
+            wgpu::Extent3d {
+                width: W,
+                height: H,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(Some(encoder.finish()));
+        buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let data = buffer.slice(..).get_mapped_range();
+        (0..H)
+            .flat_map(|y| {
+                let data = &data;
+                (0..W).map(move |x| {
+                    let i = (y * row + x * 4) as usize;
+                    [data[i], data[i + 1], data[i + 2], data[i + 3]]
+                })
+            })
+            .collect()
+    }
+
+    fn present(alpha: PresentAlpha) -> Vec<[u8; 4]> {
+        let (device, queue) = device();
+        let frame = vello_frame(&device, &queue);
+        let compositor = LayerCompositor::new(&device, TextureFormat::Rgba8Unorm);
+        let surface = texture(
+            &device,
+            TextureFormat::Rgba8Unorm,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        let view = surface.create_view(&TextureViewDescriptor::default());
+        let mut encoder = device.create_command_encoder(&Default::default());
+        compositor.present(&device, &mut encoder, &frame, &view, alpha);
+        queue.submit(Some(encoder.finish()));
+        read(&device, &queue, &surface)
+    }
+
+    fn near(a: [u8; 4], b: [u8; 4]) -> bool {
+        a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 1)
+    }
+
+    /// 50% white over a transparent window reaches a `PreMultiplied`
+    /// surface as `(128, 128, 128, 128)`, what the software renderer and a
+    /// browser composite (over green: `(128, 228, 128)`). The straight copy
+    /// it replaces handed over `(255, 255, 255, 128)`, which KWin showed as
+    /// opaque white; the unpainted half stays `(0, 0, 0, 0)`.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_alpha_premultiply_on_present() {
+        let px = present(PresentAlpha::Premultiply);
+        assert!(near(px[0], [128, 128, 128, 128]), "painted: {:?}", px[0]);
+        assert_eq!(px[W as usize - 1], [0, 0, 0, 0], "unpainted");
+        let straight = present(PresentAlpha::Straight);
+        assert!(
+            near(straight[0], [255, 255, 255, 128]),
+            "Vello's own output is straight: {:?}",
+            straight[0]
+        );
+    }
+
+    /// A UI pixel blended over an opaque green layer comes out as the
+    /// browser's `(128, 228, 128)`: `fs_ui` premultiplies Vello's straight
+    /// output before the `One, OneMinusSrcAlpha` blend (it added the
+    /// straight colour and saturated to `(255, 255, 255)`).
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_alpha_ui_over_a_layer() {
+        let (device, queue) = device();
+        let frame = vello_frame(&device, &queue);
+        let compositor = LayerCompositor::new(&device, TextureFormat::Rgba8Unorm);
+        let target = texture(
+            &device,
+            TextureFormat::Rgba8Unorm,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        let view = target.create_view(&TextureViewDescriptor::default());
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 200.0 / 255.0,
+                            b: 0.0,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
+        compositor.overlay_ui(&device, &mut encoder, &frame, &view);
+        queue.submit(Some(encoder.finish()));
+        let px = read(&device, &queue, &target);
+        assert!(near(px[0], [128, 228, 128, 255]), "over green: {:?}", px[0]);
+        assert_eq!(px[W as usize - 1], [0, 200, 0, 255], "unpainted: the layer");
+
+        // And the composited (premultiplied) pixels made straight again for
+        // a `PostMultiplied` surface.
+        let post = texture(
+            &device,
+            TextureFormat::Rgba8Unorm,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        let post_view = post.create_view(&TextureViewDescriptor::default());
+        let premultiplied = present_into(&device, &queue, &compositor, &frame, PresentAlpha::Premultiply);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        compositor.present(
+            &device,
+            &mut encoder,
+            &premultiplied,
+            &post_view,
+            PresentAlpha::Unpremultiply,
+        );
+        queue.submit(Some(encoder.finish()));
+        let px = read(&device, &queue, &post);
+        assert!(near(px[0], [255, 255, 255, 128]), "round trip: {:?}", px[0]);
+        assert_eq!(px[W as usize - 1], [0, 0, 0, 0]);
+    }
+
+    fn present_into(
+        device: &Device,
+        queue: &Queue,
+        compositor: &LayerCompositor,
+        source: &Texture,
+        alpha: PresentAlpha,
+    ) -> Texture {
+        let out = texture(
+            device,
+            TextureFormat::Rgba8Unorm,
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+        );
+        let view = out.create_view(&TextureViewDescriptor::default());
+        let mut encoder = device.create_command_encoder(&Default::default());
+        compositor.present(device, &mut encoder, source, &view, alpha);
+        queue.submit(Some(encoder.finish()));
+        out
+    }
+}
