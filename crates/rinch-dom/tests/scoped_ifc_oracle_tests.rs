@@ -1494,6 +1494,25 @@ fn scoped_pass_matches_the_whole_document_pass_on_random_documents() {
     eprintln!("not the scoped pass's: {stats:?}");
 }
 
+/// Seeds of the long run that found an IFC root's content signature falling
+/// behind its measures (review of #1627): an atomic inline resized outside a
+/// structural pass left the signature hashing its old size, so a later pass
+/// that found it at that size again served sizes measured at the size in
+/// between. 1733 went through `remeasure_dirty_atomic_inlines` (the scoped
+/// twin wrong), 1118, 1589 and 2809 through `invalidate_ifc_of_atomic_inline`
+/// (the whole-document twin wrong, `scoped_better`). The anonymous block boxes
+/// a structural pass keeps since #964 are what made either reachable.
+#[test]
+fn the_seeds_where_a_signature_fell_behind_its_measures() {
+    for seed in [1118, 1589, 1733, 2809] {
+        let stats = run_random(seed..seed + 1, 40).unwrap();
+        assert_eq!(
+            stats.scoped_better, 0,
+            "seed {seed}: the whole-document twin differs from fresh: {stats:?}"
+        );
+    }
+}
+
 /// The long run. `cargo test -p rinch-dom --test scoped_ifc_oracle_tests --
 /// --ignored` (release is much faster).
 #[test]

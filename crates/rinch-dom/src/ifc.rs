@@ -7162,8 +7162,9 @@ impl RinchDocument {
         // Measures cached under the stale size would be served straight
         // back. Only this root's: it used to clear the whole cache, which
         // re-shaped every IFC root in the document whenever one
-        // percentage-sized chip moved by half a pixel.
-        self.tree.forget_ifc_measures(root_id);
+        // percentage-sized chip moved by half a pixel. The signature goes
+        // with them: it hashes the chip's old size.
+        self.tree.forget_ifc_measures_and_signature(root_id);
     }
 
     /// Measure the min-content size of each `auto`-width atomic inline in
