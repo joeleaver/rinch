@@ -473,3 +473,16 @@ fn p9b_shift_space_keeps_the_selection() {
         sel(&p)
     );
 }
+
+/// P12: Enter on the cursor row (the runtime's activation, a click) in a
+/// multiple tree: what happens to a multi-selection.
+#[test]
+fn p12_enter_keeps_a_multi_selection() {
+    let mut p = build(MULTI, flat(&["a", "b", "c"]), &[]);
+    click(&mut p, "a", Modifiers::default());
+    click(&mut p, "c", ctrl());
+    assert_eq!(sel(&p), ["a", "c"], "control");
+    press(&mut p, KeyCode::Enter, None, Modifiers::default());
+    eprintln!("P12 selection after Enter {:?} onselect {:?}", sel(&p), p.selects.borrow());
+    assert_eq!(sel(&p), ["a", "c"], "Enter collapsed the selection");
+}
