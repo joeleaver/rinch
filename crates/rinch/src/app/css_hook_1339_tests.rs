@@ -110,19 +110,32 @@ fn settle(app: &mut RinchApp, nth: f32) {
 /// the resolved one — reading `opacity`/`visibility` right after `settle`
 /// would see a frame of the animation, not the end state a correctness
 /// fixture wants.
+///
+/// Ticks until no transition is left (at most four rounds): since #936 a
+/// dropdown's shown `visibility` is `inherit`, so a nested card's panel takes
+/// its value from the outer panel's *animated* one, and when both open at once
+/// the inner panel's own transition starts only when the outer one's ends — a
+/// second transition, as in a browser, that one far-future tick does not reach.
 fn finish_transitions(app: &mut RinchApp) {
-    {
+    for round in 1..=4 {
+        {
+            let doc = app.doc.as_ref().unwrap();
+            let mut d = doc.borrow_mut();
+            let far_future = std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64()
+                * 1000.0
+                + 10_000.0 * f64::from(round);
+            rinch_dom::transition::tick_transitions(&mut d.tree, far_future);
+        }
+        app.resolve_and_repaint(VIEWPORT.0 + 0.5 * round as f32, VIEWPORT.1);
         let doc = app.doc.as_ref().unwrap();
-        let mut d = doc.borrow_mut();
-        let far_future = std::time::SystemTime::now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64()
-            * 1000.0
-            + 10_000.0;
-        rinch_dom::transition::tick_transitions(&mut d.tree, far_future);
+        if doc.borrow().tree.active_transitions.is_empty() {
+            return;
+        }
     }
-    app.resolve_and_repaint(VIEWPORT.0 + 0.5, VIEWPORT.1);
+    panic!("transitions still running after four far-future ticks");
 }
 
 /// Simulate the pointer genuinely sitting over `node` — marks `node` and
