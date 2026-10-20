@@ -53,7 +53,8 @@ pub fn styles() -> String {
    identical. */
 .rinch-hover-card:hover .rinch-hover-card__dropdown:not(.rinch-hover-card:hover .rinch-hover-card:not(:hover) .rinch-hover-card__dropdown) {
     opacity: 1;
-    visibility: visible;
+    /* `inherit`, not `visible` (#936): stays hidden inside a hidden container. */
+    visibility: inherit;
     transition-delay: var(--rinch-hover-card-open-delay, 0ms);
 }
 
@@ -68,7 +69,8 @@ pub fn styles() -> String {
    proves the card is open, so it cannot leak a closed nested card's panel. */
 .rinch-hover-card__dropdown:hover {
     opacity: 1;
-    visibility: visible;
+    /* `inherit`, not `visible` (#936): stays hidden inside a hidden container. */
+    visibility: inherit;
 }
 
 /* Paused while hidden (#912). Hidden is the card's resting state, and a hidden

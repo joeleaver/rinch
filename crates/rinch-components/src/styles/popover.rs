@@ -62,9 +62,15 @@ pub fn styles() -> String {
    hidden, because B sits between A and C's panel) — not re-measured here
    since the mechanism is identical; `css_hook_778_tests` pins the shape that
    is. */
+/* `inherit`, not `visible` (#936): a declared `visible` overrides an inherited
+   `hidden`, so an open popover inside a closed `Drawer` or a closed outer
+   popover's dropdown showed through its closed container. `inherit` is
+   `visible` under a visible container and `hidden` under a hidden one, and the
+   #759 hand-down reads it as inherited, so the panel stays on screen while a
+   drawer around it slides closed. */
 .rinch-popover--opened .rinch-popover__dropdown:not(.rinch-popover--opened .rinch-popover:not(.rinch-popover--opened) .rinch-popover__dropdown) {
     opacity: 1;
-    visibility: visible;
+    visibility: inherit;
     transition: opacity 150ms ease, transform 150ms ease;
 }
 

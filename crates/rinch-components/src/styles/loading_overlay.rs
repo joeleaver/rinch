@@ -19,7 +19,9 @@ pub fn styles() -> String {
 
 .rinch-loading-overlay--visible {
     opacity: 1;
-    visibility: visible;
+    /* `inherit`, not `visible` (#936): a visible overlay inside a closed
+       `Drawer` stays hidden with it. */
+    visibility: inherit;
 }
 
 /* Overlay background - uses CSS variable for dark mode support */
