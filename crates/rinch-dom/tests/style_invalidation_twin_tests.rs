@@ -1345,3 +1345,29 @@ fn random_stylesheet_subsets_match_a_fresh_document() {
     }
     CSS_CUR.with(|c| *c.borrow_mut() = CSS.to_string());
 }
+
+/// #956 (review of #1624): the class toggled on a **grandchild** of the moved
+/// element, so the whole re-cascaded subtree forgets its snapshots, not just
+/// the root and its children.
+#[test]
+fn a_change_undone_on_a_grandchild_of_a_moved_element_restyles() {
+    let mut s = Spec::new();
+    let target = s.add(0, 0, "div", &["b", "d"]);
+    let old = s.add(target, 0, "div", &[]);
+    let x = s.add(old, 0, "div", &[]);
+    let m = s.add(x, 0, "div", &[]);
+    let y = s.add(m, 0, "span", &["b"]);
+    batched_scenario(
+        "grandchild",
+        s,
+        &[
+            Op::ToggleClass(y, "d"),
+            Op::Move {
+                node: x,
+                parent: target,
+                index: 1,
+            },
+            Op::ToggleClass(y, "d"),
+        ],
+    );
+}
