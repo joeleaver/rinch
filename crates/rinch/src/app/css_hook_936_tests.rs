@@ -248,9 +248,12 @@ fn a_visible_loading_overlay_in_a_closed_drawer_is_hidden() {
 /// A hovered `HoverCard` inside a `visibility: hidden` container keeps its
 /// dropdown hidden; in a visible one hovering shows it.
 ///
-/// Kills either of the two reveal rules in `styles/hover_card.rs` put back to
-/// `visibility: visible`: the hover reaches the card and the dropdown alike, so
-/// both rules match.
+/// Kills the first reveal rule in `styles/hover_card.rs`
+/// (`.rinch-hover-card:hover .rinch-hover-card__dropdown:not(…)`) put back to
+/// `visibility: visible`. The second (`.rinch-hover-card__dropdown:hover`) is
+/// changed too but no fixture can see it: it matches only when the first does
+/// (a hovered dropdown's card is hovered), and the first has the higher
+/// specificity — measured, putting it back alone survives.
 #[test]
 fn a_hovered_card_in_a_hidden_container_stays_hidden() {
     for hidden in [true, false] {
@@ -299,9 +302,11 @@ fn a_hovered_card_in_a_hidden_container_stays_hidden() {
 /// slides closed its root is held `visible`, and the open popover's panel
 /// inside it stays on screen with it, then hides at the end.
 ///
-/// Kills a hand-down (`transition::visibility_is_inherited`) that read a
-/// declared `inherit` as the node's own value: the panel would vanish on the
-/// close's first frame under a drawer still on screen.
+/// Kills a hand-down that skips the panel (measured: `visibility_is_inherited`
+/// with its shared-struct fast path off **and** `inherit` read as the node's
+/// own value — the mid-close assertion fails). Either half alone survives: the
+/// panel's `InheritedBox` is its parent's (an `inherit` of an inherited
+/// property copies nothing), so the fast path answers before the rule walk.
 #[test]
 fn an_open_popover_stays_shown_while_its_drawer_slides_closed() {
     let drawer_open = Signal::new(true);
