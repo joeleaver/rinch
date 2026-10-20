@@ -228,6 +228,7 @@ impl RinchDocument {
             let filter_creates_stacking_context = pseudo_style.has_non_identity_filter();
             self.tree.nodes[span_raw].computed_style = pseudo_style;
             self.tree.nodes[span_raw].is_pseudo_element = true;
+            self.tree.nodes[span_raw].is_generated_after = !is_before;
             // #542: the same layout parent that blockified this generated box
             // decides whether it is a flex/grid item for
             // `Node::creates_stacking_context`'s flex/grid z-index creator.

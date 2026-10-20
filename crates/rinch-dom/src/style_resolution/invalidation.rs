@@ -683,6 +683,34 @@ impl RinchDocument {
         }
     }
 
+    /// Where an insertion verb may put `child` in `parent`'s child list, given
+    /// the index `pos` it asked for (counted after `child` has left the list):
+    /// never before a generated box at the start (a `::before`, a list marker)
+    /// and never after an `::after` at the end (#1629). CSS 2.1 §12.1 makes
+    /// them the element's first and last child boxes whatever is inserted
+    /// later, and inserting a child does not re-cascade its parent, so nothing
+    /// else would put them back. Reads the first and last child only: O(1),
+    /// and an element with no generated box answers `pos`. A generated box
+    /// itself is placed by `resolve_pseudo_element`, never through this.
+    pub(crate) fn clamp_between_generated(&self, parent: usize, child: usize, pos: usize) -> usize {
+        if self.tree.nodes[child].is_pseudo_element {
+            return pos;
+        }
+        let children = &self.tree.nodes[parent].children;
+        let generated = |i: Option<&usize>, after: bool| {
+            i.and_then(|&c| self.tree.nodes.get(c))
+                .is_some_and(|n| n.is_pseudo_element && n.is_generated_after == after)
+        };
+        let len = children.len();
+        let lo = usize::from(generated(children.first(), false));
+        let hi = if generated(children.last(), true) {
+            len - 1
+        } else {
+            len
+        };
+        pos.clamp(lo, hi.max(lo))
+    }
+
     /// Take `child` out of `parent`'s child list and answer the index it
     /// held (the list's length if it was not there), for
     /// [`Self::note_child_list_changed`]. One scan, where finding the index
