@@ -355,3 +355,38 @@ fn a_list_marker_that_appears_on_a_restyle_is_laid_out() {
         text(&doc)
     );
 }
+
+/// The same, where nothing about the `<li>`'s box changes: the marker comes
+/// back with an inherited `list-style-type` from the list.
+#[test]
+fn a_list_marker_that_comes_back_with_its_list_style_is_laid_out() {
+    let mut doc = RinchDocument::new();
+    doc.load_css("li { font-size: 16px; line-height: 20px } .none { list-style-type: none }");
+    let body = doc.body();
+    let ul = doc.create_element("ul");
+    doc.set_attribute(ul, "class", "none");
+    doc.append_child(body, ul);
+    let li = doc.create_element("li");
+    let t = doc.create_text("item");
+    doc.append_child(li, t);
+    doc.append_child(ul, li);
+    doc.resolve_layout(VW, VH);
+    let text = |doc: &RinchDocument| {
+        doc.tree
+            .get(li.0)
+            .unwrap()
+            .text_layout
+            .as_ref()
+            .map(|l| l.text_content.clone())
+            .unwrap_or_default()
+    };
+    assert_eq!(text(&doc), "item", "no marker under list-style-type: none");
+
+    doc.set_attribute(ul, "class", "");
+    doc.resolve_layout(VW, VH);
+    assert!(
+        text(&doc).starts_with('\u{2022}') && text(&doc).ends_with("item"),
+        "the marker is laid out: {:?}",
+        text(&doc)
+    );
+}
