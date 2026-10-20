@@ -250,15 +250,25 @@ fn r5_a_keyboard_tree_is_one_tab_stop() {
     assert_eq!(stops, 1, "{stops} rows are Tab stops");
 }
 
-/// R6: focus on one row, cursor on another (Tab moved the focus): the
-/// arrows act from the cursor, not the focused row, and the focus jumps.
+/// R6: focus on one row, cursor on another (a scripted focus, or a click
+/// on a row's own control): the arrows act from the focused row. (Tab can
+/// no longer do it: a keyboard tree is one Tab stop, R5, so Tab leaves.)
 #[test]
 fn r6_an_arrow_acts_from_the_focused_row() {
     let mut f = fixture();
     let a1 = centre(&f.app, row(&f.app, "a1"));
     click(&mut f, a1);
-    // Tab: the next row (a2) takes the keyboard; the cursor stays on a1.
+    // Tab leaves the tree: the next stop is the box after it.
     press(&mut f, KeyCode::Tab, None, Modifiers::default());
+    let away = find(&f.app, |n| has_class(n, "away"));
+    assert!(
+        matches!(f.app.focus_target, FocusTarget::Node(id) if id == away),
+        "Tab left the tree"
+    );
+    // A scripted focus puts the keyboard on a2; the cursor stays on a1.
+    let a2 = row(&f.app, "a2");
+    f.app.try_focus_input(a2);
+    f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
     assert_eq!(f.state.cursor.get().as_deref(), Some("a1"));
     press(&mut f, KeyCode::ArrowDown, None, Modifiers::default());
     assert_eq!(
