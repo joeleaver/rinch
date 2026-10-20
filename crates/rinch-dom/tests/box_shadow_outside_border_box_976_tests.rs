@@ -106,6 +106,9 @@ fn skia_inside(p: &TinySkiaPainter, r: f64) -> u64 {
 
 // ── Backend-neutral: the commands both painters are handed ─────────────────
 
+/// An open clip: its fill rule, transform and shape.
+type Clip = (Fill, Affine, PaintShape);
+
 enum Cmd {
     Fill(Fill, Affine, PaintShape),
 }
@@ -113,9 +116,9 @@ enum Cmd {
 #[derive(Default)]
 struct Recorder {
     /// Open clips; `None` is a layer that clips nothing.
-    stack: Vec<Option<(Fill, Affine, PaintShape)>>,
+    stack: Vec<Option<Clip>>,
     /// Each fill with the clips open when it was made.
-    fills: Vec<(Cmd, Vec<(Fill, Affine, PaintShape)>)>,
+    fills: Vec<(Cmd, Vec<Clip>)>,
 }
 
 fn covers(fill: Fill, transform: Affine, shape: &PaintShape, p: Point) -> bool {
@@ -330,4 +333,84 @@ fn the_clip_leaves_the_shadows_outer_edge_alone() {
     }
     assert_eq!(alpha(&p, LEFT + BOX + 19.0, TOP + 60.0), 255);
     assert_eq!(skia_inside(&p, 0.0), 0);
+}
+
+/// The clip follows the element's transform: the whole rotated border box,
+/// 1.5px in from its edge, stays empty — not just a disc both the rotated and
+/// the unrotated box contain (review of #1638: a clip pushed with the identity
+/// transform passed the disc and put 120742 alpha units here).
+#[test]
+fn the_whole_rotated_border_box_stays_empty() {
+    for (deg, shadow) in [
+        (45.0f64, "15px 0 0 rgb(0, 0, 0)"),
+        (20.0, "25px 25px 0 rgb(0, 0, 0)"),
+        (30.0, "0 8px 12px rgb(0, 0, 0)"),
+    ] {
+        let style = format!("transform: rotate({deg}deg); box-shadow: {shadow}");
+        let p = skia(&style);
+        let r = recorded(&style);
+        let centre = Point::new(LEFT + BOX / 2.0, TOP + BOX / 2.0);
+        let to_local = Affine::rotate(-deg.to_radians());
+        let half = BOX / 2.0 - 1.5;
+        let inner = Rect::new(-half, -half, half, half);
+        let mut inside = 0u64;
+        for y in 0..VH as i64 {
+            for x in 0..VW as i64 {
+                let pt = Point::new(x as f64 + 0.5, y as f64 + 0.5);
+                if inner.contains(to_local * (pt - centre.to_vec2())) {
+                    inside += alpha(&p, pt.x, pt.y) as u64;
+                    assert!(
+                        !r.paints(pt),
+                        "{deg}deg `{shadow}`: painter commands fill {pt:?} inside the box"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            inside, 0,
+            "{deg}deg `{shadow}`: tiny-skia painted inside the box"
+        );
+    }
+}
+
+/// The clip that keeps the shadow out of the box reaches two **device**
+/// pixels past the shadow, at any scale, so it never cuts the shadow's own
+/// outer edge. Under `scale(0.125)` a pad of two local pixels is a quarter of
+/// a device pixel and dimmed the edge pixel (review of #1638: up to 41 alpha
+/// levels). Checked on the commands: every point 1.5 device pixels outside a
+/// clipped shadow fill's device bounds is inside its even-odd clip.
+#[test]
+fn the_box_clip_reaches_past_the_shadow_in_device_pixels() {
+    for scale in [1.0f64, 0.5, 0.125, 3.0] {
+        let style = format!("transform: scale({scale}); box-shadow: 30.3px 30.3px 0 rgb(0, 0, 0)");
+        let r = recorded(&style);
+        let mut checked = 0;
+        for (Cmd::Fill(_, t, shape), clips) in &r.fills {
+            let cut: Vec<_> = clips
+                .iter()
+                .filter(|(f, _, _)| matches!(f, Fill::EvenOdd))
+                .collect();
+            if cut.is_empty() {
+                continue;
+            }
+            let b = t.transform_rect_bbox(shape.bounding_box());
+            let (mx, my) = ((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0);
+            // The far sides: the shadow is pushed right and down, so its
+            // near sides run through the box, where the clip is meant to cut.
+            for pt in [Point::new(b.x1 + 1.5, my), Point::new(mx, b.y1 + 1.5)] {
+                for (f, ct, cs) in &cut {
+                    assert!(
+                        covers(*f, *ct, cs, pt),
+                        "scale({scale}): the box clip stops short of {pt:?}, \
+                         1.5 device px outside the shadow"
+                    );
+                }
+            }
+            checked += 1;
+        }
+        assert!(
+            checked > 0,
+            "scale({scale}): no shadow was painted through the box clip"
+        );
+    }
 }
