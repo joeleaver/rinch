@@ -14,6 +14,7 @@
 //! `rinch-web` for the browser), not here.
 
 mod blink;
+mod clock;
 #[cfg(feature = "collaboration")]
 mod collab;
 mod component;
@@ -26,6 +27,7 @@ pub mod registry;
 mod styles;
 mod view;
 
+pub use clock::__set_history_clock;
 pub use component::Editor;
 pub use handle::{EditorHandle, REVEAL_PATIENCE, ScrollAlign, SelectionAnchor};
 pub use images::{

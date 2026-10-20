@@ -1347,9 +1347,11 @@ impl EditorHandle {
         if caller_build {
             core.untracked = Some(rinch_core::reactive::suspend_tracking());
         }
-        let Some(tr) = built else {
+        let Some(mut tr) = built else {
             return false;
         };
+        // The history's typing-merge window reads the time (#940).
+        crate::clock::stamp(&mut tr);
         let prev = core.state.clone();
         // The mapping has to be taken before `apply` consumes the transaction.
         let mapping = tr.mapping().clone();
@@ -1433,7 +1435,9 @@ impl EditorHandle {
         let mut result: Option<(EditorState, Mapping, Vec<Kept>)> = None;
         let applied = {
             let state = &core.state;
-            let mut dispatch = |tr: Transaction| {
+            let mut dispatch = |mut tr: Transaction| {
+                // The history's typing-merge window reads the time (#940).
+                crate::clock::stamp(&mut tr);
                 let mapping = tr.mapping().clone();
                 let kept = kept_nodes(&tr);
                 result = Some((state.apply(tr), mapping, kept));

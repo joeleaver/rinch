@@ -8,6 +8,10 @@ description = "Renderer-agnostic rich-text editor view for Rinch: projects the p
 [dependencies]
 rinch-core = { workspace = true }
 rinch-editor-core = { workspace = true }
+# The clock that stamps each local transaction for the history's typing-merge
+# window (#940). `web_time` is `std::time` on native and `performance.now()` in a
+# browser, where `std::time::Instant::now` panics.
+web-time = "1"
 # The Step↔CRDT collaboration adapter (yrs) — opt-in, so default (desktop AND web)
 # builds link zero CRDT code. Enabled by the desktop `rinch`/`rinch-web` facades
 # only when their own `collaboration` feature is on.
