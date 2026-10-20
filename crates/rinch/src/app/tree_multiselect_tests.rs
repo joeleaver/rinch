@@ -611,3 +611,259 @@ fn shift_space_on_a_disabled_row_runs_up_to_it() {
     shift_space(&mut p);
     assert_eq!(sel(&p), ["a", "b"]);
 }
+
+// ---- Review 2 probes (local only) --------------------------------------------
+mod review2_probes {
+    use super::*;
+    use rinch_components::DragValues;
+
+    type Customize = Rc<dyn Fn(&mut Tree, UseTreeReturn)>;
+
+    fn build2(opts: Opts, initial: Vec<TreeNodeData>, expanded: &[&str], custom: Customize) -> P {
+        let changes: Log<Vec<String>> = Rc::default();
+        let selects: Log<String> = Rc::default();
+        let rested: Log<String> = Rc::default();
+        let seen: Log<Seen> = Rc::default();
+        let signal: Rc<RefCell<Option<Signal<Vec<TreeNodeData>>>>> = Rc::default();
+        let state = UseTreeReturn::new(UseTreeOptions {
+            initial_expanded: expanded.iter().map(|s| s.to_string()).collect(),
+            multiple: opts.multiple,
+            ..Default::default()
+        });
+        let (c, o, r, s, sig) = (
+            changes.clone(),
+            selects.clone(),
+            rested.clone(),
+            seen.clone(),
+            signal.clone(),
+        );
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let (c, o, r, s) = (c.clone(), o.clone(), r.clone(), s.clone());
+            let data = Signal::new(initial.clone());
+            *sig.borrow_mut() = Some(data);
+            let mut tree = Tree {
+                data: data.get(),
+                data_source: Some(Rc::new(move || data.get())),
+                tree: Some(state),
+                select_on_click: opts.select_on_click,
+                keyboard: opts.keyboard,
+                cursor_delay_ms: 0,
+                onselect: Some(ValueCallback::new(move |v| o.borrow_mut().push(v))),
+                oncursor: Some(ValueCallback::new(move |v| r.borrow_mut().push(v))),
+                onselectionchange: Some(ValueCallback::new(move |v| c.borrow_mut().push(v))),
+                handle_key: Some(Rc::new(move |key: &TreeKey| {
+                    let drop = key.drop_for(TreeMove::Down).map(|d| (d.parent, d.slot));
+                    s.borrow_mut().push((
+                        key.key.clone(),
+                        key.below.clone(),
+                        key.carried().to_vec(),
+                        drop,
+                    ));
+                    false
+                })),
+                ..Default::default()
+            };
+            custom(&mut tree, state);
+            let tree = tree.render(scope, &[]);
+            let root = scope.create_element("div");
+            root.set_attribute("style", "width: 300px");
+            root.append_child(&tree);
+            root
+        });
+        app.mount_component(VIEWPORT.0, VIEWPORT.1);
+        {
+            let doc = app.doc.as_ref().unwrap();
+            let mut d = doc.borrow_mut();
+            d.load_css(&rinch_theme::generate_theme_css(
+                &rinch_theme::Theme::default(),
+            ));
+            d.load_css(&rinch_components::generate_component_css());
+            d.recompute_all_styles_full();
+        }
+        app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+        let data = signal.borrow().unwrap();
+        P {
+            app,
+            state,
+            data,
+            changes,
+            selects,
+            rested,
+            seen,
+        }
+    }
+
+    /// R1: the documented `drag_values` use ("an app that drags its whole
+    /// selection") now carries each selected row's whole selection.
+    #[test]
+    fn r1_drag_values_of_the_selection_is_not_doubled() {
+        let custom: Customize = Rc::new(|tree, state| {
+            let dv: DragValues = Rc::new(move |_v: &str| {
+                let mut s: Vec<String> = state.selected.get().into_iter().collect();
+                s.sort();
+                s
+            });
+            tree.drag_values = Some(dv);
+        });
+        let mut p = build2(MULTI, flat(&["a", "b", "c", "d"]), &[], custom);
+        click(&mut p, "a", Modifiers::default());
+        click(&mut p, "c", ctrl());
+        press(&mut p, KeyCode::ArrowUp, None, Modifiers::default()); // handle_key sees c's carried
+        let seen = p.seen.borrow();
+        eprintln!("R1 seen: {:?}", seen);
+        assert_eq!(seen[0].2, ["a", "c"], "carried");
+    }
+
+    /// R2: a single-select tree whose drag_values names app ids (not row
+    /// values): main's drop_for moved the cursor row; now nothing moves.
+    #[test]
+    fn r2_single_select_drop_for_with_app_ids() {
+        let custom: Customize = Rc::new(|tree, _| {
+            tree.drag_values = Some(Rc::new(|v: &str| vec![format!("id:{v}")]));
+        });
+        let opts = Opts {
+            multiple: false,
+            select_on_click: true,
+            keyboard: true,
+        };
+        let mut p = build2(opts, flat(&["a", "b", "c", "d"]), &[], custom);
+        click(&mut p, "b", Modifiers::default());
+        press(&mut p, KeyCode::ArrowLeft, None, Modifiers::default());
+        let seen = p.seen.borrow();
+        eprintln!("R2 seen: {:?}", seen);
+        assert_eq!(seen[0].3, Some((None, TreeSlot::After("c".into()))));
+    }
+
+    /// R3: drag_values in drag order (not tree order) — Down of {b,c} must
+    /// land after d.
+    #[test]
+    fn r3_block_order_from_drag_values() {
+        let custom: Customize = Rc::new(|tree, _| {
+            tree.drag_values = Some(Rc::new(|v: &str| {
+                if v == "b" || v == "c" {
+                    vec!["c".into(), "b".into()]
+                } else {
+                    vec![v.into()]
+                }
+            }));
+        });
+        let opts = Opts {
+            multiple: false,
+            select_on_click: true,
+            keyboard: true,
+        };
+        let mut p = build2(opts, flat(&["a", "b", "c", "d", "e"]), &[], custom);
+        click(&mut p, "b", Modifiers::default());
+        press(&mut p, KeyCode::ArrowLeft, None, Modifiers::default());
+        let seen = p.seen.borrow();
+        eprintln!("R3 seen: {:?}", seen);
+        assert_eq!(seen[0].3, Some((None, TreeSlot::After("d".into()))));
+    }
+
+    /// R4: a tree that does not select (the app owns the selection) keeps
+    /// what the app selected when a Left collapse hides it, as on main.
+    #[test]
+    fn r4_no_select_tree_keeps_the_apps_selection_on_collapse() {
+        let mut p = build(MULTI_NO_SELECT, nested(), &["a"]);
+        p.state
+            .controller
+            .set_selection(["a1".to_string(), "b".to_string()]);
+        p.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+        // Chevron-free: focus a via click (no select), Left collapses it.
+        click(&mut p, "b", Modifiers::default());
+        press(&mut p, KeyCode::ArrowUp, None, Modifiers::default());
+        press(&mut p, KeyCode::ArrowUp, None, Modifiers::default());
+        press(&mut p, KeyCode::ArrowUp, None, Modifiers::default());
+        eprintln!("R4 cursor {:?}", p.state.cursor.get());
+        press(&mut p, KeyCode::ArrowLeft, None, Modifiers::default());
+        eprintln!(
+            "R4 expanded a: {} sel {:?} reports {:?}",
+            p.state.controller.is_expanded("a"),
+            sel(&p),
+            p.changes.borrow()
+        );
+        assert!(!p.state.controller.is_expanded("a"));
+        assert_eq!(sel(&p), ["a1", "b"]);
+        assert!(
+            p.changes.borrow().is_empty(),
+            "a tree that selects nothing reports nothing"
+        );
+    }
+
+    /// R5: one click is one report (a collapse click that also selects).
+    #[test]
+    fn r5_a_collapse_click_reports_once() {
+        let mut p = build(MULTI, nested(), &["a"]);
+        click(&mut p, "a1", Modifiers::default());
+        click(&mut p, "b", ctrl());
+        let before = p.changes.borrow().len();
+        click(&mut p, "a", Modifiers::default());
+        let after: Vec<_> = p.changes.borrow()[before..].to_vec();
+        eprintln!("R5 reports {:?}", after);
+        assert_eq!(sel(&p), ["a"]);
+        assert_eq!(after, [vec!["a".to_string()]]);
+    }
+
+    /// R6: Enter on an open parent (expand_on_click) — one report.
+    #[test]
+    fn r6_enter_collapse_reports_once() {
+        let mut p = build(MULTI, nested(), &["a"]);
+        click(&mut p, "a1", Modifiers::default());
+        click(&mut p, "a", ctrl());
+        let before = p.changes.borrow().len();
+        press(&mut p, KeyCode::Enter, None, Modifiers::default());
+        let after: Vec<_> = p.changes.borrow()[before..].to_vec();
+        eprintln!(
+            "R6 sel {:?} reports {:?} expanded {}",
+            sel(&p),
+            after,
+            p.state.controller.is_expanded("a")
+        );
+        assert!(after.len() <= 1, "{after:?}");
+    }
+
+    /// R7: single-select click/Enter/Space unchanged (control).
+    #[test]
+    fn r7_single_select_enter_and_shift_space() {
+        let opts = Opts {
+            multiple: false,
+            select_on_click: true,
+            keyboard: true,
+        };
+        let mut p = build(opts, flat(&["a", "b", "c"]), &[]);
+        click(&mut p, "a", Modifiers::default());
+        press(&mut p, KeyCode::ArrowDown, None, Modifiers::default());
+        press(&mut p, KeyCode::Space, Some(" "), shift());
+        press(&mut p, KeyCode::ArrowDown, None, Modifiers::default());
+        press(&mut p, KeyCode::Enter, None, Modifiers::default());
+        eprintln!(
+            "R7 sel {:?} selects {:?} changes {:?}",
+            sel(&p),
+            p.selects.borrow(),
+            p.changes.borrow()
+        );
+        assert_eq!(sel(&p), ["c"]);
+        assert!(p.changes.borrow().is_empty());
+    }
+
+    /// R8: Shift+letter (type-ahead of a capital) in a multiple tree.
+    #[test]
+    fn r8_shift_letter_typeahead() {
+        let mut p = build(MULTI, flat(&["a", "b", "c"]), &[]);
+        click(&mut p, "a", Modifiers::default());
+        press(&mut p, KeyCode::KeyC, Some("C"), shift());
+        eprintln!("R8 cursor {:?} sel {:?}", p.state.cursor.get(), sel(&p));
+        assert_eq!(p.state.cursor.get().as_deref(), Some("c"));
+        assert_eq!(sel(&p), ["a"]);
+    }
+
+    /// R9: Ctrl-click selecting a row: is onselect told? (main: yes, a click)
+    #[test]
+    fn r9_ctrl_click_onselect() {
+        let mut p = build(MULTI, flat(&["a", "b", "c"]), &[]);
+        click(&mut p, "a", Modifiers::default());
+        click(&mut p, "c", ctrl());
+        click(&mut p, "b", shift());
+        eprintln!("R9 sel {:?} selects {:?}", sel(&p), p.selects.borrow());
+    }
+}
