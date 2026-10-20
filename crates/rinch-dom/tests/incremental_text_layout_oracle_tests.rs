@@ -1666,8 +1666,8 @@ fn an_edited_run_kept_through_a_whole_document_pass_lays_out_as_fresh() {
 }
 
 // The theme reaching the anonymous boxes' **inherited** typography from their
-// container: a whole-document pass keeps a box's layout only when the box's
-// inherited text style is what it was (#964), so each of these must re-shape.
+// container: the whole-document pass keeps each box (#964), so the restyle's
+// own invalidation of the container's boxes is what must re-shape them.
 theme_typography!(
     a_theme_font_size_reaches_two_anonymous_block_boxes,
     ".a { font-size: var(--tfs); line-height: 1.25; } .b { width: 2em; }",

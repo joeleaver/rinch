@@ -1713,7 +1713,6 @@ pub(crate) struct RetiredAnonBox {
     id: usize,
     parent: usize,
     run_members: Vec<usize>,
-    run_out_of_flow: Vec<(usize, usize)>,
 }
 
 struct LineUnit {
@@ -2511,9 +2510,9 @@ impl RinchDocument {
     /// would ever reach again.
     ///
     /// **A box whose container still lists it is retired, not freed** (#964):
-    /// it keeps its slab entry, its paint layout and its measured sizes, and is
-    /// handed back in a [`RetiredAnonBox`] for `create_anonymous_block_boxes`
-    /// to mint the same run's box into. A whole-document pass re-mints every
+    /// it keeps its slab entry, its paint layout and its measured sizes (with
+    /// the content signature), and is handed back in a [`RetiredAnonBox`] for
+    /// `create_anonymous_block_boxes` to mint the same run's box into. A whole-document pass re-mints every
     /// box in the document whatever changed (a theme change), and a scoped pass
     /// every box of its containers; freeing them re-shaped each box's text,
     /// because both the paint layout and the cached measures (with the content
@@ -2591,11 +2590,11 @@ impl RinchDocument {
                 // same id.
                 let node = &mut self.tree.nodes[anon_id];
                 node.parent = None;
+                node.run_out_of_flow.clear();
                 retired.push(RetiredAnonBox {
                     id: anon_id,
                     parent,
                     run_members: std::mem::take(&mut node.run_members),
-                    run_out_of_flow: std::mem::take(&mut node.run_out_of_flow),
                 });
                 continue;
             }
@@ -3058,17 +3057,14 @@ impl RinchDocument {
             for (run, run_out_of_flow) in runs {
                 // The box this run had last pass, retired by
                 // `cleanup_anonymous_block_boxes` (#964): same container, same
-                // members in the same order, the same out-of-flow boxes
-                // standing in it. Minted into its slab entry, so its id — which
-                // its measures are cached under and an out-of-flow box's
-                // `static_ifc_root` names — does not move.
+                // members in the same order. Minted into its slab entry, so its
+                // id — which its measures are cached under and an out-of-flow
+                // box's `static_ifc_root` names — does not move. (Anything
+                // else the run's lines are built from, the out-of-flow boxes
+                // standing in it included, is in the content signature.)
                 let kept = retired
                     .iter()
-                    .position(|r| {
-                        r.parent == parent_id
-                            && r.run_members == run
-                            && r.run_out_of_flow == run_out_of_flow
-                    })
+                    .position(|r| r.parent == parent_id && r.run_members == run)
                     .map(|i| retired.swap_remove(i));
                 // Create anonymous block box DOM node
                 let anon_id = match &kept {
@@ -3146,21 +3142,19 @@ impl RinchDocument {
 
                 match kept {
                     Some(_) => {
-                        // The old box's layout and measures hold while the text
-                        // style it inherits is the one it was minted with —
-                        // the cascade never reaches a box, so a container's
-                        // inherited change since then shows only here. What it
+                        // The old box's layout and measures are kept as they
+                        // stand, exactly as a box outside a scoped pass keeps
+                        // them: whatever has touched them since the last pass
+                        // has already dropped them. A restyle of the container
+                        // drops the layouts of every box it lists
+                        // (`invalidate_text_layout_for_node`, through
+                        // `run_boxes`), a change to a member drops its box's,
+                        // and `refresh_ifc_signatures`, which runs after this,
+                        // drops a box whose content signature moved. What it
                         // was last laid out and painted at is kept for damage
                         // (`prev_layout`, `painted`), as a box that stayed would.
                         let old = &mut self.tree.nodes[anon_id];
-                        if old
-                            .computed_style
-                            .same_text_layout_inputs(&anon_node.computed_style)
-                        {
-                            anon_node.text_layout = old.text_layout.take();
-                        } else {
-                            self.tree.ifc_measure_cache.remove(&anon_id);
-                        }
+                        anon_node.text_layout = old.text_layout.take();
                         anon_node.layout = old.layout;
                         anon_node.prev_layout = old.prev_layout;
                         anon_node.painted = old.painted.take();

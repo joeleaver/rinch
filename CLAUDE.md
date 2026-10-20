@@ -3169,9 +3169,10 @@ input a shaped layout is built from:
   element and the same comparison decides, so a dark-mode toggle whose
   variables reach no text re-shapes nothing, anonymous block boxes included:
   a structural IFC pass (whole-document or scoped) re-mints a box for the same
-  run into the old box's slab entry and keeps its paint layout and measures
-  while the text style it inherits from its container is unchanged (#964,
-  `RetiredAnonBox`). Regenerated `::before`/`::after`/list-marker content is
+  run (same container, same members) into the old box's slab entry and keeps
+  its paint layout and measures, as a box outside the pass's scope keeps them;
+  a container restyle drops them through `run_boxes`, and the content
+  signature drops them for a changed run (#964, `RetiredAnonBox`). Regenerated `::before`/`::after`/list-marker content is
   the one restyle that invalidates regardless, because the nodes an inline
   layout names were freed and minted again.
 - **A structural pass drops only the roots whose content moved**

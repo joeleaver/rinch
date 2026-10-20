@@ -2879,16 +2879,36 @@ fn anon_box_doc() -> (RinchDocument, NodeId) {
 /// had changed: `shape_measure_ifc` 2 → 0, `shape_ifc_build` 2 → 0,
 /// `ifc_signature_changes` 2 → 0, and the fresh Taffy leaf of each box is
 /// answered from the measures it kept, `ifc_measure_cache_hits` 0 → 2. The box
-/// keeps its slab id, its measures and its layout when it is minted for the
-/// same run, in the same container, with the same inherited text style. The
-/// `p` kept its layout before and after.
+/// keeps its slab id, its measures, its layout and what it was last painted at
+/// when it is minted for the same run in the same container. The `p` kept its
+/// layout before and after.
 #[test]
 fn a_whole_document_pass_keeps_an_anonymous_boxs_layout() {
-    let (mut doc, _div) = anon_box_doc();
+    let (mut doc, div) = anon_box_doc();
+    // What a host's paint does after drawing: record where each node was.
+    doc.tree.consume_paint_dirty();
+    let boxes = doc.tree.get(div.0).unwrap().run_boxes.clone();
+    assert_eq!(boxes.len(), 2, "precondition: two anonymous boxes");
+    let painted: Vec<_> = boxes
+        .iter()
+        .map(|&b| rinch_dom::paint::previous_painted_rect(&doc.tree, b, 1.0))
+        .collect();
+    assert!(
+        painted.iter().all(Option::is_some),
+        "precondition: both boxes were painted: {painted:?}"
+    );
     doc.recompute_all_styles_full();
     doc.tree.perf.reset();
     doc.resolve_layout(VP.0, VP.1);
     let s = doc.tree.perf.end_frame();
+    // The same boxes, still knowing where they were painted (the damage of
+    // their next change clears that), in the same order.
+    assert_eq!(doc.tree.get(div.0).unwrap().run_boxes, boxes);
+    let after: Vec<_> = boxes
+        .iter()
+        .map(|&b| rinch_dom::paint::previous_painted_rect(&doc.tree, b, 1.0))
+        .collect();
+    assert_eq!(after, painted, "a kept box forgot where it was painted");
     expect(
         "anonymous boxes: whole-document pass",
         &s,
@@ -2931,6 +2951,51 @@ fn a_scoped_pass_keeps_the_layout_of_an_unchanged_anonymous_box() {
             (IfcScopeNodes, 7),
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 3),
+        ],
+    );
+}
+
+/// The key a re-minted box is matched by is its **run**, not its container:
+/// with the container's first run gone, the second and third runs are still
+/// what they were, and each gets its own old box back (its slab id, which an
+/// out-of-flow box's `static_ifc_root` names). Matched by container alone,
+/// each would take the box before it (#964). Both are still shaped again: a
+/// member's index in the container is part of the content signature, and
+/// every later member's moved.
+#[test]
+fn a_removed_first_run_keeps_the_later_runs_boxes() {
+    let (mut doc, div) = anon_box_doc();
+    let li2 = el(&mut doc, div, "li", "");
+    text(&mut doc, li2, "item two");
+    text(&mut doc, div, " a third run after the second block");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    let before = doc.tree.get(div.0).unwrap().run_boxes.clone();
+    assert_eq!(before.len(), 3, "precondition: three anonymous boxes");
+    let first = doc.tree.get(div.0).unwrap().children[0];
+    doc.remove_child(div, NodeId(first));
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    assert_eq!(
+        doc.tree.get(div.0).unwrap().run_boxes,
+        before[1..].to_vec(),
+        "the later runs did not get their own boxes back"
+    );
+    expect(
+        "anonymous boxes: first run removed",
+        &s,
+        &[
+            (ShapeMeasureIfc, 2),
+            (ShapeIfcBuild, 2),
+            (IfcSignatureChanges, 2),
+            (LayoutResolves, 1),
+            (IfcSetupPasses, 1),
+            (IfcScopedPasses, 1),
+            (IfcScopeContainers, 1),
+            (IfcScopeNodes, 8),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 2),
         ],
     );
 }

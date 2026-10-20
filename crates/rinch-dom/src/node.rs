@@ -2786,8 +2786,7 @@ pub struct NodeTree {
     /// IDs of anonymous block box nodes created during layout.
     /// Tracked for cleanup at the start of each layout pass. A box minted
     /// again for the same run reuses the old box's slab id, and keeps its paint
-    /// layout and cached measures while its inherited text style is unchanged
-    /// (#964, `ifc::RetiredAnonBox`).
+    /// layout and cached measures (#964, `ifc::RetiredAnonBox`).
     pub anonymous_block_boxes: Vec<RawNodeId>,
     /// The `display: inline` elements the last IFC pass **split** around
     /// block-level content (#513) — [`Node::is_split_inline`].
