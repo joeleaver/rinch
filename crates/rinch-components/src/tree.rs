@@ -786,7 +786,12 @@ pub struct Tree {
     /// outline around a row they would go into.
     pub draggable: bool,
     /// What a drag from a row carries (its own value when not given), for
-    /// an app that drags its whole selection.
+    /// an app that drags its whole selection or names rows by its own ids.
+    /// In a `multiple` tree it is called for each row the drag (or a key
+    /// move, [`TreeKey::carried`]) takes — the selected rows when the
+    /// pressed row is one of several — and each value is kept once, so one
+    /// that returns the whole selection for any row carries it once. It
+    /// never decides which rows a key move moves ([`TreeKey::drop_for`]).
     pub drag_values: Option<DragValues>,
     /// The app's judgement of each drop on offer. A refused drop is drawn in
     /// the error color and is not delivered. Drops into a dragged row's own
@@ -848,11 +853,15 @@ pub struct Tree {
     /// tree tells `onselect`). There a plain click selects the row alone;
     /// Ctrl- (Cmd-) click adds or removes a row; Shift-click, Shift with a
     /// move key and Shift+Space select the run of drawn rows from the anchor
-    /// (the row last clicked, Ctrl-clicked or toggled with Space; a hidden
-    /// one counts as its shown ancestor) to that row, replacing the
-    /// selection; Ctrl+A selects the cursor row's siblings; a collapse by a
-    /// click or a key unselects the rows it hides. Disabled rows are never
-    /// selected, and nothing is reported when the selection did not change.
+    /// (the row last clicked, Ctrl-clicked, toggled with Space or entered
+    /// with Enter, even when that unselected it; a hidden one counts as its
+    /// shown ancestor) to that row, replacing the selection; Enter adds the
+    /// cursor row, keeping the rest; Ctrl+A selects the cursor row's
+    /// siblings; a collapse by a click or a key unselects the rows it hides
+    /// (only with `select_on_click`: otherwise the selection is the app's).
+    /// Disabled rows are never selected, and nothing is reported when the
+    /// selection did not change (a click that collapses and selects is one
+    /// report).
     /// A selected value whose row left the data is not reported, though it
     /// stays in [`UseTreeReturn::selected`]: the tree does not prune the
     /// selection when the data changes.
@@ -1381,7 +1390,7 @@ fn wire_drag(
     let cfg = config.clone();
     let v = value.to_string();
     let start = __scope.register_handler(move || {
-        let carried = carried_from(&cfg, tree_state, &v);
+        let (_, carried) = carried_from(&cfg, tree_state, &v);
         // The tree shows the drag itself (the carried rows fade, the row
         // under the pointer draws the drop); the built-in snapshot of the
         // source row would sit over the very row the drop is drawn on.
@@ -2097,6 +2106,10 @@ pub struct TreeKey {
     pub above: Option<String>,
     pub below: Option<String>,
     shape: Rc<Shape>,
+    /// The rows the key moves, in tree order: the cursor row, or the selected
+    /// rows when it is one of several. Taken from the tree, never from
+    /// `drag_values` (which may name app ids rather than rows).
+    rows: Vec<usize>,
     carried: Vec<String>,
     judge_drop: Option<JudgeDrop>,
 }
@@ -2104,23 +2117,26 @@ pub struct TreeKey {
 impl TreeKey {
     /// What the key acts on: the selection top to bottom when the cursor
     /// row is one of several selected rows (rows inside other selected rows
-    /// left out), the cursor row alone otherwise; through `drag_values`.
+    /// left out), the cursor row alone otherwise; through `drag_values`
+    /// when it is given (each value once).
     pub fn carried(&self) -> &[String] {
         &self.carried
     }
 
-    /// The drop that would make `movement` of the cursor row (what a drag of
-    /// it would carry, [`Tree::drag_values`]), for the app to deliver as it
-    /// does a dropped one. `None` when there is nowhere to go (no previous
+    /// The drop that would make `movement` of the cursor row, or of the
+    /// selected rows as one block (tree order) when it is one of several,
+    /// carrying [`TreeKey::carried`], for the app to deliver as it
+    /// does a dropped one. Which rows move never depends on
+    /// [`Tree::drag_values`]. `None` when there is nowhere to go (no previous
     /// sibling to indent into, no parent to outdent from, no sibling above
     /// or below), and whenever a drag would refuse the same drop: into a row
     /// that takes no children ([`Tree::accepts_children`]), into a carried
     /// row or its subtree, or refused by [`Tree::judge_drop`].
     pub fn drop_for(&self, movement: TreeMove) -> Option<TreeDrop> {
         let shape = &self.shape;
-        // The rows carried (several when the cursor row is in a selection)
+        // The rows moved (several when the cursor row is in a selection)
         // move as one block: they must share a parent.
-        let rows: Vec<usize> = self.carried.iter().filter_map(|v| shape.index(v)).collect();
+        let rows = &self.rows;
         let (&first, &last) = (rows.first()?, rows.last()?);
         let parent_of = |r: usize| shape.rows[r].parent;
         if rows.iter().any(|&r| parent_of(r) != parent_of(first)) {
@@ -2669,7 +2685,7 @@ fn on_tree_key(
             shape.around(&expanded, &block)
         };
         let neighbor = |row: Option<usize>| row.map(|r| shape.rows[r].value.clone());
-        let carried = carried_from(config, tree_state, &cursor);
+        let (rows, carried) = carried_from(config, tree_state, &cursor);
         let offered = TreeKey {
             key: key.key.clone(),
             ctrl: key.ctrl,
@@ -2683,6 +2699,7 @@ fn on_tree_key(
             below: neighbor(below),
             cursor: cursor.clone(),
             shape: shape.clone(),
+            rows,
             carried,
             judge_drop: config.judge_drop.clone(),
         };
@@ -3027,6 +3044,7 @@ mod key_tests {
             parent,
             above: None,
             below: None,
+            rows: vec![s.index(cursor).unwrap()],
             shape: s,
             carried: vec![cursor.into()],
             judge_drop: None,
@@ -3141,9 +3159,15 @@ impl Shape {
     }
 }
 
-/// What a drag or a key move from the row of `value` carries, through the
-/// app's `drag_values`.
-fn carried_from(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, value: &str) -> Vec<String> {
+/// What a drag or a key move from the row of `value` carries: the rows it
+/// moves (tree order), and the values it carries, through the app's
+/// `drag_values` for each of those rows, each value once (an app whose
+/// `drag_values` returns the whole selection for any row carries it once).
+fn carried_from(
+    config: &Rc<TreeConfig>,
+    tree_state: UseTreeReturn,
+    value: &str,
+) -> (Vec<usize>, Vec<String>) {
     let shape = config.drag.shape(config.accepts_children.as_ref());
     let rows = match shape.index(value) {
         Some(row) => {
@@ -3158,10 +3182,18 @@ fn carried_from(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, value: &str)
     } else {
         rows.iter().map(|&r| shape.rows[r].value.clone()).collect()
     };
-    match &config.drag_values {
-        Some(each) => values.iter().flat_map(|v| each(v)).collect(),
+    let carried = match &config.drag_values {
+        Some(each) => {
+            let mut seen = HashSet::new();
+            values
+                .iter()
+                .flat_map(|v| each(v))
+                .filter(|v| seen.insert(v.clone()))
+                .collect()
+        }
         None => values,
-    }
+    };
+    (rows, carried)
 }
 
 /// How a click (or Enter) on a row changes the selection.
@@ -3208,6 +3240,9 @@ fn activate_row(
             Pick::Replace | Pick::Add => {}
         }
     }
+    // A collapse by the click drops the rows it hides from the selection;
+    // the selection changes once, below, with the click's pick.
+    let mut collapsed = false;
     if config.expand_on_click && has_children {
         let was_expanded = untracked(|| tree_state.expanded.get()).contains(value);
         controller.toggle(value);
@@ -3216,7 +3251,7 @@ fn activate_row(
                 cb.invoke(value.to_string());
             }
         } else {
-            unselect_hidden(config, tree_state, value);
+            collapsed = true;
             if let Some(cb) = &config.oncollapse {
                 cb.invoke(value.to_string());
             }
@@ -3226,6 +3261,9 @@ fn activate_row(
         if multiple {
             let next = if pick == Pick::Add {
                 let mut next = untracked(|| controller.selected.get());
+                if collapsed {
+                    next = without_hidden(config, next, value);
+                }
                 next.insert(value.to_string());
                 next
             } else {
@@ -3278,32 +3316,43 @@ fn select_run(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, fallback: &str
     change_selection(config, tree_state, run);
 }
 
-/// A collapsed row's descendants leave the selection: nothing hidden stays
-/// selected.
+/// A collapse by the tree's chevron or Left: the collapsed row's
+/// descendants leave the selection, so nothing hidden stays selected. Only
+/// in a `multiple` tree that selects on click: a tree that does not select
+/// leaves the selection to the app, as it was.
 fn unselect_hidden(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, value: &str) {
-    if !tree_state.controller.multiple {
+    if !tree_state.controller.multiple || !config.select_on_click {
         return;
     }
+    let selected = untracked(|| tree_state.selected.get());
+    let kept = without_hidden(config, selected, value);
+    change_selection(config, tree_state, kept);
+}
+
+/// `selected` without the rows inside the row of `value` (the row itself
+/// stays).
+fn without_hidden(
+    config: &Rc<TreeConfig>,
+    selected: HashSet<String>,
+    value: &str,
+) -> HashSet<String> {
     let shape = config.drag.shape(config.accepts_children.as_ref());
     let Some(row) = shape.index(value) else {
-        return;
+        return selected;
     };
-    let selected = untracked(|| tree_state.selected.get());
-    let kept: HashSet<String> = selected
-        .iter()
+    selected
+        .into_iter()
         .filter(|v| {
             shape
                 .index(v)
                 .is_none_or(|r| r == row || !shape.is_within(r, row))
         })
-        .cloned()
-        .collect();
-    change_selection(config, tree_state, kept);
+        .collect()
 }
 
 /// Tell the app the selection, top to bottom. A selected value with no row
 /// in the data (the app deleted it) is not reported, though the selection
-/// keeps it until it next changes.
+/// keeps it: the tree does not prune the selection when the data changes.
 fn selection_changed(config: &Rc<TreeConfig>, tree_state: UseTreeReturn) {
     let Some(cb) = &config.onselectionchange else {
         return;
@@ -3420,6 +3469,7 @@ mod multi_tests {
             above: None,
             below: None,
             shape: s.clone(),
+            rows: carried.iter().filter_map(|v| s.index(v)).collect(),
             carried: carried.iter().map(|v| v.to_string()).collect(),
             judge_drop: None,
         };
@@ -3483,6 +3533,7 @@ mod review_1601_drop_for_tests {
             parent: None,
             above: None,
             below: None,
+            rows: vec![s.index(cursor).unwrap()],
             shape: s,
             carried: carried.iter().map(|c| c.to_string()).collect(),
             judge_drop: None,
