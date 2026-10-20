@@ -247,3 +247,46 @@ fn the_fixture_clock_does_not_reach_another_thread() {
     });
     assert_eq!(child.join().unwrap(), "<p>xa</p>");
 }
+
+/// An app that sets a transaction's time reads the handle's clock
+/// (`history_now_ms`), so the keystroke after it still merges.
+#[test]
+fn an_app_stamping_with_the_handles_clock_still_merges() {
+    let _clock = FakeClock::install(7_000);
+    let handle = editor("<p>x</p>", 2);
+    assert_eq!(rinch_editor_view::history_now_ms(), 7_000);
+    assert!(handle.update(|state| {
+        let mut tr = state.tr();
+        tr.insert_text("a")
+            .expect("a caret in a paragraph takes text");
+        tr.set_time(rinch_editor_view::history_now_ms());
+        Some(tr)
+    }));
+    at(7_100);
+    assert!(handle.insert_text("b"));
+    assert!(handle.command("undo"));
+    assert_eq!(html(&handle), "<p>x</p>", "`a` and `b` were one step");
+}
+
+/// What the guide says joins a run: a plain-text paste inside the window does;
+/// a stored-mark toggle (cursor Bold) ends the group.
+#[test]
+fn a_text_paste_joins_a_run_and_a_stored_mark_toggle_ends_it() {
+    let _clock = FakeClock::install(8_000);
+    let handle = editor("<p>x</p>", 2);
+    assert!(handle.insert_text("a"));
+    at(8_100);
+    assert!(handle.replace_selection_with_text("PP"));
+    assert!(handle.command("undo"));
+    assert_eq!(html(&handle), "<p>x</p>", "`a` and the paste were one step");
+
+    at(9_000);
+    assert!(handle.insert_text("a"));
+    at(9_100);
+    assert!(handle.command("toggleBold"));
+    at(9_200);
+    assert!(handle.insert_text("b"));
+    assert_eq!(html(&handle), "<p>xa<strong>b</strong></p>");
+    assert!(handle.command("undo"));
+    assert_eq!(html(&handle), "<p>xa</p>", "the toggle ended `a`'s group");
+}

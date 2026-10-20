@@ -26,7 +26,17 @@ thread_local! {
     static OVERRIDE: Cell<Option<fn() -> u64>> = const { Cell::new(None) };
 }
 
-/// Milliseconds on this thread's history clock.
+/// Milliseconds on this thread's history clock: what [`EditorHandle`] stamps a
+/// transaction with. An app that sets a transaction's time itself
+/// ([`Transaction::set_time`]) must read it from here — the history compares
+/// times as numbers, so a time on another clock (epoch milliseconds, say) keeps
+/// the next keystroke from merging with that transaction.
+///
+/// [`EditorHandle`]: crate::EditorHandle
+pub fn history_now_ms() -> u64 {
+    now_ms()
+}
+
 pub(crate) fn now_ms() -> u64 {
     if let Some(clock) = OVERRIDE.with(Cell::get) {
         return clock();

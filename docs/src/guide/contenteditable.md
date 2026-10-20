@@ -1268,8 +1268,9 @@ paste and select all — are also on the built-in right-click menu of the editor
 (issue #813), and the menu items run exactly the code the chords run; see
 [Right-clicking a text field](focus.md#right-clicking-a-text-field). On the web the
 browser's own menu covers the editor surface. Undo/redo is a single, exact history: each undo
-reverses one logical edit (typing is merged into a group until a pause of 500 ms,
-a caret move or another kind of edit), because every edit is an
+reverses one logical edit (typing — and an inline picture or plain-text paste landing in
+it — is merged into a group until a pause of 500 ms, a caret move, an undo or redo, or a
+structural edit such as a split, a mark or a block change), because every edit is an
 invertible step.
 
 ### What a paste does

@@ -132,7 +132,7 @@ impl Transaction {
     /// The transaction's timestamp in milliseconds (history grouping). Defaults
     /// to `0`; `rinch-editor-view`'s `EditorHandle` stamps an unstamped one it
     /// dispatches with its clock (#940), and a builder may set its own via
-    /// [`Transaction::set_time`].
+    /// [`Transaction::set_time`] — on that same clock (see there).
     pub fn time(&self) -> u64 {
         self.time
     }
@@ -508,7 +508,14 @@ impl Transaction {
         self.stored_marks_set
     }
 
-    /// Set the transaction timestamp (history grouping window).
+    /// Set the transaction timestamp (history grouping window), in milliseconds.
+    ///
+    /// The history compares it with the times of the transactions around it, so
+    /// for a transaction an `EditorHandle` dispatches it must be on the handle's
+    /// clock (`rinch_editor_view::history_now_ms()`, milliseconds since the
+    /// thread's first stamp). A time on another clock — epoch milliseconds, say —
+    /// is far ahead of the handle's stamps, so the keystroke after it can never
+    /// merge with it.
     pub fn set_time(&mut self, time: u64) -> &mut Self {
         self.time = time;
         self

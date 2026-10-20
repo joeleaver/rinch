@@ -755,17 +755,22 @@ cursor; paste and IME preedit don't reach this path (an IME *commit* does).
 
 There is **one** history, implemented as a plugin. It stores **inverted steps** (not
 byte positions), groups them by transaction boundary, and **merges consecutive typing
-transactions** (text inserts and deletes, Backspace and the word deletes included)
-less than 500 ms apart, so a burst of typing undoes as one step and a pause starts the
-next. An explicit caret move or any other kind of edit ends the group too. The time is
-`Transaction::time`, which the core never reads a clock for: `EditorHandle` stamps
-every transaction it dispatches (`update`, the input paths, `command`, `insert_image`,
-`toggle_link`) with a
-millisecond clock (`web_time`, so `performance.now()` in a browser) unless its builder
-called `set_time` itself (#940; before, nothing stamped it and all typing merged into
-one step). On undo it pops a group, rebases its inverted steps over any intervening
-mappings, applies them as a transaction that doesn't re-enter history, and restores
-the recorded selection. `undo` / `redo` are the only history entry points.
+transactions** less than 500 ms apart, so a burst of typing undoes as one step and a
+pause starts the next. "Typing" is any transaction made only of non-structural replace
+steps: text inserts and deletes, Backspace and the word deletes, and also an inline
+picture or a plain-text paste, which therefore join a run they land in. Anything else
+— a split, a mark, a block change — is a step of its own, and an explicit caret move,
+a stored-mark toggle (cursor Bold), an undo and a redo each end the group, so the next
+keystroke starts a new one. The time is `Transaction::time`, which the core never reads
+a clock for: `EditorHandle` stamps every local edit it dispatches (`update`, the input
+paths, `command`, `insert_image`, `toggle_link`) with a millisecond clock (`web_time`,
+so `performance.now()` in a browser) unless its builder called `set_time` itself
+(#940; before, nothing stamped it and all typing merged into one step). A builder that
+does must read the same clock, `history_now_ms()`: a time on another clock (epoch
+milliseconds) stops the next keystroke from merging. On undo it pops a group, applies
+its inverted steps as a transaction that doesn't re-enter history, and restores the
+recorded selection. The steps are not mapped over a change the history did not record
+(a collaboration peer's), so an undo after one can revert the wrong text (#1615). `undo` / `redo` are the only history entry points.
 
 ## Plugins
 

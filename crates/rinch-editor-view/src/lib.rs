@@ -27,7 +27,7 @@ pub mod registry;
 mod styles;
 mod view;
 
-pub use clock::__set_history_clock;
+pub use clock::{__set_history_clock, history_now_ms};
 pub use component::Editor;
 pub use handle::{EditorHandle, REVEAL_PATIENCE, ScrollAlign, SelectionAnchor};
 pub use images::{
