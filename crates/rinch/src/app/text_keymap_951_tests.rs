@@ -366,3 +366,139 @@ fn standard_ctrl_deletes_a_word() {
     press(&mut app, KeyCode::ArrowRight, None, CMD);
     assert_eq!(sel(&app, id), (1, 1), "Super+Right: one character");
 }
+
+// ── review of #1616 (Chrome 155 on Linux, measured by the reviewer) ──────
+
+fn field_with(
+    attrs: &[(&'static str, &'static str)],
+    tag: &'static str,
+    text: &'static str,
+) -> (RinchApp, usize) {
+    let input_id = register_input_handler(InputCallback::new(|_v: String| {}));
+    let id: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let id_in = id.clone();
+    let attrs: Vec<(&'static str, &'static str)> = attrs.to_vec();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let field = scope.create_element(tag);
+        field.set_attribute(
+            "style",
+            "width: 300px; height: 160px; padding: 0; font-family: sans-serif; font-size: 16px; line-height: 20px",
+        );
+        for (k, v) in &attrs {
+            field.set_attribute(k, v);
+        }
+        field.set_attribute("value", text);
+        field.set_attribute("data-oninput", &input_id.0.to_string());
+        root.append_child(&field);
+        id_in.set(Some(field.node_id().0));
+        root
+    });
+    app.text_keymap = TextKeymap::Standard;
+    app.register_app_font(AppFont::sans_serif(INTER));
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    let id = id.get().unwrap();
+    let (cx, cy) = {
+        let d = app.doc.as_ref().unwrap().borrow();
+        let (ax, ay, w, h) = painted_element_box(&d.tree, id);
+        (ax + w / 2.0, ay + h / 2.0)
+    };
+    for ev in [
+        PlatformEvent::MouseDown {
+            x: cx,
+            y: cy,
+            button: MouseButton::Left,
+        },
+        PlatformEvent::MouseUp {
+            x: cx,
+            y: cy,
+            button: MouseButton::Left,
+        },
+    ] {
+        app.handle_event(ev, VP, 1.0);
+    }
+    assert_eq!(app.focused_input_node_id, Some(id), "focused");
+    press(&mut app, KeyCode::End, None, CTRL);
+    (app, id)
+}
+
+#[test]
+fn r1616_password_ctrl_backspace() {
+    let (mut app, id) = field_with(&[("type", "password")], "input", "hunter2 secret");
+    press(&mut app, KeyCode::Backspace, None, CTRL);
+    // Chrome 155 Linux: "" (word granularity in a password field = the whole value)
+    assert_eq!(value(&app, id), "", "password Ctrl+Backspace");
+}
+
+#[test]
+fn r1616_textarea_newline_ctrl_backspace() {
+    let (mut app, id) = field_with(&[], "textarea", "ab \n");
+    press(&mut app, KeyCode::Backspace, None, CTRL);
+    // Chrome 155 Linux: "ab " (only the line break)
+    assert_eq!(
+        value(&app, id),
+        "ab ",
+        "textarea Ctrl+Backspace at line start"
+    );
+}
+
+#[test]
+#[ignore = "#1619: fields split words at whitespace only"]
+fn r1616_hyphen_ctrl_backspace() {
+    let (mut app, id) = field_with(&[], "input", "foo-bar");
+    press(&mut app, KeyCode::Backspace, None, CTRL);
+    // Chrome 155 Linux: "foo-"
+    assert_eq!(value(&app, id), "foo-", "foo-bar Ctrl+Backspace");
+}
+
+#[test]
+fn r1616_readonly_ctrl_backspace_and_delete() {
+    let (mut app, id) = field_with(&[("readonly", "")], "input", "hello world");
+    press(&mut app, KeyCode::Backspace, None, CTRL);
+    press(&mut app, KeyCode::Home, None, NONE);
+    press(&mut app, KeyCode::Delete, None, CTRL);
+    assert_eq!(
+        value(&app, id),
+        "hello world",
+        "readonly refuses word deletes"
+    );
+}
+
+#[test]
+fn r1616_word_delete_is_one_undo_step() {
+    let (mut app, id) = field_with(&[], "input", "one two three");
+    press(&mut app, KeyCode::Backspace, None, CTRL);
+    assert_eq!(value(&app, id), "one two ");
+    press(&mut app, KeyCode::Backspace, None, CTRL);
+    assert_eq!(value(&app, id), "one ");
+    press(&mut app, KeyCode::KeyZ, None, CTRL);
+    assert_eq!(value(&app, id), "one two ", "one undo restores one word");
+}
+
+#[test]
+fn r1616_interceptor_wins_over_word_delete() {
+    let (mut app, id) = field_with(&[], "input", "one two");
+    let seen = Rc::new(Cell::new(0));
+    let s2 = seen.clone();
+    rinch_core::events::set_keyboard_interceptor(move |k| {
+        if k.key == "Backspace" && k.ctrl {
+            s2.set(s2.get() + 1);
+            true
+        } else {
+            false
+        }
+    });
+    press(&mut app, KeyCode::Backspace, None, CTRL);
+    rinch_core::events::clear_keyboard_interceptor();
+    assert!(seen.get() >= 1, "interceptor saw it");
+    assert_eq!(value(&app, id), "one two", "interceptor consumed it");
+}
+
+#[test]
+fn r1616_macos_option_shift_backspace_and_cmd_backspace() {
+    let (mut app, id) = field("input", 300, "hello brave world");
+    // Option+Shift+Backspace in Cocoa is also deleteWordBackward.
+    press(&mut app, KeyCode::Backspace, None, OPTION_SHIFT);
+    assert_eq!(value(&app, id), "hello brave ");
+}
