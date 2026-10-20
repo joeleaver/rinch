@@ -3119,6 +3119,19 @@ went stale on class toggles, insertions and removals. Now:
   `HAS_EMPTY_SELECTOR` flags say an insertion or removal can reach, and an
   `<ol>`'s later `<li>` markers. `:empty` follows the spec: no element child
   (generated boxes aside) and no non-empty text.
+- **An inserted child stays between the generated boxes** (#1629). A
+  `::before` (or list marker) is generated as its element's first child and an
+  `::after` as its last when the element is cascaded, and inserting a child
+  does not re-cascade the element, so `append_child`, `insert_before` and
+  `insert_child` clamp the position they computed between the two
+  (`RinchDocument::clamp_between_generated`, which reads the first and last
+  child only; `Node::is_generated_after` says which end a generated box
+  belongs to). `get_children` and `next_sibling` still list the generated
+  boxes, so an index or reference read from them names a real slot: an insert
+  before the `::before` box lands after it. An append used to land after the
+  `::after` box — every `rsx!` row added after its parent was attached.
+  `set_text_content` / `set_inner_html` still drop the generated boxes until
+  the element is re-cascaded (#1630).
 - **A move within one parent keeps its style and its own text layout** (#914)
   — a keyed `for` reorder, which moves a live row with `insert_before`. Its
   ancestor chain is unchanged, so only a positional selector can see the move,
