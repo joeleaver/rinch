@@ -160,7 +160,8 @@ pub struct UseTreeReturn {
     /// Signal containing selected node values.
     pub selected: Signal<HashSet<String>>,
     /// The row the keyboard is on ([`Tree::keyboard`]): moved by the arrow
-    /// keys and type-ahead, and by a click.
+    /// keys and type-ahead, and by a click. A cursor whose row the data
+    /// drops moves to the row drawn below it (above it at the end).
     pub cursor: Signal<Option<String>>,
     /// Controller for programmatic tree manipulation.
     pub controller: TreeController,
@@ -202,7 +203,9 @@ pub struct TreeController {
 }
 
 impl TreeController {
-    /// Put the keyboard's cursor on a row, without moving the keyboard.
+    /// Put the keyboard's cursor on a row. It does not give the tree the
+    /// keyboard ([`focus`](Self::focus) does); when one of the tree's rows
+    /// has it already, it moves to the cursor row.
     pub fn set_cursor(&self, value: &str) {
         self.cursor.set(Some(value.to_string()));
     }
@@ -454,6 +457,9 @@ struct ShapeRow {
     children: Vec<usize>,
     /// Whether a drop may put rows into this one ([`Tree::accepts_children`]).
     accepts: bool,
+    /// Whether the row is disabled: the keyboard's cursor can rest on it, but
+    /// never selects it.
+    disabled: bool,
 }
 
 /// Where a drop lands, by row index, and where its indicator is drawn.
@@ -490,6 +496,7 @@ impl Shape {
                     level,
                     children: Vec::new(),
                     accepts: accepts.is_none_or(|accepts| accepts(node)),
+                    disabled: node.disabled,
                 });
                 shape.by_value.insert(node.value.clone(), id);
                 ids.push(id);
@@ -551,6 +558,17 @@ impl Shape {
             }
             at = self.rows[at].parent?;
         }
+    }
+
+    /// Whether `row` is drawn: every row above it is expanded.
+    fn is_shown(&self, mut row: usize, expanded: &HashSet<String>) -> bool {
+        while let Some(parent) = self.rows[row].parent {
+            if !expanded.contains(&self.rows[parent].value) {
+                return false;
+            }
+            row = parent;
+        }
+        true
     }
 
     /// `row`'s ancestor at `level` (`row` itself at its own level).
@@ -799,7 +817,12 @@ pub struct Tree {
     /// keyboard, the arrow keys move a cursor (Right expands or steps in,
     /// Left collapses or steps out), Home, End, PageUp and PageDown jump,
     /// `*` expands the cursor row's siblings, and typed letters find the next
-    /// row that starts with them. The cursor row is selected as it moves.
+    /// row that starts with them. The tree is one Tab stop: the cursor row
+    /// (the first row before there is one) is `tabindex="0"`, every other
+    /// row `-1`. In a single-select tree the selection follows the cursor as
+    /// a click would select (only with `select_on_click`, never a disabled
+    /// row, and `onselect` is told); in a `multiple` tree the arrows select
+    /// nothing and Space toggles the cursor row.
     pub keyboard: bool,
     /// Every key the tree's rows get, before the tree's own; `true` consumes
     /// it. [`TreeKey::drop_for`] turns a key into a structural move.
@@ -808,6 +831,8 @@ pub struct Tree {
     /// app that opens what the cursor is on, once, not on every row it
     /// passed.
     pub oncursor: Option<ValueCallback<String>>,
+    /// How long the cursor rests on a row before `oncursor`, in
+    /// milliseconds (120 by default); 0 reports every move at once.
     pub cursor_delay_ms: u32,
     /// The text type-ahead matches for a row (its label when not given).
     pub label_of: Option<LabelOf>,
@@ -867,6 +892,9 @@ impl Component for Tree {
     fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
         let container = rinch_macros::rsx! { ul { class: "rinch-tree" } };
         container.set_attribute("role", "tree");
+        if self.tree.is_some_and(|tree| tree.controller.multiple) {
+            container.set_attribute("aria-multiselectable", "true");
+        }
         if self.draggable && self.tree.is_some() {
             container.add_class("rinch-tree--draggable");
         }
@@ -939,6 +967,7 @@ impl Component for Tree {
             // from, so the tree keeps the last of it.
             let drag = config.drag.clone();
             let draggable = config.draggable || config.keyboard || tree_state.controller.multiple;
+            let keys_cfg = config.keyboard.then(|| Rc::downgrade(&config));
 
             for_each_dom_typed(
                 __scope,
@@ -946,8 +975,11 @@ impl Component for Tree {
                 move || {
                     let data = collection();
                     if draggable {
-                        *drag.data.borrow_mut() = data.clone();
+                        let old = std::mem::replace(&mut *drag.data.borrow_mut(), data.clone());
                         drag.shape.borrow_mut().take();
+                        if let Some(cfg) = keys_cfg.as_ref().and_then(|cfg| cfg.upgrade()) {
+                            untracked(|| data_changed(&cfg, tree_state, &old));
+                        }
                     }
                     data
                 },
@@ -987,12 +1019,21 @@ fn render_tree_node(
 
     // Create <li> wrapper
     let li = rinch_macros::rsx! { li { class: "rinch-tree__node" } };
-    li.set_attribute("role", "treeitem");
+    // The row's content box is the treeitem (it is what takes the keyboard,
+    // so a screen reader announces the item and its state); the list item
+    // around it is only structure.
+    li.set_attribute("role", "none");
     li.set_attribute("data-value", &node.value);
+    let content = rinch_macros::rsx! { div {} };
+    content.set_attribute("role", "treeitem");
+    content.set_attribute("aria-level", &(level + 1).to_string());
+    if node.disabled {
+        content.set_attribute("aria-disabled", "true");
+    }
 
     // Reactive aria-expanded
     if has_children {
-        let li_clone = li.clone();
+        let li_clone = content.clone();
         let nv = node_value.clone();
         __scope.create_effect(move || {
             let is_expanded = expanded_signal.get().contains(&nv);
@@ -1002,7 +1043,7 @@ fn render_tree_node(
 
     // Reactive aria-selected
     {
-        let li_clone = li.clone();
+        let li_clone = content.clone();
         let nv = node_value.clone();
         __scope.create_effect(move || {
             let is_selected = selected_signal.get().contains(&nv);
@@ -1022,7 +1063,6 @@ fn render_tree_node(
     // — and that is exactly the coupling issue #717 is about. The static
     // sibling path (`render_tree_node_static`) has always written it at
     // creation; this path now matches it.
-    let content = rinch_macros::rsx! { div {} };
     content.set_attribute(
         "class",
         if node.disabled {
@@ -1031,7 +1071,11 @@ fn render_tree_node(
             "rinch-tree__node-content"
         },
     );
-    content.set_attribute("tabindex", "0");
+    // A keyboard tree is one Tab stop: the row its cursor is on, or its first
+    // row (roving tabindex, `set_stop`). Every row of any other tree is one.
+    let stop =
+        !config.keyboard || config.keys.stop.borrow().as_deref() == Some(node_value.as_str());
+    content.set_attribute("tabindex", if stop { "0" } else { "-1" });
     content.set_attribute(
         "style",
         &format!("padding-left: calc(var(--tree-level-offset) * {})", level),
@@ -1052,6 +1096,18 @@ fn render_tree_node(
             old.remove_class(DRAGGING_CLASS);
             old.remove_class(CURSOR_CLASS);
         }
+        // A row gone for good (not drawn again) leaves the map.
+        let drag = Rc::downgrade(&config.drag);
+        let value = node_value.clone();
+        let mine = content.node_id();
+        __scope.on_cleanup(move || {
+            if let Some(drag) = drag.upgrade() {
+                let mut rows = drag.rows.borrow_mut();
+                if rows.get(&value).is_some_and(|row| row.node_id() == mine) {
+                    rows.remove(&value);
+                }
+            }
+        });
     }
     if config.draggable {
         wire_drag(__scope, &content, &node_value, tree_state, &config);
@@ -1261,6 +1317,10 @@ fn render_tree_node(
     if has_children {
         let children_ul = rinch_macros::rsx! { ul { class: "rinch-tree__subtree" } };
         children_ul.set_attribute("role", "group");
+        // The group is the treeitem's, though it sits beside it in the DOM.
+        let group_id = next_group_id();
+        children_ul.set_attribute("id", &group_id);
+        content.set_attribute("aria-owns", &group_id);
 
         // With guides the children sit in a box with their guide beside
         // them, and the box is what shows and hides.
@@ -1539,11 +1599,13 @@ fn drag_over(config: &Rc<TreeConfig>, value: &str, tree_state: UseTreeReturn) {
     offer(config, Some((drop, placement, verdict)));
 }
 
-/// The verdict on a drop: refused when it would put a row into its own
-/// subtree, whatever the app says; otherwise the app's ([`Tree::judge_drop`]).
-/// The places a drag offers never reach the first case (rows under a dragged
-/// row offer nothing, and a dragged row is placed as if collapsed); it stays
-/// as a guard.
+/// The verdict on a drop, for a drag and a keyboard move alike
+/// ([`TreeKey::drop_for`]): refused when it would put a row into its own
+/// subtree, or into a row that takes no children ([`Tree::accepts_children`]),
+/// whatever the app says; otherwise the app's ([`Tree::judge_drop`]). The
+/// places a drag offers never reach the first two cases (rows under a dragged
+/// row offer nothing, a dragged row is placed as if collapsed, and a row that
+/// takes no children has no inside zone); the keyboard's can.
 fn judge(
     shape: &Shape,
     placement: &Placement,
@@ -1554,7 +1616,11 @@ fn judge(
     let cycle = placement
         .parent
         .is_some_and(|parent| dragged_rows.iter().any(|&d| shape.is_within(parent, d)));
-    if cycle {
+    let refused_inside = drop.zone == DropZone::Inside
+        && placement
+            .parent
+            .is_some_and(|parent| !shape.rows[parent].accepts);
+    if cycle || refused_inside {
         DropVerdict::Refused
     } else {
         judge_drop.map_or(DropVerdict::Allowed, |judge| judge(drop))
@@ -1696,10 +1762,15 @@ fn render_tree_node_static(
     let has_children = node.has_children();
 
     let li = rinch_macros::rsx! { li { class: "rinch-tree__node" } };
-    li.set_attribute("role", "treeitem");
+    li.set_attribute("role", "none");
     li.set_attribute("data-value", &node.value);
 
     let content = rinch_macros::rsx! { div {} };
+    content.set_attribute("role", "treeitem");
+    content.set_attribute("aria-level", &(level + 1).to_string());
+    if node.disabled {
+        content.set_attribute("aria-disabled", "true");
+    }
     let base_class = if node.disabled {
         "rinch-tree__node-content rinch-tree__node-content--disabled"
     } else {
@@ -1737,6 +1808,9 @@ fn render_tree_node_static(
     if has_children {
         let children_ul = rinch_macros::rsx! { ul { class: "rinch-tree__subtree" } };
         children_ul.set_attribute("role", "group");
+        let group_id = next_group_id();
+        children_ul.set_attribute("id", &group_id);
+        content.set_attribute("aria-owns", &group_id);
 
         for child in &node.children {
             let child_handle = render_tree_node_static(__scope, child, level + 1, config);
@@ -2010,6 +2084,7 @@ mod drop_tests {
 /// A structural move of the cursor row, for an app that binds keys to them
 /// ([`TreeKey::drop_for`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TreeMove {
     /// Into the previous sibling, as its last child.
     Indent,
@@ -2040,6 +2115,7 @@ pub struct TreeKey {
     pub below: Option<String>,
     shape: Rc<Shape>,
     carried: Vec<String>,
+    judge_drop: Option<JudgeDrop>,
 }
 
 impl TreeKey {
@@ -2051,14 +2127,16 @@ impl TreeKey {
     }
 
     /// The drop that would make `movement` of the cursor row (what a drag of
-    /// it would carry, [`Tree::drag_values`]), for the app to judge and
-    /// deliver as it does a dropped one. `None` when there is nowhere to go:
-    /// no previous sibling to indent into, no parent to outdent from, no
-    /// sibling above or below.
+    /// it would carry, [`Tree::drag_values`]), for the app to deliver as it
+    /// does a dropped one. `None` when there is nowhere to go (no previous
+    /// sibling to indent into, no parent to outdent from, no sibling above
+    /// or below), and whenever a drag would refuse the same drop: into a row
+    /// that takes no children ([`Tree::accepts_children`]), into a carried
+    /// row or its subtree, or refused by [`Tree::judge_drop`].
     pub fn drop_for(&self, movement: TreeMove) -> Option<TreeDrop> {
         let shape = &self.shape;
-        // The rows carried (several when the cursor row is in a selection),
-        // which move as one block: they must share a parent.
+        // The rows carried (several when the cursor row is in a selection)
+        // move as one block: they must share a parent.
         let rows: Vec<usize> = self.carried.iter().filter_map(|v| shape.index(v)).collect();
         let (&first, &last) = (rows.first()?, rows.last()?);
         let parent_of = |r: usize| shape.rows[r].parent;
@@ -2068,47 +2146,60 @@ impl TreeKey {
         let siblings = shape.siblings(first);
         let at_first = siblings.iter().position(|&s| s == first)?;
         let at_last = siblings.iter().position(|&s| s == last)?;
-        let value = |row: usize| shape.rows[row].value.clone();
         let (parent, slot, zone) = match movement {
             TreeMove::Indent => {
                 let before = *siblings.get(at_first.checked_sub(1)?)?;
-                if rows.contains(&before) {
-                    return None;
-                }
-                (Some(value(before)), TreeSlot::Last, DropZone::Inside)
+                (Some(before), Slot::Last, DropZone::Inside)
             }
             TreeMove::Outdent => {
                 let parent = parent_of(first)?;
                 (
-                    shape.rows[parent].parent.map(value),
-                    TreeSlot::After(value(parent)),
+                    shape.rows[parent].parent,
+                    Slot::After(parent),
                     DropZone::After,
                 )
             }
             TreeMove::Up => {
                 at_first.checked_sub(1)?;
                 let slot = match at_first.checked_sub(2) {
-                    Some(two_up) => TreeSlot::After(value(siblings[two_up])),
-                    None => TreeSlot::First,
+                    Some(two_up) => Slot::After(siblings[two_up]),
+                    None => Slot::First,
                 };
-                (parent_of(first).map(value), slot, DropZone::Before)
+                (parent_of(first), slot, DropZone::Before)
             }
             TreeMove::Down => {
                 let below = *siblings.get(at_last + 1)?;
-                (
-                    parent_of(first).map(value),
-                    TreeSlot::After(value(below)),
-                    DropZone::After,
-                )
+                (parent_of(first), Slot::After(below), DropZone::After)
             }
         };
-        Some(TreeDrop {
+        let value = |row: usize| shape.rows[row].value.clone();
+        let drop = TreeDrop {
             dragged: self.carried.clone(),
-            parent,
-            slot,
+            parent: parent.map(value),
+            slot: match slot {
+                Slot::First => TreeSlot::First,
+                Slot::Last => TreeSlot::Last,
+                Slot::After(row) => TreeSlot::After(value(row)),
+            },
             over: self.cursor.clone(),
             zone,
-        })
+        };
+        let placement = Placement {
+            parent,
+            slot,
+            line_level: 0,
+        };
+        let carried_rows: Vec<usize> = self.carried.iter().filter_map(|c| shape.index(c)).collect();
+        match judge(
+            shape,
+            &placement,
+            &carried_rows,
+            &drop,
+            self.judge_drop.as_ref(),
+        ) {
+            DropVerdict::Allowed => Some(drop),
+            DropVerdict::Refused => None,
+        }
     }
 }
 
@@ -2146,6 +2237,21 @@ struct KeyState {
     rest_timer: RefCell<Option<TimeoutHandle>>,
     /// The tree's own list, for its focused class.
     container: RefCell<Option<NodeHandle>>,
+    /// The one row that is a Tab stop (`tabindex="0"`), by value.
+    stop: RefCell<Option<String>>,
+}
+
+/// A document-unique id for a row's group of children (its `aria-owns`).
+fn next_group_id() -> String {
+    thread_local! {
+        static NEXT: Cell<u64> = const { Cell::new(0) };
+    }
+    let n = NEXT.with(|next| {
+        let n = next.get();
+        next.set(n + 1);
+        n
+    });
+    format!("rinch-tree-group-{n}")
 }
 
 impl Shape {
@@ -2246,6 +2352,10 @@ fn type_ahead(
 
 /// Draw the cursor on the row of `value` (and off the one it was on).
 fn draw_cursor(config: &Rc<TreeConfig>, value: Option<&str>) {
+    if config.keys.drawn.borrow().as_deref() == value {
+        // A row drawn again draws its own cursor (`render_tree_node`).
+        return;
+    }
     let previous = config.keys.drawn.borrow_mut().take();
     let previous = previous.and_then(|v| config.drag.rows.borrow().get(&v).cloned());
     if let Some(row) = previous {
@@ -2258,6 +2368,114 @@ fn draw_cursor(config: &Rc<TreeConfig>, value: Option<&str>) {
             row.add_class(CURSOR_CLASS);
         }
     }
+}
+
+/// Make the row of `value` the tree's one Tab stop (roving tabindex): it
+/// gets `tabindex="0"`, the one before it `-1`. A row not drawn yet takes it
+/// when it is (`render_tree_node`).
+fn set_stop(config: &Rc<TreeConfig>, value: Option<String>) {
+    let old = config.keys.stop.replace(value.clone());
+    if old == value {
+        return;
+    }
+    let (old, new) = {
+        let rows = config.drag.rows.borrow();
+        (
+            old.and_then(|v| rows.get(&v).cloned()),
+            value.and_then(|v| rows.get(&v).cloned()),
+        )
+    };
+    if let Some(old) = old {
+        old.set_attribute("tabindex", "-1");
+    }
+    if let Some(new) = new {
+        new.set_attribute("tabindex", "0");
+    }
+}
+
+/// The Tab stop is the cursor row while it is shown, else the first row.
+fn refresh_stop(config: &Rc<TreeConfig>, tree_state: UseTreeReturn) {
+    let cursor = untracked(|| tree_state.cursor.get());
+    let expanded = untracked(|| tree_state.expanded.get());
+    let shape = config.drag.shape(config.accepts_children.as_ref());
+    let stop = cursor
+        .and_then(|c| shape.index(&c))
+        .filter(|&row| shape.is_shown(row, &expanded))
+        .or_else(|| shape.roots.first().copied())
+        .map(|row| shape.rows[row].value.clone());
+    set_stop(config, stop);
+}
+
+/// The tree's row the keyboard is on, if it is on one of them, by value.
+fn focused_row(config: &Rc<TreeConfig>) -> Option<String> {
+    let container = config.keys.container.borrow().clone()?;
+    let active = container.active_element()?;
+    let on_a_row = active.get_attribute("class").is_some_and(|c| {
+        c.split_whitespace()
+            .any(|one| one == "rinch-tree__node-content")
+    });
+    if !on_a_row || !focus_inside(config) {
+        return None;
+    }
+    active
+        .parent_node()
+        .and_then(|li| li.get_attribute("data-value"))
+}
+
+/// The cursor moved while a row has the keyboard (the app put it somewhere,
+/// [`TreeController::set_cursor`]): the keyboard goes with it.
+fn follow_focus(config: &Rc<TreeConfig>, cursor: Option<&str>) {
+    let Some(cursor) = cursor else { return };
+    if !config.keys.focused.get() {
+        return;
+    }
+    let Some(focused) = focused_row(config) else {
+        return;
+    };
+    if focused == cursor {
+        return;
+    }
+    let row = config.drag.rows.borrow().get(cursor).cloned();
+    if let Some(row) = row.filter(|row| row.is_rendered()) {
+        row.focus();
+        row.scroll_into_view();
+    }
+}
+
+/// The tree's data changed (`old` is what it was). A cursor whose row is
+/// gone moves to the row drawn below it (above it at the end) that is still
+/// there, taking the keyboard with it if it had it; and the Tab stop follows.
+fn data_changed(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, old: &[TreeNodeData]) {
+    let cursor = tree_state.cursor.get();
+    let shape = config.drag.shape(config.accepts_children.as_ref());
+    if let Some(cursor) = cursor.filter(|c| shape.index(c).is_none()) {
+        let expanded = tree_state.expanded.get();
+        let before = Shape::of(old, None);
+        let next = before.index(&cursor).and_then(|row| {
+            let visible = before.visible(&expanded);
+            let at = visible.iter().position(|&r| r == row)?;
+            visible[at + 1..]
+                .iter()
+                .chain(visible[..at].iter().rev())
+                .map(|&r| &before.rows[r].value)
+                .find(|v| shape.index(v).is_some())
+                .cloned()
+        });
+        if config.keys.focused.get() && next.is_none() {
+            set_focused(config, false);
+        }
+        if config.keys.focused.get() && next.is_some() {
+            config.keys.lost_row.set(true);
+            let weak = Rc::downgrade(config);
+            let _ = set_timeout(0, move || {
+                if let Some(cfg) = weak.upgrade() {
+                    restore_keyboard(&cfg, tree_state);
+                }
+            });
+        }
+        tree_state.cursor.set(next);
+    }
+    refresh_stop(config, tree_state);
 }
 
 /// Whether the keyboard is on one of the tree's elements (a row, or a field
@@ -2277,23 +2495,37 @@ fn focus_inside(config: &Rc<TreeConfig>) -> bool {
     false
 }
 
+/// Whether something outside the tree has the keyboard now (a field the
+/// user went to): the tree must not take it back.
+fn focus_elsewhere(config: &Rc<TreeConfig>) -> bool {
+    let container = config.keys.container.borrow().clone();
+    let Some(active) = container.and_then(|c| c.active_element()) else {
+        return false;
+    };
+    // The removed row the focus fell from is in no document.
+    active.is_rendered() && !focus_inside(config)
+}
+
 /// Give the keyboard back to the cursor row as drawn now, after the box that
-/// had it was removed. Not when the keyboard is somewhere in the tree
-/// already (a rename box the app opened), and not before the row is drawn
-/// (it asks again then).
+/// had it was removed: once, right after. Not when the keyboard is somewhere
+/// in the tree already (a rename box the app opened) or has gone somewhere
+/// else, and not to a row that is not drawn.
 fn restore_keyboard(config: &Rc<TreeConfig>, tree_state: UseTreeReturn) {
-    if !config.keys.lost_row.get() {
+    if !config.keys.lost_row.replace(false) {
         return;
     }
     if focus_inside(config) {
-        config.keys.lost_row.set(false);
+        return;
+    }
+    if focus_elsewhere(config) {
+        set_focused(config, false);
         return;
     }
     let cursor = untracked(|| tree_state.cursor.get());
     let row = cursor.and_then(|c| config.drag.rows.borrow().get(&c).cloned());
-    if let Some(row) = row.filter(|row| row.is_rendered()) {
-        config.keys.lost_row.set(false);
-        row.focus();
+    match row.filter(|row| row.is_rendered()) {
+        Some(row) => row.focus(),
+        None => set_focused(config, false),
     }
 }
 
@@ -2309,14 +2541,52 @@ fn set_focused(config: &Rc<TreeConfig>, focused: bool) {
     }
 }
 
-/// Move the cursor to `value` from the keyboard: select it, give its row the
-/// keyboard, show it, and tell the app once it rests.
-fn move_cursor(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, value: &str) {
-    tree_state.cursor.set(Some(value.to_string()));
-    tree_state.controller.set_selection([value.to_string()]);
-    *config.keys.anchor.borrow_mut() = Some(value.to_string());
-    if tree_state.controller.multiple {
+/// Select the row of `value` from the keyboard, as a click on it would:
+/// only in a tree that selects on click, never a disabled row, and the app
+/// is told ([`Tree::onselect`]). In a `multiple` tree the row is toggled.
+fn select_from_keyboard(
+    config: &Rc<TreeConfig>,
+    tree_state: UseTreeReturn,
+    shape: &Shape,
+    value: &str,
+) -> bool {
+    let selectable = config.select_on_click
+        && shape
+            .index(value)
+            .is_some_and(|row| !shape.rows[row].disabled);
+    if !selectable {
+        return false;
+    }
+    let controller = tree_state.controller;
+    if controller.multiple {
+        // Space toggles the row and starts the next Shift run from it.
+        if untracked(|| controller.is_selected(value)) {
+            controller.deselect(value);
+        } else {
+            controller.select(value);
+        }
+        *config.keys.anchor.borrow_mut() = Some(value.to_string());
         selection_changed(config, tree_state);
+        return true;
+    }
+    controller.select(value);
+    if let Some(cb) = &config.onselect {
+        cb.invoke(value.to_string());
+    }
+    true
+}
+
+/// Move the cursor to `value` from the keyboard: give its row the keyboard,
+/// show it, and tell the app once it rests. A single-select tree's
+/// selection follows the cursor (as a click would select); a `multiple`
+/// tree's does not: Space selects there.
+fn move_cursor(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, shape: &Shape, value: &str) {
+    tree_state.cursor.set(Some(value.to_string()));
+    if tree_state.controller.multiple {
+        // Shift+arrows from here make a run that starts at this row.
+        *config.keys.anchor.borrow_mut() = Some(value.to_string());
+    } else {
+        select_from_keyboard(config, tree_state, shape, value);
     }
     let row = config.drag.rows.borrow().get(value).cloned();
     if let Some(row) = row {
@@ -2376,9 +2646,13 @@ fn on_tree_key(
         return false;
     };
     set_focused(config, true);
-    let cursor = untracked(|| tree_state.cursor.get())
-        .filter(|c| config.drag.rows.borrow().contains_key(c))
-        .unwrap_or(row_value);
+    // The keys act from the row that has the keyboard: it is the cursor row
+    // (a click on a row's own control, or a scripted focus, can put the
+    // keyboard on another).
+    let cursor = row_value;
+    if untracked(|| tree_state.cursor.get()).as_deref() != Some(cursor.as_str()) {
+        tree_state.cursor.set(Some(cursor.clone()));
+    }
     let shape = config.drag.shape(config.accepts_children.as_ref());
     let Some(cursor_row) = shape.index(&cursor) else {
         return false;
@@ -2409,6 +2683,7 @@ fn on_tree_key(
             cursor: cursor.clone(),
             shape: shape.clone(),
             carried,
+            judge_drop: config.judge_drop.clone(),
         };
         if handle_key(&offered) {
             return true;
@@ -2451,10 +2726,11 @@ fn on_tree_key(
             return true;
         }
     }
-    if !key.shift {
+    // `*` is a shifted key on most layouts (Shift+8 on a US keyboard).
+    if !key.shift || key.key == "*" {
         if let Some(step) = nav(&shape, &expanded, cursor_row, &key.key) {
             match step {
-                Nav::To(row) => move_cursor(config, tree_state, &shape.rows[row].value),
+                Nav::To(row) => move_cursor(config, tree_state, &shape, &shape.rows[row].value),
                 Nav::Expand(row) => expand(config, tree_state, &shape.rows[row].value),
                 Nav::Collapse(row) => {
                     let value = shape.rows[row].value.clone();
@@ -2472,6 +2748,12 @@ fn on_tree_key(
             }
             return true;
         }
+    }
+
+    // Space selects the cursor row (toggles it in a `multiple` tree), unless
+    // it is part of a type-ahead word.
+    if key.key == " " && !key.shift && config.keys.typed.borrow().is_empty() {
+        return select_from_keyboard(config, tree_state, &shape, &cursor);
     }
 
     // Type-ahead: a printable character.
@@ -2511,7 +2793,7 @@ fn on_tree_key(
         None => labels.get(value).cloned().unwrap_or_default(),
     };
     if let Some(row) = type_ahead(&shape, &expanded, cursor_row, &typed, &text_of) {
-        move_cursor(config, tree_state, &shape.rows[row].value);
+        move_cursor(config, tree_state, &shape, &shape.rows[row].value);
     }
     true
 }
@@ -2544,11 +2826,18 @@ fn wire_keyboard(
             let weak = Rc::downgrade(&cfg);
             let _ = set_timeout(0, move || {
                 let Some(cfg) = weak.upgrade() else { return };
-                // A removed cursor row's keyboard is being given back
-                // (`restore_keyboard`), or the keyboard is inside the tree
-                // after all: the tree still has it.
-                if cfg.keys.lost_row.get() || focus_inside(&cfg) {
+                // The keyboard is inside the tree after all: the tree still
+                // has it.
+                if focus_inside(&cfg) {
                     return;
+                }
+                // A removed cursor row's keyboard is being given back
+                // (`restore_keyboard`) unless it has gone somewhere else.
+                if cfg.keys.lost_row.get() {
+                    if !focus_elsewhere(&cfg) {
+                        return;
+                    }
+                    cfg.keys.lost_row.set(false);
                 }
                 set_focused(&cfg, false);
             });
@@ -2559,7 +2848,13 @@ fn wire_keyboard(
     let cfg = config.clone();
     __scope.create_effect(move || {
         let cursor = tree_state.cursor.get();
-        untracked(|| draw_cursor(&cfg, cursor.as_deref()));
+        // A collapse can hide the cursor row, which moves the Tab stop.
+        let _ = tree_state.expanded.get();
+        untracked(|| {
+            draw_cursor(&cfg, cursor.as_deref());
+            refresh_stop(&cfg, tree_state);
+            follow_focus(&cfg, cursor.as_deref());
+        });
     });
 
     let cfg = config.clone();
@@ -2723,6 +3018,7 @@ mod key_tests {
             below: None,
             shape: s,
             carried: vec![cursor.into()],
+            judge_drop: None,
         }
     }
 
@@ -3012,6 +3308,7 @@ mod multi_tests {
             below: None,
             shape: s.clone(),
             carried: carried.iter().map(|v| v.to_string()).collect(),
+            judge_drop: None,
         };
         let place = |d: Option<TreeDrop>| d.map(|d| (d.parent, d.slot));
         // b and c: up goes before a; indent goes into a (the row above the
@@ -3027,5 +3324,89 @@ mod multi_tests {
         assert_eq!(place(key(&["b", "c"]).drop_for(TreeMove::Down)), None);
         // Rows of different parents do not move as one.
         assert_eq!(place(key(&["a1", "b"]).drop_for(TreeMove::Up)), None);
+    }
+}
+
+#[cfg(test)]
+mod review_1601_drop_for_tests {
+    use super::*;
+
+    /// a (a1, a2), b, c (c1)
+    fn data() -> Vec<TreeNodeData> {
+        vec![
+            TreeNodeData::new("a", "A").with_children(vec![
+                TreeNodeData::new("a1", "A1"),
+                TreeNodeData::new("a2", "A2"),
+            ]),
+            TreeNodeData::new("b", "B"),
+            TreeNodeData::new("c", "C").with_child(TreeNodeData::new("c1", "C1")),
+        ]
+    }
+
+    fn key(shape: Shape, cursor: &str, carried: &[&str]) -> TreeKey {
+        let s = Rc::new(shape);
+        TreeKey {
+            key: String::new(),
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: false,
+            cursor: cursor.into(),
+            parent: None,
+            above: None,
+            below: None,
+            shape: s,
+            carried: carried.iter().map(|c| c.to_string()).collect(),
+            judge_drop: None,
+        }
+    }
+
+    /// RU1: a drag never offers Inside on a row `accepts_children` refuses;
+    /// the keyboard's Indent does.
+    #[test]
+    fn ru1_indent_into_a_row_that_takes_no_children_is_none() {
+        let leaves_take_none: AcceptsChildren = Rc::new(|n: &TreeNodeData| n.has_children());
+        let shape = Shape::of(&data(), Some(&leaves_take_none));
+        // c's previous sibling is b, a leaf that takes no children.
+        let drop = key(shape, "c", &["c"]).drop_for(TreeMove::Indent);
+        assert!(
+            drop.is_none(),
+            "Indent into b, which accepts no children: {:?}",
+            drop.map(|d| (d.parent, d.slot))
+        );
+    }
+
+    /// A keyboard move the app's judge refuses is no move, as a dragged one
+    /// is not delivered; one it allows is the same drop as without a judge.
+    #[test]
+    fn a_move_the_app_refuses_is_none() {
+        let mut k = key(Shape::of(&data(), None), "c", &["c"]);
+        k.judge_drop = Some(Rc::new(|d: &TreeDrop| {
+            if d.parent.as_deref() == Some("b") {
+                DropVerdict::Refused
+            } else {
+                DropVerdict::Allowed
+            }
+        }));
+        assert!(k.drop_for(TreeMove::Indent).is_none(), "into b is refused");
+        assert_eq!(
+            k.drop_for(TreeMove::Up).map(|d| d.slot),
+            Some(TreeSlot::After("a".into())),
+            "control: another move is allowed"
+        );
+    }
+
+    /// RU2: with drag_values carrying more than the cursor row (a
+    /// multi-selection), Indent can put a carried row into itself. A drag
+    /// refuses that (`judge`'s cycle check); the keyboard hands it over.
+    #[test]
+    fn ru2_indent_into_a_carried_row_is_none() {
+        let shape = Shape::of(&data(), None);
+        let drop = key(shape, "a2", &["a1", "a2"]).drop_for(TreeMove::Indent);
+        assert!(
+            drop.is_none(),
+            "a1 would move into itself: {:?}",
+            drop.map(|d| (d.dragged, d.parent, d.slot))
+        );
     }
 }

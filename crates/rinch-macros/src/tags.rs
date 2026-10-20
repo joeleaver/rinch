@@ -212,7 +212,7 @@ pub fn closest_tag(name: &str) -> Option<&'static str> {
 /// people actually make: `dvi` for `div` is a single slipped keystroke, and
 /// under plain Levenshtein it scores 2, which puts it outside the budget for a
 /// name that short and suggests nothing at all.
-fn edit_distance(a: &str, b: &str) -> usize {
+pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     // Three rows: the transposition case needs the row before last.

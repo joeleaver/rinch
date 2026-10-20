@@ -432,6 +432,25 @@ jobs:
           cargo test -p rinch-web --target wasm32-unknown-unknown \
             --features collaboration --test editor_read_only
 
+      # The drag auto-scroll fixtures again at a fractional devicePixelRatio
+      # (#1592): at DPR 1 a scroll offset is always whole, so the loop's
+      # end-of-list test was right there and spun for ever at 1.5. The runner
+      # reads `webdriver.json` from the crate directory cargo runs it in.
+      - name: Run drag auto-scroll tests (headless Chrome, DPR 1.5)
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        working-directory: crates/rinch-web
+        run: |
+          # `run:` is `bash -e` without pipefail, so without this a failing
+          # test would be hidden by `tee`.
+          set -o pipefail
+          echo '{"goog:chromeOptions":{"args":["--headless=new","--window-size=1024,768","--force-device-scale-factor=1.5"]}}' > webdriver.json
+          cargo test -p rinch-web --target wasm32-unknown-unknown \
+            --test drag_auto_scroll --test review2_1592 -- --nocapture 2>&1 | tee dpr.log
+          rm webdriver.json
+          # Positive control: the browser really ran at 1.5 (review2_1592 logs it).
+          grep -q '^dpr 1.5 ' dpr.log
+
       # The same test binaries, a second engine. The suite was written against
       # Chrome alone, and the first Firefox run found a real bug (the caret on
       # the last line of a code block drawn a line too high: Firefox answers a

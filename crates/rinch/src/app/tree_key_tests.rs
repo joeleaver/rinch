@@ -338,9 +338,16 @@ fn ctrl_and_shift_clicks_select_several_rows_and_open_nothing() {
     // Shift+Up from the cursor (d) shortens the run from the anchor.
     press(&mut f, KeyCode::ArrowUp, None, Modifiers { shift: true, ..Default::default() });
     assert_eq!(selection(&f), ["a", "b", "c"]);
-    // A plain arrow is one row again.
+    // A plain arrow moves the cursor and selects nothing.
     press(&mut f, KeyCode::ArrowUp, None, Modifiers::default());
-    assert_eq!(selection(&f), ["b"]);
+    assert_eq!(f.state.cursor.get().as_deref(), Some("b"));
+    assert_eq!(selection(&f), ["a", "b", "c"]);
+    // Space toggles the cursor row and anchors the next run there.
+    press(&mut f, KeyCode::Space, Some(" "), Modifiers::default());
+    assert_eq!(selection(&f), ["a", "c"]);
+    assert_eq!(changes.borrow().last().cloned(), Some(vec!["a".to_string(), "c".to_string()]));
+    press(&mut f, KeyCode::ArrowDown, None, Modifiers { shift: true, ..Default::default() });
+    assert_eq!(selection(&f), ["b", "c"], "a run from b, where Space was");
     // Ctrl+A: the cursor row's siblings.
     press(&mut f, KeyCode::KeyA, Some("a"), Modifiers { ctrl: true, ..Default::default() });
     assert_eq!(selection(&f), ["a", "b", "c", "d"]);

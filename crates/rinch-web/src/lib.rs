@@ -82,7 +82,9 @@ use rinch_core::events;
 
 pub use event_delegation::setup_event_delegation;
 #[doc(hidden)]
-pub use event_delegation::{__force_trusted_clicks, __reset_activation_state};
+pub use event_delegation::{
+    __drag_auto_scroll_running, __force_trusted_clicks, __reset_activation_state,
+};
 // Whether a right-click anywhere suppresses the browser's own menu. Off by
 // default: an island mounted into somebody else's page must not take the
 // right-click away from the rest of it.
