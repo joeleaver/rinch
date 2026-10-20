@@ -76,6 +76,10 @@ mod debug_commands;
 #[cfg(test)]
 mod decorative_pseudo_773_tests;
 mod deferred_work;
+mod text_keymap;
+#[cfg(all(test, feature = "desktop"))]
+mod text_keymap_951_tests;
+pub(crate) use text_keymap::{TextKeyAction, TextKeymap, TextMotion, text_key_action};
 #[cfg(test)]
 mod device_pixel_ratio_tests;
 #[cfg(test)]
@@ -783,6 +787,10 @@ pub struct RinchApp {
     /// Left then Right, or a typed character then Backspace, puts the field
     /// back exactly as the vertical move left it and must still drop the goal.
     pub(crate) input_vertical_goal: Option<(usize, u64, f32)>,
+    /// Which platform's caret keys text fields and the rich editor follow
+    /// (issue #951): [`TextKeymap::host`], set otherwise only by tests, which
+    /// drive the macOS keymap on any host.
+    pub(crate) text_keymap: TextKeymap,
     /// Bumped by every [`Self::sync_input_cursor_to_dom`] — the one place a
     /// focused field's caret, selection or text reaches the DOM from an edit
     /// command, a click, a focus change, an IME commit or an adopted
@@ -984,6 +992,7 @@ impl RinchApp {
             pending_text_selection: std::collections::HashMap::new(),
             focused_input_preedit: None,
             input_vertical_goal: None,
+            text_keymap: TextKeymap::host(),
             input_caret_generation: std::cell::Cell::new(0),
             focused_input_deferred_value: None,
             focus_target: FocusTarget::None,
@@ -2720,26 +2729,51 @@ impl RinchApp {
             events::dispatch_input_event(events::EventHandlerId(handler_id), value);
         }
     }
-    fn handle_delete(&mut self) {
-        self.handle_input_edit_command(EditCommand::DeleteForward);
-    }
-    fn handle_arrow_left(&mut self, shift: bool, ctrl: bool) {
-        let cmd = match (shift, ctrl) {
-            (true, true) => EditCommand::SelectWordLeft,
-            (true, false) => EditCommand::SelectLeft,
-            (false, true) => EditCommand::MoveWordLeft,
-            (false, false) => EditCommand::MoveLeft,
+    /// A caret or delete key in the focused text field, through the
+    /// platform's text keymap ([`text_key_action`], issue #951).
+    fn handle_text_key(&mut self, key: KeyCode, modifiers: Modifiers) {
+        let Some(action) = text_key_action(self.text_keymap, key, modifiers) else {
+            return;
         };
-        self.handle_input_edit_command(cmd);
+        match action {
+            TextKeyAction::Move { motion, extend } => self.move_input_caret(motion, extend),
+            TextKeyAction::DeleteBackward { word: false } => self.handle_backspace(),
+            TextKeyAction::DeleteBackward { word: true } => {
+                self.handle_input_edit_command(EditCommand::DeleteWordBackward)
+            }
+            TextKeyAction::DeleteForward { word } => self.handle_input_edit_command(if word {
+                EditCommand::DeleteWordForward
+            } else {
+                EditCommand::DeleteForward
+            }),
+            TextKeyAction::Inert => {}
+        }
     }
-    fn handle_arrow_right(&mut self, shift: bool, ctrl: bool) {
-        let cmd = match (shift, ctrl) {
-            (true, true) => EditCommand::SelectWordRight,
-            (true, false) => EditCommand::SelectRight,
-            (false, true) => EditCommand::MoveWordRight,
-            (false, false) => EditCommand::MoveRight,
-        };
-        self.handle_input_edit_command(cmd);
+    /// Move the focused field's caret; `extend` (Shift) keeps the anchor.
+    fn move_input_caret(&mut self, motion: TextMotion, extend: bool) {
+        let command = |select, mv| if extend { select } else { mv };
+        match motion {
+            TextMotion::CharLeft => self
+                .handle_input_edit_command(command(EditCommand::SelectLeft, EditCommand::MoveLeft)),
+            TextMotion::CharRight => self.handle_input_edit_command(command(
+                EditCommand::SelectRight,
+                EditCommand::MoveRight,
+            )),
+            TextMotion::WordLeft => self.handle_input_edit_command(command(
+                EditCommand::SelectWordLeft,
+                EditCommand::MoveWordLeft,
+            )),
+            TextMotion::WordRight => self.handle_input_edit_command(command(
+                EditCommand::SelectWordRight,
+                EditCommand::MoveWordRight,
+            )),
+            TextMotion::LineStart => self.handle_line_edge(false, extend, false),
+            TextMotion::LineEnd => self.handle_line_edge(true, extend, false),
+            TextMotion::DocStart => self.handle_line_edge(false, extend, true),
+            TextMotion::DocEnd => self.handle_line_edge(true, extend, true),
+            TextMotion::LineUp => self.handle_vertical_arrow(false, extend),
+            TextMotion::LineDown => self.handle_vertical_arrow(true, extend),
+        }
     }
     /// Enter in a focused text control.
     ///
@@ -2876,13 +2910,6 @@ impl RinchApp {
             self.focused_input_baseline = self.focused_input_value.clone();
         }
     }
-    fn handle_arrow_up(&mut self, shift: bool) {
-        self.handle_vertical_arrow(false, shift);
-    }
-    fn handle_arrow_down(&mut self, shift: bool) {
-        self.handle_vertical_arrow(true, shift);
-    }
-
     /// ArrowUp / ArrowDown in the focused text field (issue #307).
     ///
     /// A `<textarea>` moves one **visual** line — a soft-wrapped line counts,
@@ -3114,8 +3141,11 @@ impl RinchApp {
     ///
     /// A `<textarea>` goes to the start or end of the caret's **visual** line
     /// — a soft-wrapped line counts, as in a browser — over the same layout
-    /// ArrowUp/ArrowDown use ([`Self::input_text_layout`]); with Ctrl (Cmd on
-    /// macOS) to the start or end of the whole value. Shift moves the head and
+    /// ArrowUp/ArrowDown use ([`Self::input_text_layout`]); with `whole` to the
+    /// start or end of the whole value. Which keys mean which is the
+    /// platform's text keymap ([`text_key_action`], #951): Home/End and
+    /// Ctrl+Home/End on Windows and Linux; Cmd+Left/Right and Cmd+Up/Down, or
+    /// Shift+Home/End, on macOS. Shift moves the head and
     /// keeps the anchor. Without it a selection collapses and moves from its
     /// **head** — not its start or end, as the vertical arrows do: that is what
     /// Chrome 153 does, measured.
@@ -3126,7 +3156,7 @@ impl RinchApp {
     ///
     /// A single-line `<input>` keeps the [`EditCommand`] path, whose
     /// `StringDocument` has one line: Home/End go to the ends of the value.
-    fn handle_line_edge(&mut self, end: bool, shift: bool, ctrl: bool) {
+    fn handle_line_edge(&mut self, end: bool, shift: bool, whole: bool) {
         if self.live_focused_input_handler().is_none() {
             return;
         }
@@ -3136,7 +3166,7 @@ impl RinchApp {
         let Some(doc) = self.doc.clone() else { return };
         let is_textarea = doc.borrow().tree.get(node_id).and_then(|n| n.tag()) == Some("textarea");
         if !is_textarea {
-            self.handle_input_edit_command(match (end, shift, ctrl) {
+            self.handle_input_edit_command(match (end, shift, whole) {
                 (false, false, false) => EditCommand::MoveToLineStart,
                 (false, true, false) => EditCommand::SelectToLineStart,
                 (true, false, false) => EditCommand::MoveToLineEnd,
@@ -3156,7 +3186,7 @@ impl RinchApp {
         let selection = state.selection.clone();
         let len = state.document.text_length();
         let text_edge = if end { len } else { 0 };
-        let target = if ctrl {
+        let target = if whole {
             text_edge
         } else {
             let d = doc.borrow();
