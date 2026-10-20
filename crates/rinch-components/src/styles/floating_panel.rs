@@ -16,6 +16,8 @@ pub fn styles() -> String {
 /* Header - drag handle */
 .rinch-floating-panel__header {
     display: flex;
+    /* A finger here moves the panel, not the page (#1582). */
+    touch-action: none;
     align-items: center;
     padding: 6px 8px 6px 12px;
     background-color: var(--rinch-color-default);
@@ -79,6 +81,7 @@ pub fn styles() -> String {
 /* Resize handle - bottom-right corner grip */
 .rinch-floating-panel__resize {
     position: absolute;
+    touch-action: none;
     bottom: 0;
     right: 0;
     width: 20px;

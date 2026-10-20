@@ -886,10 +886,23 @@ fn clear_pending_click() {
     PENDING_CLICK.with(|c| *c.borrow_mut() = None);
 }
 
-/// True if `el` or one of its ancestors (up to `<html>`) can actually scroll — a
-/// computed `overflow-x`/`overflow-y` of `auto`/`scroll` with content overflowing
-/// its box. Decides whether a touch/pen tap should be deferred to pointerup so a
-/// scroll drag over the element pans the container instead of firing its click.
+/// True if a finger landing on `el` may start a pan: `el` or one of its
+/// ancestors can actually scroll — a computed `overflow-x`/`overflow-y` of
+/// `auto`/`scroll` with content overflowing its box — or the page itself does
+/// (#1582). Decides whether a touch/pen tap is deferred to pointerup so a scroll
+/// drag over the element pans instead of firing its click on contact.
+///
+/// The page is its own case: `<html>` computes `overflow: visible` while the
+/// document scrolls, so the walk asks the scrolling element's size, under the
+/// viewport's `overflow` (`<html>`'s, or `<body>`'s when `<html>`'s is
+/// `visible`, as the body's is propagated): `hidden`/`clip` there (a scroll
+/// lock) is a page no finger can pan.
+///
+/// A `touch-action: none` on `el` or an ancestor below the first scroller found
+/// means the browser pans nothing from this press (a `Slider`, a drag handle),
+/// so its click stays on contact, where a handler can arm a `Drag`. A `none`
+/// above that scroller is not read: the press waits for the release, which
+/// costs a tap nothing.
 fn has_scrollable_ancestor(el: &web_sys::Element) -> bool {
     let Some(win) = web_sys::window() else {
         return false;
@@ -898,6 +911,9 @@ fn has_scrollable_ancestor(el: &web_sys::Element) -> bool {
     while let Some(cur) = node {
         let is_root = cur.tag_name().eq_ignore_ascii_case("html");
         if let Ok(Some(style)) = win.get_computed_style(&cur) {
+            if style.get_property_value("touch-action").unwrap_or_default() == "none" {
+                return false;
+            }
             let overflow_y = style.get_property_value("overflow-y").unwrap_or_default();
             let overflow_x = style.get_property_value("overflow-x").unwrap_or_default();
             let scrolls_y = matches!(overflow_y.as_str(), "auto" | "scroll")
@@ -907,6 +923,9 @@ fn has_scrollable_ancestor(el: &web_sys::Element) -> bool {
             if scrolls_y || scrolls_x {
                 return true;
             }
+            if is_root {
+                return page_scrolls(&win, &cur, &style);
+            }
         }
         if is_root {
             break;
@@ -914,6 +933,38 @@ fn has_scrollable_ancestor(el: &web_sys::Element) -> bool {
         node = cur.parent_element();
     }
     false
+}
+
+/// Whether the viewport scrolls: the scrolling element overflows on an axis
+/// whose viewport `overflow` is not `hidden`/`clip` (see
+/// [`has_scrollable_ancestor`]). `html` and `html_style` are `<html>` and its
+/// computed style.
+fn page_scrolls(
+    win: &web_sys::Window,
+    html: &web_sys::Element,
+    html_style: &web_sys::CssStyleDeclaration,
+) -> bool {
+    let Some(doc) = html.owner_document() else {
+        return false;
+    };
+    let Some(scroller) = doc.scrolling_element() else {
+        return false;
+    };
+    let body_style = doc
+        .body()
+        .and_then(|b| win.get_computed_style(&b).ok().flatten());
+    let viewport = |axis: &str| -> bool {
+        let prop = format!("overflow-{axis}");
+        let mut v = html_style.get_property_value(&prop).unwrap_or_default();
+        if v == "visible"
+            && let Some(b) = &body_style
+        {
+            v = b.get_property_value(&prop).unwrap_or_default();
+        }
+        !matches!(v.as_str(), "hidden" | "clip")
+    };
+    (viewport("y") && scroller.scroll_height() > scroller.client_height())
+        || (viewport("x") && scroller.scroll_width() > scroller.client_width())
 }
 
 /// Clear a pending long-press timer (if any) on the given state, dropping the
@@ -2604,9 +2655,22 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                     mark_gesture_acted();
                     // Its focus waits for the same release
                     // ([`PendingPressFocus`]); a form control is the browser's.
-                    if !event.default_prevented()
-                        && let PressFocus::Focus(target) = press_focus_for(&el)
-                    {
+                    let press_focus = if event.default_prevented() {
+                        PressFocus::Untouched
+                    } else {
+                        press_focus_for(&el)
+                    };
+                    // Prevented as the press on contact is (`dispatch_click_at`),
+                    // unless the browser is to focus a form control here (#1588).
+                    // Without it Chrome sends its compatibility `mousedown` after
+                    // the lift to whatever is under the finger by then — an
+                    // overlay the handler opened — and that press blurs the field
+                    // the overlay focused. It does not stop a pan: `touch-action`
+                    // decides that, and a pan still ends in `pointercancel`.
+                    if !matches!(press_focus, PressFocus::Browser) {
+                        event.prevent_default();
+                    }
+                    if let PressFocus::Focus(target) = press_focus {
                         defer_press_focus(target, active_in(&el), event);
                     }
                     PENDING_CLICK.with(|c| {
@@ -2836,6 +2900,11 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         });
         if let Some(target) = deferred {
             dispatch_click_at(&target, &browser_doc_for_up, event);
+            // A `Drag` the handler armed has already seen its release: end it
+            // here, at the release, rather than leave it following a finger
+            // that has lifted. A control that drags wants `touch-action: none`,
+            // which keeps its click on contact (`has_scrollable_ancestor`).
+            rinch_core::finish_drag(event.client_x() as f32, event.client_y() as f32);
         }
     }) as Box<dyn FnMut(_)>);
     browser_doc
