@@ -617,8 +617,8 @@ impl RinchDocument {
         // a `<span>` only as far as the tree goes: cascading it here would
         // match it as one, which no pseudo rule does and a `span` rule must not
         // (#1004). Its style is the originator's to write — every cascade of
-        // the originator frees and regenerates it — so the walk leaves it, and
-        // its text child, alone. A list marker is a pseudo-element node with
+        // the originator gives it a fresh pseudo cascade, in place (#1023) —
+        // so the walk leaves it, and its text child, alone. A list marker is a pseudo-element node with
         // no pseudo style, and is cascaded as before.
         if node.is_pseudo_element && old_style.as_ref().is_some_and(|s| s.is_pseudo_style()) {
             return;

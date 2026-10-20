@@ -3193,9 +3193,13 @@ input a shaped layout is built from:
   run (same container, same members) into the old box's slab entry and keeps
   its paint layout and measures, as a box outside the pass's scope keeps them;
   a container restyle drops them through `run_boxes`, and the content
-  signature drops them for a changed run (#964, `RetiredAnonBoxes`). Regenerated `::before`/`::after`/list-marker content is
-  the one restyle that invalidates regardless, because the nodes an inline
-  layout names were freed and minted again.
+  signature drops them for a changed run (#964, `RetiredAnonBoxes`). Generated content that is minted or freed (a `::before`/`::after` that
+  starts or stops being generated, or whose text changed, and every list
+  marker, which is regenerated on each cascade of its `<li>`) is the one
+  restyle that invalidates regardless, because the nodes an inline layout
+  names were freed and minted again; a `::before`/`::after` box that still
+  generates is kept and restyled in place (#1023), so a hover on its
+  originator re-shapes nothing it did not change.
 - **A structural pass drops only the roots whose content moved**
   (`refresh_ifc_signatures`, after the atomic inlines are sized; a scoped pass
   signs only its own containers' roots). It hashes
@@ -6106,8 +6110,10 @@ Three things it deliberately does not do.
   overlay still runs — on rinch-web, and since #1004 on desktop too, where a
   generated box now carries its pseudo cascade and its `@keyframes` animation
   starts (it did not before, #925), keeping the frame clock running under a
-  closed drawer. Desktop restarts such an animation at every cascade of its
-  originator, which regenerates the box (#1023). The pause selectors were left
+  closed drawer. The box is kept across a cascade of its originator (#1023), so
+  such an animation keeps its clock as in Chrome: it restarts only when its
+  `animation-name` changes or the pseudo stops and starts being generated, and
+  a `transition` declared on a `::before`/`::after` runs. The pause selectors were left
   out because rinch-dom matches pseudo-element rules with no bloom filter
   (#935), so they cost +10% of style instructions on every page loading the
   component CSS (+71% under a closed drawer); now that they would pause
