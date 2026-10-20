@@ -483,3 +483,41 @@ fn end_at_a_cjk_soft_wrap_lands_on_a_char_boundary_on_the_same_line() {
     key(&mut app, KeyCode::End, false);
     assert_eq!(caret(&app, id), e, "a second End stays");
 }
+
+/// A line ended by a hard break other than `\n` — U+2028 here; Parley also
+/// breaks at U+2029, a lone `\r`, VT, FF and NEL — ends before its break, as a
+/// `\n` line does: End then `x` types `abx\u{2028}cd`. (Review of #1618: a
+/// line end decided by matching `'\n'` read it as a soft wrap and put the
+/// caret after the break, so `x` went onto the next line.)
+#[test]
+fn end_on_a_line_ended_by_a_line_separator_stays_before_it() {
+    let (mut app, id) = mount("textarea", 200);
+    type_str(&mut app, "ab\u{2028}cd");
+    ctrl_key(&mut app, KeyCode::Home, false);
+    assert_eq!(caret(&app, id), 0);
+    key(&mut app, KeyCode::End, false);
+    assert_eq!(caret(&app, id), 2, "before the break");
+    assert_eq!(attr(&app, id, "data-cursor-affinity"), "");
+    type_str(&mut app, "x");
+    assert_eq!(value(&app, id), "abx\u{2028}cd");
+}
+
+/// The text toolbar's anchor (Android, #813) is the caret as drawn: after End
+/// on a soft-wrapped line it is on that line, not at the start of the next
+/// (review of #1618: an anchor asked downstream survived every fixture).
+#[test]
+fn the_toolbar_anchor_follows_an_upstream_caret() {
+    let (mut app, id) = mount("textarea", 70);
+    type_str(&mut app, "abcd abcd abcd");
+    caret_to(&mut app, 7);
+    key(&mut app, KeyCode::End, false);
+    assert_eq!(caret(&app, id), 10);
+    let (_, line2, _, h) = caret_rect(&mut app, id, 5);
+    let (_, line3, _, _) = caret_rect(&mut app, id, 10);
+    assert!(line3 > line2 + h * 0.5, "control: 10 downstream is line 3");
+    let anchor = app.text_edit_state().expect("a text field holds the keyboard").anchor;
+    assert!(
+        (anchor.1 - line2).abs() < h * 0.5,
+        "the anchor is on line 2: {anchor:?} (line 2 at {line2}, line 3 at {line3})"
+    );
+}
