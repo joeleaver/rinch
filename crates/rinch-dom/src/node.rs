@@ -3596,22 +3596,25 @@ impl NodeTree {
     /// Keeps the entry's content signature — this is a *style or content*
     /// invalidation, and whether the root's structure moved is still the
     /// structural pass's question to answer.
-    /// [`Self::forget_ifc_measures`] for a root whose **content signature**
-    /// moved since the structural pass last signed it — an atomic inline in it
-    /// resized — so that pass sees the root as changed
-    /// ([`IfcRootMeasures::stale`]).
-    pub fn forget_ifc_measures_and_signature(&mut self, root: RawNodeId) {
-        self.forget_ifc_measures(root);
-        if let Some(entry) = self.ifc_measure_cache.get_mut(&root) {
-            entry.stale = true;
-        }
-    }
-
     pub fn forget_ifc_measures(&mut self, root: RawNodeId) {
         self.perf
             .bump(crate::perf::Counter::IfcMeasureInvalidations);
         if let Some(entry) = self.ifc_measure_cache.get_mut(&root) {
             entry.sizes.clear();
+        }
+    }
+
+    /// Drop the sizes cached for IFC root `root`, as
+    /// [`Self::forget_ifc_measures`] does, **and mark its content signature
+    /// stale** ([`IfcRootMeasures::stale`]): for a root an atomic inline in
+    /// which changed size outside a structural pass. The signature hashes that
+    /// size, so it no longer describes what the root is measured from next;
+    /// the next structural pass that signs the root treats it as changed
+    /// whatever signature it computes, and clears the mark.
+    pub fn forget_ifc_measures_and_signature(&mut self, root: RawNodeId) {
+        self.forget_ifc_measures(root);
+        if let Some(entry) = self.ifc_measure_cache.get_mut(&root) {
+            entry.stale = true;
         }
     }
 

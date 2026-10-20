@@ -3043,3 +3043,203 @@ fn rv_chip_hist_plain_whole() {
 fn rv_chip_hist_plain_structural() {
     rv_chip_hist_plain("rv_chip_hist_plain_structural", true, true);
 }
+
+// ── review2-1627 fixtures ─────────────────────────────────────────────────────
+
+/// A member moved from the first run to the second in one frame: both runs'
+/// first members still key a retired box, but the members differ.
+#[test]
+fn rv2_member_moved_between_runs_in_one_frame() {
+    rv_twin(
+        "rv2_member_moved_between_runs_in_one_frame",
+        RV_CSS,
+        |doc, on| {
+            let (a, s, li) = rv_doc(doc, "a");
+            let _ = li;
+            if on {
+                doc.append_child(a, s);
+            }
+            (a, s)
+        },
+        |doc, h| doc.append_child(h.0, h.1),
+    );
+}
+
+/// The same member moved there and back in one frame, with a restyle so the
+/// two states differ: the boxes are kept and must not keep the old layout.
+#[test]
+fn rv2_member_moved_between_runs_and_back_with_a_restyle() {
+    rv_twin(
+        "rv2_member_moved_between_runs_and_back_with_a_restyle",
+        RV_CSS,
+        |doc, on| {
+            let (a, s, li) = rv_doc(doc, "a");
+            if on {
+                doc.set_attribute(s, "class", "s on");
+            }
+            (a, s, li)
+        },
+        |doc, h| {
+            doc.append_child(h.0, h.1);
+            let t1 = doc.tree.get(h.0.0).unwrap().children[1];
+            doc.insert_before(h.0, h.1, NodeId(t1));
+            doc.set_attribute(h.1, "class", "s on");
+        },
+    );
+}
+
+/// The second run's text moved to the front of the first run in one frame.
+#[test]
+fn rv2_second_runs_first_member_moved_to_the_front() {
+    rv_twin(
+        "rv2_second_runs_first_member_moved_to_the_front",
+        RV_CSS,
+        |doc, on| {
+            let (a, _, _) = rv_doc(doc, "a");
+            if on {
+                let kids = doc.tree.get(a.0).unwrap().children.clone();
+                doc.insert_before(a, NodeId(kids[4]), NodeId(kids[0]));
+            }
+            a
+        },
+        |doc, a| {
+            let kids = doc.tree.get(a.0).unwrap().children.clone();
+            doc.insert_before(*a, NodeId(kids[4]), NodeId(kids[0]));
+        },
+    );
+}
+
+/// `div.a(width: W) > ["text ", span(inline-block, width: 50%) > "chip", " more", li, " after"]`
+fn rv2_pct_doc(doc: &mut RinchDocument, w: &str, chip_style: &str) -> (NodeId, NodeId) {
+    let body = doc.body();
+    let a = rv_s(doc, body, "div", &format!("width: {w}; line-height: 20px"));
+    rv_t(doc, a, "text before the chip ");
+    let c = rv_s(doc, a, "span", chip_style);
+    rv_t(doc, c, "chip text that can wrap inside");
+    rv_t(doc, a, " more text after the chip in the same run");
+    rv_s(doc, a, "li", "width: 2em");
+    rv_t(doc, a, " after");
+    (a, c)
+}
+
+fn rv2_resize_and_back(name: &str, chip_style: &'static str, whole: bool, by_chip: bool) {
+    rv_twin(
+        name,
+        "",
+        move |doc, on| {
+            let h = rv2_pct_doc(doc, "200px", chip_style);
+            if on && !whole {
+                rv_s(doc, h.0, "li", "width: 2em");
+            }
+            if on && whole {
+                doc.set_style(h.0, "color", "rgb(200, 0, 0)");
+            }
+            h
+        },
+        move |doc, h| {
+            if by_chip {
+                doc.set_style(h.1, "width", "150px");
+            } else {
+                doc.set_style(h.0, "width", "320px");
+            }
+            doc.resolve_layout(VP.0, VP.1);
+            if by_chip {
+                doc.set_style(h.1, "width", "60px");
+            } else {
+                doc.set_style(h.0, "width", "200px");
+            }
+            if whole {
+                doc.set_style(h.0, "color", "rgb(200, 0, 0)");
+                doc.recompute_all_styles_full();
+            } else {
+                rv_s(doc, h.0, "li", "width: 2em");
+            }
+        },
+    );
+}
+
+#[test]
+fn rv2_pct_chip_container_resized_and_back_scoped() {
+    rv2_resize_and_back(
+        "rv2_pct_chip_container_resized_and_back_scoped",
+        "display: inline-block; width: 50%",
+        false,
+        false,
+    );
+}
+#[test]
+fn rv2_pct_chip_container_resized_and_back_whole() {
+    rv2_resize_and_back(
+        "rv2_pct_chip_container_resized_and_back_whole",
+        "display: inline-block; width: 50%",
+        true,
+        false,
+    );
+}
+#[test]
+fn rv2_auto_chip_container_resized_and_back_scoped() {
+    rv2_resize_and_back(
+        "rv2_auto_chip_container_resized_and_back_scoped",
+        "display: inline-block",
+        false,
+        false,
+    );
+}
+#[test]
+fn rv2_chip_width_styled_and_back_scoped() {
+    rv2_resize_and_back(
+        "rv2_chip_width_styled_and_back_scoped",
+        "display: inline-block; width: 60px",
+        false,
+        true,
+    );
+}
+#[test]
+fn rv2_chip_width_styled_and_back_whole() {
+    rv2_resize_and_back(
+        "rv2_chip_width_styled_and_back_whole",
+        "display: inline-block; width: 60px",
+        true,
+        true,
+    );
+}
+
+/// The anonymous-box container is a flex item (content-sized), so its chip
+/// is capped by its min-content width (#1476): a chip text edit that grows
+/// the chip, laid out, then the text put back and a block appended.
+#[test]
+fn rv2_chip_in_flex_item_text_edited_and_back_scoped() {
+    rv_twin(
+        "rv2_chip_in_flex_item_text_edited_and_back_scoped",
+        "",
+        |doc, on| {
+            let body = doc.body();
+            let row = rv_s(
+                doc,
+                body,
+                "div",
+                "display: flex; width: 300px; line-height: 20px",
+            );
+            let a = rv_s(doc, row, "div", "");
+            rv_t(doc, a, "lead ");
+            let c = rv_s(doc, a, "span", "display: inline-block");
+            let ct = doc.create_text("short");
+            doc.append_child(c, ct);
+            rv_t(doc, a, " tail of the run");
+            rv_s(doc, a, "li", "width: 2em");
+            rv_t(doc, a, " after the block");
+            let lab = rv_s(doc, row, "div", "");
+            rv_t(doc, lab, "a label beside it that is wide enough to squeeze");
+            if on {
+                rv_s(doc, a, "li", "width: 2em");
+            }
+            (a, ct)
+        },
+        |doc, h| {
+            doc.set_text_content(h.1, "a much longer chip text that wraps");
+            doc.resolve_layout(VP.0, VP.1);
+            doc.set_text_content(h.1, "short");
+            rv_s(doc, h.0, "li", "width: 2em");
+        },
+    );
+}

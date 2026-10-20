@@ -2999,3 +2999,116 @@ fn a_removed_first_run_keeps_the_later_runs_boxes() {
         ],
     );
 }
+
+/// The stale mark an atomic inline's resize puts on its IFC root's signature
+/// (review of #1627) is **cleared** by the pass that signs the root: a chip's
+/// text edit resizes it outside a structural pass, the first whole-document
+/// pass after it treats the paragraph as changed and shapes it once, and the
+/// second shapes nothing. Without the clear, every structural pass that signs
+/// the paragraph would shape it again for good.
+#[test]
+fn a_chip_resize_marks_its_paragraph_stale_for_one_structural_pass() {
+    let mut doc = doc_with(".chip { display: inline-flex; padding: 0 4px; }");
+    let body = doc.body();
+    let p = el(&mut doc, body, "p", "");
+    text(&mut doc, p, "Status: ");
+    let chip = el(&mut doc, p, "span", "chip");
+    let t = text(&mut doc, chip, "Needs review");
+    text(&mut doc, p, " and a little more text after it");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.set_text_content(t, "Was reviewed by everyone");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.recompute_all_styles_full();
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "stale paragraph: first whole-document pass",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcSignatureChanges, 1),
+            (LayoutResolves, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullTheme, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (InlineBlockComputes, 1),
+        ],
+    );
+    doc.recompute_all_styles_full();
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "stale paragraph: second whole-document pass",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (LayoutResolves, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullTheme, 1),
+            (TaffyRootComputes, 1),
+            (InlineBlockComputes, 1),
+        ],
+    );
+}
+
+/// What the stale mark costs a whole-document pass over percentage-width
+/// atomic inlines (round 2 of the review of #1627): 500 rows, each a line of
+/// text holding a `width: 20%` `inline-block`, in a 380px list resized to
+/// 300px. Every whole-document pass measures each chip as `auto` before it
+/// signs the rows, and resolves it to its percentage after the compute,
+/// through `invalidate_ifc_of_atomic_inline`, which marks its row stale; so
+/// the next whole-document pass treats every row as changed. That is 1000 IFC
+/// measure shapes per pass where `main` shapes 500 (and 501 on the first) —
+/// the price of the seed-1118 fix, accepted: on `main` the first compute was
+/// handed measures made at the resolved size while the chip was `auto`, which
+/// in a content-sized container stayed wrong.
+#[test]
+fn a_whole_document_pass_over_percentage_chips_measures_each_row_twice() {
+    let mut doc = doc_with(".list { width: 380px; } .pct { display: inline-block; width: 20%; }");
+    let body = doc.body();
+    let list = el(&mut doc, body, "div", "list");
+    for _ in 0..500 {
+        let row = el(&mut doc, list, "div", "row");
+        text(&mut doc, row, "Status: ");
+        let chip = el(&mut doc, row, "span", "pct");
+        text(&mut doc, chip, "Needs review");
+        text(&mut doc, row, " and a little more text after it");
+    }
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.set_style(list, "width", "300px");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.recompute_all_styles_full();
+    doc.resolve_layout(VP.0, VP.1);
+    doc.recompute_all_styles_full();
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "percentage chips: a later whole-document pass",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ShapeMeasureIfc, 1000),
+            (ShapeIfcBuild, 500),
+            (ShapeAtomicInline, 1000),
+            (IfcMeasureInvalidations, 500),
+            (IfcSignatureChanges, 500),
+            (LayoutResolves, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullTheme, 1),
+            (TaffyRootComputes, 2),
+            (TaffyMeasureCalls, 1000),
+            (InlineBlockComputes, 1000),
+        ],
+    );
+}
