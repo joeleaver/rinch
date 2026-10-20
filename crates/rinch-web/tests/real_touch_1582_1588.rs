@@ -75,6 +75,23 @@ async fn real_touch(points: &[(f64, f64)]) {
     panic!("the helper never sent touch #{n} (is support/real_keys.mjs running?)");
 }
 
+/// Records the type of every pointer event, `mousedown` and `click` the window
+/// sees from now on (capture phase).
+fn record_events() -> Rc<RefCell<Vec<String>>> {
+    let seen: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = seen.clone();
+    let cb = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(
+        move |e: web_sys::Event| sink.borrow_mut().push(e.type_()),
+    );
+    let win = web_sys::window().unwrap();
+    for name in ["pointerdown", "pointerup", "pointercancel", "mousedown", "click"] {
+        win.add_event_listener_with_callback_and_bool(name, cb.as_ref().unchecked_ref(), true)
+            .unwrap();
+    }
+    cb.forget();
+    seen
+}
+
 fn require_helper() {
     assert!(
         option_env!("RINCH_REAL_KEYS").is_some(),
@@ -91,6 +108,8 @@ fn clear_stale() {
         }
     }
     rinch_web::__reset_activation_state();
+    let _ = document().document_element().unwrap().remove_attribute("style");
+    let _ = document().body().unwrap().remove_attribute("style");
     web_sys::window().unwrap().scroll_to_with_x_and_y(0.0, 0.0);
 }
 
@@ -157,9 +176,15 @@ async fn a_real_pan_that_starts_on_a_button_does_not_click_it() {
     sleep(50).await;
     let (x, y) = centre(&document().get_element_by_id("btn").unwrap());
     let path: Vec<(f64, f64)> = (0..=8).map(|i| (x, y - 10.0 * i as f64)).collect();
+    let seen = record_events();
     real_touch(&path).await;
     let scrolled = web_sys::window().unwrap().scroll_y().unwrap();
-    console_log!("REAL-PAN: page scrolled to {scrolled}, log {:?}", log.borrow());
+    // Positive control: the browser took the contact for a pan.
+    assert!(
+        seen.borrow().iter().any(|e| e == "pointercancel") && scrolled > 0.0,
+        "no pan happened: scrolled {scrolled}, events {:?}",
+        seen.borrow()
+    );
     assert!(log.borrow().is_empty(), "the pan clicked: {:?}", log.borrow());
     root.unmount();
     host.remove();
