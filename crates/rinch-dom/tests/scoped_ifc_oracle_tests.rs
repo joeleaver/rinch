@@ -1525,7 +1525,14 @@ fn scoped_pass_matches_the_whole_document_pass_long() {
             let n: u64 = n.parse().expect("SCOPED_ORACLE_SEED is a number");
             n..n + 1
         }
-        Err(_) => 1000..3000,
+        // `SCOPED_ORACLE_SEEDS=lo..hi` runs another range.
+        Err(_) => match std::env::var("SCOPED_ORACLE_SEEDS") {
+            Ok(r) => {
+                let (lo, hi) = r.split_once("..").expect("SCOPED_ORACLE_SEEDS is lo..hi");
+                lo.parse().expect("a number")..hi.parse().expect("a number")
+            }
+            Err(_) => 1000..3000,
+        },
     };
     // One document pair per thread at a time (a document is not `Send`; each
     // thread builds its own).
