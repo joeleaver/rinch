@@ -449,19 +449,23 @@ line the text soft-wrapped onto counts, as in a browser — aiming at the column
 the first of a run of vertical moves started from, so a short line in between
 does not pull the caret left for good. On desktop this reads the same text
 layout a click is hit-tested against, so the caret lands where a click at that
-height would put it (except at a soft-wrap point, below). ArrowUp on the first line goes to the start of the text and
+height would put it. ArrowUp on the first line goes to the start of the text and
 ArrowDown on the last line to its end; in a single-line `<input>` that is all
 they do (Chrome's behaviour on Linux and Windows). Shift extends the selection.
 Without Shift a selection collapses, moving from its start (up) or its end
 (down). An `<input type="number">` is not moved: a browser steps its value
 there, which desktop does not do.
 
-Where a soft-wrapped line is shorter than the column aimed at, desktop stops
-one character before the wrap point, since a caret at the wrap point itself
-would be drawn at the start of the next line. A browser keeps a caret affinity
-for that and places it after the last character instead. Where the wrap is
-at a space the space hangs and nothing looks different; in text with no
-spaces (CJK) the caret is visibly one column short.
+Where a soft-wrapped line is shorter than the column aimed at, the caret goes
+to the line's wrap point — after its last character, and after the space the
+line broke at — and is drawn at the end of that line, as in a browser. The end
+of one visual line and the start of the next are the same text offset, so the
+caret carries an *affinity* saying which of the two it is drawn at; the next
+ArrowUp, ArrowDown, Home or End moves from the line it is drawn on, and any
+other caret change (typing, a click, a horizontal arrow) puts it back at the
+start of the lower line. Up to #941 desktop had no affinity and stopped one
+character short instead, which in text with no spaces (CJK) left the caret a
+column short.
 
 Home and End in a `<textarea>` go to the start and end of the caret's
 **visual** line, soft-wrapped lines included; Ctrl+Home and Ctrl+End go to the
@@ -475,11 +479,10 @@ vertical moves was aiming at, so the next ArrowUp or ArrowDown aims from where
 the caret now is; one that leaves the caret where it was keeps that column, as
 in Chrome.
 
-End on a soft-wrapped line follows the rule above: desktop stops one character
-before the wrap point, a browser at the wrap point with the caret drawn at the
-end of the line. When the wrap is at a space, the caret sits before that space,
-so a character typed there goes before it — `abcd abcdX abcd` where Chrome
-types `abcd abcd Xabcd`.
+End on a soft-wrapped line goes to its wrap point, with the caret drawn at the
+end of the line, as in a browser: when the wrap is at a space the caret is
+after that space, so a character typed there goes after it — `abcd abcd Xabcd`,
+as Chrome types it.
 
 On macOS the desktop keys are the platform's (Cocoa's, which Chrome and Safari
 follow in their text controls), not Windows' with Cmd for Ctrl (issue #951):

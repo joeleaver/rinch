@@ -302,15 +302,28 @@ impl RinchApp {
                     )
                 };
                 let (start, end) = (state.selection.start().0, state.selection.end().0);
+                let head = state.selection.head.0;
                 let anchor = {
                     let d = doc.borrow();
+                    // The head is drawn with its affinity: an upstream caret
+                    // at a soft wrap ends the upper line (#941).
+                    let head_affinity = d
+                        .tree
+                        .get(node_id)
+                        .map(rinch_dom::form_control::caret_affinity)
+                        .unwrap_or_default();
                     let mut caret = |offset: usize| {
-                        Self::input_caret_rect_for_offset(
+                        Self::input_caret_rect_with_affinity(
                             &d.tree,
                             &mut self.hit_test_font_cx,
                             &mut self.hit_test_layout_cx,
                             node_id,
                             offset,
+                            if offset == head {
+                                head_affinity
+                            } else {
+                                rinch_core::dom::CaretAffinity::Downstream
+                            },
                         )
                     };
                     // Clipped to the field's own box. Paint does not clip there:

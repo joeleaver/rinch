@@ -215,8 +215,8 @@ fn textarea_cmd_arrows_reach_the_visual_line_and_the_value() {
     press(&mut app, KeyCode::ArrowRight, None, CMD);
     assert_eq!(
         sel(&app, id),
-        (9, 9),
-        "Cmd+Right: the visual line's end, before the wrap (#941)"
+        (10, 10),
+        "Cmd+Right: the visual line's end, at the wrap point, drawn upstream (#941)"
     );
     press(&mut app, KeyCode::ArrowDown, None, CMD);
     assert_eq!(sel(&app, id), (14, 14), "Cmd+Down: the value's end");

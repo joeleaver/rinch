@@ -361,12 +361,82 @@ fn a_number_input_is_left_alone() {
     assert_eq!(sel(&app, id), (2, 2));
 }
 
-/// Up onto a soft-wrapped line whose end is left of the goal: the nearest
-/// offset is that line's end, which is also the next line's start — and a
-/// caret there paints on the *next* line. The move stops one character short,
-/// so the caret is seen to go up. `iiii ` wraps before the wide `WWWWWWWW`.
+/// The line a caret at the field's head is drawn on, as `(caret top, line
+/// top of offset 0)` in the layout's own space: the head read back from the
+/// DOM with the affinity the runtime wrote beside it (`data-cursor-affinity`,
+/// #941), which is what paint reads.
+fn head_line_y(app: &mut RinchApp, id: usize) -> (f32, f32) {
+    use rinch_core::dom::CaretAffinity;
+    let head = caret(app, id);
+    let affinity = if attr(app, id, "data-cursor-affinity") == "upstream" {
+        CaretAffinity::Upstream
+    } else {
+        CaretAffinity::Downstream
+    };
+    let doc = app.doc.clone().unwrap();
+    let d = doc.borrow();
+    let it = RinchApp::input_text_layout(
+        &d.tree,
+        &mut app.hit_test_font_cx,
+        &mut app.hit_test_layout_cx,
+        id,
+    )
+    .expect("a laid-out value");
+    let (_, y) = rinch_dom::text_query::caret_position_for_offset_layout_with_affinity(
+        &it.layout, head, affinity,
+    );
+    let (_, first) = rinch_dom::text_query::caret_position_for_offset_layout(&it.layout, 0);
+    (y, first)
+}
+
+/// The rows of the window the caret is painted on: the pixels that differ
+/// between a frame with the caret shown and one with it blinked off. A local
+/// pixel oracle for what paint does with the affinity, not what the runtime
+/// computes.
+#[cfg(software_shell)]
+fn painted_caret_rows(app: &mut RinchApp, id: usize) -> std::ops::RangeInclusive<usize> {
+    fn frame(app: &mut RinchApp, id: usize, visible: &str) -> (Vec<u8>, u32) {
+        {
+            let doc = app.doc.clone().unwrap();
+            let mut d = doc.borrow_mut();
+            d.tree
+                .nodes
+                .get_mut(id)
+                .unwrap()
+                .attributes
+                .insert("data-cursor-visible".into(), visible.into());
+            d.tree.mark_paint_dirty(id);
+        }
+        app.resolve_and_repaint(800.0, 600.0);
+        app.scene_dirty = true;
+        app.has_previous_frame = false;
+        let (px, w, _) = app.build_pixels(1.0, (800, 600), true);
+        (px.to_vec(), w)
+    }
+    let (on, w) = frame(app, id, "true");
+    let (off, _) = frame(app, id, "false");
+    let w = w as usize;
+    let rows: Vec<usize> = on
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(off.as_chunks::<4>().0)
+        .enumerate()
+        .filter(|(_, (a, b))| a != b)
+        .map(|(i, _)| i / w)
+        .collect();
+    let lo = *rows.iter().min().expect("the caret paints somewhere");
+    let hi = *rows.iter().max().unwrap();
+    lo..=hi
+}
+
+/// Up onto a soft-wrapped line whose end is left of the goal lands at that
+/// line's wrap point — after the space the line broke at — drawn at the end
+/// of the upper line (an upstream caret, #941). Chrome 153: ArrowUp then `x`
+/// gives `iiii xWWWWWWWW`. Before the fix the caret had no affinity, so the
+/// move stopped one character short (4) and `x` went before the space.
 #[test]
-fn up_onto_a_shorter_soft_wrapped_line_stays_on_it() {
+fn up_onto_a_shorter_soft_wrapped_line_lands_at_its_wrap_point() {
     let (mut app, id) = mount("textarea", None, 130);
     let text = "iiii WWWWWWWW";
     type_str(&mut app, text);
@@ -375,16 +445,104 @@ fn up_onto_a_shorter_soft_wrapped_line_stays_on_it() {
     assert!(end_y > first_y, "the fixture wraps: {first_y} -> {end_y}");
 
     key(&mut app, KeyCode::ArrowUp, false);
-    let up = caret(&app, id);
-    assert_eq!(up, 4, "before the space the line broke at, not after it");
-    let (_, up_y, _, _) = caret_rect(&mut app, id, up);
+    assert_eq!(caret(&app, id), 5, "the wrap point, after the space");
+    let (up_y, line0_y) = head_line_y(&mut app, id);
     assert!(
-        (up_y - first_y).abs() < line_h * 0.5,
-        "the caret paints on the first line: {up_y} vs {first_y}"
+        (up_y - line0_y).abs() < line_h * 0.5,
+        "the caret is drawn on the first line: {up_y} vs {line0_y}"
     );
 
+    type_str(&mut app, "x");
+    assert_eq!(value(&app, id), "iiii xWWWWWWWW", "Chrome 153");
+}
+
+/// The caret the move leaves is on the upper line for the next move too: a
+/// second ArrowUp goes past the first line to the start of the text. Measured
+/// from the lower line (downstream) it would land on the first line again, at
+/// the same wrap point.
+#[test]
+fn a_second_up_from_the_wrap_point_leaves_the_first_line() {
+    let (mut app, id) = mount("textarea", None, 130);
+    type_str(&mut app, "iiii WWWWWWWW");
+    key(&mut app, KeyCode::ArrowUp, false);
+    assert_eq!(caret(&app, id), 5);
+    key(&mut app, KeyCode::ArrowUp, false);
+    assert_eq!(caret(&app, id), 0, "off the first line: the text's start");
+}
+
+/// And ArrowDown from it moves to the line below the upper one, back to the
+/// goal at the end of the text.
+#[test]
+fn down_from_the_wrap_point_returns_to_the_goal() {
+    let (mut app, id) = mount("textarea", None, 130);
+    let text = "iiii WWWWWWWW";
+    type_str(&mut app, text);
+    key(&mut app, KeyCode::ArrowUp, false);
     key(&mut app, KeyCode::ArrowDown, false);
     assert_eq!(caret(&app, id), text.len(), "and the goal brings it back");
+}
+
+/// A wrap with no space at it — the issue's CJK case (`漢字` × 6 at 100px,
+/// six to a line), here a break after a hyphen so it is set in the bundled
+/// Inter: `WWWWW-WWWWW-` is two lines of six of equal width. ArrowUp from the
+/// end lands after the first line's last glyph (its hyphen), not one column
+/// short of it, and the caret is drawn there.
+#[test]
+fn up_onto_a_glyph_wrapped_line_loses_no_column() {
+    let (mut app, id) = mount("textarea", None, 100);
+    let text = "WWWWW-WWWWW-";
+    type_str(&mut app, text);
+    let lines: Vec<_> = {
+        let doc = app.doc.clone().unwrap();
+        let d = doc.borrow();
+        let it = RinchApp::input_text_layout(
+            &d.tree,
+            &mut app.hit_test_font_cx,
+            &mut app.hit_test_layout_cx,
+            id,
+        )
+        .unwrap();
+        it.layout.lines().map(|l| l.text_range()).collect()
+    };
+    assert_eq!(lines, vec![0..6, 6..12], "two lines of six");
+
+    key(&mut app, KeyCode::ArrowUp, false);
+    assert_eq!(caret(&app, id), 6, "after the first line's hyphen");
+    let (up_y, line0_y) = head_line_y(&mut app, id);
+    assert!(
+        (up_y - line0_y).abs() < 10.0,
+        "drawn on the first line: {up_y} vs {line0_y}"
+    );
+    type_str(&mut app, "x");
+    assert_eq!(value(&app, id), "WWWWW-xWWWWW-");
+}
+
+/// Paint draws the upstream caret at the end of the upper line: the pixels
+/// that blink with the caret are on the first line's rows (0..20 of a field
+/// at the window's top with no padding and a 20px line), not the second's.
+/// The fixture's positive control is the caret at the end of the text, which
+/// paints on the second line.
+#[test]
+#[cfg(software_shell)]
+fn the_upstream_caret_is_painted_on_the_upper_line() {
+    let (mut app, id) = mount("textarea", None, 130);
+    type_str(&mut app, "iiii WWWWWWWW");
+    let field_top = {
+        let d = app.doc.as_ref().unwrap().borrow();
+        painted_element_box(&d.tree, id).1 as usize
+    };
+    let rows = painted_caret_rows(&mut app, id);
+    assert!(
+        *rows.start() >= field_top + 18,
+        "control: the caret at the end paints on line 2: {rows:?} (field top {field_top})"
+    );
+    key(&mut app, KeyCode::ArrowUp, false);
+    assert_eq!(caret(&app, id), 5);
+    let rows = painted_caret_rows(&mut app, id);
+    assert!(
+        *rows.end() < field_top + 22,
+        "the upstream caret paints on line 1: {rows:?} (field top {field_top})"
+    );
 }
 
 /// The goal is dropped by any other change to the caret, even one that puts

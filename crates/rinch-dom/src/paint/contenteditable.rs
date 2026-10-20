@@ -394,10 +394,22 @@ pub(super) fn paint_input_value(
     // Draw cursor/caret if focused and visible
     if is_focused && cursor_visible {
         let caret_pos = cursor_pos.min(text.len());
+        // An upstream caret at a soft wrap is drawn at the end of the upper
+        // line (#941). It is the committed text's caret: a composition moves
+        // the caret to the preedit's end, which nothing set an affinity for.
+        let affinity = if composing || is_placeholder {
+            rinch_core::dom::CaretAffinity::Downstream
+        } else {
+            crate::form_control::caret_affinity(node)
+        };
         let (caret_offset_x, caret_offset_y) = if text.is_empty() {
             (0.0, 0.0)
         } else {
-            crate::text_query::caret_position_for_offset_layout(&text_layout, caret_pos)
+            crate::text_query::caret_position_for_offset_layout_with_affinity(
+                &text_layout,
+                caret_pos,
+                affinity,
+            )
         };
         let caret_x = text_x + caret_offset_x as f64;
         let caret_y = text_y + caret_offset_y as f64;
