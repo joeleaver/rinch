@@ -122,7 +122,7 @@ pub use rinch_editor_view::{
     CaretAffinity, CaretFrom, Editor, EditorHandle, EditorKey, ImageHover, ImageInput,
     ImageInputSource, LinkClick, LinkHover, LinkSpan, NODE_VIEW_ATTR, NodeViewCtx,
     NodeViewRegistration, NodeViewRender, NodeViewSpec, ScrollAlign, SelectionAnchor,
-    clear_image_source, create_editor, set_image_source,
+    clear_image_source, create_editor, history_now_ms, set_image_source,
 };
 
 // Collaborative editing (M9), behind the `collaboration` feature. The collab methods

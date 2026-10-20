@@ -11,8 +11,10 @@
 //! single undo step (so a word is one undo, not one-per-keystroke); any non-typing
 //! transaction (a mark, a block change, a split) is its own group, and an explicit
 //! caret move breaks the current group. The time window is driven by
-//! [`Transaction::set_time`]; with times unset (`0`), consecutive typing merges
-//! (the default headless behavior), which tests pin by spacing timestamps apart.
+//! [`Transaction::set_time`]: the core reads no clock, and `rinch-editor-view`'s
+//! `EditorHandle` stamps every transaction it dispatches (#940). With times unset
+//! (`0`, a headless state driven directly), consecutive typing always merges,
+//! which tests pin by spacing timestamps apart.
 
 use std::any::Any;
 use std::rc::Rc;
@@ -202,6 +204,10 @@ impl Plugin for HistoryPlugin {
                     event.typing = prev.typing;
                 }
                 hist.undone.events.push(event);
+                // The next edit starts a step of its own, as ProseMirror's
+                // `prevTime = 0` makes it: otherwise typing within the window
+                // of the group now on top of `done` joins it.
+                hist.break_group = true;
             }
             Some(HistoryAction::Redo) => {
                 let reverted = hist.undone.events.pop();
@@ -210,6 +216,11 @@ impl Plugin for HistoryPlugin {
                     event.typing = prev.typing;
                 }
                 hist.done.events.push(event);
+                // Typing right after a redo must not join the redone group.
+                // Already true today (a redo needs an undo before it, which set
+                // it, and only a recorded edit, which empties `undone`, clears
+                // it); set here so the rule does not rest on that.
+                hist.break_group = true;
             }
             None => {
                 if tr.add_to_history() && tr.doc_changed() {
