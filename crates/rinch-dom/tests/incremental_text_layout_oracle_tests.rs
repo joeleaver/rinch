@@ -1589,6 +1589,82 @@ fn two_anon_boxes(doc: &mut RinchDocument, _on: bool) -> NodeId {
     a
 }
 
+/// [`two_anon_boxes`] whose final state (`on`) has a third run and a block
+/// after the second run, so a structural pass over the container re-mints both
+/// boxes and must keep the first run's layout while laying the new run out.
+fn two_anon_boxes_grown(doc: &mut RinchDocument, on: bool) -> NodeId {
+    let a = two_anon_boxes(doc, false);
+    if on {
+        grow_anon_boxes(doc, &a);
+    }
+    a
+}
+
+fn grow_anon_boxes(doc: &mut RinchDocument, a: &NodeId) {
+    let li = doc.create_element("li");
+    doc.set_attribute(li, "class", "b");
+    doc.append_child(*a, li);
+    let t = doc.create_text(" a third run after the second block");
+    doc.append_child(*a, t);
+}
+
+/// A scoped pass over a container whose two anonymous boxes keep their runs
+/// (#964): incremental against fresh.
+#[test]
+fn anonymous_boxes_kept_through_a_scoped_pass_lay_out_as_fresh() {
+    twin(
+        "anonymous_boxes_kept_through_a_scoped_pass_lay_out_as_fresh",
+        ".a { line-height: 1.25; } .b { width: 2em; }",
+        two_anon_boxes_grown,
+        grow_anon_boxes,
+    );
+}
+
+/// The same structural pass in the same frame as the container's own font
+/// change, which every box inherits: no box may keep a layout shaped at the
+/// old size.
+#[test]
+fn anonymous_boxes_kept_through_a_pass_that_also_restyles_them_lay_out_as_fresh() {
+    twin(
+        "anonymous_boxes_kept_through_a_pass_that_also_restyles_them_lay_out_as_fresh",
+        ".a { line-height: 1.25; } .a.on { font-size: 23px; letter-spacing: 2px; } .b { width: 2em; }",
+        |doc, on| {
+            let a = two_anon_boxes_grown(doc, on);
+            if on {
+                doc.set_attribute(a, "class", "a on");
+            }
+            a
+        },
+        |doc, a| {
+            grow_anon_boxes(doc, a);
+            doc.set_attribute(*a, "class", "a on");
+        },
+    );
+}
+
+/// A text edit in the first run, then a whole-document pass in the same
+/// frame: the kept box must not keep the layout of its old text.
+#[test]
+fn an_edited_run_kept_through_a_whole_document_pass_lays_out_as_fresh() {
+    twin(
+        "an_edited_run_kept_through_a_whole_document_pass_lays_out_as_fresh",
+        ".a { line-height: 1.25; } .b { width: 2em; }",
+        |doc, on| {
+            let a = two_anon_boxes(doc, false);
+            if on {
+                let t = doc.tree.get(a.0).unwrap().children[0];
+                doc.set_text_content(NodeId(t), "a much longer first run than before, wrapping");
+            }
+            a
+        },
+        |doc, a| {
+            let t = doc.tree.get(a.0).unwrap().children[0];
+            doc.set_text_content(NodeId(t), "a much longer first run than before, wrapping");
+            doc.recompute_all_styles_full();
+        },
+    );
+}
+
 // The theme reaching the anonymous boxes' **inherited** typography from their
 // container: a whole-document pass keeps a box's layout only when the box's
 // inherited text style is what it was (#964), so each of these must re-shape.

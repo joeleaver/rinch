@@ -2877,9 +2877,11 @@ fn anon_box_doc() -> (RinchDocument, NodeId) {
 /// re-mints every box, and used to drop each box's measures and paint layout
 /// with the old one, so both boxes were shaped again though nothing they draw
 /// had changed: `shape_measure_ifc` 2 → 0, `shape_ifc_build` 2 → 0,
-/// `ifc_signature_changes` 2 → 0. The box keeps its slab id, its measures and
-/// its layout when it is minted for the same run, in the same container, with
-/// the same inherited text style. The `p` kept its layout before and after.
+/// `ifc_signature_changes` 2 → 0, and the fresh Taffy leaf of each box is
+/// answered from the measures it kept, `ifc_measure_cache_hits` 0 → 2. The box
+/// keeps its slab id, its measures and its layout when it is minted for the
+/// same run, in the same container, with the same inherited text style. The
+/// `p` kept its layout before and after.
 #[test]
 fn a_whole_document_pass_keeps_an_anonymous_boxs_layout() {
     let (mut doc, _div) = anon_box_doc();
@@ -2892,11 +2894,13 @@ fn a_whole_document_pass_keeps_an_anonymous_boxs_layout() {
         &s,
         &[
             (StyleResolves, 1),
+            (IfcMeasureCacheHits, 2),
             (LayoutResolves, 1),
             (IfcSetupPasses, 1),
             (IfcFullPasses, 1),
             (IfcFullTheme, 1),
             (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 2),
         ],
     );
 }
@@ -2904,7 +2908,8 @@ fn a_whole_document_pass_keeps_an_anonymous_boxs_layout() {
 /// The scoped arm of the same thing: a block appended to the container after
 /// its second run puts the container in the scope, whose pass re-mints both
 /// of its boxes. Neither run changed, so neither box is shaped again:
-/// `shape_measure_ifc` 2 → 0, `shape_ifc_build` 2 → 0 (#964).
+/// `shape_measure_ifc` 2 → 0, `shape_ifc_build` 2 → 0, `ifc_signature_changes`
+/// 2 → 0, `ifc_measure_cache_hits` 0 → 2 (#964).
 #[test]
 fn a_scoped_pass_keeps_the_layout_of_an_unchanged_anonymous_box() {
     let (mut doc, div) = anon_box_doc();
@@ -2918,10 +2923,14 @@ fn a_scoped_pass_keeps_the_layout_of_an_unchanged_anonymous_box() {
         &s,
         &[
             (StyleResolves, 1),
+            (IfcMeasureCacheHits, 2),
             (LayoutResolves, 1),
             (IfcSetupPasses, 1),
             (IfcScopedPasses, 1),
+            (IfcScopeContainers, 2),
+            (IfcScopeNodes, 7),
             (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 3),
         ],
     );
 }

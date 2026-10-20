@@ -1706,6 +1706,16 @@ fn unglue(
 
 /// One cluster or inline box of a paragraph, in logical order: what the line
 /// breaker adds to a line's advance, and what [`hanging_after`] needs to know.
+/// An anonymous block box `cleanup_anonymous_block_boxes` took out of its
+/// container but kept in the slab, with the run it was minted for (#964).
+/// `create_anonymous_block_boxes` mints that run's box into it, or frees it.
+pub(crate) struct RetiredAnonBox {
+    id: usize,
+    parent: usize,
+    run_members: Vec<usize>,
+    run_out_of_flow: Vec<(usize, usize)>,
+}
+
 struct LineUnit {
     advance: f32,
     /// A space or tab that hangs at a soft wrap: one whose element wraps
@@ -2499,7 +2509,20 @@ impl RinchDocument {
     /// container has left the slab or no longer lists it, which a freed subtree
     /// (`set_inner_html`) leaves behind and which no container in any scope
     /// would ever reach again.
-    fn cleanup_anonymous_block_boxes(&mut self, scope: Option<&crate::ifc_scope::IfcScope>) {
+    ///
+    /// **A box whose container still lists it is retired, not freed** (#964):
+    /// it keeps its slab entry, its paint layout and its measured sizes, and is
+    /// handed back in a [`RetiredAnonBox`] for `create_anonymous_block_boxes`
+    /// to mint the same run's box into. A whole-document pass re-mints every
+    /// box in the document whatever changed (a theme change), and a scoped pass
+    /// every box of its containers; freeing them re-shaped each box's text,
+    /// because both the paint layout and the cached measures (with the content
+    /// signature `refresh_ifc_signatures` compares) went with the box. An
+    /// orphan is freed as before.
+    fn cleanup_anonymous_block_boxes(
+        &mut self,
+        scope: Option<&crate::ifc_scope::IfcScope>,
+    ) -> Vec<RetiredAnonBox> {
         let all = std::mem::take(&mut self.tree.anonymous_block_boxes);
         let anon_ids = match scope {
             None => all,
@@ -2517,8 +2540,9 @@ impl RinchDocument {
                 go
             }
         };
+        let mut retired: Vec<RetiredAnonBox> = Vec::new();
         if anon_ids.is_empty() {
-            return;
+            return retired;
         }
 
         // The containers whose Taffy child lists held these boxes — read from
@@ -2530,13 +2554,15 @@ impl RinchDocument {
                 continue;
             };
             let members = anon.run_members.clone();
-            if let Some(p) = anon.parent
-                && !parents_affected.contains(&p)
-                && self
-                    .tree
+            // Listed by a live container: retired for the run's next box.
+            let listed_by = anon.parent.filter(|&p| {
+                self.tree
                     .nodes
                     .get(p)
                     .is_some_and(|pn| pn.run_boxes.contains(&anon_id))
+            });
+            if let Some(p) = listed_by
+                && !parents_affected.contains(&p)
             {
                 parents_affected.push(p);
             }
@@ -2552,9 +2578,26 @@ impl RinchDocument {
             }
 
             // Remove anonymous Taffy node (children are detached, not deleted)
-            if let Some(anon_taffy) = self.tree.nodes[anon_id].taffy_id {
+            if let Some(anon_taffy) = self.tree.nodes[anon_id].taffy_id.take() {
                 self.tree.taffy_map.remove(&anon_taffy);
                 let _ = self.tree.taffy.remove(anon_taffy);
+            }
+
+            if let Some(parent) = listed_by {
+                // Retired: the entry stays, inert — no parent, no run, no Taffy
+                // node — so its id is not handed to anything else before
+                // `create_anonymous_block_boxes` decides whether the run is
+                // still there. Its measured sizes stay in the cache under the
+                // same id.
+                let node = &mut self.tree.nodes[anon_id];
+                node.parent = None;
+                retired.push(RetiredAnonBox {
+                    id: anon_id,
+                    parent,
+                    run_members: std::mem::take(&mut node.run_members),
+                    run_out_of_flow: std::mem::take(&mut node.run_out_of_flow),
+                });
+                continue;
             }
 
             // Remove anonymous DOM node from slab
@@ -2584,6 +2627,18 @@ impl RinchDocument {
                 p.run_boxes.clear();
             }
             self.rebuild_effective_taffy_children(parent_id);
+        }
+        retired
+    }
+
+    /// Free the retired boxes `create_anonymous_block_boxes` did not mint a run
+    /// into: their run is gone, or has changed.
+    fn free_retired_anonymous_boxes(&mut self, retired: Vec<RetiredAnonBox>) {
+        for r in retired {
+            self.tree.nodes.remove(r.id);
+            // `remove_subtree`'s reason, as for a freed box above: the slab
+            // recycles the id.
+            self.tree.ifc_measure_cache.remove(&r.id);
         }
     }
 
@@ -2819,7 +2874,11 @@ impl RinchDocument {
     /// Per CSS spec, when a block container has both inline-level and block-level
     /// children, consecutive runs of inline children are wrapped in anonymous
     /// block boxes. These boxes become IFC roots for text layout.
-    fn create_anonymous_block_boxes(&mut self, scope: Option<&crate::ifc_scope::IfcScope>) {
+    fn create_anonymous_block_boxes(
+        &mut self,
+        scope: Option<&crate::ifc_scope::IfcScope>,
+        mut retired: Vec<RetiredAnonBox>,
+    ) {
         // Phase 1: Detect mixed-content block containers
         // Each run with the out-of-flow boxes standing inside it
         // (`Node::run_out_of_flow`).
@@ -2997,8 +3056,25 @@ impl RinchDocument {
             let guard = self.tree.guard.clone();
 
             for (run, run_out_of_flow) in runs {
+                // The box this run had last pass, retired by
+                // `cleanup_anonymous_block_boxes` (#964): same container, same
+                // members in the same order, the same out-of-flow boxes
+                // standing in it. Minted into its slab entry, so its id — which
+                // its measures are cached under and an out-of-flow box's
+                // `static_ifc_root` names — does not move.
+                let kept = retired
+                    .iter()
+                    .position(|r| {
+                        r.parent == parent_id
+                            && r.run_members == run
+                            && r.run_out_of_flow == run_out_of_flow
+                    })
+                    .map(|i| retired.swap_remove(i));
                 // Create anonymous block box DOM node
-                let anon_id = self.tree.nodes.vacant_key();
+                let anon_id = match &kept {
+                    Some(r) => r.id,
+                    None => self.tree.nodes.vacant_key(),
+                };
                 let mut anon_node = Node::element(anon_id, "div", guard.clone());
                 anon_node.is_anonymous_block_box = true;
                 anon_node.display_mode = DisplayMode::Block;
@@ -3068,8 +3144,33 @@ impl RinchDocument {
                 anon_node.taffy_id = Some(anon_taffy);
                 self.tree.taffy_map.insert(anon_taffy, anon_id);
 
-                // Insert anonymous node into slab
-                self.tree.nodes.insert(anon_node);
+                match kept {
+                    Some(_) => {
+                        // The old box's layout and measures hold while the text
+                        // style it inherits is the one it was minted with —
+                        // the cascade never reaches a box, so a container's
+                        // inherited change since then shows only here. What it
+                        // was last laid out and painted at is kept for damage
+                        // (`prev_layout`, `painted`), as a box that stayed would.
+                        let old = &mut self.tree.nodes[anon_id];
+                        if old
+                            .computed_style
+                            .same_text_layout_inputs(&anon_node.computed_style)
+                        {
+                            anon_node.text_layout = old.text_layout.take();
+                        } else {
+                            self.tree.ifc_measure_cache.remove(&anon_id);
+                        }
+                        anon_node.layout = old.layout;
+                        anon_node.prev_layout = old.prev_layout;
+                        anon_node.painted = old.painted.take();
+                        self.tree.nodes[anon_id] = anon_node;
+                    }
+                    None => {
+                        // Insert anonymous node into slab
+                        self.tree.nodes.insert(anon_node);
+                    }
+                }
 
                 // Point every member at its box. This is what
                 // `box_tree_children` reads, and it must be set before the
@@ -3143,6 +3244,7 @@ impl RinchDocument {
             }
             self.rebuild_effective_taffy_children(parent_id);
         }
+        self.free_retired_anonymous_boxes(retired);
     }
 
     /// Recompute [`Node::contributes_in_flow_block`] for every node, bottom-up
@@ -3670,13 +3772,13 @@ impl RinchDocument {
                 go
             }
         };
-        self.cleanup_anonymous_block_boxes(scope);
+        let retired = self.cleanup_anonymous_block_boxes(scope);
         self.restore_split_inlines(was_split);
         // Before the boxes are minted, like the split restore, so a host's
         // rebuilt list names members rather than boxes that are about to exist
         // (#591).
         self.rehome_hoisted_out_of_flow(hoist_changes);
-        self.create_anonymous_block_boxes(scope);
+        self.create_anonymous_block_boxes(scope, retired);
         // After the boxes exist, so the container's rebuilt list names them
         // rather than their members (#513).
         self.split_inline_boxes(scope);
