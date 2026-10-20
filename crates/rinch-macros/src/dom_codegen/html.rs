@@ -77,10 +77,58 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
         }
     }
 
+    // An `on*` name with no handler attribute, or a component-only `*_fn`
+    // prop, is a compile error rather than a silent click handler or phantom
+    // attribute (issues #1590, #1591).
+    let mut errors: Option<syn::Error> = None;
+    let mut push_error = |e: syn::Error| match &mut errors {
+        Some(all) => all.combine(e),
+        None => errors = Some(e),
+    };
+    for prop in &event_props {
+        if crate::events::event_attribute(&prop.name).is_none() {
+            push_error(crate::events::unknown_event_error(
+                &prop.name,
+                prop.name_span(),
+            ));
+        }
+    }
+    for prop in &attr_props {
+        if !prop.name.contains('-') && prop.name.ends_with("_fn") {
+            push_error(crate::events::fn_prop_error(&prop.name, prop.name_span()));
+        }
+    }
+    if let Some(errors) = errors {
+        return errors.to_compile_error();
+    }
+
     let attr_code = generate_attr_code(&attr_props, &elem_var, ctx);
 
     // Generate event handler registration
-    let has_oninput = event_props.iter().any(|prop| prop.name == "oninput");
+    let has_event = |name: &str| event_props.iter().any(|prop| prop.name == name);
+    // The DESKTOP runtime recognizes a text input by `data-oninput`, so an
+    // element with a commit or submit handler and no `oninput` gets a no-op
+    // input handler to stay focusable and receive typed text. `onchange` has
+    // always had it; an `onsubmit` gets it only on a text control (#1590),
+    // because `onsubmit` is also written on a wrapper around a field, and a
+    // `div` carrying `data-oninput` would itself become a text field. The shim
+    // is not emitted for wasm32: the browser owns focus/typing natively there,
+    // and the extra attribute would shadow an ancestor's `[data-oninput]` in
+    // the web backend's document-level input delegation walk (#244 review).
+    let text_field_shim = if !has_event("oninput")
+        && (has_event("onchange")
+            || (has_event("onsubmit") && matches!(tag.as_str(), "input" | "textarea")))
+    {
+        quote! {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let __noop_id = __scope.register_input_handler(|_: String| {});
+                #elem_var.set_attribute("data-oninput", &__noop_id.0.to_string());
+            }
+        }
+    } else {
+        quote! {}
+    };
     let event_code: Vec<TokenStream2> = event_props
         .iter()
         .map(|prop| {
@@ -109,31 +157,13 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                 // Commit boundary (issue #226): fires once when the typed
                 // gesture ends (blur after modification, Enter, a <select>
                 // pick) with the final value — HTML `change` semantics, no
-                // longer an alias for the per-keystroke `oninput`. The DESKTOP
-                // runtime recognizes a text input by `data-oninput`, so an
-                // onchange-only element also gets a no-op input handler to
-                // stay focusable and receive typed text. The shim is not
-                // emitted for wasm32: the browser owns focus/typing natively
-                // there, and the extra attribute would shadow an ancestor's
-                // `[data-oninput]` in the web backend's document-level input
-                // delegation walk (#244 review).
-                let ensure_oninput = if has_oninput {
-                    quote! {}
-                } else {
-                    quote! {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        {
-                            let __noop_id = __scope.register_input_handler(|_: String| {});
-                            #elem_var.set_attribute("data-oninput", &__noop_id.0.to_string());
-                        }
-                    }
-                };
+                // longer an alias for the per-keystroke `oninput`. An
+                // onchange-only element gets `text_field_shim` (above).
                 quote! {
                     {
                         #handler_shadows
                         let __handler_id = __scope.register_input_handler(#handler);
                         #elem_var.set_attribute("data-onchange", &__handler_id.0.to_string());
-                        #ensure_oninput
                     }
                 }
             } else if event_name == "onscroll" {
@@ -155,27 +185,12 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                     }
                 }
             } else {
-                // Drag-and-drop and context menu events get their own data-
-                // attributes so the runtime can distinguish them during
-                // walk-up dispatch.
-                let data_attr = match event_name.as_str() {
-                    "ondragstart" => "data-ondragstart",
-                    "ondragmove" => "data-ondragmove",
-                    "ondragend" => "data-ondragend",
-                    "ondrop" => "data-ondrop",
-                    "ondragenter" => "data-ondragenter",
-                    "ondragover" => "data-ondragover",
-                    "ondragleave" => "data-ondragleave",
-                    "onfiledragenter" => "data-onfiledragenter",
-                    "onfiledragleave" => "data-onfiledragleave",
-                    "oncontextmenu" => "data-oncontextmenu",
-                    "onmouseenter" => "data-onenter",
-                    "onmouseleave" => "data-onleave",
-                    "onmousedown" => "data-onmousedown",
-                    "onmouseup" => "data-onmouseup",
-                    "onmousemove" => "data-onmousemove",
-                    _ => "data-rid", // onclick and all other events
-                };
+                // Every other supported event is a `Fn()` handler written to
+                // its own `data-` attribute, so the runtime can tell them apart
+                // during walk-up dispatch (`onclick` is `data-rid`). An
+                // unsupported name was rejected above.
+                let data_attr = crate::events::event_attribute(&event_name)
+                    .expect("unsupported events are rejected before codegen");
                 quote! {
                     {
                         #handler_shadows
@@ -209,6 +224,7 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                 #(#attr_code)*
                 #style_code
                 #(#event_code)*
+                #text_field_shim
                 #shorthand_code
                 #elem_var
             }
@@ -225,6 +241,7 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                 #(#attr_code)*
                 #style_code
                 #(#event_code)*
+                #text_field_shim
                 #shorthand_code
                 #elem_var
             }
@@ -236,6 +253,7 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                 #(#attr_code)*
                 #style_code
                 #(#event_code)*
+                #text_field_shim
                 #shorthand_code
                 #(#children_code)*
                 #elem_var
@@ -499,6 +517,162 @@ pub fn generate_class_code(
                     *#prev_var.borrow_mut() = __new_class;
                 });
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod event_and_fn_prop_tests {
+    //! What an `on*` or `*_fn` prop on an HTML element becomes (#1590, #1591).
+    use crate::dom_codegen::{DomCodegenContext, element_to_dom};
+    use crate::element::RsxElement;
+    use syn::parse_str;
+
+    fn codegen(src: &str) -> String {
+        let element: RsxElement = parse_str(src).expect("parses");
+        let mut ctx = DomCodegenContext::new();
+        element_to_dom(&element, &mut ctx).to_string()
+    }
+
+    fn is_error(out: &str) -> bool {
+        out.contains("compile_error")
+    }
+
+    /// #1590: `onsubmit` is the Enter handler, read by both backends from
+    /// `data-onsubmit`; it fell through to `data-rid`, the click handler.
+    #[test]
+    fn onsubmit_is_written_as_data_onsubmit_not_as_a_click() {
+        let out = codegen("input { onsubmit: || {} }");
+        assert!(!is_error(&out), "{out}");
+        assert!(out.contains("\"data-onsubmit\""), "{out}");
+        assert!(!out.contains("\"data-rid\""), "{out}");
+    }
+
+    /// An `onsubmit`-only `<input>`/`<textarea>` gets desktop's text-field
+    /// shim (a no-op `data-oninput`), as an `onchange`-only one does; any other
+    /// element does not, since a `div` carrying `data-oninput` is a text field.
+    #[test]
+    fn the_text_field_shim_is_given_to_controls_only() {
+        for tag in ["input", "textarea"] {
+            let out = codegen(&format!("{tag} {{ onsubmit: || {{}} }}"));
+            assert!(out.contains("\"data-oninput\""), "{tag}: {out}");
+        }
+        let out = codegen("div { onsubmit: || {} }");
+        assert!(!out.contains("\"data-oninput\""), "{out}");
+        // Beside a real oninput no shim is added (one data-oninput write).
+        let out = codegen("input { oninput: |_: String| {}, onsubmit: || {} }");
+        assert_eq!(out.matches("\"data-oninput\"").count(), 1, "{out}");
+    }
+
+    /// `onclick` stays the click handler.
+    #[test]
+    fn onclick_is_still_data_rid() {
+        let out = codegen("button { onclick: || {} }");
+        assert!(!is_error(&out) && out.contains("\"data-rid\""), "{out}");
+    }
+
+    /// Every event the macro supports still generates its handler — without
+    /// this, rejecting every `on*` name would pass the tests below.
+    #[test]
+    fn every_supported_event_generates_a_handler() {
+        for (name, attr) in [
+            ("onclick", "data-rid"),
+            ("oninput", "data-oninput"),
+            ("onchange", "data-onchange"),
+            ("onsubmit", "data-onsubmit"),
+            ("onscroll", "data-onscroll"),
+            ("onfiledrop", "data-onfiledrop"),
+            ("onfiledragenter", "data-onfiledragenter"),
+            ("onfiledragleave", "data-onfiledragleave"),
+            ("ondragstart", "data-ondragstart"),
+            ("ondragmove", "data-ondragmove"),
+            ("ondragend", "data-ondragend"),
+            ("ondrop", "data-ondrop"),
+            ("ondragenter", "data-ondragenter"),
+            ("ondragover", "data-ondragover"),
+            ("ondragleave", "data-ondragleave"),
+            ("oncontextmenu", "data-oncontextmenu"),
+            ("onmouseenter", "data-onenter"),
+            ("onmouseleave", "data-onleave"),
+            ("onmousedown", "data-onmousedown"),
+            ("onmouseup", "data-onmouseup"),
+            ("onmousemove", "data-onmousemove"),
+        ] {
+            let out = codegen(&format!("div {{ {name}: || {{}} }}"));
+            assert!(!is_error(&out), "{name}: {out}");
+            assert!(
+                out.contains(&format!("\"{attr}\"")),
+                "{name} -> {attr}: {out}"
+            );
+        }
+    }
+
+    /// #1590: an `on*` name the macro does not support was silently a click
+    /// handler. It is a compile error now, naming the supported events.
+    #[test]
+    fn an_unsupported_event_is_a_compile_error_not_a_click() {
+        for name in ["onkeydown", "onkeyup", "onfocus", "onblur", "ondblclick"] {
+            let out = codegen(&format!("div {{ {name}: || {{}} }}"));
+            assert!(is_error(&out), "{name}: {out}");
+            assert!(!out.contains("\"data-rid\""), "{name}: {out}");
+            assert!(
+                out.contains("onclick") && out.contains("onsubmit"),
+                "{name} must list the supported events: {out}"
+            );
+        }
+    }
+
+    /// A typo gets a suggestion, like an unknown tag (#528).
+    #[test]
+    fn a_misspelt_event_suggests_the_real_one() {
+        let out = codegen("div { onclik: || {} }");
+        assert!(
+            is_error(&out) && out.contains("did you mean `onclick`"),
+            "{out}"
+        );
+        let out = codegen("input { onsumbit: || {} }");
+        assert!(
+            is_error(&out) && out.contains("did you mean `onsubmit`"),
+            "{out}"
+        );
+        // And a name close to nothing suggests nothing.
+        let out = codegen("div { onkeydown: || {} }");
+        assert!(!out.contains("did you mean"), "{out}");
+    }
+
+    /// #1591: `value_fn:` / `checked_fn:` are component prop conventions; on a
+    /// raw element they used to become a `value_fn` attribute nothing reads.
+    #[test]
+    fn a_fn_prop_on_an_html_element_is_a_compile_error_naming_the_attribute() {
+        for (tag, name, attr) in [
+            ("input", "value_fn", "value"),
+            ("textarea", "value_fn", "value"),
+            ("select", "value_fn", "value"),
+            ("input", "checked_fn", "checked"),
+            ("div", "opened_fn", "opened"),
+        ] {
+            let out = codegen(&format!("{tag} {{ {name}: move || String::new() }}"));
+            assert!(is_error(&out), "{tag} {name}: {out}");
+            assert!(
+                !out.contains(&format!("\"{name}\"")),
+                "no phantom attribute: {out}"
+            );
+            assert!(
+                out.contains(&format!("`{attr}: {{|| …}}`")),
+                "{tag} {name} must name `{attr}:`: {out}"
+            );
+        }
+    }
+
+    /// The other half: a reactive `value:` / `checked:` is still an attribute.
+    #[test]
+    fn a_reactive_value_or_checked_is_still_an_attribute() {
+        for name in ["value", "checked"] {
+            let out = codegen(&format!("input {{ {name}: {{|| true}} }}"));
+            assert!(
+                !is_error(&out) && out.contains(&format!("\"{name}\"")),
+                "{out}"
+            );
         }
     }
 }

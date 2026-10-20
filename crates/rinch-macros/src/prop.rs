@@ -18,6 +18,11 @@ pub struct RsxProp {
 }
 
 impl RsxProp {
+    /// The span of the prop's name, for a diagnostic about the name itself.
+    pub fn name_span(&self) -> proc_macro2::Span {
+        self.first_ident.span()
+    }
+
     /// Convert the name back to an `Ident` for use in `quote!` codegen
     /// (e.g., component struct field assignment). For simple names this is
     /// straightforward; for `r#type` the raw prefix is preserved.
