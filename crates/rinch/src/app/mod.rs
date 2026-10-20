@@ -67,6 +67,8 @@ mod css_hook_1339_tests;
 mod css_hook_760_tests;
 #[cfg(test)]
 mod css_hook_778_tests;
+#[cfg(test)]
+mod css_hook_936_tests;
 #[cfg(all(test, software_shell))]
 mod damage_clip_chain_tests;
 #[cfg(feature = "debug")]
