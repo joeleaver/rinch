@@ -87,14 +87,15 @@ fn ctrl_arrows_stop_at_punctuation_1619() {
 }
 
 /// A `<textarea>`'s line break is one stop, both ways: Ctrl+Right at a line's
-/// end moves past it and no further, Ctrl+Left at a line's start moves before
-/// it (to the previous line's end), and the next Ctrl+Left goes on to the start
-/// of the previous word.
+/// end moves past it and no further. Ctrl+Left never leaves the caret's line
+/// (from an indented line it stops at the line's start, as Chrome 155), except
+/// from exactly the line's start, where it moves before the break (to the
+/// previous line's end), and the next Ctrl+Left goes on to the start of the
+/// previous word.
 ///
-/// The Ctrl+Left rows depart from Chrome 155 on Joe's decision (review of
-/// #1619): Chrome's `<textarea>` never takes Ctrl+Left out of the caret's line
-/// (measured: `ab-\n|cd` and `ab cd\n|ef` stay put, `ab \n |cd` stops at
-/// `ab \n| cd`); rinch makes it the mirror of Ctrl+Right instead.
+/// That last rule departs from Chrome 155 on Joe's decision (#1619): Chrome's
+/// `<textarea>` leaves the caret at a line's start (measured: `ab-\n|cd` and
+/// `ab cd\n|ef` stay put).
 #[test]
 fn a_line_break_is_one_stop_of_the_word_motion_1619() {
     // Chrome 155's rows.
@@ -103,13 +104,14 @@ fn a_line_break_is_one_stop_of_the_word_motion_1619() {
     assert_eq!(right("ab \n| cd"), "ab \n cd|");
     assert_eq!(right("ab \n|-cd"), "ab \n-|cd");
     assert_eq!(left("ab cd|\nef"), "ab |cd\nef");
+    assert_eq!(left("ab \n |cd"), "ab \n| cd");
+    assert_eq!(left("ab cd\n  |ef"), "ab cd\n|  ef");
     // Joe's: the mirror of Ctrl+Right.
     assert_eq!(left("ab-\n|cd"), "ab-|\ncd");
     assert_eq!(left("ab-|\ncd"), "ab|-\ncd");
     assert_eq!(left("ab cd\n|ef"), "ab cd|\nef");
     assert_eq!(left("ab\n\n|cd"), "ab\n|\ncd");
     assert_eq!(left("x ab\n|cd"), "x ab|\ncd");
-    assert_eq!(left("ab \n |cd"), "ab |\n cd");
 }
 
 /// Shift+Ctrl+Left extends over the same stops, keeping the anchor.
@@ -122,6 +124,14 @@ fn shift_ctrl_left_extends_over_a_line_break_1619() {
     assert_eq!((state.selection.anchor.0, state.selection.head.0), (6, 5));
     state.execute(EditCommand::SelectWordLeft);
     assert_eq!((state.selection.anchor.0, state.selection.head.0), (6, 3));
+    // From an indented line, the line's start first (Chrome 155).
+    let (text, caret) = parse("ab cd\n  |ef");
+    let mut state = EditableState::new(StringDocument::with_text(&text));
+    state.selection = Selection::cursor(caret);
+    state.execute(EditCommand::SelectWordLeft);
+    assert_eq!((state.selection.anchor.0, state.selection.head.0), (8, 6));
+    state.execute(EditCommand::SelectWordLeft);
+    assert_eq!((state.selection.anchor.0, state.selection.head.0), (8, 5));
 }
 
 /// #1616's rules hold with the new words: a word delete stops at a line
