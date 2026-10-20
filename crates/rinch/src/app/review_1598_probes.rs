@@ -441,3 +441,35 @@ fn p11_row_click_collapse_unselects_hidden_children() {
     assert!(!p.state.controller.is_expanded("a"), "control: collapsed");
     assert_eq!(sel(&p), ["a"], "Left collapse keeps hidden {:?}", sel(&p));
 }
+
+/// P9b: Shift+Space with Shift held as a real keyboard reports it
+/// (ModifiersChanged first): the multi-selection must not collapse.
+#[test]
+fn p9b_shift_space_keeps_the_selection() {
+    let mut p = build(MULTI, flat(&["a", "b", "c"]), &[]);
+    click(&mut p, "a", Modifiers::default());
+    press(&mut p, KeyCode::ArrowDown, None, Modifiers::default());
+    press(&mut p, KeyCode::Space, Some(" "), Modifiers::default());
+    assert_eq!(sel(&p), ["a", "b"], "control");
+    press(&mut p, KeyCode::ArrowDown, None, Modifiers::default());
+    p.selects.borrow_mut().clear();
+    p.app
+        .handle_event(PlatformEvent::ModifiersChanged(shift()), (800, 600), 1.0);
+    press(&mut p, KeyCode::Space, Some(" "), shift());
+    p.app.handle_event(
+        PlatformEvent::ModifiersChanged(Modifiers::default()),
+        (800, 600),
+        1.0,
+    );
+    eprintln!(
+        "P9b selection {:?} onselect {:?} changes {:?}",
+        sel(&p),
+        p.selects.borrow(),
+        p.changes.borrow().last()
+    );
+    assert!(
+        sel(&p).len() >= 2,
+        "Shift+Space collapsed the selection to {:?}",
+        sel(&p)
+    );
+}
