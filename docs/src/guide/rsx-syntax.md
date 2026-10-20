@@ -71,6 +71,17 @@ rsx! {
 }
 ```
 
+Any attribute takes a reactive closure, and only that attribute is rewritten
+when the signals it reads change. So a raw form control is bound with the
+attribute itself — `input { value: {|| text.get()} }`,
+`input { r#type: "checkbox", checked: {|| done.get()} }` — not with the
+`value_fn:` / `checked_fn:` props of the `TextInput` and `Checkbox`
+components. A `*_fn` name on an HTML element is a compile error that says so
+(issue #1591; it used to be written as a `value_fn` attribute that nothing
+reads). The components' `value_fn` also skips writing back the value the field
+already shows (the #238 echo guard); a raw `value:` writes on every change of
+the signals it reads.
+
 ### Boolean attributes
 
 A handful of HTML attributes carry no useful string: their **presence** is their
@@ -216,6 +227,15 @@ Supported HTML-element event attributes:
 | `onscroll` | Scroll container scrolls, on either axis | `Fn(ScrollEvent)` — `ev.scroll_top` and `ev.scroll_left` |
 | `ondragstart` … `ondrop`, `ondragend` | Element drag-and-drop. A cancelled drag (Escape; on desktop also a left press or a window blur while it is live, which prove its release went missing) fires `ondragend` (and `ondragleave` on the target, if it is over one), never `ondrop`. A drag whose pointer rests within 32px of the top or bottom of a scroll container under it scrolls that container (not one a `lock_scroll` overlay locks out), and the drop target scrolled under the still pointer hears `ondragenter` / `ondragover` | `Fn()` |
 | `onfiledrop`, `onfiledragenter`/`onfiledragleave` | OS → app file drop | `Fn(Vec<PathBuf>)` / `Fn()` |
+| `onsubmit` | Enter in an `<input>` or `<textarea>` (Shift+Enter in a `<textarea>` inserts a line break instead), read from the control and then up its ancestors — see [Enter in a `<textarea>`](#enter-in-a-textarea) | `Fn()` |
+
+That list is closed. Any other `on*` name on an HTML element — `onkeydown`,
+`onfocus`, `onblur`, a typo such as `onclik` — is a compile error that lists
+the supported events and suggests the nearest one. (Until issue #1590 such a
+name was silently wired as a **click** handler.) Keys reach a custom control
+through [`register_focus_target`](./focus.md) on desktop, or a document-level
+keyboard interceptor. A component's `on*` props are its own fields and are not
+affected.
 
 ### Pointer moves are coalesced
 
