@@ -3188,8 +3188,12 @@ input a shaped layout is built from:
   the paint-only path. The whole-document restyle a theme change runs
   (`recompute_all_styles_full`) is no exception (#913): it re-cascades every
   element and the same comparison decides, so a dark-mode toggle whose
-  variables reach no text re-shapes nothing — only its whole-document IFC
-  setup pass still re-shapes each anonymous block box (#964). Regenerated `::before`/`::after`/list-marker content is
+  variables reach no text re-shapes nothing, anonymous block boxes included:
+  a structural IFC pass (whole-document or scoped) re-mints a box for the same
+  run (same container, same members) into the old box's slab entry and keeps
+  its paint layout and measures, as a box outside the pass's scope keeps them;
+  a container restyle drops them through `run_boxes`, and the content
+  signature drops them for a changed run (#964, `RetiredAnonBoxes`). Regenerated `::before`/`::after`/list-marker content is
   the one restyle that invalidates regardless, because the nodes an inline
   layout names were freed and minted again.
 - **A structural pass drops only the roots whose content moved**
@@ -3204,6 +3208,15 @@ input a shaped layout is built from:
   whose invalidation reaches only the changed node's *parent*: text appended
   inside a `<span>` inside a paragraph, and a chip resized during a structural
   pass, both left the paragraph painting its old line before it.
+  **A chip resized outside a structural pass marks its root's signature
+  stale** (`IfcRootMeasures::stale`, set by `forget_ifc_measures_and_signature`
+  from `remeasure_dirty_atomic_inlines` and `invalidate_ifc_of_atomic_inline`):
+  the root is measured again at the new size while its signature still hashes
+  the old one, so a chip that went back to that size made the next pass's
+  signature match and the sizes measured in between were served. The next
+  pass that signs the root treats it as changed (review of #1627). A new path
+  that moves an atomic inline's size and drops its root's sizes must use that
+  call, not `forget_ifc_measures`.
 - **`invalidate_ifc_root` marks the root in Taffy on every route** (and its
   #466 measure leaf). An inline member is detached from Taffy, so a drop that
   came through one — a `span`'s own font change, `set_text_content` on text in a

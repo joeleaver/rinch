@@ -1612,6 +1612,123 @@ theme_typography!(
         a
     }
 );
+/// `body > div.a > ["first run of text ", li.b, " second run of text"]`: a
+/// container holding **two** anonymous block boxes, so a whole-document pass
+/// that re-mints them hands their slab ids out in another order (#964).
+fn two_anon_boxes(doc: &mut RinchDocument, _on: bool) -> NodeId {
+    let body = doc.body();
+    let a = doc.create_element("div");
+    doc.set_attribute(a, "class", "a");
+    doc.append_child(body, a);
+    let t = doc.create_text("first run of text beside a block ");
+    doc.append_child(a, t);
+    let li = doc.create_element("li");
+    doc.set_attribute(li, "class", "b");
+    doc.append_child(a, li);
+    let t2 = doc.create_text(" second run, longer, of text after it");
+    doc.append_child(a, t2);
+    a
+}
+
+/// [`two_anon_boxes`] whose final state (`on`) has a third run and a block
+/// after the second run, so a structural pass over the container re-mints both
+/// boxes and must keep the first run's layout while laying the new run out.
+fn two_anon_boxes_grown(doc: &mut RinchDocument, on: bool) -> NodeId {
+    let a = two_anon_boxes(doc, false);
+    if on {
+        grow_anon_boxes(doc, &a);
+    }
+    a
+}
+
+fn grow_anon_boxes(doc: &mut RinchDocument, a: &NodeId) {
+    let li = doc.create_element("li");
+    doc.set_attribute(li, "class", "b");
+    doc.append_child(*a, li);
+    let t = doc.create_text(" a third run after the second block");
+    doc.append_child(*a, t);
+}
+
+/// A scoped pass over a container whose two anonymous boxes keep their runs
+/// (#964): incremental against fresh.
+#[test]
+fn anonymous_boxes_kept_through_a_scoped_pass_lay_out_as_fresh() {
+    twin(
+        "anonymous_boxes_kept_through_a_scoped_pass_lay_out_as_fresh",
+        ".a { line-height: 1.25; } .b { width: 2em; }",
+        two_anon_boxes_grown,
+        grow_anon_boxes,
+    );
+}
+
+/// The same structural pass in the same frame as the container's own font
+/// change, which every box inherits: no box may keep a layout shaped at the
+/// old size.
+#[test]
+fn anonymous_boxes_kept_through_a_pass_that_also_restyles_them_lay_out_as_fresh() {
+    twin(
+        "anonymous_boxes_kept_through_a_pass_that_also_restyles_them_lay_out_as_fresh",
+        ".a { line-height: 1.25; } .a.on { font-size: 23px; letter-spacing: 2px; } .b { width: 2em; }",
+        |doc, on| {
+            let a = two_anon_boxes_grown(doc, on);
+            if on {
+                doc.set_attribute(a, "class", "a on");
+            }
+            a
+        },
+        |doc, a| {
+            grow_anon_boxes(doc, a);
+            doc.set_attribute(*a, "class", "a on");
+        },
+    );
+}
+
+/// A text edit in the first run, then a whole-document pass in the same
+/// frame: the kept box must not keep the layout of its old text.
+#[test]
+fn an_edited_run_kept_through_a_whole_document_pass_lays_out_as_fresh() {
+    twin(
+        "an_edited_run_kept_through_a_whole_document_pass_lays_out_as_fresh",
+        ".a { line-height: 1.25; } .b { width: 2em; }",
+        |doc, on| {
+            let a = two_anon_boxes(doc, false);
+            if on {
+                let t = doc.tree.get(a.0).unwrap().children[0];
+                doc.set_text_content(NodeId(t), "a much longer first run than before, wrapping");
+            }
+            a
+        },
+        |doc, a| {
+            let t = doc.tree.get(a.0).unwrap().children[0];
+            doc.set_text_content(NodeId(t), "a much longer first run than before, wrapping");
+            doc.recompute_all_styles_full();
+        },
+    );
+}
+
+// The theme reaching the anonymous boxes' **inherited** typography from their
+// container: the whole-document pass keeps each box (#964), so the restyle's
+// own invalidation of the container's boxes is what must re-shape them.
+theme_typography!(
+    a_theme_font_size_reaches_two_anonymous_block_boxes,
+    ".a { font-size: var(--tfs); line-height: 1.25; } .b { width: 2em; }",
+    two_anon_boxes
+);
+theme_typography!(
+    a_theme_letter_spacing_reaches_two_anonymous_block_boxes,
+    ".a { letter-spacing: var(--tls); line-height: 1.25; } .b { width: 2em; }",
+    two_anon_boxes
+);
+theme_typography!(
+    a_theme_font_family_reaches_two_anonymous_block_boxes,
+    ".a { font-family: var(--tff); line-height: 1.25; } .b { width: 2em; }",
+    two_anon_boxes
+);
+theme_typography!(
+    a_theme_colour_reaches_two_anonymous_block_boxes,
+    ".a { color: var(--tc); line-height: 1.25; } .b { width: 2em; }",
+    two_anon_boxes
+);
 theme_typography!(
     a_theme_colour_on_a_split_inline_reaches_its_anonymous_box,
     ".b { color: var(--tc); line-height: 1.25; }",
@@ -1646,9 +1763,10 @@ fn a_theme_change_that_reaches_no_text_reshapes_nothing() {
         let _ = ifc_doc(&mut doc, false);
         // A second paragraph, and an atomic inline with an IFC of its own.
         let _ = chip_doc(&mut doc, false);
-        // No anonymous block box: the whole-document IFC setup pass a theme
-        // change runs re-mints those, and re-shapes their text whatever the
-        // restyle did (#964).
+        // Two anonymous block boxes: the whole-document IFC setup pass a theme
+        // change runs re-mints them, and re-shaped their text whatever the
+        // restyle did until #964.
+        let _ = two_anon_boxes(&mut doc, false);
         settle(&mut doc);
         doc
     };
@@ -1670,6 +1788,11 @@ fn a_theme_change_that_reaches_no_text_reshapes_nothing() {
         s.get(rinch_dom::perf::Counter::ShapeIfcBuild),
         0,
         "a theme change that reaches no text rebuilt a paint layout: {s:?}"
+    );
+    assert_eq!(
+        s.get(rinch_dom::perf::Counter::ShapeMeasureIfc),
+        0,
+        "a theme change that reaches no text re-measured an IFC: {s:?}"
     );
     let fresh = make(THEME_B);
     assert_eq!(snapshot(&doc), snapshot(&fresh));
@@ -2119,5 +2242,1045 @@ fn a_flex_row_label_takes_a_class_text_align() {
             .0
         },
         |doc, c| doc.set_attribute(*c, "class", "frow narrow right"),
+    );
+}
+
+// ── review-1627 adversarial fixtures (#964) ───────────────────────────────────
+
+fn rv_anon_invariants(doc: &RinchDocument, name: &str) {
+    let t = &doc.tree;
+    let mut anon = Vec::new();
+    for (id, n) in t.nodes.iter() {
+        if n.is_anonymous_block_box {
+            anon.push(id);
+            let p = n.parent.unwrap_or_else(|| {
+                panic!("{name}: anon box {id} has no parent (retired box left in slab)")
+            });
+            assert!(
+                t.nodes[p].run_boxes.contains(&id),
+                "{name}: anon box {id} not listed by its container {p}"
+            );
+            assert!(
+                t.anonymous_block_boxes.contains(&id),
+                "{name}: anon box {id} not tracked"
+            );
+            assert!(
+                !n.run_members.is_empty(),
+                "{name}: anon box {id} has no members"
+            );
+            for &m in &n.run_members {
+                assert_eq!(
+                    t.nodes.get(m).and_then(|mm| mm.run_box),
+                    Some(id),
+                    "{name}: member {m} of {id}"
+                );
+            }
+        }
+    }
+    for &b in &t.anonymous_block_boxes {
+        assert!(
+            t.nodes.get(b).is_some_and(|n| n.is_anonymous_block_box),
+            "{name}: tracked box {b} is not a live anon box"
+        );
+    }
+    for k in t.ifc_measure_cache.keys() {
+        assert!(
+            t.nodes.get(*k).is_some(),
+            "{name}: measure cache entry for freed id {k}"
+        );
+    }
+}
+
+#[track_caller]
+fn rv_twin<H>(
+    name: &str,
+    css: &str,
+    build: impl Fn(&mut RinchDocument, bool) -> H,
+    change: impl FnOnce(&mut RinchDocument, &H),
+) {
+    // Re-run the oracle, then the invariants on the incremental document.
+    let make = |state: bool| {
+        let mut doc = RinchDocument::new();
+        doc.load_css(BASE_CSS);
+        doc.load_css(css);
+        let h = build(&mut doc, state);
+        settle(&mut doc);
+        (doc, h)
+    };
+    let (mut doc, h) = make(false);
+    rv_anon_invariants(&doc, name);
+    let before = snapshot(&doc);
+    change(&mut doc, &h);
+    doc.resolve_layout(VP.0, VP.1);
+    rv_anon_invariants(&doc, name);
+    let inc = snapshot(&doc);
+    let (fresh_doc, _) = make(true);
+    let fresh = snapshot(&fresh_doc);
+    assert_ne!(before, fresh, "{name}: A and B lay out identically");
+    if inc != fresh {
+        let mut diff = String::new();
+        for (i, (a, b)) in inc.iter().zip(fresh.iter()).enumerate() {
+            if a != b {
+                diff.push_str(&format!("  #{i}\n    inc:   {a}\n    fresh: {b}\n"));
+            }
+        }
+        panic!(
+            "{name}: incremental != fresh (len {} vs {})\n{diff}",
+            inc.len(),
+            fresh.len()
+        );
+    }
+    // A second layout must also move nothing.
+    doc.resolve_layout(VP.0 + 1.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    rv_anon_invariants(&doc, name);
+}
+
+const RV_CSS: &str = ".a { width: 200px; line-height: 20px; } .b { width: 2em; } \
+    .s.on { color: rgb(200, 0, 0); font-size: 22px; } .blk { display: block; } \
+    .rel { position: relative; } .abs { position: absolute; width: 5px; height: 5px; } \
+    .ell { overflow: hidden; white-space: nowrap; } .ell.on { text-overflow: ellipsis; }";
+
+/// `div.a > [t0, span.s > "span text", t1, li.b, t2]`
+fn rv_doc(doc: &mut RinchDocument, cls: &str) -> (NodeId, NodeId, NodeId) {
+    let body = doc.body();
+    let a = doc.create_element("div");
+    doc.set_attribute(a, "class", cls);
+    doc.append_child(body, a);
+    let t0 = doc.create_text("first run of text ");
+    doc.append_child(a, t0);
+    let s = doc.create_element("span");
+    doc.set_attribute(s, "class", "s");
+    doc.append_child(a, s);
+    let st = doc.create_text("span text that is long enough to wrap");
+    doc.append_child(s, st);
+    let t1 = doc.create_text(" tail of run");
+    doc.append_child(a, t1);
+    let li = doc.create_element("li");
+    doc.set_attribute(li, "class", "b");
+    doc.append_child(a, li);
+    let t2 = doc.create_text(" second run of text after the block");
+    doc.append_child(a, t2);
+    (a, s, li)
+}
+
+fn rv_grow(doc: &mut RinchDocument, a: NodeId) {
+    let li = doc.create_element("li");
+    doc.set_attribute(li, "class", "b");
+    doc.append_child(a, li);
+}
+
+#[test]
+fn rv_member_restyled_in_a_scoped_pass() {
+    rv_twin(
+        "rv_member_restyled_in_a_scoped_pass",
+        RV_CSS,
+        |doc, on| {
+            let h = rv_doc(doc, "a");
+            if on {
+                doc.set_attribute(h.1, "class", "s on");
+                rv_grow(doc, h.0);
+            }
+            h
+        },
+        |doc, h| {
+            doc.set_attribute(h.1, "class", "s on");
+            rv_grow(doc, h.0);
+        },
+    );
+}
+
+#[test]
+fn rv_member_restyled_in_a_whole_document_pass() {
+    rv_twin(
+        "rv_member_restyled_in_a_whole_document_pass",
+        RV_CSS,
+        |doc, on| {
+            let h = rv_doc(doc, "a");
+            if on {
+                doc.set_attribute(h.1, "class", "s on");
+            }
+            h
+        },
+        |doc, h| {
+            doc.set_attribute(h.1, "class", "s on");
+            doc.recompute_all_styles_full();
+        },
+    );
+}
+
+#[test]
+fn rv_member_text_edited_in_a_scoped_pass() {
+    rv_twin(
+        "rv_member_text_edited_in_a_scoped_pass",
+        RV_CSS,
+        |doc, on| {
+            let h = rv_doc(doc, "a");
+            if on {
+                let st = doc.tree.get(h.1.0).unwrap().children[0];
+                doc.set_text_content(NodeId(st), "x");
+                rv_grow(doc, h.0);
+            }
+            h
+        },
+        |doc, h| {
+            let st = doc.tree.get(h.1.0).unwrap().children[0];
+            doc.set_text_content(NodeId(st), "x");
+            rv_grow(doc, h.0);
+        },
+    );
+}
+
+#[test]
+fn rv_member_moved_out_and_back() {
+    rv_twin(
+        "rv_member_moved_out_and_back",
+        RV_CSS,
+        |doc, on| {
+            let h = rv_doc(doc, "a");
+            if on {
+                rv_grow(doc, h.0);
+            }
+            h
+        },
+        |doc, h| {
+            let other = doc.create_element("div");
+            let body = doc.body();
+            doc.append_child(body, other);
+            doc.append_child(other, h.1);
+            let t1 = doc.tree.get(h.0.0).unwrap().children[1];
+            doc.insert_before(h.0, h.1, NodeId(t1));
+            doc.remove_node(other);
+            rv_grow(doc, h.0);
+        },
+    );
+}
+
+#[test]
+fn rv_member_moved_out_and_back_across_a_layout() {
+    // Out, lay out (the box re-mints for [t0, t1]), back in, lay out.
+    let name = "rv_member_moved_out_and_back_across_a_layout";
+    rv_twin(
+        name,
+        RV_CSS,
+        |doc, on| {
+            let h = rv_doc(doc, "a");
+            if on {
+                rv_grow(doc, h.0);
+            }
+            h
+        },
+        |doc, h| {
+            let other = doc.create_element("div");
+            let body = doc.body();
+            doc.append_child(body, other);
+            doc.append_child(other, h.1);
+            doc.resolve_layout(VP.0, VP.1);
+            rv_anon_invariants(doc, name);
+            let t1 = doc.tree.get(h.0.0).unwrap().children[1];
+            doc.insert_before(h.0, h.1, NodeId(t1));
+            doc.remove_node(other);
+            rv_grow(doc, h.0);
+        },
+    );
+}
+
+#[test]
+fn rv_member_becomes_block() {
+    rv_twin(
+        "rv_member_becomes_block",
+        RV_CSS,
+        |doc, on| {
+            let h = rv_doc(doc, "a");
+            if on {
+                doc.set_attribute(h.1, "class", "s blk");
+            }
+            h
+        },
+        |doc, h| doc.set_attribute(h.1, "class", "s blk"),
+    );
+}
+
+#[test]
+fn rv_member_becomes_block_and_back_across_layouts() {
+    rv_twin(
+        "rv_member_becomes_block_and_back_across_layouts",
+        RV_CSS,
+        |doc, on| {
+            let h = rv_doc(doc, "a");
+            if on {
+                rv_grow(doc, h.0);
+            }
+            h
+        },
+        |doc, h| {
+            doc.set_attribute(h.1, "class", "s blk");
+            doc.resolve_layout(VP.0, VP.1);
+            doc.set_attribute(h.1, "class", "s");
+            rv_grow(doc, h.0);
+        },
+    );
+}
+
+#[test]
+fn rv_container_loses_its_block() {
+    rv_twin(
+        "rv_container_loses_its_block",
+        RV_CSS,
+        |doc, on| {
+            let h = rv_doc(doc, "a");
+            if on {
+                doc.remove_node(h.2);
+            }
+            h
+        },
+        |doc, h| doc.remove_node(h.2),
+    );
+}
+
+#[test]
+fn rv_container_loses_its_block_then_gets_one_back() {
+    rv_twin(
+        "rv_container_loses_its_block_then_gets_one_back",
+        RV_CSS,
+        |doc, on| {
+            let h = rv_doc(doc, "a");
+            if on {
+                doc.remove_node(h.2);
+                rv_grow(doc, h.0);
+            }
+            h
+        },
+        |doc, h| {
+            doc.remove_node(h.2);
+            doc.resolve_layout(VP.0, VP.1);
+            rv_grow(doc, h.0);
+        },
+    );
+}
+
+#[test]
+fn rv_split_inline_in_a_run_through_a_whole_document_pass() {
+    // span.s holds a block: a split inline (#513) inside a container with anon boxes.
+    rv_twin(
+        "rv_split_inline_in_a_run_through_a_whole_document_pass",
+        RV_CSS,
+        |doc, on| {
+            let h = rv_doc(doc, "a");
+            let d = doc.create_element("div");
+            doc.append_child(h.1, d);
+            let dt = doc.create_text("block in span");
+            doc.append_child(d, dt);
+            let after = doc.create_text(" after the block inside the span");
+            doc.append_child(h.1, after);
+            if on {
+                doc.set_attribute(h.1, "class", "s on");
+            }
+            h
+        },
+        |doc, h| {
+            doc.set_attribute(h.1, "class", "s on");
+            doc.recompute_all_styles_full();
+        },
+    );
+}
+
+#[test]
+fn rv_split_inline_in_a_run_through_a_scoped_pass() {
+    rv_twin(
+        "rv_split_inline_in_a_run_through_a_scoped_pass",
+        RV_CSS,
+        |doc, on| {
+            let h = rv_doc(doc, "a");
+            let d = doc.create_element("div");
+            doc.append_child(h.1, d);
+            let dt = doc.create_text("block in span");
+            doc.append_child(d, dt);
+            let after = doc.create_text(" after the block inside the span");
+            doc.append_child(h.1, after);
+            if on {
+                rv_grow(doc, h.0);
+            }
+            h
+        },
+        |doc, h| {
+            rv_grow(doc, h.0);
+        },
+    );
+}
+
+fn rv_abs_doc(doc: &mut RinchDocument, hoisted: bool) -> (NodeId, NodeId, NodeId) {
+    let h = rv_doc(doc, "a rel");
+    let abs = doc.create_element("i");
+    doc.set_attribute(abs, "class", "abs");
+    if hoisted {
+        doc.append_child(h.1, abs);
+        let more = doc.create_text(" more span text after the abs");
+        doc.append_child(h.1, more);
+    } else {
+        let t1 = doc.tree.get(h.0.0).unwrap().children[2];
+        doc.insert_before(h.0, abs, NodeId(t1));
+    }
+    (h.0, h.1, abs)
+}
+
+#[test]
+fn rv_hoisted_abs_through_a_scoped_pass() {
+    rv_twin(
+        "rv_hoisted_abs_through_a_scoped_pass",
+        RV_CSS,
+        |doc, on| {
+            let h = rv_abs_doc(doc, true);
+            if on {
+                rv_grow(doc, h.0);
+            }
+            h
+        },
+        |doc, h| rv_grow(doc, h.0),
+    );
+}
+
+#[test]
+fn rv_hoisted_abs_through_a_whole_document_pass_with_a_restyle() {
+    rv_twin(
+        "rv_hoisted_abs_through_a_whole_document_pass_with_a_restyle",
+        RV_CSS,
+        |doc, on| {
+            let h = rv_abs_doc(doc, true);
+            if on {
+                doc.set_attribute(h.1, "class", "s on");
+            }
+            h
+        },
+        |doc, h| {
+            doc.set_attribute(h.1, "class", "s on");
+            doc.recompute_all_styles_full();
+        },
+    );
+}
+
+#[test]
+fn rv_run_abs_through_a_scoped_pass() {
+    rv_twin(
+        "rv_run_abs_through_a_scoped_pass",
+        RV_CSS,
+        |doc, on| {
+            let h = rv_abs_doc(doc, false);
+            if on {
+                rv_grow(doc, h.0);
+            }
+            h
+        },
+        |doc, h| rv_grow(doc, h.0),
+    );
+}
+
+#[test]
+fn rv_run_abs_turns_block_level_before_blockify() {
+    rv_twin(
+        "rv_run_abs_turns_block_level_before_blockify",
+        RV_CSS,
+        |doc, on| {
+            let h = rv_abs_doc(doc, false);
+            if on {
+                doc.set_attribute(h.2, "class", "abs blk");
+                rv_grow(doc, h.0);
+            }
+            h
+        },
+        |doc, h| {
+            doc.set_attribute(h.2, "class", "abs blk");
+            rv_grow(doc, h.0);
+        },
+    );
+}
+
+#[test]
+fn rv_run_abs_removed_through_a_whole_document_pass() {
+    rv_twin(
+        "rv_run_abs_removed_through_a_whole_document_pass",
+        RV_CSS,
+        |doc, on| {
+            let h = rv_abs_doc(doc, false);
+            if on {
+                doc.remove_node(h.2);
+            }
+            h
+        },
+        |doc, h| {
+            doc.remove_node(h.2);
+            doc.recompute_all_styles_full();
+        },
+    );
+}
+
+/// Runs of spans only, so only the container's `run_boxes` reach the boxes
+/// on a non-inherited change (text-overflow), with no structural change.
+fn rv_span_runs(doc: &mut RinchDocument, cls: &str) -> NodeId {
+    let body = doc.body();
+    let a = doc.create_element("div");
+    doc.set_attribute(a, "class", cls);
+    doc.append_child(body, a);
+    let s = doc.create_element("span");
+    doc.append_child(a, s);
+    let st = doc.create_text("a long span run that will not fit in the width");
+    doc.append_child(s, st);
+    let li = doc.create_element("li");
+    doc.set_attribute(li, "class", "b");
+    doc.append_child(a, li);
+    let s2 = doc.create_element("span");
+    doc.append_child(a, s2);
+    let st2 = doc.create_text("another long span run that will not fit either");
+    doc.append_child(s2, st2);
+    a
+}
+
+#[test]
+fn rv_container_ellipsis_toggled_spans_only() {
+    rv_twin(
+        "rv_container_ellipsis_toggled_spans_only",
+        RV_CSS,
+        |doc, on| rv_span_runs(doc, if on { "a ell on" } else { "a ell" }),
+        |doc, a| doc.set_attribute(*a, "class", "a ell on"),
+    );
+}
+
+#[test]
+fn rv_container_ellipsis_toggled_spans_only_with_a_scoped_pass() {
+    rv_twin(
+        "rv_container_ellipsis_toggled_spans_only_with_a_scoped_pass",
+        RV_CSS,
+        |doc, on| {
+            let a = rv_span_runs(doc, if on { "a ell on" } else { "a ell" });
+            if on {
+                rv_grow(doc, a);
+            }
+            a
+        },
+        |doc, a| {
+            doc.set_attribute(*a, "class", "a ell on");
+            rv_grow(doc, *a);
+        },
+    );
+}
+
+#[test]
+fn rv_container_moved_under_a_bigger_font() {
+    rv_twin(
+        "rv_container_moved_under_a_bigger_font",
+        ".big { font-size: 25px; } .a { width: 200px; } .b { width: 2em; }",
+        |doc, on| {
+            let body = doc.body();
+            let big = doc.create_element("div");
+            doc.set_attribute(big, "class", "big");
+            let h = rv_doc(doc, "a");
+            doc.append_child(body, big);
+            if on {
+                doc.append_child(big, h.0);
+            }
+            (h.0, big)
+        },
+        |doc, h| doc.append_child(h.1, h.0),
+    );
+}
+
+#[test]
+fn rv_container_width_and_structure_in_one_frame() {
+    rv_twin(
+        "rv_container_width_and_structure_in_one_frame",
+        ".a { width: 200px; } .a.w { width: 120px; } .b { width: 2em; }",
+        |doc, on| {
+            let h = rv_doc(doc, if on { "a w" } else { "a" });
+            if on {
+                rv_grow(doc, h.0);
+            }
+            h
+        },
+        |doc, h| {
+            doc.set_attribute(h.0, "class", "a w");
+            rv_grow(doc, h.0);
+        },
+    );
+}
+
+// seed-1733 shape: an anonymous box whose only member is an inline-block that
+// shrinks in the frame of a scoped pass over the box's container.
+const RV_CHIP_CSS: &str = ".a { width: 300px; line-height: 20px; } .b { width: 2em; } \
+    .chip { display: inline-block; padding: 1px; } .gone { display: none; }";
+
+fn rv_chip_doc(doc: &mut RinchDocument, inner_block: bool) -> (NodeId, NodeId, NodeId) {
+    let body = doc.body();
+    let a = doc.create_element("div");
+    doc.set_attribute(a, "class", "a");
+    doc.append_child(body, a);
+    let li = doc.create_element("li");
+    doc.set_attribute(li, "class", "b");
+    doc.append_child(a, li);
+    let chip = doc.create_element("span");
+    doc.set_attribute(chip, "class", "chip");
+    doc.append_child(a, chip);
+    let ct = doc.create_text("plain text");
+    doc.append_child(chip, ct);
+    let x = doc.create_element(if inner_block { "div" } else { "span" });
+    doc.append_child(chip, x);
+    let xt = doc.create_text(" x y z and more words to wrap the line twice over");
+    doc.append_child(x, xt);
+    (a, chip, x)
+}
+
+fn rv_chip_twin(name: &str, inner_block: bool, whole: bool, how: u8) {
+    let apply = move |doc: &mut RinchDocument, h: &(NodeId, NodeId, NodeId)| {
+        match how {
+            0 => doc.set_attribute(h.2, "class", "gone"),
+            _ => {
+                let t = doc.tree.get(h.2.0).unwrap().children[0];
+                doc.set_text_content(NodeId(t), " x");
+            }
+        }
+        if whole {
+            doc.recompute_all_styles_full();
+        } else {
+            let p = doc.create_element("p");
+            doc.set_attribute(p, "class", "chip");
+            doc.append_child(h.0, p);
+            let pt = doc.create_text("new");
+            doc.append_child(p, pt);
+        }
+    };
+    rv_twin(
+        name,
+        RV_CHIP_CSS,
+        move |doc, on| {
+            let h = rv_chip_doc(doc, inner_block);
+            if on {
+                apply(doc, &h);
+            }
+            h
+        },
+        move |doc, h| apply(doc, h),
+    );
+}
+
+#[test]
+fn rv_chip_block_hidden_scoped() {
+    rv_chip_twin("rv_chip_block_hidden_scoped", true, false, 0);
+}
+#[test]
+fn rv_chip_block_hidden_whole() {
+    rv_chip_twin("rv_chip_block_hidden_whole", true, true, 0);
+}
+#[test]
+fn rv_chip_block_text_scoped() {
+    rv_chip_twin("rv_chip_block_text_scoped", true, false, 1);
+}
+#[test]
+fn rv_chip_block_text_whole() {
+    rv_chip_twin("rv_chip_block_text_whole", true, true, 1);
+}
+#[test]
+fn rv_chip_inline_hidden_scoped() {
+    rv_chip_twin("rv_chip_inline_hidden_scoped", false, false, 0);
+}
+#[test]
+fn rv_chip_inline_text_scoped() {
+    rv_chip_twin("rv_chip_inline_text_scoped", false, false, 1);
+}
+#[test]
+fn rv_chip_inline_text_whole() {
+    rv_chip_twin("rv_chip_inline_text_whole", false, true, 1);
+}
+
+fn rv_s(doc: &mut RinchDocument, parent: NodeId, tag: &str, style: &str) -> NodeId {
+    let e = doc.create_element(tag);
+    if !style.is_empty() {
+        doc.set_attribute(e, "style", style);
+    }
+    doc.append_child(parent, e);
+    e
+}
+fn rv_t(doc: &mut RinchDocument, parent: NodeId, s: &str) {
+    let t = doc.create_text(s);
+    doc.append_child(parent, t);
+}
+
+/// Seed 1733 of `scoped_pass_matches_the_whole_document_pass_long`, by hand.
+fn rv_seed1733(
+    doc: &mut RinchDocument,
+    hidden: bool,
+    appended: bool,
+    contents: bool,
+) -> (NodeId, NodeId) {
+    let body = doc.body();
+    let d = rv_s(doc, body, "div", "width: 360px; line-height: 20px");
+    let sec = rv_s(doc, d, "section", "display: flex");
+    rv_t(doc, sec, "a");
+    let w = if contents {
+        rv_s(doc, d, "ul", "display: contents")
+    } else {
+        d
+    };
+    rv_s(doc, w, "div", "display: flex; flex-direction: column");
+    let chip = rv_s(doc, w, "ul", "display: inline-block; padding: 1px");
+    rv_t(doc, chip, "plain text");
+    let inner = rv_s(doc, chip, "ul", "display: block");
+    rv_t(doc, inner, " ");
+    let x = rv_s(doc, inner, "div", if hidden { "display: none" } else { "" });
+    rv_t(doc, x, "x y z");
+    let after = rv_s(doc, w, "ul", "");
+    rv_t(
+        doc,
+        after,
+        "a rather longer run of text that wraps somewhere",
+    );
+    rv_s(doc, d, "span", "display: flex");
+    if appended {
+        let p = rv_s(doc, d, "p", "display: inline-flex");
+        rv_t(doc, p, "x y z");
+    }
+    (d, x)
+}
+
+fn rv_seed1733_twin(name: &str, contents: bool, whole: bool) {
+    rv_twin(
+        name,
+        "",
+        move |doc, on| rv_seed1733(doc, on, on && !whole, contents),
+        move |doc, h| {
+            doc.set_attribute(h.1, "style", "display: none");
+            if whole {
+                doc.recompute_all_styles_full();
+            } else {
+                let p = rv_s(doc, h.0, "p", "display: inline-flex");
+                rv_t(doc, p, "x y z");
+            }
+        },
+    );
+}
+
+#[test]
+fn rv_seed1733_scoped_contents() {
+    rv_seed1733_twin("rv_seed1733_scoped_contents", true, false);
+}
+#[test]
+fn rv_seed1733_scoped_plain() {
+    rv_seed1733_twin("rv_seed1733_scoped_plain", false, false);
+}
+#[test]
+fn rv_seed1733_whole_contents() {
+    rv_seed1733_twin("rv_seed1733_whole_contents", true, true);
+}
+
+/// As [`rv_seed1733`], the chip's block inserted one frame before step 9.
+fn rv_seed1733_hist(contents: bool, whole: bool, name: &str) {
+    rv_twin(
+        name,
+        "",
+        move |doc, on| {
+            let (d, x) = rv_seed1733(doc, on, on && !whole, contents);
+            if !on {
+                // State A: the chip without its block.
+                let inner = doc.tree.get(x.0).unwrap().parent.unwrap();
+                doc.remove_node(NodeId(inner));
+            }
+            (d, x)
+        },
+        move |doc, h| {
+            // Re-insert the block (step 8), lay out, then step 9.
+            let x = h.1;
+            let chip = {
+                let w = if contents {
+                    NodeId(doc.tree.get(h.0.0).unwrap().children[1])
+                } else {
+                    h.0
+                };
+                let kids: Vec<usize> = doc.tree.get(w.0).unwrap().children.clone();
+                NodeId(
+                    kids.into_iter()
+                        .find(|&k| {
+                            doc.tree.get(k).unwrap().children.len() == 1
+                                && doc.tree.get(k).unwrap().tag() == Some("ul")
+                        })
+                        .unwrap(),
+                )
+            };
+            let inner = doc.tree.get(x.0).unwrap().parent.unwrap();
+            doc.append_child(chip, NodeId(inner));
+            doc.resolve_layout(VP.0, VP.1);
+            doc.set_attribute(x, "style", "display: none");
+            if whole {
+                doc.recompute_all_styles_full();
+            } else {
+                let p = rv_s(doc, h.0, "p", "display: inline-flex");
+                rv_t(doc, p, "x y z");
+            }
+        },
+    );
+}
+
+#[test]
+fn rv_seed1733_hist_scoped_contents() {
+    rv_seed1733_hist(true, false, "rv_seed1733_hist_scoped_contents");
+}
+#[test]
+fn rv_seed1733_hist_scoped_plain() {
+    rv_seed1733_hist(false, false, "rv_seed1733_hist_scoped_plain");
+}
+#[test]
+fn rv_seed1733_hist_whole_contents() {
+    rv_seed1733_hist(true, true, "rv_seed1733_hist_whole_contents");
+}
+
+/// The seed-1733 chip history in a plain IFC root (no anonymous box): is the
+/// stale measure the anonymous box's alone?
+fn rv_chip_hist_plain(name: &str, structural: bool, sibling_text: bool) {
+    let build = move |doc: &mut RinchDocument, hidden: bool, appended: bool| {
+        let body = doc.body();
+        let d = rv_s(doc, body, "div", "width: 360px; line-height: 20px");
+        if sibling_text {
+            rv_t(doc, d, "before ");
+        }
+        let chip = rv_s(doc, d, "ul", "display: inline-block; padding: 1px");
+        rv_t(doc, chip, "plain text");
+        let inner = rv_s(doc, chip, "ul", "display: block");
+        rv_t(doc, inner, " ");
+        let x = rv_s(doc, inner, "div", if hidden { "display: none" } else { "" });
+        rv_t(doc, x, "x y z");
+        if appended {
+            let p = rv_s(doc, d, "p", "display: inline-flex");
+            rv_t(doc, p, "x y z");
+        }
+        (d, chip, x)
+    };
+    rv_twin(
+        name,
+        "",
+        move |doc, on| {
+            let h = build(doc, on, on && structural);
+            if !on {
+                let inner = doc.tree.get(h.2.0).unwrap().parent.unwrap();
+                doc.remove_node(NodeId(inner));
+            }
+            h
+        },
+        move |doc, h| {
+            let inner = doc.tree.get(h.2.0).unwrap().parent.unwrap();
+            doc.append_child(h.1, NodeId(inner));
+            doc.resolve_layout(VP.0, VP.1);
+            doc.set_attribute(h.2, "style", "display: none");
+            if structural {
+                let p = rv_s(doc, h.0, "p", "display: inline-flex");
+                rv_t(doc, p, "x y z");
+            } else {
+                doc.recompute_all_styles_full();
+            }
+        },
+    );
+}
+#[test]
+fn rv_chip_hist_plain_whole() {
+    rv_chip_hist_plain("rv_chip_hist_plain_whole", false, true);
+}
+#[test]
+fn rv_chip_hist_plain_structural() {
+    rv_chip_hist_plain("rv_chip_hist_plain_structural", true, true);
+}
+
+// ── review2-1627 fixtures ─────────────────────────────────────────────────────
+
+/// A member moved from the first run to the second in one frame: both runs'
+/// first members still key a retired box, but the members differ.
+#[test]
+fn rv2_member_moved_between_runs_in_one_frame() {
+    rv_twin(
+        "rv2_member_moved_between_runs_in_one_frame",
+        RV_CSS,
+        |doc, on| {
+            let (a, s, li) = rv_doc(doc, "a");
+            let _ = li;
+            if on {
+                doc.append_child(a, s);
+            }
+            (a, s)
+        },
+        |doc, h| doc.append_child(h.0, h.1),
+    );
+}
+
+/// The same member moved there and back in one frame, with a restyle so the
+/// two states differ: the boxes are kept and must not keep the old layout.
+#[test]
+fn rv2_member_moved_between_runs_and_back_with_a_restyle() {
+    rv_twin(
+        "rv2_member_moved_between_runs_and_back_with_a_restyle",
+        RV_CSS,
+        |doc, on| {
+            let (a, s, li) = rv_doc(doc, "a");
+            if on {
+                doc.set_attribute(s, "class", "s on");
+            }
+            (a, s, li)
+        },
+        |doc, h| {
+            doc.append_child(h.0, h.1);
+            let t1 = doc.tree.get(h.0.0).unwrap().children[1];
+            doc.insert_before(h.0, h.1, NodeId(t1));
+            doc.set_attribute(h.1, "class", "s on");
+        },
+    );
+}
+
+/// The second run's text moved to the front of the first run in one frame.
+#[test]
+fn rv2_second_runs_first_member_moved_to_the_front() {
+    rv_twin(
+        "rv2_second_runs_first_member_moved_to_the_front",
+        RV_CSS,
+        |doc, on| {
+            let (a, _, _) = rv_doc(doc, "a");
+            if on {
+                let kids = doc.tree.get(a.0).unwrap().children.clone();
+                doc.insert_before(a, NodeId(kids[4]), NodeId(kids[0]));
+            }
+            a
+        },
+        |doc, a| {
+            let kids = doc.tree.get(a.0).unwrap().children.clone();
+            doc.insert_before(*a, NodeId(kids[4]), NodeId(kids[0]));
+        },
+    );
+}
+
+/// `div.a(width: W) > ["text ", span(inline-block, width: 50%) > "chip", " more", li, " after"]`
+fn rv2_pct_doc(doc: &mut RinchDocument, w: &str, chip_style: &str) -> (NodeId, NodeId) {
+    let body = doc.body();
+    let a = rv_s(doc, body, "div", &format!("width: {w}; line-height: 20px"));
+    rv_t(doc, a, "text before the chip ");
+    let c = rv_s(doc, a, "span", chip_style);
+    rv_t(doc, c, "chip text that can wrap inside");
+    rv_t(doc, a, " more text after the chip in the same run");
+    rv_s(doc, a, "li", "width: 2em");
+    rv_t(doc, a, " after");
+    (a, c)
+}
+
+fn rv2_resize_and_back(name: &str, chip_style: &'static str, whole: bool, by_chip: bool) {
+    rv_twin(
+        name,
+        "",
+        move |doc, on| {
+            let h = rv2_pct_doc(doc, "200px", chip_style);
+            if on && !whole {
+                rv_s(doc, h.0, "li", "width: 2em");
+            }
+            if on && whole {
+                doc.set_style(h.0, "color", "rgb(200, 0, 0)");
+            }
+            h
+        },
+        move |doc, h| {
+            if by_chip {
+                doc.set_style(h.1, "width", "150px");
+            } else {
+                doc.set_style(h.0, "width", "320px");
+            }
+            doc.resolve_layout(VP.0, VP.1);
+            if by_chip {
+                doc.set_style(h.1, "width", "60px");
+            } else {
+                doc.set_style(h.0, "width", "200px");
+            }
+            if whole {
+                doc.set_style(h.0, "color", "rgb(200, 0, 0)");
+                doc.recompute_all_styles_full();
+            } else {
+                rv_s(doc, h.0, "li", "width: 2em");
+            }
+        },
+    );
+}
+
+#[test]
+fn rv2_pct_chip_container_resized_and_back_scoped() {
+    rv2_resize_and_back(
+        "rv2_pct_chip_container_resized_and_back_scoped",
+        "display: inline-block; width: 50%",
+        false,
+        false,
+    );
+}
+#[test]
+fn rv2_pct_chip_container_resized_and_back_whole() {
+    rv2_resize_and_back(
+        "rv2_pct_chip_container_resized_and_back_whole",
+        "display: inline-block; width: 50%",
+        true,
+        false,
+    );
+}
+#[test]
+fn rv2_auto_chip_container_resized_and_back_scoped() {
+    rv2_resize_and_back(
+        "rv2_auto_chip_container_resized_and_back_scoped",
+        "display: inline-block",
+        false,
+        false,
+    );
+}
+#[test]
+fn rv2_chip_width_styled_and_back_scoped() {
+    rv2_resize_and_back(
+        "rv2_chip_width_styled_and_back_scoped",
+        "display: inline-block; width: 60px",
+        false,
+        true,
+    );
+}
+#[test]
+fn rv2_chip_width_styled_and_back_whole() {
+    rv2_resize_and_back(
+        "rv2_chip_width_styled_and_back_whole",
+        "display: inline-block; width: 60px",
+        true,
+        true,
+    );
+}
+
+/// The anonymous-box container is a flex item (content-sized), so its chip
+/// is capped by its min-content width (#1476): a chip text edit that grows
+/// the chip, laid out, then the text put back and a block appended.
+#[test]
+fn rv2_chip_in_flex_item_text_edited_and_back_scoped() {
+    rv_twin(
+        "rv2_chip_in_flex_item_text_edited_and_back_scoped",
+        "",
+        |doc, on| {
+            let body = doc.body();
+            let row = rv_s(
+                doc,
+                body,
+                "div",
+                "display: flex; width: 300px; line-height: 20px",
+            );
+            let a = rv_s(doc, row, "div", "");
+            rv_t(doc, a, "lead ");
+            let c = rv_s(doc, a, "span", "display: inline-block");
+            let ct = doc.create_text("short");
+            doc.append_child(c, ct);
+            rv_t(doc, a, " tail of the run");
+            rv_s(doc, a, "li", "width: 2em");
+            rv_t(doc, a, " after the block");
+            let lab = rv_s(doc, row, "div", "");
+            rv_t(doc, lab, "a label beside it that is wide enough to squeeze");
+            if on {
+                rv_s(doc, a, "li", "width: 2em");
+            }
+            (a, ct)
+        },
+        |doc, h| {
+            doc.set_text_content(h.1, "a much longer chip text that wraps");
+            doc.resolve_layout(VP.0, VP.1);
+            doc.set_text_content(h.1, "short");
+            rv_s(doc, h.0, "li", "width: 2em");
+        },
     );
 }

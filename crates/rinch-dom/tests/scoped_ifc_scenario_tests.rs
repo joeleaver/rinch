@@ -395,10 +395,16 @@ fn probe_percentage_chip_container_resized_by_sibling() {
         mk(doc, body, "div", "", "after");
         vec![row, left, right, pc]
     }
-    // Pre-existing, reproduced on `main`: the left item keeps its old width
-    // (230 where a fresh layout gives 218) and the percentage chip a stale
-    // position and size. The whole-document twin is equally wrong, so only the
-    // twin claim is asserted; the fresh divergence is printed.
+    // Pre-existing, reproduced on `main`: the scoped pass leaves the left item
+    // at its old width (230 where a fresh layout gives 218) and the percentage
+    // chip at a stale position and size (#1637). On `main` the whole-document
+    // twin was equally wrong, through a second defect: the `p`'s content
+    // signature still hashed the chip's size from before a percentage
+    // re-resolve, so its stale sizes were served. With that fixed (review of
+    // #1627), the whole-document twin matches a fresh layout at every step and
+    // the scoped twin is the one left wrong. So what is asserted is that the
+    // whole-document twin is right wherever the two differ; the scoped
+    // divergence is printed.
     let problems = run(
         "pct",
         build,
@@ -419,11 +425,20 @@ fn probe_percentage_chip_container_resized_by_sibling() {
     for p in &problems {
         eprintln!("(pre-existing) {}", p.lines().next().unwrap_or(""));
     }
+    let twin_diffs = problems
+        .iter()
+        .filter(|p| p.contains("scoped vs whole-doc"))
+        .count();
+    let whole_right = problems
+        .iter()
+        .filter(|p| p.contains("whole-doc also wrong: false"))
+        .count();
     assert!(
         problems
             .iter()
-            .all(|p| p.contains("whole-doc also wrong: true")),
-        "the scoped pass differs from the whole-document one: {problems:#?}"
+            .all(|p| !p.contains("whole-doc also wrong: true"))
+            && twin_diffs == whole_right,
+        "the whole-document twin differs from a fresh layout: {problems:#?}"
     );
 }
 

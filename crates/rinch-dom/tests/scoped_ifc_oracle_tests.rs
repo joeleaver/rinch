@@ -1435,6 +1435,7 @@ fn run_random(seeds: std::ops::Range<u64>, steps: usize) -> Result<RandomStats, 
                         // a pre-existing defect the scoped pass does not
                         // reach. The histories part here; next seed.
                         stats.scoped_better += 1;
+                        stats.scoped_better_seeds.push(seed);
                         if trace_on() {
                             eprintln!(
                                 "seed {seed} step {step}: scoped right, whole-document wrong:\n{d}"
@@ -1482,6 +1483,8 @@ struct RandomStats {
     /// Seeds where the twins differed and the scoped one matched a fresh layout
     /// — the whole-document pass was the one wrong.
     scoped_better: usize,
+    /// Which seeds those were, to replay with `SCOPED_ORACLE_SEED`.
+    scoped_better_seeds: Vec<u64>,
 }
 
 /// The fixed seed set that runs in CI.
@@ -1489,6 +1492,25 @@ struct RandomStats {
 fn scoped_pass_matches_the_whole_document_pass_on_random_documents() {
     let stats = run_random(0..60, 20).unwrap();
     eprintln!("not the scoped pass's: {stats:?}");
+}
+
+/// Seeds of the long run that found an IFC root's content signature falling
+/// behind its measures (review of #1627): an atomic inline resized outside a
+/// structural pass left the signature hashing its old size, so a later pass
+/// that found it at that size again served sizes measured at the size in
+/// between. 1733 went through `remeasure_dirty_atomic_inlines` (the scoped
+/// twin wrong), 1118, 1589 and 2809 through `invalidate_ifc_of_atomic_inline`
+/// (the whole-document twin wrong, `scoped_better`). The anonymous block boxes
+/// a structural pass keeps since #964 are what made either reachable.
+#[test]
+fn the_seeds_where_a_signature_fell_behind_its_measures() {
+    for seed in [1118, 1589, 1733, 2809] {
+        let stats = run_random(seed..seed + 1, 40).unwrap();
+        assert_eq!(
+            stats.scoped_better, 0,
+            "seed {seed}: the whole-document twin differs from fresh: {stats:?}"
+        );
+    }
 }
 
 /// The long run. `cargo test -p rinch-dom --test scoped_ifc_oracle_tests --
@@ -1503,7 +1525,14 @@ fn scoped_pass_matches_the_whole_document_pass_long() {
             let n: u64 = n.parse().expect("SCOPED_ORACLE_SEED is a number");
             n..n + 1
         }
-        Err(_) => 1000..3000,
+        // `SCOPED_ORACLE_SEEDS=lo..hi` runs another range.
+        Err(_) => match std::env::var("SCOPED_ORACLE_SEEDS") {
+            Ok(r) => {
+                let (lo, hi) = r.split_once("..").expect("SCOPED_ORACLE_SEEDS is lo..hi");
+                lo.parse().expect("a number")..hi.parse().expect("a number")
+            }
+            Err(_) => 1000..3000,
+        },
     };
     // One document pair per thread at a time (a document is not `Send`; each
     // thread builds its own).
@@ -1523,6 +1552,7 @@ fn scoped_pass_matches_the_whole_document_pass_long() {
         total.fresh_divergent += s.fresh_divergent;
         total.control_broken += s.control_broken;
         total.scoped_better += s.scoped_better;
+        total.scoped_better_seeds.extend(s.scoped_better_seeds);
     }
     eprintln!("not the scoped pass's: {total:?}");
 }
