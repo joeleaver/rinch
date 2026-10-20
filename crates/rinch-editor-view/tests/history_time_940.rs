@@ -182,3 +182,68 @@ fn a_picture_is_stamped_like_a_keystroke() {
         "`a`, the picture and `b` were one step"
     );
 }
+
+// ---- From the review of #1612 --------------------------------------------
+
+/// Typing right after an undo starts a new step, as ProseMirror's history does
+/// (it resets `prevTime`): it used to merge into the earlier group still on the
+/// done stack when that group's last keystroke was inside the window.
+#[test]
+fn typing_after_an_undo_starts_a_new_step() {
+    let _clock = FakeClock::install(5_000);
+    let handle = editor("<p>xy</p>", 2);
+    assert!(handle.insert_text("a")); // step A
+    at(5_050);
+    handle.set_selection(Selection::cursor(Pos(4))); // ends A
+    at(5_100);
+    assert!(handle.insert_text("b")); // step B
+    at(5_150);
+    assert!(handle.command("undo")); // takes back b
+    assert_eq!(html(&handle), "<p>xay</p>");
+    at(5_200);
+    assert!(handle.insert_text("c"));
+    assert_eq!(html(&handle), "<p>xayc</p>");
+    assert!(handle.command("undo"));
+    assert_eq!(
+        html(&handle),
+        "<p>xay</p>",
+        "undo takes back only `c`, not `a` with it"
+    );
+}
+
+/// Typing right after a redo starts a new step: it used to merge into the
+/// group just redone.
+#[test]
+fn typing_after_a_redo_starts_a_new_step() {
+    let _clock = FakeClock::install(5_000);
+    let handle = editor("<p>x</p>", 2);
+    assert!(handle.insert_text("a"));
+    at(5_100);
+    assert!(handle.command("undo"));
+    at(5_200);
+    assert!(handle.command("redo"));
+    at(5_300);
+    assert!(handle.insert_text("b"));
+    assert!(handle.command("undo"));
+    assert_eq!(
+        html(&handle),
+        "<p>xa</p>",
+        "`b` is its own step after a redo"
+    );
+}
+
+/// The fixture clock is per thread: a thread that did not install one is on the
+/// real clock (a process-wide override would make this child merge `a` and `b`).
+#[test]
+fn the_fixture_clock_does_not_reach_another_thread() {
+    let _clock = FakeClock::install(9_999_999);
+    let child = std::thread::spawn(|| {
+        let handle = editor("<p>x</p>", 2);
+        assert!(handle.insert_text("a"));
+        std::thread::sleep(Duration::from_millis(650));
+        assert!(handle.insert_text("b"));
+        assert!(handle.command("undo"));
+        html(&handle)
+    });
+    assert_eq!(child.join().unwrap(), "<p>xa</p>");
+}
