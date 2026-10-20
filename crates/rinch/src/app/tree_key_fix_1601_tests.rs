@@ -545,3 +545,24 @@ fn the_focused_row_is_the_treeitem() {
     let group = find(&f.app, |n| n.attributes.get("id") == Some(&owns));
     assert_eq!(attr(&f.app, group, "role").as_deref(), Some("group"));
 }
+
+/// The cursor row is deleted while it has the keyboard, and the user clicks
+/// into a field outside the tree before the tree gives the keyboard to the
+/// neighbour: the field keeps it.
+#[test]
+fn the_neighbour_never_takes_the_keyboard_from_a_field_the_user_went_to() {
+    let _guard = crate::app::timer_backend_lock();
+    rinch_core::set_timer_backend(timers::manual);
+    let mut f = build(Opts::default(), data());
+    click_row(&mut f, "b");
+    f.data.update(|d| d.retain(|n| n.value != "b"));
+    f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    let away = find(&f.app, |n| has_class(n, "away"));
+    let at = centre(&f.app, away);
+    click(&mut f, at);
+    assert_eq!(focused(&f.app), Some(away), "control: the field has the keyboard");
+    settle(&mut f);
+    assert_eq!(focused(&f.app), Some(away), "the neighbour took the keyboard");
+    assert!(!ring(&f.app));
+    assert_eq!(f.state.cursor.get().as_deref(), Some("c"), "the cursor still moved");
+}
