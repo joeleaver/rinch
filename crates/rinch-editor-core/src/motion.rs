@@ -240,17 +240,16 @@ fn class_of(c: char) -> Class {
 ///
 /// Measured against Chrome 153 (contenteditable, Ctrl+Backspace): `foo.bar` is
 /// `foo` `.` `bar`, `foo...` is `foo` `...`, `don't` and an emoji ZWJ sequence
-/// are one word each. Not Chrome's ICU word rules, which keep `foo.bar` and
-/// `3.14` whole: Chrome's editing does not either.
+/// are one word each. These are not plain UAX #29 word boundaries, which keep
+/// `foo.bar` whole; Chrome's editing splits it, as this does.
 pub fn word_segments(units: &[Unit]) -> Vec<(usize, usize)> {
-    let class = |i: usize| match units[i] {
-        Unit::Atom => Class::Atom,
-        Unit::Char(c) => class_of(c),
-    };
     let mut classes: Vec<Class> = Vec::with_capacity(units.len());
-    for i in 0..units.len() {
-        let mut k = class(i);
-        if let (Unit::Char(c), Some(&prev)) = (units[i], classes.last())
+    for &unit in units {
+        let mut k = match unit {
+            Unit::Atom => Class::Atom,
+            Unit::Char(c) => class_of(c),
+        };
+        if let (Unit::Char(c), Some(&prev)) = (unit, classes.last())
             && is_extend(c)
             && prev != Class::Atom
             && prev != Class::Space
