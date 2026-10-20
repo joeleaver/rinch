@@ -115,7 +115,6 @@ pub fn word_boundary(doc: &Node, head: Pos, forward: bool) -> Option<Pos> {
         return None;
     }
     let units = block_units(r.parent());
-    let segments = word_segments(&units);
     let content_start = head.0 - r.parent_offset();
     let mut i = r.parent_offset().min(units.len());
     if forward {
@@ -123,14 +122,14 @@ pub fn word_boundary(doc: &Node, head: Pos, forward: bool) -> Option<Pos> {
             i += 1;
         }
         if i < units.len() {
-            i = segment_at(&segments, i).1;
+            i = segment_around(&units, i).1;
         }
     } else {
         while i > 0 && units[i - 1].is_space() {
             i -= 1;
         }
         if i > 0 {
-            i = segment_at(&segments, i - 1).0;
+            i = segment_around(&units, i - 1).0;
         }
     }
     Some(Pos(content_start + i))
@@ -151,13 +150,18 @@ pub fn block_text(block: &Node) -> String {
 }
 
 /// One position of a textblock's content: a char of its text, or an inline
-/// atom (an image, a hard break).
+/// atom.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unit {
     /// A character of a text node.
     Char(char),
-    /// A non-text leaf: one position, and a word of its own.
+    /// A non-text leaf other than a hard break (an image): one position, and a
+    /// word of its own with the atoms right beside it (Chrome 155 takes
+    /// `<img><img>` as one word).
     Atom,
+    /// A hard break: one position, and always a word of its own (Chrome 155
+    /// stops at each `<br>`).
+    Break,
 }
 
 impl Unit {
@@ -173,7 +177,14 @@ pub fn block_units(block: &Node) -> Vec<Unit> {
         let child = block.child(i);
         match child.text() {
             Some(t) => units.extend(t.chars().map(Unit::Char)),
-            None => units.extend(std::iter::repeat_n(Unit::Atom, child.node_size())),
+            None => {
+                let unit = if child.type_name() == "hard_break" {
+                    Unit::Break
+                } else {
+                    Unit::Atom
+                };
+                units.extend(std::iter::repeat_n(unit, child.node_size()));
+            }
         }
     }
     units
@@ -190,6 +201,7 @@ enum Class {
     /// Everything else that is not whitespace: punctuation, symbols, emoji.
     Punct,
     Atom,
+    Break,
 }
 
 /// Han, Hiragana, Katakana (and their iteration and prolonged-sound marks).
@@ -200,16 +212,26 @@ fn is_cjk(c: char) -> bool {
         | 0xF900..=0xFAFF | 0xFF66..=0xFF9F | 0x20000..=0x3134F)
 }
 
+/// Thai, Lao, Myanmar and Khmer: the scripts ICU's dictionary splits inside a
+/// word run.
+#[cfg_attr(not(feature = "word-dictionary"), allow(dead_code))]
+fn is_south_east_asian(c: char) -> bool {
+    matches!(c as u32,
+        0x0E00..=0x0EFF | 0x1000..=0x109F | 0x1780..=0x17FF | 0x19E0..=0x19FF
+        | 0xA9E0..=0xA9FF | 0xAA60..=0xAA7F)
+}
+
 /// A char that extends the one before it rather than starting anything: a
 /// combining mark of any script (General_Category M), a format char (Cf: the
 /// joiners, variation-selector-like controls) or an emoji skin-tone modifier.
 /// std has no General_Category, so this asks the `regex` crate's Unicode
-/// tables, which this crate links already for its input rules.
+/// tables, which this crate links already for its input rules. Below U+0300
+/// the only such char is the soft hyphen, so Latin text asks no regex.
 fn is_extend(c: char) -> bool {
     use std::sync::OnceLock;
     static EXTEND: OnceLock<regex::Regex> = OnceLock::new();
-    if c.is_ascii() {
-        return false;
+    if (c as u32) < 0x300 {
+        return c == '\u{AD}';
     }
     let re = EXTEND.get_or_init(|| {
         regex::Regex::new(r"^[\p{M}\p{Cf}\x{1F3FB}-\x{1F3FF}]$").expect("a valid class")
@@ -232,38 +254,50 @@ fn class_of(c: char) -> Class {
 
 /// The word segments of a textblock's content, as `(start, end)` unit offsets
 /// that tile it: maximal runs of one class — whitespace, word characters, CJK,
-/// punctuation — with every inline atom a segment of its own (#938, #939).
-/// A combining mark or joiner joins the unit before it; an apostrophe between
-/// two word characters stays in the word (`don't`). With the `word-dictionary`
-/// feature a word or CJK run is split further where ICU's dictionary segmenter
-/// breaks it (`漢字です` is `漢字` `です`); without it such a run is one segment.
+/// punctuation, images — with every hard break a segment of its own (#938,
+/// #939). A combining mark or format char joins the unit before it (unless
+/// that is whitespace); an apostrophe between two word characters stays in the
+/// word (`don't`), and a `.` `,` `;` `'` `’` between two digits stays in the
+/// number (`3.14`, `1,000`: UAX #29's MidNum). With the `word-dictionary`
+/// feature ICU's dictionary segmenter splits a CJK run (`漢字です` is `漢字`
+/// `です`) and the Thai, Lao, Myanmar or Khmer stretches of a word run
+/// (`ทุกสองสัปดาห์`), but never where such a stretch meets other letters
+/// (`abcไทย` is one word); without it those runs are one segment each.
 ///
-/// Measured against Chrome 153 (contenteditable, Ctrl+Backspace): `foo.bar` is
-/// `foo` `.` `bar`, `foo...` is `foo` `...`, `don't` and an emoji ZWJ sequence
-/// are one word each. These are not plain UAX #29 word boundaries, which keep
+/// Measured against Chrome 155 (contenteditable): `foo.bar` is `foo` `.` `bar`,
+/// `a.b.c` is five words, `foo...` is `foo` `...`, `3.14`, `don't` and an emoji
+/// ZWJ sequence are one word each, two adjacent images are one word and each
+/// `<br>` is one. These are not plain UAX #29 word boundaries, which keep
 /// `foo.bar` whole; Chrome's editing splits it, as this does.
 pub fn word_segments(units: &[Unit]) -> Vec<(usize, usize)> {
+    #[cfg(feature = "cost-counters")]
+    SEGMENTED_UNITS.with(|n| n.set(n.get() + units.len()));
     let mut classes: Vec<Class> = Vec::with_capacity(units.len());
     for &unit in units {
         let mut k = match unit {
             Unit::Atom => Class::Atom,
+            Unit::Break => Class::Break,
             Unit::Char(c) => class_of(c),
         };
         if let (Unit::Char(c), Some(&prev)) = (unit, classes.last())
             && is_extend(c)
-            && prev != Class::Atom
-            && prev != Class::Space
+            && !matches!(prev, Class::Atom | Class::Break | Class::Space)
         {
             k = prev;
         }
         classes.push(k);
     }
-    // An apostrophe between two word characters is part of the word.
+    let digit = |i: usize| matches!(units[i], Unit::Char(c) if c.is_numeric());
     for i in 1..units.len().saturating_sub(1) {
-        if matches!(units[i], Unit::Char('\'' | '\u{2019}'))
+        let Unit::Char(c) = units[i] else { continue };
+        // An apostrophe between two word characters is part of the word.
+        let apostrophe = matches!(c, '\'' | '\u{2019}')
             && classes[i - 1] == Class::Word
-            && classes[i + 1] == Class::Word
-        {
+            && classes[i + 1] == Class::Word;
+        // A separator between two digits is part of the number.
+        let in_number =
+            matches!(c, '.' | ',' | ';' | '\'' | '\u{2019}') && digit(i - 1) && digit(i + 1);
+        if apostrophe || in_number {
             classes[i] = Class::Word;
         }
     }
@@ -272,48 +306,83 @@ pub fn word_segments(units: &[Unit]) -> Vec<(usize, usize)> {
     while i < units.len() {
         let k = classes[i];
         let mut j = i + 1;
-        if k != Class::Atom {
+        if k != Class::Break {
             while j < units.len() && classes[j] == k {
                 j += 1;
             }
         }
-        if matches!(k, Class::Word | Class::Cjk) {
-            split_by_dictionary(units, i, j, &mut segments);
-        } else {
-            segments.push((i, j));
+        match k {
+            Class::Cjk => split_by_dictionary(units, i, j, true, &mut segments),
+            Class::Word => split_by_dictionary(units, i, j, false, &mut segments),
+            _ => segments.push((i, j)),
         }
         i = j;
     }
     segments
 }
 
-/// Push the segments of the run `units[start..end]`: ICU's dictionary word
-/// breaks inside it with `word-dictionary`, the whole run without.
+#[cfg(feature = "cost-counters")]
+thread_local! {
+    static SEGMENTED_UNITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Units classified by [`word_segments`] on this thread so far (test-only
+/// `cost-counters` feature): a word motion segments the stretch around the
+/// caret, not the whole block.
+#[cfg(feature = "cost-counters")]
+#[doc(hidden)]
+pub fn segmented_units() -> usize {
+    SEGMENTED_UNITS.with(|n| n.get())
+}
+
+/// Push the segments of the run `units[start..end]`. With `word-dictionary`:
+/// a CJK run (`whole`) is split where ICU's dictionary breaks it; a word run
+/// only inside its South-East Asian stretches (no break where one meets other
+/// letters). Without the feature, the whole run.
 #[cfg(feature = "word-dictionary")]
-fn split_by_dictionary(units: &[Unit], start: usize, end: usize, out: &mut Vec<(usize, usize)>) {
+fn split_by_dictionary(
+    units: &[Unit],
+    start: usize,
+    end: usize,
+    whole: bool,
+    out: &mut Vec<(usize, usize)>,
+) {
     use icu_segmenter::WordSegmenter;
     use icu_segmenter::options::WordBreakInvariantOptions;
-    let text: String = units[start..end]
-        .iter()
-        .map(|u| match *u {
-            Unit::Char(c) => c,
-            Unit::Atom => ' ',
-        })
-        .collect();
-    // Byte offsets of ICU's breaks, mapped to unit offsets.
-    let mut byte_to_unit = Vec::with_capacity(text.len() + 1);
-    for (n, c) in text.chars().enumerate() {
-        byte_to_unit.extend(std::iter::repeat_n(start + n, c.len_utf8()));
-    }
-    byte_to_unit.push(end);
+    let ch = |i: usize| match units[i] {
+        Unit::Char(c) => c,
+        _ => ' ',
+    };
     let mut prev = start;
-    for b in WordSegmenter::new_dictionary(WordBreakInvariantOptions::default()).segment_str(&text)
-    {
-        let at = byte_to_unit[b];
-        if at > prev {
-            out.push((prev, at));
-            prev = at;
+    let mut a = start;
+    while a < end {
+        // The stretch the dictionary splits: the whole CJK run, or each
+        // maximal South-East Asian stretch of a word run.
+        if !whole && !is_south_east_asian(ch(a)) {
+            a += 1;
+            continue;
         }
+        let mut b = a + 1;
+        while b < end && (whole || is_south_east_asian(ch(b)) || is_extend(ch(b))) {
+            b += 1;
+        }
+        let text: String = (a..b).map(ch).collect();
+        let mut byte_to_unit = Vec::with_capacity(text.len() + 1);
+        for (n, c) in text.chars().enumerate() {
+            byte_to_unit.extend(std::iter::repeat_n(a + n, c.len_utf8()));
+        }
+        byte_to_unit.push(b);
+        for byte in
+            WordSegmenter::new_dictionary(WordBreakInvariantOptions::default()).segment_str(&text)
+        {
+            let at = byte_to_unit[byte];
+            // Breaks inside the stretch only: its edges are not breaks.
+            if at > a && at < b && at > prev {
+                out.push((prev, at));
+                prev = at;
+            }
+        }
+        a = b;
     }
     if prev < end {
         out.push((prev, end));
@@ -321,22 +390,45 @@ fn split_by_dictionary(units: &[Unit], start: usize, end: usize, out: &mut Vec<(
 }
 
 #[cfg(not(feature = "word-dictionary"))]
-fn split_by_dictionary(_: &[Unit], start: usize, end: usize, out: &mut Vec<(usize, usize)>) {
+fn split_by_dictionary(
+    _: &[Unit],
+    start: usize,
+    end: usize,
+    _whole: bool,
+    out: &mut Vec<(usize, usize)>,
+) {
     out.push((start, end));
 }
 
-/// The segment holding unit `i` (which must be inside the content).
-fn segment_at(segments: &[(usize, usize)], i: usize) -> (usize, usize) {
-    let k = segments.partition_point(|&(_, end)| end <= i);
-    segments[k]
+/// The segment holding unit `i` (inside the content). Segmentation never
+/// crosses whitespace (a segment is a whitespace run or holds none), so only
+/// the stretch between the whitespace on either side of `i` is segmented: the
+/// work is linear in the word, not the block.
+fn segment_around(units: &[Unit], i: usize) -> (usize, usize) {
+    let space = units[i].is_space();
+    let mut lo = i;
+    while lo > 0 && units[lo - 1].is_space() == space {
+        lo -= 1;
+    }
+    let mut hi = i + 1;
+    while hi < units.len() && units[hi].is_space() == space {
+        hi += 1;
+    }
+    if space {
+        return (lo, hi);
+    }
+    let segments = word_segments(&units[lo..hi]);
+    let k = segments.partition_point(|&(_, end)| end <= i - lo);
+    (lo + segments[k].0, lo + segments[k].1)
 }
 
 /// The model word range `(start, end)` around `pos` — the [word
-/// segment](word_segments) under a double-click (a run of whitespace, a word, a
-/// run of punctuation, an atom), chosen by the unit to the right of the gap, or
-/// the one to its left at block end and at a word's trailing edge (right unit
-/// whitespace, left not). Collapsed `(pos, pos)` outside a textblock or in an
-/// empty block.
+/// segment](word_segments) under a double-click (a run of whitespace, a word,
+/// images, a hard break), chosen by the unit to the right of the gap, or the
+/// one to its left at block end and at a word's trailing edge (right unit
+/// whitespace, left not). On ASCII punctuation it is that one char, as in
+/// Chrome 155 (`foo|...bar` selects one `.`). Collapsed `(pos, pos)` outside a
+/// textblock or in an empty block.
 pub fn word_range_at(doc: &Node, pos: Pos) -> (Pos, Pos) {
     let Ok(r) = doc.resolve(pos) else {
         return (pos, pos);
@@ -353,8 +445,21 @@ pub fn word_range_at(doc: &Node, pos: Pos) -> (Pos, Pos) {
     let classify_right =
         off < units.len() && (!units[off].is_space() || off == 0 || units[off - 1].is_space());
     let idx = if classify_right { off } else { off - 1 };
-    let (start, end) = segment_at(&word_segments(&units), idx);
+    let (start, end) = segment_around(&units, idx);
+    let (start, end) = match units[idx] {
+        Unit::Char(c) if c.is_ascii_punctuation() && is_punct_segment(&units[start..end]) => {
+            (idx, idx + 1)
+        }
+        _ => (start, end),
+    };
     (Pos(content_start + start), Pos(content_start + end))
+}
+
+/// Whether a segment is a punctuation run (no word character in it).
+fn is_punct_segment(units: &[Unit]) -> bool {
+    units
+        .iter()
+        .all(|u| matches!(u, Unit::Char(c) if class_of(*c) == Class::Punct))
 }
 
 /// The model range `(start, end)` spanning the whole textblock `pos` is in (a
