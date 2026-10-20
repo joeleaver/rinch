@@ -672,6 +672,11 @@ impl RinchDocument {
                 if let Some(parent_taffy) = self.tree.nodes[node_id].taffy_id {
                     self.taffy_detach_contribution(parent_taffy, cid);
                 }
+                // Its pixels are recorded where it was painted before it is
+                // freed, as `remove_node` does (#966): a generated box that
+                // overflows its originator, or casts a shadow past it, left
+                // them on screen when its rule stopped matching.
+                self.mark_subtree_paint_dirty(cid);
                 // Remove the pseudo-element's subtree from the slab
                 self.tree.remove_subtree(cid);
                 // Remove from parent's children list

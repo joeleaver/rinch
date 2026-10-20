@@ -346,3 +346,23 @@ fn a_removed_child_moved_into_a_coincident_clipper_clears_its_overflow() {
     resolve(&mut app);
     check(&mut app, "remove_child into coincident clipper", (0, 115, 40, 140));
 }
+
+/// A generated box freed when its rule stops matching (the pseudo-element
+/// pruning in `resolve.rs`, a fifth route): it overflows its originator.
+#[test]
+fn a_generated_box_that_stops_matching_clears_its_overflow() {
+    let (mut app, h) = mount(Box::new(|s, o| {
+        let st = s.create_element("style");
+        let t = s.create_text(".x::before { content: ''; display: block; width: 40px; height: 120px; background: rgb(200,0,0); }");
+        st.append_child(&t);
+        o.append_child(&st);
+        let p = el(s, o, "width: 200px; height: 50px;");
+        p.set_attribute("class", "x");
+        vec![p]
+    }));
+    let before = full_frame(&mut app);
+    assert!(ink_in(&before, (0, 60, 40, 120)) > 2000, "positive control");
+    h[0].set_attribute("class", "y");
+    resolve(&mut app);
+    check(&mut app, "generated box", (0, 60, 40, 120));
+}
