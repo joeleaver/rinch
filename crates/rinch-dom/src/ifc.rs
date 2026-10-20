@@ -5473,6 +5473,12 @@ impl RinchDocument {
                     }
                     if let Some(c) = self.tree.nodes.get_mut(child_id) {
                         c.ifc_root = Some(root_id);
+                        // A member is no text leaf: its root lays out and
+                        // paints its text. A leaf layout left from when it was
+                        // a flex or grid item's text answered the caret and
+                        // glyph queries (#970). Text takes this arm only; the
+                        // contents wrapper above is an element and has none.
+                        c.cached_text_parley = None;
                         if c.display_mode.is_atomic_inline() {
                             self.tree.atomic_inline_registry.insert(child_id);
                         }
