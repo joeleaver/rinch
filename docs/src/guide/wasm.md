@@ -374,6 +374,17 @@ Two things to know when a test passes in one engine only:
   that pins the browser's own answer states each engine's
   (`tests/support/engine.rs`, `is_gecko()`), never one engine's for both.
 
+Two tests need input only the browser can make — a real Tab (focus moves) and a
+real finger (a pan, and the compatibility mouse events after a tap):
+`editor_node_view_real_tab.rs` and `real_touch_1582_1588.rs`. An ordinary run
+reports them ignored. `tests/support/run_real_keys.sh` runs them in Chrome
+(needs node >= 22), sending trusted keys and touches over the DevTools protocol;
+CI runs it after the suite:
+
+```bash
+CHROMEDRIVER=/path/to/chromedriver crates/rinch-web/tests/support/run_real_keys.sh
+```
+
 ## What Works
 
 Everything that goes through `NodeHandle` works:
@@ -395,6 +406,17 @@ The abstraction is clean. If your component code doesn't import anything from `r
 tested by hiding the first in Chrome, where the two give the same positions; it has
 not been run in Firefox, and neither has the rest of the editor's input there
 (#1461).
+
+**Touch.** A `data-rid` (`onclick`) runs on the press for a mouse, and for a
+touch or pen press that cannot start a scroll. One that can — the page scrolls,
+or a scroll container around the element does — runs on release, and not at all
+if the finger pans (a move past the slop, or the browser's `pointercancel`): a
+pan that starts on a button does not press it (#1582). An element with
+`touch-action: none` on it or between it and that scroller cannot pan, so its
+handler runs on the press, where it can arm a `Drag`: give a control that drags
+`touch-action: none`, as `Slider`, `ColorPicker`'s areas and `FloatingPanel`'s
+header and resize handle have. A `Drag` armed by a handler that ran on release
+is ended at the release.
 
 **Events dispatched by script.** rinch's document listeners (and a
 `RenderSurface` canvas's) check an event's interface before reading it, so an

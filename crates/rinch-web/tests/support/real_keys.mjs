@@ -1,9 +1,13 @@
-// Sends trusted key presses to the page under test over the DevTools protocol, when
-// the page asks through its title (`RINCH-REAL-KEY:<n>:<key>:<shift 0|1>`), and
-// answers `RINCH-REAL-KEY-SENT:<n>`. Used by `run_real_keys.sh`; see
-// `editor_node_view_real_tab.rs`. Usage: node real_keys.mjs <debugging port>
+// Sends trusted input to the page under test over the DevTools protocol, when the
+// page asks through its title, and answers through the title:
+// - a key press: `RINCH-REAL-KEY:<n>:<key>:<shift 0|1>` → `RINCH-REAL-KEY-SENT:<n>`
+//   (`editor_node_view_real_tab.rs`);
+// - a touch: `RINCH-REAL-TOUCH:<n>:<x>,<y>[;<x>,<y>…]` → `RINCH-REAL-TOUCH-SENT:<n>`,
+//   one finger down at the first point (viewport CSS px), moved through the rest,
+//   lifted at the last (`real_touch_1582_1588.rs`).
+// Used by `run_real_keys.sh`. Usage: node real_keys.mjs <debugging port>
 const port = process.argv[2];
-const deadline = Date.now() + 120_000;
+const deadline = Date.now() + 300_000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const done = new Set();
 
@@ -33,6 +37,24 @@ async function key(s, key, shift) {
   if (shift) await s.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16, modifiers: 0 });
 }
 
+async function touch(s, points) {
+  const [first, ...rest] = points;
+  // A touch-enabled page, as on a phone: without it Chrome does not treat the
+  // finger as one that can pan.
+  await s.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+  await s.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [first] });
+  for (const p of rest) {
+    await sleep(16);
+    await s.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [p] });
+  }
+  await sleep(16);
+  await s.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  // What follows a tap (compatibility mouse events, the click) comes after the
+  // touch ends; leave the emulation on until it has.
+  await sleep(300);
+  await s.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+}
+
 const sessions = new Map();
 while (Date.now() < deadline) {
   let pages = [];
@@ -50,6 +72,17 @@ while (Date.now() < deadline) {
       await key(s, m[2], m[3] === "1");
       await s.send("Runtime.evaluate", { expression: `document.title = "RINCH-REAL-KEY-SENT:${m[1]}"` });
       console.log(`real_keys: sent #${m[1]} ${m[2]} shift=${m[3]}`);
+    }
+    const t = /^RINCH-REAL-TOUCH:(\d+):([-0-9.,;]+)$/.exec(title);
+    if (t && !done.has(`${p.id}:touch:${t[1]}`)) {
+      done.add(`${p.id}:touch:${t[1]}`);
+      const points = t[2].split(";").map((xy) => {
+        const [x, y] = xy.split(",").map(Number);
+        return { x, y };
+      });
+      await touch(s, points);
+      await s.send("Runtime.evaluate", { expression: `document.title = "RINCH-REAL-TOUCH-SENT:${t[1]}"` });
+      console.log(`real_keys: touched #${t[1]} ${t[2]}`);
     }
   }
   await sleep(50);

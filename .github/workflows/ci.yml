@@ -437,7 +437,9 @@ jobs:
       # trusted keys sent over the DevTools protocol by `real_keys.mjs`, which needs
       # node >= 22 for its global `WebSocket`. Chrome only: Firefox has no CDP
       # `Input.dispatchKeyEvent` here. The real Tab is the only evidence that focus
-      # actually leaves a node view (review 2 of #1595).
+      # actually leaves a node view (review 2 of #1595). The same script runs
+      # `real_touch_1582_1588` with trusted touches (`Input.dispatchTouchEvent`):
+      # a real pan and the compatibility mouse events after a real tap.
       - name: Set up Node (trusted-key test)
         uses: actions/setup-node@v4
         with:

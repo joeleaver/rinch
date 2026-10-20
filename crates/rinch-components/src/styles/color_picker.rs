@@ -83,6 +83,8 @@ pub fn styles() -> String {
 
 .rinch-color-picker__saturation-overlay {
     position: absolute;
+    /* A finger here drags the thumb, not the page (#1582). */
+    touch-action: none;
     top: 0;
     left: 0;
     width: 100%;
@@ -132,6 +134,8 @@ pub fn styles() -> String {
 
 .rinch-color-picker__hue-overlay {
     position: absolute;
+    /* A finger here drags the thumb, not the page (#1582). */
+    touch-action: none;
     top: 0;
     left: 0;
     width: 100%;
@@ -187,6 +191,8 @@ pub fn styles() -> String {
 
 .rinch-color-picker__alpha-overlay {
     position: absolute;
+    /* A finger here drags the thumb, not the page (#1582). */
+    touch-action: none;
     top: 0;
     left: 0;
     width: 100%;
