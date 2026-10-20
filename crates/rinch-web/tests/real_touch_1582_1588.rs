@@ -84,7 +84,13 @@ fn record_events() -> Rc<RefCell<Vec<String>>> {
         move |e: web_sys::Event| sink.borrow_mut().push(e.type_()),
     );
     let win = web_sys::window().unwrap();
-    for name in ["pointerdown", "pointerup", "pointercancel", "mousedown", "click"] {
+    for name in [
+        "pointerdown",
+        "pointerup",
+        "pointercancel",
+        "mousedown",
+        "click",
+    ] {
         win.add_event_listener_with_callback_and_bool(name, cb.as_ref().unchecked_ref(), true)
             .unwrap();
     }
@@ -108,7 +114,10 @@ fn clear_stale() {
         }
     }
     rinch_web::__reset_activation_state();
-    let _ = document().document_element().unwrap().remove_attribute("style");
+    let _ = document()
+        .document_element()
+        .unwrap()
+        .remove_attribute("style");
     let _ = document().body().unwrap().remove_attribute("style");
     web_sys::window().unwrap().scroll_to_with_x_and_y(0.0, 0.0);
 }
@@ -185,7 +194,11 @@ async fn a_real_pan_that_starts_on_a_button_does_not_click_it() {
         "no pan happened: scrolled {scrolled}, events {:?}",
         seen.borrow()
     );
-    assert!(log.borrow().is_empty(), "the pan clicked: {:?}", log.borrow());
+    assert!(
+        log.borrow().is_empty(),
+        "the pan clicked: {:?}",
+        log.borrow()
+    );
     root.unmount();
     host.remove();
 }

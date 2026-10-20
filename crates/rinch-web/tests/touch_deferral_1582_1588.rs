@@ -177,7 +177,10 @@ impl Fixture {
         rinch_web::__reset_activation_state();
         self.root.unmount();
         self.host.remove();
-        let _ = document().document_element().unwrap().remove_attribute("style");
+        let _ = document()
+            .document_element()
+            .unwrap()
+            .remove_attribute("style");
         let _ = document().body().unwrap().remove_attribute("style");
     }
 }
@@ -281,7 +284,10 @@ fn a_touch_action_none_control_on_a_scrolling_page_arms_on_contact() {
     let track = by_id("track");
     pointer(&track, "pointerdown", 0.0);
     assert_eq!(f.log(), ["track"]);
-    assert!(rinch_core::Drag::is_active(), "the drag is armed on contact");
+    assert!(
+        rinch_core::Drag::is_active(),
+        "the drag is armed on contact"
+    );
     pointer(&track, "pointerup", 0.0);
     f.teardown();
 }
@@ -310,7 +316,10 @@ fn a_touch_action_none_control_in_a_scroller_arms_on_contact() {
 fn a_deferred_touch_press_on_a_button_is_prevented() {
     let f = mount(Page::HtmlHidden, SCROLLER);
     let ev = pointer(&by_id("btn"), "pointerdown", 0.0);
-    assert!(f.log().is_empty(), "positive control: the press was deferred");
+    assert!(
+        f.log().is_empty(),
+        "positive control: the press was deferred"
+    );
     assert!(ev.default_prevented(), "the deferred press is prevented");
     pointer(&by_id("btn"), "pointerup", 0.0);
     assert_eq!(f.log(), ["btn"], "positive control: the tap clicked");
@@ -324,10 +333,17 @@ fn a_deferred_touch_press_on_a_button_is_prevented() {
 fn a_deferred_touch_press_on_a_field_in_a_clickable_row_is_left_to_the_browser() {
     let f = mount(Page::HtmlHidden, SCROLLER);
     let ev = pointer(&by_id("field"), "pointerdown", 0.0);
-    assert!(f.log().is_empty(), "positive control: the press was deferred");
+    assert!(
+        f.log().is_empty(),
+        "positive control: the press was deferred"
+    );
     assert!(!ev.default_prevented());
     pointer(&by_id("field"), "pointerup", 0.0);
-    assert_eq!(f.log(), ["row"], "positive control: the tap clicked the row");
+    assert_eq!(
+        f.log(),
+        ["row"],
+        "positive control: the tap clicked the row"
+    );
     f.teardown();
 }
 
@@ -339,7 +355,10 @@ fn a_deferred_tap_that_arms_a_drag_ends_it_at_the_release() {
     let f = mount(Page::HtmlHidden, SCROLLER);
     let el = by_id("plaindrag");
     pointer(&el, "pointerdown", 0.0);
-    assert!(f.log().is_empty(), "positive control: the press was deferred");
+    assert!(
+        f.log().is_empty(),
+        "positive control: the press was deferred"
+    );
     pointer(&el, "pointerup", 0.0);
     assert_eq!(f.log(), ["plaindrag", "end"]);
     assert!(!rinch_core::Drag::is_active(), "the drag outlived the tap");
