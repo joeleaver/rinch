@@ -1177,6 +1177,60 @@ fn wrap_into_before(state: &EditorState, cut: usize) -> Option<Transaction> {
     tr.doc_changed().then_some(tr)
 }
 
+/// Whether `node` is what Backspace or Delete beside it node-selects rather than
+/// joins with: a selectable leaf atom that is not text (an image, a horizontal
+/// rule, an `embed`).
+fn selectable_atom(node: &Node) -> bool {
+    !node.is_text() && node.is_leaf() && node.node_type().spec().selectable
+}
+
+/// Backspace at the start of the block after an atom (`backward`), or Delete at
+/// the end of the block before one, across `cut` (from [`find_cut_before`] /
+/// [`find_cut_after`]): **select** the atom, so the next press removes it. When the
+/// caret's block is empty and sits right beside the atom, that block is removed
+/// first. `None` when the node across the cut is not a [`selectable_atom`].
+///
+/// A decision, and deliberately **unlike ProseMirror**, whose base keymap runs
+/// `joinBackward` / `joinForward` before `selectNodeBackward` /
+/// `selectNodeForward`: those delete the atom in one press when the caret's block
+/// is not empty (and `joinForward` from an empty one too). An atom can be an
+/// `embed` holding an app's component and its state, so rinch selects it first —
+/// for every selectable atom alike (`tests/backspace_selects_atom.rs`).
+fn select_atom_across(
+    state: &EditorState,
+    r: &ResolvedPos,
+    cut: usize,
+    backward: bool,
+) -> Option<Transaction> {
+    let r_cut = state.doc.resolve(Pos(cut)).ok()?;
+    let atom = if backward {
+        r_cut.node_before()?
+    } else {
+        r_cut.node_after()?
+    };
+    if !selectable_atom(&atom) {
+        return None;
+    }
+    let atom_pos = if backward {
+        cut - atom.node_size()
+    } else {
+        cut
+    };
+    let mut tr = state.tr();
+    let depth = r.depth();
+    let beside = depth >= 1 && r_cut.depth() + 1 == depth;
+    if beside
+        && r.parent().content().size() == 0
+        && let (Some(from), Some(to)) = (r.before(depth), r.after(depth))
+    {
+        tr.delete(from, to).ok()?;
+    }
+    let atom_pos = tr.mapping().map(atom_pos, 1);
+    let sel = crate::selection::Selection::node_at(tr.doc(), Pos(atom_pos))?;
+    tr.set_selection(sel);
+    Some(tr)
+}
+
 /// Backspace: delete the selection, else the char before the cursor, else — at the
 /// start of a textblock — join onto the previous block, move into a preceding
 /// container, or lift this block out of its wrapper.
@@ -1190,9 +1244,12 @@ fn wrap_into_before(state: &EditorState, cut: usize) -> Option<Transaction> {
 /// boundary from *inside* — a block at the start of a blockquote / list item — it
 /// **lifts** this block out of the wrapper, so a second Backspace then joins.
 ///
-/// Not ported (rare `deleteBarrier` tails): the content-move `ReplaceAround` (merge
-/// into the before-container's last textblock) and select-node-backward (atom
-/// delete) branches.
+/// An atom before the cut (a horizontal rule, an image, an `embed`) is
+/// **selected** instead ([`select_atom_across`]), so a second Backspace removes
+/// it; an empty block right after it goes in the same step.
+///
+/// Not ported (a rare `deleteBarrier` tail): the content-move `ReplaceAround`
+/// (merge into the before-container's last textblock).
 pub fn delete_char_backward() -> Command {
     command_tr(|state| {
         let sel = &state.selection;
@@ -1218,6 +1275,11 @@ pub fn delete_char_backward() -> Command {
         // At block start: join across the nearest cut, else move into the preceding
         // container, else lift out of the wrapper.
         if let Some(cut) = find_cut_before(&r) {
+            // An atom before the cut is selected, not joined with (it has no
+            // content to join).
+            if let Some(tr) = select_atom_across(state, &r, cut, true) {
+                return Some(tr);
+            }
             let mut tr = state.tr();
             if tr
                 .step(Box::new(ReplaceStep::structural(
@@ -1266,6 +1328,9 @@ pub fn delete_char_forward() -> Command {
         }
         // At block end: join across the nearest cut, else lift the next block out.
         let cut = find_cut_after(&r)?;
+        if let Some(tr) = select_atom_across(state, &r, cut, false) {
+            return Some(tr);
+        }
         let mut tr = state.tr();
         if tr
             .step(Box::new(ReplaceStep::structural(

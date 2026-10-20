@@ -1568,6 +1568,41 @@ impl RinchApp {
                     }
                 }
 
+                // A key while the keyboard is inside a node view's component (an
+                // input in an app's sheet drawn in an editor) is the view's
+                // `NodeViewSpec::on_key`'s first, ahead of the element that holds
+                // the keyboard; an Escape it leaves gives the keyboard back to the
+                // editor, caret after the node (node views, decision (c)).
+                #[cfg(feature = "desktop")]
+                if let FocusTarget::Input(nid) | FocusTarget::Node(nid) | FocusTarget::Select(nid) =
+                    self.focus_target
+                    && let Some(ks) = key_str.as_deref()
+                    && let Some((container, host)) = self
+                        .doc
+                        .as_ref()
+                        .and_then(|d| Self::node_view_around(&d.borrow().tree, nid))
+                    && let Some(handle) = crate::editor::editor_for_doc(self.doc_key(), container)
+                {
+                    let offered = crate::editor::EditorKey {
+                        key: ks,
+                        primary: ctrl,
+                        ctrl: modifiers.ctrl,
+                        meta: modifiers.meta,
+                        shift,
+                        alt,
+                        repeat: repeat == KeyRepeat::Repeat,
+                    };
+                    if handle.offer_node_view_key(host, &offered) {
+                        // An Escape posted a focus request for the editor: apply
+                        // it now, so the next key reaches the editor.
+                        self.drain_focus_requests(false);
+                        self.refresh_editor_overlays();
+                        self.resolve_and_repaint(vp_w, vp_h);
+                        actions.push(AppAction::RequestRedraw);
+                        return actions;
+                    }
+                }
+
                 // 1. User keyboard hooks (document-level interceptor). A user
                 //    handler that consumes the key wins and stops here, like a
                 //    capturing DOM listener. Render surfaces no longer hijack this
@@ -3620,6 +3655,29 @@ impl RinchApp {
             // The model motions returned early via `handle.move_cursor` above.
             _ => None,
         };
+        // Up or Down leaving the caret's textblock (or a selected node) must not
+        // step over a node an app draws with a node view: it is node-selected and
+        // offered the caret (`NodeViewSpec::on_caret_enter`), as Left and Right
+        // do. Horizontal rules are still stepped over.
+        if !extend && matches!(motion, Motion::LineUp | Motion::LineDown) {
+            let down = matches!(motion, Motion::LineDown);
+            let leaves = match new_head {
+                Some((nh, _)) => {
+                    handle.caret_address(nh).map(|(t, _)| t)
+                        != handle.caret_address(head).map(|(t, _)| t)
+                }
+                None => true,
+            };
+            if leaves && let Some(sel) = handle.vertical_node_view(down) {
+                let from = if down {
+                    crate::editor::CaretFrom::Above
+                } else {
+                    crate::editor::CaretFrom::Below
+                };
+                handle.select_from_arrow(sel, from);
+                return true;
+            }
+        }
         match new_head {
             Some((nh, affinity)) => {
                 let sel = if extend {
@@ -4526,6 +4584,10 @@ impl RinchApp {
         let doc = self.doc.clone()?;
         let d = doc.borrow();
         let hit = self.shared_hit(&d, x, y)?;
+        // A press inside a node view's component is the component's (#node-views).
+        if Self::in_node_view(&d.tree, hit) {
+            return None;
+        }
         let mut cur = Some(hit);
         while let Some(id) = cur {
             let node = d.tree.get(id)?;
@@ -4537,30 +4599,61 @@ impl RinchApp {
         None
     }
 
-    /// The host id of an editor **leaf** node element — an `<img>`/`<hr>` whose
-    /// `data-pm-type` is `image` or `horizontal_rule` — under logical point
-    /// `(x, y)`, if the click landed on one inside an editor container. Walks up
-    /// from the hit node, recording the first leaf seen, and returns it only once
-    /// the walk reaches the `data-pm-editor` container (so a leaf outside any editor,
-    /// or a click on a non-leaf block, yields `None`). The click→node-select path.
+    /// The host id of the innermost editor node element (one carrying
+    /// `data-pm-type`) under logical point `(x, y)`, if the press landed inside an
+    /// editor container and not inside a node view's component. Whether it names a
+    /// node a press **node-selects** is the schema's answer, not this walk's:
+    /// [`EditorHandle::node_selection_at_host`](crate::editor::EditorHandle::node_selection_at_host)
+    /// accepts a selectable leaf atom (an image, a horizontal rule, an `embed`, or
+    /// an app schema's own) and nothing else, so a paragraph's host answers `None`
+    /// and the press places a caret. The click→node-select path.
     pub(super) fn editor_leaf_at(&self, x: f32, y: f32) -> Option<usize> {
         let doc = self.doc.clone()?;
         let d = doc.borrow();
         let hit = self.shared_hit(&d, x, y)?;
+        if Self::in_node_view(&d.tree, hit) {
+            return None;
+        }
         let mut leaf: Option<usize> = None;
         let mut cur = Some(hit);
         while let Some(id) = cur {
             let node = d.tree.get(id)?;
-            if leaf.is_none()
-                && let Some(t) = node.attributes.get("data-pm-type")
-                && matches!(t.as_str(), "image" | "horizontal_rule")
-            {
+            if leaf.is_none() && node.attributes.contains_key("data-pm-type") {
                 leaf = Some(id);
             }
             if node.attributes.get("data-pm-editor").map(String::as_str) == Some("true") {
                 return leaf; // inside an editor — return the leaf if we passed one
             }
             cur = node.parent;
+        }
+        None
+    }
+
+    /// Whether `hit` is **inside** a node view's component: below (not on) an
+    /// element carrying [`NODE_VIEW_ATTR`](crate::editor::NODE_VIEW_ATTR) that sits
+    /// in an editor. A press or a key there is the component's; a press on the
+    /// view's host itself (its frame) is the editor's, and node-selects it.
+    pub(crate) fn in_node_view(tree: &rinch_dom::NodeTree, hit: usize) -> bool {
+        Self::node_view_around(tree, hit).is_some()
+    }
+
+    /// `(editor container, view host)` when `node` is inside a node view's
+    /// component (see [`Self::in_node_view`]).
+    pub(crate) fn node_view_around(
+        tree: &rinch_dom::NodeTree,
+        node: usize,
+    ) -> Option<(usize, usize)> {
+        let mut host: Option<usize> = None;
+        let mut cur = tree.get(node)?.parent;
+        while let Some(id) = cur {
+            let n = tree.get(id)?;
+            if n.attributes.get("data-pm-editor").map(String::as_str) == Some("true") {
+                return host.map(|h| (id, h));
+            }
+            if host.is_none() && n.attributes.contains_key(crate::editor::NODE_VIEW_ATTR) {
+                host = Some(id);
+            }
+            cur = n.parent;
         }
         None
     }

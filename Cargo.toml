@@ -11,6 +11,7 @@ exclude = [
     "examples/events-web",
     "examples/islands-web",
     "examples/editor-web",
+    "examples/editor-node-views-web",
     "examples/collab-editor-web",
     "examples/webgpu-surface-web",
 ]

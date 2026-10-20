@@ -160,6 +160,13 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
    so it can be clicked (a click node-selects it, as for an hr). */
 [data-pm-editor] [data-pm-type="embed"] { min-height: 1lh; margin: 0.85em 0; }
 [data-pm-editor] [data-pm-type="embed"]:empty { border: 1px dashed #d0d7de; border-radius: 6px; }
+/* A host an app's component is drawn in (a node view) keeps a frame of its own
+   around it: a press there node-selects the node, a press on the component is
+   the component's. */
+[data-pm-editor] [data-pm-node-view] { padding: 6px; border-radius: 6px; }
+/* A claimed inline image is the app's component on the line and nothing else:
+   no frame (a press beside it places the caret, an arrow steps over it). */
+[data-pm-editor] [data-pm-type="image"][data-pm-node-view] { padding: 0; border-radius: 0; }
 
 /* ── Tables (CSS grid — rinch-dom has no display:table) ─────────────────
    The <table> is a grid; the view sets `grid-template-columns: repeat(N, …)`

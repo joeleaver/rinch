@@ -233,6 +233,10 @@ fn resolve_editor_point(doc: &web_sys::Document, x: f32, y: f32) -> Option<Edito
                 container = Some(el);
                 break;
             }
+            // A point inside a node view's component names no editor position.
+            if el.has_attribute(rinch_editor_view::NODE_VIEW_ATTR) && node != start {
+                return None;
+            }
             if textblock.is_none() && el.has_attribute("data-pm-type") {
                 textblock = Some(el);
             }
@@ -1514,7 +1518,7 @@ fn file_drop_editor(event: &web_sys::DragEvent) -> Option<(usize, EditorHandle)>
         Some(el) => el.clone(),
         None => target.parent_element()?,
     };
-    let container = element.closest("[data-pm-editor]").ok()??;
+    let container = crate::event_delegation::editor_owning(&element)?;
     let id = get_nid(&container.into())?.0;
     let handle = registry::editor_for(id)?;
     handle.has_image_input_callback().then_some((id, handle))
@@ -1916,7 +1920,7 @@ fn update_link_hover(event: &web_sys::MouseEvent, doc: &web_sys::Document) {
             .and_then(|t| t.dyn_into::<web_sys::Element>().ok())?;
         // Cheap first: no link element under the pointer, no link.
         target.closest("a[data-pm-mark='link']").ok().flatten()?;
-        let editor_el = target.closest("[data-pm-editor]").ok().flatten()?;
+        let editor_el = crate::event_delegation::editor_owning(&target)?;
         let container_nid = get_nid(&editor_el.clone().into())?.0;
         let handle = registry::editor_for(container_nid)?;
         let (x, y) = (event.client_x() as f32, event.client_y() as f32);
@@ -1937,7 +1941,7 @@ fn update_image_hover(event: &web_sys::MouseEvent) {
             .target()
             .and_then(|t| t.dyn_into::<web_sys::Element>().ok())?;
         let img = target.closest("[data-pm-type='image']").ok().flatten()?;
-        let editor_el = img.closest("[data-pm-editor]").ok().flatten()?;
+        let editor_el = crate::event_delegation::editor_owning(&img)?;
         let container_nid = get_nid(&editor_el.clone().into())?.0;
         let handle = registry::editor_for(container_nid)?;
         let host_nid = get_nid(&img.clone().into())?.0;
@@ -2024,7 +2028,7 @@ fn handle_link_click(event: &web_sys::MouseEvent) {
     else {
         return;
     };
-    let Some(editor_el) = anchor.closest("[data-pm-editor]").ok().flatten() else {
+    let Some(editor_el) = crate::event_delegation::editor_owning(&anchor) else {
         return;
     };
     let Some(handle) = get_nid(&editor_el.into()).and_then(|nid| registry::editor_for(nid.0))
@@ -2084,7 +2088,7 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
         };
         target = beneath;
     }
-    let Some(editor_el) = target.closest("[data-pm-editor]").ok().flatten() else {
+    let Some(editor_el) = crate::event_delegation::editor_owning(&target) else {
         // Outside any editor (issue #271). A press on another text field — the
         // rule keyboard activation uses — takes the keyboard. A press on a
         // non-focusable `data-rid` handler leaves it with the editor: the browser
@@ -2114,9 +2118,12 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
     // to this editor (a non-`contenteditable` `<div>` would receive none).
     focus_capture_target(doc, &handle);
 
-    // A click on a leaf atom (image / horizontal rule) node-selects it.
+    // A click on a leaf atom node-selects it: any node the schema calls a
+    // selectable leaf (an image, a horizontal rule, an `embed` — a node view's
+    // frame), which `node_selection_at_host` decides; the innermost node host is
+    // asked, so a press in a paragraph's text answers `None` and places a caret.
     let leaf_selection = target
-        .closest("[data-pm-type='image'], [data-pm-type='horizontal_rule']")
+        .closest("[data-pm-type]")
         .ok()
         .flatten()
         .and_then(|leaf| get_nid(&leaf.into()).map(|n| n.0))
@@ -2346,6 +2353,103 @@ fn editor_key_binding(
 
 /// Handle a `keydown`. Returns whether the editor consumed the key (so the listener
 /// `preventDefault`s + stops it). Mirrors `dispatch_new_editor_key`.
+/// A key whose target is inside a node view's component, offered to the view
+/// ([`EditorHandle::offer_node_view_key`]): `Some(consumed)` when the target is in
+/// one, `None` otherwise.
+fn offer_node_view_key(event: &web_sys::KeyboardEvent) -> Option<bool> {
+    let target = event
+        .target()
+        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())?;
+    let (editor_el, host) = crate::event_delegation::node_view_around(&target)?;
+    let container_nid = get_nid(&editor_el.into())?.0;
+    let host_nid = get_nid(&host.into())?.0;
+    let handle = registry::editor_for(container_nid)?;
+    let key = event.key();
+    let offered = rinch_editor_view::EditorKey {
+        key: &key,
+        primary: if is_mac() {
+            event.meta_key()
+        } else {
+            event.ctrl_key()
+        },
+        ctrl: event.ctrl_key(),
+        meta: event.meta_key(),
+        shift: event.shift_key(),
+        alt: event.alt_key(),
+        repeat: event.repeat(),
+    };
+    Some(handle.offer_node_view_key(host_nid, &offered))
+}
+
+/// The page's node-view `ResizeObserver` and the hosts it watches, each with its
+/// editor's document key.
+type NodeViewResize = (web_sys::ResizeObserver, Vec<(web_sys::Element, u64)>);
+
+thread_local! {
+    /// One `ResizeObserver` per page, watching every mounted node view's host: a
+    /// view that grows or shrinks owes its editor an overlay pass, so the caret
+    /// and the selection highlight below it follow. Keyed by host element →
+    /// document key.
+    static NODE_VIEW_RESIZE: RefCell<Option<NodeViewResize>> =
+        const { RefCell::new(None) };
+}
+
+/// [`registry::set_node_view_host_listener`]'s listener: observe a mounted
+/// view's host, forget an unmounted one's.
+fn on_node_view_host(
+    doc_key: u64,
+    _container: usize,
+    host: &rinch_core::dom::NodeHandle,
+    mounted: bool,
+) {
+    let Some(el) = crate::web_document::element_of(host) else {
+        return;
+    };
+    NODE_VIEW_RESIZE.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        if cell.is_none() {
+            let cb = wasm_bindgen::closure::Closure::<dyn FnMut(js_sys::Array)>::new(
+                |entries: js_sys::Array| {
+                    let keys: Vec<u64> = NODE_VIEW_RESIZE.with(|cell| {
+                        let cell = cell.borrow();
+                        let Some((_, hosts)) = cell.as_ref() else {
+                            return Vec::new();
+                        };
+                        entries
+                            .iter()
+                            .filter_map(|e| e.dyn_into::<web_sys::ResizeObserverEntry>().ok())
+                            .filter_map(|e| {
+                                let t = e.target();
+                                hosts.iter().find(|(h, _)| *h == t).map(|(_, k)| *k)
+                            })
+                            .collect()
+                    });
+                    for key in keys {
+                        registry::owe_overlay_pass_for(key);
+                    }
+                },
+            );
+            let Ok(observer) = web_sys::ResizeObserver::new(cb.as_ref().unchecked_ref()) else {
+                return;
+            };
+            cb.forget();
+            *cell = Some((observer, Vec::new()));
+        }
+        let Some((observer, hosts)) = cell.as_mut() else {
+            return;
+        };
+        if mounted {
+            if !hosts.iter().any(|(h, _)| *h == el) {
+                observer.observe(&el);
+                hosts.push((el, doc_key));
+            }
+        } else if let Some(i) = hosts.iter().position(|(h, _)| *h == el) {
+            observer.unobserve(&el);
+            hosts.remove(i);
+        }
+    });
+}
+
 fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bool {
     // A key reaching the page means the browser's menu is closed (it takes the
     // keyboard while open); the cycle ends before the key is read, so a typed
@@ -2353,6 +2457,15 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
     end_context_menu_cycle();
     if event.key() == "ContextMenu" {
         MENU_KEY_TO_APP.with(|c| c.set(false));
+    }
+    // A key inside a node view's component (an input in an app's sheet drawn in
+    // an editor) is the view's `on_key`'s first; an Escape it leaves gives the
+    // keyboard back to the editor, caret after the node.
+    if let Some(consumed) = offer_node_view_key(event) {
+        if consumed {
+            refresh_caret();
+        }
+        return consumed;
     }
     // The editor owns a key only while its capture textarea holds the keyboard
     // (issue #271). This listener is on `document` in the capture phase, so it
@@ -2559,6 +2672,24 @@ fn vertical_step(
 
     // Stuck — step to the adjacent textblock in the model so the caret can still land
     // on a blank line above/below (or past a block atom). Mirrors the desktop fallback.
+    // Leaving the caret's textblock never steps over a node an app draws with a
+    // node view: it is node-selected and offered the caret, as on desktop.
+    let leaves = match &geo_head {
+        Some((p, _)) => handle.caret_address(*p).map(|(t, _)| t) != head_tb,
+        None => true,
+    };
+    if !extend
+        && leaves
+        && let Some(sel) = handle.vertical_node_view(down)
+    {
+        let from = if down {
+            rinch_editor_view::CaretFrom::Above
+        } else {
+            rinch_editor_view::CaretFrom::Below
+        };
+        handle.select_from_arrow(sel, from);
+        return true;
+    }
     let Some((new_head, affinity)) = geo_head.or_else(|| {
         handle
             .vertical_block_fallback(down)
@@ -2895,7 +3026,7 @@ fn pointer_targets_editor(event: &web_sys::PointerEvent) -> bool {
     event
         .target()
         .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-        .and_then(|el| el.closest("[data-pm-editor]").ok().flatten())
+        .and_then(|el| crate::event_delegation::editor_owning(&el))
         .is_some()
 }
 
@@ -3181,6 +3312,8 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
     // An editor unmounting while it holds the keyboard must take its text out
     // of the capture textarea with it (#1112).
     registry::set_unregister_listener(on_editor_unregistered);
+    // A node view that resizes moves what is below it (the caret, a highlight).
+    registry::set_node_view_host_listener(on_node_view_host);
 
     let doc = browser_doc.clone();
     add_capture(browser_doc, "keydown", move |e: web_sys::KeyboardEvent| {

@@ -87,7 +87,8 @@ fn a_fallback_that_answers_none_leaves_the_element_empty() {
     );
 }
 
-/// The fallback is asked only about embeds, not about every node.
+/// The fallback is asked only about embeds (and images, which this document has
+/// none of: `image_html_fallback.rs`), not about every node.
 #[test]
 fn the_fallback_is_asked_only_about_embeds() {
     let schema = Schema::starter_kit();

@@ -41,6 +41,7 @@ use super::images::ImageHover;
 use super::images::{ImageInput, ImageInputSource};
 use super::keys::EditorKey;
 use super::links::{LinkClick, LinkHover, LinkSpan};
+use super::node_views::{self, CaretFrom, Kept, NodeViewRegistration, NodeViewSpec};
 use super::registry;
 use super::view::RinchDomEditorView;
 
@@ -164,12 +165,104 @@ struct EditorCore {
     /// common case — so the mutation path's collab hook is a cheap early return.
     #[cfg(feature = "collaboration")]
     collab: Option<CollabBridge>,
+    /// The registered node views ([`EditorHandle::register_node_view`]), shared
+    /// with the view.
+    node_views: Rc<node_views::Registry>,
+}
+
+/// The nodes `tr` only set attributes of: for each node a `SetNodeAttrStep`
+/// changed, where it stands in the transaction's final document and the node it
+/// was when the transaction started. A node an earlier step put in place (a
+/// replace, then an attribute set on what replaced it) or a later step removed is
+/// not one of them. What proves a node view's node is the same node with other
+/// attributes (node views, decision (d)).
+pub(crate) fn kept_nodes(tr: &Transaction) -> Vec<Kept> {
+    let (steps, mapping) = (tr.steps(), tr.mapping());
+    let mut out: Vec<Kept> = Vec::new();
+    for (i, step) in steps.iter().enumerate() {
+        let Some(a) = step
+            .as_any()
+            .downcast_ref::<rinch_editor_core::SetNodeAttrStep>()
+        else {
+            continue;
+        };
+        let after = mapping.slice(i + 1, mapping.len()).map_result(a.pos, 1);
+        if after.deleted_after() || out.iter().any(|k| k.pos == after.pos) {
+            continue;
+        }
+        // Back to the transaction's start, step by step (`Mapping::invert` takes
+        // every map, not a slice's): a node an earlier step inserted is not kept.
+        let mut before = a.pos;
+        let mut inserted = false;
+        for map in mapping.maps()[..i].iter().rev() {
+            let r = map.invert().map_result(before, 1);
+            inserted |= r.deleted_after();
+            before = r.pos;
+        }
+        if inserted {
+            continue;
+        }
+        if let Some(old) = tr.docs().first().and_then(|d| d.node_at(before)) {
+            out.push(Kept {
+                pos: after.pos,
+                old,
+                old_pos: before,
+            });
+        }
+    }
+    out
+}
+
+/// Whether the kept atom `k` names one place of the transaction's first document
+/// `prev`: its old `Rc` stands nowhere else there, or every other copy of it is
+/// still in place in `next`, untouched by the transaction (`mapping`), and none
+/// was added. After an in-editor copy one `Rc` stands in two places, and a proof
+/// naming only the `Rc` would let the collaboration projection pair the kept atom
+/// with the other copy's CRDT char or block when that copy was deleted or moved in
+/// the same transaction (the round-3 review of #1595, F2): such a pair proves
+/// nothing, and the atom is written as a new one (lost, never misattributed).
+#[cfg(feature = "collaboration")]
+fn names_one_place(k: &Kept, prev: &Node, next: &Node, mapping: Option<&Mapping>) -> bool {
+    let at = |doc: &Node| {
+        let mut at = Vec::new();
+        doc.nodes_between(0, doc.content_size(), &mut |n: &Node, pos, _| {
+            if n.same_ref(&k.old) {
+                at.push(pos);
+            }
+            !n.is_leaf()
+        });
+        at
+    };
+    let others: Vec<usize> = at(prev).into_iter().filter(|&p| p != k.old_pos).collect();
+    if others.is_empty() {
+        return true;
+    }
+    let Some(m) = mapping else {
+        return false;
+    };
+    at(next).len() == others.len()
+        && others.iter().all(|&p| {
+            let r = m.map_result(p, 1);
+            !r.deleted_after() && next.node_at(r.pos).is_some_and(|n| n.same_ref(&k.old))
+        })
+}
+
+/// A weak [`EditorHandle`]: what a node view's context holds, so a view never
+/// keeps its editor alive.
+#[derive(Clone)]
+pub(crate) struct WeakHandle(Weak<RefCell<EditorCore>>);
+
+impl WeakHandle {
+    pub(crate) fn upgrade(&self) -> Option<EditorHandle> {
+        self.0.upgrade().map(|inner| EditorHandle { inner })
+    }
 }
 
 /// The callbacks a mutable borrow owes on its way out — see [`CoreMutGuard`].
 struct Owed {
     selection: Option<(SelectionHook, Selection)>,
     caret_moved: Option<Hook<dyn Fn()>>,
+    node_views: Vec<node_views::Work>,
 }
 
 /// An app callback and the component that registered it (#147/#183).
@@ -411,12 +504,17 @@ impl EditorCore {
     /// `scroll` says whether this change should bring the caret into view (see
     /// [`ScrollGate`]): [`Scroll::IfChanged`] arms the gate when the document or
     /// the selection changed. A refused change arms nothing.
+    ///
+    /// `kept` is the transaction's proof of which nodes are the same node with
+    /// other attributes ([`kept_nodes`]) — passed in, never left behind: a refused
+    /// change must not hand its proof to the next one (review of #1575, F2).
     fn commit(
         &mut self,
         prev: EditorState,
         next: EditorState,
         mapping: Option<&Mapping>,
         scroll: Scroll,
+        kept: Vec<Kept>,
     ) -> Option<bool> {
         if self.refuses(&prev, &next, mapping.is_none()) {
             return None;
@@ -441,7 +539,31 @@ impl EditorCore {
         }
         self.note_selection(&prev.selection, &next.selection);
         self.state = next.clone();
+        // The atoms it only set attributes of, each with its node before and after
+        // and where it stood: a proof for the collaboration projection. One whose old
+        // `Rc` the document held at another place too is a proof only when every
+        // other copy is still where it was (`names_one_place`).
+        #[cfg(feature = "collaboration")]
+        let kept_atoms: Vec<(Node, Node, usize)> = kept
+            .iter()
+            .filter(|k| names_one_place(k, &prev.doc, &next.doc, mapping))
+            .filter_map(|k| Some((k.old.clone(), next.doc.node_at(k.pos)?, k.old_pos)))
+            .filter(|(_, n, _)| n.is_leaf() && !n.is_text())
+            .collect();
+        #[cfg(feature = "collaboration")]
+        let kept_nodes: Vec<(Node, Node)> = kept_atoms
+            .iter()
+            .map(|(o, n, _)| (o.clone(), n.clone()))
+            .collect();
+        // The inline atoms (a picture) among them: still their CRDT chars
+        // (`CollabSession::note_kept_inline_atoms`).
+        #[cfg(feature = "collaboration")]
+        let kept_inline: Vec<(Node, Node, usize)> = kept_atoms
+            .into_iter()
+            .filter(|(_, n, _)| n.is_inline())
+            .collect();
         if let Some(view) = self.view.as_mut() {
+            view.set_kept(kept);
             view.update_dom(&prev, &next);
             // The caret and the highlight are drawn by the post-layout overlay
             // pass, and a selection-only change dirties no DOM, so a runtime
@@ -453,7 +575,16 @@ impl EditorCore {
             }
         }
         #[cfg(feature = "collaboration")]
-        self.record_local(&prev, &next);
+        {
+            self.record_local(&prev, &next, &kept_nodes, mapping.is_none());
+            if !kept_inline.is_empty()
+                && let Some(bridge) = self.collab.as_ref()
+            {
+                bridge
+                    .session
+                    .note_kept_inline_atoms(&prev.doc, &kept_inline);
+            }
+        }
         Some(doc_changed)
     }
 
@@ -525,9 +656,15 @@ impl EditorCore {
         let caret_moved = std::mem::take(&mut self.caret_moved_owed)
             .then(|| self.on_caret_moved.clone())
             .flatten();
+        let node_views = self
+            .view
+            .as_mut()
+            .map(RinchDomEditorView::take_node_view_work)
+            .unwrap_or_default();
         Owed {
             selection,
             caret_moved,
+            node_views,
         }
     }
 
@@ -642,17 +779,39 @@ impl EditorCore {
     /// peers. A no-op when not collaborating, or for a selection-only edit (the
     /// document is the same `Rc`, so there is nothing to project).
     #[cfg(feature = "collaboration")]
-    fn record_local(&mut self, prev: &EditorState, next: &EditorState) {
+    ///
+    /// `kept` are the leaf block atoms of `next` the change only set attributes
+    /// of, and the inline atoms (pictures) likewise ([`kept_nodes`]): any other
+    /// leaf block atom put where a different node stood is written as a new CRDT
+    /// block, and any other picture as a new CRDT char (same `src` or not —
+    /// decision (f)), so a peer's node view for the old one is not handed it
+    /// (`CollabSession::record_local_edit`). Each comes with the node it was
+    /// before the change, so it matches only that node (review 2 of #1595, G1).
+    /// A `load` (no mapping: two documents, not one edited) proves no atom and
+    /// keeps the value rule for what the load did not change.
+    fn record_local(
+        &mut self,
+        prev: &EditorState,
+        next: &EditorState,
+        kept: &[(Node, Node)],
+        load: bool,
+    ) {
         let Some(bridge) = self.collab.as_mut() else {
             return;
         };
         if prev.doc.same_ref(&next.doc) {
             return;
         }
-        match bridge
-            .session
-            .record_local(next.schema(), &prev.doc, &next.doc)
-        {
+        let recorded = if load {
+            bridge
+                .session
+                .record_local_keeping(next.schema(), &prev.doc, &next.doc, &[])
+        } else {
+            bridge
+                .session
+                .record_local_edit(next.schema(), &prev.doc, &next.doc, kept)
+        };
+        match recorded {
             // An empty delta means the projection produced no CRDT change at all, so
             // there is nothing for peers to apply.
             Ok(()) => match bridge.session.save_incremental() {
@@ -858,6 +1017,8 @@ impl<B: std::ops::Deref<Target = EditorCore>> std::ops::Deref for CoreGuard<B> {
 /// would read as unwinding — one caught panic would silence every callback
 /// for the page's lifetime.
 struct CoreMutGuard<'a> {
+    /// The editor, to run its node-view work once the borrow is released.
+    editor: &'a Rc<RefCell<EditorCore>>,
     borrow: Option<std::cell::RefMut<'a, EditorCore>>,
     no_flush: Option<rinch_core::reactive::EffectFlushSuppressed>,
     /// See [`CoreGuard`]: tracking is suspended while the borrow is held.
@@ -899,6 +1060,14 @@ impl Drop for CoreMutGuard<'_> {
         if let Some(cb) = owed.caret_moved {
             cb.invoke(|cb| cb());
         }
+        if !owed.node_views.is_empty() {
+            node_views::run(
+                &EditorHandle {
+                    inner: self.editor.clone(),
+                },
+                owed.node_views,
+            );
+        }
     }
 }
 
@@ -918,6 +1087,7 @@ impl EditorHandle {
         rinch_core::reactive::flush_pending_effects();
         let no_flush = rinch_core::reactive::suppress_effect_flush();
         CoreMutGuard {
+            editor: &self.inner,
             borrow: Some(self.inner.borrow_mut()),
             no_flush: Some(no_flush),
             untracked: Some(rinch_core::reactive::suspend_tracking()),
@@ -932,6 +1102,7 @@ impl EditorHandle {
         rinch_core::reactive::flush_pending_effects();
         let no_flush = rinch_core::reactive::suppress_effect_flush();
         Ok(CoreMutGuard {
+            editor: &self.inner,
             borrow: Some(self.inner.try_borrow_mut()?),
             no_flush: Some(no_flush),
             untracked: Some(rinch_core::reactive::suspend_tracking()),
@@ -986,6 +1157,7 @@ impl EditorHandle {
                 caret_hint: None,
                 #[cfg(feature = "collaboration")]
                 collab: None,
+                node_views: Rc::default(),
             })),
         }
     }
@@ -1014,9 +1186,11 @@ impl EditorHandle {
         let doc = rinch_editor_core::tables::cap_colspans(&doc);
         // Plugins' `init_state` and `decorations` run here; untracked, as under
         // the core (#943).
+        let node_views: Rc<node_views::Registry> = Rc::default();
         let (state, view) = untracked_handler(|| {
             let state = EditorState::create(schema.clone(), doc, plugins.clone());
-            let view = RinchDomEditorView::new(container, doc_ref, &state);
+            let view =
+                RinchDomEditorView::with_node_views(container, doc_ref, &state, node_views.clone());
             (state, view)
         });
         EditorHandle {
@@ -1043,6 +1217,7 @@ impl EditorHandle {
                 caret_hint: None,
                 #[cfg(feature = "collaboration")]
                 collab: None,
+                node_views,
             })),
         }
     }
@@ -1053,8 +1228,28 @@ impl EditorHandle {
     /// to the host document. Re-attaching a handle that is already mounted replaces
     /// its view (the old projection is abandoned).
     pub(crate) fn attach(&self, container: NodeHandle, doc_ref: Weak<RefCell<dyn DomDocument>>) {
+        // A view this one replaces takes its node views with it: disposed with no
+        // borrow held (a view's cleanup is app code).
+        let (old, host_cx) = {
+            let mut core = self.core_mut();
+            let host_cx = Self::host_cx_of(&core);
+            (
+                core.view
+                    .as_mut()
+                    .map(RinchDomEditorView::dispose_node_views),
+                host_cx,
+            )
+        };
+        if let Some(old) = old {
+            node_views::dispose_all(old, host_cx.as_ref());
+        }
         let mut core = self.core_mut();
-        let view = RinchDomEditorView::new(container, doc_ref, &core.state);
+        let view = RinchDomEditorView::with_node_views(
+            container,
+            doc_ref,
+            &core.state,
+            core.node_views.clone(),
+        );
         // The switch lives on the handle, so one set before mount (or across a
         // re-mount) is on the new container from its first frame.
         view.set_read_only(core.read_only);
@@ -1084,7 +1279,14 @@ impl EditorHandle {
             .unwrap_or(0);
         let container_id = container.node_id().0;
         super::registry::register_editor(doc_key, container_id, self.clone());
-        scope.on_cleanup(move || super::registry::unregister_editor(doc_key, container_id));
+        let weak = self.weak();
+        scope.on_cleanup(move || {
+            super::registry::unregister_editor(doc_key, container_id);
+            // Every node view goes with the editor (its scope, then its root).
+            if let Some(handle) = weak.upgrade() {
+                handle.dispose_node_views();
+            }
+        });
         container
     }
 
@@ -1151,13 +1353,14 @@ impl EditorHandle {
         let prev = core.state.clone();
         // The mapping has to be taken before `apply` consumes the transaction.
         let mapping = tr.mapping().clone();
+        let kept = kept_nodes(&tr);
         let scroll = if input || tr.selection_set() {
             Scroll::IfChanged
         } else {
             Scroll::No
         };
         let next = core.state.apply(tr);
-        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), scroll) else {
+        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), scroll, kept) else {
             return false;
         };
         drop(core);
@@ -1208,7 +1411,7 @@ impl EditorHandle {
         // and every retry refused too (review of #836).
         // Not an edit, so it never scrolls the caret into view.
         if core
-            .commit(prev, next, Some(&Mapping::new()), Scroll::No)
+            .commit(prev, next, Some(&Mapping::new()), Scroll::No, Vec::new())
             .is_none()
         {
             return false;
@@ -1222,11 +1425,28 @@ impl EditorHandle {
     /// command that would change the document. The toolbar/keymap entry point.
     pub fn command(&self, name: &str) -> bool {
         let mut core = self.core_mut();
-        let Some((next, mapping)) = core.state.run_mapped(name) else {
+        let Some(cmd) = core.state.command(name) else {
+            return false;
+        };
+        // `run_command_mapped`, keeping the attribute proof of the transaction
+        // (an undo of a node view's `set_attrs` keeps the view mounted).
+        let mut result: Option<(EditorState, Mapping, Vec<Kept>)> = None;
+        let applied = {
+            let state = &core.state;
+            let mut dispatch = |tr: Transaction| {
+                let mapping = tr.mapping().clone();
+                let kept = kept_nodes(&tr);
+                result = Some((state.apply(tr), mapping, kept));
+            };
+            let dispatch: rinch_editor_core::Dispatch = &mut dispatch;
+            cmd(state, Some(dispatch))
+        };
+        let Some((next, mapping, kept)) = result.filter(|_| applied) else {
             return false;
         };
         let prev = core.state.clone();
-        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), Scroll::IfChanged) else {
+        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), Scroll::IfChanged, kept)
+        else {
             return false;
         };
         drop(core);
@@ -2192,6 +2412,18 @@ impl EditorHandle {
             motion,
             extend,
         ) {
+            // A caret moved onto a node a view is drawn for offers it the
+            // keyboard (`NodeViewSpec::on_caret_enter`).
+            Some(sel) if !extend => {
+                let from = match motion {
+                    CursorMotion::CharLeft | CursorMotion::WordLeft | CursorMotion::DocStart => {
+                        CaretFrom::Right
+                    }
+                    _ => CaretFrom::Left,
+                };
+                self.select_from_arrow(sel, from);
+                true
+            }
             Some(sel) => {
                 self.set_selection(sel);
                 true
@@ -2286,14 +2518,17 @@ impl EditorHandle {
             let mapping = tr.mapping().clone();
             let next = prev.apply(tr);
             // Clears stored marks only: nothing moves, so nothing to scroll to.
-            core.commit(prev, next, Some(&mapping), Scroll::No);
+            core.commit(prev, next, Some(&mapping), Scroll::No, Vec::new());
         }
         core.read_only = read_only;
+        core.node_views.read_only.set(read_only);
         if let Some(view) = core.view.as_mut() {
             if read_only {
                 view.set_preedit("");
             }
             view.set_read_only(read_only);
+            // Every node view's `read_only` memo follows, once the borrow goes.
+            view.node_view_flags_changed();
         }
         drop(core);
         // No input event brought this change; a runtime that keeps per-editor
@@ -2336,6 +2571,14 @@ impl EditorHandle {
         rinch_core::reactive::flush_pending_effects();
         if let Some(view) = self.core().view.as_ref() {
             view.set_dark_mode(dark);
+        }
+        // Every node view's `dark_mode` memo follows (when the mutable borrow
+        // that queues it is released).
+        let registry = self.node_view_registry();
+        if registry.dark.replace(dark) != dark
+            && let Some(view) = self.core_mut().view.as_mut()
+        {
+            view.node_view_flags_changed();
         }
     }
 
@@ -2411,7 +2654,8 @@ impl EditorHandle {
         // whatever now happens to sit at those offsets.
         // A load is the app replacing the document, not the user moving the
         // caret: it scrolls nothing.
-        core.commit(prev, next, None, Scroll::No).is_some()
+        core.commit(prev, next, None, Scroll::No, Vec::new())
+            .is_some()
     }
 
     /// Parse `html` (schema-whitelisted) and load it as the document. Empty or
@@ -2561,7 +2805,9 @@ impl EditorHandle {
             return false;
         };
         let prev = core.state.clone();
-        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), Scroll::IfChanged) else {
+        let Some(doc_changed) =
+            core.commit(prev, next, Some(&mapping), Scroll::IfChanged, Vec::new())
+        else {
             return false;
         };
         drop(core);
@@ -2810,7 +3056,7 @@ impl EditorHandle {
         // The person's own selection did not change, so there is nothing of
         // theirs to bring into view.
         let scroll = if moved { Scroll::No } else { Scroll::IfChanged };
-        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), scroll) else {
+        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), scroll, Vec::new()) else {
             return false;
         };
         drop(core);
@@ -2870,7 +3116,9 @@ impl EditorHandle {
             return false;
         };
         let prev = core.state.clone();
-        let Some(doc_changed) = core.commit(prev, next, Some(&mapping), Scroll::IfChanged) else {
+        let Some(doc_changed) =
+            core.commit(prev, next, Some(&mapping), Scroll::IfChanged, Vec::new())
+        else {
             return false;
         };
         drop(core);
@@ -3376,11 +3624,25 @@ impl EditorHandle {
         &self,
         outbound: impl Fn(Vec<u8>) + 'static,
     ) -> Result<Vec<u8>, CollabError> {
-        let mut core = self.core_mut();
-        let session = CollabSession::new(&core.state)?;
+        let session = CollabSession::new(&self.core().state)?;
+        Ok(self.start_collaboration_host_with(session, outbound))
+    }
+
+    /// [`Self::start_collaboration_host`] with a session the caller built over this
+    /// editor's current document (`CollabSession::new(&handle.state())`). **Test
+    /// seam**: a test builds the session with a pinned yrs client id
+    /// (`rinch_editor_collab::testing`, behind that crate's `test-util` feature, which
+    /// no release build enables), so a multi-peer fuzz replays a seed bit for bit. A
+    /// session over another document makes the editor and its CRDT disagree.
+    #[doc(hidden)]
+    pub fn start_collaboration_host_with(
+        &self,
+        session: CollabSession,
+        outbound: impl Fn(Vec<u8>) + 'static,
+    ) -> Vec<u8> {
         let snapshot = session.snapshot();
-        core.collab = Some(CollabBridge::new(session, Box::new(outbound)));
-        Ok(snapshot)
+        self.core_mut().collab = Some(CollabBridge::new(session, Box::new(outbound)));
+        snapshot
     }
 
     /// Join an existing collaboration as a **guest** from a host's `snapshot` (from
@@ -3400,6 +3662,18 @@ impl EditorHandle {
         outbound: impl Fn(Vec<u8>) + 'static,
     ) -> Result<(), CollabError> {
         let session = CollabSession::from_bytes(snapshot)?;
+        self.start_collaboration_guest_with(session, outbound)
+    }
+
+    /// [`Self::start_collaboration_guest`] with a session the caller joined from the
+    /// host's snapshot (`CollabSession::from_bytes`). **Test seam**, like
+    /// [`Self::start_collaboration_host_with`]: a test joins with a pinned yrs client id.
+    #[doc(hidden)]
+    pub fn start_collaboration_guest_with(
+        &self,
+        session: CollabSession,
+        outbound: impl Fn(Vec<u8>) + 'static,
+    ) -> Result<(), CollabError> {
         // Adopt the host's document first, with **no** session attached, so the load
         // is not recorded onto a CRDT — the new session already holds this content,
         // and a session left attached from an earlier document must not have this
@@ -3459,9 +3733,15 @@ impl EditorHandle {
             .as_mut()
             .unwrap()
             .session
-            .integrate_incremental(&prev, delta);
+            .integrate_incremental_transaction(&prev, delta);
         match result {
-            Ok(Some(next)) => {
+            Ok(Some(tr)) => {
+                // A peer's change to a node view's attributes is a
+                // `SetNodeAttrStep` (the collab adapter proves it is the same
+                // atom), so the view stays mounted.
+                let kept = kept_nodes(&tr);
+                let mapping = tr.mapping().clone();
+                let next = prev.apply(tr);
                 core.carry_anchors_remote(&prev, &next.doc);
                 if !prev.doc.same_ref(&next.doc) {
                     core.carry_caret_hint(&prev, &next);
@@ -3469,6 +3749,8 @@ impl EditorHandle {
                 core.note_selection(&prev.selection, &next.selection);
                 core.state = next.clone();
                 if let Some(view) = core.view.as_mut() {
+                    view.set_kept(kept);
+                    view.set_remote_mapping(mapping);
                     view.update_dom(&prev, &next);
                 }
                 true
@@ -3721,6 +4003,277 @@ impl EditorHandle {
             .collab
             .as_mut()
             .and_then(|b| b.last_error.take())
+    }
+}
+
+// ─── Node views ──────────────────────────────────────────────────────────────
+
+impl EditorHandle {
+    /// Draw nodes of `spec.node_type` with an app's own component — a node view
+    /// (see [`crate::node_views`]). For every such node whose attributes the spec
+    /// [`matches`](NodeViewSpec::matches) — the **first** registered spec that
+    /// matches wins — `render` builds the component inside the node's host
+    /// element, now for the nodes already in the document and later for every one
+    /// that arrives.
+    ///
+    /// The view is mounted while the node stays the same node: through typing
+    /// elsewhere and through changes to its own attributes (local, undone, redone,
+    /// or a collaborator's), which its [`NodeViewCtx`](crate::NodeViewCtx) memos
+    /// follow. It is disposed when the node leaves the document, and remounted
+    /// when anything but an attribute change puts a node in its place — a view is
+    /// never handed another node. Pointer and keyboard events inside the view are
+    /// the view's; a press on the host's frame, or an arrow onto it, node-selects
+    /// the node.
+    ///
+    /// Released when the returned registration is dropped — and, when made while
+    /// a component renders, when that component unmounts: call
+    /// [`NodeViewRegistration::keep`] to tie it to that alone. Releasing it
+    /// unmounts every view it drew (another spec that matches takes over).
+    pub fn register_node_view(&self, spec: NodeViewSpec) -> NodeViewRegistration {
+        let registry = self.node_view_registry();
+        let token = registry.add(spec);
+        let weak = self.weak();
+        rinch_core::reactive::on_cleanup(move || {
+            if let Some(handle) = weak.upgrade() {
+                handle.unregister_node_view(token);
+            }
+        });
+        if let Some(view) = self.core_mut().view.as_mut() {
+            view.rescan_node_views();
+        }
+        NodeViewRegistration::new(self.weak(), token)
+    }
+
+    /// Release the spec registered with `token`.
+    pub(crate) fn unregister_node_view(&self, token: u64) {
+        if !self.node_view_registry().remove(token) {
+            return;
+        }
+        if let Ok(mut core) = self.try_core_mut()
+            && let Some(view) = core.view.as_mut()
+        {
+            view.rescan_node_views();
+        }
+    }
+
+    /// Insert an `embed` (the starter kit's block atom an app draws with a node
+    /// view) carrying `attrs` at the selection, as `insertHorizontalRule` inserts a
+    /// rule: a caret inside a paragraph splits it, a range is replaced. The caret
+    /// lands after it. `false` when the schema has no `embed`, the attributes are
+    /// refused, or the editor refuses edits ([read-only](Self::set_read_only)).
+    pub fn insert_embed(&self, attrs: rinch_editor_core::Attrs) -> bool {
+        self.dispatch(
+            |state| {
+                let node = state
+                    .schema()
+                    .create_node("embed", attrs, Fragment::empty())
+                    .ok()?;
+                let mut tr = state.tr();
+                tr.insert_block(node).ok()?;
+                Some(tr)
+            },
+            true,
+        )
+    }
+
+    /// Whether `host_id` is the host element of a mounted node view of this
+    /// editor.
+    pub fn is_node_view_host(&self, host_id: usize) -> bool {
+        self.core()
+            .view
+            .as_ref()
+            .and_then(|v| v.slot_by_host(host_id))
+            .is_some_and(|s| s.is_mounted())
+    }
+
+    /// A key pressed while the keyboard is inside the node view whose host is
+    /// `host_id`: offered to its [`on_key`](NodeViewSpec::on_key) first, and an
+    /// Escape it leaves gives the keyboard back to the editor with the caret
+    /// right after the node. `true` when the key was consumed either way — the
+    /// platform then stops it. The platform's entry point, called before the
+    /// element that holds the keyboard sees the key.
+    pub fn offer_node_view_key(&self, host_id: usize, key: &EditorKey<'_>) -> bool {
+        let Some(slot) = self
+            .core()
+            .view
+            .as_ref()
+            .and_then(|v| v.slot_by_host(host_id))
+        else {
+            return false;
+        };
+        let registry = self.node_view_registry();
+        if node_views::offer_key(&registry, &slot, key) == Some(true) {
+            return true;
+        }
+        if key.key == "Escape" {
+            if let Some(pos) = self.node_view_pos(&slot) {
+                self.return_focus_after(Pos(pos));
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Set `selection`, reached by an arrow key moving the caret `from` a side,
+    /// and — when it node-selects a node a view is mounted for — offer the view
+    /// the caret ([`NodeViewSpec::on_caret_enter`]). Whether the view took the
+    /// keyboard. The platforms' vertical motion calls this; horizontal motion
+    /// ([`Self::move_cursor`]) does it itself.
+    pub fn select_from_arrow(&self, selection: Selection, from: CaretFrom) -> bool {
+        self.set_selection(selection.clone());
+        let Selection::Node(n) = selection else {
+            return false;
+        };
+        let Some(slot) = ({
+            let core = self.core();
+            core.view
+                .as_ref()
+                .and_then(|v| v.slot_at(&core.state.doc, n.anchor))
+        }) else {
+            return false;
+        };
+        node_views::offer_caret_enter(&self.node_view_registry(), &slot, from)
+    }
+
+    /// The node selection an Up (`down = false`) or Down arrow makes when the
+    /// block right above or below the caret's textblock (or the selected node) is
+    /// a node with a **mounted view**: vertical motion steps over a horizontal rule
+    /// ([`Selection::near_text`]), but must not step over an app's component, or
+    /// it could not be reached from the keyboard. At the last (first) block of a
+    /// list item, a quote or a list, the block below (above) is the one after
+    /// (before) that container. `None` otherwise.
+    pub fn vertical_node_view(&self, down: bool) -> Option<Selection> {
+        let core = self.core();
+        let doc = &core.state.doc;
+        let sel = &core.state.selection;
+        let mut edge = match sel {
+            Selection::Node(n) if down => n.head.0,
+            Selection::Node(n) => n.anchor.0,
+            _ => {
+                let r = doc.resolve(sel.head()).ok()?;
+                if !r.parent().is_textblock() {
+                    return None;
+                }
+                if down {
+                    r.after(r.depth())?
+                } else {
+                    r.before(r.depth())?
+                }
+            }
+        };
+        // The block right below (above): at the edge of a list item, a quote or
+        // a list, the next one out — Down from a list's last line reaches the
+        // node after the list (review of #1575, F6).
+        let at = loop {
+            let r = doc.resolve(Pos(edge)).ok()?;
+            let next = if down {
+                r.node_after()
+            } else {
+                r.node_before()
+            };
+            match next {
+                Some(_) if down => break edge,
+                Some(n) => break edge - n.node_size(),
+                None if r.depth() > 0 => {
+                    edge = if down {
+                        r.after(r.depth())?
+                    } else {
+                        r.before(r.depth())?
+                    };
+                }
+                None => return None,
+            }
+        };
+        let view = core.view.as_ref()?;
+        view.has_mounted_view_at(doc, Pos(at))
+            .then(|| Selection::node_at(doc, Pos(at)))
+            .flatten()
+    }
+
+    /// Give the keyboard to the editor with the caret right after the node at
+    /// `pos`: the first text position after it, or the node itself, selected, when
+    /// no textblock follows it.
+    pub(crate) fn return_focus_after(&self, pos: Pos) {
+        let doc = self.doc();
+        let Some(node) = doc.node_at(pos.0) else {
+            return;
+        };
+        let after = pos.0 + node.node_size();
+        let sel = Selection::near_text(&doc, Pos(after), 1)
+            .filter(|s| s.head().0 >= after)
+            .or_else(|| Selection::node_at(&doc, pos));
+        if let Some(sel) = sel {
+            self.set_selection(sel);
+        }
+        self.focus();
+    }
+
+    /// A weak handle to this editor.
+    pub(crate) fn weak(&self) -> WeakHandle {
+        WeakHandle(Rc::downgrade(&self.inner))
+    }
+
+    /// The editor's node-view registry.
+    pub(crate) fn node_view_registry(&self) -> Rc<node_views::Registry> {
+        self.inner.borrow().node_views.clone()
+    }
+
+    /// The editor's document key and container, while mounted.
+    pub(crate) fn node_view_host_cx(&self) -> Option<node_views::HostCx> {
+        Self::host_cx_of(&self.inner.borrow())
+    }
+
+    fn host_cx_of(core: &EditorCore) -> Option<node_views::HostCx> {
+        let view = core.view.as_ref()?;
+        Some(node_views::HostCx {
+            doc_key: view.doc_key(),
+            container: view.container_id(),
+        })
+    }
+
+    /// Swap the host element of the inline leaf `slot` is for (see
+    /// [`RinchDomEditorView::swap_inline_host`]). Called with no borrow held, from
+    /// [`node_views::run`]; `false` when the editor is busy or the slot is gone.
+    pub(crate) fn swap_node_view_host(&self, slot: &Rc<node_views::Slot>, view_host: bool) -> bool {
+        let Ok(mut core) = self.try_core_mut() else {
+            return false;
+        };
+        let Some(view) = core.view.as_mut() else {
+            return false;
+        };
+        let swapped = view.swap_inline_host(slot, view_host);
+        if swapped {
+            // The caret beside it and the node outline are drawn from its box.
+            crate::registry::owe_overlay_pass(view.doc_key());
+        }
+        drop(core);
+        if swapped {
+            crate::registry::request_overlay_refresh();
+        }
+        swapped
+    }
+
+    /// The position just before the node `slot` is for.
+    pub(crate) fn node_view_pos(&self, slot: &Rc<node_views::Slot>) -> Option<usize> {
+        self.core().view.as_ref()?.slot_pos(slot)
+    }
+
+    /// Dispose every node view — the editor's unmount.
+    pub(crate) fn dispose_node_views(&self) {
+        let (slots, host_cx) = {
+            let Ok(mut core) = self.try_core_mut() else {
+                return;
+            };
+            let host_cx = Self::host_cx_of(&core);
+            (
+                core.view
+                    .as_mut()
+                    .map(RinchDomEditorView::dispose_node_views)
+                    .unwrap_or_default(),
+                host_cx,
+            )
+        };
+        node_views::dispose_all(slots, host_cx.as_ref());
     }
 }
 

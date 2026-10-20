@@ -540,12 +540,18 @@ handle.update(|state| {
 });
 ```
 
-It is edited as a horizontal rule is: a click or an arrow selects it whole,
-Backspace or Delete on it removes it, and its host element is an empty
-`<div data-pm-type="embed" data-sheet="sheet-42">` that the default stylesheet gives
-a line of height and a dashed outline while it is empty. Drawing the app's content
-in that element (node views) is the next step of this feature and not in this
-release.
+`handle.insert_embed(attrs)` does the same in one call. It is edited as a
+horizontal rule is: a click or an arrow selects it whole, Backspace at the start of
+the paragraph after it (or Delete at the end of the one before) selects it, and
+Backspace or Delete on it removes it. Removing an atom always takes two presses,
+which is a deliberate difference from ProseMirror: there, when the paragraph is not
+empty, one Backspace deletes the rule or embed before it (and one Delete the one
+after it). An embed can hold an app's component and its state, so rinch selects it
+first and lets the next press delete it — the same for a horizontal rule. An empty
+paragraph beside the atom goes in the first press. Its host element is
+`<div data-pm-type="embed" data-sheet="sheet-42">`; with nothing drawn in it the
+default stylesheet gives it a line of height and a dashed outline. What is drawn in
+it is a [node view](#node-views-your-component-in-the-document).
 
 **HTML.** An embed is written as that `<div>` and read back from it, wherever a
 block can stand. The default paste reads the element as an embed only from rinch's
@@ -576,6 +582,214 @@ is unregistered when the guard is dropped; registrations stack, so dropping a la
 one brings an earlier one back. **Markdown** writes the bare element as an HTML
 block, which both of its readers take back, and a `DocNode` keeps the attributes
 like any others.
+
+### Node views: your component in the document
+
+A node view draws one of your components in place of an embed: a live sheet, a
+canvas, a counter. Register it on the handle:
+
+```rust
+use rinch::prelude::*;
+use rinch_editor_core::AttrValue;
+
+let view = NodeViewSpec::new("embed", |__scope, ctx: NodeViewCtx| {
+    let clicks = Signal::new(0);
+    let sheet = ctx.attrs;
+    let ctx_for_button = ctx.clone();
+    rsx! {
+        div { class: "sheet",
+            p { {move || format!("Sheet {}", sheet.get().get_str("data-sheet").unwrap_or("?"))} }
+            input { placeholder: "a cell" }
+            button {
+                onclick: move || {
+                    clicks.update(|n| *n += 1);
+                    ctx_for_button.set_attrs(|a| *a = a.with("data-rev", AttrValue::from(clicks.get().to_string())));
+                },
+                "Save"
+            }
+        }
+    }
+})
+.matches(|attrs| attrs.get_str("data-sheet").is_some());
+handle.register_node_view(view).keep();
+```
+
+- **Which nodes.** Every node of the spec's type (a **leaf** type: `embed`, or an
+  app schema's own) whose attributes `matches` accepts; the first registered spec
+  that matches wins. Releasing a registration (dropping it, or the component that
+  registered it unmounting, after `.keep()`) unmounts its views, and the next spec
+  that matches takes over.
+- **Lifetime.** A view is mounted when its node's host is built and disposed when the
+  node leaves the document — its scope, with every signal, effect and handler it
+  made, goes with it. Typing anywhere else never touches it, and its own state
+  (`clicks` above) survives. It is also disposed when the editor unmounts.
+- **One node, for good.** A view is never handed a different node. Its context
+  follows its node's attributes — `ctx.set_attrs` (one undo step, sent to
+  collaborators key by key), its undo and redo, and a collaborator's change all
+  arrive in `ctx.attrs` without a remount — also when the same transaction inserts
+  or removes blocks around it. Anything else that puts a node where its
+  node stood — a replace, an undo of a delete, a move, a paste of a copy, even an
+  identical twin — is another node and gets a fresh mount. Key your app's state to
+  the node's attributes, not to its position. A render may set its own node's
+  attributes (a default): the view is mounted once and `ctx.attrs` follows. If
+  that write makes `matches` refuse the node, the view is unmounted (or another
+  matching spec's mounted) right after, as for any other change of the node —
+  up to 8 such re-matches inside one another. Renders that keep changing which
+  spec matches (spec A's render writes what only B matches, and B's what only
+  A matches) stop there: the last view stays mounted, with its `ctx.attrs`
+  refreshed, although its spec no longer matches the node, until the node next
+  changes.
+- **Context.** `ctx.attrs`, `ctx.selected` (node-selected), `ctx.read_only` and
+  `ctx.dark_mode` are memos; `ctx.pos()`, `ctx.set_attrs(..)`, `ctx.delete()`,
+  `ctx.select()`, `ctx.return_focus()` and `ctx.editor()` act on the node. A
+  read-only editor refuses `set_attrs` and `delete`.
+- **Events.** A press or a key inside the component is the component's: an `<input>`
+  in it takes the keyboard (the editor's caret goes), a button in it clicks. A press
+  on the host's frame — the padding the default stylesheet gives a host with a view
+  — node-selects the node, as an arrow onto it does.
+- **Keys.** While the keyboard is inside the view, `.on_key(|key| bool)` sees every
+  key first; `true` consumes it. An Escape it does not consume gives the keyboard
+  back to the editor with the caret right after the node (`ctx.return_focus()` does
+  the same from code). An arrow that lands on the node calls
+  `.on_caret_enter(|from: CaretFrom| bool)` with the side it came from; answer
+  `true` when the view took the keyboard (it focused something of its own),
+  `false` to leave the node selected. Up and Down node-select a node with a view
+  (they step over a horizontal rule), from the last (first) line of a list, a list
+  item or a quote too when the view is right after (before) it.
+- **Layout.** The host's height follows the component's, and the caret and
+  selection below it follow when it grows or shrinks.
+- **Collaboration.** A collaborator's attribute change keeps the view mounted —
+  alone, beside their typing in the same update (a reconnect catching up), on an
+  embed that had no attributes yet, and in a document holding a table. Which embed
+  is which is the shared document's: an embed a collaborator moved, or two embeds
+  they swapped — equal ones included — arrive as other embeds, and the views on
+  them are remounted. While this editor's own changes are not reaching the
+  others (`collab_outbound_stall()` is `Some`, e.g. it holds a task list), the
+  same holds: a collaborator's attribute change keeps the view mounted, and a
+  view whose embed the editor cannot prove is the same one is remounted rather
+  than kept — and when the stall ends, an embed this editor reordered or copied
+  meanwhile reaches the others as a new embed, so their views of it remount. A
+  collaborator's change that arrives during a stall brings every block that
+  differs from the shared document back to it, so the unsent edits in those
+  blocks are dropped — a view's own attribute change included. Every peer must run a build with node views: a peer built
+  before them writes an embed it moved into the place of the node that stood there,
+  which a newer peer cannot tell from an attribute change, and the newer peer's
+  view then shows the other embed's attributes.
+
+Your code (`matches`, the render, `on_key`, `on_caret_enter`) runs with no editor
+state borrowed, after the edit that caused it has been applied: it may read the
+editor, dispatch to it and write signals.
+
+### Drawing an image
+
+A spec for `"image"` draws the images it matches with your component, on the
+line, in place of the picture: a status chip, a live preview, a mention.
+
+```rust
+let badge = NodeViewSpec::new("image", |__scope, ctx: NodeViewCtx| {
+    let attrs = ctx.attrs;
+    rsx! {
+        span { class: "badge", {move || attrs.get().get_str("data-badge").unwrap_or("").to_string()} }
+    }
+})
+.matches(|attrs| attrs.get_str("data-badge").is_some());
+handle.register_node_view(badge).keep();
+```
+
+- **Only the images it matches.** Every other image keeps its `<img>`, and
+  `set_image_source`, `on_image_hover` and `on_image_input` work for it as before.
+  An image that stops matching (its `data-badge` removed) gets its `<img>` back.
+- **One character of the line.** A drawn image's host is a
+  `<span data-pm-type="image" data-…>` laid out as an inline-block, as wide and
+  tall as your component, with no frame. The caret treats it exactly as a picture:
+  one position, drawn at its left edge before it and its right edge after it; an
+  arrow steps over it, Home and End go past it, a press on the text beside it
+  places the caret there, and a press on your component is your component's.
+  `ctx.select()` node-selects it, and `ctx.selected` says when it is.
+- **Identity** is an `embed`'s: `ctx.set_attrs`, its undo and a collaborator's
+  change of the picture's attributes reach `ctx.attrs` with no remount; a picture
+  moved, or another (even an equal one) put in its place, is a fresh mount — on
+  every collaborator too: a picture pasted over another, **with the same `src`
+  included**, is a new picture in the shared document, so each peer's view of the
+  old one is remounted, never handed the pasted one. Two pictures swapped in one
+  edit are each the same picture moved, and no view is handed the other one.
+
+### Node views, step by step
+
+`examples/editor-node-views` (desktop) and `examples/editor-node-views-web` (the
+same `views.rs`, in the browser) draw three views. Each one keeps everything it
+needs in its node's `data-*` attributes, so a change is an edit like any other:
+undone with Ctrl+Z, saved with the document, sent to collaborators.
+
+**A counter.** The count is `data-count`; the buttons write it.
+
+```rust
+NodeViewSpec::new("embed", |__scope, ctx: NodeViewCtx| {
+    let attrs = ctx.attrs; // a Memo: Copy, so every closure can have it
+    let count = move || attrs.get().get_str("data-count").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+    let add = ctx.clone();
+    rsx! {
+        div {
+            span { {move || count().to_string()} }
+            button {
+                onclick: move || {
+                    let n = count() + 1;
+                    add.set_attrs(|a| *a = a.with("data-count", AttrValue::from(n.to_string())));
+                },
+                "+"
+            }
+        }
+    }
+})
+.matches(|a| a.get_str("data-kind") == Some("counter"))
+```
+
+`handle.insert_embed(Attrs::from_iter([("data-kind", AttrValue::from("counter"))]))`
+puts one at the caret.
+
+**An editable table.** A grid of `<input>`s, each cell's text in
+`data-c-<row>-<col>`:
+
+- rinch has no HTML table layout (`<table>`/`<tr>`/`<td>` are laid out as plain
+  boxes), so the grid is a CSS grid, `grid-template-columns: repeat(N, …)`,
+  whose rows are `display: contents` (each row's cells become the grid's items).
+- A cell shows its attribute with a reactive `value: {|| …}` and writes it back in
+  `onchange` (Enter, or leaving the cell): one `set_attrs`, one undo step, the one
+  key sent to collaborators.
+- On a raw `<input>`, write `value: {|| …}` — `value_fn:` is a component prop
+  (`TextInput`), and on a raw input it becomes a stray attribute (#1591) — and
+  handle Enter in `onchange` or `on_key`: `onsubmit:` on a raw input is wired as a
+  click (#1590).
+- **Keys.** While a cell has the keyboard, `.on_key(|key| bool)` hears each key
+  **press** first (never a release), before the input and before Tab moves the
+  keyboard. The example claims Up and Down to move between rows and leaves every
+  other key to the input: Left and Right move its caret, Enter commits it, **Tab**
+  and Shift+Tab go to the next (previous) tabbable element in document order — the
+  next cell, and from the last cell on to the next focusable element of the page —
+  and an Escape it leaves gives the keyboard back to the editor, the caret right
+  after the table. To keep Tab inside the view, claim it in `on_key` and focus the
+  next cell yourself. A page-level `set_keyboard_interceptor`, and a registered
+  node's `on_key`, also see key **releases**: there, return early on
+  `k.is_up()`, or an arrow moves twice.
+
+**A badge** is the image view above, its click cycling `data-badge`.
+
+**Exporting.** Another application has nothing to draw a view with, so the
+example gives exported HTML a static stand-in for each
+(`set_html_fallback`): a `<table>` of the cells inside the table's
+`<div data-pm-type="embed">`, and for a badged image a
+`<span data-pm-type="image" src=… data-badge=…><b>[hot]</b></span>` written
+**in place of** its `<img>` (an `<img>` cannot hold anything). rinch reads both
+back as the same atoms. An image's markup must be inline content (it is inside a
+`<span>`); answer `None` for an image to keep its plain `<img>`.
+
+**Copy and paste.** A copied embed or drawn image pastes back as the same kind of
+atom with its attributes (rinch's copy-out marks it, and the default paste keeps
+the attributes only beside that mark), and the copy gets a view of its own. If
+your views key app state to an attribute (a sheet id), give the copy a new one in
+`Plugin::handle_paste`: read the html with `slice_from_pasted_html`, rewrite the
+attribute on the atoms, and `tr.replace_selection(slice)`
+(`rinch-editor-view/tests/node_view_paste.rs` does exactly this).
 
 ### Dark mode
 
@@ -1566,12 +1780,11 @@ dropped. A change to an image's attributes is kept while someone else types besi
 presses Enter or Backspace anywhere in its line, drags it, inserts or deletes another
 image next to it (an identical one included), copies it elsewhere, makes the line bold
 or turns it into a heading; if they delete the image, it is deleted. Such a change
-never shows on another image; pasting a picture **with the same `src`** over it counts
-as the same image, so the change shows on the pasted one. Some cases lose it, and both
-editors still end up with the same document when they do: **changing the image's
-`src`**, or **pasting a picture with another `src` over it**, at that moment (the
-editor cannot tell the two apart, and a change dropped is better than a change shown
-on the wrong picture); **moving the image into or out of a table cell**; **cutting the
+never shows on another image. Some cases lose it, and both editors still end up with
+the same document when they do: **changing the image's `src`**, or **pasting any
+picture over it** — one with the same `src` included — at that moment (a pasted
+picture is a new one, and a change dropped is better than a change shown on the wrong
+picture); **moving the image into or out of a table cell**; **cutting the
 image and pasting it back**, or **deleting it and undoing the delete** (the image comes
 back as a new one: only a move made in one step, such as a drag, keeps it);
 **dragging an image after copying it within the editor**, until either copy is changed

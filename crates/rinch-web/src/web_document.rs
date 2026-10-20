@@ -216,6 +216,17 @@ pub(crate) fn node_by_nid(nid: usize) -> Option<web_sys::Node> {
         .filter(|n| n.is_connected())
 }
 
+/// The browser element behind `handle`.
+///
+/// Attached or not: a node view is mounted on its host while the editor's
+/// container is still being built, before it joins the page.
+pub(crate) fn element_of(handle: &rinch_core::dom::NodeHandle) -> Option<web_sys::Element> {
+    NODE_REGISTRY
+        .with(|m| m.borrow().get(&handle.node_id().0).cloned())?
+        .dyn_into::<web_sys::Element>()
+        .ok()
+}
+
 /// Set the `__nid` JS property on a browser node for reverse lookups.
 fn set_nid(node: &web_sys::Node, id: NodeId) {
     let _ = js_sys::Reflect::set(node, &"__nid".into(), &JsValue::from(id.0 as u32));
@@ -994,7 +1005,8 @@ impl WebDocument {
     /// ([`DomDocument::query_inline_box_caret_rect`]).
     ///
     /// `None` when `br` is not a `<br>` in `block`, or when what follows it is
-    /// neither text nor a `<br>` (an image: the byte query answers that).
+    /// neither text nor a `<br>` (an image: the byte query answers that). A
+    /// node view's inline host (a claimed image) is answered from its box.
     fn br_caret_viewport_rect(
         &self,
         block_id: u64,
@@ -1004,12 +1016,22 @@ impl WebDocument {
         let block = self.nodes.get(&(block_id as usize))?;
         let br = self.nodes.get(&(br_id as usize))?;
         let el = br.dyn_ref::<web_sys::Element>()?;
-        if !el.tag_name().eq_ignore_ascii_case("br") || !block.contains(Some(br)) {
+        if !block.contains(Some(br)) {
             return None;
         }
         let rect_of = |r: web_sys::DomRect| {
             (r.height() > 0.0).then(|| (r.x() as f32, r.y() as f32, r.height() as f32))
         };
+        // A claimed inline image (a node view's inline-block `<span>`): the caret
+        // before it is at its left edge, after it at its right, as tall as its box.
+        if is_node_view_host(br) {
+            let r = el.get_bounding_client_rect();
+            let x = if after { r.right() } else { r.left() };
+            return rect_of(r).map(|(_, y, h)| (x as f32, y, h));
+        }
+        if !el.tag_name().eq_ignore_ascii_case("br") {
+            return None;
+        }
         if !after {
             return rect_of(el.get_bounding_client_rect());
         }
@@ -1240,6 +1262,9 @@ fn find_text_node_recursive(
         *remaining -= byte_len;
         return None;
     }
+    if is_node_view_host(node) {
+        return None;
+    }
 
     // Recurse into children
     let children = node.child_nodes();
@@ -1266,10 +1291,23 @@ fn next_leaf_in(node: &web_sys::Node, root: &web_sys::Node) -> Option<web_sys::N
         }
         cur = cur.parent_node()?;
     };
-    while let Some(first) = sibling.first_child() {
+    while !is_node_view_host(&sibling)
+        && let Some(first) = sibling.first_child()
+    {
         sibling = first;
     }
     Some(sibling)
+}
+
+/// Whether `node` is the host of a mounted node view
+/// ([`NODE_VIEW_ATTR`](rinch_editor_view::NODE_VIEW_ATTR)): an app's component
+/// drawn in an editor, whose text is not the editor's. A claimed inline image's
+/// `<span>` is one atomic inline of its textblock, no text bytes wide, so the
+/// byte walks below step over what it holds, as the desktop's inline formatting
+/// context does (an inline-block is its own).
+fn is_node_view_host(node: &web_sys::Node) -> bool {
+    node.dyn_ref::<web_sys::Element>()
+        .is_some_and(|e| e.has_attribute(rinch_editor_view::NODE_VIEW_ATTR))
 }
 
 /// The text node holding the character that STARTS at flat UTF-8 `byte_offset`
@@ -1289,6 +1327,9 @@ fn find_char_at_byte_offset(
                 return Some((node.clone(), start as u32, ch.len_utf16() as u32));
             }
             *remaining -= text.len();
+            return None;
+        }
+        if is_node_view_host(node) {
             return None;
         }
         let children = node.child_nodes();

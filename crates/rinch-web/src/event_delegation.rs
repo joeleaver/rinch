@@ -1466,24 +1466,57 @@ fn dispatch_activation(
     dispatch_rid(rid).then_some(rid)
 }
 
-/// Form controls and the rich-text editor — see [`in_text_control`].
-const TEXT_CONTROL_SELECTOR: &str = "input, textarea, select, [data-pm-editor]";
+/// The rich-text editor `el` belongs to — its `[data-pm-editor]` container —
+/// unless `el` is **inside** a node view's component (an app's own subtree drawn
+/// in the editor, below an element carrying
+/// [`NODE_VIEW_ATTR`](rinch_editor_view::NODE_VIEW_ATTR)): a press or a key
+/// there is the component's, and the editor has no part in it. The view's host
+/// itself (its frame) is the editor's. An editor nested inside a view is its own.
+pub(crate) fn editor_owning(el: &web_sys::Element) -> Option<web_sys::Element> {
+    let selector = format!("[data-pm-editor], [{}]", rinch_editor_view::NODE_VIEW_ATTR);
+    let hit = el.closest(&selector).ok().flatten()?;
+    if hit.has_attribute("data-pm-editor") {
+        return Some(hit);
+    }
+    if !hit.is_same_node(Some(el)) {
+        return None;
+    }
+    hit.closest("[data-pm-editor]").ok().flatten()
+}
 
-/// Subtrees that consume their own pointer input: the rich-text editor
-/// (`editor_input` stops an in-editor `pointerdown` in the capture phase) and
-/// a `RenderSurface` canvas (`render_surface.rs` stops its `pointerdown` at
-/// the target and claims surface focus). Neither ever reaches the generic
-/// pointerdown dispatch, so a pointer-less click inside them must not walk up
-/// to an enclosing clickable either — the element would otherwise activate by
-/// assistive technology or `element.click()` but not by mouse.
-const SELF_HANDLED_SELECTOR: &str = "[data-pm-editor], [data-render-surface]";
+/// `(editor container, view host)` when `el` is inside a node view's component
+/// (see [`editor_owning`]).
+pub(crate) fn node_view_around(
+    el: &web_sys::Element,
+) -> Option<(web_sys::Element, web_sys::Element)> {
+    let attr = rinch_editor_view::NODE_VIEW_ATTR;
+    let host = el
+        .parent_element()?
+        .closest(&format!("[{attr}]"))
+        .ok()
+        .flatten()?;
+    let editor = host.closest("[data-pm-editor]").ok().flatten()?;
+    // The nearest editor above `el` must be the host's own: `el` is not in an
+    // editor nested inside the view.
+    let nearest = el.closest("[data-pm-editor]").ok().flatten()?;
+    nearest
+        .is_same_node(Some(&editor))
+        .then_some((editor, host))
+}
 
 /// Whether keys at `el` belong to a text control or the rich-text editor:
 /// Enter there is a submit/newline/commit, never an activation of a surrounding
 /// clickable. `editor_input` asks the same question of a press outside every
 /// editor — one predicate, so the two cannot drift (issue #271).
 pub(crate) fn in_text_control(el: &web_sys::Element) -> bool {
-    el.closest(TEXT_CONTROL_SELECTOR).ok().flatten().is_some() || in_content_editable(el)
+    // Form controls and the rich-text editor — but not a node view's component
+    // drawn in one: a button there is the component's.
+    el.closest("input, textarea, select")
+        .ok()
+        .flatten()
+        .is_some()
+        || editor_owning(el).is_some()
+        || in_content_editable(el)
 }
 
 /// Whether `el` is editable content. Read from `isContentEditable` — the
@@ -2351,8 +2384,13 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             // The editor and a render surface consume their own pointer
             // input (each stops an in-target pointerdown before the generic
             // delegation), so a click inside either must not reach an
-            // enclosing clickable — by any input device.
-            && el.closest(SELF_HANDLED_SELECTOR).ok().flatten().is_none()
+            // enclosing clickable — by any input device. (A pointer-less
+            // click there — assistive technology, `element.click()` — would
+            // otherwise activate what the mouse cannot.) A node view's
+            // component inside an editor is not the editor's: its own
+            // clickables activate as anywhere else.
+            && el.closest("[data-render-surface]").ok().flatten().is_none()
+            && editor_owning(&el).is_none()
         {
             // The click a `<label>` forwards to its control after its own
             // click dispatched in this task (a pointer-less activation of the

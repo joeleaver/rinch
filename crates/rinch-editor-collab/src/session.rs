@@ -98,9 +98,13 @@ use yrs::{StateVector, Update};
 
 use rinch_editor_core::{EditorState, Node, Pos, Schema};
 
+use crate::atom_cache;
 use crate::error::{CollabError, Result};
-use crate::projection::CollabDoc;
-use crate::remote::build_remote_transaction;
+use crate::projection::{BlockId, CollabDoc};
+use crate::remote::{
+    AtomIds, InlineIds, atom_nodes, block_atoms, build_remote_transaction,
+    build_remote_transaction_with, inline_atoms,
+};
 use crate::table::OversizedTable;
 
 /// An update that carries nothing, in the lib0 v1 encoding: zero blocks followed by a
@@ -126,6 +130,17 @@ pub struct CollabSession {
     /// large to read arrived) leaves the model the CRDT's read, so sticky indexes keep
     /// working through it; an edit refused during it does not.
     model_ahead: bool,
+    /// This session's key in [`atom_cache`].
+    uid: u64,
+    /// Bumped by every call that can change the CRDT, so an [`atom_cache`] entry is
+    /// used only for the CRDT it was read from.
+    generation: u64,
+}
+
+impl Drop for CollabSession {
+    fn drop(&mut self) {
+        atom_cache::forget(self.uid);
+    }
 }
 
 impl CollabSession {
@@ -137,7 +152,45 @@ impl CollabSession {
             poisoned: None,
             stalled: None,
             model_ahead: false,
-        })
+            uid: atom_cache::next_uid(),
+            generation: 0,
+        }
+        .with_atom_ids(state))
+    }
+
+    /// Note which CRDT block each leaf block atom of `state`'s document became
+    /// ([`atom_cache`]), so the first peer's update needs no read of its own to
+    /// tell them apart. One read of the new CRDT, paid only when the document holds
+    /// such an atom.
+    fn with_atom_ids(self, state: &EditorState) -> CollabSession {
+        let (blocks, inline) = (block_atoms(&state.doc) > 0, inline_atoms(&state.doc) > 0);
+        if (blocks || inline)
+            && let Ok((read, ids, inline_ids)) = self.cdoc.to_doc_with_all_atom_ids(state.schema())
+            && read == state.doc
+        {
+            if blocks && let Some(ids) = ids {
+                atom_cache::store(self.uid, self.generation, state.doc.clone(), ids);
+            }
+            if let Some(inline_ids) = &inline_ids {
+                atom_cache::inline_store(self.uid, &state.doc, inline_ids);
+            }
+        }
+        self
+    }
+
+    /// A local change the session recorded only set the attributes of these inline
+    /// atoms (`(before, after, pos)`: the nodes, as an editor's `SetNodeAttrStep`s
+    /// prove, and where `before` stood in the change's first document `doc`): each
+    /// `after` is still the CRDT char its `before` was, so a peer's change of its
+    /// attributes arriving next is told from another picture at its place, and a
+    /// node view drawn for it stays mounted. Without it such a node is unknown
+    /// until the next update arrives, and a peer's change of it remounts its view.
+    ///
+    /// The position says which copy changed when `doc` holds one `Rc` in two places
+    /// (an in-editor copy): the carry follows that copy, or carries nothing when not
+    /// every copy is known.
+    pub fn note_kept_inline_atoms(&self, doc: &Node, pairs: &[(Node, Node, usize)]) {
+        atom_cache::inline_carry(self.uid, doc, pairs);
     }
 
     /// Join an existing collaboration from a peer's saved CRDT bytes.
@@ -147,6 +200,8 @@ impl CollabSession {
             poisoned: None,
             stalled: None,
             model_ahead: false,
+            uid: atom_cache::next_uid(),
+            generation: 0,
         }
         .with_freeze())
     }
@@ -156,6 +211,14 @@ impl CollabSession {
     fn with_freeze(mut self) -> CollabSession {
         self.stalled = self.frozen();
         self
+    }
+
+    /// The CRDT may change: retire what [`atom_cache`] holds for the current
+    /// generation. Answers that generation, to look the cache up by.
+    fn touch(&mut self) -> u64 {
+        let previous = self.generation;
+        self.generation += 1;
+        previous
     }
 
     /// [`CollabSession::new`] with this replica's yrs client id pinned — the
@@ -168,7 +231,10 @@ impl CollabSession {
             poisoned: None,
             stalled: None,
             model_ahead: false,
-        })
+            uid: atom_cache::next_uid(),
+            generation: 0,
+        }
+        .with_atom_ids(state))
     }
 
     /// [`CollabSession::from_bytes`] with this replica's yrs client id pinned — the
@@ -180,6 +246,8 @@ impl CollabSession {
             poisoned: None,
             stalled: None,
             model_ahead: false,
+            uid: atom_cache::next_uid(),
+            generation: 0,
         }
         .with_freeze())
     }
@@ -246,6 +314,7 @@ impl CollabSession {
         id: &str,
     ) -> Result<Option<EditorState>> {
         self.guard()?;
+        self.touch();
         if !self.cdoc.oversized_tables().iter().any(|t| t.id == id) || !self.cdoc.delete_table(id) {
             return Ok(None);
         }
@@ -363,7 +432,72 @@ impl CollabSession {
     /// stalled one is a state the app is being told about via
     /// [`Self::outbound_stall`].
     pub fn record_local(&mut self, schema: &Schema, before: &Node, after: &Node) -> Result<()> {
+        self.record_local_inner(schema, before, after)
+    }
+
+    /// [`Self::record_local`] for an editor that knows which atoms the change kept:
+    /// `kept` holds every leaf block atom and inline atom (a picture) of `after` that
+    /// is the same atom as the node at its place in `before` with other attributes
+    /// (the editor proves it with the `SetNodeAttrStep`s of the transaction). Any
+    /// **other** inline atom the change put where a different node stood is written as
+    /// a new CRDT char — even one with the old one's `src` (a picture pasted over
+    /// another; decision (f)) — and any other leaf block atom as a new CRDT block,
+    /// rather than by rewriting the old one's attributes, so a peer can
+    /// tell an embed whose attributes changed (one block, the same on both sides —
+    /// [`Self::integrate_incremental_transaction`] makes that `SetNodeAttrStep`s)
+    /// from an embed that came to stand where another stood (a move, an undo of a
+    /// delete), which a node view keyed to the old one must not be handed.
+    ///
+    /// `kept` names the new nodes only, so each matches whatever node stood at its
+    /// place: an editor's transaction should use [`Self::record_local_edit`], which
+    /// also names the old ones. This form is for a load (`kept` empty) and for a
+    /// caller that cannot name them.
+    ///
+    /// [`Self::record_local`] is the positional rule: a leaf atom put in another's
+    /// place takes over its block, attributes and all, and a picture put in the place
+    /// of one with the same `src` takes over its char.
+    pub fn record_local_keeping(
+        &mut self,
+        schema: &Schema,
+        before: &Node,
+        after: &Node,
+        kept: &[Node],
+    ) -> Result<()> {
+        let _kept = crate::projection::kept_atoms_scope(Some(kept));
+        self.record_local_inner(schema, before, after)
+    }
+
+    /// [`Self::record_local_keeping`] for an editor's **transaction**: `kept` pairs each
+    /// atom the transaction only set attributes of with the node it was before
+    /// (`(old, new)`), and `before` and `after` are one document edited, never a load.
+    ///
+    /// The old half is what makes the proof sound: proved by its new node alone, an
+    /// atom kept right after one the same transaction deleted (delete one picture or
+    /// embed, renumber its neighbour, in one `update`) was paired with the deleted one's
+    /// char or block, and a peer's concurrent change of the deleted one showed on it
+    /// (review 2 of #1595, G1). And with it a proved pair keeps its char even where the
+    /// model holds one of its `Rc`s twice (an in-editor copy, G2) — while the edit took
+    /// no other copy away: a pair whose old `Rc` the change left with more than one copy
+    /// missing names no one place and is dropped ([`one_place_pairs`]; the editor also
+    /// checks every other copy stayed in place, which needs the transaction's mapping).
+    /// A load, or a caller that cannot name the old nodes, uses
+    /// [`Self::record_local_keeping`].
+    pub fn record_local_edit(
+        &mut self,
+        schema: &Schema,
+        before: &Node,
+        after: &Node,
+        kept: &[(Node, Node)],
+    ) -> Result<()> {
+        let kept = one_place_pairs(before, after, kept);
+        let _kept = crate::projection::kept_pairs_scope(&kept);
+        self.record_local_inner(schema, before, after)
+    }
+
+    fn record_local_inner(&mut self, schema: &Schema, before: &Node, after: &Node) -> Result<()> {
         self.guard()?;
+        let was_matching = self.model_matches_crdt();
+        let cached = atom_cache::lookup(self.uid, self.touch(), before);
         // Frozen while the shared document holds a table too large to read: the model
         // shows a placeholder for it, and a diff that touches a placeholder can delete
         // real content (a value-matched pairing, an export loaded back, …), so no diff
@@ -374,6 +508,7 @@ impl CollabSession {
         if let Some(frozen) = self.frozen() {
             self.stalled = Some(frozen.clone());
             self.model_ahead = true;
+            self.carry_unprojected(before, after, cached);
             return Err(frozen);
         }
         let fallback = match self.stalled.clone() {
@@ -390,39 +525,165 @@ impl CollabSession {
             // session pays the read-back per edit" note below true.
             Some(prev) => prev,
             None => match self.cdoc.project_change(before, after) {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    // A document with no leaf block atom gains nothing from the
+                    // cache: the next integrate's miss costs one walk of the blocks
+                    // beside a whole read of the CRDT, where keeping it costs every
+                    // local keystroke a second walk (review 2 of #1575, N3).
+                    if let Some(ids) = cached
+                        .filter(|ids| !ids.is_empty())
+                        .and_then(|ids| atoms_after(before, after, ids))
+                    {
+                        atom_cache::store(self.uid, self.generation, after.clone(), ids);
+                    }
+                    return Ok(());
+                }
                 Err(e) => e,
             },
         };
+        // The caller's `before` did not describe the CRDT. Re-base on what does — a
+        // write that pairs the model's inline atoms with chars by value, so which
+        // char each is cannot be carried through it.
+        atom_cache::inline_forget(self.uid);
         // The caller's `before` did not describe the CRDT. Re-base on what does.
         // `to_doc` failing means the shared document is unprojectable — report it, but
         // do not poison: poison is for *inbound* damage (issue #196), and this path has
         // written nothing.
-        let base = match self.cdoc.to_doc(schema) {
-            Ok(base) => base,
+        // The read notes the CRDT block of each leaf block atom at no extra cost.
+        let (base, base_ids) = match self.cdoc.to_doc_with_atom_ids(schema) {
+            Ok(read) => read,
             Err(_) => {
                 self.stalled = Some(fallback.clone());
+                self.carry_unprojected(before, after, cached);
                 return Err(fallback);
             }
+        };
+        // Which CRDT block each leaf block atom of `before` is: what the last
+        // operation left in the cache, or — when the model was the CRDT's read until
+        // this very edit (the stall starts here) — the read's, since a model that
+        // matches the CRDT is its read index for index. Nothing else proves it.
+        let before_ids = if block_atoms(after) == 0 {
+            None
+        } else {
+            cached.or_else(|| {
+                if was_matching && base == *before {
+                    base_ids.clone()
+                } else {
+                    None
+                }
+            })
         };
         // The read may have found a table too large to read (one a local edit pushed
         // past the budget): freeze rather than diff against its placeholder.
         if let Some(frozen) = self.frozen() {
             self.stalled = Some(frozen.clone());
             self.model_ahead = true;
+            self.carry_unprojected(before, after, before_ids);
             return Err(frozen);
         }
+        // The re-base's `before` is the CRDT's read, which holds none of the caller's
+        // old nodes and is not the document the caller edited: keep the proof's new
+        // nodes only (`review2_1575::s11` otherwise remounts a view the stall did not
+        // move).
+        let _rebase_kept = crate::projection::rebase_proof_scope();
         match self.cdoc.project_change(&base, after) {
             Ok(()) => {
                 self.stalled = None;
                 self.model_ahead = false;
-                Ok(())
+                self.settle_rebased_atoms(schema, before, after, before_ids, base_ids)
             }
             Err(e) => {
                 self.stalled = Some(e.clone());
+                self.carry_unprojected(before, after, before_ids);
                 Err(e)
             }
         }
+    }
+
+    /// A local edit the CRDT refused (an outbound stall, #220; a freeze) moved the
+    /// model from `before` to `after` and the CRDT not at all, so every leaf block
+    /// atom of `after` that is one of `before`'s is still that atom's CRDT block.
+    /// Note them for the next operation ([`carry_ids`]): a peer's change arriving
+    /// during the stall then tells an atom whose attributes the peer changed from
+    /// another that came to stand at its place, as it does when nothing is
+    /// stalled. An atom nothing proves (one the refused edit wrote, or every one
+    /// when `before`'s blocks are not known) is [unproven](atom_cache::unproven),
+    /// so a view drawn for it is remounted, never re-pointed at a block it was not
+    /// mounted for (review 2 of #1575, N1).
+    fn carry_unprojected(&self, before: &Node, after: &Node, before_ids: Option<Vec<BlockId>>) {
+        let n = block_atoms(after);
+        if n == 0 {
+            return;
+        }
+        let ids = match before_ids {
+            Some(ids) if ids.len() == block_atoms(before) => carry_ids(before, after, &ids),
+            _ => atom_cache::unproven_ids(n),
+        };
+        atom_cache::store(self.uid, self.generation, after.clone(), ids);
+    }
+
+    /// A re-base that ended a stall wrote `after` against the CRDT's own read,
+    /// pairing blocks **by value**, so an atom of the model may now stand on
+    /// another atom's CRDT block: two equal embeds the model reordered while
+    /// stalled, or a copy inserted before its original. A view drawn for it would
+    /// then write to the block a peer's view keys another node's state to. Read
+    /// which block each atom of `after` became; where that is not the block the
+    /// model proved it to be ([`carry_ids`]) — or an atom nothing proved took a
+    /// block that was there before — write that atom again as a new block, so no
+    /// view on any peer is handed another node (the peers' views of the old block
+    /// are remounted). Paid only by the edit that ends a stall, and only while
+    /// `after` holds a leaf block atom.
+    fn settle_rebased_atoms(
+        &mut self,
+        schema: &Schema,
+        before: &Node,
+        after: &Node,
+        before_ids: Option<Vec<BlockId>>,
+        base_ids: Option<Vec<BlockId>>,
+    ) -> Result<()> {
+        let n = block_atoms(after);
+        if n == 0 {
+            return Ok(());
+        }
+        let carried = match before_ids {
+            Some(ids) if ids.len() == block_atoms(before) => carry_ids(before, after, &ids),
+            _ => atom_cache::unproven_ids(n),
+        };
+        let Ok((read, Some(now))) = self.cdoc.to_doc_with_atom_ids(schema) else {
+            return Ok(());
+        };
+        if read != *after || now.len() != n {
+            return Ok(());
+        }
+        let existed = |id: &BlockId| base_ids.as_ref().is_none_or(|ids| ids.contains(id));
+        let wrong: Vec<usize> = (0..n)
+            .filter(|&i| {
+                carried[i] != now[i] && !(atom_cache::is_unproven(carried[i]) && !existed(&now[i]))
+            })
+            .collect();
+        if wrong.is_empty() {
+            atom_cache::store(self.uid, self.generation, after.clone(), now);
+            return Ok(());
+        }
+        // `after` with those atoms copied (a new `Rc` each, equal by value): the
+        // projection pairs each copy with its original as two different atoms and,
+        // told none is kept, writes the original as a new block
+        // (`changed_atom_identity`). Everything else is shared, so untouched.
+        let refreshed = refresh_atoms(after, &wrong, &mut 0);
+        let written = {
+            let _none_kept = crate::projection::kept_atoms_scope(Some(&[]));
+            self.cdoc.project_change(&refreshed, after)
+        };
+        if let Err(e) = written {
+            self.stalled = Some(e.clone());
+            return Err(e);
+        }
+        if let Ok((read, Some(now))) = self.cdoc.to_doc_with_atom_ids(schema)
+            && read == *after
+        {
+            atom_cache::store(self.uid, self.generation, after.clone(), now);
+        }
+        Ok(())
     }
 
     /// Why this replica's **outbound** is currently refusing, if it is (issue #220).
@@ -547,6 +808,34 @@ impl CollabSession {
         state: &EditorState,
         changes: &[u8],
     ) -> Result<Option<EditorState>> {
+        Ok(self
+            .integrate_incremental_transaction(state, changes)?
+            .map(|tr| state.apply(tr)))
+    }
+
+    /// [`Self::integrate_incremental`], answering the **transaction** that brings
+    /// `state` to the converged document rather than the state it leads to —
+    /// for a caller that has to know how the document changed, not only what it
+    /// became (an editor view telling a node whose attributes a peer changed from
+    /// a node a peer replaced).
+    ///
+    /// A peer's change that only sets attributes of leaf block atoms (an
+    /// `embed`'s `data-*` keys) — and only of atoms that are **the same CRDT
+    /// block** before and after, so two embeds a peer swapped are not one —
+    /// is one `SetNodeAttrStep` per key, and moves no position; anything else is
+    /// the block-level replace [`build_remote_transaction`] describes. Telling the
+    /// two apart needs the old document's block identities: the previous
+    /// operation left them in [`atom_cache`]; on a miss they are read before the
+    /// update is applied, a second full read of the CRDT, paid only while
+    /// `state`'s document holds a leaf block atom. While outbound is stalled
+    /// (#220) the model is not the CRDT's read and nothing is read: the blocks a
+    /// refused local edit carried are used, and an atom nothing proves is
+    /// replaced, so a view drawn for it is remounted.
+    pub fn integrate_incremental_transaction(
+        &mut self,
+        state: &EditorState,
+        changes: &[u8],
+    ) -> Result<Option<rinch_editor_core::Transaction>> {
         if changes.is_empty() || changes == EMPTY_UPDATE {
             // Nothing to apply — and therefore nothing that could heal a poisoned
             // session, so the sticky error still reports.
@@ -557,6 +846,42 @@ impl CollabSession {
         let update = match Update::decode_v1(changes) {
             Ok(update) => update,
             Err(e) => return Err(self.sticky_or(e.into())),
+        };
+        // The CRDT blocks of the old document's leaf block atoms (`remote::AtomIds`):
+        // only while the model is the CRDT's read (so its atoms are the CRDT's, one
+        // for one). The last operation left them in `atom_cache` for exactly this
+        // document; otherwise — the first update after the session started, or after
+        // a local edit that wrote an atom — they are read before the update moves
+        // anything, which costs a whole read of the CRDT, and only while the model
+        // holds an atom at all.
+        let generation = self.touch();
+        let old_ids = if self.model_matches_crdt() {
+            atom_cache::lookup(self.uid, generation, &state.doc).or_else(|| {
+                if block_atoms(&state.doc) == 0 {
+                    return Some(Vec::new());
+                }
+                self.cdoc
+                    .to_doc_with_atom_ids(state.schema())
+                    .ok()
+                    .filter(|(read, _)| *read == state.doc)
+                    .and_then(|(_, ids)| ids)
+                    // A read that differs from the model (a previous integrate
+                    // failed after yrs applied part of an out-of-order update)
+                    // proves nothing: every atom is remounted rather than paired
+                    // by value with an equal one (review 3 of #1575, F1).
+                    .or_else(|| Some(atom_cache::unproven_ids(block_atoms(&state.doc))))
+            })
+        } else {
+            // The model is not the CRDT's read (outbound stalled, a refused edit
+            // during a freeze, poisoned), so its atoms are not the read's index for
+            // index. What a refused local edit carried (`carry_unprojected`) says
+            // which are still their blocks; nothing proves the rest, and they are
+            // remounted rather than paired with whatever stands at their place
+            // (review 2 of #1575, N1).
+            Some(
+                atom_cache::lookup(self.uid, generation, &state.doc)
+                    .unwrap_or_else(|| atom_cache::unproven_ids(block_atoms(&state.doc))),
+            )
         };
         if let Err(apply_err) = self.cdoc.apply_decoded(update) {
             // yrs commits on drop with no rollback, so a failed apply may have
@@ -571,8 +896,14 @@ impl CollabSession {
             };
         }
         // The converged rebuild — the projectability verdict for these bytes.
-        let target = match self.cdoc.to_doc(state.schema()) {
-            Ok(target) => target,
+        // Noting the atoms' blocks costs no read of its own.
+        // Which char each inline atom of the model is, from what the last read
+        // left (`atom_cache::inline_lookup`): a picture the model made since is
+        // unknown, and a peer's attribute change of it is a replace.
+        let old_inline = atom_cache::inline_lookup(self.uid, &state.doc);
+        let (target, new_ids, new_inline) = match self.cdoc.to_doc_with_all_atom_ids(state.schema())
+        {
+            Ok(read) => read,
             Err(cause) => return Err(self.classify_unprojectable(cause)),
         };
         // The document is projectable: a previously-poisoned session is healed by
@@ -597,10 +928,37 @@ impl CollabSession {
         // the model transaction reads only the validated rebuild (and is unreachable
         // in practice for a doc `to_doc` admitted). Defense in depth, not a supported
         // failure path.
-        match build_remote_transaction(state, &target)? {
-            Some(tr) => Ok(Some(state.apply(tr))),
-            None => Ok(None),
+        let inline = new_inline.as_deref().map(|new| InlineIds {
+            old: &old_inline,
+            new,
+        });
+        let ids = match (&old_ids, &new_ids) {
+            (Some(old), Some(new)) => Some(AtomIds { old, new, inline }),
+            _ => None,
+        };
+        let tr = build_remote_transaction_with(state, &target, ids.as_ref())?;
+        // The document the editor holds next is the read, atom for atom: note
+        // which char each of its inline atoms is.
+        match &new_inline {
+            Some(new_inline) => {
+                let doc = tr
+                    .as_ref()
+                    .map_or_else(|| state.doc.clone(), |tr| tr.doc().clone());
+                atom_cache::inline_store(self.uid, &doc, new_inline);
+            }
+            None => atom_cache::inline_forget(self.uid),
         }
+        // The document the editor holds next, and its atoms' blocks — for the next
+        // operation (`atom_cache`). Only when this one knew which atom was which.
+        if ids.is_some()
+            && let Some(new_ids) = new_ids
+        {
+            let doc = tr
+                .as_ref()
+                .map_or_else(|| state.doc.clone(), |tr| tr.doc().clone());
+            atom_cache::store(self.uid, self.generation, doc, new_ids);
+        }
+        Ok(tr)
     }
 
     /// Merge another peer's CRDT wholesale into this one (test/utility convenience).
@@ -609,6 +967,7 @@ impl CollabSession {
     pub fn merge(&mut self, other: &CollabSession) -> Result<()> {
         self.guard()?;
         other.guard()?;
+        self.touch();
         self.cdoc.merge_from(&other.cdoc)
     }
 
@@ -645,6 +1004,163 @@ impl CollabSession {
     /// sticky error rather than re-deriving the underlying read failure.
     pub fn projected_doc(&self, schema: &Schema) -> Result<Node> {
         self.guard()?;
-        self.cdoc.to_doc(schema)
+        let (doc, ids, inline) = self.cdoc.to_doc_with_all_atom_ids(schema)?;
+        // An editor built on this document (a guest joining) then knows its atoms'
+        // blocks, and which char each of its inline atoms is, without another read.
+        if let Some(ids) = ids {
+            atom_cache::store(self.uid, self.generation, doc.clone(), ids);
+        }
+        match &inline {
+            Some(inline) => atom_cache::inline_store(self.uid, &doc, inline),
+            None => atom_cache::inline_forget(self.uid),
+        }
+        Ok(doc)
     }
+}
+
+/// The CRDT blocks of `after`'s leaf block atoms, given `before`'s (`ids`), after
+/// [`CollabDoc::project_change`] wrote `before → after` the fast way: the top-level
+/// blocks the two share at either end (`Rc` identity, as the projection takes them)
+/// were not written and keep their blocks, and the changed middle is written
+/// afresh. `None` — read the CRDT next time — when the middle of `after` holds a
+/// leaf block atom (its block is new, or was rewritten in place), or the two share
+/// no block (the projection then matches by value).
+fn atoms_after(
+    before: &Node,
+    after: &Node,
+    ids: Vec<crate::projection::BlockId>,
+) -> Option<Vec<crate::projection::BlockId>> {
+    atom_cache::note_walk();
+    let (prefix, suffix) = crate::projection::identity_runs(before, after);
+    if (prefix, suffix) == (0, 0) {
+        return None;
+    }
+    let (bn, an) = (before.child_count(), after.child_count());
+    if (prefix..an - suffix).any(|i| block_atoms(after.child(i)) > 0) {
+        return None;
+    }
+    let gone: usize = (prefix..bn - suffix)
+        .map(|i| block_atoms(before.child(i)))
+        .sum();
+    if gone == 0 {
+        return Some(ids);
+    }
+    let kept_before: usize = (0..prefix).map(|i| block_atoms(before.child(i))).sum();
+    let mut ids = ids;
+    ids.drain(kept_before..kept_before + gone);
+    Some(ids)
+}
+
+/// The CRDT blocks of `after`'s leaf block atoms, given `before`'s (`ids`), for a
+/// change the CRDT did **not** take ([`CollabSession::carry_unprojected`]): the
+/// CRDT is as it was, so every atom of `after` that is one of `before`'s is still
+/// that atom's block. That is an atom in a top-level block the two share at either
+/// end ([`crate::projection::identity_runs`]), one of the changed middle that is
+/// the same `Rc` as an atom of `before`'s middle (a local move; each of those
+/// claimed once, so a copy pasted twice is one atom and one unknown), or one the
+/// editor proved is the atom standing at its place before
+/// ([`crate::projection::is_kept_atom`], an attribute change) when the middle
+/// holds as many atoms on both sides. Every other atom is
+/// [unproven](atom_cache::unproven).
+fn carry_ids(
+    before: &Node,
+    after: &Node,
+    ids: &[crate::projection::BlockId],
+) -> Vec<crate::projection::BlockId> {
+    atom_cache::note_walk();
+    let (prefix, suffix) = crate::projection::identity_runs(before, after);
+    let (bn, an) = (before.child_count(), after.child_count());
+    let head: usize = (0..prefix).map(|i| block_atoms(before.child(i))).sum();
+    let tail: usize = (bn - suffix..bn)
+        .map(|i| block_atoms(before.child(i)))
+        .sum();
+    let mut old_mid = Vec::new();
+    for i in prefix..bn - suffix {
+        atom_nodes(before.child(i), &mut old_mid);
+    }
+    let mut new_mid = Vec::new();
+    for i in prefix..an - suffix {
+        atom_nodes(after.child(i), &mut new_mid);
+    }
+    let old_mid_ids = &ids[head..ids.len() - tail];
+    let mut claimed = vec![false; old_mid.len()];
+    let mut out = ids[..head].to_vec();
+    for (j, atom) in new_mid.iter().enumerate() {
+        let moved = (0..old_mid.len()).find(|&i| !claimed[i] && old_mid[i].same_ref(atom));
+        let id = match moved {
+            Some(i) => {
+                claimed[i] = true;
+                old_mid_ids[i]
+            }
+            None if old_mid.len() == new_mid.len()
+                && !claimed[j]
+                && crate::projection::is_kept_atom(atom) =>
+            {
+                claimed[j] = true;
+                old_mid_ids[j]
+            }
+            None => atom_cache::unproven(),
+        };
+        out.push(id);
+    }
+    out.extend_from_slice(&ids[ids.len() - tail..]);
+    out
+}
+
+/// `node` with its leaf block atoms at document-order indices `which` (sorted)
+/// copied — a new `Rc` each, equal by value — and every ancestor of one rebuilt
+/// around it; everything else is shared. `next` counts the atoms passed.
+fn refresh_atoms(node: &Node, which: &[usize], next: &mut usize) -> Node {
+    if crate::projection::is_leaf_block_atom(node.node_type()) {
+        let i = *next;
+        *next += 1;
+        return if which.contains(&i) {
+            node.copy_with_content(node.content().clone())
+        } else {
+            node.clone()
+        };
+    }
+    if node.is_textblock() || node.is_leaf() {
+        return node.clone();
+    }
+    let start = *next;
+    let children: Vec<Node> = node
+        .content()
+        .children()
+        .iter()
+        .map(|c| refresh_atoms(c, which, next))
+        .collect();
+    if which.iter().any(|&i| (start..*next).contains(&i)) {
+        node.copy_with_content(rinch_editor_core::Fragment::from_children(children))
+    } else {
+        node.clone()
+    }
+}
+
+/// The pairs of `kept` (`(old, new)`, an editor's proof for `before` → `after`) that
+/// name one place: `old` stands once in `before`, or one copy fewer of it is left in
+/// `after` (the one that became `new`). After an in-editor copy one `Rc` stands in two
+/// places, and when the edit also took another copy away, a pair naming only the `Rc`
+/// could be matched with that copy's CRDT char or block, and a peer's concurrent change
+/// of it would show on `new` (the round-3 review of #1595, F2). Such a pair proves
+/// nothing: `new` is written as a new atom, its peer's change lost, never misattributed.
+/// The editor checks more than the count — that every other copy is still in place
+/// (`EditorHandle`'s own filter, which has the transaction's mapping) — so this is the
+/// floor for a caller driving the session directly.
+fn one_place_pairs(before: &Node, after: &Node, kept: &[(Node, Node)]) -> Vec<(Node, Node)> {
+    let count = |doc: &Node, old: &Node| {
+        let mut n = 0usize;
+        doc.nodes_between(0, doc.content_size(), &mut |m: &Node, _, _| {
+            n += usize::from(m.same_ref(old));
+            true
+        });
+        n
+    };
+    kept.iter()
+        .filter(|(old, _)| {
+            let was = count(before, old);
+            was <= 1 || count(after, old) + 1 == was
+        })
+        .cloned()
+        .collect()
 }

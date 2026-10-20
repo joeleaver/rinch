@@ -55,6 +55,8 @@ web-sys = { version = "0.3", features = [
     "WheelEvent", "WheelEventInit",
     "EventTarget", "FocusOptions", "FocusEvent",
     "Range",
+    "ResizeObserver",
+    "ResizeObserverEntry",
     # `Element::scrollIntoView({block, inline})` — the minimal ("nearest") scroll
     # that fulfils the editor view's `ScrollSelectionIntoView` request on the web
     # (`request_scroll_into_view` in web_document.rs).

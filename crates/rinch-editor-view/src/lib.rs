@@ -21,6 +21,7 @@ mod handle;
 mod images;
 mod keys;
 mod links;
+mod node_views;
 pub mod registry;
 mod styles;
 mod view;
@@ -33,6 +34,9 @@ pub use images::{
 };
 pub use keys::EditorKey;
 pub use links::{LinkClick, LinkHover, LinkSpan};
+pub use node_views::{
+    CaretFrom, NODE_VIEW_ATTR, NodeViewCtx, NodeViewRegistration, NodeViewRender, NodeViewSpec,
+};
 #[cfg(feature = "collaboration")]
 pub use registry::collab_receive_for;
 pub use registry::{
