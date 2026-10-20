@@ -1,0 +1,247 @@
+//! A `::before` / `::after` keeps its box — and its animation and
+//! transitions — across a cascade of its originator (#1023).
+//!
+//! `resolve_styles_recursive` used to free every generated box of an element
+//! and mint it again on each cascade of that element, whatever changed. Since
+//! #1004 a generated box carries its pseudo cascade, so its `@keyframes`
+//! animation starts — and every class toggle, hover or inherited change on the
+//! originator restarted it from t=0 on a new node, and a `transition` declared
+//! on the pseudo-element never ran (the box was always new, so there was no
+//! before-change style).
+//!
+//! Chrome 155: `.w::before { content: "x"; display: inline-block; animation:
+//! k 10s linear infinite }` with `.w.on { outline: 1px solid red }` — toggling
+//! `.on` leaves the `::before` animation's `currentTime` where it was. The
+//! animation restarts only when `animation-name` changes or the pseudo stops
+//! (`content: none`) and starts being generated again; a `transition` on the
+//! `::before` runs.
+//!
+//! Every clock is backdated by 400ms before the change, so "kept" and
+//! "restarted" are 400ms apart rather than a few microseconds.
+
+#![cfg(feature = "software-renderer")]
+
+use rinch_core::dom::{DomDocument, NodeId};
+use rinch_dom::RinchDocument;
+use rinch_dom::transition::TransitionProperty;
+
+const VW: f32 = 400.0;
+const VH: f32 = 200.0;
+
+const CSS: &str = "\
+    @keyframes k { from { background-color: rgb(255, 0, 0); } to { background-color: rgb(0, 0, 255); } } \
+    @keyframes k2 { from { background-color: rgb(0, 255, 0); } to { background-color: rgb(0, 0, 255); } } \
+    .w { font-size: 16px; line-height: 20px; color: rgb(10, 20, 30); } \
+    .w::before { content: \"x\"; display: inline-block; width: 13px; \
+                 animation: k 10s linear infinite; } \
+    .w::after { content: \"y\"; display: inline-block; width: 17px; } \
+    .w.on { outline: 1px solid red; } \
+    .p.dark .w { color: rgb(200, 100, 50); } \
+    .w.renamed::before { animation-name: k2; } \
+    .w.gone::before { content: none; } \
+    .w.attr::after { content: attr(data-label); } \
+    .w.empty::after { content: ''; } \
+    .t::before { content: \"t\"; display: inline-block; color: rgb(255, 0, 0); \
+                 transition: color 1s linear; } \
+    .t.on::before { color: rgb(0, 0, 255); }";
+
+/// `body > div.p > div.w`, laid out once.
+fn doc_with(class: &str) -> (RinchDocument, NodeId, NodeId) {
+    let mut doc = RinchDocument::new();
+    doc.load_css(CSS);
+    let body = doc.body();
+    let p = doc.create_element("div");
+    doc.set_attribute(p, "class", "p");
+    doc.append_child(body, p);
+    let w = doc.create_element("div");
+    doc.set_attribute(w, "class", class);
+    let mid = doc.create_text("mid");
+    doc.append_child(w, mid);
+    doc.append_child(p, w);
+    doc.resolve_layout(VW, VH);
+    (doc, p, w)
+}
+
+/// The generated box of the given kind (`after == false` for `::before`).
+fn generated(doc: &RinchDocument, owner: NodeId, after: bool) -> Option<usize> {
+    let children = &doc.tree.get(owner.0).unwrap().children;
+    let pick = if after {
+        children.last()
+    } else {
+        children.first()
+    };
+    pick.copied()
+        .filter(|&c| doc.tree.get(c).unwrap().is_pseudo_element)
+}
+
+fn before(doc: &RinchDocument, owner: NodeId) -> usize {
+    generated(doc, owner, false).expect("the element generates a ::before")
+}
+
+fn start_time(doc: &RinchDocument, node: usize) -> f64 {
+    doc.tree
+        .active_animations
+        .get(&node)
+        .expect("the ::before runs an animation")[0]
+        .start_time_ms
+}
+
+fn backdate(doc: &mut RinchDocument, node: usize, ms: f64) -> f64 {
+    let anim = &mut doc
+        .tree
+        .active_animations
+        .get_mut(&node)
+        .expect("the ::before runs an animation")[0];
+    anim.start_time_ms -= ms;
+    anim.start_time_ms
+}
+
+fn anim_name(doc: &RinchDocument, node: usize) -> String {
+    doc.tree.active_animations.get(&node).expect("animation")[0]
+        .name
+        .clone()
+}
+
+fn text_of(doc: &RinchDocument, node: usize) -> String {
+    doc.tree
+        .get(node)
+        .unwrap()
+        .children
+        .iter()
+        .filter_map(|&c| doc.tree.get(c).unwrap().text_content())
+        .collect()
+}
+
+#[test]
+fn a_class_change_on_the_originator_keeps_the_before_and_its_clock() {
+    let (mut doc, _p, w) = doc_with("w");
+    let b = before(&doc, w);
+    let started = backdate(&mut doc, b, 400.0);
+
+    doc.set_attribute(w, "class", "w on");
+    doc.resolve_layout(VW, VH);
+
+    assert_eq!(before(&doc, w), b, "the ::before is the same node");
+    assert_eq!(
+        start_time(&doc, b),
+        started,
+        "the animation keeps its clock across an unrelated class change"
+    );
+    assert_eq!(doc.tree.active_animations.len(), 1, "no stray animation");
+}
+
+#[test]
+fn an_inherited_change_above_keeps_the_clock_and_reaches_the_before() {
+    let (mut doc, p, w) = doc_with("w");
+    let b = before(&doc, w);
+    let started = backdate(&mut doc, b, 400.0);
+
+    doc.set_attribute(p, "class", "p dark");
+    doc.resolve_layout(VW, VH);
+
+    assert_eq!(before(&doc, w), b, "the ::before is the same node");
+    assert_eq!(start_time(&doc, b), started, "the clock is kept");
+    let c = doc.tree.get(b).unwrap().computed_style.color.unwrap();
+    let [r, g, bl, _] = c.to_rgba8().to_u8_array();
+    assert_eq!(
+        (r, g, bl),
+        (200, 100, 50),
+        "the kept ::before inherits the new colour"
+    );
+}
+
+#[test]
+fn a_new_animation_name_restarts_the_animation() {
+    let (mut doc, _p, w) = doc_with("w");
+    let b = before(&doc, w);
+    let started = backdate(&mut doc, b, 400.0);
+
+    doc.set_attribute(w, "class", "w renamed");
+    doc.resolve_layout(VW, VH);
+
+    let b2 = before(&doc, w);
+    assert_eq!(anim_name(&doc, b2), "k2");
+    assert!(
+        start_time(&doc, b2) > started + 300.0,
+        "a renamed animation starts afresh"
+    );
+}
+
+#[test]
+fn a_pseudo_that_stops_and_starts_being_generated_restarts() {
+    let (mut doc, _p, w) = doc_with("w");
+    let b = before(&doc, w);
+    let started = backdate(&mut doc, b, 400.0);
+
+    doc.set_attribute(w, "class", "w gone");
+    doc.resolve_layout(VW, VH);
+    let pseudos = doc.tree.get(w.0).unwrap().children.iter()
+        .filter(|&&c| doc.tree.get(c).unwrap().is_pseudo_element)
+        .count();
+    assert_eq!(pseudos, 1, "content: none generates no ::before, the ::after stays");
+    assert!(
+        !doc.tree.active_animations.contains_key(&b) || doc.tree.get(b).is_none(),
+        "the old box's animation is gone"
+    );
+
+    doc.set_attribute(w, "class", "w");
+    doc.resolve_layout(VW, VH);
+    let b2 = before(&doc, w);
+    assert!(
+        start_time(&doc, b2) > started + 300.0,
+        "a ::before generated again runs a new animation from t=0"
+    );
+}
+
+#[test]
+fn a_transition_declared_on_a_before_runs() {
+    let (mut doc, _p, w) = doc_with("t");
+    let b = before(&doc, w);
+    assert!(doc.tree.active_transitions.is_empty());
+
+    doc.set_attribute(w, "class", "t on");
+    doc.resolve_layout(VW, VH);
+
+    assert_eq!(before(&doc, w), b, "the ::before is the same node");
+    let running = doc
+        .tree
+        .active_transitions
+        .get(&b)
+        .is_some_and(|m| m.contains_key(&TransitionProperty::Color));
+    assert!(running, "the ::before's colour transitions");
+}
+
+#[test]
+fn a_kept_after_takes_new_content_and_stays_last() {
+    let (mut doc, _p, w) = doc_with("w attr");
+    doc.set_attribute(w, "data-label", "one");
+    doc.resolve_layout(VW, VH);
+    let a = generated(&doc, w, true).expect("an ::after");
+    assert_eq!(text_of(&doc, a), "one");
+
+    doc.set_attribute(w, "data-label", "two");
+    doc.resolve_layout(VW, VH);
+    let a2 = generated(&doc, w, true).expect("an ::after");
+    assert_eq!(a2, a, "the ::after is the same node");
+    assert_eq!(text_of(&doc, a), "two", "it shows the new content");
+    let children = &doc.tree.get(w.0).unwrap().children;
+    assert_eq!(children.len(), 3, "::before, the text, ::after: {children:?}");
+    assert_eq!(*children.last().unwrap(), a);
+}
+
+#[test]
+fn a_kept_after_gains_and_loses_its_text_child() {
+    let (mut doc, _p, w) = doc_with("w empty");
+    let a = generated(&doc, w, true).expect("an ::after");
+    assert!(doc.tree.get(a).unwrap().children.is_empty(), "content: ''");
+
+    doc.set_attribute(w, "class", "w");
+    doc.resolve_layout(VW, VH);
+    assert_eq!(generated(&doc, w, true), Some(a));
+    assert_eq!(text_of(&doc, a), "y");
+
+    doc.set_attribute(w, "class", "w empty");
+    doc.resolve_layout(VW, VH);
+    assert_eq!(generated(&doc, w, true), Some(a));
+    assert!(doc.tree.get(a).unwrap().children.is_empty());
+}
