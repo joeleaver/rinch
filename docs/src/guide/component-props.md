@@ -1427,7 +1427,7 @@ Custom Default: `level_offset` defaults to `"md"`, `expand_on_click` defaults to
 | `expand_on_click` | `bool` | **`true`** | Click expands/collapses |
 | `select_on_click` | `bool` | `false` | Click selects |
 | `render_node` | `Option<RenderTreeNode>` | `None` | Custom node renderer |
-| `onselect` | `Option<ValueCallback<String>>` | `None` | |
+| `onselect` | `Option<ValueCallback<String>>` | `None` | A row was selected: by a plain click or Enter, by Space, or by the cursor in a single-select tree with `keyboard`. Not by a Ctrl-click, a Shift run or Ctrl+A |
 | `onexpand` | `Option<ValueCallback<String>>` | `None` | |
 | `oncollapse` | `Option<ValueCallback<String>>` | `None` | |
 | `data_source` | `Option<Rc<dyn Fn() -> Vec<TreeNodeData>>>` | `None` | Reactive data source — when provided, root nodes update when this changes |
@@ -1447,6 +1447,7 @@ Custom Default: `level_offset` defaults to `"md"`, `expand_on_click` defaults to
 | `oncursor` | `Option<ValueCallback<String>>` | `None` | The cursor came to rest on a row, `cursor_delay_ms` after the last move |
 | `cursor_delay_ms` | `u32` | **`120`** | How long the cursor rests before `oncursor`; `0` reports every move at once |
 | `label_of` | `Option<LabelOf>` | `None` | The text type-ahead matches for a row (its label when not given) |
+| `onselectionchange` | `Option<ValueCallback<Vec<String>>>` | `None` | The selection, top to bottom, each time a click or a key changes it, in a `multiple` tree only (see [Selecting several rows](components.md#selecting-several-rows)). Not called when nothing changed; a value whose row left the data is not reported |
 
 `drag_values`, `judge_drop`, `accepts_children`, `handle_key` and `label_of`
 are `Rc` closures and are not `on*` props, so `rsx!` does not wrap them:
@@ -1465,10 +1466,12 @@ has failed to start, on both backends.
 
 **Keyboard types:**
 
-- `TreeKey { key, ctrl, shift, alt, meta, cursor, parent, above, below }` — a key a row got, offered to `handle_key`: the key as `KeyEventData::key` names it, the cursor row, its parent (`None` at the top level), and the rows drawn right above and below it.
-- `TreeKey::drop_for(TreeMove) -> Option<TreeDrop>` — the drop a structural move of the cursor row would be (carrying what `drag_values` gives for it), for the app to deliver as it delivers a dropped one. `None` when there is nowhere to go, and whenever a drag would refuse the same drop: into a row `accepts_children` refuses, into a carried row or its subtree, or refused by `judge_drop`.
+- `TreeKey { key, ctrl, shift, alt, meta, cursor, parent, above, below }` — a key a row got, offered to `handle_key`: the key as `KeyEventData::key` names it, the cursor row, its parent (`None` at the top level), and the rows drawn right above and below it — or, when the cursor row is one of several selected rows of a `multiple` tree, the rows drawn right above and below that block.
+- `TreeKey::carried() -> &[String]` — what a key move acts on: the selection top to bottom when the cursor row is one of several selected rows (rows inside other selected rows left out), the cursor row alone otherwise; through `drag_values`.
+- `TreeKey::drop_for(TreeMove) -> Option<TreeDrop>` — the drop a structural move of `carried()` would be, as one block (several rows must share a parent, else `None`; `Up` goes before the row above the first, `Down` after the row below the last), for the app to deliver as it delivers a dropped one. `None` when there is nowhere to go, and whenever a drag would refuse the same drop: into a row `accepts_children` refuses, into a carried row or its subtree, or refused by `judge_drop`.
 - `TreeMove` — `Indent` (into the previous sibling, last), `Outdent` (out of the parent, right after it), `Up` (before the previous sibling), `Down` (after the next sibling). `#[non_exhaustive]`.
 - `TreeKeyHandler` = `Rc<dyn Fn(&TreeKey) -> bool>`, `LabelOf` = `Rc<dyn Fn(&str) -> String>`.
+- `TreeController::set_selection(values)` — make exactly these rows the selection (from code; `onselectionchange` is not called).
 - `UseTreeReturn::cursor: Signal<Option<String>>`; `TreeController::set_cursor(value)` (when a row of the tree has the keyboard, it moves to the cursor row), `cursor()`, and `focus()` (gives the cursor row, or the first row, the keyboard).
 
 **TreeNodeData:** `value: String`, `label: String`, `children: Vec<TreeNodeData>`, `disabled: bool`, `icon: Option<TablerIcon>`, `payload: Option<Rc<dyn Any>>`.

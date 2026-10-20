@@ -293,7 +293,8 @@ impl TreeController {
         self.selected.set(HashSet::new());
     }
 
-    /// Make exactly these rows the selection.
+    /// Make exactly these rows the selection. [`Tree::onselectionchange`]
+    /// is not called: it reports what clicks and keys do.
     pub fn set_selection(&self, values: impl IntoIterator<Item = String>) {
         self.selected.set(values.into_iter().collect());
     }

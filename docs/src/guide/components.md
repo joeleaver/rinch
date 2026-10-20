@@ -472,7 +472,11 @@ the tree and out of it in one press. While one of its rows has the keyboard
 - **Selection.** In a single-select tree the selection follows the cursor,
   as a click would select: only with `select_on_click`, never a disabled row
   (the cursor can rest on one), and `onselect` is told. In a `multiple` tree
-  the arrows select nothing; Space toggles the cursor row.
+  a plain arrow selects nothing; Space toggles the cursor row; Shift with a
+  move key, and Shift+Space, select the run of drawn rows from the **anchor**
+  to the cursor row, replacing the selection; Ctrl+A (Cmd+A) selects the
+  cursor row's siblings; Enter adds the cursor row as a click would, keeping
+  the rest. See *Selecting several rows* below.
 - The cursor row takes the keyboard and is scrolled into view; `oncursor`
   tells the app once it has rested `cursor_delay_ms` (120), for an app that
   opens what the cursor is on without opening every row it passes.
@@ -514,6 +518,50 @@ Tree {
   shadow) while the tree has the keyboard (`.rinch-tree--focused`), in place
   of the focus outline. The row an "inside" drop is drawn on keeps its
   outline, so a cursor row being dropped into shows both.
+
+#### Selecting several rows
+
+With `UseTreeOptions { multiple: true, .. }` and `select_on_click: true`:
+
+- **A plain click** selects the row alone (and expands or collapses it under
+  `expand_on_click`), and tells `onselect`. **Ctrl- (Cmd-) click** adds or
+  removes the row; **Shift-click** selects the run of drawn rows from the
+  anchor to the clicked row, replacing the selection. Neither of those two
+  expands, collapses or tells `onselect`.
+- **The anchor** is the row last clicked, Ctrl-clicked or toggled with
+  Space — the most recently selected row — not a row the cursor merely moved
+  to. An anchor the data no longer has is replaced by the cursor row (from
+  the keyboard) or the clicked row (Shift-click); one hidden inside a
+  collapsed row counts as its shown ancestor.
+- The keys are the ones listed above; Shift+arrows move the cursor (and tell
+  `oncursor`) as the plain arrows do.
+- **Disabled rows** are never selected: a run and Ctrl+A leave them out.
+- **A collapse** by the chevron, Left or a row click unselects the rows it
+  hides. A collapse by the app (`TreeController::collapse`) does not.
+- `onselectionchange` gets the selection top to bottom each time a click or
+  a key changes it (never when it did not change; a `multiple` tree only).
+  A selected value whose row the app deleted is left out of the report, but
+  the tree does not prune it from `UseTreeReturn::selected`.
+  `TreeController::set_selection(values)` replaces the selection from code.
+- Without `select_on_click` (#1601's rule for every tree), neither clicks
+  nor keys select anything: Shift+arrows only move the cursor, Ctrl+A is
+  not the tree's.
+
+**Moving a selection.** A drag from a selected row, and `TreeKey::drop_for`
+from one, carry the whole selection (top to bottom, rows inside other
+selected rows left out; `TreeKey::carried()` says what), through
+`drag_values` when it is set. A keyboard move moves the rows as one block:
+they must share a parent (a selection spanning two parents gives `None`,
+where a drag of the same rows is offered and delivered), Up goes before the
+row above the first, Down after the row below the last, and a block with
+gaps closes them (`b` and `d` moved Down land after `e`). `TreeKey::above`
+and `below` are then the rows around the block.
+
+**Where this differs from the WAI-ARIA tree pattern:** Ctrl+A selects the
+cursor row's siblings, not every row; Shift with an arrow selects the run
+from the anchor (the desktop file-manager model), where the pattern's
+recommended model toggles the next row and keeps the rest; Ctrl+Shift-click
+toggles the row (Ctrl wins) rather than adding the run.
 
 See the Tree section of [Component Props](component-props.md#tree) for every
 prop and type.
