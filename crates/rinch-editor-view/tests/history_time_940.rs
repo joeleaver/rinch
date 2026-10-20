@@ -145,3 +145,27 @@ fn an_apps_own_time_is_kept() {
     assert!(handle.command("undo"));
     assert_eq!(html(&handle), "<p>xa</p>", "the app's time put `b` in a step of its own");
 }
+
+/// `insert_image` and `toggle_link` run their command through the handle too and
+/// are stamped: a picture inserted in a run of typing is in the run's step (its
+/// replace is the history's "typing" class), and one inserted after a pause is
+/// not. Unstamped, its time `0` put it before every stamped keystroke, so the
+/// letter typed right after it started a step of its own.
+#[test]
+fn a_picture_is_stamped_like_a_keystroke() {
+    let _clock = FakeClock::install(20_000);
+    let handle = editor("<p>x</p>", 2);
+    assert!(handle.insert_text("a"));
+    at(20_100);
+    assert!(handle.insert_image("p.png", ""));
+    at(20_200);
+    assert!(handle.insert_text("b"));
+    at(21_000);
+    assert!(handle.insert_text("c")); // 800 ms later: a step of its own
+    assert_eq!(html(&handle), r#"<p>xa<img src="p.png">bc</p>"#);
+
+    assert!(handle.command("undo"));
+    assert_eq!(html(&handle), r#"<p>xa<img src="p.png">b</p>"#);
+    assert!(handle.command("undo"));
+    assert_eq!(html(&handle), "<p>x</p>", "`a`, the picture and `b` were one step");
+}
