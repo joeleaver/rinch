@@ -20,9 +20,14 @@ use wgpu::{
     TextureView, TextureViewDescriptor, TextureViewDimension, VertexState,
 };
 
-/// WGSL shader with two fragment entry points:
+/// WGSL shader with these fragment entry points:
 /// - `fs_layer`: blits a layer into a viewport rect, discards outside
-/// - `fs_ui`: alpha-blends Vello UI (premultiplied alpha) on top
+/// - `fs_ui`: alpha-blends the Vello UI on top. Vello 0.7 stores straight
+///   (not premultiplied) alpha (`fine.wgsl` divides by alpha at the final
+///   store), so the colour is premultiplied here and blended `One,
+///   OneMinusSrcAlpha`: the target then holds premultiplied pixels.
+/// - `fs_present_*`: one full-surface `REPLACE` pass converting the
+///   alpha encoding on the way to the window surface ([`PresentAlpha`]).
 const LAYER_BLIT_SHADER: &str = r#"
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -121,12 +126,36 @@ fn fs_layer(in: VertexOutput) -> @location(0) vec4<f32> {
     discard;
 }
 
-// Alpha-blend UI on top of composited layers.
-// Vello outputs premultiplied alpha, so we use premultiplied blending.
+// Alpha-blend UI on top of composited layers. Vello stores straight
+// alpha: premultiply, then blend One / OneMinusSrcAlpha.
 @fragment
 fn fs_ui(in: VertexOutput) -> @location(0) vec4<f32> {
     let ui = textureSample(ui_tex, tex_sampler, in.uv);
-    return ui;
+    return vec4<f32>(ui.rgb * ui.a, ui.a);
+}
+
+// Present passes (REPLACE, full surface): the source as it is, ...
+@fragment
+fn fs_present_straight(in: VertexOutput) -> @location(0) vec4<f32> {
+    return textureSample(ui_tex, tex_sampler, in.uv);
+}
+
+// ... straight alpha premultiplied (Vello's output to a PreMultiplied surface), ...
+@fragment
+fn fs_present_premultiply(in: VertexOutput) -> @location(0) vec4<f32> {
+    let c = textureSample(ui_tex, tex_sampler, in.uv);
+    return vec4<f32>(c.rgb * c.a, c.a);
+}
+
+// ... or premultiplied alpha made straight (the composited layers to a
+// PostMultiplied surface).
+@fragment
+fn fs_present_unpremultiply(in: VertexOutput) -> @location(0) vec4<f32> {
+    let c = textureSample(ui_tex, tex_sampler, in.uv);
+    if c.a <= 0.0 {
+        return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    }
+    return vec4<f32>(min(c.rgb / c.a, vec3<f32>(1.0)), c.a);
 }
 "#;
 
@@ -143,16 +172,34 @@ struct Uniforms {
     clip_rect: [f32; 4],
 }
 
+/// How a present pass converts the pixels it copies to the window surface
+/// (#1523): the surface's `CompositeAlphaMode` says how the compositor reads
+/// them, and Vello's own output is straight alpha while the composited layers
+/// are premultiplied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PresentAlpha {
+    /// As they are (and in the surface's channel order).
+    Straight,
+    /// Straight alpha made premultiplied.
+    Premultiply,
+    /// Premultiplied alpha made straight.
+    Unpremultiply,
+}
+
 /// GPU pipeline for compositing RGBA layers with the Vello UI.
 ///
 /// Two pipelines share the same bind group layout and vertex shader:
 /// - `layer_pipeline`: uses `fs_layer`, `BlendState::REPLACE` — blits layer into viewport rect
 /// - `ui_pipeline`: uses `fs_ui`, premultiplied alpha blending — overlays Vello UI on top
+/// - `present_pipelines`: `fs_present_*`, `BlendState::REPLACE` — the copy to the surface
 pub struct LayerCompositor {
     /// Pipeline for blitting a layer into a viewport rect.
     layer_pipeline: RenderPipeline,
     /// Pipeline for alpha-blending UI on top.
     ui_pipeline: RenderPipeline,
+    /// Present passes, by [`PresentAlpha`] (`Straight`, `Premultiply`,
+    /// `Unpremultiply`).
+    present_pipelines: [RenderPipeline; 3],
     bind_group_layout: BindGroupLayout,
     sampler: Sampler,
 }
@@ -247,7 +294,7 @@ impl LayerCompositor {
             cache: None,
         });
 
-        // UI overlay pipeline: premultiplied alpha blending
+        // UI overlay pipeline: premultiplied alpha blending (fs_ui premultiplies)
         let ui_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
             label: Some("layer UI overlay pipeline"),
             layout: Some(&pipeline_layout),
@@ -280,6 +327,39 @@ impl LayerCompositor {
             cache: None,
         });
 
+        let present_pipelines = [
+            "fs_present_straight",
+            "fs_present_premultiply",
+            "fs_present_unpremultiply",
+        ]
+        .map(|entry_point| {
+            device.create_render_pipeline(&RenderPipelineDescriptor {
+                label: Some(entry_point),
+                layout: Some(&pipeline_layout),
+                vertex: VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(FragmentState {
+                    module: &shader,
+                    entry_point: Some(entry_point),
+                    targets: &[Some(ColorTargetState {
+                        format: surface_format,
+                        blend: Some(BlendState::REPLACE),
+                        write_mask: ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            })
+        });
+
         let sampler = device.create_sampler(&SamplerDescriptor {
             label: Some("layer compositor sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -290,6 +370,7 @@ impl LayerCompositor {
         Self {
             layer_pipeline,
             ui_pipeline,
+            present_pipelines,
             bind_group_layout,
             sampler,
         }
@@ -496,7 +577,8 @@ impl LayerCompositor {
 
     /// Alpha-blend the Vello UI texture on top of the composited layers.
     ///
-    /// Uses premultiplied alpha blending (Vello outputs premultiplied alpha).
+    /// Vello's straight alpha is premultiplied in the shader and blended
+    /// premultiplied, so the target ends up holding premultiplied pixels.
     /// Call this once after all `blit_layer()` passes are done.
     pub fn overlay_ui(
         &self,
@@ -504,6 +586,52 @@ impl LayerCompositor {
         encoder: &mut CommandEncoder,
         ui_texture: &Texture,
         target: &TextureView,
+    ) {
+        self.full_surface_pass(
+            device,
+            encoder,
+            ui_texture,
+            target,
+            &self.ui_pipeline,
+            wgpu::LoadOp::Load, // preserve layers underneath
+        );
+    }
+
+    /// Copy `source` to the whole of `target` (the window surface),
+    /// converting its alpha encoding as `alpha` says. Every pixel is
+    /// written, so nothing an earlier frame left in the target survives.
+    pub fn present(
+        &self,
+        device: &Device,
+        encoder: &mut CommandEncoder,
+        source: &Texture,
+        target: &TextureView,
+        alpha: PresentAlpha,
+    ) {
+        let pipeline = &self.present_pipelines[match alpha {
+            PresentAlpha::Straight => 0,
+            PresentAlpha::Premultiply => 1,
+            PresentAlpha::Unpremultiply => 2,
+        }];
+        self.full_surface_pass(
+            device,
+            encoder,
+            source,
+            target,
+            pipeline,
+            wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+        );
+    }
+
+    /// A fullscreen draw of `pipeline` sampling `ui_texture` into `target`.
+    fn full_surface_pass(
+        &self,
+        device: &Device,
+        encoder: &mut CommandEncoder,
+        ui_texture: &Texture,
+        target: &TextureView,
+        pipeline: &RenderPipeline,
+        load: wgpu::LoadOp<wgpu::Color>,
     ) {
         let ui_view = ui_texture.create_view(&TextureViewDescriptor::default());
 
@@ -542,7 +670,7 @@ impl LayerCompositor {
                 view: target,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load, // preserve layers underneath
+                    load,
                     store: wgpu::StoreOp::Store,
                 },
                 depth_slice: None,
@@ -552,8 +680,273 @@ impl LayerCompositor {
             occlusion_query_set: None,
         });
 
-        pass.set_pipeline(&self.ui_pipeline);
+        pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
         pass.draw(0..3, 0..1);
+    }
+}
+
+#[cfg(test)]
+mod gpu_alpha_tests {
+    //! Real GPU fixtures for the present passes (#1523). They need an
+    //! adapter, so they are `#[ignore]`d: run them with
+    //! `cargo test -p rinch --features gpu --lib -- --ignored gpu_alpha`.
+    use super::*;
+    use vello::kurbo::{Affine, Rect};
+    use vello::peniko::{Color, Fill};
+
+    const W: u32 = 8;
+    const H: u32 = 4;
+
+    fn device() -> (Device, Queue) {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::default(),
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("a GPU adapter (these fixtures are #[ignore]d for hosts without one)");
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            .expect("a device")
+    }
+
+    fn texture(device: &Device, format: TextureFormat, usage: wgpu::TextureUsages) -> Texture {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("gpu_alpha_tests"),
+            size: wgpu::Extent3d {
+                width: W,
+                height: H,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage,
+            view_formats: &[],
+        })
+    }
+
+    /// Vello's straight-alpha output for a frame whose left half is
+    /// `rgba(255, 255, 255, 0.5)` and right half unpainted, over a
+    /// transparent base: what a transparent window renders.
+    fn vello_frame(device: &Device, queue: &Queue) -> Texture {
+        let target = texture(
+            device,
+            TextureFormat::Rgba8Unorm,
+            wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+        );
+        let mut renderer = vello::Renderer::new(
+            device,
+            vello::RendererOptions {
+                antialiasing_support: vello::AaSupport::area_only(),
+                use_cpu: false,
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
+        )
+        .expect("vello");
+        let mut scene = vello::Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::new([1.0, 1.0, 1.0, 0.5]),
+            None,
+            &Rect::new(0.0, 0.0, (W / 2) as f64, H as f64),
+        );
+        let view = target.create_view(&TextureViewDescriptor::default());
+        renderer
+            .render_to_texture(
+                device,
+                queue,
+                &scene,
+                &view,
+                &vello::RenderParams {
+                    base_color: Color::TRANSPARENT,
+                    width: W,
+                    height: H,
+                    antialiasing_method: vello::AaConfig::Area,
+                },
+            )
+            .expect("render");
+        target
+    }
+
+    /// Read `texture` back as RGBA8 rows (no padding: `W * 4` = 32 bytes,
+    /// padded to wgpu's 256-byte row alignment).
+    fn read(device: &Device, queue: &Queue, texture: &Texture) -> Vec<[u8; 4]> {
+        let row = 256u32;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (row * H) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(H),
+                },
+            },
+            wgpu::Extent3d {
+                width: W,
+                height: H,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(Some(encoder.finish()));
+        buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let data = buffer.slice(..).get_mapped_range();
+        (0..H)
+            .flat_map(|y| {
+                let data = &data;
+                (0..W).map(move |x| {
+                    let i = (y * row + x * 4) as usize;
+                    [data[i], data[i + 1], data[i + 2], data[i + 3]]
+                })
+            })
+            .collect()
+    }
+
+    fn present(alpha: PresentAlpha) -> Vec<[u8; 4]> {
+        let (device, queue) = device();
+        let frame = vello_frame(&device, &queue);
+        let compositor = LayerCompositor::new(&device, TextureFormat::Rgba8Unorm);
+        let surface = texture(
+            &device,
+            TextureFormat::Rgba8Unorm,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        let view = surface.create_view(&TextureViewDescriptor::default());
+        let mut encoder = device.create_command_encoder(&Default::default());
+        compositor.present(&device, &mut encoder, &frame, &view, alpha);
+        queue.submit(Some(encoder.finish()));
+        read(&device, &queue, &surface)
+    }
+
+    fn near(a: [u8; 4], b: [u8; 4]) -> bool {
+        a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 1)
+    }
+
+    /// 50% white over a transparent window reaches a `PreMultiplied`
+    /// surface as `(128, 128, 128, 128)`, what the software renderer and a
+    /// browser composite (over green: `(128, 228, 128)`). The straight copy
+    /// it replaces handed over `(255, 255, 255, 128)`, which KWin showed as
+    /// opaque white; the unpainted half stays `(0, 0, 0, 0)`.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_alpha_premultiply_on_present() {
+        let px = present(PresentAlpha::Premultiply);
+        assert!(near(px[0], [128, 128, 128, 128]), "painted: {:?}", px[0]);
+        assert_eq!(px[W as usize - 1], [0, 0, 0, 0], "unpainted");
+        let straight = present(PresentAlpha::Straight);
+        assert!(
+            near(straight[0], [255, 255, 255, 128]),
+            "Vello's own output is straight: {:?}",
+            straight[0]
+        );
+    }
+
+    /// A UI pixel blended over an opaque green layer comes out as the
+    /// browser's `(128, 228, 128)`: `fs_ui` premultiplies Vello's straight
+    /// output before the `One, OneMinusSrcAlpha` blend (it added the
+    /// straight colour and saturated to `(255, 255, 255)`).
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_alpha_ui_over_a_layer() {
+        let (device, queue) = device();
+        let frame = vello_frame(&device, &queue);
+        let compositor = LayerCompositor::new(&device, TextureFormat::Rgba8Unorm);
+        let target = texture(
+            &device,
+            TextureFormat::Rgba8Unorm,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        let view = target.create_view(&TextureViewDescriptor::default());
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 200.0 / 255.0,
+                            b: 0.0,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
+        compositor.overlay_ui(&device, &mut encoder, &frame, &view);
+        queue.submit(Some(encoder.finish()));
+        let px = read(&device, &queue, &target);
+        assert!(near(px[0], [128, 228, 128, 255]), "over green: {:?}", px[0]);
+        assert_eq!(px[W as usize - 1], [0, 200, 0, 255], "unpainted: the layer");
+
+        // And the composited (premultiplied) pixels made straight again for
+        // a `PostMultiplied` surface.
+        let post = texture(
+            &device,
+            TextureFormat::Rgba8Unorm,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        let post_view = post.create_view(&TextureViewDescriptor::default());
+        let premultiplied = present_into(
+            &device,
+            &queue,
+            &compositor,
+            &frame,
+            PresentAlpha::Premultiply,
+        );
+        let mut encoder = device.create_command_encoder(&Default::default());
+        compositor.present(
+            &device,
+            &mut encoder,
+            &premultiplied,
+            &post_view,
+            PresentAlpha::Unpremultiply,
+        );
+        queue.submit(Some(encoder.finish()));
+        let px = read(&device, &queue, &post);
+        assert!(near(px[0], [255, 255, 255, 128]), "round trip: {:?}", px[0]);
+        assert_eq!(px[W as usize - 1], [0, 0, 0, 0]);
+    }
+
+    fn present_into(
+        device: &Device,
+        queue: &Queue,
+        compositor: &LayerCompositor,
+        source: &Texture,
+        alpha: PresentAlpha,
+    ) -> Texture {
+        let out = texture(
+            device,
+            TextureFormat::Rgba8Unorm,
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+        );
+        let view = out.create_view(&TextureViewDescriptor::default());
+        let mut encoder = device.create_command_encoder(&Default::default());
+        compositor.present(device, &mut encoder, source, &view, alpha);
+        queue.submit(Some(encoder.finish()));
+        out
     }
 }

@@ -4956,7 +4956,7 @@ would break CSS semantics and make desktop diverge from rinch-web.
 
 ## Transparent Windows
 
-Transparent/borderless windows are configured via `WindowProps { transparent: true, borderless: true }`. The live renderer (`shell::desktop::WgpuRenderer`) uses `CompositeAlphaMode::Auto` + a transparent clear color, which the compositor honors on **Linux (Wayland/X11)**.
+Transparent/borderless windows are configured via `WindowProps { transparent: true, borderless: true }`. The software renderer presents premultiplied pixels through softbuffer. The GPU renderer (`shell::desktop::WgpuRenderer::try_new_transparent`, PR #1597) renders Vello over a transparent base and configures the surface with `surface_alpha_mode`: `Auto` for an opaque window (unchanged), and for a transparent one the first of `PreMultiplied`, `PostMultiplied`, `Inherit` the surface offers, else `Auto` (wgpu's `Auto` is `Opaque` on Vulkan, which drew every unpainted pixel black). **Vello 0.7 stores straight alpha** (`fine.wgsl` divides by alpha at its final store), so `present_step` converts on the way to the surface: a `PreMultiplied` (or `Inherit`) surface gets Vello's frame through the compositor's `fs_present_premultiply` pass, a straight copy of which showed 50% white over green as opaque white; a `PostMultiplied` one gets it as it is; an opaque window is copied as before (a Bgra8 surface goes through a `REPLACE` pass that writes every pixel, where it blended over an uncleared image). The layer compositor's `fs_ui` premultiplies Vello's colour before its `One, OneMinusSrcAlpha` blend, so translucent UI over a video or render-surface layer is no longer too bright, in opaque windows too, and the composited texture holds premultiplied pixels (copied to a premultiplied surface, made straight by `fs_present_unpremultiply` for a `PostMultiplied` one). Measured in a nested KWin on RADV (`Opaque | PreMultiplied` only; Mesa's Wayland and X11 WSI never offer `PostMultiplied`): `rgba(255,255,255,0.5)` over green reads `(128,228,128)` on GPU and software alike; pinned by the `#[ignore]`d `compositor::gpu_alpha_tests` (run with `--ignored gpu_alpha` on a host with a GPU) and `desktop::alpha_mode_tests`. **macOS** (not tested): Metal offers `Opaque | PostMultiplied`, and wgpu's `PostMultiplied` there is a `CAMetalLayer` with `opaque = false`, whose contents Core Animation composites as premultiplied, so `present_step` premultiplies for it on macOS only; a transparent window there used to be opaque and now blends. A layer's own pixels (a `RenderSurface` frame) are blitted as they are and read as premultiplied.
 
 > **Windows caveat:** true per-pixel transparency on Windows needs an alpha-capable presentation path (PreMultiplied alpha + DX12 DirectComposition + `WS_EX_NOREDIRECTIONBITMAP`) that is **not currently wired** into `WgpuRenderer` — so `transparent: true` renders opaque on Windows today. Tracked in **issue #89**. (The old `TransparentWindowRenderer` held that path but was never constructed by the runtime and has been removed as dead code.)
 
@@ -5207,7 +5207,19 @@ winit cannot make at creation is created hidden, adjusted, and then shown:
   any press or release ends, and that starts only while the primary button is
   held (so does a `start_window_*` call on any window); the fork commits a
   margin change at once and sends only requests the bound layer-shell version
-  has. The compositor closes a layer surface whose output went away: the
+  has. **A move is confirmed in the event stream** (PR #1597): after a
+  margin commit the fork sends a `wl_display.sync` and, when its callback is
+  done, pushes `WindowEvent::Moved` (the margins times the scale) in order
+  with the pointer's events; `LayerState` (`layer_shell.rs`) reads each
+  pointer position against the origin the last `Moved` reported
+  (`LayerState::applied`), never against the position last set, and drops
+  none. Reading against the last set position added each move again for
+  every position already on its way (one burst read in one batch ran the
+  window to 18380,11040); dropping positions until the compositor caught up
+  put fast drags 30–590 px off. Measured in a nested KWin with fake input:
+  60 moves at 0–16 ms apart all land exactly under the pointer, and nothing
+  moves after the release. Pins: `layer_shell::tests::a_drag_lands_under_the_pointer_at_every_lag`,
+  `rinch_runtime::layer_drag_tests`. The compositor closes a layer surface whose output went away: the
   shell's `CloseRequested` for a layer surface re-creates it
   (`layer_surface_closed`, output name dropped; with no output left it retries
   every second) instead of quitting. A
