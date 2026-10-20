@@ -128,7 +128,10 @@ fn word_delete_splits_punctuation_from_letters_939() {
 fn a_combining_mark_stays_with_its_letter_939() {
     // "cafe" + U+0301, then "!".
     assert_eq!(deleted("cafe\u{301}|!", "deleteWordBackward"), "!");
-    assert_eq!(deleted("cafe\u{301}!|", "deleteWordBackward"), "cafe\u{301}");
+    assert_eq!(
+        deleted("cafe\u{301}!|", "deleteWordBackward"),
+        "cafe\u{301}"
+    );
 }
 
 /// The delete removes exactly what the motion selects, for every caret in a
@@ -154,7 +157,11 @@ fn word_delete_is_the_motions_range_everywhere_938() {
             match state.run(command) {
                 Some(after) => {
                     assert!(!sel.is_empty(), "{notation} {command}: motion did not move");
-                    assert_eq!(notation_of(&after.doc, None), expect, "{notation} {command}");
+                    assert_eq!(
+                        notation_of(&after.doc, None),
+                        expect,
+                        "{notation} {command}"
+                    );
                 }
                 None => assert!(sel.is_empty(), "{notation} {command}"),
             }
@@ -184,9 +191,18 @@ fn double_click_selects_one_segment_939() {
 #[cfg(feature = "word-dictionary")]
 #[test]
 fn a_cjk_run_is_split_by_the_dictionary_939() {
-    assert_eq!(deleted("漢字です| テスト", "deleteWordBackward"), "漢字 テスト");
-    assert_eq!(moved("漢字です| テスト", CursorMotion::WordLeft), "漢字|です テスト");
-    assert_eq!(moved("|漢字です テスト", CursorMotion::WordRight), "漢字|です テスト");
+    assert_eq!(
+        deleted("漢字です| テスト", "deleteWordBackward"),
+        "漢字 テスト"
+    );
+    assert_eq!(
+        moved("漢字です| テスト", CursorMotion::WordLeft),
+        "漢字|です テスト"
+    );
+    assert_eq!(
+        moved("|漢字です テスト", CursorMotion::WordRight),
+        "漢字|です テスト"
+    );
 }
 
 /// Without the dictionary (a build that does not ask for it: the web's today),

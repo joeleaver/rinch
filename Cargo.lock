@@ -5092,6 +5092,7 @@ name = "rinch-editor-core"
 version = "0.1.0"
 dependencies = [
  "accesskit",
+ "icu_segmenter",
  "pretty_assertions",
  "pulldown-cmark",
  "regex",

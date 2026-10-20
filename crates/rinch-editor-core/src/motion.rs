@@ -98,31 +98,39 @@ pub fn line_boundary(doc: &Node, head: Pos, forward: bool) -> Option<Pos> {
     }))
 }
 
-/// The model position at the previous/next word boundary within `head`'s textblock
-/// (a simple whitespace/word-character scan; cross-block word motion is a later
-/// refinement). `None` if `head` is not in a textblock.
+/// The model position at the previous/next word boundary within `head`'s
+/// textblock (cross-block word motion is a later refinement). `None` if `head`
+/// is not in a textblock.
+///
+/// Backward (Ctrl+Left): past any whitespace before `head`, then to the start of
+/// the [word segment](word_segments) before it. Forward (Ctrl+Right): past any
+/// whitespace after `head`, then to the end of the segment after it — the end
+/// of the next word, as on Linux and macOS. An inline atom is a segment of its
+/// own, so the motion stops on either side of it (#938), and a run of
+/// punctuation is one apart from the letters beside it (#939). The word deletes
+/// remove exactly this range (`commands::word_delete_range`).
 pub fn word_boundary(doc: &Node, head: Pos, forward: bool) -> Option<Pos> {
     let r = doc.resolve(head).ok()?;
     if !r.parent().is_textblock() {
         return None;
     }
-    let chars: Vec<char> = block_text(r.parent()).chars().collect();
+    let units = block_units(r.parent());
+    let segments = word_segments(&units);
     let content_start = head.0 - r.parent_offset();
-    let mut i = r.parent_offset();
+    let mut i = r.parent_offset().min(units.len());
     if forward {
-        while i < chars.len() && chars[i].is_whitespace() {
+        while i < units.len() && units[i].is_space() {
             i += 1;
         }
-        while i < chars.len() && !chars[i].is_whitespace() {
-            i += 1;
+        if i < units.len() {
+            i = segment_at(&segments, i).1;
         }
     } else {
-        i = i.saturating_sub(1);
-        while i > 0 && chars[i].is_whitespace() {
+        while i > 0 && units[i - 1].is_space() {
             i -= 1;
         }
-        while i > 0 && !chars[i - 1].is_whitespace() {
-            i -= 1;
+        if i > 0 {
+            i = segment_at(&segments, i - 1).0;
         }
     }
     Some(Pos(content_start + i))
@@ -142,10 +150,187 @@ pub fn block_text(block: &Node) -> String {
     s
 }
 
-/// The model word range `(start, end)` around `pos` — the contiguous run of
-/// like-classed characters (word vs. whitespace) under a double-click, classified
-/// by the character to the right of the gap (or the last character at block end).
-/// Collapsed `(pos, pos)` outside a textblock or in an empty block.
+/// One position of a textblock's content: a char of its text, or an inline
+/// atom (an image, a hard break).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unit {
+    /// A character of a text node.
+    Char(char),
+    /// A non-text leaf: one position, and a word of its own.
+    Atom,
+}
+
+impl Unit {
+    fn is_space(self) -> bool {
+        matches!(self, Unit::Char(c) if c.is_whitespace())
+    }
+}
+
+/// The positions of a textblock's content, one [`Unit`] per position.
+pub fn block_units(block: &Node) -> Vec<Unit> {
+    let mut units = Vec::with_capacity(block.content().size());
+    for i in 0..block.child_count() {
+        let child = block.child(i);
+        match child.text() {
+            Some(t) => units.extend(t.chars().map(Unit::Char)),
+            None => units.extend(std::iter::repeat_n(Unit::Atom, child.node_size())),
+        }
+    }
+    units
+}
+
+/// What a unit is to word segmentation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Class {
+    Space,
+    /// Letters, digits, marks and `_` of every script but the CJK ones.
+    Word,
+    /// Han, Hiragana and Katakana.
+    Cjk,
+    /// Everything else that is not whitespace: punctuation, symbols, emoji.
+    Punct,
+    Atom,
+}
+
+/// Han, Hiragana, Katakana (and their iteration and prolonged-sound marks).
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32,
+        0x3005..=0x3007 | 0x3021..=0x3029 | 0x3031..=0x3035 | 0x303B..=0x303C
+        | 0x3040..=0x30FF | 0x31F0..=0x31FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF
+        | 0xF900..=0xFAFF | 0xFF66..=0xFF9F | 0x20000..=0x3134F)
+}
+
+/// A char that extends the one before it rather than starting anything: a
+/// combining mark, a joiner, a variation selector, an emoji modifier or tag.
+/// (The common blocks; std has no General_Category.)
+fn is_extend(c: char) -> bool {
+    matches!(c as u32,
+        0x0300..=0x036F | 0x0483..=0x0489 | 0x0591..=0x05BD | 0x0610..=0x061A
+        | 0x064B..=0x065F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x200C..=0x200D
+        | 0x20D0..=0x20FF | 0x3099..=0x309A | 0xFE00..=0xFE0F | 0xFE20..=0xFE2F
+        | 0x1F3FB..=0x1F3FF | 0xE0020..=0xE007F | 0xE0100..=0xE01EF)
+}
+
+fn class_of(c: char) -> Class {
+    if c.is_whitespace() {
+        Class::Space
+    } else if is_cjk(c) {
+        Class::Cjk
+    } else if c.is_alphanumeric() || c == '_' {
+        Class::Word
+    } else {
+        Class::Punct
+    }
+}
+
+/// The word segments of a textblock's content, as `(start, end)` unit offsets
+/// that tile it: maximal runs of one class — whitespace, word characters, CJK,
+/// punctuation — with every inline atom a segment of its own (#938, #939).
+/// A combining mark or joiner joins the unit before it; an apostrophe between
+/// two word characters stays in the word (`don't`). With the `word-dictionary`
+/// feature a word or CJK run is split further where ICU's dictionary segmenter
+/// breaks it (`漢字です` is `漢字` `です`); without it such a run is one segment.
+///
+/// Measured against Chrome 153 (contenteditable, Ctrl+Backspace): `foo.bar` is
+/// `foo` `.` `bar`, `foo...` is `foo` `...`, `don't` and an emoji ZWJ sequence
+/// are one word each. Not Chrome's ICU word rules, which keep `foo.bar` and
+/// `3.14` whole: Chrome's editing does not either.
+pub fn word_segments(units: &[Unit]) -> Vec<(usize, usize)> {
+    let class = |i: usize| match units[i] {
+        Unit::Atom => Class::Atom,
+        Unit::Char(c) => class_of(c),
+    };
+    let mut classes: Vec<Class> = Vec::with_capacity(units.len());
+    for i in 0..units.len() {
+        let mut k = class(i);
+        if let (Unit::Char(c), Some(&prev)) = (units[i], classes.last())
+            && is_extend(c)
+            && prev != Class::Atom
+            && prev != Class::Space
+        {
+            k = prev;
+        }
+        classes.push(k);
+    }
+    // An apostrophe between two word characters is part of the word.
+    for i in 1..units.len().saturating_sub(1) {
+        if matches!(units[i], Unit::Char('\'' | '\u{2019}'))
+            && classes[i - 1] == Class::Word
+            && classes[i + 1] == Class::Word
+        {
+            classes[i] = Class::Word;
+        }
+    }
+    let mut segments = Vec::new();
+    let mut i = 0;
+    while i < units.len() {
+        let k = classes[i];
+        let mut j = i + 1;
+        if k != Class::Atom {
+            while j < units.len() && classes[j] == k {
+                j += 1;
+            }
+        }
+        if matches!(k, Class::Word | Class::Cjk) {
+            split_by_dictionary(units, i, j, &mut segments);
+        } else {
+            segments.push((i, j));
+        }
+        i = j;
+    }
+    segments
+}
+
+/// Push the segments of the run `units[start..end]`: ICU's dictionary word
+/// breaks inside it with `word-dictionary`, the whole run without.
+#[cfg(feature = "word-dictionary")]
+fn split_by_dictionary(units: &[Unit], start: usize, end: usize, out: &mut Vec<(usize, usize)>) {
+    use icu_segmenter::WordSegmenter;
+    use icu_segmenter::options::WordBreakInvariantOptions;
+    let text: String = units[start..end]
+        .iter()
+        .map(|u| match *u {
+            Unit::Char(c) => c,
+            Unit::Atom => ' ',
+        })
+        .collect();
+    // Byte offsets of ICU's breaks, mapped to unit offsets.
+    let mut byte_to_unit = Vec::with_capacity(text.len() + 1);
+    for (n, c) in text.chars().enumerate() {
+        byte_to_unit.extend(std::iter::repeat_n(start + n, c.len_utf8()));
+    }
+    byte_to_unit.push(end);
+    let mut prev = start;
+    for b in WordSegmenter::new_dictionary(WordBreakInvariantOptions::default()).segment_str(&text)
+    {
+        let at = byte_to_unit[b];
+        if at > prev {
+            out.push((prev, at));
+            prev = at;
+        }
+    }
+    if prev < end {
+        out.push((prev, end));
+    }
+}
+
+#[cfg(not(feature = "word-dictionary"))]
+fn split_by_dictionary(_: &[Unit], start: usize, end: usize, out: &mut Vec<(usize, usize)>) {
+    out.push((start, end));
+}
+
+/// The segment holding unit `i` (which must be inside the content).
+fn segment_at(segments: &[(usize, usize)], i: usize) -> (usize, usize) {
+    let k = segments.partition_point(|&(_, end)| end <= i);
+    segments[k]
+}
+
+/// The model word range `(start, end)` around `pos` — the [word
+/// segment](word_segments) under a double-click (a run of whitespace, a word, a
+/// run of punctuation, an atom), chosen by the unit to the right of the gap, or
+/// the one to its left at block end and at a word's trailing edge (right unit
+/// whitespace, left not). Collapsed `(pos, pos)` outside a textblock or in an
+/// empty block.
 pub fn word_range_at(doc: &Node, pos: Pos) -> (Pos, Pos) {
     let Ok(r) = doc.resolve(pos) else {
         return (pos, pos);
@@ -153,27 +338,16 @@ pub fn word_range_at(doc: &Node, pos: Pos) -> (Pos, Pos) {
     if !r.parent().is_textblock() {
         return (pos, pos);
     }
-    let chars: Vec<char> = block_text(r.parent()).chars().collect();
-    if chars.is_empty() {
+    let units = block_units(r.parent());
+    if units.is_empty() {
         return (pos, pos);
     }
     let content_start = pos.0 - r.parent_offset();
-    let off = r.parent_offset().min(chars.len());
-    let is_word_char = |c: char| !c.is_whitespace();
-    // Classify by the char right of the gap, but prefer the word at a word's
-    // trailing edge (right char whitespace, left char a word char).
-    let classify_right = off < chars.len()
-        && (is_word_char(chars[off]) || off == 0 || !is_word_char(chars[off - 1]));
-    let class_idx = if classify_right { off } else { off - 1 };
-    let target = is_word_char(chars[class_idx]);
-    let mut start = off;
-    while start > 0 && is_word_char(chars[start - 1]) == target {
-        start -= 1;
-    }
-    let mut end = off;
-    while end < chars.len() && is_word_char(chars[end]) == target {
-        end += 1;
-    }
+    let off = r.parent_offset().min(units.len());
+    let classify_right =
+        off < units.len() && (!units[off].is_space() || off == 0 || units[off - 1].is_space());
+    let idx = if classify_right { off } else { off - 1 };
+    let (start, end) = segment_at(&word_segments(&units), idx);
     (Pos(content_start + start), Pos(content_start + end))
 }
 
