@@ -556,10 +556,11 @@ fn a_mismatched_3d_pair_decomposes_in_3d() {
     );
 }
 
-/// The quaternion is slerped the shorter way: `rotateX(300deg)` comes back
-/// to the plane through `rotateX(330deg)`, not through `rotateX(150deg)`.
+/// A 4×4 does not remember which way it was turned: `rotateX(300deg)` is
+/// decomposed as `rotateX(-60deg)`, so it comes back to the plane through
+/// `rotateX(330deg)`, not through `rotateX(150deg)` as a function pair would.
 #[test]
-fn a_3d_decomposition_slerps_the_shorter_arc() {
+fn a_3d_decomposition_forgets_the_turns_direction() {
     check_transition(
         "rotateX(300deg)",
         "translate(10px)",
@@ -676,6 +677,17 @@ fn a_percentage_translate_rides_a_3d_decomposition() {
         &[
             (0.2, [0.994402, 0.103325, -0.103325, 0.907242, 40.0, 8.0]),
             (0.5, [0.965346, 0.258664, -0.258664, 0.930691, 25.0, 5.0]),
+        ],
+    );
+    // The same after a paired `rotateY`, which turns the remainder's z into
+    // x: in front of the perspective, the translation would meet its `-1/d`
+    // and move that z.
+    check_transition(
+        "rotateY(30deg) perspective(100px) translate(50%, 25%) rotateX(30deg)",
+        "rotateY(30deg) rotate(30deg)",
+        &[
+            (0.2, [0.872222, 0.103325, 0.114378, 0.907242, 34.641, 8.0]),
+            (0.5, [0.853341, 0.258664, -0.0946774, 0.930691, 21.6506, 5.0]),
         ],
     );
 }
