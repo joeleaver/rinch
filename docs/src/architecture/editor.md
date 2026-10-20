@@ -283,8 +283,9 @@ see the Collaboration section of CLAUDE.md, the
 `rinch-editable` is a **separate, unrelated** engine for single-line `<input>` and
 `<textarea>` widgets: `StringDocument`, `EditCommand`, `EditableState`,
 `InputHandler`, and its own `Position`/`Selection`/`UndoStack` types. It shares no
-code and no types with `rinch-editor-core` — the identical names live in different
-crates. The quickest tell: `rinch-editable`'s `Selection` is a **struct** of two
+types with `rinch-editor-core` — the identical names live in different crates. The
+one piece of code the two share is word segmentation: both take their words from the
+leaf crate `rinch-words` (#1619), so a field's Ctrl+Backspace and the editor's agree. The quickest tell: `rinch-editable`'s `Selection` is a **struct** of two
 `Position`s, while `rinch-editor-core`'s is an **enum** of `Text`/`Node`/`Cell`.
 
 The split is intentional: a text field does not need a schema, steps, or a CRDT, and

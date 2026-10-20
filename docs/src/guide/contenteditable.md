@@ -137,7 +137,9 @@ Command names are case-sensitive. The full catalogue:
 > `rinch-web`'s opt-in `word-dictionary` feature (+3.8 MB of wasm, see
 > [Binary Size](./wasm.md#word-segmentation-for-cjk-and-thai-word-dictionary));
 > without it such a run is one word, ended by whitespace, punctuation or a change
-> of script. There are no *line* delete commands. On the web the browser's
+> of script. Desktop text fields (`<input>`, `<textarea>`) take their words from the same
+> segmentation (the `rinch-words` crate, #1619), so a field's Ctrl+Backspace after
+> `foo-bar` leaves `foo-` as the editor's does. There are no *line* delete commands. On the web the browser's
 > `deleteSoftLine*` (a soft keyboard's line delete, Cmd+Backspace / Cmd+Delete)
 > deletes to the edge of the **visual** line the caret is drawn on — on a wrapped
 > paragraph, normally only the current line's prefix or rest — and

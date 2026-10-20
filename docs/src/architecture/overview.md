@@ -33,6 +33,7 @@ rinch/
 │   ├── rinch-theme/        # Theme system (CSS variables)
 │   ├── rinch-components/   # UI component library
 │   ├── rinch-editable/     # Single-line <input>/<textarea> editing primitives
+│   ├── rinch-words/        # Word segmentation shared by the editor and text fields
 │   ├── rinch-clipboard/    # Cross-platform clipboard
 │   ├── rinch-tabler-icons/ # 5000+ Tabler Icons
 │   ├── rinch-debug/        # Debug IPC server
@@ -264,8 +265,9 @@ UI component library:
 ### rinch-editable
 
 Editing primitives for single-line `<input>` and `<textarea>` widgets — a **separate
-engine**, unrelated to the rich-text editor above (they share no code and no types,
-despite both having a `Selection`):
+engine**, unrelated to the rich-text editor above (they share no types, despite both
+having a `Selection`; the one thing they share is the word segmentation in the leaf
+crate `rinch-words`, #1619):
 
 - **EditableDocument** - Trait for text editing operations
 - **StringDocument** - Single-line text document

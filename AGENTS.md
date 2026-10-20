@@ -57,7 +57,8 @@ list if something looks off.
 | `rinch-editor-core` | The pure model: document tree, `Pos`, schema/`ContentMatch`, `Step`s, `EditorState`/`Transaction`, commands, plugins, serialization. **wasm-clean; no renderer, no CRDT.** |
 | `rinch-editor-view` | Renderer-agnostic view: `RinchDomEditorView`, `EditorHandle`, the `Editor {}` component, the mounted-editor registry. Shared by desktop and web. |
 | `rinch-editor-collab` | Optional (`collaboration` feature) CRDT adapter over **yrs**. The only crate in the workspace that links a CRDT engine. |
-| `rinch-editable` | **Unrelated** engine for single-line `<input>`/`<textarea>`. Shares no code or types with the rich editor despite overlapping names (`Selection`, `Position`). |
+| `rinch-editable` | **Unrelated** engine for single-line `<input>`/`<textarea>`. Shares no types with the rich editor despite overlapping names (`Selection`, `Position`); the only code the two share is the word segmentation in `rinch-words` (#1619). |
+| `rinch-words` | Word segmentation (what a word motion, word delete or double-click steps over), shared by `rinch-editor-core` and `rinch-editable`. A leaf crate: regex + optional ICU dictionary (`dictionary`), no rinch crate. |
 
 **Web**
 
@@ -113,7 +114,7 @@ rinch-dom            → rinch-core + stylo, taffy, parley, vello,
 rinch-components     → rinch-core, rinch-theme, rinch-macros, rinch-tabler-icons
 rinch-web            → rinch-core, rinch (no default features), rinch-editor-core,
                        rinch-editor-view, wasm-bindgen/js-sys/web-sys
-rinch-editor-core    → thiserror, regex (+ optional serde, pulldown-cmark, accesskit)
+rinch-editor-core    → thiserror, regex, rinch-words (+ optional serde, pulldown-cmark, accesskit)
 rinch-editor-view    → rinch-core, rinch-editor-core (+ optional rinch-editor-collab)
 rinch-editor-collab  → rinch-editor-core, yrs
 ```

@@ -491,6 +491,13 @@ follow in their text controls), not Windows' with Cmd for Ctrl (issue #951):
 | Start / end of the text | Ctrl+Home / Ctrl+End | Cmd+Up / Cmd+Down |
 | Delete a word backward / forward | Ctrl+Backspace / Ctrl+Delete | Option+Backspace / Option+Delete |
 
+A word is the rich-text editor's word (issue #1619): a run of punctuation is a
+word apart from the letters beside it, so `foo-bar|` + Ctrl+Backspace leaves
+`foo-` and Ctrl+Right from `|path/to/file` stops at `path|`, while `3.14`,
+`1,000`, `don't` and `snake_case` are one word each. In a `<textarea>` a line
+break is a word of its own and Ctrl+Left never leaves the caret's line, as in
+Chrome.
+
 Shift extends with each of them. On macOS Home and End leave the caret where it
 is (they scroll the field there, and desktop does not scroll a field's text),
 and Shift+Home / Shift+End extend the selection to the start / end of the text.
