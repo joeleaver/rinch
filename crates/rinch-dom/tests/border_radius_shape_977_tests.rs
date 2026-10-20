@@ -506,3 +506,81 @@ fn overflow_clip_inner_radii_lose_each_axis_border() {
     let outer = Shape::new(LEFT, TOP, 200.0, 100.0, [(30.0, 30.0); 4]);
     assert_fill(&p, outer.inset(2.0, 12.0, 2.0, 12.0), "the clip");
 }
+
+/// A `double` border is stroked along the border's centre line, whose radius
+/// is the outer one less half the width. The ring's middle on the corner's
+/// diagonal (45px from the corner centre, between the 72 outer and 24 inner
+/// radii) is on that line; stroked with the outer radius instead, the line
+/// sits about 10px further in and the 16px band misses the point.
+#[test]
+fn a_double_border_strokes_the_centre_line_radius() {
+    let p = painted(
+        300.0,
+        240.0,
+        "border: 48px double black; border-radius: 96px",
+        None,
+    );
+    let outer = Shape::new(LEFT, TOP, 300.0, 240.0, [(96.0, 96.0); 4]);
+    let inner = outer.inset(48.0, 48.0, 48.0, 48.0);
+    // Nothing outside the ring.
+    let ring = |x: f64, y: f64| outer.contains(x, y) && !inner.contains(x, y);
+    let mut outside = 0;
+    for y in 0..CANVAS.1 as i64 {
+        for x in 0..CANVAS.0 as i64 {
+            let (fx, fy) = (x as f64, y as f64);
+            let out = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
+                .iter()
+                .all(|(dx, dy)| !ring(fx + dx, fy + dy));
+            if out && alpha(&p, x, y) > 0.25 {
+                outside += 1;
+            }
+        }
+    }
+    assert_eq!(outside, 0, "the double border painted outside its ring");
+    // The ring's middle radius, 72, on the top-left corner's diagonal.
+    let d = 72.0 / std::f64::consts::SQRT_2;
+    let (cx, cy) = (LEFT + 96.0 - d, TOP + 96.0 - d);
+    assert!(
+        alpha(&p, cx as i64, cy as i64) > 0.5,
+        "the double border's band misses the ring's centre on the corner diagonal \
+         at ({cx:.1}, {cy:.1})"
+    );
+}
+
+/// An outline follows the elliptical corner, each radius grown by the
+/// outline's distance from the border edge.
+#[test]
+fn an_outline_grows_each_radius_of_an_elliptical_corner() {
+    let p = painted(
+        200.0,
+        100.0,
+        "outline: 10px solid black; border-radius: 40px / 12px",
+        None,
+    );
+    let element = Shape::new(LEFT, TOP, 200.0, 100.0, [(40.0, 12.0); 4]);
+    let outer = Shape::new(LEFT - 10.0, TOP - 10.0, 220.0, 120.0, [(50.0, 22.0); 4]);
+    assert_ring(&p, outer, element, "outline: 10px over 40px / 12px");
+}
+
+/// A blurred inset shadow's hole has elliptical corners: with an `80px /
+/// 24px` box and an 8px spread the hole's corner is `72 / 16` (§7.1.1), and a
+/// pixel just outside that ellipse — 2.5px out, 5.5px and more from the
+/// hole's straight edges — is in shadow. Measured against the circle of the
+/// horizontal radius, it was inside the hole and clear.
+#[test]
+fn a_blurred_inset_shadow_hole_has_elliptical_corners() {
+    let p = painted(
+        200.0,
+        100.0,
+        "border-radius: 80px / 24px; box-shadow: inset 0 0 2px 8px black",
+        None,
+    );
+    for (x, y) in [(LEFT + 16.0, TOP + 13.0), (LEFT + 183.0, TOP + 86.0)] {
+        assert!(
+            alpha(&p, x as i64, y as i64) > 0.6,
+            "({x}, {y}) is outside the hole's elliptical corner and should be in shadow"
+        );
+    }
+    // Control: well inside the hole there is no shadow.
+    assert!(alpha(&p, (LEFT + 60.0) as i64, (TOP + 30.0) as i64) < 0.05);
+}

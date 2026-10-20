@@ -736,7 +736,21 @@ pub(super) fn paint_outline(
         y + h + offset + half,
     );
 
-    if !radii.is_square() {
+    if radii.as_circular().is_none() && matches!(cs.outline_style, BorderStyleValue::Solid) {
+        // A solid outline round an elliptical corner (#977) is the ring
+        // between the border box grown by the offset and that grown by the
+        // offset and the width, each radius grown by the same amount on both
+        // axes — one even-odd fill, as for a solid border, since an offset
+        // ellipse is no ellipse and a stroke of one draws the wrong band. A
+        // circular corner keeps the stroke, which is exact for it.
+        let inner_rect = Rect::new(x - offset, y - offset, x + w + offset, y + h + offset);
+        let outer_rect = inner_rect.inflate(ow, ow);
+        let mut ring = radii.grown(offset + ow).path(outer_rect);
+        if inner_rect.width() > 0.0 && inner_rect.height() > 0.0 {
+            ring.extend(radii.grown(offset).path(inner_rect).iter());
+        }
+        painter.fill_color(Fill::EvenOdd, transform, color, &ring.into());
+    } else if !radii.is_square() {
         // Each radius grows by how far the outline's centre line is from the
         // border edge, on both axes (an elliptical corner stays elliptical).
         let outline_radii = radii.grown(offset + half);
