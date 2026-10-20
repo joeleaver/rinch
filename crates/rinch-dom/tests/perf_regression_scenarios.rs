@@ -2853,3 +2853,75 @@ fn a_one_pixel_resize_with_every_chip_capped() {
         ],
     );
 }
+
+/// `body > [p > "a paragraph", div > ["first run ", li, " second run"]]`: two
+/// anonymous block boxes in one container, beside an ordinary IFC root.
+fn anon_box_doc() -> (RinchDocument, NodeId) {
+    let mut doc = doc_with("li { width: 40px; }");
+    let body = doc.body();
+    let p = el(&mut doc, body, "p", "");
+    text(&mut doc, p, "a paragraph");
+    let div = el(&mut doc, body, "div", "");
+    text(&mut doc, div, "first run of text beside a block ");
+    let li = el(&mut doc, div, "li", "");
+    text(&mut doc, li, "item");
+    text(&mut doc, div, " second run of text after it");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    (doc, div)
+}
+
+/// A whole-document IFC pass (a theme change whose variables reach no text)
+/// over a container holding two anonymous block boxes (#964). The pass
+/// re-mints every box, and used to drop each box's measures and paint layout
+/// with the old one, so both boxes were shaped again though nothing they draw
+/// had changed: `shape_measure_ifc` 2 → 0, `shape_ifc_build` 2 → 0,
+/// `ifc_signature_changes` 2 → 0. The box keeps its slab id, its measures and
+/// its layout when it is minted for the same run, in the same container, with
+/// the same inherited text style. The `p` kept its layout before and after.
+#[test]
+fn a_whole_document_pass_keeps_an_anonymous_boxs_layout() {
+    let (mut doc, _div) = anon_box_doc();
+    doc.recompute_all_styles_full();
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "anonymous boxes: whole-document pass",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (LayoutResolves, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullTheme, 1),
+            (TaffyRootComputes, 1),
+        ],
+    );
+}
+
+/// The scoped arm of the same thing: a block appended to the container after
+/// its second run puts the container in the scope, whose pass re-mints both
+/// of its boxes. Neither run changed, so neither box is shaped again:
+/// `shape_measure_ifc` 2 → 0, `shape_ifc_build` 2 → 0 (#964).
+#[test]
+fn a_scoped_pass_keeps_the_layout_of_an_unchanged_anonymous_box() {
+    let (mut doc, div) = anon_box_doc();
+    let tail = doc.create_element("li");
+    doc.append_child(div, tail);
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "anonymous boxes: scoped pass",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (LayoutResolves, 1),
+            (IfcSetupPasses, 1),
+            (IfcScopedPasses, 1),
+            (TaffyRootComputes, 1),
+        ],
+    );
+}

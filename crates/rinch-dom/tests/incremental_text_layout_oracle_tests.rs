@@ -1571,6 +1571,47 @@ theme_typography!(
         a
     }
 );
+/// `body > div.a > ["first run of text ", li.b, " second run of text"]`: a
+/// container holding **two** anonymous block boxes, so a whole-document pass
+/// that re-mints them hands their slab ids out in another order (#964).
+fn two_anon_boxes(doc: &mut RinchDocument, _on: bool) -> NodeId {
+    let body = doc.body();
+    let a = doc.create_element("div");
+    doc.set_attribute(a, "class", "a");
+    doc.append_child(body, a);
+    let t = doc.create_text("first run of text beside a block ");
+    doc.append_child(a, t);
+    let li = doc.create_element("li");
+    doc.set_attribute(li, "class", "b");
+    doc.append_child(a, li);
+    let t2 = doc.create_text(" second run, longer, of text after it");
+    doc.append_child(a, t2);
+    a
+}
+
+// The theme reaching the anonymous boxes' **inherited** typography from their
+// container: a whole-document pass keeps a box's layout only when the box's
+// inherited text style is what it was (#964), so each of these must re-shape.
+theme_typography!(
+    a_theme_font_size_reaches_two_anonymous_block_boxes,
+    ".a { font-size: var(--tfs); line-height: 1.25; } .b { width: 2em; }",
+    two_anon_boxes
+);
+theme_typography!(
+    a_theme_letter_spacing_reaches_two_anonymous_block_boxes,
+    ".a { letter-spacing: var(--tls); line-height: 1.25; } .b { width: 2em; }",
+    two_anon_boxes
+);
+theme_typography!(
+    a_theme_font_family_reaches_two_anonymous_block_boxes,
+    ".a { font-family: var(--tff); line-height: 1.25; } .b { width: 2em; }",
+    two_anon_boxes
+);
+theme_typography!(
+    a_theme_colour_reaches_two_anonymous_block_boxes,
+    ".a { color: var(--tc); line-height: 1.25; } .b { width: 2em; }",
+    two_anon_boxes
+);
 theme_typography!(
     a_theme_colour_on_a_split_inline_reaches_its_anonymous_box,
     ".b { color: var(--tc); line-height: 1.25; }",
@@ -1605,9 +1646,10 @@ fn a_theme_change_that_reaches_no_text_reshapes_nothing() {
         let _ = ifc_doc(&mut doc, false);
         // A second paragraph, and an atomic inline with an IFC of its own.
         let _ = chip_doc(&mut doc, false);
-        // No anonymous block box: the whole-document IFC setup pass a theme
-        // change runs re-mints those, and re-shapes their text whatever the
-        // restyle did (#964).
+        // Two anonymous block boxes: the whole-document IFC setup pass a theme
+        // change runs re-mints them, and re-shaped their text whatever the
+        // restyle did until #964.
+        let _ = two_anon_boxes(&mut doc, false);
         settle(&mut doc);
         doc
     };
@@ -1629,6 +1671,11 @@ fn a_theme_change_that_reaches_no_text_reshapes_nothing() {
         s.get(rinch_dom::perf::Counter::ShapeIfcBuild),
         0,
         "a theme change that reaches no text rebuilt a paint layout: {s:?}"
+    );
+    assert_eq!(
+        s.get(rinch_dom::perf::Counter::ShapeMeasureIfc),
+        0,
+        "a theme change that reaches no text re-measured an IFC: {s:?}"
     );
     let fresh = make(THEME_B);
     assert_eq!(snapshot(&doc), snapshot(&fresh));
