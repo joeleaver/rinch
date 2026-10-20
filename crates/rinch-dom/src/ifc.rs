@@ -9126,30 +9126,51 @@ impl RinchDocument {
             entry.stale = false;
             entry.sizes.clear();
             changed += 1;
-            atomic_changed |= self.drop_changed_ifc_root(root, seen_before);
-        }
-        // A root marked stale that this pass did not sign — outside a scoped
-        // pass's containers — is changed all the same: its sizes were
-        // measured against an atomic inline's size its signature does not
-        // record. Its signature is forgotten rather than recomputed here, so
-        // the next pass that signs it counts it as new.
-        for root in std::mem::take(&mut self.tree.stale_ifc_roots) {
-            // Out of the document, it is measured by nothing (#1069): its
-            // entry stays stale for the pass that signs it once it is back.
-            if self.depth_if_connected(root).is_none() {
-                continue;
-            }
-            let Some(entry) = self.tree.ifc_measure_cache.get_mut(&root) else {
+            let Some(node) = self.tree.nodes.get_mut(root) else {
                 continue;
             };
-            if !entry.stale {
+            node.text_layout = None;
+            // An atomic inline is sized by its own detached compute, which
+            // `compute_inline_block_layouts` ran *earlier in this pass* —
+            // against the cached measures this loop is only now dropping, and
+            // with no signal that its content had changed. So it is queued
+            // for the same re-measure a text edit inside it gets, which runs
+            // below once every changed root has been seen. A root seen for
+            // the first time is not: it has no earlier measure to be stale
+            // against, and re-measuring every new chip would size each one
+            // twice on a first layout.
+            if node.display_mode.is_atomic_inline() {
+                if seen_before {
+                    self.tree.dirty_atomic_inlines.insert(root);
+                    atomic_changed = true;
+                }
                 continue;
             }
-            entry.stale = false;
-            entry.signature = None;
-            entry.sizes.clear();
-            changed += 1;
-            atomic_changed |= self.drop_changed_ifc_root(root, true);
+            if let Some(taffy_id) = node.taffy_id {
+                let _ = self.tree.taffy.mark_dirty(taffy_id);
+            }
+            self.mark_ifc_measure_dirty(root);
+            // The same holds one level out: an atomic inline that *contains*
+            // this root — a paragraph in an `inline-block`, a flex item's IFC in
+            // an `inline-flex` — was sized earlier in the pass, against the
+            // measure this root had cached in Taffy before its content moved.
+            // Queue every one above it. (Found by the scoped pass's random
+            // differential, on the whole-document pass: a chip turned
+            // `inline-block` inside a flex item of an `inline-flex` left the
+            // `inline-flex` at the width it had without the chip.)
+            if seen_before {
+                let mut cur = self.tree.nodes.get(root).and_then(|n| n.parent);
+                while let Some(a) = cur {
+                    let Some(an) = self.tree.nodes.get(a) else {
+                        break;
+                    };
+                    if an.display_mode.is_atomic_inline() {
+                        self.tree.dirty_atomic_inlines.insert(a);
+                        atomic_changed = true;
+                    }
+                    cur = an.parent;
+                }
+            }
         }
         self.tree
             .perf
@@ -9157,59 +9178,6 @@ impl RinchDocument {
         if atomic_changed {
             self.remeasure_dirty_atomic_inlines();
         }
-    }
-
-    /// What [`Self::refresh_ifc_signatures`] does to a root whose content
-    /// changed: its paint layout goes, and it is measured again. Returns
-    /// whether an atomic inline was queued for a re-measure.
-    fn drop_changed_ifc_root(&mut self, root: usize, seen_before: bool) -> bool {
-        let mut atomic_changed = false;
-        let Some(node) = self.tree.nodes.get_mut(root) else {
-            return false;
-        };
-        node.text_layout = None;
-        // An atomic inline is sized by its own detached compute, which
-        // `compute_inline_block_layouts` ran *earlier in this pass* —
-        // against the cached measures this loop is only now dropping, and
-        // with no signal that its content had changed. So it is queued
-        // for the same re-measure a text edit inside it gets, which runs
-        // below once every changed root has been seen. A root seen for
-        // the first time is not: it has no earlier measure to be stale
-        // against, and re-measuring every new chip would size each one
-        // twice on a first layout.
-        if node.display_mode.is_atomic_inline() {
-            if seen_before {
-                self.tree.dirty_atomic_inlines.insert(root);
-                atomic_changed = true;
-            }
-            return atomic_changed;
-        }
-        if let Some(taffy_id) = node.taffy_id {
-            let _ = self.tree.taffy.mark_dirty(taffy_id);
-        }
-        self.mark_ifc_measure_dirty(root);
-        // The same holds one level out: an atomic inline that *contains*
-        // this root — a paragraph in an `inline-block`, a flex item's IFC in
-        // an `inline-flex` — was sized earlier in the pass, against the
-        // measure this root had cached in Taffy before its content moved.
-        // Queue every one above it. (Found by the scoped pass's random
-        // differential, on the whole-document pass: a chip turned
-        // `inline-block` inside a flex item of an `inline-flex` left the
-        // `inline-flex` at the width it had without the chip.)
-        if seen_before {
-            let mut cur = self.tree.nodes.get(root).and_then(|n| n.parent);
-            while let Some(a) = cur {
-                let Some(an) = self.tree.nodes.get(a) else {
-                    break;
-                };
-                if an.display_mode.is_atomic_inline() {
-                    self.tree.dirty_atomic_inlines.insert(a);
-                    atomic_changed = true;
-                }
-                cur = an.parent;
-            }
-        }
-        atomic_changed
     }
 }
 

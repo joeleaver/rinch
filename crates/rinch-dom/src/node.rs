@@ -2973,10 +2973,6 @@ pub struct NodeTree {
     /// Do not swap it back for a `HashSet`. The set holds a handful of entries
     /// and its `O(log n)` insert is not on any path the cost harness measures.
     pub dirty_atomic_inlines: BTreeSet<RawNodeId>,
-    /// The IFC roots whose [`IfcRootMeasures::stale`] is set: the next
-    /// structural pass treats each as changed, whether or not its scope
-    /// reaches it (a scoped pass signs only its own roots).
-    pub stale_ifc_roots: BTreeSet<RawNodeId>,
     /// An atomic inline sized by a `fit-content`/`stretch` width (#691), or
     /// by an `auto` one, which is shrink-to-fit (#658), and the
     /// containing-block inner width it was last sized at by
@@ -3256,7 +3252,6 @@ impl NodeTree {
             mousemove_handlers: 0,
             dirty_text_contexts: HashSet::new(),
             dirty_atomic_inlines: BTreeSet::new(),
-            stale_ifc_roots: BTreeSet::new(),
             keyword_inline_cb_width: HashMap::new(),
             auto_inline_percent_content: HashSet::new(),
             atomic_min_content: HashMap::new(),
@@ -3607,11 +3602,8 @@ impl NodeTree {
     /// ([`IfcRootMeasures::stale`]).
     pub fn forget_ifc_measures_and_signature(&mut self, root: RawNodeId) {
         self.forget_ifc_measures(root);
-        if let Some(entry) = self.ifc_measure_cache.get_mut(&root)
-            && entry.signature.is_some()
-        {
+        if let Some(entry) = self.ifc_measure_cache.get_mut(&root) {
             entry.stale = true;
-            self.stale_ifc_roots.insert(root);
         }
     }
 
