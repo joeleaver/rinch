@@ -17,9 +17,12 @@
 //!
 //! [`BorderRadii::shape`] still hands the painter a kurbo [`RoundedRect`]
 //! whenever the corners are circular and each fits in half the shorter side —
-//! the case kurbo draws exactly — so every box that was right before is drawn
-//! by the same path it always was, and only an elliptical or overlapping one
-//! becomes a [`BezPath`] of elliptical arcs.
+//! the case kurbo draws exactly — so the *shape* of every box that was right
+//! before is the same `RoundedRect` it always was, and only an elliptical or
+//! overlapping one becomes a [`BezPath`] of elliptical arcs. (Its pixels are
+//! not all unchanged: a solid rounded border is now filled as the ring
+//! between the border-box and padding-box shapes rather than stroked, which
+//! moves the corner pixels of every outlined component to CSS's radii.)
 
 use peniko::kurbo::{Arc, BezPath, Point, Rect, RoundedRect, RoundedRectRadii, Shape, Vec2};
 
@@ -191,8 +194,8 @@ impl BorderRadii {
     /// The shape `rect` takes with these radii, fitted to it first
     /// ([`Self::fitted`]): a plain [`Rect`] when every corner is square, a
     /// kurbo [`RoundedRect`] when the corners are circular and fit in half
-    /// the shorter side (what kurbo draws without clamping — every box that
-    /// was drawn right before #977), and a [`BezPath`] of elliptical arcs
+    /// the shorter side (what kurbo draws without clamping — every shape that
+    /// was right before #977), and a [`BezPath`] of elliptical arcs
     /// otherwise.
     pub fn shape(&self, rect: Rect) -> PaintShape {
         let r = self.fitted(rect.width(), rect.height());

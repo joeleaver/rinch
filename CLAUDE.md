@@ -3771,7 +3771,8 @@ radii as `border_radius_*_y` beside the horizontal `border_radius_*`, and a
 `border-radius` transition moves both (`AnimatableValue::CornerRadius`).
 `BorderRadii::shape(rect)` is what every rounded box is drawn and clipped
 with — a kurbo `RoundedRect` when the corners are circular and fit in half the
-shorter side (every box that was right before), a `BezPath` of elliptical arcs
+shorter side (the same shape every correct box had before; a solid rounded
+border's pixels still move, see below), a `BezPath` of elliptical arcs
 otherwise. Background, clip (and a hoisted entry's clip chain), filter
 overlays, the uniform and per-side borders, the outline and the outer and
 inset shadows use it; a solid rounded uniform border is now filled as the ring
