@@ -138,3 +138,34 @@ fn shift_star_expands_the_siblings() {
         state.expanded.get()
     );
 }
+
+/// One Tab stop (roving tabindex), and the focused row is the treeitem,
+/// carrying its state, in a real browser.
+#[wasm_bindgen_test]
+fn one_tab_stop_and_the_focused_row_is_the_treeitem() {
+    let (doc, state) = mount();
+    let stops = doc
+        .query_selector_all(&format!(
+            "[{HOST_ATTR}] .rinch-tree__node-content[tabindex='0']"
+        ))
+        .unwrap()
+        .length();
+    assert_eq!(stops, 1, "one Tab stop");
+    let a1 = row(&doc, "a1");
+    a1.focus().unwrap();
+    a1.click();
+    keydown(&doc.active_element().unwrap(), "ArrowDown", false);
+    assert_eq!(state.cursor.get().as_deref(), Some("a2"));
+    let active = doc.active_element().unwrap();
+    assert_eq!(active.get_attribute("role").as_deref(), Some("treeitem"));
+    assert_eq!(
+        active.get_attribute("aria-selected").as_deref(),
+        Some("true")
+    );
+    assert_eq!(active.get_attribute("aria-level").as_deref(), Some("2"));
+    assert_eq!(active.get_attribute("tabindex").as_deref(), Some("0"));
+    assert_eq!(
+        row(&doc, "a1").get_attribute("tabindex").as_deref(),
+        Some("-1")
+    );
+}
