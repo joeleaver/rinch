@@ -54,6 +54,21 @@ fn an_underscore_joins_a_word_and_punctuation_ends_one() {
     assert_eq!(word_around("say(hi)", 5), Some((4, 6)));
 }
 
+/// #1619: the word is the rich editor's (`rinch_words`), so a number with a
+/// separator and a contraction are one word, and a dot between letters ends
+/// one. Each is what a double-click selects in a Chrome 155 `<input>`
+/// (measured: `pi 3|.14` → `3.14`, `d|on't` → `don't`, `a 1,|000` →
+/// `1,000`, `x f|oo.bar` → `foo`).
+#[test]
+fn numbers_and_contractions_are_one_word_1619() {
+    assert_eq!(word_around("pi 3.14", 4), Some((3, 7)));
+    assert_eq!(word_around("don't x", 1), Some((0, 5)));
+    assert_eq!(word_around("a 1,000 b", 4), Some((2, 7)));
+    assert_eq!(word_around("x foo.bar", 3), Some((2, 5)));
+    // A caret right after the dot belongs to the word on its right.
+    assert_eq!(word_around("x foo.bar", 6), Some((6, 9)));
+}
+
 /// Offsets are bytes; a multi-byte word must come back on char boundaries,
 /// and a caret handed in past the end or off a boundary is snapped, not
 /// panicked on.
