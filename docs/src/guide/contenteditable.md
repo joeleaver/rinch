@@ -122,9 +122,18 @@ Command names are case-sensitive. The full catalogue:
 > backward leaves `hello |ld`. A mark boundary is not a word boundary. Where there is
 > no word to take they are Backspace / Delete: a non-empty selection is deleted as it
 > stands, and at a textblock's start / end they join (or lift), as Backspace and
-> Delete do there. An inline atom — an image, a hard break — is a boundary of its
-> own: one right beside the caret goes alone, and a word beyond one is not taken
-> with it. There are no *line* delete commands. On the web the browser's
+> Delete do there. The word motion, the word deletes and double-click share one
+> word segmentation (`motion::word_segments`, #938, #939), Chrome's where it was
+> measured: a run of punctuation is a word apart from the letters beside it
+> (`foo.bar|` deletes `bar`, `foo...|` deletes `...`), an apostrophe between letters
+> stays in the word (`don't`), and an inline atom — an image, a hard break — is a
+> word of its own: the motion stops on either side of it, one beside the caret goes
+> alone (with any whitespace between them: `foo<img>  |` leaves `foo`), and a word
+> beyond one is not taken with it. A CJK or Thai run is split into words by ICU's
+> dictionary on desktop (`漢字です|` deletes `です`); the web build, which does not
+> link the dictionary, takes such a run as one word, ended by whitespace,
+> punctuation or a change of script (the `word-dictionary` feature of
+> `rinch-editor-core`). There are no *line* delete commands. On the web the browser's
 > `deleteSoftLine*` (a soft keyboard's line delete, Cmd+Backspace / Cmd+Delete)
 > deletes to the edge of the **visual** line the caret is drawn on — on a wrapped
 > paragraph, normally only the current line's prefix or rest — and

@@ -201,14 +201,21 @@ fn is_cjk(c: char) -> bool {
 }
 
 /// A char that extends the one before it rather than starting anything: a
-/// combining mark, a joiner, a variation selector, an emoji modifier or tag.
-/// (The common blocks; std has no General_Category.)
+/// combining mark of any script (General_Category M), a format char (Cf: the
+/// joiners, variation-selector-like controls) or an emoji skin-tone modifier.
+/// std has no General_Category, so this asks the `regex` crate's Unicode
+/// tables, which this crate links already for its input rules.
 fn is_extend(c: char) -> bool {
-    matches!(c as u32,
-        0x0300..=0x036F | 0x0483..=0x0489 | 0x0591..=0x05BD | 0x0610..=0x061A
-        | 0x064B..=0x065F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x200C..=0x200D
-        | 0x20D0..=0x20FF | 0x3099..=0x309A | 0xFE00..=0xFE0F | 0xFE20..=0xFE2F
-        | 0x1F3FB..=0x1F3FF | 0xE0020..=0xE007F | 0xE0100..=0xE01EF)
+    use std::sync::OnceLock;
+    static EXTEND: OnceLock<regex::Regex> = OnceLock::new();
+    if c.is_ascii() {
+        return false;
+    }
+    let re = EXTEND.get_or_init(|| {
+        regex::Regex::new(r"^[\p{M}\p{Cf}\x{1F3FB}-\x{1F3FF}]$").expect("a valid class")
+    });
+    let mut buf = [0u8; 4];
+    re.is_match(c.encode_utf8(&mut buf))
 }
 
 fn class_of(c: char) -> Class {

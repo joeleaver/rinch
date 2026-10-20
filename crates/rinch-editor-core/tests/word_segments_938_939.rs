@@ -203,6 +203,8 @@ fn a_cjk_run_is_split_by_the_dictionary_939() {
         moved("|漢字です テスト", CursorMotion::WordRight),
         "漢字|です テスト"
     );
+    // A Thai run too (ICU's own example: ทุก สอง สัปดาห์).
+    assert_eq!(deleted("ทุกสองสัปดาห์|", "deleteWordBackward"), "ทุกสอง");
 }
 
 /// Without the dictionary (a build that does not ask for it: the web's today),
