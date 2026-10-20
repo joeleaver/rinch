@@ -708,18 +708,20 @@ impl AnimatableValue {
             (AnimatableValue::Visibility(a), AnimatableValue::Visibility(b)) => Some(
                 AnimatableValue::Visibility(interpolate_visibility(*a, *b, t)),
             ),
-            // Each axis as a length-percentage; a pair whose one axis cannot
-            // interpolate (a length against a percentage) snaps whole.
+            // Each axis as a length-percentage, on its own: an axis that
+            // cannot interpolate (a length against a percentage) snaps to its
+            // end value as a lone `LengthPercentage` does, and the other axis
+            // still animates.
             (AnimatableValue::CornerRadius(ax, ay), AnimatableValue::CornerRadius(bx, by)) => {
                 let lp = |a: &LengthPercentageValue, b: &LengthPercentageValue| {
                     match AnimatableValue::LengthPercentage(*a)
                         .interpolate(&AnimatableValue::LengthPercentage(*b), t)
                     {
-                        Some(AnimatableValue::LengthPercentage(v)) => Some(v),
-                        _ => None,
+                        Some(AnimatableValue::LengthPercentage(v)) => v,
+                        _ => *b,
                     }
                 };
-                Some(AnimatableValue::CornerRadius(lp(ax, bx)?, lp(ay, by)?))
+                Some(AnimatableValue::CornerRadius(lp(ax, bx), lp(ay, by)))
             }
             // Incompatible types — snap immediately.
             //

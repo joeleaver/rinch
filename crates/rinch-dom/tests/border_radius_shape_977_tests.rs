@@ -584,3 +584,148 @@ fn a_blurred_inset_shadow_hole_has_elliptical_corners() {
     // Control: well inside the hole there is no shadow.
     assert!(alpha(&p, (LEFT + 60.0) as i64, (TOP + 30.0) as i64) < 0.05);
 }
+
+/// Half-way through a `border-radius` transition from `from` to `to` on a
+/// 200x100 box: the top-left corner's `(horizontal, vertical)` radii in px, or
+/// `None` when no transition started.
+fn radius_mid_transition(from: &str, to: &str) -> Option<(f32, f32)> {
+    use rinch_dom::transition::TransitionProperty;
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let style_el = doc.create_element("style");
+    let text = doc.create_text(&format!(
+        ".b {{ width: 200px; height: 100px; border-radius: {from}; \
+              transition: border-radius 100ms linear; }} \
+         .b.on {{ border-radius: {to}; }}"
+    ));
+    doc.append_child(style_el, text);
+    doc.append_child(body, style_el);
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "class", "b");
+    doc.append_child(body, div);
+    doc.tree.transitions_enabled = true;
+    doc.resolve_layout(800.0, 600.0);
+    doc.set_attribute(div, "class", "b on");
+    doc.resolve_layout(800.0, 600.0);
+    let start = doc
+        .tree
+        .active_transitions
+        .get(&div.0)
+        .and_then(|t| t.get(&TransitionProperty::BorderRadiusTopLeft))?
+        .start_time_ms;
+    rinch_dom::transition::tick_transitions(&mut doc.tree, start + 50.0);
+    let cs = &doc.tree.nodes[div.0].computed_style;
+    Some((
+        cs.border_radius_top_left.resolve(200.0),
+        cs.border_radius_top_left_y.resolve(100.0),
+    ))
+}
+
+/// A change of the vertical radius alone (`10px` → `10px / 30px`) is a
+/// change of the corner and starts a transition (review of #1640).
+#[test]
+fn a_vertical_only_radius_change_transitions() {
+    let (x, y) = radius_mid_transition("10px", "10px / 30px")
+        .expect("a vertical-only change should start a transition");
+    assert!(
+        (x - 10.0).abs() < 0.01 && (y - 20.0).abs() < 0.01,
+        "{x} / {y}"
+    );
+}
+
+/// An axis that cannot interpolate (a length to a percentage) snaps on its
+/// own; the other axis of the same corner still animates (review of #1640:
+/// the first cut snapped the whole corner, where the horizontal radius
+/// animated before #977).
+#[test]
+fn a_corner_snaps_only_the_axis_that_cannot_interpolate() {
+    let (x, y) = radius_mid_transition("10px", "20px / 50%")
+        .expect("the class change should start a transition");
+    assert!((x - 15.0).abs() < 0.01, "the length axis animates: {x}");
+    assert!(
+        (y - 50.0).abs() < 0.01,
+        "the mixed axis snaps to its end: {y}"
+    );
+}
+
+/// An elliptical hard shadow offset past its box does not contain the box,
+/// so the box is not punched out of it; the part of the (transparent) box the
+/// shadow does not cover stays blank (review of #1640).
+#[test]
+fn an_offset_elliptical_shadow_does_not_paint_inside_the_box() {
+    let p = painted(
+        160.0,
+        60.0,
+        "border-radius: 40px / 15px; box-shadow: 30px 0 0 rgb(0,0,0)",
+        None,
+    );
+    // Inside the box, left of where the shadow starts.
+    assert_eq!(alpha(&p, 60, 70), 0.0, "inside the box, outside the shadow");
+    // Positive control: the shadow is painted right of the box.
+    assert!(alpha(&p, 225, 70) > 0.8, "the shadow itself is painted");
+}
+
+/// A circular pill — any radius at least half the shorter side, at the
+/// common scales — stays on kurbo's `RoundedRect` path rather than slipping
+/// onto the elliptical `BezPath` by a float (review of #1640).
+#[test]
+fn pills_take_the_rounded_rect_path() {
+    use peniko::kurbo::Rect;
+    use rinch_dom::paint::painter::PaintShape;
+    use rinch_dom::paint::radii::BorderRadii;
+    let mut slipped = Vec::new();
+    for &r in &[1000.0f64, 9999.0, 500.0, 32.0] {
+        for &scale in &[1.0f64, 1.25, 1.5, 2.0] {
+            for w in 1..=240 {
+                for h in 1..=64 {
+                    let (sw, sh) = (w as f64 * scale, h as f64 * scale);
+                    let radii = BorderRadii::uniform(r * scale).fitted(sw, sh);
+                    if let PaintShape::BezPath(_) = radii.shape(Rect::new(0.0, 0.0, sw, sh)) {
+                        slipped.push((r, scale, w, h));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        slipped.is_empty(),
+        "pills on the BezPath path: {:?}",
+        &slipped[..slipped.len().min(8)]
+    );
+}
+
+/// A `data-render-surface` with no frame yet paints its background with the
+/// element's rounded shape (it used to take the top-left horizontal radius
+/// as one circle).
+#[test]
+fn a_render_surface_fallback_background_is_elliptical() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let div = doc.create_element("div");
+    doc.set_attribute(div, "data-render-surface", "nothing-registered");
+    doc.set_attribute(
+        div,
+        "style",
+        &format!(
+            "position: absolute; left: {LEFT}px; top: {TOP}px; width: 200px; height: 100px; \
+             background: black; border-radius: 40px / 12px"
+        ),
+    );
+    doc.append_child(body, div);
+    doc.resolve_layout(CANVAS.0 as f32, CANVAS.1 as f32);
+    let mut p = TinySkiaPainter::new(CANVAS.0, CANVAS.1);
+    let mut lcx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut p,
+        1.0,
+        (CANVAS.0 as f32, CANVAS.1 as f32),
+        &mut doc.font_cx,
+        &mut lcx,
+    );
+    assert_fill(
+        &p,
+        Shape::new(LEFT, TOP, 200.0, 100.0, [(40.0, 12.0); 4]),
+        "render-surface fallback",
+    );
+}

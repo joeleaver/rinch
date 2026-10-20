@@ -3239,14 +3239,9 @@ fn paint_node(
             }
             if visible {
                 if let BackgroundValue::Color(bg_color) = &node.computed_style.background {
-                    let radius =
-                        node.computed_style.border_radius_top_left.to_px().max(0.0) as f64 * scale;
-                    if radius > 0.0 {
-                        let rrect = rect.to_rounded_rect(radius);
-                        painter.fill_color(Fill::NonZero, node_transform, *bg_color, &rrect.into());
-                    } else {
-                        painter.fill_color(Fill::NonZero, node_transform, *bg_color, &rect.into());
-                    }
+                    // Rounded as any element's background is (#977).
+                    let shape = border_radii(node, scale).shape(rect);
+                    painter.fill_color(Fill::NonZero, node_transform, *bg_color, &shape);
                 }
             }
             if opacity < 1.0 {
