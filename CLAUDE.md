@@ -3096,7 +3096,11 @@ went stale on class toggles, insertions and removals. Now:
   `remove_attribute`, `set_styles` and `update_hover`/`update_focus`/
   `update_active`/`set_focus_visible` take a `ServoElementSnapshot` **before**
   the change (`note_attribute_change` / `note_state_change`, once per element
-  per resolve); `resolve_styles` runs Stylo's `StateAndAttrInvalidationProcessor`
+  per resolve — except that a subtree re-inserted and cascaded on the spot
+  mid-frame, `resolve_inserted_subtree`, forgets its elements' snapshots, so a
+  later change in the frame snapshots the state that cascade saw: kept, a class
+  added, the element moved, the class removed read as no change, #956);
+  `resolve_styles` runs Stylo's `StateAndAttrInvalidationProcessor`
   over all of them (`process_snapshots`), which marks exactly the elements a
   selector's answer changed for — self, descendants (e.g. `.card:hover .title`)
   or later siblings — with restyle hints. One change from Stylo's own: the

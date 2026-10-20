@@ -1143,6 +1143,107 @@ fn random_in_place_moves_match_a_fresh_document() {
     assert!(moves > 0, "positive control: no move was generated");
 }
 
+/// Run `ops` from `spec` as **one batch** — every op lands before a single
+/// restyle — and check the twin after it.
+#[track_caller]
+fn batched_scenario(name: &str, mut spec: Spec, ops: &[Op]) {
+    let mut l = live(&spec);
+    check(&spec, &l, &format!("{name}: initial"));
+    BATCH.with(|b| b.set(true));
+    for op in ops {
+        apply(&mut spec, &mut l, op);
+    }
+    BATCH.with(|b| b.set(false));
+    l.doc.resolve_layout(800.0, 600.0);
+    check(&spec, &l, &format!("{name}: after {ops:?}"));
+}
+
+/// #956: a change, a detaching move, and a second change that undoes the
+/// first, all before one restyle. The first change snapshots the element;
+/// the re-insertion cascades it on the spot (`resolve_inserted_subtree`)
+/// **with** the first change; the second change found the old snapshot (one
+/// per element per frame) and kept it, so the invalidator compared the final
+/// state with the state before the first change, saw nothing, and left the
+/// insertion's style — `.d:empty`'s padding and `:is(.b, .c) .d` on an element
+/// that no longer has `.d`. Batched seed 531 of the random differential,
+/// reduced: the element moves out of a child of its new parent, which leaves
+/// the new parent's ancestor chain clean, so the insertion takes the
+/// on-the-spot cascade. Pinned on the moved element, on a descendant of it,
+/// and with attributes in place of the class; plus one frame whose changes do
+/// not cancel (it passed before the fix too, and pins that forgetting the
+/// snapshot keeps a net change).
+#[test]
+fn a_change_undone_after_a_detaching_move_restyles() {
+    // container > div.b.d > div > X
+    fn spec(x_tag: &'static str, x_classes: &[&'static str]) -> (Spec, usize, usize) {
+        let mut s = Spec::new();
+        let target = s.add(0, 0, "div", &["b", "d"]);
+        let old = s.add(target, 0, "div", &[]);
+        let x = s.add(old, 0, x_tag, x_classes);
+        (s, target, x)
+    }
+    let mv = |x, target| Op::Move {
+        node: x,
+        parent: target,
+        index: 1,
+    };
+
+    for tag in ["input", "div", "span"] {
+        let (s, target, x) = spec(tag, &["b"]);
+        batched_scenario(
+            &format!("the moved <{tag}>"),
+            s,
+            &[
+                Op::ToggleClass(x, "d"),
+                mv(x, target),
+                Op::ToggleClass(x, "d"),
+            ],
+        );
+    }
+
+    // The class toggled on a descendant of the moved element.
+    let (mut s, target, x) = spec("div", &[]);
+    let y = s.add(x, 0, "span", &["b"]);
+    batched_scenario(
+        "a descendant of the moved element",
+        s,
+        &[
+            Op::ToggleClass(y, "d"),
+            mv(x, target),
+            Op::ToggleClass(y, "d"),
+        ],
+    );
+
+    // No cancellation: `.a` comes and goes around the move, then `.d`, which
+    // was there before the frame, is removed.
+    let (s, target, x) = spec("div", &["b", "d"]);
+    batched_scenario(
+        "a class there before the frame",
+        s,
+        &[
+            Op::ToggleClass(x, "a"),
+            mv(x, target),
+            Op::ToggleClass(x, "a"),
+            Op::ToggleClass(x, "d"),
+        ],
+    );
+
+    // Attributes (`[data-x]`, `[data-x="2"] .a`, `#i2`) set, moved, removed.
+    let (mut s, target, x) = spec("div", &[]);
+    s.add(x, 0, "span", &["a"]);
+    batched_scenario(
+        "attributes",
+        s,
+        &[
+            Op::SetAttr(x, "data-x", "2"),
+            Op::SetAttr(x, "id", "i2"),
+            mv(x, target),
+            Op::RemoveAttr(x, "data-x"),
+            Op::RemoveAttr(x, "id"),
+        ],
+    );
+}
+
 /// An absolutely positioned box whose containing block is the initial one has
 /// the viewport baked into its Taffy style; an ancestor that starts or stops
 /// being a containing block (`position: relative` by class) moves it to its
@@ -1175,7 +1276,11 @@ fn batched_random_mutations_match_a_fresh_document() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(20);
-    for seed in 1..=seeds {
+    let first: u64 = std::env::var("RINCH_TWIN_FIRST_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    for seed in first..=seeds {
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ seed.wrapping_mul(0x1000_0001) ^ 0xABCD);
         let mut spec = random_spec(&mut rng);
         let mut l = live(&spec);
@@ -1239,4 +1344,30 @@ fn random_stylesheet_subsets_match_a_fresh_document() {
         }
     }
     CSS_CUR.with(|c| *c.borrow_mut() = CSS.to_string());
+}
+
+/// #956 (review of #1624): the class toggled on a **grandchild** of the moved
+/// element, so the whole re-cascaded subtree forgets its snapshots, not just
+/// the root and its children.
+#[test]
+fn a_change_undone_on_a_grandchild_of_a_moved_element_restyles() {
+    let mut s = Spec::new();
+    let target = s.add(0, 0, "div", &["b", "d"]);
+    let old = s.add(target, 0, "div", &[]);
+    let x = s.add(old, 0, "div", &[]);
+    let m = s.add(x, 0, "div", &[]);
+    let y = s.add(m, 0, "span", &["b"]);
+    batched_scenario(
+        "grandchild",
+        s,
+        &[
+            Op::ToggleClass(y, "d"),
+            Op::Move {
+                node: x,
+                parent: target,
+                index: 1,
+            },
+            Op::ToggleClass(y, "d"),
+        ],
+    );
 }
