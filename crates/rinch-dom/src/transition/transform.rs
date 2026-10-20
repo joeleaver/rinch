@@ -35,7 +35,7 @@
 //!    decomposed in 3D before anything is flattened — css-transforms-2's
 //!    translation, scale, three shears, perspective and a quaternion slerped
 //!    the shorter way, a 2D end still decomposed in 2D — and the result is
-//!    kept as a `matrix3d()`, z and all (#989, see [`interpolate_mat4`]).
+//!    kept as a `matrix3d()`, z and all (#989, see `interpolate_mat4`).
 //!
 //! Not modelled at all: the `perspective` and `transform-style` properties.
 //! `transform-origin`'s z component and `backface-visibility` are applied

@@ -531,9 +531,10 @@ two axes slerp a quaternion the shorter way), `perspective(d)` interpolates
 Chrome's: the `perspective` and `transform-style` *properties* are not
 implemented at all, so a parent's `perspective` does nothing; a transform whose
 `w` depends on x or y (`perspective(200px) rotateY(30deg)`, a trapezoid in
-Chrome) is drawn with those terms dropped, since no affine draws a trapezoid;
-a mismatched remainder holding a 3D function is decomposed as a flattened
-2D matrix, where Chrome decomposes the 4×4 (#989).
+Chrome) is drawn with those terms dropped, since no affine draws a trapezoid. A
+mismatched remainder holding a 3D function is decomposed as Chrome decomposes
+it, as a 4×4 (translation, scale, shears, perspective, a quaternion), and only
+the interpolated result is flattened (#989).
 
 `transform-origin`'s z component is applied before the flattening — a list is
 composed as `M · T(0, 0, -z)` and flattened, and paint applies the x and y about
