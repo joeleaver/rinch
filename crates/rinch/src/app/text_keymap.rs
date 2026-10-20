@@ -97,8 +97,14 @@ pub(crate) fn text_key_action(
                 KeyCode::ArrowDown => mv(LineDown),
                 KeyCode::Home => mv(if ctrl { DocStart } else { LineStart }),
                 KeyCode::End => mv(if ctrl { DocEnd } else { LineEnd }),
-                KeyCode::Backspace => Some(DeleteBackward { word: ctrl }),
-                KeyCode::Delete => Some(DeleteForward { word: ctrl }),
+                // Not with Alt: Windows reports AltGr as Ctrl+Alt (the undo
+                // chords' guard, #288).
+                KeyCode::Backspace => Some(DeleteBackward {
+                    word: ctrl && !modifiers.alt,
+                }),
+                KeyCode::Delete => Some(DeleteForward {
+                    word: ctrl && !modifiers.alt,
+                }),
                 _ => None,
             }
         }
@@ -177,8 +183,13 @@ mod tests {
         assert_eq!(k(KeyCode::ArrowRight, opt_shift), mv(WordRight, true));
         assert_eq!(k(KeyCode::ArrowLeft, NONE), mv(CharLeft, false));
         assert_eq!(k(KeyCode::ArrowUp, NONE), mv(LineUp, false));
-        // Ctrl is not the word modifier on macOS.
+        // Not done, pinned as they are (#951's PR): Ctrl+Left/Right are
+        // Cocoa's line moves and Option+Up/Down its paragraph moves; rinch
+        // moves a character and a line.
         assert_eq!(k(KeyCode::ArrowLeft, ctrl), mv(CharLeft, false));
+        assert_eq!(k(KeyCode::ArrowRight, ctrl), mv(CharRight, false));
+        assert_eq!(k(KeyCode::ArrowUp, opt), mv(LineUp, false));
+        assert_eq!(k(KeyCode::ArrowDown, opt), mv(LineDown, false));
         // Home / End do not move the caret; with Shift they extend to the ends.
         assert_eq!(k(KeyCode::Home, NONE), Some(Inert));
         assert_eq!(k(KeyCode::End, NONE), Some(Inert));
@@ -224,6 +235,16 @@ mod tests {
             Some(DeleteBackward { word: false })
         );
         assert_eq!(k(KeyCode::Delete, ctrl), Some(DeleteForward { word: true }));
+        // AltGr arrives as Ctrl+Alt on Windows: not a word delete.
+        let altgr = mods(true, true, false, false);
+        assert_eq!(
+            k(KeyCode::Backspace, altgr),
+            Some(DeleteBackward { word: false })
+        );
+        assert_eq!(
+            k(KeyCode::Delete, altgr),
+            Some(DeleteForward { word: false })
+        );
         assert_eq!(k(KeyCode::Enter, NONE), None);
     }
 }

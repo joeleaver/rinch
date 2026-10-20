@@ -502,3 +502,55 @@ fn r1616_macos_option_shift_backspace_and_cmd_backspace() {
     press(&mut app, KeyCode::Backspace, None, OPTION_SHIFT);
     assert_eq!(value(&app, id), "hello brave ");
 }
+
+/// The other line-break cases: Chrome 155 deletes just the break with
+/// Ctrl+Backspace after it (`"a\n|b"` → `"ab"`); Ctrl+Delete before one does
+/// the same, by symmetry.
+#[test]
+fn a_word_delete_takes_a_line_break_alone() {
+    let (mut app, id) = field_with(&[], "textarea", "a\nb");
+    press(&mut app, KeyCode::ArrowLeft, None, NONE);
+    press(&mut app, KeyCode::Backspace, None, CTRL);
+    assert_eq!(value(&app, id), "ab", "Ctrl+Backspace after a break");
+
+    let (mut app, id) = field_with(&[], "textarea", "ab\ncd");
+    press(&mut app, KeyCode::Home, None, CTRL);
+    press(&mut app, KeyCode::ArrowRight, None, NONE);
+    press(&mut app, KeyCode::ArrowRight, None, NONE);
+    press(&mut app, KeyCode::Delete, None, CTRL);
+    assert_eq!(value(&app, id), "abcd", "Ctrl+Delete before a break");
+    press(&mut app, KeyCode::Delete, None, CTRL);
+    assert_eq!(value(&app, id), "ab", "then a word, as before");
+}
+
+/// In a password field a word is the whole value: Ctrl+Delete at 0 empties it
+/// (Chrome 155), macOS Option+Backspace too, and a word move goes to the ends.
+#[test]
+fn a_password_word_is_the_whole_value() {
+    let (mut app, id) = field_with(&[("type", "password")], "input", "hunter2 secret");
+    press(&mut app, KeyCode::ArrowLeft, None, CTRL);
+    assert_eq!(sel(&app, id), (0, 0), "Ctrl+Left: the value's start");
+    press(&mut app, KeyCode::ArrowRight, None, CTRL);
+    assert_eq!(sel(&app, id), (14, 14), "Ctrl+Right: the value's end");
+    press(&mut app, KeyCode::Home, None, NONE);
+    press(&mut app, KeyCode::Delete, None, CTRL);
+    assert_eq!(value(&app, id), "", "Ctrl+Delete at 0");
+
+    let (mut app, id) = field_with(&[("type", "password")], "input", "hunter2 secret");
+    app.text_keymap = TextKeymap::MacOs;
+    press(&mut app, KeyCode::Backspace, None, OPTION);
+    assert_eq!(value(&app, id), "", "Option+Backspace");
+}
+
+/// AltGr arrives as Ctrl+Alt on Windows; AltGr+Backspace is a character delete.
+#[test]
+fn ctrl_alt_backspace_is_not_a_word_delete() {
+    let (mut app, id) = field_with(&[], "input", "hello world");
+    let altgr = Modifiers {
+        ctrl: true,
+        alt: true,
+        ..NONE
+    };
+    press(&mut app, KeyCode::Backspace, None, altgr);
+    assert_eq!(value(&app, id), "hello worl");
+}

@@ -2731,23 +2731,56 @@ impl RinchApp {
     }
     /// A caret or delete key in the focused text field, through the
     /// platform's text keymap ([`text_key_action`], issue #951).
+    ///
+    /// In a password field a word is the whole value, as in Chrome (155,
+    /// measured for the deletes; Blink's selection modifier moves by line
+    /// there): a word delete deletes to the value's start or end and a word
+    /// move goes there, so neither reveals where the spaces are.
     fn handle_text_key(&mut self, key: KeyCode, modifiers: Modifiers) {
         let Some(action) = text_key_action(self.text_keymap, key, modifiers) else {
             return;
         };
+        let password = self.focused_input_is_password();
         match action {
-            TextKeyAction::Move { motion, extend } => self.move_input_caret(motion, extend),
+            TextKeyAction::Move { motion, extend } => {
+                let motion = match motion {
+                    TextMotion::WordLeft if password => TextMotion::LineStart,
+                    TextMotion::WordRight if password => TextMotion::LineEnd,
+                    motion => motion,
+                };
+                self.move_input_caret(motion, extend)
+            }
             TextKeyAction::DeleteBackward { word: false } => self.handle_backspace(),
             TextKeyAction::DeleteBackward { word: true } => {
-                self.handle_input_edit_command(EditCommand::DeleteWordBackward)
+                self.handle_input_edit_command(if password {
+                    EditCommand::DeleteToLineStart
+                } else {
+                    EditCommand::DeleteWordBackward
+                })
             }
-            TextKeyAction::DeleteForward { word } => self.handle_input_edit_command(if word {
-                EditCommand::DeleteWordForward
-            } else {
-                EditCommand::DeleteForward
-            }),
+            TextKeyAction::DeleteForward { word } => {
+                self.handle_input_edit_command(match (word, password) {
+                    (false, _) => EditCommand::DeleteForward,
+                    (true, false) => EditCommand::DeleteWordForward,
+                    (true, true) => EditCommand::DeleteToLineEnd,
+                })
+            }
             TextKeyAction::Inert => {}
         }
+    }
+    /// Whether the focused text field is an `<input type="password">`.
+    fn focused_input_is_password(&self) -> bool {
+        let Some(node_id) = self.focused_input_node_id else {
+            return false;
+        };
+        let Some(doc) = &self.doc else { return false };
+        let d = doc.borrow();
+        d.tree.get(node_id).is_some_and(|n| {
+            n.tag() == Some("input")
+                && n.attributes
+                    .get("type")
+                    .is_some_and(|t| t.eq_ignore_ascii_case("password"))
+        })
     }
     /// Move the focused field's caret; `extend` (Shift) keeps the anchor.
     fn move_input_caret(&mut self, motion: TextMotion, extend: bool) {
