@@ -312,6 +312,83 @@ pub(crate) fn enter_reactive_frame(root: u64, doc: u64) -> ReactiveFrameGuard {
     }
 }
 
+/// The context root and the document a callback was registered under, to be
+/// re-entered when it runs (issue #1032).
+///
+/// An effect or memo records both at creation and re-enters them around every
+/// run. A callback the platform or the host fires later — a timer, a parked
+/// continuation, a main-thread queue entry, a `rinch-ws` socket event, a menu,
+/// tray or hotkey item, a notification, a registered focus target, an Android
+/// sensor or activity result — is just as much its registrant's code, and is
+/// fired from outside any dispatch, or from inside another document's (an
+/// embedded `RinchContext`'s `update()` runs whatever is due). So such a
+/// registry records `CallbackFrame::current()` beside the callback's owner and
+/// runs the callback inside [`enter`](Self::enter):
+///
+/// - the **document** answers [`current_dispatching_doc`], so an interceptor
+///   the callback registers or clears is that document's (#963's rule);
+/// - the **root** is the store namespace [`use_store`]/[`use_context`]
+///   resolve (#136), so a timer armed in an embedded context reads that
+///   context's stores.
+///
+/// Recorded outside any document and root it re-enters none — the
+/// thread-global root and no document — wherever it is fired. It is two
+/// integers, `Copy` and `Send`, so a closure queued from a worker thread can
+/// carry one (that thread's, which is none).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct CallbackFrame {
+    root: u64,
+    /// Raw `doc_key`; `0` is no document (see [`doc_identity`]).
+    doc: u64,
+}
+
+impl CallbackFrame {
+    /// The context root and the document current on this thread right now.
+    #[must_use]
+    pub fn current() -> Self {
+        let (root, doc) = current_reactive_frame();
+        Self { root, doc }
+    }
+
+    /// This frame with its document replaced by `doc_key` — for a registry
+    /// that knows the document its callback belongs to better than the
+    /// ambient marker does (a focus target is registered on a node of a known
+    /// document, possibly at a mount no dispatch marks).
+    #[must_use]
+    pub fn with_doc(self, doc_key: u64) -> Self {
+        Self {
+            doc: doc_key,
+            ..self
+        }
+    }
+
+    /// The recorded context root (`0` = the thread-global root).
+    #[must_use]
+    pub fn root(self) -> u64 {
+        self.root
+    }
+
+    /// The recorded document, or `None` for none.
+    #[must_use]
+    pub fn doc(self) -> Option<u64> {
+        doc_identity(self.doc)
+    }
+
+    /// Make this frame's root and document current until the guard drops.
+    pub fn enter(self) -> CallbackFrameGuard {
+        CallbackFrameGuard {
+            _frame: enter_reactive_frame(self.root, self.doc),
+        }
+    }
+}
+
+/// RAII guard returned by [`CallbackFrame::enter`]; restores the root and the
+/// document it displaced.
+#[must_use = "the frame is only current while the guard is held — bind it, e.g. `let _f = …`"]
+pub struct CallbackFrameGuard {
+    _frame: ReactiveFrameGuard,
+}
+
 /// Create a context value accessible by any component.
 ///
 /// Context provides a way to share values across your component tree without

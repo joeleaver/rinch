@@ -182,15 +182,6 @@ impl RinchContext {
         let height = config.height.max(1);
         let scale_factor = config.scale_factor;
 
-        // Mount the component (builds DOM, runs initial layout) at the
-        // *logical* viewport — `width`/`height` are physical (see
-        // `rinch_platform::to_logical`). The display scale goes in first so
-        // the initial style resolution sees the right `device_pixel_ratio`
-        // (issue #211).
-        app.set_device_pixel_ratio(scale_factor);
-        let (logical_w, logical_h) = rinch_platform::to_logical((width, height), scale_factor);
-        app.mount_component(logical_w as f32, logical_h as f32);
-
         // Arm cross-thread signal dispatch. Both halves are required and they
         // are required together: `register_main_thread` is what *arms* the
         // check, so registering it without a dispatcher left a background-thread
@@ -205,8 +196,23 @@ impl RinchContext {
         // both drain sites.
         // Dispatcher first: a worker send between the two would otherwise
         // find a main thread registered and no dispatcher, and panic.
+        //
+        // Both before the mount (issue #1032, the CI failure of #1663): while no
+        // main thread is registered `is_main_thread()` answers `true` on every
+        // thread, so a timer armed by the component that came due before the
+        // mount finished hopped to "the main thread" inline on the
+        // `rinch-timer` thread, found nothing parked there, and was lost.
         rinch_core::set_cross_thread_dispatcher_if_unset(queue_on_main_thread);
         rinch_core::register_main_thread();
+
+        // Mount the component (builds DOM, runs initial layout) at the
+        // *logical* viewport — `width`/`height` are physical (see
+        // `rinch_platform::to_logical`). The display scale goes in first so
+        // the initial style resolution sees the right `device_pixel_ratio`
+        // (issue #211).
+        app.set_device_pixel_ratio(scale_factor);
+        let (logical_w, logical_h) = rinch_platform::to_logical((width, height), scale_factor);
+        app.mount_component(logical_w as f32, logical_h as f32);
 
         // Subscribe to signal changes so the game loop can detect dirty state.
         // A guard-based subscription (not the legacy single slot): each context

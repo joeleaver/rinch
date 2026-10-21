@@ -270,6 +270,10 @@ struct Entry {
     cb: Callback,
     on_binding: Option<BindingCallback>,
     owner: Option<Owner>,
+    /// The document and context root current at [`register`], entered around
+    /// every callback (issue #1032): a report arrives through the main-thread
+    /// queue from the backend's thread, under no document.
+    frame: rinch_core::CallbackFrame,
     /// Whether the last state delivered was `Pressed`, so a rebind that takes
     /// the binding away mid-hold can end the hold with a `Released`.
     pressed: bool,
@@ -356,6 +360,7 @@ pub fn register(
                 cb: Rc::new(cb),
                 on_binding: None,
                 owner: owner.clone(),
+                frame: rinch_core::CallbackFrame::current(),
                 pressed: false,
                 generation: 0,
             },
@@ -697,10 +702,11 @@ pub(crate) fn deliver(bk: BindingKey, r: Report) {
                     e.cb.clone(),
                     e.on_binding.clone(),
                     e.owner.clone(),
+                    e.frame,
                 )
             })
     });
-    let Some((id, cb, on_binding, owner)) = found else {
+    let Some((id, cb, on_binding, owner, frame)) = found else {
         return; // unregistered or rebound since the backend saw it
     };
     if let Some(o) = &owner
@@ -709,6 +715,7 @@ pub(crate) fn deliver(bk: BindingKey, r: Report) {
         unregister_key(key);
         return;
     }
+    let _frame = frame.enter();
     let run = |f: &dyn Fn()| {
         rinch_core::reactive::batch(|| match &owner {
             Some(o) => o.run(|| untracked_handler(f)),

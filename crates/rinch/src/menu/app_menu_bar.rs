@@ -567,9 +567,10 @@ fn build_menu_entries_with_flyouts(
                         // click would run a callback whose component has
                         // unmounted and read its freed signals.
                         let owner = item.callback_owner.clone();
+                        let frame = item.callback_frame;
                         let handler_id = scope.register_handler(move || {
                             active_menu.set(-1);
-                            super::invoke_menu_callback(&cb, owner.as_ref());
+                            super::invoke_menu_callback(&cb, owner.as_ref(), frame);
                         });
                         entry_node.set_attribute("data-rid", &handler_id.0.to_string());
                     }

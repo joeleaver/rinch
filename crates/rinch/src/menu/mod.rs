@@ -33,7 +33,10 @@
 //! freed, and a read of a freed signal panics (issue #183, #141 PR4), so the
 //! callback stops being dispatched. It also runs *inside* that owner, so a
 //! `Signal` it creates belongs to the menu's component rather than to whatever
-//! the event loop happened to be doing.
+//! the event loop happened to be doing, and under the document and in the
+//! context root that were current there (issue #1032, the item's
+//! `callback_frame`), so what it registers or reads is its maker's, wherever
+//! it is fired.
 //!
 //! Every path that can fire an item applies that rule through one function,
 //! `invoke_menu_callback`: the registry (`dispatch_menu_event`, which muda, ksni
@@ -116,6 +119,7 @@ pub use app_menu_bar::{MENU_BAR_HEIGHT, render_menu_bar_standalone, render_with_
 
 #[cfg(feature = "desktop")]
 use muda::accelerator::Accelerator;
+use rinch_core::CallbackFrame;
 use rinch_core::reactive::{Owner, current_owner, unowned};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -151,6 +155,12 @@ pub struct MenuItem {
     /// `None` means the item was created outside any render and has app
     /// lifetime. `Owner` is a `Weak`, so this keeps nothing alive.
     callback_owner: Option<Owner>,
+    /// The document and context root current where the callback was made,
+    /// captured beside [`callback_owner`](Self::callback_owner) and entered
+    /// around every activation (issue #1032): a native click, a chord, a tray
+    /// click or a DOM bar click arrives outside any dispatch or inside another
+    /// document's, and the callback is still its maker's code.
+    callback_frame: CallbackFrame,
     /// A checkbox or radio item's state, if this is one (issue #1520).
     toggle: Option<Toggle>,
 }
@@ -212,6 +222,7 @@ impl MenuItem {
             enabled: true,
             callback: None,
             callback_owner: None,
+            callback_frame: CallbackFrame::default(),
             toggle: None,
         }
     }
@@ -231,6 +242,7 @@ impl MenuItem {
     pub fn checkbox(label: impl Into<String>, checked: rinch_core::reactive::Signal<bool>) -> Self {
         let mut item = Self::new(label);
         item.callback_owner = current_owner();
+        item.callback_frame = CallbackFrame::current();
         item.toggle = Some(Toggle {
             kind: ToggleKind::Check,
             is_on: Rc::new(move || checked.try_get()),
@@ -260,6 +272,7 @@ impl MenuItem {
     ) -> Self {
         let mut item = Self::new(label);
         item.callback_owner = current_owner();
+        item.callback_frame = CallbackFrame::current();
         let mine = value.clone();
         item.toggle = Some(Toggle {
             kind: ToggleKind::Radio {
@@ -322,6 +335,7 @@ impl MenuItem {
     pub fn on_click(mut self, cb: impl Fn() + 'static) -> Self {
         self.callback = Some(Rc::new(cb));
         self.callback_owner = current_owner();
+        self.callback_frame = CallbackFrame::current();
         self
     }
 
@@ -397,6 +411,8 @@ pub(crate) enum MenuEntryKind {
         /// Carried through so the tray backend registers the item under the
         /// scope that created its callback, not the one that built the tray.
         callback_owner: Option<Owner>,
+        /// And the frame it was made in (issue #1032).
+        callback_frame: CallbackFrame,
         /// A checkbox or radio item's state.
         toggle: Option<Toggle>,
     },
@@ -419,6 +435,7 @@ impl Menu {
                     label: item.label,
                     enabled: item.enabled,
                     callback_owner: item.callback_owner,
+                    callback_frame: item.callback_frame,
                     toggle: item.toggle,
                 },
                 MenuEntryInner::Separator => MenuEntryKind::Separator,
@@ -440,6 +457,8 @@ impl Menu {
 struct MenuCallback {
     /// See [`MenuItem::callback_owner`]. `None` means app lifetime.
     owner: Option<Owner>,
+    /// See [`MenuItem::callback_frame`].
+    frame: CallbackFrame,
     cb: Rc<dyn Fn()>,
 }
 
@@ -580,8 +599,9 @@ fn register_callback_owned(
     menu_id: &str,
     cb: Rc<dyn Fn()>,
     owner: Option<Owner>,
+    frame: CallbackFrame,
 ) -> Rc<MenuCallback> {
-    let entry = Rc::new(MenuCallback { owner, cb });
+    let entry = Rc::new(MenuCallback { owner, frame, cb });
     // Bound outside the borrow: a displaced entry is user code whose `Drop` may
     // re-enter the registry.
     let _previous =
@@ -640,10 +660,19 @@ fn register_shortcut_with_native_bar(
 /// reason: it has app lifetime, and what it allocates must not be handed to
 /// whatever scope the dispatch happened to be nested inside. A callback whose
 /// owner is gone is not run at all — its captured signals are freed, and reading
-/// one panics.
-pub(crate) fn invoke_menu_callback(cb: &Rc<dyn Fn()>, owner: Option<&Owner>) -> bool {
+/// one panics. Either way it runs under the document and in the context root
+/// `frame` names — the ones current where the item was made (issue #1032) —
+/// not the ones current where it happens to be fired.
+pub(crate) fn invoke_menu_callback(
+    cb: &Rc<dyn Fn()>,
+    owner: Option<&Owner>,
+    frame: CallbackFrame,
+) -> bool {
+    if owner.is_some_and(|owner| !owner.is_alive()) {
+        return false;
+    }
+    let _frame = frame.enter();
     match owner {
-        Some(owner) if !owner.is_alive() => false,
         // One transaction per callback, like every event handler
         // (`rinch_core::reactive::batch`).
         Some(owner) => {
@@ -680,7 +709,7 @@ pub(crate) fn dispatch_menu_event(menu_id: &str) -> bool {
         return false;
     }
 
-    invoke_menu_callback(&entry.cb, entry.owner.as_ref())
+    invoke_menu_callback(&entry.cb, entry.owner.as_ref(), entry.frame)
 }
 
 /// Take `menu_id` out of `map` if it is still `entry`.
@@ -1054,15 +1083,17 @@ pub(crate) struct MenuRegistration {
 }
 
 impl MenuRegistration {
-    /// Register `cb` under `menu_id` on behalf of `owner`, and record the id so
-    /// dropping this token takes it back out.
+    /// Register `cb` under `menu_id` on behalf of `owner`, to run in `frame`
+    /// (issue #1032), and record the id so dropping this token takes it back
+    /// out.
     pub(crate) fn register_callback(
         &mut self,
         menu_id: &str,
         cb: Rc<dyn Fn()>,
         owner: Option<Owner>,
+        frame: CallbackFrame,
     ) {
-        let entry = register_callback_owned(menu_id, cb, owner);
+        let entry = register_callback_owned(menu_id, cb, owner, frame);
         self.callbacks.push((menu_id.to_string(), entry));
     }
 
@@ -1255,7 +1286,12 @@ fn register_menu_shortcuts_into(menu: &Menu, registration: &mut MenuRegistration
                     continue;
                 };
                 let menu_id = next_menu_id();
-                registration.register_callback(&menu_id, cb, item.callback_owner.clone());
+                registration.register_callback(
+                    &menu_id,
+                    cb,
+                    item.callback_owner.clone(),
+                    item.callback_frame,
+                );
                 registration.register_shortcut(shortcut, &menu_id);
             }
             MenuEntryInner::Separator => {}
@@ -1443,7 +1479,7 @@ fn build_muda_item(
     // Register callback, owned by the scope that created it rather than by
     // whoever is building this menu.
     if let Some(cb) = item.activation() {
-        registration.register_callback(&id, cb, item.callback_owner.clone());
+        registration.register_callback(&id, cb, item.callback_owner.clone(), item.callback_frame);
     }
 
     // Register the shortcut unconditionally; whether it ever matches is
@@ -1981,7 +2017,7 @@ mod tests {
     /// [`the_owner_is_the_scope_that_created_the_callback_not_the_one_that_built_the_menu`]
     /// pins.
     fn register_callback(menu_id: &str, cb: Rc<dyn Fn()>) {
-        register_callback_owned(menu_id, cb, current_owner());
+        register_callback_owned(menu_id, cb, current_owner(), CallbackFrame::current());
     }
 
     /// The lifetime half.
@@ -2007,8 +2043,18 @@ mod tests {
         let mut registration = MenuRegistration::default();
         let scope = Scope::new();
         scope.run(|| {
-            registration.register_callback("scoped-dispatched", cb, current_owner());
-            registration.register_callback("scoped-untouched", Rc::new(|| {}), current_owner());
+            registration.register_callback(
+                "scoped-dispatched",
+                cb,
+                current_owner(),
+                CallbackFrame::current(),
+            );
+            registration.register_callback(
+                "scoped-untouched",
+                Rc::new(|| {}),
+                current_owner(),
+                CallbackFrame::current(),
+            );
         });
         assert_eq!(callback_count(), base + 2);
 
@@ -2162,7 +2208,7 @@ mod tests {
         let mut registration = MenuRegistration::default();
         let scope = Scope::new();
         let owner = scope.run(current_owner);
-        registration.register_callback("sc-1", Rc::new(|| {}), owner);
+        registration.register_callback("sc-1", Rc::new(|| {}), owner, CallbackFrame::current());
         registration.register_shortcut("Ctrl+Alt+Y", "sc-1");
         registration.register_shortcut("Ctrl+Alt+P", "sc-no-callback");
         assert_eq!(shortcut_count(), shortcuts + 2);
@@ -2211,7 +2257,12 @@ mod tests {
 
         let dead = Scope::new();
         let owner = dead.run(current_owner);
-        register_callback_owned("shadow-dead", Rc::new(|| {}), owner);
+        register_callback_owned(
+            "shadow-dead",
+            Rc::new(|| {}),
+            owner,
+            CallbackFrame::current(),
+        );
         register_shortcut("Ctrl+Alt+I", "shadow-dead");
 
         register_callback("shadow-live", cb);
@@ -2266,7 +2317,7 @@ mod tests {
         let owner = creator.run(current_owner);
         let builder = Scope::new();
         builder.run(|| {
-            register_callback_owned("granular-1", cb, owner);
+            register_callback_owned("granular-1", cb, owner, CallbackFrame::current());
         });
 
         creator.dispose();
@@ -2309,8 +2360,8 @@ mod tests {
         let mut registration = MenuRegistration::default();
         let builder = Scope::new();
         builder.run(|| {
-            registration.register_callback("contrib-y", y_cb, y_owner);
-            registration.register_callback("contrib-z", z_cb, z_owner);
+            registration.register_callback("contrib-y", y_cb, y_owner, CallbackFrame::current());
+            registration.register_callback("contrib-z", z_cb, z_owner, CallbackFrame::current());
         });
 
         builder.dispose();
@@ -2367,8 +2418,8 @@ mod tests {
 
         {
             let mut registration = MenuRegistration::default();
-            registration.register_callback("tok-1", Rc::new(|| {}), None);
-            registration.register_callback("tok-2", Rc::new(|| {}), None);
+            registration.register_callback("tok-1", Rc::new(|| {}), None, CallbackFrame::current());
+            registration.register_callback("tok-2", Rc::new(|| {}), None, CallbackFrame::current());
             registration.register_shortcut("Ctrl+Alt+Q", "tok-1");
             assert_eq!(callback_count(), callbacks + 2);
             assert_eq!(shortcut_count(), shortcuts + 1);
@@ -2398,6 +2449,7 @@ mod tests {
                     &format!("ksni-{}", build * 4 + item),
                     Rc::new(|| {}),
                     None,
+                    CallbackFrame::current(),
                 );
             }
             // Assigning drops the previous build's token, exactly as replacing a
@@ -2454,6 +2506,62 @@ mod tests {
             "a submenu's items declare chords like any other"
         );
         assert_eq!(nested_fired.get(), 1);
+    }
+
+    /// A menu callback runs under the document and in the context root its
+    /// item was made in (issue #1032), as a timer does (#963): a native menu
+    /// click and a chord arrive outside any dispatch, or inside another
+    /// document's, and an interceptor the callback registered or cleared
+    /// reached every document on the thread. Fired from inside root 4 /
+    /// document 2, off the fixed point; an item made outside any document
+    /// answers none, not the firing one. Both routes: the registry (a chord, a
+    /// muda click, a tray item) and the DOM bar's direct invocation.
+    #[test]
+    fn a_menu_callback_runs_under_the_document_and_root_its_item_was_made_in() {
+        type Seen = Rc<RefCell<Vec<(u64, Option<u64>)>>>;
+        use rinch_core::{
+            current_context_root, current_dispatching_doc, push_context_root, push_dispatching_doc,
+        };
+        let seen: Seen = Rc::default();
+        let record = |s: Seen| {
+            move || {
+                s.borrow_mut()
+                    .push((current_context_root(), current_dispatching_doc()))
+            }
+        };
+        let in_doc = {
+            let _root = push_context_root(9);
+            let _doc = push_dispatching_doc(7);
+            MenuItem::new("In a document")
+                .shortcut("Ctrl+Shift+F7")
+                .on_click(record(seen.clone()))
+        };
+        let outside = MenuItem::new("Outside")
+            .shortcut("Ctrl+Shift+F8")
+            .on_click(record(seen.clone()));
+        let in_doc_direct = in_doc.clone();
+        let menu = Menu::new().item(in_doc).item(outside);
+        let _chords = register_menu_shortcuts(&[("File", &menu)]);
+
+        {
+            let _root = push_context_root(4);
+            let _doc = push_dispatching_doc(2);
+            assert!(match_shortcut_code(true, false, false, true, "F7", None));
+            assert!(match_shortcut_code(true, false, false, true, "F8", None));
+            // The DOM bar invokes straight from the `Menu`, not the registry.
+            let cb = in_doc_direct.activation().expect("has a callback");
+            assert!(invoke_menu_callback(
+                &cb,
+                in_doc_direct.callback_owner.as_ref(),
+                in_doc_direct.callback_frame
+            ));
+            assert_eq!(
+                (current_context_root(), current_dispatching_doc()),
+                (4, Some(2)),
+                "the firing root and document are restored"
+            );
+        }
+        assert_eq!(*seen.borrow(), [(9, Some(7)), (0, None), (9, Some(7))]);
     }
 
     /// A disabled item fires nothing, so its chord must not be armed — else the
@@ -2797,7 +2905,7 @@ mod tests {
             let (fired, cb) = probe();
             let id = format!("punct-{code}");
             let mut registration = MenuRegistration::default();
-            registration.register_callback(&id, cb, None);
+            registration.register_callback(&id, cb, None, CallbackFrame::current());
             registration.register_shortcut(&chord, &id);
 
             assert!(
@@ -2827,7 +2935,7 @@ mod tests {
     fn a_space_chord_fires_on_the_desktop_and_the_web() {
         let (fired, cb) = probe();
         let mut registration = MenuRegistration::default();
-        registration.register_callback("space-chord", cb, None);
+        registration.register_callback("space-chord", cb, None, CallbackFrame::current());
         registration.register_shortcut("Ctrl+Alt+Space", "space-chord");
         assert!(match_shortcut(
             true,
@@ -2854,7 +2962,7 @@ mod tests {
     fn a_shifted_character_is_spelled_as_its_key_and_shift() {
         let (fired, cb) = probe();
         let mut registration = MenuRegistration::default();
-        registration.register_callback("help", cb, None);
+        registration.register_callback("help", cb, None, CallbackFrame::current());
         registration.register_shortcut("Ctrl+Shift+/", "help");
         assert!(match_shortcut(
             true,
@@ -3093,9 +3201,9 @@ mod tests {
         let (second_fired, second_cb) = probe();
 
         let mut first = MenuRegistration::default();
-        first.register_callback("shared-1", first_cb, None);
+        first.register_callback("shared-1", first_cb, None, CallbackFrame::current());
         let mut second = MenuRegistration::default();
-        second.register_callback("shared-1", second_cb, None);
+        second.register_callback("shared-1", second_cb, None, CallbackFrame::current());
 
         drop(first);
         dispatch_menu_event("shared-1");
@@ -3135,7 +3243,7 @@ mod tests {
     fn a_letter_chord_matches_the_layouts_character_on_a_qwertz_keyboard() {
         let (fired, cb) = probe();
         let mut registration = MenuRegistration::default();
-        registration.register_callback("qwertz-undo", cb, None);
+        registration.register_callback("qwertz-undo", cb, None, CallbackFrame::current());
         registration.register_shortcut("Ctrl+Z", "qwertz-undo");
 
         // The physical key labelled Z on German QWERTZ is `KeyY`, typing 'z'.
@@ -3166,7 +3274,7 @@ mod tests {
     fn a_letter_chord_matches_the_layouts_character_on_an_azerty_keyboard() {
         let (fired, cb) = probe();
         let mut registration = MenuRegistration::default();
-        registration.register_callback("azerty-quit", cb, None);
+        registration.register_callback("azerty-quit", cb, None, CallbackFrame::current());
         registration.register_shortcut("Ctrl+Q", "azerty-quit");
 
         assert!(
@@ -3195,7 +3303,7 @@ mod tests {
     fn a_letter_chord_falls_back_to_the_physical_key_when_the_layout_types_no_latin_letter() {
         let (fired, cb) = probe();
         let mut registration = MenuRegistration::default();
-        registration.register_callback("cyrillic-copy", cb, None);
+        registration.register_callback("cyrillic-copy", cb, None, CallbackFrame::current());
         registration.register_shortcut("Ctrl+C", "cyrillic-copy");
 
         assert!(
@@ -3225,7 +3333,7 @@ mod tests {
     fn a_digit_chord_matches_the_physical_key_regardless_of_typed_letter() {
         let (fired, cb) = probe();
         let mut registration = MenuRegistration::default();
-        registration.register_callback("digit-one", cb, None);
+        registration.register_callback("digit-one", cb, None, CallbackFrame::current());
         registration.register_shortcut("Ctrl+1", "digit-one");
 
         // No Latin letter at all — the ordinary case for a digit key — still
@@ -3262,7 +3370,7 @@ mod tests {
         let _restore = RestoreMatching;
         let (fired, cb) = probe();
         let mut registration = MenuRegistration::default();
-        registration.register_callback("azerty-quit-physical", cb, None);
+        registration.register_callback("azerty-quit-physical", cb, None, CallbackFrame::current());
         registration.register_shortcut("Ctrl+Q", "azerty-quit-physical");
 
         set_shortcut_matching(ShortcutMatching::Physical);
@@ -3371,7 +3479,7 @@ mod tests {
     fn a_native_bar_chord_fires_until_the_accelerator_actually_attaches_then_goes_silent() {
         let (fired, cb) = probe();
         let mut registration = MenuRegistration::default();
-        registration.register_callback("mac-quit-1304", cb, None);
+        registration.register_callback("mac-quit-1304", cb, None, CallbackFrame::current());
         registration.register_shortcut_native_bar("Ctrl+Q", "mac-quit-1304", true);
 
         // Before `attach_menu_to_window` ever records success — the Linux
@@ -3400,7 +3508,7 @@ mod tests {
     fn a_non_native_bar_chord_keeps_matching_after_the_accelerator_attaches() {
         let (fired, cb) = probe();
         let mut registration = MenuRegistration::default();
-        registration.register_callback("tray-quit-1304", cb, None);
+        registration.register_callback("tray-quit-1304", cb, None, CallbackFrame::current());
         registration.register_shortcut("Ctrl+Alt+Shift+F9", "tray-quit-1304");
 
         mark_native_accelerator_attached();
@@ -3430,7 +3538,7 @@ mod modifier_spelling_tests {
             let (fired, cb) = probe();
             let mut reg = MenuRegistration::default();
             let id = format!("r1166-{s}");
-            reg.register_callback(&id, cb, None);
+            reg.register_callback(&id, cb, None, CallbackFrame::current());
             reg.register_shortcut(s, &id);
             let bare = match_shortcut_code(false, false, false, false, "KeyS", None);
             let with_ctrl = match_shortcut_code(true, false, false, false, "KeyS", None);
@@ -3758,7 +3866,7 @@ mod toggle_tests {
 
     fn activate(item: &MenuItem) {
         let cb = item.activation().expect("a toggle item always activates");
-        invoke_menu_callback(&cb, item.callback_owner.as_ref());
+        invoke_menu_callback(&cb, item.callback_owner.as_ref(), item.callback_frame);
     }
 
     /// Activating a checkbox flips its signal, and does so *before* the
@@ -3819,7 +3927,7 @@ mod toggle_tests {
         scope.dispose();
         let cb = item.activation().unwrap();
         assert!(
-            !invoke_menu_callback(&cb, item.callback_owner.as_ref()),
+            !invoke_menu_callback(&cb, item.callback_owner.as_ref(), item.callback_frame),
             "a dead owner's item does not run"
         );
         let toggle = item.toggle.as_ref().unwrap();
@@ -3895,6 +4003,48 @@ mod toggle_tests {
     /// muda: a checkbox is a `CheckMenuItem` whose mark follows the signal on
     /// an app write, and goes back to the signal's state when muda's own click
     /// handling flipped it (an already-selected radio option clicked again).
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn a_muda_item_runs_under_the_document_and_root_it_was_made_in() {
+        // Issue #1032 (review of #1663, F2): `build_muda_item` registers the
+        // item's own frame, not the builder's. Made in root 9 / document 7,
+        // built in root 3 / document 5, clicked from root 4 / document 2.
+        use rinch_core::{
+            current_context_root, current_dispatching_doc, push_context_root, push_dispatching_doc,
+        };
+        type Seen = Rc<RefCell<Vec<(u64, Option<u64>)>>>;
+        let seen: Seen = Rc::default();
+        let s = seen.clone();
+        let menu = {
+            let _root = push_context_root(9);
+            let _doc = push_dispatching_doc(7);
+            Menu::new().item(MenuItem::new("Item").on_click(move || {
+                s.borrow_mut()
+                    .push((current_context_root(), current_dispatching_doc()))
+            }))
+        };
+        let (muda_menu, _registration) = {
+            let _root = push_context_root(3);
+            let _doc = push_dispatching_doc(5);
+            build_muda_menu(menu)
+        };
+        let ids: Vec<String> = muda_menu
+            .items()
+            .into_iter()
+            .filter_map(|k| match k {
+                muda::MenuItemKind::MenuItem(m) => Some(m.id().0.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids.len(), 1, "control: one plain item");
+        {
+            let _root = push_context_root(4);
+            let _doc = push_dispatching_doc(2);
+            assert!(dispatch_menu_event(&ids[0]));
+        }
+        assert_eq!(*seen.borrow(), [(9, Some(7))]);
+    }
+
     #[cfg(feature = "desktop")]
     #[test]
     fn a_muda_check_item_follows_its_signal() {

@@ -180,7 +180,9 @@ consequences are worth knowing:
   share a thread (issues #340, #478): a registration made while a document's
   code is running — its event dispatch, its mount, or an effect it owns
   (issue #295), or a timer, `run_on_main_thread` closure or http/ws callback
-  armed from any of those (issue #963) — belongs to that document, one made
+  armed from any of those (issue #963), or a menu, tray, hotkey,
+  notification, focus-target or Android callback made in any of those (issue
+  #1032) — belongs to that document, one made
   outside any document (from `main`, a timer armed there, on rinch-web) is the
   thread-global fallback, and each
   document is served whichever of its own and the fallback is **newer** — so
@@ -188,8 +190,8 @@ consequences are worth knowing:
   clear from outside any document clears every entry; one from inside a
   document leaves that document with nothing. With several documents on one
   thread that cuts both ways: code outside any document — `main`, a timer
-  armed there, a closure queued from a worker thread, a native menu or tray
-  callback — overrides every document's own registration and its clear wipes
+  armed there, a closure queued from a worker thread, a menu (native
+  or DOM bar) or tray callback built there — overrides every document's own registration and its clear wipes
   them all. The release only reclaims the slot if it
   is still holding the callback that registered it.
 - **Register once per component, not once per event.** Each call from inside a

@@ -158,10 +158,14 @@ impl std::fmt::Debug for Notification {
 /// An `on_error` callback.
 type OnError = Owned<dyn Fn(&NotificationError)>;
 
-/// A callback with the owner that was rendering when it was set.
+/// A callback with the owner that was rendering when it was set, and the
+/// document and context root current there (issue #1032): the platform's
+/// report arrives through the main-thread queue from a worker, under no
+/// document.
 struct Owned<F: ?Sized> {
     cb: Rc<F>,
     owner: Option<Owner>,
+    frame: rinch_core::CallbackFrame,
 }
 
 impl<F: ?Sized> Clone for Owned<F> {
@@ -169,6 +173,7 @@ impl<F: ?Sized> Clone for Owned<F> {
         Owned {
             cb: self.cb.clone(),
             owner: self.owner.clone(),
+            frame: self.frame,
         }
     }
 }
@@ -178,6 +183,7 @@ impl<F: ?Sized> Owned<F> {
         Owned {
             cb,
             owner: current_owner(),
+            frame: rinch_core::CallbackFrame::current(),
         }
     }
 
@@ -187,8 +193,13 @@ impl<F: ?Sized> Owned<F> {
 
     /// Run `call` with the callback inside its owner, in one batch, as a menu
     /// callback runs (`menu::invoke_menu_callback`). A dead owner runs
-    /// nothing.
+    /// nothing. A live one runs under the document and in the context root it
+    /// was set in.
     fn invoke(&self, call: impl FnOnce(&F)) -> bool {
+        if self.is_dead() {
+            return false;
+        }
+        let _frame = self.frame.enter();
         match &self.owner {
             Some(owner) if !owner.is_alive() => false,
             Some(owner) => {

@@ -1079,14 +1079,16 @@ build on, with this menu as the fallback.
   closure armed there, or on rinch-web, which marks no document) still share
   the single fallback slot, last-wins. A timer, `run_on_main_thread` closure or
   http/ws completion armed *inside* a document runs as that document's code
-  (issue #963), so what it registers or clears is that document's. A document is served whichever of its own hook and
+  (issue #963), and so does a menu, tray, hotkey, notification, focus-target
+  or Android callback made inside one (issue #1032), so what it registers or
+  clears is that document's. A document is served whichever of its own hook and
   the fallback was registered **later**, so a single-window app keeps
   last-registration-wins wherever it registers from; `clear_keyboard_interceptor`
   from outside any document clears every entry, and from inside one leaves that
   document with none. The cost with several documents on one thread (two
   embedded contexts, an app and its DevTools): code outside any document —
-  `main`, a timer armed there, a closure queued from a worker thread, a native
-  menu or tray callback — cannot say which document it belongs to, so its
+  `main`, a timer armed there, a closure queued from a worker thread, a menu
+  (native or DOM bar) or tray callback built there — cannot say which document it belongs to, so its
   registration overrides **every** document's own hook and its clear wipes
   every document's. Registrations made inside documents stay isolated from
   each other. Its *lifetime* does match the arbiter's, though:

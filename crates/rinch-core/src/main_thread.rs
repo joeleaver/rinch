@@ -39,14 +39,17 @@ struct Parked {
     /// disposed means the component is gone and the callback must not run.
     /// `Owner` is a `Weak`, so this keeps nothing alive.
     owner: Option<crate::reactive::Owner>,
-    /// The document whose code parked this callback, as a raw `doc_key` (`0` =
-    /// none), re-entered around the resume (issue #963). A resume is driven
+    /// The document whose code parked this callback (issue #963) and the
+    /// context root it was parked in (issue #1032), re-entered around the
+    /// resume. A resume is driven
     /// from outside any event dispatch — a timer fire, an http completion
     /// drained between events, or another embedded context's `update()` — so
     /// without it the continuation ran under no document, or a borrowed one,
     /// and an interceptor it registered or cleared reached every document on
-    /// the thread. Parked outside any document, it re-enters none.
-    doc: u64,
+    /// the thread; and without the root it resolved the thread-global store
+    /// namespace, not its embedded context's. Parked outside any document, it
+    /// re-enters none.
+    frame: crate::context::CallbackFrame,
     /// Type-erased `Box<dyn FnOnce(T)>` for the caller's own payload type `T`,
     /// downcast back on resume.
     callback: Box<dyn Any>,
@@ -129,7 +132,7 @@ pub fn park_main_callback<T: 'static>(cb: impl FnOnce(T) + 'static) -> MainCallb
     let boxed: Box<dyn FnOnce(T)> = Box::new(cb);
     let parked = Parked {
         owner: crate::reactive::current_owner(),
-        doc: crate::context::current_dispatching_doc().unwrap_or(0),
+        frame: crate::context::CallbackFrame::current(),
         callback: Box::new(boxed),
     };
     PARKED.with(|p| p.borrow_mut().insert(id, parked));
@@ -148,8 +151,11 @@ pub fn park_main_callback<T: 'static>(cb: impl FnOnce(T) + 'static) -> MainCallb
 ///
 /// The callback runs under the **document** that parked it (issue #963), as an
 /// effect runs under the document that created it (#295): see
-/// [`current_dispatching_doc`](crate::current_dispatching_doc). A callback
-/// parked outside any document runs under none, wherever it is resumed.
+/// [`current_dispatching_doc`](crate::current_dispatching_doc); and in the
+/// **context root** it was parked in (issue #1032), as an effect does (#136),
+/// so a timer armed in an embedded `RinchContext` resolves that context's
+/// stores. A callback parked outside any document runs under none, at the
+/// thread-global root, wherever it is resumed.
 ///
 /// The callback runs with that component
 /// as the ambient owner, so anything it allocates belongs to the component
@@ -181,7 +187,7 @@ pub fn resume_main_callback<T: 'static>(id: MainCallbackId, payload: T) {
         );
         return;
     };
-    let _doc = crate::context::push_dispatching_doc(entry.doc);
+    let _frame = entry.frame.enter();
     match entry.owner {
         Some(owner) => owner.run(move || (*cb)(payload)),
         // Not bare: the owner stack is not an ancestor chain, so a resume nested
@@ -368,6 +374,48 @@ mod tests {
             );
         }
         assert_eq!(*seen.borrow(), [Some(1), None]);
+    }
+
+    /// A parked continuation re-enters the **context root** it was parked in
+    /// as well as the document (issue #1032), as an effect does (#136): a timer
+    /// or http completion armed inside an embedded `RinchContext` must resolve
+    /// that context's stores, whichever context's `update()` resumes it.
+    /// Resumed from inside root 4 / document 2, off the fixed point where
+    /// "inherit" and "record" agree; one parked at the thread-global root
+    /// resumes there, not in root 4.
+    #[test]
+    fn a_parked_callback_resumes_in_the_context_root_that_parked_it() {
+        type Seen = Rc<RefCell<Vec<(u64, Option<u64>)>>>;
+        use crate::context::{
+            current_context_root, current_dispatching_doc, push_context_root, push_dispatching_doc,
+        };
+
+        let seen: Seen = Rc::new(RefCell::new(Vec::new()));
+        let ids: Vec<MainCallbackId> = [(9u64, 1u64), (0, 0)]
+            .into_iter()
+            .map(|(root, doc)| {
+                let _root = push_context_root(root);
+                let _doc = push_dispatching_doc(doc);
+                let s = seen.clone();
+                park_main_callback::<()>(move |()| {
+                    s.borrow_mut()
+                        .push((current_context_root(), current_dispatching_doc()))
+                })
+            })
+            .collect();
+        {
+            let _root = push_context_root(4);
+            let _doc = push_dispatching_doc(2);
+            for id in ids {
+                resume_main_callback(id, ());
+            }
+            assert_eq!(
+                (current_context_root(), current_dispatching_doc()),
+                (4, Some(2)),
+                "the resumer's root and document are restored after each callback"
+            );
+        }
+        assert_eq!(*seen.borrow(), [(9, Some(1)), (0, None)]);
     }
 
     #[test]
