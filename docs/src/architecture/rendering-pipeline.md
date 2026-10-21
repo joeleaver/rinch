@@ -290,11 +290,18 @@ the box, so a shadow touching only that keeps the one-pass order.
 A span's own list is ink of the root that draws it: damage, the paint prune,
 the painted state and `layer_bounds` all count it.
 A line that `text-overflow: ellipsis` cuts keeps its text ranges, so a span
-there casts its own list too, and the "…" casts the root's (#1065). One limit:
-each distinct list is a pass over the lines its text is on, so a paragraph of
-many spans with *different* lists costs about lists × parley's per-line item
-walk: 193 ms for 400 distinct lists in one paragraph, against 4.6 ms for one
-shared list (#1066).
+there casts its own list too, and the "…" casts the root's (#1065). Each
+distinct list is a pass over the lines its text is on, and so is each fragment
+of the per-fragment order. Those passes share one walk of each line they draw
+(`paint::text::PaintText`, #1066): the line's positioned items are collected
+the first time a masked pass draws it and kept for the rest of that paint, and
+each glyph run's glyphs are sliced out of one walk of its run. A paragraph with
+no such passes keeps nothing: each of its passes walks a line into one reused
+buffer. Parley's own `Line::items` and `GlyphRun::glyphs` re-walk a run from its
+start for every glyph run, and a pass each used to make a paragraph of 400
+spans with different lists cost 19 ms against 2.4 ms for one shared list; it is
+2.5–3.9 ms now (release, 800x600, software painter). A pass still visits every
+glyph of the lines its text is on.
 
 **A blurred `text-shadow` is a blurred mask** (#980, `paint/text_shadow.rs`).
 Vello has no general blur, so wherever the software rasteriser is compiled in

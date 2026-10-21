@@ -248,7 +248,7 @@ impl Tooltip {
         let ty = y + ((TOOLTIP_BORDER + TOOLTIP_PAD_Y) as f64 * s);
         super::text::draw_text(
             painter,
-            &self.layout,
+            &super::text::PaintText::new(&self.layout),
             Affine::translate((tx.round(), ty.round())),
             s,
             None,
