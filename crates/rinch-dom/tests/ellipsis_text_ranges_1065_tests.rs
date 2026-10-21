@@ -82,7 +82,14 @@ fn paint(d: &mut RinchDocument) -> Vec<u8> {
     let mut painter = TinySkiaPainter::new(VW as u32, VH as u32);
     painter.fill_white();
     let mut cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
-    rinch_dom::paint::paint_document(&d.tree, &mut painter, 1.0, (VW, VH), &mut d.font_cx, &mut cx);
+    rinch_dom::paint::paint_document(
+        &d.tree,
+        &mut painter,
+        1.0,
+        (VW, VH),
+        &mut d.font_cx,
+        &mut cx,
+    );
     painter.pixels().to_vec()
 }
 
@@ -177,7 +184,10 @@ fn a_span_with_no_shadow_under_a_shadowed_root_casts_none() {
     cut_text(&all, root);
     let blue_all = count(&px_all, 0, 60, bluish);
 
-    assert!(blue_none > 20, "`Ha` and the \u{2026} cast the root's: {blue_none}");
+    assert!(
+        blue_none > 20,
+        "`Ha` and the \u{2026} cast the root's: {blue_none}"
+    );
     assert!(
         blue_none * 2 < blue_all,
         "the span casts nothing: {blue_none} blue px against {blue_all} with no `none`"
@@ -258,7 +268,10 @@ fn a_hidden_span_on_the_line_after_a_cut_is_not_drawn() {
     let (cut_shown, line2_shown) = ink("");
     let (cut_hidden, line2_hidden) = ink("hid");
     assert_eq!(cut_shown, cut_hidden, "the cut line is the same picture");
-    assert!(line2_hidden > 100, "`ab` and `ef` are drawn: {line2_hidden}");
+    assert!(
+        line2_hidden > 100,
+        "`ab` and `ef` are drawn: {line2_hidden}"
+    );
     assert!(
         line2_hidden + 300 < line2_shown,
         "the Hs are not drawn: {line2_hidden} hidden, {line2_shown} shown"

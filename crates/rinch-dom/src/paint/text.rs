@@ -433,10 +433,9 @@ impl<'a> ShadowGroup<'a> {
     /// The non-empty lists `inline_layout`'s text casts, in the order their
     /// text first appears; `None` when every run casts `root_shadows` — the
     /// fast path, drawn exactly as before per-run shadows were consulted.
-    /// Bytes no range covers cast the root's list. A `text-overflow: ellipsis`
-    /// layout records no ranges at all, so there every run casts the root's
-    /// list and a span's own is not drawn — as `visibility` is not honoured
-    /// there either (#853, #1065).
+    /// Bytes no range covers cast the root's list: the "…" of a
+    /// `text-overflow: ellipsis` layout among them, whose other text keeps
+    /// its ranges (#1065).
     pub(super) fn for_ifc(
         tree: &'a NodeTree,
         inline_layout: &crate::node::InlineLayout,
@@ -899,9 +898,9 @@ impl<'a> TextFragment<'a> {
 /// visibility of its text node's **DOM parent**. That is per element, not per
 /// Parley run: two adjacent elements that differ only in visibility share one
 /// style, so Parley shapes them into one glyph run, and the split has to be
-/// made glyph by glyph (see [`GlyphCursor`]). Bytes no range covers —
-/// the ellipsis layout records none — take the IFC root's visibility, which
-/// is why a hidden span inside an ellipsis line still draws (#853).
+/// made glyph by glyph (see [`GlyphCursor`]). Bytes no range covers — the
+/// "…" of an ellipsis layout, whose other text keeps its ranges (#853) —
+/// take the IFC root's visibility.
 pub(super) struct TextMask {
     /// `(start, end, hidden)` per text range, in layout byte offsets.
     ranges: Vec<(usize, usize, bool)>,
@@ -1165,8 +1164,11 @@ impl Recolour {
 /// range. Like visibility ([`TextMask`]) that is per element and not per
 /// Parley run.
 ///
-/// Bytes no range covers — a `text-overflow: ellipsis` rebuild records none —
-/// were shaped in the root's own colour and follow that.
+/// Bytes no range covers — the "…" of a `text-overflow: ellipsis` rebuild —
+/// were shaped in the root's own colour and follow that. The rebuild shapes
+/// all of its text in the root's colour and records that colour on every
+/// range it keeps, so a span of another colour is drawn in its own here
+/// (#1065, #1451).
 pub(super) struct LiveColours {
     /// `(start, end, recolour)` per text range, in layout byte offsets.
     ranges: Vec<(usize, usize, Recolour)>,

@@ -270,9 +270,11 @@ fn text_align_still_lines_up_against_the_box_after_the_cut() {
 //
 // A paragraph whose one overflowing word would otherwise be rebuilt as flat
 // text in the root's style keeps its layout as on main (clipped, no "…"): a
-// kept line's colour, an inline-block chip, a `visibility: hidden` span and a
-// smaller span must all survive. Chrome 153 keeps all four *and* draws the
-// "…"; that needs the cut made at paint time (#1100).
+// kept line's colour, an inline-block chip and a smaller span must all
+// survive. Chrome 153 keeps all three *and* draws the "…"; that needs the cut
+// made at paint time (#1100). A `visibility: hidden` span and a span's own
+// `text-shadow` are read per text range, which the cut keeps (#1065), so those
+// paragraphs are cut.
 
 /// `<div class=c>{build(div)}</div>` with a 120px box; returns the div.
 fn rich(build: impl FnOnce(&mut RinchDocument, NodeId)) -> (RinchDocument, NodeId) {
@@ -374,15 +376,43 @@ fn an_inline_block_chip_on_a_kept_line_stays_in_place() {
     );
 }
 
+/// The paragraph cut with its text ranges kept, mapped onto the cut text
+/// (#1065, #853): the "…" is drawn and every per-span paint decision still has
+/// its span. Returns the range count.
+fn assert_cut_with_ranges(d: &RinchDocument, div: NodeId, what: &str) -> usize {
+    let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
+    assert!(il.text_content.contains('\u{2026}'), "{what}: not cut");
+    assert!(!il.text_ranges.is_empty(), "{what}: text ranges lost");
+    for r in &il.text_ranges {
+        assert!(
+            r.flat_end <= il.text_content.len()
+                && !il.text_content[r.flat_start..r.flat_end].contains('\u{2026}'),
+            "{what}: a range off the cut text: {r:?} in {:?}",
+            il.text_content
+        );
+    }
+    il.text_ranges.len()
+}
+
 #[test]
 fn a_hidden_span_on_a_kept_line_stays_hidden() {
     let (d, div) = rich(|d, div| {
         span(d, div, "hid", "secret");
         add_text(d, div, &format!(" {WORD}"));
     });
-    // The text ranges are what `TextMask` hides the span's glyphs by; a flat
-    // rebuild carries none, and paints "secret".
-    assert!(assert_kept(&d, div, "hidden") >= 2);
+    // `TextMask` hides the span's glyphs by its text range, which the cut
+    // keeps (#853); Chrome 153 hides it and draws the "…".
+    assert!(assert_cut_with_ranges(&d, div, "hidden") >= 2);
+    let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
+    let secret = il
+        .text_ranges
+        .iter()
+        .find(|r| &il.text_content[r.flat_start..r.flat_end] == "secret");
+    assert!(
+        secret.is_some(),
+        "the span's range is on its own bytes: {:?}",
+        il.text_ranges
+    );
 }
 
 #[test]
@@ -424,14 +454,14 @@ fn a_rich_nowrap_root_is_cut_whole_as_before() {
 
 #[test]
 fn a_span_with_its_own_text_shadow_on_a_kept_line_keeps_it() {
-    // A span's own `text-shadow` list is drawn from the text ranges (#1048);
-    // a flat rebuild casts the root's list for every run (#1065).
+    // A span's own `text-shadow` list is drawn from the text ranges (#1048),
+    // which the cut keeps (#1065).
     let (d, div) = rich(|d, div| {
         let s = span(d, div, "", "ab cd");
         d.set_attribute(s, "style", "text-shadow: 2px 2px rgb(0, 0, 255)");
         add_text(d, div, &format!(" ef {WORD}"));
     });
-    assert_kept(&d, div, "text-shadow");
+    assert_cut_with_ranges(&d, div, "text-shadow");
 }
 
 // ── #1103's second review ───────────────────────────────────────────────────
