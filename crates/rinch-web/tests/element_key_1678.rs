@@ -429,6 +429,19 @@ fn caret_rect_agrees_with_caret_position_from_point() {
     check(&hs[5], "c5", &[1, 3, 5]);
     check(&hs[6], "c6", &[0, 2, 6]);
     assert!(bad.is_empty(), "{bad:#?}");
+    // A single-line field's caret-from-point answers its one line at any
+    // height, so its vertical centring is checked against the box itself.
+    for (h, id) in [(&hs[2], "c2"), (&hs[6], "c6")] {
+        let r = h.caret_rect_at(1).unwrap();
+        let b = by(id).get_bounding_client_rect();
+        let mid = (b.top() + b.bottom()) / 2.0;
+        assert!(
+            ((r.y + r.height / 2.0) as f64 - mid).abs() < 1.5,
+            "{id}: {r:?} centred in {}..{}",
+            b.top(),
+            b.bottom()
+        );
+    }
     root.unmount();
     host.remove();
 }
