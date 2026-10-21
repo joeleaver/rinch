@@ -1321,6 +1321,11 @@ impl EditorHandle {
             .unwrap_or(0);
         let container_id = container.node_id().0;
         super::registry::register_editor(doc_key, container_id, self.clone());
+        // Margin anchors set before this mount (or kept across a re-mount)
+        // report once it lands: the web runs a pass only when one is owed.
+        if self.inner.try_borrow().is_ok_and(|c| c.margins_wanted()) {
+            super::registry::owe_overlay_pass(doc_key);
+        }
         let weak = self.weak();
         scope.on_cleanup(move || {
             super::registry::unregister_editor(doc_key, container_id);
@@ -2040,7 +2045,11 @@ impl EditorHandle {
         let doc_key = {
             let mut core = self.core_mut();
             core.margins.set(anchors);
-            core.view.as_ref().map(RinchDomEditorView::doc_key)
+            // Owed only when someone listens: a set with no callback measures
+            // nothing (an emptied set still owes its one empty report).
+            (core.on_margin_layout.is_some() && !core.margins.is_idle())
+                .then(|| core.view.as_ref().map(RinchDomEditorView::doc_key))
+                .flatten()
         };
         if let Some(doc_key) = doc_key {
             registry::owe_overlay_pass(doc_key);
@@ -2057,13 +2066,17 @@ impl EditorHandle {
     ///
     /// Called after a layout or overlay pass that changed any reported line
     /// (or the set of anchors reported, or [`Self::margin_text_right`]) — not
-    /// every frame — and once soon after registering, whatever it finds. An
+    /// every frame — and once when anchors and a callback are both set on a
+    /// mounted editor (also after a re-mount), whatever it finds. A layout
+    /// that could not have moved a line (desktop: no text rebuilt, no
+    /// top-level block moved) measures nothing. An
     /// anchor is left out while it has no geometry: its block is not laid out
     /// (a virtualized block far out of view), or its position was lost
     /// ([`MarginAt::Pos`](crate::MarginAt::Pos)). A position inside a table
     /// cell reports that cell's line; a position right before a leaf block (a
     /// rule, an embed, a node view) reports that block's box. One pass
-    /// measures every anchor once, so `N` anchors cost one pass per layout.
+    /// measures every anchor once, so `N` anchors cost one pass per layout
+    /// that could move a line.
     ///
     /// The callback runs with no internal borrow held, so it may move the
     /// app's markers, read the editor, or set the anchors again (which owes
@@ -2077,8 +2090,10 @@ impl EditorHandle {
         let doc_key = {
             let mut core = self.core_mut();
             core.on_margin_layout = Some(Hook::new(Rc::new(cb)));
-            core.margins.last = None;
-            core.view.as_ref().map(RinchDomEditorView::doc_key)
+            core.margins.forget_report();
+            (!core.margins.anchors.is_empty())
+                .then(|| core.view.as_ref().map(RinchDomEditorView::doc_key))
+                .flatten()
         };
         if let Some(doc_key) = doc_key {
             registry::owe_overlay_pass(doc_key);
@@ -3645,7 +3660,15 @@ impl EditorHandle {
         let mut report: Option<(MarginHook, Vec<MarginLine>)> = None;
         if let (Some(hook), Some(view)) = (core.on_margin_layout.clone(), core.view.as_ref()) {
             match view.layout_pending() {
+                // Nothing the lines are read from moved since the last
+                // measure (an unrelated layout of the document): no measure.
+                Some(false)
+                    if core.margins.last.is_some()
+                        && view
+                            .margin_geometry_key(&core.state.doc)
+                            .is_some_and(|k| core.margins.key_is(&k)) => {}
                 Some(false) => {
+                    let key = view.margin_geometry_key(&core.state.doc);
                     let positions = Self::margin_positions(core);
                     let at: Vec<Pos> = positions.iter().flatten().copied().collect();
                     let (boxes, right) = view.measure_lines(&core.state.doc, &at);
@@ -3671,6 +3694,7 @@ impl EditorHandle {
                         .last
                         .as_ref()
                         .is_none_or(|(l, r)| *l != lines || *r != right);
+                    core.margins.key = key;
                     if changed {
                         core.margins.last = Some((lines.clone(), right));
                         report = Some((hook, lines));
@@ -3730,7 +3754,7 @@ impl EditorHandle {
             let Ok(mut core) = self.inner.try_borrow_mut() else {
                 return;
             };
-            core.margins.last = None;
+            core.margins.forget_report();
             core.margins.observed.take()
         };
         if let Some((doc_key, node)) = observed {

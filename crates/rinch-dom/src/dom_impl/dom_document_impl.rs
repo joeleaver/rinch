@@ -1196,6 +1196,10 @@ impl DomDocument for RinchDocument {
     /// change, a structural change, or text whose inline layout was dropped.
     /// A paint-only change (`mark_paint_dirty`, a scroll offset) is not
     /// pending: it moves no line.
+    fn text_layout_epoch(&self) -> Option<u64> {
+        Some(self.tree.text_layout_epoch)
+    }
+
     fn layout_pending(&self) -> bool {
         self.tree.styles_dirty
             || self.tree.layout_dirty

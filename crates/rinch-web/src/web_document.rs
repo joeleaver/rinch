@@ -2233,10 +2233,16 @@ impl DomDocument for WebDocument {
         Some((x - block_rect.x() as f32, y - block_rect.y() as f32))
     }
 
-    /// The browser exposes no line box, but a block whose lines all take its
-    /// px `line-height` stacks them from its content box: the line a caret is
-    /// on is the one its middle falls in. `None` for `line-height: normal`
-    /// (the editor then measures from the caret's rect).
+    /// The browser exposes no line box, so it is rebuilt the way CSS builds
+    /// it: the union of the boxes of what is on the caret's line. A piece of
+    /// text contributes its content area grown to the block's px
+    /// `line-height` (its inline box; the area itself under
+    /// `line-height: normal`), a picture or a node view's host its own box.
+    /// What is "on the caret's line" is every fragment that overlaps the
+    /// caret's rect by more than half the smaller of the two heights — a
+    /// picture taller than the text, a `<sup>`, a `code` run — and no
+    /// fragment of a neighbouring line. So a line a 60px picture makes taller
+    /// is reported whole, and the lines after it where they are (#1677).
     fn query_line_box(
         &self,
         node_id: u64,
@@ -2244,13 +2250,79 @@ impl DomDocument for WebDocument {
         affinity: CaretAffinity,
     ) -> Option<(f32, f32)> {
         let block = self.nodes.get(&(node_id as usize))?;
-        let lh = self.line_box_height(node_id)?;
-        let (_, y, h) = self.text_caret_viewport_rect(block, byte_offset, affinity)?;
         let el = block.dyn_ref::<web_sys::Element>()?;
-        let (_, inset_top, _, _) = self.content_box_inset(node_id);
-        let content_top = el.get_bounding_client_rect().y() as f32 + inset_top;
-        let line = ((y + h / 2.0 - content_top) / lh).floor().max(0.0);
-        Some((inset_top + line * lh, lh))
+        let (_, cy, ch) = self.text_caret_viewport_rect(block, byte_offset, affinity)?;
+        let lh = self.line_box_height(node_id);
+        let range = self.browser_doc.create_range().ok()?;
+        let on_line = |top: f32, bottom: f32| {
+            let overlap = bottom.min(cy + ch) - top.max(cy);
+            overlap > 0.0 && overlap > 0.5 * (bottom - top).min(ch)
+        };
+        let (mut top, mut bottom) = (f32::INFINITY, f32::NEG_INFINITY);
+        let mut stack: Vec<web_sys::Node> = Vec::new();
+        let kids = block.child_nodes();
+        for i in (0..kids.length()).rev() {
+            stack.extend(kids.item(i));
+        }
+        while let Some(node) = stack.pop() {
+            if node.node_type() == web_sys::Node::TEXT_NODE {
+                if range.select_node_contents(&node).is_err() {
+                    continue;
+                }
+                let Some(rects) = range.get_client_rects() else {
+                    continue;
+                };
+                for j in 0..rects.length() {
+                    let Some(r) = rects.item(j) else { continue };
+                    let (t, b) = (r.top() as f32, r.bottom() as f32);
+                    if b <= t || !on_line(t, b) {
+                        continue;
+                    }
+                    // The leading split as Chrome splits it: the smaller
+                    // half (whole px) above the text, the rest below
+                    // (measured: 17px of text in a 24px line starts 3px down).
+                    let (t, b) = match lh {
+                        Some(lh) if lh > b - t => {
+                            let above = ((lh - (b - t)) / 2.0).floor();
+                            (t - above, t - above + lh)
+                        }
+                        _ => (t, b),
+                    };
+                    top = top.min(t);
+                    bottom = bottom.max(b);
+                }
+                continue;
+            }
+            let Some(child) = node.dyn_ref::<web_sys::Element>() else {
+                continue;
+            };
+            let tag = child.tag_name().to_ascii_lowercase();
+            if tag == "br" {
+                continue;
+            }
+            let atomic = matches!(
+                tag.as_str(),
+                "img" | "svg" | "video" | "canvas" | "iframe" | "input" | "button"
+            ) || child.has_attribute(rinch_editor_view::NODE_VIEW_ATTR);
+            if atomic {
+                let r = child.get_bounding_client_rect();
+                let (t, b) = (r.top() as f32, r.bottom() as f32);
+                if b > t && on_line(t, b) {
+                    top = top.min(t);
+                    bottom = bottom.max(b);
+                }
+                continue;
+            }
+            let kids = node.child_nodes();
+            for i in (0..kids.length()).rev() {
+                stack.extend(kids.item(i));
+            }
+        }
+        if !top.is_finite() {
+            return None;
+        }
+        let block_top = el.get_bounding_client_rect().y() as f32;
+        Some((top - block_top, bottom - top))
     }
 
     fn query_caret_rect_with_affinity(

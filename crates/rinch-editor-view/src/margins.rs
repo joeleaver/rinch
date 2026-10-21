@@ -11,8 +11,8 @@
 use std::cell::Cell;
 
 use rinch_core::dom::NodeHandle;
-use rinch_editor_core::Pos;
 use rinch_editor_core::transform::Mapping;
+use rinch_editor_core::{Node, Pos};
 
 /// A place an app wants the line of: a `key` of its own choosing (a comment
 /// id) and where it is.
@@ -144,10 +144,15 @@ pub(crate) struct Margins {
     /// set (`registry::notify_node_view_host`), so a reflow the editor did not
     /// make (a window resize) reports.
     pub(crate) observed: Option<(u64, NodeHandle)>,
+    /// What the last measure read its lines from
+    /// ([`RinchDomEditorView::margin_geometry_key`](crate::RinchDomEditorView)):
+    /// a pass that finds the same skips measuring.
+    pub(crate) key: Option<(u64, Node)>,
 }
 
 impl Margins {
     pub(crate) fn set(&mut self, anchors: Vec<MarginAnchor>) {
+        self.key = None;
         self.anchors = anchors
             .into_iter()
             .map(|a| Live {
@@ -159,6 +164,21 @@ impl Margins {
                 },
             })
             .collect();
+    }
+
+    /// Forget the last report and what it was measured from, so the next
+    /// pass measures and reports whatever it finds (a new callback, a
+    /// re-mount).
+    pub(crate) fn forget_report(&mut self) {
+        self.last = None;
+        self.key = None;
+    }
+
+    /// Whether `key` is what the last measure read its lines from.
+    pub(crate) fn key_is(&self, key: &(u64, Node)) -> bool {
+        self.key
+            .as_ref()
+            .is_some_and(|(h, doc)| *h == key.0 && doc.same_ref(&key.1))
     }
 
     /// Whether a margin pass has anything to do: anchors to measure, a

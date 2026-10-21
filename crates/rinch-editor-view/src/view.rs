@@ -2230,6 +2230,35 @@ impl RinchDomEditorView {
         Some(d.layout_pending())
     }
 
+    /// What the margin pass's lines are read from, as a key a later pass can
+    /// compare: the host's text-layout epoch
+    /// ([`DomDocument::text_layout_epoch`]: any line rebuilt anywhere), the
+    /// container's size and every top-level block's box, with the document
+    /// they were measured for. Equal keys mean no line can have moved, so the
+    /// pass skips measuring — an unrelated layout of the page (a spinner, a
+    /// hover, a sibling resized) costs one key, not one measure per anchor.
+    /// `None` (always measure) when the host keeps no epoch (the browser) or
+    /// is gone or busy.
+    pub(crate) fn margin_geometry_key(&self, doc: &Node) -> Option<(u64, Node)> {
+        use std::hash::{Hash, Hasher};
+        let host = self.doc.upgrade()?;
+        let d = host.try_borrow().ok()?;
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        d.text_layout_epoch()?.hash(&mut h);
+        let mut rect = |id: usize| {
+            if let Some((x, y, w, hh)) = d.query_node_layout(id as u64) {
+                for v in [x, y, w, hh] {
+                    v.to_bits().hash(&mut h);
+                }
+            }
+        };
+        rect(self.root.dom.node_id().0);
+        for c in &self.root.children {
+            rect(c.outer.node_id().0);
+        }
+        Some((h.finish(), doc.clone()))
+    }
+
     /// The line box `(top, height)` each of `positions` sits in, in the frame
     /// the overlays are placed in (the container's padding box, unscrolled),
     /// and the text column's right edge in the same frame: the right edge of

@@ -1275,8 +1275,11 @@ anchors**, listen for where their lines are, and draw your markers in the `Edito
 ```rust
 let editor = create_editor();
 let tops = Signal::new(Vec::<(String, f32)>::new());
+let right = Signal::new(0.0f32);
+let ed = editor.clone();
 editor.on_margin_layout(move |lines: &[MarginLine]| {
     tops.set(lines.iter().map(|l| (l.key.clone(), l.top)).collect());
+    right.set(ed.margin_text_right().unwrap_or(0.0));
 });
 editor.set_margin_anchors(vec![
     MarginAnchor::at("c1", Pos(12)),     // a model position, carried through edits
@@ -1284,12 +1287,16 @@ editor.set_margin_anchors(vec![
 ]);
 
 rsx! {
-    Editor { editor: editor.clone(),
+    // A right padding for the markers: the gutter they sit in is inside the
+    // editor's padding box, so a self-scrolling editor (`overflow: auto`)
+    // does not clip them. (A marker outside the padding box — a negative
+    // `left` — shows only while nothing between it and the page clips.)
+    Editor { editor: editor.clone(), style: "padding-right: 32px",
         // Children are the overlay slot: placed in the editor's own scroller,
         // at the frame `MarginLine` reports in.
         for (key, top) in tops.get() {
             div { key: key.clone(), class: "marker",
-                  style: {format!("position: absolute; left: -24px; top: {top}px")} }
+                  style: {format!("position: absolute; left: {}px; top: {top}px", right.get() + 8.0)} }
         }
     }
 }
@@ -1308,7 +1315,8 @@ rsx! {
   (leading included), in the editor container's content coordinates — its padding box, the
   content unscrolled, which is exactly where an overlay-slot child at `top` lands. Anchors on
   one line report the same box. It is called after a layout or overlay pass that changed any
-  reported line, not every frame, and once after registering; a scroll moves no line and
+  reported line, not every frame, and once when anchors and a callback are both set on a
+  mounted editor (and again after a re-mount); a scroll moves no line and
   reports nothing. An anchor whose block is not laid out (a virtualized block far out of view)
   is left out until it is. In a table cell it is that cell's line; right before a leaf block (a
   rule, an embed) it is that block's box. The callback runs with no borrow held, belongs to
@@ -1318,7 +1326,11 @@ rsx! {
 
 Anchors never change the document, its undo history or what collaborators receive, and they
 work on a read-only editor. With none set the pass is one check per editor; `N` anchors are
-one pass of `N` measures per layout. On the web a resize that rewraps the text reports too
+one pass of `N` measures for a layout that could have moved a line, and none for one that could
+not (on desktop, a layout of the page that rebuilds no text and moves none of the editor's
+blocks — a spinner, a hover, a sibling resized). On the web the line box is rebuilt from what
+is on the line (each text run's inline box at its `line-height`, each picture's box), so a line
+a tall picture makes taller is reported whole. On the web a resize that rewraps the text reports too
 (the container is watched with a `ResizeObserver` while anchors are set).
 
 The overlay slot is a 0×0 layer at the container's padding-box origin

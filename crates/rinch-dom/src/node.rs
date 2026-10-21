@@ -2913,6 +2913,11 @@ pub struct NodeTree {
     /// IFC roots whose text content changed since last layout.
     /// Used to skip expensive Parley rebuilds for unchanged IFC roots.
     pub dirty_ifc_text_roots: rustc_hash::FxHashSet<RawNodeId>,
+    /// Bumped every time a text layout (an IFC root's `text_layout`, a text
+    /// leaf's `cached_text_parley`) is built: lines anywhere may have moved.
+    /// The editor's margin pass (#1677) measures again only when this, or a
+    /// box it reads, changed.
+    pub text_layout_epoch: u64,
     /// How many times `run_taffy_compute` has run over this tree.
     ///
     /// Instrumentation, not state: `resolve_layout`'s `!layout_dirty` early
@@ -3291,6 +3296,7 @@ impl NodeTree {
             image_loader: None,
             pending_background_urls: Vec::new(),
             dirty_ifc_text_roots: Default::default(),
+            text_layout_epoch: 0,
             taffy_computes: 0,
             ifc_setup_passes: 0,
             perf: crate::perf::PerfCounters::default(),

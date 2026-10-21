@@ -85,6 +85,11 @@ fn page(editor_style: &str) -> Page {
             ),
         );
         root.append_child(&editor);
+        // Something else on the page, laid out with it.
+        let sibling = scope.create_element("div");
+        sibling.set_attribute("data-sibling", "");
+        sibling.set_attribute("style", "width: 10px; height: 10px");
+        root.append_child(&sibling);
         root
     });
     app.register_app_font(AppFont::sans_serif(INTER));
@@ -489,4 +494,134 @@ fn an_anchor_in_a_subscript_reports_its_line() {
         "precondition: the subscript's caret is lower"
     );
     assert_eq!(line(&lines, "low"), (plain.y - fy, plain.height));
+}
+
+/// Two anchors on adjacent lines of one paragraph report two boxes: the
+/// one-line merge does not reach the next line (review of #1683, M3).
+#[test]
+fn adjacent_lines_in_one_paragraph_report_two_boxes() {
+    let mut page = page("");
+    let first = page.handle.caret_rect(Pos(7)).expect("a caret").y;
+    let second = (8..long_end().0)
+        .map(Pos)
+        .find(|&q| page.handle.caret_rect(q).expect("a caret").y > first + 1.0)
+        .expect("a second line");
+    let second = Pos(second.0 + 1);
+    page.handle.set_margin_anchors(vec![
+        MarginAnchor::at("l1", Pos(7)),
+        MarginAnchor::at("l2", second),
+    ]);
+    idle(&mut page.app);
+    let lines = last(&page);
+    let (_, fy) = frame(&page.app);
+    let p1 = para(&page.app, 1);
+    assert_eq!(line(&lines, "l1"), (p1.1 - fy, 24.0));
+    assert_eq!(line(&lines, "l2"), (p1.1 + 24.0 - fy, 24.0));
+}
+
+/// An anchor in a padded textblock (a code block) reports the line its text
+/// is on, below the block's padding and border (review of #1683, M6).
+#[test]
+fn an_anchor_in_a_padded_code_block_reports_its_line() {
+    let mut page = page("");
+    assert!(
+        page.handle
+            .load_html("<p>top</p><pre><code>code line</code></pre>")
+    );
+    idle(&mut page.app);
+    page.handle
+        .set_margin_anchors(vec![MarginAnchor::at("code", Pos(8))]);
+    idle(&mut page.app);
+    let (_, fy) = frame(&page.app);
+    let caret = page.handle.caret_rect(Pos(8)).expect("a caret");
+    let pre = boxes(&page.app, "pre")[0];
+    assert!(
+        caret.y > pre.1 + 4.0,
+        "precondition: padded, {pre:?} {caret:?}"
+    );
+    let (top, height) = line(&last(&page), "code");
+    assert!(
+        (top - (caret.y - fy)).abs() < 0.01 && (height - caret.height).abs() < 0.01,
+        "({top}, {height}) vs the caret {caret:?} in frame {fy}"
+    );
+}
+
+/// A layout of the page that moves nothing in the editor measures nothing;
+/// one that rewraps its text (the editor's own style) measures and reports.
+#[test]
+fn an_unrelated_layout_measures_nothing_and_a_rewrap_reports() {
+    let mut page = page("");
+    page.handle.set_margin_anchors(anchors());
+    idle(&mut page.app);
+    let (sibling, editor, long_p) = {
+        let doc = page.app.doc.as_ref().unwrap().borrow();
+        (
+            doc.query_selector_all("[data-sibling]")[0],
+            doc.query_selector_all("[data-pm-editor]")[0],
+            doc.query_selector_all("p")[1],
+        )
+    };
+    // `LONG` in a box of its own fixed height: its lines can move with no
+    // block's box moving.
+    {
+        let mut doc = page.app.doc.as_ref().unwrap().borrow_mut();
+        doc.set_style(long_p, "height", "200px");
+    }
+    page.app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    idle(&mut page.app);
+    let counted = crate::editor::__margin_counters();
+    let reports = page.reports.borrow().len();
+    for w in 11..21 {
+        let mut doc = page.app.doc.as_ref().unwrap().borrow_mut();
+        doc.set_style(sibling, "width", &format!("{w}px"));
+        drop(doc);
+        page.app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+        idle(&mut page.app);
+    }
+    assert_eq!(
+        crate::editor::__margin_counters(),
+        counted,
+        "ten layouts of the page, no measure"
+    );
+    {
+        let mut doc = page.app.doc.as_ref().unwrap().borrow_mut();
+        doc.set_style(editor, "letter-spacing", "3px");
+    }
+    page.app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    idle(&mut page.app);
+    assert_eq!(
+        page.reports.borrow().len(),
+        reports + 1,
+        "the rewrap reports"
+    );
+    let (_, fy) = frame(&page.app);
+    let caret = page.handle.caret_rect(long_end()).expect("a caret");
+    assert_eq!(line(&last(&page), "mark"), (caret.y - fy, 24.0));
+}
+
+/// Anchors and a callback set before the editor mounts report once it does.
+#[test]
+fn anchors_set_before_the_mount_report_after_it() {
+    let handle = crate::editor::create_editor();
+    assert!(handle.load_html("<p>top</p><p>two</p>"));
+    let reports: Rc<RefCell<Vec<Vec<MarginLine>>>> = Rc::default();
+    let r = reports.clone();
+    handle.on_margin_layout(move |lines: &[MarginLine]| r.borrow_mut().push(lines.to_vec()));
+    handle.set_margin_anchors(vec![MarginAnchor::at("a", Pos(7))]);
+    let h = handle.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        crate::editor::Editor {
+            editor: Some(h.clone()),
+            ..Default::default()
+        }
+        .render(scope, &[])
+    });
+    app.register_app_font(AppFont::sans_serif(INTER));
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    idle(&mut app);
+    let reports = reports.borrow();
+    let last = reports.last().expect("a report after the mount");
+    assert_eq!(last.len(), 1);
+    assert_eq!(last[0].key, "a");
 }

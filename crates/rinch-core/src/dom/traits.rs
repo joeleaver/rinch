@@ -1148,6 +1148,16 @@ pub trait DomDocument {
         false
     }
 
+    /// A count that moves whenever any text layout in the document is
+    /// (re)built — every place a line could have moved without the box of a
+    /// block moving. The editor's margin pass skips measuring when this and
+    /// the boxes it reads are what they were. Default `None`: unknown, so the
+    /// pass always measures (the browser, which lays out on demand and runs
+    /// the pass only on input).
+    fn text_layout_epoch(&self) -> Option<u64> {
+        None
+    }
+
     /// Get the tag name of an element node.
     ///
     /// Returns `Some("div")`, `Some("p")`, etc. for elements, `None` for text/comment nodes.

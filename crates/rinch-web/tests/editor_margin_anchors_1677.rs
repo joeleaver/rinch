@@ -400,3 +400,94 @@ async fn a_press_on_a_slot_child_is_the_childs() {
     assert_eq!(f.handle.selection(), Selection::cursor(Pos(2)));
     f.teardown();
 }
+
+/// A line a 60px picture makes taller than `line-height` is reported whole,
+/// and the line after it where it is (review of #1683, F2).
+#[wasm_bindgen_test]
+async fn a_line_taller_than_its_line_height_is_reported_whole() {
+    let style = document().create_element("style").unwrap();
+    style.set_text_content(Some(
+        "[data-pm-editor] img { width: 12px; height: 60px; vertical-align: baseline; }",
+    ));
+    document().head().unwrap().append_child(&style).unwrap();
+    // The body: a picture 6..7, `xyz` 7..10, a hard break 10..11, `second` 11..17.
+    let f = Fixture::mount(
+        r#"<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">xyz<br>second"#,
+        "",
+    );
+    f.handle.set_margin_anchors(vec![
+        MarginAnchor::at("tall", Pos(8)),
+        MarginAnchor::at("mark", Pos(13)),
+    ]);
+    next_frame().await;
+    next_task().await;
+    let lines = f.last();
+    let fy = f.frame_y();
+    let p1 = f.para(1);
+    let img = f.el("img").get_bounding_client_rect();
+    assert!(
+        p1.height() > 24.0 + 60.0 - 0.5,
+        "precondition: a tall first line, {} {}",
+        p1.height(),
+        img.height()
+    );
+    let second_top = p1.bottom() - 24.0;
+    let (top, height) = line(&lines, "tall");
+    close(top, p1.top() - fy, "the tall line's top");
+    close(top + height, second_top - fy, "the tall line's bottom");
+    assert!(top <= img.top() - fy + 0.5, "the picture is in it");
+    close(line(&lines, "mark").0, second_top - fy, "the line after it");
+    close(line(&lines, "mark").1, 24.0, "a 24px line");
+    let marker = f.el("[data-marker]").get_bounding_client_rect();
+    close(marker.top(), second_top, "the marker sits on its line");
+    f.teardown();
+    style.remove();
+}
+
+/// Anchors and a callback set before the editor mounts report once it does,
+/// and again after a re-mount (review of #1683, F1).
+#[wasm_bindgen_test]
+async fn anchors_report_after_the_mount_and_after_a_re_mount() {
+    let handle = create_editor();
+    assert!(handle.load_html("<p>top</p><p>two</p>"));
+    let reports: Rc<RefCell<Vec<Vec<MarginLine>>>> = Rc::default();
+    let r = reports.clone();
+    handle.on_margin_layout(move |lines: &[MarginLine]| r.borrow_mut().push(lines.to_vec()));
+    handle.set_margin_anchors(vec![MarginAnchor::at("a", Pos(7))]);
+    let mount = |handle: &EditorHandle| {
+        let host = document().create_element("div").unwrap();
+        host.set_attribute(HOST_MARKER, "").unwrap();
+        document().body().unwrap().append_child(&host).unwrap();
+        let h = handle.clone();
+        let root = rinch_web::mount_into(
+            &host,
+            ThemeProviderProps::default(),
+            move |scope: &mut RenderScope| {
+                Editor {
+                    editor: Some(h.clone()),
+                    ..Default::default()
+                }
+                .render(scope, &[])
+            },
+        );
+        (root, host)
+    };
+    let (root, host) = mount(&handle);
+    next_frame().await;
+    next_task().await;
+    let first = reports.borrow().len();
+    assert!(first > 0, "a report after the mount");
+    assert_eq!(reports.borrow().last().unwrap()[0].key, "a");
+    root.unmount();
+    host.remove();
+    let (root, host) = mount(&handle);
+    next_frame().await;
+    next_task().await;
+    assert!(
+        reports.borrow().len() > first,
+        "a report after the re-mount"
+    );
+    assert_eq!(reports.borrow().last().unwrap().len(), 1);
+    root.unmount();
+    host.remove();
+}

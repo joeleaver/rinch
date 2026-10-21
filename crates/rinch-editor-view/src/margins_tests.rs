@@ -184,6 +184,61 @@ fn an_anchor_before_a_leaf_block_reports_its_box() {
     assert_eq!(pass(&rig), Some(vec![("rule".into(), 20.0)]));
 }
 
+/// The container is watched while anchors are set, and let go once they are
+/// cleared — also when the last report was empty (every anchor had lost its
+/// place), so nothing is left observed (review of #1683, M10).
+#[test]
+fn the_container_is_let_go_when_the_anchors_are_cleared() {
+    thread_local! {
+        static WATCHED: RefCell<Vec<bool>> = const { RefCell::new(Vec::new()) };
+    }
+    fn listen(_: u64, _: usize, _: &NodeHandle, mounted: bool) {
+        WATCHED.with(|w| w.borrow_mut().push(mounted));
+    }
+    crate::registry::set_node_view_host_listener(listen);
+    let rig = rig(2);
+    rig.handle
+        .set_margin_anchors(vec![MarginAnchor::at("a", Pos(3))]);
+    assert_eq!(pass(&rig), Some(vec![("a".into(), 20.0)]));
+    // A load loses the anchor: an empty report, the anchor still set.
+    rig.handle.load_doc(empty_doc(&Schema::starter_kit(), 2));
+    assert_eq!(pass(&rig), Some(vec![]));
+    rig.handle.set_margin_anchors(Vec::new());
+    pass(&rig);
+    assert_eq!(WATCHED.with(|w| w.borrow().clone()), vec![true, false]);
+}
+
+/// Anchors with no callback measure nothing and owe no pass when the
+/// document changes (review of #1683, M11).
+#[test]
+fn anchors_without_a_callback_owe_nothing() {
+    let mock = Rc::new(RefCell::new(MockDomDocument::new()));
+    let doc: Rc<RefCell<dyn DomDocument>> = mock.clone();
+    let container = doc.borrow_mut().create_element("div");
+    let handle = EditorHandle::new(
+        NodeHandle::new(container, Rc::downgrade(&doc)),
+        Rc::downgrade(&doc),
+        Rc::new(Schema::starter_kit()),
+        empty_doc(&Schema::starter_kit(), 2),
+        default_plugins(),
+    );
+    let dk = doc.borrow().doc_key();
+    handle.set_margin_anchors(vec![MarginAnchor::at("a", Pos(3))]);
+    crate::registry::update_all_carets(Some(dk), None);
+    assert!(!crate::registry::overlay_pass_owed(dk), "precondition");
+    let selection = handle.selection();
+    insert_paragraph_at(&handle, 4);
+    assert_eq!(
+        handle.selection(),
+        selection,
+        "precondition: no selection change"
+    );
+    assert!(
+        !crate::registry::overlay_pass_owed(dk),
+        "no listener, no pass"
+    );
+}
+
 #[cfg(feature = "collaboration")]
 mod collab {
     use super::*;
