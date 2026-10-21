@@ -24,13 +24,67 @@
 //! between the border-box and padding-box shapes rather than stroked, which
 //! moves the corner pixels of every outlined component to CSS's radii.)
 
-use peniko::kurbo::{Arc, BezPath, Point, Rect, RoundedRect, RoundedRectRadii, Shape, Vec2};
+use peniko::kurbo::{
+    Arc, BezPath, PathEl, Point, Rect, RoundedRect, RoundedRectRadii, Shape, Vec2,
+};
 
 use super::painter::PaintShape;
 
 /// Path flattening tolerance for the elliptical arcs, the same kurbo uses for
 /// a [`RoundedRect`] everywhere else in paint.
 const TOLERANCE: f64 = 0.1;
+
+/// Flattening tolerance for [`BorderRadii::path_with_holes`], whose outline
+/// is a polygon the painter does not flatten again; finer than [`TOLERANCE`]
+/// so it stays within a twentieth of a pixel of the curved outline the box
+/// draws without holes.
+const HOLE_TOLERANCE: f64 = 0.05;
+
+/// A closed polygon contour (nothing for fewer than three points).
+fn push_polygon(path: &mut BezPath, points: &[Point]) {
+    if points.len() < 3 {
+        return;
+    }
+    path.move_to(points[0]);
+    for &p in &points[1..] {
+        path.line_to(p);
+    }
+    path.close_path();
+}
+
+/// `polygon` clipped to `clip` (Sutherland–Hodgman over its four edges):
+/// exact for a convex polygon, which a rounded rectangle's outline is.
+fn clip_polygon(polygon: &[Point], clip: Rect) -> Vec<Point> {
+    type Edge = (fn(Point, f64) -> f64, f64);
+    // Each edge as "signed distance inside" for a point.
+    let edges: [Edge; 4] = [
+        (|p, x0| p.x - x0, clip.x0),
+        (|p, x1| x1 - p.x, clip.x1),
+        (|p, y0| p.y - y0, clip.y0),
+        (|p, y1| y1 - p.y, clip.y1),
+    ];
+    let mut out = polygon.to_vec();
+    for (dist, at) in edges {
+        let input = std::mem::take(&mut out);
+        let Some(&last) = input.last() else {
+            break;
+        };
+        let mut prev = last;
+        for &cur in &input {
+            let (dp, dc) = (dist(prev, at), dist(cur, at));
+            if dc >= 0.0 {
+                if dp < 0.0 {
+                    out.push(prev.lerp(cur, dp / (dp - dc)));
+                }
+                out.push(cur);
+            } else if dp >= 0.0 {
+                out.push(prev.lerp(cur, dp / (dp - dc)));
+            }
+            prev = cur;
+        }
+    }
+    out
+}
 
 /// A box's four corner radii, each `(horizontal, vertical)` as a [`Vec2`]
 /// (`x` across, `y` down), in whatever units the caller works in.
@@ -264,6 +318,80 @@ impl BorderRadii {
                 || v * sy <= 0.0
                 || (u / c.x).powi(2) + (v / c.y).powi(2) <= 1.0 + 1e-9
         })
+    }
+
+    /// [`Self::path`] less `holes`, for a `Fill::EvenOdd` fill: the
+    /// background a `data-viewport` hole is cut out of, and an inset
+    /// shadow's clip (#1030).
+    ///
+    /// Each hole is added only where it lies inside the shape. Under
+    /// even-odd a hole contour reaching past the shape — the sliver between a
+    /// rounded corner's arc and the hole's corner, or past `rect` altogether
+    /// — counts once there, and that part was filled, outside the box.
+    ///
+    /// A hole clipped to `rect` that meets no rounded corner's box lies
+    /// inside the shape and goes in as its rect. One that meets a corner's
+    /// box is the shape flattened to a polygon and clipped to the hole
+    /// (the shape is convex, so that is the exact intersection), and the
+    /// outer contour is then that same polygon, so the two share their
+    /// vertices along the arc and cancel there exactly.
+    pub fn path_with_holes(&self, rect: Rect, holes: &[Rect]) -> BezPath {
+        let r = self.fitted(rect.width(), rect.height());
+        let Rect { x0, y0, x1, y1 } = rect;
+        let [tl, tr, br, bl] = r.corners();
+        let corner_boxes: Vec<Rect> = [
+            (tl, Rect::new(x0, y0, x0 + tl.x, y0 + tl.y)),
+            (tr, Rect::new(x1 - tr.x, y0, x1, y0 + tr.y)),
+            (br, Rect::new(x1 - br.x, y1 - br.y, x1, y1)),
+            (bl, Rect::new(x0, y1 - bl.y, x0 + bl.x, y1)),
+        ]
+        .into_iter()
+        .filter(|(c, _)| *c != Vec2::ZERO)
+        .map(|(_, b)| b)
+        .collect();
+        let at_corner = |h: &Rect| {
+            corner_boxes
+                .iter()
+                .any(|c| h.x0 < c.x1 && h.x1 > c.x0 && h.y0 < c.y1 && h.y1 > c.y0)
+        };
+        let holes: Vec<Rect> = holes
+            .iter()
+            .map(|h| h.intersect(rect))
+            .filter(|h| h.width() > 0.0 && h.height() > 0.0)
+            .collect();
+        let push_rect = |path: &mut BezPath, h: &Rect| {
+            // Wound against the outline (it does not matter under even-odd).
+            path.move_to((h.x0, h.y0));
+            path.line_to((h.x0, h.y1));
+            path.line_to((h.x1, h.y1));
+            path.line_to((h.x1, h.y0));
+            path.close_path();
+        };
+        if !holes.iter().any(at_corner) {
+            let mut path = self.path(rect);
+            for h in &holes {
+                push_rect(&mut path, h);
+            }
+            return path;
+        }
+        let mut outline: Vec<Point> = Vec::new();
+        peniko::kurbo::flatten(self.path(rect), HOLE_TOLERANCE, |el| match el {
+            PathEl::MoveTo(p) | PathEl::LineTo(p) => outline.push(p),
+            _ => {}
+        });
+        if outline.len() > 1 && outline.first() == outline.last() {
+            outline.pop();
+        }
+        let mut path = BezPath::new();
+        push_polygon(&mut path, &outline);
+        for h in &holes {
+            if at_corner(h) {
+                push_polygon(&mut path, &clip_polygon(&outline, *h));
+            } else {
+                push_rect(&mut path, h);
+            }
+        }
+        path
     }
 
     /// The outline, clockwise from the end of the top-left corner, with each

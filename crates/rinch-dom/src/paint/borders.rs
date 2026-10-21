@@ -1210,16 +1210,12 @@ pub(super) fn paint_inset_box_shadow(
     let (clip, clip_fill): (PaintShape, Fill) = if viewport_holes.is_empty() {
         (pad_radii.shape(pad), Fill::NonZero)
     } else {
-        let mut path: BezPath = pad_radii.path(pad);
-        // A hole only subtracts where it overlaps the padding box; the part
-        // outside would count as *inside* under `EvenOdd`.
-        for hole in viewport_holes {
-            let hole = hole.intersect(pad);
-            if hole.width() > 0.0 && hole.height() > 0.0 {
-                path.extend(hole.into_path(0.1).iter());
-            }
-        }
-        (path.into(), Fill::EvenOdd)
+        // A hole subtracts only where it lies inside the padding shape; any
+        // part outside would count as *inside* under `EvenOdd` (#1030).
+        (
+            pad_radii.path_with_holes(pad, viewport_holes).into(),
+            Fill::EvenOdd,
+        )
     };
 
     // The first shadow is on top, so paint back to front.
