@@ -314,3 +314,30 @@ fn a_right_to_left_line_is_not_narrowed() {
     let chrome = (200.0 - m.advance) / 2.0;
     near(m.offset, chrome - m.trailing_whitespace / 2.0);
 }
+
+/// Only the spaces at the very end of a line hang; spaces of another
+/// `white-space` before them are content (#1243's second item, Chrome 153,
+/// cases c7 and c19 of the #1228 review). c7: in a `pre-wrap` root, `pre`
+/// spaces then `pre-wrap` spaces end the first line at a soft wrap; the
+/// `pre-wrap` ones hang and the `pre` ones count, so the line overflows and
+/// starts at 0 (rinch: 5.08). c19: in a `pre` root, `pre-wrap` spaces then
+/// the root's own end the paragraph; all of them count, `cca` at 0.08 (rinch:
+/// 9.08, narrowed by the `pre` spaces only).
+#[test]
+fn spaces_before_the_hanging_run_are_content() {
+    let w = "width:50px;font:16px/25px ProbeFace";
+    let l = lines(
+        &format!("{w};white-space:pre-wrap;text-align:right"),
+        "aaaaa<span style=\"white-space:pre\">  </span>   bbbb",
+    );
+    assert_eq!(l.len(), 2, "{l:?}");
+    assert_eq!(l[0].0.trim(), "aaaaa");
+    near(l[0].1, 0.0);
+    let l = lines(
+        &format!("{w};white-space:pre;text-align:right"),
+        "<span style=\"white-space:normal\">bb cc</span><span style=\"white-space:pre-wrap\">a  </span>   ",
+    );
+    assert_eq!(l.len(), 2, "{l:?}");
+    assert_eq!(l[1].0.trim(), "cca");
+    near(l[1].1, 0.08);
+}
