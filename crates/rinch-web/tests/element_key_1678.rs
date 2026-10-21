@@ -409,8 +409,8 @@ fn caret_from_point(id: &str, x: f32, y: f32) -> Probe {
 /// asked — so most points are always checked.
 #[derive(Default)]
 struct Tally {
-    /// Offsets left out of the comparison on purpose (a shared visual
-    /// point), reported with the verdict.
+    /// Points answered with the other side of a space a soft wrap hangs at a
+    /// line's end (see `probe`), reported with the verdict.
     excluded: usize,
     compared: usize,
     unanswered: usize,
@@ -418,10 +418,41 @@ struct Tally {
     wrong: Vec<String>,
 }
 
+/// Whether the character at UTF-16 offset `at` of control `id`'s value is a
+/// space that ends its line at a soft wrap: the carets either side of it are
+/// on one line and the caret after it is not on the next offset's line.
+fn hanging_space(h: &NodeHandle, id: &str, at: usize) -> bool {
+    let el = document().get_element_by_id(id).unwrap();
+    let value = if let Some(t) = el.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+        t.value()
+    } else {
+        el.dyn_ref::<web_sys::HtmlInputElement>().unwrap().value()
+    };
+    let units: Vec<u16> = value.encode_utf16().collect();
+    if units.get(at) != Some(&u16::from(b' ')) {
+        return false;
+    }
+    let y = |o: usize| h.caret_rect_at(o).map(|r| r.y);
+    match (y(at), y(at + 1), y(at + 2)) {
+        (Some(a), Some(b), Some(c)) => (a - b).abs() <= 1.0 && (c - b).abs() > 1.0,
+        _ => false,
+    }
+}
+
 impl Tally {
-    fn probe(&mut self, id: &str, o: usize, x: f32, y: f32) {
+    fn probe(&mut self, h: &NodeHandle, id: &str, o: usize, x: f32, y: f32) {
         match caret_from_point(id, x, y) {
             Probe::At(got) if got == o => self.compared += 1,
+            // The two sides of the space a soft wrap hangs at the end of a
+            // line: adjacent offsets on one line with the line's last
+            // character, a space, between them. The engines draw a hanging
+            // space differently at the line's edge (Firefox 158 squeezes it,
+            // so its caret-from-point answers the space's start there, where
+            // Chrome 155 and Firefox 155 answer its end), so the answer is
+            // not a mismatch of the caret rect: excluded and counted.
+            Probe::At(got) if got.abs_diff(o) == 1 && hanging_space(h, id, o.min(got)) => {
+                self.excluded += 1
+            }
             Probe::At(got) => {
                 self.compared += 1;
                 self.wrong.push(format!("{o} -> {got} at ({x:.1},{y:.1})"));
@@ -508,7 +539,7 @@ fn caret_rect_agrees_with_caret_position_from_point() {
         let mut t = Tally::default();
         for &o in offs {
             let r = h.caret_rect_at(o).expect("a rendered control");
-            t.probe(id, o, r.x, r.y + r.height / 2.0);
+            t.probe(h, id, o, r.x, r.y + r.height / 2.0);
         }
         bad.extend(t.verdict(id, offs.len().div_ceil(2)));
     };
@@ -684,7 +715,7 @@ fn oracle_in_box(h: &NodeHandle, id: &str, offs: impl Iterator<Item = usize>) ->
         {
             continue;
         }
-        t.probe(id, o, x as f32, y as f32);
+        t.probe(h, id, o, x as f32, y as f32);
     }
     t
 }
@@ -747,31 +778,22 @@ fn caret_rect_agrees_for_rtl_unwrapped_and_a_scaled_page() {
         );
     }
     let mut report = Vec::new();
-    // In a right-to-left textarea of left-to-right text, the start of each
-    // line (offset 0, and every offset a soft wrap starts a line at) and the
-    // end of the line before it (its trailing space, which the bidi algorithm
-    // puts at the line's other edge) can be one visual point, and the
-    // engines resolve it differently: Chrome 155 and Firefox 155 answer the
-    // line start at the right edge, Firefox 158 the line before's last
-    // offset. Those boundary offsets are not compared in r1 (counted in the
-    // verdict as excluded); every other offset is.
+    // In a right-to-left textarea of left-to-right text, offset 0 (the run's
+    // start) and the first line's end (its trailing space, which the bidi
+    // algorithm puts at the line's left) are one visual point, and
+    // caret-from-point answers the latter there: offset 0 is not compared in
+    // r1. The two sides of a hanging space at a soft wrap are excluded by
+    // `Tally::probe` and counted.
     let mut run = |h: &NodeHandle, id: &str, len: usize, min: usize| {
-        let mixed = id == "r1";
-        let line_starts: std::collections::HashSet<usize> = if mixed {
-            let ys: Vec<f32> = (0..=len)
-                .map(|o| h.caret_rect_at(o).map_or(f32::NAN, |r| r.y))
-                .collect();
-            std::iter::once(0)
-                .chain((1..=len).filter(|&o| (ys[o] - ys[o - 1]).abs() > 1.0))
-                .collect()
-        } else {
-            Default::default()
-        };
-        let offs = (0..=len).filter(|o| !line_starts.contains(o));
-        let mut t = oracle_in_box(h, id, offs);
-        t.excluded = line_starts.len();
-        report.extend(t.verdict(id, min));
+        let first = usize::from(id == "r1");
+        report.extend(oracle_in_box(h, id, first..=len).verdict(id, min));
     };
+    // Positive control for the exclusion: r1's text wraps at spaces, so it
+    // has hanging spaces (where CI's Firefox 158 answers across, 94/95,
+    // 115/116, … in its fonts), and a space in the middle of a line is not one.
+    let hanging = (0..n).filter(|&a| hanging_space(&hs[0], "r1", a)).count();
+    assert!(hanging >= 5, "r1 has {hanging} hanging spaces");
+    assert!(!hanging_space(&hs[0], "r1", 5), "r1@5 is mid-line");
     run(&hs[0], "r1", n, 100);
     run(&hs[1], "r2", n, 40);
     run(&hs[2], "r4", nh, 100);
