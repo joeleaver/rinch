@@ -213,3 +213,199 @@ impl Painter for VelloPainter {
         self.scene.append(&other.scene, None);
     }
 }
+
+#[cfg(test)]
+mod sampling_tests {
+    //! What Vello 0.7's fine shader samples for the images this painter
+    //! encodes (#1027). There is no GPU in CI, so the shader's image arm
+    //! (`fine.wgsl`, `CMD_IMAGE`) is modelled here on the CPU, in `f32`, from
+    //! the transform the scene actually encodes for the brush. The model is
+    //! checked against a real GPU by the `#[ignore]`d
+    //! `gpu_alpha_tests::vello_draw_image_*` fixtures in
+    //! `crates/rinch/src/shell/compositor.rs`.
+    use super::*;
+    use crate::paint::painter::{PaintImage, Painter, RepeatTile};
+    use peniko::kurbo::Rect;
+
+    /// A 4x2 image of distinct opaque greys, so any two neighbours differ.
+    const W: u32 = 4;
+    const H: u32 = 2;
+    const TEXELS: [u8; 8] = [10, 200, 40, 250, 120, 0, 230, 70];
+
+    fn rgba() -> Vec<u8> {
+        TEXELS.iter().flat_map(|&g| [g, g, g, 255]).collect()
+    }
+
+    /// The last transform the scene encoded: the brush's (the image's
+    /// image-to-device map) when the draw carries a brush transform, and the
+    /// shape's otherwise, which is then the brush's too.
+    fn brush_transform(p: &VelloPainter) -> ([f32; 4], [f32; 2]) {
+        let t = p.scene().encoding().transforms.last().expect("a transform");
+        (t.matrix, t.translation)
+    }
+
+    /// `fine.wgsl`'s `CMD_IMAGE` arm for an image at atlas offset 0 with
+    /// `Extend::Pad`, for the device pixel whose top-left corner is
+    /// `(x, y)` — the shader's `my_xy` is the pixel's corner, not its centre.
+    /// Returns the grey channel.
+    fn shader_sample(
+        (m, t): ([f32; 4], [f32; 2]),
+        x: f32,
+        y: f32,
+        medium: bool,
+        repeat: bool,
+    ) -> f32 {
+        // transform_inverse
+        let inv_det = 1.0 / (m[0] * m[3] - m[1] * m[2]);
+        let im = [inv_det * m[3], -inv_det * m[1], -inv_det * m[2], inv_det * m[0]];
+        let it = [
+            -(im[0] * t[0] + im[2] * t[1]),
+            -(im[1] * t[0] + im[3] * t[1]),
+        ];
+        let (ew, eh) = (W as f32, H as f32);
+        let mut u = im[0] * x + im[2] * y + it[0];
+        let mut v = im[1] * x + im[3] * y + it[1];
+        let extend = |t: f32, max: f32| {
+            if repeat {
+                (t / max).fract().rem_euclid(1.0) * max
+            } else {
+                t.clamp(0.0, max)
+            }
+        };
+        u = extend(u, ew);
+        v = extend(v, eh);
+        let texel = |ix: f32, iy: f32| TEXELS[(iy as usize) * W as usize + ix as usize] as f32;
+        if !medium {
+            let (cu, cv) = (u.clamp(0.0, ew - 1.0), v.clamp(0.0, eh - 1.0));
+            return texel(cu.floor(), cv.floor());
+        }
+        let (u, v) = (u - 0.5, v - 0.5);
+        let (cu, cv) = (u.clamp(0.0, ew - 1.0), v.clamp(0.0, eh - 1.0));
+        let (fu, fv) = (u - u.floor(), v - v.floor());
+        let a = texel(cu.floor(), cv.floor());
+        let b = texel(cu.floor(), cv.ceil());
+        let c = texel(cu.ceil(), cv.floor());
+        let d = texel(cu.ceil(), cv.ceil());
+        let lerp = |p: f32, q: f32, s: f32| p + (q - p) * s;
+        lerp(lerp(a, b, fv), lerp(c, d, fv), fu)
+    }
+
+    /// Bilinear sampling at the pixel's CENTRE, CSS's and tiny-skia's rule,
+    /// computed in `f64` straight from the image-to-device map: the image
+    /// point under the centre, less half a texel, interpolated between the
+    /// four texels around it (edges clamped).
+    fn centre_bilinear(image_to_device: Affine, x: f64, y: f64) -> f64 {
+        let p = image_to_device.inverse() * peniko::kurbo::Point::new(x + 0.5, y + 0.5);
+        let (u, v) = (p.x - 0.5, p.y - 0.5);
+        let texel = |ix: f64, iy: f64| {
+            let ix = ix.clamp(0.0, W as f64 - 1.0) as usize;
+            let iy = iy.clamp(0.0, H as f64 - 1.0) as usize;
+            TEXELS[iy * W as usize + ix] as f64
+        };
+        let (u0, v0) = (u.floor(), v.floor());
+        let (fu, fv) = (u - u0, v - v0);
+        let top = texel(u0, v0) * (1.0 - fu) + texel(u0 + 1.0, v0) * fu;
+        let bottom = texel(u0, v0 + 1.0) * (1.0 - fu) + texel(u0 + 1.0, v0 + 1.0) * fu;
+        top * (1.0 - fv) + bottom * fv
+    }
+
+    fn draw(transform: Affine) -> VelloPainter {
+        let data = rgba();
+        let mut p = VelloPainter::new();
+        p.draw_image(
+            &PaintImage {
+                data: &data,
+                width: W,
+                height: H,
+                decoded: None,
+                opaque: true,
+            },
+            transform,
+        );
+        p
+    }
+
+    /// The issue's case: scale 1 at a whole-pixel origin reproduces every
+    /// texel, as tiny-skia does. Before #1027 Vello read each pixel between
+    /// it and its left/top neighbour (the 175 between 153 and 198 of the
+    /// issue's table).
+    #[test]
+    fn an_image_at_a_whole_pixel_origin_samples_its_texels_exactly() {
+        let p = draw(Affine::translate((150.0, 37.0)));
+        let bt = brush_transform(&p);
+        for iy in 0..H {
+            for ix in 0..W {
+                let got = shader_sample(bt, 150.0 + ix as f32, 37.0 + iy as f32, true, false);
+                let want = TEXELS[(iy * W + ix) as usize] as f32;
+                assert!(
+                    (got - want).abs() < 0.01,
+                    "texel ({ix}, {iy}): sampled {got}, the texel is {want}"
+                );
+            }
+        }
+    }
+
+    /// Off the fixed point: scaled, rotated and at a fractional origin the
+    /// shader samples at each pixel's centre. (A half-pixel shift applied in
+    /// IMAGE space rather than device space is right at scale 1 only; this
+    /// is the fixture that tells the two apart.)
+    #[test]
+    fn a_scaled_or_rotated_image_is_sampled_at_pixel_centres() {
+        let cases = [
+            Affine::translate((10.0, 4.0)) * Affine::scale(2.0),
+            Affine::translate((10.3, 4.6)) * Affine::scale_non_uniform(1.5, 2.5),
+            Affine::translate((20.0, 3.0)) * Affine::rotate(std::f64::consts::FRAC_PI_2),
+        ];
+        for m in cases {
+            let p = draw(m);
+            let bt = brush_transform(&p);
+            let bounds = m.transform_rect_bbox(Rect::new(0.0, 0.0, W as f64, H as f64));
+            let mut checked = 0;
+            for y in bounds.y0.ceil() as i32..bounds.y1.floor() as i32 {
+                for x in bounds.x0.ceil() as i32..bounds.x1.floor() as i32 {
+                    let got = shader_sample(bt, x as f32, y as f32, true, false) as f64;
+                    let want = centre_bilinear(m, x as f64, y as f64);
+                    assert!(
+                        (got - want).abs() < 0.05,
+                        "{m:?} pixel ({x}, {y}): sampled {got}, centre sample {want}"
+                    );
+                    checked += 1;
+                }
+            }
+            assert!(checked >= 8, "{m:?}: only {checked} pixels checked");
+        }
+    }
+
+    /// `fill_repeating`'s smooth tile goes through the same shader arm.
+    #[test]
+    fn a_smooth_repeating_tile_is_sampled_at_pixel_centres() {
+        let pixels = peniko::Blob::from(rgba());
+        let tile_transform = Affine::scale(1.5);
+        let fill_transform = Affine::translate((7.0, 3.0));
+        let mut p = VelloPainter::new();
+        p.fill_repeating(
+            Fill::NonZero,
+            fill_transform,
+            &RepeatTile {
+                pixels: &pixels,
+                width: W,
+                height: H,
+                transform: tile_transform,
+                smooth: true,
+            },
+            &PaintShape::Rect(Rect::new(0.0, 0.0, 6.0, 3.0)),
+        );
+        let bt = brush_transform(&p);
+        let m = fill_transform * tile_transform;
+        // Inside the first tile, away from its wrap edges (where repeat and
+        // the edge-clamped reference differ).
+        for (x, y) in [(8, 4), (9, 4), (10, 4), (9, 5)] {
+            let got = shader_sample(bt, x as f32, y as f32, true, true) as f64;
+            let want = centre_bilinear(m, x as f64, y as f64);
+            assert!(
+                (got - want).abs() < 0.05,
+                "pixel ({x}, {y}): sampled {got}, centre sample {want}"
+            );
+        }
+    }
+}

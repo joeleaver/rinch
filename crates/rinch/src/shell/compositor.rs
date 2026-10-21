@@ -738,16 +738,7 @@ mod gpu_alpha_tests {
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_SRC,
         );
-        let mut renderer = vello::Renderer::new(
-            device,
-            vello::RendererOptions {
-                antialiasing_support: vello::AaSupport::area_only(),
-                use_cpu: false,
-                num_init_threads: None,
-                pipeline_cache: None,
-            },
-        )
-        .expect("vello");
+        let mut renderer = renderer(device);
         let mut scene = vello::Scene::new();
         scene.fill(
             Fill::NonZero,
@@ -756,12 +747,36 @@ mod gpu_alpha_tests {
             None,
             &Rect::new(0.0, 0.0, (W / 2) as f64, H as f64),
         );
+        render(device, queue, &mut renderer, &target, &scene);
+        target
+    }
+
+    fn renderer(device: &Device) -> vello::Renderer {
+        vello::Renderer::new(
+            device,
+            vello::RendererOptions {
+                antialiasing_support: vello::AaSupport::area_only(),
+                use_cpu: false,
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
+        )
+        .expect("vello")
+    }
+
+    fn render(
+        device: &Device,
+        queue: &Queue,
+        renderer: &mut vello::Renderer,
+        target: &Texture,
+        scene: &vello::Scene,
+    ) {
         let view = target.create_view(&TextureViewDescriptor::default());
         renderer
             .render_to_texture(
                 device,
                 queue,
-                &scene,
+                scene,
                 &view,
                 &vello::RenderParams {
                     base_color: Color::TRANSPARENT,
@@ -771,7 +786,6 @@ mod gpu_alpha_tests {
                 },
             )
             .expect("render");
-        target
     }
 
     /// Read `texture` back as RGBA8 rows (no padding: `W * 4` = 32 bytes,
@@ -948,5 +962,82 @@ mod gpu_alpha_tests {
         compositor.present(device, &mut encoder, source, &view, alpha);
         queue.submit(Some(encoder.finish()));
         out
+    }
+
+    /// A 4x2 image of distinct opaque greys.
+    const TEXELS: [u8; 8] = [10, 200, 40, 250, 120, 0, 230, 70];
+
+    /// Render `TEXELS` through `VelloPainter::draw_image` at `transform`
+    /// and read the target back.
+    fn vello_image(transform: Affine) -> Vec<[u8; 4]> {
+        use rinch_dom::paint::painter::{PaintImage, Painter};
+        let (device, queue) = device();
+        let target = texture(
+            &device,
+            TextureFormat::Rgba8Unorm,
+            wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+        );
+        let data: Vec<u8> = TEXELS.iter().flat_map(|&g| [g, g, g, 255]).collect();
+        let mut painter = rinch_dom::paint::vello_painter::VelloPainter::new();
+        painter.draw_image(
+            &PaintImage {
+                data: &data,
+                width: 4,
+                height: 2,
+                decoded: None,
+                opaque: true,
+            },
+            transform,
+        );
+        let mut renderer = renderer(&device);
+        render(&device, &queue, &mut renderer, &target, painter.scene());
+        read(&device, &queue, &target)
+    }
+
+    /// #1027: an image at a whole-pixel origin, scale 1, reproduces its
+    /// texels as tiny-skia does. Vello 0.7 samples bilinearly from the
+    /// pixel's corner, so each pixel read half its left/top neighbour
+    /// (texel 200 came out 105) until the painter moved the sample to the
+    /// pixel's centre.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_alpha_vello_draw_image_at_a_whole_pixel_origin_is_exact() {
+        let px = vello_image(Affine::translate((2.0, 1.0)));
+        for iy in 0..2u32 {
+            for ix in 0..4u32 {
+                let got = px[((1 + iy) * W + 2 + ix) as usize];
+                let g = TEXELS[(iy * 4 + ix) as usize];
+                assert!(near(got, [g, g, g, 255]), "texel ({ix}, {iy}): {got:?}, want {g}");
+            }
+        }
+    }
+
+    /// #1027 off the fixed point: at scale 2 each pixel is the bilinear
+    /// sample at its centre (pixel `x` reads image `(x + 0.5) / 2 - 0.5`).
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_alpha_vello_draw_image_scaled_samples_pixel_centres() {
+        let px = vello_image(Affine::scale(2.0));
+        let texel = |u: f64, v: f64| {
+            let (u, v) = (u.clamp(0.0, 3.0) as usize, v.clamp(0.0, 1.0) as usize);
+            TEXELS[v * 4 + u] as f64
+        };
+        for y in 0..H {
+            for x in 0..W {
+                let (u, v) = ((x as f64 + 0.5) / 2.0 - 0.5, (y as f64 + 0.5) / 2.0 - 0.5);
+                let (u0, v0) = (u.floor(), v.floor());
+                let (fu, fv) = (u - u0, v - v0);
+                let top = texel(u0, v0) * (1.0 - fu) + texel(u0 + 1.0, v0) * fu;
+                let bottom = texel(u0, v0 + 1.0) * (1.0 - fu) + texel(u0 + 1.0, v0 + 1.0) * fu;
+                let want = top * (1.0 - fv) + bottom * fv;
+                let got = px[(y * W + x) as usize][0] as f64;
+                assert!(
+                    (got - want).abs() <= 1.5,
+                    "pixel ({x}, {y}): {got}, centre sample {want}"
+                );
+            }
+        }
     }
 }
