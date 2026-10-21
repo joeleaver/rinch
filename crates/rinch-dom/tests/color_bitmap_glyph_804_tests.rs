@@ -24,6 +24,14 @@ const VH: f32 = 100.0;
 const FACE: &[u8] = include_bytes!("../assets/fonts/NotoColorEmoji-U1F600.ttf");
 
 fn document(size_px: u32) -> RinchDocument {
+    styled(&format!(
+        "font-size: {size_px}px; line-height: 40px; color: rgb(0, 0, 0)"
+    ))
+}
+
+/// The emoji in a `div` at (10, 10) styled `style` (font size, line height and
+/// colour), the face named `ProbeEmoji`.
+fn styled(style: &str) -> RinchDocument {
     use parley::fontique::{Blob, FontInfoOverride};
     let mut doc = RinchDocument::new();
     let registered = doc.font_cx.collection.register_fonts(
@@ -39,10 +47,7 @@ fn document(size_px: u32) -> RinchDocument {
     doc.set_attribute(
         c,
         "style",
-        &format!(
-            "margin: 10px 0 0 10px; font-size: {size_px}px; line-height: 40px; \
-             color: rgb(0, 0, 0); font-family: ProbeEmoji"
-        ),
+        &format!("margin: 10px 0 0 10px; {style}; font-family: ProbeEmoji"),
     );
     doc.append_child(body, c);
     let t = doc.create_text("\u{1F600}");
@@ -147,4 +152,123 @@ fn the_cached_bitmap_glyph_matches_the_reference_804() {
         let px: Vec<[u8; 4]> = painter.pixels().as_chunks::<4>().0.to_vec();
         assert!(px == reference, "pass {pass} differs from the reference");
     }
+}
+
+/// The text colour's alpha reaches a colour glyph, as in Chrome 155 and
+/// Vello: `rgba(0, 0, 0, .5)` draws the emoji at half alpha (Chrome: max
+/// alpha 128) and `color: transparent` draws nothing (Chrome: 0 px). Only the
+/// colour's channels are ignored.
+#[test]
+fn the_text_colours_alpha_reaches_the_emoji_804() {
+    let max_alpha = |style: &str| {
+        let mut doc = styled(&format!("font-size: 32px; line-height: 40px; {style}"));
+        paint(&mut doc, false)
+            .iter()
+            .map(|p| p[3])
+            .max()
+            .unwrap_or(0)
+    };
+    assert_eq!(max_alpha("color: rgb(0, 0, 0)"), 255, "positive control");
+    let half = max_alpha("color: rgba(0, 0, 0, 0.5)");
+    assert!(
+        (127..=129).contains(&half),
+        "rgba(.5) gave max alpha {half}"
+    );
+    assert_eq!(
+        max_alpha("color: transparent"),
+        0,
+        "a transparent colour hid nothing"
+    );
+}
+
+/// At the strike's own ppem (109px, so no resampling) every drawn pixel is
+/// the strike premultiplied exactly ONCE. A second premultiply (the glyph
+/// sent through the straight-alpha blitter) still gives valid premultiplied
+/// colour, so only this sees it. (From the review of #1689.)
+#[test]
+fn at_strike_ppem_pixels_are_the_strike_premultiplied_once_804() {
+    let sf = swash::FontRef::from_index(FACE, 0).unwrap();
+    let gid = sf.charmap().map('\u{1F600}');
+    let mut cx = swash::scale::ScaleContext::new();
+    let mut s = cx.builder(sf).size(109.0).build();
+    let img = s
+        .scale_color_bitmap(gid, swash::scale::StrikeWith::ExactSize)
+        .unwrap();
+    let (sw, sh) = (img.placement.width as usize, img.placement.height as usize);
+    let pm = |c: u8, a: u8| ((c as u32 * a as u32 + 127) / 255) as u8;
+    let strike: Vec<[u8; 4]> = img.data.as_chunks::<4>().0[..sw * sh]
+        .iter()
+        .map(|p| [pm(p[0], p[3]), pm(p[1], p[3]), pm(p[2], p[3]), p[3]])
+        .collect();
+    let alpha_box = |px: &[[u8; 4]], w: usize| {
+        let mut b = (usize::MAX, usize::MAX, 0, 0);
+        for (i, p) in px.iter().enumerate() {
+            if p[3] > 0 {
+                let (x, y) = (i % w, i / w);
+                b = (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y));
+            }
+        }
+        b
+    };
+    let sb = alpha_box(&strike, sw);
+    // Laid out at 300x300 (the shared builder's 200x100 page would cut it).
+    let (w, h) = (300usize, 300usize);
+    let mut doc = RinchDocument::new();
+    {
+        use parley::fontique::{Blob, FontInfoOverride};
+        doc.font_cx.collection.register_fonts(
+            Blob::new(std::sync::Arc::new(FACE)),
+            Some(FontInfoOverride {
+                family_name: Some("ProbeEmoji"),
+                ..Default::default()
+            }),
+        );
+    }
+    let body = doc.body();
+    doc.set_attribute(body, "style", "margin: 0");
+    let c = doc.create_element("div");
+    doc.set_attribute(
+        c,
+        "style",
+        "position: absolute; left: 10px; top: 10px; font: 109px/218px ProbeEmoji; color: black",
+    );
+    doc.append_child(body, c);
+    let t = doc.create_text("\u{1F600}");
+    doc.append_child(c, t);
+    doc.resolve_layout(w as f32, h as f32);
+    let mut painter = TinySkiaPainter::new(w as u32, h as u32);
+    let mut lcx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut painter,
+        1.0,
+        (w as f32, h as f32),
+        &mut doc.font_cx,
+        &mut lcx,
+    );
+    let px: Vec<[u8; 4]> = painter.pixels().as_chunks::<4>().0.to_vec();
+    let ab = alpha_box(&px, w);
+    assert_eq!(
+        (ab.2 - ab.0, ab.3 - ab.1),
+        (sb.2 - sb.0, sb.3 - sb.1),
+        "same ink box"
+    );
+    let (dx, dy) = (ab.0 as isize - sb.0 as isize, ab.1 as isize - sb.1 as isize);
+    let mut differing = 0;
+    for y in 0..sh {
+        for x in 0..sw {
+            let (px_, py_) = (x as isize + dx, y as isize + dy);
+            if px_ < 0 || py_ < 0 || px_ as usize >= w || py_ as usize >= h {
+                continue;
+            }
+            let (a, b) = (strike[y * sw + x], px[py_ as usize * w + px_ as usize]);
+            if (0..4).any(|c| (a[c] as i32 - b[c] as i32).abs() > 1) {
+                differing += 1;
+            }
+        }
+    }
+    assert_eq!(
+        differing, 0,
+        "{differing} pixels are not the strike premultiplied once"
+    );
 }

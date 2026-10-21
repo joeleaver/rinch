@@ -1797,6 +1797,7 @@ impl Painter for TinySkiaPainter {
                     gx,
                     gy,
                     ts,
+                    ca,
                 );
             } else if g.color {
                 blit_color_glyph_into(
@@ -2437,7 +2438,9 @@ fn blit_alpha_mask_into(
 }
 
 /// Blit an already premultiplied RGBA glyph (a scaled colour bitmap strike,
-/// #804) onto `pixmap`.
+/// #804) onto `pixmap`, at the text colour's alpha `alpha`: a colour glyph
+/// ignores the colour's channels but not its alpha, so `color: transparent`
+/// hides it and `rgba(…, .5)` halves it, as Chrome and Vello draw it.
 #[allow(clippy::too_many_arguments)]
 fn blit_premultiplied_into(
     pixmap: &mut Pixmap,
@@ -2448,12 +2451,20 @@ fn blit_premultiplied_into(
     gx: f32,
     gy: f32,
     transform: Transform,
+    alpha: u8,
 ) {
+    if alpha == 0 {
+        return;
+    }
     let Some(src) = PixmapRef::from_bytes(data, glyph_w, glyph_h) else {
         return;
     };
+    let paint = PixmapPaint {
+        opacity: alpha as f32 / 255.0,
+        ..PixmapPaint::default()
+    };
     let ts = transform.pre_concat(Transform::from_translate(gx, gy));
-    pixmap.draw_pixmap(0, 0, src, &PixmapPaint::default(), ts, clip);
+    pixmap.draw_pixmap(0, 0, src, &paint, ts, clip);
 }
 
 /// A colour bitmap glyph (CBDT/CBLC, sbix) at `font_size` (#804), or `None`
@@ -2471,19 +2482,12 @@ fn color_bitmap_glyph(
     font_size: f32,
     glyph: u16,
 ) -> Option<CachedGlyph> {
-    let mut best: Option<u16> = None;
-    for strike in font.color_strikes() {
-        if !strike.contains(glyph) {
-            continue;
-        }
-        let ppem = strike.ppem();
-        best = Some(match best {
-            None => ppem,
-            Some(b) if (b as f32) < font_size => b.max(ppem),
-            Some(b) if (ppem as f32) >= font_size => b.min(ppem),
-            Some(b) => b,
-        });
-    }
+    let best = pick_strike(
+        font.color_strikes()
+            .filter(|strike| strike.contains(glyph))
+            .map(|strike| strike.ppem()),
+        font_size,
+    );
     let ppem = best.filter(|&p| p > 0)?;
     let mut scaler = cx.builder(font).size(ppem as f32).build();
     let image = scaler.scale_color_bitmap(glyph, swash::scale::StrikeWith::ExactSize)?;
@@ -2526,6 +2530,22 @@ fn scale_strike(mut rgba: Vec<u8>, sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8
     } else {
         resample_area(&rgba, sw, sh, dw, dh)
     }
+}
+
+/// The strike a colour bitmap glyph is read from, among the `ppems` of the
+/// strikes holding it, for a physical `font_size`: the smallest at least the
+/// font size (shrinking keeps detail), else the largest.
+fn pick_strike(ppems: impl Iterator<Item = u16>, font_size: f32) -> Option<u16> {
+    let mut best: Option<u16> = None;
+    for ppem in ppems {
+        best = Some(match best {
+            None => ppem,
+            Some(b) if (b as f32) < font_size => b.max(ppem),
+            Some(b) if (ppem as f32) >= font_size => b.min(ppem),
+            Some(b) => b,
+        });
+    }
+    best
 }
 
 /// Resize premultiplied RGBA from `sw`x`sh` to `dw`x`dh` by area averaging:
@@ -3111,7 +3131,23 @@ mod premultiply_tests {
 /// area filter weighs each source pixel by how much of it an output covers.
 #[cfg(test)]
 mod strike_scale_tests {
-    use super::{resample_area, scale_strike};
+    use super::{pick_strike, resample_area, scale_strike};
+
+    /// The smallest strike at least the physical size, else the largest —
+    /// in any table order (the bundled face has one strike, so only this
+    /// pins the choice).
+    #[test]
+    fn the_strike_is_the_smallest_at_least_the_size_else_the_largest() {
+        let strikes = [64u16, 160, 20, 109, 32];
+        let pick = |size: f32| pick_strike(strikes.iter().copied(), size);
+        assert_eq!(pick(16.0), Some(20));
+        assert_eq!(pick(32.0), Some(32));
+        assert_eq!(pick(40.0), Some(64));
+        assert_eq!(pick(100.0), Some(109));
+        assert_eq!(pick(120.0), Some(160));
+        assert_eq!(pick(400.0), Some(160));
+        assert_eq!(pick_strike(std::iter::empty(), 16.0), None);
+    }
 
     /// Opaque green beside a transparent pixel whose (arbitrary) straight
     /// colour is red, halved: the result is green at half alpha. Scaled

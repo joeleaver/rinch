@@ -1,4 +1,6 @@
-Copyright 2022 Google Inc. (Noto Color Emoji; this file is a one-glyph subset, U+1F600, made with fontTools' pyftsubset for rinch-dom's tests)
+Copyright 2022 Google Inc. (Noto Color Emoji 2.051, noto-emoji:20250818; this file is a one-glyph subset, U+1F600, for rinch-dom's tests, made with fontTools 4.67.0:
+  pyftsubset /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf --unicodes=U+1F600 \
+    --output-file=NotoColorEmoji-U1F600.ttf --layout-features='' --no-hinting)
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:
