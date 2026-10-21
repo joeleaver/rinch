@@ -1413,6 +1413,63 @@ fn utf8_byte_to_utf16_offset(text: &str, byte_offset: usize) -> usize {
     utf16_offset
 }
 
+thread_local! {
+    /// See [`leading_floors`]; measured once per page.
+    static LEADING_FLOORS: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// How this browser splits a line's leading around a text run's content area
+/// (#1677): `true` when the half above is floored to a whole pixel (Chrome
+/// 155: 17px of text in a 24px line starts 3px down), `false` when it is the
+/// exact half (Firefox: 3.5px). Measured once, on a hidden probe at a few font
+/// sizes until one gives an odd leading, rather than assumed from the engine's
+/// name. `true` (Chrome's) when nothing tells them apart.
+pub(crate) fn leading_floors() -> bool {
+    if let Some(known) = LEADING_FLOORS.with(|c| c.get()) {
+        return known;
+    }
+    let measured = (|| {
+        let doc = web_sys::window()?.document()?;
+        let body = doc.body()?;
+        let probe = doc.create_element("div").ok()?;
+        probe
+            .set_attribute(
+                "style",
+                "position: absolute; visibility: hidden; left: -9999px; top: 0; \
+                 margin: 0; padding: 0; border: 0; line-height: 24px; \
+                 font-family: monospace; white-space: nowrap",
+            )
+            .ok()?;
+        probe.set_text_content(Some("x"));
+        body.append_child(&probe).ok()?;
+        let text = probe.first_child()?;
+        let range = doc.create_range().ok()?;
+        range.select_node_contents(&text).ok()?;
+        let mut answer = None;
+        for size in 10..=24 {
+            probe
+                .dyn_ref::<web_sys::HtmlElement>()?
+                .style()
+                .set_property("font-size", &format!("{size}px"))
+                .ok()?;
+            let r = range.get_bounding_client_rect();
+            let half = (24.0 - r.height()) / 2.0;
+            let frac = half - half.floor();
+            if r.height() <= 0.0 || !(0.25..=0.75).contains(&frac) {
+                continue;
+            }
+            let above = r.top() - probe.get_bounding_client_rect().top();
+            answer = Some((above - half.floor()).abs() < (above - half).abs());
+            break;
+        }
+        probe.remove();
+        answer
+    })()
+    .unwrap_or(true);
+    LEADING_FLOORS.with(|c| c.set(Some(measured)));
+    measured
+}
+
 /// [`WebDocument::restore_focus`]'s browser half, run with no document
 /// borrowed ([`DomDocument::take_after_borrow`]).
 fn restore_focus_now(
@@ -2323,7 +2380,8 @@ impl DomDocument for WebDocument {
                         }
                         let (box_top, box_bottom) = match lh {
                             Some(lh) => {
-                                let above = ((lh - (b - t)) / 2.0).floor();
+                                let half = (lh - (b - t)) / 2.0;
+                                let above = if leading_floors() { half.floor() } else { half };
                                 (t - above, t - above + lh)
                             }
                             None => (t, b),

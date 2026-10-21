@@ -26,6 +26,9 @@ use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
+#[path = "support/engine.rs"]
+mod engine;
+
 const HOST_MARKER: &str = "data-test-host-margin-anchors";
 
 /// Wraps to several lines in the 300px editor.
@@ -490,4 +493,14 @@ async fn anchors_report_after_the_mount_and_after_a_re_mount() {
     assert_eq!(reports.borrow().last().unwrap().len(), 1);
     root.unmount();
     host.remove();
+}
+
+/// The leading split the line box is rebuilt with is measured, and is each
+/// engine's own: Chrome 155 floors the half above a text run to a whole pixel
+/// (17px of monospace text in a 24px line starts 3px down); Firefox puts the
+/// exact half there (3.5px — measured in CI's Firefox, where the floored
+/// rebuild was 0.5px low on every line).
+#[wasm_bindgen_test]
+fn the_leading_split_is_the_engines_own() {
+    assert_eq!(rinch_web::__leading_floors(), !engine::is_gecko());
 }

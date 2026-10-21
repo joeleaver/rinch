@@ -114,6 +114,14 @@ pub use web_document::WebDocument;
 #[doc(hidden)]
 pub use web_document::{__reset_scroll_lock, __scroll_lock_depth};
 
+/// How this browser splits a line's leading (see the editor's margin
+/// anchors, #1677): `true` when the half above a text run is floored to a
+/// whole pixel. Test-only.
+#[doc(hidden)]
+pub fn __leading_floors() -> bool {
+    web_document::leading_floors()
+}
+
 // The renderer-agnostic rich-text editor, re-exported so a web app uses the *same*
 // API as desktop: `create_editor()` → `EditorHandle`, mounted via `Editor {}`. The
 // browser input glue (keyboard/pointer/IME/clipboard → the handle) lives in
