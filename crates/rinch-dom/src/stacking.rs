@@ -165,7 +165,9 @@
 
 use std::ops::Deref;
 
-use peniko::kurbo::{Rect, RoundedRectRadii};
+use peniko::kurbo::Rect;
+
+use crate::paint::radii::BorderRadii;
 
 use crate::computed_style::PositionValue;
 use crate::node::{Node, NodeTree, RawNodeId};
@@ -199,7 +201,7 @@ pub struct ClipRect {
     pub rect: Rect,
     /// Its (padding-box, i.e. border-inset) `border-radius`, already resolved
     /// and scaled. All-zero for a square clip.
-    pub radii: RoundedRectRadii,
+    pub radii: BorderRadii,
 }
 
 impl ClipRect {
@@ -622,12 +624,13 @@ impl Collector<'_> {
 #[cfg(test)]
 mod shared_clip_prefix_tests {
     use super::{ClipRect, shared_clip_prefix};
-    use peniko::kurbo::{Rect, RoundedRectRadii};
+    use crate::paint::radii::BorderRadii;
+    use peniko::kurbo::Rect;
 
     fn clip(x0: f64, y0: f64, x1: f64, y1: f64) -> ClipRect {
         ClipRect {
             rect: Rect::new(x0, y0, x1, y1),
-            radii: RoundedRectRadii::from_single_radius(0.0),
+            radii: BorderRadii::ZERO,
         }
     }
 

@@ -693,14 +693,8 @@ mod painted {
         let node = doc.tree.get(container.0).unwrap();
         let (_, radii) =
             rinch_dom::paint::clip_shape(node, 1.0, 0.0, 0.0).expect("the container clips on x");
-        assert_eq!(
-            (
-                radii.top_left,
-                radii.top_right,
-                radii.bottom_right,
-                radii.bottom_left
-            ),
-            (0.0, 0.0, 0.0, 0.0),
+        assert!(
+            radii.is_square(),
             "a clip open on one axis has no real corner for a radius to \
              round against — clip_shape must not hand back the box's own \
              rounded corners here, even though it is holding a legitimate \

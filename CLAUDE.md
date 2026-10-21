@@ -3773,11 +3773,31 @@ component library, so this was correctness debt rather than a live visual bug
 until something actually set a border. `paint::padding_box_insets(node)`
 returns `(left, top, right, bottom)` in logical px, clamped so a border wider
 than the box cannot invert the rect; `paint::padding_box_radii(node, scale)` is
-`border_radii` reduced per corner by the *average* of the two adjacent border
-widths (rinch's radii are one scalar per corner, where CSS reduces each of two
-per-axis elliptical components by a single adjacent side — exact for a uniform
-border, an approximation otherwise, matching the choice the per-side arc border
-painter in `paint/borders.rs` already makes). Every consumer of the shape
+`border_radii` with each corner's horizontal radius reduced by the left or
+right border width and its vertical radius by the top or bottom one
+(css-backgrounds-3 §5.5; it took the *average* of the two widths off one
+circular radius until #977). **The radii are a `paint::radii::BorderRadii`**
+(#977): each corner a `(horizontal, vertical)` pair, a percentage resolved per
+axis (width for the horizontal radius, height for the vertical), a corner
+square when either radius is zero, and all eight scaled by CSS's overlap
+factor `min(Lᵢ / Sᵢ)` when the radii along a side add up to more than it
+(`border-radius: 100px 0 0 0` on 200x60 is a 60px corner; kurbo's per-corner
+clamp to half the shorter side drew 30). `ComputedStyle` carries the vertical
+radii as `border_radius_*_y` beside the horizontal `border_radius_*`, and a
+`border-radius` transition moves both (`AnimatableValue::CornerRadius`).
+`BorderRadii::shape(rect)` is what every rounded box is drawn and clipped
+with — a kurbo `RoundedRect` when the corners are circular and fit in half the
+shorter side (the same shape every correct box had before; a solid rounded
+border's pixels still move, see below), a `BezPath` of elliptical arcs
+otherwise. Background, clip (and a hoisted entry's clip chain), filter
+overlays, the uniform and per-side borders, the outline and the outer and
+inset shadows use it; a solid rounded uniform border is now filled as the ring
+between the border-box and padding-box shapes (it was a centre-line stroke
+with the outer radius, half a width too round). Still circular: the
+compositor's viewport-hole mask (`viewport_rect_with_radius`, each corner its
+smaller radius), an inline element's background (`border-top-left-radius`'s
+horizontal radius only), and hit testing, which ignores radii altogether
+(#1639). Every consumer of the shape
 agrees: `clip_shape` itself, `layer_bounds`' children-clip intersection and the
 `covers_target`/`clip_cuts_nothing` elision check in `paint_node` (both now
 read `clip`'s own rect rather than the node's plain border-box `rect`), hit

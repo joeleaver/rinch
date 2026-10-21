@@ -32,11 +32,13 @@
 //!
 //! The boxes have **no background**, which is what makes the second half of
 //! each test mean something. An outer shadow is never painted inside the
-//! border box; rinch punches the box out of the shadow only where it can prove
-//! the box lies inside the shadow's shape, and falls back to a whole fill where
-//! it cannot. With the element's own radii on a rect grown by the spread, the
-//! box's corner arcs escaped the shadow's and every rounded spread shadow took
-//! that fallback — painting the shadow *through* a transparent element.
+//! border box; rinch punches the box out of the shadow where it can prove the
+//! box lies inside the shadow's shape. Before #976 it fell back to a whole
+//! fill where it could not, and with the element's own radii on a rect grown
+//! by the spread, the box's corner arcs escaped the shadow's and every
+//! rounded spread shadow took that fallback — painting the shadow *through* a
+//! transparent element. (Since #976 the fallback is a fill through a clip that
+//! excludes the box, `box_shadow_outside_border_box_976_tests.rs`.)
 
 #![cfg(feature = "software-renderer")]
 

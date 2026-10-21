@@ -2,12 +2,11 @@
 
 use peniko::Fill;
 use peniko::color::{AlphaColor, Srgb};
-use peniko::kurbo::{
-    Affine, BezPath, Cap, Join, Point, Rect, RoundedRectRadii, Shape, Stroke, Vec2,
-};
+use peniko::kurbo::{Affine, BezPath, Cap, Join, Point, Rect, Shape, Stroke, Vec2};
 
 use super::blur::Blur1d;
 use super::painter::{PaintShape, Painter};
+use super::radii::BorderRadii;
 use crate::computed_style::BorderStyleValue;
 use crate::node::Node;
 
@@ -190,7 +189,7 @@ pub(super) fn paint_borders(
     y: f64,
     w: f64,
     h: f64,
-    radii: RoundedRectRadii,
+    radii: BorderRadii,
     transform: Affine,
 ) {
     let cs = &node.computed_style;
@@ -241,19 +240,34 @@ pub(super) fn paint_borders(
             return;
         }
         if let Some(bc) = color {
-            let stroke = make_border_stroke(bw as f64 * scale, style);
-            let half = bw as f64 * scale * 0.5;
+            let bw = bw as f64 * scale;
+            let stroke = make_border_stroke(bw, style);
+            let half = bw * 0.5;
             let border_rect = Rect::new(x + half, y + half, x + w - half, y + h - half);
-            let has_radius = radii.top_left > 0.0
-                || radii.top_right > 0.0
-                || radii.bottom_right > 0.0
-                || radii.bottom_left > 0.0;
 
-            if has_radius {
-                let rrect = border_rect.to_rounded_rect(radii);
-                painter.stroke_color(&stroke, transform, bc, &rrect.into());
-            } else {
+            if radii.is_square() {
                 painter.stroke_color(&stroke, transform, bc, &border_rect.into());
+            } else if matches!(style, BorderStyleValue::Solid) {
+                // A solid rounded border is exactly the ring between the
+                // border box's shape and the padding box's (css-backgrounds-3
+                // §5.5, #977), elliptical corners included — one even-odd
+                // fill, which a stroke of an ellipse cannot draw (an offset
+                // ellipse is no ellipse).
+                let outer = Rect::new(x, y, x + w, y + h);
+                let mut ring = radii.path(outer);
+                let inner = outer.inset(-bw);
+                if inner.width() > 0.0 && inner.height() > 0.0 {
+                    ring.extend(radii.inner(bw, bw, bw, bw).path(inner).iter());
+                }
+                painter.fill_color(Fill::EvenOdd, transform, bc, &ring.into());
+            } else {
+                // The dashed, dotted and double strokes run along the
+                // border's centre line, whose radii are the outer ones less
+                // half the width — the stroke's outer edge then has the
+                // border box's radius. (It used to stroke the centre line
+                // with the outer radii, half a width too round, #977.)
+                let centre = radii.inner(half, half, half, half);
+                painter.stroke_color(&stroke, transform, bc, &centre.shape(border_rect));
             }
         }
         return;
@@ -268,10 +282,7 @@ pub(super) fn paint_borders(
     // When widths are uniform and border-radius is present, draw arc paths per side
     // instead of straight lines. This is needed for spinners (border-radius: 50%
     // with only one side colored).
-    let has_radius = radii.top_left > 0.0
-        || radii.top_right > 0.0
-        || radii.bottom_right > 0.0
-        || radii.bottom_left > 0.0;
+    let has_radius = !radii.is_square();
     let widths_uniform = (top_w - right_w).abs() < 0.01
         && (top_w - bottom_w).abs() < 0.01
         && (top_w - left_w).abs() < 0.01;
@@ -478,7 +489,7 @@ fn paint_borders_arc_per_side(
     y: f64,
     w: f64,
     h: f64,
-    radii: RoundedRectRadii,
+    radii: BorderRadii,
     bw: f64,
     transform: Affine,
 ) {
@@ -489,14 +500,20 @@ fn paint_borders_arc_per_side(
     let iw = w - bw;
     let ih = h - bw;
 
-    // Inset radii for stroke centerline (can't go negative)
-    let tl = (radii.top_left - half).max(0.0);
-    let tr = (radii.top_right - half).max(0.0);
-    let br = (radii.bottom_right - half).max(0.0);
-    let bl = (radii.bottom_left - half).max(0.0);
+    // Inset radii for stroke centerline (can't go negative), per axis (#977).
+    let centre = radii.inner(half, half, half, half);
 
     // Build arc paths for each side
-    let paths = build_per_side_arc_paths(ix, iy, iw, ih, tl, tr, br, bl);
+    let paths = build_per_side_arc_paths(
+        ix,
+        iy,
+        iw,
+        ih,
+        centre.top_left,
+        centre.top_right,
+        centre.bottom_right,
+        centre.bottom_left,
+    );
 
     // sides: [top, right, bottom, left]. The caller never routes a
     // groove/ridge side here (it falls back to the straight-line path, which
@@ -532,45 +549,53 @@ fn paint_borders_arc_per_side(
 ///
 /// Each side includes: second half of the preceding corner arc + straight segment
 /// + first half of the following corner arc. Corner arcs are split at t=0.5
-///   using De Casteljau subdivision.
+///   using De Casteljau subdivision. Each corner is a quarter ellipse with its
+///   own horizontal (`x`) and vertical (`y`) radius (#977).
 #[allow(clippy::too_many_arguments)]
 fn build_per_side_arc_paths(
     ix: f64,
     iy: f64,
     iw: f64,
     ih: f64,
-    tl: f64,
-    tr: f64,
-    br: f64,
-    bl: f64,
+    tl: Vec2,
+    tr: Vec2,
+    br: Vec2,
+    bl: Vec2,
 ) -> [BezPath; 4] {
-    // κ for quarter-circle cubic Bézier approximation
+    // κ for quarter-ellipse cubic Bézier approximation
     const K: f64 = 0.5522847498;
 
     // Corner arc endpoints and control points.
-    // TL: from (ix, iy+tl) to (ix+tl, iy)  [left→top, counterclockwise around corner]
-    let tl_p0 = Point::new(ix, iy + tl);
-    let tl_p1 = Point::new(ix, iy + tl - tl * K);
-    let tl_p2 = Point::new(ix + tl - tl * K, iy);
-    let tl_p3 = Point::new(ix + tl, iy);
+    // TL: from (ix, iy+tl.y) to (ix+tl.x, iy)  [left→top, counterclockwise around corner]
+    let tl_p0 = Point::new(ix, iy + tl.y);
+    let tl_p1 = Point::new(ix, iy + tl.y - tl.y * K);
+    let tl_p2 = Point::new(ix + tl.x - tl.x * K, iy);
+    let tl_p3 = Point::new(ix + tl.x, iy);
 
-    // TR: from (ix+iw-tr, iy) to (ix+iw, iy+tr)  [top→right]
-    let tr_p0 = Point::new(ix + iw - tr, iy);
-    let tr_p1 = Point::new(ix + iw - tr + tr * K, iy);
-    let tr_p2 = Point::new(ix + iw, iy + tr - tr * K);
-    let tr_p3 = Point::new(ix + iw, iy + tr);
+    // TR: from (ix+iw-tr.x, iy) to (ix+iw, iy+tr.y)  [top→right]
+    let tr_p0 = Point::new(ix + iw - tr.x, iy);
+    let tr_p1 = Point::new(ix + iw - tr.x + tr.x * K, iy);
+    let tr_p2 = Point::new(ix + iw, iy + tr.y - tr.y * K);
+    let tr_p3 = Point::new(ix + iw, iy + tr.y);
 
-    // BR: from (ix+iw, iy+ih-br) to (ix+iw-br, iy+ih)  [right→bottom]
-    let br_p0 = Point::new(ix + iw, iy + ih - br);
-    let br_p1 = Point::new(ix + iw, iy + ih - br + br * K);
-    let br_p2 = Point::new(ix + iw - br + br * K, iy + ih);
-    let br_p3 = Point::new(ix + iw - br, iy + ih);
+    // BR: from (ix+iw, iy+ih-br.y) to (ix+iw-br.x, iy+ih)  [right→bottom]
+    let br_p0 = Point::new(ix + iw, iy + ih - br.y);
+    let br_p1 = Point::new(ix + iw, iy + ih - br.y + br.y * K);
+    let br_p2 = Point::new(ix + iw - br.x + br.x * K, iy + ih);
+    let br_p3 = Point::new(ix + iw - br.x, iy + ih);
 
-    // BL: from (ix+bl, iy+ih) to (ix, iy+ih-bl)  [bottom→left]
-    let bl_p0 = Point::new(ix + bl, iy + ih);
-    let bl_p1 = Point::new(ix + bl - bl * K, iy + ih);
-    let bl_p2 = Point::new(ix, iy + ih - bl + bl * K);
-    let bl_p3 = Point::new(ix, iy + ih - bl);
+    // BL: from (ix+bl.x, iy+ih) to (ix, iy+ih-bl.y)  [bottom→left]
+    let bl_p0 = Point::new(ix + bl.x, iy + ih);
+    let bl_p1 = Point::new(ix + bl.x - bl.x * K, iy + ih);
+    let bl_p2 = Point::new(ix, iy + ih - bl.y + bl.y * K);
+    let bl_p3 = Point::new(ix, iy + ih - bl.y);
+    // A corner is drawn when it is rounded at all (a square one is `ZERO`).
+    let (tl, tr, br, bl) = (
+        tl.x.max(tl.y),
+        tr.x.max(tr.y),
+        br.x.max(br.y),
+        bl.x.max(bl.y),
+    );
 
     // Split each corner arc at t=0.5
     let (tl_first, tl_second) = split_cubic_half(tl_p0, tl_p1, tl_p2, tl_p3);
@@ -680,7 +705,7 @@ pub(super) fn paint_outline(
     y: f64,
     w: f64,
     h: f64,
-    radii: RoundedRectRadii,
+    radii: BorderRadii,
     transform: Affine,
 ) {
     let cs = &node.computed_style;
@@ -711,21 +736,30 @@ pub(super) fn paint_outline(
         y + h + offset + half,
     );
 
-    let has_radius = radii.top_left > 0.0
-        || radii.top_right > 0.0
-        || radii.bottom_right > 0.0
-        || radii.bottom_left > 0.0;
-
-    if has_radius {
-        let expand = offset + half;
-        let outline_radii = RoundedRectRadii::new(
-            radii.top_left + expand,
-            radii.top_right + expand,
-            radii.bottom_right + expand,
-            radii.bottom_left + expand,
+    if radii.as_circular().is_none() && matches!(cs.outline_style, BorderStyleValue::Solid) {
+        // A solid outline round an elliptical corner (#977) is the ring
+        // between the border box grown by the offset and that grown by the
+        // offset and the width, each radius grown by the same amount on both
+        // axes — one even-odd fill, as for a solid border, since an offset
+        // ellipse is no ellipse and a stroke of one draws the wrong band. A
+        // circular corner keeps the stroke, which is exact for it.
+        let inner_rect = Rect::new(x - offset, y - offset, x + w + offset, y + h + offset);
+        let outer_rect = inner_rect.inflate(ow, ow);
+        let mut ring = radii.grown(offset + ow).path(outer_rect);
+        if inner_rect.width() > 0.0 && inner_rect.height() > 0.0 {
+            ring.extend(radii.grown(offset).path(inner_rect).iter());
+        }
+        painter.fill_color(Fill::EvenOdd, transform, color, &ring.into());
+    } else if !radii.is_square() {
+        // Each radius grows by how far the outline's centre line is from the
+        // border edge, on both axes (an elliptical corner stays elliptical).
+        let outline_radii = radii.grown(offset + half);
+        painter.stroke_color(
+            &stroke,
+            transform,
+            color,
+            &outline_radii.shape(outline_rect),
         );
-        let rrect = outline_rect.to_rounded_rect(outline_radii);
-        painter.stroke_color(&stroke, transform, color, &rrect.into());
     } else {
         painter.stroke_color(&stroke, transform, color, &outline_rect.into());
     }
@@ -751,14 +785,15 @@ pub(super) fn spread_corner_radius(r: f64, spread: f64) -> f64 {
     }
 }
 
-/// [`spread_corner_radius`] for all four corners.
-fn spread_radii(radii: RoundedRectRadii, spread: f64) -> RoundedRectRadii {
-    RoundedRectRadii::new(
-        spread_corner_radius(radii.top_left, spread),
-        spread_corner_radius(radii.top_right, spread),
-        spread_corner_radius(radii.bottom_right, spread),
-        spread_corner_radius(radii.bottom_left, spread),
-    )
+/// [`spread_corner_radius`] for all four corners, each axis on its own
+/// (§7.1.1 applies the rule to every radius; #977).
+fn spread_radii(radii: BorderRadii, spread: f64) -> BorderRadii {
+    radii.map(|c| {
+        Vec2::new(
+            spread_corner_radius(c.x, spread),
+            spread_corner_radius(c.y, spread),
+        )
+    })
 }
 
 /// Paint CSS box-shadow from typed computed values.
@@ -775,20 +810,10 @@ pub(super) fn paint_box_shadow(
     node: &crate::node::Node,
     transform: Affine,
 ) {
-    // Get per-corner border-radius from computed style
-    let radii = {
-        let cs = &node.computed_style;
-        let resolve_size = node.layout.width.min(node.layout.height);
-        let tl = cs.border_radius_top_left.resolve(resolve_size).max(0.0) as f64 * scale;
-        let tr = cs.border_radius_top_right.resolve(resolve_size).max(0.0) as f64 * scale;
-        let br = cs.border_radius_bottom_right.resolve(resolve_size).max(0.0) as f64 * scale;
-        let bl = cs.border_radius_bottom_left.resolve(resolve_size).max(0.0) as f64 * scale;
-        RoundedRectRadii::new(tl, tr, br, bl)
-    };
-    let has_radius = radii.top_left > 0.0
-        || radii.top_right > 0.0
-        || radii.bottom_right > 0.0
-        || radii.bottom_left > 0.0;
+    // The element's corners, as its background draws them (#977: per axis,
+    // fitted to the box).
+    let radii = super::border_radii(node, scale);
+    let has_radius = !radii.is_square();
 
     // The element's own border box, which an outer shadow is never painted
     // inside of. Every layer below is drawn as this hole punched out of the
@@ -820,22 +845,7 @@ pub(super) fn paint_box_shadow(
     // anti-aliased edge should be the page, not a shadow the element covers.
     // See card K24.
     let element_box = Rect::new(x, y, x + w, y + h);
-    let hole: BezPath = if has_radius {
-        element_box.to_rounded_rect(radii).into_path(0.1)
-    } else {
-        element_box.into_path(0.1)
-    };
-
-    /// The layer's expanded shape with the element's border box cut out of it.
-    ///
-    /// `Fill::EvenOdd` over the two subpaths is what does the cutting: a point
-    /// inside both is crossed an even number of times and so is left alone,
-    /// which is the ring, and only the ring.
-    fn ring(outer: BezPath, hole: &BezPath) -> BezPath {
-        let mut path = outer;
-        path.extend(hole.iter());
-        path
-    }
+    let hole: BezPath = radii.path(element_box);
 
     /// Whether the hole is wholly inside `outer` — the precondition the punch
     /// needs, and not a rounding detail.
@@ -848,14 +858,30 @@ pub(super) fn paint_box_shadow(
     /// expanded — the near edge of `0 4px 12px`, say, whose first layers are
     /// expanded by less than the 4px they are pushed down — and the strip it
     /// paints only stays hidden while the element's own background is fully
-    /// opaque. So the punch is applied only where it provably subtracts, and
-    /// the layer is filled whole (as it always was) where it does not.
+    /// opaque. So the punch is applied only where it provably subtracts; where
+    /// it does not, the shadow is filled through a clip that excludes the box
+    /// instead (`paint_shadow_layers`, #976).
     fn hole_fits(
         hole_rect: Rect,
-        hole_radii: RoundedRectRadii,
+        hole_radii: BorderRadii,
         outer_rect: Rect,
-        outer_radii: RoundedRectRadii,
+        outer_radii: BorderRadii,
     ) -> bool {
+        // The test below is for circular corners. With an elliptical one
+        // (#977) both shapes are convex, so the hole is inside the layer when
+        // every vertex of the hole's outline, flattened finely, is.
+        let (Some(hole_radii), Some(outer_radii)) =
+            (hole_radii.as_circular(), outer_radii.as_circular())
+        else {
+            let mut inside = true;
+            peniko::kurbo::flatten(hole_radii.path(hole_rect), 0.05, |el| {
+                use peniko::kurbo::PathEl;
+                if let PathEl::MoveTo(p) | PathEl::LineTo(p) = el {
+                    inside &= outer_radii.contains(outer_rect, p);
+                }
+            });
+            return inside;
+        };
         if hole_rect.x0 < outer_rect.x0
             || hole_rect.y0 < outer_rect.y0
             || hole_rect.x1 > outer_rect.x1
@@ -939,12 +965,10 @@ pub(super) fn paint_box_shadow(
         )
     }
 
-    const SQUARE: RoundedRectRadii = RoundedRectRadii {
-        top_left: 0.0,
-        top_right: 0.0,
-        bottom_right: 0.0,
-        bottom_left: 0.0,
-    };
+    const SQUARE: BorderRadii = BorderRadii::ZERO;
+
+    // Every layer of every outer shadow, in paint order (#976).
+    let mut shadow_layers: Vec<ShadowLayer> = Vec::new();
 
     // css-backgrounds-3 §7.1: the first shadow is on top, so the list is
     // painted back to front (#1009) — as `paint_inset_box_shadow` paints its
@@ -1018,29 +1042,15 @@ pub(super) fn paint_box_shadow(
                     // `r + layer_expand` it always was; it differs only where
                     // the spread ratio rule sharpens a small corner (#351).
                     let grow = |r: f64| (r + layer_expand - spread).max(0.0);
-                    let expanded_radii = RoundedRectRadii::new(
-                        grow(spread_shape_radii.top_left),
-                        grow(spread_shape_radii.top_right),
-                        grow(spread_shape_radii.bottom_right),
-                        grow(spread_shape_radii.bottom_left),
-                    );
-                    (
-                        expanded_radii,
-                        layer_rect.to_rounded_rect(expanded_radii).into_path(0.1),
-                    )
+                    let expanded_radii = spread_shape_radii
+                        .map(|c| Vec2::new(grow(c.x), grow(c.y)))
+                        .fitted(layer_rect.width(), layer_rect.height());
+                    (expanded_radii, expanded_radii.path(layer_rect))
                 } else {
                     (SQUARE, layer_rect.into_path(0.1))
                 };
-                if hole_fits(element_box, radii, layer_rect, outer_radii) {
-                    painter.fill_color(
-                        Fill::EvenOdd,
-                        transform,
-                        layer_color,
-                        &ring(outer, &hole).into(),
-                    );
-                } else {
-                    painter.fill_color(Fill::NonZero, transform, layer_color, &outer.into());
-                }
+                let fits = hole_fits(element_box, radii, layer_rect, outer_radii);
+                shadow_layers.push((layer_color, layer_rect, outer, fits));
             }
         } else {
             // No blur: simple offset shadow
@@ -1052,22 +1062,79 @@ pub(super) fn paint_box_shadow(
                 y + h + offset_y + total_expand,
             );
             let (outer_radii, outer) = if has_radius {
-                (
-                    spread_shape_radii,
-                    shadow_rect
-                        .to_rounded_rect(spread_shape_radii)
-                        .into_path(0.1),
-                )
+                let fitted = spread_shape_radii.fitted(shadow_rect.width(), shadow_rect.height());
+                (fitted, fitted.path(shadow_rect))
             } else {
                 (SQUARE, shadow_rect.into_path(0.1))
             };
-            if hole_fits(element_box, radii, shadow_rect, outer_radii) {
-                painter.fill_color(Fill::EvenOdd, transform, color, &ring(outer, &hole).into());
-            } else {
-                painter.fill_color(Fill::NonZero, transform, color, &outer.into());
-            }
+            let fits = hole_fits(element_box, radii, shadow_rect, outer_radii);
+            shadow_layers.push((color, shadow_rect, outer, fits));
         }
     }
+
+    paint_shadow_layers(painter, transform, &hole, shadow_layers);
+}
+
+/// One layer of an outer shadow: its colour, its rect, its shape, and whether
+/// the element's border box lies inside it (`hole_fits`).
+type ShadowLayer = (AlphaColor<Srgb>, Rect, BezPath, bool);
+
+/// Paint an element's outer-shadow layers, in paint order, outside its border
+/// box `hole` (#976).
+///
+/// Where the hole lies inside every layer, each layer is its ring — the
+/// layer's shape plus the hole under `Fill::EvenOdd`, which subtracts the
+/// hole and fills only the pixels the ring covers (see `hole_fits` for why
+/// that needs the hole inside the layer).
+///
+/// Where it does not — a shadow offset further than some layer is expanded,
+/// which is every hard offset shadow and the near edge of every blurred one —
+/// the even-odd fill would *add* the part of the hole outside the layer, so
+/// every layer is filled whole through **one** clip for the element that is
+/// everything but the hole: a rect around all the layers and the hole, plus
+/// the hole, under `Fill::EvenOdd`. They used to be filled whole with no clip,
+/// which painted the shadow through an element without an opaque background,
+/// where CSS clips an outer shadow to the outside of the border box. The hole
+/// is the same for every shadow of the element, so a shadow list costs one
+/// clip mask, not one per shadow, and all its layers share one edge along the
+/// hole.
+fn paint_shadow_layers(
+    painter: &mut dyn Painter,
+    transform: Affine,
+    hole: &BezPath,
+    layers: Vec<ShadowLayer>,
+) {
+    if layers.iter().all(|&(_, _, _, fits)| fits) {
+        for (color, _, mut ring, _) in layers {
+            // `Fill::EvenOdd` over the layer and the hole is what cuts: a
+            // point inside both is crossed twice and left alone.
+            ring.extend(hole.iter());
+            painter.fill_color(Fill::EvenOdd, transform, color, &ring.into());
+        }
+        return;
+    }
+    let Some(around) = layers
+        .iter()
+        .map(|(_, rect, _, _)| *rect)
+        .reduce(|a, b| a.union(b))
+    else {
+        return;
+    };
+    // Grown past the layers' anti-aliased edges and around the hole, so the
+    // clip has no edge but the hole's anywhere a layer paints. Two *device*
+    // pixels: the rect is in the element's own space, and under a downscale
+    // (`scale(0.125)`) a pad of two local pixels would sit inside the
+    // shadow's own edge pixel and dim it.
+    let linear = transform.determinant().abs().sqrt();
+    let pad = if linear > 1e-6 { 2.0 / linear } else { 2.0 };
+    let around = around.union(hole.bounding_box()).inflate(pad, pad);
+    let mut outside_hole = around.into_path(0.1);
+    outside_hole.extend(hole.iter());
+    painter.push_clip(Fill::EvenOdd, transform, &outside_hole.into());
+    for (color, _, outer, _) in layers {
+        painter.fill_color(Fill::NonZero, transform, color, &outer.into());
+    }
+    painter.pop_layer();
 }
 
 /// Paint the `inset` shadows of `shadows` (#974). Called after the element's
@@ -1111,7 +1178,7 @@ pub(super) fn paint_inset_box_shadow(
     w: f64,
     h: f64,
     scale: f64,
-    radii: RoundedRectRadii,
+    radii: BorderRadii,
     node: &Node,
     transform: Affine,
     viewport_holes: &[Rect],
@@ -1136,33 +1203,14 @@ pub(super) fn paint_inset_box_shadow(
     if pad.width() <= 0.0 || pad.height() <= 0.0 {
         return;
     }
-    // The padding box's radii: the border radius less the adjacent borders.
-    // CSS makes a corner elliptical when its two borders differ; kurbo's radii
-    // are circular, so the corner takes the larger border, which keeps the
-    // padding shape inside the border shape.
-    let pad_radii = RoundedRectRadii::new(
-        (radii.top_left - bt.max(bl)).max(0.0),
-        (radii.top_right - bt.max(br)).max(0.0),
-        (radii.bottom_right - bb.max(br)).max(0.0),
-        (radii.bottom_left - bb.max(bl)).max(0.0),
-    );
-    let rounded = pad_radii.top_left > 0.0
-        || pad_radii.top_right > 0.0
-        || pad_radii.bottom_right > 0.0
-        || pad_radii.bottom_left > 0.0;
+    // The padding box's radii: the border radius less the adjacent borders,
+    // each axis by its own (§5.5; a corner whose two borders differ is
+    // elliptical, #977).
+    let pad_radii = radii.inner(bt, br, bb, bl);
     let (clip, clip_fill): (PaintShape, Fill) = if viewport_holes.is_empty() {
-        let shape = if rounded {
-            pad.to_rounded_rect(pad_radii).into()
-        } else {
-            pad.into()
-        };
-        (shape, Fill::NonZero)
+        (pad_radii.shape(pad), Fill::NonZero)
     } else {
-        let mut path: BezPath = if rounded {
-            pad.to_rounded_rect(pad_radii).into_path(0.1)
-        } else {
-            pad.into_path(0.1)
-        };
+        let mut path: BezPath = pad_radii.path(pad);
         // A hole only subtracts where it overlaps the padding box; the part
         // outside would count as *inside* under `EvenOdd`.
         for hole in viewport_holes {
@@ -1186,13 +1234,8 @@ pub(super) fn paint_inset_box_shadow(
         if color.components[3] <= 0.0 {
             continue;
         }
-        let hole_radii = RoundedRectRadii::new(
-            spread_corner_radius(pad_radii.top_left, -spread),
-            spread_corner_radius(pad_radii.top_right, -spread),
-            spread_corner_radius(pad_radii.bottom_right, -spread),
-            spread_corner_radius(pad_radii.bottom_left, -spread),
-        );
         let hole = (pad + Vec2::new(offset_x, offset_y)).inset(-spread);
+        let hole_radii = spread_radii(pad_radii, -spread).fitted(hole.width(), hole.height());
         let hole_empty = hole.width() <= 0.0 || hole.height() <= 0.0;
 
         if blur > 0.0 && !hole_empty {
@@ -1227,11 +1270,7 @@ pub(super) fn paint_inset_box_shadow(
                 &pad.inflate(1.0, 1.0).into(),
             );
         } else {
-            let hole_path: BezPath = if rounded {
-                hole.to_rounded_rect(hole_radii).into_path(0.1)
-            } else {
-                hole.into_path(0.1)
-            };
+            let hole_path: BezPath = hole_radii.path(hole);
             // The padding box (and the hole, wherever the offset took it)
             // with the hole cut out by `EvenOdd`; the clip trims it to the
             // padding shape. The outer rect contains the hole, so the
@@ -1242,6 +1281,21 @@ pub(super) fn paint_inset_box_shadow(
         }
         painter.pop_layer();
     }
+}
+
+/// The signed distance from `(u, v)` — relative to an ellipse's centre — to
+/// the ellipse of radii `r`, positive outside: the first-order estimate
+/// `(e - 1) / |∇e|` with `e = |(u / rx, v / ry)|`. Exactly `|(u, v)| - r` for
+/// a circle, which is what the blurred inset shadow's corners used before
+/// they could be elliptical (#977).
+fn ellipse_distance(u: f64, v: f64, r: Vec2) -> f64 {
+    let (nu, nv) = (u / r.x, v / r.y);
+    let e = nu.hypot(nv);
+    if e <= 1e-12 {
+        return -r.x.min(r.y);
+    }
+    let grad = (nu / r.x).hypot(nv / r.y) / e;
+    (e - 1.0) / grad
 }
 
 /// A straight-alpha RGBA8 image to draw.
@@ -1276,7 +1330,7 @@ const DIRECT_KERNEL_MAX_SIGMA: f64 = 2.5;
 fn blurred_inset_images(
     pad: Rect,
     hole: Rect,
-    hole_radii: RoundedRectRadii,
+    hole_radii: BorderRadii,
     sigma: f64,
     color: AlphaColor<Srgb>,
     transform: Affine,
@@ -1338,8 +1392,8 @@ fn blurred_inset_images(
         }
     }
 
-    // Less each rounded corner's sliver, blurred.
-    let limit = (hole.width().min(hole.height()) * 0.5).max(0.0);
+    // Less each rounded corner's sliver, blurred. The radii are already
+    // fitted to the hole (§5.5), and each corner is a quarter ellipse (#977).
     let corners = [
         (hole_radii.top_left, hole.x0, hole.y0, 1.0, 1.0),
         (hole_radii.top_right, hole.x1, hole.y0, -1.0, 1.0),
@@ -1347,13 +1401,12 @@ fn blurred_inset_images(
         (hole_radii.bottom_left, hole.x0, hole.y1, 1.0, -1.0),
     ];
     for (r, hx, hy, sx, sy) in corners {
-        let r = r.min(limit);
-        if r <= 0.0 {
+        if r.x <= 0.0 || r.y <= 0.0 {
             continue;
         }
-        // The corner's square, and the arc's centre.
-        let sq = Rect::new(hx, hy, hx + sx * r, hy + sy * r).abs();
-        let (ccx, ccy) = (hx + sx * r, hy + sy * r);
+        // The corner's box, and the arc's centre.
+        let sq = Rect::new(hx, hy, hx + sx * r.x, hy + sy * r.y).abs();
+        let (ccx, ccy) = (hx + sx * r.x, hy + sy * r.y);
         // The patch: the square on whole pixels, grown by the reach, kept to
         // the image grown by the reach.
         let px0 = (sq.x0.floor() as i64 - reach as i64).max(area.x0 as i64 - reach as i64);
@@ -1380,7 +1433,7 @@ fn blurred_inset_images(
                 if ox <= 0.0 {
                     continue;
                 }
-                let d = (x + 0.5 - ccx).hypot(y + 0.5 - ccy) - r;
+                let d = ellipse_distance(x + 0.5 - ccx, y + 0.5 - ccy, r);
                 let outside_arc = (0.5 + d).clamp(0.0, 1.0);
                 patch[j * pw + i] = (ox * oy * outside_arc) as f32;
             }

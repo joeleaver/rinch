@@ -186,31 +186,44 @@ pub fn diff_animatable(old: &ComputedStyle, new: &ComputedStyle) -> Vec<Property
         &new.border_left_width,
     );
 
-    // Border radius
-    diff_lp(
-        &mut changes,
-        TransitionProperty::BorderRadiusTopLeft,
-        &old.border_radius_top_left,
-        &new.border_radius_top_left,
-    );
-    diff_lp(
-        &mut changes,
-        TransitionProperty::BorderRadiusTopRight,
-        &old.border_radius_top_right,
-        &new.border_radius_top_right,
-    );
-    diff_lp(
-        &mut changes,
-        TransitionProperty::BorderRadiusBottomRight,
-        &old.border_radius_bottom_right,
-        &new.border_radius_bottom_right,
-    );
-    diff_lp(
-        &mut changes,
-        TransitionProperty::BorderRadiusBottomLeft,
-        &old.border_radius_bottom_left,
-        &new.border_radius_bottom_left,
-    );
+    // Border radius: each corner is its horizontal and vertical radius
+    // together (#977).
+    for (prop, (ox, oy), (nx, ny)) in [
+        (
+            TransitionProperty::BorderRadiusTopLeft,
+            (&old.border_radius_top_left, &old.border_radius_top_left_y),
+            (&new.border_radius_top_left, &new.border_radius_top_left_y),
+        ),
+        (
+            TransitionProperty::BorderRadiusTopRight,
+            (&old.border_radius_top_right, &old.border_radius_top_right_y),
+            (&new.border_radius_top_right, &new.border_radius_top_right_y),
+        ),
+        (
+            TransitionProperty::BorderRadiusBottomRight,
+            (
+                &old.border_radius_bottom_right,
+                &old.border_radius_bottom_right_y,
+            ),
+            (
+                &new.border_radius_bottom_right,
+                &new.border_radius_bottom_right_y,
+            ),
+        ),
+        (
+            TransitionProperty::BorderRadiusBottomLeft,
+            (
+                &old.border_radius_bottom_left,
+                &old.border_radius_bottom_left_y,
+            ),
+            (
+                &new.border_radius_bottom_left,
+                &new.border_radius_bottom_left_y,
+            ),
+        ),
+    ] {
+        diff_corner_radius(&mut changes, prop, (ox, oy), (nx, ny));
+    }
 
     // Font size
     if !approx_eq(old.font_size, new.font_size) {
@@ -281,6 +294,23 @@ fn diff_dimension(
             });
         }
         _ => {}
+    }
+}
+
+/// A corner's two radii as one change. Compared with `to_px` like
+/// [`diff_lp`], so a percentage-only change is no change here either.
+fn diff_corner_radius(
+    changes: &mut Vec<PropertyChange>,
+    prop: TransitionProperty,
+    old: (&LengthPercentageValue, &LengthPercentageValue),
+    new: (&LengthPercentageValue, &LengthPercentageValue),
+) {
+    if !approx_eq(old.0.to_px(), new.0.to_px()) || !approx_eq(old.1.to_px(), new.1.to_px()) {
+        changes.push(PropertyChange {
+            property: prop,
+            old_value: AnimatableValue::CornerRadius(*old.0, *old.1),
+            new_value: AnimatableValue::CornerRadius(*new.0, *new.1),
+        });
     }
 }
 

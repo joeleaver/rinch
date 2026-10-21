@@ -43,13 +43,13 @@
 //! offset, a scale of `2.0`, a second sibling, and a `width: 0` box.
 //!
 //! Radius is the trap that cannot be stepped off, and the obvious argument for
-//! why that is safe is **false**: `clip::border_radii` resolves against
-//! `min(width, height)`, which is `0` here, so a *percentage* radius does come
-//! back as `0` — but `LengthPercentageValue::resolve` ignores the basis for a
-//! `Length`, and `border-radius: 10px` on a `height: 0` box hands back
-//! `{10, 10, 10, 10}`. What makes a `RoundedRect` and a plain `Rect` identical
-//! anyway is kurbo's clamp: `Rect::to_rounded_rect` caps every corner at half
-//! the shorter side, which is `0`. Measured with `10px` and `50%`.
+//! why that is safe is **false**: `LengthPercentageValue::resolve` ignores the
+//! basis for a `Length`, so `border-radius: 10px` on a `height: 0` box resolves
+//! to 10. What makes a rounded shape and a plain `Rect` identical anyway is
+//! the overlap rule (#977): `clip::border_radii` scales every radius by the
+//! side lengths over the radii along them, which is `0` here, so the corners
+//! come back square (kurbo's own clamp to half the shorter side did the same
+//! before #977). Measured with `10px` and `50%`.
 //!
 //! **What none of this can see:** every assertion here reads the tiny-skia
 //! pixmap. The DOM-side fix is renderer-agnostic and pushes the same clip on the
