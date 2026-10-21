@@ -43,7 +43,13 @@ impl RinchApp {
         let border_top = node.computed_style.border_top_width.to_px();
         let rel_x = local_x - padding_left - border_left + node.scroll_offset.0 as f32;
         let rel_y = local_y - padding_top - border_top + node.scroll_offset.1 as f32;
-        byte_offset_from_position(&inline_layout.layout, rel_x, rel_y)
+        // Never inside a grapheme cluster (#1684).
+        rinch_dom::text_query::grapheme_offset_from_position(
+            &inline_layout.layout,
+            &inline_layout.text_content,
+            rel_x,
+            rel_y,
+        )
     }
 
     /// Set data attributes on the IFC node for paint to read.

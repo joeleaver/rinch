@@ -60,7 +60,8 @@ pub fn resolve_cursor_motion(
 ) -> Option<Selection> {
     let new_head: Pos = match motion {
         CursorMotion::CharLeft => {
-            let near = Selection::near(doc, Pos(head.0.saturating_sub(1)), -1);
+            let to = grapheme_step(doc, head, false).unwrap_or(head.0.saturating_sub(1));
+            let near = Selection::near(doc, Pos(to), -1);
             // A char move onto a selectable block atom (hr/image) becomes a node
             // selection when collapsing (not when extending a text range).
             if !extend && matches!(near, Selection::Node(_)) {
@@ -69,7 +70,8 @@ pub fn resolve_cursor_motion(
             near.head()
         }
         CursorMotion::CharRight => {
-            let near = Selection::near(doc, Pos((head.0 + 1).min(doc.content_size())), 1);
+            let to = grapheme_step(doc, head, true).unwrap_or(head.0 + 1);
+            let near = Selection::near(doc, Pos(to.min(doc.content_size())), 1);
             if !extend && matches!(near, Selection::Node(_)) {
                 return Some(near);
             }
@@ -87,6 +89,67 @@ pub fn resolve_cursor_motion(
     } else {
         Selection::cursor(new_head)
     })
+}
+
+/// The position one grapheme cluster before (`forward = false`) or after
+/// `head` inside its textblock (#1684): an emoji ZWJ sequence, a flag, a
+/// keycap or a base with its marks is one step, as in Chrome. `None` when
+/// `head` is not in a textblock or is at the edge it would step across, where
+/// the motion leaves the block one position at a time.
+pub fn grapheme_step(doc: &Node, head: Pos, forward: bool) -> Option<usize> {
+    let r = doc.resolve(head).ok()?;
+    let block = r.parent();
+    if !block.is_textblock() {
+        return None;
+    }
+    let off = r.parent_offset();
+    if (forward && off >= block.content().size()) || (!forward && off == 0) {
+        return None;
+    }
+    let text = grapheme_text(block);
+    let i = if forward {
+        rinch_words::next_grapheme_boundary_chars(&text, off)
+    } else {
+        rinch_words::prev_grapheme_boundary_chars(&text, off)
+    };
+    Some(head.0 - off + i)
+}
+
+/// Where a Backspace at `head` starts deleting inside its textblock (#1684):
+/// an emoji sequence goes whole, any other cluster one code point at a time
+/// ([`rinch_words::backspace_start`], Chrome 155's rule). `None` outside a
+/// textblock or at its start.
+pub fn backspace_start(doc: &Node, head: Pos) -> Option<usize> {
+    let r = doc.resolve(head).ok()?;
+    let block = r.parent();
+    let off = r.parent_offset();
+    if !block.is_textblock() || off == 0 {
+        return None;
+    }
+    let text = grapheme_text(block);
+    Some(head.0 - off + rinch_words::backspace_start_chars(&text, off))
+}
+
+/// A textblock's content as one string for grapheme segmentation, one char per
+/// position: a hard break is `'\n'` (a cluster never crosses it) and any other
+/// leaf U+FFFC.
+fn grapheme_text(block: &Node) -> String {
+    let mut s = String::with_capacity(block.content().size());
+    for i in 0..block.child_count() {
+        let child = block.child(i);
+        match child.text() {
+            Some(t) => s.push_str(t),
+            None => {
+                let c = if child.type_name() == "hard_break" {
+                    '\n'
+                } else {
+                    '\u{FFFC}'
+                };
+                s.extend(std::iter::repeat_n(c, child.node_size()));
+            }
+        }
+    }
+    s
 }
 
 /// The model position at the start (`forward=false`) or end (`forward=true`) of the

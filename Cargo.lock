@@ -5051,6 +5051,7 @@ dependencies = [
  "peniko",
  "precomputed-hash",
  "rinch-core",
+ "rinch-words",
  "rustc-hash 2.1.1",
  "selectors",
  "serde",
@@ -5339,6 +5340,7 @@ version = "0.1.0"
 dependencies = [
  "icu_segmenter",
  "regex",
+ "unicode-segmentation",
 ]
 
 [[package]]

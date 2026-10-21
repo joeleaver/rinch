@@ -238,14 +238,11 @@ impl<D: EditableDocument> EditableState<D> {
             // Delete selection
             self.delete_selection();
         } else if self.selection.head.0 > 0 {
-            // Find previous character boundary
+            // An emoji sequence goes whole, any other cluster one code point
+            // at a time, as in Chrome (#1684).
             let text = self.document.to_text();
             let pos = self.selection.head.0;
-            let prev_pos = text[..pos]
-                .char_indices()
-                .last()
-                .map(|(i, _)| i)
-                .unwrap_or(0);
+            let prev_pos = rinch_words::backspace_start(&text, pos);
             let range = Range::new(prev_pos, pos);
             let deleted = self.document.text_slice(range);
             self.document.delete(range);
@@ -261,13 +258,10 @@ impl<D: EditableDocument> EditableState<D> {
         if !self.selection.is_cursor() {
             self.delete_selection();
         } else if self.selection.head.0 < self.document.text_length() {
+            // The whole grapheme cluster after the caret (#1684).
             let text = self.document.to_text();
             let pos = self.selection.head.0;
-            let next_pos = text[pos..]
-                .char_indices()
-                .nth(1)
-                .map(|(i, _)| pos + i)
-                .unwrap_or(text.len());
+            let next_pos = rinch_words::next_grapheme_boundary(&text, pos);
             let range = Range::new(pos, next_pos);
             let deleted = self.document.text_slice(range);
             self.document.delete(range);
@@ -374,13 +368,10 @@ impl<D: EditableDocument> EditableState<D> {
             // Collapse to start
             self.selection = Selection::cursor(self.selection.start());
         } else if self.selection.head.0 > 0 {
+            // One grapheme cluster (#1684).
             let text = self.document.to_text();
             let pos = self.selection.head.0;
-            let prev_pos = text[..pos]
-                .char_indices()
-                .last()
-                .map(|(i, _)| i)
-                .unwrap_or(0);
+            let prev_pos = rinch_words::prev_grapheme_boundary(&text, pos);
             if extend {
                 self.selection.head = Position(prev_pos);
             } else {
@@ -394,13 +385,10 @@ impl<D: EditableDocument> EditableState<D> {
             // Collapse to end
             self.selection = Selection::cursor(self.selection.end());
         } else if self.selection.head.0 < self.document.text_length() {
+            // One grapheme cluster (#1684).
             let text = self.document.to_text();
             let pos = self.selection.head.0;
-            let next_pos = text[pos..]
-                .char_indices()
-                .nth(1)
-                .map(|(i, _)| pos + i)
-                .unwrap_or(text.len());
+            let next_pos = rinch_words::next_grapheme_boundary(&text, pos);
             if extend {
                 self.selection.head = Position(next_pos);
             } else {
