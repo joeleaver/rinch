@@ -1789,6 +1789,22 @@ impl Node {
         }
     }
 
+    /// Whether this is a generated `::before` / `::after` box: a
+    /// pseudo-element node carrying its originator's pseudo cascade (a list
+    /// marker is a pseudo-element node with none). Such a box is kept across
+    /// a cascade of its originator while its pseudo still generates (#1023),
+    /// so a pass that drops every cached style must leave its pseudo style in
+    /// place — it is how the originator's cascade finds the box again.
+    pub fn is_generated_box(&self) -> bool {
+        self.is_pseudo_element
+            && self
+                .stylo_element_data
+                .borrow()
+                .as_ref()
+                .and_then(|d| d.styles.primary.as_ref())
+                .is_some_and(|s| s.is_pseudo_style())
+    }
+
     /// Whether this is an element node.
     pub fn is_element(&self) -> bool {
         matches!(self.kind, NodeKind::Element(_))

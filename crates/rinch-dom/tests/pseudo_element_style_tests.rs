@@ -145,9 +145,9 @@ fn a_span_rule_hinted_by_an_ancestor_class_change_does_not_restyle_a_before() {
 }
 
 /// A generated box now carries its pseudo cascade, so its `@keyframes`
-/// animation starts on desktop (#1004; it never did before — #925). It is
-/// restarted at every cascade of its originator, which regenerates the box
-/// (#1023).
+/// animation starts on desktop (#1004; it never did before — #925). It keeps
+/// its clock across a cascade of its originator, which keeps the box (#1023,
+/// `pseudo_animation_keep_1023_tests`).
 #[test]
 fn a_before_animation_runs() {
     let mut doc = RinchDocument::new();
