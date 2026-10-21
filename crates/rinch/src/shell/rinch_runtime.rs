@@ -4101,31 +4101,51 @@ fn install_wayland_icon_in(data_home: &std::path::Path, app_id: &str, png_data: 
     // that writes to the user's data directory, as an app that updates itself
     // must): replacing it with a NoDisplay stub took the app out of the
     // application menu on every start. That entry names the icon itself.
-    if !replaceable_icon_stub(&desktop_path) {
+    let Some(carried) = icon_stub_carries(&desktop_path) else {
         return;
-    }
+    };
     let desktop_content = format!(
-        "[Desktop Entry]\nType=Application\nName={app_id}\nIcon={}\nNoDisplay=true\n",
+        "[Desktop Entry]\nType=Application\nName={app_id}\nIcon={}\nNoDisplay=true\n\
+         {carried}{RINCH_STUB_MARKER}\n",
         icon_path.display()
     );
     let _ = std::fs::write(&desktop_path, desktop_content);
 }
 
-/// Whether [`install_wayland_icon`] may write its stub at `path`: nothing is
-/// there, or a stub is — an entry that hides itself with `NoDisplay=true` and
-/// launches nothing. A launcher the user hid through a menu editor carries
-/// `NoDisplay=true` beside its own `Exec=`; that one is the user's, and is
-/// kept. (So is the global-hotkeys stub, which has an `Exec=` the portal
-/// needs; it names no icon.)
+/// The key every `.desktop` stub rinch writes carries (the icon stub and the
+/// global-hotkeys stub): an entry with it is rinch's own to rewrite.
 #[cfg(target_os = "linux")]
-fn replaceable_icon_stub(path: &std::path::Path) -> bool {
-    match std::fs::read_to_string(path) {
-        Ok(text) => {
-            text.lines().any(|l| l.trim() == "NoDisplay=true")
-                && !text.lines().any(|l| l.trim_start().starts_with("Exec="))
-        }
-        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+const RINCH_STUB_MARKER: &str = "X-Rinch-Stub=true";
+
+/// Whether [`install_wayland_icon`] may write its stub at `path`, and the
+/// lines of the entry there it must keep: `Some("")` when nothing is there,
+/// `Some(lines)` for a stub rinch wrote — one carrying [`RINCH_STUB_MARKER`],
+/// whose `Exec=` and `X-Rinch-Generated=` lines are kept (the global-hotkeys
+/// stub's `Exec=` is what the portal needs), or an icon stub from before the
+/// marker (`NoDisplay=true` and no `Exec=`). `None` for anything else: the
+/// app's own launcher, or one the user hid through a menu editor, which
+/// carries `NoDisplay=true` beside its own `Exec=` and no marker.
+#[cfg(target_os = "linux")]
+fn icon_stub_carries(path: &std::path::Path) -> Option<String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(String::new()),
+        Err(_) => return None,
+    };
+    let has = |line: &str| text.lines().any(|l| l.trim() == line);
+    let marked = has(RINCH_STUB_MARKER);
+    let old_icon_stub =
+        has("NoDisplay=true") && !text.lines().any(|l| l.trim_start().starts_with("Exec="));
+    if !marked && !old_icon_stub {
+        return None;
     }
+    Some(
+        text.lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("Exec=") || l.starts_with("X-Rinch-Generated="))
+            .map(|l| format!("{l}\n"))
+            .collect(),
+    )
 }
 
 /// Returns true if a `.desktop` entry for `app_id` exists in any system
@@ -4214,7 +4234,7 @@ fn write_desktop_entry_stub(
         .replace('$', "\\$");
     let content = format!(
         "[Desktop Entry]\nType=Application\nName={app_id}\nExec=\"{exec}\"\nNoDisplay=true\n\
-         X-Rinch-Generated=global-hotkeys\n"
+         X-Rinch-Generated=global-hotkeys\n{RINCH_STUB_MARKER}\n"
     );
     // `create_new`: a file that appeared since the check is not overwritten.
     use std::io::Write;
@@ -4548,8 +4568,8 @@ mod letterbox_backdrop {
 #[cfg(all(test, target_os = "linux"))]
 mod app_id_tests {
     use super::{
-        app_id_from_exe_path, ensure_desktop_entry_in, install_wayland_icon_in,
-        replaceable_icon_stub, resolved_app_id, write_desktop_entry_stub,
+        app_id_from_exe_path, ensure_desktop_entry_in, icon_stub_carries, install_wayland_icon_in,
+        resolved_app_id, write_desktop_entry_stub,
     };
 
     /// The icon stub never replaces the app's own launcher in the user's
@@ -4567,15 +4587,18 @@ mod app_id_tests {
             "[Desktop Entry]\nType=Application\nName=Notes\nExec=/opt/notes\n",
         )
         .unwrap();
-        assert!(!replaceable_icon_stub(&launcher));
+        assert_eq!(icon_stub_carries(&launcher), None);
         let stub = root.join("stub.desktop");
         std::fs::write(
             &stub,
             "[Desktop Entry]\nType=Application\nName=stub\nIcon=/x.png\nNoDisplay=true\n",
         )
         .unwrap();
-        assert!(replaceable_icon_stub(&stub));
-        assert!(replaceable_icon_stub(&root.join("absent.desktop")));
+        assert_eq!(icon_stub_carries(&stub).as_deref(), Some(""));
+        assert_eq!(
+            icon_stub_carries(&root.join("absent.desktop")).as_deref(),
+            Some("")
+        );
         // A launcher the user hid through a menu editor: `NoDisplay=true`
         // beside its own `Exec=`. It is the user's, not a stub.
         let hidden = root.join("hidden.desktop");
@@ -4584,7 +4607,7 @@ mod app_id_tests {
             "[Desktop Entry]\nType=Application\nName=Notes\nExec=/opt/x\nNoDisplay=true\n",
         )
         .unwrap();
-        assert!(!replaceable_icon_stub(&hidden));
+        assert_eq!(icon_stub_carries(&hidden), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -4631,7 +4654,9 @@ mod app_id_tests {
         assert!(stub.contains("NoDisplay=true"), "{stub}");
         assert!(stub.contains("rinch/icons/fresh.png"), "{stub}");
         assert!(root.join("rinch/icons/fresh.png").exists());
-        // An earlier stub of its own is replaced (here: rewritten in place).
+        assert!(stub.contains("X-Rinch-Stub=true"), "{stub}");
+        // An icon stub from before the marker is replaced (here: rewritten in
+        // place), and carries the marker from then on.
         std::fs::write(
             apps.join("fresh.desktop"),
             "[Desktop Entry]\nType=Application\nName=fresh\nIcon=/old.png\nNoDisplay=true\n",
@@ -4640,6 +4665,26 @@ mod app_id_tests {
         install_wayland_icon_in(&root, "fresh", &png);
         let again = std::fs::read_to_string(apps.join("fresh.desktop")).unwrap();
         assert!(again.contains("rinch/icons/fresh.png"), "{again}");
+        assert!(again.contains("X-Rinch-Stub=true"), "{again}");
+        // The global-hotkeys stub, as `ensure_desktop_entry` writes it: it is
+        // rinch's own, so it gets the icon, and keeps the `Exec=` the portal
+        // needs.
+        let exe = std::path::Path::new("/opt/keys/bin");
+        let written = write_desktop_entry_stub(&root, "keys", exe)
+            .unwrap()
+            .unwrap();
+        let before = std::fs::read_to_string(&written).unwrap();
+        assert!(before.contains("X-Rinch-Stub=true"), "{before}");
+        install_wayland_icon_in(&root, "keys", &png);
+        let keys = std::fs::read_to_string(&written).unwrap();
+        assert!(keys.contains("rinch/icons/keys.png"), "{keys}");
+        assert!(keys.contains("Exec=\"/opt/keys/bin\""), "{keys}");
+        assert!(keys.contains("X-Rinch-Generated=global-hotkeys"), "{keys}");
+        assert!(keys.contains("X-Rinch-Stub=true"), "{keys}");
+        assert_eq!(keys.matches("Exec=").count(), 1, "{keys}");
+        // Installing again changes nothing.
+        install_wayland_icon_in(&root, "keys", &png);
+        assert_eq!(std::fs::read_to_string(&written).unwrap(), keys);
         let _ = std::fs::remove_dir_all(&root);
     }
 
