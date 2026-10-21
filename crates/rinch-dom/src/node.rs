@@ -2829,6 +2829,13 @@ pub struct NodeTree {
     /// `select_tests.rs` pins this half). Removed outright when the `value`
     /// attribute is removed, and when the select node itself is freed.
     pub select_value_fresh: HashSet<RawNodeId>,
+    /// The selection each text control had when it last lost the keyboard,
+    /// or the one stashed for its next focus — `(start, end, direction)` in
+    /// UTF-16 code units, written by the desktop runtime — so
+    /// `DomDocument::text_selection_range` answers for an unfocused control as
+    /// a browser does (issue #1678). Dropped with the node.
+    pub text_selections:
+        HashMap<RawNodeId, (usize, usize, rinch_core::dom::SelectionDirection)>,
     /// Shared lock for Stylo CSS engine.
     pub guard: SharedRwLock,
     /// IDs of anonymous block box nodes created during layout.
@@ -3279,6 +3286,7 @@ impl NodeTree {
             scroll_lock_roots: Vec::new(),
             scroll_lock_exempt: Vec::new(),
             select_value_fresh: HashSet::new(),
+            text_selections: HashMap::new(),
             guard,
             anonymous_block_boxes: Vec::new(),
             split_inlines: Vec::new(),
@@ -3699,6 +3707,10 @@ impl NodeTree {
             self.ifc_measure_cache.remove(node_id);
             // Nor a freshness flag meant for a now-gone `<select>` (#757).
             self.select_value_fresh.remove(node_id);
+            // Nor a selection remembered for a now-gone text control (#1678).
+            if !self.text_selections.is_empty() {
+                self.text_selections.remove(node_id);
+            }
             // Nor what was recorded about a now-gone atomic inline (#1476;
             // the first two leaked until then, review of #1477).
             if !self.keyword_inline_cb_width.is_empty() {

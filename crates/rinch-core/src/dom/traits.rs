@@ -575,6 +575,50 @@ pub trait DomDocument {
     ) {
     }
 
+    /// A text control's selection, `(start, end, direction)` in **UTF-16 code
+    /// units** with `start <= end` — the DOM's `selectionStart`,
+    /// `selectionEnd` and `selectionDirection` (issue #1678), the read half of
+    /// [`set_selection_range`](Self::set_selection_range).
+    ///
+    /// - **Desktop** answers, newest first: a `set_selection_range` posted and
+    ///   not yet applied; the focused control's live selection; the selection
+    ///   the control had when it last lost the keyboard, or one stashed for its
+    ///   next focus; else a caret at the start, `(0, 0, Forward)`. Offsets are
+    ///   clamped to the control's current value.
+    /// - **Web** answers the element's own properties.
+    ///
+    /// `None` for a node that is not an `<input>` or `<textarea>` (a
+    /// browser's `selectionStart` is `null` for an `<input>` whose type has no
+    /// text selection — a checkbox — and rinch answers `None` there too).
+    /// Defaulted to `None` so a backend with no text controls keeps compiling.
+    fn text_selection_range(&self, _node_id: NodeId) -> Option<(usize, usize, SelectionDirection)> {
+        None
+    }
+
+    /// Where a caret at UTF-16 offset `offset` of a text control's value is
+    /// drawn — `None` for `offset` means at the selection's head, the caret
+    /// itself (issue #1678). The rect is `width` 0 and as tall as the caret,
+    /// in logical window px on desktop and client px on the web, the space
+    /// `EditorHandle::caret_rect` answers in, so a popup is placed from it the
+    /// same way on both.
+    ///
+    /// Desktop measures with the layout paint draws the field's text with
+    /// (`paint_input_value`), so the answer is the painted caret, password
+    /// bullets and a single-line field's centring included; an IME
+    /// composition's text, which is not in the value, is not counted. The web
+    /// lays the value out in a hidden copy of the control with its computed
+    /// text styles (browsers expose no caret geometry for a form control), so
+    /// it can differ from the caret the browser draws by a pixel or so.
+    ///
+    /// `None` for a node that is not a text control, or not laid out.
+    fn text_caret_rect(
+        &mut self,
+        _node_id: NodeId,
+        _offset: Option<usize>,
+    ) -> Option<crate::reactive::ElementBounds> {
+        None
+    }
+
     /// Select a text control's **entire** text — `NodeHandle::select()`
     /// (issue #552), the DOM's `HTMLInputElement.select()`.
     ///

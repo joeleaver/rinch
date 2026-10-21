@@ -175,6 +175,20 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                         #elem_var.set_attribute("data-onscroll", &__handler_id.0.to_string());
                     }
                 }
+            } else if event_name == "onkeydown" || event_name == "onkeyup" {
+                // Key events (issue #1678) take `Fn(&KeyEventData) -> bool`:
+                // `true` consumes the key — its default handling (a line
+                // break, a submit, a focus move) does not happen and nothing
+                // after the element is offered it.
+                let data_attr = crate::events::event_attribute(&event_name)
+                    .expect("both key events are in HTML_EVENTS");
+                quote! {
+                    {
+                        #handler_shadows
+                        let __handler_id = __scope.register_key_handler(#handler);
+                        #elem_var.set_attribute(#data_attr, &__handler_id.0.to_string());
+                    }
+                }
             } else if event_name == "onfiledrop" {
                 // OS file-drop events use register_file_drop_handler with Fn(Vec<PathBuf>)
                 quote! {

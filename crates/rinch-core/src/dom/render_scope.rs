@@ -1062,6 +1062,22 @@ impl RenderScope {
         crate::events::register_scroll_handler(crate::events::ScrollCallback::new(callback))
     }
 
+    /// Register an element key handler (`onkeydown` / `onkeyup`, issue
+    /// #1678) and return its ID. The callback answers whether it consumed the
+    /// key — see [`KeyCallback`](crate::events::KeyCallback).
+    ///
+    /// ```ignore
+    /// let id = scope.register_key_handler(|k| k.key == "Enter" && !k.shift);
+    /// element.set_attribute("data-onkeydown", &id.to_string());
+    /// ```
+    #[doc(hidden)]
+    pub fn register_key_handler<F: Fn(&crate::events::KeyEventData) -> bool + 'static>(
+        &mut self,
+        callback: F,
+    ) -> crate::events::EventHandlerId {
+        crate::events::register_key_handler(crate::events::KeyCallback::new(callback))
+    }
+
     /// Dispose of this scope and all child scopes.
     ///
     /// Equivalent to dropping it: cleanups and effects both live on

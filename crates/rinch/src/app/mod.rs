@@ -255,6 +255,8 @@ mod right_press_focus_452_review_tests;
 mod right_press_focus_452_tests;
 #[cfg(test)]
 mod rsx_onsubmit_1590_tests;
+#[cfg(test)]
+mod element_key_1678_tests;
 #[cfg(all(test, software_shell))]
 mod screenshot_capture_tests;
 #[cfg(test)]
@@ -3621,6 +3623,17 @@ impl RinchApp {
         let Some(doc) = &self.doc else { return };
 
         let mut d = doc.borrow_mut();
+        // The selection stays with the control when it loses the keyboard, as
+        // a browser's `selectionStart`/`selectionEnd` do: remember it for
+        // `NodeHandle::selection_range` (issue #1678). Read from the bytes the
+        // last sync wrote, which are what the field showed.
+        let kept = rinch_core::dom::DomDocument::text_selection_range(
+            &*d,
+            rinch_core::dom::NodeId(node_id),
+        );
+        if let Some(kept) = kept {
+            d.tree.text_selections.insert(node_id, kept);
+        }
         if let Some(node) = d.tree.nodes.get_mut(node_id) {
             node.attributes.remove("data-focused");
             node.attributes.remove("data-cursor-pos");
@@ -4356,6 +4369,14 @@ impl RinchApp {
         if takes_text_focus {
             self.pending_text_selection
                 .insert(node_id, (start, end, direction));
+            // What `NodeHandle::selection_range` reads back for the control
+            // until it is focused (issue #1678).
+            if let Some(doc) = &self.doc {
+                doc.borrow_mut()
+                    .tree
+                    .text_selections
+                    .insert(node_id, (start, end, direction));
+            }
         }
     }
 

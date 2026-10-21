@@ -1986,6 +1986,48 @@ pub(crate) fn editor_owning(el: &web_sys::Element) -> Option<web_sys::Element> {
     hit.closest("[data-pm-editor]").ok().flatten()
 }
 
+/// Offer a key to the `attr` (`data-onkeydown` / `data-onkeyup`) handler of
+/// the element the key was pressed in and then its ancestors', nearest first,
+/// stopping at the first that consumes it (issue #1678). The ids are read
+/// before any handler runs, as a browser fixes an event's path at dispatch.
+///
+/// Not offered — as on desktop, where these have no element claim to walk
+/// from — for a key the rich-text editor holds (its keys are
+/// `EditorHandle::on_key`'s; a field inside a node view's component is not
+/// the editor's), one a focused render surface holds (`set_key_handler`), or
+/// one an input method is composing with (`isComposing`, or the `Process`
+/// key a composition sends).
+fn offer_element_key(
+    event: &web_sys::KeyboardEvent,
+    attr: &str,
+    data: &events::KeyEventData,
+) -> bool {
+    if event.is_composing() || event.key() == "Process" {
+        return false;
+    }
+    if rinch::render_surface::focused_surface_id().is_some() {
+        return false;
+    }
+    let Some(el) = event
+        .target()
+        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+    else {
+        return false;
+    };
+    if el.has_attribute("data-pm-capture") || editor_owning(&el).is_some() {
+        return false;
+    }
+    let mut ids = Vec::new();
+    let mut cur = Some(el);
+    while let Some(e) = cur {
+        if let Some(id) = e.get_attribute(attr).and_then(|v| v.parse::<usize>().ok()) {
+            ids.push(events::EventHandlerId(id));
+        }
+        cur = e.parent_element();
+    }
+    !ids.is_empty() && events::dispatch_key_handler_chain(ids, data)
+}
+
 /// `(editor container, view host)` when `el` is inside a node view's component
 /// (see [`editor_owning`]).
 pub(crate) fn node_view_around(
@@ -3073,6 +3115,23 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             return;
         }
 
+        // 0.5. The focused element's own `onkeydown`, then its ancestors',
+        //      before the interceptor and the dismiss stack (issue #1678) —
+        //      desktop's order. A consumed key is the browser's
+        //      `preventDefault` + `stopPropagation`: no line break, no submit,
+        //      no activation, no Tab, and nothing after this sees it.
+        let element_key = events::KeyEventData::new(event.key(), event.code()).with_modifiers(
+            event.ctrl_key() || event.meta_key(),
+            event.shift_key(),
+            event.alt_key(),
+            event.meta_key(),
+        );
+        if offer_element_key(event, "data-onkeydown", &element_key) {
+            event.prevent_default();
+            event.stop_propagation();
+            return;
+        }
+
         // 1. The document-level interceptor always sees the key first, even
         //    while a render surface holds focus — matching desktop (issue
         //    #484: the keyup leg already reached it unconditionally, but
@@ -3225,6 +3284,10 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                 event.meta_key(),
             )
             .with_kind(events::KeyEventKind::Up);
+        // The element's own `onkeyup` first (issue #1678); a consuming one
+        // stops its ancestors, and the interceptor hears the release anyway,
+        // as on desktop.
+        offer_element_key(event, "data-onkeyup", &key_data);
         events::dispatch_keyboard_event(&key_data);
 
         if let Some(surface_id) = rinch::render_surface::focused_surface_id() {

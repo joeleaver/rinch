@@ -196,6 +196,38 @@ impl<F: Fn(ScrollEvent) + 'static> crate::element::IntoEventHandler<ScrollCallba
     }
 }
 
+/// Cloneable callback for an element's `onkeydown` / `onkeyup` (issue #1678).
+///
+/// Receives the key as [`KeyEventData`](super::KeyEventData) and answers
+/// whether it **consumed** the key: `true` is the browser's `preventDefault()`
+/// plus `stopPropagation()` — the element's own handling of the key (inserting
+/// a line break, submitting, moving focus) does not happen, no ancestor's
+/// handler is offered it, and neither the document-level keyboard interceptor
+/// nor the dismiss stack sees the press. `false` lets the key go on as if the
+/// handler were not there.
+#[derive(Clone)]
+pub struct KeyCallback(pub Rc<dyn Fn(&super::KeyEventData) -> bool>);
+
+impl KeyCallback {
+    /// Create a new key callback from a function.
+    pub fn new<F: Fn(&super::KeyEventData) -> bool + 'static>(f: F) -> Self {
+        Self(Rc::new(f))
+    }
+
+    /// Invoke the callback with a key event; answers whether it consumed it.
+    ///
+    /// Runs untracked (issue #285), like every other app callback.
+    pub fn invoke(&self, key: &super::KeyEventData) -> bool {
+        crate::reactive::untracked_handler(|| (self.0)(key))
+    }
+}
+
+impl std::fmt::Debug for KeyCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("KeyCallback(...)")
+    }
+}
+
 /// Global counter for generating unique event handler IDs.
 static NEXT_HANDLER_ID: AtomicUsize = AtomicUsize::new(0);
 
@@ -239,6 +271,8 @@ pub fn unregister_handler(id: EventHandlerId) {
     drop(file_drop);
     let scroll = SCROLL_REGISTRY.with(|r| r.borrow_mut().handlers.remove(&id));
     drop(scroll);
+    let key = KEY_REGISTRY.with(|r| r.borrow_mut().remove(&id));
+    drop(key);
 }
 
 /// Whether a click handler is still registered under this id.
@@ -276,6 +310,8 @@ thread_local! {
     static INPUT_REGISTRY: RefCell<InputRegistry> = RefCell::new(InputRegistry::new());
     static FILE_DROP_REGISTRY: RefCell<FileDropRegistry> = RefCell::new(FileDropRegistry::new());
     static SCROLL_REGISTRY: RefCell<ScrollRegistry> = RefCell::new(ScrollRegistry::new());
+    /// `onkeydown` / `onkeyup` handlers (issue #1678).
+    static KEY_REGISTRY: RefCell<HashMap<EventHandlerId, KeyCallback>> = RefCell::new(HashMap::new());
     // Not const-evaluable: goes through the non-const `Default` trait method.
     static INPUT_CONTEXT: RefCell<InputContext> = RefCell::new(InputContext::default());
     /// Flag to signal that an input event was handled and a re-render may be needed.
@@ -597,6 +633,60 @@ pub fn dispatch_scroll_event(id: EventHandlerId, event: ScrollEvent) -> bool {
     }
 }
 
+/// Register an element key handler (`onkeydown` / `onkeyup`, issue #1678)
+/// and return its ID, to be written to the element's `data-onkeydown` or
+/// `data-onkeyup` attribute.
+///
+/// Like every other handler it is owned by the scope registering it and
+/// re-enters that scope and context root on dispatch (issues #136, #141).
+#[doc(hidden)]
+pub fn register_key_handler(callback: KeyCallback) -> EventHandlerId {
+    let id = next_handler_id();
+    let root = crate::context::current_context_root();
+    crate::reactive::record_handler(id);
+    let owner = crate::reactive::Owner::current();
+    let callback = KeyCallback::new(move |key| {
+        let _root = crate::context::push_context_root(root);
+        let _owner = owner.push();
+        callback.invoke(key)
+    });
+    KEY_REGISTRY.with(|registry| {
+        registry.borrow_mut().insert(id, callback);
+    });
+    id
+}
+
+/// Whether a key handler is still registered under this id. See
+/// [`has_click_handler`].
+pub fn has_key_handler(id: EventHandlerId) -> bool {
+    KEY_REGISTRY.with(|registry| registry.borrow().contains_key(&id))
+}
+
+/// Offer a key to the element key handler with the given ID, as one
+/// transaction (`batch`). Answers whether the handler **consumed** it; a
+/// missing handler (freed with its scope, #141) consumed nothing.
+pub fn dispatch_key_handler(id: EventHandlerId, key: &super::KeyEventData) -> bool {
+    let handler: Option<KeyCallback> =
+        KEY_REGISTRY.with(|registry| registry.borrow().get(&id).cloned());
+    match handler {
+        Some(h) => crate::reactive::batch(|| h.invoke(key)),
+        None => false,
+    }
+}
+
+/// Offer a key to a chain of element key handlers, nearest first — the
+/// `onkeydown` / `onkeyup` ids a backend read off the focused element and its
+/// ancestors, **before** calling any of them (a handler may change the tree,
+/// and the path is the one the key was pressed in, as a browser fixes an
+/// event's path at dispatch). Stops at the first handler that consumes the
+/// key and answers whether one did (issue #1678).
+pub fn dispatch_key_handler_chain(
+    ids: impl IntoIterator<Item = EventHandlerId>,
+    key: &super::KeyEventData,
+) -> bool {
+    ids.into_iter().any(|id| dispatch_key_handler(id, key))
+}
+
 /// Check if an input event was handled since last check, and clear the flag.
 ///
 /// This allows the shell to know if a re-render is needed after processing
@@ -624,6 +714,9 @@ pub fn clear_handlers() {
     });
     SCROLL_REGISTRY.with(|registry| {
         registry.borrow_mut().handlers.clear();
+    });
+    KEY_REGISTRY.with(|registry| {
+        registry.borrow_mut().clear();
     });
     reset_handler_ids();
 }

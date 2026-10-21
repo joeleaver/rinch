@@ -3,6 +3,58 @@
 use super::*;
 
 impl RinchApp {
+    /// Offer a key to the focused element's `onkeydown` / `onkeyup` handler
+    /// and then its ancestors', nearest first, stopping at the first that
+    /// consumes it (issue #1678). Answers whether one did.
+    ///
+    /// The walk starts at the node the arbiter's claim names — a text control
+    /// (`FocusTarget::Input`) or a focusable node (`FocusTarget::Node`: a
+    /// `tabindex` element, a button, a link, a closed `<select>`). The
+    /// rich-text editor (its keys are `EditorHandle::on_key`'s), a render
+    /// surface (`set_key_handler`) and an open `<select>` list are not offered,
+    /// nor is a key while the focused field shows an IME composition: a key
+    /// the input method is composing with is the input method's, which a
+    /// browser marks `isComposing`. The ids are read before any handler runs,
+    /// so a handler that moves or removes nodes does not change who is asked.
+    pub(super) fn offer_element_key(&mut self, data: &events::KeyEventData) -> bool {
+        let start = match self.focus_target {
+            FocusTarget::Input(id) => id,
+            FocusTarget::Node(id) if self.node_target_is_live(id) => id,
+            _ => return false,
+        };
+        let attr = if data.is_up() {
+            "data-onkeyup"
+        } else {
+            "data-onkeydown"
+        };
+        let ids: Vec<events::EventHandlerId> = {
+            let Some(doc) = self.doc.as_ref() else {
+                return false;
+            };
+            let d = doc.borrow();
+            if d.tree
+                .get(start)
+                .and_then(|n| n.attributes.get("data-preedit"))
+                .is_some_and(|p| !p.is_empty())
+            {
+                return false;
+            }
+            let mut ids = Vec::new();
+            let mut cur = Some(start);
+            while let Some(id) = cur {
+                let Some(node) = d.tree.get(id) else { break };
+                if let Some(h) = node.attributes.get(attr).and_then(|v| v.parse::<usize>().ok()) {
+                    ids.push(events::EventHandlerId(h));
+                }
+                cur = node.parent;
+            }
+            ids
+        };
+        !ids.is_empty() && events::dispatch_key_handler_chain(ids, data)
+    }
+}
+
+impl RinchApp {
     /// Whether a visible scrollbar thumb should take a press that
     /// [`detect_resize_edge`] claimed.
     ///
@@ -1536,6 +1588,29 @@ impl RinchApp {
                     }
                 }
 
+                // 0.5. The element's own `onkeydown` (issue #1678): the focused
+                //      `<input>`/`<textarea>` or focusable node, then its
+                //      ancestors, nearest first, before the document-level
+                //      interceptor and the dismiss stack — the place an
+                //      editor's `on_key` has, so a `[[` picker in a field
+                //      inside a `Modal` takes Escape and the modal stays. A
+                //      consumed key goes no further: not to the interceptor,
+                //      the dismiss stack, the field's own editing, `onsubmit`,
+                //      activation or Tab. Not while the text context menu owns
+                //      the keyboard, as the editor's `on_key` is not.
+                if self.open_text_menu.is_none()
+                    && let Some(ref ks) = key_str
+                {
+                    let key_data = events::KeyEventData::new(ks.clone(), format!("{:?}", key))
+                        .with_modifiers(ctrl, shift, alt, modifiers.meta);
+                    if self.offer_element_key(&key_data) {
+                        self.drain_focus_requests(false);
+                        self.resolve_and_repaint(vp_w, vp_h);
+                        actions.push(AppAction::RequestRedraw);
+                        return actions;
+                    }
+                }
+
                 // 1. User keyboard hooks (document-level interceptor). A user
                 //    handler that consumes the key wins and stops here, like a
                 //    capturing DOM listener. Render surfaces no longer hijack this
@@ -1766,6 +1841,12 @@ impl RinchApp {
                     let key_data = events::KeyEventData::new(ks.clone(), format!("{:?}", key))
                         .with_modifiers(ctrl, shift, alt, modifiers.meta)
                         .with_kind(events::KeyEventKind::Up);
+                    // The element's own `onkeyup` first, as `onkeydown` is
+                    // offered first (issue #1678). A consuming handler stops
+                    // the walk to its ancestors; the interceptor hears the
+                    // release regardless, since a release has no default to
+                    // prevent and a held-key tracker must see every one.
+                    self.offer_element_key(&key_data);
                     events::dispatch_keyboard_event(&key_data);
                     actions.push(AppAction::RequestRedraw);
                 }

@@ -2440,6 +2440,171 @@ impl DomDocument for WebDocument {
         }
     }
 
+    /// The element's own `selectionStart` / `selectionEnd` /
+    /// `selectionDirection` (issue #1678) — UTF-16 code units, a JS string's
+    /// own. `None` where the browser answers `null` (an `<input>` type with
+    /// no text selection) or for any other element.
+    fn text_selection_range(
+        &self,
+        node_id: NodeId,
+    ) -> Option<(usize, usize, rinch_core::dom::SelectionDirection)> {
+        let n = self.nodes.get(&node_id.0)?;
+        let (start, end, direction) = if let Some(i) = n.dyn_ref::<web_sys::HtmlInputElement>() {
+            (
+                i.selection_start().ok().flatten()?,
+                i.selection_end().ok().flatten()?,
+                i.selection_direction().ok().flatten(),
+            )
+        } else if let Some(t) = n.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+            (
+                t.selection_start().ok().flatten()?,
+                t.selection_end().ok().flatten()?,
+                t.selection_direction().ok().flatten(),
+            )
+        } else {
+            return None;
+        };
+        let direction = match direction.as_deref() {
+            Some("backward") => rinch_core::dom::SelectionDirection::Backward,
+            Some("none") => rinch_core::dom::SelectionDirection::None,
+            _ => rinch_core::dom::SelectionDirection::Forward,
+        };
+        let (start, end) = (start as usize, end as usize);
+        Some((start.min(end), start.max(end), direction))
+    }
+
+    /// Where a caret at a UTF-16 offset of the control's value sits, in
+    /// client px (issue #1678). A browser exposes no caret geometry for a
+    /// form control, so the value up to the offset is laid out in a hidden
+    /// `<div>` given the control's computed box and text styles (the
+    /// technique of the `textarea-caret-position` library), and the offset is
+    /// where a marker after that text lands, moved to the control's box and
+    /// its scroll. A single-line field centres its line in its content box, as
+    /// Chrome draws it.
+    fn text_caret_rect(
+        &mut self,
+        node_id: NodeId,
+        offset: Option<usize>,
+    ) -> Option<rinch_core::reactive::ElementBounds> {
+        const MIRRORED: &[&str] = &[
+            "direction",
+            "box-sizing",
+            "width",
+            "height",
+            "border-top-width",
+            "border-right-width",
+            "border-bottom-width",
+            "border-left-width",
+            "border-style",
+            "padding-top",
+            "padding-right",
+            "padding-bottom",
+            "padding-left",
+            "font-style",
+            "font-variant",
+            "font-weight",
+            "font-stretch",
+            "font-size",
+            "font-size-adjust",
+            "line-height",
+            "font-family",
+            "font-kerning",
+            "font-feature-settings",
+            "font-variation-settings",
+            "text-align",
+            "text-transform",
+            "text-indent",
+            "letter-spacing",
+            "word-spacing",
+            "tab-size",
+            "white-space",
+            "overflow-wrap",
+            "word-break",
+        ];
+        let (start, end, direction) = self.text_selection_range(node_id)?;
+        let n = self.nodes.get(&node_id.0)?;
+        let el: web_sys::HtmlElement = n.clone().dyn_into().ok()?;
+        let (value, single_line, password) = if let Some(i) = n.dyn_ref::<web_sys::HtmlInputElement>() {
+            (i.value(), true, i.type_().eq_ignore_ascii_case("password"))
+        } else {
+            (n.dyn_ref::<web_sys::HtmlTextAreaElement>()?.value(), false, false)
+        };
+        let units: Vec<u16> = value.encode_utf16().collect();
+        let head = offset.unwrap_or(if direction == rinch_core::dom::SelectionDirection::Backward {
+            start
+        } else {
+            end
+        });
+        let head = head.min(units.len());
+        let mut before = String::from_utf16_lossy(&units[..head]);
+        let mut after = String::from_utf16_lossy(&units[head..]);
+        if password {
+            before = "\u{2022}".repeat(before.chars().count());
+            after = "\u{2022}".repeat(after.chars().count());
+        }
+        if after.is_empty() {
+            after.push('.');
+        }
+
+        let win = web_sys::window()?;
+        let doc = win.document()?;
+        let body = doc.body()?;
+        let cs = win.get_computed_style(&el).ok()??;
+        let mirror: web_sys::HtmlElement = doc.create_element("div").ok()?.dyn_into().ok()?;
+        let ms = mirror.style();
+        for prop in MIRRORED {
+            if let Ok(v) = cs.get_property_value(prop) {
+                let _ = ms.set_property(prop, &v);
+            }
+        }
+        for (prop, v) in [
+            ("position", "absolute"),
+            ("visibility", "hidden"),
+            ("top", "0"),
+            ("left", "0"),
+            ("overflow", "hidden"),
+        ] {
+            let _ = ms.set_property(prop, v);
+        }
+        if single_line {
+            let _ = ms.set_property("white-space", "pre");
+            let _ = ms.set_property("height", "auto");
+        } else {
+            let _ = ms.set_property("white-space", "pre-wrap");
+        }
+        mirror.set_text_content(Some(&before));
+        let marker = doc.create_element("span").ok()?;
+        marker.set_text_content(Some(&after));
+        mirror.append_child(&marker).ok()?;
+        body.append_child(&mirror).ok()?;
+        let m = mirror.get_bounding_client_rect();
+        // The first box of the marker: the rest of the value may wrap.
+        let first = marker.get_client_rects().get(0);
+        let _ = body.remove_child(&mirror);
+        let first = first?;
+        let e = el.get_bounding_client_rect();
+        let x = e.left() + (first.left() - m.left()) - el.scroll_left() as f64;
+        let height = first.height();
+        let y = if single_line {
+            let px = |p: &str| {
+                cs.get_property_value(p)
+                    .ok()
+                    .and_then(|v| v.trim_end_matches("px").parse::<f64>().ok())
+                    .unwrap_or(0.0)
+            };
+            let content = el.client_height() as f64 - px("padding-top") - px("padding-bottom");
+            e.top() + el.client_top() as f64 + px("padding-top") + (content - height) / 2.0
+        } else {
+            e.top() + (first.top() - m.top()) - el.scroll_top() as f64
+        };
+        Some(rinch_core::reactive::ElementBounds {
+            x: x as f32,
+            y: y as f32,
+            width: 0.0,
+            height: height as f32,
+        })
+    }
+
     /// Whether `node` is shown, asked of the browser (issue #802; see
     /// [`DomDocument::is_rendered`]).
     ///

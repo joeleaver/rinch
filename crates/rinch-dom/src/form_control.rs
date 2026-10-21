@@ -928,3 +928,140 @@ pub(crate) fn char_metrics(
         from_os2: true,
     }
 }
+
+/// Whether `node` has a text selection a script can read — an `<input>` of a
+/// type whose `selectionStart` is not `null` in a browser (the Text state,
+/// `search`, `url`, `tel`, `password`) or a `<textarea>` (issue #1678).
+/// Chrome answers `null` for `email` and `number`, though both take text.
+pub fn has_text_selection(node: &Node) -> bool {
+    match node.tag() {
+        Some("textarea") => true,
+        Some("input") => {
+            let ty = node.attributes.get("type").map(|t| t.to_ascii_lowercase());
+            !matches!(
+                ty.as_deref(),
+                Some(
+                    "email"
+                        | "number"
+                        | "hidden"
+                        | "checkbox"
+                        | "radio"
+                        | "file"
+                        | "submit"
+                        | "image"
+                        | "reset"
+                        | "button"
+                        | "range"
+                        | "color"
+                        | "date"
+                        | "month"
+                        | "week"
+                        | "time"
+                        | "datetime-local"
+                )
+            )
+        }
+        _ => false,
+    }
+}
+
+/// The UTF-16 offset of byte `byte` of `text`, `byte` clamped to the text and
+/// moved back to a character boundary.
+pub fn utf16_of_byte(text: &str, byte: usize) -> usize {
+    let mut b = byte.min(text.len());
+    while !text.is_char_boundary(b) {
+        b -= 1;
+    }
+    text[..b].encode_utf16().count()
+}
+
+/// The byte offset of UTF-16 offset `units` of `text`, clamped to the text;
+/// an offset inside a surrogate pair is the start of its character.
+pub fn byte_of_utf16(text: &str, units: usize) -> usize {
+    let mut seen = 0;
+    for (i, c) in text.char_indices() {
+        let next = seen + c.len_utf16();
+        if next > units {
+            return i;
+        }
+        seen = next;
+    }
+    text.len()
+}
+
+/// Where a caret at byte `offset` of a text control's value is **painted**,
+/// `(x, y, height)` in logical window px (issue #1678).
+///
+/// Built the way `paint_input_value` builds the text it draws — the value, or
+/// the placeholder when the value is empty (the caret then sits at the
+/// placeholder's start), password bullets, the same font size, family and
+/// weight, the same wrap width, a single-line field's vertical centring, and
+/// the caret height paint draws (1.2 × the font size) — at scale 1, then
+/// carried through the box's painted position and transform. A property added
+/// to one and not the other moves the answer off the drawn caret; both should
+/// move to one builder together (#320).
+pub fn painted_caret_rect(
+    tree: &NodeTree,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+    node_id: usize,
+    offset: usize,
+    affinity: rinch_core::dom::CaretAffinity,
+) -> Option<(f32, f32, f32)> {
+    let node = tree.get(node_id)?;
+    if !is_value_control(node) {
+        return None;
+    }
+    let value = control_value(&tree.nodes, node_id).unwrap_or_default();
+    let value = value.as_ref();
+    let placeholder = node.attributes.get("placeholder").map(String::as_str);
+    // As paint asks it: case-sensitively.
+    let is_password = node.attributes.get("type").map(String::as_str) == Some("password");
+    let mut offset = offset.min(value.len());
+    while !value.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    let bullets;
+    let (text, offset) = if value.is_empty() {
+        (placeholder.unwrap_or(""), 0)
+    } else if is_password {
+        const BULLET: &str = "\u{2022}";
+        bullets = BULLET.repeat(value.chars().count());
+        (bullets.as_str(), value[..offset].chars().count() * BULLET.len())
+    } else {
+        (value, offset)
+    };
+
+    let style = &node.computed_style;
+    let font_size = style.font_size;
+    let padding_left = style.padding_left.to_px();
+    let padding_top = style.padding_top.to_px();
+    let (w, h) = (node.layout.width, node.layout.height);
+    let family = crate::fonts::parley_text_family(font_cx, &style.font_family, text);
+    let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
+    builder.push_default(parley::style::StyleProperty::FontSize(font_size));
+    family.push_to(&mut builder);
+    if (style.font_weight - 400.0).abs() > 1.0 {
+        builder.push_default(parley::style::StyleProperty::FontWeight(
+            parley::style::FontWeight::new(style.font_weight),
+        ));
+    }
+    let mut layout = builder.build(text);
+    layout.break_all_lines(Some(w - padding_left * 2.0));
+    let text_y = if node.tag() == Some("textarea") {
+        padding_top
+    } else {
+        (h - layout.height()) / 2.0
+    };
+    let (cx, cy) = if text.is_empty() {
+        (0.0, 0.0)
+    } else {
+        crate::text_query::caret_position_for_offset_layout_with_affinity(&layout, offset, affinity)
+    };
+    let bx = (padding_left + cx) as f64;
+    let by = (text_y + cy) as f64;
+    let caret_h = font_size as f64 * 1.2;
+    let (ax, ay) = crate::paint::point_from_painted_box(tree, node_id, 1.0, bx, by);
+    let (_, ay2) = crate::paint::point_from_painted_box(tree, node_id, 1.0, bx, by + caret_h);
+    Some((ax as f32, ay as f32, (ay2 - ay).abs() as f32))
+}
