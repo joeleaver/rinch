@@ -162,10 +162,14 @@ fn p08_zero_inline_block_in_paragraph() {
          <div style=\"width: 20px; height: 10px; background-color: rgb(0,128,0)\"></div></span>b</p>"
     ));
     let (_, g, _) = report("p08 0x0 inline-block (abs + in-flow child)", &mut d);
-    assert_eq!(
-        g,
-        18 * 18 + 20 * 10 - 18 * 10,
-        "Chrome paints both children (they overlap 18x10)"
+    // Chrome paints both children, overlapping (18x10 here). How many rows they
+    // share depends on where the font puts the baseline (the host's fonts round
+    // it differently: 18x10 locally, 18x11 under CI's DejaVu), so pin "both are
+    // drawn" rather than the exact overlap: either child alone is at most 324,
+    // and both, overlapping by 10 or 11 rows, are 344 or 326.
+    assert!(
+        (18 * 18 + 20 * 10 - 18 * 11..=18 * 18 + 20 * 10 - 18 * 10).contains(&g),
+        "Chrome paints both children: {g}"
     );
 }
 
