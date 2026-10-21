@@ -2011,7 +2011,7 @@ press outside it is swallowed by the backdrop and does nothing. Pins:
 
 ### File Drop (OS → App)
 
-File drops from the OS use `data-onfiledragenter`, `data-onfiledragleave` attributes, and `register_file_drop_handler` for the actual drop. See the File Drop section of UI Zoo for an example.
+File drops from the OS use `data-onfiledragenter`, `data-onfiledragleave` attributes, and `register_file_drop_handler` for the actual drop. See the File Drop section of UI Zoo for an example. The drop handler reads the drop point and its element's painted box through `get_click_context()` (`dispatch_file_drop` sets it, #1650; logical window px, as a click's), and so do the files an editor hands back from a mixed drop. Desktop only: rinch-web dispatches no `data-onfiledrop` (a browser drop has no paths), so there is no web context to agree with.
 
 ## Keyboard Shortcuts (built-in)
 
