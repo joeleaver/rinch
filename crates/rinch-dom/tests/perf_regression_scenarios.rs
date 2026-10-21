@@ -1176,6 +1176,58 @@ fn a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass() {
     );
 }
 
+/// #1081: an atomic inline followed by a space, in a flex item, pays one hang
+/// pass per row on a cold layout. The item's min-content measure breaks its
+/// paragraph at width 0, where every box is too wide for its line and goes
+/// through parley's emergency branch, and the space after it is folded onto
+/// the box's line by one more break of the paragraph
+/// (`fold_after_overflowing_box`). 20 rows, 20 passes, one line each; the
+/// shapes and measures are what they were. Plain block rows pay none.
+#[test]
+fn a_chip_followed_by_a_space_in_a_flex_item_pays_one_hang_pass_at_min_content() {
+    let mut doc = doc_with(
+        ".row { display: flex; } .chip { display: inline-block; width: 30px; height: 16px; }",
+    );
+    doc.tree.perf.reset();
+    let body = doc.body();
+    for i in 0..20 {
+        let row = el(&mut doc, body, "div", "row");
+        let item = el(&mut doc, row, "div", "");
+        text(&mut doc, item, &format!("label{i} "));
+        el(&mut doc, item, "span", "chip");
+        text(&mut doc, item, " more text here");
+    }
+    let s = cold_frame(&mut doc);
+    expect(
+        "flex items, a chip then a space",
+        &s,
+        &[
+            (StyleResolves, 61),
+            (ElementsCascaded, 62),
+            (StyleNodesVisited, 3212),
+            (FullStyleWalks, 61),
+            (TaffyStyleSyncs, 62),
+            (TaffyStyleChanges, 61),
+            (ShapeMeasureIfc, 60),
+            (ShapeIfcBuild, 20),
+            (IfcMeasureCacheHits, 20),
+            (IfcMeasureInvalidations, 100),
+            (IfcSignatureChanges, 20),
+            (IfcHangPasses, 20),
+            (IfcHangLines, 20),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 80),
+            (InlineBlockComputes, 20),
+            (PaintNodesVisited, 58),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
 /// A right-aligned `pre-wrap` paragraph whose last line ends in spaces that
 /// fit (#1042): the line is aligned with them as content, which takes the hang
 /// pass, one re-break of the paragraph per layout built — the root compute's
