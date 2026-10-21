@@ -268,8 +268,7 @@ fn text_extent(
     let mut r: Option<Rect> = None;
     let mut size = 0.0_f32;
     let mut add = |rect: Rect| r = Some(r.map_or(rect, |r| r.union(rect)));
-    for paint_line in text.lines() {
-        let line = &paint_line.line;
+    for line in text.layout().lines() {
         // A shadow group's lines only (#1048): a span's mask covers its text.
         if mask.is_some_and(|m| !m.may_show(line.text_range())) {
             continue;
@@ -280,10 +279,12 @@ fn text_extent(
         if mask.is_none() && valign.is_none() {
             // All of the line: its glyph runs' extent.
             let (mut x0, mut x1) = (f32::INFINITY, f32::NEG_INFINITY);
-            for (run, _) in paint_line.glyph_runs() {
-                x0 = x0.min(run.offset());
-                x1 = x1.max(run.offset() + run.advance());
-                size = size.max(run.run().font_size());
+            for item in line.items() {
+                if let parley::layout::PositionedLayoutItem::GlyphRun(run) = item {
+                    x0 = x0.min(run.offset());
+                    x1 = x1.max(run.offset() + run.advance());
+                    size = size.max(run.run().font_size());
+                }
             }
             if x0 <= x1 {
                 add(Rect::new(x0 as f64, top, x1 as f64, bottom));
@@ -895,7 +896,7 @@ fn draw_tapped(
 ) {
     // The kernel is a function of this shadow alone: the full kernel, a
     // cross, or none, by how many glyph copies each would draw.
-    let glyphs = glyph_count(text).max(1);
+    let glyphs = text.glyph_count().max(1);
     let full = shadow_kernel(sigma, false);
     let kernel = if glyphs * full.len() <= TAP_GLYPHS_PER_SHADOW {
         full
@@ -956,15 +957,6 @@ fn draw_tapped(
         painter.pop_layer();
     }
     painter.pop_layer();
-}
-
-/// How many glyphs `text` draws.
-fn glyph_count(text: &PaintText<'_>) -> usize {
-    text.lines()
-        .iter()
-        .flat_map(|line| line.glyph_runs())
-        .map(|(_, glyphs)| glyphs.len())
-        .sum()
 }
 
 /// The taps of a Gaussian of standard deviation `sigma` (physical px):

@@ -198,3 +198,42 @@ fn the_pixels_are_parleys_walks_on_every_path() {
         rinch_dom::paint::force_tapped_text_shadows(was);
     }
 }
+
+/// An inline-block on a paragraph's **second** line is painted, in a paragraph
+/// with one pass and in one with a pass per span list (review of #1700, N3).
+/// The pixel oracle above cannot see this: both of its paints take the same
+/// inline-box loop.
+///
+/// Kills: the inline-box loop walking the first line only.
+#[test]
+fn an_inline_block_on_the_second_line_is_painted() {
+    for (what, line_one) in [
+        ("one pass", "first line".to_string()),
+        (
+            "a pass per span list",
+            r#"<span style="text-shadow: 0 2px 0 rgb(200, 0, 0)">first</span> <span style="text-shadow: 0 2px 0 rgb(0, 0, 200)">line</span>"#
+                .to_string(),
+        ),
+    ] {
+        let html = format!(
+            r#"<p>{line_one}<br>second <span style="display: inline-block; width: 30px; height: 10px; background: rgb(0, 160, 0)"></span> end</p>"#
+        );
+        let px = paint(&mut doc_with("", &html), 1.0);
+        let green: Vec<usize> = px
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p[0] == 0 && p[1] == 160 && p[2] == 0)
+            .map(|(i, _)| i / VW as usize)
+            .collect();
+        assert!(green.len() >= 250, "{what}: {} green px", green.len());
+        // The paragraph starts at 10px and its lines are 18px: line two is 28..46.
+        assert!(
+            green.iter().all(|&y| (28..46).contains(&y)),
+            "{what}: green rows {:?}..{:?}",
+            green.first(),
+            green.last()
+        );
+    }
+}
