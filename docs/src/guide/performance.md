@@ -381,7 +381,9 @@ before you read the reactive counters (see the limits above).
 ## What a blurred `text-shadow` costs
 
 A `text-shadow` with a blur radius is rasterised into a coverage mask, blurred
-and filled once per shadowed block of text (#980). The masks are kept between
+and filled once per shadowed block of text (#980) — once per line or per text
+node where a shadow reaches back over earlier text, which a blur reaching into
+the line above does (#1060). The masks are kept between
 paints, so a repaint of shadowed text that has not changed, and is not cut by
 the edge of the window, a clip or the damage, pays only the fill — a scroll
 included, once each whole-pixel position a scroll can put each glyph at has

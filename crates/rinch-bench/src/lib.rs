@@ -739,8 +739,12 @@ mod text_shadow_bench_tests {
     use rinch_dom::perf::Counter;
 
     /// The cold benchmark is cold: its measured paint rasterises the mask of
-    /// every paragraph on the 800x600 page (17 of the 40; they wrap), and the
-    /// warm one rasterises none.
+    /// every line on the 800x600 page, and the warm one rasterises none. The
+    /// page shows 17 of the 40 paragraphs, two lines each; a line's blurred
+    /// shadow reaches 5px up into the line above, so each line is painted as
+    /// its own fragment with its own mask (#1060). The second lines are the
+    /// end of the same text, so most of them draw the same mask and are
+    /// served from the cache: 19 rasterised for 34 lines.
     ///
     /// Kills: the restyle left out of the cold setup (it measured the warm
     /// paint, 0 masks rasterised).
@@ -750,7 +754,7 @@ mod text_shadow_bench_tests {
         f.doc.tree.perf.reset();
         let mut f = super::op_text_shadow_paint(f);
         let n = f.doc.tree.perf.get(Counter::TextShadowMasksRasterised);
-        assert_eq!(n, 17, "the cold paint rasterised {n} masks");
+        assert_eq!(n, 19, "the cold paint rasterised {n} masks");
         f.doc.tree.perf.reset();
         let f = super::op_text_shadow_paint(f);
         assert_eq!(f.doc.tree.perf.get(Counter::TextShadowMasksRasterised), 0);
