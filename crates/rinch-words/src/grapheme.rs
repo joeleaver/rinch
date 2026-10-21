@@ -227,7 +227,7 @@ mod tests {
 
     fn last_cluster(text: &str, end: usize) -> &str {
         use unicode_segmentation::UnicodeSegmentation;
-        text[..end].graphemes(true).last().unwrap()
+        text[..end].graphemes(true).next_back().unwrap()
     }
 
     #[test]

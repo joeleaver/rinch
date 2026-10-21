@@ -8,7 +8,7 @@
 //! Notation: `|` is the caret, `@` an image, `/` a hard break. The paragraph's
 //! content starts at position 1 and every char and atom is one position.
 
-use rinch_editor_core::motion::{CursorMotion, resolve_cursor_motion, word_range_at};
+use rinch_editor_core::motion::{CursorMotion, resolve_cursor_motion};
 use rinch_editor_core::serialize::slice_from_html;
 use rinch_editor_core::{BaseCommandsPlugin, EditorState, Node, Pos, Schema, Selection};
 use std::rc::Rc;
