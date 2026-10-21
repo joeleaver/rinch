@@ -39,7 +39,8 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     the box's line on the spot, so a `<br>`, a preserved newline or spaces right after the box
     made a line of their own (`x <ib><br>` was three lines where Chrome 155 makes two):
     `ifc::fold_after_overflowing_box`, in the hang pass, commits the box's line again by length
-    with the run of hangable spaces after it and a newline that ends the run (#1081);
+    with the run of hangable spaces after it, or a newline right after it (spaces a newline
+    follows keep a line of their own, as in Chrome 155) (#1081);
     `crates/rinch-dom/tests/overflowing_box_line_end_1081_tests.rs` is the pin. A line holding
     only inline boxes still has an inverted text range (`usize::MAX..0`), which breaks parley's
     byte-to-line binary search for the text after it (#1082).

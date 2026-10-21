@@ -1671,8 +1671,8 @@ fn hang_pass(
 }
 
 /// Break again a line that ends in an inline box parley placed by its
-/// emergency branch, so that the spaces and tabs after the box and a newline
-/// after them end the box's line (#1081). Returns the unit the next line
+/// emergency branch, so that the spaces and tabs after the box, or a newline
+/// right after it, end the box's line (#1081). Returns the unit the next line
 /// starts at, `None` when nothing of that kind follows the box (the line is
 /// kept as it is), and `Err` when the unit table and the breaker disagree.
 ///
@@ -1681,10 +1681,13 @@ fn hang_pass(
 /// line. CSS puts a forced break on the line it ends (`x <ib><br>` is two
 /// lines in Chrome 155, not three), and white space at a soft wrap hangs —
 /// a collapsible space is removed there — so neither makes a line of its
-/// own. The line is committed again by length: the box, the run of spaces
-/// and tabs after it ([`LineUnit::hangs`]: not an NBSP, not a `pre` or
-/// `break-spaces` space), and one newline if the run ends at one. A word
-/// right after the box, or after the spaces, still starts the next line.
+/// own. The line is committed again by length: the box and either the run of
+/// spaces and tabs after it ([`LineUnit::hangs`]: not an NBSP, not a `pre` or
+/// `break-spaces` space) or a newline right after it. Spaces that a newline
+/// follows are not folded: Chrome 155 puts them and the break on a line of
+/// their own (`x <ib>  \n` is three lines there, the box's line ending at
+/// the box). A word right after the box, or after the spaces, still starts
+/// the next line.
 fn fold_after_overflowing_box(
     breaker: &mut parley::layout::BreakLines<'_, Brush>,
     units: &[LineUnit],
@@ -1698,7 +1701,14 @@ fn fold_after_overflowing_box(
         return Ok(None);
     }
     let spaces = units[end..].iter().take_while(|u| u.hangs).count();
-    let newline = units.get(end + spaces).is_some_and(|u| u.newline);
+    let ends_in_newline = units.get(end + spaces).is_some_and(|u| u.newline);
+    // Spaces that a forced break follows do not hang after the box: Chrome 155
+    // puts them, and the break, on a line of their own (`x <ib>  \n` is three
+    // lines). Only a newline right after the box joins its line.
+    if spaces > 0 && ends_in_newline {
+        return Ok(None);
+    }
+    let newline = ends_in_newline;
     let take = end + spaces + usize::from(newline);
     if take == end {
         return Ok(None);
