@@ -5157,8 +5157,11 @@ impl RinchApp {
         // neighbouring line, and `pos_at` picks a side by where the text runs
         // are (#1116). An image that is the line's first item is the line's
         // start, one that is its last item its end; any other image at the
-        // edge byte is on the neighbouring line, so Home lands after every
-        // position at the start byte and End before every one at the end byte.
+        // edge byte is on the neighbouring line. `pos_at` answers the position
+        // before the images at a text run's end, which is right for the end of
+        // a line that ends in text; at a line's start it can answer before an
+        // image that ends the line above (`bravo` / image / `charlie`), so
+        // Home steps past every position at the start byte.
         let edge_box = if end { last_box } else { first_box };
         if let Some(p) = edge_box.and_then(|id| handle.pos_beside_inline_leaf(id as usize, end)) {
             return Some(p);
@@ -5168,14 +5171,8 @@ impl RinchApp {
         // by setting the caret-affinity hint (#301).
         let byte = if end { range.end } else { range.start };
         let mut p = handle.pos_at(tb, byte)?;
-        let same_byte =
-            |q: usize| handle.caret_address(rinch_editor_core::Pos(q)) == Some((tb, byte));
-        if end {
-            while p.0 > 0 && same_byte(p.0 - 1) {
-                p.0 -= 1;
-            }
-        } else {
-            while same_byte(p.0 + 1) {
+        if !end {
+            while handle.caret_address(rinch_editor_core::Pos(p.0 + 1)) == Some((tb, byte)) {
                 p.0 += 1;
             }
         }
