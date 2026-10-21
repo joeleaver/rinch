@@ -204,8 +204,9 @@ Command names are case-sensitive. The full catalogue:
 > An image at a line's edge is on that line: Home on a line that starts with
 > one lands before it, End on a line that ends with one after it, and at a soft
 > wrap between two images End on the upper line lands after the first and Home
-> on the lower line before the second, as in Chrome 155 (#1116). Desktop reads the image's side from the line's
-> first and last items, which is left-to-right only.
+> on the lower line before the second, as in Chrome 155 (#1116). Desktop
+> reads the image's side from the line's first and last items, which is
+> left-to-right only.
 >
 > Where this still differs from a browser field:
 > - On a line that *mixes* directions the answer is the line's logical edge,
