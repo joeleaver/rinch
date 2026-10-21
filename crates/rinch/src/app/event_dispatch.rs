@@ -1897,8 +1897,11 @@ impl RinchApp {
                     PlatformEvent::FileDragMoved { position } => (*position, None),
                     _ => unreachable!(),
                 };
+                #[cfg(not(feature = "desktop"))]
+                let _ = path;
                 let (x, y) = (position.0 as f32, position.1 as f32);
                 // Where a picture dropped here would land in an editor (#1649).
+                #[cfg(feature = "desktop")]
                 if self.note_file_drag((x, y), path.map(|p| p.as_path())) {
                     actions.push(AppAction::RequestRedraw);
                 }
@@ -4160,6 +4163,43 @@ impl RinchApp {
     }
 }
 
+impl RinchApp {
+    /// Whether an OS file drag is in flight over the window (#1649).
+    fn file_drag_live(&self) -> bool {
+        #[cfg(feature = "desktop")]
+        return self.file_drag.is_some();
+        #[cfg(not(feature = "desktop"))]
+        false
+    }
+
+    /// End the OS file drag in flight, whatever ended it (a cancel, or the
+    /// first event that proves it is over, #1649): hide its drop caret, stop
+    /// its edge-band scroll and tell the `data-onfiledragenter` target it left.
+    /// Answers whether anything changed.
+    pub(crate) fn end_file_drag(&mut self) -> bool {
+        let mut changed = false;
+        #[cfg(feature = "desktop")]
+        if let Some(drag) = self.file_drag.take() {
+            if self.active_dnd.is_none() {
+                self.drag_auto_scroll_at = None;
+            }
+            if let Some(caret) = drag.caret
+                && caret.handle.show_drop_caret(None)
+            {
+                self.scene_dirty = true;
+                changed = true;
+            }
+        }
+        if let Some(target_id) = self.file_hover_target.take()
+            && let Some(doc) = &self.doc
+        {
+            Self::dispatch_drag_attr(doc, target_id, "data-onfiledragleave");
+            changed = true;
+        }
+        changed
+    }
+}
+
 #[cfg(feature = "desktop")]
 impl RinchApp {
     /// This app's document identity for scoping shared input state, or `None`
@@ -4395,11 +4435,8 @@ impl RinchApp {
         rest
     }
 
-    /// The synchronous half of [`Self::editor_file_drop`]: decide whether the
-    /// editor under `(x, y)` takes this drop and, if so, put its caret at the
-    /// drop point and give it the keyboard (as a press there would, and as the
-    /// browser runtime does). `None` when it takes nothing.
-    #[cfg(feature = "desktop")]
+    /// [`Self::claim_editor_file_drop_at`] for a drop no drop caret showed.
+    #[cfg(all(test, feature = "desktop"))]
     pub(crate) fn claim_editor_file_drop(
         &mut self,
         x: f32,
@@ -4409,10 +4446,15 @@ impl RinchApp {
         self.claim_editor_file_drop_at(x, y, paths, None)
     }
 
-    /// [`Self::claim_editor_file_drop`] for a drop whose drag showed a drop
-    /// caret (`indicated`, #1649): when the drop point is in that caret's
-    /// editor and its document has not changed since, the drop lands at the
-    /// caret's position, not at whatever the drop point resolves to now.
+    /// The synchronous half of [`Self::editor_file_drop`]: decide whether the
+    /// editor under `(x, y)` takes this drop and, if so, put its caret at the
+    /// drop point and give it the keyboard (as a press there would, and as the
+    /// browser runtime does). `None` when it takes nothing.
+    ///
+    /// When the drag showed a drop caret (`indicated`, #1649), the drop point
+    /// is in that caret's editor and its document has not changed since, the
+    /// caret goes where the drop caret was, not to whatever the drop point
+    /// resolves to now.
     #[cfg(feature = "desktop")]
     pub(crate) fn claim_editor_file_drop_at(
         &mut self,
@@ -4521,7 +4563,7 @@ impl RinchApp {
 
     /// The editor a picture dropped at `(x, y)` would land in, and where: its
     /// container, handle, position and the side of a soft wrap the point is
-    /// on. The cheap half of [`Self::claim_editor_file_drop`]'s test — no file
+    /// on. The cheap half of [`Self::claim_editor_file_drop_at`]'s test — no file
     /// is read while a drag hovers.
     #[cfg(feature = "desktop")]
     fn file_drop_target(
@@ -4542,41 +4584,6 @@ impl RinchApp {
         let pos = hit.pos(&handle)?;
         let (affinity, _) = self.editor_hit_affinity(&handle, pos, y);
         Some((hit.container, handle, pos, affinity))
-    }
-
-    /// Whether an OS file drag is in flight over the window (#1649).
-    fn file_drag_live(&self) -> bool {
-        #[cfg(feature = "desktop")]
-        return self.file_drag.is_some();
-        #[cfg(not(feature = "desktop"))]
-        false
-    }
-
-    /// End the OS file drag in flight, whatever ended it (a cancel, or the
-    /// first event that proves it is over, #1649): hide its drop caret, stop
-    /// its edge-band scroll and tell the `data-onfiledragenter` target it left.
-    /// Answers whether anything changed.
-    pub(crate) fn end_file_drag(&mut self) -> bool {
-        let mut changed = false;
-        #[cfg(feature = "desktop")]
-        if let Some(drag) = self.file_drag.take() {
-            if self.active_dnd.is_none() {
-                self.drag_auto_scroll_at = None;
-            }
-            if let Some(caret) = drag.caret
-                && caret.handle.show_drop_caret(None)
-            {
-                self.scene_dirty = true;
-                changed = true;
-            }
-        }
-        if let Some(target_id) = self.file_hover_target.take()
-            && let Some(doc) = &self.doc
-        {
-            Self::dispatch_drag_attr(doc, target_id, "data-onfiledragleave");
-            changed = true;
-        }
-        changed
     }
 
     /// Resolve a window/logical point inside whatever editor it lands on — the
@@ -5567,7 +5574,7 @@ fn image_rgba_to_png(width: usize, height: usize, rgba: &[u8]) -> Option<Vec<u8>
     Some(png)
 }
 
-/// A file drop an editor took: see [`RinchApp::claim_editor_file_drop`].
+/// A file drop an editor took: see [`RinchApp::claim_editor_file_drop_at`].
 #[cfg(feature = "desktop")]
 pub(crate) struct EditorDropClaim {
     pub(crate) handle: crate::editor::EditorHandle,
