@@ -728,6 +728,9 @@ impl DomDocument for RinchDocument {
         if name == "data-onmousemove" && !self.tree.nodes[node.0].attributes.contains_key(name) {
             self.tree.mousemove_handlers += 1;
         }
+        if name == "title" && !self.tree.nodes[node.0].attributes.contains_key(name) {
+            self.tree.title_attributes += 1;
+        }
         // Before the write: the invalidation snapshot holds the old value.
         self.note_attribute_change(node.0, name);
         self.tree.nodes[node.0].write_attribute(name, value);
@@ -837,6 +840,9 @@ impl DomDocument for RinchDocument {
 
         if name == "data-onmousemove" {
             self.tree.mousemove_handlers = self.tree.mousemove_handlers.saturating_sub(1);
+        }
+        if name == "title" {
+            self.tree.title_attributes = self.tree.title_attributes.saturating_sub(1);
         }
         // Before the erase, as in `set_attribute`.
         self.note_attribute_change(node.0, name);

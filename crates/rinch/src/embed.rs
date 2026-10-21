@@ -443,7 +443,9 @@ impl RinchContext {
     /// When this context next needs an [`update`](RinchContext::update) with
     /// no input, or `None` when nothing is scheduled.
     ///
-    /// Today that is the focused editor's caret blink (issue #331): an
+    /// Today that is the focused editor's caret blink (issue #331), or a
+    /// pointer resting over an element with a `title`, whose tooltip shows at
+    /// that instant (issue #1646): an
     /// editor's caret toggles every 530 ms while it has the keyboard, and it
     /// is what the desktop runtime arms its only timed wake
     /// (`ControlFlow::WaitUntil`) with. A host that renders continuously can
@@ -458,7 +460,10 @@ impl RinchContext {
     /// animation is not a wake — `update` answers `RequestRedraw` for each of
     /// its frames instead.
     pub fn next_wake(&self) -> Option<rinch_platform::Instant> {
-        self.next_wake
+        match (self.next_wake, self.app.title_tooltip_deadline()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// Notify rinch the window was resized.
@@ -615,7 +620,7 @@ impl RinchContext {
             || self.app.has_deferred_work()
             || crate::render_surface::inline_surfaces_dirty(&self.surface_ids)
             || self
-                .next_wake
+                .next_wake()
                 .is_some_and(|t| rinch_platform::Instant::now() >= t)
     }
 

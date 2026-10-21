@@ -2938,6 +2938,12 @@ pub struct NodeTree {
     /// document carries one and the shell can skip the dispatch walk on a
     /// pointer move.
     pub mousemove_handlers: usize,
+    /// How many `title` attributes `set_attribute` has written and
+    /// `remove_attribute` has not taken back — `mousemove_handlers`' twin, and
+    /// never under-counting for the same reason. `0` proves no node carries a
+    /// `title`, and the desktop runtime's title tooltip (#1646) then skips its
+    /// ancestor walk on a pointer move.
+    pub title_attributes: usize,
     /// Text nodes whose Taffy measure context (`NodeContext::Text`) no longer
     /// matches the typography their parent now computes (issue #678).
     ///
@@ -3275,6 +3281,7 @@ impl NodeTree {
             font_generation: 0,
             hit_cache: Default::default(),
             mousemove_handlers: 0,
+            title_attributes: 0,
             dirty_text_contexts: HashSet::new(),
             dirty_atomic_inlines: BTreeSet::new(),
             keyword_inline_cb_width: HashMap::new(),

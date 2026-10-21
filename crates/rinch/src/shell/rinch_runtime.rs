@@ -2766,6 +2766,18 @@ impl ApplicationHandler for RinchRuntime {
                     button: platform_button,
                 }
             }
+            // The mouse left the window: no tooltip for what it was over
+            // (#1646).
+            WindowEvent::PointerLeft {
+                kind: winit::event::PointerKind::Mouse,
+                ..
+            } => {
+                self.app.hide_title_tooltip();
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                return;
+            }
             // A touch the system stopped tracking without a release (the
             // window lost focus, a palm was rejected): the press it held is
             // cancelled.
@@ -3068,9 +3080,10 @@ impl RinchRuntime {
         #[cfg(feature = "a11y")]
         self.sync_a11y();
 
-        // Drive the focused editor's caret blink. This is the only thing that
-        // arms a timed wake (`WaitUntil`); when nothing is blinking it returns the
-        // loop to `Wait` so the app stays idle.
+        // Drive the focused editor's caret blink, and wake for a resting
+        // pointer's `title` tooltip (#1646). These are the only two timed
+        // wakes (`WaitUntil`); with neither it returns the loop to `Wait` so
+        // the app stays idle.
         #[cfg(feature = "desktop")]
         self.tick_caret_blink(event_loop);
     }
@@ -3078,8 +3091,9 @@ impl RinchRuntime {
 
 impl RinchRuntime {
     /// Blink the focused editor's caret by arming a `WaitUntil` wake for the next
-    /// phase toggle (see [`crate::editor::caret_blink_tick`]). Owns the event
-    /// loop's control flow: `WaitUntil` while a caret blinks, `Wait` otherwise.
+    /// phase toggle (see [`crate::editor::caret_blink_tick`]), or for a
+    /// pending `title` tooltip's deadline, whichever is sooner. Owns the event
+    /// loop's control flow: `WaitUntil` while either is due, `Wait` otherwise.
     ///
     /// *Which* editor blinks is [`RinchApp::blinking_editor_id`]'s decision, not
     /// this function's — it excludes a blurred window, so a backgrounded app
@@ -3087,17 +3101,25 @@ impl RinchRuntime {
     #[cfg(feature = "desktop")]
     fn tick_caret_blink(&mut self, event_loop: &dyn ActiveEventLoop) {
         let focused = self.app.blinking_editor_id();
-        match crate::editor::caret_blink_tick(self.app.doc_key(), focused) {
+        let blink_at = match crate::editor::caret_blink_tick(self.app.doc_key(), focused) {
             Some(blink) => {
                 if blink.redraw
                     && let Some(w) = &self.window
                 {
                     w.request_redraw();
                 }
-                event_loop.set_control_flow(ControlFlow::WaitUntil(
-                    std::time::Instant::now() + blink.next,
-                ));
+                Some(std::time::Instant::now() + blink.next)
             }
+            None => None,
+        };
+        // A pointer resting over a `title` shows its tooltip at its deadline
+        // (#1646): the other timed wake.
+        let wake = match (blink_at, self.app.title_tooltip_deadline()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        match wake {
+            Some(at) => event_loop.set_control_flow(ControlFlow::WaitUntil(at)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
