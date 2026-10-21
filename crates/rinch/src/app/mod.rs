@@ -250,7 +250,7 @@ mod review_1514_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod review_1670_tests;
 #[cfg(all(test, feature = "desktop"))]
-mod review_1699_app_probes;
+mod review_1699_app_probe_tests;
 #[cfg(test)]
 mod right_press_click_1093_tests;
 #[cfg(test)]
