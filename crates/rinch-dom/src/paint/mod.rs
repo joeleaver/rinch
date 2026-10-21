@@ -2433,16 +2433,56 @@ fn paint_children_with_stacking(
     }
 }
 
+/// Whether a `0x0` box's clip hides everything [`paint_node`] would draw
+/// under it (#1696): the box clips on both axes (a zero-area clip), and no
+/// descendant painted in its walk escapes that clip.
+///
+/// Only a stacking context paints positioned descendants in its own walk; any
+/// other box's are hoisted to an outer sequence and painted there (clipped by
+/// this box through their clip chain when it contains them). Inside a stacking
+/// context a `position: fixed` descendant escapes the clip (#545), and an
+/// absolute one does when this box is not its containing block.
+fn zero_clip_hides_subtree(tree: &NodeTree, node_id: RawNodeId) -> bool {
+    let Some(node) = tree.get(node_id) else {
+        return false;
+    };
+    if node.clip_axes() != (true, true) {
+        return false;
+    }
+    if !node.creates_stacking_context() {
+        return true;
+    }
+    if node.establishes_abs_containing_block() {
+        !subtree_has_fixed(tree, node_id)
+    } else {
+        !subtree_has_escaping_absolute(tree, node_id)
+    }
+}
+
+/// Whether anything under `node_id` that is rendered is `position: fixed`.
+fn subtree_has_fixed(tree: &NodeTree, node_id: RawNodeId) -> bool {
+    let Some(node) = tree.get(node_id) else {
+        return false;
+    };
+    node.children.iter().any(|&c| {
+        tree.get(c).is_some_and(|child| {
+            child.computed_style.display != DisplayValue::None
+                && (child.box_position() == PositionValue::Fixed || subtree_has_fixed(tree, c))
+        })
+    })
+}
+
 /// Whether a box laid out `0x0` has descendants [`paint_node`] must walk
 /// (#1696): an element with children whose own arm would paint them. The
 /// arms that draw an element's content themselves and never visit its
-/// children — an `<svg>` (its shapes are drawn by `paint_svg`), an `<img>`, a
-/// `data-render-surface` — are left out, as is a node with no children, which
-/// has nothing to paint at zero area.
+/// children — an `<svg>` (its shapes are drawn by `paint_svg`; an HTML child
+/// of one is not rendered) and an `<img>` (a replaced element) — are left out,
+/// as is a node with no children, which has nothing to paint at zero area. A
+/// `data-render-surface` is walked: without a frame its arm paints it as an
+/// ordinary element, children included, and a `0x0` surface draws no frame.
 fn zero_box_paints_children(node: &Node) -> bool {
     !node.children.is_empty()
         && matches!(&node.kind, NodeKind::Element(el) if el.tag != "svg" && el.tag != "img")
-        && !node.attributes.contains_key("data-render-surface")
 }
 
 /// Whether the ordinary (non-stacking-context) box `node_id`, entered at
@@ -2700,6 +2740,18 @@ fn paint_node(
             // height: 0; z-index: 2`) owns every descendant in its sequence —
             // nothing hoists them out, so returning here drew none of them.
             // `display: none` (also `0x0`) returned above, by its `display`.
+            //
+            // A `0x0` box that clips on both axes clips to nothing: its own
+            // inline content and every in-flow descendant are cut away whole,
+            // so the subtree is not walked at all (a clipped wrapper around 500
+            // rows otherwise cost 500 visits that drew nothing). The one thing
+            // such a walk could draw is a descendant this box's clip does not
+            // reach, which only a stacking context paints here — see
+            // [`zero_clip_hides_subtree`].
+            if layout.width == 0.0 && layout.height == 0.0 && zero_clip_hides_subtree(tree, node_id)
+            {
+                return;
+            }
             let x = offset_x + layout.x as f64 * scale;
             let y = offset_y + layout.y as f64 * scale;
             let node_transform = compose_node_transform(node, x, y, scale, parent_transform);
@@ -2775,6 +2827,32 @@ fn paint_node(
 
             let scroll_x = node.scroll_offset.0 * scale;
             let scroll_y = node.scroll_offset.1 * scale;
+            // An IFC root's own inline content — its text and its atomic
+            // inlines (an unpositioned `inline-block` marker) — overflows a
+            // degenerate box too, as in Chrome 155. `paint_children_with_stacking`
+            // skips every child its IFC draws, so it is drawn here, as the
+            // generic arm draws it.
+            if let Some(inline_layout) = &node.text_layout {
+                let (off_x, off_y) = ifc_root_content_origin(node);
+                let visible = !matches!(
+                    node.computed_style.visibility,
+                    VisibilityValue::Hidden | VisibilityValue::Collapse
+                );
+                paint_inline_layout(
+                    tree,
+                    painter,
+                    scale,
+                    x + off_x as f64 * scale - scroll_x,
+                    y + off_y as f64 * scale - scroll_y,
+                    inline_layout,
+                    font_cx,
+                    layout_cx,
+                    node.computed_style.text_shadow.as_slice(),
+                    node_transform,
+                    node,
+                    !visible,
+                );
+            }
             paint_children_with_stacking(
                 tree,
                 node_id,

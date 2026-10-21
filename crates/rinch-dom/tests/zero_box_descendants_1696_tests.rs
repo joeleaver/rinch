@@ -265,3 +265,85 @@ fn the_gpu_painter_records_the_child() {
     let without = color_draws(&mut doc);
     assert_eq!(with, without + 1, "the child's background is in the scene");
 }
+
+/// A `0x0` `<svg>` or `<img>` does not render an HTML child (Chrome 155 draws
+/// neither): `zero_box_paints_children` leaves both out, as their full-size
+/// arms never walk their children.
+#[test]
+fn a_zero_by_zero_svg_or_img_paints_no_html_child() {
+    for tag in ["svg", "img"] {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "margin: 0");
+        let pad = el(&mut doc, body, "padding: 20px 0 0 30px");
+        let host = doc.create_element(tag);
+        doc.set_attribute(host, "style", "display: block; width: 0; height: 0");
+        doc.append_child(pad, host);
+        el(
+            &mut doc,
+            host,
+            "width: 50px; height: 40px; background-color: rgb(0, 128, 0)",
+        );
+        doc.resolve_layout(VW, VH);
+        let p = paint(&mut doc, 1.0);
+        assert_eq!(count_any_green(&p, WINDOW), 0, "<{tag}>'s HTML child");
+    }
+}
+
+/// A `0x0` render surface with no frame paints its children as any `0x0` box
+/// does (its arm paints a frameless surface as an ordinary element).
+#[test]
+fn a_zero_by_zero_render_surface_without_a_frame_paints_its_child() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    doc.set_attribute(body, "style", "margin: 0");
+    let pad = el(&mut doc, body, "padding: 20px 0 0 30px");
+    let surf = el(&mut doc, pad, "width: 0; height: 0");
+    doc.set_attribute(surf, "data-render-surface", "987654");
+    el(
+        &mut doc,
+        surf,
+        "width: 50px; height: 40px; background-color: rgb(0, 128, 0)",
+    );
+    doc.resolve_layout(VW, VH);
+    let p = paint(&mut doc, 1.0);
+    assert_eq!(count_rgb(&p, (30, 80, 20, 60), GREEN), 50 * 40);
+}
+
+/// A `0x0` box that clips holds nothing visible, so its subtree is not
+/// walked: 500 rows under it cost the box's own visit, not 500.
+#[test]
+fn a_zero_by_zero_clipping_box_does_not_walk_its_subtree() {
+    use rinch_dom::perf::Counter;
+    for style in ["overflow: hidden", "overflow: clip", "overflow: hidden; z-index: 2; position: relative"] {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let bx = el(&mut doc, body, &format!("width: 0; height: 0; {style}"));
+        for _ in 0..500 {
+            el(&mut doc, bx, "height: 4px; background-color: rgb(0, 128, 0)");
+        }
+        doc.resolve_layout(VW, VH);
+        doc.tree.perf.reset();
+        let p = paint(&mut doc, 1.0);
+        assert_eq!(count_any_green(&p, WINDOW), 0, "{style}");
+        let visits = doc.tree.perf.get(Counter::PaintNodesVisited);
+        assert!(visits <= 4, "{style}: {visits} paint visits");
+    }
+}
+
+/// …except a stacking context's `position: fixed` descendant, which its clip
+/// does not reach (#545): it is still drawn.
+#[test]
+fn a_zero_by_zero_clipping_stacking_context_still_paints_a_fixed_descendant() {
+    let (mut doc, bx, _) = slot_doc("z-index: 2; overflow: hidden");
+    el(
+        &mut doc,
+        bx,
+        "position: fixed; left: 100px; top: 150px; width: 20px; height: 10px; \
+         background-color: rgb(0, 128, 0)",
+    );
+    doc.resolve_layout(VW + 1.0, VH);
+    let p = paint(&mut doc, 1.0);
+    assert_eq!(count_rgb(&p, (100, 120, 150, 160), GREEN), 200);
+    assert_eq!(count_any_green(&p, WINDOW), 200, "the contained absolute is clipped");
+}

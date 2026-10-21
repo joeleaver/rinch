@@ -327,6 +327,8 @@ mod viewport_ready_348_tests;
 mod visibility_hidden_overlay_paint_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod zero_box_overlay_1696_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod review_1699_app_probes;
 
 pub(crate) use hit_testing::*;
 pub use text_context_menu::{TextContextMenuPresentation, TextEditAction, TextEditState};
