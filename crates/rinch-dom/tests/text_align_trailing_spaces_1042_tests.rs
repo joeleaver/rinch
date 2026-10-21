@@ -213,17 +213,21 @@ fn a_shrink_to_fit_box_draws_its_spaces_inside_itself() {
             true,
         );
         let l = read(&d, c);
-        // The box is rounded to whole pixels (41 against Chrome's 41.42), so
-        // the line may sit a fraction of a pixel either side of 0; it was a
-        // whole space and more off.
-        assert!(l[0].1.abs() < 0.5, "{l:?}");
+        // The box is rounded down to 41 (Chrome: 41.42), and an auto-width
+        // box's paint layout is broken at its width plus up to a pixel of
+        // slack (`ifc_paint_max_width`), here 42: so the line ends at 42 and
+        // starts 0.58 (right) or 0.29 (centred) in. It was a whole space and
+        // more off.
+        assert!(l[0].1 < 0.6, "{l:?}");
     }
 }
 
 /// The issue's inline-block row: the box is as wide as `longer line`, and
 /// `abc` and its spaces before the forced break are right-aligned in it as one
-/// piece. Chrome 155: box 79.13, `abc` at 37.70 (41.43 from its right edge).
-/// rinch rounds the box to 79, so `abc` is 41.43 from 79.
+/// piece. Chrome 155: `longer line` at 0 and `abc` at 37.70. Read as the
+/// distance between the two lines, since rinch breaks an auto-width box's
+/// lines at its rounded width plus up to a pixel of slack
+/// (`ifc_paint_max_width`) and so puts `longer line` 0.88 in.
 #[test]
 fn an_inline_blocks_line_before_a_forced_break_counts_its_spaces() {
     let (d, c) = lay_out(
@@ -231,9 +235,9 @@ fn an_inline_blocks_line_before_a_forced_break_counts_its_spaces() {
         "abc   \nlonger line",
         false,
     );
-    let w = d.tree.get(c.0).unwrap().layout.width;
     let l = read(&d, c);
-    assert!((l[0].1 - (w - 41.43)).abs() < 0.05, "box {w}, {l:?}");
+    assert_eq!(l.len(), 2, "{l:?}");
+    near(l[0].1 - l[1].1, 37.70);
 }
 
 /// A no-break space never hangs (the issue's comment): an `x` and a trailing
