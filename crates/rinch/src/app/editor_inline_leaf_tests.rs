@@ -99,6 +99,18 @@ impl Page {
         doc.query_caret_position(block as u64, byte)
             .expect("laid out")
     }
+
+    /// [`Self::local`] from the block's content box, not its border box
+    /// (#1667): where on its own lines the caret is in a padded code block.
+    fn content_local(&self, i: usize) -> (f32, f32) {
+        let (block, _) = self.handle.caret_address(Pos(i + 1)).unwrap();
+        let (l, t, _, _) = {
+            let doc = self.app.doc.as_ref().unwrap().borrow();
+            doc.content_box_inset(block as u64)
+        };
+        let (x, y) = self.local(i);
+        (x - l, y - t)
+    }
 }
 
 impl Page {
@@ -716,7 +728,7 @@ mod trailing_break_paths {
             "positive control: the text ends in a newline"
         );
         assert_eq!(placeholders(&p), 1);
-        let (lx, ly) = p.local(3);
+        let (lx, ly) = p.content_local(3);
         assert!(
             lx.abs() < 0.5 && ly >= LINE - 4.0,
             "after the final newline: line 2's start, got ({lx}, {ly})"
@@ -736,6 +748,10 @@ mod trailing_break_paths {
         let q = page("<pre><code>ab\n</code></pre>");
         assert_eq!(q.handle.doc().child(0).child(0).text(), Some("ab\n"));
         assert_eq!(placeholders(&q), 1);
-        assert!(q.local(3).1 >= LINE - 4.0, "{:?}", q.local(3));
+        assert!(
+            q.content_local(3).1 >= LINE - 4.0,
+            "{:?}",
+            q.content_local(3)
+        );
     }
 }

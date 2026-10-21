@@ -131,6 +131,8 @@ mod editor_node_view_image_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_node_view_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_padded_textblock_1667_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_popup_hooks_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_programmatic_selection_tests;
@@ -243,6 +245,8 @@ mod review_1481_probe_tests;
 mod review_1494_tests;
 #[cfg(test)]
 mod review_1514_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod review_1670_tests;
 #[cfg(test)]
 mod right_press_click_1093_tests;
 #[cfg(test)]

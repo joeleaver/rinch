@@ -2243,15 +2243,16 @@ impl DomDocument for WebDocument {
         if let Some(rect) = self.text_caret_viewport_rect(block, byte_offset, affinity) {
             return Some(rect);
         }
-        // No text node (an empty block): the block's own box, one line high.
+        // No text node (an empty block): the block's content box, one line
+        // high — where a padded block's text would start (#1667).
         let el = block.dyn_ref::<web_sys::Element>()?;
         let r = el.get_bounding_client_rect();
-        let h = if r.height() > 0.0 {
-            r.height() as f32
-        } else {
-            18.0
-        };
-        Some((r.x() as f32, r.y() as f32, h))
+        let (l, t, _, b) = self.content_box_inset(node_id);
+        let ch = self
+            .line_box_height(node_id)
+            .unwrap_or(r.height() as f32 - t - b);
+        let h = if ch > 0.0 { ch } else { 18.0 };
+        Some((r.x() as f32 + l, r.y() as f32 + t, h))
     }
 
     /// Downstream at a soft wrap, as on desktop — see
@@ -2643,6 +2644,48 @@ impl DomDocument for WebDocument {
             Ok(el) => (el.client_left() as f32, el.client_top() as f32),
             Err(_) => (0.0, 0.0),
         }
+    }
+
+    /// From `getComputedStyle`: a px `line-height`; `None` for `normal`.
+    fn line_box_height(&self, node_id: u64) -> Option<f32> {
+        let el = self
+            .nodes
+            .get(&(node_id as usize))?
+            .clone()
+            .dyn_into::<web_sys::Element>()
+            .ok()?;
+        let cs = web_sys::window()?.get_computed_style(&el).ok().flatten()?;
+        let v = cs.get_property_value("line-height").ok()?;
+        v.trim()
+            .strip_suffix("px")?
+            .parse::<f32>()
+            .ok()
+            .filter(|h| *h > 0.0)
+    }
+
+    /// From `getComputedStyle`: the used padding and border widths, in px.
+    fn content_box_inset(&self, node_id: u64) -> (f32, f32, f32, f32) {
+        let zero = (0.0, 0.0, 0.0, 0.0);
+        let Some(el) = self
+            .nodes
+            .get(&(node_id as usize))
+            .and_then(|n| n.clone().dyn_into::<web_sys::Element>().ok())
+        else {
+            return zero;
+        };
+        let Some(cs) = web_sys::window().and_then(|w| w.get_computed_style(&el).ok().flatten())
+        else {
+            return zero;
+        };
+        let px = |p: &str| -> f32 {
+            cs.get_property_value(p)
+                .ok()
+                .and_then(|v| v.trim().trim_end_matches("px").parse::<f32>().ok())
+                .unwrap_or(0.0)
+                .max(0.0)
+        };
+        let side = |s: &str| px(&format!("padding-{s}")) + px(&format!("border-{s}-width"));
+        (side("left"), side("top"), side("right"), side("bottom"))
     }
 
     fn node_font(&self, node_id: u64) -> Option<rinch_core::dom::NodeFont> {

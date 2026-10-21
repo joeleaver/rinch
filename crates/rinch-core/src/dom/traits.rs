@@ -491,6 +491,15 @@ pub trait DomDocument {
     /// Returns the (x, y) coordinates where a text cursor would be rendered
     /// at the specified byte offset within the text node.
     ///
+    /// **Relative to the node's border box** — the box
+    /// [`query_node_layout`](Self::query_node_layout) reports — so a padded
+    /// or bordered block's caret includes that padding and border (#1667).
+    /// The browser backend measures from `getBoundingClientRect`; rinch-dom
+    /// adds the offset at which it draws the Parley layout. The same frame
+    /// for [`Self::query_glyph_bounds`], [`Self::query_selection_rects`],
+    /// [`Self::query_inline_box_caret`] and
+    /// [`Self::query_caret_position_with_affinity`].
+    ///
     /// # Arguments
     /// * `node_id` - The ID of the text node or element containing text
     /// * `byte_offset` - The UTF-8 byte offset within the text content
@@ -502,7 +511,8 @@ pub trait DomDocument {
     /// Query the bounding box of a glyph cluster at the given byte offset.
     ///
     /// Returns the bounding box of the glyph cluster containing the specified
-    /// byte offset within the text node.
+    /// byte offset within the text node, relative to the node's border box
+    /// (the frame of [`Self::query_caret_position`]).
     ///
     /// # Arguments
     /// * `node_id` - The ID of the text node or element containing text
@@ -936,6 +946,26 @@ pub trait DomDocument {
         (0.0, 0.0)
     }
 
+    /// A node's padding plus border on each side, `(left, top, right,
+    /// bottom)`: from its border box (the box
+    /// [`query_node_layout`](Self::query_node_layout) reports) in to its
+    /// content box, where its text starts. The editor places the caret in an
+    /// empty textblock (no text to ask [`Self::query_caret_position`] about)
+    /// at the block's content origin (#1667). Default zero, for a backend
+    /// with no box model to report.
+    fn content_box_inset(&self, _node_id: u64) -> (f32, f32, f32, f32) {
+        (0.0, 0.0, 0.0, 0.0)
+    }
+
+    /// The height of one line box of `node_id`: its computed `line-height` in
+    /// px. The editor draws the caret in an empty textblock this tall (#1667):
+    /// its box need not be one line plus its padding (desktop sizes
+    /// `min-height: 1lh` as a border box, #1278). Default `None` (the caller
+    /// falls back to the block's content height).
+    fn line_box_height(&self, _node_id: u64) -> Option<f32> {
+        None
+    }
+
     /// The resolved font of `node_id` ([`NodeFont`]), so the IME preedit overlay can
     /// match the text it composes into (e.g. a 32px heading vs. 16px body). Default
     /// `None` — the overlay keeps its inherited font. Backends that can read computed
@@ -995,7 +1025,7 @@ pub trait DomDocument {
 
     /// The caret beside the atomic inline `box_id` (an `<img>`) that the
     /// text-bearing element `node_id` lays out in its inline layout, as
-    /// `(x, y, height)`, layout-local like [`Self::query_caret_position`]:
+    /// `(x, y, height)`, border-box-local like [`Self::query_caret_position`]:
     /// on the box's leading edge, or its trailing edge when `after`, at the top
     /// of its line and one line high.
     ///
@@ -1029,8 +1059,9 @@ pub trait DomDocument {
         None
     }
 
-    /// Per-line selection rectangles `(x, y, width, height)`, layout-local to the
-    /// node's inline layout, covering the byte range `[a, b)`. Used to render a
+    /// Per-line selection rectangles `(x, y, width, height)`, relative to the
+    /// node's border box (the frame of [`Self::query_caret_position`]),
+    /// covering the byte range `[a, b)`. Used to render a
     /// text selection's highlight. Default: empty (no inline layout / mock).
     fn query_selection_rects(
         &self,
@@ -1075,7 +1106,7 @@ pub trait DomDocument {
     }
 
     /// [`Self::query_caret_position`] for a caret with `affinity` at a soft
-    /// wrap (#301), layout-local like it. Default: the affinity-blind
+    /// wrap (#301), border-box-local like it. Default: the affinity-blind
     /// [`Self::query_caret_position`].
     fn query_caret_position_with_affinity(
         &self,
