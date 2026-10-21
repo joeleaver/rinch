@@ -650,7 +650,16 @@ impl<'a> TextFragment<'a> {
                     if let Some(p) = line_pieces.get_mut(k)
                         && p.0 <= byte
                     {
-                        let r = Rect::new(x as f64, top, x as f64 + advance, bottom);
+                        // A `vertical-align` shift moves the glyphs off the
+                        // line's ascent and descent (#724; the line does not
+                        // grow for it, #1357): the box goes with them.
+                        let shift = if inline_layout.vertical_align_spans.is_empty() {
+                            0.0
+                        } else {
+                            inline_layout.vertical_align_shift_at(byte) as f64
+                        };
+                        let r =
+                            Rect::new(x as f64, top + shift, x as f64 + advance, bottom + shift);
                         p.3 = Some(p.3.map_or(r, |q| q.union(r)));
                     }
                     x += cluster.advance();
@@ -673,7 +682,10 @@ impl<'a> TextFragment<'a> {
         let shadow_box = |list: &[TextShadowValue], text: Rect| {
             list.iter()
                 .map(|s| {
-                    let reach = s.blur_radius.max(0.0) as f64 * super::text_shadow::REACH_PER_BLUR;
+                    let reach = super::text_shadow::visible_reach(
+                        s.blur_radius.max(0.0) as f64,
+                        colour(s).components[3],
+                    );
                     (text + Vec2::new(s.offset_x as f64, s.offset_y as f64)).inflate(reach, reach)
                 })
                 .reduce(|a, b| a.union(b))
@@ -800,7 +812,15 @@ impl TextMask {
     /// `walk_inline_children` (`flat_pos` only grows) and never overlap. A
     /// linear scan made a paint of one IFC quadratic in its spans (PR #844
     /// review, F2: 2000 spans, one hidden, 596 -> 1780 ms).
-    fn hidden_at(&self, byte: usize) -> bool {
+    /// Whether every byte of `range` is shown and lies in one recorded
+    /// range: the whole of a glyph run a fragment's mask holds, measured
+    /// without a walk of its clusters.
+    pub(super) fn shows_all(&self, range: std::ops::Range<usize>) -> bool {
+        let i = self.ranges.partition_point(|&(_, e, _)| e <= range.start);
+        matches!(self.ranges.get(i), Some(&(s, e, false)) if s <= range.start && range.end <= e)
+    }
+
+    pub(super) fn hidden_at(&self, byte: usize) -> bool {
         let i = self.ranges.partition_point(|&(_, e, _)| e <= byte);
         match self.ranges.get(i) {
             Some(&(s, _, h)) if s <= byte => h,
@@ -1260,11 +1280,11 @@ pub(super) fn draw_text(
             // Before the hidden test's `continue`: the cursor hands out a
             // run's glyph runs in order and has to see each of them.
             let recolours = live.and_then(|l| ccursor.take(&glyph_run, l));
+            let shifts = run_shifts(&mut vcursor, &glyph_run, valign);
             let flags = run_flags(&mut cursor, &glyph_run, mask);
             if flags.as_ref().is_some_and(|f| f.iter().all(|&h| h)) {
                 continue;
             }
-            let shifts = run_shifts(&mut vcursor, &glyph_run, valign);
             let mut gx = glyph_run.offset() * sf;
             let gy = glyph_run.baseline() * sf;
             let run = glyph_run.run();

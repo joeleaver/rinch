@@ -307,6 +307,49 @@ fn shadows_of_two_colours_overlapping_are_drawn_per_fragment() {
     assert!(second_shadow > first_text, "{draws:?}");
 }
 
+/// A faint blurred tail that cannot change an 8-bit pixel decides nothing:
+/// a 4px blur at alpha 0.1 reaches about 4.1px where it stays above half a
+/// level (6px is where the mask is cut), so a `0 3px` offset leaves the line
+/// above alone and the one-pass order is kept. The same blur at full alpha
+/// reaches about 5.8px, into the line above, and is drawn per line.
+///
+/// Kills: the overlap decided with the mask's 3-sigma reach (the faint case
+/// interleaves); the alpha left out of the visible reach.
+#[test]
+fn a_faint_blur_tail_keeps_the_one_pass_order() {
+    let prev = rinch_dom::paint::force_tapped_text_shadows(true);
+    let html = r#"<p class="t s" style="width: 40px">H H</p>"#;
+    let order = |css: &str| {
+        let draws = record(&mut doc_with(css, html));
+        let first_text = draws.iter().position(|d| d.color == BLACK).unwrap();
+        let last_shadow = draws.iter().rposition(|d| d.color == RED).unwrap();
+        last_shadow > first_text
+    };
+    let faint = order(".s { text-shadow: 0 3px 4px rgba(255, 0, 0, 0.1); }");
+    let full = order(".s { text-shadow: 0 3px 4px rgb(255, 0, 0); }");
+    rinch_dom::paint::force_tapped_text_shadows(prev);
+    assert!(!faint, "the faint tail keeps the one-pass order");
+    assert!(full, "the opaque blur reaches the line above: per line");
+}
+
+/// A `visibility: hidden` glyph run before a raised one in the same parley
+/// run: the raised glyph keeps its `vertical-align` shift. The shift cursor
+/// hands out a run's glyph runs in order and was skipped past hidden ones, so
+/// the raised glyph took the hidden run's shifts (none) and sat on the
+/// baseline. (Found while working on #1060; reachable on main with no shadow.)
+///
+/// Kills: `run_shifts` called after the hidden test's `continue`.
+#[test]
+fn a_raised_glyph_after_a_hidden_run_keeps_its_shift() {
+    let html = r#"<p class="t">X<span style="visibility: hidden; color: rgb(0, 0, 255)">Y</span><span style="vertical-align: 20px">Z</span></p>"#;
+    let main = main_glyphs(&record(&mut doc_with("", html)));
+    assert_eq!(main.len(), 2, "X and Z drawn, Y hidden: {main:?}");
+    assert!(
+        (main[1].y - (main[0].y - 20.0)).abs() < 0.01,
+        "Z is raised 20px above X: {main:?}"
+    );
+}
+
 // ── The pixels ──────────────────────────────────────────────────────────────
 
 /// Paint `doc` with tiny-skia over white and count the pixels around
