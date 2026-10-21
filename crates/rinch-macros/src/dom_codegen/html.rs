@@ -625,7 +625,7 @@ mod event_and_fn_prop_tests {
     /// handler. It is a compile error now, naming the supported events.
     #[test]
     fn an_unsupported_event_is_a_compile_error_not_a_click() {
-        for name in ["onkeydown", "onkeyup", "onfocus", "onblur", "ondblclick"] {
+        for name in ["onfocus", "onblur", "ondblclick", "onkeypress"] {
             let out = codegen(&format!("div {{ {name}: || {{}} }}"));
             assert!(is_error(&out), "{name}: {out}");
             assert!(!out.contains("\"data-rid\""), "{name}: {out}");
@@ -650,8 +650,22 @@ mod event_and_fn_prop_tests {
             "{out}"
         );
         // And a name close to nothing suggests nothing.
-        let out = codegen("div { onkeydown: || {} }");
+        let out = codegen("div { onfocus: || {} }");
         assert!(!out.contains("did you mean"), "{out}");
+    }
+
+    /// #1678: `onkeydown` / `onkeyup` are element key handlers, registered
+    /// as `Fn(&KeyEventData) -> bool` and written to their own attributes —
+    /// not click handlers, not `Fn()`.
+    #[test]
+    fn the_key_events_register_key_handlers() {
+        for (name, attr) in [("onkeydown", "data-onkeydown"), ("onkeyup", "data-onkeyup")] {
+            let out = codegen(&format!("textarea {{ {name}: |k| k.shift }}"));
+            assert!(!is_error(&out), "{name}: {out}");
+            assert!(out.contains("register_key_handler"), "{name}: {out}");
+            assert!(out.contains(&format!("\"{attr}\"")), "{name}: {out}");
+            assert!(!out.contains("\"data-rid\""), "{name}: {out}");
+        }
     }
 
     /// #1591: `value_fn:` / `checked_fn:` are component prop conventions; on a
