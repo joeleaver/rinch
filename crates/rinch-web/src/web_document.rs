@@ -2475,11 +2475,15 @@ impl DomDocument for WebDocument {
     /// Where a caret at a UTF-16 offset of the control's value sits, in
     /// client px (issue #1678). A browser exposes no caret geometry for a
     /// form control, so the value up to the offset is laid out in a hidden
-    /// `<div>` given the control's computed box and text styles (the
-    /// technique of the `textarea-caret-position` library), and the offset is
-    /// where a marker after that text lands, moved to the control's box and
-    /// its scroll. A single-line field centres its line in its content box, as
-    /// Chrome draws it.
+    /// `<div>` with the control's computed text styles and its padding, at the
+    /// width the control lays its text out in (`clientWidth` less the
+    /// horizontal padding: a scrollbar's gutter is not text room), and the
+    /// offset is where a marker after that text lands. That position is
+    /// moved by the control's own scroll, scaled by any transform on it or an
+    /// ancestor (the ratio of its painted box to its layout box), and placed
+    /// at its painted box. A single-line field centres its line in its
+    /// content box, as Chrome draws it. `None` for a control that is not
+    /// rendered.
     fn text_caret_rect(
         &mut self,
         node_id: NodeId,
@@ -2487,14 +2491,6 @@ impl DomDocument for WebDocument {
     ) -> Option<rinch_core::reactive::ElementBounds> {
         const MIRRORED: &[&str] = &[
             "direction",
-            "box-sizing",
-            "width",
-            "height",
-            "border-top-width",
-            "border-right-width",
-            "border-bottom-width",
-            "border-left-width",
-            "border-style",
             "padding-top",
             "padding-right",
             "padding-bottom",
@@ -2516,10 +2512,12 @@ impl DomDocument for WebDocument {
             "letter-spacing",
             "word-spacing",
             "tab-size",
-            "white-space",
             "overflow-wrap",
             "word-break",
         ];
+        if !self.is_rendered(node_id) {
+            return None;
+        }
         let (start, end, direction) = self.text_selection_range(node_id)?;
         let n = self.nodes.get(&node_id.0)?;
         let el: web_sys::HtmlElement = n.clone().dyn_into().ok()?;
@@ -2556,6 +2554,19 @@ impl DomDocument for WebDocument {
         let doc = win.document()?;
         let body = doc.body()?;
         let cs = win.get_computed_style(&el).ok()??;
+        let px = |p: &str| {
+            cs.get_property_value(p)
+                .ok()
+                .and_then(|v| v.trim_end_matches("px").parse::<f64>().ok())
+                .unwrap_or(0.0)
+        };
+        let (pad_l, pad_r, pad_t, pad_b) = (
+            px("padding-left"),
+            px("padding-right"),
+            px("padding-top"),
+            px("padding-bottom"),
+        );
+        let text_width = (el.client_width() as f64 - pad_l - pad_r).max(0.0);
         let mirror: web_sys::HtmlElement = doc.create_element("div").ok()?.dyn_into().ok()?;
         let ms = mirror.style();
         for prop in MIRRORED {
@@ -2563,20 +2574,25 @@ impl DomDocument for WebDocument {
                 let _ = ms.set_property(prop, &v);
             }
         }
+        let width = format!("{text_width}px");
         for (prop, v) in [
             ("position", "absolute"),
             ("visibility", "hidden"),
             ("top", "0"),
             ("left", "0"),
             ("overflow", "hidden"),
+            ("box-sizing", "content-box"),
+            ("border", "0"),
+            ("margin", "0"),
+            ("height", "auto"),
+            ("transform", "none"),
+            ("width", width.as_str()),
+            (
+                "white-space",
+                if single_line { "pre" } else { "pre-wrap" },
+            ),
         ] {
             let _ = ms.set_property(prop, v);
-        }
-        if single_line {
-            let _ = ms.set_property("white-space", "pre");
-            let _ = ms.set_property("height", "auto");
-        } else {
-            let _ = ms.set_property("white-space", "pre-wrap");
         }
         mirror.set_text_content(Some(&before));
         let marker = doc.create_element("span").ok()?;
@@ -2588,26 +2604,28 @@ impl DomDocument for WebDocument {
         let first = marker.get_client_rects().get(0);
         let _ = body.remove_child(&mirror);
         let first = first?;
-        let e = el.get_bounding_client_rect();
-        let x = e.left() + (first.left() - m.left()) - el.scroll_left() as f64;
+        // In the control's own (untransformed) padding-box coordinates.
+        let local_x = first.left() - m.left() - el.scroll_left() as f64;
         let height = first.height();
-        let y = if single_line {
-            let px = |p: &str| {
-                cs.get_property_value(p)
-                    .ok()
-                    .and_then(|v| v.trim_end_matches("px").parse::<f64>().ok())
-                    .unwrap_or(0.0)
-            };
-            let content = el.client_height() as f64 - px("padding-top") - px("padding-bottom");
-            e.top() + el.client_top() as f64 + px("padding-top") + (content - height) / 2.0
+        let local_y = if single_line {
+            let content = el.client_height() as f64 - pad_t - pad_b;
+            pad_t + (content - height) / 2.0
         } else {
-            e.top() + (first.top() - m.top()) - el.scroll_top() as f64
+            first.top() - m.top() - el.scroll_top() as f64
         };
+        // Onto the painted box: a transform on the control or an ancestor
+        // scales its layout box into the rect `getBoundingClientRect` reports.
+        let e = el.get_bounding_client_rect();
+        let (ow, oh) = (el.offset_width() as f64, el.offset_height() as f64);
+        let sx = if ow > 0.0 { e.width() / ow } else { 1.0 };
+        let sy = if oh > 0.0 { e.height() / oh } else { 1.0 };
+        let x = e.left() + (el.client_left() as f64 + local_x) * sx;
+        let y = e.top() + (el.client_top() as f64 + local_y) * sy;
         Some(rinch_core::reactive::ElementBounds {
             x: x as f32,
             y: y as f32,
             width: 0.0,
-            height: height as f32,
+            height: (height * sy) as f32,
         })
     }
 

@@ -1995,14 +1995,17 @@ pub(crate) fn editor_owning(el: &web_sys::Element) -> Option<web_sys::Element> {
 /// from — for a key the rich-text editor holds (its keys are
 /// `EditorHandle::on_key`'s; a field inside a node view's component is not
 /// the editor's), one a focused render surface holds (`set_key_handler`), or
-/// one an input method is composing with (`isComposing`, or the `Process`
-/// key a composition sends).
+/// one an input method is composing with (`isComposing`, the `Process` key a
+/// composition sends, or `keyCode` 229).
 fn offer_element_key(
     event: &web_sys::KeyboardEvent,
     attr: &str,
     data: &events::KeyEventData,
 ) -> bool {
-    if event.is_composing() || event.key() == "Process" {
+    // `keyCode` 229 is a key an input method took; Safari sends the Enter
+    // that confirms a composition after `compositionend` with `isComposing`
+    // already false, and only this says so.
+    if event.is_composing() || event.key() == "Process" || event.key_code() == 229 {
         return false;
     }
     if rinch::render_surface::focused_surface_id().is_some() {

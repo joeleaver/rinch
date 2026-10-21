@@ -317,7 +317,8 @@ fn a_focusable_nodes_onkeydown_runs_and_a_consumed_enter_does_not_activate() {
 fn selection_range_reads_utf16_units_focused_unfocused_and_after_blur() {
     let mut f = mount();
     let ta = f.textarea.clone();
-    // Never focused: a caret at the start, as a browser answers.
+    // Never focused: a caret at the start of an empty textarea, as Chrome
+    // answers (a value is covered by `an_unfocused_controls_selection_is_chromes`).
     assert_eq!(
         ta.selection_range(),
         Some((0, 0, SelectionDirection::Forward))
@@ -369,11 +370,268 @@ fn selection_range_reads_utf16_units_focused_unfocused_and_after_blur() {
         ta.selection_range(),
         Some((1, 5, SelectionDirection::Forward))
     );
-    f.app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    // Drained (`AboutToWait` applies posted requests): now it is the stash
+    // that answers, and the next focus that shows it.
+    f.app.handle_event(PlatformEvent::AboutToWait, VP, 1.0);
+    assert!(
+        rinch_core::peek_pending_text_selection_request(f.app.doc_key(), ta.node_id().0)
+            .is_none(),
+        "the request was drained"
+    );
     assert_eq!(
         ta.selection_range(),
         Some((1, 5, SelectionDirection::Forward))
     );
+
+    // An unspecified direction reads back `Forward`, before focus as after,
+    // as Chrome answers.
+    ta.set_selection_range(2, 4, SelectionDirection::None);
+    assert_eq!(
+        ta.selection_range(),
+        Some((2, 4, SelectionDirection::Forward))
+    );
+    f.app.handle_event(PlatformEvent::AboutToWait, VP, 1.0);
+    assert_eq!(
+        ta.selection_range(),
+        Some((2, 4, SelectionDirection::Forward))
+    );
+}
+
+/// An unfocused control with a value reads what Chrome 155 reads: an
+/// `<input>`'s caret after its value (written through the value setter),
+/// again after a `value` write, a `<textarea>`'s default value's start; and
+/// `None` for the input types whose `selectionStart` is `null`.
+#[test]
+fn an_unfocused_controls_selection_is_chromes() {
+    let out: Rc<RefCell<Vec<NodeHandle>>> = Rc::new(RefCell::new(Vec::new()));
+    let o = out.clone();
+    let mut app = RinchApp::new(move |__scope: &mut RenderScope| {
+        let root = __scope.create_element("div");
+        let mut add = |tag: &str, attrs: &[(&str, &str)]| {
+            let el = __scope.create_element(tag);
+            for (k, v) in attrs {
+                el.set_attribute(k, v);
+            }
+            root.append_child(&el);
+            o.borrow_mut().push(el);
+        };
+        add("input", &[("value", "abc")]);
+        add("input", &[]);
+        add("textarea", &[]);
+        add("input", &[("type", "email"), ("value", "a@b")]);
+        add("input", &[("type", "Number"), ("value", "1")]);
+        add("input", &[("type", "date")]);
+        let ta = out_text(__scope);
+        root.append_child(&ta);
+        o.borrow_mut().push(ta);
+        root
+    });
+    fn out_text(scope: &mut RenderScope) -> NodeHandle {
+        let ta = scope.create_element("textarea");
+        ta.append_child(&scope.create_text("hello"));
+        ta
+    }
+    app.mount_component(VP.0 as f32, VP.1 as f32);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    let h = out.borrow().clone();
+    let fwd = SelectionDirection::Forward;
+    assert_eq!(h[0].selection_range(), Some((3, 3, fwd)), "input value=abc");
+    assert_eq!(h[1].selection_range(), Some((0, 0, fwd)), "empty input");
+    h[1].set_attribute("value", "hello");
+    assert_eq!(h[1].selection_range(), Some((5, 5, fwd)), "after a value write");
+    h[1].set_selection_range(1, 2, fwd);
+    app.handle_event(PlatformEvent::AboutToWait, VP, 1.0);
+    h[1].set_attribute("value", "hello world");
+    assert_eq!(h[1].selection_range(), Some((11, 11, fwd)), "a write moves it to the end");
+    h[2].set_attribute("value", "xy");
+    assert_eq!(h[2].selection_range(), Some((2, 2, fwd)), "textarea value write");
+    for (i, what) in [(3, "email"), (4, "number"), (5, "date")] {
+        assert_eq!(h[i].selection_range(), None, "{what}");
+    }
+    assert_eq!(h[6].selection_range(), Some((0, 0, fwd)), "textarea text child");
+}
+
+/// #1678 review F2: a raw `<textarea>` with only an `onkeydown` is a text
+/// field on desktop as it is in a browser — it focuses, takes text, and its
+/// handler runs.
+#[test]
+fn a_raw_control_with_only_a_key_handler_takes_text() {
+    let log: Log = Rc::new(RefCell::new(Vec::new()));
+    let out: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let (l, o) = (log.clone(), out.clone());
+    let mut app = RinchApp::new(move |__scope: &mut RenderScope| {
+        let l = l.clone();
+        let root = rsx! {
+            div {
+                textarea {
+                    style: "width: 200px; height: 60px",
+                    onkeydown: move |k| {
+                        l.borrow_mut().push(k.key.clone());
+                        false
+                    },
+                }
+            }
+        };
+        *o.borrow_mut() = Some(root.children()[0].clone());
+        root
+    });
+    app.mount_component(VP.0 as f32, VP.1 as f32);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    let ta = out.borrow().clone().unwrap();
+    let mut f = Fixture {
+        app,
+        outer: ta.clone(),
+        textarea: ta.clone(),
+        input: ta.clone(),
+        tile: ta.clone(),
+        log,
+    };
+    f.click(&ta);
+    f.type_str("a");
+    assert_eq!(f.value(&ta), "a");
+    assert_eq!(f.take_log(), ["a"]);
+}
+
+/// #1678 review F4: a handler that moves the focus without consuming sends
+/// the key on to the newly focused field, as Chrome does.
+#[test]
+fn a_key_follows_a_focus_move_made_by_its_handler() {
+    let out: Rc<RefCell<Vec<NodeHandle>>> = Rc::new(RefCell::new(Vec::new()));
+    let o = out.clone();
+    let mut app = RinchApp::new(move |__scope: &mut RenderScope| {
+        let other: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+        let o2 = other.clone();
+        let root = rsx! {
+            div {
+                input {
+                    style: "width: 200px; height: 30px",
+                    oninput: move |_v: String| {},
+                    onkeydown: move |k| {
+                        if k.key == "x"
+                            && let Some(b) = o2.borrow().as_ref()
+                        {
+                            b.focus();
+                        }
+                        false
+                    },
+                }
+                input { style: "width: 200px; height: 30px", oninput: move |_v: String| {} }
+            }
+        };
+        let k = root.children();
+        *other.borrow_mut() = Some(k[1].clone());
+        *o.borrow_mut() = vec![k[0].clone(), k[1].clone()];
+        root
+    });
+    app.mount_component(VP.0 as f32, VP.1 as f32);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    let h = out.borrow().clone();
+    let mut f = Fixture {
+        app,
+        outer: h[0].clone(),
+        textarea: h[0].clone(),
+        input: h[1].clone(),
+        tile: h[1].clone(),
+        log: Rc::new(RefCell::new(Vec::new())),
+    };
+    f.click(&h[0]);
+    f.type_str("x");
+    assert_eq!((f.value(&h[0]), f.value(&h[1])), (String::new(), "x".into()));
+}
+
+/// While the built-in text context menu is open it owns the keyboard: the
+/// field's `onkeydown` is not offered (as the editor's `on_key` is not).
+#[test]
+fn the_text_context_menu_keeps_its_keys_from_onkeydown() {
+    let mut f = mount();
+    let ta = f.textarea.clone();
+    f.click(&ta);
+    f.type_str("hi");
+    let (x, y) = {
+        let d = f.app.doc.as_ref().unwrap().borrow();
+        let (x, y, _, h) = painted_element_box(&d.tree, ta.node_id().0);
+        (x + 3.0, y + h / 2.0)
+    };
+    f.app.handle_event(
+        PlatformEvent::MouseDown {
+            x,
+            y,
+            button: MouseButton::Right,
+        },
+        VP,
+        1.0,
+    );
+    f.app.handle_event(
+        PlatformEvent::MouseUp {
+            x,
+            y,
+            button: MouseButton::Right,
+        },
+        VP,
+        1.0,
+    );
+    assert!(f.app.open_text_menu.is_some(), "positive control: the menu opened");
+    f.take_log();
+    f.app.handle_event(
+        PlatformEvent::KeyDown {
+            key: KeyCode::ArrowDown,
+            logical_key: None,
+            text: None,
+            modifiers: Modifiers::default(),
+            repeat: KeyRepeat::Unknown,
+        },
+        VP,
+        1.0,
+    );
+    assert!(
+        !f.take_log().iter().any(|e| e.starts_with("down:")),
+        "the menu's key"
+    );
+}
+
+/// The caret rect at the head follows the caret's affinity: End on a soft-
+/// wrapped first line puts the caret at that line's end (upstream), which
+/// the downstream rect at the same offset draws at the next line's start.
+#[test]
+fn the_head_caret_rect_follows_its_affinity() {
+    let mut f = mount();
+    let ta = f.textarea.clone();
+    f.click(&ta);
+    f.type_str("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda");
+    // To the first line, then its end.
+    for key in [KeyCode::Home, KeyCode::ArrowUp, KeyCode::ArrowUp, KeyCode::End] {
+        f.press(key, None, false);
+    }
+    f.app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    let (_, head, _) = ta.selection_range().unwrap();
+    let up = ta.caret_rect().unwrap();
+    let down = ta.caret_rect_at(head).unwrap();
+    let c0 = ta.caret_rect_at(0).unwrap();
+    assert!((up.y - c0.y).abs() < 0.5, "upstream: line 1 {up:?} {c0:?}");
+    assert!(down.y > up.y + 10.0, "downstream: line 2 {down:?} {up:?}");
+}
+
+/// No box, no caret: a `display: none` field answers `None`.
+#[test]
+fn a_hidden_field_has_no_caret_rect() {
+    let out: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let o = out.clone();
+    let mut app = RinchApp::new(move |__scope: &mut RenderScope| {
+        let root = __scope.create_element("div");
+        let el = __scope.create_element("input");
+        el.set_attribute("value", "abc");
+        el.set_attribute("style", "display: none");
+        root.append_child(&el);
+        *o.borrow_mut() = Some(el);
+        root
+    });
+    app.mount_component(VP.0 as f32, VP.1 as f32);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    let el = out.borrow().clone().unwrap();
+    assert_eq!(el.caret_rect(), None);
+    el.set_attribute("style", "display: block; width: 100px; height: 20px");
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    assert!(el.caret_rect().is_some(), "positive control: shown, it has one");
 }
 
 /// The caret rect is where paint draws the caret — the same answer the
@@ -455,8 +713,8 @@ fn caret_rect_is_the_painted_caret() {
     };
     assert!((r.x - (ix + 8.0)).abs() < 0.5, "{r:?}");
     assert!(
-        r.y > iy && r.y + r.height / 2.0 < iy + ih,
-        "{r:?} in {iy}..{}",
+        (r.y + r.height / 2.0 - (iy + ih / 2.0)).abs() < 2.0,
+        "centred: {r:?} in {iy}..{}",
         iy + ih
     );
     assert_eq!(f.tile.caret_rect(), None, "not a text control");

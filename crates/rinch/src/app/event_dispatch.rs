@@ -1607,8 +1607,13 @@ impl RinchApp {
                 {
                     let key_data = events::KeyEventData::new(ks.clone(), format!("{:?}", key))
                         .with_modifiers(ctrl, shift, alt, modifiers.meta);
-                    if self.offer_element_key(&key_data) {
-                        self.drain_focus_requests(false);
+                    let consumed = self.offer_element_key(&key_data);
+                    // A handler that moved the focus (`other.focus()`) moved
+                    // it for this key too: the rest of the arm runs against
+                    // the new claim, as Chrome inserts an unconsumed key into
+                    // the element focused during its keydown.
+                    self.drain_focus_requests(false);
+                    if consumed {
                         self.resolve_and_repaint(vp_w, vp_h);
                         actions.push(AppAction::RequestRedraw);
                         return actions;

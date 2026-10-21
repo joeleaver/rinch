@@ -110,14 +110,17 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
     // element with a commit or submit handler and no `oninput` gets a no-op
     // input handler to stay focusable and receive typed text. `onchange` has
     // always had it; an `onsubmit` gets it only on a text control (#1590),
-    // because `onsubmit` is also written on a wrapper around a field, and a
+    // and so do `onkeydown` / `onkeyup` (#1678 — a raw composer read through
+    // `live_value()` on Enter has no `oninput`), because these are also
+    // written on a wrapper around a field, and a
     // `div` carrying `data-oninput` would itself become a text field. The shim
     // is not emitted for wasm32: the browser owns focus/typing natively there,
     // and the extra attribute would shadow an ancestor's `[data-oninput]` in
     // the web backend's document-level input delegation walk (#244 review).
     let text_field_shim = if !has_event("oninput")
         && (has_event("onchange")
-            || (has_event("onsubmit") && matches!(tag.as_str(), "input" | "textarea")))
+            || ((has_event("onsubmit") || has_event("onkeydown") || has_event("onkeyup"))
+                && matches!(tag.as_str(), "input" | "textarea")))
     {
         quote! {
             #[cfg(not(target_arch = "wasm32"))]
@@ -570,8 +573,15 @@ mod event_and_fn_prop_tests {
         for tag in ["input", "textarea"] {
             let out = codegen(&format!("{tag} {{ onsubmit: || {{}} }}"));
             assert!(out.contains("\"data-oninput\""), "{tag}: {out}");
+            // #1678: a key handler makes a raw control a text field too.
+            for ev in ["onkeydown", "onkeyup"] {
+                let out = codegen(&format!("{tag} {{ {ev}: |_| false }}"));
+                assert!(out.contains("\"data-oninput\""), "{tag} {ev}: {out}");
+            }
         }
         let out = codegen("div { onsubmit: || {} }");
+        assert!(!out.contains("\"data-oninput\""), "{out}");
+        let out = codegen("div { onkeydown: |_| false }");
         assert!(!out.contains("\"data-oninput\""), "{out}");
         // Beside a real oninput no shim is added (one data-oninput write).
         let out = codegen("input { oninput: |_: String| {}, onsubmit: || {} }");

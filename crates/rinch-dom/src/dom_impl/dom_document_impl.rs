@@ -735,9 +735,33 @@ impl DomDocument for RinchDocument {
         if name == "title" && !self.tree.nodes[node.0].attributes.contains_key(name) {
             self.tree.title_sources += 1;
         }
+        // A `value` write that changes an unfocused text control's value puts
+        // its caret at the end, as a browser's value setter does (issue
+        // #1678; rinch-web writes through that setter). The focused field's
+        // own selection is the runtime's, synced with each edit.
+        let value_before = (name == "value"
+            && crate::form_control::has_text_selection(&self.tree.nodes[node.0])
+            && self.tree.nodes[node.0].attributes.get("data-focused").map(String::as_str)
+                != Some("true"))
+        .then(|| {
+            crate::form_control::control_value(&self.tree.nodes, node.0)
+                .unwrap_or_default()
+                .into_owned()
+        });
         // Before the write: the invalidation snapshot holds the old value.
         self.note_attribute_change(node.0, name);
         self.tree.nodes[node.0].write_attribute(name, value);
+        if let Some(before) = value_before {
+            let after = crate::form_control::control_value(&self.tree.nodes, node.0)
+                .unwrap_or_default();
+            if after != before {
+                let len = after.encode_utf16().count();
+                self.tree.text_selections.insert(
+                    node.0,
+                    (len, len, rinch_core::dom::SelectionDirection::Forward),
+                );
+            }
+        }
         if selects_this_option {
             crate::select::set_option_selectedness(&mut self.tree, node.0, true);
         }
@@ -1338,8 +1362,15 @@ impl DomDocument for RinchDocument {
         }
         let value = form_control::control_value(&self.tree.nodes, node_id.0).unwrap_or_default();
         let len = value.encode_utf16().count();
+        // Chrome reads an unspecified direction back as `forward`, before
+        // focus as after (and desktop's focused selection has no "none").
         let order = |(a, b, d): (usize, usize, SelectionDirection)| {
             let (a, b) = (a.min(len), b.min(len));
+            let d = if d == SelectionDirection::None {
+                SelectionDirection::Forward
+            } else {
+                d
+            };
             Some((a.min(b), a.max(b), d))
         };
         if let Some(posted) =
@@ -1372,7 +1403,14 @@ impl DomDocument for RinchDocument {
         if let Some(&kept) = self.tree.text_selections.get(&node_id.0) {
             return order(kept);
         }
-        Some((0, 0, SelectionDirection::Forward))
+        // Untouched: Chrome 155 puts an `<input>`'s caret after its value
+        // (its value is set through the setter, which moves it to the end) and
+        // a `<textarea>`'s at the start of its default value.
+        if node.tag() == Some("input") {
+            Some((len, len, SelectionDirection::Forward))
+        } else {
+            Some((0, 0, SelectionDirection::Forward))
+        }
     }
 
     /// The caret paint draws (or would draw) at that offset, through
@@ -1385,6 +1423,11 @@ impl DomDocument for RinchDocument {
     ) -> Option<rinch_core::reactive::ElementBounds> {
         use crate::form_control;
         use rinch_core::dom::SelectionDirection;
+        if !self.is_rendered(node_id) {
+            // No box, no caret (`display: none`, `visibility: hidden`, out of
+            // the document).
+            return None;
+        }
         let node = self.tree.get(node_id.0)?;
         if !form_control::has_text_selection(node) {
             return None;
