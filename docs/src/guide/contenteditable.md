@@ -2021,7 +2021,9 @@ array on the way from the block up to the document root, naming the block's entr
 its container's) in it, and a 32-bit hash of everything before it. **Treat the bytes
 as opaque**: store them, compare them, hand them back; do not build or edit them. A
 trailer whose hash, version or chain (each entry in the array of the next one's node)
-does not check out is refused, so damaged bytes answer `None`, never another place.
+does not check out is refused (`None`). That check is a 32-bit hash against
+accidental damage, not protection against tampering: bytes edited on purpose, with
+the hash recomputed, can name another place.
 yrs alone still reads the leading index, because yrs's decoder ignores what follows
 it; that is yrs's behaviour, not a promise, and a test pins it.
 `collab_locate_sticky(&bytes)` answers a `StickyLocation`:
@@ -2049,6 +2051,23 @@ characters). A table's rows and cells have no entry, so an index whose row was
 deleted lands at the start of the first textblock of the table. An index from plain
 `collab_sticky_index` has no trailer, and its deleted block is still `None`. An index
 naming a peer's edit this replica has not merged yet is `None`, not displaced.
+
+**`None` means "not locatable now", `displaced` means "its block is gone".** `None`
+covers cases that can change: an edit not merged yet, a stalled or poisoned session,
+the block inside a table too large to read (its placeholder), a `doc` that is not the
+one the shared document projects; and cases that will not: damaged bytes, an anchor
+from another document. An app that keeps anchors should not drop one on a single
+`None`; it can keep it and ask again after the next change.
+
+**An anchor is tied to the shared document's CRDT items, not to its text.** It
+resolves in any replica that grew from the same CRDT (a peer, a server copy, a
+"duplicate" made by loading a snapshot), and in no other: the same text in a
+document projected afresh has new items. So anything that writes the document as new
+items loses every anchor into it (`None`, or displaced for those with a trailer
+whose outer levels survive): `load_doc` / `load_html` while collaborating, starting a
+new host session from the model, the re-base that ends an outbound stall for the
+blocks it rewrites, and a future change of the wire format tag. Keep anchors keyed
+by document, and treat a re-projection as invalidating them.
 
 **Many at once.** `collab_locate_sticky_many(&[&anchor, …])` answers every anchor in
 one read of the shared document, in order. One `collab_locate_sticky` stops at its

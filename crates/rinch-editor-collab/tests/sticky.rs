@@ -1569,3 +1569,370 @@ fn an_entry_after_a_void_level_must_be_its_container() {
     assert!(a.located(&x).2, "the real chain locates, displaced");
     assert_eq!(a.locate(&crossed), None);
 }
+
+// --- review2 of #1679 (reviewer probes) --------------------------------------------
+
+fn hr(s: &Schema) -> Node {
+    s.create_node("horizontal_rule", Default::default(), Fragment::empty())
+        .unwrap()
+}
+
+impl Peer {
+    /// Replace the textblock holding `pos` by a horizontal rule (the `---` input rule's shape).
+    fn make_rule(&mut self, pos: usize) {
+        let s = self.state.schema().clone();
+        let rp = self.state.doc.resolve(Pos(pos)).unwrap();
+        let d = rp.depth();
+        let (a, b) = (rp.before(d).unwrap(), rp.after(d).unwrap());
+        self.local(|tr| {
+            tr.replace_with(a, b, Fragment::from_node(hr(&s))).unwrap();
+        });
+    }
+}
+
+/// RV2-A: a textblock replaced by a rule. Its block is gone from the model.
+#[test]
+fn rv2_a_paragraph_replaced_by_a_rule() {
+    let s = schema();
+    for text in ["", "abc"] {
+        let mut a = Peer::host(&s, vec![para(&s, "keep"), para(&s, text), para(&s, "x")]);
+        let mut b = Peer::join(&s, &a);
+        let w = a.sticky_with(7, StickyAssoc::After);
+        let wb = a.sticky_with(7, StickyAssoc::Before);
+        a.make_rule(7);
+        a.send_to(&mut b);
+        eprintln!(
+            "RV2-A text={text:?} doc={} after={:?} before={:?} remote={:?}",
+            rinch_editor_core::serialize::node_to_html(&a.state.doc),
+            a.locate(&w),
+            a.locate(&wb),
+            b.locate(&w)
+        );
+    }
+}
+
+/// RV2-B: a list item's paragraph replaced by a rule; then the item deleted.
+#[test]
+fn rv2_b_list_item_paragraph_replaced_by_a_rule() {
+    let s = schema();
+    let mut a = Peer::host(
+        &s,
+        vec![
+            para(&s, "keep"),
+            ordered_list(
+                &s,
+                vec![
+                    list_item(&s, vec![para(&s, "one")]),
+                    list_item(&s, vec![para(&s, "two")]),
+                ],
+            ),
+            para(&s, "x"),
+        ],
+    );
+    let pos = (0..a.state.doc.content_size())
+        .find(|&p| char_at(&a.state.doc, p) == Some('w'))
+        .unwrap();
+    let w = a.sticky_with(pos, StickyAssoc::After);
+    a.make_rule(pos);
+    eprintln!(
+        "RV2-B1 doc={} loc={:?}",
+        rinch_editor_core::serialize::node_to_html(&a.state.doc),
+        a.locate(&w)
+    );
+    let rp = a.state.doc.resolve(Pos(pos)).ok();
+    let _ = rp;
+    // delete the whole list
+    let start = 6;
+    let end = start + a.state.doc.child(1).node_size();
+    a.delete(start, end);
+    eprintln!(
+        "RV2-B2 doc={} loc={:?}",
+        rinch_editor_core::serialize::node_to_html(&a.state.doc),
+        a.locate(&w)
+    );
+}
+
+/// RV2-C: a table nested in a cell of a row a peer deletes. The inner table's blocks
+/// are gone from the model exactly as the row's own paragraph is.
+#[test]
+fn rv2_c_a_table_nested_in_a_deleted_row() {
+    let s = schema();
+    let cell_of = |n: Node| s.branch("table_cell", Fragment::from_node(n)).unwrap();
+    let row_of = |n: Node| {
+        s.branch("table_row", Fragment::from_node(cell_of(n)))
+            .unwrap()
+    };
+    let inner = s
+        .branch(
+            "table",
+            Fragment::from_children(vec![row_of(para(&s, "in"))]),
+        )
+        .unwrap();
+    let outer = s
+        .branch(
+            "table",
+            Fragment::from_children(vec![row_of(para(&s, "xy")), row_of(inner)]),
+        )
+        .unwrap();
+    let mut a = Peer::host(&s, vec![para(&s, "a"), outer, para(&s, "z")]);
+    let mut b = Peer::join(&s, &a);
+    let n = (0..a.state.doc.content_size())
+        .find(|&p| char_at(&a.state.doc, p) == Some('n'))
+        .unwrap();
+    let y = (0..a.state.doc.content_size())
+        .find(|&p| char_at(&a.state.doc, p) == Some('y'))
+        .unwrap();
+    let wn = a.sticky_with(n, StickyAssoc::After);
+    let wy = a.sticky_with(y, StickyAssoc::After);
+    assert!(!a.located(&wn).2);
+    // Delete the outer table's second row (the one holding the inner table).
+    let rp = a.state.doc.resolve(Pos(n)).unwrap();
+    // depth: table(1) row(2) cell(3) table(4) row(5) cell(6) p(7)
+    let (from, to) = (rp.before(2).unwrap(), rp.after(2).unwrap());
+    b.delete(from, to);
+    b.send_to(&mut a);
+    eprintln!(
+        "RV2-C doc={} n={:?} y={:?} remote={:?}",
+        rinch_editor_core::serialize::node_to_html(&a.state.doc),
+        a.locate(&wn),
+        a.locate(&wy),
+        b.locate(&wn)
+    );
+    for peer in [&a, &b] {
+        // The outer table is alive: its first textblock, displaced.
+        assert_eq!(peer.located(&wn), (7, vec![1, 0, 0, 0], true));
+        assert!(!peer.located(&wy).2);
+    }
+}
+
+/// RV2-D: damage anywhere in the bytes (prefix included), truncation, extension,
+/// splices of two anchors, and an anchor resolved against another document.
+#[test]
+fn rv2_d_damaged_and_foreign_bytes() {
+    let s = schema();
+    let cell = |t: &str| {
+        s.branch("table_cell", Fragment::from_node(para(&s, t)))
+            .unwrap()
+    };
+    let row = |t: &str| {
+        s.branch(
+            "table_row",
+            Fragment::from_children(vec![cell(t), cell("q")]),
+        )
+        .unwrap()
+    };
+    let table = s
+        .branch(
+            "table",
+            Fragment::from_children(vec![row("tab"), row("le")]),
+        )
+        .unwrap();
+    let blocks = vec![
+        para(&s, "p0"),
+        bullet_list(
+            &s,
+            vec![
+                list_item(&s, vec![para(&s, "one")]),
+                list_item(&s, vec![blockquote(&s, vec![para(&s, "deep")])]),
+            ],
+        ),
+        table,
+        para(&s, "end"),
+    ];
+    let mut a = Peer::host(&s, blocks.clone());
+    let mut other = Peer::host(&s, blocks); // an independent document, same content
+    let find = |doc: &Node, c: char| {
+        (0..doc.content_size())
+            .find(|&p| char_at(doc, p) == Some(c))
+            .unwrap()
+    };
+    let doc = a.state.doc.clone();
+    let anchors: Vec<Vec<u8>> = ['0', 'n', 'e', 'b', 'l', 'd']
+        .iter()
+        .flat_map(|&c| {
+            let p = find(&doc, c);
+            vec![
+                a.sticky_with(p, StickyAssoc::After),
+                a.sticky_with(p, StickyAssoc::Before),
+            ]
+        })
+        .collect();
+    // Cross-document: nothing resolves in an independent replica.
+    for w in &anchors {
+        assert_eq!(other.locate(w), None, "foreign doc");
+        assert_eq!(other.resolve(w), None, "foreign doc");
+    }
+    let refs: Vec<&[u8]> = anchors.iter().map(Vec::as_slice).collect();
+    assert!(
+        other
+            .session
+            .locate_sticky_many(&other.state.doc, &refs)
+            .iter()
+            .all(Option::is_none)
+    );
+    other.type_at(1, "x");
+
+    let mut rng = 0x1234_5678_9abc_def1u64;
+    let mut next = || {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        rng
+    };
+    let mut run = |a: &Peer, phase: &str| {
+        let (mut none, mut same, mut other_place, mut panics, mut checked) = (0, 0, 0, 0, 0);
+        let rights: Vec<_> = anchors.iter().map(|w| a.locate(w)).collect();
+        eprintln!(
+            "RV2-D {phase} rights={:?}",
+            rights
+                .iter()
+                .map(|r| r.as_ref().map(|l| (l.pos.0, l.displaced)))
+                .collect::<Vec<_>>()
+        );
+        for (k, w) in anchors.iter().enumerate() {
+            let right = &rights[k];
+            let mut probe = |m: &[u8]| {
+                checked += 1;
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| a.locate(m))) {
+                    Err(_) => panics += 1,
+                    Ok(None) => none += 1,
+                    Ok(r) if &r == right => same += 1,
+                    Ok(r) => {
+                        if other_place < 5 {
+                            eprintln!("RV2-D {phase} OTHER a{k} {r:?} right {right:?}");
+                        }
+                        other_place += 1
+                    }
+                }
+            };
+            // every single byte, every value
+            for i in 0..w.len() {
+                for v in 0..=255u8 {
+                    if v != w[i] {
+                        let mut m = w.clone();
+                        m[i] = v;
+                        probe(&m);
+                    }
+                }
+            }
+            // truncations and extensions
+            for cut in 0..w.len() {
+                probe(&w[..cut]);
+            }
+            for v in [0u8, 1, 0x52, 0xff] {
+                let mut m = w.clone();
+                m.push(v);
+                probe(&m);
+            }
+            // two random byte changes
+            for _ in 0..20_000 {
+                let mut m = w.clone();
+                for _ in 0..2 {
+                    let i = (next() as usize) % m.len();
+                    m[i] ^= (next() as u8) | 1;
+                }
+                probe(&m);
+            }
+        }
+        eprintln!(
+            "RV2-D {phase}: checked {checked} none {none} same {same} other {other_place} panics {panics}"
+        );
+        assert_eq!((other_place, panics), (0, 0));
+    };
+    run(&a, "live");
+    // Splices: a's yrs prefix + b's trailer, raw (hash not recomputed) and rehashed.
+    let splice = |x: &[u8], y: &[u8], rehashed: bool| {
+        let (hx, hy) = (yrs_len(x), yrs_len(y));
+        let mut m = x[..hx].to_vec();
+        m.extend_from_slice(&y[hy..]);
+        if rehashed { rehash(m) } else { m }
+    };
+    let report = |a: &Peer, phase: &str| {
+        let (mut raw_some, mut re_some, mut re_other) = (0, 0, 0);
+        for (i, x) in anchors.iter().enumerate() {
+            for (j, y) in anchors.iter().enumerate() {
+                if i == j {
+                    continue;
+                }
+                if a.locate(&splice(x, y, false)).is_some() {
+                    raw_some += 1;
+                }
+                let r = a.locate(&splice(x, y, true));
+                if r.is_some() {
+                    re_some += 1;
+                }
+                if r.is_some() && r != a.locate(x) {
+                    re_other += 1;
+                    eprintln!(
+                        "RV2-D {phase} rehashed splice x{i}+y{j}: {r:?} vs own {:?}",
+                        a.locate(x)
+                    );
+                }
+            }
+        }
+        eprintln!(
+            "RV2-D {phase} splices: raw located {raw_some}, rehashed located {re_some}, rehashed elsewhere {re_other}"
+        );
+        assert_eq!(raw_some, 0);
+    };
+    report(&a, "live");
+    // Delete the list (both items) and the table: most anchors are now displaced.
+    let start = a.state.doc.child(0).node_size();
+    let end = start + a.state.doc.child(1).node_size() + a.state.doc.child(2).node_size();
+    a.delete(start, end);
+    run(&a, "gone");
+    report(&a, "gone");
+}
+
+/// An anchor whose block is new on a peer that has not merged it yet is `None`, not
+/// displaced, even when its yrs index names a text (no item id to check) and an
+/// outer level of its trailer is a block that peer deleted.
+#[test]
+fn an_anchor_whose_entries_are_not_merged_yet_is_not_displaced() {
+    let s = schema();
+    let mut a = Peer::host(
+        &s,
+        vec![para(&s, "keep"), blockquote(&s, vec![para(&s, "")])],
+    );
+    let mut b = Peer::join(&s, &a);
+    // A wraps the quote's empty paragraph in a new list and anchors in it.
+    a.local(|tr| {
+        tr.set_selection(Selection::cursor(Pos(8)));
+    });
+    a.run("toggleBulletList");
+    assert_eq!(a.state.doc.child(1).child(0).type_name(), "bullet_list");
+    let pos = 10;
+    assert!(
+        a.state
+            .doc
+            .resolve(Pos(pos))
+            .unwrap()
+            .parent()
+            .is_textblock()
+    );
+    let anchor = a.sticky_with(pos, StickyAssoc::After);
+    assert!(StickyIndex::decode_v1(&anchor).unwrap().is_nested());
+    // B deletes the quote without having merged A's list.
+    b.delete(6, 10);
+    assert_eq!(b.state.doc.child_count(), 1);
+    assert_eq!(b.locate(&anchor), None);
+    // Once merged, the quote's tombstone in the root places it.
+    a.send_to(&mut b);
+    b.send_to(&mut a);
+    for peer in [&a, &b] {
+        assert_eq!(peer.located(&anchor), (5, vec![0], true));
+    }
+}
+
+/// Bytes between the last entry and the hash are refused, even with the hash redone.
+#[test]
+fn bytes_after_the_last_entry_are_refused() {
+    let s = schema();
+    let peer = Peer::host(&s, vec![para(&s, "keep"), para(&s, "abc")]);
+    let with = peer.sticky_with(8, StickyAssoc::After);
+    assert_eq!(peer.located(&rehash(with.clone())), (8, vec![1], false));
+    let mut longer = with.clone();
+    let at = longer.len() - 4;
+    longer.insert(at, 0);
+    assert_eq!(peer.locate(&rehash(longer)), None);
+}

@@ -232,7 +232,14 @@ impl CollabDoc {
     /// and last a big-endian 32-bit FNV-1a hash of every byte before it, the yrs index
     /// included. [`Self::locate_sticky`] refuses (`None`) bytes whose trailer does not
     /// check out: a wrong magic, version or hash, a malformed entry, or entries that do
-    /// not form the chain from the block up to the root. A table's rows and cells are
+    /// not form the chain from the block up to the root. The hash is a 32-bit check
+    /// against accidental damage, not tamper-proofing: bytes edited on purpose with the
+    /// hash recomputed can name another place.
+    ///
+    /// The bytes name CRDT items, not text: they resolve in any replica grown from the
+    /// same CRDT (a snapshot loaded elsewhere included) and in no other, and anything
+    /// that writes the document as new items (a load while collaborating, a new host
+    /// session from the model, the re-base that ends an outbound stall) loses them. A table's rows and cells are
     /// not arrays and have no entry; the table itself has one in the array that holds
     /// it.
     ///
@@ -377,6 +384,10 @@ impl CollabDoc {
     /// document this CRDT projects. `displaced` is never `true` for a block that is
     /// still in the CRDT.
     ///
+    /// So `None` means "not locatable now", which can change (an unmerged edit, a
+    /// placeholder table, a stalled or poisoned session at the session level, a
+    /// mismatched `doc`) or not (damaged or foreign bytes); `displaced` means the
+    /// block is gone.    ///
     /// One call searches the CRDT until it finds the block, and reads all of it when
     /// the block is gone; [`Self::locate_sticky_many`] locates any number of indexes
     /// in one read.
@@ -707,6 +718,15 @@ impl LiveIndex {
             let Out::YMap(child) = child else { continue };
             if let Some(text) = block_text(txn, &child) {
                 self.gone_texts.insert(branch_of(&text));
+            } else if is_table_map(txn, &child) {
+                // A table in a gone place: every cell it stores is gone too.
+                if let Some(id) = map_id(&child) {
+                    for cell in all_cell_maps(txn, &child) {
+                        if let Some(children) = node_content(txn, &cell) {
+                            self.mark_gone(txn, &children, id);
+                        }
+                    }
+                }
             } else if let (Some(id), Some(children)) = (map_id(&child), node_content(txn, &child)) {
                 self.mark_gone(txn, &children, id);
             }
