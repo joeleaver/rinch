@@ -14,8 +14,8 @@
 //! inherits them from `:root`): `--rinch-color-surface` for the background,
 //! `--rinch-color-text` for the text and `--rinch-color-border` for the edge,
 //! so a dark theme gets a dark tooltip. Without the theme they fall back to
-//! the same light values the built-in text context menu uses. The font is
-//! `<body>`'s `font-family` at [`TOOLTIP_FONT_SIZE`].
+//! the same light values the built-in text context menu uses. The font is the
+//! theme's `--rinch-font-family`, else `sans-serif`, at [`TOOLTIP_FONT_SIZE`].
 
 use peniko::Brush;
 use peniko::color::{AlphaColor, Srgb};
@@ -121,10 +121,12 @@ impl Tooltip {
         layout_cx: &mut parley::LayoutContext<Brush>,
         text: &str,
     ) -> Self {
-        let body = tree.nodes.get(tree.body_id);
-        let family = body
-            .map(|b| b.computed_style.font_family.clone())
-            .unwrap_or_default();
+        // The theme's UI font, else the platform's sans-serif — not the
+        // page's own `font-family`, which a tooltip is no part of (a browser
+        // sets its tooltips in the system UI font).
+        let family = custom_property(tree, tree.body_id, "rinch-font-family")
+            .filter(|f| !f.is_empty())
+            .unwrap_or_else(|| "sans-serif".to_string());
         let color = |name: &str, fallback: [u8; 3]| {
             custom_property(tree, tree.body_id, name)
                 .and_then(|v| crate::layout::parse_color(&v))

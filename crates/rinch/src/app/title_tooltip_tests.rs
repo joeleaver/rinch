@@ -437,7 +437,7 @@ fn showing_it_repaints_its_rect_and_lays_out_nothing() {
     let due = app.title_tooltip_deadline().unwrap();
     assert!(tick_at(&mut app, due));
     let stats = paint(&mut app);
-    // One damage rect, the tooltip's 68x29 box grown by a pixel of
+    // One damage rect, the tooltip's 67x27 box grown by a pixel of
     // anti-aliasing; the document's two nodes under it are repainted (the
     // root and `#save`), and the text's glyphs are rasterised for the first
     // time. No cascade, no layout, no shaping counter.
@@ -448,14 +448,14 @@ fn showing_it_repaints_its_rect_and_lays_out_nothing() {
             (Counter::PaintFrames, 1),
             (Counter::RepaintPartial, 1),
             (Counter::DamageRects, 1),
-            (Counter::RepaintedPx, 1972),
+            (Counter::RepaintedPx, 2001),
             (Counter::SurfacePx, 480000),
             (Counter::PaintNodesVisited, 2),
             (Counter::StackingOrderBuilds, 1),
             (Counter::GlyphCacheHits, 1),
-            (Counter::GlyphCacheMisses, 7),
+            (Counter::GlyphCacheMisses, 8),
             (Counter::ClipMasks, 1),
-            (Counter::ClipMaskPx, 2376),
+            (Counter::ClipMaskPx, 2409),
             (Counter::PaintSurfaceAllocs, 1),
         ],
     );
