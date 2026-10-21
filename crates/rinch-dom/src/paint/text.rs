@@ -557,6 +557,27 @@ struct Piece<'a> {
     text: Option<Rect>,
 }
 
+/// [`super::text_shadow::visible_reach`] by `(blur, alpha)`, for one
+/// [`TextFragment::in_paint_order`]: a page holds few distinct shadows and
+/// colours, and the reach is a root search.
+#[derive(Default)]
+struct ReachMemo(std::cell::RefCell<Vec<(u64, u32, f64)>>);
+
+impl ReachMemo {
+    fn get(&self, blur: f64, alpha: f32) -> f64 {
+        let key = (blur.to_bits(), alpha.to_bits());
+        let mut memo = self.0.borrow_mut();
+        if let Some(&(_, _, r)) = memo.iter().find(|m| (m.0, m.1) == key) {
+            return r;
+        }
+        let r = super::text_shadow::visible_reach(blur, alpha);
+        if memo.len() < 64 {
+            memo.push((key.0, key.1, r));
+        }
+        r
+    }
+}
+
 /// The colour a `text-shadow` is drawn in ([`render_text_shadows`]'s).
 fn shadow_colour(s: &TextShadowValue) -> AlphaColor<Srgb> {
     s.color
@@ -569,7 +590,12 @@ fn shadow_colour(s: &TextShadowValue) -> AlphaColor<Srgb> {
 /// no pixel of that colour at all — the shadow painted over a pixel of colour
 /// `over` or under it differs by at most its alpha times the colours'
 /// largest channel difference.
-fn shadow_rect(s: &TextShadowValue, text: Rect, over: Option<AlphaColor<Srgb>>) -> Option<Rect> {
+fn shadow_rect(
+    reaches: &ReachMemo,
+    s: &TextShadowValue,
+    text: Rect,
+    over: Option<AlphaColor<Srgb>>,
+) -> Option<Rect> {
     let c = shadow_colour(s);
     let diff = over.map_or(1.0, |o| {
         (0..3)
@@ -580,7 +606,7 @@ fn shadow_rect(s: &TextShadowValue, text: Rect, over: Option<AlphaColor<Srgb>>) 
     if alpha * 255.0 < 0.5 {
         return None;
     }
-    let reach = super::text_shadow::visible_reach(s.blur_radius.max(0.0) as f64, alpha);
+    let reach = reaches.get(s.blur_radius.max(0.0) as f64, alpha);
     Some((text + Vec2::new(s.offset_x as f64, s.offset_y as f64)).inflate(reach, reach))
 }
 
@@ -758,13 +784,14 @@ impl<'a> TextFragment<'a> {
             .all(|s| Some(shadow_colour(s)) == first);
         let overlaps =
             |a: Rect, b: Rect| a.x0.max(b.x0) < a.x1.min(b.x1) && a.y0.max(b.y0) < a.y1.min(b.y1);
+        let reaches = ReachMemo::default();
         // The most a fragment's shadows can reach: each one's box at the
         // reach where it can change a pixel of any colour.
         let shadow_max = |p: &Piece<'_>| {
             let text = p.text?;
             p.shadows
                 .iter()
-                .filter_map(|s| shadow_rect(s, text, None))
+                .filter_map(|s| shadow_rect(&reaches, s, text, None))
                 .reduce(|a, b| a.union(b))
         };
         let inks: Vec<(Option<Rect>, Option<Rect>)> =
@@ -789,13 +816,16 @@ impl<'a> TextFragment<'a> {
                 return false;
             };
             later.shadows.iter().any(|s| {
-                shadow_rect(s, text, Some(earlier.colour))
+                shadow_rect(&reaches, s, text, Some(earlier.colour))
                     .is_some_and(|r| overlaps(r, earlier_text))
                     || (!one_colour
                         && earlier.shadows.iter().any(|e| {
-                            shadow_rect(s, text, Some(shadow_colour(e))).is_some_and(|r| {
-                                shadow_rect(e, earlier_text, None).is_some_and(|er| overlaps(r, er))
-                            })
+                            shadow_rect(&reaches, s, text, Some(shadow_colour(e))).is_some_and(
+                                |r| {
+                                    shadow_rect(&reaches, e, earlier_text, None)
+                                        .is_some_and(|er| overlaps(r, er))
+                                },
+                            )
                         }))
             })
         };
