@@ -1166,6 +1166,43 @@ impl DomDocument for RinchDocument {
         self.query_caret_rect_with_affinity(node_id, byte_offset, CaretAffinity::Downstream)
     }
 
+    /// From the same Parley layout [`Self::query_caret_position_with_affinity`]
+    /// reads, moved to the node's border box the same way
+    /// ([`Self::text_layout_origin`]).
+    fn query_line_box(
+        &self,
+        node_id: u64,
+        byte_offset: usize,
+        affinity: CaretAffinity,
+    ) -> Option<(f32, f32)> {
+        let node = self.tree.nodes.get(node_id as usize)?;
+        let layout = node
+            .text_layout
+            .as_ref()
+            .map(|l| &l.layout)
+            .or(node.cached_text_parley.as_deref())
+            .or_else(|| {
+                node.children
+                    .iter()
+                    .filter_map(|&c| self.tree.nodes.get(c))
+                    .find_map(|c| c.cached_text_parley.as_deref())
+            })?;
+        let (top, height) = crate::text_query::line_box_for_offset(layout, byte_offset, affinity)?;
+        let (_, oy) = self.text_layout_origin(node_id as usize);
+        Some((oy + top, height))
+    }
+
+    /// What the next `resolve_layout` would act on: a style change, a box
+    /// change, a structural change, or text whose inline layout was dropped.
+    /// A paint-only change (`mark_paint_dirty`, a scroll offset) is not
+    /// pending: it moves no line.
+    fn layout_pending(&self) -> bool {
+        self.tree.styles_dirty
+            || self.tree.layout_dirty
+            || self.tree.ifc_dirty
+            || !self.tree.dirty_ifc_text_roots.is_empty()
+    }
+
     fn query_caret_position_with_affinity(
         &self,
         node_id: u64,

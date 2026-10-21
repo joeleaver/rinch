@@ -29,6 +29,24 @@ use crate::handle::EditorHandle;
 /// With no handle, `Editor {}` mounts a self-contained editor — editable via the
 /// keyboard once clicked into, but with no external control surface. Pass initial
 /// content as HTML with the `content` prop.
+///
+/// **Children are an overlay slot** (#1677): they are placed in a layer inside
+/// the editor's container, at its padding-box origin ([`OVERLAY_SLOT_ATTR`]),
+/// which scrolls with the text as the caret does — so an absolutely positioned
+/// child at `top: {line.top}px` sits beside the line a
+/// [`MarginLine`](crate::MarginLine) reported, in the same scroller, with no
+/// frame of lag. They are never part of the document, the editor's diff, its
+/// caret map or its text, and a press or a key in them is theirs (a button
+/// there runs its own handler and places no caret). The layer sets no
+/// `pointer-events`; style the children as the app needs.
+///
+/// ```ignore
+/// rsx! {
+///     Editor { editor: editor.clone(),
+///         div { class: "comment-marker", style: {move || format!("top: {}px", top.get())} }
+///     }
+/// }
+/// ```
 #[derive(Debug, Default)]
 pub struct Editor {
     /// A handle from [`create_editor`](super::create_editor) for programmatic
@@ -61,7 +79,7 @@ pub struct Editor {
 }
 
 impl Component for Editor {
-    fn render(&self, scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
+    fn render(&self, scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         let handle = self.editor.clone().unwrap_or_else(create_editor);
         // Lock *before* the content load, and before the mount so the container
         // carries `data-pm-readonly` from its first frame. The order is only
@@ -83,6 +101,49 @@ impl Component for Editor {
         }
         // `mount` also releases the registration when the scope is disposed
         // (conditional hide, tab switch) — the handle itself may live on.
-        handle.mount(scope)
+        let container = handle.mount(scope);
+        if !children.is_empty() {
+            container.append_child(&overlay_slot(scope, children));
+        }
+        container
     }
+}
+
+/// The attribute on the layer that holds an [`Editor`]'s children — its
+/// **overlay slot** (#1677).
+pub const OVERLAY_SLOT_ATTR: &str = "data-pm-overlay";
+
+/// The overlay slot: a 0×0 layer at the container's padding-box origin
+/// holding `children`, so a child at `top: {MarginLine::top}px` sits level
+/// with that line and scrolls with the text, as the caret does.
+///
+/// It also carries [`NODE_VIEW_ATTR`](crate::NODE_VIEW_ATTR), which is how
+/// both platforms already treat an app's own subtree inside an editor: a press
+/// or a key inside it is its own — never a caret placement, a node selection
+/// or an editor key — and the caret map and the editor's text skip it. The
+/// view never diffs it: it is not a block (no `data-pm-type`).
+fn overlay_slot(scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
+    let layer = scope.create_element("div");
+    layer.set_attribute(OVERLAY_SLOT_ATTR, "");
+    layer.set_attribute(crate::NODE_VIEW_ATTR, "");
+    // Inline, so a consumer's stylesheet cannot move it off the origin; it
+    // sets no `pointer-events` (a 0×0 box catches nothing, and its children
+    // are the app's to style).
+    layer.set_styles(&[
+        ("position", "absolute"),
+        ("left", "0"),
+        ("top", "0"),
+        ("width", "0"),
+        ("height", "0"),
+        ("padding", "0"),
+        ("margin", "0"),
+        ("border", "0"),
+        ("overflow", "visible"),
+        ("z-index", "2"),
+        ("white-space", "normal"),
+    ]);
+    for child in children {
+        layer.append_child(child);
+    }
+    layer
 }

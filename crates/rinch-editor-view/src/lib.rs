@@ -22,13 +22,16 @@ mod handle;
 mod images;
 mod keys;
 mod links;
+mod margins;
+#[cfg(test)]
+mod margins_tests;
 mod node_views;
 pub mod registry;
 mod styles;
 mod view;
 
 pub use clock::{__set_history_clock, history_now_ms};
-pub use component::Editor;
+pub use component::{Editor, OVERLAY_SLOT_ATTR};
 pub use handle::{EditorHandle, REVEAL_PATIENCE, ScrollAlign, SelectionAnchor};
 pub use images::{
     ImageHover, ImageInput, ImageInputSource, clear_image_source, set_image_source,
@@ -36,6 +39,7 @@ pub use images::{
 };
 pub use keys::EditorKey;
 pub use links::{LinkClick, LinkHover, LinkSpan};
+pub use margins::{__margin_counters, MarginAnchor, MarginAssoc, MarginAt, MarginLine};
 pub use node_views::{
     CaretFrom, NODE_VIEW_ATTR, NodeViewCtx, NodeViewRegistration, NodeViewRender, NodeViewSpec,
 };

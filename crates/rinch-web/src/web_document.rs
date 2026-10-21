@@ -2233,6 +2233,26 @@ impl DomDocument for WebDocument {
         Some((x - block_rect.x() as f32, y - block_rect.y() as f32))
     }
 
+    /// The browser exposes no line box, but a block whose lines all take its
+    /// px `line-height` stacks them from its content box: the line a caret is
+    /// on is the one its middle falls in. `None` for `line-height: normal`
+    /// (the editor then measures from the caret's rect).
+    fn query_line_box(
+        &self,
+        node_id: u64,
+        byte_offset: usize,
+        affinity: CaretAffinity,
+    ) -> Option<(f32, f32)> {
+        let block = self.nodes.get(&(node_id as usize))?;
+        let lh = self.line_box_height(node_id)?;
+        let (_, y, h) = self.text_caret_viewport_rect(block, byte_offset, affinity)?;
+        let el = block.dyn_ref::<web_sys::Element>()?;
+        let (_, inset_top, _, _) = self.content_box_inset(node_id);
+        let content_top = el.get_bounding_client_rect().y() as f32 + inset_top;
+        let line = ((y + h / 2.0 - content_top) / lh).floor().max(0.0);
+        Some((inset_top + line * lh, lh))
+    }
+
     fn query_caret_rect_with_affinity(
         &self,
         node_id: u64,
@@ -2640,8 +2660,16 @@ impl DomDocument for WebDocument {
         let Some(n) = self.nodes.get(&(node_id as usize)) else {
             return (0.0, 0.0);
         };
+        // Less its own scroll: an absolute child of a scrolled box is placed
+        // against its *scrolled* content, so an editor container that is
+        // itself the scroller (`overflow: auto` on the `Editor`) puts its
+        // overlays at the unscrolled offset, where the desktop's parent-
+        // relative layout already is (#1677).
         match n.clone().dyn_into::<web_sys::Element>() {
-            Ok(el) => (el.client_left() as f32, el.client_top() as f32),
+            Ok(el) => (
+                el.client_left() as f32 - el.scroll_left() as f32,
+                el.client_top() as f32 - el.scroll_top() as f32,
+            ),
             Err(_) => (0.0, 0.0),
         }
     }

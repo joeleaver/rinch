@@ -120,9 +120,10 @@ pub use web_document::{__reset_scroll_lock, __scroll_lock_depth};
 // `editor_input`, installed once alongside event delegation.
 pub use rinch_editor_view::{
     CaretAffinity, CaretFrom, Editor, EditorHandle, EditorKey, ImageHover, ImageInput,
-    ImageInputSource, LinkClick, LinkHover, LinkSpan, NODE_VIEW_ATTR, NodeViewCtx,
-    NodeViewRegistration, NodeViewRender, NodeViewSpec, ScrollAlign, SelectionAnchor,
-    clear_image_source, create_editor, history_now_ms, set_image_source,
+    ImageInputSource, LinkClick, LinkHover, LinkSpan, MarginAnchor, MarginAssoc, MarginAt,
+    MarginLine, NODE_VIEW_ATTR, NodeViewCtx, NodeViewRegistration, NodeViewRender, NodeViewSpec,
+    OVERLAY_SLOT_ATTR, ScrollAlign, SelectionAnchor, clear_image_source, create_editor,
+    history_now_ms, set_image_source,
 };
 
 // Collaborative editing (M9), behind the `collaboration` feature. The collab methods
