@@ -1176,6 +1176,84 @@ fn a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass() {
     );
 }
 
+/// A right-aligned `pre-wrap` paragraph whose last line ends in spaces that
+/// fit (#1042): the line is aligned with them as content, which takes the hang
+/// pass, one re-break of the paragraph per layout built — the root compute's
+/// measure and the paint layout. The same paragraph aligned to the start pays
+/// none (`a_start_aligned_paragraph_ending_in_spaces_pays_no_pass`).
+#[test]
+fn a_right_aligned_paragraph_ending_in_spaces_pays_one_pass() {
+    let mut doc = doc_with(".p { width: 200px; white-space: pre-wrap; text-align: right; }");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    text(&mut doc, p, "abc   ");
+    let s = cold_frame(&mut doc);
+    expect(
+        "right-aligned paragraph ending in spaces",
+        &s,
+        &[
+            (StyleResolves, 2),
+            (ElementsCascaded, 3),
+            (StyleNodesVisited, 7),
+            (FullStyleWalks, 2),
+            (TaffyStyleSyncs, 3),
+            (TaffyStyleChanges, 2),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 2),
+            (IfcSignatureChanges, 1),
+            (IfcHangPasses, 2),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// The start-aligned twin of
+/// `a_right_aligned_paragraph_ending_in_spaces_pays_one_pass`: no hang pass.
+#[test]
+fn a_start_aligned_paragraph_ending_in_spaces_pays_no_pass() {
+    let mut doc = doc_with(".p { width: 200px; white-space: pre-wrap; }");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    text(&mut doc, p, "abc   ");
+    let s = cold_frame(&mut doc);
+    expect(
+        "start-aligned paragraph ending in spaces",
+        &s,
+        &[
+            (StyleResolves, 2),
+            (ElementsCascaded, 3),
+            (StyleNodesVisited, 7),
+            (FullStyleWalks, 2),
+            (TaffyStyleSyncs, 3),
+            (TaffyStyleChanges, 2),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 2),
+            (IfcSignatureChanges, 1),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
 /// A 40-line `pre` paragraph with two tabs on every line (#1122): its tabs are
 /// set at their stops by **one** rebuild per layout however many lines and
 /// tabs it holds — the first build lays every tab out one space wide, and a
