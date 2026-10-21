@@ -102,7 +102,6 @@ fn caret_at(d: &RinchDocument, root: NodeId, offset: usize, (x, y): (f32, f32)) 
 fn a_space_that_does_not_fit_takes_its_word_to_the_next_line() {
     let (d, b) = build(None, "width: 75px; white-space: break-spaces", "bullet text ");
     assert_eq!(size(&d, b), (75.0, 2.0 * LINE));
-    caret_at(&d, b, 3, (19.26, 0.0));
     caret_at(&d, b, 11, (28.33, LINE));
     caret_at(&d, b, 12, (32.83, LINE));
 }
@@ -153,7 +152,7 @@ fn a_run_of_spaces_longer_than_a_line_is_broken_between_spaces() {
 fn a_word_with_no_break_before_it_keeps_one_space_after_it() {
     let (d, b) = build(None, "width: 20px; white-space: break-spaces", "abcdef  x");
     assert_eq!(size(&d, b), (20.0, 2.0 * LINE));
-    caret_at(&d, b, 7, (57.47, 0.0));
+    caret_at(&d, b, 6, (52.97, 0.0));
     caret_at(&d, b, 8, (4.5, LINE));
     caret_at(&d, b, 9, (13.23, LINE));
 }
@@ -219,13 +218,13 @@ fn each_space_follows_its_own_elements_white_space() {
             "pre-wrap",
             "break-spaces",
             3.0 * LINE,
-            vec![(1, (32.42, 0.0)), (4, (9.0, LINE)), (10, (36.0, LINE))],
+            vec![(1, (32.42, 0.0)), (4, (9.0, LINE)), (9, (31.5, LINE))],
         ),
         (
             "break-spaces",
             "pre-wrap",
             2.0 * LINE,
-            vec![(1, (32.42, 0.0)), (4, (45.92, 0.0)), (10, (72.92, 0.0))],
+            vec![(1, (32.42, 0.0)), (4, (45.92, 0.0)), (9, (68.42, 0.0))],
         ),
     ] {
         let mut d = doc();

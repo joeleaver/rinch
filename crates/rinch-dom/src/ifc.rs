@@ -328,7 +328,7 @@ pub(crate) fn break_lines_hanging_spaces(
     text: &str,
     max_width: Option<f32>,
     preserves_spaces: bool,
-    unhung: &[std::ops::Range<usize>],
+    unhung: &UnhungSpaces,
     count_trailing: bool,
 ) -> HangStats {
     layout.break_all_lines(max_width);
@@ -341,7 +341,9 @@ pub(crate) fn break_lines_hanging_spaces(
     // can come out ending in spaces parley did not hang.
     let fix = max.filter(|&max| {
         (preserves_spaces
-            && (any_unhung_line(layout, text) || any_unhung_trailing_line(layout, text, unhung)))
+            && (any_unhung_line(layout, text)
+                || any_unhung_trailing_line(layout, text, unhung)
+                || any_overflowing_break_spaces_line(layout, text, &unhung.breaking, max)))
             || any_hung_nbsp_line(layout, text, max)
             || (count_trailing && any_counted_trailing_line(layout, text, preserves_spaces))
     });
@@ -590,12 +592,22 @@ pub(crate) fn break_leaf_lines(
     layout.break_all_lines(max_width);
     let glue = max_width.filter(|max| max.is_finite() && any_hung_nbsp_line(layout, text, *max));
     let mut stats = match glue {
-        Some(max) => hang_pass(layout, text, max, None, &[], false, false),
+        Some(max) => hang_pass(layout, text, max, None, &UnhungSpaces::default(), false, false),
         None => HangStats::default(),
     };
     if let Some(keep) = phantom_last_line(layout) {
         match glue {
-            Some(max) => stats = hang_pass(layout, text, max, Some(keep), &[], false, false),
+            Some(max) => {
+                stats = hang_pass(
+                    layout,
+                    text,
+                    max,
+                    Some(keep),
+                    &UnhungSpaces::default(),
+                    false,
+                    false,
+                )
+            }
             None => break_lines_up_to(layout, max_width, keep),
         }
         stats.phantom_rebreaks = 1;
@@ -736,7 +748,7 @@ enum IfcOp<'a> {
 /// one line). The substitute's length differs from the character's, which
 /// the `offset_map` records like any collapsed run.
 ///
-/// Text under `pre` or `pre-wrap`, and all the text of a `contenteditable`
+/// Text under `pre`, `pre-wrap` or `break-spaces`, and all the text of a `contenteditable`
 /// root, is pushed verbatim, a tab as one space that the replay widens to
 /// its tab stop ([`TabStops`], #1122) and the characters above as their
 /// substitutes. It is content to the collapsible text around
@@ -873,7 +885,7 @@ pub(crate) enum SpaceCollapse {
     /// `pre-line`: spaces and tabs collapse, a segment break is a forced
     /// break and removes the collapsible spaces on both sides of it.
     PreserveBreaks,
-    /// `pre`, `pre-wrap`: everything is kept.
+    /// `pre`, `pre-wrap`, `break-spaces`: everything is kept.
     Preserve,
 }
 
@@ -883,7 +895,9 @@ impl SpaceCollapse {
         match white_space {
             WhiteSpaceValue::Normal | WhiteSpaceValue::NoWrap => Self::Collapse,
             WhiteSpaceValue::PreLine => Self::PreserveBreaks,
-            WhiteSpaceValue::Pre | WhiteSpaceValue::PreWrap => Self::Preserve,
+            WhiteSpaceValue::Pre | WhiteSpaceValue::PreWrap | WhiteSpaceValue::BreakSpaces => {
+                Self::Preserve
+            }
         }
     }
 }
@@ -1372,7 +1386,7 @@ fn hang_pass(
     text: &str,
     max: f32,
     limit: Option<usize>,
-    unhung: &[std::ops::Range<usize>],
+    unhung: &UnhungSpaces,
     hang_spaces: bool,
     count_trailing: bool,
 ) -> HangStats {
@@ -1429,6 +1443,7 @@ fn hang_pass(
         let mut line_max = max;
         let mut widened_from = f32::NEG_INFINITY;
         let mut unglued = false;
+        let mut spaces_broken = false;
         loop {
             let Some(end) = line_end(&units, cursor, advance) else {
                 in_step = false;
@@ -1463,6 +1478,19 @@ fn hang_pass(
                 (reason, advance) = again;
                 line_max = max;
                 continue;
+            }
+            // #1043: `break-spaces` spaces never hang. A line parley ended
+            // with such spaces past the room is broken where CSS breaks it.
+            if !spaces_broken && reason == BreakReason::Regular && advance > max + 0.005 {
+                spaces_broken = true;
+                if let Some(again) =
+                    break_overflowing_spaces(&mut breaker, &units, cursor, end, &line_start, max)
+                {
+                    stats.lines += 1;
+                    (reason, advance) = again;
+                    line_max = max;
+                    continue;
+                }
             }
             let hanging = match reason {
                 // The hang branch is the one Regular break that overflows.
@@ -1744,6 +1772,111 @@ fn unglue(
     Some(result)
 }
 
+/// Break again a line parley ended past `max` in a run of `break-spaces`
+/// spaces or tabs (#1043), and return the reason and advance of the line that
+/// replaces it; `None` when the line is not one, or is right as it is.
+///
+/// parley 0.11.1 hangs an overflowing space whatever the `white-space`, and
+/// commits the line after it. CSS Text 3 §4.1.3 hangs no `break-spaces`
+/// space: one that does not fit starts the next line, and there is a break
+/// opportunity after every one of them. There is none between a word and the
+/// space after it (UAX #14 LB7), so the line, from `line_start` to
+/// `units[end]`, ending in such a run, breaks:
+///
+/// - **after the last space of the run that fits**, when one does: the rest
+///   start the next line (`abc` and ten spaces in 40px is `abc` and two, then
+///   eight, in Chrome 155);
+/// - **at the last opportunity before the word the run follows**, when not
+///   even its first space fits and there is one: the word goes to the next
+///   line with its space (`bullet text ` in 75px is `bullet ` / `text `);
+/// - **after the run's first space**, when there is none: the word and that
+///   space overflow, and the next line starts with the second space
+///   (`abcdef  x` in 20px is `abcdef ` / ` x`). A run that starts the line is
+///   broken after its first space the same way, however narrow the line.
+///
+/// A line committed here is committed by length, as [`unglue`] commits one:
+/// the breaker has no opportunity of its own between two spaces.
+fn break_overflowing_spaces(
+    breaker: &mut parley::layout::BreakLines<'_, Brush>,
+    units: &[LineUnit],
+    cursor: usize,
+    end: usize,
+    line_start: &parley::layout::BreakerState,
+    max: f32,
+) -> Option<(parley::layout::BreakReason, f32)> {
+    use parley::layout::{BreakReason, YieldData};
+    const TOL: f32 = 0.005;
+    // No following word fits in this much room: it only decides which side
+    // of a width boundary a unit falls.
+    const ROOM: f32 = 0.01;
+    // The table's cursor can sit on the zero-width newline that ended the
+    // line before; a newline is never the first unit of a line.
+    let first = cursor
+        + units[cursor..end]
+            .iter()
+            .take_while(|u| u.newline)
+            .count();
+    let run = units[first..end]
+        .iter()
+        .rev()
+        .take_while(|u| u.breaks)
+        .count();
+    if run == 0 {
+        return None;
+    }
+    let run_start = end - run;
+    let x = |p: usize| -> f32 { units[cursor..p].iter().map(|u| u.advance).sum() };
+    let through = match (run_start + 1..=end).rev().find(|&p| x(p) <= max + TOL) {
+        // It fits as it is.
+        Some(p) if p == end => return None,
+        Some(p) => p,
+        None => {
+            let word_x = x(run_start);
+            if run_start > first && word_x > ROOM {
+                breaker.revert_to(line_start.clone());
+                let room = word_x - ROOM;
+                let state = breaker.state_mut();
+                state.set_layout_max_advance(room);
+                state.set_line_max_advance(room);
+                if let Some(YieldData::LineBreak(d)) = breaker.break_next()
+                    && d.advance <= room + TOL
+                {
+                    breaker.set_prior_line_width(max);
+                    return Some((d.reason, d.advance));
+                }
+            }
+            run_start + 1
+        }
+    };
+    let n = units[cursor..through].iter().filter(|u| u.counted).count();
+    breaker.revert_to(line_start.clone());
+    breaker.break_next_with_length(u32::try_from(n).ok()?)?;
+    breaker.set_prior_line_width(max);
+    Some((BreakReason::Regular, x(through)))
+}
+
+/// The preserved text of an inline formatting context whose spaces and tabs
+/// do not hang at a soft wrap, as sorted, disjoint flat byte ranges.
+#[derive(Default)]
+pub(crate) struct UnhungSpaces {
+    /// `pre` text (#1212): it wraps nowhere, so CSS Text 3 §4.1.3 hangs none
+    /// of its spaces and a line ending in them is aligned with them.
+    pub pre: Vec<std::ops::Range<usize>>,
+    /// `break-spaces` text (#1043): its spaces never hang
+    /// ([`LineUnit::breaks`]).
+    pub breaking: Vec<std::ops::Range<usize>>,
+}
+
+impl UnhungSpaces {
+    fn is_empty(&self) -> bool {
+        self.pre.is_empty() && self.breaking.is_empty()
+    }
+
+    fn contains(&self, byte: usize) -> bool {
+        in_ranges(&self.pre, byte) || in_ranges(&self.breaking, byte)
+    }
+}
+
 /// An anonymous block box `cleanup_anonymous_block_boxes` took out of its
 /// container but kept in the slab, with the run it was minted for (#964).
 /// `create_anonymous_block_boxes` mints that run's box into it, or frees it.
@@ -1805,8 +1938,13 @@ struct LineUnit {
     /// §4.1.3 hangs a preserved space only where the text wraps, so the hang
     /// pass does not widen a line for it and a line ending in it is aligned
     /// with it as content. (Parley itself still hangs the one that overflows
-    /// right after `pre-wrap` spaces — tracked in #1243.)
+    /// right after `pre-wrap` spaces — tracked in #1243.) A `break-spaces`
+    /// space or tab is one too: it never hangs.
     unhung: bool,
+    /// A space or tab of a `break-spaces` element (#1043): it never hangs,
+    /// one that does not fit starts the next line, and there is a break
+    /// opportunity after it ([`break_overflowing_spaces`]).
+    breaks: bool,
     newline: bool,
     /// A no-break space (U+00A0), which parley hangs and CSS glues (#1218).
     nbsp: bool,
@@ -1957,24 +2095,46 @@ fn in_ranges(ranges: &[std::ops::Range<usize>], byte: usize) -> bool {
 fn any_unhung_trailing_line(
     layout: &parley::Layout<Brush>,
     text: &str,
-    unhung: &[std::ops::Range<usize>],
+    unhung: &UnhungSpaces,
 ) -> bool {
     !unhung.is_empty()
         && layout.lines().any(|line| {
             let r = line.text_range();
             let body = text.get(r.clone()).unwrap_or("");
             let trimmed = body.trim_end_matches(['\n', '\r']);
-            trimmed.ends_with([' ', '\t']) && in_ranges(unhung, r.start + trimmed.len() - 1)
+            trimmed.ends_with([' ', '\t']) && unhung.contains(r.start + trimmed.len() - 1)
+        })
+}
+
+/// Whether some line parley ended past `max` in a `break-spaces` space or
+/// tab (#1043) — the cheap test that sends a paragraph through [`hang_pass`]
+/// for [`break_overflowing_spaces`].
+fn any_overflowing_break_spaces_line(
+    layout: &parley::Layout<Brush>,
+    text: &str,
+    breaking: &[std::ops::Range<usize>],
+    max: f32,
+) -> bool {
+    use parley::layout::BreakReason;
+    !breaking.is_empty()
+        && layout.lines().any(|line| {
+            let r = line.text_range();
+            let body = text.get(r.clone()).unwrap_or("");
+            line.break_reason() == BreakReason::Regular
+                && line.metrics().advance > max + 0.005
+                && body.ends_with([' ', '\t'])
+                && in_ranges(breaking, r.start + body.len() - 1)
         })
 }
 
 /// Every cluster and inline box of `layout`, in the logical order the line
 /// breaker walks them. Read from an already broken layout: each cluster is on
-/// exactly one line. A space in an `unhung` range is [`LineUnit::unhung`].
+/// exactly one line. A space in one of the `unhung` ranges is
+/// [`LineUnit::unhung`], and in a `break-spaces` one [`LineUnit::breaks`] too.
 fn logical_units(
     layout: &parley::Layout<Brush>,
     text: &str,
-    unhung: &[std::ops::Range<usize>],
+    unhung: &UnhungSpaces,
 ) -> Vec<LineUnit> {
     // (byte, 0 = inline box / 1 = cluster, index within its kind) → unit.
     let mut keyed: Vec<((usize, u8, usize), LineUnit)> = Vec::new();
@@ -1985,13 +2145,15 @@ fn logical_units(
                 let range = c.text_range();
                 let n = keyed.len();
                 let space = is_hanging_space(text, &c);
-                let pre = space && in_ranges(unhung, range.start);
+                let pre = space && in_ranges(&unhung.pre, range.start);
+                let breaks = space && in_ranges(&unhung.breaking, range.start);
                 keyed.push((
                     (range.start, 1, n),
                     LineUnit {
                         advance: c.advance(),
-                        hangs: space && !pre,
-                        unhung: pre,
+                        hangs: space && !pre && !breaks,
+                        unhung: pre || breaks,
+                        breaks,
                         newline: c.is_hard_line_break(),
                         nbsp: c.is_space_or_nbsp()
                             && text
@@ -2018,6 +2180,7 @@ fn logical_units(
                 advance,
                 hangs: false,
                 unhung: false,
+                breaks: false,
                 newline: false,
                 nbsp: false,
                 counted: in_flow,
@@ -7753,28 +7916,29 @@ impl RinchDocument {
         // content; collapsible ones are single, and gone at a forced break.
         let preserves_spaces = ifc_text.preserved();
         // The text of `pre` elements, whose preserved spaces must not hang
-        // (`LineUnit::unhung`; the mixed seams left are tracked in #1243).
-        let unhung: Vec<std::ops::Range<usize>> = if preserves_spaces {
-            text_ranges
+        // (`LineUnit::unhung`; the mixed seams left are tracked in #1243),
+        // and of `break-spaces` ones, whose spaces never hang (#1043).
+        let mut unhung = UnhungSpaces::default();
+        if preserves_spaces {
+            use crate::computed_style::WhiteSpaceValue;
+            for r in text_ranges
                 .iter()
                 .filter(|r| !r.is_br && r.flat_end > r.flat_start)
-                .filter(|r| {
-                    nodes
-                        .get(r.node_id)
-                        .and_then(|t| t.parent)
-                        .and_then(|el| nodes.get(el))
-                        .is_some_and(|el| {
-                            matches!(
-                                el.computed_style.white_space,
-                                crate::computed_style::WhiteSpaceValue::Pre
-                            )
-                        })
-                })
-                .map(|r| r.flat_start..r.flat_end)
-                .collect()
-        } else {
-            Vec::new()
-        };
+            {
+                let white_space = nodes
+                    .get(r.node_id)
+                    .and_then(|t| t.parent)
+                    .and_then(|el| nodes.get(el))
+                    .map(|el| el.computed_style.white_space);
+                match white_space {
+                    Some(WhiteSpaceValue::Pre) => unhung.pre.push(r.flat_start..r.flat_end),
+                    Some(WhiteSpaceValue::BreakSpaces) => {
+                        unhung.breaking.push(r.flat_start..r.flat_end)
+                    }
+                    _ => {}
+                }
+            }
+        }
         // Build and break; with preserved tabs, again until each tab ends at
         // its stop (#1122): a tab's width depends on where its line puts it.
         let tabs = ifc_text.tab_offsets();
@@ -7846,6 +8010,7 @@ impl RinchDocument {
                 vertical_align_spans,
                 max_width: max_width.unwrap_or(f32::INFINITY),
                 preserves_spaces,
+                break_spaces: unhung.breaking,
                 hang,
                 span_fragments: Default::default(),
                 out_of_flow,
@@ -8124,6 +8289,7 @@ impl RinchDocument {
                 max_width: container_width,
                 // Every line fits: nothing hangs.
                 preserves_spaces: false,
+                break_spaces: Vec::new(),
                 hang: HangStats::default(),
                 span_fragments: Default::default(),
                 // The caller carries the marks of the layout this replaces.

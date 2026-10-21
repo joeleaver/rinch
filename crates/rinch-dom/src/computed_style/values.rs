@@ -970,6 +970,10 @@ pub enum WhiteSpaceValue {
     Pre,
     PreWrap,
     PreLine,
+    /// `break-spaces`: preserved like `pre-wrap`, but its spaces and tabs
+    /// never hang — one that does not fit starts the next line — and there is
+    /// a break opportunity after each of them (#1043).
+    BreakSpaces,
 }
 
 /// CSS overflow-wrap (word-wrap) property values.

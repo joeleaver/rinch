@@ -531,6 +531,7 @@ fn emit_white_space(css: &mut String, obj: &serde_json::Map<String, Value>) {
             "Pre" => "pre",
             "PreWrap" => "pre-wrap",
             "PreLine" => "pre-line",
+            "BreakSpaces" => "break-spaces",
             // "Normal" is the default; nothing to emit.
             _ => return,
         };

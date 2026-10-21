@@ -623,11 +623,15 @@ pub struct InlineLayout {
     /// The max_width used to build this layout (for cache invalidation).
     pub max_width: f32,
     /// Whether spaces at the end of a line can be content, not collapsed
-    /// away: the IFC holds text under `pre` or `pre-wrap` (any element's,
+    /// away: the IFC holds text under `pre`, `pre-wrap` or `break-spaces` (any element's,
     /// #1192), or is a contenteditable root. Not `pre-line`'s, which collapses
     /// spaces and removes them at the end of a line (CSS Text 3 §4.1.3).
     /// Read by [`Self::measured_width`].
     pub preserves_spaces: bool,
+    /// The flat byte ranges of `break-spaces` text, sorted and disjoint: its
+    /// spaces and tabs never hang, so a line ending in them is as wide as
+    /// they make it (#1043). Read by [`Self::measured_width`].
+    pub break_spaces: Vec<std::ops::Range<usize>>,
     /// What hanging the preserved spaces at a soft wrap cost this layout
     /// (the `ifc_hang_*` perf counters).
     pub hang: crate::ifc::HangStats,
@@ -754,12 +758,18 @@ impl InlineLayout {
     /// line keeps everything up to and including its last NBSP, and drops
     /// only the spaces, tabs and newline after it. Not clamped to the
     /// available width: an NBSP never hangs, not even conditionally, so a
-    /// min-content measure must count it. A text with no NBSP (every ordinary
-    /// one) returns `width` after one scan of its bytes.
+    /// min-content measure must count it. A `break-spaces` space or tab is
+    /// kept like an NBSP: it never hangs either (#1043). A text with no NBSP
+    /// and no `break-spaces` text (every ordinary one) returns `width` after
+    /// one scan of its bytes.
     fn width_keeping_nbsp(&self, width: f32) -> f32 {
-        if !self.text_content.contains('\u{a0}') {
+        if !self.text_content.contains('\u{a0}') && self.break_spaces.is_empty() {
             return width;
         }
+        let in_break_spaces = |byte: usize| {
+            let i = self.break_spaces.partition_point(|r| r.end <= byte);
+            self.break_spaces.get(i).is_some_and(|r| r.contains(&byte))
+        };
         let mut extent = width;
         for line in self.layout.lines() {
             let m = line.metrics();
@@ -772,7 +782,12 @@ impl InlineLayout {
             for run in line.runs() {
                 for c in run.clusters() {
                     let range = c.text_range();
-                    let nbsp = self.text_content.get(range.clone()) == Some("\u{a0}");
+                    // A `break-spaces` space or tab is kept the same way: it
+                    // never hangs either (#1043).
+                    let nbsp = self.text_content.get(range.clone()) == Some("\u{a0}")
+                        || (!self.break_spaces.is_empty()
+                            && matches!(self.text_content.get(range.clone()), Some(" " | "\t"))
+                            && in_break_spaces(range.start));
                     clusters.push((range.start, c.advance(), nbsp));
                 }
             }
