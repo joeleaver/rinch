@@ -164,32 +164,15 @@ pub fn visual_line_range(
     byte_offset: usize,
     affinity: CaretAffinity,
 ) -> Option<std::ops::Range<usize>> {
-    use parley::layout::{BreakReason, Cluster};
-    let last = layout.lines().len().checked_sub(1)?;
     // The line the caret is DRAWN on (Parley's own `Cursor`, which puts an
     // upstream caret at a soft wrap on the upper line and a caret after a hard
     // break on the far one), not the line whose byte range holds the caret
     // byte: an inline box has no bytes, so a caret right before an image that
     // ends a line is drawn on that line while its byte starts the next one.
-    let (_, cy) = caret_position_for_offset_layout_with_affinity(layout, byte_offset, affinity);
-    let index = layout
+    let line = layout
         .lines()
-        .position(|l| {
-            let m = l.metrics();
-            cy >= m.block_min_coord - 0.5 && cy < m.block_max_coord - 0.5
-        })
-        .unwrap_or(last);
-    let line = layout.lines().nth(index)?;
-    let range = line.text_range();
-    let mut end = range.end;
-    if line.break_reason() == BreakReason::Explicit
-        && end > range.start
-        && let Some(cluster) = Cluster::from_byte_index(layout, end - 1)
-        && cluster.is_hard_line_break()
-    {
-        end = cluster.text_range().start;
-    }
-    Some(range.start..end.max(range.start))
+        .nth(caret_line_index(layout, byte_offset, affinity)?)?;
+    Some(line_edge_range(layout, &line))
 }
 
 /// The line box `(top, height)` of the visual line a caret at `byte_offset`
@@ -232,6 +215,123 @@ pub fn visual_line_range_for_node(
         return visual_line_range(layout, byte_offset, affinity);
     }
     None
+}
+
+/// Which visual line [`visual_line_edges`] is asked about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineOf {
+    /// The line Parley draws a caret at this byte with this affinity on (the
+    /// line [`visual_line_range`] finds).
+    Caret(usize, CaretAffinity),
+    /// The line holding the inline box with this id: where a caret drawn
+    /// against that box's edge is (#1116). An inline box has no bytes, so a
+    /// caret beside an image is drawn from the image's box, which can be on
+    /// another line than the one the byte query picks.
+    InlineBox(u64),
+}
+
+/// A visual line's edges, as Home and End want them (#1116).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VisualLineEdges {
+    /// The line's bytes, as [`visual_line_range`] gives them.
+    pub range: std::ops::Range<usize>,
+    /// The inline box that is the line's first item, if one is.
+    pub first_box: Option<u64>,
+    /// The inline box that is the line's last item, if one is.
+    pub last_box: Option<u64>,
+    /// No glyph run on the line is right-to-left. Items are in visual order,
+    /// so `first_box` and `last_box` are the line's logical edges only then.
+    pub ltr: bool,
+}
+
+/// The edges of the visual line `at` names: its bytes, and the inline boxes
+/// that are its first and last items. An inline box (an image) has no bytes,
+/// so the line's edge byte is the byte of both sides of a box there, and of
+/// a box at that byte on the neighbouring line: the items say which side of
+/// the box the line's edge is (#1116). `None` for an empty layout, or a box
+/// the layout does not hold.
+pub fn visual_line_edges(
+    layout: &parley::layout::Layout<Brush>,
+    at: LineOf,
+) -> Option<VisualLineEdges> {
+    use parley::layout::PositionedLayoutItem;
+    let index = match at {
+        LineOf::Caret(byte, affinity) => caret_line_index(layout, byte, affinity)?,
+        LineOf::InlineBox(id) => layout.lines().position(|l| {
+            l.items()
+                .any(|it| matches!(it, PositionedLayoutItem::InlineBox(b) if b.id == id))
+        })?,
+    };
+    let line = layout.lines().nth(index)?;
+    let as_box = |item: PositionedLayoutItem<'_, Brush>| match item {
+        PositionedLayoutItem::InlineBox(b) => Some(b.id),
+        PositionedLayoutItem::GlyphRun(_) => None,
+    };
+    let ltr = line.items().all(|it| match it {
+        PositionedLayoutItem::GlyphRun(g) => !g.run().is_rtl(),
+        PositionedLayoutItem::InlineBox(_) => true,
+    });
+    Some(VisualLineEdges {
+        range: line_edge_range(layout, &line),
+        first_box: line.items().next().and_then(as_box),
+        last_box: line.items().last().and_then(as_box),
+        ltr,
+    })
+}
+
+/// [`visual_line_edges`] in the text-bearing element `node_id`'s layout.
+pub fn visual_line_edges_for_node(
+    doc: &crate::dom_impl::RinchDocument,
+    node_id: u64,
+    at: LineOf,
+) -> Option<VisualLineEdges> {
+    let node = doc.tree.nodes.get(node_id as usize)?;
+    if let Some(ref inline_layout) = node.text_layout {
+        return visual_line_edges(&inline_layout.layout, at);
+    }
+    if let Some(ref layout) = node.cached_text_parley {
+        return visual_line_edges(layout, at);
+    }
+    None
+}
+
+/// A line's bytes as [`visual_line_range`] gives them: up to the hard break
+/// that ends it, if one does.
+fn line_edge_range(
+    layout: &parley::layout::Layout<Brush>,
+    line: &parley::layout::Line<'_, Brush>,
+) -> std::ops::Range<usize> {
+    use parley::layout::{BreakReason, Cluster};
+    let range = line.text_range();
+    let mut end = range.end;
+    if line.break_reason() == BreakReason::Explicit
+        && end > range.start
+        && let Some(cluster) = Cluster::from_byte_index(layout, end - 1)
+        && cluster.is_hard_line_break()
+    {
+        end = cluster.text_range().start;
+    }
+    range.start..end.max(range.start)
+}
+
+/// The index of the line Parley draws a caret at `byte_offset` with
+/// `affinity` on (see [`visual_line_range`]). `None` for an empty layout.
+fn caret_line_index(
+    layout: &parley::layout::Layout<Brush>,
+    byte_offset: usize,
+    affinity: CaretAffinity,
+) -> Option<usize> {
+    let last = layout.lines().len().checked_sub(1)?;
+    let (_, cy) = caret_position_for_offset_layout_with_affinity(layout, byte_offset, affinity);
+    Some(
+        layout
+            .lines()
+            .position(|l| {
+                let m = l.metrics();
+                cy >= m.block_min_coord - 0.5 && cy < m.block_max_coord - 0.5
+            })
+            .unwrap_or(last),
+    )
 }
 
 /// [`caret_position_for_offset_layout`] for a caret with `affinity` at a soft

@@ -376,10 +376,30 @@ fn review_1595_tab_out_of_the_last_input_leaves_the_view() {
     assert_ne!(p.app.focus_target, FocusTarget::Input(b));
 }
 
-/// Control for the above: an unclaimed image last on its line. End and a press
-/// past the line's end land before the image (Pos 3): #1599, older than node views.
+/// Control for the above: an unclaimed image last on its line. End lands
+/// after the image (Pos 4); it landed before it (Pos 3) until #1116, the End
+/// half of #1599.
 #[test]
-#[ignore = "#1599: End lands before a line-final image"]
+fn review_1595_control_end_lands_after_an_unclaimed_line_final_image() {
+    let view = Rc::new(View::default());
+    let mut p = page(
+        r#"<p>ab<img src="x.png" data-y="n" style="width:20px;height:20px"></p><p>gh</p>"#,
+        view.clone(),
+    );
+    let (ax, ay, ah) = caret(&p, 2);
+    press(&mut p.app, (ax + 1.0, ay + ah / 2.0));
+    key(&mut p.app, KeyCode::End);
+    assert_eq!(
+        p.handle.selection(),
+        Selection::cursor(Pos(4)),
+        "End: after the image"
+    );
+}
+
+/// The same image: a press past the line's end lands before the image (Pos
+/// 3): #1599, older than node views. Its End half is fixed by #1116 (above).
+#[test]
+#[ignore = "#1599: a press past a line-final image lands before it"]
 fn review_1595_control_unclaimed_image_at_the_end_of_its_line() {
     let view = Rc::new(View::default());
     let mut p = page(
@@ -387,10 +407,6 @@ fn review_1595_control_unclaimed_image_at_the_end_of_its_line() {
         view.clone(),
     );
     assert_eq!(view.renders.get(), 0);
-    let (ax, ay, ah) = caret(&p, 2);
-    press(&mut p.app, (ax + 1.0, ay + ah / 2.0));
-    key(&mut p.app, KeyCode::End);
-    eprintln!("REVIEW-1595 control End -> {:?}", p.handle.selection());
     let ib = {
         let doc = p.app.doc.as_ref().unwrap();
         let d = doc.borrow();
@@ -411,6 +427,6 @@ fn review_1595_control_unclaimed_image_at_the_end_of_its_line() {
     assert_eq!(
         p.handle.selection(),
         Selection::cursor(Pos(4)),
-        "End: after the image"
+        "a press past its edge: after the image"
     );
 }
