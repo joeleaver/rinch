@@ -15,18 +15,17 @@ use super::text::render_text_with_shadow;
 const SELECTION_WASH: (u8, u8, u8, u8) = (51, 154, 240, 100);
 
 /// Paint the selection `a..b` (byte offsets, either order) over `layout`, whose
-/// origin is at `(text_x, text_y)`: one rect per line, from
-/// [`crate::text_query::selection_rects_for_layout`] — the editor's rule, so
-/// each line's rect is its line box and ends where the next line's begins, the
-/// line before a hard break carries a newline's width and a soft-wrapped line
-/// runs to its trailing edge (#1106; #1008, #1010, #1024). Two neighbours used
-/// to be derived here from the glyph top and a fractional `line_height` (or
-/// `1.2 × font-size` in a `<textarea>`), so they overlapped by a pixel — a
-/// darker row across a translucent highlight — or left one unpainted.
-///
-/// Every line but the selection's last is extended to `extend_to` (the content
-/// width), as these painters always did for a selection that carries on to the
-/// next line; the editor's highlight is not.
+/// origin is at `(text_x, text_y)` and whose units are `units` device px each:
+/// one rect per line, from [`crate::text_query::selection_rects_for_layout`] —
+/// the editor's rule, so each line's rect is its line box and ends where the
+/// next line's begins, the line before a hard break carries a newline's width
+/// and a soft-wrapped line runs to its trailing edge (#1106; #1008, #1010,
+/// #1024). Two neighbours used to be derived here from the glyph top and a
+/// fractional `line_height` (or `1.2 × font-size` in a `<textarea>`), so they
+/// overlapped by a pixel — a darker row across a translucent highlight — or
+/// left one unpainted. A line the selection carries on past is not extended to
+/// the content box's edge: Chrome 155 ends it at its text (a soft wrap's
+/// trailing space) or a newline's width, whether or not it is the last.
 #[allow(clippy::too_many_arguments)]
 fn paint_selection_rects(
     painter: &mut dyn Painter,
@@ -36,57 +35,94 @@ fn paint_selection_rects(
     b: usize,
     text_x: f64,
     text_y: f64,
-    extend_to: f64,
+    units: f64,
 ) {
     let (r, g, bl, al) = SELECTION_WASH;
     let color = AlphaColor::<Srgb>::from_rgba8(r, g, bl, al);
-    let rects = crate::text_query::selection_rects_for_layout(layout, a, b);
-    let last = rects.len().saturating_sub(1);
-    for (i, (left, top, width, height)) in rects.into_iter().enumerate() {
-        let left = left as f64;
-        let mut right = left + width as f64;
-        if i < last {
-            right = right.max(extend_to);
-        }
+    for (left, top, width, height) in crate::text_query::selection_rects_for_layout(layout, a, b) {
         let rect = Rect::new(
-            text_x + left,
-            text_y + top as f64,
-            text_x + right,
-            text_y + (top + height) as f64,
+            text_x + left as f64 * units,
+            text_y + top as f64 * units,
+            text_x + (left + width) as f64 * units,
+            text_y + (top + height) as f64 * units,
         );
         painter.fill_color(Fill::NonZero, transform, color, &rect.into());
     }
 }
 
+/// The **read-only** text selection (`user-select: text`) IFC root `node`
+/// carries — `data-text-sel`, `-start`, `-end` — as byte offsets into its
+/// laid-out text, clamped to it. `None` when it carries none, or an empty one.
+pub(crate) fn read_only_selection(node: &Node) -> Option<(usize, usize)> {
+    let layout = node.text_layout.as_ref()?;
+    if node.attributes.get("data-text-sel").map(String::as_str) != Some("true") {
+        return None;
+    }
+    let len = layout.text_content.len();
+    let at = |k: &str| {
+        node.attributes
+            .get(k)
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(0)
+            .min(len)
+    };
+    let (a, b) = (at("data-text-sel-start"), at("data-text-sel-end"));
+    (a != b).then_some((a, b))
+}
+
+/// How far `node`'s read-only selection highlight reaches past its border box,
+/// in CSS px: `[left, top, right, bottom]`, never negative. Under a
+/// `line-height` smaller than the text, each line's rect is its content area
+/// (#1008), and the first and last stand out of the box above and below it, as
+/// Chrome 155 paints them; the highlight is the node's own paint, so its damage
+/// has to reach that far, or a partial frame leaves stale rows of wash (review
+/// of #1706). Zero for a node with no selection.
+pub(crate) fn read_only_selection_outsets(node: &Node) -> [f32; 4] {
+    let mut o = [0.0_f32; 4];
+    let (Some((a, b)), Some(layout)) = (read_only_selection(node), node.text_layout.as_ref())
+    else {
+        return o;
+    };
+    let (ox, oy) = super::ifc_root_content_origin(node);
+    let (w, h) = (node.layout.width, node.layout.height);
+    for (left, top, width, height) in
+        crate::text_query::selection_rects_for_layout(&layout.layout, a, b)
+    {
+        o[0] = o[0].max(-(ox + left));
+        o[1] = o[1].max(-(oy + top));
+        o[2] = o[2].max(ox + left + width - w);
+        o[3] = o[3].max(oy + top + height - h);
+    }
+    o
+}
+
 /// Paint the translucent selection highlight for a **read-only** text selection
-/// (`user-select: text`) over a block's inline `layout`. `sel_start`/`sel_end`
-/// are byte offsets into the laid-out text; `text_x`/`text_y` are the content-box
-/// origin. (The editor and `<input>` render their own selections elsewhere; this
-/// is only for selecting static, non-editable text.)
-#[allow(clippy::too_many_arguments)]
+/// (`user-select: text`, [`read_only_selection`]) over IFC root `node`'s inline
+/// layout, whose content-box origin is at device px `(text_x, text_y)`. The
+/// layout is in CSS px, so its rects are scaled by `scale` (they were drawn at
+/// 1/scale on a HiDPI display). (The editor and `<input>` render their own
+/// selections elsewhere; this is only for selecting static, non-editable text.)
 pub(super) fn paint_text_selection_highlight(
+    node: &Node,
     painter: &mut dyn Painter,
+    scale: f64,
     text_x: f64,
     text_y: f64,
-    layout: &parley::layout::Layout<Brush>,
-    text_len: usize,
-    sel_start: usize,
-    sel_end: usize,
-    content_width: f64,
     transform: Affine,
 ) {
-    if sel_start == sel_end {
+    let (Some((a, b)), Some(layout)) = (read_only_selection(node), node.text_layout.as_ref())
+    else {
         return;
-    }
+    };
     paint_selection_rects(
         painter,
         transform,
-        layout,
-        sel_start.min(text_len),
-        sel_end.min(text_len),
+        &layout.layout,
+        a,
+        b,
         text_x,
         text_y,
-        content_width,
+        scale,
     );
 }
 
@@ -293,7 +329,9 @@ pub(super) fn paint_input_value(
             sel_end_byte,
             text_x,
             text_y,
-            w - padding_left * 2.0,
+            // The control's layout is built at the scaled font size: already
+            // device px.
+            1.0,
         );
     }
 

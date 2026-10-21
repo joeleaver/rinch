@@ -793,7 +793,8 @@ fn ink_rect(tree: &NodeTree, node: &Node, x: f64, y: f64, w: f64, h: f64, scale:
     if cs.box_shadow.is_empty()
         && cs.text_shadow.is_empty()
         && cs.outline_width <= 0.0
-        && (!tree.inline_text_shadows || node.text_layout.is_none())
+        && (node.text_layout.is_none()
+            || (!tree.inline_text_shadows && contenteditable::read_only_selection(node).is_none()))
     {
         return r;
     }
@@ -829,7 +830,9 @@ pub(crate) fn member_text_shadows<'a>(
 /// [`own_ink_outsets`], grown for an IFC root by the `text-shadow` reach of
 /// the inline elements whose text it lays out and paints
 /// ([`member_text_shadows`], #1048): a flowed inline owns no box, so its
-/// shadow is ink of the root that draws it.
+/// shadow is ink of the root that draws it. Also grown by the reach of a
+/// read-only selection highlight the root carries past its box
+/// ([`contenteditable::read_only_selection_outsets`], review of #1706).
 pub(crate) fn ink_outsets_in<'a>(
     node: &'a Node,
     enabled: bool,
@@ -838,6 +841,12 @@ pub(crate) fn ink_outsets_in<'a>(
     let mut o = own_ink_outsets(&node.computed_style);
     for list in member_text_shadows(node, enabled, get) {
         let m = text_shadow_outsets(list);
+        for (side, reach) in o.iter_mut().zip(m) {
+            *side = side.max(reach);
+        }
+    }
+    if node.text_layout.is_some() {
+        let m = contenteditable::read_only_selection_outsets(node);
         for (side, reach) in o.iter_mut().zip(m) {
             *side = side.max(reach);
         }
@@ -3651,48 +3660,16 @@ fn paint_node(
 
             // Render read-only text selection highlight (user-select: text).
             // It highlights this box's own text, so it goes with it (#829).
-            if visible
-                && node
-                    .attributes
-                    .get("data-text-sel")
-                    .map(|s| s == "true")
-                    .unwrap_or(false)
-            {
-                let sel_start = node
-                    .attributes
-                    .get("data-text-sel-start")
-                    .and_then(|s| s.parse::<usize>().ok())
-                    .unwrap_or(0);
-                let sel_end = node
-                    .attributes
-                    .get("data-text-sel-end")
-                    .and_then(|s| s.parse::<usize>().ok())
-                    .unwrap_or(0);
-
-                if sel_start != sel_end {
-                    if let Some(ref inline_layout) = node.text_layout {
-                        let cs = &node.computed_style;
-                        let (off_x, off_y) = ifc_root_content_origin(node);
-                        let pad_x = off_x as f64 * scale;
-                        let pad_y = off_y as f64 * scale;
-                        let text_x = x + pad_x;
-                        let text_y = y + pad_y;
-                        let text_len = inline_layout.text_content.len();
-                        let content_width = node.layout.width as f64 * scale
-                            - (cs.padding_left.to_px() + cs.padding_right.to_px()) as f64 * scale;
-                        paint_text_selection_highlight(
-                            painter,
-                            text_x,
-                            text_y,
-                            &inline_layout.layout,
-                            text_len,
-                            sel_start,
-                            sel_end,
-                            content_width,
-                            node_transform,
-                        );
-                    }
-                }
+            if visible && node.text_layout.is_some() {
+                let (off_x, off_y) = ifc_root_content_origin(node);
+                paint_text_selection_highlight(
+                    node,
+                    painter,
+                    scale,
+                    x + off_x as f64 * scale,
+                    y + off_y as f64 * scale,
+                    node_transform,
+                );
             }
 
             // Check if this is an IFC root with a cached inline layout
