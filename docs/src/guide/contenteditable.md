@@ -2016,10 +2016,15 @@ Its bytes also **outlive their block**. yrs garbage-collects a deleted block's
 characters together with the block, so nothing in the shared document says which
 block they were in any more; but the block's own entry in its parent array stays there
 as a tombstone. So these bytes are the plain yrs `StickyIndex` described above, with
-`assoc`'s association, followed by a trailer that yrs decoding ignores (an app still
-resolves them with yrs alone): one more yrs `StickyIndex` per array on the way from
-the block up to the document root, naming the block's entry (or its container's) in
-it. `collab_locate_sticky(&bytes)` answers a `StickyLocation`:
+`assoc`'s association, followed by a versioned trailer: one more yrs `StickyIndex` per
+array on the way from the block up to the document root, naming the block's entry (or
+its container's) in it, and a 32-bit hash of everything before it. **Treat the bytes
+as opaque**: store them, compare them, hand them back; do not build or edit them. A
+trailer whose hash, version or chain (each entry in the array of the next one's node)
+does not check out is refused, so damaged bytes answer `None`, never another place.
+yrs alone still reads the leading index, because yrs's decoder ignores what follows
+it; that is yrs's behaviour, not a promise, and a test pins it.
+`collab_locate_sticky(&bytes)` answers a `StickyLocation`:
 
 ```rust
 let anchor = editor.collab_sticky_index_with(pos, StickyAssoc::After).unwrap();
@@ -2031,15 +2036,26 @@ if let Some(at) = editor.collab_locate_sticky(&anchor) {
 }
 ```
 
-While the block lives it is the same answer as `collab_resolve_sticky`, with
-`displaced: false`. Once the block is deleted, joined into the one before it or
-replaced (a list toggled on it), it is the place the block stood, at the innermost
-level that still has its entry: the end of the last textblock before that place, or
-the start of the first one after it when there is none. A table's rows and cells have
-no entry, so an index whose row was deleted lands at the start of the first textblock
-of the table. An index from plain `collab_sticky_index` has no trailer, and its
-deleted block is still `None`. An index naming a peer's edit this replica has not
-merged yet is `None`, not displaced.
+While the block is in the shared document it is the same answer as
+`collab_resolve_sticky`, with `displaced: false`, or `None` when the model cannot show
+it (a table too large to read, shown as a placeholder): `displaced` is never `true`
+for a block that is still there. Once the block is deleted, joined into the one
+before it or replaced, it is the place the block stood, at the innermost level that
+still has its entry: the end of the last textblock before that place, or the start of
+the first one after it when there is none. Two edits that keep the text still
+**replace** the block and leave the index displaced for good: toggling a list on its
+paragraph, and undoing the deletion of its block (the undo writes the text as new
+characters). A table's rows and cells have no entry, so an index whose row was
+deleted lands at the start of the first textblock of the table. An index from plain
+`collab_sticky_index` has no trailer, and its deleted block is still `None`. An index
+naming a peer's edit this replica has not merged yet is `None`, not displaced.
+
+**Many at once.** `collab_locate_sticky_many(&[&anchor, …])` answers every anchor in
+one read of the shared document, in order. One `collab_locate_sticky` stops at its
+block when the block is there but reads the whole document when it is gone, so an app
+resolving every comment on each layout should batch: measured on a 4,000-paragraph
+document (debug build), 200 single calls took 0.37 s with every block present and
+1.6 s with every block deleted; one batch of the same 200 took 24 ms and 26 ms.
 
 **Without an editor** (a server, a tool holding only the CRDT bytes), load a replica
 and ask it. Making an index works the same way, on the model the replica reads:
@@ -2052,9 +2068,11 @@ let doc = replica.to_doc(&schema)?;
 let anchor = replica.sticky_index_with(&doc, pos, StickyAssoc::After); // Option<Vec<u8>>
 // …and later, on a replica loaded from newer bytes:
 let found = replica.locate_sticky_in(&schema, &anchor_bytes)?; // Option<StickyLocation>
+let all = replica.locate_sticky_many_in(&schema, &[&a1, &a2])?; // Vec<Option<…>>
 ```
 
-`CollabSession::sticky_index_with` / `locate_sticky` are the session's pair.
+`CollabSession::sticky_index_with` / `locate_sticky` / `locate_sticky_many` are the
+session's.
 
 ### On the web
 

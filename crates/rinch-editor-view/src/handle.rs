@@ -3917,8 +3917,9 @@ impl EditorHandle {
     /// answers the place the block stood, marked
     /// [`displaced`](StickyLocation::displaced). The bytes start with the plain yrs
     /// `StickyIndex` [`Self::collab_sticky_index`] describes (with `assoc`'s
-    /// association), followed by a trailer that yrs decoding ignores
-    /// ([`rinch_editor_collab::CollabDoc::sticky_index_with`] documents it).
+    /// association), followed by a checked trailer; treat them as opaque (store,
+    /// compare, hand back)
+    /// ([`rinch_editor_collab::CollabDoc::sticky_index_with`] documents them).
     ///
     /// For a range (a comment's span), make the start with [`StickyAssoc::After`] and
     /// the end with [`StickyAssoc::Before`]. `None` in the same cases as
@@ -3943,6 +3944,21 @@ impl EditorHandle {
         let core = self.inner.try_borrow().ok()?;
         let bridge = core.collab.as_ref()?;
         bridge.session.locate_sticky(&core.state.doc, bytes)
+    }
+
+    /// [`Self::collab_locate_sticky`] for every index of `anchors`, in order, in one
+    /// walk of the shared document: for resolving many anchors at once (every comment
+    /// of a document on each layout). One answer per index; every answer is `None`
+    /// when not collaborating, while the editor is borrowed, and while the session is
+    /// poisoned or stalled.
+    pub fn collab_locate_sticky_many(&self, anchors: &[&[u8]]) -> Vec<Option<StickyLocation>> {
+        let Ok(core) = self.inner.try_borrow() else {
+            return vec![None; anchors.len()];
+        };
+        let Some(bridge) = core.collab.as_ref() else {
+            return vec![None; anchors.len()];
+        };
+        bridge.session.locate_sticky_many(&core.state.doc, anchors)
     }
 
     /// Detach the collaboration session (stop projecting and broadcasting). The
@@ -8016,6 +8032,10 @@ mod tests {
             let bytes = h.collab_sticky_index(Pos(2)).expect("collaborating");
             h.stop_collaboration();
             assert_eq!(h.collab_resolve_sticky(&bytes), None);
+            assert_eq!(
+                h.collab_locate_sticky_many(&[&bytes, &bytes]),
+                vec![None, None]
+            );
         }
 
         /// A sticky index made on one editor follows its character through edits on
@@ -8094,6 +8114,14 @@ mod tests {
                 assert_eq!((l.pos, l.path, l.displaced), (Pos(7), vec![0], true));
                 assert_eq!(h.collab_resolve_sticky(&in_gone), None);
             }
+            // One read for many: the same answers, in order.
+            let many = host.collab_locate_sticky_many(&[&in_gone, &before, &after]);
+            let one: Vec<_> = [&in_gone, &before, &after]
+                .iter()
+                .map(|b| host.collab_locate_sticky(b))
+                .collect();
+            assert_eq!(many, one);
+            assert_eq!(many.len(), 3);
         }
     }
 

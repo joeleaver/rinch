@@ -4233,3 +4233,36 @@ fn rv5_typing_after_curing_a_table_alone_in_a_quote_projects() {
     a.receive(&d);
     assert_eq!(rv5_texts(&a.state.doc), ["tail!"]);
 }
+
+/// Review of #1679, R7: an index made in a table cell, the table then grown past the
+/// budget by a peer (it reads as a placeholder; nothing was deleted). And an index after
+/// the table.
+#[test]
+fn r7_an_index_in_a_table_that_becomes_oversized() {
+    use rinch_editor_collab::StickyAssoc;
+    let s = schema();
+    let (mut a, mut b) = pair(&s, table_and_tail(&s, 1, 1), (1, 2));
+    let in_cell = Pos(pos_of(&b.state.doc, "r0c0") + 2);
+    let tail = Pos(pos_of(&b.state.doc, "tail") + 2);
+    let cell_idx = b
+        .session
+        .sticky_index_with(&b.state.doc, in_cell, StickyAssoc::After)
+        .unwrap();
+    let tail_idx = b
+        .session
+        .sticky_index_with(&b.state.doc, tail, StickyAssoc::After)
+        .unwrap();
+    let update = grown_table_update(&b, 2000, false);
+    integrate_healthy(&mut a, &update);
+    integrate_healthy(&mut b, &update);
+    assert_eq!(b.session.oversized_tables().len(), 1);
+    // The cell is still in the CRDT; the model cannot show it: `None`, never displaced.
+    assert_eq!(b.session.resolve_sticky(&b.state.doc, &cell_idx), None);
+    assert_eq!(b.session.locate_sticky(&b.state.doc, &cell_idx), None);
+    let after = b.session.locate_sticky(&b.state.doc, &tail_idx).unwrap();
+    let resolved = b.session.resolve_sticky(&b.state.doc, &tail_idx);
+    assert_eq!((Some(after.pos), after.displaced), (resolved, false));
+    assert!(resolved.is_some());
+    let loaded = rinch_editor_collab::CollabDoc::load(&b.session.snapshot()).unwrap();
+    assert_eq!(loaded.locate_sticky_in(&s, &cell_idx).unwrap(), None);
+}

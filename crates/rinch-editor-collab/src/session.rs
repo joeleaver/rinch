@@ -1020,6 +1020,16 @@ impl CollabSession {
         self.cdoc.locate_sticky(doc, bytes)
     }
 
+    /// [`Self::locate_sticky`] for every index of `anchors`, in order, in one walk of
+    /// the CRDT ([`CollabDoc::locate_sticky_many`]). Every answer is `None` while the
+    /// session is poisoned or outbound is stalled.
+    pub fn locate_sticky_many(&self, doc: &Node, anchors: &[&[u8]]) -> Vec<Option<StickyLocation>> {
+        if !self.model_matches_crdt() {
+            return vec![None; anchors.len()];
+        }
+        self.cdoc.locate_sticky_many(doc, anchors)
+    }
+
     /// The model document the CRDT currently projects to — the canonical converged
     /// read-back (both peers reconstruct identically). The rock-solid convergence
     /// assertion in tests. On a [poisoned](Self::is_poisoned) session this returns the
