@@ -2390,6 +2390,42 @@ mod tests {
         assert_eq!(*seen.borrow(), [(9, Some(7)), (9, Some(7))]);
     }
 
+    /// Issue #1032 (review of #1663, F2): the ksni conversion registers each
+    /// item with the frame it was made in, not the one current where the tray
+    /// is built. Made in root 9 / document 7, built in root 3 / document 5,
+    /// clicked from root 4 / document 2.
+    #[test]
+    fn a_ksni_item_runs_under_the_document_and_root_it_was_made_in() {
+        use rinch_core::{
+            current_context_root, current_dispatching_doc, push_context_root, push_dispatching_doc,
+        };
+        type Seen = Rc<RefCell<Vec<(u64, Option<u64>)>>>;
+        let seen: Seen = Rc::default();
+        let s = seen.clone();
+        let menu = {
+            let _root = push_context_root(9);
+            let _doc = push_dispatching_doc(7);
+            Menu::new().item(MenuItem::new("Item").on_click(move || {
+                s.borrow_mut()
+                    .push((current_context_root(), current_dispatching_doc()))
+            }))
+        };
+        let (entries, _registration, _toggles) = {
+            let _root = push_context_root(3);
+            let _doc = push_dispatching_doc(5);
+            convert_menu_to_ksni_entries(menu)
+        };
+        let mut ids = Vec::new();
+        registered_ids(&entries, &mut ids);
+        assert_eq!(ids.len(), 1, "control: the item was registered");
+        {
+            let _root = push_context_root(4);
+            let _doc = push_dispatching_doc(2);
+            assert!(crate::menu::dispatch_menu_event(&ids[0]));
+        }
+        assert_eq!(*seen.borrow(), [(9, Some(7))]);
+    }
+
     // ── review-1527 fixtures ────────────────────────────────────────────
     #[cfg(target_os = "linux")]
     fn first_toggle(entries: &[KsniMenuEntry]) -> (Option<String>, KsniToggle) {

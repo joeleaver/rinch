@@ -593,7 +593,7 @@ mod tests {
             // Registered at mount, under no dispatching document: the node's
             // own document is still the one its callbacks belong to.
             let _root = push_context_root(9);
-            let (s1, s2, s3) = (seen.clone(), seen.clone(), seen.clone());
+            let (s1, s2, s3, s4) = (seen.clone(), seen.clone(), seen.clone(), seen.clone());
             scope.run(|| {
                 register_focus_target(
                     &node,
@@ -603,7 +603,8 @@ mod tests {
                         .on_key(move |_| {
                             at("key", &s3);
                             true
-                        }),
+                        })
+                        .on_ime(move |_| at("ime", &s4)),
                 )
             });
         }
@@ -612,6 +613,7 @@ mod tests {
             let _doc = push_dispatching_doc(FIRING);
             notify_focus_gained(doc_key, node_id);
             assert!(offer_key(doc_key, node_id, &KeyEventData::new("a", "KeyA")));
+            assert!(offer_ime(doc_key, node_id, &ImeEvent::Enabled));
             notify_focus_lost(doc_key, node_id);
             assert_eq!(
                 (current_context_root(), current_dispatching_doc()),
@@ -621,8 +623,63 @@ mod tests {
         let want = Some(doc_key);
         assert_eq!(
             *seen.borrow(),
-            [("gained", 9, want), ("key", 9, want), ("lost", 9, want)]
+            [
+                ("gained", 9, want),
+                ("key", 9, want),
+                ("ime", 9, want),
+                ("lost", 9, want)
+            ]
         );
+        scope.dispose();
+    }
+
+    /// Issue #1032 (review of #1663, F2): the `on_focus_lost` owed to a target
+    /// `set_inner_html` freed while it held the claim (#1509) runs in the
+    /// target's frame too, though its registration is gone by then.
+    #[test]
+    fn a_freed_targets_owed_focus_lost_runs_under_its_document_and_root() {
+        type Seen = Rc<RefCell<Vec<(u64, Option<u64>)>>>;
+        use rinch_core::{
+            current_context_root, current_dispatching_doc, push_context_root, push_dispatching_doc,
+        };
+        let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(MockDomDocument::new()));
+        let weak: Weak<RefCell<dyn DomDocument>> = Rc::downgrade(&doc);
+        let id = doc.borrow_mut().create_element("div");
+        let node = NodeHandle::new(id, weak);
+        let (doc_key, node_id) = (node.doc_key(), node.node_id().0);
+        const FIRING: u64 = u64::MAX - 1;
+        assert_ne!(doc_key, FIRING, "control: off the firing document");
+
+        let seen: Seen = Rc::default();
+        let s = seen.clone();
+        let scope = Scope::new();
+        {
+            let _root = push_context_root(9);
+            scope.run(|| {
+                register_focus_target(
+                    &node,
+                    FocusEntry::new().on_focus_lost(move || {
+                        s.borrow_mut()
+                            .push((current_context_root(), current_dispatching_doc()))
+                    }),
+                )
+            });
+        }
+        note_claim(doc_key, Some(node_id));
+        forget_freed_nodes(doc_key, &[node.node_id()]);
+        assert!(!is_registered(doc_key, node_id), "control: the entry went");
+        let owed = take_freed(doc_key, node_id).expect("control: focus-lost is owed");
+        {
+            let _root = push_context_root(4);
+            let _doc = push_dispatching_doc(FIRING);
+            owed.fire();
+            assert_eq!(
+                (current_context_root(), current_dispatching_doc()),
+                (4, Some(FIRING))
+            );
+        }
+        assert_eq!(*seen.borrow(), [(9, Some(doc_key))]);
+        note_claim(doc_key, None);
         scope.dispose();
     }
 

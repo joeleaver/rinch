@@ -4005,6 +4005,48 @@ mod toggle_tests {
     /// handling flipped it (an already-selected radio option clicked again).
     #[cfg(feature = "desktop")]
     #[test]
+    fn a_muda_item_runs_under_the_document_and_root_it_was_made_in() {
+        // Issue #1032 (review of #1663, F2): `build_muda_item` registers the
+        // item's own frame, not the builder's. Made in root 9 / document 7,
+        // built in root 3 / document 5, clicked from root 4 / document 2.
+        use rinch_core::{
+            current_context_root, current_dispatching_doc, push_context_root, push_dispatching_doc,
+        };
+        type Seen = Rc<RefCell<Vec<(u64, Option<u64>)>>>;
+        let seen: Seen = Rc::default();
+        let s = seen.clone();
+        let menu = {
+            let _root = push_context_root(9);
+            let _doc = push_dispatching_doc(7);
+            Menu::new().item(MenuItem::new("Item").on_click(move || {
+                s.borrow_mut()
+                    .push((current_context_root(), current_dispatching_doc()))
+            }))
+        };
+        let (muda_menu, _registration) = {
+            let _root = push_context_root(3);
+            let _doc = push_dispatching_doc(5);
+            build_muda_menu(menu)
+        };
+        let ids: Vec<String> = muda_menu
+            .items()
+            .into_iter()
+            .filter_map(|k| match k {
+                muda::MenuItemKind::MenuItem(m) => Some(m.id().0.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids.len(), 1, "control: one plain item");
+        {
+            let _root = push_context_root(4);
+            let _doc = push_dispatching_doc(2);
+            assert!(dispatch_menu_event(&ids[0]));
+        }
+        assert_eq!(*seen.borrow(), [(9, Some(7))]);
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
     fn a_muda_check_item_follows_its_signal() {
         let on = Signal::new(true);
         let model = Signal::new(1u8);
