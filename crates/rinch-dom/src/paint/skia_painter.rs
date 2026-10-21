@@ -2482,24 +2482,12 @@ fn color_bitmap_glyph(
     if sw == 0 || sh == 0 || image.content != swash::scale::image::Content::Color {
         return None;
     }
-    let mut premul = image.data;
-    premul.truncate((sw * sh * 4) as usize);
-    for px in premul.chunks_exact_mut(4) {
-        let a = px[3];
-        if a < 255 {
-            px[0] = premultiply_channel(px[0], a);
-            px[1] = premultiply_channel(px[1], a);
-            px[2] = premultiply_channel(px[2], a);
-        }
-    }
     let scale = font_size / ppem as f32;
     let dw = ((sw as f32 * scale).round() as u32).max(1);
     let dh = ((sh as f32 * scale).round() as u32).max(1);
-    let data = if (dw, dh) == (sw, sh) {
-        premul
-    } else {
-        resample_area(&premul, sw, sh, dw, dh)
-    };
+    let mut data = image.data;
+    data.truncate((sw * sh * 4) as usize);
+    let data = scale_strike(data, sw, sh, dw, dh);
     Some(CachedGlyph {
         left: (image.placement.left as f32 * scale).round() as i32,
         top: (image.placement.top as f32 * scale).round() as i32,
@@ -2509,6 +2497,26 @@ fn color_bitmap_glyph(
         premultiplied: true,
         data,
     })
+}
+
+/// A strike's straight-alpha RGBA, premultiplied and then scaled from
+/// `sw`x`sh` to `dw`x`dh` (#804). Premultiplying FIRST is the point: the colour
+/// under a transparent pixel is arbitrary, and averaging straight alpha would
+/// blend it into the edge.
+fn scale_strike(mut rgba: Vec<u8>, sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
+    for px in rgba.chunks_exact_mut(4) {
+        let a = px[3];
+        if a < 255 {
+            px[0] = premultiply_channel(px[0], a);
+            px[1] = premultiply_channel(px[1], a);
+            px[2] = premultiply_channel(px[2], a);
+        }
+    }
+    if (dw, dh) == (sw, sh) {
+        rgba
+    } else {
+        resample_area(&rgba, sw, sh, dw, dh)
+    }
 }
 
 /// Resize premultiplied RGBA from `sw`x`sh` to `dw`x`dh` by area averaging:
@@ -3089,5 +3097,33 @@ mod premultiply_tests {
                 );
             }
         }
+    }
+}
+
+/// #804: a colour bitmap strike is premultiplied before it is scaled, so the
+/// colour under a transparent pixel never reaches the scaled edge, and the
+/// area filter weighs each source pixel by how much of it an output covers.
+#[cfg(test)]
+mod strike_scale_tests {
+    use super::{resample_area, scale_strike};
+
+    /// Opaque green beside a transparent pixel whose (arbitrary) straight
+    /// colour is red, halved: the result is green at half alpha. Scaled
+    /// straight, half the red would bleed in.
+    #[test]
+    fn transparent_colour_does_not_bleed_into_the_edge() {
+        let src = vec![0, 255, 0, 255, 255, 0, 0, 0];
+        assert_eq!(scale_strike(src, 2, 1, 1, 1), vec![0, 128, 0, 128]);
+    }
+
+    /// A 3-to-2 shrink: the middle source pixel is split half and half
+    /// between the two outputs (off the 2:1 fixed point where every source
+    /// pixel goes whole to one output).
+    #[test]
+    fn a_fractional_shrink_splits_the_shared_pixel() {
+        let px = |v: u8| [v, v, v, 255];
+        let src: Vec<u8> = [px(0), px(150), px(255)].concat();
+        // out0 = (0 + 150/2) / 1.5 = 50; out1 = (150/2 + 255) / 1.5 = 220.
+        assert_eq!(resample_area(&src, 3, 1, 2, 1), [px(50), px(220)].concat());
     }
 }
