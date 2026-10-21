@@ -1262,8 +1262,52 @@ fn a_justified_paragraph_with_lines_ending_in_spaces_pays_one_pass() {
     );
 }
 
+/// The common case of justified prose (review of #1680): `normal` text whose
+/// first line's last word ends within a space of the edge, so parley hangs
+/// that space and, uncounted, it takes a word gap's share away. The paragraph
+/// takes the pass: one per layout built, and the line committed again by
+/// length. Most multi-line justified paragraphs have such a line somewhere
+/// (35 of 41 widths of a four-sentence paragraph), so this, not the
+/// single-space twin below, is what justified text usually pays.
+#[test]
+fn a_justified_paragraph_whose_word_ends_at_the_edge_pays_one_pass() {
+    let mut doc = doc_with(".p { width: 44px; text-align: justify; }");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    text(&mut doc, p, "aa bb cc dd");
+    let s = cold_frame(&mut doc);
+    expect(
+        "justified paragraph, word at the edge",
+        &s,
+        &[
+            (StyleResolves, 2),
+            (ElementsCascaded, 3),
+            (StyleNodesVisited, 7),
+            (FullStyleWalks, 2),
+            (TaffyStyleSyncs, 3),
+            (TaffyStyleChanges, 2),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 2),
+            (IfcSignatureChanges, 1),
+            (IfcHangPasses, 2),
+            (IfcHangLines, 2),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
 /// The twin whose lines end in one space that fits: parley counts those as
-/// CSS does, and the paragraph takes no pass.
+/// CSS does, and the paragraph takes no pass. It is built so that every\n/// line's space fits, which justified prose rarely manages throughout.
 #[test]
 fn a_justified_paragraph_with_single_spaces_pays_no_pass() {
     let mut doc = doc_with(".p { width: 50px; white-space: pre-wrap; text-align: justify; }");

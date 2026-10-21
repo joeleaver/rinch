@@ -279,3 +279,58 @@ fn right_aligned_hanging_spaces_in_a_run_of_their_own_hang() {
     assert_at(&d, b, 0, 7.94, 0.0, "`aa` starts");
     assert_at(&d, b, 5, 50.0, 0.0, "`bb` ends");
 }
+
+/// A justified line after a forced break: the table's cursor starts on the
+/// zero-width newline that ended the line before, which `justify_line` steps
+/// over before it commits the line again by length (review of #1680). Chrome:
+/// on `pre-line` line two, `six` ends at 57.39 and `eight` at 150; on
+/// `pre-wrap` line two, `dd` starts at 40.41 and ends flush at 60.
+#[test]
+fn a_justified_line_after_a_forced_break() {
+    let s = "One two three four.\nFive six seven eight nine ten eleven.";
+    let (d, b) = block("150px", "pre-line", &[("", s)]);
+    assert_at(&d, b, s.find("six").unwrap() + 3, 57.39, 1.0, "`six` ends");
+    assert_at(
+        &d,
+        b,
+        s.find("eight").unwrap() + 5,
+        150.0,
+        1.0,
+        "`eight` ends",
+    );
+    let (d, b) = block("60px", "pre-wrap", &[("", "aa bb\ncc dd   ee ff gg")]);
+    assert_at(&d, b, 9, 40.41, 1.0, "`dd` starts");
+    assert_at(&d, b, 11, 60.0, 1.0, "`dd` ends");
+}
+
+/// A left-to-right block whose text starts with Hebrew: parley's base
+/// direction is then right-to-left, and it offsets and justifies such a line
+/// from its left end, so a widened alignment width would push it past the
+/// box's right edge (113px in a 90px box, review of #1680). The fix leaves it
+/// as it was. Asserted on the painted glyph runs, not on Chrome's numbers:
+/// the Hebrew comes from the host's fallback face.
+#[test]
+fn a_right_to_left_paragraph_is_not_widened() {
+    let (d, b) = block(
+        "90px",
+        "pre-wrap",
+        &[("", "שלום עולם   אב גד   הו זח טי כל")],
+    );
+    let il = d.tree.nodes[b.0]
+        .text_layout
+        .as_ref()
+        .expect("a text layout");
+    let line = il.layout.lines().next().expect("a first line");
+    let mut runs = 0;
+    for item in line.items() {
+        if let parley::layout::PositionedLayoutItem::GlyphRun(gr) = item {
+            runs += 1;
+            let end = gr.offset() + gr.advance();
+            assert!(
+                end <= 90.5,
+                "a glyph run on line one ends at {end}, past the box's 90"
+            );
+        }
+    }
+    assert!(runs > 0, "line one has glyph runs");
+}

@@ -343,6 +343,10 @@ pub(crate) fn break_lines_hanging_spaces(
     // parley offsets a right-to-left line by its trailing white space, so a
     // narrowed alignment width would move it the wrong way: left as it was.
     let count_trailing = count_trailing && !layout.is_rtl();
+    // The same for justification: parley offsets and justifies a
+    // right-to-left line from its left end, so a widened width would push it
+    // past the box's right edge (an LTR block whose text starts with Hebrew:
+    // `justify_hanging_spaces_1056_tests::*_right_to_left_*`).
     let justify = justify && !layout.is_rtl();
     // The pass hangs preserved spaces on every line it breaks, whichever
     // test sent the paragraph through it: a line [`unglue`] moves an NBSP onto
@@ -1535,6 +1539,8 @@ fn hang_pass(
                     reason,
                     count_trailing,
                 );
+                // parley justifies every soft-wrapped line, `Emergency`
+                // included (see `any_miscounted_justified_line`).
                 if justify && matches!(reason, BreakReason::Regular | BreakReason::Emergency) {
                     match justify_line(&mut breaker, &units, cursor, end, &line_start, max, advance)
                     {
@@ -2163,9 +2169,21 @@ fn justify_line(
 
 /// Whether some soft-wrapped line ends in white space parley may count
 /// differently from CSS when it justifies the line ([`justify_line`]): two or
-/// more spaces, an NBSP, or the space parley hung past `max`. A line ending in
+/// more spaces or NBSPs, or the space parley hung past `max`. A line ending in
 /// one space that fits is counted right. The cheap test that sends a
 /// justified paragraph through [`hang_pass`] for it (#1056).
+///
+/// Not common enough to be cheap: in justified prose some line's last word
+/// usually ends within a space of the box's edge, so most multi-line justified
+/// paragraphs take the pass (35 of 41 widths of a four-sentence paragraph,
+/// review of #1680; `perf_regression_scenarios::a_justified_paragraph_whose_word_ends_at_the_edge_pays_one_pass`).
+///
+/// A lone NBSP is not a case of its own: no break follows an NBSP (UAX #14
+/// GL) unless spaces come after it, which the two-character test sees, or
+/// parley hung it, which [`unglue`] breaks again first. `Emergency` is kept
+/// beside `Regular` because parley justifies both; such a break lands inside
+/// a word, so the line rarely ends in white space, and `justify_line` leaves
+/// one that does not.
 fn any_miscounted_justified_line(layout: &parley::Layout<Brush>, text: &str, max: f32) -> bool {
     use parley::layout::BreakReason;
     layout.lines().any(|line| {
@@ -2177,9 +2195,7 @@ fn any_miscounted_justified_line(layout: &parley::Layout<Brush>, text: &str, max
         }
         let body = text.get(line.text_range()).unwrap_or("");
         let white = &body[body.trim_end_matches([' ', '\t', '\u{a0}']).len()..];
-        white.chars().nth(1).is_some()
-            || white.contains('\u{a0}')
-            || (!white.is_empty() && line.metrics().advance > max)
+        white.chars().nth(1).is_some() || (!white.is_empty() && line.metrics().advance > max)
     })
 }
 
