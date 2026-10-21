@@ -719,6 +719,56 @@ pub fn op_text_shadow_paint(mut f: PaintFixture) -> PaintFixture {
     f
 }
 
+/// A page whose lines are made of many text nodes, with a blurred
+/// `text-shadow` on each (#1060): every IFC holds more than one text
+/// fragment, so the shadow's paint order is decided per fragment. `spans`
+/// is 30 `nowrap` lines of 12 spans (a syntax-highlighted listing); `count`
+/// is 30 lines of `Count: <span>N</span> items…` (a label and a reactive
+/// value). Painted once, so the measured paint is the warm steady state.
+fn text_shadow_fragments_page(count: bool) -> PaintFixture {
+    let mut doc = new_document();
+    doc.load_css(&format!(
+        "body {{ margin: 0; font-family: {FAMILY}; font-size: 14px; line-height: 18px; \
+         color: rgb(30, 30, 40); }} p {{ margin: 0 0 2px 0; \
+         text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4); }}"
+    ));
+    let words: Vec<&str> = LOREM.split(' ').collect();
+    let mut html = String::new();
+    for i in 0..30 {
+        if count {
+            html.push_str(&format!(
+                "<p>Count: <span>{i}</span> items in the basket today</p>"
+            ));
+        } else {
+            html.push_str("<p style=\"white-space: nowrap\">");
+            for (k, w) in words.iter().take(12).enumerate() {
+                html.push_str(&format!("<span>{w}{i}{k}</span> "));
+            }
+            html.push_str("</p>");
+        }
+    }
+    let body = doc.body();
+    doc.set_inner_html(body, &html);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    let mut f = PaintFixture {
+        doc,
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// [`text_shadow_fragments_page`] with 12 spans a line.
+pub fn setup_text_shadow_spans() -> PaintFixture {
+    text_shadow_fragments_page(false)
+}
+
+/// [`text_shadow_fragments_page`] with a label and a value a line.
+pub fn setup_text_shadow_count() -> PaintFixture {
+    text_shadow_fragments_page(true)
+}
+
 /// The same page painted once at a 4px blur, then restyled to 4.01px — a blur
 /// radius is in a mask's cache key — so the measured paint rasterises and
 /// blurs every shadow with the glyph caches warm. It needs no API of its own,

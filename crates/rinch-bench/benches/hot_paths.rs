@@ -99,6 +99,8 @@ fn shadow_paint(f: PaintFixture) -> PaintFixture {
 #[library_benchmark]
 #[bench::paragraphs_40(setup = setup_text_shadow_paint)]
 #[bench::paragraphs_40_cold(setup = setup_text_shadow_paint_cold)]
+#[bench::spans_30x12(setup = setup_text_shadow_spans)]
+#[bench::count_30(setup = setup_text_shadow_count)]
 fn text_shadow_paint(f: PaintFixture) -> PaintFixture {
     black_box(measure(black_box(f), op_text_shadow_paint))
 }

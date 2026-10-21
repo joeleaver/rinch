@@ -431,6 +431,7 @@ The benchmarks live in `crates/rinch-bench`:
 | `dom::shadow_paint.fields_40` | A full `TinySkiaPainter` paint of 40 input-like boxes, each with a 1px border, a 6px radius and a blurred `inset` shadow (#974: a blurred mask built and drawn per box) |
 | `dom::text_shadow_paint.paragraphs_40` | The same 40 paragraphs with `text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4)` on each, painted again: every blurred mask is served from the cache (#980) |
 | `dom::text_shadow_paint.paragraphs_40_cold` | The same page restyled to a 4.01px blur first, so no mask is cached: every visible shadow is rasterised into a coverage mask, blurred and filled |
+| `dom::text_shadow_paint.spans_30x12` / `count_30` | Warm paints of 30 lines whose text is many text nodes — 12 spans a `nowrap` line, or `Count: <span>N</span> items…` — with a blurred `text-shadow`: each line is painted fragment by fragment (#1060), a mask per fragment |
 | `shell::pointer_move_warm.warm_x50` | 50 pointer moves inside one row of a 500-row scroller, each followed by `AboutToWait` |
 | `shell::pointer_move_cold.cold` | The first move after a layout, which builds the hit-test cache |
 | `shell::hover_frame.partial_repaint` | A move onto another row, then the frame: layout and a partial software repaint |
