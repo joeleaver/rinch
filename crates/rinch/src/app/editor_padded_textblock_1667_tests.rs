@@ -310,13 +310,15 @@ fn the_caret_in_an_empty_code_block_sits_at_its_content_origin() {
         caret.1
     );
     assert!(
-        caret.3 <= 25.0,
-        "the caret is one line tall, not the padded box's height: {}",
+        (caret.3 - 24.0).abs() <= 1.0,
+        "the caret is one line (24px) tall, not the padded box's height: {}",
         caret.3
     );
     let rect = p.handle.caret_rect(Pos(pos)).expect("a caret rect");
     assert!(
-        (rect.x - want.0).abs() <= 0.01 && (rect.y - want.1).abs() <= 0.01 && rect.height <= 25.0,
+        (rect.x - want.0).abs() <= 0.01
+            && (rect.y - want.1).abs() <= 0.01
+            && (rect.height - 24.0).abs() < 0.01,
         "caret_rect in an empty code block answers {rect:?}, its content origin is {want:?}"
     );
 }

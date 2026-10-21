@@ -114,6 +114,20 @@ impl F {
             r.y() + px("padding-top") + px("border-top-width"),
         )
     }
+    /// The code block's computed `line-height` (the editor's stylesheet
+    /// sets `1.5` on its `0.9em` font).
+    fn line(&self) -> f64 {
+        let cs = web_sys::window()
+            .unwrap()
+            .get_computed_style(&self.pre())
+            .unwrap()
+            .unwrap();
+        cs.get_property_value("line-height")
+            .unwrap()
+            .trim_end_matches("px")
+            .parse()
+            .expect("a px line-height")
+    }
     fn caret(&self) -> web_sys::DomRect {
         document()
             .query_selector("[data-pm-editor] [data-pm-caret]")
@@ -216,7 +230,7 @@ async fn the_caret_in_an_empty_code_block_sits_at_its_content_origin() {
         caret.y()
     );
     assert!(
-        caret.height() <= 25.0,
+        (caret.height() - f.line()).abs() <= 1.0,
         "one line tall, not the padded box's height: {}",
         caret.height()
     );
@@ -224,7 +238,7 @@ async fn the_caret_in_an_empty_code_block_sits_at_its_content_origin() {
     assert!(
         (rect.x as f64 - cx).abs() <= 0.5
             && (rect.y as f64 - cy).abs() <= 0.5
-            && rect.height <= 25.0,
+            && (rect.height as f64 - f.line()).abs() < 0.5,
         "caret_rect answers {rect:?}, the content origin is ({cx}, {cy})"
     );
     f.done();
