@@ -226,22 +226,28 @@ fn a_hanging_space_before_a_newline_does_not_add_a_line() {
     assert_eq!(caret(&d, b, s.find("more").unwrap()), (0.0, LINE));
 }
 
-/// `text-align: right` lines the text, not its hanging space, up with the
-/// edge: `text` lands exactly where it does without the space (46.67: the 0.6
-/// of slack between 74.41 and 75, right of its left-aligned 46.07), on one line.
-/// That is the spec's rule: at the end of a `pre-wrap` paragraph the spaces hang
-/// unconditionally, and hanging glyphs take no part in alignment (CSS Text 3
-/// §4.1.3). Chrome 153 treats the line as overflowing instead and leaves `text`
-/// at its start-aligned 46.06. On `main` the space went to a line of its own.
+/// `text-align: right` with a space the width cannot hold at the end of the
+/// paragraph: the line stays one line, and since #1042 it is aligned as Chrome
+/// 153 aligns it. A preserved space there hangs only conditionally (CSS Text 3
+/// §4.1.3): the part that fits counts for alignment, and with it the line
+/// fills the box, so it starts at the start edge and `text` is at its
+/// start-aligned 46.06. rinch used to hang the whole space, which put `text`
+/// where it is without the space (46.67, the 0.6 of slack between 74.41 and
+/// 75). On `main` before that the space went to a line of its own.
 #[test]
-fn right_aligned_text_hangs_its_spaces_past_the_edge() {
+fn right_aligned_text_hangs_only_the_space_past_the_edge() {
     let (with_space, b) = block("75px; text-align: right", "bullet text ");
     assert_eq!(boxof(&with_space, b).3, LINE);
     let (without, b2) = block("75px; text-align: right", "bullet text");
     let at = caret(&with_space, b, "bullet ".len());
     assert_eq!(at.1, 0.0);
-    assert_eq!(at, caret(&without, b2, "bullet ".len()));
-    assert!((at.0 - 46.67).abs() < 0.1, "`text` x {}", at.0);
+    assert!((at.0 - 46.06).abs() < 0.1, "`text` x {}", at.0);
+    let bare = caret(&without, b2, "bullet ".len());
+    assert!(
+        (bare.0 - 46.67).abs() < 0.1,
+        "without the space: {}",
+        bare.0
+    );
 }
 
 /// Baseline alignment in a flex row lines the items' *first* baselines up

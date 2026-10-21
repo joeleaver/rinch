@@ -1832,9 +1832,9 @@ struct LineUnit {
 /// - With `count_trailing` (#1042), so does every white-space unit before the
 ///   run of hanging spaces at the line's end (a no-break space never hangs,
 ///   and spaces followed by one are not at the end), and, at the end of the
-///   paragraph or before a forced break, as much of that hanging run as fits
-///   in `max` after the content: CSS Text 3 §4.1.3 hangs a preserved space
-///   there only conditionally. At a soft wrap the run hangs whole. Chrome
+///   paragraph or before a forced break, the hanging run too: CSS Text 3
+///   §4.1.3 hangs a preserved space there only conditionally, so the part
+///   that fits counts. At a soft wrap the run hangs whole. Chrome
 ///   155: `abc` and three `pre-wrap` spaces ending a 200px right-aligned
 ///   paragraph start at 158.58, not 172.08.
 fn align_unhung_trailing(
@@ -1854,12 +1854,6 @@ fn align_unhung_trailing(
         .sum();
     let mut narrow = unhung;
     if count_trailing {
-        let newlines: f32 = line
-            .iter()
-            .rev()
-            .take_while(|u| u.newline)
-            .map(|u| u.advance)
-            .sum();
         let trailing = || {
             line.iter()
                 .rev()
@@ -1867,12 +1861,19 @@ fn align_unhung_trailing(
                 .take_while(|u| u.hangs || u.unhung || u.nbsp)
         };
         let white: f32 = trailing().map(|u| u.advance).sum();
-        let hanging: f32 = trailing().take_while(|u| u.hangs).map(|u| u.advance).sum();
-        let content = line.iter().map(|u| u.advance).sum::<f32>() - white - newlines;
-        let mut counted = white - hanging;
-        if matches!(reason, BreakReason::None | BreakReason::Explicit) {
-            counted += hanging.min((max - content - counted).max(0.0));
-        }
+        // At the end of the paragraph or before a forced break only the part
+        // of the run that overflows hangs; counting all of it gives the same
+        // line, since the content and the part that fits fill the width and
+        // a line with no free space is start-aligned either way.
+        let counted = if matches!(reason, BreakReason::None | BreakReason::Explicit) {
+            white
+        } else {
+            white
+                - trailing()
+                    .take_while(|u| u.hangs)
+                    .map(|u| u.advance)
+                    .sum::<f32>()
+        };
         narrow = narrow.max(counted);
     }
     if narrow > 0.0 {
