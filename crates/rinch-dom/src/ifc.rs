@@ -406,6 +406,7 @@ pub(crate) fn break_lines_hanging_spaces(
         (preserves_spaces
             && (any_unhung_line(layout, text) || any_unhung_trailing_line(layout, text, unhung)))
             || any_hung_nbsp_line(layout, text, max)
+            || any_emergency_box_line_before_white_space(layout, text)
             || (count_trailing && any_counted_trailing_line(layout, text, preserves_spaces))
             || (justify && any_miscounted_justified_line(layout, text, max))
     });
@@ -1518,6 +1519,30 @@ fn hang_pass(
             }
             continue;
         }
+        // #1081: the white space or forced break after a box parley placed
+        // by its emergency branch belongs on the box's line.
+        if data.reason == BreakReason::Emergency {
+            match fold_after_overflowing_box(
+                &mut breaker,
+                &units,
+                cursor,
+                data.advance,
+                &line_start,
+                max,
+            ) {
+                Ok(Some(end)) => {
+                    stats.lines += 1;
+                    cursor = end;
+                    line_start = breaker.state().clone();
+                    continue;
+                }
+                Ok(None) => {}
+                Err(()) => {
+                    in_step = false;
+                    continue;
+                }
+            }
+        }
         // A line that ends at the hang is broken again, from the state it
         // started from, with room for its content and every space and tab
         // after it. That can end at a hang again — an NBSP after the spaces
@@ -1643,6 +1668,51 @@ fn hang_pass(
     }
     breaker.finish();
     stats
+}
+
+/// Break again a line that ends in an inline box parley placed by its
+/// emergency branch, so that the spaces and tabs after the box and a newline
+/// after them end the box's line (#1081). Returns the unit the next line
+/// starts at, `None` when nothing of that kind follows the box (the line is
+/// kept as it is), and `Err` when the unit table and the breaker disagree.
+///
+/// At the start of a line parley 0.11.1 consumes a box too wide for any line
+/// and commits the line on the spot, so whatever follows starts the next
+/// line. CSS puts a forced break on the line it ends (`x <ib><br>` is two
+/// lines in Chrome 155, not three), and white space at a soft wrap hangs —
+/// a collapsible space is removed there — so neither makes a line of its
+/// own. The line is committed again by length: the box, the run of spaces
+/// and tabs after it ([`LineUnit::hangs`]: not an NBSP, not a `pre` or
+/// `break-spaces` space), and one newline if the run ends at one. A word
+/// right after the box, or after the spaces, still starts the next line.
+fn fold_after_overflowing_box(
+    breaker: &mut parley::layout::BreakLines<'_, Brush>,
+    units: &[LineUnit],
+    cursor: usize,
+    advance: f32,
+    line_start: &parley::layout::BreakerState,
+    max: f32,
+) -> Result<Option<usize>, ()> {
+    let end = line_end(units, cursor, advance).ok_or(())?;
+    if end == cursor || !units[end - 1].inline_box {
+        return Ok(None);
+    }
+    let spaces = units[end..].iter().take_while(|u| u.hangs).count();
+    let newline = units.get(end + spaces).is_some_and(|u| u.newline);
+    let take = end + spaces + usize::from(newline);
+    if take == end {
+        return Ok(None);
+    }
+    // The table's cursor can sit on the zero-width newline that ended the
+    // line before; a newline is never the first unit of a line.
+    let first = cursor + units[cursor..end].iter().take_while(|u| u.newline).count();
+    let n = units[first..take].iter().filter(|u| u.counted).count();
+    breaker.revert_to(line_start.clone());
+    breaker
+        .break_next_with_length(u32::try_from(n).map_err(|_| ())?)
+        .ok_or(())?;
+    breaker.set_prior_line_width(max);
+    Ok(Some(take))
 }
 
 /// Break again a line parley ended by hanging a no-break space (#1218), and
@@ -2471,6 +2541,35 @@ fn any_hung_nbsp_line(layout: &parley::Layout<Brush>, text: &str, max: f32) -> b
                 .get(..line.text_range().end)
                 .is_some_and(|t| t.ends_with('\u{a0}'))
     })
+}
+
+/// Whether some line holds an inline box parley placed by its emergency
+/// branch and the next line starts with a space, tab or newline (#1081): the
+/// cheap test that sends a paragraph through [`hang_pass`] for
+/// [`fold_after_overflowing_box`].
+fn any_emergency_box_line_before_white_space(layout: &parley::Layout<Brush>, text: &str) -> bool {
+    use parley::PositionedLayoutItem;
+    use parley::layout::BreakReason;
+    let mut lines = layout.lines().peekable();
+    while let Some(line) = lines.next() {
+        if line.break_reason() != BreakReason::Emergency
+            || !line
+                .items()
+                .last()
+                .is_some_and(|item| matches!(item, PositionedLayoutItem::InlineBox(_)))
+        {
+            continue;
+        }
+        if let Some(next) = lines.peek()
+            && text
+                .get(next.text_range().start..)
+                .and_then(|t| t.chars().next())
+                .is_some_and(|c| matches!(c, ' ' | '\t' | '\n'))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// Whether some line parley ended by hanging one space while more hangable

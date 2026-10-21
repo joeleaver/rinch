@@ -35,7 +35,14 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     with text before the box that line is counted at the box's height. `ifc::phantom_last_line`
     finds it and `break_lines_hanging_spaces` breaks the paragraph again without it (#1050),
     counted as `ifc_phantom_rebreaks`;
-    `crates/rinch-dom/tests/atomic_inline_line_box_tests.rs` is the pin.
+    `crates/rinch-dom/tests/atomic_inline_line_box_tests.rs` is the pin. And that branch commits
+    the box's line on the spot, so a `<br>`, a preserved newline or spaces right after the box
+    made a line of their own (`x <ib><br>` was three lines where Chrome 155 makes two):
+    `ifc::fold_after_overflowing_box`, in the hang pass, commits the box's line again by length
+    with the run of hangable spaces after it and a newline that ends the run (#1081);
+    `crates/rinch-dom/tests/overflowing_box_line_end_1081_tests.rs` is the pin. A line holding
+    only inline boxes still has an inverted text range (`usize::MAX..0`), which breaks parley's
+    byte-to-line binary search for the text after it (#1082).
   - **A text-final newline gets an empty line after it**, and it is counted: a `<br>` is pushed
     as `"\n"`, so `<div>a<br></div>` and `<pre>a\n</pre>` were two lines where CSS makes one (a
     line after the last forced break exists only when something follows it). `phantom_last_line`
