@@ -2288,8 +2288,8 @@ impl RinchDomEditorView {
 
     /// Caret geometry for an *empty* textblock (which has no Parley layout, so
     /// [`DomDocument::query_caret_position`] returns `None`): the block's content
-    /// origin in container space with its content box's height as the line
-    /// height ([`DomDocument::content_box_inset`]). `None` if the block at `pos` is *not* actually empty (a non-empty
+    /// origin in container space ([`DomDocument::content_box_inset`]), one
+    /// line ([`DomDocument::line_box_height`]) tall. `None` if the block at `pos` is *not* actually empty (a non-empty
     /// block that merely failed to measure — leave the caret hidden rather than
     /// misplace it) or has no host box yet.
     ///
@@ -2320,9 +2320,11 @@ impl RinchDomEditorView {
         // Its content box, not its border box: an empty code block is padded,
         // and its caret goes where its text would start (#1667).
         let (l, t, _, b) = d.content_box_inset(block_id as u64);
-        // An empty block's content height is its single line box; clamp to a
-        // sane range and fall back to a default when it has collapsed to zero.
-        let ch = bh - t - b;
+        // One line box tall: the block's line height, else its content height
+        // (its box need not be one line plus its padding: desktop sizes
+        // `min-height: 1lh` as a border box, #1278); clamp to a sane range and
+        // fall back to a default when it has collapsed to zero.
+        let ch = d.line_box_height(block_id as u64).unwrap_or(bh - t - b);
         let h = if (4.0..=80.0).contains(&ch) { ch } else { 18.0 };
         Some((ox + l, oy + t, h))
     }

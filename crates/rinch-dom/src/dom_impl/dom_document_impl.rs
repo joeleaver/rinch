@@ -1223,8 +1223,8 @@ impl DomDocument for RinchDocument {
         }
         // No text geometry. For an element with no text at all (an empty
         // paragraph) that is its nature: the editor view paints the caret at the
-        // block's content-box origin, the content box's height tall (clamped the
-        // same way, `RinchDomEditorView::empty_block_caret`). Text without geometry is
+        // block's content-box origin, one line tall (clamped the same way,
+        // `RinchDomEditorView::empty_block_caret`). Text without geometry is
         // text not laid out yet (edited since the last layout), and has no
         // answer until the next one.
         if !self.text_content(NodeId(id)).unwrap_or_default().is_empty() {
@@ -1238,9 +1238,12 @@ impl DomDocument for RinchDocument {
         if node.layout.width == 0.0 && node.layout.height == 0.0 {
             return None;
         }
-        // Its content box (#1667): a padded block's text would start there.
+        // Its content box (#1667): a padded block's text would start there,
+        // one line tall.
         let (l, t, _, b) = self.content_box_inset(node_id);
-        let bh = node.layout.height - t - b;
+        let bh = self
+            .line_box_height(node_id)
+            .unwrap_or(node.layout.height - t - b);
         let h = if (4.0..=80.0).contains(&bh) { bh } else { 18.0 };
         let (l, t) = (l as f64, t as f64);
         let (x, y) = crate::paint::point_from_painted_box(&self.tree, id, 1.0, l, t);
@@ -1452,6 +1455,13 @@ impl DomDocument for RinchDocument {
             cs.border_left_width.to_px().max(0.0),
             cs.border_top_width.to_px().max(0.0),
         )
+    }
+
+    /// The computed `line-height` against the node's `font-size` (`normal`
+    /// is rinch's 1.2, `ComputedStyle::line_height_px`).
+    fn line_box_height(&self, node_id: u64) -> Option<f32> {
+        let node = self.tree.nodes.get(node_id as usize)?;
+        Some(node.computed_style.line_height_px())
     }
 
     /// Padding plus border from the computed style, as Taffy laid the box

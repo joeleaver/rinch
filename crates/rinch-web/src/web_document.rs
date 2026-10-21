@@ -2248,7 +2248,9 @@ impl DomDocument for WebDocument {
         let el = block.dyn_ref::<web_sys::Element>()?;
         let r = el.get_bounding_client_rect();
         let (l, t, _, b) = self.content_box_inset(node_id);
-        let ch = r.height() as f32 - t - b;
+        let ch = self
+            .line_box_height(node_id)
+            .unwrap_or(r.height() as f32 - t - b);
         let h = if ch > 0.0 { ch } else { 18.0 };
         Some((r.x() as f32 + l, r.y() as f32 + t, h))
     }
@@ -2642,6 +2644,23 @@ impl DomDocument for WebDocument {
             Ok(el) => (el.client_left() as f32, el.client_top() as f32),
             Err(_) => (0.0, 0.0),
         }
+    }
+
+    /// From `getComputedStyle`: a px `line-height`; `None` for `normal`.
+    fn line_box_height(&self, node_id: u64) -> Option<f32> {
+        let el = self
+            .nodes
+            .get(&(node_id as usize))?
+            .clone()
+            .dyn_into::<web_sys::Element>()
+            .ok()?;
+        let cs = web_sys::window()?.get_computed_style(&el).ok().flatten()?;
+        let v = cs.get_property_value("line-height").ok()?;
+        v.trim()
+            .strip_suffix("px")?
+            .parse::<f32>()
+            .ok()
+            .filter(|h| *h > 0.0)
     }
 
     /// From `getComputedStyle`: the used padding and border widths, in px.

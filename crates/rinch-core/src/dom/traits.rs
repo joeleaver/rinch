@@ -951,10 +951,19 @@ pub trait DomDocument {
     /// [`query_node_layout`](Self::query_node_layout) reports) in to its
     /// content box, where its text starts. The editor places the caret in an
     /// empty textblock (no text to ask [`Self::query_caret_position`] about)
-    /// at the block's content origin, one content box tall (#1667). Default
-    /// zero, for a backend with no box model to report.
+    /// at the block's content origin (#1667). Default zero, for a backend
+    /// with no box model to report.
     fn content_box_inset(&self, _node_id: u64) -> (f32, f32, f32, f32) {
         (0.0, 0.0, 0.0, 0.0)
+    }
+
+    /// The height of one line box of `node_id`: its computed `line-height` in
+    /// px. The editor draws the caret in an empty textblock this tall (#1667):
+    /// its box need not be one line plus its padding (desktop sizes
+    /// `min-height: 1lh` as a border box, #1278). Default `None` (the caller
+    /// falls back to the block's content height).
+    fn line_box_height(&self, _node_id: u64) -> Option<f32> {
+        None
     }
 
     /// The resolved font of `node_id` ([`NodeFont`]), so the IME preedit overlay can
