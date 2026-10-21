@@ -420,7 +420,9 @@ mod sampling_tests {
     fn a_smooth_repeating_tile_is_sampled_at_pixel_centres() {
         let pixels = peniko::Blob::from(rgba());
         let tile_transform = Affine::scale(1.5);
-        let fill_transform = Affine::translate((7.0, 3.0));
+        // Off the fixed point: a device scale on the fill transform (DPR
+        // 1.25), where a shift in the shape's space is not a device half-pixel.
+        let fill_transform = Affine::translate((7.0, 3.0)) * Affine::scale(1.25);
         let mut p = VelloPainter::new();
         p.fill_repeating(
             Fill::NonZero,
@@ -438,7 +440,7 @@ mod sampling_tests {
         let m = fill_transform * tile_transform;
         // Inside the first tile, away from its wrap edges (where repeat and
         // the edge-clamped reference differ).
-        for (x, y) in [(8, 4), (9, 4), (10, 4), (9, 5)] {
+        for (x, y) in [(8, 4), (9, 4), (10, 4), (11, 4), (9, 5)] {
             let got = shader_sample(bt, x as f32, y as f32, true, true) as f64;
             let want = centre_bilinear(m, x as f64, y as f64);
             assert!(
