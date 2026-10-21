@@ -9,6 +9,7 @@
 //! edges of every cluster and an interior stop answers one of them.
 
 use super::*;
+use std::cell::Cell;
 
 const VALUE: &str = "a\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}b\u{2764}\u{FE0F}c\u{1F1EB}\u{1F1F7}d1\u{FE0F}\u{20E3}e\u{301}f";
 const STYLE: &str = "display: block; width: 700px; font: 32px/40px sans-serif; padding: 0; border: 0";
