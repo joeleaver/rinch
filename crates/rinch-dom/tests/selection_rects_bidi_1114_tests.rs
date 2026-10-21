@@ -52,13 +52,20 @@ fn doc_with(text: &str, style: &str) -> (RinchDocument, u64) {
 
 /// Byte offset of the `n`th char of `text`.
 fn b(text: &str, n: usize) -> usize {
-    text.char_indices().nth(n).map(|(i, _)| i).unwrap_or(text.len())
+    text.char_indices()
+        .nth(n)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len())
 }
 
 #[track_caller]
 fn assert_rects(got: &[(f32, f32, f32, f32)], want: &[(f32, f32)], what: &str) {
     let xs: Vec<(f32, f32)> = got.iter().map(|r| (r.0, r.0 + r.2)).collect();
-    assert_eq!(xs.len(), want.len(), "{what}: one rect per visual piece: got {got:?}, want {want:?}");
+    assert_eq!(
+        xs.len(),
+        want.len(),
+        "{what}: one rect per visual piece: got {got:?}, want {want:?}"
+    );
     for (g, w) in xs.iter().zip(want) {
         assert!(
             (g.0 - w.0).abs() <= 0.5 && (g.1 - w.1).abs() <= 0.5,
@@ -127,7 +134,10 @@ fn every_line_of_a_right_to_left_paragraph_is_highlighted() {
     let widths: Vec<f32> = got.iter().map(|r| r.2).collect();
     assert_eq!(widths.len(), 3, "three lines: {got:?}");
     for (w, chrome) in widths.iter().zip([78.8 + 4.5, 97.53 + 4.5, 118.75]) {
-        assert!((w - chrome).abs() <= 0.5, "line width {w} is not {chrome}: {got:?}");
+        assert!(
+            (w - chrome).abs() <= 0.5,
+            "line width {w} is not {chrome}: {got:?}"
+        );
     }
     for (n, r) in got.iter().enumerate() {
         assert_eq!((r.1, r.3), (n as f32 * 40.0, 40.0), "line {n} box: {got:?}");
@@ -163,6 +173,38 @@ fn a_hebrew_paragraph_is_not_slivers() {
     assert!(mid[0].2 > 5.0, "a mid-line selection is a sliver: {mid:?}");
 }
 
+/// A selected hard break on a line holding a right-to-left run is a newline's
+/// width past the line's text, as on a left-to-right line (#1706's rule,
+/// `selection_rects_for_layout`): the same width on both, measured from the
+/// caret before the break. Chrome 155 lays `abc &#x202E;def&#x202C;` out `0..57`.
+#[test]
+fn a_hard_break_after_a_right_to_left_run_is_a_newline_wide() {
+    const BIDI: &str = "abc \u{202E}def\u{202C}\nxyz";
+    const LTR: &str = "abc def\nxyz";
+    let style = "width: 400px; white-space: pre";
+    let extension = |text: &str| {
+        let (doc, p) = doc_with(text, style);
+        let got = doc.query_selection_rects(p, 0, text.find('\n').unwrap() + 1);
+        assert_eq!(got.len(), 1, "{text:?}: one piece: {got:?}");
+        let (end_x, _) = doc
+            .query_caret_position(p, text.find('\n').unwrap())
+            .unwrap();
+        (got[0].0 + got[0].2, end_x)
+    };
+    let (bidi_right, bidi_text) = extension(BIDI);
+    assert!((bidi_text - 57.0).abs() <= 0.5, "Chrome's 57: {bidi_text}");
+    let (ltr_right, ltr_text) = extension(LTR);
+    let newline = ltr_right - ltr_text;
+    assert!(
+        newline > 2.0,
+        "the left-to-right line's newline is wide: {newline}"
+    );
+    assert!(
+        (bidi_right - (bidi_text + newline)).abs() <= 0.01,
+        "the bidi line ends a newline ({newline}) past its text ({bidi_text}): {bidi_right}"
+    );
+}
+
 // ── The pixels: the read-only highlight and the textarea's ──────────────────
 
 #[cfg(feature = "software-renderer")]
@@ -194,18 +236,26 @@ mod pixels {
         [p[0], p[1], p[2]] != [255, 255, 255]
     }
 
-    /// The text box sits at `(20, 20)`, its line `20..60`: "bc " is washed at
+    /// The text box sits at `(20, 20)` and its first line's box starts there
+    /// (a textarea's lines are its own, not 40px, so row 26 is the one both
+    /// highlights cover): "bc " is washed at
     /// x 20 + 9..32, "de" at 20 + 66..84; "ihg f" between them, at
     /// 20 + 33..65, is not. The old single rect washed `20 + 9..65` and left
     /// "de" bare.
     #[track_caller]
     fn assert_two_pieces(px: &[[u8; 4]], what: &str) {
-        let y = 40;
+        let y = 26;
         for x in [20 + 12, 20 + 28, 20 + 70, 20 + 80] {
-            assert!(washed(px, x, y), "{what}: column {x} is selected text, not washed");
+            assert!(
+                washed(px, x, y),
+                "{what}: column {x} is selected text, not washed"
+            );
         }
         for x in [20 + 40, 20 + 55, 20 + 62, 20 + 90] {
-            assert!(!washed(px, x, y), "{what}: column {x} is unselected text, washed");
+            assert!(
+                !washed(px, x, y),
+                "{what}: column {x} is unselected text, washed"
+            );
         }
     }
 
