@@ -280,6 +280,8 @@ mod select_popup_width_tests;
 #[cfg(test)]
 mod select_value_order_757_tests;
 mod select_widget;
+#[cfg(all(test, software_shell))]
+mod selection_highlight_damage_1106_tests;
 #[cfg(test)]
 mod shared_hit_tests;
 #[cfg(test)]
