@@ -337,12 +337,12 @@ fn a_faint_blur_tail_keeps_the_one_pass_order() {
 /// over the earlier text depends on how far the shadow's colour is from the
 /// text's (painting a 40%-black shadow over `rgb(40, 40, 40)` text or under
 /// it differs by at most 0.4 x 40 levels, times the blur's coverage), and a
-/// space between two fragments has no ink. Here `burg`'s 4px blur reaches
-/// about 3.7px over grey text — less than the 14px space before it — so the
-/// one-pass order is kept.
+/// space between two fragments has no ink. Here `burg`'s 4px blur stays
+/// above the 2-level order tolerance for about 2.3px over grey text — less
+/// than the 14px space before it — so the one-pass order is kept.
 ///
-/// Kills: the colour difference left out of the visible reach (5.2px, past
-/// the space); a space's advance counted as ink.
+/// Kills: the colour difference left out of the visible reach (4.1px, past
+/// the 3.9px space); a space's advance counted as ink.
 #[test]
 fn a_blur_that_cannot_reach_ink_of_another_colour_keeps_the_one_pass_order() {
     let prev = rinch_dom::paint::force_tapped_text_shadows(true);

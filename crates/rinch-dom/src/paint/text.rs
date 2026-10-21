@@ -525,9 +525,13 @@ impl<'a> ShadowGroup<'a> {
 /// (Chrome 155, measured). Within one fragment every shadow is under the text.
 /// Chrome also splits a fragment at a bidi boundary and orders a line's
 /// fragments visually; these fragments do neither (#1675).
-/// The one-pass order — every shadow, then all of the text — paints the same
-/// pixels unless a later fragment's shadow can change a pixel of an earlier
-/// fragment's text, or (with shadows of more than one colour) of its shadows;
+/// The one-pass order — every shadow, then all of the text — is kept unless a
+/// later fragment's shadow can change a pixel of an earlier fragment's ink
+/// (text or decorations), or (with shadows of more than one colour) of its
+/// shadows, by more than [`super::text_shadow::ORDER_TOLERANCE_LEVELS`]. That
+/// is about order only: the one-pass path blurs a list's fragments as one
+/// mask, so where adjacent blurs overlap it differs from the per-fragment
+/// composite by up to about 10 levels either way (as on main);
 /// only then are the fragments drawn one by one, which costs a shadow pass
 /// and a text pass per fragment (a glyph run two fragments share is drawn in
 /// two calls, and a blurred shadow is a mask per fragment, as wide as the
@@ -591,10 +595,11 @@ fn shadow_colour(s: &TextShadowValue) -> AlphaColor<Srgb> {
         .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255))
 }
 
-/// The box within which shadow `s` of text boxed by `text` can change an
-/// 8-bit pixel of something in colour `over` (any colour when `None`):
+/// The box within which shadow `s` of text boxed by `text` can change a
+/// pixel of something in colour `over` (any colour when `None`) by more than
+/// [`super::text_shadow::ORDER_TOLERANCE_LEVELS`]:
 /// moved by its offset, grown by its visible reach. `None` when it can change
-/// no pixel of that colour at all — the shadow painted over a pixel of colour
+/// no pixel of that colour by more than that at all — the shadow painted over a pixel of colour
 /// `over` or under it differs by at most its alpha times the colours'
 /// largest channel difference.
 fn shadow_rect(
@@ -627,9 +632,9 @@ impl<'a> TextFragment<'a> {
     /// extent of its ink-bearing clusters (a space only under a decoration)
     /// by its line's ascent and descent, moved with any `vertical-align`
     /// shift; its shadow is that box moved by each offset and grown by the
-    /// reach at which the blur can still change an 8-bit pixel of the colour
-    /// under it ([`shadow_rect`]). Ink past a glyph's advance or below the
-    /// descent (an italic overhang, a wavy underline) is not in the box, so a
+    /// reach at which the blur can still change a pixel of the colour under it
+    /// by more than the order tolerance ([`shadow_rect`]). Ink past a glyph's advance or below the
+    /// descent (an italic overhang) is not in the box, so a
     /// shadow touching only that keeps the one-pass order.
     pub(super) fn in_paint_order(
         tree: &'a NodeTree,
