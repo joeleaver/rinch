@@ -3681,9 +3681,7 @@ fn paint_node(
                         let content_width = node.layout.width as f64 * scale
                             - (cs.padding_left.to_px() + cs.padding_right.to_px()) as f64 * scale;
                         paint_text_selection_highlight(
-                            node,
                             painter,
-                            scale,
                             text_x,
                             text_y,
                             &inline_layout.layout,
