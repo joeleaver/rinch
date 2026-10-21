@@ -1241,7 +1241,11 @@ fn a_3d_list_that_lands_in_the_plane_is_decomposed_in_2d() {
         (0.8, [0.6, 0.0, 0.0, 1.0, 4.0, 0.0]),
     ];
     check_transition("rotateY(180deg) scaleZ(-1)", "translate(5px)", &flip);
-    check_transition("scaleX(-1) rotateX(360deg)", "rotateY(0deg) translate(5px)", &flip);
+    check_transition(
+        "scaleX(-1) rotateX(360deg)",
+        "rotateY(0deg) translate(5px)",
+        &flip,
+    );
     check_keyframes("rotateY(180deg) scaleZ(-1)", "translate(5px)", &flip);
 }
 
