@@ -100,7 +100,11 @@ fn caret_at(d: &RinchDocument, root: NodeId, offset: usize, (x, y): (f32, f32)) 
 /// one line, the space hanging.
 #[test]
 fn a_space_that_does_not_fit_takes_its_word_to_the_next_line() {
-    let (d, b) = build(None, "width: 75px; white-space: break-spaces", "bullet text ");
+    let (d, b) = build(
+        None,
+        "width: 75px; white-space: break-spaces",
+        "bullet text ",
+    );
     assert_eq!(size(&d, b), (75.0, 2.0 * LINE));
     caret_at(&d, b, 11, (28.33, LINE));
     caret_at(&d, b, 12, (32.83, LINE));
@@ -255,7 +259,11 @@ fn each_space_follows_its_own_elements_white_space() {
 /// 27.92 wide, the caret after the spaces at 27.92.
 #[test]
 fn pre_line_collapses_the_spaces_at_a_lines_end() {
-    let (d, b) = build(None, "display: inline-block; white-space: pre-line", "abc   ");
+    let (d, b) = build(
+        None,
+        "display: inline-block; white-space: pre-line",
+        "abc   ",
+    );
     assert_eq!(size(&d, b), (28.0, LINE));
     caret_at(&d, b, 6, (27.92, 0.0));
 }
@@ -265,7 +273,11 @@ fn pre_line_collapses_the_spaces_at_a_lines_end() {
 /// `bullet ` / `text x`.
 #[test]
 fn a_space_that_does_not_fit_before_a_word_takes_its_word_along() {
-    let (d, b) = build(None, "width: 75px; white-space: break-spaces", "bullet text x");
+    let (d, b) = build(
+        None,
+        "width: 75px; white-space: break-spaces",
+        "bullet text x",
+    );
     assert_eq!(size(&d, b), (75.0, 2.0 * LINE));
     caret_at(&d, b, 6, (41.56, 0.0));
     caret_at(&d, b, 11, (28.33, LINE));
@@ -287,4 +299,3 @@ fn spaces_at_a_soft_wrap_are_aligned_as_content() {
     caret_at(&d, b, 0, (7.11, 0.0));
     caret_at(&d, b, 4, (34.89, 0.0));
 }
-

@@ -215,8 +215,14 @@ fn the_linear_pass_commits_the_lines_the_restarting_loop_did() {
         let mut want = build(&mut fcx, &mut lcx, &text, &boxes);
         reference(&mut want, &text, max);
         let mut got = build(&mut fcx, &mut lcx, &text, &boxes);
-        let stats: HangStats =
-            break_lines_hanging_spaces(&mut got, &text, Some(max), true, &super::UnhungSpaces::default(), false);
+        let stats: HangStats = break_lines_hanging_spaces(
+            &mut got,
+            &text,
+            Some(max),
+            true,
+            &super::UnhungSpaces::default(),
+            false,
+        );
         fixed += stats.passes;
         lines_fixed += stats.lines;
         assert!(stats.passes <= 1, "case {case}: {stats:?}");
@@ -276,7 +282,14 @@ fn with_inline_boxes_every_line_is_in_step_and_none_is_left_unhung() {
         let (text, boxes) = paragraph(&mut rng, true);
         let max = 8.0 + rng.below(160) as f32 + rng.below(100) as f32 / 100.0;
         let mut got = build(&mut fcx, &mut lcx, &text, &boxes);
-        let stats = break_lines_hanging_spaces(&mut got, &text, Some(max), true, &super::UnhungSpaces::default(), false);
+        let stats = break_lines_hanging_spaces(
+            &mut got,
+            &text,
+            Some(max),
+            true,
+            &super::UnhungSpaces::default(),
+            false,
+        );
         fixed_lines += stats.lines;
         // Review of #1077: parley's trailing line after an overflowing last box
         // (#1050) is never left behind, on the hang route either.
