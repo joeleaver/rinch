@@ -24,13 +24,68 @@
 //! between the border-box and padding-box shapes rather than stroked, which
 //! moves the corner pixels of every outlined component to CSS's radii.)
 
-use peniko::kurbo::{Arc, BezPath, Point, Rect, RoundedRect, RoundedRectRadii, Shape, Vec2};
+use peniko::kurbo::{
+    Arc, BezPath, ParamCurve, PathEl, PathSeg, Point, Rect, RoundedRect, RoundedRectRadii, Shape,
+    Vec2,
+};
 
 use super::painter::PaintShape;
 
 /// Path flattening tolerance for the elliptical arcs, the same kurbo uses for
 /// a [`RoundedRect`] everywhere else in paint.
 const TOLERANCE: f64 = 0.1;
+
+/// Flattening tolerance for the corners [`BorderRadii::path_with_holes`]
+/// flattens (the ones a hole meets): finer than [`TOLERANCE`], so such a
+/// corner stays within a twentieth of a pixel of its arc. Its anti-aliased
+/// pixels still differ from the arc's by a few supersamples.
+const HOLE_TOLERANCE: f64 = 0.05;
+
+/// A closed polygon contour (nothing for fewer than three points).
+fn push_polygon(path: &mut BezPath, points: &[Point]) {
+    if points.len() < 3 {
+        return;
+    }
+    path.move_to(points[0]);
+    for &p in &points[1..] {
+        path.line_to(p);
+    }
+    path.close_path();
+}
+
+/// `polygon` clipped to `clip` (Sutherland–Hodgman over its four edges):
+/// exact for a convex polygon, which a rounded rectangle's outline is.
+fn clip_polygon(polygon: &[Point], clip: Rect) -> Vec<Point> {
+    type Edge = (fn(Point, f64) -> f64, f64);
+    // Each edge as "signed distance inside" for a point.
+    let edges: [Edge; 4] = [
+        (|p, x0| p.x - x0, clip.x0),
+        (|p, x1| x1 - p.x, clip.x1),
+        (|p, y0| p.y - y0, clip.y0),
+        (|p, y1| y1 - p.y, clip.y1),
+    ];
+    let mut out = polygon.to_vec();
+    for (dist, at) in edges {
+        let input = std::mem::take(&mut out);
+        let Some(&last) = input.last() else {
+            break;
+        };
+        let mut prev = last;
+        for &cur in &input {
+            let (dp, dc) = (dist(prev, at), dist(cur, at));
+            if dc >= 0.0 {
+                if dp < 0.0 {
+                    out.push(prev.lerp(cur, dp / (dp - dc)));
+                }
+                out.push(cur);
+            } else if dp >= 0.0 {
+                out.push(prev.lerp(cur, dp / (dp - dc)));
+            }
+            prev = cur;
+        }
+    }
+    out
+}
 
 /// A box's four corner radii, each `(horizontal, vertical)` as a [`Vec2`]
 /// (`x` across, `y` down), in whatever units the caller works in.
@@ -264,6 +319,116 @@ impl BorderRadii {
                 || v * sy <= 0.0
                 || (u / c.x).powi(2) + (v / c.y).powi(2) <= 1.0 + 1e-9
         })
+    }
+
+    /// [`Self::path`] less `holes`, for a `Fill::EvenOdd` fill: the
+    /// background a `data-viewport` hole is cut out of, and an inset
+    /// shadow's clip (#1030).
+    ///
+    /// Each hole is added only where it lies inside the shape. Under
+    /// even-odd a hole contour reaching past the shape — the sliver between a
+    /// rounded corner's arc and the hole's corner, or past `rect` altogether
+    /// — counts once there, and that part was filled, outside the box.
+    ///
+    /// A hole clipped to `rect` that meets no rounded corner's box lies
+    /// inside the shape and goes in as its rect. One that meets a corner's
+    /// box is the shape flattened to a polygon and clipped to the hole (the
+    /// shape is convex, so that is the exact intersection). The outer
+    /// contour then has the corners a hole meets flattened the same way, so
+    /// it and the hole share their vertices along those arcs; every other
+    /// segment is the shape's own, so a corner no hole meets draws as it does
+    /// with no hole. Each hole contour is wound against the outline, so the
+    /// shared edges cancel under every anti-aliasing scheme — Vello's
+    /// analytic area coverage (Android) included, which sums the two
+    /// fractional coverages of same-way edges and drew a line along the arc.
+    pub fn path_with_holes(&self, rect: Rect, holes: &[Rect]) -> BezPath {
+        let r = self.fitted(rect.width(), rect.height());
+        let Rect { x0, y0, x1, y1 } = rect;
+        let [tl, tr, br, bl] = r.corners();
+        let corner_boxes: Vec<Rect> = [
+            (tl, Rect::new(x0, y0, x0 + tl.x, y0 + tl.y)),
+            (tr, Rect::new(x1 - tr.x, y0, x1, y0 + tr.y)),
+            (br, Rect::new(x1 - br.x, y1 - br.y, x1, y1)),
+            (bl, Rect::new(x0, y1 - bl.y, x0 + bl.x, y1)),
+        ]
+        .into_iter()
+        .filter(|(c, _)| *c != Vec2::ZERO)
+        .map(|(_, b)| b)
+        .collect();
+        let overlaps =
+            |h: &Rect, c: &Rect| h.x0 < c.x1 && h.x1 > c.x0 && h.y0 < c.y1 && h.y1 > c.y0;
+        let at_corner = |h: &Rect| corner_boxes.iter().any(|c| overlaps(h, c));
+        let holes: Vec<Rect> = holes
+            .iter()
+            .map(|h| h.intersect(rect))
+            .filter(|h| h.width() > 0.0 && h.height() > 0.0)
+            .collect();
+        // The outline runs clockwise on screen (y down); a hole contour runs
+        // the other way.
+        let push_rect = |path: &mut BezPath, h: &Rect| {
+            path.move_to((h.x0, h.y0));
+            path.line_to((h.x0, h.y1));
+            path.line_to((h.x1, h.y1));
+            path.line_to((h.x1, h.y0));
+            path.close_path();
+        };
+        let shape = self.path(rect);
+        let touched: Vec<&Rect> = corner_boxes
+            .iter()
+            .filter(|c| holes.iter().any(|h| overlaps(h, c)))
+            .collect();
+        if touched.is_empty() {
+            let mut path = shape;
+            for h in &holes {
+                push_rect(&mut path, h);
+            }
+            return path;
+        }
+        // Each segment of the shape flattened on its own, so a segment comes
+        // out the same points in the outline and in the polygon a hole clips.
+        let flat = |seg: PathSeg| {
+            let mut pts = Vec::new();
+            let mut one = BezPath::new();
+            one.move_to(seg.start());
+            one.push(seg.as_path_el());
+            peniko::kurbo::flatten(one, HOLE_TOLERANCE, |el| {
+                if let PathEl::LineTo(p) = el {
+                    pts.push(p);
+                }
+            });
+            pts
+        };
+        let mut polygon: Vec<Point> = Vec::new();
+        let mut path = BezPath::new();
+        for (i, seg) in shape.segments().enumerate() {
+            if i == 0 {
+                polygon.push(seg.start());
+                path.move_to(seg.start());
+            }
+            let pts = flat(seg);
+            if touched.iter().any(|c| overlaps(&seg.bounding_box(), c)) {
+                for &p in &pts {
+                    path.line_to(p);
+                }
+            } else {
+                path.push(seg.as_path_el());
+            }
+            polygon.extend(pts);
+        }
+        path.close_path();
+        if polygon.len() > 1 && polygon.first() == polygon.last() {
+            polygon.pop();
+        }
+        for h in &holes {
+            if at_corner(h) {
+                let mut cut = clip_polygon(&polygon, *h);
+                cut.reverse();
+                push_polygon(&mut path, &cut);
+            } else {
+                push_rect(&mut path, h);
+            }
+        }
+        path
     }
 
     /// The outline, clockwise from the end of the top-left corner, with each

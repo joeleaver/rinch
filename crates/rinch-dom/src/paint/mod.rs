@@ -42,7 +42,7 @@ pub use text_shadow::{
 };
 
 use peniko::color::{AlphaColor, Srgb};
-use peniko::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Vec2};
+use peniko::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use peniko::{Brush, Fill};
 use radii::BorderRadii;
 
@@ -2099,25 +2099,6 @@ pub fn viewport_ready(node: &Node) -> bool {
         .is_none_or(|v| v == "true")
 }
 
-/// Build a BezPath for the background shape with viewport holes cut out.
-/// Uses EvenOdd fill rule: outer shape wound clockwise, holes wound counter-clockwise.
-fn build_background_with_holes(rect: Rect, radii: BorderRadii, holes: &[Rect]) -> BezPath {
-    // Outer contour: the background shape (clockwise)
-    let mut path = radii.path(rect);
-
-    // Inner contours: viewport holes (counter-clockwise = reversed winding)
-    for hole in holes {
-        // Rect path_elements goes clockwise, so we reverse for counter-clockwise
-        path.move_to((hole.x0, hole.y0));
-        path.line_to((hole.x0, hole.y1));
-        path.line_to((hole.x1, hole.y1));
-        path.line_to((hole.x1, hole.y0));
-        path.close_path();
-    }
-
-    path
-}
-
 /// Paint a subtree rooted at `root_node_id` into `painter`, positioned at (0, 0).
 ///
 /// Used for drag-and-drop snapshot capture. The subtree is translated so its
@@ -3480,7 +3461,7 @@ fn paint_node(
                     let (bg_fill, bg_shape): (Fill, PaintShape) = if !viewport_holes.is_empty() {
                         (
                             Fill::EvenOdd,
-                            build_background_with_holes(rect, radii, &viewport_holes).into(),
+                            radii.path_with_holes(rect, &viewport_holes).into(),
                         )
                     } else {
                         (Fill::NonZero, radii.shape(rect))

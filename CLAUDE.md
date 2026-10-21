@@ -2911,7 +2911,10 @@ whole of #416, with no opt-in. Only the polarity follows the palette, so a
 **Viewport holes.** A `data-viewport` node is a compositing hole: `find_viewport_rects`
 (`crates/rinch-dom/src/paint/mod.rs`) cuts its rect out of every clipping ancestor's
 background fill, `<body>` included (the UA sheet makes it `overflow-y: auto`), so the
-layer underneath shows through. On a **transparent** window a hole nothing fills is
+layer underneath shows through. Only the part of the rect inside the ancestor's
+(rounded) shape is cut (`BorderRadii::path_with_holes`, #1030), for its background and its
+inset shadow's clip alike: a hole reaching past a rounded corner or past the box used to
+fill that part under `EvenOdd`, painting outside the box. On a **transparent** window a hole nothing fills is
 see-through to the desktop, so a viewport whose content can be absent opts out by
 stamping **`data-viewport-ready="false"`** — paint then leaves the backgrounds alone and
 the node paints its own `background` (a placeholder, poster, or error affordance). The
