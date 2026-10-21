@@ -94,4 +94,48 @@ fn the_snap_takes_the_nearer_edge_1684() {
     // The answers switch once, from the start to the end.
     assert!(last_start < first_end, "{last_start} {first_end}");
     assert!(offsets[last_start..=first_end].iter().all(|&o| o == family.0 || o == family.1));
+    // And at the middle: the end is answered over about as many samples as
+    // the start (each is half the emoji plus half its neighbour letter), not
+    // only over the half letter after the emoji.
+    let starts = offsets.iter().filter(|&&o| o == family.0).count();
+    let ends = offsets.iter().filter(|&&o| o == family.1).count();
+    assert!(2 * ends > starts, "start answered {starts} times, end {ends}");
+}
+
+/// The rich editor's press resolves through the same snap (`editor_point`):
+/// every byte a press can answer in a paragraph of emoji is a cluster edge.
+#[cfg(feature = "desktop")]
+#[test]
+fn a_press_in_the_editor_lands_on_a_cluster_edge_1684() {
+    let slot: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let slot_in = slot.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let (container, handle) = crate::editor::mount_editor(scope);
+        handle.load_html(&format!("<p>{VALUE}</p>"));
+        container.set_attribute("style", STYLE);
+        root.append_child(&container);
+        slot_in.set(container.node_id().0);
+        root
+    });
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    let (bx, by, bw, _) = {
+        let d = app.doc.as_ref().unwrap().borrow();
+        painted_element_box(&d.tree, slot.get())
+    };
+    let mut bytes = Vec::new();
+    let mut x = bx + 1.0;
+    while x < bx + bw {
+        if let Some(p) = app.editor_point(x, by + 20.0) {
+            bytes.push(p.byte);
+        }
+        x += 0.5;
+    }
+    let inside: Vec<usize> =
+        bytes.iter().copied().filter(|&b| !rinch_words::is_grapheme_boundary(VALUE, b)).collect();
+    assert!(inside.is_empty(), "carets inside a cluster at {inside:?}");
+    for b in (0..=VALUE.len()).filter(|&b| rinch_words::is_grapheme_boundary(VALUE, b)) {
+        assert!(bytes.contains(&b), "the sweep never reached boundary {b}");
+    }
 }
