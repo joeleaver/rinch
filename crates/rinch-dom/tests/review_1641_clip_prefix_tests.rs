@@ -241,6 +241,7 @@ fn random_stacking_documents_paint_balanced() {
 }
 
 #[test]
+#[ignore = "a harness, not a check: writes hashes to $RINCH_1641_OUT for a two-tree differential; run with --ignored"]
 fn random_stacking_documents_pixel_hashes() {
     let mut out = String::new();
     let mut total_clips = 0usize;
