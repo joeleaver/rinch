@@ -2631,28 +2631,6 @@ impl DomDocument for WebDocument {
         ))
     }
 
-    /// From `getComputedStyle`: `overflow-x` or `overflow-y` other than
-    /// `visible`.
-    fn clips_overflow(&self, node_id: u64) -> bool {
-        let Some(el) = self
-            .nodes
-            .get(&(node_id as usize))
-            .and_then(|n| n.dyn_ref::<web_sys::Element>())
-        else {
-            return false;
-        };
-        self.browser_doc
-            .default_view()
-            .and_then(|w| w.get_computed_style(el).ok().flatten())
-            .is_some_and(|style| {
-                ["overflow-x", "overflow-y"].iter().any(|p| {
-                    style
-                        .get_property_value(p)
-                        .is_ok_and(|v| !v.is_empty() && v != "visible")
-                })
-            })
-    }
-
     fn content_origin_inset(&self, node_id: u64) -> (f32, f32) {
         // clientLeft/clientTop = the node's left/top border width. The editor's overlay
         // container is position:relative with a border, so an absolutely-positioned

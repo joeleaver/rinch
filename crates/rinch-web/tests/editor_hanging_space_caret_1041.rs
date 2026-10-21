@@ -5,8 +5,8 @@
 //! after them reports their true x, past the block; the editor draws its
 //! caret overlay from that, so it was painted outside the paragraph. Chrome
 //! 155 draws its own caret at the block's border-box edge less the caret's
-//! width, except in a block that is itself a scroll container (measured with
-//! headless screenshots, see the desktop twin
+//! width, whatever the block's `overflow` (measured with headless
+//! screenshots, see the desktop twin
 //! `rinch/src/app/editor_hanging_space_caret_1041_tests.rs`). Only the
 //! overlay is kept in: `caret_rect` keeps the Range's x.
 //!
@@ -224,7 +224,7 @@ fn the_caret_after_spaces_hanging_past_a_paragraphs_end_stays_at_its_end() {
 }
 
 #[wasm_bindgen_test]
-fn a_paragraph_that_clips_its_overflow_does_not_keep_its_caret_in() {
+fn a_paragraph_that_clips_its_overflow_keeps_its_caret_in_too() {
     let f = Fixture::new("[data-pm-editor] p { overflow: hidden; }");
     let carets = f.type_spaces();
     let right = f.para().get_bounding_client_rect().right();
@@ -235,8 +235,9 @@ fn a_paragraph_that_clips_its_overflow_does_not_keep_its_caret_in() {
     }
     let last = carets.last().unwrap();
     assert!(
-        last.0 > right + 20.0 && (last.0 - spaces_end).abs() <= 1.0,
-        "the caret goes on to where the spaces end ({spaces_end}), past {right}: {carets:?}"
+        (last.1 - right).abs() <= 0.5,
+        "the caret stops at the clipping paragraph's edge {right} (spaces end at \
+         {spaces_end}): {carets:?}"
     );
     f.teardown();
 }

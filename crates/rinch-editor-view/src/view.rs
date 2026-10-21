@@ -2043,9 +2043,11 @@ impl RinchDomEditorView {
     /// the caret after them is at their true x, past the block: clipped away
     /// under the editor's `overflow: auto`, painted outside the editor
     /// without it. Chrome 155 draws its caret there at the block's border-box
-    /// edge less the caret's width (padding and border included) and leaves
-    /// it in a block that clips its overflow, where it runs on and is clipped
-    /// (measured with headless screenshots). Only the overlay is kept in:
+    /// edge less the caret's width (padding and border included), whatever
+    /// the block's `overflow` (measured with headless screenshots; a block
+    /// that clips at its padding box hides a caret clamped into its right
+    /// border, which the overlay, a child of the editor and not of the block,
+    /// does not). Only the overlay is kept in:
     /// [`EditorHandle::caret_rect`](crate::EditorHandle::caret_rect), the
     /// reveal probes and the vertical motions keep the text's own x, as a
     /// collapsed `Range`'s rect does in the browser, so Up then Down from a
@@ -2062,9 +2064,13 @@ impl RinchDomEditorView {
         }
         let (left, _) = self.block_offset_in_container(d, block_id);
         let right = left + w - rinch_core::dom::CARET_WIDTH;
-        if (left..=right).contains(&x) || d.clips_overflow(block_id as u64) {
+        if (left..=right).contains(&x) {
             return x;
         }
+        // The left arm is for right-to-left text hanging its spaces past the
+        // start edge (Chrome 155 keeps that caret at the border-box left). Not
+        // reachable yet: rinch-dom reads no CSS `direction`, so no editor line
+        // hangs to the left, and nothing tests it.
         if x > right { right.max(left) } else { left }
     }
 

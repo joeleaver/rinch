@@ -182,9 +182,8 @@ Command names are case-sensitive. The full catalogue:
 > `pre-wrap` textblock (every editor block) hang past its edge rather than
 > wrapping, as CSS says. The caret after them is drawn at the textblock's
 > border-box edge, its whole width inside the block, as Chrome draws its own
-> (issue #1041) — unless the textblock itself clips its overflow (an author
-> `overflow: hidden` or `auto` on it), where the caret runs on with the spaces
-> and is clipped, as in Chrome. Only the drawn caret is kept in: the selection
+> (issue #1041), whatever the textblock's `overflow`. Only the drawn caret is
+> kept in: the selection
 > highlight over the spaces, `caret_rect` and the vertical motions keep the
 > spaces' own x.
 >

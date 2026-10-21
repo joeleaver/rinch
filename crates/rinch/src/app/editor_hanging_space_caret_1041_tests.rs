@@ -13,9 +13,12 @@
 //! border: 5px` it is at `border right - 1`, not at the content box; a `<p>`
 //! with `padding-right: 30px; border-right: 5px` inside a wider editable
 //! clamps at the `<p>`'s border edge; `text-align: center` clamps the same.
-//! A block that is itself a scroll container (`overflow: auto`, `hidden`) is
-//! **not** clamped: its caret runs on and is clipped away, while a `<p>`
-//! inside an `overflow: auto` editable is clamped. The Range rects keep the
+//! A block that clips its overflow (`hidden`, `auto`, `clip`) is clamped the
+//! same: at `right - 1` (measured by the review of #1668 with focus
+//! emulation; a first probe here read the caret as missing, because with a
+//! right border the clamped caret sits in the border strip, which a clipping
+//! block clips away — rinch's overlay is a child of the editor, not of the
+//! block, and is drawn there). The Range rects keep the
 //! unclamped x, and so do rinch's selection highlight and
 //! `EditorHandle::caret_rect` (which the vertical motions read): only the
 //! drawn caret is kept in.
@@ -266,9 +269,10 @@ fn a_padded_code_block_keeps_the_caret_in_its_border_box_not_its_content_box() {
 }
 
 #[test]
-fn a_textblock_that_clips_its_overflow_does_not_keep_its_caret_in() {
-    // Chrome: a block that is a scroll container keeps the caret where the
-    // spaces end (and clips it).
+fn a_textblock_that_clips_its_overflow_keeps_its_caret_in_too() {
+    // Chrome 155: `overflow: hidden` on the block changes nothing; the caret
+    // stops at its right edge. The overlay is not inside the `<p>`, so the
+    // `<p>`'s clip would not hide a caret drawn past it.
     let end = Pos(12);
     let mut p = page(
         "<p>bullet text</p>",
@@ -278,9 +282,35 @@ fn a_textblock_that_clips_its_overflow_does_not_keep_its_caret_in() {
     let boxes = type_spaces(&mut p);
     let (right, _) = p.block_right();
     let spaces_end = p.highlight_right(end);
-    let last = boxes.last().unwrap().0;
+    assert!(spaces_end > right + 20.0, "{spaces_end} vs {right}");
+    let last = boxes.last().unwrap();
     assert!(
-        last > right + 20.0 && (last - spaces_end).abs() <= 1.0,
-        "the caret goes on to where the spaces end ({spaces_end}), past {right}: {boxes:?}"
+        (last.0 + last.2 - right).abs() <= 0.5,
+        "the caret stops at the clipping block's edge {right}: {boxes:?}"
+    );
+}
+
+#[test]
+fn a_narrow_clipping_block_in_a_wide_editor_keeps_its_caret_in() {
+    // A 60px `<p>` in the 130px editor: a caret past it would be drawn in the
+    // editor's empty space beside the paragraph.
+    let end = Pos(12);
+    let mut p = page(
+        "<p>bullet text</p>",
+        "[data-pm-editor] p { overflow: hidden; width: 60px; }",
+        end,
+    );
+    let boxes = type_spaces(&mut p);
+    let (right, _) = p.block_right();
+    for (n, c) in boxes.iter().enumerate() {
+        assert!(
+            c.0 + c.2 <= right + 0.5,
+            "space {n}: the caret {c:?} is painted inside the 60px block (right {right})"
+        );
+    }
+    let last = boxes.last().unwrap();
+    assert!(
+        (last.0 + last.2 - right).abs() <= 0.5,
+        "{boxes:?} vs {right}"
     );
 }

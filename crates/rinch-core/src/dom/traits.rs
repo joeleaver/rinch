@@ -936,16 +936,6 @@ pub trait DomDocument {
         (0.0, 0.0)
     }
 
-    /// Whether `node_id`'s box clips its overflow: its `overflow` is not
-    /// `visible` on either axis (a scroll container, or `clip`). The editor
-    /// asks it before keeping its caret overlay inside a textblock (#1041):
-    /// a browser draws the caret after spaces hanging past a line's end at
-    /// the block's edge unless the block itself clips, where the caret runs
-    /// on and is clipped. Default `false`.
-    fn clips_overflow(&self, _node_id: u64) -> bool {
-        false
-    }
-
     /// The resolved font of `node_id` ([`NodeFont`]), so the IME preedit overlay can
     /// match the text it composes into (e.g. a 32px heading vs. 16px body). Default
     /// `None` — the overlay keeps its inherited font. Backends that can read computed
