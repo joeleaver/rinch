@@ -1440,6 +1440,15 @@ impl DomDocument for RinchDocument {
         )
     }
 
+    /// [`Node::clips_overflow`](crate::node::Node::clips_overflow): the
+    /// predicate paint clips by.
+    fn clips_overflow(&self, node_id: u64) -> bool {
+        self.tree
+            .nodes
+            .get(node_id as usize)
+            .is_some_and(|n| n.clips_overflow())
+    }
+
     fn tag_name(&self, node: NodeId) -> Option<String> {
         let n = self.tree.nodes.get(node.0)?;
         match &n.kind {

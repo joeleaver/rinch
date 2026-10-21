@@ -57,7 +57,7 @@ pub fn caret_position_for_offset_with_affinity(
     if let Some(ref inline_layout) = node.text_layout {
         let (x, y) = at(&inline_layout.layout);
         let shift = inline_layout.vertical_align_shift_at(byte_offset);
-        return Some((clamp_caret_x(node, x), y + shift));
+        return Some((x, y + shift));
     }
 
     // Check cached standalone text layout
@@ -76,30 +76,6 @@ pub fn caret_position_for_offset_with_affinity(
     }
 
     None
-}
-
-/// A caret x in `node`'s inline layout (content-box local), kept inside the
-/// node's border box, the caret's [`CARET_WIDTH`] included, unless the node
-/// clips its overflow (#1041).
-///
-/// Preserved spaces that overflow a line hang past its end (#1018), and the
-/// caret after them would be drawn out there, outside the block. Chrome 155
-/// draws it at the block's border-box edge less the caret's width (padding
-/// and border included, `text-align` whatever it is) and leaves it alone in
-/// a block that is a scroll container, where it is clipped. Only the caret:
-/// selection rects ([`selection_rects_for_layout`]) keep the true extent.
-///
-/// [`CARET_WIDTH`]: rinch_core::dom::CARET_WIDTH
-fn clamp_caret_x(node: &crate::node::Node, x: f32) -> f32 {
-    // A box not laid out yet has no edge to keep the caret inside.
-    if node.clips_overflow() || node.layout.width <= 0.0 {
-        return x;
-    }
-    let cs = &node.computed_style;
-    let start = cs.padding_left.to_px() + cs.border_left_width.to_px();
-    let min = -start;
-    let max = node.layout.width - start - rinch_core::dom::CARET_WIDTH;
-    if x > max { max.max(min) } else { x.max(min) }
 }
 
 /// Get the glyph bounds for a byte offset in a specific node.

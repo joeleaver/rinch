@@ -899,65 +899,7 @@ impl WebDocument {
     /// where a caret just after it draws. A caret the browser gives no rect
     /// (beside a preserved `"\n"`) is drawn where what follows it starts
     /// ([`Self::caret_where_next_starts_at`]). `None` for a block with no text.
-    ///
-    /// The caret is kept inside `block`'s border box, as the browser draws
-    /// its own ([`Self::clamp_caret_to_block`], #1041).
     fn text_caret_viewport_rect(
-        &self,
-        block: &web_sys::Node,
-        byte_offset: usize,
-        affinity: CaretAffinity,
-    ) -> Option<(f32, f32, f32)> {
-        let (x, y, h) = self.unclamped_text_caret_viewport_rect(block, byte_offset, affinity)?;
-        Some((self.clamp_caret_to_block(block, x), y, h))
-    }
-
-    /// A caret's viewport `x` kept inside `block`'s border box, its
-    /// [`CARET_WIDTH`](rinch_core::dom::CARET_WIDTH) included, unless `block`
-    /// is a scroll container (#1041).
-    ///
-    /// Preserved spaces that overflow a line hang past its end, and a
-    /// collapsed range after them reports their true x, past the block.
-    /// Chrome 155 draws its own caret there at the block's border-box edge
-    /// less the caret's width, and leaves it in a block whose `overflow` is
-    /// not `visible`, where it is clipped (measured with headless
-    /// screenshots); the editor draws its overlay from this answer, so it
-    /// clamps the same way. A caret inside the box asks nothing more of the
-    /// browser than the block's client rect.
-    fn clamp_caret_to_block(&self, block: &web_sys::Node, x: f32) -> f32 {
-        let Some(el) = block.dyn_ref::<web_sys::Element>() else {
-            return x;
-        };
-        let r = el.get_bounding_client_rect();
-        if r.width() <= 0.0 {
-            return x;
-        }
-        let (min, max) = (
-            r.left() as f32,
-            r.right() as f32 - rinch_core::dom::CARET_WIDTH,
-        );
-        if (min..=max).contains(&x) {
-            return x;
-        }
-        let clips = self
-            .browser_doc
-            .default_view()
-            .and_then(|w| w.get_computed_style(el).ok().flatten())
-            .is_some_and(|style| {
-                ["overflow-x", "overflow-y"].iter().any(|p| {
-                    style
-                        .get_property_value(p)
-                        .is_ok_and(|v| !v.is_empty() && v != "visible")
-                })
-            });
-        if clips {
-            return x;
-        }
-        if x > max { max.max(min) } else { min }
-    }
-
-    /// [`Self::text_caret_viewport_rect`] before it is kept inside the block.
-    fn unclamped_text_caret_viewport_rect(
         &self,
         block: &web_sys::Node,
         byte_offset: usize,
@@ -2687,6 +2629,28 @@ impl DomDocument for WebDocument {
             rect.width() as f32,
             rect.height() as f32,
         ))
+    }
+
+    /// From `getComputedStyle`: `overflow-x` or `overflow-y` other than
+    /// `visible`.
+    fn clips_overflow(&self, node_id: u64) -> bool {
+        let Some(el) = self
+            .nodes
+            .get(&(node_id as usize))
+            .and_then(|n| n.dyn_ref::<web_sys::Element>())
+        else {
+            return false;
+        };
+        self.browser_doc
+            .default_view()
+            .and_then(|w| w.get_computed_style(el).ok().flatten())
+            .is_some_and(|style| {
+                ["overflow-x", "overflow-y"].iter().any(|p| {
+                    style
+                        .get_property_value(p)
+                        .is_ok_and(|v| !v.is_empty() && v != "visible")
+                })
+            })
     }
 
     fn content_origin_inset(&self, node_id: u64) -> (f32, f32) {

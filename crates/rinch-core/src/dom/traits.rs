@@ -114,10 +114,9 @@ pub enum CaretAffinity {
 }
 
 /// The width, in CSS px, of the text caret the rich-text editor draws (its
-/// overlay), and the width a caret query keeps inside the box it clamps the
-/// caret to ([`DomDocument::query_caret_position`], #1041): a caret's left
-/// edge is at most the block's border-box right edge less this, so the
-/// whole caret is drawn inside the block.
+/// overlay). The editor keeps that whole width inside the textblock's border
+/// box when spaces hang past a line's end (#1041), as a browser keeps its own
+/// 1px caret.
 pub const CARET_WIDTH: f32 = 2.0;
 
 /// Bounding box for a glyph cluster.
@@ -935,6 +934,16 @@ pub trait DomDocument {
     /// too. Default `(0, 0)`, for a backend with no borders to report.
     fn content_origin_inset(&self, _node_id: u64) -> (f32, f32) {
         (0.0, 0.0)
+    }
+
+    /// Whether `node_id`'s box clips its overflow: its `overflow` is not
+    /// `visible` on either axis (a scroll container, or `clip`). The editor
+    /// asks it before keeping its caret overlay inside a textblock (#1041):
+    /// a browser draws the caret after spaces hanging past a line's end at
+    /// the block's edge unless the block itself clips, where the caret runs
+    /// on and is clipped. Default `false`.
+    fn clips_overflow(&self, _node_id: u64) -> bool {
+        false
     }
 
     /// The resolved font of `node_id` ([`NodeFont`]), so the IME preedit overlay can

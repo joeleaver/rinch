@@ -16,7 +16,9 @@
 //! A block that is itself a scroll container (`overflow: auto`, `hidden`) is
 //! **not** clamped: its caret runs on and is clipped away, while a `<p>`
 //! inside an `overflow: auto` editable is clamped. The Range rects keep the
-//! unclamped x, and so does rinch's selection highlight.
+//! unclamped x, and so do rinch's selection highlight and
+//! `EditorHandle::caret_rect` (which the vertical motions read): only the
+//! drawn caret is kept in.
 //!
 //! Driven through real key presses; text in the bundled Inter
 //! (`perf_expect::new_app`), sizes declared.
@@ -158,18 +160,18 @@ impl Page {
     }
 }
 
-/// Type twelve spaces and answer `caret_rect`'s x before and after each;
-/// asserts each caret stays on the start's line.
-fn type_spaces(p: &mut Page) -> Vec<f32> {
-    let start = p.caret_rect();
-    let mut xs = vec![start.0];
+/// Type twelve spaces and answer the caret overlay's painted box before and
+/// after each; asserts each caret stays on the start's line.
+fn type_spaces(p: &mut Page) -> Vec<(f32, f32, f32, f32)> {
+    let start = p.caret();
+    let mut boxes = vec![start];
     for n in 1..=12 {
         space(&mut p.app);
-        let r = p.caret_rect();
-        assert_eq!(r.1, start.1, "space {n}: the caret stays on the line");
-        xs.push(r.0);
+        let c = p.caret();
+        assert_eq!(c.1, start.1, "space {n}: the caret stays on the line ({c:?})");
+        boxes.push(c);
     }
-    xs
+    boxes
 }
 
 #[test]
@@ -179,18 +181,13 @@ fn the_caret_after_spaces_hanging_past_a_paragraphs_end_stays_at_its_end() {
     let mut p = page("<p>bullet text</p>", "", end);
     let start = p.caret();
     let mut overlay = vec![start];
-    let mut xs = vec![p.caret_rect().0];
+    let mut rects = vec![p.caret_rect().0];
     for n in 1..=12 {
         space(&mut p.app);
         let c = p.caret();
-        let r = p.caret_rect();
-        assert_eq!(c.1, start.1, "space {n}: the caret stays on the line");
-        assert!(
-            (r.0 - c.0).abs() <= 1.0,
-            "space {n}: caret_rect {r:?} answers where the caret is painted, {c:?}"
-        );
+        assert_eq!(c.1, start.1, "space {n}: the caret stays on the line ({c:?})");
         overlay.push(c);
-        xs.push(r.0);
+        rects.push(p.caret_rect().0);
     }
     let (right, _) = p.block_right();
     let spaces_end = p.highlight_right(end);
@@ -198,8 +195,18 @@ fn the_caret_after_spaces_hanging_past_a_paragraphs_end_stays_at_its_end() {
         spaces_end > right + 20.0,
         "the twelve spaces hang well past the block ({spaces_end} vs {right})"
     );
-    // Off the fixed point: the first spaces fit and move the caret right.
-    assert!(xs[1] > xs[0] && xs[2] > xs[1], "the first spaces move it: {xs:?}");
+    // Off the fixed point: the first spaces fit and move the caret right,
+    // drawn where `caret_rect` says.
+    assert!(
+        overlay[1].0 > overlay[0].0 && overlay[2].0 > overlay[1].0,
+        "the first spaces move it: {overlay:?}"
+    );
+    for n in 0..3 {
+        assert!(
+            (overlay[n].0 - rects[n]).abs() <= 1.0,
+            "space {n}: inside the block the caret is drawn at caret_rect {rects:?}, {overlay:?}"
+        );
+    }
     for (n, c) in overlay.iter().enumerate() {
         assert!(
             c.0 + c.2 <= right + 0.5,
@@ -216,33 +223,41 @@ fn the_caret_after_spaces_hanging_past_a_paragraphs_end_stays_at_its_end() {
         .filter(|c| (c.0 + c.2 - right).abs() <= 0.5)
         .count();
     assert!(at_edge >= 4, "it reached the edge and stayed there: {overlay:?}");
-}
-
-#[test]
-fn a_padded_code_block_clamps_the_caret_to_its_border_box_not_its_content_box() {
-    // "bullet" is 1..7; the code block has a 1em side padding.
-    let end = Pos(7);
-    let mut p = page("<pre><code>bullet</code></pre>", "", end);
-    let xs = type_spaces(&mut p);
-    let (right, content_right) = p.block_right();
-    let spaces_end = p.highlight_right(end);
-    let limit = right - CARET_WIDTH;
-    assert!(content_right < limit - 10.0, "{content_right} vs {limit}");
-    assert!(spaces_end > limit + 20.0, "{spaces_end} vs {limit}");
-    assert!(xs[1] > xs[0] && xs[2] > xs[1], "the first spaces move it: {xs:?}");
-    for (n, x) in xs.iter().enumerate() {
-        assert!(*x <= limit + 0.5, "space {n}: {x} past {limit}");
-    }
-    let last = *xs.last().unwrap();
+    // `caret_rect` keeps the text's own x, as a collapsed Range does.
+    let last_rect = *rects.last().unwrap();
     assert!(
-        (last - limit).abs() <= 0.5,
-        "the caret stops at the border box's edge {limit}, past the content box \
-         {content_right}: {xs:?}"
+        (last_rect - spaces_end).abs() <= 1.0,
+        "caret_rect {last_rect} is where the spaces end, {spaces_end}"
     );
 }
 
 #[test]
-fn a_textblock_that_clips_its_overflow_does_not_clamp_its_caret() {
+fn a_padded_code_block_keeps_the_caret_in_its_border_box_not_its_content_box() {
+    // "bullet" is 1..7; the code block has a 1em side padding.
+    let end = Pos(7);
+    let mut p = page("<pre><code>bullet</code></pre>", "", end);
+    let boxes = type_spaces(&mut p);
+    let (right, content_right) = p.block_right();
+    let spaces_end = p.highlight_right(end);
+    assert!(content_right < right - 10.0, "{content_right} vs {right}");
+    assert!(spaces_end > right + 20.0, "{spaces_end} vs {right}");
+    assert!(
+        boxes[1].0 > boxes[0].0 && boxes[2].0 > boxes[1].0,
+        "the first spaces move it: {boxes:?}"
+    );
+    for (n, c) in boxes.iter().enumerate() {
+        assert!(c.0 + c.2 <= right + 0.5, "space {n}: {c:?} past {right}");
+    }
+    let last = boxes.last().unwrap();
+    assert!(
+        (last.0 + last.2 - right).abs() <= 0.5,
+        "the caret stops at the border box's edge {right}, past the content box \
+         {content_right}: {boxes:?}"
+    );
+}
+
+#[test]
+fn a_textblock_that_clips_its_overflow_does_not_keep_its_caret_in() {
     // Chrome: a block that is a scroll container keeps the caret where the
     // spaces end (and clips it).
     let end = Pos(12);
@@ -251,12 +266,12 @@ fn a_textblock_that_clips_its_overflow_does_not_clamp_its_caret() {
         "[data-pm-editor] p { overflow: hidden; }",
         end,
     );
-    let xs = type_spaces(&mut p);
+    let boxes = type_spaces(&mut p);
     let (right, _) = p.block_right();
     let spaces_end = p.highlight_right(end);
-    let last = *xs.last().unwrap();
+    let last = boxes.last().unwrap().0;
     assert!(
         last > right + 20.0 && (last - spaces_end).abs() <= 1.0,
-        "the caret goes on to where the spaces end ({spaces_end}), past {right}: {xs:?}"
+        "the caret goes on to where the spaces end ({spaces_end}), past {right}: {boxes:?}"
     );
 }
