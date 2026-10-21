@@ -299,7 +299,7 @@ mod textarea_text_child_tests;
 #[cfg(test)]
 mod textarea_vertical_arrow_tests;
 mod title_tooltip;
-#[cfg(test)]
+#[cfg(all(test, software_shell))]
 mod title_tooltip_tests;
 #[cfg(test)]
 mod trap_focus_tests;
