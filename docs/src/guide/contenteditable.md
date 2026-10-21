@@ -513,6 +513,17 @@ With the callback registered:
   **every other file of the drop**: the PDF dropped with a photo, a text file
   that is only named `.png`, a picture over the limit. A drop with no picture
   in it, or on a read-only editor, is the handler's whole, as before.
+- While a file drag from outside the window hovers over the editor, a **drop
+  caret** (a caret bar of its own, `data-pm-drop-caret`) shows where a picture
+  would land and follows the pointer; the drop lands exactly there. It shows
+  only when a hovered file is *named* like a picture (its bytes cannot be read
+  before the drop) and the editor is not read-only; on Wayland no file is named
+  before the drop, so it does not show there. The selection does not move and
+  nothing scrolls to the caret until the drop. Held in the top or bottom band
+  of the editor's scroll container, the drag scrolls it, as an in-app drag does,
+  so a long note can be targeted. The caret and the scrolling end with the drag:
+  its cancel, its drop, or the first pointer move, press, wheel, key or window
+  blur the window hears, since none reaches it while an OS drag is in flight.
 - A pasted bitmap has no size limit of its own: it is whatever the clipboard
   held, encoded as PNG on the UI thread (about 50 to 90 ms for a 4K
   screenshot).
