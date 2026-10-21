@@ -873,11 +873,12 @@ impl Walk<'_> {
             }
 
             // A box collapsed to zero in one dimension still keeps its origin
-            // and its transform, and paint still walks into it (#142). A box
-            // collapsed in *both* is one paint returns from — but the stacking
-            // walk descends *through* it to hoist positioned descendants out,
-            // and those are painted. Recursing into it costs a level and can
-            // only enlarge the result, which is the right way to be wrong.
+            // and its transform, and paint still walks into it (#142); so does
+            // a box collapsed in *both* since #1696 (a `0x0` stacking context's
+            // descendants are entries of its own sequence, and an in-flow
+            // child of a `0x0` box overflows it). The walk here does not apply
+            // the box's own zero-area clip, so it can only enlarge the result,
+            // which is the right way to be wrong.
             //
             // Read that "only enlarge" narrowly: it is measured against *not*
             // recursing, not against what this branch used to return. When the

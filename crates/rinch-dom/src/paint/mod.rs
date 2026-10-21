@@ -2433,6 +2433,18 @@ fn paint_children_with_stacking(
     }
 }
 
+/// Whether a box laid out `0x0` has descendants [`paint_node`] must walk
+/// (#1696): an element with children whose own arm would paint them. The
+/// arms that draw an element's content themselves and never visit its
+/// children — an `<svg>` (its shapes are drawn by `paint_svg`), an `<img>`, a
+/// `data-render-surface` — are left out, as is a node with no children, which
+/// has nothing to paint at zero area.
+fn zero_box_paints_children(node: &Node) -> bool {
+    !node.children.is_empty()
+        && matches!(&node.kind, NodeKind::Element(el) if el.tag != "svg" && el.tag != "img")
+        && !node.attributes.contains_key("data-render-surface")
+}
+
 /// Whether the ordinary (non-stacking-context) box `node_id`, entered at
 /// `offset` under `parent_transform`, would paint nothing at all — decided
 /// without a [`paint_node`] visit (#910).
@@ -2673,13 +2685,21 @@ fn paint_node(
                 None,
                 false,
             );
-        } else if (layout.width == 0.0) != (layout.height == 0.0) {
+        } else if (layout.width == 0.0) != (layout.height == 0.0) || zero_box_paints_children(node)
+        {
             // A real box collapsed to zero in one dimension (e.g. an
             // auto-height container with only absolutely-positioned children)
             // may still have overflowing children that need painting. Unlike
             // display:contents it keeps its own origin, transform, and
             // opacity — only the degenerate background/border fill is
             // skipped (#142).
+            //
+            // So does a box collapsed in **both** (#1696): CSS paints a box's
+            // overflowing content whatever its own size, and a `0x0` stacking
+            // context (the editor's overlay slot, `position: absolute; width: 0;
+            // height: 0; z-index: 2`) owns every descendant in its sequence —
+            // nothing hoists them out, so returning here drew none of them.
+            // `display: none` (also `0x0`) returned above, by its `display`.
             let x = offset_x + layout.x as f64 * scale;
             let y = offset_y + layout.y as f64 * scale;
             let node_transform = compose_node_transform(node, x, y, scale, parent_transform);

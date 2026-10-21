@@ -3812,6 +3812,8 @@ that would use. **A component whose overlay must cover its parent (e.g.
 it the overlay covers whatever positioned ancestor it does have, or the
 window, as it always has on the web.
 
+**A `0x0` box paints its descendants** (#1696): `paint_node` walks a box zero in both dimensions as it walks one zero in one (#142) — its origin, transform, opacity and stacking context are kept, its own `overflow` clip is pushed (a `0x0` `overflow: hidden` box clips everything), and only its background, border and shadow are not drawn. It used to return without visiting the children, so a `0x0` stacking context (the `Editor` overlay slot) drew none of its descendants and a `0x0` box's in-flow children were never drawn; only a positioned descendant of a non-stacking `0x0` box, hoisted to an outer sequence, was drawn. `display: none` is decided by `display`, not size; an `<svg>`, `<img>` or `data-render-surface` is not walked (`zero_box_paints_children`). Pins: `rinch-dom/tests/zero_box_descendants_1696_tests.rs`, `rinch/src/app/zero_box_overlay_1696_tests.rs`.
+
 **Overflow clipping.** One predicate — `Node::clips_overflow()`, "either axis is
 not `visible`, and the box is neither a non-atomic `display: inline` element nor
 `display: contents`" (which generates no box to clip to, #1038) — and
