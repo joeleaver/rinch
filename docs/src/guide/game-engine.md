@@ -386,7 +386,10 @@ silences another) and keeps its own document-scoped element-bounds signals,
 editor registrations, and focus requests. Stores/contexts are **namespaced
 per context** (#136): a `create_store` inside a context's component lands in
 that context's own namespace, its effects and event handlers resolve that
-namespace first, and lookups **fall back to the thread-global namespace** for
+namespace first — and so do a timer, an `rinch-http` completion, a
+`run_on_main_thread` closure, a `rinch-ws` event and a menu, tray, hotkey,
+notification or focus-target callback made inside it, wherever it is fired
+(#1032) — and lookups **fall back to the thread-global namespace** for
 stores created outside any context (e.g. before mounting). Two contexts can
 therefore create the *same* store type without overwriting each other, and
 dropping a context clears its namespace. One caveat remains: each context

@@ -232,3 +232,38 @@ fn a_release_reports_whether_another_key_went_down() {
         ]
     );
 }
+
+/// Issue #1032: a hotkey callback runs under the document and in the context
+/// root current at `register`, not where the report is delivered (the
+/// main-thread queue, from the backend's thread, under no document).
+/// Delivered from inside root 4 / document 2, off the fixed point.
+#[test]
+fn a_callback_runs_under_the_document_and_root_it_was_registered_in() {
+    type Seen = Rc<RefCell<Vec<(u64, Option<u64>)>>>;
+    use rinch_core::{
+        current_context_root, current_dispatching_doc, push_context_root, push_dispatching_doc,
+    };
+    let fk = fake::install();
+    let seen: Seen = Rc::default();
+    let s = seen.clone();
+    let _hk = {
+        let _root = push_context_root(9);
+        let _doc = push_dispatching_doc(7);
+        register("RightCtrl", move |_| {
+            s.borrow_mut()
+                .push((current_context_root(), current_dispatching_doc()))
+        })
+        .unwrap()
+    };
+    {
+        let _root = push_context_root(4);
+        let _doc = push_dispatching_doc(2);
+        fake::key(&fk, ControlRight, true);
+        fake::key(&fk, ControlRight, false);
+        assert_eq!(
+            (current_context_root(), current_dispatching_doc()),
+            (4, Some(2))
+        );
+    }
+    assert_eq!(*seen.borrow(), [(9, Some(7)), (9, Some(7))]);
+}

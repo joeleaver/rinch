@@ -137,7 +137,7 @@ Callbacks fire both when the user clicks the menu item and when the keyboard sho
 
 ### Callback lifetime
 
-A callback belongs to the component that **created** it — the scope that was rendering when you called `on_click`, which is where the closure captured its `Signal`s. When that component unmounts its signals are freed, so the item stops firing rather than reading freed state (reading a freed signal panics). The callback also runs *inside* that component, so a `Signal` it creates belongs there too.
+A callback belongs to the component that **created** it — the scope that was rendering when you called `on_click`, which is where the closure captured its `Signal`s. When that component unmounts its signals are freed, so the item stops firing rather than reading freed state (reading a freed signal panics). The callback also runs *inside* that component, so a `Signal` it creates belongs there too — and under the document (and, in an embedded `RinchContext`, the store namespace) that was current where the item was made, so an interceptor it registers is that window's, wherever the click arrives from.
 
 Ownership is per item, not per menu: one `Menu` may collect items contributed by several components, and each item's callback stops on its own component's unmount. This holds however the item is activated — a native menu click, a tray click, the DOM menu bar on Linux or on the web, or the keyboard shortcut.
 

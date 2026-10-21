@@ -86,20 +86,26 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::rc::Rc;
 
+use rinch_core::CallbackFrame;
 use rinch_core::reactive::{Owner, current_owner, unowned};
 
-/// The scope that was rendering when a callback was registered, if any.
+/// The scope that was rendering when a callback was registered, if any, and
+/// the document and context root its code belongs to.
 ///
 /// `Owner` is a `Weak`, so this keeps nothing alive. `None` means the
 /// registration happened outside any render and the callback has app lifetime.
+/// The frame is re-entered around the call (issue #1032): these callbacks are
+/// drained once a frame, outside any dispatch, so without it an interceptor a
+/// callback registered or cleared reached every document on the thread, and a
+/// store it read resolved the thread-global namespace.
 #[derive(Clone)]
-struct Registrant(Option<Owner>);
+struct Registrant(Option<Owner>, CallbackFrame);
 
 impl Registrant {
-    /// Capture the ambient owner. Must be called where the *user's* closure was
+    /// Capture the ambient owner and frame. Must be called where the *user's* closure was
     /// created — that is where it captured its signals.
     fn current() -> Self {
-        Registrant(current_owner())
+        Registrant(current_owner(), CallbackFrame::current())
     }
 
     /// Whether the component that registered the callback is gone.
@@ -112,8 +118,10 @@ impl Registrant {
     /// Run `f` with the registering component as the ambient owner, so what it
     /// allocates belongs to that component — or with *no* owner when the
     /// registration was ownerless, so an app-lifetime callback cannot allocate
-    /// into whatever scope the dispatch is nested inside.
+    /// into whatever scope the dispatch is nested inside. Either way under the
+    /// registration's document and context root.
     fn run<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _frame = self.1.enter();
         match &self.0 {
             Some(owner) => owner.run(f),
             None => unowned(f),
@@ -642,13 +650,13 @@ mod tests {
     /// the fixed point; a registration made outside any document answers none.
     #[test]
     fn a_callback_runs_under_the_document_and_root_that_registered_it() {
+        type Seen = Rc<RefCell<Vec<(u64, Option<u64>)>>>;
         use rinch_core::{
-            current_context_root, current_dispatching_doc, push_context_root,
-            push_dispatching_doc,
+            current_context_root, current_dispatching_doc, push_context_root, push_dispatching_doc,
         };
 
-        let seen: Rc<RefCell<Vec<(u64, Option<u64>)>>> = Rc::new(RefCell::new(Vec::new()));
-        let record = |s: Rc<RefCell<Vec<(u64, Option<u64>)>>>| -> Rc<dyn Fn()> {
+        let seen: Seen = Rc::new(RefCell::new(Vec::new()));
+        let record = |s: Seen| -> Rc<dyn Fn()> {
             Rc::new(move || {
                 s.borrow_mut()
                     .push((current_context_root(), current_dispatching_doc()))

@@ -107,8 +107,20 @@ fn deferred_callbacks_in_an_embed_context_read_its_store() {
         let queued = *queued_seen.lock().unwrap();
         let effect = *effect_seen.borrow();
         drop(c);
-        assert_eq!(effect, Some(42), "positive control: an effect resolves the context's store");
-        assert_eq!(timer, Some(Some(42)), "the timer resolves the context's store");
-        assert_eq!(queued, Some(true), "the queued closure resolves the context's store");
+        assert_eq!(
+            effect,
+            Some(42),
+            "positive control: an effect resolves the context's store"
+        );
+        assert_eq!(
+            timer,
+            Some(Some(42)),
+            "the timer resolves the context's store"
+        );
+        assert_eq!(
+            queued,
+            Some(true),
+            "the queued closure resolves the context's store"
+        );
     });
 }

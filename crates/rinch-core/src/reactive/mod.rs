@@ -385,10 +385,11 @@ pub fn set_cross_thread_dispatcher_if_unset(dispatcher: fn(Box<dyn FnOnce() + Se
 /// [`Signal::send`](crate::Signal::send) panicked in the one mode most likely to
 /// want it (issue #172).
 ///
-/// Each closure is queued beside the raw `doc_key` of the document whose code
-/// queued it (`0` = none) and runs under it — see [`queue_main_callback`].
+/// Each closure is queued beside the document and context root whose code
+/// queued it and runs in them — see [`queue_main_callback`].
 #[allow(clippy::type_complexity)]
-static MAIN_QUEUE: Mutex<Vec<(u64, Box<dyn FnOnce() + Send>)>> = Mutex::new(Vec::new());
+static MAIN_QUEUE: Mutex<Vec<(crate::context::CallbackFrame, Box<dyn FnOnce() + Send>)>> =
+    Mutex::new(Vec::new());
 
 /// Push `f` onto the shared main-thread queue.
 ///
@@ -403,12 +404,15 @@ static MAIN_QUEUE: Mutex<Vec<(u64, Box<dyn FnOnce() + Send>)>> = Mutex::new(Vec:
 /// none for a closure queued from a worker thread, which is no document's code.
 /// The drain runs between events, or inside another embedded context's
 /// `update()`, so without this a closure queued by one document's handler ran
-/// under no document or a borrowed one.
+/// under no document or a borrowed one. It also runs in the **context root**
+/// current here (issue #1032), so a closure queued by an embedded
+/// `RinchContext`'s code resolves that context's stores, as an effect does
+/// (#136); one queued from a worker thread runs at the thread-global root.
 pub fn queue_main_callback(f: Box<dyn FnOnce() + Send>) -> bool {
-    let doc = crate::context::current_dispatching_doc().unwrap_or(0);
+    let frame = crate::context::CallbackFrame::current();
     let mut queue = MAIN_QUEUE.lock().unwrap();
     let was_empty = queue.is_empty();
-    queue.push((doc, f));
+    queue.push((frame, f));
     was_empty
 }
 
@@ -421,14 +425,15 @@ pub fn queue_main_callback(f: Box<dyn FnOnce() + Send>) -> bool {
 /// whoever runs it. The document it ultimately touches is still repainted by its
 /// own host, because a signal change notifies every subscriber (issue #134).
 pub fn drain_main_callbacks() {
-    let callbacks: Vec<(u64, Box<dyn FnOnce() + Send>)> =
+    let callbacks: Vec<(crate::context::CallbackFrame, Box<dyn FnOnce() + Send>)> =
         MAIN_QUEUE.lock().unwrap().drain(..).collect();
     // One transaction per callback, not one for the whole drain: callbacks are
     // queued independently (a `Signal::send`, a timer, a parked continuation),
     // and a later one may rely on an earlier one's effects having run. Each runs
-    // under the document that queued it (issue #963).
-    for (doc, callback) in callbacks {
-        let _doc = crate::context::push_dispatching_doc(doc);
+    // under the document that queued it (issue #963), in its context root
+    // (issue #1032).
+    for (frame, callback) in callbacks {
+        let _frame = frame.enter();
         batch(callback);
     }
 }

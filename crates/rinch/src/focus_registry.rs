@@ -51,6 +51,7 @@ use std::rc::Rc;
 
 use std::collections::{HashMap, HashSet};
 
+use rinch_core::CallbackFrame;
 use rinch_core::dom::{NodeHandle, NodeId};
 use rinch_core::events::KeyEventData;
 use rinch_core::reactive::{Owner, current_owner};
@@ -216,6 +217,10 @@ struct Registered {
     /// The ambient owner at registration (`None`: app lifetime). Read only
     /// for a target freed while it held the claim (#1509).
     owner: Option<Owner>,
+    /// The context root current at registration, with the node's own
+    /// document: entered around every callback (issue #1032), which the
+    /// arbiter fires from deferred focus work, outside any dispatch.
+    frame: CallbackFrame,
     entry: Rc<FocusEntry>,
 }
 
@@ -224,6 +229,7 @@ struct Registered {
 /// and still owed `on_focus_lost` when the arbiter releases the claim.
 pub(crate) struct FreedFocusLost {
     owner: Option<Owner>,
+    frame: CallbackFrame,
     on_focus_lost: Option<Rc<dyn Fn()>>,
 }
 
@@ -234,6 +240,7 @@ impl FreedFocusLost {
         if let Some(cb) = self.on_focus_lost
             && self.owner.as_ref().is_none_or(Owner::is_alive)
         {
+            let _frame = self.frame.enter();
             rinch_core::batch(|| cb());
         }
     }
@@ -308,6 +315,7 @@ pub fn register_focus_target(node: &NodeHandle, entry: FocusEntry) {
             node_id,
             token,
             owner: current_owner(),
+            frame: CallbackFrame::current().with_doc(doc_key),
             entry: Rc::new(entry),
         });
     });
@@ -365,6 +373,7 @@ fn forget_freed_nodes(doc_key: u64, ids: &[NodeId]) {
             let cb = r.entry.on_focus_lost.clone();
             let lost = FreedFocusLost {
                 owner: r.owner.clone(),
+                frame: r.frame,
                 on_focus_lost: cb,
             };
             FREED.with(|f| f.borrow_mut().push((doc_key, r.node_id, lost)));
@@ -427,11 +436,16 @@ pub(crate) fn take_freed(doc_key: u64, node_id: usize) -> Option<FreedFocusLost>
 /// registry so the callback runs with no borrow held — it is user code and may
 /// register or unregister targets itself.
 fn entry_for(doc_key: u64, node_id: usize) -> Option<Rc<FocusEntry>> {
+    framed_entry_for(doc_key, node_id).map(|(entry, _)| entry)
+}
+
+/// [`entry_for`] with the frame its callbacks run in (issue #1032).
+fn framed_entry_for(doc_key: u64, node_id: usize) -> Option<(Rc<FocusEntry>, CallbackFrame)> {
     TARGETS.with(|t| {
         t.borrow()
             .iter()
             .find(|r| r.is_at(doc_key, node_id))
-            .map(|r| r.entry.clone())
+            .map(|r| (r.entry.clone(), r.frame))
     })
 }
 
@@ -472,9 +486,10 @@ pub(crate) fn wants_key_routing(doc_key: u64, node_id: usize) -> bool {
 /// node — every generic `tabindex` node takes `FocusTarget::Node`, only some of
 /// them registered for the news.
 pub(crate) fn notify_focus_gained(doc_key: u64, node_id: usize) {
-    if let Some(entry) = entry_for(doc_key, node_id)
+    if let Some((entry, frame)) = framed_entry_for(doc_key, node_id)
         && let Some(cb) = entry.on_focus_gained.clone()
     {
+        let _frame = frame.enter();
         // One transaction per callback, like every event handler.
         rinch_core::batch(|| cb());
     }
@@ -483,9 +498,10 @@ pub(crate) fn notify_focus_gained(doc_key: u64, node_id: usize) {
 /// Fire `on_focus_lost` for a registered target. Callers must have completed
 /// the focus transition first — this is user code (see [`FocusEntry::on_focus_lost`]).
 pub(crate) fn notify_focus_lost(doc_key: u64, node_id: usize) {
-    if let Some(entry) = entry_for(doc_key, node_id)
+    if let Some((entry, frame)) = framed_entry_for(doc_key, node_id)
         && let Some(cb) = entry.on_focus_lost.clone()
     {
+        let _frame = frame.enter();
         rinch_core::batch(|| cb());
     }
 }
@@ -493,9 +509,12 @@ pub(crate) fn notify_focus_lost(doc_key: u64, node_id: usize) {
 /// Offer `key` to the target focused at `(doc_key, node_id)`. `true` means the
 /// target consumed it and the runtime must not handle it further.
 pub(crate) fn offer_key(doc_key: u64, node_id: usize, key: &KeyEventData) -> bool {
-    entry_for(doc_key, node_id)
-        .and_then(|entry| entry.on_key.clone())
-        .is_some_and(|cb| rinch_core::batch(|| cb(key)))
+    framed_entry_for(doc_key, node_id)
+        .and_then(|(entry, frame)| Some((entry.on_key.clone()?, frame)))
+        .is_some_and(|(cb, frame)| {
+            let _frame = frame.enter();
+            rinch_core::batch(|| cb(key))
+        })
 }
 
 /// Whether the target at `(doc_key, node_id)` consumes IME composition — i.e.
@@ -524,8 +543,11 @@ pub(crate) fn caret_rect_of(doc_key: u64, node_id: usize) -> Option<(f32, f32, f
 /// anything consumed it — `false` for an unregistered, unmounted, or non-text
 /// target, which is the same silence rule the focus callbacks obey.
 pub(crate) fn offer_ime(doc_key: u64, node_id: usize, ime: &ImeEvent) -> bool {
-    match entry_for(doc_key, node_id).and_then(|entry| entry.on_ime.clone()) {
-        Some(cb) => {
+    match framed_entry_for(doc_key, node_id)
+        .and_then(|(entry, frame)| Some((entry.on_ime.clone()?, frame)))
+    {
+        Some((cb, frame)) => {
+            let _frame = frame.enter();
             rinch_core::batch(|| cb(ime));
             true
         }
@@ -549,9 +571,9 @@ mod tests {
     /// Fired here from inside root 4 / document 2, off the fixed point.
     #[test]
     fn a_targets_callbacks_run_under_its_document_and_root() {
+        type Seen = Rc<RefCell<Vec<(&'static str, u64, Option<u64>)>>>;
         use rinch_core::{
-            current_context_root, current_dispatching_doc, push_context_root,
-            push_dispatching_doc,
+            current_context_root, current_dispatching_doc, push_context_root, push_dispatching_doc,
         };
         let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(MockDomDocument::new()));
         let weak: Weak<RefCell<dyn DomDocument>> = Rc::downgrade(&doc);
@@ -561,8 +583,8 @@ mod tests {
         const FIRING: u64 = u64::MAX - 1;
         assert_ne!(doc_key, FIRING, "control: off the firing document");
 
-        let seen: Rc<RefCell<Vec<(&'static str, u64, Option<u64>)>>> = Rc::default();
-        let at = |what: &'static str, s: &Rc<RefCell<Vec<(&'static str, u64, Option<u64>)>>>| {
+        let seen: Seen = Rc::default();
+        let at = |what: &'static str, s: &Seen| {
             s.borrow_mut()
                 .push((what, current_context_root(), current_dispatching_doc()))
         };
@@ -591,7 +613,10 @@ mod tests {
             notify_focus_gained(doc_key, node_id);
             assert!(offer_key(doc_key, node_id, &KeyEventData::new("a", "KeyA")));
             notify_focus_lost(doc_key, node_id);
-            assert_eq!((current_context_root(), current_dispatching_doc()), (4, Some(FIRING)));
+            assert_eq!(
+                (current_context_root(), current_dispatching_doc()),
+                (4, Some(FIRING))
+            );
         }
         let want = Some(doc_key);
         assert_eq!(

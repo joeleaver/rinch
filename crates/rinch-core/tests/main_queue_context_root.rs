@@ -29,11 +29,9 @@ fn a_queued_closure_runs_in_the_context_root_that_queued_it() {
         let _doc = push_dispatching_doc(1);
         let s = Arc::clone(&seen);
         queue_main_callback(Box::new(move || {
-            s.lock().unwrap().push((
-                "context",
-                current_context_root(),
-                current_dispatching_doc(),
-            ));
+            s.lock()
+                .unwrap()
+                .push(("context", current_context_root(), current_dispatching_doc()));
         }));
     }
     {

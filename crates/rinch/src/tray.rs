@@ -642,6 +642,8 @@ impl Drop for TrayIcon {
 struct ActivateCallback {
     cb: Rc<dyn Fn()>,
     owner: Option<Owner>,
+    /// The document and context root current at `on_activate` (issue #1032).
+    frame: rinch_core::CallbackFrame,
 }
 
 /// Source of the registry ids the activate callbacks are registered under.
@@ -651,7 +653,7 @@ static ACTIVATE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 fn register_activate(
     activate: Option<ActivateCallback>,
 ) -> (Option<String>, Option<crate::menu::MenuRegistration>) {
-    let Some(ActivateCallback { cb, owner }) = activate else {
+    let Some(ActivateCallback { cb, owner, frame }) = activate else {
         return (None, None);
     };
     let id = format!(
@@ -659,7 +661,7 @@ fn register_activate(
         ACTIVATE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
     let mut registration = crate::menu::MenuRegistration::default();
-    registration.register_callback(&id, cb, owner);
+    registration.register_callback(&id, cb, owner, frame);
     (Some(id), Some(registration))
 }
 
@@ -803,6 +805,7 @@ impl TrayIconBuilder {
         self.activate = Some(ActivateCallback {
             cb: Rc::new(cb),
             owner: current_owner(),
+            frame: rinch_core::CallbackFrame::current(),
         });
         self
     }
@@ -1100,6 +1103,7 @@ fn convert_menu_entries_inner(
                 enabled,
                 callback,
                 callback_owner,
+                callback_frame,
                 toggle,
             } => {
                 // A disabled item fires nothing: ksni never activates one. Minting
@@ -1110,7 +1114,7 @@ fn convert_menu_entries_inner(
                 let callback = callback.filter(|_| enabled);
                 let menu_id = callback.map(|cb| {
                     let id = format!("ksni-{}", next_ksni_id());
-                    registration.register_callback(&id, cb, callback_owner);
+                    registration.register_callback(&id, cb, callback_owner, callback_frame);
                     id
                 });
                 // A toggle shows its state whether or not it is enabled.
@@ -2319,6 +2323,71 @@ mod tests {
         ksni::Tray::activate(&mut tray, 0, 0);
         rinch_core::drain_main_callbacks();
         assert_eq!(ran.get(), 1, "a released callback does not run");
+    }
+
+    /// Issue #1032: `on_activate`'s callback, and a tray menu item's, run
+    /// under the document and in the context root current where they were
+    /// made, not where the click is dispatched (the main-thread queue, under
+    /// no document). Fired from inside root 4 / document 2, off the fixed
+    /// point.
+    #[test]
+    fn activate_and_items_run_under_the_document_and_root_they_were_made_in() {
+        type Seen = Rc<RefCell<Vec<(u64, Option<u64>)>>>;
+        use rinch_core::{
+            current_context_root, current_dispatching_doc, push_context_root, push_dispatching_doc,
+        };
+        use std::cell::RefCell;
+        let seen: Seen = Rc::default();
+        let record = |s: Seen| {
+            move || {
+                s.borrow_mut()
+                    .push((current_context_root(), current_dispatching_doc()))
+            }
+        };
+        let (builder, menu) = {
+            let _root = push_context_root(9);
+            let _doc = push_dispatching_doc(7);
+            (
+                TrayIconBuilder::new().on_activate(record(seen.clone())),
+                Menu::new().item(MenuItem::new("Item").on_click(record(seen.clone()))),
+            )
+        };
+        let (activate_id, _registration) = register_activate(builder.activate);
+        let activate_id = activate_id.expect("registered");
+        let mut item_registration = crate::menu::MenuRegistration::default();
+        let item_id = menu
+            .take_entries()
+            .into_iter()
+            .find_map(|e| match e {
+                crate::menu::MenuEntryKind::Item {
+                    callback,
+                    callback_owner,
+                    callback_frame,
+                    ..
+                } => {
+                    let cb = callback?;
+                    item_registration.register_callback(
+                        "tray-1032-item",
+                        cb,
+                        callback_owner,
+                        callback_frame,
+                    );
+                    Some("tray-1032-item")
+                }
+                _ => None,
+            })
+            .expect("an item");
+        {
+            let _root = push_context_root(4);
+            let _doc = push_dispatching_doc(2);
+            assert!(crate::menu::dispatch_menu_event(&activate_id));
+            assert!(crate::menu::dispatch_menu_event(item_id));
+            assert_eq!(
+                (current_context_root(), current_dispatching_doc()),
+                (4, Some(2))
+            );
+        }
+        assert_eq!(*seen.borrow(), [(9, Some(7)), (9, Some(7))]);
     }
 
     // ── review-1527 fixtures ────────────────────────────────────────────

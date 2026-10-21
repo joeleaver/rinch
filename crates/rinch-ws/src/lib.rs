@@ -172,13 +172,15 @@ struct Slot<T> {
     /// since been disposed means the component is gone and [`invoke`] must prune
     /// rather than call. `Owner` is a `Weak`, so this keeps nothing alive.
     owner: Option<Owner>,
-    /// The document whose code registered this callback, as a raw `doc_key`
-    /// (`0` = none), re-entered around every call (issue #963). Delivery is
+    /// The document whose code registered this callback (issue #963) and the
+    /// context root it was registered in (issue #1032), re-entered around every
+    /// call. Delivery is
     /// drained between events on native and comes straight from the socket on
     /// the web, so without it the callback ran under no document — or another
     /// embedded context's — and an interceptor it registered or cleared
-    /// reached every document on the thread.
-    doc: u64,
+    /// reached every document on the thread; and without the root it resolved
+    /// the thread-global store namespace, not its embedded context's.
+    frame: rinch_core::CallbackFrame,
     cb: Box<dyn FnMut(T)>,
 }
 
@@ -191,7 +193,7 @@ impl<T> Slot<T> {
     fn new(cb: Box<dyn FnMut(T)>) -> Self {
         Self {
             owner: current_owner(),
-            doc: rinch_core::current_dispatching_doc().unwrap_or(0),
+            frame: rinch_core::CallbackFrame::current(),
             cb,
         }
     }
@@ -262,7 +264,12 @@ pub(crate) fn dispatch(id: u64, event: WsEvent) {
 /// nested inside.
 fn invoke<T: 'static>(id: u64, arg: T, select: impl Fn(&mut Handlers) -> &mut Option<Slot<T>>) {
     let taken = HANDLERS.with(|h| h.borrow_mut().get_mut(&id).and_then(|hs| select(hs).take()));
-    let Some(Slot { owner, doc, mut cb }) = taken else {
+    let Some(Slot {
+        owner,
+        frame,
+        mut cb,
+    }) = taken
+    else {
         return;
     };
 
@@ -285,9 +292,10 @@ fn invoke<T: 'static>(id: u64, arg: T, select: impl Fn(&mut Handlers) -> &mut Op
     // drain's batch and joins it; on the web `dispatch` is called straight from
     // the socket's JS callback, so this is the only one.
     //
-    // It runs under the document that registered it (issue #963).
+    // It runs under the document that registered it (issue #963), in its
+    // context root (issue #1032).
     {
-        let _doc = rinch_core::push_dispatching_doc(doc);
+        let _frame = frame.enter();
         match &owner {
             Some(owner) => rinch_core::batch(|| owner.run(|| cb(arg))),
             None => rinch_core::batch(|| unowned(|| cb(arg))),
@@ -298,7 +306,7 @@ fn invoke<T: 'static>(id: u64, arg: T, select: impl Fn(&mut Handlers) -> &mut Op
         if let Some(hs) = h.borrow_mut().get_mut(&id) {
             let slot = select(hs);
             if slot.is_none() {
-                *slot = Some(Slot { owner, doc, cb });
+                *slot = Some(Slot { owner, frame, cb });
             }
         }
     });
@@ -731,12 +739,12 @@ mod tests {
     /// Delivered from inside root 4, off the fixed point.
     #[test]
     fn a_callback_runs_in_the_context_root_that_registered_it() {
+        type Seen = Rc<RefCell<Vec<(u64, Option<u64>)>>>;
         use rinch_core::{
-            current_context_root, current_dispatching_doc, push_context_root,
-            push_dispatching_doc,
+            current_context_root, current_dispatching_doc, push_context_root, push_dispatching_doc,
         };
 
-        let seen: Rc<RefCell<Vec<(u64, Option<u64>)>>> = Rc::new(RefCell::new(Vec::new()));
+        let seen: Seen = Rc::new(RefCell::new(Vec::new()));
         for (id, root, doc) in [(424_260u64, 9u64, 1u64), (424_261, 0, 0)] {
             HANDLERS.with(|h| h.borrow_mut().insert(id, Handlers::default()));
             let _root = push_context_root(root);
@@ -757,7 +765,10 @@ mod tests {
             for id in [424_260, 424_260, 424_261] {
                 dispatch(id, WsEvent::Open);
             }
-            assert_eq!((current_context_root(), current_dispatching_doc()), (4, Some(2)));
+            assert_eq!(
+                (current_context_root(), current_dispatching_doc()),
+                (4, Some(2))
+            );
         }
         assert_eq!(*seen.borrow(), [(9, Some(1)), (9, Some(1)), (0, None)]);
 
