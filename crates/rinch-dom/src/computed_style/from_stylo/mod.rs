@@ -170,6 +170,14 @@ impl ComputedStyle {
                 &border.border_bottom_right_radius,
             ),
             border_radius_bottom_left: border_radius_from_stylo(&border.border_bottom_left_radius),
+            border_radius_top_left_y: border_radius_y_from_stylo(&border.border_top_left_radius),
+            border_radius_top_right_y: border_radius_y_from_stylo(&border.border_top_right_radius),
+            border_radius_bottom_right_y: border_radius_y_from_stylo(
+                &border.border_bottom_right_radius,
+            ),
+            border_radius_bottom_left_y: border_radius_y_from_stylo(
+                &border.border_bottom_left_radius,
+            ),
 
             // Border styles (per-side)
             border_top_style: border_style_from_stylo(&border.border_top_style),

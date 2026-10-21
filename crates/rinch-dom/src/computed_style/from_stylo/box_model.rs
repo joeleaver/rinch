@@ -109,11 +109,19 @@ pub(super) fn inset_from_stylo_generic(
 pub(super) fn border_radius_from_stylo(
     radius: &style::values::computed::BorderCornerRadius,
 ) -> LengthPercentageValue {
-    // BorderCornerRadius is a Size with width and height for elliptical radii
-    // We just take the width (horizontal radius) for simplicity.
+    // BorderCornerRadius is a Size: `width` is the horizontal radius and
+    // `height` the vertical one (#977; [`border_radius_y_from_stylo`]).
     // Percentages (and the percentage part of a calc) are resolved at paint
-    // time when dimensions are known.
+    // time when dimensions are known, each against its own axis.
     lp_value_from_stylo(&radius.0.width.0)
+}
+
+/// The **vertical** radius of a corner — `BorderCornerRadius`'s `height`
+/// (#977). See [`border_radius_from_stylo`] for the horizontal one.
+pub(super) fn border_radius_y_from_stylo(
+    radius: &style::values::computed::BorderCornerRadius,
+) -> LengthPercentageValue {
+    lp_value_from_stylo(&radius.0.height.0)
 }
 
 /// Check if a border style is 'none' or 'hidden' (meaning no border should be painted).

@@ -1915,3 +1915,121 @@ fn a_large_list_that_only_changes_colour_repaints_its_own_box() {
         ],
     );
 }
+
+// ── Outer box-shadows (#976) ───────────────────────────────────────────────
+
+const CARD_CSS: &str = "
+    body { margin: 0; }
+    .card { position: absolute; width: 120px; height: 60px; border-radius: 8px;
+            background-color: rgb(255, 255, 255); }
+    .lifted { box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.2); }
+    .glow { box-shadow: 0 0 8px rgba(0, 0, 0, 0.3); }
+    .card:hover { background-color: rgb(240, 240, 255); }
+";
+
+/// Six cards: three with Mantine's two-shadow `sm` list, offset 1px down —
+/// further than its first blur layers are expanded, so the border box does
+/// not fit inside them — and three with a centred glow, whose layers all
+/// contain the box.
+fn card_page() -> RinchApp {
+    mount_settled(|scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let style = scope.create_element("style");
+        let css = scope.create_text(CARD_CSS);
+        style.append_child(&css);
+        root.append_child(&style);
+        for i in 0..6 {
+            let card = scope.create_element("div");
+            let kind = if i < 3 { "lifted" } else { "glow" };
+            card.set_attribute("class", &format!("card {kind}"));
+            card.set_attribute(
+                "style",
+                &format!(
+                    "left: {}px; top: {}px;",
+                    40 + (i % 3) * 200,
+                    60 + (i / 3) * 200
+                ),
+            );
+            root.append_child(&card);
+        }
+        root
+    })
+}
+
+/// Hovering a card repaints it with its shadow. A card whose shadow list does
+/// not fit around its border box pays **one** clip mask for the whole list,
+/// beside the damage clip, to keep the shadow outside the box (#976) — not
+/// one per shadow. A card whose shadow fits pays only the damage clip.
+/// Positive control: each hover is a partial repaint.
+#[test]
+fn hovering_an_outer_shadowed_card_costs_one_shadow_clip() {
+    let mut app = card_page();
+    let lifted = interaction(&mut app, |app| {
+        app.handle_event(PlatformEvent::MouseMove { x: 100.0, y: 90.0 }, SIZE, 1.0);
+    });
+    assert_eq!(
+        lifted.get(RepaintPartial),
+        1,
+        "positive control: {lifted:?}"
+    );
+    expect_frame(
+        "hover a card with an offset shadow list",
+        &lifted,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 9916),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 3),
+            (StackingOrderBuilds, 2),
+            // The damage clip, and one clip around both shadows of the list:
+            // the second is #976's, which keeps the shadow outside the box.
+            (ClipMasks, 2),
+            (ClipMaskPx, 20268),
+            (PaintSurfaceAllocs, 1),
+            (HitTests, 1),
+            (HitTestNodesVisited, 2),
+            (HitExtentsComputed, 6),
+        ],
+    );
+
+    let mut app = card_page();
+    let glow = interaction(&mut app, |app| {
+        app.handle_event(PlatformEvent::MouseMove { x: 100.0, y: 290.0 }, SIZE, 1.0);
+    });
+    assert_eq!(glow.get(RepaintPartial), 1, "positive control: {glow:?}");
+    expect_frame(
+        "hover a card with a centred shadow",
+        &glow,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 12096),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 3),
+            (StackingOrderBuilds, 2),
+            // The damage clip only: a shadow around the box needs no clip.
+            (ClipMasks, 1),
+            (ClipMaskPx, 13024),
+            (HitTests, 1),
+            (HitTestNodesVisited, 2),
+            (HitExtentsComputed, 3),
+        ],
+    );
+}

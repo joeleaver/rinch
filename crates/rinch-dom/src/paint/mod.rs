@@ -12,6 +12,7 @@ pub mod damage;
 pub mod image;
 mod layer_bounds;
 pub mod painter;
+pub mod radii;
 pub mod scrollbar;
 mod select;
 mod svg;
@@ -40,8 +41,9 @@ pub use text_shadow::{
 };
 
 use peniko::color::{AlphaColor, Srgb};
-use peniko::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, RoundedRectRadii, Shape, Vec2};
+use peniko::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Vec2};
 use peniko::{Brush, Fill};
+use radii::BorderRadii;
 
 use painter::{BlendMode, PaintShape, Painter};
 
@@ -2097,21 +2099,9 @@ pub fn viewport_ready(node: &Node) -> bool {
 
 /// Build a BezPath for the background shape with viewport holes cut out.
 /// Uses EvenOdd fill rule: outer shape wound clockwise, holes wound counter-clockwise.
-fn build_background_with_holes(
-    rect: Rect,
-    radii: RoundedRectRadii,
-    radius: f64,
-    holes: &[Rect],
-) -> BezPath {
-    let mut path = BezPath::new();
-
+fn build_background_with_holes(rect: Rect, radii: BorderRadii, holes: &[Rect]) -> BezPath {
     // Outer contour: the background shape (clockwise)
-    if radius > 0.0 {
-        let rrect = rect.to_rounded_rect(radii);
-        path.extend(rrect.path_elements(0.1));
-    } else {
-        path.extend(rect.path_elements(0.1));
-    }
+    let mut path = radii.path(rect);
 
     // Inner contours: viewport holes (counter-clockwise = reversed winding)
     for hole in holes {
@@ -2336,15 +2326,7 @@ fn paint_children_with_stacking(
                 }
                 open = entry.clips;
                 for clip in order.clips_for(entry) {
-                    let shape: PaintShape = if clip.radii.top_left > 0.0
-                        || clip.radii.top_right > 0.0
-                        || clip.radii.bottom_right > 0.0
-                        || clip.radii.bottom_left > 0.0
-                    {
-                        clip.rect.to_rounded_rect(clip.radii).into()
-                    } else {
-                        clip.rect.into()
-                    };
+                    let shape: PaintShape = clip.radii.shape(clip.rect);
                     painter.push_clip(Fill::NonZero, node_transform, &shape);
                 }
             }
@@ -2745,15 +2727,12 @@ fn paint_node(
             // `overflow: clip`. The radii come back and are dropped rather
             // than pushed as a `RoundedRect`, and the reason is the *clamp*,
             // not the resolution. Measured, because the obvious argument is
-            // false: [`clip::border_radii`] resolves against
-            // `min(width, height)`, which is `0` here, so a **percentage**
-            // radius does come back as `0` — but `LengthPercentageValue::resolve`
-            // ignores the basis for a `Length`, so `border-radius: 10px` on a
-            // `height: 0` box hands back `{10, 10, 10, 10}`. What makes the two
-            // shapes identical anyway is kurbo: `Rect::to_rounded_rect` clamps
-            // every corner to half the shorter side, which is `0` for a
-            // zero-area rect, so both spellings arrive at square corners.
-            // Checked against `10px` and `50%`, not reasoned from the type.
+            // false: `LengthPercentageValue::resolve` ignores the basis for a
+            // `Length`, so `border-radius: 10px` resolves to 10 on a `height: 0`
+            // box. What makes the two shapes identical anyway is the overlap
+            // rule (#977): [`clip::border_radii`] scales every radius by the
+            // side lengths over the radii along them, which is `0` for a
+            // zero-height box, so both spellings arrive at square corners.
             //
             // #536 (the clip is the padding box, not the border box) cannot
             // interact here either: `padding_box_insets` clamps each border
@@ -2973,17 +2952,8 @@ fn paint_node(
         // background/border/etc paint that `node_outside_dirty` makes
         // pointless — never the clip itself.
         let clip = clip_shape(node, scale, x, y);
-        let root_clip: Option<PaintShape> = clip.map(|(clip_rect, clip_radii)| {
-            if clip_radii.top_left > 0.0
-                || clip_radii.top_right > 0.0
-                || clip_radii.bottom_right > 0.0
-                || clip_radii.bottom_left > 0.0
-            {
-                clip_rect.to_rounded_rect(clip_radii).into()
-            } else {
-                clip_rect.into()
-            }
-        });
+        let root_clip: Option<PaintShape> =
+            clip.map(|(clip_rect, clip_radii)| clip_radii.shape(clip_rect));
         if let Some(shape) = &root_clip {
             painter.push_clip(Fill::NonZero, node_transform, shape);
         }
@@ -3043,7 +3013,17 @@ fn paint_node(
                 }
 
                 // Borders (no border-radius for img elements)
-                paint_borders(painter, node, scale, x, y, w, h, 0.0.into(), node_transform);
+                paint_borders(
+                    painter,
+                    node,
+                    scale,
+                    x,
+                    y,
+                    w,
+                    h,
+                    BorderRadii::ZERO,
+                    node_transform,
+                );
             }
 
             if opacity < 1.0 {
@@ -3106,22 +3086,8 @@ fn paint_node(
                 // the shape the author asked for, and the frame is clipped to
                 // the same shape.
                 let (backdrop, has_radius) = {
-                    let cs = &node.computed_style;
-                    let resolve_size = node.layout.width.min(node.layout.height);
-                    let tl =
-                        cs.border_radius_top_left.resolve(resolve_size).max(0.0) as f64 * scale;
-                    let tr =
-                        cs.border_radius_top_right.resolve(resolve_size).max(0.0) as f64 * scale;
-                    let br =
-                        cs.border_radius_bottom_right.resolve(resolve_size).max(0.0) as f64 * scale;
-                    let bl =
-                        cs.border_radius_bottom_left.resolve(resolve_size).max(0.0) as f64 * scale;
-                    if tl > 0.0 || tr > 0.0 || br > 0.0 || bl > 0.0 {
-                        let radii = RoundedRectRadii::new(tl, tr, br, bl);
-                        (RoundedRect::from_rect(rect, radii).into(), true)
-                    } else {
-                        (painter::PaintShape::from(rect), false)
-                    }
+                    let radii = border_radii(node, scale);
+                    (radii.shape(rect), !radii.is_square())
                 };
                 // Except over a hole. A viewport that punches one — a
                 // `GameViewport`, which stamps no `data-viewport-ready` and is
@@ -3273,14 +3239,9 @@ fn paint_node(
             }
             if visible {
                 if let BackgroundValue::Color(bg_color) = &node.computed_style.background {
-                    let radius =
-                        node.computed_style.border_radius_top_left.to_px().max(0.0) as f64 * scale;
-                    if radius > 0.0 {
-                        let rrect = rect.to_rounded_rect(radius);
-                        painter.fill_color(Fill::NonZero, node_transform, *bg_color, &rrect.into());
-                    } else {
-                        painter.fill_color(Fill::NonZero, node_transform, *bg_color, &rect.into());
-                    }
+                    // Rounded as any element's background is (#977).
+                    let shape = border_radii(node, scale).shape(rect);
+                    painter.fill_color(Fill::NonZero, node_transform, *bg_color, &shape);
                 }
             }
             if opacity < 1.0 {
@@ -3294,14 +3255,12 @@ fn paint_node(
                 VisibilityValue::Hidden | VisibilityValue::Collapse
             );
 
-            // Get border-radius from computed style, resolving percentages
-            // against the element's shorter side. `clip::border_radii` is the
-            // one definition, so the clip shape and the background it clips
-            // cannot round differently.
+            // Get border-radius from computed style, each axis resolved
+            // against its own side and the corners fitted to the box (#977).
+            // `clip::border_radii` is the one definition, so the clip shape
+            // and the background it clips cannot round differently.
             let radii = border_radii(node, scale);
-            // Uniform radius for code paths that don't support per-corner yet
-            let radius =
-                (radii.top_left + radii.top_right + radii.bottom_right + radii.bottom_left) / 4.0;
+            let rounded = !radii.is_square();
 
             // Get opacity from computed style and push layer if needed
             // The layer's bounds are the union of what the subtree
@@ -3429,9 +3388,7 @@ fn paint_node(
             // (common: an app-shell root at the window size) could still
             // decide "nothing to clip" from the larger border box while its
             // smaller padding-box clip was the one actually in question.
-            if radius <= 0.0
-                && let Some((clip_rect, _)) = clip
-            {
+            if !rounded && let Some((clip_rect, _)) = clip {
                 // A rotated or skewed clip is not its own bounding box, so
                 // only an axis-aligned one may be tested this way.
                 let m = node_transform.as_coeffs();
@@ -3506,13 +3463,10 @@ fn paint_node(
                     let (bg_fill, bg_shape): (Fill, PaintShape) = if !viewport_holes.is_empty() {
                         (
                             Fill::EvenOdd,
-                            build_background_with_holes(rect, radii, radius, &viewport_holes)
-                                .into(),
+                            build_background_with_holes(rect, radii, &viewport_holes).into(),
                         )
-                    } else if radius > 0.0 {
-                        (Fill::NonZero, rect.to_rounded_rect(radii).into())
                     } else {
-                        (Fill::NonZero, rect.into())
+                        (Fill::NonZero, radii.shape(rect))
                     };
                     background::paint_background(
                         painter,
@@ -3592,13 +3546,8 @@ fn paint_node(
             // to *lift* this exact bracket around a `position: fixed` entry
             // (#545) and put it back afterwards. Re-deriving the shape there
             // would be a second derivation to drift out of step with this one.
-            let root_clip: Option<PaintShape> = clip.map(|(clip_rect, clip_radii)| {
-                if radius > 0.0 {
-                    clip_rect.to_rounded_rect(clip_radii).into()
-                } else {
-                    clip_rect.into()
-                }
-            });
+            let root_clip: Option<PaintShape> =
+                clip.map(|(clip_rect, clip_radii)| clip_radii.shape(clip_rect));
             if let Some(shape) = &root_clip {
                 painter.push_clip(Fill::NonZero, node_transform, shape);
             }
@@ -3830,23 +3779,18 @@ fn paint_node(
                         // biasing every filtered element one level light (#260).
                         let dark = AlphaColor::<Srgb>::BLACK
                             .with_alpha((1.0 - brightness).clamp(0.0, 1.0));
-                        if radius > 0.0 {
-                            let rrect = rect.to_rounded_rect(radii);
-                            painter.fill_color(Fill::NonZero, node_transform, dark, &rrect.into());
-                        } else {
-                            painter.fill_color(Fill::NonZero, node_transform, dark, &rect.into());
-                        }
+                        painter.fill_color(Fill::NonZero, node_transform, dark, &radii.shape(rect));
                     } else if brightness > 1.0 {
                         // Brighten: overlay white with alpha proportional to
                         // excess brightness. Same rounding note as above.
                         let light = AlphaColor::<Srgb>::WHITE
                             .with_alpha((brightness - 1.0).clamp(0.0, 1.0));
-                        if radius > 0.0 {
-                            let rrect = rect.to_rounded_rect(radii);
-                            painter.fill_color(Fill::NonZero, node_transform, light, &rrect.into());
-                        } else {
-                            painter.fill_color(Fill::NonZero, node_transform, light, &rect.into());
-                        }
+                        painter.fill_color(
+                            Fill::NonZero,
+                            node_transform,
+                            light,
+                            &radii.shape(rect),
+                        );
                     }
                 }
 
@@ -3862,12 +3806,7 @@ fn paint_node(
                     );
                     // Fill with neutral gray
                     let gray = AlphaColor::<Srgb>::from_rgba8(128, 128, 128, 255);
-                    if radius > 0.0 {
-                        let rrect = rect.to_rounded_rect(radii);
-                        painter.fill_color(Fill::NonZero, node_transform, gray, &rrect.into());
-                    } else {
-                        painter.fill_color(Fill::NonZero, node_transform, gray, &rect.into());
-                    }
+                    painter.fill_color(Fill::NonZero, node_transform, gray, &radii.shape(rect));
                     painter.pop_layer();
                 }
             }
