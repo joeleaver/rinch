@@ -1009,7 +1009,10 @@ mod gpu_alpha_tests {
             for ix in 0..4u32 {
                 let got = px[((1 + iy) * W + 2 + ix) as usize];
                 let g = TEXELS[(iy * 4 + ix) as usize];
-                assert!(near(got, [g, g, g, 255]), "texel ({ix}, {iy}): {got:?}, want {g}");
+                assert!(
+                    near(got, [g, g, g, 255]),
+                    "texel ({ix}, {iy}): {got:?}, want {g}"
+                );
             }
         }
     }

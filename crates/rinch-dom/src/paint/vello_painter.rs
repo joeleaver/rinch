@@ -291,7 +291,12 @@ mod sampling_tests {
     ) -> f32 {
         // transform_inverse
         let inv_det = 1.0 / (m[0] * m[3] - m[1] * m[2]);
-        let im = [inv_det * m[3], -inv_det * m[1], -inv_det * m[2], inv_det * m[0]];
+        let im = [
+            inv_det * m[3],
+            -inv_det * m[1],
+            -inv_det * m[2],
+            inv_det * m[0],
+        ];
         let it = [
             -(im[0] * t[0] + im[2] * t[1]),
             -(im[1] * t[0] + im[3] * t[1]),
