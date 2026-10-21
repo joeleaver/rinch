@@ -702,6 +702,25 @@ mod review_1652 {
         assert_eq!(app.title_tooltip_text(), Some("SVG-ROOT-CHILD"));
     }
 
+    /// A document whose only title is an SVG `<title>` element: the counter
+    /// that lets an untitled document skip the walk must count it.
+    #[test]
+    fn r2e_a_title_element_alone_is_counted() {
+        let mut app = mount_with(|scope, root| {
+            let svg = scope.create_element("svg");
+            svg.set_attribute(
+                "style",
+                "position: absolute; left: 100px; top: 100px; width: 160px; height: 60px",
+            );
+            let t = scope.create_element("title");
+            t.append_child(&scope.create_text("ONLY-CHILD"));
+            svg.append_child(&t);
+            root.append_child(&svg);
+        });
+        rest_at(&mut app, (171.0, 133.0));
+        assert_eq!(app.title_tooltip_text(), Some("ONLY-CHILD"));
+    }
+
     #[test]
     fn r2c_an_svg_roots_title_attribute_is_no_tooltip_as_in_chrome() {
         let mut app = mount_with(|scope, root| {
