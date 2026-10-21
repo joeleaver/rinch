@@ -107,6 +107,8 @@ mod editor_file_drop_caret_1649_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_focus_and_reveal_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_hanging_space_caret_1041_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_image_drop_review_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_image_drop_tests;
@@ -122,8 +124,6 @@ mod editor_line_separator_caret_tests;
 mod editor_link_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_list_item_space_tests;
-#[cfg(all(test, feature = "desktop"))]
-mod editor_hanging_space_caret_1041_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_list_item_wrap_tests;
 #[cfg(all(test, feature = "desktop"))]

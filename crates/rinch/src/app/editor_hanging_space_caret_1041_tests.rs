@@ -168,7 +168,10 @@ fn type_spaces(p: &mut Page) -> Vec<(f32, f32, f32, f32)> {
     for n in 1..=12 {
         space(&mut p.app);
         let c = p.caret();
-        assert_eq!(c.1, start.1, "space {n}: the caret stays on the line ({c:?})");
+        assert_eq!(
+            c.1, start.1,
+            "space {n}: the caret stays on the line ({c:?})"
+        );
         boxes.push(c);
     }
     boxes
@@ -185,7 +188,10 @@ fn the_caret_after_spaces_hanging_past_a_paragraphs_end_stays_at_its_end() {
     for n in 1..=12 {
         space(&mut p.app);
         let c = p.caret();
-        assert_eq!(c.1, start.1, "space {n}: the caret stays on the line ({c:?})");
+        assert_eq!(
+            c.1, start.1,
+            "space {n}: the caret stays on the line ({c:?})"
+        );
         overlay.push(c);
         rects.push(p.caret_rect().0);
     }
@@ -222,7 +228,10 @@ fn the_caret_after_spaces_hanging_past_a_paragraphs_end_stays_at_its_end() {
         .iter()
         .filter(|c| (c.0 + c.2 - right).abs() <= 0.5)
         .count();
-    assert!(at_edge >= 4, "it reached the edge and stayed there: {overlay:?}");
+    assert!(
+        at_edge >= 4,
+        "it reached the edge and stayed there: {overlay:?}"
+    );
     // `caret_rect` keeps the text's own x, as a collapsed Range does.
     let last_rect = *rects.last().unwrap();
     assert!(
