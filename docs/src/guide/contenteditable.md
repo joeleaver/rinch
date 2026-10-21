@@ -178,6 +178,16 @@ Command names are case-sensitive. The full catalogue:
 > of the document and never reaches `doc()`, the HTML or the markdown. Set it yourself with `EditorHandle::set_selection_with_affinity`;
 > read it with `caret_affinity()`, and `caret_rect` at the head draws with it.
 >
+> **Spaces hanging past a line's end.** Spaces typed at the end of a line in a
+> `pre-wrap` textblock (every editor block) hang past its edge rather than
+> wrapping, as CSS says. The caret after them is drawn at the textblock's
+> border-box edge, its whole width inside the block, as Chrome draws its own
+> (issue #1041) — unless the textblock itself clips its overflow (an author
+> `overflow: hidden` or `auto` on it), where the caret runs on with the spaces
+> and is clipped, as in Chrome. Only the drawn caret is kept in: the selection
+> highlight over the spaces, `caret_rect` and the vertical motions keep the
+> spaces' own x.
+>
 > Neither backend hit-tests points on the line (the web uses collapsed `Range`
 > rects, desktop the text layout), so a caret line scrolled out of the editor's
 > scroller or off the page behaves as a visible one (#1026, #1107), and a hard
@@ -1163,7 +1173,7 @@ web.
 | `on_key(\|key: &EditorKey\| -> bool)` | Offered every key press **before** the editor moves the caret, runs a binding or types. `true` consumes it: the editor does nothing (on the web the `keydown` is `preventDefault`ed and stopped). `false` leaves it to the editor. |
 | `on_selection_change(\|sel: &Selection\|)` | Called after every change that leaves the selection different: typing, deleting, clicks, arrows, commands, app transactions, a load that resets it, a peer's edit that maps it. Not called when the selection is unchanged. |
 | `on_caret_moved(\|\|)` | Called once the runtime has placed the focused editor's caret somewhere new, **after layout**. The moment to position the popup. |
-| `caret_rect(pos) -> Option<ElementBounds>` | Where a caret at `pos` is on screen (zero width), whether or not the caret is there: logical window pixels on desktop, client pixels on the web. The frame of a `position: fixed` popup. |
+| `caret_rect(pos) -> Option<ElementBounds>` | Where a caret at `pos` is on screen (zero width), whether or not the caret is there: logical window pixels on desktop, client pixels on the web. The frame of a `position: fixed` popup. It is the text position, as a collapsed `Range`'s rect is in a browser: after spaces hanging past a line's end it is out past the block, where the drawn caret is kept at the block's edge (below). |
 
 `EditorKey` speaks the browser's `KeyboardEvent`: `key` is `"ArrowDown"`,
 `"Enter"`, `"Escape"`, `"Tab"` for named keys and the typed text for printable
