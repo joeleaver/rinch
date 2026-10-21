@@ -89,10 +89,10 @@
 //!   guaranteed to have, so `blit_color_glyph` is pinned font-free inside
 //!   `skia_painter.rs` instead, beside the mask path's own unit fixtures. That
 //!   module is also where the `PremultipliedColorU8` validity proof over the
-//!   whole 256x256 domain lives. (There is no *bitmap* colour path to cover:
-//!   `draw_glyphs` never asks swash for `ColorBitmap`, so CBDT/CBLC and sbix
-//!   faces paint nothing at all — measured in the #794 review and filed
-//!   separately.)
+//!   whole 256x256 domain lives. (The *bitmap* colour path — CBDT/CBLC and
+//!   sbix strikes, #804 — does not go through `blit_color_glyph`: it is
+//!   premultiplied before it is scaled and drawn as it is, and
+//!   `color_bitmap_glyph_804_tests.rs` covers it with a bundled face.)
 //! - **A fully opaque pixel.** `A == 255` makes `c * A / 255 == c`, so an
 //!   interior pixel separates no rounding rule and is skipped here. It is not
 //!   an empty case: `blit_color_glyph` has a whole `sa == 255` branch that
