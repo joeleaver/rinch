@@ -246,25 +246,65 @@ fn one_text_node_on_one_line_keeps_one_shadow_draw_under_one_text_draw() {
     assert_eq!(draws[1].color, BLACK, "{draws:?}");
 }
 
-/// Two spans whose shadows fall below the line reach back over nothing, so
-/// the one-pass order — every shadow, then the text — is kept, draw for draw.
+/// Shadows that reach back over no earlier text keep the one-pass order —
+/// every shadow, then the text — draw for draw: two spans whose shadows fall
+/// below the line, two spans whose shadows fall to their right, and two text
+/// nodes whose shadows overlap each other but are all one colour (painting
+/// one colour over another in either order gives the same pixels).
 ///
 /// Kills: interleaving whenever an IFC holds more than one text node with a
-/// shadow (the reach-back test skipped).
+/// shadow (the reach-back test skipped); a reach-back test on the vertical
+/// axis only (the second case); shadows compared with earlier shadows even
+/// when all are one colour (the third).
 #[test]
 fn shadows_that_reach_back_over_nothing_keep_the_one_pass_order() {
-    let html = r#"<p class="t">Ham<span class="s">burg</span> <span class="s">ok</span></p>"#;
+    for (css, html) in [
+        (
+            ".s { text-shadow: 3px 60px 0 rgb(255, 0, 0); }",
+            r#"<p class="t">Ham<span class="s">burg</span> <span class="s">ok</span></p>"#,
+        ),
+        (
+            ".s { text-shadow: 3px 0 0 rgb(255, 0, 0); }",
+            r#"<p class="t">Ham<span class="s">burg</span> <span class="s">ok</span></p>"#,
+        ),
+        (
+            ".s { text-shadow: 3px 0 0 rgb(255, 0, 0), 9px 0 0 rgb(255, 0, 0); }",
+            r#"<p class="t s">H<span>H</span></p>"#,
+        ),
+    ] {
+        let draws = record(&mut doc_with(css, html));
+        let last_shadow = draws.iter().rposition(|d| d.color == RED).unwrap();
+        let first_text = draws.iter().position(|d| d.color == BLACK).unwrap();
+        assert!(
+            last_shadow < first_text,
+            "{css} {html}: every shadow before any text: {:?}",
+            draws.iter().map(|d| d.color).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// Shadows of two colours that overlap each other are drawn per fragment:
+/// the later fragment's (both of them) over the earlier fragment's.
+///
+/// Kills: earlier shadows never compared (only earlier text).
+#[test]
+fn shadows_of_two_colours_overlapping_are_drawn_per_fragment() {
     let draws = record(&mut doc_with(
-        ".s { text-shadow: 3px 60px 0 rgb(255, 0, 0); }",
-        html,
+        ".s { text-shadow: 3px 0 0 rgb(255, 0, 0), 9px 0 0 rgb(0, 0, 255); }",
+        r#"<p class="t s">H<span>H</span></p>"#,
     ));
-    let last_shadow = draws.iter().rposition(|d| d.color == RED).unwrap();
-    let first_text = draws.iter().position(|d| d.color == BLACK).unwrap();
-    assert!(
-        last_shadow < first_text,
-        "every shadow before any text: {:?}",
-        draws.iter().map(|d| d.color).collect::<Vec<_>>()
-    );
+    let main = main_glyphs(&draws);
+    let first_text = draw_of(&draws, BLACK, main[0]);
+    let second_shadow = draws
+        .iter()
+        .position(|d| {
+            d.color == [0, 0, 255]
+                && d.glyphs
+                    .iter()
+                    .any(|g| (g.x - main[1].x - 9.0).abs() < 0.01)
+        })
+        .unwrap();
+    assert!(second_shadow > first_text, "{draws:?}");
 }
 
 // ── The pixels ──────────────────────────────────────────────────────────────
