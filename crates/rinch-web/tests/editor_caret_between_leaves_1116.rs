@@ -100,7 +100,7 @@ async fn caret_between(html: &str, pos: usize) -> (f64, Vec<(String, f64, f64)>)
     (c.x as f64, boxes)
 }
 
-const SRC: &str = "data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2240%22 height=%2216%22/%3E";
+const SRC: &str = "x.png";
 
 #[wasm_bindgen_test]
 async fn the_caret_between_a_claimed_and_an_unclaimed_image_is_at_their_boundary() {
