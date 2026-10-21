@@ -5129,8 +5129,9 @@ impl RinchApp {
     /// The model position at the start (`end = false`) or end (`end = true`) of the
     /// caret's current **visual** line — so Home/End land at the wrapped line's edge,
     /// not the whole block's. Read from the caret's Parley layout
-    /// ([`rinch_dom::text_query::visual_line_range_for_node`]), with the caret's
-    /// affinity hint choosing the upper line at a soft wrap (#301), so it answers
+    /// ([`rinch_dom::text_query::visual_line_edges_for_node`]): the line the
+    /// caret is drawn on, with the caret's affinity hint choosing the upper line
+    /// at a soft wrap (#301) and an image's box the image's line (#1116), so it answers
     /// the same for a line scrolled out of view — where it used to hit-test a point
     /// on the line, which a clipping scroller hides (#1107). `None` when the caret
     /// has no Parley layout (an empty block); the caller falls back to the
@@ -5143,15 +5144,25 @@ impl RinchApp {
     ) -> Option<rinch_editor_core::Pos> {
         let (tb, flat) = handle.caret_address(head)?;
         let affinity = handle.caret_affinity_at(head);
-        let (range, (first_box, last_box)) = {
+        let edges = {
+            use rinch_dom::text_query::{LineOf, visual_line_edges_for_node};
             let doc = self.doc.clone()?;
             let d = doc.borrow();
             let id = tb as u64;
-            (
-                rinch_dom::text_query::visual_line_range_for_node(&d, id, flat, affinity)?,
-                rinch_dom::text_query::visual_line_edge_boxes_for_node(&d, id, flat, affinity)?,
-            )
+            // The line the caret is DRAWN on: beside an image that is the
+            // image's line, which the byte query cannot tell (between two
+            // images a soft wrap separates, the byte's caret is on the upper
+            // line and a downstream caret before the second image on the
+            // lower one, #1116).
+            handle
+                .caret_inline_box(head, affinity)
+                .filter(|&(leaf_tb, _, _)| leaf_tb == tb)
+                .and_then(|(_, leaf, _)| {
+                    visual_line_edges_for_node(&d, id, LineOf::InlineBox(leaf as u64))
+                })
+                .or_else(|| visual_line_edges_for_node(&d, id, LineOf::Caret(flat, affinity)))?
         };
+        let range = edges.range.clone();
         // An image has no bytes, so the edge byte is the byte of both sides of
         // an image at the line's edge, and of one at that byte on the
         // neighbouring line, and `pos_at` picks a side by where the text runs
@@ -5161,8 +5172,16 @@ impl RinchApp {
         // before the images at a text run's end, which is right for the end of
         // a line that ends in text; at a line's start it can answer before an
         // image that ends the line above (`bravo` / image / `charlie`), so
-        // Home steps past every position at the start byte.
-        let edge_box = if end { last_box } else { first_box };
+        // Home steps past every position at the start byte. Items are in
+        // visual order, so a line holding right-to-left text keeps `pos_at`'s
+        // answer.
+        let edge_box = if !edges.ltr {
+            None
+        } else if end {
+            edges.last_box
+        } else {
+            edges.first_box
+        };
         if let Some(p) = edge_box.and_then(|id| handle.pos_beside_inline_leaf(id as usize, end)) {
             return Some(p);
         }
@@ -5171,7 +5190,7 @@ impl RinchApp {
         // by setting the caret-affinity hint (#301).
         let byte = if end { range.end } else { range.start };
         let mut p = handle.pos_at(tb, byte)?;
-        if !end {
+        if !end && edges.ltr {
             while handle.caret_address(rinch_editor_core::Pos(p.0 + 1)) == Some((tb, byte)) {
                 p.0 += 1;
             }
