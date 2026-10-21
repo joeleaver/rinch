@@ -332,6 +332,35 @@ fn a_faint_blur_tail_keeps_the_one_pass_order() {
     assert!(full, "the opaque blur reaches the line above: per line");
 }
 
+/// What a reach-back must clear to change a pixel: a blur's visible reach
+/// over the earlier text depends on how far the shadow's colour is from the
+/// text's (painting a 40%-black shadow over `rgb(40, 40, 40)` text or under
+/// it differs by at most 0.4 x 40 levels, times the blur's coverage), and a
+/// space between two fragments has no ink. Here `burg`'s 4px blur reaches
+/// about 3.7px over grey text — less than the 14px space before it — so the
+/// one-pass order is kept.
+///
+/// Kills: the colour difference left out of the visible reach (5.2px, past
+/// the space); a space's advance counted as ink.
+#[test]
+fn a_blur_that_cannot_reach_ink_of_another_colour_keeps_the_one_pass_order() {
+    let prev = rinch_dom::paint::force_tapped_text_shadows(true);
+    let draws = record(&mut doc_with(
+        ".g { font-size: 14px; line-height: 18px; color: rgb(40, 40, 40); }
+         .s { text-shadow: 0 0 4px rgba(0, 0, 0, 0.4); }",
+        r#"<p class="t g">Ham <span class="s">burg</span></p>"#,
+    ));
+    rinch_dom::paint::force_tapped_text_shadows(prev);
+    const GREY: [u8; 3] = [40, 40, 40];
+    let first_text = draws.iter().position(|d| d.color == GREY).unwrap();
+    let last_shadow = draws.iter().rposition(|d| d.color == BLACK).unwrap();
+    assert!(
+        last_shadow < first_text,
+        "one pass: {:?}",
+        draws.iter().map(|d| d.color).collect::<Vec<_>>()
+    );
+}
+
 /// A `visibility: hidden` glyph run before a raised one in the same parley
 /// run: the raised glyph keeps its `vertical-align` shift. The shift cursor
 /// hands out a run's glyph runs in order and was skipped past hidden ones, so
