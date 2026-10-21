@@ -215,6 +215,60 @@ and clears a selection that was pre-armed for it but never applied —
 calling `set_selection_range()` on a field and then clicking somewhere else
 in it does what you would expect: the click wins.
 
+### Reading the selection and the caret
+
+`NodeHandle::selection_range()` (issue #1678) is the read half:
+`Option<(start, end, SelectionDirection)>` in UTF-16 code units with
+`start <= end`, the DOM's `selectionStart` / `selectionEnd` /
+`selectionDirection`. It answers for a control that does not hold the keyboard
+too, as a browser does: what `set_selection_range` set (at once, before the
+runtime applies it), the selection the control had when it lost the keyboard,
+a caret after the value once a `value` write changed it (a browser's value
+setter moves it there), or a caret at the start, `(0, 0, Forward)`, for a
+parsed or default value nobody has touched — Chrome 155's answers. `None` for
+anything but an `<input>` or `<textarea>`, and — as Chrome answers `null`
+there — for an `<input>` of type `email`, `number`, the date/time family or
+any other type with no text selection. A range set with
+`SelectionDirection::None` reads back `Forward`, as Chrome on Linux and
+Windows reads it (macOS Chrome reads `"none"`; not measured here). On desktop
+the selection a `focus()` or Tab shows is the one `selection_range()` read
+just before — a browser's `focus()` keeps the control's own selection (Chrome
+selects an `<input>`'s whole text on Tab, which desktop does not). A `value`
+write that leaves the value as it was keeps the selection.
+
+`NodeHandle::caret_rect()` and `caret_rect_at(offset)` answer where a caret is
+drawn — at the selection's head, or at a UTF-16 offset — as an `ElementBounds`
+of width 0, in logical window px on desktop and client px on the web, the
+space `EditorHandle::caret_rect` answers in, so one popup positioning works
+for both. Desktop measures with the layout paint draws the field with
+(password bullets, a single-line field's centring, the placeholder's start in
+an empty field); an IME composition's text, which is not in the value yet, is
+not counted. A browser exposes no caret geometry for a form control, so the web
+lays the value out in a hidden copy of the control with its computed text
+styles at the width the control lays its text out in; Chrome 155's and
+Firefox 155's own `caretPositionFromPoint` answer the same offset at the
+rect's centre for a textarea scrolled under its scrollbar, right-to-left
+text, line starts after a break, `wrap="off"`, a centred or horizontally
+scrolled `<input>`, a password field and a field under a `transform`. Its height is the
+text's own (the font's content area), where desktop's is the 1.2 × font-size
+caret it paints. A field that is not rendered (`display: none`) has no caret
+rect. Ask after layout — from an effect or an `onkeydown` that did
+not move the caret — since desktop answers from the last layout.
+
+```rust
+textarea {
+    oninput: move |v: String| {
+        draft.set(v.clone());
+        // `[[` just typed: open the picker under it.
+        if let Some((_, end, _)) = field.selection_range()
+            && v.encode_utf16().take(end).collect::<Vec<_>>().ends_with(&[0x5b, 0x5b])
+        {
+            picker_at.set(field.caret_rect_at(end - 2));
+        }
+    },
+}
+```
+
 A focused `<select>` is **closed**, like a browser's: Enter, Space or Alt+Down
 opens its popup, and the popup then owns the keyboard until it commits or is
 dismissed — at which point focus returns to the closed control, so Tab carries
@@ -438,6 +492,9 @@ to make the decision `restore_focus` exists to make.
 
 `register_focus_target` attaches callbacks to a focusable node. It does not
 change *who* can be focused — it changes what your component is told about it.
+(For keys alone, an element's own `onkeydown` / `onkeyup` — see
+[Keys on an element](./rsx-syntax.md#keys-on-an-element) — work on both
+backends, on a text control too, which `on_key` here never hears.)
 
 ```rust
 use rinch::prelude::*;

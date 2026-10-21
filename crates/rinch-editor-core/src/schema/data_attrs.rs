@@ -103,6 +103,8 @@ pub const RESERVED_DATA_ATTRS: &[&str] = &[
     "data-onmousedown",
     "data-onmouseup",
     "data-onmousemove",
+    "data-onkeydown",
+    "data-onkeyup",
     "data-nofocus",
     "data-disabled",
     "data-trap-focus",

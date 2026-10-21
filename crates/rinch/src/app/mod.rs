@@ -148,6 +148,8 @@ mod editor_tab_caret_tests;
 mod editor_word_delete_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_wrapped_selection_tests;
+#[cfg(test)]
+mod element_key_1678_tests;
 mod event_dispatch;
 #[cfg(test)]
 mod file_drop_click_context_1650_tests;
@@ -3627,6 +3629,17 @@ impl RinchApp {
         let Some(doc) = &self.doc else { return };
 
         let mut d = doc.borrow_mut();
+        // The selection stays with the control when it loses the keyboard, as
+        // a browser's `selectionStart`/`selectionEnd` do: remember it for
+        // `NodeHandle::selection_range` (issue #1678). Read from the bytes the
+        // last sync wrote, which are what the field showed.
+        let kept = rinch_core::dom::DomDocument::text_selection_range(
+            &*d,
+            rinch_core::dom::NodeId(node_id),
+        );
+        if let Some(kept) = kept {
+            d.tree.text_selections.insert(node_id, kept);
+        }
         if let Some(node) = d.tree.nodes.get_mut(node_id) {
             node.attributes.remove("data-focused");
             node.attributes.remove("data-cursor-pos");
@@ -4362,6 +4375,14 @@ impl RinchApp {
         if takes_text_focus {
             self.pending_text_selection
                 .insert(node_id, (start, end, direction));
+            // What `NodeHandle::selection_range` reads back for the control
+            // until it is focused (issue #1678).
+            if let Some(doc) = &self.doc {
+                doc.borrow_mut()
+                    .tree
+                    .text_selections
+                    .insert(node_id, (start, end, direction));
+            }
         }
     }
 
@@ -4867,6 +4888,15 @@ impl RinchApp {
         let value = rinch_dom::form_control::control_value(&d.tree.nodes, node_id)
             .map(|v| v.into_owned())
             .unwrap_or_default();
+        // The selection the control shows when it gains the keyboard is the
+        // one `NodeHandle::selection_range()` reads for it now (issue #1678):
+        // a range set on it before focus, the one it had when it last lost
+        // the keyboard, the end after a `value` write, else the start — as a
+        // browser's `focus()` keeps the control's own selection.
+        let kept_selection = rinch_core::dom::DomDocument::text_selection_range(
+            &*d,
+            rinch_core::dom::NodeId(node_id),
+        );
         drop(d);
 
         // Take input focus through the arbiter (tears down a prior surface / CE /
@@ -4896,13 +4926,15 @@ impl RinchApp {
             self.focused_input_baseline = value.clone();
         }
 
-        // Create EditableState with cursor at end — unless a
-        // `set_selection_range()`/`select()` call reached this node before it
-        // was focused (issue #552), stashed in `pending_text_selection`; that
-        // takes priority, as a browser's own pre-armed `setSelectionRange()`
-        // does the first time the control is focused.
+        // Create EditableState with the control's own selection (above) —
+        // a `set_selection_range()`/`select()` that reached it before it was
+        // focused (issue #552) included, as a browser's own pre-armed
+        // `setSelectionRange()` shows the first time the control is focused.
+        // A control with no readable selection (`email`, `number`) gets the
+        // caret at the end.
+        self.pending_text_selection.remove(&node_id);
         let mut state = EditableState::new(StringDocument::with_text(&value));
-        state.selection = match self.pending_text_selection.remove(&node_id) {
+        state.selection = match kept_selection {
             Some((start, end, direction)) => {
                 let start_byte = utf16_units_to_byte_offset(&value, start);
                 let end_byte = utf16_units_to_byte_offset(&value, end);

@@ -735,9 +735,38 @@ impl DomDocument for RinchDocument {
         if name == "title" && !self.tree.nodes[node.0].attributes.contains_key(name) {
             self.tree.title_sources += 1;
         }
+        // A `value` write that changes an unfocused text control's value puts
+        // its caret at the end, as a browser's value setter does (issue
+        // #1678; rinch-web writes through that setter). The focused field's
+        // own selection is the runtime's, synced with each edit.
+        let value_before = (name == "value"
+            && crate::form_control::has_text_selection(&self.tree.nodes[node.0])
+            && self.tree.nodes[node.0]
+                .attributes
+                .get("data-focused")
+                .map(String::as_str)
+                != Some("true"))
+        .then(|| {
+            crate::form_control::control_value(&self.tree.nodes, node.0)
+                .unwrap_or_default()
+                .into_owned()
+        });
         // Before the write: the invalidation snapshot holds the old value.
         self.note_attribute_change(node.0, name);
         self.tree.nodes[node.0].write_attribute(name, value);
+        if let Some(before) = value_before {
+            let after =
+                crate::form_control::control_value(&self.tree.nodes, node.0).unwrap_or_default();
+            if after != before {
+                // It overrides a selection set before it, posted or not.
+                rinch_core::cancel_pending_text_selection_request(self.doc_key, node.0);
+                let len = after.encode_utf16().count();
+                self.tree.text_selections.insert(
+                    node.0,
+                    (len, len, rinch_core::dom::SelectionDirection::Forward),
+                );
+            }
+        }
         if selects_this_option {
             crate::select::set_option_selectedness(&mut self.tree, node.0, true);
         }
@@ -1377,6 +1406,125 @@ impl DomDocument for RinchDocument {
         direction: rinch_core::dom::SelectionDirection,
     ) {
         rinch_core::post_text_selection_request(self.doc_key, node_id.0, start, end, direction);
+    }
+
+    /// Newest first (issue #1678): a request posted and not yet applied, the
+    /// focused field's live selection (the bytes the runtime syncs into
+    /// `data-selection-start` / `data-cursor-pos`), the one remembered when
+    /// it last lost the keyboard or stashed for its next focus
+    /// (`NodeTree::text_selections`), else a caret at the start. Clamped to
+    /// the current value, `start <= end`.
+    fn text_selection_range(
+        &self,
+        node_id: NodeId,
+    ) -> Option<(usize, usize, rinch_core::dom::SelectionDirection)> {
+        use crate::form_control;
+        use rinch_core::dom::SelectionDirection;
+        let node = self.tree.get(node_id.0)?;
+        if !form_control::has_text_selection(node) {
+            return None;
+        }
+        let value = form_control::control_value(&self.tree.nodes, node_id.0).unwrap_or_default();
+        let len = value.encode_utf16().count();
+        // Chrome reads an unspecified direction back as `forward`, before
+        // focus as after (and desktop's focused selection has no "none").
+        let order = |(a, b, d): (usize, usize, SelectionDirection)| {
+            let (a, b) = (a.min(len), b.min(len));
+            let d = if d == SelectionDirection::None {
+                SelectionDirection::Forward
+            } else {
+                d
+            };
+            Some((a.min(b), a.max(b), d))
+        };
+        if let Some(posted) =
+            rinch_core::peek_pending_text_selection_request(self.doc_key, node_id.0)
+        {
+            return order(posted);
+        }
+        if node.attributes.get("data-focused").map(String::as_str) == Some("true")
+            && let Some(head) = node
+                .attributes
+                .get("data-cursor-pos")
+                .and_then(|v| v.parse::<usize>().ok())
+        {
+            let anchor = node
+                .attributes
+                .get("data-selection-start")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(head);
+            let (head, anchor) = (
+                form_control::utf16_of_byte(&value, head),
+                form_control::utf16_of_byte(&value, anchor),
+            );
+            let direction = if anchor > head {
+                SelectionDirection::Backward
+            } else {
+                SelectionDirection::Forward
+            };
+            return order((anchor, head, direction));
+        }
+        if let Some(&kept) = self.tree.text_selections.get(&node_id.0) {
+            return order(kept);
+        }
+        // Untouched (a parsed `value`, a textarea's default value): a caret at
+        // the start, Chrome 155's answer. A `value` write moved it to the end
+        // above, through `text_selections`.
+        Some((0, 0, SelectionDirection::Forward))
+    }
+
+    /// The caret paint draws (or would draw) at that offset, through
+    /// [`crate::form_control::painted_caret_rect`] with this document's own
+    /// font contexts, which carry the app's registered faces (issue #1678).
+    fn text_caret_rect(
+        &mut self,
+        node_id: NodeId,
+        offset: Option<usize>,
+    ) -> Option<rinch_core::reactive::ElementBounds> {
+        use crate::form_control;
+        use rinch_core::dom::SelectionDirection;
+        if !self.is_rendered(node_id) {
+            // No box, no caret (`display: none`, `visibility: hidden`, out of
+            // the document).
+            return None;
+        }
+        let node = self.tree.get(node_id.0)?;
+        if !form_control::has_text_selection(node) {
+            return None;
+        }
+        let focused = node.attributes.get("data-focused").map(String::as_str) == Some("true");
+        let affinity = if focused && offset.is_none() {
+            form_control::caret_affinity(node)
+        } else {
+            CaretAffinity::Downstream
+        };
+        let units = match offset {
+            Some(units) => units,
+            None => {
+                let (start, end, dir) = self.text_selection_range(node_id)?;
+                if dir == SelectionDirection::Backward {
+                    start
+                } else {
+                    end
+                }
+            }
+        };
+        let value = form_control::control_value(&self.tree.nodes, node_id.0).unwrap_or_default();
+        let byte = form_control::byte_of_utf16(&value, units);
+        let (x, y, height) = form_control::painted_caret_rect(
+            &self.tree,
+            &mut self.font_cx,
+            &mut self.layout_cx,
+            node_id.0,
+            byte,
+            affinity,
+        )?;
+        Some(rinch_core::reactive::ElementBounds {
+            x,
+            y,
+            width: 0.0,
+            height,
+        })
     }
 
     /// Whether `node` is shown, from the computed styles of the last resolve

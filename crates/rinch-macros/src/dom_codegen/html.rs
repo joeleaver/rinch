@@ -110,14 +110,17 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
     // element with a commit or submit handler and no `oninput` gets a no-op
     // input handler to stay focusable and receive typed text. `onchange` has
     // always had it; an `onsubmit` gets it only on a text control (#1590),
-    // because `onsubmit` is also written on a wrapper around a field, and a
+    // and so do `onkeydown` / `onkeyup` (#1678 — a raw composer read through
+    // `live_value()` on Enter has no `oninput`), because these are also
+    // written on a wrapper around a field, and a
     // `div` carrying `data-oninput` would itself become a text field. The shim
     // is not emitted for wasm32: the browser owns focus/typing natively there,
     // and the extra attribute would shadow an ancestor's `[data-oninput]` in
     // the web backend's document-level input delegation walk (#244 review).
     let text_field_shim = if !has_event("oninput")
         && (has_event("onchange")
-            || (has_event("onsubmit") && matches!(tag.as_str(), "input" | "textarea")))
+            || ((has_event("onsubmit") || has_event("onkeydown") || has_event("onkeyup"))
+                && matches!(tag.as_str(), "input" | "textarea")))
     {
         quote! {
             #[cfg(not(target_arch = "wasm32"))]
@@ -173,6 +176,20 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                         #handler_shadows
                         let __handler_id = __scope.register_scroll_handler(#handler);
                         #elem_var.set_attribute("data-onscroll", &__handler_id.0.to_string());
+                    }
+                }
+            } else if event_name == "onkeydown" || event_name == "onkeyup" {
+                // Key events (issue #1678) take `Fn(&KeyEventData) -> bool`:
+                // `true` consumes the key — its default handling (a line
+                // break, a submit, a focus move) does not happen and nothing
+                // after the element is offered it.
+                let data_attr = crate::events::event_attribute(&event_name)
+                    .expect("both key events are in HTML_EVENTS");
+                quote! {
+                    {
+                        #handler_shadows
+                        let __handler_id = __scope.register_key_handler(#handler);
+                        #elem_var.set_attribute(#data_attr, &__handler_id.0.to_string());
                     }
                 }
             } else if event_name == "onfiledrop" {
@@ -556,8 +573,15 @@ mod event_and_fn_prop_tests {
         for tag in ["input", "textarea"] {
             let out = codegen(&format!("{tag} {{ onsubmit: || {{}} }}"));
             assert!(out.contains("\"data-oninput\""), "{tag}: {out}");
+            // #1678: a key handler makes a raw control a text field too.
+            for ev in ["onkeydown", "onkeyup"] {
+                let out = codegen(&format!("{tag} {{ {ev}: |_| false }}"));
+                assert!(out.contains("\"data-oninput\""), "{tag} {ev}: {out}");
+            }
         }
         let out = codegen("div { onsubmit: || {} }");
+        assert!(!out.contains("\"data-oninput\""), "{out}");
+        let out = codegen("div { onkeydown: |_| false }");
         assert!(!out.contains("\"data-oninput\""), "{out}");
         // Beside a real oninput no shim is added (one data-oninput write).
         let out = codegen("input { oninput: |_: String| {}, onsubmit: || {} }");
@@ -611,7 +635,7 @@ mod event_and_fn_prop_tests {
     /// handler. It is a compile error now, naming the supported events.
     #[test]
     fn an_unsupported_event_is_a_compile_error_not_a_click() {
-        for name in ["onkeydown", "onkeyup", "onfocus", "onblur", "ondblclick"] {
+        for name in ["onfocus", "onblur", "ondblclick", "onkeypress"] {
             let out = codegen(&format!("div {{ {name}: || {{}} }}"));
             assert!(is_error(&out), "{name}: {out}");
             assert!(!out.contains("\"data-rid\""), "{name}: {out}");
@@ -636,8 +660,22 @@ mod event_and_fn_prop_tests {
             "{out}"
         );
         // And a name close to nothing suggests nothing.
-        let out = codegen("div { onkeydown: || {} }");
+        let out = codegen("div { onfocus: || {} }");
         assert!(!out.contains("did you mean"), "{out}");
+    }
+
+    /// #1678: `onkeydown` / `onkeyup` are element key handlers, registered
+    /// as `Fn(&KeyEventData) -> bool` and written to their own attributes —
+    /// not click handlers, not `Fn()`.
+    #[test]
+    fn the_key_events_register_key_handlers() {
+        for (name, attr) in [("onkeydown", "data-onkeydown"), ("onkeyup", "data-onkeyup")] {
+            let out = codegen(&format!("textarea {{ {name}: |k| k.shift }}"));
+            assert!(!is_error(&out), "{name}: {out}");
+            assert!(out.contains("register_key_handler"), "{name}: {out}");
+            assert!(out.contains(&format!("\"{attr}\"")), "{name}: {out}");
+            assert!(!out.contains("\"data-rid\""), "{name}: {out}");
+        }
     }
 
     /// #1591: `value_fn:` / `checked_fn:` are component prop conventions; on a

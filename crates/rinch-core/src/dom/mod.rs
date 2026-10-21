@@ -736,6 +736,44 @@ impl NodeHandle {
         }
     }
 
+    /// This text control's selection, `(start, end, direction)` in **UTF-16
+    /// code units** with `start <= end` — the DOM's `selectionStart` /
+    /// `selectionEnd` / `selectionDirection` (issue #1678), and the read half
+    /// of [`set_selection_range`](Self::set_selection_range): what it sets is
+    /// what this reads back, on both backends, before the control is focused
+    /// as well as after.
+    ///
+    /// `None` for a node that is not an `<input>`/`<textarea>`, or before this
+    /// handle is mounted. See [`DomDocument::text_selection_range`].
+    pub fn selection_range(&self) -> Option<(usize, usize, SelectionDirection)> {
+        let doc = self.accessed_doc()?;
+        doc.borrow().text_selection_range(self.node_id)
+    }
+
+    /// Where this text control's caret is drawn: a rect of width 0 at the
+    /// selection's head, in logical window px on desktop and client px on the
+    /// web — the space `EditorHandle::caret_rect` answers in (issue #1678).
+    /// What a popup anchored at the caret (a `[[` link picker, an `@` list)
+    /// is placed from.
+    ///
+    /// Ask after layout — from an effect, a timer, or a key handler for a
+    /// caret that the key did not move — since the desktop answer is the
+    /// layout the field was last painted with. See
+    /// [`DomDocument::text_caret_rect`].
+    pub fn caret_rect(&self) -> Option<crate::reactive::ElementBounds> {
+        let doc = self.accessed_doc()?;
+        doc.borrow_mut().text_caret_rect(self.node_id, None)
+    }
+
+    /// [`caret_rect`](Self::caret_rect) for a caret at UTF-16 offset `offset`
+    /// of the control's value rather than at the selection's head — the start
+    /// of a `[[` trigger, say, so the popup does not follow the caret as the
+    /// query is typed. An offset past the value is clamped to its end.
+    pub fn caret_rect_at(&self, offset: usize) -> Option<crate::reactive::ElementBounds> {
+        let doc = self.accessed_doc()?;
+        doc.borrow_mut().text_caret_rect(self.node_id, Some(offset))
+    }
+
     /// Select this text control's **entire** text — the DOM's
     /// `HTMLInputElement.select()` (issue #552). Equivalent to
     /// `set_selection_range(0, <the control's UTF-16 length>,

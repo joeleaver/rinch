@@ -766,6 +766,23 @@ impl DomDocument for MockDomDocument {
         self.selection_range = Some((node_id, start, end, direction));
     }
 
+    /// The last selection set on `node_id`, clamped to its live value; a
+    /// caret at the start for any other `<input>`/`<textarea>` (issue #1678).
+    fn text_selection_range(&self, node_id: NodeId) -> Option<(usize, usize, SelectionDirection)> {
+        let n = self.nodes.get(&node_id)?;
+        if !matches!(&n.kind, MockNodeKind::Element(tag) if tag == "input" || tag == "textarea") {
+            return None;
+        }
+        let len = self
+            .live_value(node_id)
+            .map(|v| v.encode_utf16().count())
+            .unwrap_or(0);
+        match self.selection_range {
+            Some((n, start, end, dir)) if n == node_id => Some((start.min(len), end.min(len), dir)),
+            _ => Some((0, 0, SelectionDirection::Forward)),
+        }
+    }
+
     fn resolve_layout(&mut self, _width: f32, _height: f32) {
         // Mock does nothing
     }

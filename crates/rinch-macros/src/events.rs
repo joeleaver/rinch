@@ -13,15 +13,18 @@
 
 /// Every supported event, with the attribute its handler id is written to.
 ///
-/// The first five take handlers of their own shape (`Fn(String)`,
-/// `Fn(ScrollEvent)`, `Fn(Vec<PathBuf>)`) and have their own arms in the
-/// codegen; the rest are `Fn()` handlers registered with `register_handler`.
+/// The first seven take handlers of their own shape (`Fn(String)`,
+/// `Fn(ScrollEvent)`, `Fn(Vec<PathBuf>)`, and `Fn(&KeyEventData) -> bool` for
+/// the two key events, issue #1678) and have their own arms in the codegen;
+/// the rest are `Fn()` handlers registered with `register_handler`.
 pub const HTML_EVENTS: &[(&str, &str)] = &[
     ("onclick", "data-rid"),
     ("oninput", "data-oninput"),
     ("onchange", "data-onchange"),
     ("onscroll", "data-onscroll"),
     ("onfiledrop", "data-onfiledrop"),
+    ("onkeydown", "data-onkeydown"),
+    ("onkeyup", "data-onkeyup"),
     ("onsubmit", "data-onsubmit"),
     ("onmousedown", "data-onmousedown"),
     ("onmouseup", "data-onmouseup"),
@@ -65,9 +68,8 @@ pub fn unknown_event_error(name: &str, span: proc_macro2::Span) -> syn::Error {
         format!(
             "`{name}` is not an event `rsx!` supports on an HTML element\n\
              {suggestion}note: the supported events are {}\n\
-             note: keyboard and focus events have no element attribute; a \
-             custom control takes keys through `register_focus_target` \
-             (desktop) or a document-level keyboard interceptor",
+             note: focus events have no element attribute; keys are \
+             `onkeydown` / `onkeyup`",
             supported.join(", "),
         ),
     )

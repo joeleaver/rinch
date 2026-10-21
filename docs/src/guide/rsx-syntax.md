@@ -228,14 +228,73 @@ Supported HTML-element event attributes:
 | `ondragstart` … `ondrop`, `ondragend` | Element drag-and-drop. A cancelled drag (Escape; on desktop also a left press or a window blur while it is live, which prove its release went missing) fires `ondragend` (and `ondragleave` on the target, if it is over one), never `ondrop`. A drag whose pointer rests within 32px of the top or bottom of a scroll container under it scrolls that container (not one a `lock_scroll` overlay locks out), and the drop target scrolled under the still pointer hears `ondragenter` / `ondragover` | `Fn()` |
 | `onfiledrop`, `onfiledragenter`/`onfiledragleave` | OS → app file drop (desktop only: the browser build dispatches none of the three). `onfiledrop` reads the drop point and its own element's box through `get_click_context()` (`mouse_x`/`mouse_y`, `element_*`), in the same frame as a click's, so dropped files can be placed where they were dropped; it did not until issue #1650 | `Fn(Vec<PathBuf>)` / `Fn()` |
 | `onsubmit` | Enter in an `<input>` or `<textarea>` (Shift+Enter in a `<textarea>` inserts a line break instead), read from the control and then up its ancestors — see [Enter in a `<textarea>`](#enter-in-a-textarea) | `Fn()` |
+| `onkeydown` / `onkeyup` | A key pressed / released while the element, or a text control or focusable element inside it, holds the keyboard — see [Keys on an element](#keys-on-an-element) | `Fn(&KeyEventData) -> bool` — `true` consumes the key |
 
-That list is closed. Any other `on*` name on an HTML element — `onkeydown`,
-`onfocus`, `onblur`, a typo such as `onclik` — is a compile error that lists
-the supported events and suggests the nearest one. (Until issue #1590 such a
-name was silently wired as a **click** handler.) Keys reach a custom control
-through [`register_focus_target`](./focus.md) on desktop, or a document-level
-keyboard interceptor. A component's `on*` props are its own fields and are not
-affected.
+That list is closed. Any other `on*` name on an HTML element — `onfocus`,
+`onblur`, a typo such as `onclik` — is a compile error that lists the
+supported events and suggests the nearest one. (Until issue #1590 such a name
+was silently wired as a **click** handler.) A component's `on*` props are its
+own fields and are not affected.
+
+### Keys on an element
+
+`onkeydown` and `onkeyup` (issue #1678) take a `KeyEventData` (`key` spelled
+as `KeyboardEvent.key`, `code`, the four modifiers, `kind`) and answer whether
+they **consumed** the key. `true` is a browser listener's `preventDefault()`
+plus `stopPropagation()`: the field does not insert the key, Enter runs no
+`onsubmit` and activates nothing, Tab moves no focus, and nothing after the
+element hears it. A chat composer, Enter to send and Shift+Enter for a new
+line:
+
+```rust
+textarea {
+    value: {|| draft.get()},
+    oninput: move |v: String| draft.set(v),
+    onkeydown: move |k| {
+        if k.key == "Enter" && !k.shift {
+            send(draft.get());
+            draft.set(String::new());
+            true // no line break
+        } else {
+            false
+        }
+    },
+}
+```
+
+A key goes, on desktop and the web alike: a menu shortcut; the rich-text
+editor's or a node view's `on_key`; **the focused element's `onkeydown`, then
+its ancestors', nearest first, until one consumes it**; the document-level
+keyboard interceptor; an open popup's key entry and, for Escape, the dismiss
+stack; then the element's own handling. So a `[[` picker in a field inside a
+`Modal` takes Escape and the modal stays open. `onkeyup` is offered the same
+way; a consuming one stops its ancestors, and the interceptor hears every
+release whatever the element answered (a release has no default to prevent).
+
+The walk starts at the element holding the keyboard: a text control, or a
+focusable element (`tabindex`, a button, a link, a closed `<select>`). Keys the
+rich-text editor holds go to `EditorHandle::on_key`, a focused render
+surface's to `set_key_handler`, and an open native `<select>` list keeps its
+keys on desktop. A key an input method is composing with is not offered (a
+browser marks it `isComposing` or reports it as the `Process` key; desktop,
+while the field shows a preedit). One known gap: Safari sends the Enter that
+confirms a composition after the composition ends, unmarked (`keyCode` 229
+only), and it is offered — an Android soft keyboard's plain Enter can carry
+229 too, so refusing it would break Enter there. And
+with an input method on, plain characters may arrive as composition text with
+no key event at all — use `oninput` for text. A handler that moves the focus
+and does not consume the key sends it on to the newly focused field, as Chrome
+does. A raw `<input>` or `<textarea>` with only a key handler (no `oninput`)
+is still a text field on desktop, as in a browser.
+
+A composer's popup needs two more things, both on `NodeHandle`:
+`selection_range()` reads the selection back as `(start, end, direction)` in
+UTF-16 code units, the unit `set_selection_range` takes; `caret_rect()` (at the
+selection's head) and `caret_rect_at(offset)` (at a UTF-16 offset — the start
+of a `[[`, so the popup stays put as the query is typed) answer where the caret
+is drawn, in logical window px on desktop and client px on the web, the space
+`EditorHandle::caret_rect` answers in. See [Reading the selection and the
+caret](./focus.md#reading-the-selection-and-the-caret).
 
 ### Pointer moves are coalesced
 

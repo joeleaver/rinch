@@ -437,6 +437,28 @@ pub fn post_text_selection_request(
     });
 }
 
+/// The text-selection request posted for `doc_key`/`node_id` and not yet
+/// drained, without consuming it — what a selection read answers between a
+/// `set_selection_range` and the runtime applying it (issue #1678).
+pub fn peek_pending_text_selection_request(
+    doc_key: u64,
+    node_id: usize,
+) -> Option<(usize, usize, crate::dom::SelectionDirection)> {
+    PENDING_TEXT_SELECTIONS.with(|m| m.borrow().get(&doc_key)?.get(&node_id).copied())
+}
+
+/// Drop the text-selection request posted for `doc_key`/`node_id`, if any —
+/// a `value` write that changes the control's value overrides a selection set
+/// before it, as a browser's value setter moves the caret to the end (issue
+/// #1678).
+pub fn cancel_pending_text_selection_request(doc_key: u64, node_id: usize) {
+    PENDING_TEXT_SELECTIONS.with(|m| {
+        if let Some(pending) = m.borrow_mut().get_mut(&doc_key) {
+            pending.remove(&node_id);
+        }
+    });
+}
+
 /// Consume **every** pending text-selection request posted for the given
 /// document, as `(node_id, start, end, direction)` — mirroring
 /// [`take_pending_focus_request`]'s document scoping (issue #134), but

@@ -44,6 +44,11 @@ impl RinchDocument {
                 for (name, value) in attrs {
                     self.set_attribute(node_id, name, value);
                 }
+                // A parsed `value` is the default value, set with no value
+                // setter: it leaves the caret at the start, as Chrome 155's
+                // parser does (issue #1678; `set_attribute` puts it at the
+                // end for a script's write).
+                self.tree.text_selections.remove(&node_id.0);
 
                 // Recursively create and append children
                 for child in children {
