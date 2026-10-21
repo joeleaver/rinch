@@ -1063,11 +1063,9 @@ const SPAN_ELLIPSIS: Case = Case {
     to: "t b",
 };
 
-/// **A pinned finding, #1451 — not the behaviour wanted.** The "…" is drawn
-/// from a flat rebuild of the paragraph that records no text ranges (#1091),
-/// so paint has only the root's colour to follow and the span keeps its start
-/// colour for the whole run; `rv_b2` shows it right once the run has ended. A
-/// fix makes the first assertion below fail: flip both then.
+/// #1451: the "…" is drawn from a flat rebuild of the paragraph (#1091),
+/// which keeps its text ranges mapped onto the cut text (#1065), so paint
+/// follows the span's colour mid-run as it does on an uncut line.
 #[test]
 fn rv_b1_span_on_ellipsis_line_mid_run() {
     let (mut doc, s) = SPAN_ELLIPSIS.started();
@@ -1075,14 +1073,14 @@ fn rv_b1_span_on_ellipsis_line_mid_run() {
     let (px, st) = frame(&mut doc);
     let now = colour_of(&doc, s);
     assert!(now != RED && now != BLUE);
-    assert_eq!(
-        exact(&px, now),
-        0,
-        "#1451 is fixed if the span is drawn in the frame's colour: assert that instead"
+    let span_px = exact(&px, now);
+    assert!(
+        span_px > 1000,
+        "the span in the frame's colour: {span_px} px"
     );
     assert!(
-        exact(&px, RED) > 1000,
-        "the whole line in the start colour: {} px",
+        exact(&px, RED) < span_px,
+        "only `MM` and the \u{2026} keep the start colour: {} px",
         exact(&px, RED)
     );
     assert_eq!(shapes(&st), 0);

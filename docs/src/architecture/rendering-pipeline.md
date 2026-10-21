@@ -122,9 +122,9 @@ inline element's background are read from their element's style on every paint.
 The layout is rebuilt once, with no Taffy compute, on the frame the colour stops
 moving, so a finished fade costs what a colour-only hover costs and later frames
 recolour nothing (each paint still compares every range's colour with the one it
-was shaped in). A span on a line cut by `text-overflow: ellipsis` is the
-exception: that line is a flat rebuild with no text ranges, so the span keeps
-its start colour until the run ends (#1451).
+was shaped in). A span on a line cut by `text-overflow: ellipsis` follows too:
+that line is a flat rebuild in the root's colour, but it keeps its text ranges
+mapped onto the cut text (#1065, #1451).
 
 ### Why an atomic inline needs its own pass
 
@@ -289,9 +289,8 @@ the box, so a shadow touching only that keeps the one-pass order.
 
 A span's own list is ink of the root that draws it: damage, the paint prune,
 the painted state and `layer_bounds` all count it.
-Two limits. In a `nowrap`/`pre` root that `text-overflow: ellipsis` cuts, every
-run casts the root's list, because that layout records no text ranges, the same
-gap as #853 (#1065); a wrapping root with such a span is left un-cut. And
+A line that `text-overflow: ellipsis` cuts keeps its text ranges, so a span
+there casts its own list too, and the "…" casts the root's (#1065). One limit:
 each distinct list is a pass over the lines its text is on, so a paragraph of
 many spans with *different* lists costs about lists × parley's per-line item
 walk: 193 ms for 400 distinct lists in one paragraph, against 4.6 ms for one

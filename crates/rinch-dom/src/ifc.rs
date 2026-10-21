@@ -28,10 +28,10 @@ pub struct TreeCheckVerdict {
 pub(crate) enum EllipsisSource<'a> {
     /// The original layout, whose lines are kept and cut one by one.
     Lines(&'a InlineLayout),
-    /// The whole text, cut to one prefix (a `nowrap`/`pre` root whose inline
-    /// content the flat rebuild cannot represent — the behaviour before
-    /// #1091).
-    Whole(&'a str),
+    /// The original layout's whole text, cut to one prefix (a `nowrap`/`pre`
+    /// root whose inline content the flat rebuild cannot represent — the
+    /// behaviour before #1091).
+    Whole(&'a InlineLayout),
 }
 
 /// The IFC root's own text style, as the flat ellipsis rebuild applies it to
@@ -55,6 +55,57 @@ pub(crate) struct EllipsisStyle {
 /// its layout, and of the flat `text-overflow: ellipsis` rebuild.
 pub(crate) fn root_text_color(cs: &crate::computed_style::ComputedStyle) -> peniko::Color {
     cs.color.unwrap_or(peniko::Color::BLACK)
+}
+
+/// The text ranges of a layout cut for `text-overflow: ellipsis`, mapped
+/// onto the rebuilt text (#1065, #853).
+///
+/// Each `(start, len, new_start)` of `segments` says that the original bytes
+/// `start..start + len` are the rebuilt bytes `new_start..new_start + len`: the
+/// rebuild keeps a prefix of each line and adds a "…" or a line join, neither
+/// of which belongs to a range (so both take the root's style). A range is
+/// split where it crosses a segment's end, each piece with the DOM offsets of
+/// the bytes it keeps. `color` is what every glyph of the rebuild is shaped
+/// in — the root's colour, whatever each range's element computes — so paint
+/// recolours a span whose colour is not the root's (its live colours, #679).
+fn map_ranges_through_cut(
+    ranges: &[crate::node::IfcTextRange],
+    segments: &[(usize, usize, usize)],
+    color: peniko::Color,
+) -> Vec<crate::node::IfcTextRange> {
+    let mut out = Vec::new();
+    for r in ranges {
+        // Segments are in text order: the first that ends past the range's
+        // start, then every one that starts before its end.
+        let first = segments.partition_point(|&(s, len, _)| s + len <= r.flat_start);
+        for &(s, len, new) in &segments[first..] {
+            if s >= r.flat_end {
+                break;
+            }
+            let a = r.flat_start.max(s) - r.flat_start;
+            let b = r.flat_end.min(s + len) - r.flat_start;
+            if a >= b {
+                continue;
+            }
+            let (dom_a, dom_b) = (r.dom_for_flat(a), r.dom_for_flat(b));
+            out.push(crate::node::IfcTextRange {
+                flat_start: new + (r.flat_start + a - s),
+                flat_end: new + (r.flat_start + b - s),
+                node_id: r.node_id,
+                node_offset: r.node_offset + dom_a,
+                is_br: r.is_br,
+                dom_text_len: dom_b - dom_a,
+                offset_map: r
+                    .offset_map
+                    .iter()
+                    .filter(|&&(f, _)| f > a && f < b)
+                    .map(|&(f, d)| (f - a, d.saturating_sub(dom_a)))
+                    .collect(),
+                color,
+            });
+        }
+    }
+    out
 }
 
 /// The colour a text node's glyphs are drawn in: its element's `color`.
@@ -2718,7 +2769,7 @@ impl RinchDocument {
                     // As before #1091: the whole text, cut to one prefix.
                     // Not when a descendant wraps (#1212): that paragraph has
                     // lines of its own, and one cut prefix would drop them.
-                    Some(EllipsisSource::Whole(&inline_layout.text_content))
+                    Some(EllipsisSource::Whole(&inline_layout))
                 } else {
                     None
                 };
@@ -8205,18 +8256,18 @@ impl RinchDocument {
     /// the same thing as `il` (#1091): no inline box (a chip would be dropped
     /// and left at its old position), no inline background or decoration
     /// span, and every text run's nearest element carries the root's text
-    /// style, its `text-shadow` list and `visibility: visible`. Inherited
-    /// properties are what an element passes to its text, so the nearest
-    /// element answers for each run; the non-inherited ones that reach text
-    /// arrive as `background_spans` / `decoration_spans`. `white-space` is
-    /// not compared: it decides only where lines break, and the rebuild keeps
-    /// the lines it was given.
+    /// style. Inherited properties are what an element passes to its text,
+    /// so the nearest element answers for each run; the non-inherited ones
+    /// that reach text arrive as `background_spans` / `decoration_spans`.
+    /// `text-shadow` and `visibility` are not compared: paint reads them per
+    /// text range, and the rebuild keeps its ranges (#1065, #853).
+    /// `white-space` is not compared: it decides only where lines break, and
+    /// the rebuild keeps the lines it was given.
     fn ellipsis_rebuild_is_faithful(
         nodes: &slab::Slab<Node>,
         root_id: usize,
         il: &InlineLayout,
     ) -> bool {
-        use crate::computed_style::VisibilityValue;
         if !il.layout.inline_boxes().is_empty()
             || !il.background_spans.is_empty()
             || !il.decoration_spans.is_empty()
@@ -8249,10 +8300,7 @@ impl RinchDocument {
             let Some(el) = nodes.get(r.node_id).and_then(|t| t.parent) else {
                 return false;
             };
-            let s = &nodes[el].computed_style;
-            Self::same_inline_text_style_but_wrap(s, root)
-                && s.text_shadow == root.text_shadow
-                && matches!(s.visibility, VisibilityValue::Visible)
+            Self::same_inline_text_style_but_wrap(&nodes[el].computed_style, root)
         })
     }
 
@@ -8300,8 +8348,12 @@ impl RinchDocument {
     /// From [`EllipsisSource::Whole`], the whole text is cut to the longest
     /// prefix that fits (a binary search, shaping each candidate) and laid out
     /// unconstrained — what a `nowrap`/`pre` root always got. That rebuild is
-    /// flat text in the root's own style: inline styling, inline boxes and
-    /// text-node ranges are lost (#1100).
+    /// flat text in the root's own style: inline fonts, backgrounds,
+    /// decorations and inline boxes are lost (#1100).
+    ///
+    /// Either way the text ranges are kept, mapped onto the rebuilt text
+    /// ([`map_ranges_through_cut`]), so paint still reads a span's
+    /// visibility, `text-shadow` and live colour (#853, #1065, #1451).
     #[allow(clippy::too_many_arguments)]
     fn build_ellipsis_layout(
         nodes: &slab::Slab<Node>,
@@ -8327,9 +8379,14 @@ impl RinchDocument {
         // [`Self::ellipsis_cut_ends`]), so an overshoot can step back.
         let mut cuts: Vec<Option<(usize, Vec<usize>)>> = Vec::new();
         let mut lines: Vec<String> = Vec::new();
+        // Where each rebuilt line starts in the original text: every line is
+        // a prefix of the original from there (#1065).
+        let mut starts: Vec<usize> = Vec::new();
+        let source_ranges: &[crate::node::IfcTextRange] = match &source {
+            EllipsisSource::Lines(il) | EllipsisSource::Whole(il) => &il.text_ranges,
+        };
         let source_text = match &source {
-            EllipsisSource::Lines(il) => il.text_content.as_str(),
-            EllipsisSource::Whole(t) => t,
+            EllipsisSource::Lines(il) | EllipsisSource::Whole(il) => il.text_content.as_str(),
         };
         let (mut lines, whole) = match source {
             EllipsisSource::Lines(il) => {
@@ -8337,6 +8394,7 @@ impl RinchDocument {
                 for line in il.layout.lines() {
                     let m = line.metrics();
                     let range = line.text_range();
+                    starts.push(range.start);
                     if m.advance - m.trailing_whitespace > container_width {
                         let ends = if target_width > 0.0 {
                             Self::ellipsis_cut_ends(&line, target_width)
@@ -8353,7 +8411,10 @@ impl RinchDocument {
                 }
                 (lines, false)
             }
-            EllipsisSource::Whole(full_text) => {
+            EllipsisSource::Whole(il) => {
+                let full_text = il.text_content.as_str();
+                starts.push(0);
+                cuts.push(Some((0, Vec::new())));
                 if full_text.is_empty() {
                     return None;
                 }
@@ -8435,12 +8496,27 @@ impl RinchDocument {
             shapes += built;
         }
 
+        // Each line's kept prefix of the original, and where it now starts:
+        // the lines are joined by one hard break (the whole cut is one line).
+        let mut segments = Vec::with_capacity(lines.len());
+        let mut at = 0;
+        for (i, line) in lines.iter().enumerate() {
+            let kept = if matches!(cuts.get(i), Some(Some(_))) {
+                line.len().saturating_sub(ellipsis.len())
+            } else {
+                line.len()
+            };
+            segments.push((starts[i], kept, at));
+            at += line.len() + 1;
+        }
+        let text_ranges = map_ranges_through_cut(source_ranges, &segments, style.color);
+
         Some((
             InlineLayout {
                 layout,
                 text_content: text,
                 child_positions: Vec::new(),
-                text_ranges: Vec::new(),
+                text_ranges,
                 root_color: style.color,
                 background_spans: Vec::new(),
                 decoration_spans: Vec::new(),
