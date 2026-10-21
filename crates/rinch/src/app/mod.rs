@@ -11284,6 +11284,8 @@ mod editor_scroll_gate_tests;
 mod editor_table_span_1182_tests;
 #[cfg(test)]
 mod grapheme_hit_1684_tests;
+#[cfg(test)]
+mod review_1687_tests;
 
 /// What [`RinchApp::collect_tab_stops_from`] found under a root.
 struct TabStops {

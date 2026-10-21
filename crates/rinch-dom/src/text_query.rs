@@ -314,7 +314,8 @@ pub fn snap_to_grapheme_boundary(
     let before = rinch_words::prev_grapheme_boundary(text, offset);
     let after = rinch_words::next_grapheme_boundary(text, offset);
     let (bx, _) = caret_position_for_offset_layout(layout, before);
-    let (ax, _) = caret_position_for_offset_layout(layout, after);
+    let (ax, _) =
+        caret_position_for_offset_layout_with_affinity(layout, after, CaretAffinity::Upstream);
     if (x - bx).abs() <= (x - ax).abs() {
         before
     } else {
