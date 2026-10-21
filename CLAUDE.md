@@ -80,8 +80,7 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     `pre-wrap` before): the same pass breaks a line parley ended past the box in such spaces
     (`ifc::break_overflowing_spaces`) after the last one that fits, else before the word they follow,
     else after their first space, committed by length; the line is aligned with them as content and
-    `measured_width` counts them (Chrome 155, `tests/white_space_break_spaces_1043_tests.rs`). Not a
-    text leaf's (`break_leaf_lines`), whose spaces still hang. It is **one**
+    `measured_width` counts them (Chrome 155, `tests/white_space_break_spaces_1043_tests.rs`). It is **one**
     extra break of the paragraph, line by line, however many lines it fixes: the first version
     restarted from line 0 per fixed line, which is quadratic (0.7–1.0 s for 1,600 double-spaced
     lines). `ifc_hang_passes` counts those breaks, at most one per layout, and

@@ -259,3 +259,32 @@ fn pre_line_collapses_the_spaces_at_a_lines_end() {
     assert_eq!(size(&d, b), (28.0, LINE));
     caret_at(&d, b, 6, (27.92, 0.0));
 }
+
+/// The same with a word after the space: parley hangs the space and ends the
+/// line there, a line no other test sends through the hang pass. Chrome:
+/// `bullet ` / `text x`.
+#[test]
+fn a_space_that_does_not_fit_before_a_word_takes_its_word_along() {
+    let (d, b) = build(None, "width: 75px; white-space: break-spaces", "bullet text x");
+    assert_eq!(size(&d, b), (75.0, 2.0 * LINE));
+    caret_at(&d, b, 6, (41.56, 0.0));
+    caret_at(&d, b, 11, (28.33, LINE));
+    caret_at(&d, b, 13, (41.56, LINE));
+}
+
+/// Spaces that fit at a soft wrap are content too: they do not hang, so a
+/// centred line is centred with them. Chrome: `ab` and six spaces, centred in
+/// 60px (`ab` at 7.11), then `cd`. As `pre-wrap` they would hang and `ab`
+/// would sit at 20.61.
+#[test]
+fn spaces_at_a_soft_wrap_are_aligned_as_content() {
+    let (d, b) = build(
+        None,
+        "width: 60px; white-space: break-spaces; text-align: center",
+        "ab      cd",
+    );
+    assert_eq!(size(&d, b), (60.0, 2.0 * LINE));
+    caret_at(&d, b, 0, (7.11, 0.0));
+    caret_at(&d, b, 4, (34.89, 0.0));
+}
+
