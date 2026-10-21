@@ -1607,13 +1607,21 @@ impl RinchApp {
                 {
                     let key_data = events::KeyEventData::new(ks.clone(), format!("{:?}", key))
                         .with_modifiers(ctrl, shift, alt, modifiers.meta);
+                    let claim = self.focus_target;
                     let consumed = self.offer_element_key(&key_data);
                     // A handler that moved the focus (`other.focus()`) moved
                     // it for this key too: the rest of the arm runs against
                     // the new claim, as Chrome inserts an unconsumed key into
                     // the element focused during its keydown.
                     self.drain_focus_requests(false);
-                    if consumed {
+                    // Space activates on its release, on the element that
+                    // got the press: a Space whose handler moved the focus
+                    // to another button clicks nothing (Chrome). Enter, which
+                    // activates on the press, goes to the new focus.
+                    let space_left_its_element = key_data.is_space()
+                        && self.focus_target != claim
+                        && matches!(self.focus_target, FocusTarget::Node(_));
+                    if consumed || space_left_its_element {
                         self.resolve_and_repaint(vp_w, vp_h);
                         actions.push(AppAction::RequestRedraw);
                         return actions;

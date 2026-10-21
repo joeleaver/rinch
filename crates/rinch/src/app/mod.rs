@@ -4882,6 +4882,15 @@ impl RinchApp {
         let value = rinch_dom::form_control::control_value(&d.tree.nodes, node_id)
             .map(|v| v.into_owned())
             .unwrap_or_default();
+        // The selection the control shows when it gains the keyboard is the
+        // one `NodeHandle::selection_range()` reads for it now (issue #1678):
+        // a range set on it before focus, the one it had when it last lost
+        // the keyboard, the end after a `value` write, else the start — as a
+        // browser's `focus()` keeps the control's own selection.
+        let kept_selection = rinch_core::dom::DomDocument::text_selection_range(
+            &*d,
+            rinch_core::dom::NodeId(node_id),
+        );
         drop(d);
 
         // Take input focus through the arbiter (tears down a prior surface / CE /
@@ -4911,13 +4920,15 @@ impl RinchApp {
             self.focused_input_baseline = value.clone();
         }
 
-        // Create EditableState with cursor at end — unless a
-        // `set_selection_range()`/`select()` call reached this node before it
-        // was focused (issue #552), stashed in `pending_text_selection`; that
-        // takes priority, as a browser's own pre-armed `setSelectionRange()`
-        // does the first time the control is focused.
+        // Create EditableState with the control's own selection (above) —
+        // a `set_selection_range()`/`select()` that reached it before it was
+        // focused (issue #552) included, as a browser's own pre-armed
+        // `setSelectionRange()` shows the first time the control is focused.
+        // A control with no readable selection (`email`, `number`) gets the
+        // caret at the end.
+        self.pending_text_selection.remove(&node_id);
         let mut state = EditableState::new(StringDocument::with_text(&value));
-        state.selection = match self.pending_text_selection.remove(&node_id) {
+        state.selection = match kept_selection {
             Some((start, end, direction)) => {
                 let start_byte = utf16_units_to_byte_offset(&value, start);
                 let end_byte = utf16_units_to_byte_offset(&value, end);

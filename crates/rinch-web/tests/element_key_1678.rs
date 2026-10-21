@@ -539,3 +539,169 @@ fn a_key_code_229_key_is_not_offered() {
     assert!(f.take_log().is_empty(), "no handler ran");
     f.teardown();
 }
+
+/// Every offset whose rect's centre lies inside `id`'s box: the ones
+/// `caretPositionFromPoint` does not answer as that offset. Answers
+/// `(checked, mismatches)`.
+fn oracle_in_box(
+    h: &NodeHandle,
+    id: &str,
+    offs: impl Iterator<Item = usize>,
+) -> (usize, Vec<String>) {
+    let el: web_sys::HtmlElement = document()
+        .get_element_by_id(id)
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    let r = el.get_bounding_client_rect();
+    // The padding box (no scrollbar), scaled as the control is painted.
+    let (sx, sy) = (
+        r.width() / el.offset_width() as f64,
+        r.height() / el.offset_height() as f64,
+    );
+    let left = r.left() + el.client_left() as f64 * sx;
+    let top = r.top() + el.client_top() as f64 * sy;
+    let right = left + el.client_width() as f64 * sx;
+    let bottom = top + el.client_height() as f64 * sy;
+    let mut n = 0;
+    let mut bad = Vec::new();
+    for o in offs {
+        let Some(c) = h.caret_rect_at(o) else {
+            bad.push(format!("{o}: None"));
+            continue;
+        };
+        let (x, y) = (c.x as f64, (c.y + c.height / 2.0) as f64);
+        let win = web_sys::window().unwrap();
+        let (vw, vh) = (
+            win.inner_width().unwrap().as_f64().unwrap(),
+            win.inner_height().unwrap().as_f64().unwrap(),
+        );
+        // Inside the box and the viewport (`caretPositionFromPoint` answers
+        // nothing outside the viewport).
+        if x < left.max(0.0) + 3.0
+            || x > right.min(vw) - 3.0
+            || y < top.max(0.0) + 3.0
+            || y > bottom.min(vh) - 3.0
+        {
+            continue;
+        }
+        n += 1;
+        let got = caret_from_point(x as f32, y as f32);
+        if got != format!("{id}:{o}") {
+            bad.push(format!("{o} -> {got}"));
+        }
+    }
+    (n, bad)
+}
+
+/// Review 2 of #1686, G2/G3/G4: right-to-left text (Latin and Hebrew), a
+/// `wrap="off"` and a `white-space: pre` textarea scrolled both ways, and a
+/// transform or zoom on `<body>` / `<html>` — each against the browser's own
+/// caret-from-point.
+#[wasm_bindgen_test]
+fn caret_rect_agrees_for_rtl_unwrapped_and_a_scaled_page() {
+    let long: String = (0..40).map(|i| format!("word{i} ")).collect();
+    let heb: String = (0..30).map(|_| "שלום עולם ").collect();
+    let lines: String = (0..12)
+        .map(|i| format!("line {i} with a long tail that does not wrap here\n"))
+        .collect();
+    let (n, nh, nl) = (
+        long.encode_utf16().count(),
+        heb.encode_utf16().count(),
+        lines.encode_utf16().count(),
+    );
+    let (l, h, ls) = (long.clone(), heb.clone(), lines.clone());
+    let (root, host, hs) = mount_with(move |__scope| {
+        let (a, b, c, d, e) = (l.clone(), l.clone(), h.clone(), ls.clone(), ls.clone());
+        let r = rsx! {
+            div {
+                input { id: "s1", style: "width: 120px; height: 30px; font: 16px sans-serif; display: inline-block; vertical-align: top", value: "abcdef" }
+                textarea { id: "r1", dir: "rtl", style: "width: 200px; height: 300px; font: 16px/20px sans-serif; padding: 4px; border: 1px solid; overflow-y: hidden; display: inline-block; vertical-align: top", {a.clone()} }
+                textarea { id: "r2", dir: "rtl", style: "width: 200px; height: 120px; font: 16px/20px sans-serif; padding: 4px; border: 1px solid; overflow-y: scroll; display: inline-block; vertical-align: top", {b.clone()} }
+                textarea { id: "r4", dir: "rtl", style: "width: 200px; height: 300px; font: 16px/20px sans-serif; padding: 4px; border: 1px solid; overflow-y: hidden; display: inline-block; vertical-align: top", {c.clone()} }
+                textarea { id: "w1", wrap: "off", style: "width: 200px; height: 80px; font: 16px/20px sans-serif; padding: 4px; border: 1px solid; display: inline-block; vertical-align: top", {d.clone()} }
+                textarea { id: "w2", style: "width: 200px; height: 80px; font: 16px/20px sans-serif; padding: 4px; border: 1px solid; white-space: pre; display: inline-block; vertical-align: top", {e.clone()} }
+            }
+        };
+        let k = r.children();
+        // r1, r2, r4, w1, w2, s1, by id (s1 is first in the tree, so it stays
+        // in the viewport under the page's scale).
+        let pick = |id: &str| {
+            k.iter()
+                .find(|n| n.get_attribute("id").as_deref() == Some(id))
+                .cloned()
+                .unwrap_or_else(|| panic!("no #{id}"))
+        };
+        let hs = ["r1", "r2", "r4", "w1", "w2", "s1"].map(pick).to_vec();
+        (r, hs)
+    });
+    let by = |id: &str| -> web_sys::HtmlElement {
+        document()
+            .get_element_by_id(id)
+            .unwrap()
+            .dyn_into()
+            .unwrap()
+    };
+    by("r2").set_scroll_top(100_000);
+    for id in ["w1", "w2"] {
+        by(id).set_scroll_left(150);
+        by(id).set_scroll_top(60);
+        assert!(
+            by(id).scroll_left() > 0,
+            "positive control: {id} scrolls across"
+        );
+    }
+    let mut report = Vec::new();
+    // In a right-to-left textarea of left-to-right text, offset 0 (the run's
+    // start) and the first line's end (its trailing space, which the bidi
+    // algorithm puts at the line's left) are one visual point, and
+    // caret-from-point answers the latter there: offset 0 is not checked.
+    let mut run = |h: &NodeHandle, id: &str, len: usize, min: usize| {
+        let first = usize::from(id == "r1");
+        let (checked, bad) = oracle_in_box(h, id, first..=len);
+        if checked < min || !bad.is_empty() {
+            let w = web_sys::window().unwrap();
+            let b = document()
+                .get_element_by_id(id)
+                .unwrap()
+                .get_bounding_client_rect();
+            report.push(format!(
+                "{id}: checked {checked}, wrong {:?} (viewport {:?}x{:?}, box {}..{} x {}..{})",
+                &bad[..bad.len().min(6)],
+                w.inner_width().unwrap().as_f64(),
+                w.inner_height().unwrap().as_f64(),
+                b.left(),
+                b.right(),
+                b.top(),
+                b.bottom()
+            ));
+        }
+    };
+    run(&hs[0], "r1", n, 100);
+    run(&hs[1], "r2", n, 40);
+    run(&hs[2], "r4", nh, 100);
+    run(&hs[3], "w1", nl, 10);
+    run(&hs[4], "w2", nl, 10);
+
+    let body: web_sys::HtmlElement = document().body().unwrap();
+    let html: web_sys::HtmlElement = document().document_element().unwrap().dyn_into().unwrap();
+    body.style()
+        .set_property("transform", "scale(1.5)")
+        .unwrap();
+    body.style()
+        .set_property("transform-origin", "0 0")
+        .unwrap();
+    run(&hs[5], "s1", 6, 4);
+    run(&hs[0], "r1", n, 50);
+    body.style().remove_property("transform").unwrap();
+    body.style().remove_property("transform-origin").unwrap();
+    body.style().set_property("zoom", "1.5").unwrap();
+    run(&hs[5], "s1", 6, 4);
+    body.style().remove_property("zoom").unwrap();
+    html.style().set_property("zoom", "1.25").unwrap();
+    run(&hs[5], "s1", 6, 4);
+    html.style().remove_property("zoom").unwrap();
+    assert!(report.is_empty(), "{report:#?}");
+    root.unmount();
+    host.remove();
+}

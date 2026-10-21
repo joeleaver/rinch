@@ -758,6 +758,8 @@ impl DomDocument for RinchDocument {
             let after =
                 crate::form_control::control_value(&self.tree.nodes, node.0).unwrap_or_default();
             if after != before {
+                // It overrides a selection set before it, posted or not.
+                rinch_core::cancel_pending_text_selection_request(self.doc_key, node.0);
                 let len = after.encode_utf16().count();
                 self.tree.text_selections.insert(
                     node.0,

@@ -2140,7 +2140,9 @@ when a request is stashed, set to the end by a `set_attribute("value")`
 that changes an unfocused control's value (a browser's value setter; a
 parsed `value` does not), dropped in `remove_subtree` — else `(0, 0,
 Forward)`, Chrome 155's answer for a parsed or default value; a `None`
-direction reads `Forward`; `None` for a non-text control and, as Chrome, for
+direction reads `Forward` (Chrome on Linux/Windows; macOS unmeasured); a
+programmatic or Tab focus shows exactly this selection (`try_focus_input`);
+a posted request is cancelled by such a value write; `None` for a non-text control and, as Chrome, for
 `email`/`number`/date types). The caret rect (`DomDocument::text_caret_rect`,
 `None` unless rendered) is width 0 in logical window px on desktop
 (`form_control::painted_caret_rect`, built as `paint_input_value` builds the

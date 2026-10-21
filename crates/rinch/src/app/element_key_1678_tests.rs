@@ -444,8 +444,8 @@ fn an_unfocused_controls_selection_is_chromes() {
         Some((5, 5, fwd)),
         "after a value write"
     );
+    // A range set and not yet applied: the write still wins (review 2, G1).
     h[1].set_selection_range(1, 2, fwd);
-    app.handle_event(PlatformEvent::AboutToWait, VP, 1.0);
     h[1].set_attribute("value", "hello world");
     assert_eq!(
         h[1].selection_range(),
@@ -787,4 +787,136 @@ fn a_password_fields_caret_is_measured_over_its_bullets() {
         pw6 > 1.0 && pw6 < plain6 * 0.8,
         "bullets are narrower than W: {pw6} vs {plain6}"
     );
+}
+
+/// Review 2 of #1686, G1/G6/N1: the selection a control shows when it gains
+/// the keyboard is the one `selection_range()` read for it — after a range
+/// set and then overridden by a `value` write (posted or stashed), typing
+/// lands at the end, as in Chrome; an untouched textarea's caret is at its
+/// start; an equal `value` write keeps the selection.
+#[test]
+fn focus_shows_the_selection_selection_range_reads() {
+    let out: Rc<RefCell<Vec<NodeHandle>>> = Rc::new(RefCell::new(Vec::new()));
+    let o = out.clone();
+    let mut app = RinchApp::new(move |__scope: &mut RenderScope| {
+        let root = __scope.create_element("div");
+        for i in 0..4 {
+            let tag = if i == 2 { "textarea" } else { "input" };
+            let el = __scope.create_element(tag);
+            el.set_attribute("style", "width: 200px; height: 30px; display: block");
+            let id = __scope.register_input_handler(|_v: String| {});
+            el.set_attribute("data-oninput", &id.0.to_string());
+            if i == 2 {
+                el.append_child(&__scope.create_text("hello"));
+            } else {
+                el.set_attribute("value", "hello");
+            }
+            root.append_child(&el);
+            o.borrow_mut().push(el);
+        }
+        root
+    });
+    app.mount_component(VP.0 as f32, VP.1 as f32);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    let h = out.borrow().clone();
+    let fwd = SelectionDirection::Forward;
+    let mut f = Fixture {
+        app,
+        outer: h[0].clone(),
+        textarea: h[0].clone(),
+        input: h[0].clone(),
+        tile: h[0].clone(),
+        log: Rc::new(RefCell::new(Vec::new())),
+    };
+    let focus_and_type = |f: &mut Fixture, n: &NodeHandle| {
+        n.focus();
+        f.app.handle_event(PlatformEvent::AboutToWait, VP, 1.0);
+        f.type_str("Z");
+        f.value(n)
+    };
+
+    // Posted, then overridden.
+    h[0].set_selection_range(1, 2, fwd);
+    h[0].set_attribute("value", "hello world");
+    assert_eq!(h[0].selection_range(), Some((11, 11, fwd)));
+    assert_eq!(focus_and_type(&mut f, &h[0]), "hello worldZ");
+
+    // Stashed, then overridden.
+    h[1].set_selection_range(1, 2, fwd);
+    f.app.handle_event(PlatformEvent::AboutToWait, VP, 1.0);
+    h[1].set_attribute("value", "hello world");
+    assert_eq!(h[1].selection_range(), Some((11, 11, fwd)));
+    assert_eq!(focus_and_type(&mut f, &h[1]), "hello worldZ");
+
+    // Untouched textarea: the caret starts where the read says.
+    assert_eq!(h[2].selection_range(), Some((0, 0, fwd)));
+    assert_eq!(focus_and_type(&mut f, &h[2]), "Zhello");
+
+    // An equal write keeps the selection (Chrome's value setter does too).
+    h[3].set_selection_range(1, 2, fwd);
+    f.app.handle_event(PlatformEvent::AboutToWait, VP, 1.0);
+    h[3].set_attribute("value", "hello");
+    assert_eq!(h[3].selection_range(), Some((1, 2, fwd)));
+    assert_eq!(focus_and_type(&mut f, &h[3]), "hZllo");
+}
+
+/// Review 2 of #1686, G5: a button's `onkeydown` that moves the focus to
+/// another button and does not consume the key: Space clicks nothing (it
+/// activates on its release, on the element that got the press), Enter
+/// clicks the new focus — Chrome's answers, measured with trusted keys.
+#[test]
+fn space_whose_handler_moved_focus_clicks_nothing() {
+    let log: Log = Rc::new(RefCell::new(Vec::new()));
+    let out: Rc<RefCell<Vec<NodeHandle>>> = Rc::new(RefCell::new(Vec::new()));
+    let (l, o) = (log.clone(), out.clone());
+    let mut app = RinchApp::new(move |__scope: &mut RenderScope| {
+        let other: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+        let o2 = other.clone();
+        let (la, lb) = (l.clone(), l.clone());
+        let root = rsx! {
+            div {
+                button {
+                    style: "width: 60px; height: 20px",
+                    onclick: move || la.borrow_mut().push("A".into()),
+                    onkeydown: move |_k| {
+                        if let Some(b) = o2.borrow().as_ref() {
+                            b.focus();
+                        }
+                        false
+                    },
+                }
+                button {
+                    style: "width: 60px; height: 20px",
+                    onclick: move || lb.borrow_mut().push("B".into()),
+                }
+            }
+        };
+        let k = root.children();
+        *other.borrow_mut() = Some(k[1].clone());
+        *o.borrow_mut() = vec![k[0].clone(), k[1].clone()];
+        root
+    });
+    app.mount_component(VP.0 as f32, VP.1 as f32);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    let h = out.borrow().clone();
+    let mut f = Fixture {
+        app,
+        outer: h[0].clone(),
+        textarea: h[0].clone(),
+        input: h[0].clone(),
+        tile: h[1].clone(),
+        log: log.clone(),
+    };
+    for (key, text, want) in [
+        (KeyCode::Space, Some(" "), Vec::<String>::new()),
+        (KeyCode::Enter, None, vec!["B".to_string()]),
+    ] {
+        h[0].focus();
+        f.app.handle_event(PlatformEvent::AboutToWait, VP, 1.0);
+        assert_eq!(f.app.focus_target, FocusTarget::Node(h[0].node_id().0));
+        f.take_log();
+        f.press(key, text, false);
+        assert_eq!(f.take_log(), want, "{key:?}");
+        assert_eq!(f.app.focus_target, FocusTarget::Node(h[1].node_id().0));
+    }
 }

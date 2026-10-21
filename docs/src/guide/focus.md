@@ -229,7 +229,12 @@ parsed or default value nobody has touched — Chrome 155's answers. `None` for
 anything but an `<input>` or `<textarea>`, and — as Chrome answers `null`
 there — for an `<input>` of type `email`, `number`, the date/time family or
 any other type with no text selection. A range set with
-`SelectionDirection::None` reads back `Forward`, as in Chrome.
+`SelectionDirection::None` reads back `Forward`, as Chrome on Linux and
+Windows reads it (macOS Chrome reads `"none"`; not measured here). On desktop
+the selection a `focus()` or Tab shows is the one `selection_range()` read
+just before — a browser's `focus()` keeps the control's own selection (Chrome
+selects an `<input>`'s whole text on Tab, which desktop does not). A `value`
+write that leaves the value as it was keeps the selection.
 
 `NodeHandle::caret_rect()` and `caret_rect_at(offset)` answer where a caret is
 drawn — at the selection's head, or at a UTF-16 offset — as an `ElementBounds`

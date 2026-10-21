@@ -587,7 +587,9 @@ pub trait DomDocument {
     ///   value puts it at the end, as a browser's value setter does; else a
     ///   caret at the start, `(0, 0, Forward)`, Chrome 155's answer for a
     ///   parsed or default value. Offsets are clamped to the control's current
-    ///   value, and an unspecified direction reads `Forward`, as in Chrome.
+    ///   value, and an unspecified direction reads `Forward`, as Chrome on Linux
+    ///   and Windows reads it (Chrome on macOS reads `"none"`; not measured).
+    ///   The selection a programmatic or Tab focus shows is this one.
     /// - **Web** answers the element's own properties.
     ///
     /// `None` for a node that is not an `<input>` or `<textarea>` (a

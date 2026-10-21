@@ -2474,16 +2474,18 @@ impl DomDocument for WebDocument {
 
     /// Where a caret at a UTF-16 offset of the control's value sits, in
     /// client px (issue #1678). A browser exposes no caret geometry for a
-    /// form control, so the value up to the offset is laid out in a hidden
-    /// `<div>` with the control's computed text styles and its padding, at the
-    /// width the control lays its text out in (`clientWidth` less the
-    /// horizontal padding: a scrollbar's gutter is not text room), and the
-    /// offset is where a marker after that text lands. That position is
-    /// moved by the control's own scroll, scaled by any transform on it or an
-    /// ancestor (the ratio of its painted box to its layout box), and placed
-    /// at its painted box. A single-line field centres its line in its
-    /// content box, as Chrome draws it. `None` for a control that is not
-    /// rendered.
+    /// form control, so the value is laid out in a hidden `<div>` appended to
+    /// `<body>` for the call (an app's `MutationObserver` on the body sees it
+    /// come and go) with the control's computed text styles, direction,
+    /// `white-space` and padding, at the width the control lays its text out
+    /// in (`clientWidth` less the horizontal padding: a scrollbar's gutter is
+    /// not text room), and the caret is a collapsed `Range` at the offset in
+    /// it — placed by the browser's own line breaking and bidi rules. That
+    /// position is moved by the control's own scroll, unscaled by the
+    /// mirror's own painted/layout ratio (a transform or zoom on `<body>` or
+    /// `<html>`), scaled by the control's, and placed at its painted box. A
+    /// single-line field centres its line in its content box, as Chrome draws
+    /// it. `None` for a control that is not rendered.
     fn text_caret_rect(
         &mut self,
         node_id: NodeId,
@@ -2514,6 +2516,7 @@ impl DomDocument for WebDocument {
             "tab-size",
             "overflow-wrap",
             "word-break",
+            "unicode-bidi",
         ];
         if !self.is_rendered(node_id) {
             return None;
@@ -2540,15 +2543,20 @@ impl DomDocument for WebDocument {
             },
         );
         let head = head.min(units.len());
-        let mut before = String::from_utf16_lossy(&units[..head]);
-        let mut after = String::from_utf16_lossy(&units[head..]);
-        if password {
-            before = "\u{2022}".repeat(before.chars().count());
-            after = "\u{2022}".repeat(after.chars().count());
-        }
-        if after.is_empty() {
-            after.push('.');
-        }
+        // The mirror's text and the caret's offset into it. A password field
+        // draws a bullet per character, so the offset becomes a char count.
+        // A zero-width space after the value gives a caret at its very end
+        // (after a trailing newline, in an empty field) a line box to sit in;
+        // it is neutral to bidi and takes no width.
+        let (text, at) = if password {
+            let chars = String::from_utf16_lossy(&units[..head]).chars().count();
+            (
+                format!("{}\u{200b}", "\u{2022}".repeat(value.chars().count())),
+                chars,
+            )
+        } else {
+            (format!("{value}\u{200b}"), head)
+        };
 
         let win = web_sys::window()?;
         let doc = win.document()?;
@@ -2574,6 +2582,14 @@ impl DomDocument for WebDocument {
                 let _ = ms.set_property(prop, &v);
             }
         }
+        // A textarea wraps as its own `white-space` says (`wrap="off"` is
+        // `pre`); a single-line field never wraps.
+        let white_space = if single_line {
+            "pre".to_string()
+        } else {
+            cs.get_property_value("white-space")
+                .unwrap_or_else(|_| "pre-wrap".into())
+        };
         let width = format!("{text_width}px");
         for (prop, v) in [
             ("position", "absolute"),
@@ -2587,28 +2603,41 @@ impl DomDocument for WebDocument {
             ("height", "auto"),
             ("transform", "none"),
             ("width", width.as_str()),
-            ("white-space", if single_line { "pre" } else { "pre-wrap" }),
+            ("white-space", white_space.as_str()),
         ] {
             let _ = ms.set_property(prop, v);
         }
-        mirror.set_text_content(Some(&before));
-        let marker = doc.create_element("span").ok()?;
-        marker.set_text_content(Some(&after));
-        mirror.append_child(&marker).ok()?;
+        let node = doc.create_text_node(&text);
+        mirror.append_child(&node).ok()?;
         body.append_child(&mirror).ok()?;
         let m = mirror.get_bounding_client_rect();
-        // The first box of the marker: the rest of the value may wrap.
-        let first = marker.get_client_rects().get(0);
+        // A collapsed range at the offset: the browser places it by the same
+        // line-breaking and bidi rules it lays the control's text out with,
+        // where a marker's edge is the wrong end of a right-to-left run.
+        let caret = doc.create_range().ok().and_then(|range| {
+            range.set_start(&node, at as u32).ok()?;
+            range.collapse_with_to_start(true);
+            let rects = range.get_client_rects()?;
+            rects
+                .get(0)
+                .or_else(|| Some(range.get_bounding_client_rect()))
+        });
+        // The mirror's own painted/layout ratio: a transform or zoom on
+        // `<body>` or `<html>` scales the mirror too, and the control's ratio
+        // below applies it again.
+        let (mw, mh) = (mirror.offset_width() as f64, mirror.offset_height() as f64);
+        let mx = if mw > 0.0 { m.width() / mw } else { 1.0 };
+        let my = if mh > 0.0 { m.height() / mh } else { 1.0 };
         let _ = body.remove_child(&mirror);
-        let first = first?;
+        let caret = caret?;
         // In the control's own (untransformed) padding-box coordinates.
-        let local_x = first.left() - m.left() - el.scroll_left() as f64;
-        let height = first.height();
+        let local_x = (caret.left() - m.left()) / mx - el.scroll_left() as f64;
+        let height = caret.height() / my;
         let local_y = if single_line {
             let content = el.client_height() as f64 - pad_t - pad_b;
             pad_t + (content - height) / 2.0
         } else {
-            first.top() - m.top() - el.scroll_top() as f64
+            (caret.top() - m.top()) / my - el.scroll_top() as f64
         };
         // Onto the painted box: a transform on the control or an ancestor
         // scales its layout box into the rect `getBoundingClientRect` reports.
