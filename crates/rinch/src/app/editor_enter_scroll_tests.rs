@@ -209,7 +209,10 @@ fn enter_mid_pane_keeps_the_scroll(flex_pane: bool) {
     let mut r = rig(200, flex_pane);
     wheel_to(&mut r.app, r.pane, 2400.0);
     let before = scroll_of(&r.app, r.pane);
-    assert!(before >= 2400.0, "positive control: the wheel scrolled ({before})");
+    assert!(
+        before >= 2400.0,
+        "positive control: the wheel scrolled ({before})"
+    );
     click(&mut r.app, 300.0, 200.0);
     assert!(matches!(r.app.focus_target, FocusTarget::Editor(_)));
     press(&mut r.app, KeyCode::End);
@@ -247,7 +250,10 @@ fn enter_at_the_bottom_scrolls_down_to_the_new_line() {
     let mut r = rig(60, false);
     wheel_to(&mut r.app, r.pane, f64::MAX);
     let bottom = scroll_of(&r.app, r.pane);
-    assert!(bottom > 1000.0, "positive control: the wheel scrolled ({bottom})");
+    assert!(
+        bottom > 1000.0,
+        "positive control: the wheel scrolled ({bottom})"
+    );
     let end = r.handle.doc().content_size() - 1;
     r.handle.set_selection(Selection::cursor(Pos(end)));
     r.handle.focus();
@@ -293,5 +299,8 @@ fn caret_rect_of_a_new_empty_paragraph_waits_for_its_layout() {
             "caret_rect answered the editor's top ({y}) for an unlaid paragraph: {seen:?}"
         );
     }
-    assert!(caret_y(&r) > 0.0, "after the layout it answers the new line");
+    assert!(
+        caret_y(&r) > 0.0,
+        "after the layout it answers the new line"
+    );
 }
