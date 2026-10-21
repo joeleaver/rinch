@@ -2455,14 +2455,13 @@ impl DomDocument for WebDocument {
                 i.selection_end().ok().flatten()?,
                 i.selection_direction().ok().flatten(),
             )
-        } else if let Some(t) = n.dyn_ref::<web_sys::HtmlTextAreaElement>() {
+        } else {
+            let t = n.dyn_ref::<web_sys::HtmlTextAreaElement>()?;
             (
                 t.selection_start().ok().flatten()?,
                 t.selection_end().ok().flatten()?,
                 t.selection_direction().ok().flatten(),
             )
-        } else {
-            return None;
         };
         let direction = match direction.as_deref() {
             Some("backward") => rinch_core::dom::SelectionDirection::Backward,
