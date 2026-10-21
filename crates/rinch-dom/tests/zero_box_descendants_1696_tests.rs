@@ -315,12 +315,20 @@ fn a_zero_by_zero_render_surface_without_a_frame_paints_its_child() {
 #[test]
 fn a_zero_by_zero_clipping_box_does_not_walk_its_subtree() {
     use rinch_dom::perf::Counter;
-    for style in ["overflow: hidden", "overflow: clip", "overflow: hidden; z-index: 2; position: relative"] {
+    for style in [
+        "overflow: hidden",
+        "overflow: clip",
+        "overflow: hidden; z-index: 2; position: relative",
+    ] {
         let mut doc = RinchDocument::new();
         let body = doc.body();
         let bx = el(&mut doc, body, &format!("width: 0; height: 0; {style}"));
         for _ in 0..500 {
-            el(&mut doc, bx, "height: 4px; background-color: rgb(0, 128, 0)");
+            el(
+                &mut doc,
+                bx,
+                "height: 4px; background-color: rgb(0, 128, 0)",
+            );
         }
         doc.resolve_layout(VW, VH);
         doc.tree.perf.reset();
@@ -345,5 +353,9 @@ fn a_zero_by_zero_clipping_stacking_context_still_paints_a_fixed_descendant() {
     doc.resolve_layout(VW + 1.0, VH);
     let p = paint(&mut doc, 1.0);
     assert_eq!(count_rgb(&p, (100, 120, 150, 160), GREEN), 200);
-    assert_eq!(count_any_green(&p, WINDOW), 200, "the contained absolute is clipped");
+    assert_eq!(
+        count_any_green(&p, WINDOW),
+        200,
+        "the contained absolute is clipped"
+    );
 }

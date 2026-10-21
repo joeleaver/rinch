@@ -23,7 +23,11 @@ fn doc_from(html: &str) -> RinchDocument {
 fn paint(doc: &mut RinchDocument) -> (TinySkiaPainter, u64) {
     let mut painter = TinySkiaPainter::new(VW as u32, VH as u32);
     let mut layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
-    let before = doc.tree.perf.total().get(rinch_dom::perf::Counter::PaintNodesVisited);
+    let before = doc
+        .tree
+        .perf
+        .total()
+        .get(rinch_dom::perf::Counter::PaintNodesVisited);
     rinch_dom::paint::paint_document(
         &doc.tree,
         &mut painter,
@@ -32,7 +36,11 @@ fn paint(doc: &mut RinchDocument) -> (TinySkiaPainter, u64) {
         &mut doc.font_cx,
         &mut layout_cx,
     );
-    let after = doc.tree.perf.total().get(rinch_dom::perf::Counter::PaintNodesVisited);
+    let after = doc
+        .tree
+        .perf
+        .total()
+        .get(rinch_dom::perf::Counter::PaintNodesVisited);
     (painter, after - before)
 }
 
@@ -154,7 +162,11 @@ fn p08_zero_inline_block_in_paragraph() {
          <div style=\"width: 20px; height: 10px; background-color: rgb(0,128,0)\"></div></span>b</p>"
     ));
     let (_, g, _) = report("p08 0x0 inline-block (abs + in-flow child)", &mut d);
-    assert_eq!(g, 18 * 18 + 20 * 10 - 18 * 10, "Chrome paints both children (they overlap 18x10)");
+    assert_eq!(
+        g,
+        18 * 18 + 20 * 10 - 18 * 10,
+        "Chrome paints both children (they overlap 18x10)"
+    );
 }
 
 // --- clips ---
@@ -185,7 +197,10 @@ fn p11_zero_box_with_filter() {
         "<div style=\"margin: 20px; width: 0; height: 0; filter: brightness(0.5)\">\
          <div style=\"width: 30px; height: 30px; background-color: rgb(0,128,0)\"></div></div>",
     );
-    let (_, g, _) = report("p11 0x0 filter brightness(0.5) (Chrome: child darkened, green=0)", &mut d);
+    let (_, g, _) = report(
+        "p11 0x0 filter brightness(0.5) (Chrome: child darkened, green=0)",
+        &mut d,
+    );
     let _ = g;
 }
 
@@ -363,7 +378,10 @@ fn p18c_perf_height_zero_overflow_hidden_rows_1d_preexisting() {
     let mut d = doc_from(&format!(
         "<div style=\"width: 100px; height: 0; overflow: hidden\">{inner}</div>"
     ));
-    let (i, _, v) = report("p18c 1D height:0 overflow:hidden > 500 rows (main's cost)", &mut d);
+    let (i, _, v) = report(
+        "p18c 1D height:0 overflow:hidden > 500 rows (main's cost)",
+        &mut d,
+    );
     assert_eq!(i, 0);
     let _ = v;
 }

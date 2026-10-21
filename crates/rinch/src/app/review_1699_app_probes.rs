@@ -73,7 +73,11 @@ fn h1_zero_overflow_hidden_child_paint_vs_hit() {
     let c = id(&app, "[data-c]");
     let h = hit(&app, 60.0, 60.0);
     eprintln!("PROBE h1 hit at child center = {h:?} (child={c})");
-    assert_ne!(h, Some(c), "paint clips the child away, so it must not be hit");
+    assert_ne!(
+        h,
+        Some(c),
+        "paint clips the child away, so it must not be hit"
+    );
 }
 
 /// An inline-block marker in a `0x0` stacking context: hit vs paint.
@@ -127,11 +131,11 @@ fn d1_in_flow_child_colour_change_partial() {
     let c = id(&app, "[data-c]");
     let (px, _) = frame(&mut app);
     assert_eq!(count(&px, (60, 90, 40, 60), G), 600, "drawn before");
-    app.doc
-        .as_ref()
-        .unwrap()
-        .borrow_mut()
-        .set_style(rinch_core::dom::NodeId(c), "background-color", "rgb(255, 0, 0)");
+    app.doc.as_ref().unwrap().borrow_mut().set_style(
+        rinch_core::dom::NodeId(c),
+        "background-color",
+        "rgb(255, 0, 0)",
+    );
     let (px, st) = frame(&mut app);
     eprintln!(
         "PROBE d1 repaints={:?} red={} green={}",
@@ -154,15 +158,18 @@ fn d2_zero_box_transform_change_moves_child() {
     let b = id(&app, "[data-b]");
     let (px, _) = frame(&mut app);
     assert_eq!(count(&px, (60, 80, 60, 80), G), 400, "drawn before");
-    app.doc
-        .as_ref()
-        .unwrap()
-        .borrow_mut()
-        .set_style(rinch_core::dom::NodeId(b), "transform", "translate(100px, 70px)");
+    app.doc.as_ref().unwrap().borrow_mut().set_style(
+        rinch_core::dom::NodeId(b),
+        "transform",
+        "translate(100px, 70px)",
+    );
     let (px, st) = frame(&mut app);
     let at_new = count(&px, (160, 180, 130, 150), G);
     let at_old = count(&px, (60, 80, 60, 80), G);
-    eprintln!("PROBE d2 repaints={:?} new={at_new} old={at_old}", repaints(&st));
+    eprintln!(
+        "PROBE d2 repaints={:?} new={at_new} old={at_old}",
+        repaints(&st)
+    );
     assert_eq!((at_new, at_old), (400, 0));
 }
 
@@ -176,11 +183,11 @@ fn d3_zero_box_unclips() {
     let b = id(&app, "[data-b]");
     let (px, _) = frame(&mut app);
     assert_eq!(count(&px, (0, 400, 0, 300), G), 0, "clipped before");
-    app.doc
-        .as_ref()
-        .unwrap()
-        .borrow_mut()
-        .set_style(rinch_core::dom::NodeId(b), "overflow", "visible");
+    app.doc.as_ref().unwrap().borrow_mut().set_style(
+        rinch_core::dom::NodeId(b),
+        "overflow",
+        "visible",
+    );
     let (px, st) = frame(&mut app);
     let g = count(&px, (50, 80, 50, 80), G);
     eprintln!("PROBE d3 repaints={:?} green={g}", repaints(&st));
@@ -204,7 +211,10 @@ fn d4_zero_box_opacity_change() {
         .set_style(rinch_core::dom::NodeId(b), "opacity", "0.5");
     let (px, st) = frame(&mut app);
     let g = count(&px, (0, 400, 0, 300), G);
-    eprintln!("PROBE d4 repaints={:?} still-opaque-green={g}", repaints(&st));
+    eprintln!(
+        "PROBE d4 repaints={:?} still-opaque-green={g}",
+        repaints(&st)
+    );
     assert_eq!(g, 0, "faded");
 }
 
@@ -219,14 +229,20 @@ fn d5_zero_ifc_root_text_colour_change() {
     let b = id(&app, "[data-b]");
     let (px, _) = frame(&mut app);
     let g0 = count(&px, (0, 400, 0, 300), G);
-    app.doc
-        .as_ref()
-        .unwrap()
-        .borrow_mut()
-        .set_style(rinch_core::dom::NodeId(b), "color", "rgb(255, 0, 0)");
+    app.doc.as_ref().unwrap().borrow_mut().set_style(
+        rinch_core::dom::NodeId(b),
+        "color",
+        "rgb(255, 0, 0)",
+    );
     let (px, st) = frame(&mut app);
-    let (g1, r1) = (count(&px, (0, 400, 0, 300), G), count(&px, (0, 400, 0, 300), R));
-    eprintln!("PROBE d5 before green={g0}; after repaints={:?} green={g1} red={r1}", repaints(&st));
+    let (g1, r1) = (
+        count(&px, (0, 400, 0, 300), G),
+        count(&px, (0, 400, 0, 300), R),
+    );
+    eprintln!(
+        "PROBE d5 before green={g0}; after repaints={:?} green={g1} red={r1}",
+        repaints(&st)
+    );
     assert!(g0 > 50);
     assert_eq!(g1, 0, "old colour gone");
     assert!(r1 > 50, "new colour drawn");

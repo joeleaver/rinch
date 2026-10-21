@@ -249,6 +249,8 @@ mod review_1494_tests;
 mod review_1514_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod review_1670_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod review_1699_app_probes;
 #[cfg(test)]
 mod right_press_click_1093_tests;
 #[cfg(test)]
@@ -327,8 +329,6 @@ mod viewport_ready_348_tests;
 mod visibility_hidden_overlay_paint_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod zero_box_overlay_1696_tests;
-#[cfg(all(test, feature = "desktop"))]
-mod review_1699_app_probes;
 
 pub(crate) use hit_testing::*;
 pub use text_context_menu::{TextContextMenuPresentation, TextEditAction, TextEditState};
