@@ -1038,20 +1038,6 @@ impl RawIndex<'_> {
     }
 }
 
-/// The map of **visible** child `index` of `list` (void containers skipped, as
-/// [`read_children`] skips them), if there is one.
-pub(crate) fn visible_child<T: ReadTxn>(txn: &T, list: &ArrayRef, index: usize) -> Option<MapRef> {
-    // One sequential pass: `ArrayRef::get` walks the array from its start, so asking it
-    // for each child in turn would cost O(index²).
-    list.iter(txn)
-        .filter_map(|child| match child {
-            Out::YMap(m) => Some(m),
-            _ => None,
-        })
-        .filter(|m| !map_is_void(txn, m))
-        .nth(index)
-}
-
 /// The `text` Text object of a text-block node.
 pub(crate) fn block_text<T: ReadTxn>(txn: &T, node: &MapRef) -> Option<TextRef> {
     match node.get(txn, TEXT) {

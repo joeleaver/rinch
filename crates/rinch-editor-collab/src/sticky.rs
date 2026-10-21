@@ -32,11 +32,12 @@
 //! # let _ = doc;
 //! ```
 //!
-//! The association is [`Assoc::After`] (the index sticks to the character that
+//! [`CollabDoc::sticky_index`]'s association is [`Assoc::After`] (the index sticks to the character that
 //! *starts* at the position), except at the very end of a text, where there is no such
 //! character and it is [`Assoc::Before`] (it sticks to the last one). An empty text has
 //! neither, and yrs then names the `Text` itself (`IndexScope::Nested`), which resolves
 //! to its start.
+//! [`CollabDoc::sticky_index_with`] takes the association ([`StickyAssoc`]).
 //!
 //! ## What a sticky index survives, and what it does not
 //!
@@ -44,7 +45,13 @@
 //!   character.
 //! * Its own character deleted: it resolves to the place where that character was
 //!   (yrs keeps the tombstone), which is the neighbouring position.
-//! * Its **whole block deleted**, or its character **moved to another block**: `None`.
+//! * Its **whole block deleted**, or its character **moved to another block**: `None`
+//!   from [`CollabDoc::resolve_sticky`]. An index made by [`CollabDoc::sticky_index_with`]
+//!   carries, after the yrs bytes, an index on its block's entry in each parent array
+//!   (a deleted block's characters are garbage-collected with it, so nothing else
+//!   says where they were, but its entry stays in a live parent array as a
+//!   tombstone), and [`CollabDoc::locate_sticky`] resolves it to the place the block
+//!   stood, marked displaced.
 //!   The projection has no "move": joining two blocks deletes the second block's
 //!   `Text` and re-inserts its characters into the first, and splitting a block deletes
 //!   the tail from one `Text` and inserts it into a new one (see
@@ -96,7 +103,7 @@
 //! zero blocks (see [`CollabDoc::to_doc`]): positions in it have no sticky index.
 
 use crate::table::{cell_maps, is_table_map};
-use yrs::branch::{Branch, BranchPtr};
+use yrs::branch::{Branch, BranchID, BranchPtr};
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{
@@ -104,12 +111,53 @@ use yrs::{
     Transact,
 };
 
-use rinch_editor_core::{Node, Pos};
+use rinch_editor_core::{Node, Pos, Schema};
 
+use crate::error::Result;
 use crate::projection::{
     CollabDoc, block_text, map_is_void, node_content, node_type, read_block, u16_offset,
-    visible_child,
 };
+
+/// Which character a sticky index holds on to, at the position it was made for.
+///
+/// For a **range** (a comment's span, a highlight), make two indexes: the start with
+/// [`StickyAssoc::After`] and the end with [`StickyAssoc::Before`]. Text typed at
+/// either edge then lands outside the range, and each end resolves on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum StickyAssoc {
+    /// The character that starts at the position (yrs [`Assoc::After`]): text inserted
+    /// at the position lands before the index. At the very end of a text, where there
+    /// is no such character, the last one is held instead ([`Assoc::Before`]). The
+    /// default, and what [`CollabDoc::sticky_index`] uses.
+    #[default]
+    After,
+    /// The character that ends at the position (yrs [`Assoc::Before`]): text inserted
+    /// at the position lands after the index. At the very start of a text yrs names the
+    /// text itself, which resolves to its start.
+    Before,
+}
+
+/// Where a sticky index points now: [`CollabDoc::locate_sticky`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct StickyLocation {
+    /// The model position, always inside a textblock.
+    pub pos: Pos,
+    /// The child indices from the document root to the textblock holding [`Self::pos`]:
+    /// `path[0]` is the top-level block's index.
+    pub path: Vec<usize>,
+    /// The index's own block is gone (deleted, joined into another block, replaced by
+    /// a list toggle, …), so [`Self::pos`] is the nearest place in a surviving
+    /// textblock to where that block stood, not the character the index was made for.
+    /// `false` when the index resolved to its character (or, for a deleted character,
+    /// to where that character was inside its live block).
+    pub displaced: bool,
+}
+
+/// The first two bytes of the trailer [`CollabDoc::sticky_index_with`] appends after
+/// the yrs bytes, then its version.
+const TRAILER_MAGIC: [u8; 2] = *b"RS";
+const TRAILER_VERSION: u8 = 1;
 
 impl CollabDoc {
     /// The sticky index of model position `pos` of `doc`: an address that follows its
@@ -142,15 +190,51 @@ impl CollabDoc {
     /// identity, and a split or join rebuilds both nodes it touches. Inside a list or
     /// a quote the comparison is structural and the same Enter keeps the index.
     ///
+    /// An index that must outlive its block is made by [`Self::sticky_index_with`],
+    /// which also takes the association.
+    ///
     /// `doc` must be the model document this CRDT projects (the editor's current
-    /// document): the projection mirrors the model's tree index for index, which is
-    /// how the textblock is found. `None` when:
+    /// document, or [`Self::to_doc`] of a loaded replica): the projection mirrors the
+    /// model's tree index for index, which is how the textblock is found. `None` when:
     ///
     /// * `pos` is out of range, or not inside a textblock (between blocks, say);
     /// * the textblock has no CRDT behind it: the starter paragraph of an empty CRDT,
     ///   or a `doc` that is not the one this CRDT projects (a node type or the
     ///   block's text differs along the way).
     pub fn sticky_index(&self, doc: &Node, pos: Pos) -> Option<Vec<u8>> {
+        self.make_sticky(doc, pos, StickyAssoc::After, false)
+    }
+
+    /// A sticky index of model position `pos` of `doc` that holds the character
+    /// `assoc` names and **survives the deletion of its block**:
+    /// [`Self::locate_sticky`] then resolves it to the nearest surviving place, marked
+    /// [`StickyLocation::displaced`].
+    ///
+    /// The bytes start with exactly the plain yrs [`StickyIndex`] (v1) that
+    /// [`Self::sticky_index`] documents, with `assoc`'s association, so an app can still
+    /// resolve them with yrs alone ([`StickyIndex::decode_v1`] reads the index and
+    /// ignores what follows). A trailer follows it, because the CRDT forgets which
+    /// block a deleted block's characters were in (yrs garbage-collects them with
+    /// it), while the block's own entry in its parent array stays there as a
+    /// tombstone: the trailer is `b"RS"`, a version byte (`1`), a count byte, then for
+    /// each array on the way from the textblock up to the `content` root, innermost
+    /// first, a big-endian `u16` length and a v1 yrs [`StickyIndex`] on that array,
+    /// [`Assoc::After`], naming the block's (or its container's) entry there. A table's
+    /// rows and cells are not arrays and have no entry; the table itself has one in
+    /// the array that holds it.
+    ///
+    /// `None` exactly when [`Self::sticky_index`] is `None`.
+    pub fn sticky_index_with(&self, doc: &Node, pos: Pos, assoc: StickyAssoc) -> Option<Vec<u8>> {
+        self.make_sticky(doc, pos, assoc, true)
+    }
+
+    fn make_sticky(
+        &self,
+        doc: &Node,
+        pos: Pos,
+        assoc: StickyAssoc,
+        trailer: bool,
+    ) -> Option<Vec<u8>> {
         let rp = doc.resolve(pos).ok()?;
         let block = rp.parent();
         if !block.is_textblock() {
@@ -172,11 +256,19 @@ impl CollabDoc {
         }
         let mut level = Level::List(self.content.clone());
         let mut text: Option<TextRef> = None;
+        // The entries in their parent arrays, outermost first.
+        let mut entries: Vec<StickyIndex> = Vec::new();
         for depth in 0..rp.depth() {
             let index = rp.index(depth);
             let model_node = rp.node(depth + 1);
             let map = match level {
-                Level::List(list) => visible_child(&txn, &list, index)?,
+                Level::List(list) => {
+                    let (map, raw) = visible_child_at(&txn, &list, index)?;
+                    if trailer {
+                        entries.push(list.sticky_index(&txn, raw, Assoc::After)?);
+                    }
+                    map
+                }
                 Level::Table(rows) => {
                     if model_node.type_name() != "table_row" {
                         return None;
@@ -206,13 +298,29 @@ impl CollabDoc {
         }
 
         let at = u16_offset(&crdt_text, rp.parent_offset());
-        // yrs refuses `After` at the end of a text (there is no character there to
-        // stick to), including the only offset of an empty one; `Before` then sticks
-        // to the last character, or names the `Text` itself when there is none.
-        let sticky = text
-            .sticky_index(&txn, at, Assoc::After)
-            .or_else(|| text.sticky_index(&txn, at, Assoc::Before))?;
-        Some(sticky.encode_v1())
+        let sticky = match assoc {
+            // yrs refuses `After` at the end of a text (there is no character there to
+            // stick to), including the only offset of an empty one; `Before` then
+            // sticks to the last character, or names the `Text` itself when there is
+            // none.
+            StickyAssoc::After => text
+                .sticky_index(&txn, at, Assoc::After)
+                .or_else(|| text.sticky_index(&txn, at, Assoc::Before))?,
+            // `Before` at offset 0 names the `Text` itself (its start).
+            StickyAssoc::Before => text.sticky_index(&txn, at, Assoc::Before)?,
+        };
+        let mut bytes = sticky.encode_v1();
+        if trailer {
+            bytes.extend_from_slice(&TRAILER_MAGIC);
+            bytes.push(TRAILER_VERSION);
+            bytes.push(u8::try_from(entries.len()).ok()?);
+            for entry in entries.iter().rev() {
+                let encoded = entry.encode_v1();
+                bytes.extend_from_slice(&u16::try_from(encoded.len()).ok()?.to_be_bytes());
+                bytes.extend_from_slice(&encoded);
+            }
+        }
+        Some(bytes)
     }
 
     /// Where the sticky index `bytes` (from [`Self::sticky_index`], on this replica or
@@ -223,48 +331,255 @@ impl CollabDoc {
     /// (a peer's edit not merged yet) or garbage-collected, when it is not in the text
     /// of a **live** textblock (its block was deleted, or it names something that is
     /// not a textblock's text at all), or when `doc` is not the document this CRDT
-    /// projects.
+    /// projects. [`Self::locate_sticky`] answers a deleted block's index too.
     pub fn resolve_sticky(&self, doc: &Node, bytes: &[u8]) -> Option<Pos> {
         let sticky = StickyIndex::decode_v1(bytes).ok()?;
         let txn = self.doc.transact();
-        let offset = sticky.get_offset(&txn)?;
+        resolve_text_index(&txn, &self.content, doc, &sticky)
+    }
 
-        let mut path: Vec<(usize, String)> = Vec::new();
-        let text = find_text(&txn, &self.content, offset.branch, &mut path)?;
-        let crdt_text = text.get_string(&txn);
-        let chars = char_offset(&crdt_text, offset.index);
-
-        // The same path in the model: a node's content starts one past its open token.
-        let mut node = doc;
-        let mut start = 0usize;
-        for (index, type_name) in &path {
-            if *index >= node.child_count() {
-                return None;
-            }
-            start += (0..*index)
-                .map(|i| node.child(i).node_size())
-                .sum::<usize>();
-            node = node.child(*index);
-            if node.type_name() != type_name {
-                return None;
-            }
-            start += 1;
+    /// Where the sticky index `bytes` (from [`Self::sticky_index_with`] or
+    /// [`Self::sticky_index`], on this replica or any other) points now in `doc`, the
+    /// model document this CRDT projects, with the path of the textblock it is in.
+    ///
+    /// While its block lives this is [`Self::resolve_sticky`]'s answer, with
+    /// [`StickyLocation::displaced`] `false`. When its block is gone — deleted,
+    /// joined into the block before it (the projection has no move), or replaced (a
+    /// list toggled on it) — an index made by [`Self::sticky_index_with`] resolves to
+    /// the place that block stood, at the innermost level whose array still holds its
+    /// entry, and `displaced` is `true`: the end of the last textblock before that
+    /// place, or the start of the first one after it when there is none before. When
+    /// the entry still lives (the block's table row went, the table did not), the
+    /// start of the first textblock in that block is taken instead. An index from
+    /// [`Self::sticky_index`] carries no trailer, so its deleted block gives `None`.
+    ///
+    /// `None` also when the bytes do not decode, when an item they name is not merged
+    /// here yet (a peer's edit), or when `doc` is not the document this CRDT projects.
+    pub fn locate_sticky(&self, doc: &Node, bytes: &[u8]) -> Option<StickyLocation> {
+        let sticky = StickyIndex::decode_v1(bytes).ok()?;
+        let entries = decode_trailer(&bytes[sticky.encode_v1().len().min(bytes.len())..]);
+        let txn = self.doc.transact();
+        if let Some(pos) = resolve_text_index(&txn, &self.content, doc, &sticky) {
+            return Some(location(doc, pos, false));
         }
-        if !node.is_textblock() || read_block(node).ok()?.text != crdt_text {
+        // An item this replica has not merged yet is not a deleted one: wait for it.
+        let known = |s: &StickyIndex| {
+            s.id()
+                .is_none_or(|id| txn.state_vector().get(&id.client) > id.clock)
+        };
+        if !known(&sticky) {
             return None;
         }
-        Some(Pos(start + chars))
+        for entry in &entries {
+            if !known(entry) {
+                return None;
+            }
+            let Some(offset) = entry.get_offset(&txn) else {
+                // Collected with a deleted container: the next level out.
+                continue;
+            };
+            let mut path = Vec::new();
+            let Some(Hit::Array(list)) = find_branch(&txn, &self.content, offset.branch, &mut path)
+            else {
+                continue;
+            };
+            // The raw index counts void containers too, which the model does not have.
+            let mut visible = 0usize;
+            let mut alive = false;
+            for (i, child) in list.iter(&txn).enumerate() {
+                let Out::YMap(map) = child else { continue };
+                if i as u32 >= offset.index {
+                    alive = entry.id().is_some_and(|id| {
+                        AsRef::<Branch>::as_ref(&map).id() == BranchID::Nested(*id)
+                    });
+                    break;
+                }
+                if !map_is_void(&txn, &map) {
+                    visible += 1;
+                }
+            }
+            let (owner, start) = model_node_at(doc, &path)?;
+            let boundary = start
+                + (0..visible.min(owner.child_count()))
+                    .map(|i| owner.child(i).node_size())
+                    .sum::<usize>();
+            let pos = snap_to_textblock(doc, boundary, alive)?;
+            return Some(location(doc, pos, true));
+        }
+        None
+    }
+
+    /// [`Self::locate_sticky`] without an editor: reads this replica's model document
+    /// ([`Self::to_doc`]) and locates `bytes` in it. For a server or a tool holding
+    /// only the CRDT bytes: `CollabDoc::load(&crdt)?.locate_sticky_in(&schema, &sticky)`.
+    ///
+    /// `Err` when the replica does not read as a document of `schema`.
+    pub fn locate_sticky_in(
+        &self,
+        schema: &Schema,
+        bytes: &[u8],
+    ) -> Result<Option<StickyLocation>> {
+        let doc = self.to_doc(schema)?;
+        Ok(self.locate_sticky(&doc, bytes))
     }
 }
 
-/// The live textblock `text` whose branch is `target`, searched depth-first under
-/// `list`, recording the `(child index, node type)` of every node on the way to it.
-fn find_text<T: ReadTxn>(
+/// The location of `pos`, a position inside a textblock of `doc`.
+fn location(doc: &Node, pos: Pos, displaced: bool) -> StickyLocation {
+    let path = doc
+        .resolve(pos)
+        .map(|rp| (0..rp.depth()).map(|d| rp.index(d)).collect())
+        .unwrap_or_default();
+    StickyLocation {
+        pos,
+        path,
+        displaced,
+    }
+}
+
+/// The yrs indexes of a [`CollabDoc::sticky_index_with`] trailer, innermost first;
+/// empty for no trailer or one that does not decode.
+fn decode_trailer(mut rest: &[u8]) -> Vec<StickyIndex> {
+    let Some(([m0, m1, version, count], tail)) = rest.split_first_chunk::<4>() else {
+        return Vec::new();
+    };
+    if [*m0, *m1] != TRAILER_MAGIC || *version != TRAILER_VERSION {
+        return Vec::new();
+    }
+    rest = tail;
+    let mut entries = Vec::new();
+    for _ in 0..*count {
+        let Some((len, tail)) = rest.split_first_chunk::<2>() else {
+            return Vec::new();
+        };
+        let len = u16::from_be_bytes(*len) as usize;
+        if tail.len() < len {
+            return Vec::new();
+        }
+        let Ok(entry) = StickyIndex::decode_v1(&tail[..len]) else {
+            return Vec::new();
+        };
+        entries.push(entry);
+        rest = &tail[len..];
+    }
+    entries
+}
+
+/// The model position the text index `sticky` names, if it is in the text of a live
+/// textblock that `doc` mirrors.
+fn resolve_text_index<T: ReadTxn>(
+    txn: &T,
+    content: &ArrayRef,
+    doc: &Node,
+    sticky: &StickyIndex,
+) -> Option<Pos> {
+    let offset = sticky.get_offset(txn)?;
+    let mut path: Vec<(usize, String)> = Vec::new();
+    let Hit::Text(text) = find_branch(txn, content, offset.branch, &mut path)? else {
+        return None;
+    };
+    let crdt_text = text.get_string(txn);
+    let chars = char_offset(&crdt_text, offset.index);
+    let (node, start) = model_node_at(doc, &path)?;
+    if !node.is_textblock() || read_block(node).ok()?.text != crdt_text {
+        return None;
+    }
+    Some(Pos(start + chars))
+}
+
+/// The node of `doc` at `path` (child index and node type at each step) and the
+/// position its content starts at: `None` when `doc` does not have that path.
+fn model_node_at<'a>(doc: &'a Node, path: &[(usize, String)]) -> Option<(&'a Node, usize)> {
+    let mut node = doc;
+    let mut start = 0usize;
+    for (index, type_name) in path {
+        if *index >= node.child_count() {
+            return None;
+        }
+        start += (0..*index)
+            .map(|i| node.child(i).node_size())
+            .sum::<usize>();
+        node = node.child(*index);
+        if node.type_name() != type_name {
+            return None;
+        }
+        // A node's content starts one past its open token.
+        start += 1;
+    }
+    Some((node, start))
+}
+
+/// The textblock position nearest `boundary`, a position between nodes: the start
+/// of the first textblock at or after it when `forward`, otherwise the end of the
+/// last one before it; the other side when there is none on the side asked for.
+fn snap_to_textblock(doc: &Node, boundary: usize, forward: bool) -> Option<Pos> {
+    fn collect(node: &Node, start: usize, out: &mut Vec<(usize, usize)>) {
+        let mut pos = start;
+        for i in 0..node.child_count() {
+            let child = node.child(i);
+            if child.is_textblock() {
+                out.push((pos + 1, pos + 1 + child.content_size()));
+            } else if !child.is_leaf() {
+                collect(child, pos + 1, out);
+            }
+            pos += child.node_size();
+        }
+    }
+    let mut blocks = Vec::new();
+    collect(doc, 0, &mut blocks);
+    let before = blocks
+        .iter()
+        .rev()
+        .find(|(_, end)| *end <= boundary)
+        .map(|(_, end)| *end);
+    let after = blocks
+        .iter()
+        .find(|(start, _)| *start >= boundary)
+        .map(|(start, _)| *start);
+    let pos = if forward {
+        after.or(before)
+    } else {
+        before.or(after)
+    };
+    pos.map(Pos)
+}
+
+/// The map of **visible** child `index` of `list` and its raw index in the yrs array
+/// (which counts void containers).
+fn visible_child_at<T: ReadTxn>(txn: &T, list: &ArrayRef, index: usize) -> Option<(MapRef, u32)> {
+    // One sequential pass: `ArrayRef::get` walks the array from its start, so asking it
+    // for each child in turn would cost O(index²). Void containers are skipped, as
+    // `projection::read_children` skips them.
+    list.iter(txn)
+        .enumerate()
+        .filter_map(|(raw, child)| match child {
+            Out::YMap(m) => Some((m, raw as u32)),
+            _ => None,
+        })
+        .filter(|(m, _)| !map_is_void(txn, m))
+        .nth(index)
+}
+
+/// What [`find_branch`] found.
+enum Hit {
+    /// The `text` of a live textblock.
+    Text(TextRef),
+    /// A live content array (the `content` root, or a container's or cell's).
+    Array(ArrayRef),
+}
+
+/// The live textblock `text` or content array whose branch is `target`, searched
+/// depth-first under `list` (itself included), recording the `(child index, node
+/// type)` of every node on the way to it.
+fn find_branch<T: ReadTxn>(
     txn: &T,
     list: &ArrayRef,
     target: BranchPtr,
     path: &mut Vec<(usize, String)>,
-) -> Option<TextRef> {
+) -> Option<Hit> {
+    if BranchPtr::from(AsRef::<Branch>::as_ref(list)) == target {
+        return Some(Hit::Array(list.clone()));
+    }
     // The index recorded is the child's *visible* index, the one the model uses: a
     // void container is not in the model (see `projection::is_void`), and holds no
     // text to find.
@@ -286,7 +601,7 @@ fn find_text<T: ReadTxn>(
         path.push((index, type_name));
         if let Some(text) = block_text(txn, &map) {
             if BranchPtr::from(AsRef::<Branch>::as_ref(&text)) == target {
-                return Some(text);
+                return Some(Hit::Text(text));
             }
         } else if is_table_map(txn, &map) {
             // A table's rows and cells are its grid's, in model order; a filler has
@@ -304,17 +619,17 @@ fn find_text<T: ReadTxn>(
                         continue;
                     };
                     path.push((k, cell_type));
-                    if let Some(text) = find_text(txn, &children, target, path) {
-                        return Some(text);
+                    if let Some(hit) = find_branch(txn, &children, target, path) {
+                        return Some(hit);
                     }
                     path.pop();
                 }
                 path.pop();
             }
         } else if let Some(children) = node_content(txn, &map)
-            && let Some(text) = find_text(txn, &children, target, path)
+            && let Some(hit) = find_branch(txn, &children, target, path)
         {
-            return Some(text);
+            return Some(hit);
         }
         path.pop();
     }

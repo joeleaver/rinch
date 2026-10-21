@@ -33,7 +33,9 @@ use rinch_editor_core::{
 };
 
 #[cfg(feature = "collaboration")]
-use rinch_editor_collab::{CollabError, CollabSession, OversizedTable};
+use rinch_editor_collab::{
+    CollabError, CollabSession, OversizedTable, StickyAssoc, StickyLocation,
+};
 
 #[cfg(feature = "collaboration")]
 use super::collab::CollabBridge;
@@ -3908,6 +3910,39 @@ impl EditorHandle {
         let core = self.inner.try_borrow().ok()?;
         let bridge = core.collab.as_ref()?;
         bridge.session.resolve_sticky(&core.state.doc, bytes)
+    }
+
+    /// A sticky index for position `pos` that holds the character `assoc` names and
+    /// **survives the deletion of its block**: [`Self::collab_locate_sticky`] then
+    /// answers the place the block stood, marked
+    /// [`displaced`](StickyLocation::displaced). The bytes start with the plain yrs
+    /// `StickyIndex` [`Self::collab_sticky_index`] describes (with `assoc`'s
+    /// association), followed by a trailer that yrs decoding ignores
+    /// ([`rinch_editor_collab::CollabDoc::sticky_index_with`] documents it).
+    ///
+    /// For a range (a comment's span), make the start with [`StickyAssoc::After`] and
+    /// the end with [`StickyAssoc::Before`]. `None` in the same cases as
+    /// [`Self::collab_sticky_index`].
+    pub fn collab_sticky_index_with(&self, pos: Pos, assoc: StickyAssoc) -> Option<Vec<u8>> {
+        let core = self.inner.try_borrow().ok()?;
+        let bridge = core.collab.as_ref()?;
+        bridge
+            .session
+            .sticky_index_with(&core.state.doc, pos, assoc)
+    }
+
+    /// Where a sticky index (from [`Self::collab_sticky_index_with`] or
+    /// [`Self::collab_sticky_index`], made by this editor or a peer's) points now in
+    /// this editor's document, with the path of its textblock (`path[0]` is the
+    /// top-level block) and whether its block is gone and the position is only the
+    /// nearest place to where it stood
+    /// ([`rinch_editor_collab::CollabDoc::locate_sticky`]). `None` in the same cases as
+    /// [`Self::collab_resolve_sticky`], except that a deleted block's index from
+    /// [`Self::collab_sticky_index_with`] is answered.
+    pub fn collab_locate_sticky(&self, bytes: &[u8]) -> Option<StickyLocation> {
+        let core = self.inner.try_borrow().ok()?;
+        let bridge = core.collab.as_ref()?;
+        bridge.session.locate_sticky(&core.state.doc, bytes)
     }
 
     /// Detach the collaboration session (stop projecting and broadcasting). The
@@ -8010,6 +8045,55 @@ mod tests {
             }
             // Between blocks is not a place in any text.
             assert_eq!(host.collab_sticky_index(Pos(0)), None);
+        }
+
+        /// #1676: an index from `collab_sticky_index_with` outlives its block on both
+        /// peers, and the association decides which side of an insert it keeps.
+        #[test]
+        fn a_sticky_index_with_outlives_its_block_across_peers() {
+            let s = schema();
+            let host = mount(doc_node(
+                &s,
+                vec![para(&s, "keep"), para(&s, "gone"), para(&s, "x")],
+            ))
+            .handle;
+            let guest = mount(doc_node(&s, vec![para(&s, "")])).handle;
+            loopback(&host, &guest);
+
+            let in_gone = guest
+                .collab_sticky_index_with(Pos(9), StickyAssoc::After)
+                .expect("inside a paragraph");
+            let before = host
+                .collab_sticky_index_with(Pos(3), StickyAssoc::Before)
+                .expect("inside a paragraph");
+            let after = host
+                .collab_sticky_index_with(Pos(3), StickyAssoc::After)
+                .expect("inside a paragraph");
+            host.set_selection(Selection::cursor(Pos(3)));
+            assert!(host.insert_text("--"));
+            assert_eq!(
+                guest.collab_locate_sticky(&before).map(|l| l.pos),
+                Some(Pos(3))
+            );
+            assert_eq!(
+                guest.collab_locate_sticky(&after).map(|l| l.pos),
+                Some(Pos(5))
+            );
+
+            // The host deletes the block the guest's index is in.
+            assert!(host.update(|state| {
+                let mut tr = state.tr();
+                tr.replace(8, 14, Slice::empty()).ok()?;
+                Some(tr)
+            }));
+            assert_eq!(doc_text(&guest), doc_text(&host));
+            for h in [&host, &guest] {
+                let l = h
+                    .collab_locate_sticky(&in_gone)
+                    .expect("displaced, not lost");
+                assert_eq!((l.pos, l.path, l.displaced), (Pos(7), vec![0], true));
+                assert_eq!(h.collab_resolve_sticky(&in_gone), None);
+            }
         }
     }
 

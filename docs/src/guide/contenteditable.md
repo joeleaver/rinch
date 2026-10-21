@@ -1948,7 +1948,8 @@ What it survives and what it does not:
 
 - **Any edit elsewhere**, local or merged from a peer: it moves with its character.
 - **Its own character deleted:** it resolves to where that character was.
-- **Its block deleted:** `collab_resolve_sticky` answers `None`. Joining a block into
+- **Its block deleted:** `collab_resolve_sticky` answers `None` (an index from
+  `collab_sticky_index_with` is still located, displaced: see below). Joining a block into
   the one before it counts (Backspace at a block's start): the projection writes the
   joined text as a new insert, not a move. Likewise, splitting a block (Enter) before
   the position moves the tail into a new block, and an index on the tail then resolves
@@ -2001,6 +2002,59 @@ The
 [`CollabDoc::sticky_index` docs](https://docs.rs/rinch-editor-collab) say the same at
 the source. The adapter itself exposes the pair as `CollabSession::sticky_index(doc,
 pos)` / `resolve_sticky(doc, bytes)`, taking the model document the session projects.
+
+#### Choosing the side, outliving the block, and resolving without an editor
+
+`collab_sticky_index_with(pos, assoc)` takes the side the index holds on to:
+`StickyAssoc::After` (the default, the character that starts at `pos`: text typed at
+`pos` goes before the index) or `StickyAssoc::Before` (the character that ends at
+`pos`: text typed there goes after it). A **range** — a comment's span, a highlight —
+is two indexes, the start `After` and the end `Before`, so text typed at either edge
+stays outside it.
+
+Its bytes also **outlive their block**. yrs garbage-collects a deleted block's
+characters together with the block, so nothing in the shared document says which
+block they were in any more; but the block's own entry in its parent array stays there
+as a tombstone. So these bytes are the plain yrs `StickyIndex` described above, with
+`assoc`'s association, followed by a trailer that yrs decoding ignores (an app still
+resolves them with yrs alone): one more yrs `StickyIndex` per array on the way from
+the block up to the document root, naming the block's entry (or its container's) in
+it. `collab_locate_sticky(&bytes)` answers a `StickyLocation`:
+
+```rust
+let anchor = editor.collab_sticky_index_with(pos, StickyAssoc::After).unwrap();
+// …any number of local and remote edits later:
+if let Some(at) = editor.collab_locate_sticky(&anchor) {
+    // at.pos: a position inside a textblock
+    // at.path: child indices to that textblock; at.path[0] is the top-level block
+    // at.displaced: its block is gone, and at.pos is only the nearest place
+}
+```
+
+While the block lives it is the same answer as `collab_resolve_sticky`, with
+`displaced: false`. Once the block is deleted, joined into the one before it or
+replaced (a list toggled on it), it is the place the block stood, at the innermost
+level that still has its entry: the end of the last textblock before that place, or
+the start of the first one after it when there is none. A table's rows and cells have
+no entry, so an index whose row was deleted lands at the start of the first textblock
+of the table. An index from plain `collab_sticky_index` has no trailer, and its
+deleted block is still `None`. An index naming a peer's edit this replica has not
+merged yet is `None`, not displaced.
+
+**Without an editor** (a server, a tool holding only the CRDT bytes), load a replica
+and ask it. Making an index works the same way, on the model the replica reads:
+
+```rust
+use rinch_editor_collab::{CollabDoc, StickyAssoc};
+
+let replica = CollabDoc::load(&crdt_bytes)?;
+let doc = replica.to_doc(&schema)?;
+let anchor = replica.sticky_index_with(&doc, pos, StickyAssoc::After); // Option<Vec<u8>>
+// …and later, on a replica loaded from newer bytes:
+let found = replica.locate_sticky_in(&schema, &anchor_bytes)?; // Option<StickyLocation>
+```
+
+`CollabSession::sticky_index_with` / `locate_sticky` are the session's pair.
 
 ### On the web
 
