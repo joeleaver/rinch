@@ -1221,6 +1221,13 @@ impl DomDocument for RinchDocument {
             return None;
         }
         let node = self.tree.nodes.get(id)?;
+        // A box 0 wide and 0 tall has not been laid out either: the empty
+        // paragraph Enter just made is a fresh element whose origin is its
+        // parent's until the next layout (the view's `empty_block_caret` makes
+        // the same call).
+        if node.layout.width == 0.0 && node.layout.height == 0.0 {
+            return None;
+        }
         let bh = node.layout.height;
         let h = if (4.0..=80.0).contains(&bh) { bh } else { 18.0 };
         let (x, y) = crate::paint::point_from_painted_box(&self.tree, id, 1.0, 0.0, 0.0);

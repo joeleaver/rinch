@@ -226,7 +226,7 @@ Supported HTML-element event attributes:
 | `onchange` | Commit boundary: the gesture ends (blur after a modification, Enter, a `<select>` pick) — fires with the final value | `Fn(String)` |
 | `onscroll` | Scroll container scrolls, on either axis | `Fn(ScrollEvent)` — `ev.scroll_top` and `ev.scroll_left` |
 | `ondragstart` … `ondrop`, `ondragend` | Element drag-and-drop. A cancelled drag (Escape; on desktop also a left press or a window blur while it is live, which prove its release went missing) fires `ondragend` (and `ondragleave` on the target, if it is over one), never `ondrop`. A drag whose pointer rests within 32px of the top or bottom of a scroll container under it scrolls that container (not one a `lock_scroll` overlay locks out), and the drop target scrolled under the still pointer hears `ondragenter` / `ondragover` | `Fn()` |
-| `onfiledrop`, `onfiledragenter`/`onfiledragleave` | OS → app file drop | `Fn(Vec<PathBuf>)` / `Fn()` |
+| `onfiledrop`, `onfiledragenter`/`onfiledragleave` | OS → app file drop (desktop only: the browser build dispatches none of the three). `onfiledrop` reads the drop point and its own element's box through `get_click_context()` (`mouse_x`/`mouse_y`, `element_*`), in the same frame as a click's, so dropped files can be placed where they were dropped; it did not until issue #1650 | `Fn(Vec<PathBuf>)` / `Fn()` |
 | `onsubmit` | Enter in an `<input>` or `<textarea>` (Shift+Enter in a `<textarea>` inserts a line break instead), read from the control and then up its ancestors — see [Enter in a `<textarea>`](#enter-in-a-textarea) | `Fn()` |
 
 That list is closed. Any other `on*` name on an HTML element — `onkeydown`,

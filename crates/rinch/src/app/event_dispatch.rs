@@ -1945,7 +1945,8 @@ impl RinchApp {
                     #[cfg(feature = "desktop")]
                     let paths = self.editor_file_drop(x, y, paths);
                     if let Some(hit_id) = hit_id.filter(|_| !paths.is_empty()) {
-                        Self::dispatch_file_drop(doc, hit_id, paths);
+                        let context = (x, y, vp_w, vp_h, self.modifier_state());
+                        Self::dispatch_file_drop(doc, hit_id, paths, context);
                     }
                     // Clean up hover state
                     if let Some(target_id) = self.file_hover_target.take() {
@@ -3240,10 +3241,22 @@ impl RinchApp {
 
     /// Dispatch an OS file-drop event by walking up from `hit_id` looking for
     /// `data-onfiledrop` and invoking the registered `FileDropCallback`.
+    ///
+    /// `(x, y, viewport_width, viewport_height, modifiers)` is the click
+    /// context the handler reads through `get_click_context()` (#1650): the
+    /// drop point in logical window px and the handler element's painted box,
+    /// the frame every other handler's context is in.
     pub(crate) fn dispatch_file_drop(
         doc: &Rc<RefCell<RinchDocument>>,
         hit_id: usize,
         paths: Vec<std::path::PathBuf>,
+        (x, y, viewport_width, viewport_height, modifiers): (
+            f32,
+            f32,
+            f32,
+            f32,
+            events::ModifierState,
+        ),
     ) {
         let handler_id = {
             let d = doc.borrow();
@@ -3261,7 +3274,7 @@ impl RinchApp {
                         .and_then(|v| v.parse::<usize>().ok())
                         .filter(|&id| events::has_file_drop_handler(events::EventHandlerId(id)))
                     {
-                        found = Some(id);
+                        found = Some((id, painted_element_box(&d.tree, nid)));
                         break;
                     }
                     current = node.parent;
@@ -3271,7 +3284,20 @@ impl RinchApp {
             }
             found
         };
-        if let Some(id) = handler_id {
+        if let Some((id, (elem_x, elem_y, elem_w, elem_h))) = handler_id {
+            events::set_click_context(events::ClickContext {
+                mouse_x: x,
+                mouse_y: y,
+                element_x: elem_x,
+                element_y: elem_y,
+                element_width: elem_w,
+                element_height: elem_h,
+                text_hit: events::TextHitInfo::default(),
+                viewport_width,
+                viewport_height,
+                button: events::MouseButton::Left,
+                modifiers,
+            });
             events::dispatch_file_drop_event(events::EventHandlerId(id), paths);
         }
     }

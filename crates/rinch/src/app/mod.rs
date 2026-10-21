@@ -141,6 +141,8 @@ mod editor_word_delete_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_wrapped_selection_tests;
 mod event_dispatch;
+#[cfg(test)]
+mod file_drop_click_context_1650_tests;
 mod focus;
 #[cfg(test)]
 mod focus_lifecycle_tests;
@@ -11215,6 +11217,8 @@ mod click_viewport_tests {
     }
 }
 
+#[cfg(test)]
+mod editor_enter_scroll_tests;
 #[cfg(test)]
 mod editor_scroll_gate_tests;
 #[cfg(test)]
