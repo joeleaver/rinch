@@ -4301,7 +4301,7 @@ comments' mechanism wrong.
 
 ### Image Support
 
-Images render on **both** desktop backends — GPU (Vello, `scene.draw_image`) and software (tiny-skia, `draw_pixmap`) — via `<img>` elements and `background-image: url(...)` CSS. Remote/file images load asynchronously on background threads; `data:` URIs (e.g. base64 PNG) are decoded synchronously and inserted straight into the cache (`request_image_load_for_node`).
+Images render on **both** desktop backends — GPU (Vello, an image-brush `scene.fill`) and software (tiny-skia, `draw_pixmap`) — via `<img>` elements and `background-image: url(...)` CSS. Remote/file images load asynchronously on background threads; `data:` URIs (e.g. base64 PNG) are decoded synchronously and inserted straight into the cache (`request_image_load_for_node`).
 
 **Architecture:**
 ```
@@ -4322,7 +4322,7 @@ rinch:       NetworkImageLoader (rinch-http, gated behind image-network feature)
 3. The background thread calls `ImageLoader::load()` then decodes with the `image` crate to RGBA8
 4. Results go to a static `Mutex<Vec<PendingImage>>` queue
 5. `drain_pending_images()` at the start of layout picks up decoded images, updates Taffy intrinsic dims
-6. `paint_image()` renders via `scene.draw_image()` with proper affine transforms
+6. `paint_image()` renders via `Painter::draw_image` with proper affine transforms. Vello 0.7's fine shader samples an image from each pixel's top-left **corner** (bilinear then reads half a texel up-left, so an image at a whole-pixel origin came out averaged with its neighbours), so `VelloPainter::draw_image` and `fill_repeating` hand it a brush transform that moves the image half a device pixel up-left (`vello_painter::centre_sampling`), which samples at the centre as tiny-skia does (#1027). Pins: `vello_painter::sampling_tests` (a CPU model of the shader arm) and the `#[ignore]`d `compositor::gpu_alpha_tests::gpu_alpha_vello_draw_image_*` (real GPU)
 
 **Background layers** (#468, `crates/rinch-dom/src/paint/background.rs`): the
 **first** layer of `background-image` is sized, positioned and tiled by
