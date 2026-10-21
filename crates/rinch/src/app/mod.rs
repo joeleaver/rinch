@@ -103,6 +103,8 @@ mod editor_caret_affinity_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_decoration_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_file_drop_caret_1649_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_focus_and_reveal_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_image_drop_review_tests;
@@ -432,6 +434,36 @@ pub(crate) struct PendingDrag {
 }
 
 /// Active drag: movement threshold was crossed, snapshot captured.
+/// An OS file drag over the window (#1649), from its first
+/// `FileHoverEnter`/`FileDragMoved` to its drop, its `FileHoverCancelled`, or
+/// the first event that proves it is over without either
+/// ([`RinchApp::end_file_drag`]).
+#[cfg(feature = "desktop")]
+pub(crate) struct FileDrag {
+    /// The pointer, logical px.
+    pub(crate) cursor: (f32, f32),
+    /// Whether a hovered path is named like a picture
+    /// ([`event_dispatch::path_looks_like_an_image`]). The bytes cannot be read
+    /// until the drop, and on Wayland no path is known before it, so this
+    /// stays `false` there.
+    pub(crate) picture: bool,
+    /// The drop caret shown for it, while the pointer is over an editor that
+    /// would take the drop.
+    pub(crate) caret: Option<DropCaret>,
+}
+
+/// Where an OS file drag over an editor would land, as its drop caret shows
+/// it (#1649).
+#[cfg(feature = "desktop")]
+pub(crate) struct DropCaret {
+    pub(crate) container: usize,
+    pub(crate) handle: crate::editor::EditorHandle,
+    pub(crate) pos: rinch_editor_core::Pos,
+    /// The document `pos` is a position in: a drop after it changed resolves
+    /// its point again.
+    pub(crate) doc: rinch_editor_core::Node,
+}
+
 pub(crate) struct ActiveDrag {
     /// The draggable source element.
     pub node_id: usize,
@@ -919,6 +951,9 @@ pub struct RinchApp {
     pub(crate) text_selecting: bool,
     /// Node ID of the current file-drop hover target (for enter/leave during OS drag).
     pub(crate) file_hover_target: Option<usize>,
+    /// The OS file drag over the window, with its drop caret (#1649).
+    #[cfg(feature = "desktop")]
+    pub(crate) file_drag: Option<FileDrag>,
     /// Inspect highlight rectangle (absolute x, y, w, h in logical pixels).
     /// Set by the runtime when inspect mode is active and a node is hovered.
     pub(crate) inspect_highlight: Option<(f32, f32, f32, f32)>,
@@ -1030,6 +1065,8 @@ impl RinchApp {
             text_selection: None,
             text_selecting: false,
             file_hover_target: None,
+            #[cfg(feature = "desktop")]
+            file_drag: None,
             inspect_highlight: None,
             pending_fonts: Vec::new(),
             scope_context_to_doc: false,

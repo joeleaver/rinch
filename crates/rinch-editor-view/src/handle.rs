@@ -3487,6 +3487,23 @@ impl EditorHandle {
         self.inner.borrow().reveal.map(|(from, to, _)| (from, to))
     }
 
+    /// Show where an OS file drag hovering over this editor would land — a
+    /// caret bar at `at` (a position and the side of a soft wrap), drawn apart
+    /// from the caret — or hide it (`None`). The selection does not move and
+    /// no scroll is asked for: the drop itself does both. Called by the
+    /// desktop runtime while a picture file is dragged over an editor that
+    /// would take it. Answers whether the overlay changed (the runtime then
+    /// lays out and repaints). A no-op before mount.
+    #[doc(hidden)]
+    pub fn show_drop_caret(&self, at: Option<(Pos, CaretAffinity)>) -> bool {
+        let mut guard = self.core_mut();
+        let core = &mut *guard;
+        match core.view.as_mut() {
+            Some(view) => view.show_drop_caret(&core.state.doc, at),
+            None => false,
+        }
+    }
+
     /// Hide this editor's overlays (caret + selection highlight) because it isn't
     /// focused. The runtime's focus-aware caret pass calls this for every editor
     /// that isn't the focused one. A no-op before mount. Returns whether an overlay

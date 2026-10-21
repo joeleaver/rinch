@@ -1229,6 +1229,14 @@ pub struct RinchDomEditorView {
     ///
     /// [`EditorHandle::scroll_into_view`]: super::EditorHandle::scroll_into_view
     reveal_probes: Vec<NodeHandle>,
+    /// The drop caret ([`Self::show_drop_caret`]): where an OS file drag over
+    /// this editor will land, drawn while the drag hovers. Separate from the
+    /// caret, so the live selection is untouched and an unfocused editor
+    /// (whose caret the focus-aware pass hides) still shows it.
+    drop_caret: Option<NodeHandle>,
+    /// The drop caret's last `(x, y, height)` (pixels rounded), `None` while
+    /// hidden, so a repeat with the same geometry writes nothing.
+    last_drop_caret: Option<(i32, i32, i32)>,
     /// Which side of a soft wrap the caret at the selection's head is drawn on
     /// (#301) — the handle's hint for the current selection
     /// ([`EditorHandle::caret_affinity`](super::EditorHandle::caret_affinity)),
@@ -1355,6 +1363,8 @@ impl RinchDomEditorView {
             decorations: DecorationSet::empty(),
             overlay_dirty: false,
             reveal_probes: Vec::new(),
+            drop_caret: None,
+            last_drop_caret: None,
             node_views,
             node_view_work,
             slots,
@@ -2171,6 +2181,69 @@ impl RinchDomEditorView {
             probe.set_styles(&[("left", &left), ("top", &top), ("height", &height)]);
         }
         Some(self.reveal_probes[..boxes.len()].to_vec())
+    }
+
+    /// Show the drop caret at `at` — a model position and the side of a soft
+    /// wrap to draw it on — or hide it (`None`). It is the caret bar drawn at
+    /// that position (the geometry the caret overlay uses), in its own
+    /// element (`data-pm-drop-caret`): the selection, the caret and the
+    /// caret's blink are untouched. A position with no geometry yet (a block
+    /// edited since the last layout) hides it.
+    ///
+    /// Answers whether anything was written, which the caller turns into a
+    /// layout and a repaint; it does not set [`Self::overlay_dirty`], which
+    /// the caret pass reads as "the caret moved".
+    pub(crate) fn show_drop_caret(&mut self, doc: &Node, at: Option<(Pos, CaretAffinity)>) -> bool {
+        let geometry = at.and_then(|(pos, affinity)| {
+            let pos = Pos(pos.0.min(doc.content_size()));
+            let host = self.doc.upgrade()?;
+            let d = host.try_borrow().ok()?;
+            let (block, byte) = self.caret_target(doc, pos)?;
+            self.caret_geometry(&*d, doc, pos, block.node_id().0, byte, affinity)
+        });
+        let Some((x, y, height)) = geometry else {
+            if self.last_drop_caret.take().is_none() {
+                return false;
+            }
+            if let Some(bar) = &self.drop_caret {
+                bar.set_style("visibility", "hidden");
+            }
+            return true;
+        };
+        let key = (x.round() as i32, y.round() as i32, height.round() as i32);
+        if self.last_drop_caret == Some(key) {
+            return false;
+        }
+        self.last_drop_caret = Some(key);
+        if self.drop_caret.is_none() {
+            let Some(bar) = create_element(&self.doc, "div") else {
+                return false;
+            };
+            bar.set_attribute("data-pm-drop-caret", "true");
+            bar.set_attribute("aria-hidden", "true");
+            bar.set_styles(&[
+                ("position", "absolute"),
+                // Placed by `transform`, as the caret is (`overlay_translate`).
+                ("left", "0"),
+                ("top", "0"),
+                ("width", "2px"),
+                ("background-color", "#1a73e8"),
+                ("pointer-events", "none"),
+                ("z-index", "1"),
+            ]);
+            self.root.dom.append_child(&bar);
+            self.drop_caret = Some(bar);
+        }
+        if let Some(bar) = &self.drop_caret {
+            let transform = overlay_translate(x, y);
+            let h = format!("{}px", overlay_size(x, y, 0.0, height).1);
+            bar.set_styles(&[
+                ("transform", &transform),
+                ("height", &h),
+                ("visibility", "visible"),
+            ]);
+        }
+        true
     }
 
     /// Caret geometry for an *empty* textblock (which has no Parley layout, so

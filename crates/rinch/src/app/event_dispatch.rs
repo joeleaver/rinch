@@ -134,6 +134,29 @@ impl RinchApp {
             self.close_text_context_menu();
             actions.push(AppAction::RequestRedraw);
         }
+        // An OS file drag in progress takes the pointer: while it lasts the
+        // window hears no move, press, release, wheel or key of its own, and a
+        // window that lost the keyboard is not where it is dropping. So any of
+        // them proves the drag ended, whether or not its `FileHoverCancelled`
+        // arrived (the #189 shape: a drop caret and an edge-band scroll armed
+        // by the hover must not wait for a cancel that may never come, #1649).
+        // The shell hands a held pointer move over before any other event, so
+        // a move from before the drag cannot arrive after its first hover.
+        if self.file_drag_live() || self.file_hover_target.is_some() {
+            let over = matches!(
+                event,
+                PlatformEvent::MouseMove { .. }
+                    | PlatformEvent::MouseDown { .. }
+                    | PlatformEvent::MouseUp { .. }
+                    | PlatformEvent::MouseWheel { .. }
+                    | PlatformEvent::KeyDown { .. }
+                    | PlatformEvent::PointerCancel
+                    | PlatformEvent::WindowFocus(false)
+            );
+            if over && self.end_file_drag() {
+                actions.push(AppAction::RequestRedraw);
+            }
+        }
         // Focus work parked by the handler of an earlier event (an `on_key`,
         // an `oninput`, an interceptor or a menu shortcut that called
         // `focus()` or `blur()`) is applied before the next key, press or
@@ -1864,13 +1887,21 @@ impl RinchApp {
                 #[cfg(feature = "debug")]
                 self.handle_debug_commands(&mut actions, scale_factor, window_size);
             }
-            PlatformEvent::FileHoverEnter { position, .. }
-            | PlatformEvent::FileDragMoved { position } => {
+            PlatformEvent::FileHoverEnter { .. } | PlatformEvent::FileDragMoved { .. } => {
                 // OS file drag entered or is moving over the window.
                 // Hit-test the drag position and fire data-onfiledragenter
                 // on the first ancestor with that attribute (like ondragenter for
                 // internal DnD).
+                let (position, path) = match &event {
+                    PlatformEvent::FileHoverEnter { path, position } => (*position, Some(path)),
+                    PlatformEvent::FileDragMoved { position } => (*position, None),
+                    _ => unreachable!(),
+                };
                 let (x, y) = (position.0 as f32, position.1 as f32);
+                // Where a picture dropped here would land in an editor (#1649).
+                if self.note_file_drag((x, y), path.map(|p| p.as_path())) {
+                    actions.push(AppAction::RequestRedraw);
+                }
                 if let Some(doc) = &self.doc {
                     let hit_id = {
                         let d = doc.borrow();
@@ -1895,11 +1926,8 @@ impl RinchApp {
             }
             PlatformEvent::FileHoverCancelled => {
                 // OS file drag left the window without dropping.
-                if let Some(target_id) = self.file_hover_target.take() {
-                    if let Some(doc) = &self.doc {
-                        Self::dispatch_drag_attr(doc, target_id, "data-onfiledragleave");
-                        actions.push(AppAction::RequestRedraw);
-                    }
+                if self.end_file_drag() {
+                    actions.push(AppAction::RequestRedraw);
                 }
             }
             PlatformEvent::FileDropped { paths, position } => {
@@ -1917,8 +1945,15 @@ impl RinchApp {
                     // What it does not take (the PDF dropped with a
                     // photo, a file only named like a picture) is the app's
                     // handler's still.
+                    // The drop lands where its drop caret showed it would.
                     #[cfg(feature = "desktop")]
-                    let paths = self.editor_file_drop(x, y, paths);
+                    let indicated = self.file_drag.take().and_then(|drag| drag.caret);
+                    #[cfg(feature = "desktop")]
+                    if let Some(caret) = &indicated {
+                        caret.handle.show_drop_caret(None);
+                    }
+                    #[cfg(feature = "desktop")]
+                    let paths = self.editor_file_drop(x, y, paths, indicated);
                     if let Some(hit_id) = hit_id.filter(|_| !paths.is_empty()) {
                         Self::dispatch_file_drop(doc, hit_id, paths);
                     }
@@ -2267,14 +2302,25 @@ impl RinchApp {
         vp_h: f32,
         motion: bool,
     ) -> bool {
-        let Some((x, y)) = self.active_dnd.as_ref().map(|drag| drag.cursor) else {
+        // An element drag, or an OS file drag showing a drop caret (#1649):
+        // a file dragged over a long note scrolls it as an element drag does.
+        let element = self.active_dnd.as_ref().map(|drag| drag.cursor);
+        #[cfg(feature = "desktop")]
+        let file = self
+            .file_drag
+            .as_ref()
+            .filter(|drag| drag.caret.is_some())
+            .map(|drag| drag.cursor);
+        #[cfg(not(feature = "desktop"))]
+        let file: Option<(f32, f32)> = None;
+        let Some((x, y)) = element.or(file) else {
             self.drag_auto_scroll_at = None;
             return false;
         };
         let Some(doc) = self.doc.clone() else {
             return false;
         };
-        if !motion && self.hit_memo.get().is_none() {
+        if element.is_some() && !motion && self.hit_memo.get().is_none() {
             // `shared_hit` checks the generation and the point itself.
             self.hit_memo.set(self.drag_hit_memo);
         }
@@ -2284,7 +2330,9 @@ impl RinchApp {
                 .and_then(|hit| Self::drag_auto_scroll_container(&d, hit, y, vp_h))
         };
         // A hit test made afresh here (after motion) is the newest answer.
-        self.drag_hit_memo = self.hit_memo.get();
+        if element.is_some() {
+            self.drag_hit_memo = self.hit_memo.get();
+        }
         let Some((container, velocity)) = pick else {
             self.drag_auto_scroll_at = None;
             return false;
@@ -2304,7 +2352,15 @@ impl RinchApp {
                     event,
                 );
             }
-            self.track_drag_pointer(vp_w, vp_h);
+            if element.is_some() {
+                self.track_drag_pointer(vp_w, vp_h);
+            } else {
+                // The text under the still pointer moved: so does the drop
+                // caret. The hit memo still names the point before the scroll.
+                self.hit_memo.set(None);
+                #[cfg(feature = "desktop")]
+                self.place_file_drop_caret();
+            }
         }
         true
     }
@@ -4304,8 +4360,9 @@ impl RinchApp {
         x: f32,
         y: f32,
         paths: Vec<std::path::PathBuf>,
+        indicated: Option<super::DropCaret>,
     ) -> Vec<std::path::PathBuf> {
-        let Some(claim) = self.claim_editor_file_drop(x, y, &paths) else {
+        let Some(claim) = self.claim_editor_file_drop_at(x, y, &paths, indicated.as_ref()) else {
             return paths;
         };
         let EditorDropClaim {
@@ -4349,6 +4406,21 @@ impl RinchApp {
         y: f32,
         paths: &[std::path::PathBuf],
     ) -> Option<EditorDropClaim> {
+        self.claim_editor_file_drop_at(x, y, paths, None)
+    }
+
+    /// [`Self::claim_editor_file_drop`] for a drop whose drag showed a drop
+    /// caret (`indicated`, #1649): when the drop point is in that caret's
+    /// editor and its document has not changed since, the drop lands at the
+    /// caret's position, not at whatever the drop point resolves to now.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn claim_editor_file_drop_at(
+        &mut self,
+        x: f32,
+        y: f32,
+        paths: &[std::path::PathBuf],
+        indicated: Option<&super::DropCaret>,
+    ) -> Option<EditorDropClaim> {
         // Cheapest first: no disk is touched for a drop that cannot be the
         // editor's.
         if !paths.iter().any(|p| path_looks_like_an_image(p)) {
@@ -4366,7 +4438,12 @@ impl RinchApp {
         if images.is_empty() {
             return None;
         }
-        let pos = hit.pos(&handle)?;
+        let pos = match indicated
+            .filter(|caret| caret.container == hit.container && caret.doc.same_ref(&handle.doc()))
+        {
+            Some(caret) => caret.pos,
+            None => hit.pos(&handle)?,
+        };
         handle.set_selection(rinch_editor_core::Selection::cursor(pos));
         handle.focus();
         self.refresh_editor_overlays();
@@ -4377,6 +4454,129 @@ impl RinchApp {
             images,
             rest,
         })
+    }
+
+    /// An OS file drag is over the window at `cursor`, hovering `path` when
+    /// the platform names one (#1649): note it and place its drop caret.
+    /// Answers whether an overlay changed.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn note_file_drag(
+        &mut self,
+        cursor: (f32, f32),
+        path: Option<&std::path::Path>,
+    ) -> bool {
+        let drag = self.file_drag.get_or_insert(super::FileDrag {
+            cursor,
+            picture: false,
+            caret: None,
+        });
+        drag.cursor = cursor;
+        if path.is_some_and(path_looks_like_an_image) {
+            drag.picture = true;
+        }
+        self.place_file_drop_caret()
+    }
+
+    /// Put the drop caret of the OS file drag in flight where a drop at its
+    /// pointer would land, in the editor under it that would take the drop:
+    /// one with an [`on_image_input`](crate::editor::EditorHandle::on_image_input)
+    /// callback that does not refuse edits, for a drag holding a path named
+    /// like a picture. Anywhere else, no caret. Neither the selection nor the
+    /// scroll moves: the drop does both. Answers whether an overlay changed.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn place_file_drop_caret(&mut self) -> bool {
+        let Some(drag) = self.file_drag.as_ref() else {
+            return false;
+        };
+        let (x, y) = drag.cursor;
+        let target = if drag.picture {
+            self.file_drop_target(x, y)
+        } else {
+            None
+        };
+        let old = self.file_drag.as_mut().and_then(|drag| drag.caret.take());
+        let mut changed = false;
+        if let Some(old) = &old
+            && target.as_ref().is_none_or(|t| t.0 != old.container)
+        {
+            changed |= old.handle.show_drop_caret(None);
+        }
+        if let Some((container, handle, pos, affinity)) = target {
+            changed |= handle.show_drop_caret(Some((pos, affinity)));
+            let doc = handle.doc();
+            if let Some(drag) = self.file_drag.as_mut() {
+                drag.caret = Some(super::DropCaret {
+                    container,
+                    handle,
+                    pos,
+                    doc,
+                });
+            }
+        }
+        if changed {
+            self.scene_dirty = true;
+        }
+        changed
+    }
+
+    /// The editor a picture dropped at `(x, y)` would land in, and where: its
+    /// container, handle, position and the side of a soft wrap the point is
+    /// on. The cheap half of [`Self::claim_editor_file_drop`]'s test — no file
+    /// is read while a drag hovers.
+    #[cfg(feature = "desktop")]
+    fn file_drop_target(
+        &self,
+        x: f32,
+        y: f32,
+    ) -> Option<(
+        usize,
+        crate::editor::EditorHandle,
+        rinch_editor_core::Pos,
+        rinch_core::dom::CaretAffinity,
+    )> {
+        let hit = self.editor_point(x, y)?;
+        let handle = crate::editor::editor_for_doc(self.doc_key(), hit.container)?;
+        if !handle.has_image_input_callback() || handle.refuses_edits() {
+            return None;
+        }
+        let pos = hit.pos(&handle)?;
+        let (affinity, _) = self.editor_hit_affinity(&handle, pos, y);
+        Some((hit.container, handle, pos, affinity))
+    }
+
+    /// Whether an OS file drag is in flight over the window (#1649).
+    fn file_drag_live(&self) -> bool {
+        #[cfg(feature = "desktop")]
+        return self.file_drag.is_some();
+        #[cfg(not(feature = "desktop"))]
+        false
+    }
+
+    /// End the OS file drag in flight, whatever ended it (a cancel, or the
+    /// first event that proves it is over, #1649): hide its drop caret, stop
+    /// its edge-band scroll and tell the `data-onfiledragenter` target it left.
+    /// Answers whether anything changed.
+    pub(crate) fn end_file_drag(&mut self) -> bool {
+        let mut changed = false;
+        #[cfg(feature = "desktop")]
+        if let Some(drag) = self.file_drag.take() {
+            if self.active_dnd.is_none() {
+                self.drag_auto_scroll_at = None;
+            }
+            if let Some(caret) = drag.caret
+                && caret.handle.show_drop_caret(None)
+            {
+                self.scene_dirty = true;
+                changed = true;
+            }
+        }
+        if let Some(target_id) = self.file_hover_target.take()
+            && let Some(doc) = &self.doc
+        {
+            Self::dispatch_drag_attr(doc, target_id, "data-onfiledragleave");
+            changed = true;
+        }
+        changed
     }
 
     /// Resolve a window/logical point inside whatever editor it lands on — the
