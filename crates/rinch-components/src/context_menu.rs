@@ -49,6 +49,50 @@ impl Default for ContextMenu {
     }
 }
 
+/// Space kept between the menu and the viewport's edges.
+const EDGE_MARGIN: f32 = 4.0;
+
+/// The menu's `min-width` in CSS, the width it is assumed to need.
+const MENU_MIN_WIDTH: f32 = 180.0;
+
+/// Below this much room under the pointer the menu opens upward instead,
+/// when there is more room above.
+const PREFERRED_ROOM_BELOW: f32 = 320.0;
+
+/// Where the dropdown goes for a press at `(x, y)` in a `vw` by `vh` viewport.
+///
+/// The menu's real height is not known until it is laid out, and a guess at it
+/// put a tall menu opened near the bottom partly off the window. So nothing is
+/// guessed: the menu hangs from the pointer when there is room below, and
+/// otherwise stands on it (anchored by `bottom`, so it ends at the pointer
+/// whatever its height). It is not capped and scrolled: an `overflow` on the
+/// dropdown would clip a `DropdownMenu` nested in it. Horizontally it is anchored by `right` at the pointer
+/// when its minimum width does not fit to the right. A zero viewport (no click
+/// context) places it at the pointer as before.
+pub(crate) fn dropdown_placement(x: f32, y: f32, vw: f32, vh: f32) -> String {
+    if vw <= 0.0 || vh <= 0.0 {
+        return format!("position: absolute; left: {x}px; top: {y}px;");
+    }
+    let x = x.clamp(0.0, vw);
+    let y = y.clamp(0.0, vh);
+
+    let horizontal = if x + MENU_MIN_WIDTH + EDGE_MARGIN > vw && x > vw - x {
+        format!("right: {}px;", vw - x)
+    } else {
+        format!("left: {x}px;")
+    };
+
+    let below = vh - y - EDGE_MARGIN;
+    let above = y - EDGE_MARGIN;
+    let vertical = if below >= PREFERRED_ROOM_BELOW || below >= above {
+        format!("top: {y}px;")
+    } else {
+        format!("bottom: {}px;", vh - y)
+    };
+
+    format!("position: absolute; {horizontal} {vertical}")
+}
+
 impl Component for ContextMenu {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         let opened = self.opened;
@@ -130,27 +174,6 @@ impl Component for ContextMenu {
                     let vw = vp_w.get();
                     let vh = vp_h.get();
 
-                    // Estimated dropdown size for viewport-aware positioning.
-                    // The dropdown min-width is 180px in CSS; height ~200px is a
-                    // conservative estimate for a typical context menu.
-                    let menu_w = 180.0f32;
-                    let menu_h = 200.0f32;
-                    let margin = 4.0f32;
-
-                    // Flip horizontally if menu would overflow right edge
-                    let final_x = if x + menu_w + margin > vw && x > menu_w {
-                        x - menu_w
-                    } else {
-                        x
-                    };
-
-                    // Flip vertically if menu would overflow bottom edge
-                    let final_y = if y + menu_h + margin > vh && y > menu_h {
-                        y - menu_h
-                    } else {
-                        y
-                    };
-
                     portal_clone.set_attribute(
                         "style",
                         "position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 200;",
@@ -159,13 +182,7 @@ impl Component for ContextMenu {
                         "style",
                         "position: absolute; top: 0; left: 0; right: 0; bottom: 0;",
                     );
-                    dropdown_clone.set_attribute(
-                        "style",
-                        &format!(
-                            "position: absolute; left: {}px; top: {}px;",
-                            final_x, final_y,
-                        ),
-                    );
+                    dropdown_clone.set_attribute("style", &dropdown_placement(x, y, vw, vh));
                 } else {
                     portal_clone.set_attribute("style", "display: none;");
                     overlay_clone.set_attribute("style", "display: none;");
@@ -257,6 +274,47 @@ impl Component for ContextMenuDropdown {
 
 #[cfg(test)]
 mod tests {
+    use super::dropdown_placement;
+
+    #[test]
+    fn a_press_near_the_bottom_opens_upward_ending_at_the_pointer() {
+        // A tall menu opened 100px above the bottom of an 800px window: the
+        // old 200px guess put its top at 500 and its end off the window.
+        assert_eq!(
+            dropdown_placement(50.0, 700.0, 1200.0, 800.0),
+            "position: absolute; left: 50px; bottom: 100px;"
+        );
+    }
+
+    #[test]
+    fn a_press_with_room_below_hangs_from_the_pointer() {
+        assert_eq!(
+            dropdown_placement(50.0, 100.0, 1200.0, 800.0),
+            "position: absolute; left: 50px; top: 100px;"
+        );
+        // Enough room below is enough, even with more above.
+        assert_eq!(
+            dropdown_placement(50.0, 450.0, 1200.0, 800.0),
+            "position: absolute; left: 50px; top: 450px;"
+        );
+    }
+
+    #[test]
+    fn a_press_near_the_right_edge_ends_at_the_pointer() {
+        assert_eq!(
+            dropdown_placement(1150.0, 100.0, 1200.0, 800.0),
+            "position: absolute; right: 50px; top: 100px;"
+        );
+    }
+
+    #[test]
+    fn no_viewport_places_it_at_the_pointer() {
+        assert_eq!(
+            dropdown_placement(10.0, 20.0, 0.0, 0.0),
+            "position: absolute; left: 10px; top: 20px;"
+        );
+    }
+
     use super::*;
     use rinch_core::dom::mock::MockDomDocument;
     use rinch_core::dom::{DomDocument, NodeHandle, NodeId};
@@ -628,6 +686,38 @@ mod tests {
             outer_opened.try_get(),
             Some(true),
             "the outer ContextMenu must NOT be closed by an inner submenu's item"
+        );
+    }
+}
+
+#[cfg(test)]
+mod review_1641_placement {
+    use super::dropdown_placement;
+
+    #[test]
+    fn a_narrow_window_with_more_room_right_keeps_the_left_anchor() {
+        // 184px do not fit right of x = 100 in a 200px window, but there is no
+        // more room to the left either: anchored by `right` it would run off
+        // the left edge.
+        assert_eq!(
+            dropdown_placement(100.0, 10.0, 200.0, 800.0),
+            "position: absolute; left: 100px; top: 10px;"
+        );
+    }
+
+    #[test]
+    fn a_pointer_past_the_viewport_is_clamped_into_it() {
+        assert_eq!(
+            dropdown_placement(1300.0, 900.0, 1200.0, 800.0),
+            "position: absolute; right: 0px; bottom: 0px;"
+        );
+    }
+
+    #[test]
+    fn one_zero_dimension_is_no_viewport() {
+        assert_eq!(
+            dropdown_placement(1150.0, 700.0, 1200.0, 0.0),
+            "position: absolute; left: 1150px; top: 700px;"
         );
     }
 }
