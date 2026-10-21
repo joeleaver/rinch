@@ -523,12 +523,15 @@ impl<'a> ShadowGroup<'a> {
 /// one's shadows and then its text, so a later fragment's shadow reaching back
 /// is drawn over earlier text: a span's, and one line's over the line above
 /// (Chrome 155, measured). Within one fragment every shadow is under the text.
+/// Chrome also splits a fragment at a bidi boundary and orders a line's
+/// fragments visually; these fragments do neither (#1675).
 /// The one-pass order — every shadow, then all of the text — paints the same
-/// pixels unless a later fragment's shadow overlaps an earlier fragment's
-/// text, or (with shadows of more than one colour) its shadows; only then are
-/// the fragments drawn one by one, which costs a shadow pass and a text pass
-/// per fragment (a glyph run two fragments share is drawn in two calls, and a
-/// blurred shadow is a mask per fragment).
+/// pixels unless a later fragment's shadow can change a pixel of an earlier
+/// fragment's text, or (with shadows of more than one colour) of its shadows;
+/// only then are the fragments drawn one by one, which costs a shadow pass
+/// and a text pass per fragment (a glyph run two fragments share is drawn in
+/// two calls, and a blurred shadow is a mask per fragment, as wide as the
+/// fragment).
 pub(super) struct TextFragment<'a> {
     pub(super) shadows: &'a [TextShadowValue],
     pub(super) mask: TextMask,
@@ -616,12 +619,14 @@ impl<'a> TextFragment<'a> {
     /// paints the same pixels: no shadow at all, a single fragment, or no
     /// fragment's shadow overlapping an earlier fragment's ink.
     ///
-    /// The overlap is decided on boxes: a fragment's text is its clusters'
-    /// advance extent by its line's ascent and descent, its shadow that box
-    /// moved by each offset and grown by the blur's reach. Ink past a glyph's
-    /// advance or below the descent (an italic overhang, a wavy underline)
-    /// is not in the box, so a shadow touching only that keeps the one-pass
-    /// order.
+    /// The overlap is decided on boxes: a fragment's text is the advance
+    /// extent of its ink-bearing clusters (a space only under a decoration)
+    /// by its line's ascent and descent, moved with any `vertical-align`
+    /// shift; its shadow is that box moved by each offset and grown by the
+    /// reach at which the blur can still change an 8-bit pixel of the colour
+    /// under it ([`shadow_rect`]). Ink past a glyph's advance or below the
+    /// descent (an italic overhang, a wavy underline) is not in the box, so a
+    /// shadow touching only that keeps the one-pass order.
     pub(super) fn in_paint_order(
         tree: &'a NodeTree,
         inline_layout: &crate::node::InlineLayout,

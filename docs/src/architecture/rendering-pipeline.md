@@ -251,22 +251,35 @@ stretch of one line — so a later fragment's shadow reaching back is drawn over
 earlier text: in `<p style="text-shadow: -29px 0 blue">A<span>B</span></p>`
 the shadow of `B` covers `A`, and with `text-shadow: 0 -60px` on a 60px line
 the second line's shadow covers the first line, one text node or not (Chrome
-155, measured). Within one fragment every shadow is under the text. rinch keeps
-the one-pass order wherever the two orders paint the same pixels, decided on
-boxes (`paint::text::TextFragment::in_paint_order`): a fragment's text is its
-clusters' advance extent by its line's ascent and descent, its shadow that box
-moved by each offset and grown by the blur's reach, and only a shadow box
-overlapping an earlier fragment's text box — or, with shadows of more than one
-colour, its shadow box — sends the IFC down the per-fragment path, which draws
-each fragment's shadows and text through a mask of its own. That costs a draw
-per fragment for each glyph run fragments share, and a blurred mask per
-fragment rather than per paragraph: a blurred shadow that reaches into the line
-above (`0 1px 4px` reaches 5px up, past any line less than 5px below the one
-above it) makes every line its own mask. Ink past a glyph's advance or below
-its descent (an italic overhang, a wavy underline) is not in the box, so a
-shadow touching only that keeps the one-pass order.
+155, measured). Within one fragment every shadow is under the text. This is an
+inline formatting context's rule; a flex or grid item's own text (a text leaf)
+is still painted in one pass however many lines it has. Chrome also splits a
+fragment at a bidi boundary inside one text node and paints a line's fragments
+in visual order; rinch does neither (#1675, pinned in
+`tests/review_1673_fixtures.rs`).
 
-A span's own list is ink of the root that draws it: damage, the paint prune, the painted state and `layer_bounds` all count it.
+rinch keeps the one-pass order wherever the two orders paint the same 8-bit
+pixels, decided on boxes (`paint::text::TextFragment::in_paint_order`). A
+fragment's text box is the advance extent of its ink-bearing clusters (a space
+has none unless a decoration is drawn across it) by its line's ascent and
+descent, moved with any `vertical-align` shift. A shadow's box is that box moved
+by its offset and grown by its *visible* reach: how far its blur can still
+change a pixel of the colour under it. A shadow painted over a pixel or under it
+differs by at most its alpha times the two colours' largest channel difference
+times the blur's coverage, so a 40%-black `0 0 4px` blur over `rgb(40, 40, 40)`
+text reaches about 3.7px, less than a 14px space, and `Count: <span>3</span>`
+keeps one pass. Only a shadow box overlapping an earlier fragment's text box —
+or, with shadows of more than one colour, its shadow box — sends the IFC down
+the per-fragment path, which draws each fragment's shadows and text through a
+mask of its own; a blurred fragment's mask covers that fragment's clusters
+only. A blurred shadow that reaches into the line above
+(`0 1px 4px rgba(0, 0, 0, 0.4)` over near-black text reaches 2.7px up, past
+lines set 1px apart) makes every line its own mask. Ink past a glyph's advance
+or below its descent (an italic overhang, a wavy underline) is not in the box,
+so a shadow touching only that keeps the one-pass order.
+
+A span's own list is ink of the root that draws it: damage, the paint prune,
+the painted state and `layer_bounds` all count it.
 Two limits. In a `nowrap`/`pre` root that `text-overflow: ellipsis` cuts, every
 run casts the root's list, because that layout records no text ranges, the same
 gap as #853 (#1065); a wrapping root with such a span is left un-cut. And

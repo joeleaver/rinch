@@ -52,7 +52,10 @@ fn measure(name: &str, css: &str, html: &str) {
 const BASE: &str = "body { margin: 0; font-family: Inter; font-size: 14px; line-height: 18px; \
     color: rgb(30, 30, 40); } p { margin: 0 0 2px 0; text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4); }";
 
+/// Measurement probe from the review of #1673 (run with `--release --ignored
+/// --nocapture`): masks rasterised and cold/warm paint times per page.
 #[test]
+#[ignore]
 fn probe_costs() {
     // A: the bench page (identical second lines).
     let mut h = String::new();
@@ -89,7 +92,9 @@ fn probe_costs() {
     measure("two_nodes_one_line", BASE, &h);
 }
 
+/// Writes raw pixels of each page to `$PIX_OUT` (run with `--ignored`).
 #[test]
+#[ignore]
 fn probe_pixels() {
     let out = std::env::var("PIX_OUT").unwrap();
     let pages = [
