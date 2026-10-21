@@ -1005,8 +1005,9 @@ fn a_partial_repaint_inside_a_clip_fills_only_the_damage_mask() {
     // Around the whole scroller the damage clip (`8..332 x 18..242`, 72 576)
     // is 255 wherever the scroller's clip (`18..323 x 28..233`, 62 525) can
     // be non-zero, so that clip is filled and not intersected — each of the
-    // three times it is pushed here (its own bracket, and the clip chains of
-    // the entries hoisted out of it). The box's clip (`30..311 x 40..195`,
+    // two times it is pushed here (its own bracket, and once for the run of
+    // entries hoisted out of it: an entry whose chain only adds the box's clip
+    // keeps it open, #1641). The box's clip (`30..311 x 40..195`,
     // 43 555), pushed twice, is filled and intersected: the scroller's
     // rounded mask is not 255 over all of it. The small clip
     // (`248..303 x 118..173`, 3 025) lies where the damage, the scroller and
@@ -1017,10 +1018,10 @@ fn a_partial_repaint_inside_a_clip_fills_only_the_damage_mask() {
         &[Rect::new(10.0, 20.0, 330.0, 240.0)],
     );
     let around = painter.take_stats();
-    assert_eq!(around.clip_masks, 7, "{around:?}");
+    assert_eq!(around.clip_masks, 6, "{around:?}");
     assert_eq!(
         around.clip_mask_px,
-        72_576 + 3 * 62_525 + 2 * (2 * 43_555) + 3_025,
+        72_576 + 2 * 62_525 + 2 * (2 * 43_555) + 3_025,
         "{around:?}"
     );
 }

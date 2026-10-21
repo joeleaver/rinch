@@ -689,3 +689,35 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod review_1641_placement {
+    use super::dropdown_placement;
+
+    #[test]
+    fn a_narrow_window_with_more_room_right_keeps_the_left_anchor() {
+        // 184px do not fit right of x = 100 in a 200px window, but there is no
+        // more room to the left either: anchored by `right` it would run off
+        // the left edge.
+        assert_eq!(
+            dropdown_placement(100.0, 10.0, 200.0, 800.0),
+            "position: absolute; left: 100px; top: 10px;"
+        );
+    }
+
+    #[test]
+    fn a_pointer_past_the_viewport_is_clamped_into_it() {
+        assert_eq!(
+            dropdown_placement(1300.0, 900.0, 1200.0, 800.0),
+            "position: absolute; right: 0px; bottom: 0px;"
+        );
+    }
+
+    #[test]
+    fn one_zero_dimension_is_no_viewport() {
+        assert_eq!(
+            dropdown_placement(1150.0, 700.0, 1200.0, 0.0),
+            "position: absolute; left: 1150px; top: 700px;"
+        );
+    }
+}
