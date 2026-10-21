@@ -290,7 +290,8 @@ fn r5_a_hidden_span_stays_undrawn_on_the_per_fragment_path() {
 }
 
 /// A blurred shadow whose offset alone misses the line above but whose blur
-/// reaches it (3px down, 4px blur: 6px of reach) is drawn per line. Pins the
+/// reaches it (3px down, 6px blur: about 7.3px of reach above the 2-level
+/// tolerance) is drawn per line. Pins the
 /// blur reach in the box test (mutant: reach 0 — survives the PR's rinch-dom
 /// suite; only rinch-bench's mask count catches it).
 #[test]
@@ -298,7 +299,7 @@ fn r6_a_blur_reaching_the_line_above_is_drawn_per_line() {
     let prev = rinch_dom::paint::force_tapped_text_shadows(true);
     let html = r#"<p class="t s" style="width: 40px">H H</p>"#;
     let draws = record(&mut doc_with(
-        ".s { text-shadow: 0 3px 4px rgb(255, 0, 0); }",
+        ".s { text-shadow: 0 3px 6px rgb(255, 0, 0); }",
         html,
     ));
     rinch_dom::paint::force_tapped_text_shadows(prev);

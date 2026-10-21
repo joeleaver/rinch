@@ -557,6 +557,10 @@ struct Piece<'a> {
     end: usize,
     shadows: &'a [TextShadowValue],
     colour: AlphaColor<Srgb>,
+    /// Whether an underline, line-through or wavy underline is drawn across
+    /// it: ink in a colour of its own, so a shadow over it is compared with
+    /// every colour.
+    decorated: bool,
     text: Option<Rect>,
 }
 
@@ -606,7 +610,7 @@ fn shadow_rect(
             .fold(0.0_f32, f32::max)
     });
     let alpha = c.components[3] * diff;
-    if alpha * 255.0 < 0.5 {
+    if alpha as f64 * 255.0 <= super::text_shadow::ORDER_TOLERANCE_LEVELS {
         return None;
     }
     let reach = reaches.get(s.blur_radius.max(0.0) as f64, alpha);
@@ -697,6 +701,7 @@ impl<'a> TextFragment<'a> {
                         end,
                         shadows: r.shadows,
                         colour: r.colour,
+                        decorated: false,
                         text: None,
                     });
                 }
@@ -746,18 +751,22 @@ impl<'a> TextFragment<'a> {
                 for cluster in run.visual_clusters() {
                     let byte = cluster.text_range().start;
                     let advance = cluster.advance() as f64;
-                    let inked = !cluster.is_space_or_nbsp()
-                        || wavy
-                        || cluster.glyphs().next().is_some_and(|g| {
-                            styles.get(g.style_index()).is_some_and(|st| {
-                                st.underline.is_some() || st.strikethrough.is_some()
-                            })
-                        });
+                    let decorated = cluster.glyphs().next().is_some_and(|g| {
+                        styles
+                            .get(g.style_index())
+                            .is_some_and(|st| st.underline.is_some() || st.strikethrough.is_some())
+                    }) || (wavy
+                        && inline_layout
+                            .decoration_spans
+                            .iter()
+                            .any(|d| d.start <= byte && byte < d.end));
+                    let inked = !cluster.is_space_or_nbsp() || decorated;
                     let k = line_pieces.partition_point(|p| p.end <= byte);
                     if inked
                         && let Some(p) = line_pieces.get_mut(k)
                         && p.start <= byte
                     {
+                        p.decorated |= decorated;
                         // A `vertical-align` shift moves the glyphs off the
                         // line's ascent and descent (#724; the line does not
                         // grow for it, #1357): the box goes with them.
@@ -821,8 +830,13 @@ impl<'a> TextFragment<'a> {
                 return false;
             };
             later.shadows.iter().any(|s| {
-                shadow_rect(&reaches, s, text, Some(earlier.colour))
-                    .is_some_and(|r| overlaps(r, earlier_text))
+                shadow_rect(
+                    &reaches,
+                    s,
+                    text,
+                    (!earlier.decorated).then_some(earlier.colour),
+                )
+                .is_some_and(|r| overlaps(r, earlier_text))
                     || (!one_colour
                         && earlier.shadows.iter().any(|e| {
                             shadow_rect(&reaches, s, text, Some(shadow_colour(e))).is_some_and(

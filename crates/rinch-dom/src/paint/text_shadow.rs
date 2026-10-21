@@ -333,11 +333,20 @@ fn text_extent(
     Rect::new(r.x0 * scale, r.y0 * scale, r.x1 * scale, r.y1 * scale)
 }
 
+/// How many 8-bit levels a pixel may differ by between the one-pass
+/// `text-shadow` order and the per-fragment order for the one-pass order to
+/// be kept (#1060). Drawing a later fragment's shadow over earlier ink or
+/// under it changes a pixel by at most the shadow's coverage × alpha × the
+/// colours' channel difference; at 2 levels, a line of differently coloured
+/// spans under a soft dark shadow keeps one pass (review of #1673: the
+/// per-fragment path cost 3× the paint there for differences of 1–5 levels).
+pub(crate) const ORDER_TOLERANCE_LEVELS: f64 = 2.0;
+
 /// How far past its box a blurred `text-shadow` of `blur` px and alpha
-/// `alpha` can still change an 8-bit pixel (#1060): the distance at which the
-/// coverage of a Gaussian of standard deviation `blur / 2` over a half-plane —
-/// which bounds any ink inside the box — times `alpha` drops below half a
-/// level. Never more than [`REACH_PER_BLUR`] × `blur`, the reach the mask is
+/// `alpha` can still change an 8-bit pixel by more than
+/// [`ORDER_TOLERANCE_LEVELS`] (#1060): the distance at which the coverage of a
+/// Gaussian of standard deviation `blur / 2` over a half-plane — which bounds
+/// any ink inside the box — times `alpha` drops to that many levels. Never more than [`REACH_PER_BLUR`] × `blur`, the reach the mask is
 /// rasterised to. A shadow with no blur reaches no further than its box.
 pub(crate) fn visible_reach(blur: f64, alpha: f32) -> f64 {
     let sigma = blur / 2.0;
@@ -347,7 +356,7 @@ pub(crate) fn visible_reach(blur: f64, alpha: f32) -> f64 {
     let limit = blur * REACH_PER_BLUR;
     // The half-plane coverage at `d`: the Gaussian tail past d / sigma.
     let tail = |z: f64| 0.5 * erfc(z / std::f64::consts::SQRT_2);
-    let threshold = 0.5 / (255.0 * alpha.clamp(0.0, 1.0) as f64);
+    let threshold = ORDER_TOLERANCE_LEVELS / (255.0 * alpha.clamp(0.0, 1.0) as f64);
     if threshold >= 0.5 {
         return 0.0;
     }

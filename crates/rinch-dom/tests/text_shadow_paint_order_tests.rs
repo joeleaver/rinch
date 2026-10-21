@@ -307,11 +307,12 @@ fn shadows_of_two_colours_overlapping_are_drawn_per_fragment() {
     assert!(second_shadow > first_text, "{draws:?}");
 }
 
-/// A faint blurred tail that cannot change an 8-bit pixel decides nothing:
-/// a 4px blur at alpha 0.1 reaches about 4.1px where it stays above half a
-/// level (6px is where the mask is cut), so a `0 3px` offset leaves the line
-/// above alone and the one-pass order is kept. The same blur at full alpha
-/// reaches about 5.8px, into the line above, and is drawn per line.
+/// A faint blurred tail that cannot change a pixel by more than the order
+/// tolerance (2 levels) decides nothing: a 4px blur at alpha 0.1 stays above
+/// it for about 2.8px (6px is where the mask is cut), so a `0 2px` offset
+/// leaves the line above (1.6px up) alone and the one-pass order is kept. The
+/// same blur at full alpha reaches about 4.8px, into the line above, and is
+/// drawn per line.
 ///
 /// Kills: the overlap decided with the mask's 3-sigma reach (the faint case
 /// interleaves); the alpha left out of the visible reach.
@@ -325,8 +326,8 @@ fn a_faint_blur_tail_keeps_the_one_pass_order() {
         let last_shadow = draws.iter().rposition(|d| d.color == RED).unwrap();
         last_shadow > first_text
     };
-    let faint = order(".s { text-shadow: 0 3px 4px rgba(255, 0, 0, 0.1); }");
-    let full = order(".s { text-shadow: 0 3px 4px rgb(255, 0, 0); }");
+    let faint = order(".s { text-shadow: 0 2px 4px rgba(255, 0, 0, 0.1); }");
+    let full = order(".s { text-shadow: 0 2px 4px rgb(255, 0, 0); }");
     rinch_dom::paint::force_tapped_text_shadows(prev);
     assert!(!faint, "the faint tail keeps the one-pass order");
     assert!(full, "the opaque blur reaches the line above: per line");
@@ -352,6 +353,33 @@ fn a_blur_that_cannot_reach_ink_of_another_colour_keeps_the_one_pass_order() {
     ));
     rinch_dom::paint::force_tapped_text_shadows(prev);
     const GREY: [u8; 3] = [40, 40, 40];
+    let first_text = draws.iter().position(|d| d.color == GREY).unwrap();
+    let last_shadow = draws.iter().rposition(|d| d.color == BLACK).unwrap();
+    assert!(
+        last_shadow < first_text,
+        "one pass: {:?}",
+        draws.iter().map(|d| d.color).collect::<Vec<_>>()
+    );
+}
+
+/// The order tolerance: a later shadow that can change a pixel of earlier
+/// ink by at most 2 levels counts as no change. A 40%-black 4px blur over
+/// `rgb(110, 110, 110)` text stays above 2 levels for about 3.4px — less than
+/// the 14px space between the two spans — where it stays above half a level
+/// for about 4.6px, past it. So differently coloured spans keep one pass.
+///
+/// Kills: a tolerance of half a level.
+#[test]
+fn differently_coloured_spans_under_a_soft_shadow_keep_the_one_pass_order() {
+    let prev = rinch_dom::paint::force_tapped_text_shadows(true);
+    let draws = record(&mut doc_with(
+        ".g { font-size: 14px; line-height: 18px; color: rgb(110, 110, 110);
+              text-shadow: 0 0 4px rgba(0, 0, 0, 0.4); }
+         .b { color: rgb(0, 0, 200); }",
+        r#"<p class="t g">Ham <span class="b">burg</span></p>"#,
+    ));
+    rinch_dom::paint::force_tapped_text_shadows(prev);
+    const GREY: [u8; 3] = [110, 110, 110];
     let first_text = draws.iter().position(|d| d.color == GREY).unwrap();
     let last_shadow = draws.iter().rposition(|d| d.color == BLACK).unwrap();
     assert!(
