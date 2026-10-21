@@ -2226,7 +2226,8 @@ impl RinchDomEditorView {
                 // Placed by `transform`, as the caret is (`overlay_translate`).
                 ("left", "0"),
                 ("top", "0"),
-                ("width", "2px"),
+                // The width a caret query keeps inside its block (#1041).
+                ("width", &format!("{}px", rinch_core::dom::CARET_WIDTH)),
                 ("background-color", "#1a73e8"),
                 ("pointer-events", "none"),
                 ("z-index", "1"),
@@ -2668,7 +2669,8 @@ impl RinchDomEditorView {
                 // `transform` (`overlay_translate`): see there for why.
                 ("left", "0"),
                 ("top", "0"),
-                ("width", "2px"),
+                // The width a caret query keeps inside its block (#1041).
+                ("width", &format!("{}px", rinch_core::dom::CARET_WIDTH)),
                 ("background-color", "#1a73e8"),
                 ("pointer-events", "none"),
                 // In front of the in-flow text and the selection highlight.
