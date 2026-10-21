@@ -54,10 +54,10 @@ fn paint_selection_rects(
 /// carries — `data-text-sel`, `-start`, `-end` — as byte offsets into its
 /// laid-out text, clamped to it. `None` when it carries none, or an empty one.
 pub(crate) fn read_only_selection(node: &Node) -> Option<(usize, usize)> {
-    let layout = node.text_layout.as_ref()?;
-    if node.attributes.get("data-text-sel").map(String::as_str) != Some("true") {
+    if !node.carries_text_selection() {
         return None;
     }
+    let layout = node.text_layout.as_ref()?;
     let len = layout.text_content.len();
     let at = |k: &str| {
         node.attributes

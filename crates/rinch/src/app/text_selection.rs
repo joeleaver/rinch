@@ -65,14 +65,13 @@ impl RinchApp {
                 if anchor != focus {
                     let sel_start = anchor.min(focus);
                     let sel_end = anchor.max(focus);
-                    node.attributes
-                        .insert("data-text-sel".to_string(), "true".to_string());
+                    node.write_attribute("data-text-sel", "true");
                     node.attributes
                         .insert("data-text-sel-start".to_string(), sel_start.to_string());
                     node.attributes
                         .insert("data-text-sel-end".to_string(), sel_end.to_string());
                 } else {
-                    node.attributes.remove("data-text-sel");
+                    node.erase_attribute("data-text-sel");
                     node.attributes.remove("data-text-sel-start");
                     node.attributes.remove("data-text-sel-end");
                 }
@@ -90,7 +89,7 @@ impl RinchApp {
             if let Some(doc) = &self.doc {
                 let mut d = doc.borrow_mut();
                 if let Some(node) = d.tree.nodes.get_mut(sel.ifc_node_id) {
-                    node.attributes.remove("data-text-sel");
+                    node.erase_attribute("data-text-sel");
                     node.attributes.remove("data-text-sel-start");
                     node.attributes.remove("data-text-sel-end");
                 }

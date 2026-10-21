@@ -880,6 +880,12 @@ pub struct Node {
     /// instead: a direct write of `id` fails loudly in every debug test rather
     /// than silently un-fixing #675. The assert is compiled out in release.
     id_atom: Option<Atom>,
+    /// Whether the node carries `data-text-sel="true"`, the read-only text
+    /// selection the shell writes on an IFC root. Kept by
+    /// [`Node::write_attribute`] / [`Node::erase_attribute`] like `id_atom`, so
+    /// the paint and damage paths ask a `bool` per IFC root rather than hash an
+    /// attribute name (review of #1706: the lookup cost a hover frame 3.6%).
+    text_sel: bool,
     /// A `<textarea>`'s dirty value flag, for the one state the `value`
     /// attribute cannot carry: **dirty with no attribute**, which removing the
     /// attribute leaves (#1222). While the attribute is present its presence
@@ -1473,6 +1479,8 @@ impl Node {
     pub fn write_attribute(&mut self, name: &str, value: &str) {
         if name == "id" {
             self.id_atom = Some(Atom::from(value));
+        } else if name == "data-text-sel" {
+            self.text_sel = value == "true";
         }
         self.attributes.insert(name.to_string(), value.to_string());
     }
@@ -1485,6 +1493,8 @@ impl Node {
     pub fn erase_attribute(&mut self, name: &str) {
         if name == "id" {
             self.id_atom = None;
+        } else if name == "data-text-sel" {
+            self.text_sel = false;
         }
         self.attributes.remove(name);
     }
@@ -1503,6 +1513,20 @@ impl Node {
         self.id_atom.as_ref()
     }
 
+    /// Whether the node carries `data-text-sel="true"` (a read-only text
+    /// selection), without hashing the attribute name.
+    #[inline]
+    pub fn carries_text_selection(&self) -> bool {
+        debug_assert_eq!(
+            self.text_sel,
+            self.attributes.get("data-text-sel").map(String::as_str) == Some("true"),
+            "Node::text_sel drifted from `data-text-sel` — something wrote \
+             `attributes` directly instead of through `write_attribute` / \
+             `erase_attribute`",
+        );
+        self.text_sel
+    }
+
     /// Create a new document root node.
     pub fn document(id: RawNodeId, guard: SharedRwLock) -> Self {
         Self {
@@ -1512,6 +1536,7 @@ impl Node {
             children: Vec::new(),
             attributes: HashMap::new(),
             id_atom: None,
+            text_sel: false,
             value_dirty: false,
             dirty: DirtyFlags::empty(),
             scroll_offset: (0.0, 0.0),
@@ -1589,6 +1614,7 @@ impl Node {
             children: Vec::new(),
             attributes: HashMap::new(),
             id_atom: None,
+            text_sel: false,
             value_dirty: false,
             dirty: DirtyFlags::STYLE | DirtyFlags::LAYOUT,
             scroll_offset: (0.0, 0.0),
@@ -1665,6 +1691,7 @@ impl Node {
             children: Vec::new(),
             attributes: HashMap::new(),
             id_atom: None,
+            text_sel: false,
             value_dirty: false,
             dirty: DirtyFlags::LAYOUT,
             scroll_offset: (0.0, 0.0),
@@ -1739,6 +1766,7 @@ impl Node {
             children: Vec::new(),
             attributes: HashMap::new(),
             id_atom: None,
+            text_sel: false,
             value_dirty: false,
             dirty: DirtyFlags::empty(),
             scroll_offset: (0.0, 0.0),
