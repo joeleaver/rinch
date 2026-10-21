@@ -123,6 +123,8 @@ mod editor_link_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_list_item_space_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_hanging_space_caret_1041_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_list_item_wrap_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_node_view_image_tests;

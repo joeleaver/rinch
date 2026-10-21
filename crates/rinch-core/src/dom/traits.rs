@@ -113,6 +113,13 @@ pub enum CaretAffinity {
     Upstream,
 }
 
+/// The width, in CSS px, of the text caret the rich-text editor draws (its
+/// overlay), and the width a caret query keeps inside the box it clamps the
+/// caret to ([`DomDocument::query_caret_position`], #1041): a caret's left
+/// edge is at most the block's border-box right edge less this, so the
+/// whole caret is drawn inside the block.
+pub const CARET_WIDTH: f32 = 2.0;
+
 /// Bounding box for a glyph cluster.
 #[derive(Debug, Clone, Copy)]
 pub struct GlyphBounds {
