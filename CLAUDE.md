@@ -2013,6 +2013,36 @@ press outside it is swallowed by the backdrop and does nothing. Pins:
 
 File drops from the OS use `data-onfiledragenter`, `data-onfiledragleave` attributes, and `register_file_drop_handler` for the actual drop. See the File Drop section of UI Zoo for an example.
 
+## `title` tooltips (desktop)
+
+An element with a non-empty `title` (the nearest one up the tree; a `title=""`
+or white-space-only one on a nearer element means none) shows a tooltip after
+the pointer rests 500 ms over it (#1646, `app/title_tooltip.rs`,
+`rinch_dom::paint::tooltip`). It is **not a DOM node**: a
+`rinch_dom::paint::tooltip::Tooltip` is shaped once (Parley, the theme's
+`--rinch-font-family` else `sans-serif`, 12px) and painted after the document
+by `build_pixels` / `build_scene`, its framebuffer rect added to the frame's
+damage by hand like the inspect highlight's (`TitleTooltipState::last_rect`),
+so showing or hiding it runs no style, layout or IFC pass (pinned by
+`title_tooltip_tests::showing_it_repaints_its_rect_and_lays_out_nothing`).
+Colours: `--rinch-color-surface` / `-text` / `-border` read off `<body>`'s
+custom properties, light fallbacks without the theme. The hover arm calls
+`note_title_tooltip_move` with the move's shared hit (restarting the rest timer
+on every move); a document with no `title` pays one read of
+`NodeTree::title_attributes` (counted by `set_attribute`/`remove_attribute`,
+like `mousemove_handlers`). `AboutToWait` runs `tick_title_tooltip`, which
+shows a due one and follows a shown one's `title` (changed: re-shaped; removed
+or detached: hidden). The deadline is the second timed wake:
+`RinchApp::title_tooltip_deadline` is folded into the desktop shell's
+`WaitUntil` (with the caret blink) and into `RinchContext::next_wake`. Placed
+below-right of the pointer (+10, +20), flipped left / above to stay in the
+window. Hidden by a move onto another source, `MouseDown`, `MouseWheel`,
+`KeyDown` (these three also suppress it until the pointer reaches another
+`title`), `PointerCancel`, `Resized`, `WindowFocus(false)`, a file hover, the
+mouse leaving the window (the shell's `PointerLeft`), and any drag. Off on
+Android; `RinchApp::set_title_tooltips`. Not on `rinch-web` (the browser draws
+its own). Components declare no `title` prop, so it goes on an HTML element.
+
 ## Keyboard Shortcuts (built-in)
 
 - `Alt + I` - Toggle inspect mode (hover highlight for element info)
