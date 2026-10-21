@@ -362,7 +362,7 @@ fn a_running_loader_costs_the_same_bounded_frame_every_turn() {
                 (DamageRects, 1),
                 (SurfacePx, 480000),
                 (PaintNodesVisited, 4),
-                (StackingOrderBuilds, 2),
+                (StackingOrderBuilds, 1),
                 (ClipMasks, 1),
             ],
         );
@@ -473,11 +473,12 @@ fn row_count(app: &RinchApp) -> usize {
 ///
 /// **Findings shared by all four `for` scenarios, pinned as they are; a fix must LOWER this number, and its PR updates the pin:**
 ///
-/// - **#910, fixed: paint visits the rows the scroller shows** (25: html,
+/// - **#910, fixed: paint visits the rows the scroller shows** (24: html,
 ///   body, the chain down to the scroller, and the rows its clip and ink
 ///   margin let through), where it visited all 205. The clip the painter has
 ///   open is a cull, and a row it cuts away is dismissed by the scroller's
-///   loop without a visit.
+///   loop without a visit. 25 → 24 (#1719): a `0x0` text node beside the
+///   `<style>`, which paints nothing, is no longer entered to find that out.
 /// - **#909, fixed: the damage is clipped by the scroller.** `repainted_px` is
 ///   122 816 = 304 x 404 — the scroller's box and its 4px margin — where it
 ///   was 182 400 = 304 x 600, down to the window's bottom edge: rows the
@@ -522,7 +523,7 @@ fn a_keyed_for_moves_one_row() {
             (DamageRects, 1),
             (RepaintedPx, 122816),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 25),
+            (PaintNodesVisited, 24),
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 138),
             (ClipMasks, 2),
@@ -575,7 +576,7 @@ fn a_keyed_for_inserts_one_row_in_the_middle() {
             (DamageRects, 1),
             (RepaintedPx, 122816),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 25),
+            (PaintNodesVisited, 24),
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 137),
             (ClipMasks, 2),
@@ -614,7 +615,7 @@ fn a_keyed_for_removes_one_row_from_the_middle() {
             (RepaintedPx, 122816),
             (SurfacePx, 480000),
             (RemovalDamageSteps, 9),
-            (PaintNodesVisited, 25),
+            (PaintNodesVisited, 24),
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 137),
             (ClipMasks, 2),
@@ -658,7 +659,7 @@ fn a_keyed_for_replaces_every_row() {
             (RepaintedPx, 122816),
             (SurfacePx, 480000),
             (RemovalDamageSteps, 1800),
-            (PaintNodesVisited, 25),
+            (PaintNodesVisited, 24),
             (StackingOrderBuilds, 1),
             (GlyphCacheHits, 168),
             (ClipMasks, 2),
@@ -1270,7 +1271,7 @@ fn a_box_that_becomes_a_stacking_context_repaints_its_subtrees_reach() {
             (RepaintedPx, 26416),
             (SurfacePx, 480000),
             (PaintNodesVisited, 6),
-            (StackingOrderBuilds, 4),
+            (StackingOrderBuilds, 2),
             (ClipMasks, 1),
             (ClipMaskPx, 27136),
             (PaintLayers, 1),
@@ -1307,7 +1308,7 @@ fn a_stacking_context_that_only_changes_opacity_repaints_its_own_box() {
             (DamageRects, 1),
             (RepaintedPx, 10816),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 6),
+            (PaintNodesVisited, 4),
             (StackingOrderBuilds, 2),
             (ClipMasks, 1),
             (ClipMaskPx, 11236),
@@ -1555,14 +1556,20 @@ fn transform_row_frames(transform: &'static str) -> (FrameStats, FrameStats) {
 /// What an identity transform costs (#415): `transform: translateX(0)` makes
 /// each row a stacking context, exactly as `translateX(1px)` or `opacity:
 /// 0.99` always has. A stacking context is hoisted into its ancestor's paint
-/// sequence and is never pruned by the off-screen cull or by hit testing's
-/// flow extents, so every one of the 300 rows is visited by paint and by a
-/// pointer move, where the `none` twin below visits the ~20 on screen:
+/// sequence; until #1719 neither paint's clip cull nor hit testing's flow
+/// extents pruned one, so every one of the 300 rows was visited by paint and
+/// by a pointer move, where the `none` twin below visits the ~20 on screen:
 /// `PaintNodesVisited` 24 → 303, `StackingOrderBuilds` 2 → 313 and
 /// `HitTestNodesVisited` 4 → 291 on a wheel notch, and 4 → 285 nodes on a warm
-/// pointer move. The price is the pre-existing one for any stacking context;
-/// #415 is what makes a no-op transform pay it, as CSS says it must be one.
-/// A fix to the cull or the prune must *lower* these.
+/// pointer move.
+///
+/// #1719 prunes them both: paint's loop asks of a stacking-context entry what
+/// `paint_node` would have (`subtree_is_entirely_outside`), and hit testing
+/// prunes a stacking context whose subtree hoists nothing on its flow extent,
+/// since its sequence is then its flow walk. The notch is now the twin's in
+/// paint (24 visits), builds 2 sequences (313), and its hit test visits 2
+/// nodes (291); the warm move visits 2 (285). A fix to the cull or the prune
+/// must *lower* these.
 #[test]
 fn identity_transform_rows_cost_what_any_stacking_context_costs() {
     let (notch, warm) = transform_row_frames("translateX(0)");
@@ -1577,12 +1584,12 @@ fn identity_transform_rows_cost_what_any_stacking_context_costs() {
             (DamageRects, 1),
             (RepaintedPx, 122816),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 303),
-            (StackingOrderBuilds, 313),
+            (PaintNodesVisited, 24),
+            (StackingOrderBuilds, 2),
             (ClipMasks, 3),
             (ClipMaskPx, 367044),
             (HitTests, 1),
-            (HitTestNodesVisited, 291),
+            (HitTestNodesVisited, 2),
         ],
     );
     expect_frame(
@@ -1591,7 +1598,7 @@ fn identity_transform_rows_cost_what_any_stacking_context_costs() {
         &[
             (PaintCachedFrames, 1),
             (HitTests, 1),
-            (HitTestNodesVisited, 285),
+            (HitTestNodesVisited, 2),
         ],
     );
 }
@@ -2030,6 +2037,217 @@ fn hovering_an_outer_shadowed_card_costs_one_shadow_clip() {
             (HitTests, 1),
             (HitTestNodesVisited, 2),
             (HitExtentsComputed, 3),
+        ],
+    );
+}
+
+// ── Positioned and nested rows in a scroller (#1719) ──────────────────────
+
+/// `branch` children per open folder, `depth` levels, every folder open, every
+/// node with an icon (`li > content > icon > svg > path`).
+fn open_tree(
+    level: usize,
+    prefix: &str,
+    branch: usize,
+    depth: usize,
+    open: &mut std::collections::HashSet<String>,
+) -> Vec<rinch_components::TreeNodeData> {
+    use rinch_components::TreeNodeData;
+    (0..branch)
+        .map(|i| {
+            let v = format!("{prefix}.{i}");
+            let mut n = TreeNodeData::new(v.clone(), format!("node {v}"))
+                .with_icon(rinch_tabler_icons::TablerIcon::Folder);
+            if level + 1 < depth {
+                open.insert(v.clone());
+                n = n.with_children(open_tree(level + 1, &v, branch, depth, open));
+            }
+            n
+        })
+        .collect()
+}
+
+/// rinch's own `Tree` — 363 rows, five levels, every folder open — in a
+/// 300x400 scroller, with a custom `render_node` written in `rsx!` (an `if`
+/// and a reactive text, each a `display: contents` wrapper), the shape of an
+/// app's file tree. Returns the app and the scroller.
+fn mount_open_tree() -> (RinchApp, NodeHandle) {
+    use rinch_components::{
+        RenderTreeNode, RenderTreeNodePayload, Tree, UseTreeOptions, UseTreeReturn,
+    };
+    let out: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let out2 = out.clone();
+    let app = mount_settled(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let style = scope.create_element("style");
+        let css = scope.create_text(&format!(
+            "{ROW_CSS} {}",
+            rinch_components::generate_component_css()
+        ));
+        style.append_child(&css);
+        root.append_child(&style);
+        let mut open = std::collections::HashSet::new();
+        let data = open_tree(0, "n", 3, 5, &mut open);
+        let state = UseTreeReturn::new(UseTreeOptions {
+            initial_expanded: open,
+            ..Default::default()
+        });
+        let render_node: RenderTreeNode = Rc::new(
+            |p: &RenderTreeNodePayload, __scope: &mut RenderScope| {
+                let label = p.node.label.clone();
+                let folder = p.has_children;
+                let selected = p.selected_signal;
+                let value = p.node_value.to_string();
+                rsx! { span {
+                    if folder { b { "+" } }
+                    {|| if selected.get().contains(&value) { "*".to_string() } else { String::new() }}
+                    {label.clone()}
+                } }
+            },
+        );
+        let scroller = scope.create_element("div");
+        scroller.set_attribute("class", "scroller");
+        let tree = Tree {
+            data,
+            tree: Some(state),
+            render_node: Some(render_node),
+            ..Default::default()
+        }
+        .render(scope, &[]);
+        scroller.append_child(&tree);
+        root.append_child(&scroller);
+        *out2.borrow_mut() = Some(scroller.clone());
+        root
+    });
+    let scroller = out.borrow().clone().unwrap();
+    (app, scroller)
+}
+
+/// The second wheel notch over an open five-level `Tree` (#1719): paint visits
+/// the rows on screen and the open folders around them, not the 363 rows.
+///
+/// `paints_nothing_without_visit` gave up three levels down, and a tree row is
+/// deeper than that (`li > content > icon > svg > path`); a `display: contents`
+/// wrapper and a `0x0` box answered "visit me" outright. So every row scrolled
+/// out of view was entered, and every open folder around it, and a frame cost
+/// what the open rows cost: **604** visits on main. The question is now bounded
+/// by a count of nodes, a wrapper is looked through, and a box with no area
+/// and nothing to walk paints nothing: **172** — the rows on screen, the
+/// ink-margin band, and the chain of open folders above them.
+///
+/// An open folder's chevron is rotated, so a stacking context of its own; the
+/// hit test built every one's sequence (**129** builds on main). It now prunes
+/// a stacking context that hoists nothing on its flow extent before building
+/// its sequence: **9**. The rotated chevrons are still entered (one visit
+/// each, 135 nodes) — their transform is inverted on entry.
+#[test]
+fn a_scrolled_open_tree_paints_the_rows_on_screen() {
+    let (mut app, scroller) = mount_open_tree();
+    let rows = app
+        .doc()
+        .unwrap()
+        .borrow()
+        .tree
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.attributes.get("role").map(String::as_str) == Some("treeitem"))
+        .count();
+    assert_eq!(rows, 363, "positive control: every row is mounted");
+    interaction(&mut app, wheel_notch);
+    let first = scroller.scroll_top();
+    let s = interaction(&mut app, wheel_notch);
+    assert!(
+        scroller.scroll_top() > first && first > 0.0,
+        "positive control: both notches scrolled"
+    );
+    expect_frame(
+        "second wheel notch, open five-level tree",
+        &s,
+        &[
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 122816),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 172),
+            (StackingOrderBuilds, 9),
+            (GlyphCacheHits, 325),
+            (ClipMasks, 3),
+            (ClipMaskPx, 367044),
+            (HitTests, 1),
+            (HitTestNodesVisited, 135),
+        ],
+    );
+}
+
+/// A 500-row scroller whose rows (and the scroller) are stacking contexts
+/// (`position: relative; z-index: 0`), each holding one in-flow child.
+fn mount_stacking_rows() -> (RinchApp, NodeHandle) {
+    let out: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let out2 = out.clone();
+    let app = mount_settled(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let scroller = scope.create_element("div");
+        scroller.set_attribute(
+            "style",
+            "width: 300px; height: 400px; overflow-y: auto; position: relative; z-index: 0",
+        );
+        for _ in 0..SCROLL_ROWS {
+            let row = scope.create_element("div");
+            row.set_attribute("style", "height: 20px; position: relative; z-index: 0");
+            let mark = scope.create_element("div");
+            mark.set_attribute(
+                "style",
+                "width: 10px; height: 10px; background: rgb(0, 0, 200)",
+            );
+            row.append_child(&mark);
+            scroller.append_child(&row);
+        }
+        root.append_child(&scroller);
+        *out2.borrow_mut() = Some(scroller.clone());
+        root
+    });
+    let scroller = out.borrow().clone().unwrap();
+    (app, scroller)
+}
+
+/// Rows that are stacking contexts are entries of the scroller's paint
+/// sequence, and neither paint nor hit testing dismissed one without entering
+/// it (#1719). On main the notch visited **524** nodes in paint (each row
+/// culled on arrival by `subtree_is_entirely_outside`), **492** in its hit
+/// test, and built **515** sequences, one per row for the hit test. The loop
+/// now asks paint's question itself, and the hit test prunes a stacking
+/// context that hoists nothing on its flow extent: **45**, **3** and **26**
+/// (the rows paint draws).
+#[test]
+fn stacking_context_rows_are_culled_like_in_flow_rows() {
+    let (mut app, scroller) = mount_stacking_rows();
+    interaction(&mut app, wheel_notch);
+    let first = scroller.scroll_top();
+    let s = interaction(&mut app, wheel_notch);
+    assert!(
+        scroller.scroll_top() > first && first > 0.0,
+        "positive control: both notches scrolled"
+    );
+    expect_frame(
+        "second wheel notch, 500 stacking-context rows",
+        &s,
+        &[
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 122816),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 45),
+            (StackingOrderBuilds, 26),
+            (ClipMasks, 2),
+            (ClipMaskPx, 245640),
+            (HitTests, 1),
+            (HitTestNodesVisited, 3),
         ],
     );
 }
