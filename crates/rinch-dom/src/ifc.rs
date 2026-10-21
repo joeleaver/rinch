@@ -1818,6 +1818,9 @@ struct LineUnit {
     /// A hyphen or another UAX #14 class HY/BA character that is not white
     /// space: LB12a allows a break between it and an NBSP after it.
     breaks_before_glue: bool,
+    /// The shaped run a cluster belongs to (`usize::MAX` for a box): parley
+    /// counts a line's trailing white space in its last run only (#1042).
+    run: usize,
 }
 
 /// Re-set the alignment width of the line just committed, `line` its units
@@ -1829,14 +1832,18 @@ struct LineUnit {
 ///
 /// - [`LineUnit::unhung`] spaces at the end (a `pre` root's spaces after a
 ///   wrapping span) always count — Chrome 153's answer (#1212).
-/// - With `count_trailing` (#1042), so does every white-space unit before the
-///   run of hanging spaces at the line's end (a no-break space never hangs,
-///   and spaces followed by one are not at the end), and, at the end of the
-///   paragraph or before a forced break, the hanging run too: CSS Text 3
-///   §4.1.3 hangs a preserved space there only conditionally, so the part
-///   that fits counts. At a soft wrap the run hangs whole. Chrome
-///   155: `abc` and three `pre-wrap` spaces ending a 200px right-aligned
-///   paragraph start at 158.58, not 172.08.
+/// - With `count_trailing` (#1042) the width is narrowed by exactly what
+///   parley adds back (the trailing white space of the line's **last shaped
+///   run**: parley does not look past it, and a tab or a span with its own
+///   font size or spacing is a run of its own) less what CSS hangs: the run
+///   of hanging spaces at the line's end at a soft wrap, nothing at the end
+///   of the paragraph or before a forced break, where CSS Text 3 §4.1.3
+///   hangs a preserved space only conditionally (and a line whose content
+///   and fitting spaces fill it is start-aligned whether or not the
+///   overflowing part is counted). An NBSP and a `pre` space never hang, so
+///   they count wherever they are. Chrome 155: `abc` and three `pre-wrap`
+///   spaces ending a 200px right-aligned paragraph start at 158.58, not
+///   172.08; `abc\t\t` at 128.
 fn align_unhung_trailing(
     breaker: &mut parley::layout::BreakLines<'_, Brush>,
     line: &[LineUnit],
@@ -1852,33 +1859,62 @@ fn align_unhung_trailing(
         .take_while(|u| u.unhung)
         .map(|u| u.advance)
         .sum();
-    let mut narrow = unhung;
-    if count_trailing {
-        let trailing = || {
+    let narrow = if count_trailing {
+        // What parley's `align` adds back: the white space at the end of the
+        // line's last shaped run only (a tab, a span with its own font size
+        // or spacing, starts a run of its own). White space in earlier runs
+        // is content to parley already.
+        let last_run = line.last().map_or(usize::MAX, |u| u.run);
+        let added_back: f32 = line
+            .iter()
+            .rev()
+            .take_while(|u| {
+                u.run == last_run
+                    && last_run != usize::MAX
+                    && (u.newline || u.hangs || u.unhung || u.nbsp)
+            })
+            .map(|u| u.advance)
+            .sum();
+        // What CSS hangs: the run of hanging spaces at the line's end at a
+        // soft wrap, whatever runs it spans; nothing at the end of the
+        // paragraph or before a forced break (only the part that overflows
+        // hangs there, and a line with no free space is start-aligned
+        // whether or not that part is counted).
+        let hangs: f32 = if matches!(reason, BreakReason::None | BreakReason::Explicit) {
+            0.0
+        } else {
             line.iter()
                 .rev()
                 .skip_while(|u| u.newline)
-                .take_while(|u| u.hangs || u.unhung || u.nbsp)
+                .take_while(|u| u.hangs)
+                .map(|u| u.advance)
+                .sum()
         };
-        let white: f32 = trailing().map(|u| u.advance).sum();
-        // At the end of the paragraph or before a forced break only the part
-        // of the run that overflows hangs; counting all of it gives the same
-        // line, since the content and the part that fits fill the width and
-        // a line with no free space is start-aligned either way.
-        let counted = if matches!(reason, BreakReason::None | BreakReason::Explicit) {
-            white
-        } else {
-            white
-                - trailing()
-                    .take_while(|u| u.hangs)
-                    .map(|u| u.advance)
-                    .sum::<f32>()
-        };
-        narrow = narrow.max(counted);
-    }
-    if narrow > 0.0 {
+        // Negative when the hanging run spans more than the last run: the
+        // width then grows, so that all of it hangs.
+        added_back - hangs
+    } else {
+        unhung
+    };
+    if narrow != 0.0 {
         breaker.set_prior_line_width(max - narrow);
     }
+}
+
+/// Whether `node`'s computed CSS `direction` is `ltr`: read from the nearest
+/// node at or above it with a Stylo style (an anonymous block box has none
+/// and inherits its container's). `ltr` when nothing has one.
+fn css_direction_is_ltr(nodes: &slab::Slab<Node>, node: usize) -> bool {
+    let mut at = Some(node);
+    while let Some(id) = at {
+        let Some(n) = nodes.get(id) else { break };
+        let data = n.stylo_element_data.borrow();
+        if let Some(primary) = data.as_ref().and_then(|d| d.styles.get_primary()) {
+            return primary.writing_mode.is_bidi_ltr();
+        }
+        at = n.parent;
+    }
+    true
 }
 
 /// Whether some line ends (before any newline) in white space
@@ -1944,6 +1980,7 @@ fn logical_units(
     let mut keyed: Vec<((usize, u8, usize), LineUnit)> = Vec::new();
     for line in layout.lines() {
         for run in line.runs() {
+            let run_index = run.index();
             for c in run.clusters() {
                 let range = c.text_range();
                 let n = keyed.len();
@@ -1966,6 +2003,7 @@ fn logical_units(
                             .get(range.clone())
                             .and_then(|t| t.chars().next_back())
                             .is_some_and(breaks_before_glue),
+                        run: run_index,
                     },
                 ));
             }
@@ -1985,6 +2023,7 @@ fn logical_units(
                 counted: in_flow,
                 inline_box: in_flow,
                 breaks_before_glue: false,
+                run: usize::MAX,
             },
         ));
     }
@@ -7753,12 +7792,15 @@ impl RinchDocument {
         let alignment = root_computed.text_align.to_parley();
         // Trailing white space that does not hang moves only a line aligned
         // away from its start (#1042).
+        // and only in a left-to-right block: rinch hands parley no CSS
+        // `direction`, so `break_lines_hanging_spaces`' own `is_rtl` test
+        // sees only the direction parley infers from the text.
         let count_trailing = matches!(
             alignment,
             parley::layout::Alignment::Right
                 | parley::layout::Alignment::Center
                 | parley::layout::Alignment::End
-        );
+        ) && css_direction_is_ltr(nodes, root_id);
         let mut hang = HangStats::default();
         let mut builds = 0u32;
         let (text_layout, text_content) = loop {

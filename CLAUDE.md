@@ -96,9 +96,14 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     `any_counted_trailing_line`), #1042: `abc` and three `pre-wrap` spaces right-aligned in 200px
     start at 158.58, as in Chrome 155 (they started at 172.08), and a shrink-to-fit box no
     longer draws its line past its own edge. A start-aligned paragraph is not re-broken for it.
-    Not done: a right-to-left line (parley offsets it by its trailing white space, so narrowing
-    would move it the wrong way), a `nowrap`/`pre` root with no wrapping text (#1237), and a
-    justified line's space count (#1056).
+    The width is narrowed by what parley adds back — the trailing white space of the line's
+    **last shaped run** only (a tab, or a span with its own font size or spacing, is a run of its
+    own) — less what CSS hangs. Such a paragraph pays one extra break of the whole paragraph per
+    layout (`ifc_hang_passes`; `perf_regression_scenarios::a_right_aligned_paragraph_ending_in_spaces_pays_one_pass`).
+    Not done: a right-to-left line, by parley's inferred direction or CSS `direction: rtl`
+    (parley offsets it by its trailing white space, so narrowing would move it the wrong way;
+    #1666), a flex or grid item's own text (a text leaf, `break_leaf_lines`), a `nowrap`/`pre`
+    root with no wrapping text (#1237), and a justified line's space count (#1056).
     `crates/rinch-dom/tests/text_align_trailing_spaces_1042_tests.rs` is the pin.
   - **rinch collapses an IFC's white space itself; the IFC's tree builder always hands parley
     `Preserve`.** (The ranged builders — form controls, text leaves — are separate and unchanged.)
