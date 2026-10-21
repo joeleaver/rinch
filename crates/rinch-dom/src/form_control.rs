@@ -1027,7 +1027,10 @@ pub fn painted_caret_rect(
     } else if is_password {
         const BULLET: &str = "\u{2022}";
         bullets = BULLET.repeat(value.chars().count());
-        (bullets.as_str(), value[..offset].chars().count() * BULLET.len())
+        (
+            bullets.as_str(),
+            value[..offset].chars().count() * BULLET.len(),
+        )
     } else {
         (value, offset)
     };

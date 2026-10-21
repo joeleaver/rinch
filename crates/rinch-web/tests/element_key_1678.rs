@@ -108,7 +108,11 @@ impl Fixture {
     }
 
     fn el(&self, id: &str) -> web_sys::HtmlElement {
-        document().get_element_by_id(id).unwrap().dyn_into().unwrap()
+        document()
+            .get_element_by_id(id)
+            .unwrap()
+            .dyn_into()
+            .unwrap()
     }
 
     fn take_log(&self) -> Vec<String> {
@@ -149,7 +153,10 @@ fn onkeydown_consumes_enter_and_shift_enter_goes_on() {
     assert!(key("keydown", "Enter", "Enter", false, false), "cancelled");
     assert_eq!(f.take_log(), ["down:Enter"], "no ancestor, no submit");
 
-    assert!(!key("keydown", "Enter", "Enter", true, false), "not cancelled");
+    assert!(
+        !key("keydown", "Enter", "Enter", true, false),
+        "not cancelled"
+    );
     assert_eq!(f.take_log(), ["down:S-Enter", "outer:Enter"]);
     f.teardown();
 }
@@ -233,12 +240,14 @@ fn selection_range_reads_the_controls_own_selection() {
 
     let ta: web_sys::HtmlTextAreaElement = f.el("k-ta").dyn_into().unwrap();
     ta.set_value("a😀bc");
-    ta.set_selection_range_with_direction(3, 5, "backward").unwrap();
+    ta.set_selection_range_with_direction(3, 5, "backward")
+        .unwrap();
     assert_eq!(
         f.textarea.selection_range(),
         Some((3, 5, SelectionDirection::Backward))
     );
-    f.textarea.set_selection_range(1, 3, SelectionDirection::Forward);
+    f.textarea
+        .set_selection_range(1, 3, SelectionDirection::Forward);
     assert_eq!(
         f.textarea.selection_range(),
         Some((1, 3, SelectionDirection::Forward))
@@ -260,7 +269,11 @@ fn caret_rect_is_in_client_px_at_the_offset() {
     let c0 = f.textarea.caret_rect_at(0).expect("laid out");
     let c2 = f.textarea.caret_rect_at(2).unwrap();
     let c3 = f.textarea.caret_rect_at(3).unwrap();
-    assert!((c0.x as f64 - (r.left() + 2.0 + 6.0)).abs() < 0.5, "{c0:?} {}", r.left());
+    assert!(
+        (c0.x as f64 - (r.left() + 2.0 + 6.0)).abs() < 0.5,
+        "{c0:?} {}",
+        r.left()
+    );
     // The caret is the text's own height (the font's content area, a little
     // less than the 20px line), centred in its line.
     assert!(c0.height > 15.0 && c0.height <= 20.0, "{c0:?}");
@@ -271,23 +284,32 @@ fn caret_rect_is_in_client_px_at_the_offset() {
     );
 
     let probe = document().create_element("span").unwrap();
-    probe.set_attribute("style", "font: 16px/20px monospace; white-space: pre").unwrap();
+    probe
+        .set_attribute("style", "font: 16px/20px monospace; white-space: pre")
+        .unwrap();
     probe.set_text_content(Some("ab"));
     document().body().unwrap().append_child(&probe).unwrap();
     let ab = probe.get_bounding_client_rect().width() as f32;
     probe.remove();
     assert!((c2.x - c0.x - ab).abs() < 0.5, "{c0:?} {c2:?} ab={ab}");
-    assert!((c3.x - c0.x).abs() < 0.5 && (c3.y - c0.y - 20.0).abs() < 0.5, "{c0:?} {c3:?}");
+    assert!(
+        (c3.x - c0.x).abs() < 0.5 && (c3.y - c0.y - 20.0).abs() < 0.5,
+        "{c0:?} {c3:?}"
+    );
 
     // The head: a caret set at 4 is drawn where offset 4 is.
-    f.textarea.set_selection_range(4, 4, SelectionDirection::Forward);
+    f.textarea
+        .set_selection_range(4, 4, SelectionDirection::Forward);
     let head = f.textarea.caret_rect().unwrap();
     let at4 = f.textarea.caret_rect_at(4).unwrap();
     assert_eq!((head.x, head.y), (at4.x, at4.y));
 
     let ir = f.el("k-in").get_bounding_client_rect();
     let ic = f.input.caret_rect().expect("an empty field has a caret");
-    assert!((ic.x as f64 - (ir.left() + 1.0 + 8.0)).abs() < 0.5, "{ic:?}");
+    assert!(
+        (ic.x as f64 - (ir.left() + 1.0 + 8.0)).abs() < 0.5,
+        "{ic:?}"
+    );
     assert!(
         (ic.y as f64) > ir.top() && ((ic.y + ic.height) as f64) < ir.bottom(),
         "{ic:?} in {}..{}",

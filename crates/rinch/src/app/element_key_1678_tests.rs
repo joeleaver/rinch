@@ -83,7 +83,12 @@ fn mount() -> Fixture {
             }
         };
         let kids = root.children();
-        *handles_in.borrow_mut() = Some([root.clone(), kids[0].clone(), kids[1].clone(), kids[2].clone()]);
+        *handles_in.borrow_mut() = Some([
+            root.clone(),
+            kids[0].clone(),
+            kids[1].clone(),
+            kids[2].clone(),
+        ]);
         root
     });
     app.mount_component(VP.0 as f32, VP.1 as f32);
@@ -181,18 +186,31 @@ fn onkeydown_consumes_enter_before_the_field_and_onsubmit() {
     f.take_log();
 
     f.press(KeyCode::Enter, None, false);
-    assert_eq!(f.value(&f.textarea), "hi", "a consumed Enter inserts nothing");
+    assert_eq!(
+        f.value(&f.textarea),
+        "hi",
+        "a consumed Enter inserts nothing"
+    );
     let log = f.take_log();
     assert_eq!(log[0], "down:Enter", "{log:?}");
     assert!(
-        !log.iter().any(|e| e == "submit" || e.starts_with("outer:") || e.starts_with("input:")),
+        !log.iter()
+            .any(|e| e == "submit" || e.starts_with("outer:") || e.starts_with("input:")),
         "consumed: no submit, no ancestor, no edit: {log:?}"
     );
 
     f.press(KeyCode::Enter, None, true);
     let log = f.take_log();
-    assert_eq!(log[..2], ["down:S-Enter", "outer:Enter"], "nearest first: {log:?}");
-    assert_eq!(f.value(&f.textarea), "hi\n", "Shift+Enter is the field's newline");
+    assert_eq!(
+        log[..2],
+        ["down:S-Enter", "outer:Enter"],
+        "nearest first: {log:?}"
+    );
+    assert_eq!(
+        f.value(&f.textarea),
+        "hi\n",
+        "Shift+Enter is the field's newline"
+    );
 }
 
 /// The element sees a key before the document-level interceptor and the
@@ -223,7 +241,11 @@ fn onkeydown_runs_before_the_interceptor_and_the_dismiss_stack() {
     assert!(seen.borrow().is_empty(), "{:?}", seen.borrow());
 
     f.press(KeyCode::KeyX, Some("x"), false);
-    assert_eq!(*seen.borrow(), ["interceptor:x"], "an unconsumed key goes on");
+    assert_eq!(
+        *seen.borrow(),
+        ["interceptor:x"],
+        "an unconsumed key goes on"
+    );
     assert_eq!(f.value(&f.textarea), "x");
     rinch_core::clear_keyboard_interceptor();
 }
@@ -296,14 +318,20 @@ fn selection_range_reads_utf16_units_focused_unfocused_and_after_blur() {
     let mut f = mount();
     let ta = f.textarea.clone();
     // Never focused: a caret at the start, as a browser answers.
-    assert_eq!(ta.selection_range(), Some((0, 0, SelectionDirection::Forward)));
+    assert_eq!(
+        ta.selection_range(),
+        Some((0, 0, SelectionDirection::Forward))
+    );
     assert_eq!(f.tile.selection_range(), None, "not a text control");
     assert_eq!(f.outer.selection_range(), None);
 
     f.click(&ta);
     f.type_str("a😀bc");
     // "a😀bc": 😀 is 4 bytes and 2 UTF-16 units; the caret is after `c`.
-    assert_eq!(ta.selection_range(), Some((5, 5, SelectionDirection::Forward)));
+    assert_eq!(
+        ta.selection_range(),
+        Some((5, 5, SelectionDirection::Forward))
+    );
     // Shift+Left twice: anchor 5, head 3 — backward.
     for _ in 0..2 {
         f.app.handle_event(
@@ -321,19 +349,31 @@ fn selection_range_reads_utf16_units_focused_unfocused_and_after_blur() {
             1.0,
         );
     }
-    assert_eq!(ta.selection_range(), Some((3, 5, SelectionDirection::Backward)));
+    assert_eq!(
+        ta.selection_range(),
+        Some((3, 5, SelectionDirection::Backward))
+    );
 
     // Blur: the selection stays with the control.
     let input = f.input.clone();
     f.click(&input);
-    assert_eq!(ta.selection_range(), Some((3, 5, SelectionDirection::Backward)));
+    assert_eq!(
+        ta.selection_range(),
+        Some((3, 5, SelectionDirection::Backward))
+    );
 
     // A range set on an unfocused control reads back at once, swapped and
     // clamped, and is what the next focus shows.
     ta.set_selection_range(9, 1, SelectionDirection::Forward);
-    assert_eq!(ta.selection_range(), Some((1, 5, SelectionDirection::Forward)));
+    assert_eq!(
+        ta.selection_range(),
+        Some((1, 5, SelectionDirection::Forward))
+    );
     f.app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
-    assert_eq!(ta.selection_range(), Some((1, 5, SelectionDirection::Forward)));
+    assert_eq!(
+        ta.selection_range(),
+        Some((1, 5, SelectionDirection::Forward))
+    );
 }
 
 /// The caret rect is where paint draws the caret — the same answer the
@@ -366,7 +406,10 @@ fn caret_rect_is_the_painted_caret() {
     assert!((head.x - at_end.0).abs() < 0.5, "{head:?} vs {at_end:?}");
     assert!((head.y - at_end.1).abs() < 0.5, "{head:?} vs {at_end:?}");
     assert_eq!(head.width, 0.0);
-    assert!((head.height - 16.0 * 1.2).abs() < 0.01, "paint's caret height");
+    assert!(
+        (head.height - 16.0 * 1.2).abs() < 0.01,
+        "paint's caret height"
+    );
 
     // Off the line start: offset 1 is right of offset 0, on line 1; offset 3
     // starts line 2, a line lower (paint lays the text out at the font's own
@@ -376,10 +419,19 @@ fn caret_rect_is_the_painted_caret() {
     let c3 = ta.caret_rect_at(3).unwrap();
     let p3 = painted(&mut f, 3);
     let p1 = painted(&mut f, 1);
-    assert!((c1.x - p1.0).abs() < 0.5 && (c1.y - p1.1).abs() < 0.5, "{c1:?} vs {p1:?}");
+    assert!(
+        (c1.x - p1.0).abs() < 0.5 && (c1.y - p1.1).abs() < 0.5,
+        "{c1:?} vs {p1:?}"
+    );
     assert!(c1.x > c0.x + 3.0, "{c0:?} {c1:?}");
-    assert!((c3.x - p3.0).abs() < 0.5 && (c3.y - p3.1).abs() < 0.5, "{c3:?} vs {p3:?}");
-    assert!((c3.x - c0.x).abs() < 0.5 && c3.y > c0.y + 15.0, "{c0:?} {c3:?}");
+    assert!(
+        (c3.x - p3.0).abs() < 0.5 && (c3.y - p3.1).abs() < 0.5,
+        "{c3:?} vs {p3:?}"
+    );
+    assert!(
+        (c3.x - c0.x).abs() < 0.5 && c3.y > c0.y + 15.0,
+        "{c0:?} {c3:?}"
+    );
     // The textarea's padding is in it: 10px page padding + 6px.
     let (bx, by) = {
         let d = f.app.doc.as_ref().unwrap().borrow();
@@ -402,7 +454,11 @@ fn caret_rect_is_the_painted_caret() {
         painted_element_box(&d.tree, input.node_id().0)
     };
     assert!((r.x - (ix + 8.0)).abs() < 0.5, "{r:?}");
-    assert!(r.y > iy && r.y + r.height / 2.0 < iy + ih, "{r:?} in {iy}..{}", iy + ih);
+    assert!(
+        r.y > iy && r.y + r.height / 2.0 < iy + ih,
+        "{r:?} in {iy}..{}",
+        iy + ih
+    );
     assert_eq!(f.tile.caret_rect(), None, "not a text control");
 }
 
@@ -433,5 +489,8 @@ fn a_password_fields_caret_is_measured_over_its_bullets() {
     let (pw, plain) = ids.borrow_mut().take().unwrap();
     let pw6 = pw.caret_rect_at(6).unwrap().x - pw.caret_rect_at(0).unwrap().x;
     let plain6 = plain.caret_rect_at(6).unwrap().x - plain.caret_rect_at(0).unwrap().x;
-    assert!(pw6 > 1.0 && pw6 < plain6 * 0.8, "bullets are narrower than W: {pw6} vs {plain6}");
+    assert!(
+        pw6 > 1.0 && pw6 < plain6 * 0.8,
+        "bullets are narrower than W: {pw6} vs {plain6}"
+    );
 }

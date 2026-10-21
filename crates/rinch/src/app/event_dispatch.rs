@@ -43,7 +43,11 @@ impl RinchApp {
             let mut cur = Some(start);
             while let Some(id) = cur {
                 let Some(node) = d.tree.get(id) else { break };
-                if let Some(h) = node.attributes.get(attr).and_then(|v| v.parse::<usize>().ok()) {
+                if let Some(h) = node
+                    .attributes
+                    .get(attr)
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
                     ids.push(events::EventHandlerId(h));
                 }
                 cur = node.parent;

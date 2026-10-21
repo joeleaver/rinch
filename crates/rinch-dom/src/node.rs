@@ -2834,8 +2834,7 @@ pub struct NodeTree {
     /// UTF-16 code units, written by the desktop runtime — so
     /// `DomDocument::text_selection_range` answers for an unfocused control as
     /// a browser does (issue #1678). Dropped with the node.
-    pub text_selections:
-        HashMap<RawNodeId, (usize, usize, rinch_core::dom::SelectionDirection)>,
+    pub text_selections: HashMap<RawNodeId, (usize, usize, rinch_core::dom::SelectionDirection)>,
     /// Shared lock for Stylo CSS engine.
     pub guard: SharedRwLock,
     /// IDs of anonymous block box nodes created during layout.

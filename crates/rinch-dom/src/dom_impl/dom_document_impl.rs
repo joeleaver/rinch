@@ -1342,7 +1342,8 @@ impl DomDocument for RinchDocument {
             let (a, b) = (a.min(len), b.min(len));
             Some((a.min(b), a.max(b), d))
         };
-        if let Some(posted) = rinch_core::peek_pending_text_selection_request(self.doc_key, node_id.0)
+        if let Some(posted) =
+            rinch_core::peek_pending_text_selection_request(self.doc_key, node_id.0)
         {
             return order(posted);
         }

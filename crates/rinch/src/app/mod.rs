@@ -146,6 +146,8 @@ mod editor_tab_caret_tests;
 mod editor_word_delete_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_wrapped_selection_tests;
+#[cfg(test)]
+mod element_key_1678_tests;
 mod event_dispatch;
 #[cfg(test)]
 mod file_drop_click_context_1650_tests;
@@ -255,8 +257,6 @@ mod right_press_focus_452_review_tests;
 mod right_press_focus_452_tests;
 #[cfg(test)]
 mod rsx_onsubmit_1590_tests;
-#[cfg(test)]
-mod element_key_1678_tests;
 #[cfg(all(test, software_shell))]
 mod screenshot_capture_tests;
 #[cfg(test)]

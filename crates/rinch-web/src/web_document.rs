@@ -2524,17 +2524,24 @@ impl DomDocument for WebDocument {
         let (start, end, direction) = self.text_selection_range(node_id)?;
         let n = self.nodes.get(&node_id.0)?;
         let el: web_sys::HtmlElement = n.clone().dyn_into().ok()?;
-        let (value, single_line, password) = if let Some(i) = n.dyn_ref::<web_sys::HtmlInputElement>() {
-            (i.value(), true, i.type_().eq_ignore_ascii_case("password"))
-        } else {
-            (n.dyn_ref::<web_sys::HtmlTextAreaElement>()?.value(), false, false)
-        };
+        let (value, single_line, password) =
+            if let Some(i) = n.dyn_ref::<web_sys::HtmlInputElement>() {
+                (i.value(), true, i.type_().eq_ignore_ascii_case("password"))
+            } else {
+                (
+                    n.dyn_ref::<web_sys::HtmlTextAreaElement>()?.value(),
+                    false,
+                    false,
+                )
+            };
         let units: Vec<u16> = value.encode_utf16().collect();
-        let head = offset.unwrap_or(if direction == rinch_core::dom::SelectionDirection::Backward {
-            start
-        } else {
-            end
-        });
+        let head = offset.unwrap_or(
+            if direction == rinch_core::dom::SelectionDirection::Backward {
+                start
+            } else {
+                end
+            },
+        );
         let head = head.min(units.len());
         let mut before = String::from_utf16_lossy(&units[..head]);
         let mut after = String::from_utf16_lossy(&units[head..]);
