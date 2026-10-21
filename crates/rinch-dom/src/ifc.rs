@@ -1834,23 +1834,30 @@ fn break_overflowing_spaces(
         Some(p) => p,
         None => {
             let word_x = x(run_start);
+            let mut wraps_in_word = false;
             if run_start > first && word_x > ROOM {
                 breaker.revert_to(line_start.clone());
                 let room = word_x - ROOM;
                 let state = breaker.state_mut();
                 state.set_layout_max_advance(room);
                 state.set_line_max_advance(room);
-                if let Some(YieldData::LineBreak(d)) = breaker.break_next()
-                    && d.advance <= room + TOL
-                {
-                    breaker.set_prior_line_width(max);
-                    return Some((d.reason, d.advance));
+                if let Some(YieldData::LineBreak(d)) = breaker.break_next() {
+                    if d.reason == BreakReason::Emergency {
+                        wraps_in_word = true;
+                    } else if d.advance <= room + TOL {
+                        breaker.set_prior_line_width(max);
+                        return Some((d.reason, d.advance));
+                    }
                 }
             }
-            run_start + 1
+            if wraps_in_word {
+                run_start
+            } else {
+                run_start + 1
+            }
         }
     };
-    let n = units[cursor..through].iter().filter(|u| u.counted).count();
+    let n = units[first..through].iter().filter(|u| u.counted).count();
     breaker.revert_to(line_start.clone());
     breaker.break_next_with_length(u32::try_from(n).ok()?)?;
     breaker.set_prior_line_width(max);

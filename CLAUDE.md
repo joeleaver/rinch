@@ -76,8 +76,8 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     is left, an empty line) make one more line. `ifc::break_lines_hanging_spaces` is how an IFC
     breaks its lines, and puts the spaces back on the line they hang from; upstream's rework
     (#790, #785) is unreleased. Spaces and tabs hang, NBSP does not (it glues, and after a hung run starts the next line).
-    A `break-spaces` space or tab never hangs (#1043, `WhiteSpaceValue::BreakSpaces`; it read as
-    `pre-wrap` before): the same pass breaks a line parley ended past the box in such spaces
+    A `break-spaces` space or tab in an IFC never hangs (#1043, `WhiteSpaceValue::BreakSpaces`; it read as
+    `pre-wrap` before; a flex or grid item's own text still hangs them, #1672): the same pass breaks a line parley ended past the box in such spaces
     (`ifc::break_overflowing_spaces`) after the last one that fits, else before the word they follow,
     else after their first space, committed by length; the line is aligned with them as content and
     `measured_width` counts them (Chrome 155, `tests/white_space_break_spaces_1043_tests.rs`). It is **one**
