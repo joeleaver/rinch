@@ -75,7 +75,13 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     hangs the first such space and commits the line, so the rest of the spaces (or, when nothing
     is left, an empty line) make one more line. `ifc::break_lines_hanging_spaces` is how an IFC
     breaks its lines, and puts the spaces back on the line they hang from; upstream's rework
-    (#790, #785) is unreleased. Spaces and tabs hang, NBSP does not (it glues, and after a hung run starts the next line). It is **one**
+    (#790, #785) is unreleased. Spaces and tabs hang, NBSP does not (it glues, and after a hung run starts the next line).
+    A `break-spaces` space or tab never hangs (#1043, `WhiteSpaceValue::BreakSpaces`; it read as
+    `pre-wrap` before): the same pass breaks a line parley ended past the box in such spaces
+    (`ifc::break_overflowing_spaces`) after the last one that fits, else before the word they follow,
+    else after their first space, committed by length; the line is aligned with them as content and
+    `measured_width` counts them (Chrome 155, `tests/white_space_break_spaces_1043_tests.rs`). Not a
+    text leaf's (`break_leaf_lines`), whose spaces still hang. It is **one**
     extra break of the paragraph, line by line, however many lines it fixes: the first version
     restarted from line 0 per fixed line, which is quadratic (0.7–1.0 s for 1,600 double-spaced
     lines). `ifc_hang_passes` counts those breaks, at most one per layout, and
@@ -83,7 +89,7 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     `ifc::hang_differential_tests` holds the old loop as the oracle. Likewise an IFC's measure is `InlineLayout::measured_width`, not
     `Layout::width`: the latter drops a preserved trailing space that Chrome counts, and a box
     sized without it wraps the space onto a line of its own (the editor's list bullet dropping a
-    line after "text "). Only when the IFC holds preserved text (`pre`, `pre-wrap`, a
+    line after "text "). Only when the IFC holds preserved text (`pre`, `pre-wrap`, `break-spaces`, a
     contenteditable root): collapsible spaces, `pre-line`'s included, are gone at a line's end
     before parley sees them.
     `crates/rinch-dom/tests/list_item_trailing_space_tests.rs` is the pin.
