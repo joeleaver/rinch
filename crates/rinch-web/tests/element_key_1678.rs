@@ -335,6 +335,17 @@ fn caret_rect_is_in_client_px_at_the_offset() {
 fn mount_with(
     build: impl Fn(&mut RenderScope) -> (NodeHandle, Vec<NodeHandle>) + 'static,
 ) -> (RootHandle, web_sys::Element, Vec<NodeHandle>) {
+    // A host a failed test left behind would put its controls under this
+    // test's points.
+    if let Ok(stale) = document().query_selector_all(&format!("[{HOST_MARKER}]")) {
+        for i in 0..stale.length() {
+            if let Some(node) = stale.item(i)
+                && let Ok(el) = node.dyn_into::<web_sys::Element>()
+            {
+                el.remove();
+            }
+        }
+    }
     let host = document().create_element("div").unwrap();
     host.set_attribute(HOST_MARKER, "").unwrap();
     document().body().unwrap().append_child(&host).unwrap();
@@ -349,23 +360,88 @@ fn mount_with(
     (root, host, hs)
 }
 
-/// The offset `caretPositionFromPoint` answers at `(x, y)`, as
-/// `"<id>:<offset>"` — the browser's own caret-from-point, the oracle a
-/// caret rect has to agree with.
-fn caret_from_point(x: f32, y: f32) -> String {
+/// What the browser's own caret-from-point answers at `(x, y)` for control
+/// `id` — the oracle a caret rect has to agree with.
+#[derive(Debug, PartialEq)]
+enum Probe {
+    /// `caretPositionFromPoint` names the control and this offset.
+    At(usize),
+    /// Another element is on top at that point (`elementFromPoint`): the
+    /// point says nothing about this control.
+    Covered,
+    /// The control is on top, but caret-from-point names a node inside its
+    /// anonymous content (Firefox 158 answers its inner `<div>` with a child
+    /// index, `DIV:1`, for some points) or nothing: no offset to compare.
+    Unanswered(String),
+}
+
+fn caret_from_point(id: &str, x: f32, y: f32) -> Probe {
     let f = js_sys::Function::new_with_args(
-        "x,y",
-        "const p=document.caretPositionFromPoint(x,y); \
-         return p ? ((p.offsetNode.id||p.offsetNode.nodeName)+':'+p.offset) : 'null'",
+        "id,x,y",
+        "const el = document.getElementById(id); \
+         if (document.elementFromPoint(x, y) !== el) return 'covered'; \
+         const p = document.caretPositionFromPoint(x, y); \
+         if (!p) return 'none'; \
+         if (p.offsetNode === el) return 'at:' + p.offset; \
+         return (p.offsetNode.id || p.offsetNode.nodeName) + ':' + p.offset",
     );
-    f.call2(
-        &wasm_bindgen::JsValue::NULL,
-        &(x as f64).into(),
-        &(y as f64).into(),
-    )
-    .unwrap()
-    .as_string()
-    .unwrap()
+    let got = f
+        .call3(
+            &wasm_bindgen::JsValue::NULL,
+            &id.into(),
+            &(x as f64).into(),
+            &(y as f64).into(),
+        )
+        .unwrap()
+        .as_string()
+        .unwrap();
+    match got.strip_prefix("at:") {
+        Some(o) => Probe::At(o.parse().unwrap()),
+        None if got == "covered" => Probe::Covered,
+        None => Probe::Unanswered(got),
+    }
+}
+
+/// Probe each `(offset, rect)` and fold the answers: the mismatches, and
+/// how many points were compared and how many the oracle could not answer.
+/// A control passes when nothing compared disagrees, at least `min` points
+/// were compared, and the unanswered ones are under a quarter of those
+/// asked — so most points are always checked.
+#[derive(Default)]
+struct Tally {
+    compared: usize,
+    unanswered: usize,
+    covered: usize,
+    wrong: Vec<String>,
+}
+
+impl Tally {
+    fn probe(&mut self, id: &str, o: usize, x: f32, y: f32) {
+        match caret_from_point(id, x, y) {
+            Probe::At(got) if got == o => self.compared += 1,
+            Probe::At(got) => {
+                self.compared += 1;
+                self.wrong.push(format!("{o} -> {got} at ({x:.1},{y:.1})"));
+            }
+            Probe::Covered => self.covered += 1,
+            Probe::Unanswered(_) => self.unanswered += 1,
+        }
+    }
+
+    fn verdict(&self, id: &str, min: usize) -> Option<String> {
+        let asked = self.compared + self.unanswered;
+        let ok =
+            self.wrong.is_empty() && self.compared >= min && self.unanswered * 4 < asked.max(1);
+        (!ok).then(|| {
+            format!(
+                "{id}: compared {}, unanswered {}, covered {}, wrong {:?}",
+                self.compared,
+                self.unanswered,
+                self.covered,
+                &self.wrong[..self.wrong.len().min(6)]
+            )
+        })
+    }
 }
 
 /// Review of #1686, F1/F6 and the web mutants: at the centre of the rect
@@ -425,13 +501,12 @@ fn caret_rect_agrees_with_caret_position_from_point() {
     assert!(by("c4").scroll_left() > 0, "positive control: c4 scrolls");
     let mut bad = Vec::new();
     let mut check = |h: &NodeHandle, id: &str, offs: &[usize]| {
+        let mut t = Tally::default();
         for &o in offs {
             let r = h.caret_rect_at(o).expect("a rendered control");
-            let got = caret_from_point(r.x, r.y + r.height / 2.0);
-            if got != format!("{id}:{o}") {
-                bad.push(format!("{id}@{o} -> {got} ({r:?})"));
-            }
+            t.probe(id, o, r.x, r.y + r.height / 2.0);
         }
+        bad.extend(t.verdict(id, offs.len().div_ceil(2)));
     };
     check(&hs[0], "c0", &[0, 1, 5, 6, 11]);
     let tail: Vec<usize> = (n - 40..n).step_by(3).collect();
@@ -444,7 +519,6 @@ fn caret_rect_agrees_with_caret_position_from_point() {
     // Line starts after a break, an empty line included (Gecko puts a
     // collapsed range after a break at the end of the line before).
     check(&hs[7], "c7", &[0, 1, 2, 3, 4, 5]);
-    assert!(bad.is_empty(), "{bad:#?}");
     // A single-line field's caret-from-point answers its one line at any
     // height, so its vertical centring is checked against the box itself.
     for (h, id) in [(&hs[2], "c2"), (&hs[6], "c6")] {
@@ -458,8 +532,11 @@ fn caret_rect_agrees_with_caret_position_from_point() {
             b.bottom()
         );
     }
+    // Torn down before the verdict, so a failure leaves nothing on the page
+    // for the next test's points to land on.
     root.unmount();
     host.remove();
+    assert!(bad.is_empty(), "{bad:#?}");
 }
 
 /// Review of #1686, F3/F5/F7: an unfocused control with a value reads what
@@ -558,11 +635,7 @@ fn a_key_code_229_enter_is_offered() {
 /// Every offset whose rect's centre lies inside `id`'s box: the ones
 /// `caretPositionFromPoint` does not answer as that offset. Answers
 /// `(checked, mismatches)`.
-fn oracle_in_box(
-    h: &NodeHandle,
-    id: &str,
-    offs: impl Iterator<Item = usize>,
-) -> (usize, Vec<String>) {
+fn oracle_in_box(h: &NodeHandle, id: &str, offs: impl Iterator<Item = usize>) -> Tally {
     let el: web_sys::HtmlElement = document()
         .get_element_by_id(id)
         .unwrap()
@@ -586,11 +659,10 @@ fn oracle_in_box(
     if engine::is_gecko() && el.scroll_width() > el.client_width() {
         bottom -= 12.0 * sy;
     }
-    let mut n = 0;
-    let mut bad = Vec::new();
+    let mut t = Tally::default();
     for o in offs {
         let Some(c) = h.caret_rect_at(o) else {
-            bad.push(format!("{o}: None"));
+            t.wrong.push(format!("{o}: None"));
             continue;
         };
         let (x, y) = (c.x as f64, (c.y + c.height / 2.0) as f64);
@@ -608,15 +680,9 @@ fn oracle_in_box(
         {
             continue;
         }
-        n += 1;
-        let got = caret_from_point(x as f32, y as f32);
-        if got != format!("{id}:{o}") {
-            bad.push(format!(
-                "{o} -> {got} at ({x:.1},{y:.1}) in {left:.1}..{right:.1} x {top:.1}..{bottom:.1}"
-            ));
-        }
+        t.probe(id, o, x as f32, y as f32);
     }
-    (n, bad)
+    t
 }
 
 /// Review 2 of #1686, G2/G3/G4: right-to-left text (Latin and Hebrew), a
@@ -683,24 +749,7 @@ fn caret_rect_agrees_for_rtl_unwrapped_and_a_scaled_page() {
     // caret-from-point answers the latter there: offset 0 is not checked.
     let mut run = |h: &NodeHandle, id: &str, len: usize, min: usize| {
         let first = usize::from(id == "r1");
-        let (checked, bad) = oracle_in_box(h, id, first..=len);
-        if checked < min || !bad.is_empty() {
-            let w = web_sys::window().unwrap();
-            let b = document()
-                .get_element_by_id(id)
-                .unwrap()
-                .get_bounding_client_rect();
-            report.push(format!(
-                "{id}: checked {checked}, wrong {:?} (viewport {:?}x{:?}, box {}..{} x {}..{})",
-                &bad[..bad.len().min(6)],
-                w.inner_width().unwrap().as_f64(),
-                w.inner_height().unwrap().as_f64(),
-                b.left(),
-                b.right(),
-                b.top(),
-                b.bottom()
-            ));
-        }
+        report.extend(oracle_in_box(h, id, first..=len).verdict(id, min));
     };
     run(&hs[0], "r1", n, 100);
     run(&hs[1], "r2", n, 40);
@@ -726,7 +775,7 @@ fn caret_rect_agrees_for_rtl_unwrapped_and_a_scaled_page() {
     html.style().set_property("zoom", "1.25").unwrap();
     run(&hs[5], "s1", 6, 4);
     html.style().remove_property("zoom").unwrap();
-    assert!(report.is_empty(), "{report:#?}");
     root.unmount();
     host.remove();
+    assert!(report.is_empty(), "{report:#?}");
 }
