@@ -276,8 +276,11 @@ focusable element (`tabindex`, a button, a link, a closed `<select>`). Keys the
 rich-text editor holds go to `EditorHandle::on_key`, a focused render
 surface's to `set_key_handler`, and an open native `<select>` list keeps its
 keys on desktop. A key an input method is composing with is not offered (a
-browser marks it `isComposing` or `keyCode` 229 — Safari sends the Enter that
-confirms a composition that way; desktop, while the field shows a preedit), and
+browser marks it `isComposing` or reports it as the `Process` key; desktop,
+while the field shows a preedit). One known gap: Safari sends the Enter that
+confirms a composition after the composition ends, unmarked (`keyCode` 229
+only), and it is offered — an Android soft keyboard's plain Enter can carry
+229 too, so refusing it would break Enter there. And
 with an input method on, plain characters may arrive as composition text with
 no key event at all — use `oninput` for text. A handler that moves the focus
 and does not consume the key sends it on to the newly focused field, as Chrome

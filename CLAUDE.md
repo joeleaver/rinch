@@ -2123,8 +2123,10 @@ the web). Not offered: keys the editor holds,
 a focused render surface's, an open native `<select>` list's (desktop), while
 the text context menu is open (desktop), or during an IME composition
 (desktop: the focused field shows a `data-preedit`; web: `isComposing`,
-`key == "Process"` or `keyCode == 229` — Safari's composition-confirming
-Enter, which the web's `onsubmit` Enter also refuses now). `onkeyup`'s consumption stops only its ancestors: the
+or `key == "Process"`; known gap: Safari's composition-confirming Enter —
+`key: "Enter"`, `keyCode` 229, `isComposing` false — is offered, since
+refusing every 229 Enter would refuse an Android soft keyboard's plain
+Enter). `onkeyup`'s consumption stops only its ancestors: the
 interceptor hears every release. `KeyEventData` and `KeyEventKind` are in the
 prelude. Pins: `app/element_key_1678_tests.rs`,
 `rinch-web/tests/element_key_1678.rs`.

@@ -516,10 +516,12 @@ fn an_unfocused_controls_selection_and_a_hidden_caret() {
     host.remove();
 }
 
-/// Safari's composition-confirming Enter: `isComposing` false, `keyCode`
-/// 229. Not offered.
+/// A `keyCode` 229 Enter that is not marked composing (Safari's IME-confirm
+/// Enter, and an Android soft keyboard's plain Enter) is offered, and still
+/// submits: refusing it would break Enter on Android. The `Process` key is
+/// not offered (`a_composing_key_is_not_offered`).
 #[wasm_bindgen_test]
-fn a_key_code_229_key_is_not_offered() {
+fn a_key_code_229_enter_is_offered() {
     let f = Fixture::mount();
     f.el("k-ta").focus().unwrap();
     let init = web_sys::KeyboardEventInit::new();
@@ -532,11 +534,8 @@ fn a_key_code_229_key_is_not_offered() {
     assert_eq!(ev.key_code(), 229, "positive control: the init carried it");
     let target: web_sys::EventTarget = document().active_element().unwrap().into();
     target.dispatch_event(&ev).unwrap();
-    assert!(
-        !ev.default_prevented(),
-        "neither onkeydown nor onsubmit took it"
-    );
-    assert!(f.take_log().is_empty(), "no handler ran");
+    assert!(ev.default_prevented(), "the field's handler took it");
+    assert_eq!(f.take_log(), ["down:Enter"]);
     f.teardown();
 }
 

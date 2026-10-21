@@ -1995,17 +1995,18 @@ pub(crate) fn editor_owning(el: &web_sys::Element) -> Option<web_sys::Element> {
 /// from — for a key the rich-text editor holds (its keys are
 /// `EditorHandle::on_key`'s; a field inside a node view's component is not
 /// the editor's), one a focused render surface holds (`set_key_handler`), or
-/// one an input method is composing with (`isComposing`, the `Process` key a
-/// composition sends, or `keyCode` 229).
+/// one an input method is composing with (`isComposing`, or the `Process` key
+/// a composition sends). Known gap: Safari sends the Enter that confirms a
+/// composition after `compositionend`, as `key: "Enter"`, `keyCode` 229 and
+/// `isComposing` false, and that Enter is offered. Refusing every 229 Enter
+/// would also refuse an Android soft keyboard's plain Enter, which can carry
+/// 229.
 fn offer_element_key(
     event: &web_sys::KeyboardEvent,
     attr: &str,
     data: &events::KeyEventData,
 ) -> bool {
-    // `keyCode` 229 is a key an input method took; Safari sends the Enter
-    // that confirms a composition after `compositionend` with `isComposing`
-    // already false, and only this says so.
-    if event.is_composing() || event.key() == "Process" || event.key_code() == 229 {
+    if event.is_composing() || event.key() == "Process" {
         return false;
     }
     if rinch::render_surface::focused_surface_id().is_some() {
@@ -3214,18 +3215,12 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             // activating press and on every auto-repeat of it. A node with no
             // live handler fell through, leaving the key to the browser.
             event.prevent_default();
-        } else if key_data.key == "Enter"
-            && !event.shift_key()
-            && !event.is_composing()
-            && event.key_code() != 229
-        {
+        } else if key_data.key == "Enter" && !event.shift_key() && !event.is_composing() {
             // Enter (without Shift) fires the nearest ancestor's data-onsubmit,
             // matching a native form submit. Shift+Enter is left alone so
             // multiline inputs (a textarea) can insert a newline. During an IME
             // composition the Enter that commits the candidate is skipped
-            // (isComposing; `keyCode` 229 for Safari, which sends it after
-            // `compositionend`, #1678) so it confirms the text instead of
-            // submitting.
+            // (isComposing) so it confirms the text instead of submitting.
             if let Some(target) = event.target()
                 && let Ok(el) = target.clone().dyn_into::<web_sys::Element>()
             {
