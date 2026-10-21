@@ -246,44 +246,144 @@ pub(super) fn render_text_shadow_pass(
 }
 
 /// The text's own extent relative to its origin, in physical px: each line
-/// `mask` may show ([`TextMask::may_show`]),
-/// from its first glyph run's start to its last one's end and from its top to
-/// its bottom (ascent and descent, or the line box when that is taller),
-/// grown by how far glyph ink may reach past them.
+/// `mask` may show ([`TextMask::may_show`]), from its first shown glyph's
+/// start to its last one's end and from its top to its bottom (ascent and
+/// descent, or the line box when that is taller), moved by any
+/// `vertical-align` shift of the glyphs (#724), grown by how far glyph ink may
+/// reach past them.
+///
+/// With a mask, only what the mask shows counts: a text fragment's mask
+/// (#1060) shows one fragment of a line, and measured by the whole line every
+/// fragment's blurred mask was as wide as its line (review of #1673: a line
+/// of 12 spans rasterised and filled 24 line-wide masks per paint). A glyph
+/// run the mask shows whole is measured by its own extent; one it shows part
+/// of, cluster by cluster.
 fn text_extent(
     layout: &parley::layout::Layout<Brush>,
     scale: f64,
     mask: Option<&TextMask>,
+    valign: Option<&crate::node::InlineLayout>,
 ) -> Rect {
+    let valign = valign.filter(|l| !l.vertical_align_spans.is_empty());
     let mut r: Option<Rect> = None;
     let mut size = 0.0_f32;
+    let mut add = |rect: Rect| r = Some(r.map_or(rect, |r| r.union(rect)));
     for line in layout.lines() {
         // A shadow group's lines only (#1048): a span's mask covers its text.
         if mask.is_some_and(|m| !m.may_show(line.text_range())) {
             continue;
         }
         let m = line.metrics();
-        let (mut x0, mut x1) = (f32::INFINITY, f32::NEG_INFINITY);
-        for item in line.items() {
-            if let parley::layout::PositionedLayoutItem::GlyphRun(run) = item {
-                x0 = x0.min(run.offset());
-                x1 = x1.max(run.offset() + run.advance());
-                size = size.max(run.run().font_size());
+        let top = m.block_min_coord.min(m.baseline - m.ascent) as f64;
+        let bottom = m.block_max_coord.max(m.baseline + m.descent) as f64;
+        if mask.is_none() && valign.is_none() {
+            // All of the line: its glyph runs' extent.
+            let (mut x0, mut x1) = (f32::INFINITY, f32::NEG_INFINITY);
+            for item in line.items() {
+                if let parley::layout::PositionedLayoutItem::GlyphRun(run) = item {
+                    x0 = x0.min(run.offset());
+                    x1 = x1.max(run.offset() + run.advance());
+                    size = size.max(run.run().font_size());
+                }
             }
-        }
-        if x0 > x1 {
+            if x0 <= x1 {
+                add(Rect::new(x0 as f64, top, x1 as f64, bottom));
+            }
             continue;
         }
-        let top = m.block_min_coord.min(m.baseline - m.ascent);
-        let bottom = m.block_max_coord.max(m.baseline + m.descent);
-        let line_rect = Rect::new(x0 as f64, top as f64, x1 as f64, bottom as f64);
-        r = Some(r.map_or(line_rect, |r| r.union(line_rect)));
+        for run in line.runs() {
+            let range = run.text_range();
+            if mask.is_some_and(|m| !m.may_show(range.clone())) {
+                continue;
+            }
+            let whole = valign.is_none() && mask.is_none_or(|m| m.shows_all(range.clone()));
+            let Some(mut x) = run.visual_clusters().next().and_then(|c| c.visual_offset()) else {
+                continue;
+            };
+            let mut shown = false;
+            if whole {
+                add(Rect::new(x as f64, top, (x + run.advance()) as f64, bottom));
+                shown = true;
+            } else {
+                for cluster in run.visual_clusters() {
+                    let byte = cluster.text_range().start;
+                    let advance = cluster.advance();
+                    if mask.is_none_or(|m| !m.hidden_at(byte)) {
+                        let shift = valign.map_or(0.0, |l| l.vertical_align_shift_at(byte)) as f64;
+                        add(Rect::new(
+                            x as f64,
+                            top + shift,
+                            (x + advance) as f64,
+                            bottom + shift,
+                        ));
+                        shown = true;
+                    }
+                    x += advance;
+                }
+            }
+            if shown {
+                size = size.max(run.font_size());
+            }
+        }
     }
     // An italic's overhang, a tall accent, a wavy underline below the
     // descent: a quarter of the largest font size.
     let ink = size as f64 * 0.25;
     let r = r.unwrap_or(Rect::ZERO).inflate(ink, ink);
     Rect::new(r.x0 * scale, r.y0 * scale, r.x1 * scale, r.y1 * scale)
+}
+
+/// How many 8-bit levels a pixel may differ by between the one-pass
+/// `text-shadow` order and the per-fragment order for the one-pass order to
+/// be kept (#1060). Drawing a later fragment's shadow over earlier ink or
+/// under it changes a pixel by at most the shadow's coverage × alpha × the
+/// colours' channel difference; at 2 levels, a line of differently coloured
+/// spans under a soft dark shadow keeps one pass (review of #1673: the
+/// per-fragment path cost 3× the paint there for differences of 1–5 levels).
+pub(crate) const ORDER_TOLERANCE_LEVELS: f64 = 2.0;
+
+/// How far past its box a blurred `text-shadow` of `blur` px and alpha
+/// `alpha` can still change an 8-bit pixel by more than
+/// [`ORDER_TOLERANCE_LEVELS`] (#1060): the distance at which the coverage of a
+/// Gaussian of standard deviation `blur / 2` over a half-plane — which bounds
+/// any ink inside the box — times `alpha` drops to that many levels. Never more than [`REACH_PER_BLUR`] × `blur`, the reach the mask is
+/// rasterised to. A shadow with no blur reaches no further than its box.
+pub(crate) fn visible_reach(blur: f64, alpha: f32) -> f64 {
+    let sigma = blur / 2.0;
+    if sigma.is_nan() || sigma < 0.25 {
+        return 0.0;
+    }
+    let limit = blur * REACH_PER_BLUR;
+    // The half-plane coverage at `d`: the Gaussian tail past d / sigma.
+    let tail = |z: f64| 0.5 * erfc(z / std::f64::consts::SQRT_2);
+    let threshold = ORDER_TOLERANCE_LEVELS / (255.0 * alpha.clamp(0.0, 1.0) as f64);
+    if threshold >= 0.5 {
+        return 0.0;
+    }
+    let (mut lo, mut hi) = (0.0_f64, limit / sigma);
+    if tail(hi) >= threshold {
+        return limit;
+    }
+    for _ in 0..40 {
+        let mid = 0.5 * (lo + hi);
+        if tail(mid) >= threshold {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    hi * sigma
+}
+
+/// The complementary error function, to about 1e-7 (Abramowitz and Stegun
+/// 7.1.26), for `x >= 0`.
+fn erfc(x: f64) -> f64 {
+    let t = 1.0 / (1.0 + 0.327_591_1 * x);
+    let poly = t
+        * (0.254_829_592
+            + t * (-0.284_496_736
+                + t * (1.421_413_741 + t * (-1.453_152_027 + t * 1.061_405_429))));
+    poly * (-x * x).exp()
 }
 
 // ── The blurred mask (software rasteriser compiled in) ─────────────────────
@@ -320,7 +420,7 @@ fn draw_masked(
     } else {
         (x, y, css_transform)
     };
-    let ext = text_extent(layout, scale, mask);
+    let ext = text_extent(layout, scale, mask, wavy);
     // The mask's frame is anchored to the pixel the text's origin rounds to,
     // not to its exact position, so a sub-pixel move changes the mask's size
     // and origin only when it moves that pixel: the key (which includes the
@@ -831,7 +931,7 @@ fn draw_tapped(
 
     // Everything a copy can draw, grown by the kernel's reach, in the
     // painter's space. Vello clips a layer to its bounds.
-    let ext = text_extent(layout, scale, mask);
+    let ext = text_extent(layout, scale, mask, wavy);
     let reach = 3.0 * sigma;
     let bounds = PaintShape::Rect(Rect::new(
         x + ext.x0 - reach,

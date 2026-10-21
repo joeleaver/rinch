@@ -244,11 +244,51 @@ the way down declared another (`none` included). When every run casts the
 root's list the text is drawn exactly as one list; otherwise each distinct list
 is drawn through a mask that keeps it to the text casting it
 (`paint::text::ShadowGroup`, the #829 visibility mask's per-range rule), every
-shadow before any text, as for one list. Chrome 153 paints shadow-then-text per
-text node instead: in `<p style="text-shadow: -29px 0 blue">A<span>B</span></p>`
-the shadow of `B` covers `A` there (measured) and not in rinch, whether or not
-the span declares its own list. Such a list is ink of the root that draws it:
-damage, the paint prune, the painted state and `layer_bounds` all count it.
+shadow before any text, as for one list.
+
+**Chrome paints shadow-then-text per text fragment** (#1060) — one text node's
+stretch of one line — so a later fragment's shadow reaching back is drawn over
+earlier text: in `<p style="text-shadow: -29px 0 blue">A<span>B</span></p>`
+the shadow of `B` covers `A`, and with `text-shadow: 0 -60px` on a 60px line
+the second line's shadow covers the first line, one text node or not (Chrome
+155, measured). Within one fragment every shadow is under the text. This is an
+inline formatting context's rule; a flex or grid item's own text (a text leaf)
+is still painted in one pass however many lines it has. Chrome also splits a
+fragment at a bidi boundary inside one text node and paints a line's fragments
+in visual order; rinch does neither (#1675, pinned in
+`tests/review_1673_fixtures.rs`).
+
+rinch keeps the one-pass order wherever drawing in Chrome's order would change
+no pixel by more than 2 levels of 255 (`ORDER_TOLERANCE_LEVELS`), decided on
+boxes (`paint::text::TextFragment::in_paint_order`). That covers the *order*
+only: the one-pass path blurs all fragments of one shadow list as one mask,
+the per-fragment path one mask a fragment, and where two adjacent fragments'
+blurs overlap the two composites differ by up to about 10 levels whichever
+order is chosen (as on main, review 2 of #1673). A fragment's text box is the
+advance extent of its ink-bearing clusters (a space has none unless an
+underline, line-through or wavy underline is drawn across it) by its line's
+ascent and descent, moved with any `vertical-align` shift. A shadow's box is
+that box moved by its offset and grown by its *visible* reach: how far its blur
+can still change a pixel of the ink under it by more than the tolerance. A
+shadow painted over a pixel or under it differs by at most its alpha times the
+two colours' largest channel difference times the blur's coverage, so a
+40%-black `0 0 4px` blur over `rgb(40, 40, 40)` text reaches about 2.3px, less
+than a 14px space, and `Count: <span>3</span>` keeps one pass. A decorated
+fragment is compared with every colour, since its underline has a colour of its
+own. The bound is a half-plane's coverage at the text box's edge, which is
+conservative: spans in highlighter colours under the same shadow (a 40%-black
+blur over `rgb(28, 0, 207)` stays above 2 levels for about 3.95px, past a
+3.91px space) still go per fragment, where the pixels measured differ by 1–5
+levels. Only a shadow box overlapping an earlier fragment's text box — or, with
+shadows of more than one colour, its shadow box — sends the IFC down the
+per-fragment path, which draws each fragment's shadows and text through a mask
+of its own; a blurred fragment's mask covers that fragment's clusters only. A
+blurred shadow that reaches into the line above makes every line its own mask.
+Ink past a glyph's advance or below its descent (an italic overhang) is not in
+the box, so a shadow touching only that keeps the one-pass order.
+
+A span's own list is ink of the root that draws it: damage, the paint prune,
+the painted state and `layer_bounds` all count it.
 Two limits. In a `nowrap`/`pre` root that `text-overflow: ellipsis` cuts, every
 run casts the root's list, because that layout records no text ranges, the same
 gap as #853 (#1065); a wrapping root with such a span is left un-cut. And

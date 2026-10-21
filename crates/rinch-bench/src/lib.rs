@@ -719,6 +719,81 @@ pub fn op_text_shadow_paint(mut f: PaintFixture) -> PaintFixture {
     f
 }
 
+/// A page whose lines are made of many text nodes, with a blurred
+/// `text-shadow` on each (#1060): every IFC holds more than one text
+/// fragment, so the shadow's paint order is decided per fragment. `spans`
+/// is 30 `nowrap` lines of 12 spans (a syntax-highlighted listing); `count`
+/// is 30 lines of `Count: <span>N</span> items…` (a label and a reactive
+/// value). Painted once, so the measured paint is the warm steady state.
+fn text_shadow_fragments_page(count: bool) -> PaintFixture {
+    text_shadow_fragments_page_in(count, false)
+}
+
+/// [`text_shadow_fragments_page`], with each span in one of six
+/// highlighter colours when `coloured`.
+fn text_shadow_fragments_page_in(count: bool, coloured: bool) -> PaintFixture {
+    const COLOURS: [&str; 6] = [
+        "rgb(170, 13, 145)",
+        "rgb(28, 0, 207)",
+        "rgb(196, 26, 22)",
+        "rgb(0, 116, 0)",
+        "rgb(63, 110, 116)",
+        "rgb(92, 38, 153)",
+    ];
+    let mut doc = new_document();
+    doc.load_css(&format!(
+        "body {{ margin: 0; font-family: {FAMILY}; font-size: 14px; line-height: 18px; \
+         color: rgb(30, 30, 40); }} p {{ margin: 0 0 2px 0; \
+         text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4); }}"
+    ));
+    let words: Vec<&str> = LOREM.split(' ').collect();
+    let mut html = String::new();
+    for i in 0..30 {
+        if count {
+            html.push_str(&format!(
+                "<p>Count: <span>{i}</span> items in the basket today</p>"
+            ));
+        } else {
+            html.push_str("<p style=\"white-space: nowrap\">");
+            for (k, w) in words.iter().take(12).enumerate() {
+                if coloured {
+                    let c = COLOURS[k % COLOURS.len()];
+                    html.push_str(&format!("<span style=\"color: {c}\">{w}{i}{k}</span> "));
+                } else {
+                    html.push_str(&format!("<span>{w}{i}{k}</span> "));
+                }
+            }
+            html.push_str("</p>");
+        }
+    }
+    let body = doc.body();
+    doc.set_inner_html(body, &html);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    let mut f = PaintFixture {
+        doc,
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// [`text_shadow_fragments_page`] with 12 spans a line.
+pub fn setup_text_shadow_spans() -> PaintFixture {
+    text_shadow_fragments_page(false)
+}
+
+/// [`text_shadow_fragments_page`] with 12 spans a line in six colours (a
+/// syntax-highlighted listing).
+pub fn setup_text_shadow_coloured() -> PaintFixture {
+    text_shadow_fragments_page_in(false, true)
+}
+
+/// [`text_shadow_fragments_page`] with a label and a value a line.
+pub fn setup_text_shadow_count() -> PaintFixture {
+    text_shadow_fragments_page(true)
+}
+
 /// The same page painted once at a 4px blur, then restyled to 4.01px — a blur
 /// radius is in a mask's cache key — so the measured paint rasterises and
 /// blurs every shadow with the glyph caches warm. It needs no API of its own,
@@ -739,8 +814,12 @@ mod text_shadow_bench_tests {
     use rinch_dom::perf::Counter;
 
     /// The cold benchmark is cold: its measured paint rasterises the mask of
-    /// every paragraph on the 800x600 page (17 of the 40; they wrap), and the
-    /// warm one rasterises none.
+    /// every line on the 800x600 page, and the warm one rasterises none. The
+    /// page shows 17 of the 40 paragraphs, two lines each; a line's blurred
+    /// shadow reaches 5px up into the line above, so each line is painted as
+    /// its own fragment with its own mask (#1060). The second lines are the
+    /// end of the same text, so most of them draw the same mask and are
+    /// served from the cache: 19 rasterised for 34 lines.
     ///
     /// Kills: the restyle left out of the cold setup (it measured the warm
     /// paint, 0 masks rasterised).
@@ -750,10 +829,40 @@ mod text_shadow_bench_tests {
         f.doc.tree.perf.reset();
         let mut f = super::op_text_shadow_paint(f);
         let n = f.doc.tree.perf.get(Counter::TextShadowMasksRasterised);
-        assert_eq!(n, 17, "the cold paint rasterised {n} masks");
+        assert_eq!(n, 19, "the cold paint rasterised {n} masks");
         f.doc.tree.perf.reset();
         let f = super::op_text_shadow_paint(f);
         assert_eq!(f.doc.tree.perf.get(Counter::TextShadowMasksRasterised), 0);
+    }
+
+    /// The one-colour multi-fragment pages keep the one-pass order: a cold
+    /// paint rasterises one mask a line (30), not one a fragment (#1060).
+    /// The highlighted page goes per fragment: a 40%-black 4px blur over
+    /// `rgb(28, 0, 207)` stays above the 2-level order tolerance for about
+    /// 3.95px, past the 3.91px space before the next span, so it rasterises a
+    /// mask a fragment (377).
+    ///
+    /// Kills: the colour difference left out (the one-colour pages go per
+    /// fragment); a tolerance that lets the highlighted page keep one pass
+    /// without saying so here.
+    #[test]
+    fn the_multi_fragment_pages_rasterise_the_masks_their_order_needs() {
+        for (name, setup, masks) in [
+            (
+                "spans",
+                super::setup_text_shadow_spans as fn() -> super::PaintFixture,
+                30,
+            ),
+            ("coloured", super::setup_text_shadow_coloured, 377),
+            ("count", super::setup_text_shadow_count, 30),
+        ] {
+            let mut f = setup();
+            rinch_dom::paint::clear_text_shadow_cache();
+            f.doc.tree.perf.reset();
+            let f = super::op_text_shadow_paint(f);
+            let n = f.doc.tree.perf.get(Counter::TextShadowMasksRasterised);
+            assert_eq!(n, masks, "{name}: {n} masks");
+        }
     }
 }
 

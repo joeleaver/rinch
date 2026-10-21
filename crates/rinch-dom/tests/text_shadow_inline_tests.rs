@@ -324,10 +324,12 @@ fn nested_spans_inherit_and_override() {
     assert!(glyphs_in(&ops, RED).is_empty());
 }
 
-/// Every shadow is drawn before any text, as with a paragraph's own list: the
-/// main glyphs come last.
+/// Where no shadow reaches back over earlier text (these fall 40px below the
+/// line), every shadow is drawn before any text, as with a paragraph's own
+/// list: the main glyphs come last. One that does reach back is drawn per
+/// text fragment (#1060, `text_shadow_paint_order_tests.rs`).
 ///
-/// Kills: the text drawn per group (a later group's shadow over earlier text).
+/// Kills: the text drawn per group whether or not a shadow reaches back.
 #[test]
 fn every_shadow_is_under_every_glyph() {
     let ops = record(
