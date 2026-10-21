@@ -87,6 +87,19 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     contenteditable root): collapsible spaces, `pre-line`'s included, are gone at a line's end
     before parley sees them.
     `crates/rinch-dom/tests/list_item_trailing_space_tests.rs` is the pin.
+  - **parley's `align` hangs every line's trailing white space** (`free = width - advance +
+    trailing_whitespace`), NBSP included. CSS hangs a preserved space unconditionally only at a
+    soft wrap; at the end of the paragraph or before a forced break only the part that does not
+    fit hangs, and an NBSP never hangs. So a line aligned `right`, `center` or `end` that ends in
+    such white space is sent through the hang pass and its alignment width narrowed by what
+    counts (`ifc::align_unhung_trailing` with `count_trailing`; the cheap trigger is
+    `any_counted_trailing_line`), #1042: `abc` and three `pre-wrap` spaces right-aligned in 200px
+    start at 158.58, as in Chrome 155 (they started at 172.08), and a shrink-to-fit box no
+    longer draws its line past its own edge. A start-aligned paragraph is not re-broken for it.
+    Not done: a right-to-left line (parley offsets it by its trailing white space, so narrowing
+    would move it the wrong way), a `nowrap`/`pre` root with no wrapping text (#1237), and a
+    justified line's space count (#1056).
+    `crates/rinch-dom/tests/text_align_trailing_spaces_1042_tests.rs` is the pin.
   - **rinch collapses an IFC's white space itself; the IFC's tree builder always hands parley
     `Preserve`.** (The ranged builders — form controls, text leaves — are separate and unchanged.)
     `WhiteSpaceCollapse::Collapse` collapses and trims per *style span*, and rinch pushes one span
@@ -3298,10 +3311,13 @@ input a shaped layout is built from:
   soft-wrap hang by rinch's hang pass, and a line ending in them is aligned
   with them as content (`ifc::align_unhung_trailing` narrows its alignment
   width by the `pre` spaces at its very end), so an overflowing right-aligned
-  line starts at 0 as in Chrome. Two mixed seams are not Chrome's yet,
-  tracked in #1243: parley still hangs the one `pre` space that overflows
-  right after `pre-wrap` spaces, and a trailing run mixing `pre` and
-  `pre-wrap` spaces is narrowed by its final `pre` part only. The "…" is drawn by rebuilding the paragraph as flat
+  line starts at 0 as in Chrome. On a left-to-right line aligned `right`,
+  `center` or `end`, every space before the hanging run at the line's end
+  counts too, whatever its `white-space` (#1042, below). One mixed seam is
+  not Chrome's yet, tracked in #1243: parley still hangs the one `pre`
+  space that overflows right after `pre-wrap` spaces (and on a
+  right-to-left line a mixed run is still narrowed by its final `pre` part
+  only). The "…" is drawn by rebuilding the paragraph as flat
   text in the root's style, which would strip every line of it, so the
   per-line cut is taken only where that draws the same glyphs
   (`ellipsis_rebuild_is_faithful`: no inline box, no background or
