@@ -1396,3 +1396,26 @@ impl CollabDoc {
         true
     }
 }
+
+/// Every cell map a table stores, shown or not: the cells of rows marked deleted and
+/// cells a span covers included (the read shows none of those). For the sticky-index
+/// walk, which must tell such a cell (its blocks are gone from the model) from one
+/// of a table too large to read (its blocks are there, behind a placeholder).
+pub(crate) fn all_cell_maps<T: ReadTxn>(txn: &T, node: &MapRef) -> Vec<MapRef> {
+    let Some(Out::YArray(rows)) = node.get(txn, ROWS) else {
+        return Vec::new();
+    };
+    let mut cells = Vec::new();
+    for row in rows.iter(txn) {
+        let Out::YMap(row) = row else { continue };
+        let Some(Out::YMap(row_cells)) = row.get(txn, CELLS) else {
+            continue;
+        };
+        for (_, cell) in row_cells.iter(txn) {
+            if let Out::YMap(cell) = cell {
+                cells.push(cell);
+            }
+        }
+    }
+    cells
+}

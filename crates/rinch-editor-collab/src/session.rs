@@ -105,6 +105,7 @@ use crate::remote::{
     AtomIds, InlineIds, atom_nodes, block_atoms, build_remote_transaction,
     build_remote_transaction_with, inline_atoms,
 };
+use crate::sticky::{StickyAssoc, StickyLocation};
 use crate::table::OversizedTable;
 
 /// An update that carries nothing, in the lib0 v1 encoding: zero blocks followed by a
@@ -996,6 +997,37 @@ impl CollabSession {
             return None;
         }
         self.cdoc.resolve_sticky(doc, bytes)
+    }
+
+    /// [`Self::sticky_index`] with the association `assoc`, in the form that survives
+    /// the deletion of its block: see [`CollabDoc::sticky_index_with`]. `None` in the
+    /// same cases as [`Self::sticky_index`].
+    pub fn sticky_index_with(&self, doc: &Node, pos: Pos, assoc: StickyAssoc) -> Option<Vec<u8>> {
+        if !self.model_matches_crdt() {
+            return None;
+        }
+        self.cdoc.sticky_index_with(doc, pos, assoc)
+    }
+
+    /// Where the sticky index `bytes` points now in `doc` (this session's editor
+    /// document), with its textblock's path and whether its block is gone: see
+    /// [`CollabDoc::locate_sticky`]. Also `None` while the session is poisoned or
+    /// outbound is stalled, as for [`Self::sticky_index`].
+    pub fn locate_sticky(&self, doc: &Node, bytes: &[u8]) -> Option<StickyLocation> {
+        if !self.model_matches_crdt() {
+            return None;
+        }
+        self.cdoc.locate_sticky(doc, bytes)
+    }
+
+    /// [`Self::locate_sticky`] for every index of `anchors`, in order, in one walk of
+    /// the CRDT ([`CollabDoc::locate_sticky_many`]). Every answer is `None` while the
+    /// session is poisoned or outbound is stalled.
+    pub fn locate_sticky_many(&self, doc: &Node, anchors: &[&[u8]]) -> Vec<Option<StickyLocation>> {
+        if !self.model_matches_crdt() {
+            return vec![None; anchors.len()];
+        }
+        self.cdoc.locate_sticky_many(doc, anchors)
     }
 
     /// The model document the CRDT currently projects to — the canonical converged

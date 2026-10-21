@@ -53,7 +53,7 @@ pub use rinch_core::dom::CaretAffinity;
 /// The collaboration error type (re-exported from `rinch-editor-collab`) returned by
 /// the [`EditorHandle`] collaboration methods.
 #[cfg(feature = "collaboration")]
-pub use rinch_editor_collab::{CollabError, OversizedTable};
+pub use rinch_editor_collab::{CollabError, OversizedTable, StickyAssoc, StickyLocation};
 // Reconciliation ([`EditorHandle::collab_state_vector`] /
 // [`EditorHandle::collab_sync_diff`]) needs no re-exported engine types: a state vector
 // and a diff are both opaque `Vec<u8>`, and a diff is applied through the same

@@ -81,7 +81,8 @@ pub mod testing;
 // here as an inherent-impl module.
 mod project;
 
-// Deep-link anchors (`CollabDoc::sticky_index` / `resolve_sticky`), also an inherent-impl
+// Deep-link anchors (`CollabDoc::sticky_index` / `sticky_index_with` / `resolve_sticky` /
+// `locate_sticky`), also an inherent-impl
 // module.
 mod sticky;
 
@@ -110,4 +111,5 @@ pub use projection::CollabDoc;
 pub use rebase::rebase_steps;
 pub use remote::{ORIGIN_REMOTE, RemoteCarry, build_remote_transaction};
 pub use session::CollabSession;
+pub use sticky::{StickyAssoc, StickyLocation};
 pub use table::OversizedTable;
