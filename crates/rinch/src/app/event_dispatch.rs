@@ -228,6 +228,27 @@ impl RinchApp {
             actions.push(AppAction::RequestRedraw);
         }
 
+        // The `title` tooltip (#1646) goes on anything the user does: a press,
+        // a wheel or a key keeps it away from what the pointer is over until
+        // the pointer reaches another `title`; a cancel, blur or resize just
+        // takes it down. Before the menu below, which swallows presses.
+        let tooltip_up = self.title_tooltip.shown.is_some();
+        match &event {
+            PlatformEvent::MouseDown { .. }
+            | PlatformEvent::MouseWheel { .. }
+            | PlatformEvent::KeyDown { .. } => self.dismiss_title_tooltip(),
+            PlatformEvent::PointerCancel
+            | PlatformEvent::Resized { .. }
+            | PlatformEvent::WindowFocus(false)
+            | PlatformEvent::FileHoverEnter { .. } => self.hide_title_tooltip(),
+            _ => {}
+        }
+        // A hide is a frame to draw: nothing else this event does need ask
+        // for one (a bare Shift press, an embed host's lone press).
+        if tooltip_up && self.title_tooltip.shown.is_none() {
+            actions.push(AppAction::RequestRedraw);
+        }
+
         // While it is open the pointer belongs to the menu: an item press runs
         // it, any other press closes it unacted and is swallowed.
         if let Some(menu_actions) = self.text_menu_intercept_pointer(&event, vp_w, vp_h) {
@@ -494,6 +515,8 @@ impl RinchApp {
                                 if let Some(dir) = detect_resize_edge(x, y, vp_w, vp_h, inset)
                                     && !self.scrollbar_thumb_beats_resize(dir, x, y)
                                 {
+                                    // On a resize handle, over no content.
+                                    self.note_title_tooltip_move(None, x, y, Instant::now());
                                     actions.push(AppAction::SetCursor(resize_direction_to_cursor(
                                         &dir,
                                     )));
@@ -505,6 +528,7 @@ impl RinchApp {
                 }
 
                 // Update hover state and cursor
+                let mut tooltip_hit = None;
                 if let Some(doc) = &self.doc {
                     let (hovered, cursor_style, old_hovered) = {
                         let h = self.move_hit(x, y);
@@ -533,6 +557,7 @@ impl RinchApp {
                     }
                     // Don't request redraw — AboutToWait batches dirty state.
                     actions.push(AppAction::SetCursor(cursor_style));
+                    tooltip_hit = Some(hovered);
 
                     // A press on a surface holds its pointer until the release
                     // (`SurfaceEvent`'s capture note): the move is that surface's,
@@ -642,6 +667,12 @@ impl RinchApp {
                             crate::editor::set_image_hover(self.input_doc(), image_hover);
                         }
                     }
+                }
+                // The `title` tooltip (#1646): (re)start the rest timer, or
+                // take down one that no longer describes what the pointer is
+                // over. Shown or hidden at `AboutToWait`.
+                if let Some(hovered) = tooltip_hit {
+                    self.note_title_tooltip_move(hovered, x, y, Instant::now());
                 }
             }
             PlatformEvent::MouseDown {
@@ -2069,6 +2100,12 @@ impl RinchApp {
                 }
 
                 if any_transitions || any_animations || any_video {
+                    actions.push(AppAction::RequestRedraw);
+                }
+
+                // A pointer that has rested long enough shows its `title`
+                // (#1646); a shown tooltip follows its `title`.
+                if self.tick_title_tooltip(Instant::now(), vp_w, vp_h) {
                     actions.push(AppAction::RequestRedraw);
                 }
             }

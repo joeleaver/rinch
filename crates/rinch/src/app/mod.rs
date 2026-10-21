@@ -302,6 +302,9 @@ mod textarea_newline_tests;
 mod textarea_text_child_tests;
 #[cfg(test)]
 mod textarea_vertical_arrow_tests;
+mod title_tooltip;
+#[cfg(all(test, software_shell))]
+mod title_tooltip_tests;
 #[cfg(test)]
 mod trap_focus_tests;
 #[cfg(test)]
@@ -317,6 +320,7 @@ mod visibility_hidden_overlay_paint_tests;
 
 pub(crate) use hit_testing::*;
 pub use text_context_menu::{TextContextMenuPresentation, TextEditAction, TextEditState};
+pub use title_tooltip::{TITLE_TOOLTIP_DELAY, set_title_tooltips_default};
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -971,6 +975,8 @@ pub struct RinchApp {
     /// Inspect highlight rectangle (absolute x, y, w, h in logical pixels).
     /// Set by the runtime when inspect mode is active and a node is hovered.
     pub(crate) inspect_highlight: Option<(f32, f32, f32, f32)>,
+    /// The `title` tooltip (#1646): waiting, showing, or neither.
+    pub(crate) title_tooltip: title_tooltip::TitleTooltipState,
     /// App-bundled fonts, kept for the life of the app rather than drained.
     ///
     /// `mount_component` builds a *new* document with its own font context and
@@ -1082,6 +1088,7 @@ impl RinchApp {
             #[cfg(feature = "desktop")]
             file_drag: None,
             inspect_highlight: None,
+            title_tooltip: Default::default(),
             pending_fonts: Vec::new(),
             scope_context_to_doc: false,
             #[cfg(feature = "debug")]
@@ -1927,6 +1934,8 @@ impl RinchApp {
         if let Some((x, y, w, h)) = self.inspect_highlight {
             Self::paint_inspect_overlay(&mut self.painter, scale, x, y, w, h);
         }
+        // The `title` tooltip (#1646), over everything else.
+        Self::paint_title_tooltip(self.title_tooltip.shown.as_ref(), &mut self.painter, scale);
 
         // The GPU path has no dirty region: every painted frame re-encodes
         // the whole scene and rasterises the whole surface.
@@ -2066,6 +2075,13 @@ impl RinchApp {
             let inspect_now = self
                 .inspect_highlight
                 .and_then(|hl| Self::inspect_overlay_rect(scale, hl, w, h));
+            // The `title` tooltip's rect (#1646), the same way: drawn after
+            // the document, so its old and new rects are named by hand.
+            let tooltip_now = self
+                .title_tooltip
+                .shown
+                .as_ref()
+                .and_then(|t| t.tip.device_rect(scale, t.origin, w, h));
 
             // Why this frame repaints in full, if it does. The first reason
             // recorded before this paint wins over anything decided here.
@@ -2096,6 +2112,8 @@ impl RinchApp {
                     ghost_now,
                     self.last_inspect_rect,
                     inspect_now,
+                    self.title_tooltip.last_rect,
+                    tooltip_now,
                 ]
                 .into_iter()
                 .flatten()
@@ -2201,6 +2219,10 @@ impl RinchApp {
                 Self::paint_inspect_overlay(painter, scale, x, y, w_r, h_r);
             }
             self.last_inspect_rect = inspect_now;
+
+            // The `title` tooltip, over everything else (#1646).
+            Self::paint_title_tooltip(self.title_tooltip.shown.as_ref(), painter, scale);
+            self.title_tooltip.last_rect = tooltip_now;
 
             // Close the painter's frame (#885's pool trim) only when something
             // was painted: a frame whose damage named nothing touched no mask

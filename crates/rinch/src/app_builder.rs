@@ -81,6 +81,9 @@ pub struct App<F> {
     /// See [`prefer_x11`](App::prefer_x11).
     #[cfg(feature = "desktop")]
     pub(crate) prefer_x11: bool,
+    /// See [`title_tooltips`](App::title_tooltips).
+    #[cfg(feature = "desktop")]
+    pub(crate) title_tooltips: bool,
     /// See [`activation_policy`](App::activation_policy). `None` leaves it to
     /// winit (and a bundle's `Info.plist`).
     #[cfg(feature = "desktop")]
@@ -110,6 +113,8 @@ where
             shortcut_matching: crate::menu::ShortcutMatching::default(),
             #[cfg(feature = "desktop")]
             prefer_x11: false,
+            #[cfg(feature = "desktop")]
+            title_tooltips: true,
             #[cfg(feature = "desktop")]
             activation_policy: None,
             #[cfg(feature = "gpu")]
@@ -335,6 +340,18 @@ where
         self
     }
 
+    /// Whether an element's `title` shows as a tooltip after the pointer
+    /// rests over it (issue #1646). On by default; `false` turns it off for
+    /// every window of the app. (Android has no resting pointer and never
+    /// shows one; an embedded `RinchContext` uses
+    /// [`RinchApp::set_title_tooltips`](crate::app::RinchApp::set_title_tooltips)
+    /// through `app_mut()`.)
+    #[cfg(feature = "desktop")]
+    pub fn title_tooltips(mut self, enabled: bool) -> Self {
+        self.title_tooltips = enabled;
+        self
+    }
+
     /// On Linux, run on X11 — under a Wayland session, through XWayland —
     /// whenever an X server is reachable (`DISPLAY` is set); otherwise on
     /// whatever winit picks, as without this (issue #1519).
@@ -408,6 +425,7 @@ where
             renderer: self.renderer,
             shortcut_matching: self.shortcut_matching,
             prefer_x11: self.prefer_x11,
+            title_tooltips: self.title_tooltips,
             activation_policy: self.activation_policy,
             #[cfg(feature = "gpu")]
             gpu: self.gpu,
@@ -451,10 +469,12 @@ where
             renderer,
             shortcut_matching,
             prefer_x11,
+            title_tooltips,
             activation_policy,
             #[cfg(feature = "gpu")]
             gpu,
         } = self.into_startup();
+        crate::app::set_title_tooltips_default(title_tooltips);
 
         crate::shell::renderer::set_requested(renderer);
         crate::shell::overlay_window::set_prefer_x11(prefer_x11);
@@ -731,6 +751,8 @@ pub(crate) struct Startup<F> {
     pub(crate) shortcut_matching: crate::menu::ShortcutMatching,
     /// See [`App::prefer_x11`].
     pub(crate) prefer_x11: bool,
+    /// See [`App::title_tooltips`].
+    pub(crate) title_tooltips: bool,
     /// See [`App::activation_policy`].
     pub(crate) activation_policy: Option<crate::shell::activation::ActivationPolicy>,
     #[cfg(feature = "gpu")]
@@ -886,6 +908,18 @@ mod tests {
                 "the last call wins"
             );
         }
+    }
+
+    /// `title_tooltips` reaches the startup (issue #1646): on unless turned off.
+    #[test]
+    fn title_tooltips_is_on_unless_turned_off() {
+        assert!(App::new(component).into_startup().title_tooltips);
+        assert!(
+            !App::new(component)
+                .title_tooltips(false)
+                .into_startup()
+                .title_tooltips
+        );
     }
 
     /// **The canonical chain.** Every doc example, and almost every migrated

@@ -968,7 +968,7 @@ pub(super) fn render_text(
 /// anyway. A glyph run is then drawn as one stretch per colour: text that
 /// differs only in a colour written since the build shares a run.
 #[allow(clippy::too_many_arguments)]
-fn draw_text(
+pub(super) fn draw_text(
     painter: &mut dyn Painter,
     layout: &parley::layout::Layout<Brush>,
     transform: Affine,

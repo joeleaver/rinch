@@ -18,6 +18,7 @@ mod select;
 mod svg;
 mod text;
 mod text_shadow;
+pub mod tooltip;
 pub mod vello_painter;
 
 #[cfg(feature = "software-renderer")]

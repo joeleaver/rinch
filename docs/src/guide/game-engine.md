@@ -529,6 +529,17 @@ if ctx.wants_keyboard() {
 > still not hittable there — issue #843. A browser, and so `rinch-web`, lets that
 > descendant take pointer events.)
 
+#### `title` tooltips in a context
+
+An element's `title` shows as a tooltip after the pointer rests over it, as on
+desktop (#1646). The rest is timed, so an event-driven host must call `update`
+at [`next_wake()`](#rinchcontext), which includes the tooltip's deadline. When
+the pointer leaves the UI's surface — the window, or the part of it you route
+to rinch — call `ctx.pointer_left()`; there is no `PlatformEvent` for it, and a
+tooltip showing at the time otherwise stays until the next press, key or move.
+It answers whether a frame is owed. `ctx.app_mut().set_title_tooltips(false)`
+turns tooltips off for a HUD that does not want them.
+
 ### Split Layout (Viewport Hole)
 
 Use `GameViewport` to mark a transparent region where the game renders:

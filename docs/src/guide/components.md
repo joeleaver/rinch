@@ -344,6 +344,55 @@ Tooltip { label: "Top tooltip", position: "top",
 }
 ```
 
+#### The `title` attribute
+
+For a plain advisory tooltip you do not need the component: any element with a
+`title` attribute gets one, as in a browser.
+
+```rust
+button { title: "Delete the selected rows", "Delete" }
+div { title: {|| format!("{} unread", unread.get())}, "Inbox" }
+```
+
+(`title` is an HTML attribute: a component declares no `title` prop, so put it
+on an element of yours, or on one the component renders.)
+
+On `rinch-web` the browser shows it. On desktop (and in an embedded
+`RinchContext`) rinch draws it (#1646):
+
+- it shows after the pointer has **rested** for 500 ms (`TITLE_TOOLTIP_DELAY`)
+  over the element or a descendant of it — the nearest `title` up the tree
+  applies, and a `title=""` (or white space only) on a nearer element means
+  *no* tooltip there, not its ancestor's, as HTML specifies (and Chrome 155
+  does);
+- it sits below and to the right of the pointer, and flips left of it or above
+  it rather than leave the window; line feeds in the title break lines, and a
+  line longer than 400px wraps;
+- it hides when the pointer moves onto content under another `title` (or
+  none), and on any press, wheel, key press, window blur, resize or the
+  pointer leaving the window. After a press, wheel or key it stays hidden
+  until the pointer reaches content under another `title`;
+- it follows the attribute: changing `title` while it shows changes the text,
+  removing it hides it;
+- its colours are the theme's `--rinch-color-surface` (background),
+  `--rinch-color-text` and `--rinch-color-border`, so a dark theme gets a dark
+  tooltip, with light fallbacks without the theme; its font is
+  `--rinch-font-family` (else `sans-serif`) at 12px.
+
+It is painted over the frame, not added to the document, so showing it runs no
+style or layout pass and it never appears in `dom_tree` or hit testing.
+`App::new(app).title_tooltips(false)` turns it off (an embed host: see the
+game-engine guide); it is off on Android, where there is no resting pointer.
+
+In SVG, as in Chrome, a `title` *attribute* is no tooltip; an `<svg>`'s
+`<title>` child is. (A `<title>` inside one of its shapes is not shown yet:
+rinch hit-tests the `<svg>` as one box.)
+
+Two places it is not a browser's: after a press it stays away over the same
+element however far the pointer moves inside it (Chrome brings it back after a
+larger move), and a `title` changed while it shows changes its text (Chrome
+keeps the old text).
+
 ### Data Display
 
 | Component | Description |

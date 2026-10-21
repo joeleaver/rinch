@@ -33,6 +33,10 @@ impl DomDocument for RinchDocument {
         let tag = crate::attr_name::fold_tag_name(tag);
         let tag = tag.as_ref();
         let id = self.tree.nodes.vacant_key();
+        if tag == "title" {
+            // An SVG element's tooltip text (#1646).
+            self.tree.title_sources += 1;
+        }
         let mut node = Node::element(id, tag, self.tree.guard.clone());
         // Use CSS-standard defaults based on element type:
         // Block elements (div, p, h1, etc.): flex-column (emulates block stacking)
@@ -728,6 +732,9 @@ impl DomDocument for RinchDocument {
         if name == "data-onmousemove" && !self.tree.nodes[node.0].attributes.contains_key(name) {
             self.tree.mousemove_handlers += 1;
         }
+        if name == "title" && !self.tree.nodes[node.0].attributes.contains_key(name) {
+            self.tree.title_sources += 1;
+        }
         // Before the write: the invalidation snapshot holds the old value.
         self.note_attribute_change(node.0, name);
         self.tree.nodes[node.0].write_attribute(name, value);
@@ -837,6 +844,9 @@ impl DomDocument for RinchDocument {
 
         if name == "data-onmousemove" {
             self.tree.mousemove_handlers = self.tree.mousemove_handlers.saturating_sub(1);
+        }
+        if name == "title" {
+            self.tree.title_sources = self.tree.title_sources.saturating_sub(1);
         }
         // Before the erase, as in `set_attribute`.
         self.note_attribute_change(node.0, name);
