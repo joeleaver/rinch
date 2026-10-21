@@ -140,7 +140,11 @@ fn grapheme_text(block: &Node) -> String {
         match child.text() {
             Some(t) => s.push_str(t),
             None => {
-                let c = if child.type_name() == "hard_break" { '\n' } else { '\u{FFFC}' };
+                let c = if child.type_name() == "hard_break" {
+                    '\n'
+                } else {
+                    '\u{FFFC}'
+                };
                 s.extend(std::iter::repeat_n(c, child.node_size()));
             }
         }

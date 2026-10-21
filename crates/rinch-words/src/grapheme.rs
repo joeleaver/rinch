@@ -36,7 +36,10 @@ pub fn next_grapheme_boundary(text: &str, byte: usize) -> usize {
         return text.len();
     }
     let mut c = GraphemeCursor::new(byte, text.len(), true);
-    c.next_boundary(text, 0).ok().flatten().unwrap_or(text.len())
+    c.next_boundary(text, 0)
+        .ok()
+        .flatten()
+        .unwrap_or(text.len())
 }
 
 /// Whether a caret may stand at `byte`: a grapheme boundary (the text's two
@@ -90,9 +93,11 @@ fn is_emoji_sequence(cluster: &str) -> bool {
             // A regional indicator: a flag is a pair of them.
             0x1F1E6..=0x1F1FF => !first || more.is_some(),
             // Variation selectors, the keycap mark, skin tones, tags.
-            0xFE00..=0xFE0F | 0xE0100..=0xE01EF | 0x20E3 | 0x1F3FB..=0x1F3FF | 0xE0020..=0xE007F => {
-                !first
-            }
+            0xFE00..=0xFE0F
+            | 0xE0100..=0xE01EF
+            | 0x20E3
+            | 0x1F3FB..=0x1F3FF
+            | 0xE0020..=0xE007F => !first,
             // A ZWJ joining a pictograph (not an Indic conjunct's ZWJ).
             0x200D => more.is_some_and(|n| n >= 0x2100),
             _ => false,
@@ -155,19 +160,47 @@ mod tests {
     const CHROME_155: &[(&str, &str, &str)] = &[
         // (text, after Backspace before the last 'b', cluster after 'a')
         ("a\u{2764}\u{FE0F}b", "ab", "\u{2764}\u{FE0F}"),
-        ("a\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}b", "ab", "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"),
+        (
+            "a\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}b",
+            "ab",
+            "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}",
+        ),
         ("a\u{1F1EB}\u{1F1F7}b", "ab", "\u{1F1EB}\u{1F1F7}"),
         ("a1\u{FE0F}\u{20E3}b", "ab", "1\u{FE0F}\u{20E3}"),
         ("a\u{1F44D}\u{1F3FD}b", "ab", "\u{1F44D}\u{1F3FD}"),
         ("ae\u{301}b", "aeb", "e\u{301}"),
-        ("a\u{1100}\u{1161}\u{11A8}b", "a\u{1100}\u{1161}b", "\u{1100}\u{1161}\u{11A8}"),
-        ("a\u{915}\u{94D}\u{937}\u{93F}b", "a\u{915}\u{94D}\u{937}b", "\u{915}\u{94D}\u{937}\u{93F}"),
-        ("a\u{E01}\u{E34}\u{E48}b", "a\u{E01}\u{E34}b", "\u{E01}\u{E34}\u{E48}"),
-        ("a\u{1F1EB}\u{1F1F7}\u{1F1E9}\u{1F1EA}b", "a\u{1F1EB}\u{1F1F7}b", "\u{1F1EB}\u{1F1F7}"),
-        ("a\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}b", "ab", "\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}"),
+        (
+            "a\u{1100}\u{1161}\u{11A8}b",
+            "a\u{1100}\u{1161}b",
+            "\u{1100}\u{1161}\u{11A8}",
+        ),
+        (
+            "a\u{915}\u{94D}\u{937}\u{93F}b",
+            "a\u{915}\u{94D}\u{937}b",
+            "\u{915}\u{94D}\u{937}\u{93F}",
+        ),
+        (
+            "a\u{E01}\u{E34}\u{E48}b",
+            "a\u{E01}\u{E34}b",
+            "\u{E01}\u{E34}\u{E48}",
+        ),
+        (
+            "a\u{1F1EB}\u{1F1F7}\u{1F1E9}\u{1F1EA}b",
+            "a\u{1F1EB}\u{1F1F7}b",
+            "\u{1F1EB}\u{1F1F7}",
+        ),
+        (
+            "a\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}b",
+            "ab",
+            "\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}",
+        ),
         ("ae\u{301}\u{323}b", "ae\u{301}b", "e\u{301}\u{323}"),
         ("a\u{2764}\u{FE0E}b", "ab", "\u{2764}\u{FE0E}"),
-        ("a\u{1F469}\u{1F3FD}\u{200D}\u{1F4BB}b", "ab", "\u{1F469}\u{1F3FD}\u{200D}\u{1F4BB}"),
+        (
+            "a\u{1F469}\u{1F3FD}\u{200D}\u{1F4BB}b",
+            "ab",
+            "\u{1F469}\u{1F3FD}\u{200D}\u{1F4BB}",
+        ),
     ];
 
     #[test]
@@ -178,7 +211,11 @@ mod tests {
             let left = format!("{}{}", &text[..start], &text[before_b..]);
             assert_eq!(left, after_bs, "Backspace in {text:?}");
             // ArrowRight / Delete from after 'a' cross the whole cluster.
-            assert_eq!(next_grapheme_boundary(text, 1), 1 + cluster.len(), "{text:?}");
+            assert_eq!(
+                next_grapheme_boundary(text, 1),
+                1 + cluster.len(),
+                "{text:?}"
+            );
             // ArrowLeft from before 'b' crosses the last cluster.
             assert_eq!(
                 prev_grapheme_boundary(text, before_b),
@@ -196,7 +233,9 @@ mod tests {
     #[test]
     fn no_boundary_inside_a_cluster() {
         let t = "a\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}b";
-        let interior: Vec<usize> = (2..t.len() - 1).filter(|&b| is_grapheme_boundary(t, b)).collect();
+        let interior: Vec<usize> = (2..t.len() - 1)
+            .filter(|&b| is_grapheme_boundary(t, b))
+            .collect();
         assert!(interior.is_empty(), "{interior:?}");
         // Inside a cluster, the neighbours are its edges.
         assert_eq!(prev_grapheme_boundary(t, 8), 1);

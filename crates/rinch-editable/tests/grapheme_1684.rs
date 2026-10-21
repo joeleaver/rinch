@@ -34,11 +34,20 @@ const E_ACUTE: &str = "e\u{301}";
 #[test]
 fn arrows_cross_a_whole_cluster_1684() {
     for c in [FAMILY, HEART, FLAG, KEYCAP, THUMB_TONE, E_ACUTE] {
-        assert_eq!(run(&format!("a|{c}b"), EditCommand::MoveRight), format!("a{c}|b"));
-        assert_eq!(run(&format!("a{c}|b"), EditCommand::MoveLeft), format!("a|{c}b"));
+        assert_eq!(
+            run(&format!("a|{c}b"), EditCommand::MoveRight),
+            format!("a{c}|b")
+        );
+        assert_eq!(
+            run(&format!("a{c}|b"), EditCommand::MoveLeft),
+            format!("a|{c}b")
+        );
     }
     // Two flags are two clusters.
-    assert_eq!(run(&format!("a{FLAG}{FLAG}|b"), EditCommand::MoveLeft), format!("a{FLAG}|{FLAG}b"));
+    assert_eq!(
+        run(&format!("a{FLAG}{FLAG}|b"), EditCommand::MoveLeft),
+        format!("a{FLAG}|{FLAG}b")
+    );
 }
 
 #[test]
@@ -62,17 +71,39 @@ fn delete_removes_a_whole_cluster_1684() {
 #[test]
 fn backspace_removes_an_emoji_sequence_whole_1684() {
     for c in [FAMILY, HEART, FLAG, KEYCAP, THUMB_TONE] {
-        assert_eq!(run(&format!("a{c}|b"), EditCommand::DeleteBackward), "a|b", "{c:?}");
+        assert_eq!(
+            run(&format!("a{c}|b"), EditCommand::DeleteBackward),
+            "a|b",
+            "{c:?}"
+        );
     }
-    assert_eq!(run(&format!("a{FLAG}{FLAG}|b"), EditCommand::DeleteBackward), format!("a{FLAG}|b"));
+    assert_eq!(
+        run(&format!("a{FLAG}{FLAG}|b"), EditCommand::DeleteBackward),
+        format!("a{FLAG}|b")
+    );
 }
 
 /// Chrome's Backspace takes one code point off a cluster that is not an emoji
 /// sequence: an accent, a Hangul jamo, a Devanagari or Thai sign.
 #[test]
 fn backspace_takes_one_mark_off_other_clusters_1684() {
-    assert_eq!(run(&format!("a{E_ACUTE}|b"), EditCommand::DeleteBackward), "ae|b");
-    assert_eq!(run("a\u{1100}\u{1161}\u{11A8}|b", EditCommand::DeleteBackward), "a\u{1100}\u{1161}|b");
-    assert_eq!(run("a\u{915}\u{94D}\u{937}\u{93F}|b", EditCommand::DeleteBackward), "a\u{915}\u{94D}\u{937}|b");
-    assert_eq!(run("a\u{E01}\u{E34}\u{E48}|b", EditCommand::DeleteBackward), "a\u{E01}\u{E34}|b");
+    assert_eq!(
+        run(&format!("a{E_ACUTE}|b"), EditCommand::DeleteBackward),
+        "ae|b"
+    );
+    assert_eq!(
+        run("a\u{1100}\u{1161}\u{11A8}|b", EditCommand::DeleteBackward),
+        "a\u{1100}\u{1161}|b"
+    );
+    assert_eq!(
+        run(
+            "a\u{915}\u{94D}\u{937}\u{93F}|b",
+            EditCommand::DeleteBackward
+        ),
+        "a\u{915}\u{94D}\u{937}|b"
+    );
+    assert_eq!(
+        run("a\u{E01}\u{E34}\u{E48}|b", EditCommand::DeleteBackward),
+        "a\u{E01}\u{E34}|b"
+    );
 }

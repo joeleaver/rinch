@@ -117,6 +117,13 @@ Command names are case-sensitive. The full catalogue:
 > link that runs straight into a *different* link: text typed at that seam continues
 > the first one (see [inherited marks](./editor.md#state-selection-stored-marks)).
 
+> Arrows, Delete and Backspace step over a **grapheme cluster**, as a browser does:
+> an emoji ZWJ sequence (`👨‍👩‍👧`), a flag, a keycap, `❤️` or a skin-toned emoji is one
+> step, and a click never puts the caret inside one. Backspace follows Chrome: it
+> deletes an emoji sequence whole but takes one code point off any other cluster, so
+> after `e` + a combining accent it removes only the accent (Delete removes both).
+> The same rule holds in desktop `<input>`/`<textarea>` fields.
+
 > The word deletes remove from the caret to the boundary the word motion
 > (Ctrl+Left / Ctrl+Right) lands on, taking the whitespace between: in `hello wor|ld`
 > backward leaves `hello |ld`. A mark boundary is not a word boundary. Where there is

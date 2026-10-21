@@ -696,10 +696,7 @@ impl RinchApp {
             byte_offset_from_position(&it.layout, local_x, adjusted_y)
         } else {
             rinch_dom::text_query::grapheme_offset_from_position(
-                &it.layout,
-                &it.value,
-                local_x,
-                adjusted_y,
+                &it.layout, &it.value, local_x, adjusted_y,
             )
         };
 

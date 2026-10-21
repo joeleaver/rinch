@@ -12,7 +12,8 @@ use super::*;
 use std::cell::Cell;
 
 const VALUE: &str = "a\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}b\u{2764}\u{FE0F}c\u{1F1EB}\u{1F1F7}d1\u{FE0F}\u{20E3}e\u{301}f";
-const STYLE: &str = "display: block; width: 700px; font: 32px/40px sans-serif; padding: 0; border: 0";
+const STYLE: &str =
+    "display: block; width: 700px; font: 32px/40px sans-serif; padding: 0; border: 0";
 
 fn page(tag: &'static str) -> (RinchApp, usize) {
     let id = Rc::new(Cell::new(0usize));
@@ -63,12 +64,19 @@ fn check(tag: &'static str) {
         .copied()
         .filter(|&o| !rinch_words::is_grapheme_boundary(VALUE, o))
         .collect();
-    assert!(inside.is_empty(), "{tag}: carets inside a cluster at {inside:?}");
+    assert!(
+        inside.is_empty(),
+        "{tag}: carets inside a cluster at {inside:?}"
+    );
     // Positive control: every boundary of the value was reached.
-    let boundaries: Vec<usize> =
-        (0..=VALUE.len()).filter(|&b| rinch_words::is_grapheme_boundary(VALUE, b)).collect();
+    let boundaries: Vec<usize> = (0..=VALUE.len())
+        .filter(|&b| rinch_words::is_grapheme_boundary(VALUE, b))
+        .collect();
     for b in boundaries {
-        assert!(offsets.contains(&b), "{tag}: the sweep never reached boundary {b}");
+        assert!(
+            offsets.contains(&b),
+            "{tag}: the sweep never reached boundary {b}"
+        );
     }
 }
 
@@ -93,13 +101,20 @@ fn the_snap_takes_the_nearer_edge_1684() {
     let last_start = offsets.iter().rposition(|&o| o == family.0).unwrap();
     // The answers switch once, from the start to the end.
     assert!(last_start < first_end, "{last_start} {first_end}");
-    assert!(offsets[last_start..=first_end].iter().all(|&o| o == family.0 || o == family.1));
+    assert!(
+        offsets[last_start..=first_end]
+            .iter()
+            .all(|&o| o == family.0 || o == family.1)
+    );
     // And at the middle: the end is answered over about as many samples as
     // the start (each is half the emoji plus half its neighbour letter), not
     // only over the half letter after the emoji.
     let starts = offsets.iter().filter(|&&o| o == family.0).count();
     let ends = offsets.iter().filter(|&&o| o == family.1).count();
-    assert!(2 * ends > starts, "start answered {starts} times, end {ends}");
+    assert!(
+        2 * ends > starts,
+        "start answered {starts} times, end {ends}"
+    );
 }
 
 /// The rich editor's press resolves through the same snap (`editor_point`):
@@ -132,8 +147,11 @@ fn a_press_in_the_editor_lands_on_a_cluster_edge_1684() {
         }
         x += 0.5;
     }
-    let inside: Vec<usize> =
-        bytes.iter().copied().filter(|&b| !rinch_words::is_grapheme_boundary(VALUE, b)).collect();
+    let inside: Vec<usize> = bytes
+        .iter()
+        .copied()
+        .filter(|&b| !rinch_words::is_grapheme_boundary(VALUE, b))
+        .collect();
     assert!(inside.is_empty(), "carets inside a cluster at {inside:?}");
     for b in (0..=VALUE.len()).filter(|&b| rinch_words::is_grapheme_boundary(VALUE, b)) {
         assert!(bytes.contains(&b), "the sweep never reached boundary {b}");
