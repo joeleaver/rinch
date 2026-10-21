@@ -244,11 +244,29 @@ the way down declared another (`none` included). When every run casts the
 root's list the text is drawn exactly as one list; otherwise each distinct list
 is drawn through a mask that keeps it to the text casting it
 (`paint::text::ShadowGroup`, the #829 visibility mask's per-range rule), every
-shadow before any text, as for one list. Chrome 153 paints shadow-then-text per
-text node instead: in `<p style="text-shadow: -29px 0 blue">A<span>B</span></p>`
-the shadow of `B` covers `A` there (measured) and not in rinch, whether or not
-the span declares its own list. Such a list is ink of the root that draws it:
-damage, the paint prune, the painted state and `layer_bounds` all count it.
+shadow before any text, as for one list.
+
+**Chrome paints shadow-then-text per text fragment** (#1060) — one text node's
+stretch of one line — so a later fragment's shadow reaching back is drawn over
+earlier text: in `<p style="text-shadow: -29px 0 blue">A<span>B</span></p>`
+the shadow of `B` covers `A`, and with `text-shadow: 0 -60px` on a 60px line
+the second line's shadow covers the first line, one text node or not (Chrome
+155, measured). Within one fragment every shadow is under the text. rinch keeps
+the one-pass order wherever the two orders paint the same pixels, decided on
+boxes (`paint::text::TextFragment::in_paint_order`): a fragment's text is its
+clusters' advance extent by its line's ascent and descent, its shadow that box
+moved by each offset and grown by the blur's reach, and only a shadow box
+overlapping an earlier fragment's text box — or, with shadows of more than one
+colour, its shadow box — sends the IFC down the per-fragment path, which draws
+each fragment's shadows and text through a mask of its own. That costs a draw
+per fragment for each glyph run fragments share, and a blurred mask per
+fragment rather than per paragraph: a blurred shadow that reaches into the line
+above (`0 1px 4px` reaches 5px up, past any line less than 5px below the one
+above it) makes every line its own mask. Ink past a glyph's advance or below
+its descent (an italic overhang, a wavy underline) is not in the box, so a
+shadow touching only that keeps the one-pass order.
+
+A span's own list is ink of the root that draws it: damage, the paint prune, the painted state and `layer_bounds` all count it.
 Two limits. In a `nowrap`/`pre` root that `text-overflow: ellipsis` cuts, every
 run casts the root's list, because that layout records no text ranges, the same
 gap as #853 (#1065); a wrapping root with such a span is left un-cut. And
