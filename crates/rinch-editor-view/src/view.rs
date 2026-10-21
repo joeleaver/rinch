@@ -1540,9 +1540,10 @@ impl EditorView for RinchDomEditorView {
                 flat_byte,
                 self.caret_affinity,
             )
+            .map(|(x, y, height)| (x, self.keep_caret_in_block(&*d, block_id, x), y, height))
         };
         match geometry {
-            Some((x, y, height)) => {
+            Some((x, caret_x, y, height)) => {
                 // While composing, the preedit overlay stands in for the caret at
                 // the cursor — show it and hide the blinking caret. Otherwise place
                 // the caret as usual.
@@ -1552,7 +1553,7 @@ impl EditorView for RinchDomEditorView {
                     Vec::new()
                 } else {
                     self.hide_preedit();
-                    scroll_if(self.position_caret(x, y, height))
+                    scroll_if(self.position_caret(caret_x, y, height))
                 }
             }
             None => {
@@ -2035,6 +2036,44 @@ impl RinchDomEditorView {
         (x - ix, y - iy)
     }
 
+    /// The caret overlay's container-space `x`, kept inside textblock
+    /// `block_id`'s border box with the caret's whole [`CARET_WIDTH`] (#1041).
+    ///
+    /// Preserved spaces that overflow a line hang past its end (#1018), and
+    /// the caret after them is at their true x, past the block: clipped away
+    /// under the editor's `overflow: auto`, painted outside the editor
+    /// without it. Chrome 155 draws its caret there at the block's border-box
+    /// edge less the caret's width (padding and border included), whatever
+    /// the block's `overflow` (measured with headless screenshots; a block
+    /// that clips at its padding box hides a caret clamped into its right
+    /// border, which the overlay, a child of the editor and not of the block,
+    /// does not). Only the overlay is kept in:
+    /// [`EditorHandle::caret_rect`](crate::EditorHandle::caret_rect), the
+    /// reveal probes and the vertical motions keep the text's own x, as a
+    /// collapsed `Range`'s rect does in the browser, so Up then Down from a
+    /// line's end comes back to it. The selection highlight is not clamped
+    /// either, in Chrome or here.
+    ///
+    /// [`CARET_WIDTH`]: rinch_core::dom::CARET_WIDTH
+    fn keep_caret_in_block(&self, d: &dyn DomDocument, block_id: usize, x: f32) -> f32 {
+        let Some((_, _, w, _)) = d.query_node_layout(block_id as u64) else {
+            return x;
+        };
+        if w <= 0.0 {
+            return x;
+        }
+        let (left, _) = self.block_offset_in_container(d, block_id);
+        let right = left + w - rinch_core::dom::CARET_WIDTH;
+        if (left..=right).contains(&x) {
+            return x;
+        }
+        // The left arm is for right-to-left text hanging its spaces past the
+        // start edge (Chrome 155 keeps that caret at the border-box left). Not
+        // reachable yet: rinch-dom reads no CSS `direction`, so no editor line
+        // hangs to the left, and nothing tests it.
+        if x > right { right.max(left) } else { left }
+    }
+
     /// The caret for `pos` — in textblock `block_id` at `flat_byte`, as
     /// [`Self::caret_target`] resolved it — as `(x, y, height)` in the
     /// container's coordinate space: Parley's caret, or an empty block's content
@@ -2226,7 +2265,8 @@ impl RinchDomEditorView {
                 // Placed by `transform`, as the caret is (`overlay_translate`).
                 ("left", "0"),
                 ("top", "0"),
-                ("width", "2px"),
+                // The width a caret query keeps inside its block (#1041).
+                ("width", &format!("{}px", rinch_core::dom::CARET_WIDTH)),
                 ("background-color", "#1a73e8"),
                 ("pointer-events", "none"),
                 ("z-index", "1"),
@@ -2672,7 +2712,8 @@ impl RinchDomEditorView {
                 // `transform` (`overlay_translate`): see there for why.
                 ("left", "0"),
                 ("top", "0"),
-                ("width", "2px"),
+                // The width a caret query keeps inside its block (#1041).
+                ("width", &format!("{}px", rinch_core::dom::CARET_WIDTH)),
                 ("background-color", "#1a73e8"),
                 ("pointer-events", "none"),
                 // In front of the in-flow text and the selection highlight.

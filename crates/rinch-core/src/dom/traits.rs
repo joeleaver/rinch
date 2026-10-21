@@ -113,6 +113,12 @@ pub enum CaretAffinity {
     Upstream,
 }
 
+/// The width, in CSS px, of the text caret the rich-text editor draws (its
+/// overlay). The editor keeps that whole width inside the textblock's border
+/// box when spaces hang past a line's end (#1041), as a browser keeps its own
+/// 1px caret.
+pub const CARET_WIDTH: f32 = 2.0;
+
 /// Bounding box for a glyph cluster.
 #[derive(Debug, Clone, Copy)]
 pub struct GlyphBounds {
