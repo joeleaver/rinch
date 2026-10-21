@@ -2513,7 +2513,7 @@ fn color_bitmap_glyph(
 /// under a transparent pixel is arbitrary, and averaging straight alpha would
 /// blend it into the edge.
 fn scale_strike(mut rgba: Vec<u8>, sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
-    for px in rgba.chunks_exact_mut(4) {
+    for px in rgba.as_chunks_mut::<4>().0 {
         let a = px[3];
         if a < 255 {
             px[0] = premultiply_channel(px[0], a);
