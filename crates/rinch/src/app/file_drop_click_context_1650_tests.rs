@@ -8,7 +8,7 @@
 //! context (or the wrong one) cannot pass by agreeing with a default.
 
 use super::*;
-use rinch_core::events::{ClickContext, MouseButton, ModifierState, TextHitInfo};
+use rinch_core::events::{ClickContext, ModifierState, MouseButton, TextHitInfo};
 use std::path::PathBuf;
 
 const VP: (u32, u32) = (800, 600);
@@ -170,7 +170,11 @@ fn the_element_box_follows_a_scrolled_ancestor() {
         *out.borrow_mut() = Some(scroller.clone());
         root
     });
-    scroller_out.borrow().as_ref().unwrap().set_scroll_top(250.0);
+    scroller_out
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .set_scroll_top(250.0);
     app.resolve_and_repaint(800.0, 600.0);
     drop_at(&mut app, (63.0, 171.0), VP, 1.0);
     let ctx = one(&seen);
