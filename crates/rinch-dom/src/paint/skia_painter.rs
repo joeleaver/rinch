@@ -554,9 +554,13 @@ struct CachedGlyph {
     top: i32,
     width: u32,
     height: u32,
-    /// `true`: `data` is straight-alpha RGBA and the brush is ignored (a COLR
-    /// glyph). `false`: `data` is one coverage byte per pixel.
+    /// `true`: `data` is RGBA and the brush is ignored (a COLR glyph, or a
+    /// colour bitmap strike). `false`: `data` is one coverage byte per pixel.
     color: bool,
+    /// For a colour glyph: `data` is already premultiplied (a bitmap strike,
+    /// premultiplied before it was scaled to the font size, #804), so it is
+    /// drawn as it is. `false`: straight alpha, premultiplied at the blit.
+    premultiplied: bool,
     data: Vec<u8>,
 }
 
@@ -804,6 +808,10 @@ pub struct TinySkiaPainter {
     layer_stack: Vec<LayerState>,
     /// Reusable swash scale context for glyph rasterization.
     scale_context: swash::scale::ScaleContext,
+    /// A second swash context for colour bitmap strikes (#804): a strike is
+    /// read at its own ppem, by a scaler built while the run's scaler (from
+    /// `scale_context`, at the font size) is still alive.
+    bitmap_scale_context: swash::scale::ScaleContext,
     /// Rasterised glyphs, reused across calls and frames.
     glyph_cache: GlyphCache,
     /// Scratch RGBA buffer a glyph is coloured into before it is drawn.
@@ -837,6 +845,7 @@ impl TinySkiaPainter {
             clip_mask: None,
             layer_stack: Vec::new(),
             scale_context: swash::scale::ScaleContext::new(),
+            bitmap_scale_context: swash::scale::ScaleContext::new(),
             glyph_cache: GlyphCache::default(),
             glyph_scratch: Vec::new(),
             mask_pool: Vec::new(),
@@ -1653,8 +1662,9 @@ impl Painter for TinySkiaPainter {
             swash::scale::Source::ColorOutline(0),
             swash::scale::Source::Outline,
         ]);
-        let rasterise = |s: &mut swash::scale::Scaler<'_>, id: u32| -> Option<CachedGlyph> {
-            let image = render.render(s, id as u16)?;
+        let render_color = swash::scale::Render::new(&[swash::scale::Source::ColorOutline(0)]);
+        let render_outline = swash::scale::Render::new(&[swash::scale::Source::Outline]);
+        let to_cached = |image: swash::scale::image::Image| -> Option<CachedGlyph> {
             if image.placement.width == 0 || image.placement.height == 0 {
                 return None;
             }
@@ -1676,8 +1686,26 @@ impl Painter for TinySkiaPainter {
                 width: image.placement.width,
                 height: image.placement.height,
                 color,
+                premultiplied: false,
                 data,
             })
+        };
+        let bitmap_cx = &mut self.bitmap_scale_context;
+        // A face with colour bitmap strikes (CBDT/CBLC, sbix) is asked in
+        // swash's order — colour outline, colour bitmap, outline — with the
+        // bitmap read at its strike's own size and scaled here (#804). Any
+        // other face takes the one `Render` it always did.
+        let mut rasterise = |s: &mut swash::scale::Scaler<'_>, id: u32| -> Option<CachedGlyph> {
+            if !s.has_color_bitmaps() {
+                return render.render(s, id as u16).and_then(to_cached);
+            }
+            if let Some(image) = render_color.render(s, id as u16) {
+                return to_cached(image);
+            }
+            if let Some(g) = color_bitmap_glyph(bitmap_cx, font_ref, font_size, id as u16) {
+                return Some(g);
+            }
+            render_outline.render(s, id as u16).and_then(to_cached)
         };
 
         let run = if self.reference_mode {
@@ -1759,7 +1787,9 @@ impl Painter for TinySkiaPainter {
                 }
             }
             let mask = self.clip_mask.as_ref().map(|m| &m.mask);
-            if g.color {
+            if g.color && g.premultiplied {
+                blit_premultiplied_into(&mut self.pixmap, mask, &g.data, g.width, g.height, gx, gy, ts);
+            } else if g.color {
                 blit_color_glyph_into(
                     &mut self.pixmap,
                     mask,
@@ -2395,6 +2425,153 @@ fn blit_alpha_mask_into(
     // Compose the transform: first translate to glyph position, then apply the node transform
     let ts = transform.pre_concat(Transform::from_translate(gx, gy));
     pixmap.draw_pixmap(0, 0, src, &PixmapPaint::default(), ts, clip);
+}
+
+/// Blit an already premultiplied RGBA glyph (a scaled colour bitmap strike,
+/// #804) onto `pixmap`.
+#[allow(clippy::too_many_arguments)]
+fn blit_premultiplied_into(
+    pixmap: &mut Pixmap,
+    clip: Option<&Mask>,
+    data: &[u8],
+    glyph_w: u32,
+    glyph_h: u32,
+    gx: f32,
+    gy: f32,
+    transform: Transform,
+) {
+    let Some(src) = PixmapRef::from_bytes(data, glyph_w, glyph_h) else {
+        return;
+    };
+    let ts = transform.pre_concat(Transform::from_translate(gx, gy));
+    pixmap.draw_pixmap(0, 0, src, &PixmapPaint::default(), ts, clip);
+}
+
+/// A colour bitmap glyph (CBDT/CBLC, sbix) at `font_size` (#804), or `None`
+/// when the face has no strike holding `glyph`.
+///
+/// The strike is the smallest whose ppem is at least the font size (shrinking
+/// keeps detail), else the largest. It is decoded at its own size — a scaler
+/// at exactly the strike's ppem, so swash does not resample it — then
+/// premultiplied and only then scaled, by area averaging: swash's own resize
+/// filters straight alpha, which drags the colour of the transparent pixels
+/// (black, in Noto Color Emoji) into every edge.
+fn color_bitmap_glyph(
+    cx: &mut swash::scale::ScaleContext,
+    font: swash::FontRef<'_>,
+    font_size: f32,
+    glyph: u16,
+) -> Option<CachedGlyph> {
+    let mut best: Option<u16> = None;
+    for strike in font.color_strikes() {
+        if !strike.contains(glyph) {
+            continue;
+        }
+        let ppem = strike.ppem();
+        best = Some(match best {
+            None => ppem,
+            Some(b) if (b as f32) < font_size => b.max(ppem),
+            Some(b) if (ppem as f32) >= font_size => b.min(ppem),
+            Some(b) => b,
+        });
+    }
+    let ppem = best.filter(|&p| p > 0)?;
+    let mut scaler = cx.builder(font).size(ppem as f32).build();
+    let image = scaler.scale_color_bitmap(glyph, swash::scale::StrikeWith::ExactSize)?;
+    let (sw, sh) = (image.placement.width, image.placement.height);
+    if sw == 0 || sh == 0 || image.content != swash::scale::image::Content::Color {
+        return None;
+    }
+    let mut premul = image.data;
+    premul.truncate((sw * sh * 4) as usize);
+    for px in premul.chunks_exact_mut(4) {
+        let a = px[3];
+        if a < 255 {
+            px[0] = premultiply_channel(px[0], a);
+            px[1] = premultiply_channel(px[1], a);
+            px[2] = premultiply_channel(px[2], a);
+        }
+    }
+    let scale = font_size / ppem as f32;
+    let dw = ((sw as f32 * scale).round() as u32).max(1);
+    let dh = ((sh as f32 * scale).round() as u32).max(1);
+    let data = if (dw, dh) == (sw, sh) {
+        premul
+    } else {
+        resample_area(&premul, sw, sh, dw, dh)
+    };
+    Some(CachedGlyph {
+        left: (image.placement.left as f32 * scale).round() as i32,
+        top: (image.placement.top as f32 * scale).round() as i32,
+        width: dw,
+        height: dh,
+        color: true,
+        premultiplied: true,
+        data,
+    })
+}
+
+/// Resize premultiplied RGBA from `sw`x`sh` to `dw`x`dh` by area averaging:
+/// each output pixel is the mean of the source area it covers (fractional
+/// pixels weighted by how much of them it covers). Separable: rows, then
+/// columns.
+fn resample_area(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
+    // The source spans `[lo, hi)` of one axis that output pixel `i` covers,
+    // as (index, weight) pairs summing to 1.
+    fn taps(n_src: u32, n_dst: u32) -> Vec<Vec<(usize, f32)>> {
+        let step = n_src as f32 / n_dst as f32;
+        (0..n_dst)
+            .map(|i| {
+                let (lo, hi) = (i as f32 * step, (i as f32 + 1.0) * step);
+                let mut out = Vec::new();
+                let mut j = lo.floor() as u32;
+                while (j as f32) < hi && j < n_src {
+                    let w = (hi.min(j as f32 + 1.0) - lo.max(j as f32)).max(0.0);
+                    if w > 0.0 {
+                        out.push((j as usize, w / step));
+                    }
+                    j += 1;
+                }
+                out
+            })
+            .collect()
+    }
+    let (sw_u, dw_u) = (sw as usize, dw as usize);
+    let xt = taps(sw, dw);
+    let yt = taps(sh, dh);
+    // Rows: sh x dw, as f32.
+    let mut mid = vec![0f32; sh as usize * dw_u * 4];
+    for y in 0..sh as usize {
+        for (x, t) in xt.iter().enumerate() {
+            for &(j, w) in t {
+                let s = (y * sw_u + j) * 4;
+                let d = (y * dw_u + x) * 4;
+                for c in 0..4 {
+                    mid[d + c] += src[s + c] as f32 * w;
+                }
+            }
+        }
+    }
+    let mut out = vec![0u8; dh as usize * dw_u * 4];
+    for (y, t) in yt.iter().enumerate() {
+        for x in 0..dw_u {
+            let mut acc = [0f32; 4];
+            for &(j, w) in t {
+                let s = (j * dw_u + x) * 4;
+                for c in 0..4 {
+                    acc[c] += mid[s + c] * w;
+                }
+            }
+            let d = (y * dw_u + x) * 4;
+            let a = acc[3].round().clamp(0.0, 255.0);
+            out[d + 3] = a as u8;
+            for c in 0..3 {
+                // A premultiplied channel never exceeds its alpha.
+                out[d + c] = acc[c].round().clamp(0.0, a) as u8;
+            }
+        }
+    }
+    out
 }
 
 /// Blit a color (RGBA) glyph onto `pixmap`, converting it to premultiplied
