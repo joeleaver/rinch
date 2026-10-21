@@ -625,7 +625,13 @@ impl RinchApp {
         let rel_y = local_y.max(0.0);
 
         let byte_offset = if let Some(ref layout) = block_node.text_layout {
-            byte_offset_from_position(&layout.layout, rel_x, rel_y)
+            // A caret never stands inside a grapheme cluster (#1684).
+            rinch_dom::text_query::grapheme_offset_from_position(
+                &layout.layout,
+                &layout.text_content,
+                rel_x,
+                rel_y,
+            )
         } else if let Some(ref layout) = block_node.cached_text_parley {
             byte_offset_from_position(layout, rel_x, rel_y)
         } else {
@@ -684,7 +690,18 @@ impl RinchApp {
         let local_y = (box_y - it.padding_top).max(0.0);
         let adjusted_y = (local_y - it.vertical_offset).max(0.0);
 
-        let byte_offset = byte_offset_from_position(&it.layout, local_x, adjusted_y);
+        // A caret never stands inside a grapheme cluster (#1684); a password
+        // field's layout is over bullets, one per char, so it has none.
+        let byte_offset = if it.is_password {
+            byte_offset_from_position(&it.layout, local_x, adjusted_y)
+        } else {
+            rinch_dom::text_query::grapheme_offset_from_position(
+                &it.layout,
+                &it.value,
+                local_x,
+                adjusted_y,
+            )
+        };
 
         // For password fields, map display byte offset back to real value byte offset
         if it.is_password {

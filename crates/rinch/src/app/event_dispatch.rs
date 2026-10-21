@@ -4755,8 +4755,15 @@ impl RinchApp {
         let pad_t = node.computed_style.padding_top.to_px();
         let rel_x = local_x - pad_l + node.scroll_offset.0 as f32;
         let rel_y = local_y - pad_t + node.scroll_offset.1 as f32;
-        let ifc_byte =
-            rinch_dom::text_query::byte_offset_from_position(&layout.layout, rel_x, rel_y);
+        // Never inside a grapheme cluster (#1684): Parley gives a caret stop
+        // to every character of a glyph that draws several (an emoji ZWJ
+        // sequence, a flag, `❤️`).
+        let ifc_byte = rinch_dom::text_query::grapheme_offset_from_position(
+            &layout.layout,
+            &layout.text_content,
+            rel_x,
+            rel_y,
+        );
         // Parley steps over an inline box to the byte after it, which is the
         // byte of both of the box's sides: name the box and the half instead.
         let inline_box = rinch_dom::text_query::inline_box_at_point(&layout.layout, rel_x, rel_y)

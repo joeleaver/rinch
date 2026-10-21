@@ -8,6 +8,10 @@ description = "Word segmentation shared by the Rinch rich-text editor and its de
 [dependencies]
 # Unicode general categories (marks, format chars, decimal digits, emoji).
 regex = "1"
+# Extended grapheme clusters (UAX #29): where a caret may stand and what one
+# arrow press or Delete steps over (#1684). Already in the graph (cosmic/winit
+# side), pure Rust, no data files.
+unicode-segmentation = "1.12"
 # Word segmentation by ICU's dictionary for CJK and South-East Asian runs
 # (#939). The same crate and data parley links under `complex-scripts`, so a
 # build that has parley pays nothing for it; a build without parley (the web)

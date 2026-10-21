@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# Grapheme-cluster boundaries for hit testing (#1684).
+rinch-words.workspace = true
 rinch-core = { workspace = true }
 slab = "0.4"
 # Taffy's default features minus the five rinch never reads (#1260), which

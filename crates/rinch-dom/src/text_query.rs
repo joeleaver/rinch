@@ -284,6 +284,44 @@ pub fn byte_offset_from_position(layout: &parley::layout::Layout<Brush>, x: f32,
     Cursor::from_point(layout, x, y).index()
 }
 
+/// [`byte_offset_from_position`] for a caret: the answer is a grapheme
+/// boundary of `text`, the text `layout` was built from (#1684). Parley
+/// splits a glyph that draws several characters — an emoji ZWJ sequence, a
+/// flag, a keycap, `❤️` — into one caret stop per character, so a click on the
+/// glyph's middle would put the caret inside the cluster; it goes to whichever
+/// of the cluster's two edges is nearer `x` instead.
+pub fn grapheme_offset_from_position(
+    layout: &parley::layout::Layout<Brush>,
+    text: &str,
+    x: f32,
+    y: f32,
+) -> usize {
+    let offset = byte_offset_from_position(layout, x, y);
+    snap_to_grapheme_boundary(layout, text, offset, x)
+}
+
+/// `offset` if it is a grapheme boundary of `text`, else whichever edge of
+/// the cluster around it has its caret nearer `x` in `layout` (#1684).
+pub fn snap_to_grapheme_boundary(
+    layout: &parley::layout::Layout<Brush>,
+    text: &str,
+    offset: usize,
+    x: f32,
+) -> usize {
+    if offset > text.len() || rinch_words::is_grapheme_boundary(text, offset) {
+        return offset;
+    }
+    let before = rinch_words::prev_grapheme_boundary(text, offset);
+    let after = rinch_words::next_grapheme_boundary(text, offset);
+    let (bx, _) = caret_position_for_offset_layout(layout, before);
+    let (ax, _) = caret_position_for_offset_layout(layout, after);
+    if (x - bx).abs() <= (x - ax).abs() {
+        before
+    } else {
+        after
+    }
+}
+
 /// The caret beside the inline box `box_id` in `layout`, as `(x, y, height)`
 /// layout-local: on the box's left edge, or its right edge when `after`, at the
 /// top of the box's line and one line high — the line box a text caret on that

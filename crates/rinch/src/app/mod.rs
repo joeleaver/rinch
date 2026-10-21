@@ -3120,6 +3120,7 @@ impl RinchApp {
                 Some(it) => {
                     let (target, x) = Self::vertical_move_target(
                         &it.layout,
+                        &it.value,
                         origin,
                         origin_affinity,
                         down,
@@ -3203,6 +3204,7 @@ impl RinchApp {
     /// Also returns the x it aimed at, which is the goal the next move keeps.
     fn vertical_move_target(
         layout: &parley::layout::Layout<peniko::Brush>,
+        text: &str,
         origin: usize,
         origin_affinity: rinch_core::dom::CaretAffinity,
         down: bool,
@@ -3227,6 +3229,8 @@ impl RinchApp {
             return (None, x);
         };
         let offset = Cursor::from_point(layout, x, (top + bottom) / 2.0).index();
+        // Never inside a grapheme cluster (#1684).
+        let offset = rinch_dom::text_query::snap_to_grapheme_boundary(layout, text, offset, x);
         // Landing on a soft-wrapped line's end — its wrap point, after any
         // space hung there, which is also the next line's start — is an
         // upstream caret, drawn at the end of this line (#941; Chrome 153).
@@ -11278,6 +11282,8 @@ mod editor_enter_scroll_tests;
 mod editor_scroll_gate_tests;
 #[cfg(test)]
 mod editor_table_span_1182_tests;
+#[cfg(test)]
+mod grapheme_hit_1684_tests;
 
 /// What [`RinchApp::collect_tab_stops_from`] found under a root.
 struct TabStops {

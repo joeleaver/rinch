@@ -13,6 +13,13 @@
 //! engine) can use it without the editor model. The ICU dictionary that splits
 //! CJK and Thai runs is the optional `dictionary` feature.
 
+mod grapheme;
+pub use grapheme::{
+    backspace_start, backspace_start_chars, is_grapheme_boundary, is_grapheme_boundary_chars,
+    next_grapheme_boundary, next_grapheme_boundary_chars, prev_grapheme_boundary,
+    prev_grapheme_boundary_chars,
+};
+
 /// One position of a run of text: a char, or (in the rich editor) an inline
 /// atom.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -5339,6 +5339,7 @@ version = "0.1.0"
 dependencies = [
  "icu_segmenter",
  "regex",
+ "unicode-segmentation",
 ]
 
 [[package]]

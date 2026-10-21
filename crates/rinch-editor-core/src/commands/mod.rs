@@ -1267,9 +1267,11 @@ pub fn delete_char_backward() -> Command {
         }
         let r = state.doc.resolve(Pos(pos)).ok()?;
         if r.parent_offset() > 0 {
-            // Mid-text: delete the char before the cursor.
+            // Mid-text: delete the char before the cursor — or the whole emoji
+            // sequence it ends (#1684).
+            let from = crate::motion::backspace_start(&state.doc, Pos(pos)).unwrap_or(pos - 1);
             let mut tr = state.tr();
-            tr.delete(pos - 1, pos).ok()?;
+            tr.delete(from, pos).ok()?;
             return tr.doc_changed().then_some(tr);
         }
         // At block start: join across the nearest cut, else move into the preceding
@@ -1321,9 +1323,10 @@ pub fn delete_char_forward() -> Command {
         let pos = sel.from().0;
         let r = state.doc.resolve(Pos(pos)).ok()?;
         if r.parent_offset() < r.parent().content().size() {
-            // Mid-text: delete the char after the cursor.
+            // Mid-text: delete the grapheme cluster after the cursor (#1684).
+            let to = crate::motion::grapheme_step(&state.doc, Pos(pos), true).unwrap_or(pos + 1);
             let mut tr = state.tr();
-            tr.delete(pos, pos + 1).ok()?;
+            tr.delete(pos, to).ok()?;
             return tr.doc_changed().then_some(tr);
         }
         // At block end: join across the nearest cut, else lift the next block out.
