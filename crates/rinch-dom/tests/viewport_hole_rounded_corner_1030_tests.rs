@@ -155,3 +155,50 @@ fn a_hole_past_the_box_edge_paints_nothing_outside_the_box() {
         );
     }
 }
+
+/// Every pixel of a hole at a rounded corner is clear — the ones on the arc
+/// too, where the shape's edge and the hole's cut meet. A hole that cut a
+/// slightly different curve from the one the background fills leaves a
+/// faint line of background along the arc there.
+#[test]
+fn no_pixel_of_a_corner_hole_is_painted() {
+    let p = painted(&boxed("40px", "background: rgb(0,0,0)", ""));
+    let mut painted_px = Vec::new();
+    for y in 150..250 {
+        for x in 150..250 {
+            if alpha(&p, x, y) != 0 {
+                painted_px.push((x, y, alpha(&p, x, y)));
+            }
+        }
+    }
+    assert!(
+        painted_px.is_empty(),
+        "painted inside the hole: {painted_px:?}"
+    );
+}
+
+/// A hole narrower than the box's straight top side ends partway along it,
+/// off its midpoint (the hole's right edge at x = 230 crosses the top side,
+/// which runs 190..310, a third of the way along). The background right of
+/// the hole along that side is still painted.
+#[test]
+fn a_corner_hole_ends_where_its_rect_ends() {
+    let p = painted(&boxed(
+        "40px",
+        "background: rgb(0,0,0)",
+        "width: 80px; height: 80px",
+    ));
+    for (x, y) in [(235, 151), (260, 152), (300, 151), (151, 235), (152, 260)] {
+        assert!(
+            alpha(&p, x, y) > 200,
+            "({x}, {y}) is outside the hole and not painted ({})",
+            alpha(&p, x, y)
+        );
+    }
+    assert_eq!(
+        alpha(&p, 152, 152),
+        0,
+        "(152, 152) is outside the corner and painted"
+    );
+    assert_eq!(alpha(&p, 225, 225), 0, "the hole no longer cuts (225, 225)");
+}
