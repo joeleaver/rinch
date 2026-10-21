@@ -185,19 +185,11 @@ fn hit_test_node(
 
     // A stacking context whose subtree hoists nothing paints exactly its flow
     // walk, so a point outside its flow extent hits nothing in it: answered
-    // here, before its sequence is built (#1719). The loop below prunes such
-    // an entry before entering it; this is the transformed one, which only
-    // its own inverse — `descend`, above — can place.
-    if node_id != tree.body_id && node.creates_stacking_context() {
-        let ([x0, y0, x1, y1], hoists) = flow(tree, node_id);
-        if !hoists
-            && !(x >= nx + x0 - EXTENT_SLACK
-                && x <= nx + x1 + EXTENT_SLACK
-                && y >= ny + y0 - EXTENT_SLACK
-                && y <= ny + y1 + EXTENT_SLACK)
-        {
-            return None;
-        }
+    // before its sequence is built (#1719). The loop below prunes such an
+    // entry before entering it; this is the transformed one, which only its
+    // own inverse — `descend`, above — can place.
+    if stacking_context_misses(tree, node, node_id, nx, ny, x, y) {
+        return None;
     }
 
     let nw = node.layout.width;
@@ -293,7 +285,7 @@ fn hit_test_node(
                 // sequence is then its flow walk. One that hoists cannot: its
                 // own hoisted descendants may be anywhere.
                 if (entry.kind != rinch_dom::stacking::PaintKind::StackingContext
-                    || !flow(tree, entry.node_id).1)
+                    || !flow_hoists(tree, entry.node_id))
                     && !flow_subtree_may_contain(
                         tree,
                         child,
@@ -409,6 +401,20 @@ fn cached_paint_order(tree: &rinch_dom::NodeTree, root: usize, ox: f64, oy: f64)
 /// edge; a pixel of slack keeps the prune strictly conservative.
 const EXTENT_SLACK: f32 = 1.0;
 
+/// [`flow_extent`]'s cache hit, inlined where the warm pointer move's 500-row
+/// loop asks it ([`flow_subtree_may_contain`]); a miss computes it out of line.
+/// `flow_extent` itself stays one function, cache check included, for its own
+/// recursion: inlining the check there cost the cold move about 4% (review of
+/// #1720, which also measured +18% on `shell::pointer_move_warm` while
+/// nothing inlined the hit).
+#[inline]
+fn cached_flow_extent(tree: &rinch_dom::NodeTree, id: usize) -> rinch_dom::hit_cache::Extent {
+    match tree.hit_cache.extent(id) {
+        Some(e) => e,
+        None => flow_extent(tree, id),
+    }
+}
+
 /// Whether `hit_test_node(child)` — entered at parent offset `(ox, oy)` as an
 /// ordinary node, i.e. not as a stacking-context root — could possibly return
 /// a hit for the point `(x, y)`.
@@ -435,7 +441,7 @@ fn flow_subtree_may_contain(
     let (dx, dy) = rinch_dom::paint::ifc_content_box_offset(tree, child);
     let cx = ox + child.layout.x + dx;
     let cy = oy + child.layout.y + dy;
-    let [x0, y0, x1, y1] = flow_extent(tree, child.id);
+    let [x0, y0, x1, y1] = cached_flow_extent(tree, child.id);
     x >= cx + x0 - EXTENT_SLACK
         && x <= cx + x1 + EXTENT_SLACK
         && y >= cy + y0 - EXTENT_SLACK
@@ -468,62 +474,100 @@ fn flow_subtree_may_contain(
 /// sibling's `flow_subtree_may_contain` has to see to still walk into a child
 /// overflowing *this* node vertically.
 fn flow_extent(tree: &rinch_dom::NodeTree, id: usize) -> rinch_dom::hit_cache::Extent {
-    flow(tree, id).0
-}
-
-/// [`flow_extent`], and whether the flow walk under `id` passes over a box
-/// painted at a stacking root (positioned, or a stacking context). A stacking
-/// context with no such box has a sequence holding only its in-flow children —
-/// the flow walk, exactly — so its flow extent bounds every box its own hit
-/// test can reach, and it can be pruned like an in-flow box (#1719).
-fn flow(tree: &rinch_dom::NodeTree, id: usize) -> (rinch_dom::hit_cache::Extent, bool) {
-    if let Some(f) = tree.hit_cache.flow(id) {
-        return f;
+    if let Some(e) = tree.hit_cache.extent(id) {
+        return e;
     }
     tree.perf.bump(rinch_dom::perf::Counter::HitExtentsComputed);
     let Some(node) = tree.get(id) else {
-        return ([0.0; 4], false);
+        return [0.0; 4];
     };
     let mut e = [0.0, 0.0, node.layout.width, node.layout.height];
     let (clip_x, clip_y) = node.clip_axes();
-    if clip_x && clip_y {
-        // A box that clips confines every child hit to its own box, and its
-        // children are not walked for that. Nor for the hoisting bit, which is
-        // then the conservative answer: anything under it may be hoisted.
-        let hoists = !node.children.is_empty();
-        tree.hit_cache.store_flow(id, e, hoists);
-        return (e, hoists);
-    }
-    let mut hoists = false;
-    let sx = node.scroll_offset.0 as f32;
-    let sy = node.scroll_offset.1 as f32;
-    for &child_id in rinch_dom::RinchDocument::box_tree_children(&tree.nodes, id).iter() {
-        let Some(child) = tree.get(child_id) else {
-            continue;
-        };
-        if paints_at_stacking_root(child) {
-            hoists = true;
-            continue;
-        }
-        if child.is_text() && child.ifc_root.is_some() {
-            continue;
-        }
-        let (dx, dy) = rinch_dom::paint::ifc_content_box_offset(tree, child);
-        let cx = child.layout.x + dx - sx;
-        let cy = child.layout.y + dy - sy;
-        let ([c0, c1, c2, c3], child_hoists) = flow(tree, child_id);
-        hoists |= child_hoists;
-        if !clip_x {
-            e[0] = e[0].min(cx + c0);
-            e[2] = e[2].max(cx + c2);
-        }
-        if !clip_y {
-            e[1] = e[1].min(cy + c1);
-            e[3] = e[3].max(cy + c3);
+    if !clip_x || !clip_y {
+        let sx = node.scroll_offset.0 as f32;
+        let sy = node.scroll_offset.1 as f32;
+        for &child_id in rinch_dom::RinchDocument::box_tree_children(&tree.nodes, id).iter() {
+            let Some(child) = tree.get(child_id) else {
+                continue;
+            };
+            if paints_at_stacking_root(child) || (child.is_text() && child.ifc_root.is_some()) {
+                continue;
+            }
+            let (dx, dy) = rinch_dom::paint::ifc_content_box_offset(tree, child);
+            let cx = child.layout.x + dx - sx;
+            let cy = child.layout.y + dy - sy;
+            let [c0, c1, c2, c3] = flow_extent(tree, child_id);
+            if !clip_x {
+                e[0] = e[0].min(cx + c0);
+                e[2] = e[2].max(cx + c2);
+            }
+            if !clip_y {
+                e[1] = e[1].min(cy + c1);
+                e[3] = e[3].max(cy + c3);
+            }
         }
     }
-    tree.hit_cache.store_flow(id, e, hoists);
-    (e, hoists)
+    tree.hit_cache.store_extent(id, e);
+    e
+}
+
+/// Whether `node` is a stacking context (not the body) whose subtree hoists
+/// nothing and whose flow extent misses `(x, y)` — in its own space, after
+/// `descend`'s inverse — so its hit test can answer `None` without building
+/// its sequence (#1719). Kept out of line: `hit_test_node` runs it for every
+/// node it visits, and inlining it pushed `flow_subtree_may_contain` out of
+/// `hit_test_node` (+4% on `shell::pointer_move_cold`, review of #1720).
+#[inline(never)]
+fn stacking_context_misses(
+    tree: &rinch_dom::NodeTree,
+    node: &rinch_dom::Node,
+    node_id: usize,
+    nx: f32,
+    ny: f32,
+    x: f32,
+    y: f32,
+) -> bool {
+    if node_id == tree.body_id || !node.creates_stacking_context() || flow_hoists(tree, node_id) {
+        return false;
+    }
+    let [x0, y0, x1, y1] = flow_extent(tree, node_id);
+    !(x >= nx + x0 - EXTENT_SLACK
+        && x <= nx + x1 + EXTENT_SLACK
+        && y >= ny + y0 - EXTENT_SLACK
+        && y <= ny + y1 + EXTENT_SLACK)
+}
+
+/// Whether the flow walk under `id` passes over a box painted at a stacking
+/// root (positioned, or a stacking context). A stacking context with no such
+/// box has a sequence holding only its in-flow children — the flow walk,
+/// exactly — so its flow extent bounds every box its own hit test can reach,
+/// and it can be pruned like an in-flow box (#1719). A box that clips on both
+/// axes answers conservatively ("hoists", if it has children) without walking.
+/// Kept apart from [`flow_extent`] so a document with no stacking context
+/// below the body pays nothing for it.
+fn flow_hoists(tree: &rinch_dom::NodeTree, id: usize) -> bool {
+    if let Some(h) = tree.hit_cache.hoists(id) {
+        return h;
+    }
+    let Some(node) = tree.get(id) else {
+        return false;
+    };
+    let (clip_x, clip_y) = node.clip_axes();
+    let hoists = if clip_x && clip_y {
+        !node.children.is_empty()
+    } else {
+        rinch_dom::RinchDocument::box_tree_children(&tree.nodes, id)
+            .iter()
+            .any(|&child_id| {
+                tree.get(child_id).is_some_and(|child| {
+                    paints_at_stacking_root(child)
+                        || (!(child.is_text() && child.ifc_root.is_some())
+                            && flow_hoists(tree, child_id))
+                })
+            })
+    };
+    tree.hit_cache.store_hoists(id, hoists);
+    hoists
 }
 
 /// The box a node is *painted* in, in layout pixels, shaped as the four

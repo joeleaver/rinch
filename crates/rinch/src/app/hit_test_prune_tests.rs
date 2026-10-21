@@ -1020,3 +1020,35 @@ fn reference_hit_test_node_is_per_axis_like_the_real_one() {
          with hit_test_node's per-axis check_children (#535)"
     );
 }
+
+/// A stacking-context row, cache warm with "hoists nothing" (#1719), then a
+/// child restyled into an absolute box hanging far below the row: the restyle
+/// drops the memo, and the box is hit where it hangs (review of #1720).
+#[test]
+fn a_stacking_row_that_starts_hoisting_is_hit() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let row = doc.create_element("div");
+    doc.set_attribute(
+        row,
+        "style",
+        "position: relative; z-index: 0; width: 100px; height: 20px; margin-top: 10px",
+    );
+    doc.append_child(body, row);
+    let kid = doc.create_element("div");
+    doc.set_attribute(kid, "style", "width: 50px; height: 10px");
+    doc.append_child(row, kid);
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        hit_test(&doc.tree, 300.0, 300.0).map(|h| h == kid.0),
+        Some(false)
+    );
+    doc.set_attribute(
+        kid,
+        "style",
+        "position: absolute; left: 280px; top: 280px; width: 50px; height: 50px",
+    );
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(hit_test(&doc.tree, 300.0, 300.0), Some(kid.0));
+    assert_agree(&doc, "after hoisting");
+}

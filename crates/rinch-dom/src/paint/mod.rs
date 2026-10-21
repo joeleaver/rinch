@@ -2637,6 +2637,14 @@ fn paints_nothing_within(
 
 /// Nodes [`paints_nothing_without_visit`] may look at to answer one question
 /// before it gives up and lets [`paint_node`] decide (#1719).
+///
+/// The budget is per question, and a level that is visited asks again of its
+/// children, so a single-child chain of depth D outside the cull costs about
+/// (D − 128) × 128 rect tests where the old depth cap of 3 cost about D × 4.
+/// Measured (review of #1720, release, full frame): an 800-deep chain outside
+/// a 300px clip painted in 3.9 ms against 1.3 ms with the depth cap, while its
+/// visit count fell (800 → 676). Bounded, and only that pathological shape
+/// pays it; a list's rows and a tree's folders are a few dozen nodes each.
 const PAINTS_NOTHING_BUDGET: u32 = 128;
 
 /// See [`paints_nothing_within`]; this is it with a fresh budget of

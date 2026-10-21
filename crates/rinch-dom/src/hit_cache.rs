@@ -139,9 +139,8 @@ type OrderKey = (usize, u64, u64);
 struct State {
     /// The generation `extents` and `orders` were filled at.
     filled_at: u64,
-    /// Each node's flow extent and whether its flow subtree holds a box
-    /// painted at a stacking root (see [`HitCache::flow`]).
-    extents: Vec<Option<(Extent, bool)>>,
+    extents: Vec<Option<Extent>>,
+    hoists: Vec<Option<bool>>,
     orders: HashMap<OrderKey, Rc<PaintOrder>>,
 }
 
@@ -187,6 +186,7 @@ impl HitCache {
         if s.filled_at != self.generation.get() {
             s.filled_at = self.generation.get();
             s.extents.clear();
+            s.hoists.clear();
             s.orders.clear();
         }
         s
@@ -243,23 +243,35 @@ impl HitCache {
         s.orders.clear();
     }
 
-    /// The flow extent stored for `id` in the current generation, and whether
-    /// the flow walk under `id` passed over a box painted at a stacking root
-    /// (positioned, or a stacking context) — one it does not test, because an
-    /// ancestor's sequence holds it. Like the extent, that bit reads no scroll
-    /// offset, so a scroll that keeps the extents keeps it.
+    /// The extent stored for `id` in the current generation.
     #[inline]
-    pub fn flow(&self, id: usize) -> Option<(Extent, bool)> {
+    pub fn extent(&self, id: usize) -> Option<Extent> {
         self.state().extents.get(id).copied().flatten()
     }
 
-    /// Store `id`'s flow extent and hoisting bit for the current generation.
-    pub fn store_flow(&self, id: usize, extent: Extent, hoists: bool) {
+    /// Whether the flow walk under `id` passes over a box painted at a
+    /// stacking root (#1719), stored for the current generation.
+    #[inline]
+    pub fn hoists(&self, id: usize) -> Option<bool> {
+        self.state().hoists.get(id).copied().flatten()
+    }
+
+    /// Store `id`'s hoisting bit for the current generation.
+    pub fn store_hoists(&self, id: usize, hoists: bool) {
+        let mut s = self.state();
+        if s.hoists.len() <= id {
+            s.hoists.resize(id + 1, None);
+        }
+        s.hoists[id] = Some(hoists);
+    }
+
+    /// Store `id`'s extent for the current generation.
+    pub fn store_extent(&self, id: usize, extent: Extent) {
         let mut s = self.state();
         if s.extents.len() <= id {
             s.extents.resize(id + 1, None);
         }
-        s.extents[id] = Some((extent, hoists));
+        s.extents[id] = Some(extent);
     }
 
     /// The stacking sequence cached for `root` at base `(ox, oy)`.

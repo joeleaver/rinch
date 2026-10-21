@@ -522,3 +522,66 @@ fn open_folders_paint_the_same_frame_and_only_the_rows_on_screen() {
         assert!(visits < 260, "scroll {scroll}: {visits} visits");
     }
 }
+
+/// **The stacking-context branch places the subtree with the row's own
+/// transform** (review of #1720). A `translateY(-500px)` stacking row held
+/// below the viewport, its transformed box still outside the clip and its ink
+/// margin; its child reaches 300px further up and lands in view only through
+/// the row's transform. The frame equals the same child placed there with no
+/// transform. `padding-top: 1px` keeps the child's negative margin from
+/// collapsing through the row.
+///
+/// Kills: `subtree_is_entirely_outside` handed the parent's transform (the
+/// child is culled: the frames differ).
+#[test]
+fn a_transformed_stacking_rows_child_that_lands_in_view_is_drawn() {
+    let build = |transformed: bool| {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let s = child(
+            &mut doc,
+            body,
+            "position: absolute; left: 20px; top: 20px; width: 200px; height: 300px; \
+             overflow-y: hidden",
+        );
+        child(&mut doc, s, "height: 1000px");
+        let (transform, kid_mt) = if transformed {
+            ("transform: translateY(-500px);", -300)
+        } else {
+            ("", -800)
+        };
+        let row = child(
+            &mut doc,
+            s,
+            &format!("padding-top: 1px; position: relative; z-index: 0; height: 20px; {transform}"),
+        );
+        child(
+            &mut doc,
+            row,
+            &format!(
+                "width: 50px; height: 30px; margin-top: {kid_mt}px; background-color: rgb(0, 200, 0)"
+            ),
+        );
+        child(&mut doc, s, "height: 600px");
+        doc.resolve_layout(VW, VH);
+        doc.tree.nodes[s.0].scroll_offset = (0.0, 100.0);
+        doc.tree.hit_cache.invalidate();
+        doc
+    };
+    let (got, _) = paint(&mut build(true), None);
+    let (want, _) = paint(&mut build(false), None);
+    let green = want
+        .pixels()
+        .chunks(4)
+        .filter(|c| c[0] == 0 && c[1] == 200 && c[2] == 0)
+        .count();
+    assert!(
+        green > 500,
+        "positive control: the oracle draws {green} green px"
+    );
+    assert_eq!(
+        first_difference(&got, &want, Rect::new(0.0, 0.0, VW as f64, VH as f64)),
+        None,
+        "(x, y, transformed row, oracle)"
+    );
+}

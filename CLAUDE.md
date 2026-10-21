@@ -4271,8 +4271,9 @@ it enters that child as an ordinary node (its own box, plus its non-hoisted
 children's extents unless it clips). In-flow and positioned `z-index: auto`
 entries are pruned on it, and so is a stacking context whose flow walk passes
 over no box painted at a stacking root (#1719: its sequence is then exactly its
-flow walk; `HitCache::flow` keeps that bit beside the extent, and a box that
-clips answers it conservatively, "hoists", without walking). A stacking context
+flow walk; that bit is a separate memo, `HitCache::hoists`, computed only for a
+stacking context the hit test asks about, and a box that clips answers it
+conservatively, "hoists", without walking). A stacking context
 that hoists something is always entered, since its hoisted descendants can be
 anywhere; one with nothing in its box tree builds no sequence. Pin:
 `prune_tests::stacking_context_rows_hit_identically` (against the unpruned

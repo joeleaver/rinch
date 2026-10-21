@@ -414,11 +414,9 @@ fn backspace_joins_two_paragraphs() {
 /// `settle` runs it (#1001). Before that, the click itself created the
 /// highlight's `data-pm-selection` div — a second layout, a scoped IFC pass
 /// over 37 nodes, and a full repaint. The hit-test caches are cold at the click
-/// (75 extents) because the overlay pass's resolve in `settle` moved their
+/// (69 extents) because the overlay pass's resolve in `settle` moved their
 /// generation; a pointer move before the click warms them (36 extents, 6
-/// sequences). #1719: 69 → 75 extents, because a stacking context the hit test
-/// enters now has its flow extent asked first (one that hoists nothing is
-/// pruned on it), and 8 → 6 sequences built over the frame, because paint
+/// sequences). #1719: 8 → 6 sequences built over the frame, because paint
 /// builds none for a stacking context with no children (the editor's caret).
 #[test]
 fn a_toolbar_bold_over_a_word() {
@@ -465,7 +463,7 @@ fn a_toolbar_bold_over_a_word() {
             (ClipMaskPx, 20520),
             (HitTests, 2),
             (HitTestNodesVisited, 10),
-            (HitExtentsComputed, 75),
+            (HitExtentsComputed, 69),
         ],
     );
 }
