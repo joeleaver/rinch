@@ -204,11 +204,20 @@ Command names are case-sensitive. The full catalogue:
 > An image at a line's edge is on that line: Home on a line that starts with
 > one lands before it, End on a line that ends with one after it, and at a soft
 > wrap between two images End on the upper line lands after the first and Home
-> on the lower line before the second, as in Chrome 155 (#1116). Desktop
-> reads the image's side from the line's first and last items, which is
-> left-to-right only.
+> on the lower line before the second, as in Chrome 155 (#1116); Home and End
+> pressed again stay there. The caret beside an image is drawn on its side, and
+> a drag or Up/Down onto an image lands on the half it reaches (#1104); a hard
+> break is resolved on both sides on both platforms (#1099, #1025), and the web
+> resolves both sides of an image too — a click, Home, a soft-line delete, and
+> an IME commit or autocorrect right after one.
 >
 > Where this still differs from a browser field:
+> - **Desktop, an image on a line holding right-to-left text**: desktop reads
+>   which side of an image is the line's edge from the line's items, which are
+>   in visual order, so on such a line it keeps the flat byte's answer, which
+>   can differ from Chrome's: in `abc שלום <img>שלום` wrapped before the image,
+>   End on the second line lands at the paragraph's end, where Chrome 155
+>   lands right after the image (#1116).
 > - On a line that *mixes* directions the answer is the line's logical edge,
 >   which can differ from a browser field's: at the end of a line whose last
 >   run is right-to-left, Chrome's End stops before the trailing space where

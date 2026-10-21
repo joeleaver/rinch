@@ -292,6 +292,9 @@ fn a_line_holding_right_to_left_text_keeps_the_bytes_answer() {
         }
         matched += 1;
         assert_eq!(p.press(14, KeyCode::Home), 9, "w={w}");
+        // A known difference (the guide says so): End keeps the byte's answer,
+        // the paragraph's end, where Chrome 155 lands after the image (10).
+        assert_eq!(p.press(11, KeyCode::End), 14, "w={w}");
     }
     assert!(matched > 0, "positive control: the image starts line 2");
 }
