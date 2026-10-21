@@ -370,6 +370,48 @@ mod tests {
         assert_eq!(*seen.borrow(), [Some(1), None]);
     }
 
+    /// A parked continuation re-enters the **context root** it was parked in
+    /// as well as the document (issue #1032), as an effect does (#136): a timer
+    /// or http completion armed inside an embedded `RinchContext` must resolve
+    /// that context's stores, whichever context's `update()` resumes it.
+    /// Resumed from inside root 4 / document 2, off the fixed point where
+    /// "inherit" and "record" agree; one parked at the thread-global root
+    /// resumes there, not in root 4.
+    #[test]
+    fn a_parked_callback_resumes_in_the_context_root_that_parked_it() {
+        use crate::context::{
+            current_context_root, current_dispatching_doc, push_context_root,
+            push_dispatching_doc,
+        };
+
+        let seen: Rc<RefCell<Vec<(u64, Option<u64>)>>> = Rc::new(RefCell::new(Vec::new()));
+        let ids: Vec<MainCallbackId> = [(9u64, 1u64), (0, 0)]
+            .into_iter()
+            .map(|(root, doc)| {
+                let _root = push_context_root(root);
+                let _doc = push_dispatching_doc(doc);
+                let s = seen.clone();
+                park_main_callback::<()>(move |()| {
+                    s.borrow_mut()
+                        .push((current_context_root(), current_dispatching_doc()))
+                })
+            })
+            .collect();
+        {
+            let _root = push_context_root(4);
+            let _doc = push_dispatching_doc(2);
+            for id in ids {
+                resume_main_callback(id, ());
+            }
+            assert_eq!(
+                (current_context_root(), current_dispatching_doc()),
+                (4, Some(2)),
+                "the resumer's root and document are restored after each callback"
+            );
+        }
+        assert_eq!(*seen.borrow(), [(9, Some(1)), (0, None)]);
+    }
+
     #[test]
     fn ids_are_distinct_and_independent() {
         let log = Rc::new(RefCell::new(Vec::<&'static str>::new()));

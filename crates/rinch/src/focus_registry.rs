@@ -542,6 +542,65 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Weak;
 
+    /// Issue #1032: a target's callbacks run under its node's document and in
+    /// the context root it was registered in, wherever the arbiter fires them
+    /// from — the deferred focus work runs at `AboutToWait`, outside any
+    /// dispatch, and an embed host's drain can run inside another context's.
+    /// Fired here from inside root 4 / document 2, off the fixed point.
+    #[test]
+    fn a_targets_callbacks_run_under_its_document_and_root() {
+        use rinch_core::{
+            current_context_root, current_dispatching_doc, push_context_root,
+            push_dispatching_doc,
+        };
+        let doc: Rc<RefCell<dyn DomDocument>> = Rc::new(RefCell::new(MockDomDocument::new()));
+        let weak: Weak<RefCell<dyn DomDocument>> = Rc::downgrade(&doc);
+        let id = doc.borrow_mut().create_element("div");
+        let node = NodeHandle::new(id, weak);
+        let (doc_key, node_id) = (node.doc_key(), node.node_id().0);
+        const FIRING: u64 = u64::MAX - 1;
+        assert_ne!(doc_key, FIRING, "control: off the firing document");
+
+        let seen: Rc<RefCell<Vec<(&'static str, u64, Option<u64>)>>> = Rc::default();
+        let at = |what: &'static str, s: &Rc<RefCell<Vec<(&'static str, u64, Option<u64>)>>>| {
+            s.borrow_mut()
+                .push((what, current_context_root(), current_dispatching_doc()))
+        };
+        let scope = Scope::new();
+        {
+            // Registered at mount, under no dispatching document: the node's
+            // own document is still the one its callbacks belong to.
+            let _root = push_context_root(9);
+            let (s1, s2, s3) = (seen.clone(), seen.clone(), seen.clone());
+            scope.run(|| {
+                register_focus_target(
+                    &node,
+                    FocusEntry::new()
+                        .on_focus_gained(move || at("gained", &s1))
+                        .on_focus_lost(move || at("lost", &s2))
+                        .on_key(move |_| {
+                            at("key", &s3);
+                            true
+                        }),
+                )
+            });
+        }
+        {
+            let _root = push_context_root(4);
+            let _doc = push_dispatching_doc(FIRING);
+            notify_focus_gained(doc_key, node_id);
+            assert!(offer_key(doc_key, node_id, &KeyEventData::new("a", "KeyA")));
+            notify_focus_lost(doc_key, node_id);
+            assert_eq!((current_context_root(), current_dispatching_doc()), (4, Some(FIRING)));
+        }
+        let want = Some(doc_key);
+        assert_eq!(
+            *seen.borrow(),
+            [("gained", 9, want), ("key", 9, want), ("lost", 9, want)]
+        );
+        scope.dispose();
+    }
+
     /// Issue #1490: a registration's scope cleanup releases that registration,
     /// not whatever is registered at `(doc_key, node_id)` when it runs. On
     /// `rinch-dom` a freed node id is handed to the next node minted, so the

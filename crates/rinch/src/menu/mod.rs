@@ -2456,6 +2456,54 @@ mod tests {
         assert_eq!(nested_fired.get(), 1);
     }
 
+    /// A menu callback runs under the document and in the context root its
+    /// item was made in (issue #1032), as a timer does (#963): a native menu
+    /// click and a chord arrive outside any dispatch, or inside another
+    /// document's, and an interceptor the callback registered or cleared
+    /// reached every document on the thread. Fired from inside root 4 /
+    /// document 2, off the fixed point; an item made outside any document
+    /// answers none, not the firing one. Both routes: the registry (a chord, a
+    /// muda click, a tray item) and the DOM bar's direct invocation.
+    #[test]
+    fn a_menu_callback_runs_under_the_document_and_root_its_item_was_made_in() {
+        use rinch_core::{
+            current_context_root, current_dispatching_doc, push_context_root,
+            push_dispatching_doc,
+        };
+        let seen: Rc<RefCell<Vec<(u64, Option<u64>)>>> = Rc::default();
+        let record = |s: Rc<RefCell<Vec<(u64, Option<u64>)>>>| {
+            move || {
+                s.borrow_mut()
+                    .push((current_context_root(), current_dispatching_doc()))
+            }
+        };
+        let in_doc = {
+            let _root = push_context_root(9);
+            let _doc = push_dispatching_doc(7);
+            MenuItem::new("In a document")
+                .shortcut("Ctrl+Shift+F7")
+                .on_click(record(seen.clone()))
+        };
+        let outside = MenuItem::new("Outside")
+            .shortcut("Ctrl+Shift+F8")
+            .on_click(record(seen.clone()));
+        let menu = Menu::new().item(in_doc).item(outside);
+        let _chords = register_menu_shortcuts(&[("File", &menu)]);
+
+        {
+            let _root = push_context_root(4);
+            let _doc = push_dispatching_doc(2);
+            assert!(match_shortcut_code(true, false, false, true, "F7", None));
+            assert!(match_shortcut_code(true, false, false, true, "F8", None));
+            assert_eq!(
+                (current_context_root(), current_dispatching_doc()),
+                (4, Some(2)),
+                "the firing root and document are restored"
+            );
+        }
+        assert_eq!(*seen.borrow(), [(9, Some(7)), (0, None)]);
+    }
+
     /// A disabled item fires nothing, so its chord must not be armed — else the
     /// keystroke runs the callback the greyed-out item refuses to run, *and* is
     /// swallowed on the way. `build_muda_item` has always applied this rule; the

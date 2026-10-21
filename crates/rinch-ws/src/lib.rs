@@ -725,6 +725,48 @@ mod tests {
         });
     }
 
+    /// The callback also re-enters the **context root** it was registered in
+    /// (issue #1032), as an effect does (#136), so a socket opened by an
+    /// embedded `RinchContext`'s component resolves that context's stores.
+    /// Delivered from inside root 4, off the fixed point.
+    #[test]
+    fn a_callback_runs_in_the_context_root_that_registered_it() {
+        use rinch_core::{
+            current_context_root, current_dispatching_doc, push_context_root,
+            push_dispatching_doc,
+        };
+
+        let seen: Rc<RefCell<Vec<(u64, Option<u64>)>>> = Rc::new(RefCell::new(Vec::new()));
+        for (id, root, doc) in [(424_260u64, 9u64, 1u64), (424_261, 0, 0)] {
+            HANDLERS.with(|h| h.borrow_mut().insert(id, Handlers::default()));
+            let _root = push_context_root(root);
+            let _registrar = push_dispatching_doc(doc);
+            let s = seen.clone();
+            install(
+                id,
+                |h| &mut h.on_open,
+                Box::new(move |()| {
+                    s.borrow_mut()
+                        .push((current_context_root(), current_dispatching_doc()))
+                }),
+            );
+        }
+        {
+            let _root = push_context_root(4);
+            let _deliverer = push_dispatching_doc(2);
+            for id in [424_260, 424_260, 424_261] {
+                dispatch(id, WsEvent::Open);
+            }
+            assert_eq!((current_context_root(), current_dispatching_doc()), (4, Some(2)));
+        }
+        assert_eq!(*seen.borrow(), [(9, Some(1)), (9, Some(1)), (0, None)]);
+
+        HANDLERS.with(|h| {
+            h.borrow_mut().remove(&424_260);
+            h.borrow_mut().remove(&424_261);
+        });
+    }
+
     /// The owner is per **callback**, not per connection. Two components may
     /// share one handle — a message list and a connection-status badge — and the
     /// badge staying mounted must not keep the list's dead `on_message` armed.

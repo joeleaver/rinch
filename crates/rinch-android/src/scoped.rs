@@ -634,6 +634,52 @@ mod tests {
         unrelated.dispose();
     }
 
+    /// A platform callback runs under the document and in the context root it
+    /// was registered in (issue #1032), as a timer does (#963) — a sensor
+    /// reading or an activity result arrives from the frame drain, under no
+    /// document, so an interceptor it registers or clears reached every
+    /// document on the thread. Dispatched from inside root 4 / document 2, off
+    /// the fixed point; a registration made outside any document answers none.
+    #[test]
+    fn a_callback_runs_under_the_document_and_root_that_registered_it() {
+        use rinch_core::{
+            current_context_root, current_dispatching_doc, push_context_root,
+            push_dispatching_doc,
+        };
+
+        let seen: Rc<RefCell<Vec<(u64, Option<u64>)>>> = Rc::new(RefCell::new(Vec::new()));
+        let record = |s: Rc<RefCell<Vec<(u64, Option<u64>)>>>| -> Rc<dyn Fn()> {
+            Rc::new(move || {
+                s.borrow_mut()
+                    .push((current_context_root(), current_dispatching_doc()))
+            })
+        };
+        {
+            let _root = push_context_root(9);
+            let _doc = push_dispatching_doc(1);
+            SLOT.with(|slot| slot.install(record(seen.clone())));
+            LIST.with(|list| list.install(record(seen.clone())));
+        }
+        LIST.with(|list| list.install(record(seen.clone())));
+        {
+            let _root = push_context_root(4);
+            let _doc = push_dispatching_doc(2);
+            SLOT.with(|slot| slot.dispatch(|cb| cb()));
+            LIST.with(|list| list.dispatch(|cb| cb()));
+            assert_eq!(
+                (current_context_root(), current_dispatching_doc()),
+                (4, Some(2))
+            );
+        }
+        assert_eq!(
+            *seen.borrow(),
+            [(9, Some(1)), (9, Some(1)), (0, None)],
+            "slot, then the list in registration order"
+        );
+        SLOT.with(|slot| slot.clear());
+        LIST.with(|list| list.clear_for_test());
+    }
+
     /// And the mirror image: a callback with an owner is attributed to *that*
     /// scope, not to the one the dispatch is nested inside.
     #[test]
