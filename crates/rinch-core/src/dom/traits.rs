@@ -1138,6 +1138,20 @@ pub trait DomDocument {
         None
     }
 
+    /// [`Self::query_line_box`] for several carets in one text-bearing
+    /// element, in order — for a backend that reads the element's lines once
+    /// rather than once per caret (the browser). Default: one query each.
+    fn query_line_boxes(
+        &self,
+        node_id: u64,
+        carets: &[(usize, CaretAffinity)],
+    ) -> Vec<Option<(f32, f32)>> {
+        carets
+            .iter()
+            .map(|&(byte, affinity)| self.query_line_box(node_id, byte, affinity))
+            .collect()
+    }
+
     /// Whether the document has changes its geometry does not show yet: a
     /// mutation or a style change made since the last
     /// [`resolve_layout`](Self::resolve_layout). A backend that lays out on
@@ -1148,13 +1162,13 @@ pub trait DomDocument {
         false
     }
 
-    /// A count that moves whenever any text layout in the document is
-    /// (re)built — every place a line could have moved without the box of a
-    /// block moving. The editor's margin pass skips measuring when this and
-    /// the boxes it reads are what they were. Default `None`: unknown, so the
-    /// pass always measures (the browser, which lays out on demand and runs
-    /// the pass only on input).
-    fn text_layout_epoch(&self) -> Option<u64> {
+    /// A stamp of the text layout `node_id`'s lines are read from (the one
+    /// [`Self::query_line_box`] reads), which changes whenever that layout is
+    /// rebuilt — the one way its lines move with no box moving. The editor's
+    /// margin pass skips measuring a block whose stamp and boxes are what they
+    /// were. Default `None`: unknown, so only the boxes are compared (the
+    /// browser, which lays out on demand).
+    fn text_layout_generation(&self, _node_id: u64) -> Option<u64> {
         None
     }
 

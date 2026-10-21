@@ -1326,11 +1326,14 @@ rsx! {
 
 Anchors never change the document, its undo history or what collaborators receive, and they
 work on a read-only editor. With none set the pass is one check per editor; `N` anchors are
-one pass of `N` measures for a layout that could have moved a line, and none for one that could
-not (on desktop, a layout of the page that rebuilds no text and moves none of the editor's
-blocks — a spinner, a hover, a sibling resized). On the web the line box is rebuilt from what
-is on the line (each text run's inline box at its `line-height`, each picture's box), so a line
-a tall picture makes taller is reported whole. On the web a resize that rewraps the text reports too
+one pass of `N` measures for a layout that could have moved one of their lines, and none for
+one that could not: the pass compares, for every block an anchor is in, where it is, its box
+and (on desktop) whether its text was laid out again — so a spinner, a hover, a label's text
+elsewhere or a keystroke in another editor measures nothing. On the web, which keeps no record
+of text layouts, a rewrap that moves no anchored block's box is reported at the next change that
+does. On the web the line box is rebuilt from what is on the line (each text run's inline box at
+its own `line-height`, each picture's box), so a line a tall picture makes taller is reported
+whole; under `line-height: normal` it is within a pixel. On the web a resize that rewraps the text reports too
 (the container is watched with a `ResizeObserver` while anchors are set).
 
 The overlay slot is a 0×0 layer at the container's padding-box origin

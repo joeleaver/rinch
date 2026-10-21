@@ -144,10 +144,10 @@ pub(crate) struct Margins {
     /// set (`registry::notify_node_view_host`), so a reflow the editor did not
     /// make (a window resize) reports.
     pub(crate) observed: Option<(u64, NodeHandle)>,
-    /// What the last measure read its lines from
-    /// ([`RinchDomEditorView::margin_geometry_key`](crate::RinchDomEditorView)):
-    /// a pass that finds the same skips measuring.
-    pub(crate) key: Option<(u64, Node)>,
+    /// The last measure's document, the anchors' positions in it, and the
+    /// key of what their lines were read from (`RinchDomEditorView::margin_key`):
+    /// a pass that finds the same document and key measures nothing.
+    pub(crate) key: Option<(Node, Vec<Option<Pos>>, u64)>,
 }
 
 impl Margins {
@@ -172,13 +172,6 @@ impl Margins {
     pub(crate) fn forget_report(&mut self) {
         self.last = None;
         self.key = None;
-    }
-
-    /// Whether `key` is what the last measure read its lines from.
-    pub(crate) fn key_is(&self, key: &(u64, Node)) -> bool {
-        self.key
-            .as_ref()
-            .is_some_and(|(h, doc)| *h == key.0 && doc.same_ref(&key.1))
     }
 
     /// Whether a margin pass has anything to do: anchors to measure, a
@@ -217,6 +210,17 @@ impl Margins {
                 });
             }
         }
+    }
+
+    /// Whether any anchor is a sticky index.
+    pub(crate) fn has_sticky(&self) -> bool {
+        #[cfg(feature = "collaboration")]
+        return self
+            .anchors
+            .iter()
+            .any(|a| matches!(a.at, LiveAt::Sticky(_)));
+        #[cfg(not(feature = "collaboration"))]
+        false
     }
 
     pub(crate) fn has_pos_anchors(&self) -> bool {

@@ -1196,8 +1196,26 @@ impl DomDocument for RinchDocument {
     /// change, a structural change, or text whose inline layout was dropped.
     /// A paint-only change (`mark_paint_dirty`, a scroll offset) is not
     /// pending: it moves no line.
-    fn text_layout_epoch(&self) -> Option<u64> {
-        Some(self.tree.text_layout_epoch)
+    /// The stamp of the text layout [`Self::query_line_box`] would read for
+    /// `node_id` (its own, else a text child's), `0` with none.
+    fn text_layout_generation(&self, node_id: u64) -> Option<u64> {
+        let id = node_id as usize;
+        let node = self.tree.nodes.get(id)?;
+        let holder = if node.text_layout.is_some() || node.cached_text_parley.is_some() {
+            Some(id)
+        } else {
+            node.children.iter().copied().find(|&c| {
+                self.tree
+                    .nodes
+                    .get(c)
+                    .is_some_and(|c| c.cached_text_parley.is_some())
+            })
+        };
+        Some(
+            holder
+                .and_then(|h| self.tree.text_layout_stamps.get(&h).copied())
+                .unwrap_or(0),
+        )
     }
 
     fn layout_pending(&self) -> bool {

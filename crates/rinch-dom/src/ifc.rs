@@ -2758,6 +2758,8 @@ impl RinchDocument {
 
         self.tree.nodes[root_id].text_layout = Some(Box::new(inline_layout));
         self.tree.text_layout_epoch += 1;
+        let stamp = self.tree.text_layout_epoch;
+        self.tree.text_layout_stamps.insert(root_id, stamp);
         // Each box is told where its note is, last to first: a box noted
         // twice (hoisted out of an inline element in an anonymous box's run)
         // keeps the first, its real place.
@@ -2922,6 +2924,8 @@ impl RinchDocument {
             layout.align(alignment, parley::layout::AlignmentOptions::default());
             self.tree.nodes[id].cached_text_parley = Some(Box::new(layout));
             self.tree.text_layout_epoch += 1;
+            let stamp = self.tree.text_layout_epoch;
+            self.tree.text_layout_stamps.insert(id, stamp);
         }
     }
 

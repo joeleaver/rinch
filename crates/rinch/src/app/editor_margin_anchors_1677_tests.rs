@@ -625,3 +625,120 @@ fn anchors_set_before_the_mount_report_after_it() {
     assert_eq!(last.len(), 1);
     assert_eq!(last[0].key, "a");
 }
+
+/// Review round 2 of #1683: the margin pass's gate.
+mod review2_probes {
+    use super::*;
+
+    const TABLE: &str =
+        "<table><tr><td><p>a1</p><p>a2</p><p>a3</p></td><td><p>bb</p></td></tr></table>";
+    /// Inside `bb` (table 0, row 1, cell 2, p 3, `a1` 4..6, `a2` 8..10,
+    /// `a3` 12..14, cell B opens at 16, its p at 17, `bb` 18..20).
+    const IN_B: Pos = Pos(19);
+
+    fn add_sheet(page: &mut Page, css: &str) {
+        {
+            let mut doc = page.app.doc.as_ref().unwrap().borrow_mut();
+            let body = doc.query_selector_all("[data-sibling]")[0];
+            let style = doc.create_element("style");
+            let text = doc.create_text(css);
+            doc.append_child(style, text);
+            let parent = doc.parent_node(body).unwrap();
+            doc.insert_before(parent, style, body);
+        }
+        page.app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+        idle(&mut page.app);
+    }
+
+    fn caret_line(page: &Page, at: Pos) -> f32 {
+        let (_, fy) = frame(&page.app);
+        page.handle.caret_rect(at).expect("a caret").y - fy
+    }
+
+    /// A line in a table cell moves (a class on the editor gives the short
+    /// cell some top padding; the row's height is the tall cell's) with no
+    /// text rebuilt and no top-level block's box moving: the anchored block's
+    /// own offset moved, and the report follows it (review 2 of #1683, G1).
+    #[test]
+    fn r2_a_cell_padding_change_moves_a_line_the_gate_does_not_see() {
+        let mut page = page("");
+        assert!(page.handle.load_html(TABLE));
+        idle(&mut page.app);
+        add_sheet(
+            &mut page,
+            "[data-pm-editor][data-x] td + td { padding-top: 30px; }",
+        );
+        page.handle
+            .set_margin_anchors(vec![MarginAnchor::at("b", IN_B)]);
+        idle(&mut page.app);
+        let before = caret_line(&page, IN_B);
+        assert!(
+            (line(&last(&page), "b").0 - before).abs() < 0.01,
+            "baseline: {:?} vs caret {before}",
+            last(&page)
+        );
+        let table_before = boxes(&page.app, "table")[0];
+        let (passes0, measures0) = crate::editor::__margin_counters();
+        let n0 = page.reports.borrow().len();
+        {
+            let mut doc = page.app.doc.as_ref().unwrap().borrow_mut();
+            let ed = doc.query_selector_all("[data-pm-editor]")[0];
+            doc.set_attribute(ed, "data-x", "");
+        }
+        page.app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+        idle(&mut page.app);
+        let after = caret_line(&page, IN_B);
+        let table_after = boxes(&page.app, "table")[0];
+        let (passes1, measures1) = crate::editor::__margin_counters();
+        eprintln!(
+            "R2-A caret {before} -> {after}; table {table_before:?} -> {table_after:?}; \
+             passes {passes0}->{passes1} measures {measures0}->{measures1}; reports {n0}->{}; last {:?}",
+            page.reports.borrow().len(),
+            last(&page)
+        );
+        assert!(after > before + 20.0, "precondition: the line moved");
+        assert_eq!(table_before, table_after, "precondition: the table did not");
+        let reported = line(&last(&page), "b").0;
+        // Positive control: a forced measure finds the moved line.
+        page.handle
+            .set_margin_anchors(vec![MarginAnchor::at("b", IN_B)]);
+        idle(&mut page.app);
+        let forced = line(&last(&page), "b").0;
+        eprintln!("R2-A reported {reported}, forced {forced}, caret {after}");
+        assert!((forced - after).abs() < 0.01, "control: a measure finds it");
+        assert!(
+            (reported - after).abs() < 0.01,
+            "STALE: reported {reported}, the line is at {after}"
+        );
+    }
+
+    /// A text edit elsewhere on the page (a status label) rebuilds no anchored
+    /// block's text and moves none: nothing is measured (review 2 of #1683, G2).
+    #[test]
+    fn r2_a_text_edit_outside_the_editor_measures() {
+        let mut page = page("");
+        page.handle.set_margin_anchors(anchors());
+        idle(&mut page.app);
+        let sibling = {
+            let doc = page.app.doc.as_ref().unwrap().borrow();
+            doc.query_selector_all("[data-sibling]")[0]
+        };
+        {
+            let mut doc = page.app.doc.as_ref().unwrap().borrow_mut();
+            doc.set_style(sibling, "width", "100px");
+            doc.set_text_content(sibling, "words: 0");
+        }
+        page.app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+        idle(&mut page.app);
+        let c0 = crate::editor::__margin_counters();
+        for i in 1..11 {
+            let mut doc = page.app.doc.as_ref().unwrap().borrow_mut();
+            doc.set_text_content(sibling, &format!("words: {i}"));
+            drop(doc);
+            page.app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+            idle(&mut page.app);
+        }
+        let c1 = crate::editor::__margin_counters();
+        assert_eq!(c1, c0, "a label's text elsewhere measures no anchor");
+    }
+}

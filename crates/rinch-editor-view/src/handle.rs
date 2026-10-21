@@ -2068,8 +2068,8 @@ impl EditorHandle {
     /// (or the set of anchors reported, or [`Self::margin_text_right`]) — not
     /// every frame — and once when anchors and a callback are both set on a
     /// mounted editor (also after a re-mount), whatever it finds. A layout
-    /// that could not have moved a line (desktop: no text rebuilt, no
-    /// top-level block moved) measures nothing. An
+    /// that could not have moved an anchor's line (no anchored block moved or,
+    /// on desktop, had its text laid out again) measures nothing. An
     /// anchor is left out while it has no geometry: its block is not laid out
     /// (a virtualized block far out of view), or its position was lost
     /// ([`MarginAt::Pos`](crate::MarginAt::Pos)). A position inside a table
@@ -3660,44 +3660,59 @@ impl EditorHandle {
         let mut report: Option<(MarginHook, Vec<MarginLine>)> = None;
         if let (Some(hook), Some(view)) = (core.on_margin_layout.clone(), core.view.as_ref()) {
             match view.layout_pending() {
-                // Nothing the lines are read from moved since the last
-                // measure (an unrelated layout of the document): no measure.
-                Some(false)
-                    if core.margins.last.is_some()
-                        && view
-                            .margin_geometry_key(&core.state.doc)
-                            .is_some_and(|k| core.margins.key_is(&k)) => {}
                 Some(false) => {
-                    let key = view.margin_geometry_key(&core.state.doc);
-                    let positions = Self::margin_positions(core);
+                    let doc = core.state.doc.clone();
+                    // A position anchor only moves with the document (or a
+                    // new set, which forgets it): the same document, the same
+                    // positions. A sticky anchor also stops resolving when the
+                    // session stops, stalls or is poisoned, with the document
+                    // unchanged, so it is resolved every pass.
+                    let positions = match &core.margins.key {
+                        Some((d, positions, _))
+                            if d.same_ref(&doc) && !core.margins.has_sticky() =>
+                        {
+                            positions.clone()
+                        }
+                        _ => Self::margin_positions(core),
+                    };
                     let at: Vec<Pos> = positions.iter().flatten().copied().collect();
-                    let (boxes, right) = view.measure_lines(&core.state.doc, &at);
-                    margins::count_pass(at.len());
-                    let mut boxes = boxes.into_iter();
-                    let lines: Vec<MarginLine> = core
-                        .margins
-                        .anchors
-                        .iter()
-                        .zip(&positions)
-                        .filter_map(|(a, p)| {
-                            p.as_ref()?;
-                            let (top, height) = boxes.next().flatten()?;
-                            Some(MarginLine {
-                                key: a.key.clone(),
-                                top,
-                                height,
+                    let key = view.margin_key(&doc, &at);
+                    // Nothing the lines are read from moved since the last
+                    // measure (a layout of something else): no measure.
+                    let unmoved = core.margins.last.is_some()
+                        && key.is_some()
+                        && core.margins.key.as_ref().is_some_and(|(d, p, k)| {
+                            d.same_ref(&doc) && Some(*k) == key && *p == positions
+                        });
+                    if !unmoved {
+                        let (boxes, right) = view.measure_lines(&doc, &at);
+                        margins::count_pass(at.len());
+                        let mut boxes = boxes.into_iter();
+                        let lines: Vec<MarginLine> = core
+                            .margins
+                            .anchors
+                            .iter()
+                            .zip(&positions)
+                            .filter_map(|(a, p)| {
+                                p.as_ref()?;
+                                let (top, height) = boxes.next().flatten()?;
+                                Some(MarginLine {
+                                    key: a.key.clone(),
+                                    top,
+                                    height,
+                                })
                             })
-                        })
-                        .collect();
-                    let changed = core
-                        .margins
-                        .last
-                        .as_ref()
-                        .is_none_or(|(l, r)| *l != lines || *r != right);
-                    core.margins.key = key;
-                    if changed {
-                        core.margins.last = Some((lines.clone(), right));
-                        report = Some((hook, lines));
+                            .collect();
+                        let changed = core
+                            .margins
+                            .last
+                            .as_ref()
+                            .is_none_or(|(l, r)| *l != lines || *r != right);
+                        core.margins.key = key.map(|k| (doc, positions, k));
+                        if changed {
+                            core.margins.last = Some((lines.clone(), right));
+                            report = Some((hook, lines));
+                        }
                     }
                 }
                 // Lines are about to move (or the host is busy): wait for the
