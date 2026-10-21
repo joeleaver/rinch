@@ -330,12 +330,14 @@ pub(crate) fn break_lines_hanging_spaces(
     preserves_spaces: bool,
     unhung: &UnhungSpaces,
     count_trailing: bool,
+    justify: bool,
 ) -> HangStats {
     layout.break_all_lines(max_width);
     let max = max_width.filter(|max| max.is_finite());
     // parley offsets a right-to-left line by its trailing white space, so a
     // narrowed alignment width would move it the wrong way: left as it was.
     let count_trailing = count_trailing && !layout.is_rtl();
+    let justify = justify && !layout.is_rtl();
     // The pass hangs preserved spaces on every line it breaks, whichever
     // test sent the paragraph through it: a line [`unglue`] moves an NBSP onto
     // can come out ending in spaces parley did not hang.
@@ -344,12 +346,20 @@ pub(crate) fn break_lines_hanging_spaces(
             && (any_unhung_line(layout, text) || any_unhung_trailing_line(layout, text, unhung)))
             || any_hung_nbsp_line(layout, text, max)
             || (count_trailing && any_counted_trailing_line(layout, text, preserves_spaces))
+            || (justify && any_miscounted_justified_line(layout, text, max))
     });
     let fix = fix.map(|max| (max, preserves_spaces));
     let mut stats = match fix {
-        Some((max, hang_spaces)) => {
-            hang_pass(layout, text, max, None, unhung, hang_spaces, count_trailing)
-        }
+        Some((max, hang_spaces)) => hang_pass(
+            layout,
+            text,
+            max,
+            None,
+            unhung,
+            hang_spaces,
+            count_trailing,
+            justify,
+        ),
         None => HangStats::default(),
     };
     // #1050, #1172: parley's trailing empty line after an overflowing inline
@@ -366,6 +376,7 @@ pub(crate) fn break_lines_hanging_spaces(
                     unhung,
                     hang_spaces,
                     count_trailing,
+                    justify,
                 )
             }
             None => break_lines_up_to(layout, max_width, keep),
@@ -598,6 +609,7 @@ pub(crate) fn break_leaf_lines(
             &UnhungSpaces::default(),
             false,
             false,
+            false,
         ),
         None => HangStats::default(),
     };
@@ -610,6 +622,7 @@ pub(crate) fn break_leaf_lines(
                     max,
                     Some(keep),
                     &UnhungSpaces::default(),
+                    false,
                     false,
                     false,
                 )
@@ -1395,6 +1408,7 @@ fn hang_pass(
     unhung: &UnhungSpaces,
     hang_spaces: bool,
     count_trailing: bool,
+    justify: bool,
 ) -> HangStats {
     use parley::layout::{BreakReason, YieldData};
     let mut stats = HangStats::default();
@@ -1513,6 +1527,16 @@ fn hang_pass(
                     reason,
                     count_trailing,
                 );
+                if justify && matches!(reason, BreakReason::Regular | BreakReason::Emergency) {
+                    match justify_line(&mut breaker, &units, cursor, end, &line_start, max, advance)
+                    {
+                        Some(rebroken) => stats.lines += rebroken,
+                        None => {
+                            in_step = false;
+                            break;
+                        }
+                    }
+                }
                 cursor = end;
                 line_start = breaker.state().clone();
                 break;
@@ -1957,6 +1981,10 @@ struct LineUnit {
     newline: bool,
     /// A no-break space (U+00A0), which parley hangs and CSS glues (#1218).
     nbsp: bool,
+    /// A space or NBSP cluster (parley's `is_space_or_nbsp`): what parley
+    /// counts as a justification opportunity ([`justify_line`]). A preserved
+    /// tab is one too: it is pushed to parley as a space (#1122).
+    space: bool,
     /// Counted by [`parley::layout::BreakLines::break_next_with_length`]:
     /// every cluster and in-flow inline box, not an out-of-flow box.
     counted: bool,
@@ -1965,8 +1993,9 @@ struct LineUnit {
     /// A hyphen or another UAX #14 class HY/BA character that is not white
     /// space: LB12a allows a break between it and an NBSP after it.
     breaks_before_glue: bool,
-    /// The shaped run a cluster belongs to (`usize::MAX` for a box): parley
-    /// counts a line's trailing white space in its last run only (#1042).
+    /// The shaped run a cluster belongs to, the same whatever line the table's
+    /// layout put it on (`usize::MAX` for a box): parley counts a line's
+    /// trailing white space in its last run only (#1042).
     run: usize,
 }
 
@@ -2007,21 +2036,7 @@ fn align_unhung_trailing(
         .map(|u| u.advance)
         .sum();
     let narrow = if count_trailing {
-        // What parley's `align` adds back: the white space at the end of the
-        // line's last shaped run only (a tab, a span with its own font size
-        // or spacing, starts a run of its own). White space in earlier runs
-        // is content to parley already.
-        let last_run = line.last().map_or(usize::MAX, |u| u.run);
-        let added_back: f32 = line
-            .iter()
-            .rev()
-            .take_while(|u| {
-                u.run == last_run
-                    && last_run != usize::MAX
-                    && (u.newline || u.hangs || u.unhung || u.nbsp)
-            })
-            .map(|u| u.advance)
-            .sum();
+        let added_back = parley_trailing_whitespace(line);
         // What CSS hangs: the run of hanging spaces at the line's end at a
         // soft wrap, whatever runs it spans; nothing at the end of the
         // paragraph or before a forced break (only the part that overflows
@@ -2046,6 +2061,111 @@ fn align_unhung_trailing(
     if narrow != 0.0 {
         breaker.set_prior_line_width(max - narrow);
     }
+}
+
+/// What parley's `align` adds back to a line's free space (its
+/// `trailing_whitespace`): the white space at the end of the line's last
+/// shaped run only (a tab, a span with its own font size or spacing, starts a
+/// run of its own; an inline box ends none). White space in earlier runs is
+/// content to parley already.
+fn parley_trailing_whitespace(line: &[LineUnit]) -> f32 {
+    let last_run = line.last().map_or(usize::MAX, |u| u.run);
+    line.iter()
+        .rev()
+        .take_while(|u| {
+            u.run == last_run
+                && last_run != usize::MAX
+                && (u.newline || u.hangs || u.unhung || u.nbsp)
+        })
+        .map(|u| u.advance)
+        .sum()
+}
+
+/// Justify the soft-wrapped line just committed (#1056), `units[cursor..end]`
+/// its units and `line_start` the state it started from. Returns the number
+/// of times the line was broken again (0 or 1), or `None` when breaking it
+/// again failed (the paragraph is then broken as parley breaks it).
+///
+/// CSS shares a justified line's free space — the box's width less its
+/// content, its hanging spaces excluded — among its justification
+/// opportunities: the spaces and NBSPs of its content, less the last one when
+/// the content ends in one (a `break-spaces` space or an NBSP, which do not
+/// hang). That is Chrome 155's count, measured: three hanging `pre-wrap`
+/// spaces take no share, `a b c&nbsp;&nbsp;` widens its first NBSP and not its
+/// second, and a `break-spaces` line widens every space but its last.
+///
+/// parley 0.11.1 counts them as it breaks the line (`LineData::num_spaces`,
+/// not public): every space or NBSP that fits, less one when the line ends in
+/// one. So two or more hanging spaces that fit took shares, and a line parley
+/// ended by hanging the one space that did not fit (that space is not counted)
+/// lost a word gap to the "less one". Such a line is committed again **by
+/// length**, after which parley's count is exact — every space or NBSP on the
+/// line, less one, since the line ends in one — and never fewer than CSS's
+/// (the surplus is hanging spaces). parley gives each of the first `count`
+/// spaces `free / count`, so the alignment width is set to make that
+/// `css_free / opportunities`: the opportunities get exactly their share, and
+/// the hanging spaces after them the surplus (they are past the box's edge,
+/// so only a caret between two of them shows it). A line with no opportunity
+/// or no free space is start-aligned. Only lines ending in a space or NBSP
+/// need this: parley counts any other line as CSS does.
+fn justify_line(
+    breaker: &mut parley::layout::BreakLines<'_, Brush>,
+    units: &[LineUnit],
+    cursor: usize,
+    end: usize,
+    line_start: &parley::layout::BreakerState,
+    max: f32,
+    advance: f32,
+) -> Option<u32> {
+    // The table's cursor can sit on the zero-width newline that ended the
+    // line before (see `break_overflowing_spaces`).
+    let first = cursor + units[cursor..end].iter().take_while(|u| u.newline).count();
+    let line = &units[first..end];
+    if !line.last().is_some_and(|u| u.space) {
+        return Some(0);
+    }
+    let hanging = line.iter().rev().take_while(|u| u.hangs).count();
+    let content = &line[..line.len() - hanging];
+    let content_advance: f32 = content.iter().map(|u| u.advance).sum();
+    let opportunities = content.iter().filter(|u| u.space).count()
+        - usize::from(content.last().is_some_and(|u| u.space));
+    let n = u32::try_from(line.iter().filter(|u| u.counted).count()).ok()?;
+    breaker.revert_to(line_start.clone());
+    breaker.break_next_with_length(n)?;
+    // parley's count for a line committed by length that ends in a space.
+    let counted = line.iter().filter(|u| u.space).count() - 1;
+    let free = max - content_advance;
+    // parley's free space is `width - advance + trailing`.
+    let start_aligned = advance - parley_trailing_whitespace(line);
+    let width = if opportunities == 0 || free <= 0.0 {
+        start_aligned
+    } else {
+        start_aligned + free * counted as f32 / opportunities as f32
+    };
+    breaker.set_prior_line_width(width);
+    Some(1)
+}
+
+/// Whether some soft-wrapped line ends in white space parley may count
+/// differently from CSS when it justifies the line ([`justify_line`]): two or
+/// more spaces, an NBSP, or the space parley hung past `max`. A line ending in
+/// one space that fits is counted right. The cheap test that sends a
+/// justified paragraph through [`hang_pass`] for it (#1056).
+fn any_miscounted_justified_line(layout: &parley::Layout<Brush>, text: &str, max: f32) -> bool {
+    use parley::layout::BreakReason;
+    layout.lines().any(|line| {
+        if !matches!(
+            line.break_reason(),
+            BreakReason::Regular | BreakReason::Emergency
+        ) {
+            return false;
+        }
+        let body = text.get(line.text_range()).unwrap_or("");
+        let white = &body[body.trim_end_matches([' ', '\t', '\u{a0}']).len()..];
+        white.chars().nth(1).is_some()
+            || white.contains('\u{a0}')
+            || (!white.is_empty() && line.metrics().advance > max)
+    })
 }
 
 /// Whether `node`'s computed CSS `direction` is `ltr`: read from the nearest
@@ -2129,7 +2249,13 @@ fn logical_units(
     let mut keyed: Vec<((usize, u8, usize), LineUnit)> = Vec::new();
     for line in layout.lines() {
         for run in line.runs() {
-            let run_index = run.index();
+            // The shaped run's identity across lines. `Run::index` is the
+            // run's place on its line, so a run the table's layout broke
+            // across two lines (the spaces parley hung, then the rest of the
+            // run on the next line) took two indices, and a line the hang
+            // pass broke again around them saw two runs where parley sees
+            // one. Its metrics live in the layout's run data, one per run.
+            let run_index = std::ptr::from_ref(run.metrics()) as usize;
             for c in run.clusters() {
                 let range = c.text_range();
                 let n = keyed.len();
@@ -2148,6 +2274,7 @@ fn logical_units(
                             && text
                                 .get(range.clone())
                                 .is_some_and(|t| t.starts_with('\u{a0}')),
+                        space: c.is_space_or_nbsp(),
                         counted: true,
                         inline_box: false,
                         breaks_before_glue: text
@@ -2172,6 +2299,7 @@ fn logical_units(
                 breaks: false,
                 newline: false,
                 nbsp: false,
+                space: false,
                 counted: in_flow,
                 inline_box: in_flow,
                 breaks_before_glue: false,
@@ -7954,6 +8082,10 @@ impl RinchDocument {
                 | parley::layout::Alignment::Center
                 | parley::layout::Alignment::End
         ) && css_direction_is_ltr(nodes, root_id);
+        // A justified line shares its free space among its opportunities
+        // only (#1056); left to right only, as above.
+        let justify = matches!(alignment, parley::layout::Alignment::Justify)
+            && css_direction_is_ltr(nodes, root_id);
         let mut hang = HangStats::default();
         let mut builds = 0u32;
         let (text_layout, text_content) = loop {
@@ -7968,6 +8100,7 @@ impl RinchDocument {
                 preserves_spaces,
                 &unhung,
                 count_trailing,
+                justify,
             ));
             let Some(stops) = &stops else {
                 break (text_layout, text_content);
