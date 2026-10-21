@@ -25,7 +25,8 @@
 //! moves the corner pixels of every outlined component to CSS's radii.)
 
 use peniko::kurbo::{
-    Arc, BezPath, PathEl, Point, Rect, RoundedRect, RoundedRectRadii, Shape, Vec2,
+    Arc, BezPath, ParamCurve, PathEl, PathSeg, Point, Rect, RoundedRect, RoundedRectRadii, Shape,
+    Vec2,
 };
 
 use super::painter::PaintShape;
@@ -34,10 +35,10 @@ use super::painter::PaintShape;
 /// a [`RoundedRect`] everywhere else in paint.
 const TOLERANCE: f64 = 0.1;
 
-/// Flattening tolerance for [`BorderRadii::path_with_holes`], whose outline
-/// is a polygon the painter does not flatten again; finer than [`TOLERANCE`]
-/// so it stays within a twentieth of a pixel of the curved outline the box
-/// draws without holes.
+/// Flattening tolerance for the corners [`BorderRadii::path_with_holes`]
+/// flattens (the ones a hole meets): finer than [`TOLERANCE`], so such a
+/// corner stays within a twentieth of a pixel of its arc. Its anti-aliased
+/// pixels still differ from the arc's by a few supersamples.
 const HOLE_TOLERANCE: f64 = 0.05;
 
 /// A closed polygon contour (nothing for fewer than three points).
@@ -331,10 +332,15 @@ impl BorderRadii {
     ///
     /// A hole clipped to `rect` that meets no rounded corner's box lies
     /// inside the shape and goes in as its rect. One that meets a corner's
-    /// box is the shape flattened to a polygon and clipped to the hole
-    /// (the shape is convex, so that is the exact intersection), and the
-    /// outer contour is then that same polygon, so the two share their
-    /// vertices along the arc and cancel there exactly.
+    /// box is the shape flattened to a polygon and clipped to the hole (the
+    /// shape is convex, so that is the exact intersection). The outer
+    /// contour then has the corners a hole meets flattened the same way, so
+    /// it and the hole share their vertices along those arcs; every other
+    /// segment is the shape's own, so a corner no hole meets draws as it does
+    /// with no hole. Each hole contour is wound against the outline, so the
+    /// shared edges cancel under every anti-aliasing scheme — Vello's
+    /// analytic area coverage (Android) included, which sums the two
+    /// fractional coverages of same-way edges and drew a line along the arc.
     pub fn path_with_holes(&self, rect: Rect, holes: &[Rect]) -> BezPath {
         let r = self.fitted(rect.width(), rect.height());
         let Rect { x0, y0, x1, y1 } = rect;
@@ -349,44 +355,75 @@ impl BorderRadii {
         .filter(|(c, _)| *c != Vec2::ZERO)
         .map(|(_, b)| b)
         .collect();
-        let at_corner = |h: &Rect| {
-            corner_boxes
-                .iter()
-                .any(|c| h.x0 < c.x1 && h.x1 > c.x0 && h.y0 < c.y1 && h.y1 > c.y0)
-        };
+        let overlaps =
+            |h: &Rect, c: &Rect| h.x0 < c.x1 && h.x1 > c.x0 && h.y0 < c.y1 && h.y1 > c.y0;
+        let at_corner = |h: &Rect| corner_boxes.iter().any(|c| overlaps(h, c));
         let holes: Vec<Rect> = holes
             .iter()
             .map(|h| h.intersect(rect))
             .filter(|h| h.width() > 0.0 && h.height() > 0.0)
             .collect();
+        // The outline runs clockwise on screen (y down); a hole contour runs
+        // the other way.
         let push_rect = |path: &mut BezPath, h: &Rect| {
-            // Wound against the outline (it does not matter under even-odd).
             path.move_to((h.x0, h.y0));
             path.line_to((h.x0, h.y1));
             path.line_to((h.x1, h.y1));
             path.line_to((h.x1, h.y0));
             path.close_path();
         };
-        if !holes.iter().any(at_corner) {
-            let mut path = self.path(rect);
+        let shape = self.path(rect);
+        let touched: Vec<&Rect> = corner_boxes
+            .iter()
+            .filter(|c| holes.iter().any(|h| overlaps(h, c)))
+            .collect();
+        if touched.is_empty() {
+            let mut path = shape;
             for h in &holes {
                 push_rect(&mut path, h);
             }
             return path;
         }
-        let mut outline: Vec<Point> = Vec::new();
-        peniko::kurbo::flatten(self.path(rect), HOLE_TOLERANCE, |el| match el {
-            PathEl::MoveTo(p) | PathEl::LineTo(p) => outline.push(p),
-            _ => {}
-        });
-        if outline.len() > 1 && outline.first() == outline.last() {
-            outline.pop();
-        }
+        // Each segment of the shape flattened on its own, so a segment comes
+        // out the same points in the outline and in the polygon a hole clips.
+        let flat = |seg: PathSeg| {
+            let mut pts = Vec::new();
+            let mut one = BezPath::new();
+            one.move_to(seg.start());
+            one.push(seg.as_path_el());
+            peniko::kurbo::flatten(one, HOLE_TOLERANCE, |el| {
+                if let PathEl::LineTo(p) = el {
+                    pts.push(p);
+                }
+            });
+            pts
+        };
+        let mut polygon: Vec<Point> = Vec::new();
         let mut path = BezPath::new();
-        push_polygon(&mut path, &outline);
+        for (i, seg) in shape.segments().enumerate() {
+            if i == 0 {
+                polygon.push(seg.start());
+                path.move_to(seg.start());
+            }
+            let pts = flat(seg);
+            if touched.iter().any(|c| overlaps(&seg.bounding_box(), c)) {
+                for &p in &pts {
+                    path.line_to(p);
+                }
+            } else {
+                path.push(seg.as_path_el());
+            }
+            polygon.extend(pts);
+        }
+        path.close_path();
+        if polygon.len() > 1 && polygon.first() == polygon.last() {
+            polygon.pop();
+        }
         for h in &holes {
             if at_corner(h) {
-                push_polygon(&mut path, &clip_polygon(&outline, *h));
+                let mut cut = clip_polygon(&polygon, *h);
+                cut.reverse();
+                push_polygon(&mut path, &cut);
             } else {
                 push_rect(&mut path, h);
             }
