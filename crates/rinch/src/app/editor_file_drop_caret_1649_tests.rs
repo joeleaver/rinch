@@ -319,7 +319,6 @@ fn a_drop_after_the_document_changed_resolves_its_point_again() {
 #[test]
 fn a_missing_cancel_does_not_strand_the_drop_caret() {
     let ends: Vec<PlatformEvent> = vec![
-        PlatformEvent::MouseMove { x: 600.0, y: 500.0 },
         PlatformEvent::MouseDown {
             x: 600.0,
             y: 500.0,
@@ -338,6 +337,15 @@ fn a_missing_cancel_does_not_strand_the_drop_caret() {
         assert!(p.drop_caret().is_none(), "{what}: still shown");
         assert!(p.app.file_drag.is_none(), "{what}: the drag is still live");
     }
+    // A pointer move hides the caret, and keeps the drag for a drop.
+    let mut p = page();
+    let a = p.point_at(5);
+    p.hover(PathBuf::from("/nowhere/cat.png"), a);
+    send(&mut p.app, PlatformEvent::MouseMove { x: 600.0, y: 500.0 });
+    assert!(p.drop_caret().is_none(), "a move hides it");
+    assert!(p.app.file_drag.as_ref().is_some_and(|d| d.suspended));
+    send(&mut p.app, PlatformEvent::AboutToWait);
+    assert!(p.drop_caret().is_none(), "nothing shows it again");
     // Events that come during an OS drag do not end it.
     let mut p = page();
     let a = p.point_at(5);
@@ -408,6 +416,17 @@ fn a_missing_cancel_does_not_strand_the_scrolling() {
     frame_after(&mut p, 30);
     frame_after(&mut p, 30);
     assert_eq!(p.scroll_top(), stopped, "a blur ends the drag");
+
+    // A pointer move stops it too, though the drag waits for its drop.
+    p.hover(PathBuf::from("/nowhere/cat.png"), at);
+    frame_after(&mut p, 30);
+    frame_after(&mut p, 30);
+    let scrolled = p.scroll_top();
+    assert!(scrolled > stopped, "scrolling again");
+    send(&mut p.app, PlatformEvent::MouseMove { x: 700.0, y: 500.0 });
+    frame_after(&mut p, 30);
+    frame_after(&mut p, 30);
+    assert_eq!(p.scroll_top(), scrolled, "a move stops it");
 }
 
 #[test]
@@ -473,5 +492,152 @@ fn a_path_less_drop_of_no_picture_inserts_nothing_and_hides_the_caret() {
     assert_eq!(
         rinch_editor_core::serialize::node_to_html(&p.handle.doc()),
         "<p>alpha bravo</p>"
+    );
+}
+
+/// X11: the source's ungrab at the release sends the window a crossing Enter
+/// (a pointer move to the shell) before the XdndDrop (measured with a GTK
+/// source, review of #1655). The drop still lands where the caret showed.
+#[test]
+fn a_pointer_move_before_the_drop_keeps_the_shown_position() {
+    let files = Files::new("enter");
+    let png = files.write("cat.png", PNG_MAGIC);
+    let mut p = page();
+    let (a, b) = (p.point_at(5), p.point_at(8));
+    p.hover(png.clone(), a);
+    assert_eq!(p.indicated(), Some(Pos(6)));
+    send(
+        &mut p.app,
+        PlatformEvent::MouseMove {
+            x: b.0 as f32,
+            y: b.1 as f32,
+        },
+    );
+    send(
+        &mut p.app,
+        PlatformEvent::FileDropped {
+            paths: vec![png],
+            position: b,
+        },
+    );
+    assert_eq!(p.handle.selection(), Selection::cursor(Pos(6)));
+    assert!(p.app.file_drag.is_none());
+}
+
+/// A hover after a pointer move is a new drag: the old one's picture does
+/// not carry over.
+#[test]
+fn a_hover_after_a_pointer_move_starts_a_new_drag() {
+    let mut p = page();
+    let a = p.point_at(5);
+    p.hover(PathBuf::from("/nowhere/cat.png"), a);
+    send(&mut p.app, PlatformEvent::MouseMove { x: 600.0, y: 500.0 });
+    p.hover(PathBuf::from("/nowhere/notes.txt"), a);
+    assert!(p.drop_caret().is_none(), "a text file, in a new drag");
+    send(&mut p.app, PlatformEvent::FileHoverCancelled);
+    p.hover(PathBuf::from("/nowhere/cat.png"), a);
+    assert_caret_at(&p, a, "control");
+}
+
+/// X11/Windows name each path with a `FileHoverEnter` of its own: a picture
+/// and a text file dragged together show the caret.
+#[test]
+fn a_picture_then_a_text_file_in_one_drag_shows_the_caret() {
+    let mut p = page();
+    let a = p.point_at(5);
+    p.hover(PathBuf::from("/nowhere/cat.png"), a);
+    p.hover(PathBuf::from("/nowhere/notes.txt"), a);
+    assert_caret_at(&p, a, "picture, then text");
+}
+
+fn two_editors() -> (
+    RinchApp,
+    crate::editor::EditorHandle,
+    crate::editor::EditorHandle,
+) {
+    let h1 = crate::editor::create_editor();
+    let h2 = crate::editor::create_editor();
+    assert!(h1.load_html("<p>alpha bravo</p>"));
+    assert!(h2.load_html("<p>charlie delta</p>"));
+    let (i1, i2) = (h1.clone(), h2.clone());
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "width: 800px; height: 600px; display: flex");
+        for h in [&i1, &i2] {
+            let e = h.mount(scope);
+            e.set_attribute(
+                "style",
+                "width: 300px; height: 200px; font-size: 16px; line-height: 24px; \
+                 font-family: sans-serif",
+            );
+            root.append_child(&e);
+        }
+        root
+    });
+    app.register_app_font(AppFont::sans_serif(INTER));
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    h1.on_image_input(|_| None);
+    h2.on_image_input(|_| None);
+    send(&mut app, PlatformEvent::AboutToWait);
+    (app, h1, h2)
+}
+
+fn visible_drop_carets(app: &RinchApp) -> usize {
+    let d = app.doc.as_ref().unwrap().borrow();
+    d.tree
+        .nodes
+        .iter()
+        .filter(|(_, n)| {
+            n.attributes.contains_key("data-pm-drop-caret")
+                && n.computed_style.visibility
+                    == rinch_dom::computed_style::VisibilityValue::Visible
+        })
+        .count()
+}
+
+/// From one editor to another: one bar, in the editor under the pointer; a
+/// drop back in the first resolves its point there (review of #1655).
+#[test]
+fn moving_between_two_editors_moves_the_caret() {
+    let files = Files::new("two");
+    let png = files.write("cat.png", PNG_MAGIC);
+    let (mut app, h1, h2) = two_editors();
+    send(
+        &mut app,
+        PlatformEvent::FileHoverEnter {
+            path: png.clone(),
+            position: (40.0, 12.0),
+        },
+    );
+    assert_eq!(visible_drop_carets(&app), 1);
+    send(
+        &mut app,
+        PlatformEvent::FileDragMoved {
+            position: (340.0, 12.0),
+        },
+    );
+    assert_eq!(
+        visible_drop_carets(&app),
+        1,
+        "only one bar after moving to the second editor"
+    );
+    send(
+        &mut app,
+        PlatformEvent::FileDropped {
+            paths: vec![png],
+            position: (40.0, 12.0),
+        },
+    );
+    assert_eq!(visible_drop_carets(&app), 0);
+    assert_ne!(
+        h1.selection(),
+        Selection::cursor(Pos(1)),
+        "the first editor took it"
+    );
+    assert_eq!(
+        h2.selection(),
+        Selection::cursor(Pos(1)),
+        "the second did not"
     );
 }

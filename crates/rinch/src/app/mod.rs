@@ -433,7 +433,6 @@ pub(crate) struct PendingDrag {
     pub mousedown_pos: (f32, f32),
 }
 
-/// Active drag: movement threshold was crossed, snapshot captured.
 /// An OS file drag over the window (#1649), from its first
 /// `FileHoverEnter`/`FileDragMoved` to its drop, its `FileHoverCancelled`, or
 /// the first event that proves it is over without either
@@ -452,6 +451,13 @@ pub(crate) struct FileDrag {
     /// hover only for an offer carrying one — so a path-less drag is claimed
     /// on the editor's say alone, and a drop of no picture inserts nothing.
     pub(crate) paths_known: bool,
+    /// Set by a pointer move heard while the drag was live: the caret is
+    /// hidden and the edge-band scroll stopped, but the shown position and
+    /// the `data-onfiledragenter` target are kept for the drop. On X11 the
+    /// release's crossing Enter reaches the window (as a move) before the
+    /// drop does ([`RinchApp::suspend_file_drag`]). A hover after it starts
+    /// a new drag.
+    pub(crate) suspended: bool,
     /// The drop caret shown for it, while the pointer is over an editor that
     /// would take the drop.
     pub(crate) caret: Option<DropCaret>,
@@ -469,6 +475,7 @@ pub(crate) struct DropCaret {
     pub(crate) doc: rinch_editor_core::Node,
 }
 
+/// Active drag: movement threshold was crossed, snapshot captured.
 pub(crate) struct ActiveDrag {
     /// The draggable source element.
     pub node_id: usize,

@@ -135,18 +135,20 @@ impl RinchApp {
             actions.push(AppAction::RequestRedraw);
         }
         // An OS file drag in progress takes the pointer: while it lasts the
-        // window hears no move, press, release, wheel or key of its own, and a
+        // window hears no press, release, wheel or key of its own, and a
         // window that lost the keyboard is not where it is dropping. So any of
         // them proves the drag ended, whether or not its `FileHoverCancelled`
         // arrived (the #189 shape: a drop caret and an edge-band scroll armed
         // by the hover must not wait for a cancel that may never come, #1649).
-        // The shell hands a held pointer move over before any other event, so
-        // a move from before the drag cannot arrive after its first hover.
+        // A pointer move is weaker proof: on X11 the source's ungrab at the
+        // release sends the window a crossing Enter (a move to the shell)
+        // *before* the XdndDrop (measured with a GTK source, review of
+        // #1655), so a move only hides the caret and stops the scroll; the
+        // shown position and the hover target wait for the drop.
         if self.file_drag_live() || self.file_hover_target.is_some() {
             let over = matches!(
                 event,
-                PlatformEvent::MouseMove { .. }
-                    | PlatformEvent::MouseDown { .. }
+                PlatformEvent::MouseDown { .. }
                     | PlatformEvent::MouseUp { .. }
                     | PlatformEvent::MouseWheel { .. }
                     | PlatformEvent::KeyDown { .. }
@@ -154,6 +156,9 @@ impl RinchApp {
                     | PlatformEvent::WindowFocus(false)
             );
             if over && self.end_file_drag() {
+                actions.push(AppAction::RequestRedraw);
+            }
+            if matches!(event, PlatformEvent::MouseMove { .. }) && self.suspend_file_drag() {
                 actions.push(AppAction::RequestRedraw);
             }
         }
@@ -2312,7 +2317,7 @@ impl RinchApp {
         let file = self
             .file_drag
             .as_ref()
-            .filter(|drag| drag.caret.is_some())
+            .filter(|drag| drag.caret.is_some() && !drag.suspended)
             .map(|drag| drag.cursor);
         #[cfg(not(feature = "desktop"))]
         let file: Option<(f32, f32)> = None;
@@ -4164,6 +4169,29 @@ impl RinchApp {
 }
 
 impl RinchApp {
+    /// A pointer move during an OS file drag (#1649): hide the drop caret and
+    /// stop the edge-band scroll, keeping the shown position and the hover
+    /// target for a drop that may still come (X11 delivers the release's
+    /// crossing Enter before the drop). Answers whether an overlay changed.
+    fn suspend_file_drag(&mut self) -> bool {
+        #[cfg(feature = "desktop")]
+        if let Some(drag) = self.file_drag.as_mut()
+            && !drag.suspended
+        {
+            drag.suspended = true;
+            if self.active_dnd.is_none() {
+                self.drag_auto_scroll_at = None;
+            }
+            if let Some(caret) = &drag.caret
+                && caret.handle.show_drop_caret(None)
+            {
+                self.scene_dirty = true;
+                return true;
+            }
+        }
+        false
+    }
+
     /// Whether an OS file drag is in flight over the window (#1649).
     fn file_drag_live(&self) -> bool {
         #[cfg(feature = "desktop")]
@@ -4511,8 +4539,20 @@ impl RinchApp {
             cursor,
             picture: false,
             paths_known: false,
+            suspended: false,
             caret: None,
         });
+        if drag.suspended {
+            // A hover after a pointer move: a new drag, not the one the move
+            // interrupted (whose caret is hidden already).
+            *drag = super::FileDrag {
+                cursor,
+                picture: false,
+                paths_known: false,
+                suspended: false,
+                caret: None,
+            };
+        }
         drag.cursor = cursor;
         if let Some(path) = path {
             drag.paths_known = true;
@@ -6539,5 +6579,63 @@ mod editor_key_binding_tests {
         // takes the logical arm — everything else keeps resolving physically.
         let b = editor_key_binding(KeyCode::Enter, Some("Enter"), false, false, false).unwrap();
         assert_eq!(b.key, Key::Enter);
+    }
+}
+
+/// The order an app hears `data-onfiledragenter` / `-leave` / `-drop` on X11,
+/// where the release's crossing Enter (a pointer move) comes before the drop
+/// (review of #1655): the drop before the leave, as before #1649.
+#[cfg(all(test, feature = "desktop"))]
+mod file_drop_order_1649_tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::path::PathBuf;
+    use std::rc::Rc;
+
+    #[test]
+    fn a_pointer_move_before_the_drop_keeps_drop_before_leave() {
+        let log: Rc<RefCell<Vec<&'static str>>> = Rc::default();
+        let l = log.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "width: 800px; height: 600px");
+            let (a, b, c) = (l.clone(), l.clone(), l.clone());
+            let enter = scope.register_handler(move || a.borrow_mut().push("enter"));
+            let leave = scope.register_handler(move || b.borrow_mut().push("leave"));
+            let drop = scope.register_file_drop_handler(move |_| c.borrow_mut().push("drop"));
+            root.set_attribute("data-onfiledragenter", &enter.0.to_string());
+            root.set_attribute("data-onfiledragleave", &leave.0.to_string());
+            root.set_attribute("data-onfiledrop", &drop.0.to_string());
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        let vp = (800, 600);
+        let path = PathBuf::from("/x/a.txt");
+        app.handle_event(
+            PlatformEvent::FileHoverEnter {
+                path: path.clone(),
+                position: (100.0, 100.0),
+            },
+            vp,
+            1.0,
+        );
+        app.handle_event(
+            PlatformEvent::FileDragMoved {
+                position: (120.0, 100.0),
+            },
+            vp,
+            1.0,
+        );
+        app.handle_event(PlatformEvent::MouseMove { x: 120.0, y: 100.0 }, vp, 1.0);
+        app.handle_event(
+            PlatformEvent::FileDropped {
+                paths: vec![path],
+                position: (120.0, 100.0),
+            },
+            vp,
+            1.0,
+        );
+        assert_eq!(*log.borrow(), vec!["enter", "drop", "leave"]);
     }
 }
