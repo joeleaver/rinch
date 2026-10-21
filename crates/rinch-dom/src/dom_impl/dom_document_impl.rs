@@ -1155,9 +1155,11 @@ impl DomDocument for RinchDocument {
         &crate::ifc::PRESERVED_SUBSTITUTE_FLAT_BYTES
     }
 
+    /// Relative to the node's border box, as the trait says: Parley's
+    /// layout-local caret moved by where that layout is drawn
+    /// ([`Self::text_layout_origin`], #1667).
     fn query_caret_position(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32)> {
-        use crate::text_query::caret_position_for_offset;
-        caret_position_for_offset(self, node_id, byte_offset)
+        self.query_caret_position_with_affinity(node_id, byte_offset, CaretAffinity::Downstream)
     }
 
     fn query_caret_rect(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32, f32)> {
@@ -1170,12 +1172,14 @@ impl DomDocument for RinchDocument {
         byte_offset: usize,
         affinity: CaretAffinity,
     ) -> Option<(f32, f32)> {
-        crate::text_query::caret_position_for_offset_with_affinity(
+        let (x, y) = crate::text_query::caret_position_for_offset_with_affinity(
             self,
             node_id,
             byte_offset,
             affinity,
-        )
+        )?;
+        let (ox, oy) = self.text_layout_origin(node_id as usize);
+        Some((ox + x, oy + y))
     }
 
     /// From the IFC root's Parley layout: the box's positioned item is keyed by
@@ -1193,7 +1197,9 @@ impl DomDocument for RinchDocument {
             .text_layout
             .as_ref()?
             .layout;
-        crate::text_query::inline_box_caret(layout, box_id, after)
+        let (x, y, h) = crate::text_query::inline_box_caret(layout, box_id, after)?;
+        let (ox, oy) = self.text_layout_origin(node_id as usize);
+        Some((ox + x, oy + y, h))
     }
 
     fn query_inline_box_caret_rect(
@@ -1217,8 +1223,8 @@ impl DomDocument for RinchDocument {
         }
         // No text geometry. For an element with no text at all (an empty
         // paragraph) that is its nature: the editor view paints the caret at the
-        // block's own box origin, the box's height tall (clamped the same way,
-        // `RinchDomEditorView::empty_block_caret`). Text without geometry is
+        // block's content-box origin, the content box's height tall (clamped the
+        // same way, `RinchDomEditorView::empty_block_caret`). Text without geometry is
         // text not laid out yet (edited since the last layout), and has no
         // answer until the next one.
         if !self.text_content(NodeId(id)).unwrap_or_default().is_empty() {
@@ -1232,10 +1238,13 @@ impl DomDocument for RinchDocument {
         if node.layout.width == 0.0 && node.layout.height == 0.0 {
             return None;
         }
-        let bh = node.layout.height;
+        // Its content box (#1667): a padded block's text would start there.
+        let (l, t, _, b) = self.content_box_inset(node_id);
+        let bh = node.layout.height - t - b;
         let h = if (4.0..=80.0).contains(&bh) { bh } else { 18.0 };
-        let (x, y) = crate::paint::point_from_painted_box(&self.tree, id, 1.0, 0.0, 0.0);
-        let (_, y2) = crate::paint::point_from_painted_box(&self.tree, id, 1.0, 0.0, h as f64);
+        let (l, t) = (l as f64, t as f64);
+        let (x, y) = crate::paint::point_from_painted_box(&self.tree, id, 1.0, l, t);
+        let (_, y2) = crate::paint::point_from_painted_box(&self.tree, id, 1.0, l, t + h as f64);
         Some((x as f32, y as f32, (y2 - y).abs() as f32))
     }
 
@@ -1253,7 +1262,11 @@ impl DomDocument for RinchDocument {
             (None, Some(layout)) => layout,
             (None, None) => return Vec::new(),
         };
+        let (ox, oy) = self.text_layout_origin(node_id as usize);
         crate::text_query::selection_rects_for_layout(layout, byte_a, byte_b)
+            .into_iter()
+            .map(|(x, y, w, h)| (ox + x, oy + y, w, h))
+            .collect()
     }
 
     fn query_glyph_bounds(
@@ -1263,9 +1276,10 @@ impl DomDocument for RinchDocument {
     ) -> Option<rinch_core::dom::GlyphBounds> {
         use crate::text_query::glyph_bounds_for_offset;
         let bounds = glyph_bounds_for_offset(self, node_id, byte_offset)?;
+        let (ox, oy) = self.text_layout_origin(node_id as usize);
         Some(rinch_core::dom::GlyphBounds {
-            x: bounds.x,
-            y: bounds.y,
+            x: ox + bounds.x,
+            y: oy + bounds.y,
             width: bounds.width,
             height: bounds.height,
         })
@@ -1437,6 +1451,22 @@ impl DomDocument for RinchDocument {
         (
             cs.border_left_width.to_px().max(0.0),
             cs.border_top_width.to_px().max(0.0),
+        )
+    }
+
+    /// Padding plus border from the computed style, as Taffy laid the box
+    /// out with them.
+    fn content_box_inset(&self, node_id: u64) -> (f32, f32, f32, f32) {
+        let Some(node) = self.tree.nodes.get(node_id as usize) else {
+            return (0.0, 0.0, 0.0, 0.0);
+        };
+        let cs = &node.computed_style;
+        let side = |p: f32, b: f32| p.max(0.0) + b.max(0.0);
+        (
+            side(cs.padding_left.to_px(), cs.border_left_width.to_px()),
+            side(cs.padding_top.to_px(), cs.border_top_width.to_px()),
+            side(cs.padding_right.to_px(), cs.border_right_width.to_px()),
+            side(cs.padding_bottom.to_px(), cs.border_bottom_width.to_px()),
         )
     }
 
@@ -2123,9 +2153,9 @@ impl RinchDocument {
         self.caret_to_window(node_id, local_x, local_y, height)
     }
 
-    /// A layout-local caret `(x, y, height)` in `node_id`'s inline layout,
-    /// pushed through its padding and the composed transform of its ancestors
-    /// into logical window pixels.
+    /// A caret `(x, y, height)` relative to `node_id`'s border box (what the
+    /// `DomDocument` text queries answer), pushed through the composed
+    /// transform of its ancestors into logical window pixels.
     fn caret_to_window(
         &self,
         node_id: usize,
@@ -2133,15 +2163,44 @@ impl RinchDocument {
         local_y: f32,
         height: f32,
     ) -> Option<(f32, f32, f32)> {
-        let node = self.tree.get(node_id)?;
-        let pad_l = node.computed_style.padding_left.to_px();
-        let pad_t = node.computed_style.padding_top.to_px();
+        self.tree.get(node_id)?;
         let fwd = |lx: f32, ly: f32| {
             crate::paint::point_from_painted_box(&self.tree, node_id, 1.0, lx as f64, ly as f64)
         };
-        let (cx, cy) = fwd(pad_l + local_x, pad_t + local_y);
-        let (_, cy2) = fwd(pad_l + local_x, pad_t + local_y + height);
+        let (cx, cy) = fwd(local_x, local_y);
+        let (_, cy2) = fwd(local_x, local_y + height);
         Some((cx as f32, cy as f32, (cy2 - cy).abs() as f32))
+    }
+
+    /// Where the text layout the `DomDocument` text queries read for
+    /// `node_id` is drawn, relative to `node_id`'s border box — the offset
+    /// that turns Parley's layout-local answers into the border-box-local
+    /// ones the trait promises (and rinch-web answers from
+    /// `getBoundingClientRect`, #1667). The same precedence as
+    /// [`crate::text_query::caret_position_for_offset_with_affinity`]:
+    ///
+    /// - an IFC root's inline layout is drawn at its content box, one padding
+    ///   and border in ([`crate::paint::ifc_root_content_origin`], what paint
+    ///   uses);
+    /// - a text node's own measured layout at its own origin;
+    /// - an element whose text is a measured child text node at that child's
+    ///   box.
+    fn text_layout_origin(&self, node_id: usize) -> (f32, f32) {
+        let Some(node) = self.tree.nodes.get(node_id) else {
+            return (0.0, 0.0);
+        };
+        if node.text_layout.is_some() {
+            return crate::paint::ifc_root_content_origin(node);
+        }
+        if node.cached_text_parley.is_some() {
+            return (0.0, 0.0);
+        }
+        node.children
+            .iter()
+            .filter_map(|&c| self.tree.nodes.get(c))
+            .find(|c| c.cached_text_parley.is_some())
+            .map(|c| (c.layout.x, c.layout.y))
+            .unwrap_or((0.0, 0.0))
     }
 }
 

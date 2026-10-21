@@ -1518,7 +1518,7 @@ impl EditorView for RinchDomEditorView {
             return Vec::new();
         };
         let block_id = block.node_id().0;
-        // Query Parley for the caret geometry (layout-local to the textblock), then
+        // Query the caret geometry (local to the textblock's border box), then
         // translate into the container's coordinate space. An *empty* textblock has
         // no Parley layout, so `query_caret_position` returns `None` there — fall
         // back to the block's content origin with a sensible line height, so the
@@ -2248,8 +2248,8 @@ impl RinchDomEditorView {
 
     /// Caret geometry for an *empty* textblock (which has no Parley layout, so
     /// [`DomDocument::query_caret_position`] returns `None`): the block's content
-    /// origin in container space with the block's own box height as the line
-    /// height. `None` if the block at `pos` is *not* actually empty (a non-empty
+    /// origin in container space with its content box's height as the line
+    /// height ([`DomDocument::content_box_inset`]). `None` if the block at `pos` is *not* actually empty (a non-empty
     /// block that merely failed to measure — leave the caret hidden rather than
     /// misplace it) or has no host box yet.
     ///
@@ -2277,10 +2277,14 @@ impl RinchDomEditorView {
             return None;
         }
         let (ox, oy) = self.block_offset_in_container(d, block_id);
-        // An empty block's box height is its single line box; clamp to a sane range
-        // and fall back to a default when it has collapsed to zero.
-        let h = if (4.0..=80.0).contains(&bh) { bh } else { 18.0 };
-        Some((ox, oy, h))
+        // Its content box, not its border box: an empty code block is padded,
+        // and its caret goes where its text would start (#1667).
+        let (l, t, _, b) = d.content_box_inset(block_id as u64);
+        // An empty block's content height is its single line box; clamp to a
+        // sane range and fall back to a default when it has collapsed to zero.
+        let ch = bh - t - b;
+        let h = if (4.0..=80.0).contains(&ch) { ch } else { 18.0 };
+        Some((ox + l, oy + t, h))
     }
 
     /// Take and clear the "an overlay moved" flag. The runtime re-resolves layout
