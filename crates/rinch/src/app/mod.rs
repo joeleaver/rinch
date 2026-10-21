@@ -11196,6 +11196,8 @@ mod click_viewport_tests {
 #[cfg(test)]
 mod editor_scroll_gate_tests;
 #[cfg(test)]
+mod editor_enter_scroll_tests;
+#[cfg(test)]
 mod editor_table_span_1182_tests;
 
 /// What [`RinchApp::collect_tab_stops_from`] found under a root.
