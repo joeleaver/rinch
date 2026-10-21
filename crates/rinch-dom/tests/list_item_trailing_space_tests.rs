@@ -528,12 +528,11 @@ fn spaces_hang_under_overflow_wrap_anywhere() {
 
 /// Justification spreads a line's free space over its word gaps only; hanging
 /// spaces take no part. Chrome 153: `bb` ends flush at 50 on lines one and two.
-/// `main` agrees (it kept one space on the line, which parley leaves out of the
-/// count). With three spaces kept, parley 0.11.1 counts two of them as
-/// justification opportunities (`num_spaces` drops only the last), so `bb` ends
-/// at 44.71: the line is not flush.
+/// With three spaces kept on the line, parley 0.11.1 counted one of them as a
+/// justification opportunity (`num_spaces` drops only the last), so `bb` ended
+/// at 46.03 and the line was not flush, until #1056
+/// (`justify_hanging_spaces_1056_tests.rs` has the rest).
 #[test]
-#[ignore = "#1056: parley 0.11.1 counts all but the last kept space as justification opportunities"]
 fn a_justified_line_is_flush_whatever_hangs_after_it() {
     let s = "aa bb   cc dd   ee ff gg";
     let (d, b) = block("50px; text-align: justify", s);
