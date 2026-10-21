@@ -2272,8 +2272,8 @@ impl EditorHandle {
 
     /// The inline leaf a caret at `pos` is drawn against rather than placed by
     /// its flat byte offset, as `(textblock element id, leaf element id,
-    /// after)`: the image just before `pos`, or, for a `Downstream` caret, the
-    /// one just after it (#1104). The host draws such a caret from the leaf's
+    /// after)`: for a `Downstream` caret the image just after `pos`, else the
+    /// one just before it (#1104, #1116). The host draws such a caret from the leaf's
     /// box (`DomDocument::query_inline_box_caret`). `None` anywhere else.
     pub fn caret_inline_box(
         &self,

@@ -5142,20 +5142,44 @@ impl RinchApp {
         end: bool,
     ) -> Option<rinch_editor_core::Pos> {
         let (tb, flat) = handle.caret_address(head)?;
-        let range = {
+        let affinity = handle.caret_affinity_at(head);
+        let (range, (first_box, last_box)) = {
             let doc = self.doc.clone()?;
             let d = doc.borrow();
-            rinch_dom::text_query::visual_line_range_for_node(
-                &d,
-                tb as u64,
-                flat,
-                handle.caret_affinity_at(head),
-            )?
+            let id = tb as u64;
+            (
+                rinch_dom::text_query::visual_line_range_for_node(&d, id, flat, affinity)?,
+                rinch_dom::text_query::visual_line_edge_boxes_for_node(&d, id, flat, affinity)?,
+            )
         };
+        // An image has no bytes, so the edge byte is the byte of both sides of
+        // an image at the line's edge, and of one at that byte on the
+        // neighbouring line, and `pos_at` picks a side by where the text runs
+        // are (#1116). An image that is the line's first item is the line's
+        // start, one that is its last item its end; any other image at the
+        // edge byte is on the neighbouring line, so Home lands after every
+        // position at the start byte and End before every one at the end byte.
+        let edge_box = if end { last_box } else { first_box };
+        if let Some(p) = edge_box.and_then(|id| handle.pos_beside_inline_leaf(id as usize, end)) {
+            return Some(p);
+        }
         // At a soft wrap the end-of-line position is the same model position as
         // the start of the next visual line. End draws it at the end of this line
         // by setting the caret-affinity hint (#301).
-        handle.pos_at(tb, if end { range.end } else { range.start })
+        let byte = if end { range.end } else { range.start };
+        let mut p = handle.pos_at(tb, byte)?;
+        let same_byte =
+            |q: usize| handle.caret_address(rinch_editor_core::Pos(q)) == Some((tb, byte));
+        if end {
+            while p.0 > 0 && same_byte(p.0 - 1) {
+                p.0 -= 1;
+            }
+        } else {
+            while same_byte(p.0 + 1) {
+                p.0 += 1;
+            }
+        }
+        Some(p)
     }
 
     /// The id of the `data-pm-editor` container under window/logical point

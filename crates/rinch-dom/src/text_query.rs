@@ -165,21 +165,14 @@ pub fn visual_line_range(
     affinity: CaretAffinity,
 ) -> Option<std::ops::Range<usize>> {
     use parley::layout::{BreakReason, Cluster};
-    let last = layout.lines().len().checked_sub(1)?;
     // The line the caret is DRAWN on (Parley's own `Cursor`, which puts an
     // upstream caret at a soft wrap on the upper line and a caret after a hard
     // break on the far one), not the line whose byte range holds the caret
     // byte: an inline box has no bytes, so a caret right before an image that
     // ends a line is drawn on that line while its byte starts the next one.
-    let (_, cy) = caret_position_for_offset_layout_with_affinity(layout, byte_offset, affinity);
-    let index = layout
+    let line = layout
         .lines()
-        .position(|l| {
-            let m = l.metrics();
-            cy >= m.block_min_coord - 0.5 && cy < m.block_max_coord - 0.5
-        })
-        .unwrap_or(last);
-    let line = layout.lines().nth(index)?;
+        .nth(caret_line_index(layout, byte_offset, affinity)?)?;
     let range = line.text_range();
     let mut end = range.end;
     if line.break_reason() == BreakReason::Explicit
@@ -232,6 +225,72 @@ pub fn visual_line_range_for_node(
         return visual_line_range(layout, byte_offset, affinity);
     }
     None
+}
+
+/// The inline boxes at the two edges of the visual line a caret at
+/// `byte_offset` with `affinity` is drawn on (the line [`visual_line_range`]
+/// finds), as `(first, last)`: the id of the box that is the line's first
+/// item, and of the one that is its last. `None` on a side whose edge item is
+/// text, and for an empty layout.
+///
+/// An inline box (an image) has no bytes, so the line's edge byte is the byte
+/// of both sides of a box there, and of a box at that byte on the neighbouring
+/// line: the items say which side of the box the line's edge is (#1116).
+/// Items are in visual order, so this is left-to-right only, like
+/// [`inline_box_at_point`].
+pub fn visual_line_edge_boxes(
+    layout: &parley::layout::Layout<Brush>,
+    byte_offset: usize,
+    affinity: CaretAffinity,
+) -> Option<(Option<u64>, Option<u64>)> {
+    use parley::layout::PositionedLayoutItem;
+    let line = layout
+        .lines()
+        .nth(caret_line_index(layout, byte_offset, affinity)?)?;
+    let as_box = |item: PositionedLayoutItem<'_, Brush>| match item {
+        PositionedLayoutItem::InlineBox(b) => Some(b.id),
+        PositionedLayoutItem::GlyphRun(_) => None,
+    };
+    let first = line.items().next().and_then(as_box);
+    let last = line.items().last().and_then(as_box);
+    Some((first, last))
+}
+
+/// [`visual_line_edge_boxes`] in the text-bearing element `node_id`'s layout.
+pub fn visual_line_edge_boxes_for_node(
+    doc: &crate::dom_impl::RinchDocument,
+    node_id: u64,
+    byte_offset: usize,
+    affinity: CaretAffinity,
+) -> Option<(Option<u64>, Option<u64>)> {
+    let node = doc.tree.nodes.get(node_id as usize)?;
+    if let Some(ref inline_layout) = node.text_layout {
+        return visual_line_edge_boxes(&inline_layout.layout, byte_offset, affinity);
+    }
+    if let Some(ref layout) = node.cached_text_parley {
+        return visual_line_edge_boxes(layout, byte_offset, affinity);
+    }
+    None
+}
+
+/// The index of the line Parley draws a caret at `byte_offset` with
+/// `affinity` on (see [`visual_line_range`]). `None` for an empty layout.
+fn caret_line_index(
+    layout: &parley::layout::Layout<Brush>,
+    byte_offset: usize,
+    affinity: CaretAffinity,
+) -> Option<usize> {
+    let last = layout.lines().len().checked_sub(1)?;
+    let (_, cy) = caret_position_for_offset_layout_with_affinity(layout, byte_offset, affinity);
+    Some(
+        layout
+            .lines()
+            .position(|l| {
+                let m = l.metrics();
+                cy >= m.block_min_coord - 0.5 && cy < m.block_max_coord - 0.5
+            })
+            .unwrap_or(last),
+    )
 }
 
 /// [`caret_position_for_offset_layout`] for a caret with `affinity` at a soft

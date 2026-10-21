@@ -1890,9 +1890,11 @@ impl RinchDomEditorView {
 
     /// The inline leaf whose box a caret at `pos` is drawn against, as `(its
     /// host element id, after)`, when the flat byte offset cannot place it
-    /// (#1104): the zero-byte leaf (an image) just before `pos` — the caret is
-    /// after it — or else, for a `Downstream` caret, the zero-byte leaf just
-    /// after `pos`. The byte's own caret is the leading edge of whatever follows
+    /// (#1104): for a `Downstream` caret the zero-byte leaf (an image) just
+    /// after `pos` — the caret is before it — or else the one just before
+    /// `pos`, the caret after it. Downstream asks the leaf after first because
+    /// between two images a soft wrap separates, the caret before the second
+    /// is the lower line's start (#1116). The byte's own caret is the leading edge of whatever follows
     /// the image, so it is drawn after the image at a block's start, right after
     /// a hard break, and where the image starts a soft-wrapped line; on one line
     /// after text the image's left edge is the byte's caret anyway. An
@@ -1922,14 +1924,18 @@ impl RinchDomEditorView {
         let mut before: Option<usize> = None;
         for i in 0..block.child_count() {
             if at == off {
+                // Downstream, a leaf after `pos` first: between two images
+                // that a soft wrap separates, the caret before the second is
+                // the lower line's start (#1116); on one line the two edges
+                // are one x.
+                if affinity == CaretAffinity::Downstream && zero_byte_leaf(block.child(i)) {
+                    return Some((desc.children.get(i)?.dom.node_id().0, false));
+                }
                 let prev = before.map(|p| block.child(p));
                 if let Some(prev) = prev
                     && zero_byte_leaf(prev)
                 {
                     return Some((desc.children.get(before?)?.dom.node_id().0, true));
-                }
-                if affinity == CaretAffinity::Downstream && zero_byte_leaf(block.child(i)) {
-                    return Some((desc.children.get(i)?.dom.node_id().0, false));
                 }
                 return None;
             }
