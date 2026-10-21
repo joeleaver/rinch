@@ -524,8 +524,11 @@ With the callback registered:
   nothing scrolls to the caret until the drop. Held in the top or bottom band
   of the editor's scroll container, the drag scrolls it, as an in-app drag does,
   so a long note can be targeted. The caret and the scrolling end with the drag:
-  its cancel, its drop, or the first pointer move, press, wheel, key or window
-  blur the window hears, since none reaches it while an OS drag is in flight.
+  its cancel, its drop, or the first press, wheel, key or window blur the
+  window hears, since none reaches it while an OS drag is in flight. A pointer
+  move hides the caret and stops the scrolling but keeps the shown position for
+  the drop: on X11 the window hears the pointer enter at the release, before the
+  drop arrives.
 - A pasted bitmap has no size limit of its own: it is whatever the clipboard
   held, encoded as PNG on the UI thread (about 50 to 90 ms for a 4K
   screenshot).
