@@ -190,8 +190,8 @@ consequences are worth knowing:
   clear from outside any document clears every entry; one from inside a
   document leaves that document with nothing. With several documents on one
   thread that cuts both ways: code outside any document — `main`, a timer
-  armed there, a closure queued from a worker thread, a native menu or tray
-  callback built there — overrides every document's own registration and its clear wipes
+  armed there, a closure queued from a worker thread, a menu (native
+  or DOM bar) or tray callback built there — overrides every document's own registration and its clear wipes
   them all. The release only reclaims the slot if it
   is still holding the callback that registered it.
 - **Register once per component, not once per event.** Each call from inside a

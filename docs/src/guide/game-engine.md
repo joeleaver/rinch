@@ -389,7 +389,11 @@ that context's own namespace, its effects and event handlers resolve that
 namespace first — and so do a timer, an `rinch-http` completion, a
 `run_on_main_thread` closure, a `rinch-ws` event and a menu, tray, hotkey,
 notification or focus-target callback made inside it, wherever it is fired
-(#1032) — and lookups **fall back to the thread-global namespace** for
+(#1032; a menu item built in `main` is no context's, even clicked in a
+context's DOM bar, and an `unowned` timer that outlives its context runs in
+that dead namespace, where `create_store` leaves an entry nothing clears;
+the dismiss stack and the interceptors still run at the thread-global root,
+#1665) — and lookups **fall back to the thread-global namespace** for
 stores created outside any context (e.g. before mounting). Two contexts can
 therefore create the *same* store type without overwriting each other, and
 dropping a context clears its namespace. One caveat remains: each context

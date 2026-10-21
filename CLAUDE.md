@@ -1343,7 +1343,9 @@ collect items from several components and each stops on its own. A live callback
 runs *inside* its owner, so a `Signal` it creates belongs to the menu's
 component; an ownerless one runs `unowned`. Either way it runs under the
 document and in the context root current where the item was made (#1032),
-not where it is fired. Built outside any render — from
+not where it is fired — so an item built in `main` and clicked in an embedded
+context's DOM bar resolves the thread-global store namespace, not that
+context's. Built outside any render — from
 `main`, before the event loop, which is what every example does — there is no
 owner and the callback keeps **app lifetime**, unchanged. Every activation path
 goes through one `invoke_menu_callback`, so the rule holds for a muda click, a
@@ -1872,7 +1874,15 @@ document on the thread, and a `use_store` in a timer armed in an embedded
 `RinchContext` resolves that context's store; one armed from `main` or queued
 from a worker thread runs under no document at the thread-global root,
 wherever it is fired — a menu item made in `main` included, even when the DOM
-menu bar fires it inside a document's click. (Two desktop *windows* do not cross-feed a plain mouse drag on their own —
+menu bar fires it inside a document's click; in an embedded `RinchContext`
+such an item resolves the thread-global store namespace, not the hosting
+context's, so `use_store` there panics for a store only that context created
+(build the item inside the context's component instead). One that outlives
+its context — an `unowned` timer of a dropped `RinchContext` — runs in that
+dead root: it reads none of the context's stores (they were cleared with it),
+and a `create_store` there leaves an entry nothing clears. The dismiss stack
+and the interceptors are not re-entered this way: they run at the dispatch's
+root, which in embed is the thread-global one (#1665). (Two desktop *windows* do not cross-feed a plain mouse drag on their own —
 the pointer is grabbed to the pressing window while a button is held — so this
 matters for an embed host pumping several contexts from one event stream, and
 for a drag left live past a missed `MouseUp`.)

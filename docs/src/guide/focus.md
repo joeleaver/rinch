@@ -1087,8 +1087,8 @@ build on, with this menu as the fallback.
   from outside any document clears every entry, and from inside one leaves that
   document with none. The cost with several documents on one thread (two
   embedded contexts, an app and its DevTools): code outside any document —
-  `main`, a timer armed there, a closure queued from a worker thread, a native
-  menu or tray callback built there — cannot say which document it belongs to, so its
+  `main`, a timer armed there, a closure queued from a worker thread, a menu
+  (native or DOM bar) or tray callback built there — cannot say which document it belongs to, so its
   registration overrides **every** document's own hook and its clear wipes
   every document's. Registrations made inside documents stay isolated from
   each other. Its *lifetime* does match the arbiter's, though:
