@@ -4510,11 +4510,13 @@ impl RinchApp {
         let drag = self.file_drag.get_or_insert(super::FileDrag {
             cursor,
             picture: false,
+            paths_known: false,
             caret: None,
         });
         drag.cursor = cursor;
-        if path.is_some_and(path_looks_like_an_image) {
-            drag.picture = true;
+        if let Some(path) = path {
+            drag.paths_known = true;
+            drag.picture |= path_looks_like_an_image(path);
         }
         self.place_file_drop_caret()
     }
@@ -4523,7 +4525,9 @@ impl RinchApp {
     /// pointer would land, in the editor under it that would take the drop:
     /// one with an [`on_image_input`](crate::editor::EditorHandle::on_image_input)
     /// callback that does not refuse edits, for a drag holding a path named
-    /// like a picture. Anywhere else, no caret. Neither the selection nor the
+    /// like a picture — or naming no path at all (Wayland names none before
+    /// the drop; a drop that holds no picture then inserts nothing). Anywhere
+    /// else, no caret. Neither the selection nor the
     /// scroll moves: the drop does both. Answers whether an overlay changed.
     #[cfg(feature = "desktop")]
     pub(crate) fn place_file_drop_caret(&mut self) -> bool {
@@ -4531,7 +4535,7 @@ impl RinchApp {
             return false;
         };
         let (x, y) = drag.cursor;
-        let target = if drag.picture {
+        let target = if drag.picture || !drag.paths_known {
             self.file_drop_target(x, y)
         } else {
             None

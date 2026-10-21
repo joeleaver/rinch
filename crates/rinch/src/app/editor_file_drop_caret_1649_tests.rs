@@ -228,15 +228,14 @@ fn no_drop_caret_where_the_drop_would_not_be_the_editors() {
     assert!(p.drop_caret().is_none(), "a text file");
     send(&mut p.app, PlatformEvent::FileHoverCancelled);
 
-    // Wayland: no path before the drop.
-    p.drag_to(a);
-    assert!(p.drop_caret().is_none(), "no path known");
-    send(&mut p.app, PlatformEvent::FileHoverCancelled);
-
     // Read-only.
     p.handle.set_read_only(true);
     p.hover(PathBuf::from("/nowhere/cat.png"), a);
     assert!(p.drop_caret().is_none(), "a read-only editor");
+    send(&mut p.app, PlatformEvent::FileHoverCancelled);
+    // Read-only, with no path named (Wayland).
+    p.drag_to(a);
+    assert!(p.drop_caret().is_none(), "a read-only editor, path-less");
     send(&mut p.app, PlatformEvent::FileHoverCancelled);
     p.handle.set_read_only(false);
 
@@ -423,4 +422,56 @@ fn a_drag_the_editor_would_not_take_does_not_scroll_it() {
     frame_after(&mut p, 30);
     frame_after(&mut p, 30);
     assert_eq!(p.scroll_top(), 0.0);
+}
+
+/// Wayland names no path before the drop (the fork starts the hover with an
+/// empty list, and only for an offer carrying `text/uri-list`): the editor
+/// claims the hover on its own say, and the drop decides.
+#[test]
+fn a_path_less_hover_shows_the_drop_caret_and_a_picture_drop_lands_there() {
+    let files = Files::new("pathless");
+    let png = files.write("cat.png", PNG_MAGIC);
+    let mut p = page();
+    let (a, b) = (p.point_at(5), p.point_at(8));
+    p.drag_to(a);
+    assert_caret_at(&p, a, "path-less hover");
+    assert_eq!(p.indicated(), Some(Pos(6)));
+    assert_eq!(p.handle.selection(), Selection::cursor(Pos(1)));
+    send(
+        &mut p.app,
+        PlatformEvent::FileDropped {
+            paths: vec![png],
+            position: b,
+        },
+    );
+    assert_eq!(p.handle.selection(), Selection::cursor(Pos(6)));
+    assert!(p.drop_caret().is_none());
+}
+
+#[test]
+fn a_path_less_drop_of_no_picture_inserts_nothing_and_hides_the_caret() {
+    let files = Files::new("pathless-text");
+    let notes = files.write("notes.txt", b"words");
+    let mut p = page();
+    let a = p.point_at(5);
+    p.drag_to(a);
+    assert!(p.drop_caret().is_some(), "shown first");
+    send(
+        &mut p.app,
+        PlatformEvent::FileDropped {
+            paths: vec![notes],
+            position: a,
+        },
+    );
+    assert!(p.drop_caret().is_none(), "the drop hides it");
+    assert!(p.app.file_drag.is_none());
+    assert_eq!(
+        p.handle.selection(),
+        Selection::cursor(Pos(1)),
+        "the editor took nothing: the caret stays"
+    );
+    assert_eq!(
+        rinch_editor_core::serialize::node_to_html(&p.handle.doc()),
+        "<p>alpha bravo</p>"
+    );
 }
