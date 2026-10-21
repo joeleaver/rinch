@@ -341,9 +341,7 @@ pub(crate) fn break_lines_hanging_spaces(
     // can come out ending in spaces parley did not hang.
     let fix = max.filter(|&max| {
         (preserves_spaces
-            && (any_unhung_line(layout, text)
-                || any_unhung_trailing_line(layout, text, unhung)
-                || any_overflowing_break_spaces_line(layout, text, &unhung.breaking, max)))
+            && (any_unhung_line(layout, text) || any_unhung_trailing_line(layout, text, unhung)))
             || any_hung_nbsp_line(layout, text, max)
             || (count_trailing && any_counted_trailing_line(layout, text, preserves_spaces))
     });
@@ -592,7 +590,15 @@ pub(crate) fn break_leaf_lines(
     layout.break_all_lines(max_width);
     let glue = max_width.filter(|max| max.is_finite() && any_hung_nbsp_line(layout, text, *max));
     let mut stats = match glue {
-        Some(max) => hang_pass(layout, text, max, None, &UnhungSpaces::default(), false, false),
+        Some(max) => hang_pass(
+            layout,
+            text,
+            max,
+            None,
+            &UnhungSpaces::default(),
+            false,
+            false,
+        ),
         None => HangStats::default(),
     };
     if let Some(keep) = phantom_last_line(layout) {
@@ -1811,11 +1817,7 @@ fn break_overflowing_spaces(
     const ROOM: f32 = 0.01;
     // The table's cursor can sit on the zero-width newline that ended the
     // line before; a newline is never the first unit of a line.
-    let first = cursor
-        + units[cursor..end]
-            .iter()
-            .take_while(|u| u.newline)
-            .count();
+    let first = cursor + units[cursor..end].iter().take_while(|u| u.newline).count();
     let run = units[first..end]
         .iter()
         .rev()
@@ -2091,7 +2093,8 @@ fn in_ranges(ranges: &[std::ops::Range<usize>], byte: usize) -> bool {
 
 /// Whether some line ends (before any newline) in a space or tab of an
 /// `unhung` range — the cheap test that sends a paragraph through
-/// [`hang_pass`] for [`align_unhung_trailing`].
+/// [`hang_pass`] for [`align_unhung_trailing`], and for
+/// [`break_overflowing_spaces`] when the range is `break-spaces` text.
 fn any_unhung_trailing_line(
     layout: &parley::Layout<Brush>,
     text: &str,
@@ -2103,27 +2106,6 @@ fn any_unhung_trailing_line(
             let body = text.get(r.clone()).unwrap_or("");
             let trimmed = body.trim_end_matches(['\n', '\r']);
             trimmed.ends_with([' ', '\t']) && unhung.contains(r.start + trimmed.len() - 1)
-        })
-}
-
-/// Whether some line parley ended past `max` in a `break-spaces` space or
-/// tab (#1043) — the cheap test that sends a paragraph through [`hang_pass`]
-/// for [`break_overflowing_spaces`].
-fn any_overflowing_break_spaces_line(
-    layout: &parley::Layout<Brush>,
-    text: &str,
-    breaking: &[std::ops::Range<usize>],
-    max: f32,
-) -> bool {
-    use parley::layout::BreakReason;
-    !breaking.is_empty()
-        && layout.lines().any(|line| {
-            let r = line.text_range();
-            let body = text.get(r.clone()).unwrap_or("");
-            line.break_reason() == BreakReason::Regular
-                && line.metrics().advance > max + 0.005
-                && body.ends_with([' ', '\t'])
-                && in_ranges(breaking, r.start + body.len() - 1)
         })
 }
 
