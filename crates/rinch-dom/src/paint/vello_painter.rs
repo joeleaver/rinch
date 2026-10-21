@@ -39,6 +39,30 @@ impl Default for VelloPainter {
     }
 }
 
+/// The brush transform that makes Vello sample an image at each pixel's
+/// CENTRE, for an image brush whose image-to-device map would otherwise be
+/// `transform * brush` (#1027).
+///
+/// Vello 0.7's fine shader (`fine.wgsl`, `CMD_IMAGE`) maps the pixel's
+/// top-left corner into the image, where CSS and tiny-skia map its centre:
+/// its bilinear arm then reads half a texel up and left of the right point
+/// (an image at a whole-pixel origin comes out averaged with its
+/// neighbours), and its nearest arm picks the texel under the corner. Moving
+/// the image half a DEVICE pixel up and left, `T(-0.5) * transform * brush`,
+/// puts the centre where the shader looks, under any scale, rotation or
+/// skew; the shape is unaffected, being drawn with `transform` alone. A
+/// scene appended under a translation keeps it (translations commute); one
+/// appended under a scale would not, and none is.
+///
+/// A degenerate `transform` (which draws nothing) keeps `brush`.
+fn centre_sampling(transform: Affine, brush: Affine) -> Affine {
+    let det = transform.determinant();
+    if !det.is_finite() || det == 0.0 {
+        return brush;
+    }
+    transform.inverse() * Affine::translate((-0.5, -0.5)) * transform * brush
+}
+
 /// Dispatch a fill operation on a `PaintShape` to the appropriate Scene method.
 macro_rules! dispatch_fill {
     ($scene:expr, $fill:expr, $transform:expr, $brush:expr, $shape:expr) => {
@@ -148,7 +172,17 @@ impl Painter for VelloPainter {
             width: image.width,
             height: image.height,
         };
-        self.scene.draw_image(&image_data, transform);
+        // `Scene::draw_image` is this fill with no brush transform; the
+        // brush transform moves the sample to the pixel's centre (#1027).
+        let rect = peniko::kurbo::Rect::new(0.0, 0.0, image.width as f64, image.height as f64);
+        let brush = peniko::ImageBrush::new(image_data);
+        self.scene.fill(
+            Fill::NonZero,
+            transform,
+            &brush,
+            Some(centre_sampling(transform, Affine::IDENTITY)),
+            &rect,
+        );
     }
 
     fn fill_repeating(
@@ -174,7 +208,7 @@ impl Painter for VelloPainter {
             .with_extend(peniko::Extend::Repeat)
             .with_quality(quality)
             .into();
-        let brush_transform = Some(tile.transform);
+        let brush_transform = Some(centre_sampling(transform, tile.transform));
         match shape {
             PaintShape::Rect(r) => self.scene.fill(fill, transform, &brush, brush_transform, r),
             PaintShape::RoundedRect(r) => {
