@@ -327,7 +327,8 @@ impl ActiveAnimation {
                 // An eased 0 or 1 is the keyframe's own value, as it was when
                 // an iteration's ends snapped to it: an interpolation there
                 // need not reproduce it (a `matrix3d` against `none` is
-                // decomposed flat, #989), and Chrome 153 shows the keyframe.
+                // decomposed and put back together), and Chrome 153 shows the
+                // keyframe.
                 if eased == 0.0 {
                     result.push((*prop, from_val.clone()));
                 } else if eased == 1.0 {

@@ -30,10 +30,12 @@
 //!    (translation, scale, shear and rotation angle, each interpolated, then
 //!    recomposed — Chromium's decomposition, see [`interpolate_affine`]). A
 //!    `matrix()` pair is interpolated the same way, and so is a `matrix3d()`
-//!    pair once flattened. With a 3D function in a remainder this is **not**
-//!    Chrome's: Chrome decomposes the 4×4 before flattening it, rinch
-//!    decomposes the flattened 2D matrix, which has lost any rotation out of
-//!    the page (#989).
+//!    pair. When either matrix is not a 2D one (a 3D function in a
+//!    remainder, a `matrix3d()` that leaves the plane), the 4×4s are
+//!    decomposed in 3D before anything is flattened — css-transforms-2's
+//!    translation, scale, three shears, perspective and a quaternion slerped
+//!    the shorter way, a 2D end still decomposed in 2D — and the result is
+//!    kept as a `matrix3d()`, z and all (#989, see `interpolate_mat4`).
 //!
 //! Not modelled at all: the `perspective` and `transform-style` properties.
 //! `transform-origin`'s z component and `backface-visibility` are applied
@@ -144,8 +146,9 @@ pub enum TransformOp {
     /// `matrix()`, and what a decomposed interpolation leaves behind — which
     /// may carry a box-relative translation, hence an [`Affine`].
     Matrix(Affine),
-    /// `matrix3d()`, as a row-major 4×4 (`m[row][col]`, column vectors — so
-    /// CSS's `m41, m42` are `m[0][3], m[1][3]`).
+    /// `matrix3d()`, and what a 3D decomposed interpolation leaves behind
+    /// (#989), as a row-major 4×4 (`m[row][col]`, column vectors — so CSS's
+    /// `m41, m42` are `m[0][3], m[1][3]`).
     Matrix3D([[f64; 4]; 4]),
 }
 
@@ -255,7 +258,7 @@ impl TransformOp {
             TransformOp::Rotate3D { axis, angle } => {
                 // css-transforms-2's `rotate3d()` matrix.
                 let [x, y, z] = *axis;
-                let (s, c) = angle.sin_cos();
+                let (s, c) = sin_cos_snapped(*angle);
                 let k = 1.0 - c;
                 Mat4 {
                     m: [
@@ -425,13 +428,20 @@ impl TransformOp {
             (TransformOp::Matrix(a), TransformOp::Matrix(b)) => {
                 TransformOp::Matrix(interpolate_affine(a, b, t))
             }
-            // Flattened and decomposed in 2D, which is exact for a
-            // `matrix3d()` that draws a plane figure — the usual reason to
-            // write one — and not Chrome's for one that does not: Chrome
-            // decomposes in 3D (#989).
+            // Decomposed as Chrome does: in 2D when both are 2D matrices, in
+            // 3D otherwise (#989). A `matrix3d()` has no box-relative part.
             (TransformOp::Matrix3D(a), TransformOp::Matrix3D(b)) => {
-                let (fa, fb) = (Mat4::from_m(a).flatten(), Mat4::from_m(b).flatten());
-                TransformOp::Matrix3D(Mat4::lift(&interpolate_affine(&fa, &fb, t)).m)
+                let (ma, mb) = (Mat4::from_m(a), Mat4::from_m(b));
+                match interpolate_mat4(&ma, &mb, t) {
+                    Some(r) => TransformOp::Matrix3D(r.whole().m),
+                    None => {
+                        if t < 0.5 {
+                            self.clone()
+                        } else {
+                            to.clone()
+                        }
+                    }
+                }
             }
             _ => unreachable!("interpolate_pair is only called on a pair"),
         }
@@ -710,10 +720,14 @@ pub fn compose(ops: &[TransformOp]) -> Affine {
         ops.iter()
             .fold(Affine::IDENTITY, |acc, op| acc.then(&op.to_affine()))
     } else {
-        ops.iter()
-            .fold(Mat4::IDENTITY, |acc, op| acc.then(&op.to_mat4()))
-            .flatten()
+        compose_mat4(ops).flatten()
     }
+}
+
+/// A function list composed as a 4×4, in list order, not flattened.
+fn compose_mat4(ops: &[TransformOp]) -> Mat4 {
+    ops.iter()
+        .fold(Mat4::IDENTITY, |acc, op| acc.then(&op.to_mat4()))
 }
 
 /// [`compose`], about a `transform-origin` whose z is `origin_z` CSS px, and
@@ -804,9 +818,21 @@ pub fn interpolate_lists(a: &[TransformOp], b: &[TransformOp], t: f64) -> Vec<Tr
         })
         .collect();
     if prefix < a.len().max(b.len()) {
-        let ra = compose(&a[prefix.min(a.len())..]);
-        let rb = compose(&b[prefix.min(b.len())..]);
-        out.push(TransformOp::Matrix(interpolate_affine(&ra, &rb, t)));
+        let (ra, rb) = (&a[prefix.min(a.len())..], &b[prefix.min(b.len())..]);
+        if ra.iter().chain(rb).all(TransformOp::is_planar) {
+            out.push(TransformOp::Matrix(interpolate_affine(
+                &compose(ra),
+                &compose(rb),
+                t,
+            )));
+        } else {
+            let (ma, mb) = (compose_mat4(ra), compose_mat4(rb));
+            match interpolate_mat4(&ma, &mb, t) {
+                Some(r) => r.push_ops(&mut out),
+                // No decomposition: the pair flips half way, as in 2D.
+                None => out.extend(if t < 0.5 { ra } else { rb }.iter().cloned()),
+            }
+        }
     }
     out
 }
@@ -838,11 +864,22 @@ pub fn lists_equivalent(a: &[TransformOp], b: &[TransformOp]) -> bool {
                 .zip(ya.as_slice())
                 .all(|(p, q)| close(p, q))
         })
-    } else {
+    } else if a.iter().chain(b).all(TransformOp::is_planar) {
         let (ca, cb) = (compose(a), compose(b));
         ca.matrix.iter().zip(&cb.matrix).all(|(p, q)| close(p, q))
             && ca.pct_w.iter().zip(&cb.pct_w).all(|(p, q)| close(p, q))
             && ca.pct_h.iter().zip(&cb.pct_h).all(|(p, q)| close(p, q))
+    } else {
+        // The 4×4s, not their flattenings: `scaleY(0.5)` and `rotateX(60deg)`
+        // flatten alike, and their interpolation leaves the plane (#989).
+        let (ca, cb) = (compose_mat4(a), compose_mat4(b));
+        let rows = |m: &[[f64; 4]], n: &[[f64; 4]]| {
+            m.iter()
+                .flatten()
+                .zip(n.iter().flatten())
+                .all(|(p, q)| close(p, q))
+        };
+        rows(&ca.m, &cb.m) && rows(&ca.pct_w, &cb.pct_w) && rows(&ca.pct_h, &cb.pct_h)
     }
 }
 
@@ -943,6 +980,355 @@ pub fn interpolate_affine(a: &Affine, b: &Affine, t: f64) -> Affine {
         pct_w: [mix(a.pct_w[0], b.pct_w[0]), mix(a.pct_w[1], b.pct_w[1])],
         pct_h: [mix(a.pct_h[0], b.pct_h[0]), mix(a.pct_h[1], b.pct_h[1])],
     }
+}
+
+/// A 4×4 decomposed as css-transforms-2 §"Decomposing a 3D matrix" does it,
+/// in Chromium's form (`gfx::DecomposedTransform`): the matrix is
+/// `P · T · R · K · S` — perspective, translation, the rotation `quaternion`,
+/// the shears `K = [[1, xy, xz], [0, 1, yz], [0, 0, 1]]` and the scale.
+#[derive(Debug, Clone, Copy)]
+struct Decomposed3 {
+    translate: [f64; 3],
+    scale: [f64; 3],
+    /// `[xy, xz, yz]`.
+    skew: [f64; 3],
+    /// The `w` row.
+    perspective: [f64; 4],
+    /// `[x, y, z, w]`.
+    quaternion: [f64; 4],
+}
+
+impl Mat4 {
+    /// Chromium's `Is2dTransform`: the matrix maps the plane onto itself with
+    /// no perspective, so it is a 2D affine lifted ([`Mat4::lift`]).
+    fn is_2d(&self) -> bool {
+        let m = &self.m;
+        m[2][0] == 0.0
+            && m[2][1] == 0.0
+            && m[0][2] == 0.0
+            && m[1][2] == 0.0
+            && m[2][2] == 1.0
+            && m[2][3] == 0.0
+            && m[3] == [0.0, 0.0, 0.0, 1.0]
+    }
+
+    /// Decompose as Chrome does: a [2D](Self::is_2d) matrix by the 2D
+    /// decomposition ([`decompose`], so a reflection is one negative scale),
+    /// anything else by the 3D one. `None` where there is none: a singular
+    /// linear part, or an `m44` of 0.
+    fn decompose(&self) -> Option<Decomposed3> {
+        if self.is_2d() {
+            let a = self.flatten().matrix;
+            let d = decompose(&a)?;
+            let half = d.angle / 2.0;
+            return Some(Decomposed3 {
+                translate: [a[4], a[5], 0.0],
+                scale: [d.scale[0], d.scale[1], 1.0],
+                skew: [d.skew, 0.0, 0.0],
+                perspective: [0.0, 0.0, 0.0, 1.0],
+                quaternion: [0.0, 0.0, half.sin(), half.cos()],
+            });
+        }
+        let w = self.m[3][3];
+        if w == 0.0 || !w.is_finite() {
+            return None;
+        }
+        let m = self.m.map(|row| row.map(|x| x / w));
+        // The linear part, whose inverse also solves for the perspective.
+        let lin = [
+            [m[0][0], m[0][1], m[0][2]],
+            [m[1][0], m[1][1], m[1][2]],
+            [m[2][0], m[2][1], m[2][2]],
+        ];
+        let inv = invert3(&lin)?;
+        // `m = P · N`, where `N` is `m` with its `w` row `(0, 0, 0, 1)` and
+        // `P` the identity with `m`'s `w` row: so `p = r · N⁻¹`.
+        let r = m[3];
+        let perspective = if r[0] != 0.0 || r[1] != 0.0 || r[2] != 0.0 {
+            let t = [m[0][3], m[1][3], m[2][3]];
+            let mut p = [0.0; 4];
+            for (j, pj) in p.iter_mut().take(3).enumerate() {
+                *pj = (0..3).map(|i| r[i] * inv[i][j]).sum();
+            }
+            // Column 3 of `N⁻¹` is `(-A⁻¹ t, 1)`.
+            p[3] = r[3]
+                - (0..3)
+                    .map(|i| r[i] * (0..3).map(|k| inv[i][k] * t[k]).sum::<f64>())
+                    .sum::<f64>();
+            p
+        } else {
+            [0.0, 0.0, 0.0, 1.0]
+        };
+        let translate = [m[0][3], m[1][3], m[2][3]];
+        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let len = |a: [f64; 3]| dot(a, a).sqrt();
+        let comb =
+            |a: [f64; 3], b: [f64; 3], k: f64| [a[0] - k * b[0], a[1] - k * b[1], a[2] - k * b[2]];
+        let div = |a: [f64; 3], k: f64| if k != 0.0 { a.map(|x| x / k) } else { a };
+        let mut col = [0, 1, 2].map(|c| [m[0][c], m[1][c], m[2][c]]);
+        let mut scale = [0.0; 3];
+        let mut skew = [0.0; 3];
+        scale[0] = len(col[0]);
+        col[0] = div(col[0], scale[0]);
+        skew[0] = dot(col[0], col[1]);
+        col[1] = comb(col[1], col[0], skew[0]);
+        scale[1] = len(col[1]);
+        col[1] = div(col[1], scale[1]);
+        skew[0] = div([skew[0], 0.0, 0.0], scale[1])[0];
+        skew[1] = dot(col[0], col[2]);
+        col[2] = comb(col[2], col[0], skew[1]);
+        skew[2] = dot(col[1], col[2]);
+        col[2] = comb(col[2], col[1], skew[2]);
+        scale[2] = len(col[2]);
+        col[2] = div(col[2], scale[2]);
+        if scale[2] != 0.0 {
+            skew[1] /= scale[2];
+            skew[2] /= scale[2];
+        }
+        // A reflection: the 3D decomposition negates every scale and column.
+        let c12 = [
+            col[1][1] * col[2][2] - col[1][2] * col[2][1],
+            col[1][2] * col[2][0] - col[1][0] * col[2][2],
+            col[1][0] * col[2][1] - col[1][1] * col[2][0],
+        ];
+        if dot(col[0], c12) < 0.0 {
+            for i in 0..3 {
+                scale[i] = -scale[i];
+                col[i] = col[i].map(|x| -x);
+            }
+        }
+        // The rotation matrix's entries, `q[row][col]`, to a quaternion by
+        // the branch Chromium takes (it avoids the spec's degenerate case).
+        let q = |r: usize, c: usize| col[c][r];
+        let trace = q(0, 0) + q(1, 1) + q(2, 2);
+        let quaternion = if trace > 0.0 {
+            let r = (1.0 + trace).sqrt();
+            let h = 0.5 / r;
+            [
+                (q(2, 1) - q(1, 2)) * h,
+                (q(0, 2) - q(2, 0)) * h,
+                (q(1, 0) - q(0, 1)) * h,
+                0.5 * r,
+            ]
+        } else if q(0, 0) > q(1, 1) && q(0, 0) > q(2, 2) {
+            let r = (1.0 + q(0, 0) - q(1, 1) - q(2, 2)).sqrt();
+            let h = 0.5 / r;
+            [
+                0.5 * r,
+                (q(0, 1) + q(1, 0)) * h,
+                (q(0, 2) + q(2, 0)) * h,
+                (q(2, 1) - q(1, 2)) * h,
+            ]
+        } else if q(1, 1) > q(2, 2) {
+            let r = (1.0 - q(0, 0) + q(1, 1) - q(2, 2)).sqrt();
+            let h = 0.5 / r;
+            [
+                (q(0, 1) + q(1, 0)) * h,
+                0.5 * r,
+                (q(1, 2) + q(2, 1)) * h,
+                (q(0, 2) - q(2, 0)) * h,
+            ]
+        } else {
+            let r = (1.0 - q(0, 0) - q(1, 1) + q(2, 2)).sqrt();
+            let h = 0.5 / r;
+            [
+                (q(0, 2) + q(2, 0)) * h,
+                (q(1, 2) + q(2, 1)) * h,
+                0.5 * r,
+                (q(1, 0) - q(0, 1)) * h,
+            ]
+        };
+        Some(Decomposed3 {
+            translate,
+            scale,
+            skew,
+            perspective,
+            quaternion,
+        })
+    }
+
+    /// The matrix [`Mat4::decompose`] took apart, put back together: the
+    /// perspective, then the rest.
+    fn recompose(d: &Decomposed3) -> (Mat4, Mat4) {
+        let mut p = Mat4::IDENTITY;
+        p.m[3] = d.perspective;
+        let [x, y, z, w] = d.quaternion;
+        let mut rest = Mat4::IDENTITY;
+        rest.m[0][3] = d.translate[0];
+        rest.m[1][3] = d.translate[1];
+        rest.m[2][3] = d.translate[2];
+        let mut r = Mat4::IDENTITY;
+        r.m[0][0] = 1.0 - 2.0 * (y * y + z * z);
+        r.m[1][0] = 2.0 * (x * y + z * w);
+        r.m[2][0] = 2.0 * (x * z - y * w);
+        r.m[0][1] = 2.0 * (x * y - z * w);
+        r.m[1][1] = 1.0 - 2.0 * (x * x + z * z);
+        r.m[2][1] = 2.0 * (y * z + x * w);
+        r.m[0][2] = 2.0 * (x * z + y * w);
+        r.m[1][2] = 2.0 * (y * z - x * w);
+        r.m[2][2] = 1.0 - 2.0 * (x * x + y * y);
+        let mut k = Mat4::IDENTITY;
+        k.m[0][1] = d.skew[0];
+        k.m[0][2] = d.skew[1];
+        k.m[1][2] = d.skew[2];
+        let mut s = Mat4::IDENTITY;
+        s.m[0][0] = d.scale[0];
+        s.m[1][1] = d.scale[1];
+        s.m[2][2] = d.scale[2];
+        (p, rest.then(&r).then(&k).then(&s))
+    }
+}
+
+/// `sin_cos`, exact at a multiple of a quarter turn, as Chromium's
+/// `SinCosDegrees` is: `rotateX(360deg)` is then exactly the identity, so a
+/// list holding it can still be a 2D matrix ([`Mat4::is_2d`]).
+fn sin_cos_snapped(rad: f64) -> (f64, f64) {
+    let q = rad / std::f64::consts::FRAC_PI_2;
+    let n = q.round();
+    if (q - n).abs() > 1e-6 * n.abs().max(1.0) {
+        return rad.sin_cos();
+    }
+    match (n as i64).rem_euclid(4) {
+        0 => (0.0, 1.0),
+        1 => (1.0, 0.0),
+        2 => (0.0, -1.0),
+        _ => (-1.0, 0.0),
+    }
+}
+
+/// The inverse of a 3×3, or `None` for a singular one.
+fn invert3(a: &[[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
+    let cof =
+        |r0: usize, r1: usize, c0: usize, c1: usize| a[r0][c0] * a[r1][c1] - a[r0][c1] * a[r1][c0];
+    let det = a[0][0] * cof(1, 2, 1, 2) - a[0][1] * cof(1, 2, 0, 2) + a[0][2] * cof(1, 2, 0, 1);
+    if det == 0.0 || !det.is_finite() {
+        return None;
+    }
+    let adj = [
+        [cof(1, 2, 1, 2), -cof(0, 2, 1, 2), cof(0, 1, 1, 2)],
+        [-cof(1, 2, 0, 2), cof(0, 2, 0, 2), -cof(0, 1, 0, 2)],
+        [cof(1, 2, 0, 1), -cof(0, 2, 0, 1), cof(0, 1, 0, 1)],
+    ];
+    Some(adj.map(|row| row.map(|x| x / det)))
+}
+
+/// Chromium's `Quaternion::Slerp`, the shorter arc.
+fn slerp(from: [f64; 4], to: [f64; 4], t: f64) -> [f64; 4] {
+    let mut from = from;
+    let mut cos = from.iter().zip(&to).map(|(a, b)| a * b).sum::<f64>();
+    if cos < 0.0 {
+        from = from.map(|x| -x);
+        cos = -cos;
+    }
+    let cos = cos.min(1.0);
+    let sin = (1.0 - cos * cos).sqrt();
+    if sin < 1e-5 {
+        return from;
+    }
+    let half = cos.acos();
+    let (ka, kb) = (((1.0 - t) * half).sin() / sin, (t * half).sin() / sin);
+    [0, 1, 2, 3].map(|i| ka * from[i] + kb * to[i])
+}
+
+/// An interpolated 4×4: the perspective, the box-relative translation
+/// (`[x, y]` per unit of the box's width and height) and the rest, in that
+/// order, as [`Decomposed3`] composes them.
+struct Interpolated4 {
+    perspective: Mat4,
+    pct_w: [f64; 2],
+    pct_h: [f64; 2],
+    rest: Mat4,
+}
+
+impl Interpolated4 {
+    fn has_pct(&self) -> bool {
+        self.pct_w.iter().chain(&self.pct_h).any(|x| *x != 0.0)
+    }
+
+    /// The whole matrix, the box-relative part left out.
+    fn whole(&self) -> Mat4 {
+        self.perspective.then(&self.rest)
+    }
+
+    /// The fewest functions that compose to this: a `matrix3d()`, with the
+    /// box-relative translation as a `matrix()` in front of the rest (and the
+    /// perspective, when there is one, in front of that).
+    fn push_ops(&self, out: &mut Vec<TransformOp>) {
+        // Two 2D ends interpolate to a 2D matrix: keep the list planar.
+        if self.perspective.m == Mat4::IDENTITY.m && self.rest.is_2d() {
+            let f = self.rest.flatten();
+            out.push(TransformOp::Matrix(Affine {
+                matrix: f.matrix,
+                pct_w: self.pct_w,
+                pct_h: self.pct_h,
+            }));
+            return;
+        }
+        if !self.has_pct() {
+            out.push(TransformOp::Matrix3D(self.whole().m));
+            return;
+        }
+        if self.perspective.m != Mat4::IDENTITY.m {
+            out.push(TransformOp::Matrix3D(self.perspective.m));
+        }
+        out.push(TransformOp::Matrix(Affine {
+            matrix: Affine::IDENTITY.matrix,
+            pct_w: self.pct_w,
+            pct_h: self.pct_h,
+        }));
+        out.push(TransformOp::Matrix3D(self.rest.m));
+    }
+}
+
+/// Interpolate two 4×4s by decomposition, as Chrome's `gfx::Transform::Blend`
+/// does (#989): each end is decomposed on its own ([`Mat4::decompose`] — in
+/// 2D for a 2D matrix), translation, scale, shears and perspective are lerped
+/// and the quaternion slerped the shorter way. Two 2D ends are left to
+/// [`interpolate_affine`], whose result is the same. The box-relative
+/// translation is lerped beside the translation; what of it is not a
+/// translation (a perspective's `w` row met it) is dropped, as
+/// [`Mat4::flatten`] drops it. `None` when either end has no decomposition.
+fn interpolate_mat4(a: &Mat4, b: &Mat4, t: f64) -> Option<Interpolated4> {
+    let mix = |x: f64, y: f64| x + (y - x) * t;
+    if a.is_2d() && b.is_2d() {
+        let (fa, fb) = (a.flatten(), b.flatten());
+        if decompose(&fa.matrix).is_none() || decompose(&fb.matrix).is_none() {
+            return None;
+        }
+        let r = interpolate_affine(&fa, &fb, t);
+        return Some(Interpolated4 {
+            perspective: Mat4::IDENTITY,
+            pct_w: r.pct_w,
+            pct_h: r.pct_h,
+            rest: Mat4::lift(&Affine::from_matrix(r.matrix)),
+        });
+    }
+    let (da, db) = (a.decompose()?, b.decompose()?);
+    let lerp = |x: &[f64], y: &[f64], out: &mut [f64]| {
+        for i in 0..out.len() {
+            out[i] = mix(x[i], y[i]);
+        }
+    };
+    let mut d = da;
+    lerp(&da.translate, &db.translate, &mut d.translate);
+    lerp(&da.scale, &db.scale, &mut d.scale);
+    lerp(&da.skew, &db.skew, &mut d.skew);
+    lerp(&da.perspective, &db.perspective, &mut d.perspective);
+    d.quaternion = slerp(da.quaternion, db.quaternion, t);
+    let (perspective, rest) = Mat4::recompose(&d);
+    let pct = |m: &Mat4, rows: &BoxRows| [rows[0][3] / m.m[3][3], rows[1][3] / m.m[3][3]];
+    let (aw, ah, bw, bh) = (
+        pct(a, &a.pct_w),
+        pct(a, &a.pct_h),
+        pct(b, &b.pct_w),
+        pct(b, &b.pct_h),
+    );
+    Some(Interpolated4 {
+        perspective,
+        pct_w: [mix(aw[0], bw[0]), mix(aw[1], bw[1])],
+        pct_h: [mix(ah[0], bh[0]), mix(ah[1], bh[1])],
+        rest,
+    })
 }
 
 #[cfg(test)]

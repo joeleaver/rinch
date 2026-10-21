@@ -6312,10 +6312,15 @@ interpolation. A list of planar
 functions still composes as 2D affines, unchanged. Every `rotate*` interpolates
 as one primitive (common axis → angle lerp; otherwise a quaternion slerp that,
 like Chrome's, takes the shorter arc), `perspective(d)` as `1/d`, and
-`matrix3d()` pairs with `matrix3d()` only. Not Chrome's: the `perspective` and
+`matrix3d()` pairs with `matrix3d()` only. A mismatched remainder (and a
+`matrix3d()` pair) whose 4×4 is not a 2D matrix is decomposed in 3D before
+anything is flattened — css-transforms-2's decomposition in Chromium's form, a
+2D end still by the 2D one, the quaternion slerped the shorter way — and kept
+as a `matrix3d()`, z included (#989, `transform::interpolate_mat4`); such lists
+"hold still" only when their 4×4s are equal, so `scaleY(0.5)` →
+`rotateX(60deg)` transitions. Not Chrome's: the `perspective` and
 `transform-style` properties do nothing; a projective result (`perspective(200px)
-rotateY(30deg)`, a trapezoid) loses its `m14`/`m24`; a mismatched remainder
-with a 3D function in it is decomposed flat (#989). `transform-origin`'s z is
+rotateY(30deg)`, a trapezoid) loses its `m14`/`m24`. `transform-origin`'s z is
 applied before the flattening (`transition::compose_about_origin_z`: the list is
 composed as `M · T(0, 0, -z)`, the x and y still at paint), so `rotateY(45deg)`
 about `50% 50% 100px` swings 56px left as in Chrome; and `backface-visibility:
