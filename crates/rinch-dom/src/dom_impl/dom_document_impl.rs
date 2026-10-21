@@ -741,7 +741,10 @@ impl DomDocument for RinchDocument {
         // own selection is the runtime's, synced with each edit.
         let value_before = (name == "value"
             && crate::form_control::has_text_selection(&self.tree.nodes[node.0])
-            && self.tree.nodes[node.0].attributes.get("data-focused").map(String::as_str)
+            && self.tree.nodes[node.0]
+                .attributes
+                .get("data-focused")
+                .map(String::as_str)
                 != Some("true"))
         .then(|| {
             crate::form_control::control_value(&self.tree.nodes, node.0)
@@ -752,8 +755,8 @@ impl DomDocument for RinchDocument {
         self.note_attribute_change(node.0, name);
         self.tree.nodes[node.0].write_attribute(name, value);
         if let Some(before) = value_before {
-            let after = crate::form_control::control_value(&self.tree.nodes, node.0)
-                .unwrap_or_default();
+            let after =
+                crate::form_control::control_value(&self.tree.nodes, node.0).unwrap_or_default();
             if after != before {
                 let len = after.encode_utf16().count();
                 self.tree.text_selections.insert(
@@ -1403,14 +1406,10 @@ impl DomDocument for RinchDocument {
         if let Some(&kept) = self.tree.text_selections.get(&node_id.0) {
             return order(kept);
         }
-        // Untouched: Chrome 155 puts an `<input>`'s caret after its value
-        // (its value is set through the setter, which moves it to the end) and
-        // a `<textarea>`'s at the start of its default value.
-        if node.tag() == Some("input") {
-            Some((len, len, SelectionDirection::Forward))
-        } else {
-            Some((0, 0, SelectionDirection::Forward))
-        }
+        // Untouched (a parsed `value`, a textarea's default value): a caret at
+        // the start, Chrome 155's answer. A `value` write moved it to the end
+        // above, through `text_selections`.
+        Some((0, 0, SelectionDirection::Forward))
     }
 
     /// The caret paint draws (or would draw) at that offset, through

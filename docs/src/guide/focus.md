@@ -223,13 +223,13 @@ in it does what you would expect: the click wins.
 `selectionDirection`. It answers for a control that does not hold the keyboard
 too, as a browser does: what `set_selection_range` set (at once, before the
 runtime applies it), the selection the control had when it lost the keyboard,
-or a caret at the start, `(0, 0, Forward)`, for one nobody has touched (Chrome's
-answer). `None` for anything but an `<input>` or `<textarea>`, and — as Chrome
-answers `null` there — for an `<input>` of type `email`, `number`, the
-date/time family or any other type with no text selection. Desktop keeps no
-"none" direction for a focused field: a range set with
-`SelectionDirection::None` reads back `Forward` once the field holds the
-keyboard.
+a caret after the value once a `value` write changed it (a browser's value
+setter moves it there), or a caret at the start, `(0, 0, Forward)`, for a
+parsed or default value nobody has touched — Chrome 155's answers. `None` for
+anything but an `<input>` or `<textarea>`, and — as Chrome answers `null`
+there — for an `<input>` of type `email`, `number`, the date/time family or
+any other type with no text selection. A range set with
+`SelectionDirection::None` reads back `Forward`, as in Chrome.
 
 `NodeHandle::caret_rect()` and `caret_rect_at(offset)` answer where a caret is
 drawn — at the selection's head, or at a UTF-16 offset — as an `ElementBounds`
@@ -239,10 +239,14 @@ for both. Desktop measures with the layout paint draws the field with
 (password bullets, a single-line field's centring, the placeholder's start in
 an empty field); an IME composition's text, which is not in the value yet, is
 not counted. A browser exposes no caret geometry for a form control, so the web
-lays the value out in a hidden copy of the control with its computed styles;
-it can be a pixel off the caret the browser draws, and its height is the
+lays the value out in a hidden copy of the control with its computed text
+styles at the width the control lays its text out in; Chrome 155's own
+`caretPositionFromPoint` answers the same offset at the rect's centre for a
+textarea scrolled under its scrollbar, a centred or horizontally scrolled
+`<input>`, a password field and a field under a `transform`. Its height is the
 text's own (the font's content area), where desktop's is the 1.2 × font-size
-caret it paints. Ask after layout — from an effect or an `onkeydown` that did
+caret it paints. A field that is not rendered (`display: none`) has no caret
+rect. Ask after layout — from an effect or an `onkeydown` that did
 not move the caret — since desktop answers from the last layout.
 
 ```rust

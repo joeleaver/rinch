@@ -2587,10 +2587,7 @@ impl DomDocument for WebDocument {
             ("height", "auto"),
             ("transform", "none"),
             ("width", width.as_str()),
-            (
-                "white-space",
-                if single_line { "pre" } else { "pre-wrap" },
-            ),
+            ("white-space", if single_line { "pre" } else { "pre-wrap" }),
         ] {
             let _ = ms.set_property(prop, v);
         }

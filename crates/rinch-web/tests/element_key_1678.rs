@@ -318,3 +318,211 @@ fn caret_rect_is_in_client_px_at_the_offset() {
     );
     f.teardown();
 }
+
+/// Mount `build`'s tree in a fresh host; answers the root, the host and the
+/// handles `build` hands back.
+fn mount_with(
+    build: impl Fn(&mut RenderScope) -> (NodeHandle, Vec<NodeHandle>) + 'static,
+) -> (RootHandle, web_sys::Element, Vec<NodeHandle>) {
+    let host = document().create_element("div").unwrap();
+    host.set_attribute(HOST_MARKER, "").unwrap();
+    document().body().unwrap().append_child(&host).unwrap();
+    let out: Rc<RefCell<Vec<NodeHandle>>> = Rc::new(RefCell::new(Vec::new()));
+    let o = out.clone();
+    let root = rinch_web::mount_into(&host, ThemeProviderProps::default(), move |s| {
+        let (r, hs) = build(s);
+        *o.borrow_mut() = hs;
+        r
+    });
+    let hs = out.borrow().clone();
+    (root, host, hs)
+}
+
+/// The offset `caretPositionFromPoint` answers at `(x, y)`, as
+/// `"<id>:<offset>"` — the browser's own caret-from-point, the oracle a
+/// caret rect has to agree with.
+fn caret_from_point(x: f32, y: f32) -> String {
+    let f = js_sys::Function::new_with_args(
+        "x,y",
+        "const p=document.caretPositionFromPoint(x,y); \
+         return p ? ((p.offsetNode.id||p.offsetNode.nodeName)+':'+p.offset) : 'null'",
+    );
+    f.call2(
+        &wasm_bindgen::JsValue::NULL,
+        &(x as f64).into(),
+        &(y as f64).into(),
+    )
+    .unwrap()
+    .as_string()
+    .unwrap()
+}
+
+/// Review of #1686, F1/F6 and the web mutants: at the centre of the rect
+/// for an offset, the browser's own caret-from-point answers that offset —
+/// a textarea with a vertical scrollbar scrolled to its end, a centred
+/// single-line field, a field under `transform: scale(2)`, a horizontally
+/// scrolled long field, a password field and spaced text.
+#[wasm_bindgen_test]
+fn caret_rect_agrees_with_caret_position_from_point() {
+    let long: String = (0..40).map(|i| format!("word{i} ")).collect();
+    let n = long.encode_utf16().count();
+    let l = long.clone();
+    let (root, host, hs) = mount_with(move |__scope| {
+        let l1 = l.clone();
+        let l2 = l.clone();
+        let r = rsx! {
+            div {
+                textarea { id: "c0", style: "width: 300px; height: 80px; font: 16px/20px sans-serif; padding: 4px 6px; border: 2px solid black; margin: 0", "hello world" }
+                textarea { id: "c1", style: "width: 200px; height: 60px; font: 16px/20px sans-serif; padding: 4px; border: 1px solid; overflow-y: scroll", {l1.clone()} }
+                input { id: "c2", style: "width: 200px; height: 30px; font: 16px sans-serif; text-align: center", value: "abc" }
+                input { id: "c4", style: "width: 100px; height: 30px; font: 16px sans-serif", value: {l2.clone()} }
+                textarea { id: "c5", style: "width: 200px; height: 60px; font: 16px/20px sans-serif; letter-spacing: 3px", "abc def" }
+                input { id: "c6", r#type: "password", style: "width: 200px; height: 40px; font: 16px sans-serif", value: "abcdef" }
+                // Last, so the scaled box paints over nothing else.
+                div { style: "transform: scale(2); transform-origin: 0 0; width: 300px",
+                    input { id: "c3", style: "width: 120px; height: 30px; font: 16px sans-serif", value: "abcdef" }
+                }
+            }
+        };
+        let k = r.children();
+        let scaled = k[6].children();
+        (
+            r,
+            vec![
+                k[0].clone(),
+                k[1].clone(),
+                k[2].clone(),
+                scaled[0].clone(),
+                k[3].clone(),
+                k[4].clone(),
+                k[5].clone(),
+            ],
+        )
+    });
+    let by = |id: &str| -> web_sys::HtmlElement {
+        document()
+            .get_element_by_id(id)
+            .unwrap()
+            .dyn_into()
+            .unwrap()
+    };
+    by("c1").set_scroll_top(100_000);
+    by("c4").set_scroll_left(100_000);
+    assert!(by("c1").scroll_top() > 0, "positive control: c1 scrolls");
+    assert!(by("c4").scroll_left() > 0, "positive control: c4 scrolls");
+    let mut bad = Vec::new();
+    let mut check = |h: &NodeHandle, id: &str, offs: &[usize]| {
+        for &o in offs {
+            let r = h.caret_rect_at(o).expect("a rendered control");
+            let got = caret_from_point(r.x, r.y + r.height / 2.0);
+            if got != format!("{id}:{o}") {
+                bad.push(format!("{id}@{o} -> {got} ({r:?})"));
+            }
+        }
+    };
+    check(&hs[0], "c0", &[0, 1, 5, 6, 11]);
+    let tail: Vec<usize> = (n - 40..n).step_by(3).collect();
+    check(&hs[1], "c1", &tail);
+    check(&hs[2], "c2", &[0, 1, 3]);
+    check(&hs[3], "c3", &[0, 3, 6]);
+    check(&hs[4], "c4", &[n - 3, n]);
+    check(&hs[5], "c5", &[1, 3, 5]);
+    check(&hs[6], "c6", &[0, 2, 6]);
+    assert!(bad.is_empty(), "{bad:#?}");
+    root.unmount();
+    host.remove();
+}
+
+/// Review of #1686, F3/F5/F7: an unfocused control with a value reads what
+/// desktop reads (Chrome's answers), an unspecified direction reads
+/// `Forward`, and a `display: none` field has no caret rect.
+#[wasm_bindgen_test]
+fn an_unfocused_controls_selection_and_a_hidden_caret() {
+    let (root, host, hs) = mount_with(|__scope| {
+        let r = rsx! {
+            div {
+                input { value: "abc" }
+                input {}
+                textarea {}
+                input { r#type: "email", value: "a@b" }
+                textarea { "hello" }
+                input { style: "display: none", value: "abc" }
+            }
+        };
+        let mut k = r.children();
+        k.push(r.clone());
+        (r, k)
+    });
+    let fwd = SelectionDirection::Forward;
+    assert_eq!(
+        hs[0].selection_range(),
+        Some((3, 3, fwd)),
+        "input value=abc"
+    );
+    assert_eq!(hs[1].selection_range(), Some((0, 0, fwd)), "empty input");
+    hs[1].set_attribute("value", "hello");
+    assert_eq!(
+        hs[1].selection_range(),
+        Some((5, 5, fwd)),
+        "after a value write"
+    );
+    hs[1].set_selection_range(1, 2, fwd);
+    hs[1].set_attribute("value", "hello world");
+    assert_eq!(
+        hs[1].selection_range(),
+        Some((11, 11, fwd)),
+        "a write moves it to the end"
+    );
+    hs[2].set_attribute("value", "xy");
+    assert_eq!(
+        hs[2].selection_range(),
+        Some((2, 2, fwd)),
+        "textarea value write"
+    );
+    assert_eq!(hs[3].selection_range(), None, "email");
+    assert_eq!(
+        hs[4].selection_range(),
+        Some((0, 0, fwd)),
+        "textarea text child"
+    );
+    hs[1].set_selection_range(2, 4, SelectionDirection::None);
+    assert_eq!(
+        hs[1].selection_range(),
+        Some((2, 4, fwd)),
+        "None reads Forward"
+    );
+    assert_eq!(hs[5].caret_rect(), None, "display: none");
+    assert!(hs[0].caret_rect().is_some(), "positive control");
+    // Parsed markup sets the value with no setter: Chrome 155 reads a caret
+    // at the start, and so does desktop.
+    let parent = hs[6].clone();
+    parent.set_inner_html("<input value=\"abcd\">");
+    let parsed = parent.children()[0].clone();
+    assert_eq!(parsed.selection_range(), Some((0, 0, fwd)), "parsed input");
+    root.unmount();
+    host.remove();
+}
+
+/// Safari's composition-confirming Enter: `isComposing` false, `keyCode`
+/// 229. Not offered.
+#[wasm_bindgen_test]
+fn a_key_code_229_key_is_not_offered() {
+    let f = Fixture::mount();
+    f.el("k-ta").focus().unwrap();
+    let init = web_sys::KeyboardEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_key("Enter");
+    init.set_code("Enter");
+    js_sys::Reflect::set(&init, &"keyCode".into(), &229.into()).unwrap();
+    let ev = web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+    assert_eq!(ev.key_code(), 229, "positive control: the init carried it");
+    let target: web_sys::EventTarget = document().active_element().unwrap().into();
+    target.dispatch_event(&ev).unwrap();
+    assert!(
+        !ev.default_prevented(),
+        "neither onkeydown nor onsubmit took it"
+    );
+    assert!(f.take_log().is_empty(), "no handler ran");
+    f.teardown();
+}

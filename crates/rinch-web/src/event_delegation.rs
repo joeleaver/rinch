@@ -3214,12 +3214,18 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             // activating press and on every auto-repeat of it. A node with no
             // live handler fell through, leaving the key to the browser.
             event.prevent_default();
-        } else if key_data.key == "Enter" && !event.shift_key() && !event.is_composing() {
+        } else if key_data.key == "Enter"
+            && !event.shift_key()
+            && !event.is_composing()
+            && event.key_code() != 229
+        {
             // Enter (without Shift) fires the nearest ancestor's data-onsubmit,
             // matching a native form submit. Shift+Enter is left alone so
             // multiline inputs (a textarea) can insert a newline. During an IME
             // composition the Enter that commits the candidate is skipped
-            // (isComposing) so it confirms the text instead of submitting.
+            // (isComposing; `keyCode` 229 for Safari, which sends it after
+            // `compositionend`, #1678) so it confirms the text instead of
+            // submitting.
             if let Some(target) = event.target()
                 && let Ok(el) = target.clone().dyn_into::<web_sys::Element>()
             {

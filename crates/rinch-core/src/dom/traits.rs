@@ -583,8 +583,11 @@ pub trait DomDocument {
     /// - **Desktop** answers, newest first: a `set_selection_range` posted and
     ///   not yet applied; the focused control's live selection; the selection
     ///   the control had when it last lost the keyboard, or one stashed for its
-    ///   next focus; else a caret at the start, `(0, 0, Forward)`. Offsets are
-    ///   clamped to the control's current value.
+    ///   next focus — a `value` write that changes an unfocused control's
+    ///   value puts it at the end, as a browser's value setter does; else a
+    ///   caret at the start, `(0, 0, Forward)`, Chrome 155's answer for a
+    ///   parsed or default value. Offsets are clamped to the control's current
+    ///   value, and an unspecified direction reads `Forward`, as in Chrome.
     /// - **Web** answers the element's own properties.
     ///
     /// `None` for a node that is not an `<input>` or `<textarea>` (a
@@ -607,10 +610,16 @@ pub trait DomDocument {
     /// bullets and a single-line field's centring included; an IME
     /// composition's text, which is not in the value, is not counted. The web
     /// lays the value out in a hidden copy of the control with its computed
-    /// text styles (browsers expose no caret geometry for a form control), so
-    /// it can differ from the caret the browser draws by a pixel or so.
+    /// text styles, at the width it lays its text out in (browsers expose no
+    /// caret geometry for a form control). Checked in Chrome 155 against
+    /// `document.caretPositionFromPoint` at the rect's centre, which answers
+    /// the same offset for a textarea scrolled under its scrollbar, a centred
+    /// or horizontally scrolled `<input>`, a password field, spaced text and a
+    /// field under `transform: scale(2)`; other styles the copy does not carry
+    /// are not covered.
     ///
-    /// `None` for a node that is not a text control, or not laid out.
+    /// `None` for a node that is not a text control, or not rendered
+    /// (`display: none`, `visibility: hidden`, out of the document).
     fn text_caret_rect(
         &mut self,
         _node_id: NodeId,

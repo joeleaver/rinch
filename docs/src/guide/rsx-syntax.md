@@ -276,9 +276,13 @@ focusable element (`tabindex`, a button, a link, a closed `<select>`). Keys the
 rich-text editor holds go to `EditorHandle::on_key`, a focused render
 surface's to `set_key_handler`, and an open native `<select>` list keeps its
 keys on desktop. A key an input method is composing with is not offered (a
-browser marks it `isComposing`; desktop, while the field shows a preedit), and
+browser marks it `isComposing` or `keyCode` 229 — Safari sends the Enter that
+confirms a composition that way; desktop, while the field shows a preedit), and
 with an input method on, plain characters may arrive as composition text with
-no key event at all — use `oninput` for text.
+no key event at all — use `oninput` for text. A handler that moves the focus
+and does not consume the key sends it on to the newly focused field, as Chrome
+does. A raw `<input>` or `<textarea>` with only a key handler (no `oninput`)
+is still a text field on desktop, as in a browser.
 
 A composer's popup needs two more things, both on `NodeHandle`:
 `selection_range()` reads the selection back as `(start, end, direction)` in

@@ -374,8 +374,7 @@ fn selection_range_reads_utf16_units_focused_unfocused_and_after_blur() {
     // that answers, and the next focus that shows it.
     f.app.handle_event(PlatformEvent::AboutToWait, VP, 1.0);
     assert!(
-        rinch_core::peek_pending_text_selection_request(f.app.doc_key(), ta.node_id().0)
-            .is_none(),
+        rinch_core::peek_pending_text_selection_request(f.app.doc_key(), ta.node_id().0).is_none(),
         "the request was drained"
     );
     assert_eq!(
@@ -397,9 +396,10 @@ fn selection_range_reads_utf16_units_focused_unfocused_and_after_blur() {
     );
 }
 
-/// An unfocused control with a value reads what Chrome 155 reads: an
-/// `<input>`'s caret after its value (written through the value setter),
-/// again after a `value` write, a `<textarea>`'s default value's start; and
+/// An unfocused control with a value reads what Chrome 155 reads: a caret
+/// after the value once a `value` write set it (rinch-web writes through the
+/// value setter, which moves it there), at the start of a parsed or default
+/// value; and
 /// `None` for the input types whose `selectionStart` is `null`.
 #[test]
 fn an_unfocused_controls_selection_is_chromes() {
@@ -424,6 +424,7 @@ fn an_unfocused_controls_selection_is_chromes() {
         let ta = out_text(__scope);
         root.append_child(&ta);
         o.borrow_mut().push(ta);
+        o.borrow_mut().push(root.clone());
         root
     });
     fn out_text(scope: &mut RenderScope) -> NodeHandle {
@@ -438,17 +439,38 @@ fn an_unfocused_controls_selection_is_chromes() {
     assert_eq!(h[0].selection_range(), Some((3, 3, fwd)), "input value=abc");
     assert_eq!(h[1].selection_range(), Some((0, 0, fwd)), "empty input");
     h[1].set_attribute("value", "hello");
-    assert_eq!(h[1].selection_range(), Some((5, 5, fwd)), "after a value write");
+    assert_eq!(
+        h[1].selection_range(),
+        Some((5, 5, fwd)),
+        "after a value write"
+    );
     h[1].set_selection_range(1, 2, fwd);
     app.handle_event(PlatformEvent::AboutToWait, VP, 1.0);
     h[1].set_attribute("value", "hello world");
-    assert_eq!(h[1].selection_range(), Some((11, 11, fwd)), "a write moves it to the end");
+    assert_eq!(
+        h[1].selection_range(),
+        Some((11, 11, fwd)),
+        "a write moves it to the end"
+    );
     h[2].set_attribute("value", "xy");
-    assert_eq!(h[2].selection_range(), Some((2, 2, fwd)), "textarea value write");
+    assert_eq!(
+        h[2].selection_range(),
+        Some((2, 2, fwd)),
+        "textarea value write"
+    );
     for (i, what) in [(3, "email"), (4, "number"), (5, "date")] {
         assert_eq!(h[i].selection_range(), None, "{what}");
     }
-    assert_eq!(h[6].selection_range(), Some((0, 0, fwd)), "textarea text child");
+    assert_eq!(
+        h[6].selection_range(),
+        Some((0, 0, fwd)),
+        "textarea text child"
+    );
+    // Parsed markup sets its value with no setter: Chrome 155 reads the
+    // untouched `<input>`'s caret at the start.
+    h[7].set_inner_html("<input value=\"abcd\">");
+    let parsed = h[7].children()[0].clone();
+    assert_eq!(parsed.selection_range(), Some((0, 0, fwd)), "parsed input");
 }
 
 /// #1678 review F2: a raw `<textarea>` with only an `onkeydown` is a text
@@ -536,7 +558,10 @@ fn a_key_follows_a_focus_move_made_by_its_handler() {
     };
     f.click(&h[0]);
     f.type_str("x");
-    assert_eq!((f.value(&h[0]), f.value(&h[1])), (String::new(), "x".into()));
+    assert_eq!(
+        (f.value(&h[0]), f.value(&h[1])),
+        (String::new(), "x".into())
+    );
 }
 
 /// While the built-in text context menu is open it owns the keyboard: the
@@ -570,7 +595,10 @@ fn the_text_context_menu_keeps_its_keys_from_onkeydown() {
         VP,
         1.0,
     );
-    assert!(f.app.open_text_menu.is_some(), "positive control: the menu opened");
+    assert!(
+        f.app.open_text_menu.is_some(),
+        "positive control: the menu opened"
+    );
     f.take_log();
     f.app.handle_event(
         PlatformEvent::KeyDown {
@@ -599,7 +627,12 @@ fn the_head_caret_rect_follows_its_affinity() {
     f.click(&ta);
     f.type_str("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda");
     // To the first line, then its end.
-    for key in [KeyCode::Home, KeyCode::ArrowUp, KeyCode::ArrowUp, KeyCode::End] {
+    for key in [
+        KeyCode::Home,
+        KeyCode::ArrowUp,
+        KeyCode::ArrowUp,
+        KeyCode::End,
+    ] {
         f.press(key, None, false);
     }
     f.app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
@@ -631,7 +664,10 @@ fn a_hidden_field_has_no_caret_rect() {
     assert_eq!(el.caret_rect(), None);
     el.set_attribute("style", "display: block; width: 100px; height: 20px");
     app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
-    assert!(el.caret_rect().is_some(), "positive control: shown, it has one");
+    assert!(
+        el.caret_rect().is_some(),
+        "positive control: shown, it has one"
+    );
 }
 
 /// The caret rect is where paint draws the caret — the same answer the

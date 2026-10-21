@@ -2115,11 +2115,16 @@ at the first that consumes (`dispatch_key_handler_chain`; ids read before any
 runs). Order, both backends: menu chords → the editor's / a node view's
 `on_key` → **element handlers** → `set_keyboard_interceptor` → key entries →
 dismiss stack → the element's own handling (`RinchApp::offer_element_key`,
-`event_delegation::offer_element_key`). Not offered: keys the editor holds,
+`event_delegation::offer_element_key`). Focus requests a handler made are
+applied before the key's default, so an unconsumed key lands in the field a
+handler focused, as in Chrome. A raw `<input>`/`<textarea>` with only a key
+handler gets the desktop text-field shim (it focuses and takes text, as on
+the web). Not offered: keys the editor holds,
 a focused render surface's, an open native `<select>` list's (desktop), while
 the text context menu is open (desktop), or during an IME composition
-(desktop: the focused field shows a `data-preedit`; web: `isComposing` or
-`key == "Process"`). `onkeyup`'s consumption stops only its ancestors: the
+(desktop: the focused field shows a `data-preedit`; web: `isComposing`,
+`key == "Process"` or `keyCode == 229` — Safari's composition-confirming
+Enter, which the web's `onsubmit` Enter also refuses now). `onkeyup`'s consumption stops only its ancestors: the
 interceptor hears every release. `KeyEventData` and `KeyEventKind` are in the
 prelude. Pins: `app/element_key_1678_tests.rs`,
 `rinch-web/tests/element_key_1678.rs`.
@@ -2131,14 +2136,18 @@ SelectionDirection)` in UTF-16 units, `start <= end`
 a posted request (`peek_pending_text_selection_request`), else the focused
 field's `data-selection-start`/`data-cursor-pos` bytes, else
 `NodeTree::text_selections` — written at blur by `clear_input_focus_attrs` and
-when a request is stashed, dropped in `remove_subtree` — else `(0, 0,
-Forward)`, Chrome's answer for an untouched control; `None` for a non-text
-control and, as Chrome, for `email`/`number`/date types). The caret rect
-(`DomDocument::text_caret_rect`) is width 0 in logical window px on desktop
+when a request is stashed, set to the end by a `set_attribute("value")`
+that changes an unfocused control's value (a browser's value setter; a
+parsed `value` does not), dropped in `remove_subtree` — else `(0, 0,
+Forward)`, Chrome 155's answer for a parsed or default value; a `None`
+direction reads `Forward`; `None` for a non-text control and, as Chrome, for
+`email`/`number`/date types). The caret rect (`DomDocument::text_caret_rect`,
+`None` unless rendered) is width 0 in logical window px on desktop
 (`form_control::painted_caret_rect`, built as `paint_input_value` builds the
 text, caret height 1.2 × font-size) and client px on the web (a hidden mirror
-`<div>` with the control's computed styles; height is the font's content
-area).
+`<div>` with the control's computed text styles at `clientWidth` less padding,
+its in-box offset scaled by painted/layout size for a transform; pinned
+against `caretPositionFromPoint`; height is the font's content area).
 
 **`NodeHandle::select()` / `set_selection_range(start, end, direction)`**
 (issue #552) are `focus()`'s selection counterparts — for a rename box that
@@ -6698,7 +6707,7 @@ Button { variant: "filled" }
 - `Callback` and `InputCallback` have built-in defaults (no-op), so custom components can use `on_toggle: Callback` instead of `Option<Callback>`.
 - Component text props (e.g., `variant`, `color`, `size`) are now `String` (not `Option<String>`). Empty string means "not set". The macro auto-converts string literals to `String::from(...)`.
 - `_fn` suffix props (e.g., `checked_fn`, `value_fn`) are auto-wrapped — just pass the closure directly, don't wrap in `Some(Rc::new(...))`
-- **The table above is for components.** On an HTML element, `on*` names are a closed list (`crates/rinch-macros/src/events.rs`: `onclick` → `data-rid`, `oninput`, `onchange`, `onsubmit`, `onscroll`, `onkeydown`/`onkeyup` (#1678, below), the mouse, context-menu, drag and file-drop events), and any other `on*` name — `onfocus`, a typo — is a **compile error** listing them, with a "did you mean" (#1590; it used to fall through to `data-rid` and become a *click* handler, so `input { onsubmit }` ran on a click and never on Enter). An `onsubmit`-only `<input>`/`<textarea>` gets the same desktop-only no-op `data-oninput` shim an `onchange`-only element gets, so it takes typed text; a wrapper `div { onsubmit }` does not. A `*_fn` prop (`value_fn`, `checked_fn`, …) on an HTML element is a compile error saying to write `value: {|| …}` (#1591; it used to be a `value_fn` attribute nothing reads): every HTML attribute already takes a reactive closure and updates surgically, so the component's `_fn` convention has nothing to add there. A raw reactive `value:` writes on every fire, with no #238 echo guard — the components' `bind_value_fn` is the guarded binding.
+- **The table above is for components.** On an HTML element, `on*` names are a closed list (`crates/rinch-macros/src/events.rs`: `onclick` → `data-rid`, `oninput`, `onchange`, `onsubmit`, `onscroll`, `onkeydown`/`onkeyup` (#1678, below), the mouse, context-menu, drag and file-drop events), and any other `on*` name — `onfocus`, a typo — is a **compile error** listing them, with a "did you mean" (#1590; it used to fall through to `data-rid` and become a *click* handler, so `input { onsubmit }` ran on a click and never on Enter). An `onsubmit`-, `onkeydown`- or `onkeyup`-only `<input>`/`<textarea>` gets the same desktop-only no-op `data-oninput` shim an `onchange`-only element gets, so it takes typed text; a wrapper `div { onsubmit }` does not. A `*_fn` prop (`value_fn`, `checked_fn`, …) on an HTML element is a compile error saying to write `value: {|| …}` (#1591; it used to be a `value_fn` attribute nothing reads): every HTML attribute already takes a reactive closure and updates surgically, so the component's `_fn` convention has nothing to add there. A raw reactive `value:` writes on every fire, with no #238 echo guard — the components' `bind_value_fn` is the guarded binding.
 - **Note:** ThemeProvider props (`primary_color_fn`, `dark_mode_fn`) use a different codegen path and still require manual `Rc::new()` wrapping
 
 **Component Props vs HTML Attributes:**
