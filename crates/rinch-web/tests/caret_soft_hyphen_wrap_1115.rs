@@ -10,12 +10,17 @@
 //! Nothing here pins a font's advances: the wraps are found from the glyphs'
 //! own boxes on whatever monospace face the host has, and every soft-hyphen
 //! wrap the text makes is checked (a positive control asserts there is one).
+//! Firefox gives the first character's range its glyph box alone, so the bug
+//! was Chrome's; the fixtures run in both.
 //!
 //! ```text
 //! CHROMEDRIVER=/path/to/chromedriver \
 //!   cargo test -p rinch-web --target wasm32-unknown-unknown --test caret_soft_hyphen_wrap_1115
 //! ```
 #![cfg(target_arch = "wasm32")]
+
+#[path = "support/engine.rs"]
+mod engine;
 
 use rinch_core::dom::{CaretAffinity, RenderScope};
 use rinch_core::element::ThemeProviderProps;
@@ -46,7 +51,9 @@ impl Fixture {
     fn mounted() -> Self {
         if let Ok(stale) = document().query_selector_all(&format!("[{HOST_MARKER}]")) {
             for i in 0..stale.length() {
-                if let Some(el) = stale.item(i).and_then(|n| n.dyn_into::<web_sys::Element>().ok())
+                if let Some(el) = stale
+                    .item(i)
+                    .and_then(|n| n.dyn_into::<web_sys::Element>().ok())
                 {
                     el.remove();
                 }
@@ -133,11 +140,17 @@ fn a_downstream_caret_at_a_soft_hyphen_wrap_is_on_the_lower_line() {
     );
     for &i in &wraps {
         let g = f.glyph(i);
-        // Positive control: this is the shape of the bug — the bounding rect of
-        // the line's first character starts on the line above.
-        assert!(
-            f.bounding(i).top() < g.top() - 1.0,
-            "char {i}: its bounding rect spans the break (the #1115 shape)"
+        // Positive control, each engine's measured answer: in Chrome (153, 155)
+        // the bounding rect of the line's first character also covers the
+        // break and starts on the line above — the shape of the bug. Firefox
+        // (155) gives that range the glyph's box alone.
+        let spans = f.bounding(i).top() < g.top() - 1.0;
+        assert_eq!(
+            spans,
+            !engine::is_gecko(),
+            "char {i}: whether its bounding rect spans the break ({} vs glyph {})",
+            f.bounding(i).top(),
+            g.top()
         );
         let pos = Pos(i as usize + 1);
         let down = f
