@@ -243,3 +243,55 @@ fn end_before_a_hard_break_lands_after_an_image_before_it() {
     );
     assert_eq!(p.press(1, KeyCode::End), 2, "before the break");
 }
+
+/// Two images end the line above `charlie` (`alpha ` / `bravo` / image image
+/// / `charlie` at 80px): Home from `charlie` steps past both (13). Chrome
+/// 155: 13. (Review of #1710: a single step landed between them, 12.)
+#[test]
+fn home_steps_past_two_images_ending_the_line_above() {
+    let mut p = page(&format!("<p>alpha bravo{IMG}{IMG}charlie</p>"), 80);
+    assert!(
+        p.line_of(16) > p.image_line(1),
+        "positive control: charlie below the images"
+    );
+    assert_eq!(p.press(16, KeyCode::Home), 13);
+}
+
+/// At the wrap between two images, keys pressed after Home stay on the line
+/// the caret is drawn on (line 2, before the second image): Home again stays
+/// at 7, End goes to 16. Chrome 155: 7, 16. Home and End looked the line up
+/// from the caret's byte, which is line 1's, so Home again went to 0 and End
+/// stayed at 7 (review of #1710).
+#[test]
+fn keys_after_home_at_a_two_image_wrap_stay_on_its_line() {
+    let mut p = page(&format!("<p>alpha {IMG}{IMG} charlie</p>"), 100);
+    assert_eq!(p.press(12, KeyCode::Home), 7);
+    p.key(KeyCode::Home);
+    assert_eq!((p.head(), p.drawn_line()), (7, 1), "Home again");
+    p.press(12, KeyCode::Home);
+    p.key(KeyCode::End);
+    assert_eq!(p.head(), 16, "then End");
+    // And End, End on line 1 stays after the first image.
+    assert_eq!(p.press(2, KeyCode::End), 7);
+    p.key(KeyCode::End);
+    assert_eq!((p.head(), p.drawn_line()), (7, 0), "End again");
+}
+
+/// A line holding right-to-left text keeps the byte's answer: items are in
+/// visual order, so the image that starts line 2 logically (`abc שלום ` /
+/// image + `שלום`) sits at its visual right end. Home from the line's end
+/// lands at 9, before the image. Chrome 155: 9 (rinch reads no `direction`;
+/// the paragraph is left-to-right). The image-edge rule gave 10.
+#[test]
+fn a_line_holding_right_to_left_text_keeps_the_bytes_answer() {
+    let mut matched = 0;
+    for w in [80u32, 90, 100, 110] {
+        let mut p = page(&format!("<p>abc שלום {IMG}שלום</p>"), w);
+        if p.image_line(0) != 1 || p.line_of(2) != 0 {
+            continue;
+        }
+        matched += 1;
+        assert_eq!(p.press(14, KeyCode::Home), 9, "w={w}");
+    }
+    assert!(matched > 0, "positive control: the image starts line 2");
+}
