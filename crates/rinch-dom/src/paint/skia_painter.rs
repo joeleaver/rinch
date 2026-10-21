@@ -1788,7 +1788,16 @@ impl Painter for TinySkiaPainter {
             }
             let mask = self.clip_mask.as_ref().map(|m| &m.mask);
             if g.color && g.premultiplied {
-                blit_premultiplied_into(&mut self.pixmap, mask, &g.data, g.width, g.height, gx, gy, ts);
+                blit_premultiplied_into(
+                    &mut self.pixmap,
+                    mask,
+                    &g.data,
+                    g.width,
+                    g.height,
+                    gx,
+                    gy,
+                    ts,
+                );
             } else if g.color {
                 blit_color_glyph_into(
                     &mut self.pixmap,
@@ -2722,11 +2731,10 @@ impl TinySkiaPainter {
 /// `glyph_premultiply_tests.rs` is that end-to-end oracle, over a real glyph
 /// edge; this module is the font-free half, and it is what covers the
 /// **colour**-glyph site, which needs a COLR face no CI host is guaranteed to
-/// have. (COLR is the whole of it: `draw_glyphs` builds its swash `Render` from
-/// `ColorOutline` and `Outline` only, with no `Source::ColorBitmap`, so a
-/// CBDT/CBLC or sbix emoji face paints **nothing** on this backend — a separate
-/// pre-existing bug, filed from the #794 review, not something these fixtures
-/// cover or claim to.)
+/// have. (COLR is the whole of it: a colour bitmap strike — CBDT/CBLC, sbix —
+/// is premultiplied before it is scaled (#804, `scale_strike`) and drawn
+/// without this blitter; `strike_scale_tests` and
+/// `tests/color_bitmap_glyph_804_tests.rs` cover it.)
 ///
 /// The two blitters are tested through their own private methods rather than
 /// through `draw_glyphs`, for the same reason: a synthetic mask is the only way
@@ -2985,10 +2993,8 @@ mod premultiply_tests {
     }
 
     /// Site 2: the **COLR** path, which carries its own straight-alpha RGBA and
-    /// ignores the brush. Not the embedded-bitmap path, which does not exist:
-    /// `draw_glyphs` asks swash for `ColorOutline` and `Outline` and never
-    /// `ColorBitmap`, so a CBDT/CBLC or sbix face paints nothing at all here
-    /// (measured in the #794 review, filed separately).
+    /// ignores the brush. Not the bitmap-strike path (CBDT/CBLC, sbix, #804),
+    /// which is premultiplied before scaling and drawn without this blitter.
     ///
     /// It is reachable from a document fixture on a host that happens to have a
     /// COLR face installed, and unreachable on one that does not — which is the

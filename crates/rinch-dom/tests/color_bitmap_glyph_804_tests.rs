@@ -92,7 +92,10 @@ fn a_cbdt_emoji_paints_in_colour_at_the_font_size_804() {
     // The page is transparent, so every pixel is the glyph's own,
     // premultiplied: no channel above its alpha. A strike drawn straight
     // (unpremultiplied) breaks this at every antialiased edge.
-    let bad = px.iter().filter(|p| p[0] > p[3] || p[1] > p[3] || p[2] > p[3]).count();
+    let bad = px
+        .iter()
+        .filter(|p| p[0] > p[3] || p[1] > p[3] || p[2] > p[3])
+        .count();
     assert_eq!(bad, 0, "{bad} pixels are not valid premultiplied colour");
     let (n, bb) = coloured(&px);
     let (x0, y0, x1, y1) = bb.expect("the CBDT emoji painted no coloured pixel at all (#804)");
