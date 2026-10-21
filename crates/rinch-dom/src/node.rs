@@ -2913,6 +2913,17 @@ pub struct NodeTree {
     /// IFC roots whose text content changed since last layout.
     /// Used to skip expensive Parley rebuilds for unchanged IFC roots.
     pub dirty_ifc_text_roots: rustc_hash::FxHashSet<RawNodeId>,
+    /// Bumped every time a text layout (an IFC root's `text_layout`, a text
+    /// leaf's `cached_text_parley`) is built; the value is the stamp of that
+    /// build ([`Self::text_layout_stamps`]).
+    pub text_layout_epoch: u64,
+    /// The stamp of the last text layout built for each node that had one
+    /// built: a node whose stamp is unchanged has the lines it had. The
+    /// editor's margin pass (#1677) measures an anchor's block again only when
+    /// its stamp or a box it reads changed. An entry of a freed (and reused)
+    /// id is harmless: it is read only while the node has a layout, and every
+    /// build writes it.
+    pub text_layout_stamps: rustc_hash::FxHashMap<RawNodeId, u64>,
     /// How many times `run_taffy_compute` has run over this tree.
     ///
     /// Instrumentation, not state: `resolve_layout`'s `!layout_dirty` early
@@ -3291,6 +3302,8 @@ impl NodeTree {
             image_loader: None,
             pending_background_urls: Vec::new(),
             dirty_ifc_text_roots: Default::default(),
+            text_layout_epoch: 0,
+            text_layout_stamps: Default::default(),
             taffy_computes: 0,
             ifc_setup_passes: 0,
             perf: crate::perf::PerfCounters::default(),
@@ -3697,6 +3710,7 @@ impl NodeTree {
             // The slab recycles ids: a node created later may be handed this
             // one, and must not inherit this node's measured sizes.
             self.ifc_measure_cache.remove(node_id);
+            self.text_layout_stamps.remove(node_id);
             // Nor a freshness flag meant for a now-gone `<select>` (#757).
             self.select_value_fresh.remove(node_id);
             // Nor what was recorded about a now-gone atomic inline (#1476;

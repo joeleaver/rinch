@@ -43,6 +43,7 @@ use super::images::ImageHover;
 use super::images::{ImageInput, ImageInputSource};
 use super::keys::EditorKey;
 use super::links::{LinkClick, LinkHover, LinkSpan};
+use super::margins::{self, MarginAnchor, MarginLine, Margins};
 use super::node_views::{self, CaretFrom, Kept, NodeViewRegistration, NodeViewSpec};
 use super::registry;
 use super::view::RinchDomEditorView;
@@ -53,6 +54,8 @@ type LinkClickHook = Hook<dyn Fn(&LinkClick) -> bool>;
 type LinkHoverHook = Hook<dyn Fn(Option<&LinkHover>)>;
 /// An [`EditorHandle::on_image_hover`] callback, with its owner (see [`Hook`]).
 type ImageHoverHook = Hook<dyn Fn(Option<&ImageHover>)>;
+/// An [`EditorHandle::on_margin_layout`] callback, with its owner (see [`Hook`]).
+type MarginHook = Hook<dyn Fn(&[MarginLine])>;
 
 /// Whether `prev → next` only shifted the selection: the same kind, both ends
 /// moved by one amount, and the head at the same offset in a textblock of the
@@ -170,6 +173,13 @@ struct EditorCore {
     /// The registered node views ([`EditorHandle::register_node_view`]), shared
     /// with the view.
     node_views: Rc<node_views::Registry>,
+    /// The margin anchors ([`EditorHandle::set_margin_anchors`]) and what the last
+    /// margin pass reported. Empty for an editor that has none, so the pass is
+    /// one check.
+    margins: Margins,
+    /// See [`EditorHandle::on_margin_layout`]. Called by the margin pass with no
+    /// borrow held.
+    on_margin_layout: Option<MarginHook>,
 }
 
 /// The nodes `tr` only set attributes of: for each node a `SetNodeAttrStep`
@@ -527,6 +537,9 @@ impl EditorCore {
         }
         if doc_changed {
             self.carry_anchors(&next.doc, mapping);
+            if self.margins.has_pos_anchors() {
+                self.margins.carry(mapping);
+            }
             self.carry_reveal(mapping);
             self.carry_caret_hint(&prev, &next);
         }
@@ -564,6 +577,7 @@ impl EditorCore {
             .into_iter()
             .filter(|(_, n, _)| n.is_inline())
             .collect();
+        let margins_moved = doc_changed && self.margins_wanted();
         if let Some(view) = self.view.as_mut() {
             view.set_kept(kept);
             view.update_dom(&prev, &next);
@@ -571,8 +585,9 @@ impl EditorCore {
             // pass, and a selection-only change dirties no DOM, so a runtime
             // that skips a frame with nothing dirty would never run that pass
             // for it (#1001). Owe it; the input paths that run it themselves
-            // clear this in the same turn.
-            if prev.selection != next.selection {
+            // clear this in the same turn. A document change owes it too while
+            // margin anchors listen (#1677): their lines may have moved.
+            if prev.selection != next.selection || margins_moved {
                 crate::registry::owe_overlay_pass(view.doc_key());
             }
         }
@@ -763,9 +778,21 @@ impl EditorCore {
     /// lives for an upload (`on_image_input`), and a peer's keystroke anywhere
     /// in the document lost the picture.
     #[cfg(feature = "collaboration")]
-    fn carry_anchors_remote(&self, prev: &EditorState, doc: &Node) {
+    ///
+    /// The margin anchors' positions ([`EditorHandle::set_margin_anchors`]) are
+    /// carried by the same rule, and a document change owes the margin pass
+    /// that reports where their lines moved.
+    fn carry_anchors_remote(&mut self, prev: &EditorState, doc: &Node) {
+        if !prev.doc.same_ref(doc)
+            && self.margins_wanted()
+            && let Some(view) = self.view.as_ref()
+        {
+            crate::registry::owe_overlay_pass(view.doc_key());
+        }
         let mut anchors = self.anchors.borrow_mut();
-        if anchors.live.values().all(Option::is_none) {
+        let selections = anchors.live.values().any(Option::is_some);
+        let margins = self.margins.has_pos_anchors();
+        if !selections && !margins {
             return;
         }
         // `None`: the documents are the same, and every anchor stands.
@@ -775,6 +802,15 @@ impl EditorCore {
         for slot in anchors.live.values_mut() {
             *slot = slot.take().and_then(|sel| carry.selection(&sel));
         }
+        if margins {
+            self.margins.carry_remote(&carry);
+        }
+    }
+
+    /// Whether a margin pass has an audience: margin anchors are set and a
+    /// [`EditorHandle::on_margin_layout`] callback is registered.
+    fn margins_wanted(&self) -> bool {
+        self.on_margin_layout.is_some() && !self.margins.anchors.is_empty()
     }
 
     /// Project a just-applied local change onto the CRDT and broadcast the delta to
@@ -1160,6 +1196,8 @@ impl EditorHandle {
                 #[cfg(feature = "collaboration")]
                 collab: None,
                 node_views: Rc::default(),
+                margins: Margins::default(),
+                on_margin_layout: None,
             })),
         }
     }
@@ -1220,6 +1258,8 @@ impl EditorHandle {
                 #[cfg(feature = "collaboration")]
                 collab: None,
                 node_views,
+                margins: Margins::default(),
+                on_margin_layout: None,
             })),
         }
     }
@@ -1281,12 +1321,18 @@ impl EditorHandle {
             .unwrap_or(0);
         let container_id = container.node_id().0;
         super::registry::register_editor(doc_key, container_id, self.clone());
+        // Margin anchors set before this mount (or kept across a re-mount)
+        // report once it lands: the web runs a pass only when one is owed.
+        if self.inner.try_borrow().is_ok_and(|c| c.margins_wanted()) {
+            super::registry::owe_overlay_pass(doc_key);
+        }
         let weak = self.weak();
         scope.on_cleanup(move || {
             super::registry::unregister_editor(doc_key, container_id);
             // Every node view goes with the editor (its scope, then its root).
             if let Some(handle) = weak.upgrade() {
                 handle.dispose_node_views();
+                handle.release_margins();
             }
         });
         container
@@ -1974,6 +2020,99 @@ impl EditorHandle {
             width: 0.0,
             height,
         })
+    }
+
+    /// Replace this editor's **margin anchors**: the places whose lines an app
+    /// draws something beside (a comment's marker, a bookmark flag, a change
+    /// bar). [`Self::on_margin_layout`] then reports where each one's line is
+    /// drawn, and reports again whenever a line moves — through local edits, a
+    /// peer's edits, a reflow or a resize — so the app can keep its markers
+    /// level with the text.
+    ///
+    /// An anchor is a [`MarginAt::Pos`](crate::MarginAt::Pos) — a model
+    /// position, carried through every change the editor applies, as a
+    /// [`SelectionAnchor`] is — or, while collaborating, a sticky index
+    /// ([`MarginAnchor::sticky`]), resolved afresh on each pass so it names the
+    /// same character on every replica. Positions are given in the document as
+    /// it is now.
+    ///
+    /// Anchors are view state: setting them changes nothing in the document,
+    /// its undo history or what collaborators receive, and works on a
+    /// [read-only](Self::set_read_only) editor. They are kept across a
+    /// re-mount and before mount; an empty `Vec` clears them (the callback then
+    /// hears one empty report).
+    pub fn set_margin_anchors(&self, anchors: Vec<MarginAnchor>) {
+        let doc_key = {
+            let mut core = self.core_mut();
+            core.margins.set(anchors);
+            // Owed only when someone listens: a set with no callback measures
+            // nothing (an emptied set still owes its one empty report).
+            (core.on_margin_layout.is_some() && !core.margins.is_idle())
+                .then(|| core.view.as_ref().map(RinchDomEditorView::doc_key))
+                .flatten()
+        };
+        if let Some(doc_key) = doc_key {
+            registry::owe_overlay_pass(doc_key);
+        }
+    }
+
+    /// Be told where the [margin anchors](Self::set_margin_anchors)' lines
+    /// are drawn: one [`MarginLine`] per anchor that has geometry, in the order
+    /// the anchors were given — its key, and the top and height of the line
+    /// box it sits in, in the editor container's content coordinates (the
+    /// frame the `Editor { … }` overlay slot's children are placed in, which
+    /// scrolls with the text; see [`MarginLine`]). Anchors on one line report
+    /// the same box.
+    ///
+    /// Called after a layout or overlay pass that changed any reported line
+    /// (or the set of anchors reported, or [`Self::margin_text_right`]) — not
+    /// every frame — and once when anchors and a callback are both set on a
+    /// mounted editor (also after a re-mount), whatever it finds. A layout
+    /// that could not have moved an anchor's line (no anchored block moved or,
+    /// on desktop, had its text laid out again) measures nothing. An
+    /// anchor is left out while it has no geometry: its block is not laid out
+    /// (a virtualized block far out of view), or its position was lost
+    /// ([`MarginAt::Pos`](crate::MarginAt::Pos)). A position inside a table
+    /// cell reports that cell's line; a position right before a leaf block (a
+    /// rule, an embed, a node view) reports that block's box. One pass
+    /// measures every anchor once, so `N` anchors cost one pass per layout
+    /// that could move a line.
+    ///
+    /// The callback runs with no internal borrow held, so it may move the
+    /// app's markers, read the editor, or set the anchors again (which owes
+    /// another pass rather than recursing). Registered while a component
+    /// renders, it belongs to that component and is not called once it
+    /// unmounts (#147/#183); registered outside any render it keeps app
+    /// lifetime. Registering it again replaces it.
+    ///
+    /// Free when no anchors are set: the pass is one check per editor.
+    pub fn on_margin_layout(&self, cb: impl Fn(&[MarginLine]) + 'static) {
+        let doc_key = {
+            let mut core = self.core_mut();
+            core.on_margin_layout = Some(Hook::new(Rc::new(cb)));
+            core.margins.forget_report();
+            (!core.margins.anchors.is_empty())
+                .then(|| core.view.as_ref().map(RinchDomEditorView::doc_key))
+                .flatten()
+        };
+        if let Some(doc_key) = doc_key {
+            registry::owe_overlay_pass(doc_key);
+        }
+    }
+
+    /// The right edge of the text column — the first laid-out top-level
+    /// block's border box — in the coordinates [`MarginLine`] uses, as of
+    /// the last margin report. A margin marker placed at this `x` and beyond
+    /// is clear of the text. `None` before the first report, or with no block
+    /// laid out.
+    pub fn margin_text_right(&self) -> Option<f32> {
+        self.inner
+            .try_borrow()
+            .ok()?
+            .margins
+            .last
+            .as_ref()
+            .and_then(|(_, right)| *right)
     }
 
     /// Whether the named command currently applies (toolbar enablement).
@@ -3472,6 +3611,170 @@ impl EditorHandle {
             }
         }
         true
+    }
+
+    /// Measure the [margin anchors](Self::set_margin_anchors)' lines and, when
+    /// the report changed, call [`Self::on_margin_layout`]. Called by
+    /// [`update_all_carets`](crate::update_all_carets) for every mounted
+    /// editor, before any caret pass writes an overlay. Returns whether the
+    /// callback ran (the app may have moved its markers: the runtime then lays
+    /// out again).
+    ///
+    /// One check and nothing more for an editor with no anchors and nothing
+    /// reported. While the host has layout pending (desktop: a pass made
+    /// before the layout an edit owes), nothing is measured and the pass is
+    /// owed again, so lines are never reported where they are about to leave.
+    pub(crate) fn margin_pass(&self) -> bool {
+        {
+            let Ok(core) = self.inner.try_borrow() else {
+                return false;
+            };
+            if core.margins.is_idle()
+                || (core.on_margin_layout.is_none() && core.margins.observed.is_none())
+            {
+                return false;
+            }
+        }
+        let mut guard = self.core_mut();
+        let core = &mut *guard;
+        // While anchors are set and someone listens, the platform watches the
+        // container's size (a reflow the editor did not cause: a resize).
+        let want = (core.on_margin_layout.is_some() && !core.margins.anchors.is_empty())
+            .then(|| {
+                core.view
+                    .as_ref()
+                    .map(|v| (v.doc_key(), v.container().clone()))
+            })
+            .flatten();
+        let mut notify: Vec<(u64, NodeHandle, bool)> = Vec::new();
+        let observed = core.margins.observed.as_ref().map(|(_, n)| n.node_id());
+        if observed != want.as_ref().map(|(_, n)| n.node_id()) {
+            if let Some((dk, old)) = core.margins.observed.take() {
+                notify.push((dk, old, false));
+            }
+            if let Some((dk, new)) = want {
+                notify.push((dk, new.clone(), true));
+                core.margins.observed = Some((dk, new));
+            }
+        }
+        let mut report: Option<(MarginHook, Vec<MarginLine>)> = None;
+        if let (Some(hook), Some(view)) = (core.on_margin_layout.clone(), core.view.as_ref()) {
+            match view.layout_pending() {
+                Some(false) => {
+                    let doc = core.state.doc.clone();
+                    // A position anchor only moves with the document (or a
+                    // new set, which forgets it): the same document, the same
+                    // positions. A sticky anchor also stops resolving when the
+                    // session stops, stalls or is poisoned, with the document
+                    // unchanged, so it is resolved every pass.
+                    let positions = match &core.margins.key {
+                        Some((d, positions, _))
+                            if d.same_ref(&doc) && !core.margins.has_sticky() =>
+                        {
+                            positions.clone()
+                        }
+                        _ => Self::margin_positions(core),
+                    };
+                    let at: Vec<Pos> = positions.iter().flatten().copied().collect();
+                    let key = view.margin_key(&doc, &at);
+                    // Nothing the lines are read from moved since the last
+                    // measure (a layout of something else): no measure.
+                    let unmoved = core.margins.last.is_some()
+                        && key.is_some()
+                        && core.margins.key.as_ref().is_some_and(|(d, p, k)| {
+                            d.same_ref(&doc) && Some(*k) == key && *p == positions
+                        });
+                    if !unmoved {
+                        let (boxes, right) = view.measure_lines(&doc, &at);
+                        margins::count_pass(at.len());
+                        let mut boxes = boxes.into_iter();
+                        let lines: Vec<MarginLine> = core
+                            .margins
+                            .anchors
+                            .iter()
+                            .zip(&positions)
+                            .filter_map(|(a, p)| {
+                                p.as_ref()?;
+                                let (top, height) = boxes.next().flatten()?;
+                                Some(MarginLine {
+                                    key: a.key.clone(),
+                                    top,
+                                    height,
+                                })
+                            })
+                            .collect();
+                        let changed = core
+                            .margins
+                            .last
+                            .as_ref()
+                            .is_none_or(|(l, r)| *l != lines || *r != right);
+                        core.margins.key = key.map(|k| (doc, positions, k));
+                        if changed {
+                            core.margins.last = Some((lines.clone(), right));
+                            report = Some((hook, lines));
+                        }
+                    }
+                }
+                // Lines are about to move (or the host is busy): wait for the
+                // pass after the layout.
+                _ => registry::owe_overlay_pass(view.doc_key()),
+            }
+        }
+        drop(guard);
+        for (doc_key, node, mounted) in notify {
+            registry::notify_node_view_host(doc_key, node.node_id().0, &node, mounted);
+        }
+        match report {
+            Some((hook, lines)) => hook.invoke(|cb| cb(&lines)).is_some(),
+            None => false,
+        }
+    }
+
+    /// Where each margin anchor is now, in the order of the set: a
+    /// position anchor's carried position, a sticky index resolved (all of
+    /// them in one walk of the shared document). `None` for one with no place.
+    fn margin_positions(core: &EditorCore) -> Vec<Option<Pos>> {
+        #[cfg(feature = "collaboration")]
+        let mut sticky = {
+            let bytes: Vec<&[u8]> = core
+                .margins
+                .anchors
+                .iter()
+                .filter_map(|a| match &a.at {
+                    margins::LiveAt::Sticky(b) => Some(b.as_slice()),
+                    _ => None,
+                })
+                .collect();
+            let located = match (bytes.is_empty(), core.collab.as_ref()) {
+                (false, Some(bridge)) => bridge.session.locate_sticky_many(&core.state.doc, &bytes),
+                _ => vec![None; bytes.len()],
+            };
+            located.into_iter()
+        };
+        core.margins
+            .anchors
+            .iter()
+            .map(|a| match &a.at {
+                margins::LiveAt::Pos(pos, _) => *pos,
+                #[cfg(feature = "collaboration")]
+                margins::LiveAt::Sticky(_) => sticky.next().flatten().map(|l| l.pos),
+            })
+            .collect()
+    }
+
+    /// Stop watching the container for the margin pass and forget the last
+    /// report, so a re-mount reports afresh. Called when the editor unmounts.
+    fn release_margins(&self) {
+        let observed = {
+            let Ok(mut core) = self.inner.try_borrow_mut() else {
+                return;
+            };
+            core.margins.forget_report();
+            core.margins.observed.take()
+        };
+        if let Some((doc_key, node)) = observed {
+            registry::notify_node_view_host(doc_key, node.node_id().0, &node, false);
+        }
     }
 
     /// The start of a pending [`Self::scroll_into_view`] range, if one is

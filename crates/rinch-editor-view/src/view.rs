@@ -2,7 +2,7 @@
 //! `EditorState` onto rinch-dom (design §6).
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 
 use crate::handle::ScrollAlign;
@@ -1271,6 +1271,14 @@ pub struct RinchDomEditorView {
     view_boxes: Vec<(usize, (i32, i32, i32, i32))>,
 }
 
+/// What a margin anchor is measured on ([`RinchDomEditorView::margin_target`]).
+enum MarginTarget {
+    /// A caret: its textblock's host id, its flat byte, its position.
+    Text(usize, usize, Pos),
+    /// A leaf block's host id.
+    Leaf(usize),
+}
+
 /// How far above and below a revealed range [`RinchDomEditorView::position_reveal`]
 /// keeps clear, in CSS px, so the words land a little inside the scroller's
 /// edge rather than flush against it.
@@ -2220,6 +2228,183 @@ impl RinchDomEditorView {
             probe.set_styles(&[("left", &left), ("top", &top), ("height", &height)]);
         }
         Some(self.reveal_probes[..boxes.len()].to_vec())
+    }
+
+    /// Whether the host document has changes its geometry does not show yet
+    /// ([`DomDocument::layout_pending`]); `None` when it is gone or busy.
+    pub(crate) fn layout_pending(&self) -> Option<bool> {
+        let host = self.doc.upgrade()?;
+        let d = host.try_borrow().ok()?;
+        Some(d.layout_pending())
+    }
+
+    /// What an anchor at `pos` is measured on: a caret in a textblock (the
+    /// block's host id, the caret's flat byte, and the position the caret
+    /// target resolved for), or a leaf block's host (`pos` right before a
+    /// rule, an embed, a node view). Anywhere else between blocks, the
+    /// nearest text position after it. `None` when nothing there.
+    fn margin_target(&self, doc: &Node, pos: Pos) -> Option<MarginTarget> {
+        let pos = Pos(pos.0.min(doc.content_size()));
+        if let Some((block, byte)) = self.caret_target(doc, pos) {
+            return Some(MarginTarget::Text(block.node_id().0, byte, pos));
+        }
+        let r = doc.resolve(pos).ok()?;
+        if r.node_after().is_some_and(|n| n.is_leaf() && n.is_block()) {
+            return self.node_host_at(doc, pos).map(MarginTarget::Leaf);
+        }
+        let near = Selection::near_text(doc, pos, 1)?.head();
+        let (block, byte) = self.caret_target(doc, near)?;
+        Some(MarginTarget::Text(block.node_id().0, byte, near))
+    }
+
+    /// What the margin pass's lines for `positions` are read from, hashed so
+    /// a later pass can compare: for every block an anchor is measured on, its
+    /// offset in the container, its box, its padding and border, and — where
+    /// the host keeps one ([`DomDocument::text_layout_generation`]) — the
+    /// stamp of its text layout; and the first top-level block's box (the
+    /// column edge). Equal keys for the same document mean no anchor's line
+    /// can have moved, so the pass measures nothing: a layout of anything
+    /// else (a spinner, a hover, a label's text, another editor) costs this
+    /// key, `O(anchored blocks × depth)`, not a measure per anchor. A line in
+    /// a nested block (a table cell's paragraph) is covered: its offset is
+    /// summed up the chain. On a host with no stamps (the browser) a rewrap
+    /// that moves no anchored block's box is not seen until the next change
+    /// that does. `None` when the host is gone or busy.
+    pub(crate) fn margin_key(&self, doc: &Node, positions: &[Pos]) -> Option<u64> {
+        use std::hash::{Hash, Hasher};
+        let host = self.doc.upgrade()?;
+        let d = host.try_borrow().ok()?;
+        let d: &dyn DomDocument = &*d;
+        let mut ids: Vec<usize> = positions
+            .iter()
+            .filter_map(|&p| match self.margin_target(doc, p)? {
+                MarginTarget::Text(id, _, _) | MarginTarget::Leaf(id) => Some(id),
+            })
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        if let Some(first) = self.root.children.first() {
+            ids.push(first.outer.node_id().0);
+        }
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for id in ids {
+            id.hash(&mut h);
+            let (x, y) = self.block_offset_in_container(d, id);
+            let (_, _, w, bh) = d.query_node_layout(id as u64).unwrap_or_default();
+            let (l, t, r, b) = d.content_box_inset(id as u64);
+            for v in [x, y, w, bh, l, t, r, b] {
+                v.to_bits().hash(&mut h);
+            }
+            d.text_layout_generation(id as u64).hash(&mut h);
+        }
+        Some(h.finish())
+    }
+
+    /// The line box `(top, height)` each of `positions` sits in, in the frame
+    /// the overlays are placed in (the container's padding box, unscrolled),
+    /// and the text column's right edge in the same frame: the right edge of
+    /// the first laid-out top-level block. What
+    /// [`EditorHandle::set_margin_anchors`](super::EditorHandle::set_margin_anchors)
+    /// reports, in one pass over the anchors.
+    ///
+    /// A position in a textblock is measured on the line a caret there is
+    /// drawn on (its downstream side at a soft wrap): the block's carets go to
+    /// [`DomDocument::query_line_boxes`] together, so a backend reads each
+    /// block's lines once per pass; a caret it cannot answer gets the caret's
+    /// rect grown to the block's [`line_box_height`](DomDocument::line_box_height)
+    /// about its middle. A position right before a leaf block (a horizontal
+    /// rule, an embed, a node view's host) is that block's box; anywhere else
+    /// between blocks, the nearest text position after it. Positions in one
+    /// textblock whose boxes overlap are one line and get one box (their
+    /// union). `None` for a position with no geometry: its block is not laid
+    /// out (virtualized), or the host is gone or busy.
+    pub(crate) fn measure_lines(
+        &self,
+        doc: &Node,
+        positions: &[Pos],
+    ) -> (Vec<Option<(f32, f32)>>, Option<f32>) {
+        let mut out: Vec<Option<(f32, f32)>> = vec![None; positions.len()];
+        let Some(host) = self.doc.upgrade() else {
+            return (out, None);
+        };
+        let Ok(d) = host.try_borrow() else {
+            return (out, None);
+        };
+        let d: &dyn DomDocument = &*d;
+        // (index, block id, top, height), merged per block below.
+        let mut found: Vec<(usize, usize, f32, f32)> = Vec::with_capacity(positions.len());
+        // The carets, grouped by their textblock.
+        let mut by_block: HashMap<usize, Vec<(usize, usize, Pos)>> = HashMap::new();
+        for (i, &pos) in positions.iter().enumerate() {
+            match self.margin_target(doc, pos) {
+                Some(MarginTarget::Text(block, byte, at)) => {
+                    by_block.entry(block).or_default().push((i, byte, at));
+                }
+                Some(MarginTarget::Leaf(id)) => {
+                    if let Some((_, _, w, h)) = d.query_node_layout(id as u64)
+                        && (w != 0.0 || h != 0.0)
+                    {
+                        let (_, oy) = self.block_offset_in_container(d, id);
+                        found.push((i, id, oy, h));
+                    }
+                }
+                None => {}
+            }
+        }
+        for (block, carets) in by_block {
+            let (_, oy) = self.block_offset_in_container(d, block);
+            let asked: Vec<(usize, CaretAffinity)> = carets
+                .iter()
+                .map(|&(_, byte, _)| (byte, CaretAffinity::Downstream))
+                .collect();
+            let boxes = d.query_line_boxes(block as u64, &asked);
+            let mut line_height: Option<Option<f32>> = None;
+            for (&(i, byte, at), line) in carets.iter().zip(boxes) {
+                let geometry = match line {
+                    Some((top, h)) => Some((oy + top, h)),
+                    None => self
+                        .caret_geometry(d, doc, at, block, byte, CaretAffinity::Downstream)
+                        .map(|(_, y, h)| {
+                            let lh =
+                                *line_height.get_or_insert_with(|| d.line_box_height(block as u64));
+                            match lh {
+                                Some(lh) if lh > h => (y - (lh - h) / 2.0, lh),
+                                _ => (y, h),
+                            }
+                        }),
+                };
+                if let Some((top, h)) = geometry {
+                    found.push((i, block, top, h));
+                }
+            }
+        }
+        // One line, one box: in each block, boxes that overlap are merged.
+        found.sort_by(|a, b| a.1.cmp(&b.1).then(a.2.total_cmp(&b.2)));
+        let mut start = 0;
+        while start < found.len() {
+            let (block, mut top, h) = (found[start].1, found[start].2, found[start].3);
+            let mut bottom = top + h;
+            let mut end = start + 1;
+            while end < found.len() && found[end].1 == block && found[end].2 < bottom - 0.5 {
+                top = top.min(found[end].2);
+                bottom = bottom.max(found[end].2 + found[end].3);
+                end += 1;
+            }
+            for f in &found[start..end] {
+                out[f.0] = Some((top, bottom - top));
+            }
+            start = end;
+        }
+        let right = self.root.children.iter().find_map(|c| {
+            let id = c.outer.node_id().0;
+            let (_, _, w, h) = d.query_node_layout(id as u64)?;
+            if w == 0.0 && h == 0.0 {
+                return None;
+            }
+            let (x, _) = self.block_offset_in_container(d, id);
+            Some(x + w)
+        });
+        (out, right)
     }
 
     /// Show the drop caret at `at` — a model position and the side of a soft

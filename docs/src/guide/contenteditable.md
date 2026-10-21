@@ -65,7 +65,8 @@ content looks right out of the box — you don't hand-roll editor CSS.
 | `read_only` | `bool` | Mount the editor [read-only](#read-only). `false` (the default) leaves the handle's switch as it is, so a handle locked before mount stays locked. Change it afterwards with `handle.set_read_only(..)`. |
 
 Like every rinch component, `Editor {}` also accepts the universal `style:` and
-`class:` props, applied to its host element.
+`class:` props, applied to its host element. Its **children** are an overlay slot that
+scrolls with the text — see [Margin anchors](#margin-anchors-drawing-beside-a-line).
 
 ```rust
 // Self-contained: no handle needed if you don't drive it programmatically.
@@ -1262,6 +1263,83 @@ and stop being called once it unmounts, even if the `EditorHandle` lives on (an
 app-level handle handed to a view that comes and goes). A live callback runs inside
 that component, so a signal it creates belongs to it. A callback registered outside
 any render (from `main`, a timer) keeps app lifetime.
+
+### Margin anchors: drawing beside a line
+
+An app that draws something beside a place in the text — a comment's marker, a
+bookmark flag, a change bar — needs to know where that place's line is drawn, and to
+follow it through edits, reflows and scrolling. Give the editor the places as **margin
+anchors**, listen for where their lines are, and draw your markers in the `Editor`'s
+**overlay slot** (its children), which scrolls with the text:
+
+```rust
+let editor = create_editor();
+let tops = Signal::new(Vec::<(String, f32)>::new());
+let right = Signal::new(0.0f32);
+let ed = editor.clone();
+editor.on_margin_layout(move |lines: &[MarginLine]| {
+    tops.set(lines.iter().map(|l| (l.key.clone(), l.top)).collect());
+    right.set(ed.margin_text_right().unwrap_or(0.0));
+});
+editor.set_margin_anchors(vec![
+    MarginAnchor::at("c1", Pos(12)),     // a model position, carried through edits
+    MarginAnchor::at("c2", Pos(40)),
+]);
+
+rsx! {
+    // A right padding for the markers: the gutter they sit in is inside the
+    // editor's padding box, so a self-scrolling editor (`overflow: auto`)
+    // does not clip them. (A marker outside the padding box — a negative
+    // `left` — shows only while nothing between it and the page clips.)
+    Editor { editor: editor.clone(), style: "padding-right: 32px",
+        // Children are the overlay slot: placed in the editor's own scroller,
+        // at the frame `MarginLine` reports in.
+        for (key, top) in tops.get() {
+            div { key: key.clone(), class: "marker",
+                  style: {format!("position: absolute; left: {}px; top: {top}px", right.get() + 8.0)} }
+        }
+    }
+}
+```
+
+- **`set_margin_anchors(Vec<MarginAnchor>)`** replaces the whole set. `MarginAnchor::at(key,
+  pos)` is a model `Pos`, carried through every change the editor applies — local edits by
+  their mapping (`at_with(key, pos, MarginAssoc::Before)` keeps it before text inserted right
+  at it), a peer's change the way a `SelectionAnchor` is carried. It is lost when the
+  document is replaced (`load_doc`/`load_html`) or a peer removes, splits, joins or retypes its
+  block. While collaborating, `MarginAnchor::sticky(key, bytes)` takes a sticky index
+  (`collab_sticky_index_with`, from this editor or a peer's), resolved afresh on every pass —
+  the same character on every replica, and the place its block stood once that block is gone.
+- **`on_margin_layout(|lines: &[MarginLine]|)`** hears one `MarginLine { key, top, height }`
+  per anchor that has geometry, in the order given: the **line box** of the line it sits in
+  (leading included), in the editor container's content coordinates — its padding box, the
+  content unscrolled, which is exactly where an overlay-slot child at `top` lands. Anchors on
+  one line report the same box. It is called after a layout or overlay pass that changed any
+  reported line, not every frame, and once when anchors and a callback are both set on a
+  mounted editor (and again after a re-mount); a scroll moves no line and
+  reports nothing. An anchor whose block is not laid out (a virtualized block far out of view)
+  is left out until it is. In a table cell it is that cell's line; right before a leaf block (a
+  rule, an embed) it is that block's box. The callback runs with no borrow held, belongs to
+  the component that registered it, and may set the anchors again.
+- **`margin_text_right()`** is the right edge of the text column (the first laid-out block's
+  border box) in the same coordinates, as of the last report.
+
+Anchors never change the document, its undo history or what collaborators receive, and they
+work on a read-only editor. With none set the pass is one check per editor; `N` anchors are
+one pass of `N` measures for a layout that could have moved one of their lines, and none for
+one that could not: the pass compares, for every block an anchor is in, where it is, its box
+and (on desktop) whether its text was laid out again — so a spinner, a hover, a label's text
+elsewhere or a keystroke in another editor measures nothing. On the web, which keeps no record
+of text layouts, a rewrap that moves no anchored block's box is reported at the next change that
+does. On the web the line box is rebuilt from what is on the line (each text run's inline box at
+its own `line-height`, each picture's box), so a line a tall picture makes taller is reported
+whole; under `line-height: normal` it is within a pixel. On the web a resize that rewraps the text reports too
+(the container is watched with a `ResizeObserver` while anchors are set).
+
+The overlay slot is a 0×0 layer at the container's padding-box origin
+(`[data-pm-overlay]`). Its children are never part of the document, the editor's diff, its
+caret map or its text; a press or a key in them is theirs (a button there runs its handler
+and places no caret). The layer sets no `pointer-events` — style your markers as you need.
 
 ## Keyboard shortcuts
 

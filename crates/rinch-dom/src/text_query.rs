@@ -192,6 +192,31 @@ pub fn visual_line_range(
     Some(range.start..end.max(range.start))
 }
 
+/// The line box `(top, height)` of the visual line a caret at `byte_offset`
+/// with `affinity` is drawn on, in the layout's own space: the line Parley
+/// draws that caret on (as [`visual_line_range`] finds it), from its
+/// `block_min_coord` to its `block_max_coord` — the whole line, its leading
+/// included, so every position on one line answers the same box. `None` for
+/// an empty layout.
+pub fn line_box_for_offset(
+    layout: &parley::layout::Layout<Brush>,
+    byte_offset: usize,
+    affinity: CaretAffinity,
+) -> Option<(f32, f32)> {
+    let last = layout.lines().len().checked_sub(1)?;
+    let (_, cy) = caret_position_for_offset_layout_with_affinity(layout, byte_offset, affinity);
+    let index = layout
+        .lines()
+        .position(|l| {
+            let m = l.metrics();
+            cy >= m.block_min_coord - 0.5 && cy < m.block_max_coord - 0.5
+        })
+        .unwrap_or(last);
+    let line = layout.lines().nth(index)?;
+    let m = line.metrics();
+    Some((m.block_min_coord, m.block_max_coord - m.block_min_coord))
+}
+
 /// [`visual_line_range`] in the text-bearing element `node_id`'s layout.
 pub fn visual_line_range_for_node(
     doc: &crate::dom_impl::RinchDocument,

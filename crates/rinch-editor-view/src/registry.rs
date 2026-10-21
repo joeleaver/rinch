@@ -89,6 +89,10 @@ pub type NodeViewHostListener = fn(u64, usize, &rinch_core::dom::NodeHandle, boo
 /// Desktop registers none: its post-layout overlay pass compares the hosts'
 /// boxes itself.
 ///
+/// An editor's own container is handed over the same way while it has
+/// [margin anchors](EditorHandle::set_margin_anchors) (#1677): a resize that
+/// rewraps its text then reports where their lines went.
+///
 /// Per thread, like the rest of this registry; setting it again replaces it.
 pub fn set_node_view_host_listener(listener: NodeViewHostListener) {
     NODE_VIEW_HOST_LISTENER.with(|slot| slot.set(Some(listener)));
@@ -560,6 +564,12 @@ pub fn editor_for(container_id: usize) -> Option<EditorHandle> {
 /// one and the geometry for it — after the caret, so its scroll is queued last
 /// and wins over the caret's. `true` is returned for that as for a moved
 /// overlay: the probes it placed need a layout before the scroll is applied.
+///
+/// Before any of that, every editor with
+/// [margin anchors](EditorHandle::set_margin_anchors) measures their lines
+/// and reports a change to its
+/// [`on_margin_layout`](EditorHandle::on_margin_layout) callback; `true` is
+/// returned when one ran, since the app may have moved what it draws.
 pub fn update_all_carets(doc_key: Option<u64>, focused: Option<usize>) -> bool {
     OVERLAY_PASSES_OWED.with(|r| {
         let mut r = r.borrow_mut();
@@ -569,6 +579,14 @@ pub fn update_all_carets(doc_key: Option<u64>, focused: Option<usize>) -> bool {
     });
     let editors = all_editors();
     let mut moved = false;
+    // The margin anchors first, while the geometry is the layout's alone: a
+    // caret pass below writes its overlays, which a host that lays out
+    // afterwards (desktop) would count as layout still owed.
+    for (dk, _, handle) in &editors {
+        if doc_key.is_none_or(|k| k == *dk) {
+            moved |= handle.margin_pass();
+        }
+    }
     for (dk, id, handle) in editors {
         if doc_key.is_some_and(|k| k != dk) {
             continue;

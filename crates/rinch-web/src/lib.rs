@@ -114,15 +114,24 @@ pub use web_document::WebDocument;
 #[doc(hidden)]
 pub use web_document::{__reset_scroll_lock, __scroll_lock_depth};
 
+/// How this browser splits a line's leading (see the editor's margin
+/// anchors, #1677): `true` when the half above a text run is floored to a
+/// whole pixel. Test-only.
+#[doc(hidden)]
+pub fn __leading_floors() -> bool {
+    web_document::leading_floors()
+}
+
 // The renderer-agnostic rich-text editor, re-exported so a web app uses the *same*
 // API as desktop: `create_editor()` → `EditorHandle`, mounted via `Editor {}`. The
 // browser input glue (keyboard/pointer/IME/clipboard → the handle) lives in
 // `editor_input`, installed once alongside event delegation.
 pub use rinch_editor_view::{
     CaretAffinity, CaretFrom, Editor, EditorHandle, EditorKey, ImageHover, ImageInput,
-    ImageInputSource, LinkClick, LinkHover, LinkSpan, NODE_VIEW_ATTR, NodeViewCtx,
-    NodeViewRegistration, NodeViewRender, NodeViewSpec, ScrollAlign, SelectionAnchor,
-    clear_image_source, create_editor, history_now_ms, set_image_source,
+    ImageInputSource, LinkClick, LinkHover, LinkSpan, MarginAnchor, MarginAssoc, MarginAt,
+    MarginLine, NODE_VIEW_ATTR, NodeViewCtx, NodeViewRegistration, NodeViewRender, NodeViewSpec,
+    OVERLAY_SLOT_ATTR, ScrollAlign, SelectionAnchor, clear_image_source, create_editor,
+    history_now_ms, set_image_source,
 };
 
 // Collaborative editing (M9), behind the `collaboration` feature. The collab methods

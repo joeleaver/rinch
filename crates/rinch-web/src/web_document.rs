@@ -1413,6 +1413,63 @@ fn utf8_byte_to_utf16_offset(text: &str, byte_offset: usize) -> usize {
     utf16_offset
 }
 
+thread_local! {
+    /// See [`leading_floors`]; measured once per page.
+    static LEADING_FLOORS: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// How this browser splits a line's leading around a text run's content area
+/// (#1677): `true` when the half above is floored to a whole pixel (Chrome
+/// 155: 17px of text in a 24px line starts 3px down), `false` when it is the
+/// exact half (Firefox: 3.5px). Measured once, on a hidden probe at a few font
+/// sizes until one gives an odd leading, rather than assumed from the engine's
+/// name. `true` (Chrome's) when nothing tells them apart.
+pub(crate) fn leading_floors() -> bool {
+    if let Some(known) = LEADING_FLOORS.with(|c| c.get()) {
+        return known;
+    }
+    let measured = (|| {
+        let doc = web_sys::window()?.document()?;
+        let body = doc.body()?;
+        let probe = doc.create_element("div").ok()?;
+        probe
+            .set_attribute(
+                "style",
+                "position: absolute; visibility: hidden; left: -9999px; top: 0; \
+                 margin: 0; padding: 0; border: 0; line-height: 24px; \
+                 font-family: monospace; white-space: nowrap",
+            )
+            .ok()?;
+        probe.set_text_content(Some("x"));
+        body.append_child(&probe).ok()?;
+        let text = probe.first_child()?;
+        let range = doc.create_range().ok()?;
+        range.select_node_contents(&text).ok()?;
+        let mut answer = None;
+        for size in 10..=24 {
+            probe
+                .dyn_ref::<web_sys::HtmlElement>()?
+                .style()
+                .set_property("font-size", &format!("{size}px"))
+                .ok()?;
+            let r = range.get_bounding_client_rect();
+            let half = (24.0 - r.height()) / 2.0;
+            let frac = half - half.floor();
+            if r.height() <= 0.0 || !(0.25..=0.75).contains(&frac) {
+                continue;
+            }
+            let above = r.top() - probe.get_bounding_client_rect().top();
+            answer = Some((above - half.floor()).abs() < (above - half).abs());
+            break;
+        }
+        probe.remove();
+        answer
+    })()
+    .unwrap_or(true);
+    LEADING_FLOORS.with(|c| c.set(Some(measured)));
+    measured
+}
+
 /// [`WebDocument::restore_focus`]'s browser half, run with no document
 /// borrowed ([`DomDocument::take_after_borrow`]).
 fn restore_focus_now(
@@ -2233,6 +2290,212 @@ impl DomDocument for WebDocument {
         Some((x - block_rect.x() as f32, y - block_rect.y() as f32))
     }
 
+    /// [`Self::query_line_boxes`] for one caret.
+    fn query_line_box(
+        &self,
+        node_id: u64,
+        byte_offset: usize,
+        affinity: CaretAffinity,
+    ) -> Option<(f32, f32)> {
+        self.query_line_boxes(node_id, &[(byte_offset, affinity)])
+            .pop()
+            .flatten()
+    }
+
+    /// The browser exposes no line box, so it is rebuilt the way CSS builds
+    /// it: the union of the boxes of what is on a caret's line. A piece of
+    /// text contributes its inline box — its content area grown (or shrunk)
+    /// to **its own element's** computed `line-height`, the smaller whole-px
+    /// half of the leading above as Chrome splits it; under `line-height:
+    /// normal`, the content area itself (so a line of mixed sizes there is
+    /// within a pixel) — and a picture or a node view's host its own box.
+    /// What is "on a caret's line" is every piece whose content area overlaps
+    /// the line's caret rect by more than half the smaller height: a picture
+    /// taller than the text, a `<sup>`, a `code` run, and no piece of a
+    /// neighbouring line (#1677).
+    ///
+    /// The block is read **once** for all of `carets`: one walk of its text
+    /// (each text node's string fetched once, each one's client rects once),
+    /// then for each caret one range rect — the character after it, which is
+    /// on the line a downstream caret is drawn on; the last character's end
+    /// at the block's end. `affinity` is not read: a margin anchor's line is
+    /// its downstream one.
+    fn query_line_boxes(
+        &self,
+        node_id: u64,
+        carets: &[(usize, CaretAffinity)],
+    ) -> Vec<Option<(f32, f32)>> {
+        let none = || vec![None; carets.len()];
+        let Some(block) = self.nodes.get(&(node_id as usize)) else {
+            return none();
+        };
+        let Some(el) = block.dyn_ref::<web_sys::Element>() else {
+            return none();
+        };
+        let Ok(range) = self.browser_doc.create_range() else {
+            return none();
+        };
+        let window = web_sys::window();
+        // A piece of the line: its content area, and its inline box.
+        struct Piece {
+            top: f32,
+            bottom: f32,
+            box_top: f32,
+            box_bottom: f32,
+        }
+        let mut pieces: Vec<Piece> = Vec::new();
+        // Text nodes in flat-byte order: (node, its text, its first flat byte).
+        let mut texts: Vec<(web_sys::Node, String, usize)> = Vec::new();
+        let mut line_heights: Vec<(web_sys::Element, Option<f32>)> = Vec::new();
+        let mut flat = 0usize;
+        let mut stack: Vec<web_sys::Node> = Vec::new();
+        let kids = block.child_nodes();
+        for i in (0..kids.length()).rev() {
+            stack.extend(kids.item(i));
+        }
+        while let Some(node) = stack.pop() {
+            if node.node_type() == web_sys::Node::TEXT_NODE {
+                let text = node.text_content().unwrap_or_default();
+                let lh = node.parent_element().and_then(|parent| {
+                    if let Some((_, lh)) = line_heights.iter().find(|(e, _)| *e == parent) {
+                        return *lh;
+                    }
+                    let lh = window
+                        .as_ref()
+                        .and_then(|w| w.get_computed_style(&parent).ok().flatten())
+                        .and_then(|cs| cs.get_property_value("line-height").ok())
+                        .and_then(|v| v.trim().strip_suffix("px")?.parse::<f32>().ok())
+                        .filter(|h| *h > 0.0);
+                    line_heights.push((parent, lh));
+                    lh
+                });
+                if range.select_node_contents(&node).is_ok()
+                    && let Some(rects) = range.get_client_rects()
+                {
+                    for j in 0..rects.length() {
+                        let Some(r) = rects.item(j) else { continue };
+                        let (t, b) = (r.top() as f32, r.bottom() as f32);
+                        if b <= t {
+                            continue;
+                        }
+                        let (box_top, box_bottom) = match lh {
+                            Some(lh) => {
+                                let half = (lh - (b - t)) / 2.0;
+                                let above = if leading_floors() { half.floor() } else { half };
+                                (t - above, t - above + lh)
+                            }
+                            None => (t, b),
+                        };
+                        pieces.push(Piece {
+                            top: t,
+                            bottom: b,
+                            box_top,
+                            box_bottom,
+                        });
+                    }
+                }
+                let len = text.len();
+                texts.push((node, text, flat));
+                flat += len;
+                continue;
+            }
+            let Some(child) = node.dyn_ref::<web_sys::Element>() else {
+                continue;
+            };
+            let tag = child.tag_name().to_ascii_lowercase();
+            if tag == "br" {
+                continue;
+            }
+            let atomic = matches!(
+                tag.as_str(),
+                "img" | "svg" | "video" | "canvas" | "iframe" | "input" | "button"
+            ) || child.has_attribute(rinch_editor_view::NODE_VIEW_ATTR);
+            if atomic {
+                let r = child.get_bounding_client_rect();
+                let (t, b) = (r.top() as f32, r.bottom() as f32);
+                if b > t {
+                    pieces.push(Piece {
+                        top: t,
+                        bottom: b,
+                        box_top: t,
+                        box_bottom: b,
+                    });
+                }
+                continue;
+            }
+            let kids = node.child_nodes();
+            for i in (0..kids.length()).rev() {
+                stack.extend(kids.item(i));
+            }
+        }
+        let block_top = el.get_bounding_client_rect().y() as f32;
+        // Each caret's UTF-16 offset, found walking the text once in byte
+        // order (from the start of its text node for each caret was quadratic
+        // in a long paragraph's anchors).
+        let mut order: Vec<usize> = (0..carets.len()).collect();
+        order.sort_by_key(|&i| carets[i].0);
+        let mut at: Vec<Option<(usize, u32, u32)>> = vec![None; carets.len()];
+        let (mut ti, mut byte_in, mut utf16_in) = (0usize, 0usize, 0u32);
+        for i in order {
+            let byte = carets[i].0;
+            // The text node holding the character that starts at `byte`.
+            while ti < texts.len() && byte >= texts[ti].2 + texts[ti].1.len() {
+                ti += 1;
+                byte_in = 0;
+                utf16_in = 0;
+            }
+            let (t, local) = match texts.get(ti) {
+                Some((_, text, start)) => (ti, (byte - start).min(text.len())),
+                None => match texts.last() {
+                    Some((_, text, _)) => (texts.len() - 1, text.len()),
+                    None => continue,
+                },
+            };
+            if t != ti {
+                // Past the end: the last node, from its start.
+                let text = &texts[t].1;
+                let off = utf8_byte_to_utf16_offset(text, local) as u32;
+                at[i] = Some((t, off, off));
+                continue;
+            }
+            let text = &texts[t].1;
+            for ch in text[byte_in..].chars() {
+                if byte_in >= local {
+                    break;
+                }
+                byte_in += ch.len_utf8();
+                utf16_in += ch.len_utf16() as u32;
+            }
+            let end = text[byte_in..]
+                .chars()
+                .next()
+                .map_or(utf16_in, |ch| utf16_in + ch.len_utf16() as u32);
+            at[i] = Some((t, utf16_in, end));
+        }
+        at.into_iter()
+            .map(|at| {
+                let (t, off, end) = at?;
+                let node = &texts[t].0;
+                range.set_start(node, off).ok()?;
+                range.set_end(node, end).ok()?;
+                let r = range.get_bounding_client_rect();
+                let (cy, ch) = (r.top() as f32, r.height() as f32);
+                if ch <= 0.0 {
+                    return None;
+                }
+                let (mut top, mut bottom) = (f32::INFINITY, f32::NEG_INFINITY);
+                for p in &pieces {
+                    let overlap = p.bottom.min(cy + ch) - p.top.max(cy);
+                    if overlap > 0.0 && overlap > 0.5 * (p.bottom - p.top).min(ch) {
+                        top = top.min(p.box_top);
+                        bottom = bottom.max(p.box_bottom);
+                    }
+                }
+                top.is_finite().then_some((top - block_top, bottom - top))
+            })
+            .collect()
+    }
+
     fn query_caret_rect_with_affinity(
         &self,
         node_id: u64,
@@ -2640,8 +2903,16 @@ impl DomDocument for WebDocument {
         let Some(n) = self.nodes.get(&(node_id as usize)) else {
             return (0.0, 0.0);
         };
+        // Less its own scroll: an absolute child of a scrolled box is placed
+        // against its *scrolled* content, so an editor container that is
+        // itself the scroller (`overflow: auto` on the `Editor`) puts its
+        // overlays at the unscrolled offset, where the desktop's parent-
+        // relative layout already is (#1677).
         match n.clone().dyn_into::<web_sys::Element>() {
-            Ok(el) => (el.client_left() as f32, el.client_top() as f32),
+            Ok(el) => (
+                el.client_left() as f32 - el.scroll_left() as f32,
+                el.client_top() as f32 - el.scroll_top() as f32,
+            ),
             Err(_) => (0.0, 0.0),
         }
     }

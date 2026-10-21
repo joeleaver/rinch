@@ -941,7 +941,11 @@ pub trait DomDocument {
     /// box, so the editor's overlay container offset must subtract this once. The
     /// desktop renderer is the same (its layout origins are border-box-relative, an
     /// absolute child's insets padding-box-relative) and answers the border widths
-    /// too. Default `(0, 0)`, for a backend with no borders to report.
+    /// too. An absolute child of a box that scrolls sits against its *scrolled*
+    /// content, so the web answers its border less its own `scrollLeft`/
+    /// `scrollTop` (#1677), while the desktop's parent-relative layouts are
+    /// unscrolled already. Default `(0, 0)`, for a backend with no borders to
+    /// report.
     fn content_origin_inset(&self, _node_id: u64) -> (f32, f32) {
         (0.0, 0.0)
     }
@@ -1115,6 +1119,57 @@ pub trait DomDocument {
         _affinity: CaretAffinity,
     ) -> Option<(f32, f32)> {
         self.query_caret_position(node_id, byte_offset)
+    }
+
+    /// The line box of the line a caret at `byte_offset` in text-bearing
+    /// element `node_id` is drawn on (with `affinity` at a soft wrap), as
+    /// `(top, height)`, border-box-local like
+    /// [`Self::query_caret_position`]: the whole line, its leading included,
+    /// not the glyphs of the character there. The editor's margin anchors
+    /// (`EditorHandle::set_margin_anchors`) report it. Default `None`: the
+    /// editor then derives the line from the caret rect and the block's
+    /// [`line_box_height`](Self::line_box_height).
+    fn query_line_box(
+        &self,
+        _node_id: u64,
+        _byte_offset: usize,
+        _affinity: CaretAffinity,
+    ) -> Option<(f32, f32)> {
+        None
+    }
+
+    /// [`Self::query_line_box`] for several carets in one text-bearing
+    /// element, in order — for a backend that reads the element's lines once
+    /// rather than once per caret (the browser). Default: one query each.
+    fn query_line_boxes(
+        &self,
+        node_id: u64,
+        carets: &[(usize, CaretAffinity)],
+    ) -> Vec<Option<(f32, f32)>> {
+        carets
+            .iter()
+            .map(|&(byte, affinity)| self.query_line_box(node_id, byte, affinity))
+            .collect()
+    }
+
+    /// Whether the document has changes its geometry does not show yet: a
+    /// mutation or a style change made since the last
+    /// [`resolve_layout`](Self::resolve_layout). A backend that lays out on
+    /// demand (the browser) answers `false`, as does the default. The editor's
+    /// margin pass waits for a layout while it is `true` rather than report
+    /// lines that are about to move.
+    fn layout_pending(&self) -> bool {
+        false
+    }
+
+    /// A stamp of the text layout `node_id`'s lines are read from (the one
+    /// [`Self::query_line_box`] reads), which changes whenever that layout is
+    /// rebuilt — the one way its lines move with no box moving. The editor's
+    /// margin pass skips measuring a block whose stamp and boxes are what they
+    /// were. Default `None`: unknown, so only the boxes are compared (the
+    /// browser, which lays out on demand).
+    fn text_layout_generation(&self, _node_id: u64) -> Option<u64> {
+        None
     }
 
     /// Get the tag name of an element node.

@@ -273,7 +273,8 @@ pub mod prelude {
     #[cfg(feature = "desktop")]
     pub use crate::editor::{
         CaretFrom, Editor, EditorHandle, EditorKey, ImageHover, LinkClick, LinkHover, LinkSpan,
-        NodeViewCtx, NodeViewRegistration, NodeViewSpec, ScrollAlign, create_editor,
+        MarginAnchor, MarginAssoc, MarginAt, MarginLine, NodeViewCtx, NodeViewRegistration,
+        NodeViewSpec, ScrollAlign, create_editor,
     };
 
     // Collaborative editing (M9): the editor's collab error type + the thread-safe
