@@ -2308,6 +2308,14 @@ fn paint_children_with_stacking(
     // painting it again as a box would double it. See `drawn_by_its_ifc`.
     let already_drawn_inline = |child: &Node, _kind: PaintKind| drawn_by_its_ifc(tree, child);
 
+    // A box with nothing in its box tree has nothing to sequence. Building an
+    // empty paint order for every leaf stacking context — a positioned
+    // `z-index` badge in each row of a list — was one `stacking_paint_order`
+    // per badge per frame (#1719).
+    if crate::RinchDocument::box_tree_children(&tree.nodes, node_id).is_empty() {
+        return;
+    }
+
     if node_id == tree.body_id || node.creates_stacking_context() {
         let order = stacking_paint_order(tree, node_id, scale, offset_x, offset_y);
         let mut open = ClipSpan::EMPTY;
@@ -2370,8 +2378,9 @@ fn paint_children_with_stacking(
 
             // Asked here, after the entry's chain is pushed, so the cull it
             // reads is the one the entry would paint under (#910). A lifted
-            // fixed entry is never asked — the helper answers `false` for one
-            // — and a stacking context neither.
+            // fixed entry is never asked — the helper answers `false` for one.
+            // A stacking-context entry is (#1719): a list whose rows are
+            // stacking contexts entered every row to cull it on arrival.
             if lifted.is_none()
                 && paints_nothing_without_visit(
                     tree,
@@ -2380,7 +2389,6 @@ fn paint_children_with_stacking(
                     entry.offset_x,
                     entry.offset_y,
                     entry_transform,
-                    0,
                 )
             {
                 continue;
@@ -2424,7 +2432,6 @@ fn paint_children_with_stacking(
                 offset_x,
                 offset_y,
                 node_transform,
-                0,
             ) {
                 continue;
             }
@@ -2505,39 +2512,43 @@ fn zero_box_paints_children(node: &Node) -> bool {
 /// children, skipping those its IFC draws and those painted at a stacking root.
 /// So the answer is `true` exactly when paint would have walked the subtree and
 /// drawn nothing: the box clips, or every child it would descend into is itself
-/// such a subtree. What it asks nothing about, it answers `false` for, and
-/// [`paint_node`] decides as it always has — a stacking context (hoisted, and
-/// `subtree_is_entirely_outside` is the walk that knows what escapes one),
-/// `position: fixed` or `sticky`, `display: contents`, a box degenerate in
-/// either axis.
+/// such a subtree. A stacking context outside the cull is answered by the
+/// walk [`paint_node`] would make, [`subtree_is_entirely_outside`] (#1719). What
+/// it asks nothing about, it answers `false` for, and [`paint_node`] decides as
+/// it always has — `position: fixed` or `sticky`, `display: contents`, a box
+/// degenerate in either axis.
 ///
 /// The point is the count, not the test: a 500-row scroller showing 20 rows
 /// used to enter `paint_node` for every row, each to be culled on arrival. The
 /// loop still meets each row; it no longer composes a transform, walks a
 /// sticky chain or reads a dozen style fields to dismiss it.
 #[allow(clippy::too_many_arguments)]
-fn paints_nothing_without_visit(
+fn paints_nothing_within(
     tree: &NodeTree,
     node_id: RawNodeId,
     scale: f64,
     offset_x: f64,
     offset_y: f64,
     parent_transform: Affine,
-    depth: usize,
+    budget: &mut u32,
 ) -> bool {
-    // Shallow on purpose; past it, visit and let paint decide. Every level
+    // Bounded on purpose; past it, visit and let paint decide. Every level
     // that *is* visited asks this again of its own children, so a subtree
     // outside the cull whose content reaches back in late in DOM order is
-    // re-walked once per level of nesting above it. The cap bounds that to
-    // `MAX_DEPTH + 1` rect tests per node, where 32 let it grow with the
-    // nesting: 2000 `column-reverse` rows under 30 overflowing wrappers
-    // painted in 0.30 ms against 0.13 ms with no cull, and 0.15 ms with this
-    // cap (review of #957, release, best of 5). A list row — the row, its
-    // content, a line or two inside that — still prunes whole within it.
-    const MAX_DEPTH: usize = 3;
-    if depth > MAX_DEPTH {
+    // re-walked once per level of nesting above it. A depth cap of 32 let that
+    // grow with the nesting: 2000 `column-reverse` rows under 30 overflowing
+    // wrappers painted in 0.30 ms against 0.13 ms with no cull (review of
+    // #957, release, best of 5). A cap of 3 bounded it, and defeated the cull
+    // for every row deeper than that — a `Tree` row is `li > content > chevron
+    // > svg > path`, so each one scrolled out of view was entered, and each
+    // open folder around it (#1719). The bound is a count of nodes instead
+    // ([`PAINTS_NOTHING_BUDGET`] per question, shared by the whole recursion):
+    // a row prunes whole whatever its depth, and an open folder whose subtree
+    // is larger than the budget is entered, to ask the same of its rows.
+    if *budget == 0 {
         return false;
     }
+    *budget -= 1;
     let Some(node) = tree.get(node_id) else {
         return false;
     };
@@ -2545,16 +2556,23 @@ fn paints_nothing_without_visit(
     if cs.display == DisplayValue::None {
         return true;
     }
-    if node.creates_stacking_context()
-        || matches!(cs.position, PositionValue::Fixed | PositionValue::Sticky)
-        || cs.display == DisplayValue::Contents
+    if matches!(cs.position, PositionValue::Fixed | PositionValue::Sticky)
         || node.estimated_height.is_some()
     {
         return false;
     }
     let layout = &node.layout;
     if layout.width == 0.0 || layout.height == 0.0 {
-        return false;
+        return zero_box_paints_nothing_within(
+            tree,
+            node_id,
+            node,
+            scale,
+            offset_x,
+            offset_y,
+            parent_transform,
+            budget,
+        );
     }
     let x = offset_x + layout.x as f64 * scale;
     let y = offset_y + layout.y as f64 * scale;
@@ -2570,6 +2588,20 @@ fn paints_nothing_without_visit(
     };
     if inside {
         return false;
+    }
+    // A stacking context outside every cull is [`paint_node`]'s own prune,
+    // asked one level up (#1719): with no children it draws nothing, and with
+    // some it draws nothing exactly when [`subtree_is_entirely_outside`] says
+    // so — the walk that knows what escapes it (a hoisted `position: fixed`
+    // descendant, an absolute past a clip). The same call, on the same cull,
+    // so the answer is the one the visit would have reached; what it saves is
+    // the visit. A list whose rows are stacking contexts (`position:
+    // relative; z-index: 0`) entered every row, on screen or not.
+    if node.creates_stacking_context() {
+        return node.children.is_empty()
+            || subtree_is_entirely_outside(tree, node_id, scale, x, y, node_transform, |r| {
+                intersects_dirty_region(r.x0, r.y0, r.width(), r.height())
+            });
     }
     // Both axes, not `clips_overflow()`'s OR (#535): a box open on one axis
     // lets a child paint past it on exactly that axis, so a box clipping only
@@ -2591,16 +2623,91 @@ fn paints_nothing_without_visit(
             };
             paints_at_stacking_root(child)
                 || drawn_by_its_ifc(tree, child)
-                || paints_nothing_without_visit(
+                || paints_nothing_within(
                     tree,
                     child_id,
                     scale,
                     child_x,
                     child_y,
                     node_transform,
-                    depth + 1,
+                    budget,
                 )
         })
+}
+
+/// Nodes [`paints_nothing_without_visit`] may look at to answer one question
+/// before it gives up and lets [`paint_node`] decide (#1719).
+const PAINTS_NOTHING_BUDGET: u32 = 128;
+
+/// See [`paints_nothing_within`]; this is it with a fresh budget of
+/// [`PAINTS_NOTHING_BUDGET`] nodes.
+fn paints_nothing_without_visit(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    offset_x: f64,
+    offset_y: f64,
+    parent_transform: Affine,
+) -> bool {
+    let mut budget = PAINTS_NOTHING_BUDGET;
+    paints_nothing_within(
+        tree,
+        node_id,
+        scale,
+        offset_x,
+        offset_y,
+        parent_transform,
+        &mut budget,
+    )
+}
+
+/// [`paints_nothing_within`] for a box with no area, mirroring
+/// [`paint_node`]'s zero-size arm (#1719).
+///
+/// A `display: contents` element generates no box: paint walks its children
+/// in the parent's space under the parent's transform, so it paints nothing
+/// exactly when none of them does. `rsx!` wraps every `for`, `if` and reactive
+/// text in one, and answering `false` for it made every row holding one — and
+/// every ancestor of that row — be entered, on screen or not.
+///
+/// Any other box degenerate in both axes with nothing to walk (an empty
+/// element, an `<svg>`'s shapes, which its own arm draws) returns from
+/// [`paint_node`] having drawn nothing, so it answers `true`: an icon's `0x0`
+/// `<path>` defeated the cull for the row around it. A box degenerate in one
+/// axis, or one whose children paint outside it (#142, #1696), is entered.
+#[allow(clippy::too_many_arguments)]
+fn zero_box_paints_nothing_within(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    node: &Node,
+    scale: f64,
+    offset_x: f64,
+    offset_y: f64,
+    parent_transform: Affine,
+    budget: &mut u32,
+) -> bool {
+    if node.computed_style.display == DisplayValue::Contents {
+        return crate::RinchDocument::box_tree_children(&tree.nodes, node_id)
+            .iter()
+            .all(|&child_id| {
+                let Some(child) = tree.get(child_id) else {
+                    return true;
+                };
+                paints_at_stacking_root(child)
+                    || drawn_by_its_ifc(tree, child)
+                    || paints_nothing_within(
+                        tree,
+                        child_id,
+                        scale,
+                        offset_x,
+                        offset_y,
+                        parent_transform,
+                        budget,
+                    )
+            });
+    }
+    let layout = &node.layout;
+    !((layout.width == 0.0) != (layout.height == 0.0) || zero_box_paints_children(node))
 }
 
 #[allow(clippy::too_many_arguments)]
