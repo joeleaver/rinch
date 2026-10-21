@@ -2029,7 +2029,7 @@ Colours: `--rinch-color-surface` / `-text` / `-border` read off `<body>`'s
 custom properties, light fallbacks without the theme. The hover arm calls
 `note_title_tooltip_move` with the move's shared hit (restarting the rest timer
 on every move); a document with no `title` pays one read of
-`NodeTree::title_attributes` (counted by `set_attribute`/`remove_attribute`,
+`NodeTree::title_sources` (counted by `set_attribute`/`remove_attribute`,
 like `mousemove_handlers`). `AboutToWait` runs `tick_title_tooltip`, which
 shows a due one and follows a shown one's `title` (changed: re-shaped; removed
 or detached: hidden). The deadline is the second timed wake:
@@ -2040,8 +2040,16 @@ window. Hidden by a move onto another source, `MouseDown`, `MouseWheel`,
 `KeyDown` (these three also suppress it until the pointer reaches another
 `title`), `PointerCancel`, `Resized`, `WindowFocus(false)`, a file hover, the
 mouse leaving the window (the shell's `PointerLeft`), and any drag. Off on
-Android; `RinchApp::set_title_tooltips`. Not on `rinch-web` (the browser draws
-its own). Components declare no `title` prop, so it goes on an HTML element.
+Android; `App::title_tooltips(bool)` (a thread-local default read when the
+window's `RinchApp` is made) and `RinchApp::set_title_tooltips`. Embed:
+`RinchContext::pointer_left()` is the host's half of the window-leave hide.
+A hide pushes `RequestRedraw` itself (a lone Shift press must repaint). SVG
+follows Chrome 155: an SVG element's `title` attribute is ignored and its first
+`<title>` child's text is its title (`paint::tooltip::own_title`); only the
+`<svg>` root is reached, since hit testing does not enter shapes.
+`title_sources` also counts every `<title>` element created. Not on
+`rinch-web` (the browser draws its own). Components declare no `title` prop, so
+it goes on an HTML element.
 
 ## Keyboard Shortcuts (built-in)
 

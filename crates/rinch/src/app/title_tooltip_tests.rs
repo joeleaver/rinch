@@ -460,3 +460,400 @@ fn showing_it_repaints_its_rect_and_lays_out_nothing() {
         ],
     );
 }
+
+// ── Review of #1652 (scratch fixtures) ─────────────────────────────────────
+mod review_1652 {
+    use super::*;
+    use rinch_dom::perf::FullRepaintReason;
+
+    fn key(app: &mut RinchApp, k: KeyCode, lk: &str) -> Vec<AppAction> {
+        app.handle_event(
+            PlatformEvent::KeyDown {
+                key: k,
+                logical_key: Some(lk.into()),
+                text: None,
+                modifiers: Modifiers::default(),
+                repeat: KeyRepeat::Fresh,
+            },
+            SIZE,
+            1.0,
+        )
+    }
+
+    /// The event's actions plus the `AboutToWait` turn after it: does the
+    /// shell get asked for a frame?
+    fn frame_asked(app: &mut RinchApp, mut a: Vec<AppAction>) -> bool {
+        a.extend(app.handle_event(PlatformEvent::AboutToWait, SIZE, 1.0));
+        a.contains(&AppAction::RequestRedraw)
+    }
+
+    #[test]
+    fn r1a_a_shift_press_that_hides_it_asks_for_a_frame() {
+        let (mut app, _) = mount();
+        rest_at(&mut app, ON_SAVE);
+        paint(&mut app);
+        let a = key(&mut app, KeyCode::ShiftLeft, "Shift");
+        assert_eq!(app.title_tooltip_text(), None);
+        assert!(frame_asked(&mut app, a), "hidden, but no frame asked for");
+    }
+
+    /// The whole sequence a real Shift tap delivers.
+    #[test]
+    fn r1e_a_real_shift_tap_sequence_asks_for_a_frame() {
+        let (mut app, _) = mount();
+        rest_at(&mut app, ON_SAVE);
+        paint(&mut app);
+        let mut a = Vec::new();
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        a.extend(app.handle_event(PlatformEvent::ModifiersChanged(shift), SIZE, 1.0));
+        a.extend(key(&mut app, KeyCode::ShiftLeft, "Shift"));
+        a.extend(app.handle_event(PlatformEvent::AboutToWait, SIZE, 1.0));
+        a.extend(app.handle_event(
+            PlatformEvent::ModifiersChanged(Modifiers::default()),
+            SIZE,
+            1.0,
+        ));
+        a.extend(app.handle_event(
+            PlatformEvent::KeyUp {
+                key: KeyCode::ShiftLeft,
+                logical_key: Some("Shift".into()),
+                modifiers: Modifiers::default(),
+            },
+            SIZE,
+            1.0,
+        ));
+        assert_eq!(app.title_tooltip_text(), None);
+        assert!(frame_asked(&mut app, a), "hidden, but no frame asked for");
+    }
+
+    #[test]
+    fn r1b_a_wheel_over_unscrollable_content_asks_for_a_frame() {
+        let (mut app, _) = mount();
+        rest_at(&mut app, ON_SAVE);
+        paint(&mut app);
+        let a = app.handle_event(
+            PlatformEvent::MouseWheel {
+                x: ON_SAVE.0,
+                y: ON_SAVE.1,
+                delta_x: 0.0,
+                delta_y: 40.0,
+            },
+            SIZE,
+            1.0,
+        );
+        assert_eq!(app.title_tooltip_text(), None);
+        assert!(frame_asked(&mut app, a), "hidden, but no frame asked for");
+    }
+
+    #[test]
+    fn r1c_a_window_blur_that_hides_it_asks_for_a_frame() {
+        let (mut app, _) = mount();
+        rest_at(&mut app, ON_SAVE);
+        paint(&mut app);
+        let a = app.handle_event(PlatformEvent::WindowFocus(false), SIZE, 1.0);
+        assert_eq!(app.title_tooltip_text(), None);
+        assert!(frame_asked(&mut app, a), "hidden, but no frame asked for");
+    }
+
+    #[test]
+    fn r1d_a_press_on_plain_content_that_hides_it_asks_for_a_frame() {
+        let (mut app, _) = mount();
+        rest_at(&mut app, ON_OUTER);
+        paint(&mut app);
+        let mut a = app.handle_event(
+            PlatformEvent::MouseDown {
+                x: ON_OUTER.0,
+                y: ON_OUTER.1,
+                button: MouseButton::Left,
+            },
+            SIZE,
+            1.0,
+        );
+        a.extend(app.handle_event(
+            PlatformEvent::MouseUp {
+                x: ON_OUTER.0,
+                y: ON_OUTER.1,
+                button: MouseButton::Left,
+            },
+            SIZE,
+            1.0,
+        ));
+        assert_eq!(app.title_tooltip_text(), None);
+        assert!(frame_asked(&mut app, a), "hidden, but no frame asked for");
+    }
+
+    /// A small document built by the caller.
+    fn mount_with(build: impl Fn(&mut RenderScope, &NodeHandle) + 'static) -> RinchApp {
+        mount_settled(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute(
+                "style",
+                "position: relative; width: 800px; height: 600px; font: 16px/20px sans-serif",
+            );
+            build(scope, &root);
+            root
+        })
+    }
+
+    #[test]
+    fn r2a_an_svg_title_attribute_is_no_tooltip_as_in_chrome() {
+        let mut app = mount_with(|scope, root| {
+            let svg = scope.create_element("svg");
+            svg.set_attribute(
+                "style",
+                "position: absolute; left: 100px; top: 100px; width: 160px; height: 60px",
+            );
+            svg.set_attribute("width", "160");
+            svg.set_attribute("height", "60");
+            let rect = scope.create_element("rect");
+            rect.set_attribute("width", "160");
+            rect.set_attribute("height", "60");
+            rect.set_attribute("fill", "#9cf");
+            rect.set_attribute("title", "SVG-ATTR");
+            svg.append_child(&rect);
+            root.append_child(&svg);
+        });
+        move_to(&mut app, (171.0, 133.0));
+        if let Some(due) = app.title_tooltip_deadline() {
+            tick_at(&mut app, due);
+        }
+        assert_eq!(
+            app.title_tooltip_text(),
+            None,
+            "Chrome 155 shows nothing for an SVG `title` attribute"
+        );
+    }
+
+    /// Not done: rinch's hit test answers the `<svg>` for a point over one of
+    /// its shapes, so a shape's own `<title>` is never reached.
+    #[test]
+    #[ignore = "SVG shapes are not hit-tested individually (#1646 not done)"]
+    fn r2b_an_svg_title_child_is_the_tooltip_as_in_chrome() {
+        let mut app = mount_with(|scope, root| {
+            let svg = scope.create_element("svg");
+            svg.set_attribute(
+                "style",
+                "position: absolute; left: 100px; top: 100px; width: 160px; height: 60px",
+            );
+            svg.set_attribute("width", "160");
+            svg.set_attribute("height", "60");
+            let rect = scope.create_element("rect");
+            rect.set_attribute("width", "160");
+            rect.set_attribute("height", "60");
+            let t = scope.create_element("title");
+            t.append_child(&scope.create_text("SVG-CHILD"));
+            rect.append_child(&t);
+            svg.append_child(&rect);
+            root.append_child(&svg);
+        });
+        move_to(&mut app, (171.0, 133.0));
+        if let Some(due) = app.title_tooltip_deadline() {
+            tick_at(&mut app, due);
+        }
+        assert_eq!(
+            app.title_tooltip_text(),
+            Some("SVG-CHILD"),
+            "Chrome 155 shows an SVG <title> child"
+        );
+    }
+
+    #[test]
+    fn r4_a_disabled_buttons_title_shows_as_in_chrome() {
+        let mut app = mount_with(|scope, root| {
+            let b = scope.create_element("button");
+            b.set_attribute("disabled", "");
+            b.set_attribute("title", "DISABLED");
+            b.set_attribute(
+                "style",
+                "position: absolute; left: 100px; top: 100px; width: 160px; height: 60px",
+            );
+            root.append_child(&b);
+        });
+        rest_at(&mut app, (171.0, 133.0));
+        assert_eq!(app.title_tooltip_text(), Some("DISABLED"));
+    }
+
+    /// An `<svg>`'s own `<title>` child is its tooltip (Chrome 155 shows an
+    /// SVG `<title>` child), and the `<svg>`'s `title` attribute is not.
+    #[test]
+    fn r2d_an_svg_roots_title_child_is_its_tooltip() {
+        let mut app = mount_with(|scope, root| {
+            let svg = scope.create_element("svg");
+            svg.set_attribute(
+                "style",
+                "position: absolute; left: 100px; top: 100px; width: 160px; height: 60px",
+            );
+            svg.set_attribute("width", "160");
+            svg.set_attribute("height", "60");
+            svg.set_attribute("title", "SVG-ROOT-ATTR");
+            let t = scope.create_element("title");
+            t.append_child(&scope.create_text("SVG-ROOT-CHILD"));
+            svg.append_child(&t);
+            let rect = scope.create_element("rect");
+            rect.set_attribute("width", "160");
+            rect.set_attribute("height", "60");
+            svg.append_child(&rect);
+            root.append_child(&svg);
+        });
+        rest_at(&mut app, (171.0, 133.0));
+        assert_eq!(app.title_tooltip_text(), Some("SVG-ROOT-CHILD"));
+    }
+
+    #[test]
+    fn r2c_an_svg_roots_title_attribute_is_no_tooltip_as_in_chrome() {
+        let mut app = mount_with(|scope, root| {
+            let svg = scope.create_element("svg");
+            svg.set_attribute(
+                "style",
+                "position: absolute; left: 100px; top: 100px; width: 160px; height: 60px",
+            );
+            svg.set_attribute("width", "160");
+            svg.set_attribute("height", "60");
+            svg.set_attribute("title", "SVG-ROOT-ATTR");
+            let rect = scope.create_element("rect");
+            rect.set_attribute("width", "160");
+            rect.set_attribute("height", "60");
+            svg.append_child(&rect);
+            root.append_child(&svg);
+        });
+        move_to(&mut app, (171.0, 133.0));
+        if let Some(due) = app.title_tooltip_deadline() {
+            tick_at(&mut app, due);
+        }
+        assert_eq!(
+            app.title_tooltip_text(),
+            None,
+            "Chrome 155 shows nothing for <svg title>"
+        );
+    }
+
+    /// Kills M9 (the in-document check): the doc says a detached source hides it.
+    #[test]
+    fn r8_removing_the_titled_element_takes_it_down() {
+        let (mut app, ids) = mount();
+        rest_at(&mut app, ON_SAVE);
+        let doc = app.doc.clone().unwrap();
+        doc.borrow_mut().remove_node(NodeId(ids.save.get()));
+        app.handle_event(PlatformEvent::AboutToWait, SIZE, 1.0);
+        assert_eq!(app.title_tooltip_text(), None);
+    }
+
+    // ── pixel oracle: a partial frame equals a full repaint ──
+
+    fn frame(app: &mut RinchApp, scale: f64) -> Vec<u8> {
+        if app.has_pending_layout() {
+            app.resolve_and_repaint(VP.0, VP.1);
+        }
+        app.build_pixels(scale, SIZE_PX(scale), false).0.to_vec()
+    }
+    #[allow(non_snake_case)]
+    fn SIZE_PX(_scale: f64) -> (u32, u32) {
+        SIZE
+    }
+    fn full(app: &mut RinchApp, scale: f64) -> Vec<u8> {
+        app.invalidate_previous_frame(FullRepaintReason::Invalidated);
+        app.request_repaint();
+        frame(app, scale)
+    }
+    fn assert_partial_is_full(app: &mut RinchApp, scale: f64, what: &str) {
+        let p = frame(app, scale);
+        let f = full(app, scale);
+        let diff = p.chunks(4).zip(f.chunks(4)).filter(|(a, b)| a != b).count();
+        assert_eq!(
+            diff, 0,
+            "{what}: {diff} px differ between the partial frame and a full repaint"
+        );
+    }
+
+    fn scroller_app() -> (RinchApp, Rc<Cell<usize>>) {
+        let id = Rc::new(Cell::new(0));
+        let i = id.clone();
+        let app = mount_with(move |scope, root| {
+            let sc = scope.create_element("div");
+            sc.set_attribute(
+                "style",
+                "position: absolute; left: 30px; top: 40px; width: 260px; height: 180px; overflow: auto",
+            );
+            sc.set_attribute("title", "Scroller");
+            for k in 0..40 {
+                let row = scope.create_element("div");
+                let c = (k * 37 % 200) + 30;
+                row.set_attribute(
+                    "style",
+                    &format!(
+                        "height: 13px; background: rgb({c}, {}, {})",
+                        255 - c,
+                        (c * 3) % 256
+                    ),
+                );
+                row.append_child(&scope.create_text(&format!("row {k}")));
+                sc.append_child(&row);
+            }
+            i.set(sc.node_id().0);
+            root.append_child(&sc);
+            let fixed = scope.create_element("div");
+            fixed.set_attribute(
+                "style",
+                "position: fixed; left: 400px; top: 300px; width: 300px; height: 200px; \
+                 z-index: 9999; background: rgb(1, 2, 3)",
+            );
+            fixed.set_attribute("title", "Over a fixed overlay");
+            root.append_child(&fixed);
+        });
+        (app, id)
+    }
+
+    fn scroll_oracle(scale: f64) {
+        let (mut app, sc) = scroller_app();
+        frame(&mut app, scale);
+        rest_at(&mut app, (243.0, 187.0)); // near the scroller's bottom-right: the tooltip overlaps it and the page
+        assert_eq!(app.title_tooltip_text(), Some("Scroller"));
+        assert_partial_is_full(&mut app, scale, "shown");
+        let doc = app.doc.clone().unwrap();
+        doc.borrow_mut().set_scroll_top(NodeId(sc.get()), 37.0);
+        app.handle_event(PlatformEvent::AboutToWait, SIZE, 1.0);
+        assert_partial_is_full(&mut app, scale, "scrolled under it");
+        move_to(&mut app, (751.0, 41.0));
+        app.handle_event(PlatformEvent::AboutToWait, SIZE, 1.0);
+        assert_eq!(app.title_tooltip_text(), None);
+        assert_partial_is_full(&mut app, scale, "hidden");
+        // Over the fixed overlay: drawn on top of it.
+        rest_at(&mut app, (690.0, 489.0));
+        assert_eq!(app.title_tooltip_text(), Some("Over a fixed overlay"));
+        assert_partial_is_full(&mut app, scale, "over the overlay");
+        move_to(&mut app, (751.0, 41.0));
+        assert_partial_is_full(&mut app, scale, "hidden off the overlay");
+    }
+
+    #[test]
+    fn r9_partial_frames_equal_a_full_repaint_at_1x() {
+        scroll_oracle(1.0);
+    }
+
+    #[test]
+    fn r10_partial_frames_equal_a_full_repaint_at_1_25x() {
+        scroll_oracle(1.25);
+    }
+
+    #[test]
+    fn r10b_partial_frames_equal_a_full_repaint_at_2x() {
+        scroll_oracle(2.0);
+    }
+}
+
+/// `App::title_tooltips(false)` reaches the app `run` creates afterwards on
+/// the thread (`set_title_tooltips_default`), and only that thread.
+#[test]
+fn the_startup_default_turns_off_apps_created_after_it() {
+    set_title_tooltips_default(false);
+    let (mut off, _) = mount();
+    set_title_tooltips_default(true);
+    assert!(!off.title_tooltips_enabled());
+    move_to(&mut off, ON_SAVE);
+    assert_eq!(off.title_tooltip_deadline(), None);
+    let (on, _) = mount();
+    assert!(on.title_tooltips_enabled());
+}

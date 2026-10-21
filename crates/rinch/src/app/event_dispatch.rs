@@ -204,6 +204,7 @@ impl RinchApp {
         // a wheel or a key keeps it away from what the pointer is over until
         // the pointer reaches another `title`; a cancel, blur or resize just
         // takes it down. Before the menu below, which swallows presses.
+        let tooltip_up = self.title_tooltip.shown.is_some();
         match &event {
             PlatformEvent::MouseDown { .. }
             | PlatformEvent::MouseWheel { .. }
@@ -213,6 +214,11 @@ impl RinchApp {
             | PlatformEvent::WindowFocus(false)
             | PlatformEvent::FileHoverEnter { .. } => self.hide_title_tooltip(),
             _ => {}
+        }
+        // A hide is a frame to draw: nothing else this event does need ask
+        // for one (a bare Shift press, an embed host's lone press).
+        if tooltip_up && self.title_tooltip.shown.is_none() {
+            actions.push(AppAction::RequestRedraw);
         }
 
         // While it is open the pointer belongs to the menu: an item press runs

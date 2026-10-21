@@ -14,7 +14,7 @@
 //! show itself is [`RinchApp::tick_title_tooltip`], run from `AboutToWait`.
 //! Nothing is timed, walked or painted while the pointer is over no titled
 //! element, and a document that never wrote a `title` pays one counter read
-//! per pointer move (`NodeTree::title_attributes`).
+//! per pointer move (`NodeTree::title_sources`).
 //!
 //! It hides when the pointer moves onto content under another `title` (or
 //! none), and on any press, wheel, key press, pointer cancel, resize, window
@@ -23,7 +23,7 @@
 //! the button just clicked does not bring it back. One tooltip at a time.
 
 use super::*;
-use rinch_dom::paint::tooltip::{Tooltip, advisory_title, place_tooltip};
+use rinch_dom::paint::tooltip::{Tooltip, advisory_title, own_title, place_tooltip};
 
 /// How long the pointer rests before the tooltip shows.
 pub const TITLE_TOOLTIP_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
@@ -68,13 +68,26 @@ pub(crate) struct TitleTooltipState {
     pub(crate) last_rect: Option<peniko::kurbo::Rect>,
 }
 
+thread_local! {
+    /// The default for a new [`RinchApp`] on this thread: `App::title_tooltips`
+    /// (`run` creates the window's app on the thread it is called on).
+    static TOOLTIPS_OFF_BY_DEFAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether a `RinchApp` created from now on, on this thread, shows `title` tooltips
+/// ([`App::title_tooltips`](crate::App::title_tooltips) calls this before the
+/// window's app is created). Android ignores it: it never shows one.
+pub fn set_title_tooltips_default(enabled: bool) {
+    TOOLTIPS_OFF_BY_DEFAULT.set(!enabled);
+}
+
 impl Default for TitleTooltipState {
     fn default() -> Self {
         Self {
             // A touch screen has no resting pointer: a finger that stays down
             // is a long press (a context menu), and one that lifts leaves no
             // pointer behind.
-            enabled: !cfg!(target_os = "android"),
+            enabled: !cfg!(target_os = "android") && !TOOLTIPS_OFF_BY_DEFAULT.get(),
             pending: None,
             shown: None,
             suppressed: None,
@@ -135,7 +148,7 @@ impl RinchApp {
         let titled = self
             .doc
             .as_ref()
-            .is_some_and(|doc| doc.borrow().tree.title_attributes > 0);
+            .is_some_and(|doc| doc.borrow().tree.title_sources > 0);
         if !titled && state.pending.is_none() && state.shown.is_none() && state.over.is_none() {
             // No `title` anywhere and nothing to take down: the whole cost of
             // a pointer move in a document without one.
@@ -222,14 +235,7 @@ impl RinchApp {
             let pointer = shown.pointer;
             let d = doc.borrow();
             let now_text = (Self::in_document(&d.tree, source))
-                .then(|| {
-                    d.tree
-                        .nodes
-                        .get(source)
-                        .and_then(|n| n.attributes.get("title"))
-                        .filter(|t| !t.trim().is_empty())
-                        .cloned()
-                })
+                .then(|| own_title(&d.tree, source).filter(|t| !t.trim().is_empty()))
                 .flatten();
             drop(d);
             match now_text {
@@ -274,14 +280,7 @@ impl RinchApp {
             // Read again: the attribute may have changed or gone while the
             // pointer rested.
             let text = Self::in_document(&d.tree, source)
-                .then(|| {
-                    d.tree
-                        .nodes
-                        .get(source)
-                        .and_then(|n| n.attributes.get("title"))
-                        .filter(|t| !t.trim().is_empty())
-                        .cloned()
-                })
+                .then(|| own_title(&d.tree, source).filter(|t| !t.trim().is_empty()))
                 .flatten();
             let Some(text) = text else {
                 return false;

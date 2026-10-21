@@ -48,27 +48,52 @@ const FALLBACK_BACKGROUND: [u8; 3] = [0xff, 0xff, 0xff];
 const FALLBACK_TEXT: [u8; 3] = [0x21, 0x25, 0x29];
 const FALLBACK_BORDER: [u8; 3] = [0xde, 0xe2, 0xe6];
 
-/// The advisory title that applies to `node`: the `title` attribute of the
-/// node itself or of its nearest ancestor that carries one, as HTML defines
-/// it. An attribute that is present but empty — or only white space — ends the
-/// search with no tooltip: "if this attribute is omitted from an element, then
-/// it implies that the title attribute of the nearest ancestor … is relevant",
-/// so an empty one is relevant and says nothing.
+/// The advisory title that applies to `node`: the title of the node itself
+/// or of its nearest ancestor that has one, as HTML defines it. A title that
+/// is present but empty — or only white space — ends the search with no
+/// tooltip: "if this attribute is omitted from an element, then it implies
+/// that the title attribute of the nearest ancestor … is relevant", so an
+/// empty one is relevant and says nothing (Chrome 155 agrees, for `""` and
+/// for white space).
 ///
-/// Returns the node carrying the attribute, and the text.
-pub fn advisory_title(tree: &NodeTree, node: RawNodeId) -> Option<(RawNodeId, &str)> {
+/// An element's title is [`own_title`]'s answer. Returns the node it belongs
+/// to, and the text.
+pub fn advisory_title(tree: &NodeTree, node: RawNodeId) -> Option<(RawNodeId, String)> {
     let mut cur = Some(node);
     while let Some(id) = cur {
         let n = tree.nodes.get(id)?;
-        if let Some(title) = n.attributes.get("title") {
+        if let Some(title) = own_title(tree, id) {
             if title.trim().is_empty() {
                 return None;
             }
-            return Some((id, title.as_str()));
+            return Some((id, title));
         }
         cur = n.parent;
     }
     None
+}
+
+/// The title `id` carries itself, if any: an HTML element's `title`
+/// attribute, or an SVG element's first `<title>` child's text. As in Chrome
+/// 155, an SVG element's `title` *attribute* is no title (SVG has none).
+pub fn own_title(tree: &NodeTree, id: RawNodeId) -> Option<String> {
+    let n = tree.nodes.get(id)?;
+    let tag = n.tag()?;
+    if tag == "svg" || crate::attr_name::is_svg_content_tag(tag) {
+        let title = n
+            .children
+            .iter()
+            .filter_map(|&c| tree.nodes.get(c))
+            .find(|c| c.tag() == Some("title"))?;
+        let mut text = String::new();
+        for &c in &title.children {
+            if let Some(t) = tree.nodes.get(c).and_then(|c| c.text_content()) {
+                text.push_str(t);
+            }
+        }
+        return Some(text);
+    }
+    n.attributes.get("title").cloned()
 }
 
 /// Where a tooltip of `size` goes for a pointer at `pointer`, in a

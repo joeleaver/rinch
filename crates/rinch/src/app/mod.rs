@@ -318,7 +318,7 @@ mod visibility_hidden_overlay_paint_tests;
 
 pub(crate) use hit_testing::*;
 pub use text_context_menu::{TextContextMenuPresentation, TextEditAction, TextEditState};
-pub use title_tooltip::TITLE_TOOLTIP_DELAY;
+pub use title_tooltip::{TITLE_TOOLTIP_DELAY, set_title_tooltips_default};
 
 use std::cell::RefCell;
 use std::rc::Rc;

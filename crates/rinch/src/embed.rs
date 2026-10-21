@@ -624,6 +624,20 @@ impl RinchContext {
                 .is_some_and(|t| rinch_platform::Instant::now() >= t)
     }
 
+    /// Tell rinch the pointer left the UI's surface (the window, or the
+    /// region of it the host routes to rinch). There is no `PlatformEvent`
+    /// for this: a host must call it, or a `title` tooltip (issue #1646)
+    /// shown or waiting when the pointer left stays until the next press,
+    /// key or move. Returns whether a frame is owed (a shown tooltip went).
+    ///
+    /// To turn tooltips off altogether, call
+    /// `app_mut().set_title_tooltips(false)`.
+    pub fn pointer_left(&mut self) -> bool {
+        let shown = self.app.title_tooltip_text().is_some();
+        self.app.hide_title_tooltip();
+        shown
+    }
+
     /// Access the underlying `RinchApp` for advanced use cases.
     pub fn app(&self) -> &RinchApp {
         &self.app
