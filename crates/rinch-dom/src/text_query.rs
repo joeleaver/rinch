@@ -521,11 +521,14 @@ pub fn selection_rects_for_layout(
 /// The visual pieces `(left, right)` of the byte range `[a, b)` on `line`,
 /// left to right: each contiguous stretch of clusters whose first byte is in
 /// the range, walked in visual order (Parley's `Selection::geometry_with`
-/// rule). An inline box between two selected clusters stays inside the piece
-/// around it. A selected hard break (`<br>`, a preserved `\n`), which is in
-/// no cluster of the line, is a newline's width (a quarter of ascent +
+/// rule). An inline box (an image, an `inline-block`) whose index is in the
+/// range is selected; a cluster with no advance (a bidi control, a zero-width
+/// space) adds no piece. A selected hard break (`<br>`, a preserved `\n`) that
+/// is in no cluster of the line is a newline's width (a quarter of ascent +
 /// descent) from the caret before it, joined to the piece it touches — what
-/// [`selection_rects_for_layout`] gives it on a left-to-right line.
+/// [`selection_rects_for_layout`] gives it on a left-to-right line. In a
+/// right-to-left paragraph the newline is a cluster of the line with no
+/// advance, so a selected one shows no width there.
 fn bidi_line_pieces(
     layout: &parley::layout::Layout<Brush>,
     line: &parley::layout::Line<'_, Brush>,
@@ -536,13 +539,33 @@ fn bidi_line_pieces(
     let mut pieces: Vec<(f32, f32)> = Vec::new();
     let mut open: Option<(f32, f32)> = None;
     for item in line.items() {
-        let parley::layout::PositionedLayoutItem::GlyphRun(glyph_run) = item else {
-            continue;
+        let glyph_run = match item {
+            parley::layout::PositionedLayoutItem::GlyphRun(g) => g,
+            parley::layout::PositionedLayoutItem::InlineBox(bx) => {
+                let index = layout
+                    .inline_boxes()
+                    .iter()
+                    .find(|ib| ib.id == bx.id)
+                    .map(|ib| ib.index);
+                if index.is_some_and(|i| (a..b).contains(&i)) {
+                    let (x0, x1) = (bx.x, bx.x + bx.width);
+                    open = Some(match open {
+                        Some((l, _)) => (l, x1),
+                        None => (x0, x1),
+                    });
+                } else if let Some(piece) = open.take() {
+                    pieces.push(piece);
+                }
+                continue;
+            }
         };
         let mut x = glyph_run.offset();
         for cluster in glyph_run.run().visual_clusters() {
             let x0 = x;
             x += cluster.advance();
+            if cluster.advance() == 0.0 {
+                continue;
+            }
             if (a..b).contains(&cluster.text_range().start) {
                 open = Some(match open {
                     Some((l, _)) => (l, x),
