@@ -1217,6 +1217,88 @@ fn a_right_aligned_paragraph_ending_in_spaces_pays_one_pass() {
     );
 }
 
+/// A justified `pre-wrap` paragraph whose lines end in three spaces (#1056):
+/// parley would count two of them as justification opportunities, so the
+/// paragraph takes the hang pass, and each such line is committed once more by
+/// length so that parley's count is exact: per layout built (the root
+/// compute's measure and the paint layout), one pass and four lines broken
+/// again, two widened for their spaces and the same two committed by length
+/// (`ifc_hang_lines`). The third line ends in one space that fits and is left
+/// as it is.
+#[test]
+fn a_justified_paragraph_with_lines_ending_in_spaces_pays_one_pass() {
+    let mut doc = doc_with(".p { width: 50px; white-space: pre-wrap; text-align: justify; }");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    text(&mut doc, p, "aa bb   cc dd   ee ff gg");
+    let s = cold_frame(&mut doc);
+    expect(
+        "justified paragraph, lines ending in spaces",
+        &s,
+        &[
+            (StyleResolves, 2),
+            (ElementsCascaded, 3),
+            (StyleNodesVisited, 7),
+            (FullStyleWalks, 2),
+            (TaffyStyleSyncs, 3),
+            (TaffyStyleChanges, 2),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 2),
+            (IfcSignatureChanges, 1),
+            (IfcHangPasses, 2),
+            (IfcHangLines, 8),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// The twin whose lines end in one space that fits: parley counts those as
+/// CSS does, and the paragraph takes no pass.
+#[test]
+fn a_justified_paragraph_with_single_spaces_pays_no_pass() {
+    let mut doc = doc_with(".p { width: 50px; white-space: pre-wrap; text-align: justify; }");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    text(&mut doc, p, "aa b cc d ee f gg");
+    let s = cold_frame(&mut doc);
+    expect(
+        "justified paragraph, single spaces",
+        &s,
+        &[
+            (StyleResolves, 2),
+            (ElementsCascaded, 3),
+            (StyleNodesVisited, 7),
+            (FullStyleWalks, 2),
+            (TaffyStyleSyncs, 3),
+            (TaffyStyleChanges, 2),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 2),
+            (IfcSignatureChanges, 1),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
 /// The start-aligned twin of
 /// `a_right_aligned_paragraph_ending_in_spaces_pays_one_pass`: no hang pass.
 #[test]

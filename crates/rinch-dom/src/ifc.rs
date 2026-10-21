@@ -2127,8 +2127,15 @@ fn justify_line(
     let hanging = line.iter().rev().take_while(|u| u.hangs).count();
     let content = &line[..line.len() - hanging];
     let content_advance: f32 = content.iter().map(|u| u.advance).sum();
-    let opportunities = content.iter().filter(|u| u.space).count()
-        - usize::from(content.last().is_some_and(|u| u.space));
+    let content_ends_in_space = content.last().is_some_and(|u| u.space);
+    // One hanging space that fit (parley hangs only what overflows `max`) is
+    // counted as CSS counts it: parley counted it and its "less one" took it
+    // off again. Nothing to do.
+    if hanging == 1 && !content_ends_in_space && advance <= max {
+        return Some(0);
+    }
+    let opportunities =
+        content.iter().filter(|u| u.space).count() - usize::from(content_ends_in_space);
     let n = u32::try_from(line.iter().filter(|u| u.counted).count()).ok()?;
     breaker.revert_to(line_start.clone());
     breaker.break_next_with_length(n)?;
