@@ -1205,7 +1205,7 @@ first), like `on_change`, and costs nothing while none is registered.
 browser lays out on demand, so `caret_rect` is always current. The desktop runtime
 lays out once per input event, after the editor has handled it, so from
 `on_selection_change` or `on_key` a position in the block just edited answers
-`None` (it has no layout yet). `on_caret_moved` comes from the caret pass after the
+`None` (it has no layout yet), and so does the new empty paragraph Enter makes. `on_caret_moved` comes from the caret pass after the
 layout. The desktop may run a caret pass before an event's layout as well, so a
 call can come with `None` for the edited block; the one after the layout follows
 in the same event. It is not called for a scroll: the caret moves with the editor

@@ -2179,6 +2179,15 @@ impl RinchDomEditorView {
     /// height. `None` if the block at `pos` is *not* actually empty (a non-empty
     /// block that merely failed to measure — leave the caret hidden rather than
     /// misplace it) or has no host box yet.
+    ///
+    /// A box that is 0 wide **and** 0 tall has not been laid out: the empty
+    /// paragraph Enter just made is a fresh element whose box is the default
+    /// until the next layout, and its "origin" is the top of the editor. A
+    /// caret placed there was the scroll anchor the input path's caret pass
+    /// fulfils the caret scroll with, so Enter at the end of a paragraph in a
+    /// scrolled pane jumped the pane to the editor's top (desktop). `None`
+    /// keeps the scroll owed until a pass after the layout has the real box,
+    /// as for a textblock whose text was edited since the last layout.
     fn empty_block_caret(
         &self,
         d: &dyn DomDocument,
@@ -2190,7 +2199,10 @@ impl RinchDomEditorView {
         if r.parent().content().size() != 0 {
             return None;
         }
-        let (_, _, _, bh) = d.query_node_layout(block_id as u64)?;
+        let (_, _, bw, bh) = d.query_node_layout(block_id as u64)?;
+        if bw == 0.0 && bh == 0.0 {
+            return None;
+        }
         let (ox, oy) = self.block_offset_in_container(d, block_id);
         // An empty block's box height is its single line box; clamp to a sane range
         // and fall back to a default when it has collapsed to zero.
