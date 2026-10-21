@@ -108,8 +108,26 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     Not done: a right-to-left line, by parley's inferred direction or CSS `direction: rtl`
     (parley offsets it by its trailing white space, so narrowing would move it the wrong way;
     #1666), a flex or grid item's own text (a text leaf, `break_leaf_lines`), a `nowrap`/`pre`
-    root with no wrapping text (#1237), and a justified line's space count (#1056).
+    root with no wrapping text (#1237).
     `crates/rinch-dom/tests/text_align_trailing_spaces_1042_tests.rs` is the pin.
+  - **parley counts a justified line's opportunities as it breaks it** (`num_spaces`, not
+    public): every space or NBSP that fits, less one when the line ends in one. So two or more
+    spaces hanging at a wrap took shares of the free space, and a line parley ended by hanging
+    the one space that did not fit lost a word gap (the line was not flush; on `main` that
+    second case was any justified line whose last word ended within a space of the edge, in
+    `normal` and `pre-wrap` alike). Chrome 155's opportunities are the spaces and NBSPs of the
+    line's content, hanging spaces excluded, less the last when the content ends in one. With
+    `text-align: justify` in a left-to-right block, a paragraph with such a line
+    (`any_miscounted_justified_line`) takes the hang pass, and `ifc::justify_line` commits the
+    line again **by length** — parley's count is then every space on it less one, never fewer
+    than CSS's — and sets its alignment width so each opportunity gets `free / opportunities`
+    (#1056). The surplus shares land on the spaces after the opportunities: hanging spaces
+    (past the edge; a caret between two of them is right of Chrome's) or, when the content
+    ends in an NBSP before hanging spaces, that NBSP (a caret after it is one share right of
+    Chrome's). `LineUnit::run` is the shaped run's identity (its `RunMetrics` address), not
+    `Run::index`, which is a place on a line: #1042's trailing white space read hanging spaces
+    of one run that the table's layout had on two lines as two runs.
+    `crates/rinch-dom/tests/justify_hanging_spaces_1056_tests.rs` is the pin.
   - **rinch collapses an IFC's white space itself; the IFC's tree builder always hands parley
     `Preserve`.** (The ranged builders — form controls, text leaves — are separate and unchanged.)
     `WhiteSpaceCollapse::Collapse` collapses and trims per *style span*, and rinch pushes one span

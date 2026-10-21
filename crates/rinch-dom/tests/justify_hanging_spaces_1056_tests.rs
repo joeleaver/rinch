@@ -81,10 +81,7 @@ fn at(d: &RinchDocument, b: NodeId, offset: usize) -> (f32, f32) {
 fn assert_at(d: &RinchDocument, b: NodeId, offset: usize, x: f32, line: f32, what: &str) {
     let (got_x, got_line) = at(d, b, offset);
     assert_eq!(got_line, line, "{what}: on line {got_line}, Chrome {line}");
-    assert!(
-        (got_x - x).abs() < 0.05,
-        "{what}: at {got_x}, Chrome {x}"
-    );
+    assert!((got_x - x).abs() < 0.05, "{what}: at {got_x}, Chrome {x}");
 }
 
 /// The issue's text. Chrome: `bb` and `dd` end flush at 50, and the one word
@@ -103,7 +100,14 @@ fn three_hanging_spaces_take_no_share() {
     // counts beyond CSS's (two here, of 7.94 each), so a caret between them
     // is that much right of Chrome's 54.5 and 59. They are past the box's
     // edge; nothing is drawn there.
-    assert_at(&d, b, 6, 62.44, 0.0, "the first hanging space ends (Chrome: 54.5)");
+    assert_at(
+        &d,
+        b,
+        6,
+        62.44,
+        0.0,
+        "the first hanging space ends (Chrome: 54.5)",
+    );
 }
 
 /// Two hanging spaces, two word gaps. Chrome: each gap 16.05 wide, `c` ends at
@@ -192,9 +196,30 @@ fn sentences_ending_in_three_spaces_justify_flush() {
     let (d, b) = block("120px", "pre-wrap", &[("", s)]);
     assert_at(&d, b, "One two".len(), 67.58, 0.0, "`two` ends");
     assert_at(&d, b, "One two three.".len(), 120.0, 0.0, "`three.` ends");
-    assert_at(&d, b, "One two three.   Four".len(), 33.89, 1.0, "`Four` ends");
-    assert_at(&d, b, s.find("six.").unwrap() + 4, 120.0, 1.0, "`six.` ends");
-    assert_at(&d, b, s.find("eight").unwrap() + 5, 120.0, 2.0, "`eight` ends");
+    assert_at(
+        &d,
+        b,
+        "One two three.   Four".len(),
+        33.89,
+        1.0,
+        "`Four` ends",
+    );
+    assert_at(
+        &d,
+        b,
+        s.find("six.").unwrap() + 4,
+        120.0,
+        1.0,
+        "`six.` ends",
+    );
+    assert_at(
+        &d,
+        b,
+        s.find("eight").unwrap() + 5,
+        120.0,
+        2.0,
+        "`eight` ends",
+    );
 }
 
 /// `break-spaces` spaces never hang: every one is an opportunity but the last

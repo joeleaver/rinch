@@ -320,6 +320,12 @@ impl HangStats {
 /// ([`align_unhung_trailing`]). A paragraph with no such line, or aligned
 /// to the start, is not broken again for it.
 ///
+/// And with `justify` (`text-align: justify`, left to right), a soft-wrapped
+/// line parley would count a different number of justification opportunities
+/// on than CSS ([`any_miscounted_justified_line`]) is committed again by
+/// length and given the alignment width that shares its free space among its
+/// opportunities only ([`justify_line`], #1056).
+///
 /// [`BreakReason::Regular`]: parley::layout::BreakReason::Regular
 /// [`BreakLines::revert_to`]: parley::layout::BreakLines::revert_to
 /// [`set_prior_line_width`]: parley::layout::BreakLines::set_prior_line_width
@@ -1399,7 +1405,9 @@ fn break_lines_up_to(layout: &mut parley::Layout<Brush>, max_width: Option<f32>,
 /// Spaces are hung only with `hang_spaces`; a line parley ended by hanging a
 /// no-break space is broken again ([`unglue`]) either way. With
 /// `count_trailing`, trailing white space that does not hang is aligned as
-/// content ([`align_unhung_trailing`]).
+/// content ([`align_unhung_trailing`]); with `justify`, a soft-wrapped line is
+/// justified over its opportunities only ([`justify_line`]).
+#[allow(clippy::too_many_arguments)]
 fn hang_pass(
     layout: &mut parley::Layout<Brush>,
     text: &str,
