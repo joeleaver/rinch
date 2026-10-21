@@ -852,10 +852,12 @@ fn focus_shows_the_selection_selection_range_reads() {
     assert_eq!(h[2].selection_range(), Some((0, 0, fwd)));
     assert_eq!(focus_and_type(&mut f, &h[2]), "Zhello");
 
-    // An equal write keeps the selection (Chrome's value setter does too).
+    // A write that leaves the value as it was keeps the selection (Chrome's
+    // value setter does too): "hel\nlo" sanitizes to "hello" in an <input>.
+    // (A write of the very same attribute string changes nothing at all.)
     h[3].set_selection_range(1, 2, fwd);
     f.app.handle_event(PlatformEvent::AboutToWait, VP, 1.0);
-    h[3].set_attribute("value", "hello");
+    h[3].set_attribute("value", "hel\nlo");
     assert_eq!(h[3].selection_range(), Some((1, 2, fwd)));
     assert_eq!(focus_and_type(&mut f, &h[3]), "hZllo");
 }
