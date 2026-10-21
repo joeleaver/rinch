@@ -1121,9 +1121,11 @@ pub trait DomDocument {
         None
     }
 
-    /// Per-line selection rectangles `(x, y, width, height)`, relative to the
-    /// node's border box (the frame of [`Self::query_caret_position`]),
-    /// covering the byte range `[a, b)`. Used to render a
+    /// Selection rectangles `(x, y, width, height)`, relative to the node's
+    /// border box (the frame of [`Self::query_caret_position`]), covering the
+    /// byte range `[a, b)`: on rinch-dom one per line, or one per visual piece
+    /// of a line holding a right-to-left run (#1114); on the web the browser's
+    /// `Range.getClientRects` boxes. Used to render a
     /// text selection's highlight. Default: empty (no inline layout / mock).
     fn query_selection_rects(
         &self,

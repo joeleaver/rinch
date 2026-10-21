@@ -16,7 +16,8 @@ const SELECTION_WASH: (u8, u8, u8, u8) = (51, 154, 240, 100);
 
 /// Paint the selection `a..b` (byte offsets, either order) over `layout`, whose
 /// origin is at `(text_x, text_y)` and whose units are `units` device px each:
-/// one rect per line, from [`crate::text_query::selection_rects_for_layout`] —
+/// one rect per line (per visual piece on a line holding a right-to-left run,
+/// #1114), from [`crate::text_query::selection_rects_for_layout`] —
 /// the editor's rule, so each line's rect is its line box and ends where the
 /// next line's begins, the line before a hard break carries a newline's width
 /// and a soft-wrapped line runs to its trailing edge (#1106; #1008, #1010,

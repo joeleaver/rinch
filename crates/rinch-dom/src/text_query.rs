@@ -526,8 +526,10 @@ pub fn cluster_range_at_point(
     parley::layout::Cluster::from_point_exact(layout, x, y).map(|(c, _)| c.text_range())
 }
 
-/// Per-line selection rectangles `(x, y, width, height)` (layout-local) covering
-/// the byte range `[a, b)` in `layout`. One rect per visual line the range spans.
+/// Selection rectangles `(x, y, width, height)` (layout-local) covering the
+/// byte range `[a, b)` in `layout`: one rect per visual piece of the range on
+/// each line it spans — one per line for left-to-right text, and on a line
+/// holding a right-to-left run one per contiguous visual stretch (#1114).
 /// Used to render a text selection's highlight.
 pub fn selection_rects_for_layout(
     layout: &parley::layout::Layout<Brush>,
@@ -568,6 +570,17 @@ pub fn selection_rects_for_layout(
             _ => metrics.block_max_coord,
         };
         let height = bottom - top;
+        // A line holding a right-to-left run is walked in visual order: a
+        // logical range there is as many pieces as it has contiguous visual
+        // stretches, and its logical end can stand left of its start (#1114).
+        // A line with none — every line of left-to-right text — keeps the one
+        // start-to-end rect below and pays one pass over its runs.
+        if line.runs().any(|run| run.is_rtl()) {
+            bidi_line_pieces(layout, &line, start, end, |l, r| {
+                rects.push((l, top, (r - l).max(1.0), height))
+            });
+            continue;
+        }
         let left = Cursor::from_byte_index(layout, start, Affinity::Downstream)
             .geometry(layout, 0.0)
             .x0 as f32;
@@ -603,6 +616,85 @@ pub fn selection_rects_for_layout(
         rects.push((left, top, (right - left).max(1.0), height));
     }
     rects
+}
+
+/// The visual pieces `(left, right)` of the byte range `[a, b)` on `line`,
+/// left to right: each contiguous stretch of clusters whose first byte is in
+/// the range, walked in visual order (Parley's `Selection::geometry_with`
+/// rule). An inline box (an image, an `inline-block`) whose index is in the
+/// range is selected; a cluster with no advance (a bidi control, a zero-width
+/// space) adds no piece. A selected hard break (`<br>`, a preserved `\n`) that
+/// is in no cluster of the line is a newline's width (a quarter of ascent +
+/// descent) from the caret before it, joined to the piece it touches — what
+/// [`selection_rects_for_layout`] gives it on a left-to-right line. In a
+/// right-to-left paragraph the newline is a cluster of the line with no
+/// advance, so a selected one shows no width there.
+fn bidi_line_pieces(
+    layout: &parley::layout::Layout<Brush>,
+    line: &parley::layout::Line<'_, Brush>,
+    a: usize,
+    b: usize,
+    mut emit: impl FnMut(f32, f32),
+) {
+    let mut pieces: Vec<(f32, f32)> = Vec::new();
+    let mut open: Option<(f32, f32)> = None;
+    for item in line.items() {
+        let glyph_run = match item {
+            parley::layout::PositionedLayoutItem::GlyphRun(g) => g,
+            parley::layout::PositionedLayoutItem::InlineBox(bx) => {
+                let index = layout
+                    .inline_boxes()
+                    .iter()
+                    .find(|ib| ib.id == bx.id)
+                    .map(|ib| ib.index);
+                if index.is_some_and(|i| (a..b).contains(&i)) {
+                    let (x0, x1) = (bx.x, bx.x + bx.width);
+                    open = Some(match open {
+                        Some((l, _)) => (l, x1),
+                        None => (x0, x1),
+                    });
+                } else if let Some(piece) = open.take() {
+                    pieces.push(piece);
+                }
+                continue;
+            }
+        };
+        let mut x = glyph_run.offset();
+        for cluster in glyph_run.run().visual_clusters() {
+            let x0 = x;
+            x += cluster.advance();
+            if cluster.advance() == 0.0 {
+                continue;
+            }
+            if (a..b).contains(&cluster.text_range().start) {
+                open = Some(match open {
+                    Some((l, _)) => (l, x),
+                    None => (x0, x),
+                });
+            } else if let Some(piece) = open.take() {
+                pieces.push(piece);
+            }
+        }
+    }
+    pieces.extend(open);
+    let range = line.text_range();
+    if line.break_reason() == parley::layout::BreakReason::Explicit
+        && range.end > range.start
+        && (a..b).contains(&(range.end - 1))
+    {
+        let metrics = line.metrics();
+        let nx = Cursor::from_byte_index(layout, range.end - 1, Affinity::Downstream)
+            .geometry(layout, 0.0)
+            .x0 as f32;
+        let nr = nx + (metrics.ascent + metrics.descent) * 0.25;
+        match pieces.iter_mut().find(|(l, r)| *l <= nx && nx <= *r) {
+            Some(piece) => piece.1 = piece.1.max(nr),
+            None => pieces.push((nx, nr)),
+        }
+    }
+    for (l, r) in pieces {
+        emit(l, r);
+    }
 }
 
 // ── IFC ↔ DomCursor conversions ─────────────────────────────────────────
