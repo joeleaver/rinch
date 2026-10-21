@@ -121,7 +121,10 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     (`any_miscounted_justified_line`) takes the hang pass, and `ifc::justify_line` commits the
     line again **by length** — parley's count is then every space on it less one, never fewer
     than CSS's — and sets its alignment width so each opportunity gets `free / opportunities`
-    (#1056). The surplus shares land on the spaces after the opportunities: hanging spaces
+    (#1056). Most multi-line justified paragraphs pay that pass, one extra break per layout
+    built, since some line's last word usually ends within a space of the edge (35 of 41 widths
+    of a four-sentence paragraph; `perf_regression_scenarios::a_justified_paragraph_whose_word_ends_at_the_edge_pays_one_pass`).
+    The surplus shares land on the spaces after the opportunities: hanging spaces
     (past the edge; a caret between two of them is right of Chrome's) or, when the content
     ends in an NBSP before hanging spaces, that NBSP (a caret after it is one share right of
     Chrome's). `LineUnit::run` is the shaped run's identity (its `RunMetrics` address), not
