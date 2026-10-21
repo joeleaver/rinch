@@ -409,6 +409,9 @@ fn caret_from_point(id: &str, x: f32, y: f32) -> Probe {
 /// asked — so most points are always checked.
 #[derive(Default)]
 struct Tally {
+    /// Offsets left out of the comparison on purpose (a shared visual
+    /// point), reported with the verdict.
+    excluded: usize,
     compared: usize,
     unanswered: usize,
     covered: usize,
@@ -434,8 +437,9 @@ impl Tally {
             self.wrong.is_empty() && self.compared >= min && self.unanswered * 4 < asked.max(1);
         (!ok).then(|| {
             format!(
-                "{id}: compared {}, unanswered {}, covered {}, wrong {:?}",
+                "{id}: compared {}, excluded {}, unanswered {}, covered {}, wrong {:?}",
                 self.compared,
+                self.excluded,
                 self.unanswered,
                 self.covered,
                 &self.wrong[..self.wrong.len().min(6)]
@@ -743,13 +747,30 @@ fn caret_rect_agrees_for_rtl_unwrapped_and_a_scaled_page() {
         );
     }
     let mut report = Vec::new();
-    // In a right-to-left textarea of left-to-right text, offset 0 (the run's
-    // start) and the first line's end (its trailing space, which the bidi
-    // algorithm puts at the line's left) are one visual point, and
-    // caret-from-point answers the latter there: offset 0 is not checked.
+    // In a right-to-left textarea of left-to-right text, the start of each
+    // line (offset 0, and every offset a soft wrap starts a line at) and the
+    // end of the line before it (its trailing space, which the bidi algorithm
+    // puts at the line's other edge) can be one visual point, and the
+    // engines resolve it differently: Chrome 155 and Firefox 155 answer the
+    // line start at the right edge, Firefox 158 the line before's last
+    // offset. Those boundary offsets are not compared in r1 (counted in the
+    // verdict as excluded); every other offset is.
     let mut run = |h: &NodeHandle, id: &str, len: usize, min: usize| {
-        let first = usize::from(id == "r1");
-        report.extend(oracle_in_box(h, id, first..=len).verdict(id, min));
+        let mixed = id == "r1";
+        let line_starts: std::collections::HashSet<usize> = if mixed {
+            let ys: Vec<f32> = (0..=len)
+                .map(|o| h.caret_rect_at(o).map_or(f32::NAN, |r| r.y))
+                .collect();
+            std::iter::once(0)
+                .chain((1..=len).filter(|&o| (ys[o] - ys[o - 1]).abs() > 1.0))
+                .collect()
+        } else {
+            Default::default()
+        };
+        let offs = (0..=len).filter(|o| !line_starts.contains(o));
+        let mut t = oracle_in_box(h, id, offs);
+        t.excluded = line_starts.len();
+        report.extend(t.verdict(id, min));
     };
     run(&hs[0], "r1", n, 100);
     run(&hs[1], "r2", n, 40);
