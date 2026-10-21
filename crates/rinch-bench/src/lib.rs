@@ -794,6 +794,37 @@ pub fn setup_text_shadow_count() -> PaintFixture {
     text_shadow_fragments_page(true)
 }
 
+/// One paragraph of 200 spans, each casting a hard `text-shadow` list of its
+/// own (#1066): 200 shadow passes over the lines they cast on, painted once.
+/// Each pass used to walk its lines' items again, quadratic in the glyph runs
+/// of a line; the items are collected once per paint now.
+pub fn setup_text_shadow_distinct() -> PaintFixture {
+    let mut doc = new_document();
+    doc.load_css(&format!(
+        "body {{ margin: 0; font-family: {FAMILY}; font-size: 14px; line-height: 18px; \
+         color: rgb(30, 30, 40); }} p {{ margin: 0; }}"
+    ));
+    let mut html = String::from("<p>");
+    for i in 0..200 {
+        html.push_str(&format!(
+            "<span style=\"text-shadow: 0 2px 0 rgb({}, {}, 0)\">tok{i} </span>",
+            (i * 53) % 256,
+            (i * 97) % 256
+        ));
+    }
+    html.push_str("</p>");
+    let body = doc.body();
+    doc.set_inner_html(body, &html);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    let mut f = PaintFixture {
+        doc,
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
 /// The same page painted once at a 4px blur, then restyled to 4.01px — a blur
 /// radius is in a mask's cache key — so the measured paint rasterises and
 /// blurs every shadow with the glyph caches warm. It needs no API of its own,

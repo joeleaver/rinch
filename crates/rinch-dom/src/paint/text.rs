@@ -38,6 +38,8 @@ pub(super) fn paint_inline_layout(
     // the common case — means the layout's own brushes are current.
     let live = LiveColours::for_ifc(tree, inline_layout, root);
     let live = live.as_ref();
+    // Every pass below walks the same lines (#1066).
+    let text = PaintText::new(&inline_layout.layout);
 
     // Paint inline element backgrounds BEFORE text so text renders on top
     if !inline_layout.background_spans.is_empty() {
@@ -57,7 +59,7 @@ pub(super) fn paint_inline_layout(
         for fragment in &fragments {
             render_text_shadows(
                 painter,
-                &inline_layout.layout,
+                &text,
                 parent_x,
                 parent_y,
                 fragment.shadows,
@@ -68,7 +70,7 @@ pub(super) fn paint_inline_layout(
             );
             draw_text(
                 painter,
-                &inline_layout.layout,
+                &text,
                 transform * Affine::translate((parent_x, parent_y)),
                 scale,
                 Some(&fragment.mask),
@@ -97,7 +99,7 @@ pub(super) fn paint_inline_layout(
         match ShadowGroup::for_ifc(tree, inline_layout, text_shadows, root_hidden) {
             None => render_text_shadows(
                 painter,
-                &inline_layout.layout,
+                &text,
                 parent_x,
                 parent_y,
                 text_shadows,
@@ -113,7 +115,7 @@ pub(super) fn paint_inline_layout(
                 for group in &groups {
                     render_text_shadows(
                         painter,
-                        &inline_layout.layout,
+                        &text,
                         parent_x,
                         parent_y,
                         group.shadows,
@@ -127,7 +129,7 @@ pub(super) fn paint_inline_layout(
         }
         draw_text(
             painter,
-            &inline_layout.layout,
+            &text,
             transform * Affine::translate((parent_x, parent_y)),
             scale,
             mask,
@@ -155,8 +157,8 @@ pub(super) fn paint_inline_layout(
     }
 
     // Paint inline-block boxes by looking them up in tree and painting
-    for line in inline_layout.layout.lines() {
-        for item in line.items() {
+    for line in text.lines() {
+        for (item, _) in &line.items {
             if let parley::layout::PositionedLayoutItem::InlineBox(positioned_box) = item {
                 let child_id = positioned_box.id as usize;
                 paint_node(
@@ -944,11 +946,11 @@ impl TextMask {
 
     /// Whether anything in the byte range `range` (a line's) may be shown.
     ///
-    /// A shadow group's mask shows only its own text (#1048), and walking a
-    /// line's items costs parley a scan of the run per glyph run it yields —
-    /// so each group's pass skips the lines its text is not on. Without that,
-    /// a paragraph of N spans with N distinct lists cost N passes over every
-    /// line: 298 ms at N = 400 (review of #1063).
+    /// A shadow group's mask shows only its own text (#1048), so each group's
+    /// pass skips the lines its text is not on. Without that, a paragraph of
+    /// N spans with N distinct lists cost N passes over every line: 298 ms at
+    /// N = 400 (review of #1063, before [`PaintText`] collected each line's
+    /// items once per paint, #1066).
     pub(super) fn may_show(&self, range: std::ops::Range<usize>) -> bool {
         self.shown_span
             .is_none_or(|(s, e)| range.start < e && range.end > s)
@@ -1363,7 +1365,7 @@ fn run_flags(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_text(
     painter: &mut dyn Painter,
-    layout: &parley::layout::Layout<Brush>,
+    text: &PaintText<'_>,
     x: f64,
     y: f64,
     css_transform: Affine,
@@ -1376,7 +1378,7 @@ pub(super) fn render_text(
     let color_brush = color.map(Brush::Solid);
     draw_text(
         painter,
-        layout,
+        text,
         transform,
         scale,
         mask,
@@ -1385,6 +1387,140 @@ pub(super) fn render_text(
         valign,
         None,
     );
+}
+
+/// A text layout as a paint walks it: each line's positioned items and their
+/// glyphs, collected once and shared by every pass drawn from it (#1066).
+///
+/// Parley's own walk is quadratic in the glyph runs of a parley `Run`:
+/// `Line::items` re-walks the run's clusters from its start for every glyph
+/// run it yields, and so does `GlyphRun::glyphs`. A paragraph's spans of one
+/// font are one `Run` per line, split into glyph runs by style, so a line of
+/// many styled spans cost glyphs × glyph runs per walk — and an IFC paint
+/// walks it once per pass: every `text-shadow` list a span casts of its own
+/// (#1048), every text fragment (#1060), every blurred mask's key and
+/// rasterisation. Collected here, the items are walked once per paint and each
+/// glyph run's glyphs are sliced out of one walk of its run's clusters, split
+/// by style index exactly as `GlyphRunIter` splits them.
+pub(super) struct PaintText<'a> {
+    layout: &'a parley::layout::Layout<Brush>,
+    lines: std::cell::OnceCell<Vec<PaintLine<'a>>>,
+}
+
+/// One line of a [`PaintText`].
+pub(super) struct PaintLine<'a> {
+    pub(super) line: parley::layout::Line<'a, Brush>,
+    /// The line's items in Parley's order, each glyph run with the range of
+    /// its glyphs in `glyphs`.
+    pub(super) items: Vec<(
+        parley::layout::PositionedLayoutItem<'a, Brush>,
+        std::ops::Range<usize>,
+    )>,
+    glyphs: Vec<parley::layout::Glyph>,
+}
+
+impl<'a> PaintLine<'a> {
+    /// The line's glyph runs, in order, each with its glyphs.
+    pub(super) fn glyph_runs(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            &parley::layout::GlyphRun<'a, Brush>,
+            &[parley::layout::Glyph],
+        ),
+    > + '_ {
+        self.items.iter().filter_map(|(item, range)| match item {
+            parley::layout::PositionedLayoutItem::GlyphRun(run) => {
+                Some((run, &self.glyphs[range.clone()]))
+            }
+            parley::layout::PositionedLayoutItem::InlineBox(_) => None,
+        })
+    }
+}
+
+thread_local! {
+    /// How many times a paint walked a line's items ([`PaintText::lines`]).
+    static LINE_WALKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Collect each glyph run's glyphs with Parley's own `GlyphRun::glyphs`
+    /// rather than slicing one walk of the run (#1066). For the oracle test.
+    static REFERENCE_GLYPHS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// How many times paint has walked a line's positioned items on this thread
+/// since the last call, which it resets. For tests (#1066).
+#[doc(hidden)]
+pub fn take_text_line_walks() -> u64 {
+    LINE_WALKS.with(|w| w.replace(0))
+}
+
+/// Collect glyph runs' glyphs through Parley's own `GlyphRun::glyphs`, the
+/// walk used before #1066, on this thread until set back. Returns the
+/// previous setting. For the pixel oracle.
+#[doc(hidden)]
+pub fn set_reference_text_walk(on: bool) -> bool {
+    REFERENCE_GLYPHS.with(|r| r.replace(on))
+}
+
+impl<'a> PaintText<'a> {
+    pub(super) fn new(layout: &'a parley::layout::Layout<Brush>) -> Self {
+        Self {
+            layout,
+            lines: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// Every line, its items collected on the first call.
+    pub(super) fn lines(&self) -> &[PaintLine<'a>] {
+        self.lines.get_or_init(|| {
+            let reference = REFERENCE_GLYPHS.with(std::cell::Cell::get);
+            self.layout
+                .lines()
+                .map(|line| {
+                    LINE_WALKS.with(|w| w.set(w.get() + 1));
+                    let mut items = Vec::new();
+                    let mut glyphs: Vec<parley::layout::Glyph> = Vec::new();
+                    // The glyphs of the parley run the last glyph run came
+                    // from, and where its next glyph run starts in them.
+                    let mut key = None;
+                    let mut run_glyphs: Vec<parley::layout::Glyph> = Vec::new();
+                    let mut next = 0;
+                    for item in line.items() {
+                        let start = glyphs.len();
+                        if let parley::layout::PositionedLayoutItem::GlyphRun(glyph_run) = &item {
+                            if reference {
+                                glyphs.extend(glyph_run.glyphs());
+                            } else {
+                                let run = glyph_run.run();
+                                let k = (run.index(), run.cluster_range().start);
+                                if key != Some(k) {
+                                    key = Some(k);
+                                    next = 0;
+                                    run_glyphs.clear();
+                                    run_glyphs
+                                        .extend(run.visual_clusters().flat_map(|c| c.glyphs()));
+                                }
+                                let rest = run_glyphs.get(next..).unwrap_or(&[]);
+                                let count = rest.first().map_or(0, |first| {
+                                    rest.iter()
+                                        .take_while(|g| g.style_index() == first.style_index())
+                                        .count()
+                                });
+                                glyphs.extend_from_slice(&rest[..count]);
+                                next += count;
+                            }
+                        }
+                        let end = glyphs.len();
+                        items.push((item, start..end));
+                    }
+                    PaintLine {
+                        line,
+                        items,
+                        glyphs,
+                    }
+                })
+                .collect()
+        })
+    }
 }
 
 /// Draw `layout`'s glyphs and its straight decorations (underline,
@@ -1406,7 +1542,7 @@ pub(super) fn render_text(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw_text(
     painter: &mut dyn Painter,
-    layout: &parley::layout::Layout<Brush>,
+    text: &PaintText<'_>,
     transform: Affine,
     scale: f64,
     mask: Option<&TextMask>,
@@ -1417,22 +1553,19 @@ pub(super) fn draw_text(
 ) {
     let sf = scale as f32;
     let live = live.filter(|_| glyph_brush.is_none());
-    for line in layout.lines() {
-        if mask.is_some_and(|m| !m.may_show(line.text_range())) {
+    for line in text.lines() {
+        if mask.is_some_and(|m| !m.may_show(line.line.text_range())) {
             continue;
         }
         let mut cursor = GlyphCursor::default();
         let mut vcursor = ValignCursor::default();
         let mut ccursor = ColourCursor::default();
-        for item in line.items() {
-            let parley::layout::PositionedLayoutItem::GlyphRun(glyph_run) = item else {
-                continue;
-            };
+        for (glyph_run, run_glyphs) in line.glyph_runs() {
             // Before the hidden test's `continue`: the cursor hands out a
             // run's glyph runs in order and has to see each of them.
-            let recolours = live.and_then(|l| ccursor.take(&glyph_run, l));
-            let shifts = run_shifts(&mut vcursor, &glyph_run, valign);
-            let flags = run_flags(&mut cursor, &glyph_run, mask);
+            let recolours = live.and_then(|l| ccursor.take(glyph_run, l));
+            let shifts = run_shifts(&mut vcursor, glyph_run, valign);
+            let flags = run_flags(&mut cursor, glyph_run, mask);
             if flags.as_ref().is_some_and(|f| f.iter().all(|&h| h)) {
                 continue;
             }
@@ -1518,7 +1651,7 @@ pub(super) fn draw_text(
             let mut segments: Vec<(f32, f32)> = Vec::new();
             let mut glyphs: Vec<PaintGlyph> = Vec::new();
             let mut stretch = Recolour::KEEP;
-            for (i, glyph) in glyph_run.glyphs().enumerate() {
+            for (i, glyph) in run_glyphs.iter().enumerate() {
                 let start_x = gx;
                 let shift = shifts.as_ref().map(|s| s[i]).unwrap_or(0.0) * sf;
                 let px = gx + glyph.x * sf;
@@ -1556,7 +1689,7 @@ pub(super) fn draw_text(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw_shadow_copy(
     painter: &mut dyn Painter,
-    layout: &parley::layout::Layout<Brush>,
+    text: &PaintText<'_>,
     x: f64,
     y: f64,
     brush: &Brush,
@@ -1568,7 +1701,7 @@ pub(super) fn draw_shadow_copy(
     let transform = css_transform * Affine::translate((x, y));
     draw_text(
         painter,
-        layout,
+        text,
         transform,
         scale,
         mask,
@@ -1613,9 +1746,10 @@ pub(super) fn render_text_with_shadow(
     color: Option<AlphaColor<Srgb>>,
     wavy: Option<&crate::node::InlineLayout>,
 ) {
+    let text = PaintText::new(layout);
     render_text_shadows(
         painter,
-        layout,
+        &text,
         x,
         y,
         text_shadows,
@@ -1628,7 +1762,7 @@ pub(super) fn render_text_with_shadow(
     // Render the main text on top
     render_text(
         painter,
-        layout,
+        &text,
         x,
         y,
         css_transform,
@@ -1644,7 +1778,7 @@ pub(super) fn render_text_with_shadow(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_text_shadows(
     painter: &mut dyn Painter,
-    layout: &parley::layout::Layout<Brush>,
+    text: &PaintText<'_>,
     x: f64,
     y: f64,
     text_shadows: &[TextShadowValue],
@@ -1664,7 +1798,7 @@ pub(super) fn render_text_shadows(
         let sy = y + shadow.offset_y as f64 * scale;
         super::text_shadow::render_text_shadow_pass(
             painter,
-            layout,
+            text,
             sx,
             sy,
             shadow_color,

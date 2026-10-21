@@ -36,7 +36,7 @@ use peniko::kurbo::{Affine, Rect};
 #[cfg(feature = "software-renderer")]
 use super::blur::Blur1d;
 use super::painter::{BlendMode, PaintShape, Painter};
-use super::text::{TextMask, draw_shadow_copy};
+use super::text::{PaintText, TextMask, draw_shadow_copy};
 
 /// How far a blurred `text-shadow` reaches past its offset copy, as a
 /// multiple of its blur radius: three standard deviations of a Gaussian whose
@@ -187,7 +187,7 @@ pub fn text_shadow_scratch_size() -> Option<(u32, u32)> {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_text_shadow_pass(
     painter: &mut dyn Painter,
-    layout: &parley::layout::Layout<Brush>,
+    text: &PaintText<'_>,
     x: f64,
     y: f64,
     color: AlphaColor<Srgb>,
@@ -203,7 +203,7 @@ pub(super) fn render_text_shadow_pass(
         let brush = Brush::Solid(color);
         draw_shadow_copy(
             painter,
-            layout,
+            text,
             x,
             y,
             &brush,
@@ -218,7 +218,7 @@ pub(super) fn render_text_shadow_pass(
     if !FORCE_TAPS.with(Cell::get)
         && draw_masked(
             painter,
-            layout,
+            text,
             x,
             y,
             color,
@@ -233,7 +233,7 @@ pub(super) fn render_text_shadow_pass(
     }
     draw_tapped(
         painter,
-        layout,
+        text,
         x,
         y,
         color,
@@ -259,7 +259,7 @@ pub(super) fn render_text_shadow_pass(
 /// run the mask shows whole is measured by its own extent; one it shows part
 /// of, cluster by cluster.
 fn text_extent(
-    layout: &parley::layout::Layout<Brush>,
+    text: &PaintText<'_>,
     scale: f64,
     mask: Option<&TextMask>,
     valign: Option<&crate::node::InlineLayout>,
@@ -268,7 +268,8 @@ fn text_extent(
     let mut r: Option<Rect> = None;
     let mut size = 0.0_f32;
     let mut add = |rect: Rect| r = Some(r.map_or(rect, |r| r.union(rect)));
-    for line in layout.lines() {
+    for paint_line in text.lines() {
+        let line = &paint_line.line;
         // A shadow group's lines only (#1048): a span's mask covers its text.
         if mask.is_some_and(|m| !m.may_show(line.text_range())) {
             continue;
@@ -279,12 +280,10 @@ fn text_extent(
         if mask.is_none() && valign.is_none() {
             // All of the line: its glyph runs' extent.
             let (mut x0, mut x1) = (f32::INFINITY, f32::NEG_INFINITY);
-            for item in line.items() {
-                if let parley::layout::PositionedLayoutItem::GlyphRun(run) = item {
-                    x0 = x0.min(run.offset());
-                    x1 = x1.max(run.offset() + run.advance());
-                    size = size.max(run.run().font_size());
-                }
+            for (run, _) in paint_line.glyph_runs() {
+                x0 = x0.min(run.offset());
+                x1 = x1.max(run.offset() + run.advance());
+                size = size.max(run.run().font_size());
             }
             if x0 <= x1 {
                 add(Rect::new(x0 as f64, top, x1 as f64, bottom));
@@ -401,7 +400,7 @@ fn erfc(x: f64) -> f64 {
 #[allow(clippy::too_many_arguments)]
 fn draw_masked(
     painter: &mut dyn Painter,
-    layout: &parley::layout::Layout<Brush>,
+    text: &PaintText<'_>,
     x: f64,
     y: f64,
     color: AlphaColor<Srgb>,
@@ -420,7 +419,7 @@ fn draw_masked(
     } else {
         (x, y, css_transform)
     };
-    let ext = text_extent(layout, scale, mask, wavy);
+    let ext = text_extent(text, scale, mask, wavy);
     // The mask's frame is anchored to the pixel the text's origin rounds to,
     // not to its exact position, so a sub-pixel move changes the mask's size
     // and origin only when it moves that pixel: the key (which includes the
@@ -461,7 +460,7 @@ fn draw_masked(
         let mut hasher = CallHasher::default();
         draw_shadow_copy(
             &mut hasher,
-            layout,
+            text,
             ox - area.x0,
             oy - area.y0,
             &Brush::Solid(AlphaColor::<Srgb>::from_rgba8(255, 255, 255, 255)),
@@ -513,7 +512,7 @@ fn draw_masked(
         let white = Brush::Solid(AlphaColor::<Srgb>::from_rgba8(255, 255, 255, 255));
         draw_shadow_copy(
             sp,
-            layout,
+            text,
             ox - area.x0,
             oy - area.y0,
             &white,
@@ -884,7 +883,7 @@ fn blur_2d(blur: &Blur1d, mask: &mut [f32], w: usize, h: usize) {
 #[allow(clippy::too_many_arguments)]
 fn draw_tapped(
     painter: &mut dyn Painter,
-    layout: &parley::layout::Layout<Brush>,
+    text: &PaintText<'_>,
     x: f64,
     y: f64,
     color: AlphaColor<Srgb>,
@@ -896,7 +895,7 @@ fn draw_tapped(
 ) {
     // The kernel is a function of this shadow alone: the full kernel, a
     // cross, or none, by how many glyph copies each would draw.
-    let glyphs = glyph_count(layout).max(1);
+    let glyphs = glyph_count(text).max(1);
     let full = shadow_kernel(sigma, false);
     let kernel = if glyphs * full.len() <= TAP_GLYPHS_PER_SHADOW {
         full
@@ -917,7 +916,7 @@ fn draw_tapped(
         let brush = Brush::Solid(color);
         draw_shadow_copy(
             painter,
-            layout,
+            text,
             x,
             y,
             &brush,
@@ -931,7 +930,7 @@ fn draw_tapped(
 
     // Everything a copy can draw, grown by the kernel's reach, in the
     // painter's space. Vello clips a layer to its bounds.
-    let ext = text_extent(layout, scale, mask, wavy);
+    let ext = text_extent(text, scale, mask, wavy);
     let reach = 3.0 * sigma;
     let bounds = PaintShape::Rect(Rect::new(
         x + ext.x0 - reach,
@@ -945,7 +944,7 @@ fn draw_tapped(
         painter.push_layer(BlendMode::Plus, weight, css_transform, &bounds);
         draw_shadow_copy(
             painter,
-            layout,
+            text,
             x + dx,
             y + dy,
             &opaque,
@@ -959,17 +958,13 @@ fn draw_tapped(
     painter.pop_layer();
 }
 
-/// How many glyphs `layout` draws.
-fn glyph_count(layout: &parley::layout::Layout<Brush>) -> usize {
-    let mut n = 0;
-    for line in layout.lines() {
-        for item in line.items() {
-            if let parley::layout::PositionedLayoutItem::GlyphRun(run) = item {
-                n += run.glyphs().count();
-            }
-        }
-    }
-    n
+/// How many glyphs `text` draws.
+fn glyph_count(text: &PaintText<'_>) -> usize {
+    text.lines()
+        .iter()
+        .flat_map(|line| line.glyph_runs())
+        .map(|(_, glyphs)| glyphs.len())
+        .sum()
 }
 
 /// The taps of a Gaussian of standard deviation `sigma` (physical px):
