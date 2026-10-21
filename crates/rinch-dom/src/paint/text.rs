@@ -1,7 +1,7 @@
 //! Text rendering functions.
 
 use peniko::color::{AlphaColor, Srgb};
-use peniko::kurbo::{Affine, Stroke};
+use peniko::kurbo::{Affine, Rect, Stroke, Vec2};
 use peniko::{Brush, Fill};
 
 use super::painter::{PaintGlyph, Painter};
@@ -44,64 +44,110 @@ pub(super) fn paint_inline_layout(
         paint_inline_backgrounds(tree, painter, parent_x, parent_y, inline_layout, transform);
     }
 
-    // Each text run casts the `text-shadow` its own element computed (#1048);
-    // `None` — the common case — means every run casts the root's list.
-    match ShadowGroup::for_ifc(tree, inline_layout, text_shadows, root_hidden) {
-        None => render_text_shadows(
-            painter,
-            &inline_layout.layout,
-            parent_x,
-            parent_y,
-            text_shadows,
-            transform,
-            scale,
-            mask,
-            Some(inline_layout),
-        ),
-        Some(groups) => {
-            // Every shadow under every glyph, as for one list: each group's
-            // passes through a mask that keeps them to the text casting them.
-            for group in &groups {
-                render_text_shadows(
+    // Chrome paints each text fragment's shadows and then its text before
+    // the next fragment's (#1060). `None` — the common case — is where that
+    // order and the one-pass order below paint the same pixels.
+    if let Some(fragments) =
+        TextFragment::in_paint_order(tree, inline_layout, text_shadows, root_hidden)
+    {
+        for fragment in &fragments {
+            render_text_shadows(
+                painter,
+                &inline_layout.layout,
+                parent_x,
+                parent_y,
+                fragment.shadows,
+                transform,
+                scale,
+                Some(&fragment.mask),
+                Some(inline_layout),
+            );
+            draw_text(
+                painter,
+                &inline_layout.layout,
+                transform * Affine::translate((parent_x, parent_y)),
+                scale,
+                Some(&fragment.mask),
+                None,
+                None,
+                Some(inline_layout),
+                live,
+            );
+            if !inline_layout.decoration_spans.is_empty() {
+                paint_wavy_decorations(
                     painter,
-                    &inline_layout.layout,
                     parent_x,
                     parent_y,
-                    group.shadows,
+                    inline_layout,
                     transform,
                     scale,
-                    Some(&group.mask),
-                    Some(inline_layout),
+                    Some(&fragment.mask),
+                    WavyBrush::Live(tree),
                 );
             }
         }
-    }
-    draw_text(
-        painter,
-        &inline_layout.layout,
-        transform * Affine::translate((parent_x, parent_y)),
-        scale,
-        mask,
-        None,
-        None,
-        Some(inline_layout),
-        live,
-    );
-
-    // Wavy underlines (`text-decoration-style: wavy` — the spellcheck squiggle)
-    // paint AFTER the text, so the wave reads over the glyph descenders rather
-    // than being hidden by them.
-    if !inline_layout.decoration_spans.is_empty() {
-        paint_wavy_decorations(
+    } else {
+        // Each text run casts the `text-shadow` its own element computed
+        // (#1048); `None` — the common case — means every run casts the
+        // root's list.
+        match ShadowGroup::for_ifc(tree, inline_layout, text_shadows, root_hidden) {
+            None => render_text_shadows(
+                painter,
+                &inline_layout.layout,
+                parent_x,
+                parent_y,
+                text_shadows,
+                transform,
+                scale,
+                mask,
+                Some(inline_layout),
+            ),
+            Some(groups) => {
+                // Every shadow under every glyph, as for one list: each
+                // group's passes through a mask that keeps them to the text
+                // casting them.
+                for group in &groups {
+                    render_text_shadows(
+                        painter,
+                        &inline_layout.layout,
+                        parent_x,
+                        parent_y,
+                        group.shadows,
+                        transform,
+                        scale,
+                        Some(&group.mask),
+                        Some(inline_layout),
+                    );
+                }
+            }
+        }
+        draw_text(
             painter,
-            parent_x,
-            parent_y,
-            inline_layout,
-            transform,
+            &inline_layout.layout,
+            transform * Affine::translate((parent_x, parent_y)),
             scale,
             mask,
-            WavyBrush::Live(tree),
+            None,
+            None,
+            Some(inline_layout),
+            live,
         );
+
+        // Wavy underlines (`text-decoration-style: wavy` — the spellcheck
+        // squiggle) paint AFTER the text, so the wave reads over the glyph
+        // descenders rather than being hidden by them.
+        if !inline_layout.decoration_spans.is_empty() {
+            paint_wavy_decorations(
+                painter,
+                parent_x,
+                parent_y,
+                inline_layout,
+                transform,
+                scale,
+                mask,
+                WavyBrush::Live(tree),
+            );
+        }
     }
 
     // Paint inline-block boxes by looking them up in tree and painting
@@ -462,6 +508,217 @@ impl<'a> ShadowGroup<'a> {
                 })
                 .collect(),
         )
+    }
+}
+
+/// One text fragment — one text node's stretch of one line — with the
+/// `text-shadow` list it casts and a mask that shows only its own text
+/// (#1060).
+///
+/// Chrome paints an inline formatting context fragment by fragment, each
+/// one's shadows and then its text, so a later fragment's shadow reaching back
+/// is drawn over earlier text: a span's, and one line's over the line above
+/// (Chrome 155, measured). Within one fragment every shadow is under the text.
+/// The one-pass order — every shadow, then all of the text — paints the same
+/// pixels unless a later fragment's shadow overlaps an earlier fragment's
+/// text, or (with shadows of more than one colour) its shadows; only then are
+/// the fragments drawn one by one, which costs a shadow pass and a text pass
+/// per fragment (a glyph run two fragments share is drawn in two calls, and a
+/// blurred shadow is a mask per fragment).
+pub(super) struct TextFragment<'a> {
+    pub(super) shadows: &'a [TextShadowValue],
+    pub(super) mask: TextMask,
+}
+
+/// How many fragment pairs [`TextFragment::in_paint_order`] compares before
+/// it stops looking and draws fragment by fragment, which is always right.
+const FRAGMENT_PAIR_BUDGET: usize = 65_536;
+
+impl<'a> TextFragment<'a> {
+    /// `inline_layout`'s shown text fragments in paint order — lines in order,
+    /// each line's fragments in text order — or `None` when the one-pass order
+    /// paints the same pixels: no shadow at all, a single fragment, or no
+    /// fragment's shadow overlapping an earlier fragment's ink.
+    ///
+    /// The overlap is decided on boxes: a fragment's text is its clusters'
+    /// advance extent by its line's ascent and descent, its shadow that box
+    /// moved by each offset and grown by the blur's reach. Ink past a glyph's
+    /// advance or below the descent (an italic overhang, a wavy underline)
+    /// is not in the box, so a shadow touching only that keeps the one-pass
+    /// order.
+    pub(super) fn in_paint_order(
+        tree: &'a NodeTree,
+        inline_layout: &crate::node::InlineLayout,
+        root_shadows: &'a [TextShadowValue],
+        root_hidden: bool,
+    ) -> Option<Vec<Self>> {
+        // Asked of every IFC on every paint: answer the common cases without
+        // allocating — no shadow anywhere, or one line holding one text node.
+        if root_shadows.is_empty() && !tree.inline_text_shadows {
+            return None;
+        }
+        let layout = &inline_layout.layout;
+        if layout.len() <= 1
+            && inline_layout
+                .text_ranges
+                .iter()
+                .filter(|r| !r.is_br)
+                .count()
+                <= 1
+        {
+            return None;
+        }
+        let mut ranges: Vec<(usize, usize, bool, &'a [TextShadowValue])> = inline_layout
+            .text_ranges
+            .iter()
+            .filter(|r| !r.is_br)
+            .map(|r| {
+                let el = range_element(tree, r);
+                (
+                    r.flat_start,
+                    r.flat_end,
+                    el.map(is_hidden).unwrap_or(root_hidden),
+                    el.map_or(root_shadows, |e| e.computed_style.text_shadow.as_slice()),
+                )
+            })
+            .collect();
+        if ranges.iter().all(|r| r.3.is_empty()) && root_shadows.is_empty() {
+            return None;
+        }
+        ranges.sort_by_key(|r| r.0);
+
+        // Each shown fragment: its byte range, its list, its text box.
+        let mut pieces: Vec<(usize, usize, &'a [TextShadowValue], Option<Rect>)> = Vec::new();
+        let mut next = 0;
+        for line in layout.lines() {
+            let lr = line.text_range();
+            let first = pieces.len();
+            while next < ranges.len() && ranges[next].1 <= lr.start {
+                next += 1;
+            }
+            let mut push = |s: usize, e: usize, hidden: bool, list| {
+                if s < e && !hidden {
+                    pieces.push((s, e, list, None));
+                }
+            };
+            let (mut at, mut i) = (lr.start, next);
+            while at < lr.end {
+                match ranges.get(i) {
+                    Some(&(s, e, hidden, list)) if s < lr.end => {
+                        if s > at {
+                            push(at, s, root_hidden, root_shadows);
+                        }
+                        push(s.max(at), e.min(lr.end), hidden, list);
+                        at = e.max(at);
+                        i += 1;
+                    }
+                    _ => {
+                        push(at, lr.end, root_hidden, root_shadows);
+                        at = lr.end;
+                    }
+                }
+            }
+            // One pass over the line's clusters gives every fragment on it
+            // its advance extent: a walk per fragment re-walks a glyph run
+            // its fragments share, quadratic in spans on one line.
+            let line_pieces = &mut pieces[first..];
+            if line_pieces.is_empty() {
+                continue;
+            }
+            let m = line.metrics();
+            let (top, bottom) = (
+                (m.baseline - m.ascent) as f64,
+                (m.baseline + m.descent) as f64,
+            );
+            for run in line.runs() {
+                let Some(mut x) = run.visual_clusters().next().and_then(|c| c.visual_offset())
+                else {
+                    continue;
+                };
+                for cluster in run.visual_clusters() {
+                    let byte = cluster.text_range().start;
+                    let advance = cluster.advance() as f64;
+                    let k = line_pieces.partition_point(|p| p.1 <= byte);
+                    if let Some(p) = line_pieces.get_mut(k)
+                        && p.0 <= byte
+                    {
+                        let r = Rect::new(x as f64, top, x as f64 + advance, bottom);
+                        p.3 = Some(p.3.map_or(r, |q| q.union(r)));
+                    }
+                    x += cluster.advance();
+                }
+            }
+        }
+        if pieces.len() <= 1 {
+            return None;
+        }
+
+        let colour = |s: &TextShadowValue| {
+            s.color
+                .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255))
+        };
+        let first = pieces.iter().flat_map(|p| p.2).next().map(colour);
+        let one_colour = pieces
+            .iter()
+            .flat_map(|p| p.2)
+            .all(|s| Some(colour(s)) == first);
+        let shadow_box = |list: &[TextShadowValue], text: Rect| {
+            list.iter()
+                .map(|s| {
+                    let reach = s.blur_radius.max(0.0) as f64 * super::text_shadow::REACH_PER_BLUR;
+                    (text + Vec2::new(s.offset_x as f64, s.offset_y as f64)).inflate(reach, reach)
+                })
+                .reduce(|a, b| a.union(b))
+        };
+        let overlaps =
+            |a: Rect, b: Rect| a.x0.max(b.x0) < a.x1.min(b.x1) && a.y0.max(b.y0) < a.y1.min(b.y1);
+        let inks: Vec<(Option<Rect>, Option<Rect>)> = pieces
+            .iter()
+            .map(|&(_, _, list, text)| (text, text.and_then(|t| shadow_box(list, t))))
+            .collect();
+        // An earlier fragment can be hit only if its ink reaches below the
+        // shadow's top: scanning back, stop where no earlier ink does.
+        let mut reach_below = Vec::with_capacity(inks.len());
+        let mut lowest = f64::NEG_INFINITY;
+        for &(text, shadow) in &inks {
+            for r in text.into_iter().chain(shadow.filter(|_| !one_colour)) {
+                lowest = lowest.max(r.y1);
+            }
+            reach_below.push(lowest);
+        }
+        let mut compared = 0usize;
+        let changes_pixels = 'search: {
+            for (j, &(_, shadow)) in inks.iter().enumerate() {
+                let Some(shadow) = shadow else { continue };
+                for i in (0..j).rev() {
+                    if reach_below[i] <= shadow.y0 {
+                        break;
+                    }
+                    compared += 1;
+                    let (text, earlier_shadow) = inks[i];
+                    if compared > FRAGMENT_PAIR_BUDGET
+                        || text.is_some_and(|t| overlaps(shadow, t))
+                        || (!one_colour && earlier_shadow.is_some_and(|s| overlaps(shadow, s)))
+                    {
+                        break 'search true;
+                    }
+                }
+            }
+            false
+        };
+        changes_pixels.then(|| {
+            pieces
+                .into_iter()
+                .map(|(s, e, shadows, _)| Self {
+                    shadows,
+                    mask: TextMask {
+                        ranges: vec![(s, e, false)],
+                        default_hidden: true,
+                        shown_span: Some((s, e)),
+                    },
+                })
+                .collect()
+        })
     }
 }
 

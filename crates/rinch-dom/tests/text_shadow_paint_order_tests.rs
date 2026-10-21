@@ -319,7 +319,10 @@ fn the_earlier_glyph_under_a_later_shadow_is_red_in_pixels() {
         let mut doc = doc_with(&shadow_css("s", off), html);
         let main = main_glyphs(&record(&mut doc));
         let (black, red) = black_core_pixels(&mut doc, main[0]);
-        assert!(red > 100, "{html}: the shadow is drawn there ({red} red px)");
+        assert!(
+            red > 100,
+            "{html}: the shadow is drawn there ({red} red px)"
+        );
         assert_eq!(
             black, 0,
             "{html}: {black} black px of the earlier H show through the later shadow"
