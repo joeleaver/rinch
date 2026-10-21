@@ -6131,8 +6131,10 @@ Three things it deliberately does not do.
   generated box now carries its pseudo cascade and its `@keyframes` animation
   starts (it did not before, #925), keeping the frame clock running under a
   closed drawer. The box is kept across a cascade of its originator (#1023), so
-  such an animation keeps its clock as in Chrome: it restarts only when its
-  `animation-name` changes or the pseudo stops and starts being generated, and
+  such an animation keeps its clock as in Chrome: it restarts when its
+  `animation-name` changes, when the pseudo stops being rendered (`content:
+  none`, `display: none`) and comes back, or when its originator leaves the
+  document and is inserted again (#699), and
   a `transition` declared on a `::before`/`::after` runs. The pause selectors were left
   out because rinch-dom matches pseudo-element rules with no bloom filter
   (#935), so they cost +10% of style instructions on every page loading the

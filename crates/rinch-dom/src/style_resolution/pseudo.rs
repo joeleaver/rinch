@@ -21,8 +21,10 @@ impl RinchDocument {
     /// (#1023): its pseudo style is replaced in place and pushed for
     /// `apply_stylo_styles_to_taffy`, which compares it with the box's last
     /// `computed_style` as for any restyled element — so a running animation
-    /// keeps its clock (it restarts only when its name changes, as in
-    /// Chrome) and a declared `transition` runs. Its text child is replaced
+    /// keeps its clock and a declared `transition` runs. As in Chrome, the
+    /// animation restarts when its name changes, when the pseudo stops being
+    /// rendered (`content: none`, `display: none`) and comes back, or when the
+    /// originator leaves the document and is inserted again (#699). Its text child is replaced
     /// only when the text changed. When the pseudo no longer generates the
     /// box is removed.
     ///

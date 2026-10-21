@@ -12,8 +12,9 @@
 //! Chrome 155: `.w::before { content: "x"; display: inline-block; animation:
 //! k 10s linear infinite }` with `.w.on { outline: 1px solid red }` — toggling
 //! `.on` leaves the `::before` animation's `currentTime` where it was. The
-//! animation restarts only when `animation-name` changes or the pseudo stops
-//! (`content: none`) and starts being generated again; a `transition` on the
+//! animation restarts when `animation-name` changes, when the pseudo stops
+//! being rendered (`content: none`, `display: none`) and comes back, or when
+//! the originator leaves the document and is inserted again; a `transition` on the
 //! `::before` runs.
 //!
 //! Every clock is backdated by 400ms before the change, so "kept" and
@@ -428,4 +429,75 @@ fn a_root_font_size_change_keeps_the_before_and_its_clock() {
 
     assert_eq!(before(&doc, w), b, "the ::before is the same node");
     assert_eq!(start_time(&doc, b), started, "the clock is kept");
+}
+
+fn pseudo_children(doc: &RinchDocument, n: NodeId) -> Vec<usize> {
+    doc.tree
+        .get(n.0)
+        .unwrap()
+        .children
+        .iter()
+        .copied()
+        .filter(|&c| doc.tree.get(c).unwrap().is_pseudo_element)
+        .collect()
+}
+
+/// A kept box whose `::before` rule leaves with the theme sheet is removed.
+/// The element has no `::before` rule any more, so only the box it already
+/// has makes the cascade ask about the pseudo (review of #1643, e1).
+#[test]
+fn a_before_whose_rule_leaves_with_the_theme_sheet_is_removed() {
+    let mut doc = RinchDocument::new();
+    doc.set_theme_css(".w::before { content: 'T'; }");
+    let body = doc.body();
+    let w = doc.create_element("div");
+    doc.set_attribute(w, "class", "w");
+    let t = doc.create_text("mid");
+    doc.append_child(w, t);
+    doc.append_child(body, w);
+    doc.resolve_layout(VW, VH);
+    assert_eq!(
+        pseudo_children(&doc, w).len(),
+        1,
+        "positive control: the theme ::before"
+    );
+    doc.set_theme_css(".other { color: red; }");
+    doc.recompute_all_styles_full();
+    doc.resolve_layout(VW + 10.0, VH);
+    assert_eq!(
+        pseudo_children(&doc, w).len(),
+        0,
+        "the ::before left with its rule"
+    );
+}
+
+/// A kept `z-index` box becomes a stacking context when its originator
+/// becomes a flex container (it is a flex item then), and stops being one
+/// when the originator stops (review of #1643, e7).
+#[test]
+fn a_kept_before_becomes_and_stops_being_a_flex_item() {
+    let mut doc = RinchDocument::new();
+    doc.load_css(".w::before { content: 'z'; z-index: 3; } .w.fx { display: flex; }");
+    let body = doc.body();
+    let w = doc.create_element("div");
+    doc.set_attribute(w, "class", "w");
+    let t = doc.create_text("mid");
+    doc.append_child(w, t);
+    doc.append_child(body, w);
+    doc.resolve_layout(VW, VH);
+    let b = pseudo_children(&doc, w)[0];
+    assert!(!doc.tree.get(b).unwrap().creates_stacking_context());
+    doc.set_attribute(w, "class", "w fx");
+    doc.resolve_layout(VW, VH);
+    assert_eq!(pseudo_children(&doc, w), vec![b], "kept");
+    assert!(
+        doc.tree.get(b).unwrap().creates_stacking_context(),
+        "a z-indexed flex item"
+    );
+    doc.set_attribute(w, "class", "w");
+    doc.resolve_layout(VW, VH);
+    assert!(
+        !doc.tree.get(b).unwrap().creates_stacking_context(),
+        "no longer a flex item"
+    );
 }
