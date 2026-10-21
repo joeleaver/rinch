@@ -13,6 +13,9 @@
 //! ```
 #![cfg(target_arch = "wasm32")]
 
+#[path = "support/engine.rs"]
+mod engine;
+
 use rinch::prelude::*;
 use rinch_core::element::ThemeProviderProps;
 use rinch_web::RootHandle;
@@ -308,7 +311,15 @@ fn caret_rect_is_in_client_px_at_the_offset() {
     let ic = f.input.caret_rect().expect("an empty field has a caret");
     assert!(
         (ic.x as f64 - (ir.left() + 1.0 + 8.0)).abs() < 0.5,
-        "{ic:?}"
+        "{ic:?} box left {} clientLeft {} padding-left {:?}",
+        ir.left(),
+        f.el("k-in").client_left(),
+        web_sys::window()
+            .unwrap()
+            .get_computed_style(&f.el("k-in"))
+            .unwrap()
+            .unwrap()
+            .get_property_value("padding-left")
     );
     assert!(
         (ic.y as f64) > ir.top() && ((ic.y + ic.height) as f64) < ir.bottom(),
@@ -377,6 +388,7 @@ fn caret_rect_agrees_with_caret_position_from_point() {
                 input { id: "c2", style: "width: 200px; height: 30px; font: 16px sans-serif; text-align: center", value: "abc" }
                 input { id: "c4", style: "width: 100px; height: 30px; font: 16px sans-serif", value: {l2.clone()} }
                 textarea { id: "c5", style: "width: 200px; height: 60px; font: 16px/20px sans-serif; letter-spacing: 3px", "abc def" }
+                textarea { id: "c7", style: "width: 200px; height: 100px; font: 16px/20px sans-serif", "x\n\ny\nz" }
                 input { id: "c6", r#type: "password", style: "width: 200px; height: 40px; font: 16px sans-serif", value: "abcdef" }
                 // Last, so the scaled box paints over nothing else.
                 div { style: "transform: scale(2); transform-origin: 0 0; width: 300px",
@@ -385,7 +397,7 @@ fn caret_rect_agrees_with_caret_position_from_point() {
             }
         };
         let k = r.children();
-        let scaled = k[6].children();
+        let scaled = k[7].children();
         (
             r,
             vec![
@@ -395,6 +407,7 @@ fn caret_rect_agrees_with_caret_position_from_point() {
                 scaled[0].clone(),
                 k[3].clone(),
                 k[4].clone(),
+                k[6].clone(),
                 k[5].clone(),
             ],
         )
@@ -428,6 +441,9 @@ fn caret_rect_agrees_with_caret_position_from_point() {
     check(&hs[4], "c4", &[n - 3, n]);
     check(&hs[5], "c5", &[1, 3, 5]);
     check(&hs[6], "c6", &[0, 2, 6]);
+    // Line starts after a break, an empty line included (Gecko puts a
+    // collapsed range after a break at the end of the line before).
+    check(&hs[7], "c7", &[0, 1, 2, 3, 4, 5]);
     assert!(bad.is_empty(), "{bad:#?}");
     // A single-line field's caret-from-point answers its one line at any
     // height, so its vertical centring is checked against the box itself.
@@ -561,7 +577,15 @@ fn oracle_in_box(
     let left = r.left() + el.client_left() as f64 * sx;
     let top = r.top() + el.client_top() as f64 * sy;
     let right = left + el.client_width() as f64 * sx;
-    let bottom = top + el.client_height() as f64 * sy;
+    let mut bottom = top + el.client_height() as f64 * sy;
+    // Gecko's scrollbars overlay the content and `clientHeight` keeps the
+    // strip they cover, where caret-from-point answers the scrollbar's own
+    // position (Firefox 155: offset 1). Chrome's take the strip out of
+    // `clientHeight`. So under Gecko the strip of a horizontally scrolling box
+    // is not sampled.
+    if engine::is_gecko() && el.scroll_width() > el.client_width() {
+        bottom -= 12.0 * sy;
+    }
     let mut n = 0;
     let mut bad = Vec::new();
     for o in offs {
@@ -587,7 +611,9 @@ fn oracle_in_box(
         n += 1;
         let got = caret_from_point(x as f32, y as f32);
         if got != format!("{id}:{o}") {
-            bad.push(format!("{o} -> {got}"));
+            bad.push(format!(
+                "{o} -> {got} at ({x:.1},{y:.1}) in {left:.1}..{right:.1} x {top:.1}..{bottom:.1}"
+            ));
         }
     }
     (n, bad)

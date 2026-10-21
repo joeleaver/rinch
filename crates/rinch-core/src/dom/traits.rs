@@ -613,12 +613,15 @@ pub trait DomDocument {
     /// composition's text, which is not in the value, is not counted. The web
     /// lays the value out in a hidden copy of the control with its computed
     /// text styles, at the width it lays its text out in (browsers expose no
-    /// caret geometry for a form control). Checked in Chrome 155 against
-    /// `document.caretPositionFromPoint` at the rect's centre, which answers
-    /// the same offset for a textarea scrolled under its scrollbar, a centred
-    /// or horizontally scrolled `<input>`, a password field, spaced text and a
-    /// field under `transform: scale(2)`; other styles the copy does not carry
-    /// are not covered.
+    /// caret geometry for a form control). Checked in Chrome 155 and Firefox
+    /// 155 against `document.caretPositionFromPoint` at the rect's centre,
+    /// which answers the same offset for a textarea scrolled under its
+    /// scrollbar, right-to-left text, line starts after a break, `wrap="off"`
+    /// and `white-space: pre`, a centred or horizontally scrolled `<input>`,
+    /// a password field, spaced text, a field under `transform: scale(2)` and
+    /// a scaled or zoomed page (Firefox's overlay-scrollbar strip excepted,
+    /// where its caret-from-point answers the scrollbar); other styles the
+    /// copy does not carry are not covered.
     ///
     /// `None` for a node that is not a text control, or not rendered
     /// (`display: none`, `visibility: hidden`, out of the document).

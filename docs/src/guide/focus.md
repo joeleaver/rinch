@@ -245,10 +245,11 @@ for both. Desktop measures with the layout paint draws the field with
 an empty field); an IME composition's text, which is not in the value yet, is
 not counted. A browser exposes no caret geometry for a form control, so the web
 lays the value out in a hidden copy of the control with its computed text
-styles at the width the control lays its text out in; Chrome 155's own
-`caretPositionFromPoint` answers the same offset at the rect's centre for a
-textarea scrolled under its scrollbar, a centred or horizontally scrolled
-`<input>`, a password field and a field under a `transform`. Its height is the
+styles at the width the control lays its text out in; Chrome 155's and
+Firefox 155's own `caretPositionFromPoint` answer the same offset at the
+rect's centre for a textarea scrolled under its scrollbar, right-to-left
+text, line starts after a break, `wrap="off"`, a centred or horizontally
+scrolled `<input>`, a password field and a field under a `transform`. Its height is the
 text's own (the font's content area), where desktop's is the 1.2 × font-size
 caret it paints. A field that is not rendered (`display: none`) has no caret
 rect. Ask after layout — from an effect or an `onkeydown` that did

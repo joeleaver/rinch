@@ -2574,7 +2574,25 @@ impl DomDocument for WebDocument {
             px("padding-top"),
             px("padding-bottom"),
         );
-        let text_width = (el.client_width() as f64 - pad_l - pad_r).max(0.0);
+        // The border widths as computed, not `clientLeft`/`clientTop`: Gecko
+        // answers those for an `<input>` as border plus padding (Firefox 155:
+        // `clientLeft` 9 for a 1px border and 8px padding).
+        let (border_l, border_t, border_b) = (
+            px("border-left-width"),
+            px("border-top-width"),
+            px("border-bottom-width"),
+        );
+        // A textarea's text room is its client width (a scrollbar's gutter is
+        // not text room); an `<input>` has no scrollbar, and Gecko's
+        // `clientWidth` for one already leaves its padding out, so its room
+        // comes from the border box.
+        let border_r = px("border-right-width");
+        let text_width = if single_line {
+            el.offset_width() as f64 - border_l - border_r - pad_l - pad_r
+        } else {
+            el.client_width() as f64 - pad_l - pad_r
+        }
+        .max(0.0);
         let mirror: web_sys::HtmlElement = doc.create_element("div").ok()?.dyn_into().ok()?;
         let ms = mirror.style();
         for prop in MIRRORED {
@@ -2614,8 +2632,27 @@ impl DomDocument for WebDocument {
         // A collapsed range at the offset: the browser places it by the same
         // line-breaking and bidi rules it lays the control's text out with,
         // where a marker's edge is the wrong end of a right-to-left run.
+        // Right after a line break the caret starts the next line, but a
+        // collapsed range there is the end of the line before in Gecko
+        // (Firefox 155; Chrome puts it on the next line). The character at
+        // the offset — the zero-width space at the very end — is on that next
+        // line in both, so the caret is its start edge.
+        let after_break = !password && head > 0 && units[head - 1] == u16::from(b'\n');
+        let rtl = cs.get_property_value("direction").is_ok_and(|d| d == "rtl");
         let caret = doc.create_range().ok().and_then(|range| {
             range.set_start(&node, at as u32).ok()?;
+            if after_break {
+                range.set_end(&node, at as u32 + 1).ok()?;
+                let r = range.get_client_rects()?.get(0)?;
+                let x = if rtl { r.right() } else { r.left() };
+                return web_sys::DomRect::new_with_x_and_y_and_width_and_height(
+                    x,
+                    r.top(),
+                    0.0,
+                    r.height(),
+                )
+                .ok();
+            }
             range.collapse_with_to_start(true);
             let rects = range.get_client_rects()?;
             rects
@@ -2634,7 +2671,9 @@ impl DomDocument for WebDocument {
         let local_x = (caret.left() - m.left()) / mx - el.scroll_left() as f64;
         let height = caret.height() / my;
         let local_y = if single_line {
-            let content = el.client_height() as f64 - pad_t - pad_b;
+            // From the border box: Gecko's `clientHeight` / `clientLeft` for
+            // an `<input>` are its inner editor's, padding excluded.
+            let content = el.offset_height() as f64 - border_t - border_b - pad_t - pad_b;
             pad_t + (content - height) / 2.0
         } else {
             (caret.top() - m.top()) / my - el.scroll_top() as f64
@@ -2645,8 +2684,17 @@ impl DomDocument for WebDocument {
         let (ow, oh) = (el.offset_width() as f64, el.offset_height() as f64);
         let sx = if ow > 0.0 { e.width() / ow } else { 1.0 };
         let sy = if oh > 0.0 { e.height() / oh } else { 1.0 };
-        let x = e.left() + (el.client_left() as f64 + local_x) * sx;
-        let y = e.top() + (el.client_top() as f64 + local_y) * sy;
+        // A textarea's padding box starts at `clientLeft`/`clientTop`, which
+        // count a vertical scrollbar on its left (a right-to-left textarea in
+        // Chrome); an `<input>` has no scrollbar, and Gecko's `clientLeft` for
+        // one is border plus padding, so its origin is the computed border.
+        let (origin_x, origin_y) = if single_line {
+            (border_l, border_t)
+        } else {
+            (el.client_left() as f64, el.client_top() as f64)
+        };
+        let x = e.left() + (origin_x + local_x) * sx;
+        let y = e.top() + (origin_y + local_y) * sy;
         Some(rinch_core::reactive::ElementBounds {
             x: x as f32,
             y: y as f32,
