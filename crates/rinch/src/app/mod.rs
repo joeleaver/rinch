@@ -108,6 +108,8 @@ mod editor_focus_and_reveal_tests;
 mod editor_image_drop_review_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_image_drop_tests;
+#[cfg(test)]
+mod file_drop_click_context_1650_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_image_hover_tests;
 #[cfg(all(test, feature = "desktop"))]
