@@ -75,10 +75,17 @@ pure; pinned by `app_builder::tests::web_parts_*`): the theme (installed as by
 (`.title()`, else a `window_props` title that is not `WindowProps::default()`'s,
 written to `document.title`; with neither the page keeps its own `<title>`).
 `.menu()` is therefore no longer `desktop`-gated (an Android build has it too,
-and `run_android` warns). `.image_scheme()` registers when called, on both targets; `.size()` and the
-rest of `.window_props()` have no web effect. `.fonts()` stays gated on the `font` module
-(`desktop`/`android`/`embed`): `AppFont` names parley's `GenericFamily`, which a
-web build does not link. The GPU and desktop-only methods do not exist there.
+and `run_android` warns). The menu bar is a **compile-time** choice on the web:
+`App<F, M = NoMenuBar>`, and on `wasm32` only `.menu()` returns
+`App<F, WithMenuBar>` (elsewhere it returns `Self`, so desktop code is
+unchanged); `AppExt` is implemented once per state, so an app with no menu does
+not link `mount_with_menu_bar` (paint-web release wasm, pre-wasm-opt: a runtime
+branch cost +93 KB over main). `.image_scheme()` registers when called, on both targets; `.size()` and the
+rest of `.window_props()` have no web effect. `.fonts()` exists on every target and a web mount ignores the faces
+(`WebParts::fonts`): `rinch::font` is ungated because `GenericFamily` is named
+from `parlance` directly — the very type fontique re-exports, so nothing
+changes for an `AppFont` user — and parlance builds for wasm with no
+dependencies. The GPU and desktop-only methods do not exist there.
 Pins: `rinch-web/tests/app_ext_1769.rs`, `app_ext_menu_1769.rs` (Chrome 155).
 
 The seven `run_*` functions (`run`, `run_with_theme`, `run_with_menu`,

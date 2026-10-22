@@ -141,8 +141,24 @@ app (as `rinch_web::mount` does) and returns:
 | `.title(..)` | Becomes `document.title`; without a title the page keeps its own `<title>` |
 | `.image_scheme(..)` | Registered, as on the desktop |
 | `.size(..)`, `.window_props(..)` | Ignored: the page sizes the browser window |
-| `.fonts(..)` | Not available on a web build — load fonts with `@font-face` in the page's CSS, and put `.fonts(..)` behind `#[cfg(not(target_arch = "wasm32"))]` |
+| `.fonts(..)` | Accepted and ignored: load web fonts with `@font-face` in the page's CSS |
 | GPU and other desktop-only settings (`.gpu_config`, `.renderer`, …) | Not available: the browser composites |
+
+On a web build `.menu(..)` returns an `App<F, WithMenuBar>` rather than the
+same type, so an app that never calls it does not link the DOM menu bar (about
+93 KB of wasm). A chain reads the same; only code that names the `App` type or
+assigns `app = app.menu(..)` back to an `App<F>` variable sees the difference.
+
+**Forgetting the import** gives:
+
+```text
+error[E0599]: no method named `run` found for struct `rinch::App` in the current scope
+```
+
+`App::run` is the desktop's inherent method, so the web build has none until
+`rinch_web::AppExt` is in scope. The compiler suggests the trait only when the
+crate already names `rinch_web` somewhere; otherwise it says nothing more. The
+fix is the import above, behind `#[cfg(target_arch = "wasm32")]`.
 
 For islands, or a menu bar on an island, use the `mount_*` functions below.
 

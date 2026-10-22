@@ -78,7 +78,8 @@ pub mod embed;
 #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
 pub mod focus_registry;
 /// App-bundled fonts: the bytes a build carries and the CSS names they answer to.
-#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+/// Built on every target (a web build accepts them in `App::fonts` and ignores
+/// them, #1769); only the desktop, Android and embed hosts register them.
 pub mod font;
 /// [`Menu`](menu::Menu) / [`MenuItem`](menu::MenuItem) and the DOM menu bar.
 ///
@@ -173,7 +174,6 @@ pub mod prelude {
         target_arch = "wasm32"
     ))]
     pub use crate::app_builder::App;
-    #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
     pub use crate::font::{AppFont, GenericFamily};
     #[cfg(feature = "desktop")]
     pub use crate::shell::activation::ActivationPolicy;

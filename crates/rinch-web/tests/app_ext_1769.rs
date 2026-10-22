@@ -49,6 +49,8 @@ fn run_mounts_the_app_sets_the_title_and_installs_the_theme() {
     App::new(app)
         .title("Built by App 1769")
         .size(640, 480)
+        // Accepted on a web build and ignored there (no cfg around it).
+        .fonts(&[rinch::font::AppFont::new(&[])])
         .theme(ThemeProviderProps {
             primary_color: Some("grape".into()),
             ..Default::default()
@@ -83,8 +85,10 @@ fn run_mounts_the_app_sets_the_title_and_installs_the_theme() {
         .expect("a theme <style>")
         .text_content()
         .unwrap_or_default();
+    // The binding itself: every theme names `grape` among its palettes, so
+    // only the primary-colour line tells the configured theme from the default.
     assert!(
-        theme.contains("--rinch-primary-color") && theme.contains("grape"),
+        theme.contains("--rinch-primary-color: var(--rinch-color-grape-"),
         "the configured primary colour is installed"
     );
 }

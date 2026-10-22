@@ -6,6 +6,7 @@
 use rinch::App;
 use rinch::menu::{Menu, MenuItem};
 use rinch_core::dom::{NodeHandle, RenderScope};
+use rinch_core::element::ThemeProviderProps;
 use rinch_web::AppExt as _;
 use wasm_bindgen_test::*;
 
@@ -26,6 +27,10 @@ fn run_with_a_menu_mounts_under_the_menu_bar_and_keeps_the_page_title() {
     document().set_title("Page title 1769");
 
     App::new(app)
+        .theme(ThemeProviderProps {
+            primary_color: Some("teal".into()),
+            ..Default::default()
+        })
         .menu(vec![
             ("File", Menu::new().item(MenuItem::new("New"))),
             ("Edit", Menu::new().item(MenuItem::new("Undo"))),
@@ -50,4 +55,16 @@ fn run_with_a_menu_mounts_under_the_menu_bar_and_keeps_the_page_title() {
         "both top-level menus are in the bar: {labels:?}"
     );
     assert_eq!(document().title(), "Page title 1769");
+    // The theme reaches the page on this path too: the primary-colour binding
+    // names the configured palette (the default's is `blue`).
+    let theme = document()
+        .query_selector("style[data-rinch-theme]")
+        .unwrap()
+        .expect("a theme <style>")
+        .text_content()
+        .unwrap_or_default();
+    assert!(
+        theme.contains("--rinch-primary-color: var(--rinch-color-teal-"),
+        "the configured primary colour is installed"
+    );
 }

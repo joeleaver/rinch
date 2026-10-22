@@ -30,6 +30,15 @@
 
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::element::{ThemeProviderProps, WindowProps};
+use std::marker::PhantomData;
+
+/// `App::menu`'s labels, owned.
+fn owned_menus(menus: Vec<(&str, crate::menu::Menu)>) -> Vec<(String, crate::menu::Menu)> {
+    menus
+        .into_iter()
+        .map(|(label, menu)| (label.to_string(), menu))
+        .collect()
+}
 
 /// A rinch application, configured by builder methods and started by a terminal
 /// method ([`run`](App::run) on desktop, `run_android` on Android — the latter
@@ -55,6 +64,15 @@ use rinch_core::element::{ThemeProviderProps, WindowProps};
 /// }
 /// ```
 ///
+/// Without that import a web build fails with `error[E0599]: no method named
+/// `run` found for struct `rinch::App``: `run` is the desktop's inherent
+/// method, and the compiler names `rinch_web::AppExt` as the fix only when the
+/// crate already mentions `rinch_web` somewhere. Add the `use` above.
+///
+/// The second type parameter is the menu-bar state ([`NoMenuBar`] by default):
+/// on `wasm32`, [`menu`](App::menu) moves it to [`WithMenuBar`] so only an app
+/// that has a menu bar links one.
+///
 /// # Example
 ///
 /// ```ignore
@@ -71,7 +89,7 @@ use rinch_core::element::{ThemeProviderProps, WindowProps};
 /// ```
 #[must_use = "an App does nothing until a terminal method (`run` on desktop or, \
               through `rinch_web::AppExt`, on the web; `run_android` on Android) is called"]
-pub struct App<F> {
+pub struct App<F, M = NoMenuBar> {
     pub(crate) component: F,
     /// The window configuration. [`title`](App::title) and [`size`](App::size)
     /// are held separately and applied over this at startup, so setting them
@@ -82,7 +100,6 @@ pub struct App<F> {
     pub(crate) theme: Option<ThemeProviderProps>,
     /// Faces the build carries, in the order they were added. Not an `Option`:
     /// "no bundled fonts" and "an empty list of them" are the same startup.
-    #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
     pub(crate) fonts: Vec<crate::font::AppFont>,
     pub(crate) menus: Option<Vec<(String, crate::menu::Menu)>>,
     #[cfg(feature = "desktop")]
@@ -102,7 +119,25 @@ pub struct App<F> {
     pub(crate) activation_policy: Option<crate::shell::activation::ActivationPolicy>,
     #[cfg(feature = "gpu")]
     pub(crate) gpu: Option<crate::shell::desktop::GpuInit>,
+    /// Whether a web build was given a menu bar — see [`NoMenuBar`].
+    pub(crate) menu_bar: PhantomData<M>,
 }
+
+/// The menu-bar state of an [`App`] that was given no menu bar: the default
+/// second type parameter, so `App<F>` names it.
+///
+/// It exists for the web (#1769): on `wasm32` [`App::menu`] returns an
+/// `App<F, WithMenuBar>`, and `rinch_web::AppExt` is implemented for each state
+/// separately, so an app that never calls `.menu()` does not link the DOM menu
+/// bar. On every other target `.menu()` returns `Self` and an `App` stays in
+/// this state.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoMenuBar;
+
+/// The menu-bar state of an [`App`] that [`App::menu`] gave a menu bar, on a
+/// `wasm32` build. See [`NoMenuBar`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WithMenuBar;
 
 impl<F> App<F>
 where
@@ -116,7 +151,6 @@ where
             title: None,
             size: None,
             theme: None,
-            #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
             fonts: Vec::new(),
             menus: None,
             #[cfg(feature = "desktop")]
@@ -131,9 +165,15 @@ where
             activation_policy: None,
             #[cfg(feature = "gpu")]
             gpu: None,
+            menu_bar: PhantomData,
         }
     }
+}
 
+impl<F, M> App<F, M>
+where
+    F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
+{
     /// Set the window title.
     ///
     /// Wins over the title carried by [`window_props`](App::window_props)
@@ -200,12 +240,9 @@ where
     /// Applies on Android too — the one configuration method besides
     /// [`theme`](App::theme) that does, and the platform that needs it most.
     ///
-    /// Not on a web build: [`AppFont`](crate::font::AppFont) names its generic
-    /// families through the desktop text stack, which a browser build does
-    /// not link, and the browser loads fonts from the page's CSS
-    /// (`@font-face`). A cross-platform app puts `.fonts(..)` behind
-    /// `#[cfg(not(target_arch = "wasm32"))]` (#1769).
-    #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+    /// On a web build (`rinch_web::AppExt`) the faces are accepted and
+    /// ignored: the browser loads fonts from the page's CSS (`@font-face`), so
+    /// a cross-platform chain needs no `cfg` around this call (#1769).
     pub fn fonts(mut self, fonts: &[crate::font::AppFont]) -> Self {
         self.fonts.extend_from_slice(fonts);
         self
@@ -271,14 +308,42 @@ where
     /// web, run through `rinch_web::AppExt`, it is the DOM menu bar
     /// `rinch_web::mount_with_menu_bar` draws (#1769). Android has no window
     /// menu bar: `run_android` warns and ignores it.
+    ///
+    /// On `wasm32` it returns an `App<F, WithMenuBar>` rather than `Self`, so
+    /// that only an app that has a menu bar links it (see [`NoMenuBar`]); a
+    /// chain reads the same either way.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn menu(mut self, menus: Vec<(&str, crate::menu::Menu)>) -> Self {
-        self.menus = Some(
-            menus
-                .into_iter()
-                .map(|(label, menu)| (label.to_string(), menu))
-                .collect(),
-        );
+        self.menus = Some(owned_menus(menus));
         self
+    }
+
+    /// See the non-`wasm32` [`menu`](App::menu): the same, in the
+    /// [`WithMenuBar`] state.
+    #[cfg(target_arch = "wasm32")]
+    pub fn menu(self, menus: Vec<(&str, crate::menu::Menu)>) -> App<F, WithMenuBar> {
+        App {
+            component: self.component,
+            props: self.props,
+            title: self.title,
+            size: self.size,
+            theme: self.theme,
+            fonts: self.fonts,
+            menus: Some(owned_menus(menus)),
+            #[cfg(feature = "desktop")]
+            renderer: self.renderer,
+            #[cfg(feature = "desktop")]
+            shortcut_matching: self.shortcut_matching,
+            #[cfg(feature = "desktop")]
+            prefer_x11: self.prefer_x11,
+            #[cfg(feature = "desktop")]
+            title_tooltips: self.title_tooltips,
+            #[cfg(feature = "desktop")]
+            activation_policy: self.activation_policy,
+            #[cfg(feature = "gpu")]
+            gpu: self.gpu,
+            menu_bar: PhantomData,
+        }
     }
 
     /// Raise the compositor GPU device's features and limits.
@@ -456,9 +521,9 @@ where
     /// `title` is [`title`](App::title) if one was set, else the title carried
     /// by [`window_props`](App::window_props) when it is not the default one
     /// (`WindowProps::default().title`), else `None` — so a web page keeps its
-    /// own `<title>` unless the app named one. Size, the other window props,
-    /// fonts and the GPU configuration have no web counterpart and are not
-    /// handed over.
+    /// own `<title>` unless the app named one. Size, the other window props
+    /// and the GPU configuration have no web counterpart and are not handed
+    /// over; the fonts are, for the mount to ignore.
     #[doc(hidden)]
     pub fn into_web_parts(self) -> WebParts<F> {
         let default_title = WindowProps::default().title;
@@ -470,6 +535,7 @@ where
             title,
             theme: self.theme.unwrap_or_default(),
             menus: self.menus,
+            fonts: self.fonts,
         }
     }
 
@@ -776,6 +842,10 @@ pub struct WebParts<F> {
     pub theme: ThemeProviderProps,
     /// The menu bar, if one was configured.
     pub menus: Option<Vec<(String, crate::menu::Menu)>>,
+    /// The faces given to [`App::fonts`]. A browser mount ignores them (the
+    /// page loads its fonts with `@font-face`); handed over so dropping them
+    /// is the mount's documented choice.
+    pub fonts: Vec<crate::font::AppFont>,
 }
 
 /// Everything a terminal method needs, with every builder rule already applied.
