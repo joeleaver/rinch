@@ -719,6 +719,72 @@ Unhyphenated attribute names — `id`, `tabindex`, `role` — are not routed: on
 component they are still struct fields, and a component that does not declare
 one does not compile.
 
+### Keeping a handle to an element: `ref:`
+
+`ref: target` hands you the `NodeHandle` of the element it is written on, so you
+can reach an inner element later (to focus it, measure it, read its live value)
+without searching for it again from a root you saved (issue #1779). `target` is
+a `Signal<Option<NodeHandle>>` you create:
+
+```rust
+#[component]
+fn search_bar() -> NodeHandle {
+    let field: Signal<Option<NodeHandle>> = Signal::new(None);
+    let popup_at = Signal::new((0.0_f32, 0.0_f32));
+    rsx! {
+        div {
+            input { ref: field, placeholder: "Search" }
+            button {
+                onclick: move || {
+                    if let Some(rect) = field.get().and_then(|f| f.bounding_rect()) {
+                        popup_at.set((rect.x, rect.y + rect.height));
+                    }
+                },
+                "Suggest"
+            }
+        }
+    }
+}
+```
+
+- The signal is set to `Some(handle)` when the element is built (after its
+  attributes and children, just before it is attached to its parent), and back
+  to `None` when the element goes: the `if` branch it is in is hidden, its `for`
+  row is removed, the component that built it unmounts or re-renders. A clear
+  only happens while the signal still holds that element, so a branch shown in
+  its place, or a component's next render, keeps the new one.
+- It is an ordinary signal: an effect or `{|| …}` closure that reads it runs
+  again when the element arrives or goes. The set happens **during the build**:
+  outside a batch (a mount, an effect re-rendering a branch) a reader runs right
+  then, while the element is not yet attached to its parent, so
+  `bounding_rect()` answers `None` there. Read the handle from an event handler,
+  or once the tree is mounted.
+- One signal shared by several elements (`ref:` inside a `for`) holds the last
+  one built, and is cleared when **that** element goes — even if another element
+  that named it is still mounted. Give each element its own signal when you
+  need each one.
+- On a component, `ref:` is the component's **root** element, like `style:` and
+  `class:`. On a component that re-renders it follows each new root.
+- `ref` is a Rust keyword; `ref:` and `r#ref:` both work. `r#ref:` used to
+  write an HTML attribute named `ref` (or set a component field named `ref`);
+  it now means this binding.
+
+### Where an element is now: `bounding_rect()`
+
+`NodeHandle::bounding_rect()` answers, synchronously, the box an element is
+painted in: viewport-relative logical pixels, the frame of a click's
+`ClickContext` (`element_x` …) and of `bounds_signal()`, so a transform on the
+element or an ancestor moves and scales it, and a scroll moves it. On the web it
+is `getBoundingClientRect()`. An inline element (`<span>`, `<a>`, `<strong>`)
+answers the box around its fragments on its lines — a wrapped one, the union of
+all of them, without the white space hung at a line's end. On desktop it is the box as of the **last layout**:
+a style the same handler just wrote shows from the next frame, where a browser
+lays out to answer. An element under `display: none` (or one that is
+`display: contents`) answers a zero rect; a text node, or an element not in the
+document, answers `None`. `get_layout_bounds()` is a different question — the
+box relative to its parent, as laid out — and `bounds_signal()` is the reactive
+one, refreshed after each desktop layout.
+
 ## Fragments
 
 Use empty braces to group multiple elements without a wrapper:

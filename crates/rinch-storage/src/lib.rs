@@ -93,8 +93,10 @@
 //! # }
 //! ```
 
+mod app_store;
 mod error;
 
+pub use app_store::{PlatformStore, open_app_store};
 pub use error::StorageError;
 
 use std::future::Future;

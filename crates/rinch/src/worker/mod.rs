@@ -35,8 +35,8 @@
 //!   and a Content-Security-Policy that allows `blob:` workers.
 //!
 //! A handler is synchronous: nothing in a worker runs rinch tasks or timers,
-//! so [`spawn_local`](rinch_core::spawn_local) and
-//! [`set_timeout`](rinch_core::set_timeout) panic inside one, and a worker
+//! so [`spawn_local`](rinch_core::spawn_local),
+//! [`set_timeout`](rinch_core::set_timeout) and `set_interval` panic inside one, and a worker
 //! cannot [`spawn`](Worker::spawn) workers.
 //!
 //! Messages cross as bytes, through [`WorkerMessage`], on every platform, so a

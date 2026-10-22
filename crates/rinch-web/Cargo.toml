@@ -116,8 +116,13 @@ rinch-editor-collab = { workspace = true, features = ["test-util"] }
 # refuses `clipboard-write` (tests/clipboard_copy_then.rs, #1780). A
 # `BroadcastChannel` (tests/worker_1772.rs).
 web-sys = { version = "0.3", features = ["DragEventInit", "FilePropertyBag", "HtmlImageElement", "HtmlIFrameElement", "Clipboard", "BroadcastChannel"] }
-# `rinch::worker` in a real browser (tests/worker_1772.rs).
-rinch = { workspace = true, default-features = false, features = ["components", "theme", "worker"] }
+# The browser's message dialogs (tests/confirm_dialog_1773.rs): `rinch::dialogs`
+# is behind `file-dialogs`, which on wasm32 links no crate. `rinch::worker` in a
+# real browser (tests/worker_1772.rs).
+rinch = { workspace = true, default-features = false, features = ["components", "theme", "file-dialogs", "worker"] }
+# Emitting events at `rinch::init_logging`'s console writer (tests/init_logging_1773.rs).
+tracing.workspace = true
+log = "0.4"
 
 [features]
 # Collaborative editing (M9): forwards to the editor view's collab adapter, which

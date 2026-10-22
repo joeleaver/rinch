@@ -345,13 +345,17 @@ fn uses_set_timeout(_: String, _: &Replies<String>) {
     rinch_core::set_timeout(1, || {});
 }
 
+fn uses_set_interval(_: String, _: &Replies<String>) {
+    rinch_core::set_interval(1, || {});
+}
+
 fn spawns_a_worker(_: String, replies: &Replies<String>) {
     let inner = Worker::<String, String>::spawn(echo);
     replies.send(format!("ended:{}", inner.is_ended()));
 }
 
 fn tasks_and_timers_refuse_inside_a_handler() {
-    for handler in [uses_spawn_local, uses_set_timeout] {
+    for handler in [uses_spawn_local, uses_set_timeout, uses_set_interval] {
         let worker = Rc::new(Worker::<String, String>::spawn(handler));
         worker.send("go".into());
         let events = Rc::new(RefCell::new(None));

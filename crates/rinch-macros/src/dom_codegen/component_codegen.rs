@@ -18,7 +18,8 @@ use super::captures::{
     collect_body_captures, collect_capture_idents, is_move_closure, shadow_clones, wrap_site,
 };
 use super::html::{
-    generate_attr_code, generate_class_code, generate_shorthand_code, generate_style_code,
+    generate_attr_code, generate_class_code, generate_ref_code, generate_shorthand_code,
+    generate_style_code,
 };
 use super::{DomCodegenContext, no_siblings};
 
@@ -48,7 +49,12 @@ pub fn has_reactive_component_props(element: &RsxElement) -> bool {
         // A hyphenated attribute is applied to the root, not the struct
         // (issue #433): a reactive one is an effect on a stable root, like a
         // reactive `style:`/`class:`, and re-renders nothing.
-        if name == "key" || name == "style" || name == "class" || is_root_attribute(&name) {
+        if name == "key"
+            || name == "ref"
+            || name == "style"
+            || name == "class"
+            || is_root_attribute(&name)
+        {
             return false;
         }
         if name.starts_with("on") || name.ends_with("_fn") {
@@ -76,6 +82,7 @@ pub fn generate_reactive_component_stmt(
     // Separate style/class/shorthand props from component struct props
     let mut style_prop = None;
     let mut class_prop = None;
+    let mut ref_prop = None;
     let mut shorthand_props = Vec::new();
     let mut attr_props = Vec::new();
     let mut comp_props = Vec::new();
@@ -84,6 +91,8 @@ pub fn generate_reactive_component_stmt(
         let name_str = prop.name.to_string();
         if name_str == "key" {
             continue;
+        } else if name_str == "ref" {
+            ref_prop = Some(prop);
         } else if name_str == "style" {
             style_prop = Some(prop);
         } else if name_str == "class" {
@@ -124,6 +133,8 @@ pub fn generate_reactive_component_stmt(
         &result_var,
     );
     let root_bindings = &bindings.per_render;
+    // `ref:` binds each render's root, in that render's scope (issue #1779).
+    let ref_code = generate_ref_code(ref_prop, &result_var);
 
     // Pass the actual parent directly to reactive_component_dom — no wrapper div needed.
     // This is the statement path: no return value, the function handles insertion.
@@ -166,6 +177,7 @@ pub fn generate_reactive_component_stmt(
             __rendered
         });
         #root_bindings
+        #ref_code
         #result_var
     };
     let (binding_fns, render) = bindings.finish(ctx, &body);
@@ -186,6 +198,7 @@ pub fn element_to_dom_component(element: &RsxElement, ctx: &mut DomCodegenContex
     // not as fields on the component struct. Shorthands become set_style() calls.
     let mut style_prop = None;
     let mut class_prop = None;
+    let mut ref_prop = None;
     let mut shorthand_props = Vec::new();
     let mut attr_props = Vec::new();
     let mut comp_props = Vec::new();
@@ -195,6 +208,9 @@ pub fn element_to_dom_component(element: &RsxElement, ctx: &mut DomCodegenContex
         if name_str == "key" {
             // key: is handled by the parent for-loop, not the component struct
             continue;
+        } else if name_str == "ref" {
+            // ref: binds the rendered root (issue #1779)
+            ref_prop = Some(prop);
         } else if name_str == "style" {
             style_prop = Some(prop);
         } else if name_str == "class" {
@@ -225,6 +241,7 @@ pub fn element_to_dom_component(element: &RsxElement, ctx: &mut DomCodegenContex
             &attr_props,
             style_prop,
             class_prop,
+            ref_prop,
         );
     }
 
@@ -251,6 +268,7 @@ pub fn element_to_dom_component(element: &RsxElement, ctx: &mut DomCodegenContex
     let style_code = generate_style_code(style_prop, &result_var, ctx);
     let class_code = generate_class_code(class_prop, &result_var, ctx);
     let shorthand_code = generate_shorthand_code(&shorthand_props, &result_var, ctx);
+    let ref_code = generate_ref_code(ref_prop, &result_var);
 
     quote! {
         {
@@ -281,6 +299,7 @@ pub fn element_to_dom_component(element: &RsxElement, ctx: &mut DomCodegenContex
             #style_code
             #class_code
             #shorthand_code
+            #ref_code
 
             #result_var
         }
@@ -295,6 +314,7 @@ pub fn element_to_dom_component(element: &RsxElement, ctx: &mut DomCodegenContex
 /// Uses a `display:contents` wrapper div as the parent for `reactive_component_dom`, so the
 /// returned node can be appended to any parent by the caller. This avoids using
 /// `__scope.parent()` which would misroute to the scope root (body).
+#[allow(clippy::too_many_arguments)]
 pub fn element_to_dom_component_reactive(
     element: &RsxElement,
     ctx: &mut DomCodegenContext,
@@ -303,6 +323,7 @@ pub fn element_to_dom_component_reactive(
     attr_props: &[&RsxProp],
     style_prop: Option<&RsxProp>,
     class_prop: Option<&RsxProp>,
+    ref_prop: Option<&RsxProp>,
 ) -> TokenStream2 {
     let comp_name = &element.name;
     let wrapper_var = ctx.next_var("reactive_wrapper");
@@ -337,6 +358,8 @@ pub fn element_to_dom_component_reactive(
         &result_var,
     );
     let root_bindings = &bindings.per_render;
+    // `ref:` binds each render's root, in that render's scope (issue #1779).
+    let ref_code = generate_ref_code(ref_prop, &result_var);
 
     // Use a display:contents wrapper div as the parent for reactive_component_dom.
     // This ensures the component content is placed inside the wrapper, which the caller
@@ -380,6 +403,7 @@ pub fn element_to_dom_component_reactive(
             __rendered
         });
         #root_bindings
+        #ref_code
         #result_var
     };
     let (binding_fns, render) = bindings.finish(ctx, &body);

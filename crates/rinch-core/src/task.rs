@@ -72,7 +72,7 @@ thread_local! {
 }
 
 /// Mark this thread as running `rinch::worker` handlers: [`spawn_local`] and
-/// [`set_timeout`] panic here from now on instead of silently never running.
+/// [`set_timeout`] / [`set_interval`](crate::timer::set_interval) panic here from now on instead of silently never running.
 #[doc(hidden)]
 pub fn __enter_worker_context() {
     IN_WORKER.with(|w| w.set(true));

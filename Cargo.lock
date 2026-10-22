@@ -5222,6 +5222,7 @@ dependencies = [
 name = "rinch-storage"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "js-sys",
  "tempfile",
  "thiserror 1.0.69",
@@ -5305,6 +5306,7 @@ name = "rinch-web"
 version = "0.1.0"
 dependencies = [
  "js-sys",
+ "log",
  "rinch",
  "rinch-clipboard",
  "rinch-core",
@@ -5313,6 +5315,7 @@ dependencies = [
  "rinch-editor-core",
  "rinch-editor-view",
  "rinch-http",
+ "tracing",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",

@@ -233,6 +233,21 @@ fn child_component() -> NodeHandle {
 }
 ```
 
+### Intervals and polled signals off the native frame loop (#1773)
+
+`set_interval` (`rinch-core/src/timer.rs`) is a chain of `set_timeout` ticks,
+so it needs no backend of its own: a thread-local `INTERVALS` map holds each
+interval's pending `TimeoutHandle` (the handle the app keeps is a stable id),
+each tick re-arms from its own deadline (fixed rate; more than a period late it
+re-arms from now), and `on_cleanup` drops the entry when the arming component
+unmounts. `poll_signal` is drained by the native hosts once per frame; the web
+has no frame loop, so `poll_signal` calls a waker hook
+(`reactive::set_poll_waker`) after each registration and `rinch-web/src/polls.rs`
+keeps one drain scheduled (rAF while `polls_want_every_frame()`, else
+`setTimeout(next_poll_due())`, nothing when the registry is empty), each drain
+inside a `batch`. Pins: `timer::tests` (`an_interval_*`, the two rate tests),
+`poll::waker_tests`, `rinch-web/tests/poll_signal_1773.rs`.
+
 ## Threading Model
 
 Rinch **owns the main thread**. `App::run()` calls winit's event loop, which takes over the thread and returns only once the application exits it (`close_current_window`, or an `on_close_requested` answering `true`). All UI state (`Signal`, `Effect`, `NodeHandle`, `RenderScope`) is `!Send` — the reactive system is thread-local.
@@ -366,7 +381,7 @@ already-ended worker holding one `Error`: on the web the app's start function
 re-runs in every instance and would otherwise spawn itself recursively. A
 worker thread and a worker instance call `rinch_core::task::__enter_worker_context`
 (desktop: at thread start; web: in `__rinch_worker_run`), after which
-`spawn_local` and `set_timeout` panic (`refuse_in_worker`) — nothing drives
+`spawn_local`, `set_timeout` and `set_interval` panic (`refuse_in_worker`) — nothing drives
 tasks or timers there (on the web `ensure_global_init` never runs in the
 instance; on the desktop the task table and timer queue are the UI thread's).
 A startup failure on the web is reported from a `queueMicrotask`, not a rinch

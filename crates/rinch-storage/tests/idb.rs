@@ -142,3 +142,44 @@ async fn empty_key_is_rejected() {
         other => panic!("expected InvalidKey, got {other:?}"),
     }
 }
+
+/// `open_app_store` (#1773): the same call as on native. Two stores of one app
+/// are two databases, both created and both independent.
+#[wasm_bindgen_test]
+async fn open_app_store_opens_each_store_of_an_app() {
+    let a = rinch_storage::open_app_store("rinch-storage-test-1773", "one")
+        .await
+        .unwrap();
+    let b = rinch_storage::open_app_store("rinch-storage-test-1773", "two")
+        .await
+        .unwrap();
+    a.put("k", b"first").await.unwrap();
+    b.put("k", b"second").await.unwrap();
+    assert_eq!(a.get("k").await.unwrap(), Some(b"first".to_vec()));
+    assert_eq!(b.get("k").await.unwrap(), Some(b"second".to_vec()));
+
+    // Reopened, the value is still there.
+    let again = rinch_storage::open_app_store("rinch-storage-test-1773", "one")
+        .await
+        .unwrap();
+    assert_eq!(again.get("k").await.unwrap(), Some(b"first".to_vec()));
+
+    assert!(matches!(
+        rinch_storage::open_app_store("x", "a/b").await.err(),
+        Some(StorageError::InvalidKey(_))
+    ));
+}
+
+/// Why `open_app_store` gives each store its own database: `IdbStore::open`
+/// creates its object store only when the database is created (a version
+/// upgrade), so a second store name in an existing database is never made.
+#[wasm_bindgen_test]
+async fn a_second_store_in_an_existing_database_is_not_created() {
+    let first = IdbStore::open(&db("second-store"), "first").await.unwrap();
+    first.put("k", b"v").await.unwrap();
+    let second = IdbStore::open(&db("second-store"), "second").await.unwrap();
+    assert!(
+        second.put("k", b"v").await.is_err(),
+        "the second object store does not exist"
+    );
+}

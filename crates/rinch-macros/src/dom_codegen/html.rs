@@ -60,12 +60,16 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
     // prop order. Nothing observable rides on it today — they write different
     // attributes — but it is an ordering change, not a no-op.
     let mut style_prop = None;
+    // `ref:` hands the app this element's handle (issue #1779).
+    let mut ref_prop = None;
 
     for prop in &element.props {
         let name_str = prop.name.to_string();
         if name_str == "key" {
             // Skip key prop — used by for-loop reconciliation, not a DOM attribute
             continue;
+        } else if name_str == "ref" {
+            ref_prop = Some(prop);
         } else if is_event_prop(&name_str) {
             event_props.push(prop);
         } else if name_str == "style" {
@@ -233,6 +237,9 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
         .map(|child| super::generate_child_code(child, &elem_var, ctx))
         .collect();
 
+    // After the element's attributes and children, before the caller appends it.
+    let ref_code = generate_ref_code(ref_prop, &elem_var);
+
     // Check if void element
     if is_void_element(&tag) {
         quote! {
@@ -243,6 +250,7 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                 #(#event_code)*
                 #text_field_shim
                 #shorthand_code
+                #ref_code
                 #elem_var
             }
         }
@@ -260,6 +268,7 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                 #(#event_code)*
                 #text_field_shim
                 #shorthand_code
+                #ref_code
                 #elem_var
             }
         }
@@ -273,9 +282,26 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                 #text_field_shim
                 #shorthand_code
                 #(#children_code)*
+                #ref_code
                 #elem_var
             }
         }
+    }
+}
+
+/// `ref: target` (issue #1779): set `target` — a
+/// `Signal<Option<NodeHandle>>` — to the element, and back to `None` when the
+/// building scope is disposed (`rinch_core::dom::bind_node_ref`). Also used for
+/// a component's root.
+pub fn generate_ref_code(ref_prop: Option<&RsxProp>, elem_var: &syn::Ident) -> TokenStream2 {
+    match ref_prop {
+        Some(prop) => {
+            let value = &prop.value;
+            quote! {
+                rinch::core::dom::bind_node_ref(__scope, #value, &#elem_var);
+            }
+        }
+        None => quote! {},
     }
 }
 

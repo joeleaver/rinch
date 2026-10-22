@@ -58,7 +58,7 @@ fn word_count() -> NodeHandle {
 ## Handlers are synchronous
 
 A handler runs to completion for each message; nothing in a worker runs rinch
-tasks or timers. `spawn_local` and `set_timeout` called inside a handler
+tasks or timers. `spawn_local`, `set_timeout` and `set_interval` called inside a handler
 **panic** (the worker then ends with a `WorkerEvent::Error`) rather than
 silently never running. Do the work in the handler, and send a reply for each
 step of progress you want the UI to see.

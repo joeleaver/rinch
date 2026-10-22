@@ -87,6 +87,7 @@ mod editor_input;
 mod event_delegation;
 mod images;
 mod menu_bar;
+mod polls;
 pub mod web_document;
 
 use std::cell::{Cell, RefCell};
@@ -302,6 +303,10 @@ fn ensure_global_init() {
         // And `rinch_core::spawn_local`'s polls off microtasks: nothing drains
         // the main-thread callback queue in a browser.
         rinch_core::task::set_task_scheduler(web_schedule_task);
+
+        // Sample `poll_signal`s: the native hosts drain them once per frame,
+        // and the browser has no rinch frame loop to do it (#1773).
+        polls::install();
 
         // Theme CSS is page-global (one shared `<style>`). On any signal change
         // (e.g. dark-mode toggle), refresh it once — regardless of which root
