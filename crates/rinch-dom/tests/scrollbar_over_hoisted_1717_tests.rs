@@ -456,3 +456,18 @@ fn the_thumb_is_the_last_fill_in_the_command_stream() {
         r.fills
     );
 }
+
+/// Rows at `z-index: -1` are drawn behind the scroller's own background, and
+/// the bar with the scroller (Chrome 155): a negative-`z` entry is not one the
+/// bar waits for, or it would be drawn before the background that covers it.
+#[test]
+fn rows_at_a_negative_z_index_do_not_defer_the_bar() {
+    let (mut a, s) = build(SCROLLER, "position: relative; z-index: -1", no_extra);
+    // The twin: the same content height, with rows that draw nothing.
+    let (mut b, _) = build(SCROLLER, "background-color: transparent", no_extra);
+    let pa = paint(&mut a);
+    let pb = paint(&mut b);
+    let (cx, cy) = thumb_centre(&a, s);
+    assert_ne!(px(&pa, cx, cy), [238, 238, 238, 255], "the thumb is drawn");
+    assert_eq!(first_difference(&pa, &pb, STRIP, 1.0), None);
+}
