@@ -272,11 +272,6 @@ pub struct PaintEntry {
     pub clips: ClipSpan,
 }
 
-/// A stacking-context root's paint sequence, plus the clip chains its entries
-/// index into.
-///
-/// Derefs to the entries, so `order.iter()`, `order[i]` and `order.len()` read
-/// as they did when this was a plain `Vec<PaintEntry>`.
 /// A scroll container whose overlay scrollbars this sequence draws (#1717).
 ///
 /// A scroller that is no stacking context draws its bars at the end of its
@@ -292,6 +287,10 @@ pub struct PaintEntry {
 /// Only entries at `z >= 0` count: a negative-`z` one is drawn before the
 /// scroller itself, so a scroller whose contained entries are all negative is
 /// not deferred and draws its bars itself.
+///
+/// Two scrollers share an `after` only when one contains the other; the inner
+/// one comes first in [`PaintOrder::bars`], so the outer one's bars are drawn
+/// over it, as Chrome 155 draws them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DeferredBars {
     /// The scroll container.
@@ -310,6 +309,11 @@ pub struct DeferredBars {
     pub clips: ClipSpan,
 }
 
+/// A stacking-context root's paint sequence, plus the clip chains its entries
+/// index into.
+///
+/// Derefs to the entries, so `order.iter()`, `order[i]` and `order.len()` read
+/// as they did when this was a plain `Vec<PaintEntry>`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PaintOrder {
     /// The children, back to front.
@@ -430,6 +434,31 @@ pub fn stacking_paint_order(
     offset_x: f64,
     offset_y: f64,
 ) -> PaintOrder {
+    build_order(tree, node_id, scale, offset_x, offset_y, true)
+}
+
+/// [`stacking_paint_order`] without [`PaintOrder::bars`], which only paint
+/// reads: hit testing finds a scrollbar under the pointer before it resolves a
+/// click (`find_scrollbar_hit`), not through this sequence, and the cold hit
+/// test is paid on every pointer move after a layout.
+pub fn stacking_hit_order(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    offset_x: f64,
+    offset_y: f64,
+) -> PaintOrder {
+    build_order(tree, node_id, scale, offset_x, offset_y, false)
+}
+
+fn build_order(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    offset_x: f64,
+    offset_y: f64,
+    collect_bars: bool,
+) -> PaintOrder {
     tree.perf.bump(crate::perf::Counter::StackingOrderBuilds);
     let Some(_node) = tree.get(node_id) else {
         return PaintOrder::default();
@@ -448,6 +477,7 @@ pub fn stacking_paint_order(
         order: 0,
         bar_owners: Vec::new(),
         open_bars: Vec::new(),
+        collect_bars,
     };
     // The box tree, not the element tree (#566).
     let box_children = crate::RinchDocument::box_tree_children(&tree.nodes, node_id);
@@ -488,6 +518,9 @@ pub fn stacking_paint_order(
     // `Collector::span` is untouched.
     let mut bars: Vec<DeferredBars> = bar_owners
         .into_iter()
+        // Innermost first among scrollers sharing an `after`: an outer
+        // scroller's bars are drawn over an inner one's (Chrome 155).
+        .rev()
         .filter_map(|owner| {
             let last = owner.last?;
             let at = hoisted[split..].partition_point(|(d, e)| (e.z_index, *d) <= last);
@@ -546,6 +579,8 @@ struct Collector<'a> {
     /// Indices into [`Self::bar_owners`] of the scroll containers the cursor
     /// is inside, outermost first.
     open_bars: Vec<usize>,
+    /// Whether to record [`Self::bar_owners`] at all — paint's sequence only.
+    collect_bars: bool,
 }
 
 /// A scroll container the collector descended into, and the last entry it
@@ -723,7 +758,6 @@ impl Collector<'_> {
         let x = cx - child.scroll_offset.0 * self.scale;
         let y = cy - child.scroll_offset.1 * self.scale;
 
-        let chain_len = self.chain_len(child);
         let pushed = match clip_shape(child, self.scale, cx, cy) {
             Some((rect, radii)) => {
                 self.live.push(ClipRect { rect, radii });
@@ -734,12 +768,20 @@ impl Collector<'_> {
         // A scroll container that may draw bars: its contained entries are
         // noted as they are hoisted (#1717). Only one that clips — its clip is
         // what an entry's chain is checked against.
-        let bar_owner = pushed && (child.scrolls_y() || child.scrolls_x());
+        let bar_owner = self.collect_bars && pushed && (child.scrolls_y() || child.scrolls_x());
         if bar_owner {
+            // The links `child` itself is drawn under: `chain_len` as it was
+            // before its own clip was pushed.
+            let own = self.live.len() - 1;
+            let chain_len = match child.computed_style.position {
+                PositionValue::Fixed => 0,
+                PositionValue::Absolute => self.cb_depth,
+                _ => own,
+            };
             self.open_bars.push(self.bar_owners.len());
             self.bar_owners.push(BarOwner {
                 node_id: child.id,
-                own: self.live.len() - 1,
+                own,
                 chain_len,
                 origin_x: cx,
                 origin_y: cy,

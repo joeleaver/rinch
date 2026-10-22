@@ -2479,7 +2479,22 @@ fn paint_children_with_stacking(
                         owner.computed_style.visibility,
                         VisibilityValue::Hidden | VisibilityValue::Collapse
                     )
+                    // Culled as the scroller's own `paint_node` is: a scroller
+                    // outside the window, the damage or the clips just
+                    // switched to draws no bar (its thumb used to be filled
+                    // whatever the cull, one per scroller in the document).
+                    && {
+                        let r = node_transform.transform_rect_bbox(Rect::new(
+                            bar.origin_x,
+                            bar.origin_y,
+                            bar.origin_x + owner.layout.width as f64 * scale,
+                            bar.origin_y + owner.layout.height as f64 * scale,
+                        ));
+                        intersects_dirty_region(r.x0, r.y0, r.width(), r.height())
+                    }
                 {
+                    tree.perf
+                        .bump(crate::perf::Counter::DeferredScrollbarsPainted);
                     paint_scrollbars(
                         tree,
                         bar.node_id,

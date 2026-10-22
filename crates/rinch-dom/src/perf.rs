@@ -352,6 +352,10 @@ define_counters! {
     /// Stacking-order sequences built (`stacking_paint_order`), by paint and
     /// hit testing alike.
     StackingOrderBuilds = "stacking_order_builds",
+    /// Scroll containers whose overlay bars a stacking-context sequence drew
+    /// after their positioned descendants (#1717). Bars of a scroller outside
+    /// the window or the damage are not drawn, and not counted.
+    DeferredScrollbarsPainted = "deferred_scrollbars_painted",
     /// Pixels of blurred `inset` box-shadow built by paint (#974): the
     /// image each blurred inset shadow is computed over, cropped to what the
     /// frame can show — render target, open clips and a partial repaint's
