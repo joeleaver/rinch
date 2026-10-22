@@ -287,6 +287,40 @@ press outside it is swallowed by the backdrop and does nothing. Pins:
 
 File drops from the OS use `data-onfiledragenter`, `data-onfiledragleave` attributes, and `register_file_drop_handler` for the actual drop. See the File Drop section of UI Zoo for an example. The drop handler reads the drop point and its element's painted box through `get_click_context()` (`dispatch_file_drop` sets it, #1650; logical window px, as a click's), and so do the files an editor hands back from a mixed drop. Desktop only: rinch-web dispatches no `data-onfiledrop` (a browser drop has no paths), so there is no web context to agree with.
 
+**`ondropfiles` (`data-ondropfiles`, #1771)** is the cross-platform form: the
+files as `rinch_core::file::LocalFile`s (`file.rs`: a name, a size, an optional
+path and an `Rc<dyn FileSource>` read on demand — a path on a spawned thread
+woken through its `Send` waker, a browser `File` with a `FileReader`'s single
+`loadend`, bytes in memory). Registry `FILES_DROP_REGISTRY` in
+`events/handlers.rs` (owner and context root re-entered, untracked, one batch).
+Desktop: `dispatch_file_drop` walks to the first node carrying a **live**
+`data-onfiledrop` or `data-ondropfiles` and fires each it carries, paths
+first; the files are `LocalFile::from_path` (one `stat` each; a path that
+fails it is left out of the files, not the paths), and the hover walk
+(`find_file_drop_target`) counts either attribute. The editor's leftovers
+(`editor_file_drop`'s `rest`) reach both kinds. Web
+(`event_delegation::install_file_drop`): document **bubble** `dragover`/`drop`
+listeners that prevent the default and dispatch over a live
+`closest("[data-ondropfiles]")` when the drag carries `Files`, and skip an
+event already prevented — the editor's capture `on_drop` prevents every drop it
+is involved in and hands the files it did not take (non-images, everything on a
+read-only editor or a drop with no picture) to `dispatch_dropped_files` itself.
+Pins: `rinch/src/app/files_drop_1771_tests.rs`, `rinch-web/tests/files_1771.rs`.
+
+**The picker** (`rinch::file::FilePicker`, web always, native with
+`file-dialogs`): `pick()` starts the picker when called (a browser needs the
+user gesture) and returns a future; `open(cb)` is `pick()` in `spawn_local`.
+Native: the blocking `rfd` dialog, the future already resolved. Web: a hidden
+but rendered `<input type=file data-rinch-file-picker>` in `<body>` (an input
+that is not rendered makes `showPicker()` throw `NotSupportedError`), one
+closure on `change` and `cancel` that removes the input and drops itself, and
+`showPicker()` — which throws `NotAllowedError` without a user gesture where
+`click()` is ignored silently and no event would ever come; then the future
+resolves empty and a warning is logged once. `click()` where `showPicker` is
+missing or refuses for another reason. Playwright's Firefox grants every page
+activation, so the test's no-gesture phase runs only when
+`navigator.userActivation.isActive` is false.
+
 ## `title` tooltips (desktop)
 
 An element with a non-empty `title` (the nearest one up the tree; a `title=""`

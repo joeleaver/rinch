@@ -370,7 +370,9 @@ Guide: `docs/src/guide/performance.md`.
 
 ### File Dialogs (optional)
 
-Enable with `features = ["file-dialogs"]`:
+Enable with `features = ["file-dialogs"]`. The cross-platform picker that
+hands back `LocalFile`s on the web too is `rinch::file::FilePicker` (#1771);
+its mechanism is under **File Drop** in `pointer-drag-tooltips.md`.
 
 ```rust
 use rinch::dialogs::{open_file, save_file, pick_folder, message};
