@@ -175,3 +175,89 @@ async fn two_adjacent_images_are_each_their_own() {
     );
     f.teardown();
 }
+
+// From the review of PR #1730: a block's edge. With no text before (after)
+// the images, the start (end) is the box list's, never the text beyond the
+// other images.
+
+#[wasm_bindgen_test]
+async fn adjacent_images_at_a_paragraphs_start_are_each_their_own() {
+    let f = Fixture::mount(&format!("<p>{IMG}{IMG}cd</p>"));
+    next_task().await;
+    let imgs = f.images();
+    assert_eq!(imgs.len(), 2);
+    assert_covers(
+        &f.select(0, 1).await,
+        imgs[0].0,
+        imgs[0].1,
+        "first leading image",
+    );
+    assert_covers(
+        &f.select(1, 2).await,
+        imgs[1].0,
+        imgs[1].1,
+        "second leading image",
+    );
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+async fn adjacent_images_at_a_paragraphs_end_are_each_their_own() {
+    let f = Fixture::mount(&format!("<p>ab{IMG}{IMG}</p>"));
+    next_task().await;
+    let imgs = f.images();
+    assert_covers(
+        &f.select(2, 3).await,
+        imgs[0].0,
+        imgs[0].1,
+        "first trailing image",
+    );
+    assert_covers(
+        &f.select(3, 4).await,
+        imgs[1].0,
+        imgs[1].1,
+        "second trailing image",
+    );
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+async fn the_middle_of_three_images_alone() {
+    let f = Fixture::mount(&format!("<p>{IMG}{IMG}{IMG}</p>"));
+    next_task().await;
+    let imgs = f.images();
+    assert_covers(&f.select(1, 2).await, imgs[1].0, imgs[1].1, "middle image");
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+async fn an_image_after_a_hard_break_alone() {
+    let f = Fixture::mount(&format!("<p>ab<br>{IMG}cd</p>"));
+    next_task().await;
+    let imgs = f.images();
+    assert_covers(
+        &f.select(3, 4).await,
+        imgs[0].0,
+        imgs[0].1,
+        "image after break",
+    );
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+async fn a_linked_image_alone() {
+    let f = Fixture::mount(&format!("<p>ab<a href=\"https://e.x\">{IMG}</a>cd</p>"));
+    next_task().await;
+    let imgs = f.images();
+    assert_covers(&f.select(2, 3).await, imgs[0].0, imgs[0].1, "linked image");
+    f.teardown();
+}
+
+#[wasm_bindgen_test]
+async fn a_hard_break_alone_draws_nothing() {
+    let f = Fixture::mount("<p>ab<br>cd</p>");
+    next_task().await;
+    let hl = f.select(2, 3).await;
+    assert!(hl.is_empty(), "br alone: {hl:?}");
+    f.teardown();
+}

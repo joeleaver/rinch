@@ -1303,21 +1303,19 @@ pub(crate) fn find_text_node_at_byte_offset(
 
 /// [`find_text_node_at_byte_offset`], but the **last** position at that byte:
 /// at a text node's end, the start of the next text node, past the elements
-/// with no bytes between them (an image, a `<br>`). `None` only when there is
-/// no text node at all.
+/// with no bytes between them (an image, a `<br>`). `None` when no text
+/// follows the byte (only images, or nothing, after it).
 fn find_text_node_at_byte_offset_latest(
     node: &web_sys::Node,
     byte_offset: usize,
 ) -> Option<(web_sys::Node, u32)> {
     let mut remaining = byte_offset;
-    let mut at_end = None;
-    find_text_node_latest_recursive(node, &mut remaining, &mut at_end).or(at_end)
+    find_text_node_latest_recursive(node, &mut remaining)
 }
 
 fn find_text_node_latest_recursive(
     node: &web_sys::Node,
     remaining: &mut usize,
-    at_end: &mut Option<(web_sys::Node, u32)>,
 ) -> Option<(web_sys::Node, u32)> {
     if node.node_type() == web_sys::Node::TEXT_NODE {
         let text = node.text_content().unwrap_or_default();
@@ -1326,9 +1324,6 @@ fn find_text_node_latest_recursive(
             return Some((node.clone(), utf16_offset as u32));
         }
         *remaining -= text.len();
-        if *remaining == 0 {
-            *at_end = Some((node.clone(), text.encode_utf16().count() as u32));
-        }
         return None;
     }
     if is_node_view_host(node) {
@@ -1337,7 +1332,7 @@ fn find_text_node_latest_recursive(
     let children = node.child_nodes();
     for i in 0..children.length() {
         if let Some(child) = children.item(i)
-            && let Some(result) = find_text_node_latest_recursive(&child, remaining, at_end)
+            && let Some(result) = find_text_node_latest_recursive(&child, remaining)
         {
             return Some(result);
         }
@@ -3324,7 +3319,13 @@ impl DomDocument for WebDocument {
                 (Some(first), None) => range.set_start_before(first).ok()?,
                 (None, None) => return None,
             }
-            let end = find_text_node_at_byte_offset(n, byte_b);
+            // Byte 0 with boxes: the end is after the last selected box (the
+            // first text node's start is after every leading image).
+            let end = if byte_b == 0 && !boxes.is_empty() {
+                None
+            } else {
+                find_text_node_at_byte_offset(n, byte_b)
+            };
             match (boxes.last(), end) {
                 (Some(last), Some((t, _))) if precedes(&t, last) => {
                     range.set_end_after(last).ok()?

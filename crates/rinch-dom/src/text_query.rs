@@ -696,14 +696,15 @@ fn selection_rects_impl(
         if selected.is_some() {
             // The byte carets stand before every box at their byte, so the
             // range is moved past an unselected box at the start byte (the
-            // selection starts after it) and grown over every selected box
-            // (one at the end byte is after the end caret). An unselected box
+            // selection starts after it) and grown to the right edge of every
+            // selected box (one at the end byte is after the end caret; a
+            // selected box is never left of the start caret, which stands
+            // before every box at the start byte). An unselected box
             // at the end byte is already outside: the end caret stands before
             // it (measured at a paragraph's end, whose line's range ends at
             // the box).
-            for &(id, index, bl, br) in &boxes {
+            for &(id, index, _, br) in &boxes {
                 if is_selected(id) {
-                    left = left.min(bl);
                     right = right.max(br);
                 } else if index == start {
                     left = left.max(br);

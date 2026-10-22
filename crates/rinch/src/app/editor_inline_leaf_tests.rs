@@ -971,3 +971,117 @@ fn a_selection_up_to_a_trailing_image_stops_before_it() {
     let hl = p.select(1, 6);
     assert_span(hl[0], start, img.0 + img.2, "`lpha` and the image");
 }
+
+// ── review of #1730 (scratch) ──
+mod review_1730 {
+    use super::*;
+
+    #[test]
+    fn rv_leading_adjacent_images_each_their_own() {
+        let mut p = page(&format!("<p>{IMG}{IMG}cd</p>"));
+        let imgs = p.images();
+        assert_eq!(imgs.len(), 2);
+        let (a, b) = (imgs[0], imgs[1]);
+        let hl = p.select(0, 1);
+        assert_eq!(hl.len(), 1, "{hl:?}");
+        assert_span(hl[0], a.0, a.0 + a.2, "first leading image");
+        let hl = p.select(1, 2);
+        assert_eq!(hl.len(), 1, "{hl:?}");
+        assert_span(hl[0], b.0, b.0 + b.2, "second leading image");
+    }
+
+    #[test]
+    fn rv_trailing_adjacent_images_each_their_own() {
+        let mut p = page(&format!("<p>ab{IMG}{IMG}</p>"));
+        let imgs = p.images();
+        let (a, b) = (imgs[0], imgs[1]);
+        let hl = p.select(2, 3);
+        assert_eq!(hl.len(), 1, "{hl:?}");
+        assert_span(hl[0], a.0, a.0 + a.2, "first trailing image");
+        let hl = p.select(3, 4);
+        assert_eq!(hl.len(), 1, "{hl:?}");
+        assert_span(hl[0], b.0, b.0 + b.2, "second trailing image");
+        let start = p.block_box().0 + p.local(1).0;
+        let hl = p.select(1, 3);
+        assert_eq!(hl.len(), 1, "{hl:?}");
+        assert_span(hl[0], start, a.0 + a.2, "`b` and the first image");
+    }
+
+    #[test]
+    fn rv_image_in_a_link_alone() {
+        let mut p = page(&format!("<p>ab<a href=\"https://e.x\">{IMG}</a>cd</p>"));
+        let a = p.images()[0];
+        let hl = p.select(2, 3);
+        assert_eq!(hl.len(), 1, "{hl:?}");
+        assert_span(hl[0], a.0, a.0 + a.2, "linked image alone");
+    }
+
+    #[test]
+    fn rv_image_after_hard_break_alone() {
+        let mut p = page(&format!("<p>ab<br>{IMG}cd</p>"));
+        let a = p.images()[0];
+        let hl = p.select(3, 4);
+        assert_eq!(hl.len(), 1, "{hl:?}");
+        assert_span(hl[0], a.0, a.0 + a.2, "image after a break, alone");
+        let hl = p.select(4, 5);
+        assert_eq!(hl.len(), 1, "{hl:?}");
+        assert!(
+            hl[0].0 >= a.0 + a.2 - 1.5,
+            "from after the image: {hl:?} {a:?}"
+        );
+    }
+
+    #[test]
+    fn rv_image_before_hard_break_alone() {
+        let mut p = page(&format!("<p>ab{IMG}<br>cd</p>"));
+        let a = p.images()[0];
+        let hl = p.select(2, 3);
+        assert_eq!(hl.len(), 1, "{hl:?}");
+        assert_span(hl[0], a.0, a.0 + a.2, "image before a break, alone");
+    }
+
+    #[test]
+    fn rv_only_images_paragraph() {
+        let mut p = page(&format!("<p>{IMG}{IMG}{IMG}</p>"));
+        let imgs = p.images();
+        let hl = p.select(1, 2);
+        assert_eq!(hl.len(), 1, "{hl:?}");
+        assert_span(hl[0], imgs[1].0, imgs[1].0 + imgs[1].2, "middle image");
+        let hl = p.select(0, 3);
+        assert_eq!(hl.len(), 1, "{hl:?}");
+        assert_span(hl[0], imgs[0].0, imgs[2].0 + imgs[2].2, "all three");
+    }
+
+    #[test]
+    fn rv_two_paragraphs_trailing_image_selected_into_next() {
+        // `ab<img>` | `cd`: from after `b` to after `c` in the next block.
+        let mut p = page(&format!("<p>ab{IMG}</p><p>cd</p>"));
+        let a = p.images()[0];
+        // chars: p1 content 0..3, p2 content starts at model 5 → (i+1) offsets
+        p.handle.set_selection(Selection::text(Pos(3), Pos(7)));
+        idle(&mut p.app);
+        let hl = p.highlights();
+        assert!(!hl.is_empty());
+        let first = hl.iter().find(|r| (r.1 - a.1).abs() < LINE).unwrap();
+        assert!(
+            first.0 + first.2 >= a.0 + a.2 - 1.5,
+            "first line takes the image: {hl:?} {a:?}"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn rv_perf_many_images_select_all() {
+        for n in [250usize, 500, 1000, 2000] {
+            let html = format!("<p>{}</p>", format!("x{IMG}").repeat(n));
+            let mut p = page(&html);
+            let t = std::time::Instant::now();
+            for k in 0..5 {
+                p.handle
+                    .set_selection(Selection::text(Pos(1), Pos(2 * n + 1 - k)));
+                idle(&mut p.app);
+            }
+            eprintln!("n={n}: {:?} per selection change", t.elapsed() / 5);
+        }
+    }
+}
