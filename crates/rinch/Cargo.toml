@@ -45,7 +45,6 @@ base64 = { version = "0.22", optional = true }
 keyboard-types = { version = "0.7", optional = true }
 
 # Optional features
-rfd = { workspace = true, optional = true }
 rinch-clipboard = { workspace = true, optional = true }
 tray-icon = { workspace = true, optional = true }
 
@@ -117,6 +116,11 @@ x11rb = { version = "0.13", default-features = false, features = ["xfixes", "sha
 # multiple times with different names".)
 zbus = { version = "5", default-features = false, features = ["async-io"], optional = true }
 futures-lite = { version = "2", optional = true }
+
+# Native file and message dialogs. The browser's message dialogs need no crate
+# (`dialogs::web`), and a browser file picker gives no path (#1773).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rfd = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"

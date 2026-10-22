@@ -112,6 +112,9 @@ rinch-editor-collab = { workspace = true, features = ["test-util"] }
 # in tests/image_sources.rs: that the browser really decodes what an app's
 # image loader answered with.
 web-sys = { version = "0.3", features = ["DragEventInit", "FilePropertyBag", "HtmlImageElement"] }
+# The browser's message dialogs (tests/confirm_dialog_1773.rs): `rinch::dialogs`
+# is behind `file-dialogs`, which on wasm32 links no crate.
+rinch = { workspace = true, default-features = false, features = ["file-dialogs"] }
 
 [features]
 # Collaborative editing (M9): forwards to the editor view's collab adapter, which
