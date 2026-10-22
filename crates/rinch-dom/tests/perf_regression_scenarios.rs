@@ -250,7 +250,7 @@ fn a_text_control_finds_its_font_only_when_the_font_changes() {
 // ── shape_select_label ─────────────────────────────────────────────────────
 
 /// An auto-width `<select>` is sized from its widest option label, shaped at
-/// style sync (`style_resolution`, #1098) — one shape per label, and none on a
+/// style sync (`style_resolution`, #1098) and answered by its measure (#1129) — one shape per label, and none on a
 /// restyle that moves neither the labels nor the font (the width is cached on
 /// the node). An edited label shapes them all again.
 #[test]
@@ -301,7 +301,9 @@ fn an_auto_width_select_shapes_its_labels_only_when_they_change() {
             (ShapeSelectLabel, 2),
             (StyleResolves, 1),
             (TaffyStyleSyncs, 1),
-            (TaffyStyleChanges, 1),
+            // `TaffyStyleChanges` 1 → 0 (#1129): the label width is the
+            // select's measure context now, not a `min-width` in its Taffy
+            // style, so the edit changes the context and no style.
             (ShapeMeasureIfc, 1),
             // 2 → 1 (#509, #826): the edited `<option>`'s label is no
             // longer its own dead IFC build either — only the `<select>`'s

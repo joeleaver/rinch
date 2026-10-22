@@ -32,6 +32,7 @@
 //! | `display: flex; width: 50px` | `min-width: 0` | 50 x 24 |
 //! | `display: grid; width: 50px` | — | 160 x 24 |
 //! | `display: flex; flex-direction: column` | — | 600 x 24 |
+//! | `display: grid` | — | 600 x 24 |
 //!
 //! Chrome computes a select's `overflow` as `clip`, not `hidden`: a `clip`
 //! box is no scroll container, so its automatic minimum size as a flex or
@@ -160,6 +161,7 @@ fn as_a_flex_or_grid_item_it_does_not_shrink_below_its_label_unless_asked() {
     check("display: flex; width: 50px", "min-width: 0", (50.0, 24.0));
     check("display: grid; width: 50px", "", (160.0, 24.0));
     check("display: flex; flex-direction: column", "", (600.0, 24.0));
+    check("display: grid", "", (600.0, 24.0));
 }
 
 #[test]
