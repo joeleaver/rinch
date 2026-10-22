@@ -409,3 +409,35 @@ async fn removing_the_part_holding_the_focused_editor_releases_it() {
     root.unmount();
     purge();
 }
+
+/// With no opener to hand the keyboard to (nothing was focused when the modal
+/// opened), closing it still takes the keyboard from its editor: the hidden
+/// editor does not keep typing.
+#[wasm_bindgen_test]
+async fn closing_a_modal_with_no_opener_releases_its_editor() {
+    let h = host("h7");
+    let open = Signal::new(false);
+    let m = editor("<p>modal</p>");
+    let root = rinch_web::mount_into(
+        &h,
+        ThemeProviderProps::default(),
+        move |s: &mut RenderScope| {
+            let page = s.create_element("div");
+            let ed = m.mount(s);
+            let dialog = modal(s, open, &[ed]);
+            page.append_child(&dialog);
+            page
+        },
+    );
+    open.set(true);
+    press_editor("h7");
+    open.set(false);
+    microtask().await;
+    assert!(
+        !capture_active(),
+        "the closed editor still holds the keyboard"
+    );
+    assert!(!caret_visible("h7"));
+    root.unmount();
+    purge();
+}
