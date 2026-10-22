@@ -1703,7 +1703,11 @@ impl RinchRuntime {
         // After readback, this includes both pure-CPU and readback-GPU surfaces.
         let surface_pixels = crate::render_surface::collect_surface_pixels_by_id();
         if !surface_pixels.is_empty() {
-            self.app.mark_scene_dirty();
+            // The surface nodes are the damage, as on the software path: a
+            // partial frame elsewhere would otherwise prune them (#1718).
+            self.app.request_repaint();
+            let ids: Vec<usize> = surface_pixels.keys().copied().collect();
+            self.app.mark_surface_nodes_paint_dirty(&ids);
             rinch_dom::paint::set_surface_pixels(Some(surface_pixels));
         }
 
@@ -1888,15 +1892,19 @@ impl RinchRuntime {
             Some(compositor_viewport_names)
         });
 
-        // Build scene from document — CPU surfaces paint inline via draw_image()
-        let scene = self.app.build_scene(scale, size);
+        // Build the frame from the document — CPU surfaces paint inline via
+        // draw_image(). Only what its damage reaches is encoded and rendered
+        // while the renderer's UI texture holds the last frame (#1718).
+        let frame = self
+            .app
+            .build_gpu_frame(scale, size, renderer.ui_invalid_reason(transparent));
 
         rinch_dom::paint::set_active_viewports(None);
         rinch_dom::paint::set_surface_pixels(None);
 
         // Render to screen
         let present_start = std::time::Instant::now();
-        renderer.paint(scene, transparent)?;
+        renderer.paint_frame(frame, transparent)?;
         self.app.perf_add(
             rinch_dom::perf::Counter::TimePresentNs,
             present_start.elapsed().as_nanos() as u64,

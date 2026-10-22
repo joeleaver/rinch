@@ -166,6 +166,8 @@ mod font_tests;
 mod frozen_component_box_tests;
 #[cfg(all(test, software_shell, feature = "desktop"))]
 mod game_viewport_inline_tests;
+#[cfg(all(test, software_shell, feature = "gpu"))]
+mod gpu_partial_frame_1718_tests;
 #[cfg(test)]
 mod hidden_animation_frames_tests;
 #[cfg(test)]
@@ -425,6 +427,37 @@ pub(crate) struct ViewportPaintInputs {
     /// punch, or `None` for "every viewport punches" — which is also what a
     /// paint nobody installed anything for uses, hence the default.
     holes: Option<std::collections::HashSet<String>>,
+}
+
+/// What [`RinchApp::frame_damage`] decided a frame repaints.
+#[cfg(software_shell)]
+struct FrameDamage {
+    /// Why it repaints in full, or `None` for a frame limited to `damage`.
+    full: Option<rinch_dom::perf::FullRepaintReason>,
+    /// The device-pixel rects it repaints, when `full` is `None`.
+    damage: rinch_dom::paint::DamageRegion,
+    ghost_now: Option<peniko::kurbo::Rect>,
+    inspect_now: Option<peniko::kurbo::Rect>,
+    tooltip_now: Option<peniko::kurbo::Rect>,
+}
+
+/// What [`RinchApp::build_gpu_frame`] hands the desktop GPU renderer (#1718).
+#[cfg(all(feature = "gpu", software_shell))]
+pub enum GpuFrame<'a> {
+    /// Nothing on screen changed: the UI texture already holds this frame.
+    Unchanged,
+    /// The whole surface, as [`RinchApp::build_scene`] encodes it.
+    Full(&'a Scene),
+    /// Only `rects` changed. `scene` holds what touches them, to be rendered
+    /// into a target at least `size` (it reaches from the surface's origin to
+    /// the far corner of the damage) whose pixels under each rect replace the
+    /// UI texture's.
+    Partial {
+        scene: &'a Scene,
+        size: (u32, u32),
+        /// Integer device-pixel rects `(x, y, w, h)` inside the surface.
+        rects: Vec<(u32, u32, u32, u32)>,
+    },
 }
 
 // ── Drag-and-drop state ──────────────────────────────────────────────────────
@@ -703,6 +736,10 @@ pub struct RinchApp {
     /// GPU painter (reused across frames). Wraps vello::Scene.
     #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
     pub(crate) painter: VelloPainter,
+    /// Whether `painter` holds the whole document, not a partial frame's
+    /// pruned encoding (#1718): `build_scene` re-encodes when it does not.
+    #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+    pub(crate) scene_is_full: bool,
     /// Software painter (reused across frames). Uses tiny-skia for CPU rendering.
     #[cfg(software_shell)]
     pub(crate) skia_painter: Option<TinySkiaPainter>,
@@ -1026,6 +1063,8 @@ impl RinchApp {
             doc: None,
             #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
             painter: VelloPainter::new(),
+            #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+            scene_is_full: false,
             #[cfg(software_shell)]
             skia_painter: None,
             #[cfg(feature = "debug")]
@@ -1910,7 +1949,7 @@ impl RinchApp {
     #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
     pub fn build_scene(&mut self, scale: f64, size: (u32, u32)) -> &Scene {
         use rinch_dom::perf::{Counter, FullRepaintReason};
-        if !self.scene_dirty {
+        if !self.scene_dirty && self.scene_is_full {
             self.perf_add(Counter::PaintCachedFrames, 1);
             return self.painter.scene();
         }
@@ -1955,8 +1994,8 @@ impl RinchApp {
         // The `title` tooltip (#1646), over everything else.
         Self::paint_title_tooltip(self.title_tooltip.shown.as_ref(), &mut self.painter, scale);
 
-        // The GPU path has no dirty region: every painted frame re-encodes
-        // the whole scene and rasterises the whole surface.
+        // This path has no dirty region: every painted frame re-encodes the
+        // whole scene (the desktop window uses `build_gpu_frame`, #1718).
         if let Some(doc) = &self.doc {
             let d = doc.borrow();
             let perf = &d.tree.perf;
@@ -1970,6 +2009,7 @@ impl RinchApp {
         }
 
         self.scene_dirty = false;
+        self.scene_is_full = true;
         self.repaint_unattributed = false;
         // This frame consumed the dirty lists, so the software pixmap — if a
         // window ever presents with software again after presenting with the
@@ -1980,6 +2020,144 @@ impl RinchApp {
             self.has_previous_frame = false;
         }
         self.painter.scene()
+    }
+
+    /// The desktop GPU renderer's frame (#1718): like [`Self::build_scene`],
+    /// but limited to the frame's damage when the renderer's UI texture still
+    /// holds the previous frame, as the software path is.
+    ///
+    /// `target` is `None` when the UI texture holds the frame this app last
+    /// built, or why it does not (it was never rendered, it was resized, or
+    /// it was rendered over another base colour), which makes the frame a
+    /// full one. A partial frame encodes only the subtrees its damage reaches
+    /// and is rendered into a target the size of the damage's bounds; the
+    /// renderer copies each damage rect from it into the UI texture. A frame
+    /// whose damage names nothing renders nothing.
+    #[cfg(all(feature = "gpu", software_shell))]
+    pub fn build_gpu_frame(
+        &mut self,
+        scale: f64,
+        size: (u32, u32),
+        target: Option<rinch_dom::perf::FullRepaintReason>,
+    ) -> GpuFrame<'_> {
+        use rinch_dom::perf::Counter;
+        if !self.scene_dirty && target.is_none() {
+            self.perf_add(Counter::PaintCachedFrames, 1);
+            return GpuFrame::Unchanged;
+        }
+        let w = (size.0 as f64 * scale).round() as u32;
+        let h = (size.1 as f64 * scale).round() as u32;
+        let paint_start = Instant::now();
+        // A cached scene the renderer no longer holds is painted again, in
+        // full, but with nothing in the document changed there is no damage
+        // to work out: its paint-dirty lists are empty.
+        let FrameDamage {
+            full,
+            damage,
+            ghost_now,
+            inspect_now,
+            tooltip_now,
+        } = self.frame_damage(scale, w, h, target, true);
+        // The lists are consumed: the software pixmap (should this window
+        // present with it again) no longer has a region to catch up with.
+        self.has_previous_frame = false;
+
+        let bounds = damage.bounds();
+        let partial = full.is_none() && !damage.is_empty();
+        if full.is_some() || partial {
+            self.painter.reset();
+            if partial {
+                rinch_dom::paint::set_dirty_rects(Some(damage.rects()));
+            }
+            if let Some(doc) = &self.doc {
+                let mut d = doc.borrow_mut();
+                let d = &mut *d;
+                rinch_dom::paint::paint_document(
+                    &d.tree,
+                    &mut self.painter,
+                    scale,
+                    (size.0 as f32, size.1 as f32),
+                    &mut d.font_cx,
+                    &mut d.layout_cx,
+                );
+            }
+            rinch_dom::paint::set_dirty_region(None);
+            if let (Some(drag), Some(_)) = (&self.active_dnd, ghost_now) {
+                use peniko::kurbo::Affine;
+                let (tx, ty) = drag.ghost_translate(scale);
+                self.painter
+                    .scene_mut()
+                    .append(drag.snapshot.scene(), Some(Affine::translate((tx, ty))));
+            }
+            if let Some((x, y, w_r, h_r)) = self.inspect_highlight {
+                Self::paint_inspect_overlay(&mut self.painter, scale, x, y, w_r, h_r);
+            }
+            Self::paint_title_tooltip(self.title_tooltip.shown.as_ref(), &mut self.painter, scale);
+        }
+        self.last_ghost_rect = ghost_now;
+        self.last_inspect_rect = inspect_now;
+        self.title_tooltip.last_rect = tooltip_now;
+
+        if let Some(doc) = &self.doc {
+            let d = doc.borrow();
+            let perf = &d.tree.perf;
+            let surface_px = w as u64 * h as u64;
+            match full {
+                Some(reason) => {
+                    perf.bump(Counter::PaintFrames);
+                    perf.add(Counter::SurfacePx, surface_px);
+                    perf.full_repaint(reason);
+                    perf.add(Counter::RepaintedPx, surface_px);
+                }
+                None if damage.is_empty() => perf.bump(Counter::RepaintNone),
+                None => {
+                    perf.bump(Counter::PaintFrames);
+                    perf.add(Counter::SurfacePx, surface_px);
+                    perf.bump(Counter::RepaintPartial);
+                    perf.add(Counter::DamageRects, damage.rects().len() as u64);
+                    perf.add(Counter::RepaintedPx, (damage.area() as u64).min(surface_px));
+                }
+            }
+            perf.add_elapsed(Counter::TimePaintNs, paint_start);
+        }
+        self.scene_dirty = false;
+        self.scene_is_full = full.is_some();
+
+        if full.is_some() {
+            return GpuFrame::Full(self.painter.scene());
+        }
+        let Some(bounds) = bounds.filter(|_| partial) else {
+            return GpuFrame::Unchanged;
+        };
+        // Whole device pixels: the damage is (`compute_damage` rounds out),
+        // but a rect is never trusted to be.
+        let px = |r: peniko::kurbo::Rect| {
+            let x0 = (r.x0.floor().max(0.0) as u32).min(w);
+            let y0 = (r.y0.floor().max(0.0) as u32).min(h);
+            let x1 = (r.x1.ceil().max(0.0) as u32).min(w);
+            let y1 = (r.y1.ceil().max(0.0) as u32).min(h);
+            (x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0))
+        };
+        // The target reaches from the surface's origin to the damage's far
+        // corner, and the scene is rendered there untranslated: Vello's
+        // output for a pixel depends on where the target puts it (a scene
+        // translated by 31px drew a glyph edge 7 levels off), so a partial
+        // frame drawn anywhere else would not be the full frame's pixels.
+        let (bx, by, bw, bh) = px(bounds);
+        let rects: Vec<_> = damage
+            .rects()
+            .iter()
+            .map(|r| px(*r))
+            .filter(|r| r.2 > 0 && r.3 > 0)
+            .collect();
+        if rects.is_empty() || bw == 0 || bh == 0 {
+            return GpuFrame::Unchanged;
+        }
+        GpuFrame::Partial {
+            scene: self.painter.scene(),
+            size: (bx + bw, by + bh),
+            rects,
+        }
     }
 
     /// The pixels a software debug screenshot captures: the frame last
@@ -2051,7 +2229,6 @@ impl RinchApp {
         if !self.scene_dirty {
             self.perf_add(rinch_dom::perf::Counter::PaintCachedFrames, 1);
         }
-        let painter = self.skia_painter.as_mut().unwrap();
 
         if self.scene_dirty {
             let paint_start = Instant::now();
@@ -2070,91 +2247,22 @@ impl RinchApp {
 
             use rinch_dom::perf::{Counter, FullRepaintReason};
 
-            // The overlays paint straight into the framebuffer after the
-            // document, so no DOM node owns their pixels: their rects in the
-            // frame on screen and in this one are added by hand. Both rects,
-            // always, while an overlay is up — the ghost and the highlight are
-            // translucent, so the pixels under them have to be repainted before
-            // they are drawn again, even when they did not move (#173).
-            let ghost_now = self.active_dnd.as_ref().and_then(|drag| {
-                if !rinch_core::events::is_drag_ghost_visible() {
-                    return None;
-                }
-                let (tx, ty) = drag.ghost_translate(scale);
-                Self::ghost_overlay_rect(
-                    tx as i32,
-                    ty as i32,
-                    drag.snapshot_width,
-                    drag.snapshot_height,
-                    w,
-                    h,
-                )
-            });
-            let inspect_now = self
-                .inspect_highlight
-                .and_then(|hl| Self::inspect_overlay_rect(scale, hl, w, h));
-            // The `title` tooltip's rect (#1646), the same way: drawn after
-            // the document, so its old and new rects are named by hand.
-            let tooltip_now = self
-                .title_tooltip
-                .shown
-                .as_ref()
-                .and_then(|t| t.tip.device_rect(scale, t.origin, w, h));
-
-            // Why this frame repaints in full, if it does. The first reason
-            // recorded before this paint wins over anything decided here.
-            let invalidated = self.full_repaint_reason.take();
-            let unattributed = std::mem::take(&mut self.repaint_unattributed);
-            let whole_document = self
-                .doc
-                .as_ref()
-                .is_some_and(|doc| doc.borrow().tree.whole_document_damaged);
-            let mut damage = rinch_dom::paint::DamageRegion::new(w as f64, h as f64);
-            let full_reason = if first_frame {
+            let fresh = if first_frame {
                 Some(FullRepaintReason::FirstFrame)
             } else if resized {
                 Some(FullRepaintReason::Resize)
-            } else if let Some(reason) = invalidated {
-                Some(reason)
-            } else if !self.has_previous_frame {
-                Some(FullRepaintReason::Invalidated)
-            } else if whole_document {
-                Some(FullRepaintReason::Restyle)
             } else {
-                if let Some(doc) = &self.doc {
-                    let d = doc.borrow();
-                    damage = rinch_dom::paint::compute_damage(&d.tree, scale, w as f64, h as f64);
-                }
-                for r in [
-                    self.last_ghost_rect,
-                    ghost_now,
-                    self.last_inspect_rect,
-                    inspect_now,
-                    self.title_tooltip.last_rect,
-                    tooltip_now,
-                ]
-                .into_iter()
-                .flatten()
-                {
-                    damage.add(r);
-                }
-                if damage.is_full() {
-                    Some(FullRepaintReason::RegionTooLarge)
-                } else if damage.is_empty() && unattributed {
-                    // Something marked the scene dirty without saying what it
-                    // changed, and nothing else named any damage: which pixels
-                    // moved is unknown, so all of them are repainted.
-                    Some(FullRepaintReason::Unattributed)
-                } else {
-                    None
-                }
+                None
             };
-
-            // Drain paint_dirty_nodes now that the damage is known, and record
-            // that their pixels are where their boxes now are.
-            if let Some(doc) = &self.doc {
-                doc.borrow_mut().tree.consume_paint_dirty();
-            }
+            let has_previous = self.has_previous_frame;
+            let FrameDamage {
+                full: full_reason,
+                damage,
+                ghost_now,
+                inspect_now,
+                tooltip_now,
+            } = self.frame_damage(scale, w, h, fresh, has_previous);
+            let painter = self.skia_painter.as_mut().unwrap();
 
             if full_reason.is_some() {
                 painter.reset();
@@ -2282,6 +2390,115 @@ impl RinchApp {
         }
 
         (self.skia_painter.as_ref().unwrap().pixels(), w, h)
+    }
+
+    /// What this frame repaints, decided once for both renderers: the
+    /// reason it repaints in full (`fresh` — a first frame or a resize the
+    /// caller saw — wins, then an invalidation recorded before the paint,
+    /// then a target holding no previous frame, then a whole-document
+    /// restyle), or else the damage the document and the overlays name.
+    /// Consumes the paint-dirty lists, so their nodes' pixels are recorded
+    /// where this frame draws them.
+    #[cfg(software_shell)]
+    fn frame_damage(
+        &mut self,
+        scale: f64,
+        w: u32,
+        h: u32,
+        fresh: Option<rinch_dom::perf::FullRepaintReason>,
+        has_previous: bool,
+    ) -> FrameDamage {
+        use rinch_dom::perf::FullRepaintReason;
+        // The overlays paint straight into the framebuffer after the
+        // document, so no DOM node owns their pixels: their rects in the
+        // frame on screen and in this one are added by hand. Both rects,
+        // always, while an overlay is up — the ghost and the highlight are
+        // translucent, so the pixels under them have to be repainted before
+        // they are drawn again, even when they did not move (#173).
+        let ghost_now = self.active_dnd.as_ref().and_then(|drag| {
+            if !rinch_core::events::is_drag_ghost_visible() {
+                return None;
+            }
+            let (tx, ty) = drag.ghost_translate(scale);
+            Self::ghost_overlay_rect(
+                tx as i32,
+                ty as i32,
+                drag.snapshot_width,
+                drag.snapshot_height,
+                w,
+                h,
+            )
+        });
+        let inspect_now = self
+            .inspect_highlight
+            .and_then(|hl| Self::inspect_overlay_rect(scale, hl, w, h));
+        // The `title` tooltip's rect (#1646), the same way: drawn after
+        // the document, so its old and new rects are named by hand.
+        let tooltip_now = self
+            .title_tooltip
+            .shown
+            .as_ref()
+            .and_then(|t| t.tip.device_rect(scale, t.origin, w, h));
+
+        // Why this frame repaints in full, if it does. The first reason
+        // recorded before this paint wins over anything decided here.
+        let invalidated = self.full_repaint_reason.take();
+        let unattributed = std::mem::take(&mut self.repaint_unattributed);
+        let whole_document = self
+            .doc
+            .as_ref()
+            .is_some_and(|doc| doc.borrow().tree.whole_document_damaged);
+        let mut damage = rinch_dom::paint::DamageRegion::new(w as f64, h as f64);
+        let full = if let Some(reason) = fresh {
+            Some(reason)
+        } else if let Some(reason) = invalidated {
+            Some(reason)
+        } else if !has_previous {
+            Some(FullRepaintReason::Invalidated)
+        } else if whole_document {
+            Some(FullRepaintReason::Restyle)
+        } else {
+            if let Some(doc) = &self.doc {
+                let d = doc.borrow();
+                damage = rinch_dom::paint::compute_damage(&d.tree, scale, w as f64, h as f64);
+            }
+            for r in [
+                self.last_ghost_rect,
+                ghost_now,
+                self.last_inspect_rect,
+                inspect_now,
+                self.title_tooltip.last_rect,
+                tooltip_now,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                damage.add(r);
+            }
+            if damage.is_full() {
+                Some(FullRepaintReason::RegionTooLarge)
+            } else if damage.is_empty() && unattributed {
+                // Something marked the scene dirty without saying what it
+                // changed, and nothing else named any damage: which pixels
+                // moved is unknown, so all of them are repainted.
+                Some(FullRepaintReason::Unattributed)
+            } else {
+                None
+            }
+        };
+
+        // Drain paint_dirty_nodes now that the damage is known, and record
+        // that their pixels are where their boxes now are.
+        if let Some(doc) = &self.doc {
+            doc.borrow_mut().tree.consume_paint_dirty();
+        }
+        FrameDamage {
+            full,
+            damage,
+            ghost_now,
+            inspect_now,
+            tooltip_now,
+        }
     }
 
     /// The framebuffer rect `blit_drag_overlay` touches for the same arguments,

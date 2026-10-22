@@ -1410,7 +1410,7 @@ fn an_empty_damage_repaints_nothing() {
     expect_frame("repaint none", &s, &[(RepaintNone, 1)]);
 }
 
-/// The GPU (and embed) path always re-encodes the whole scene.
+/// `build_scene` (embed, Android, DevTools) always re-encodes the whole scene.
 #[cfg(any(feature = "gpu", feature = "embed"))]
 #[test]
 fn full_repaint_gpu() {

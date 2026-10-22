@@ -238,7 +238,21 @@ pub struct WgpuRenderer {
     /// Composited output texture (layers + UI) for screenshot capture.
     /// Created lazily, invalidated on resize.
     pub(crate) composited_texture: Option<Texture>,
+    /// What `render_texture` holds (#1718): `None` before the first frame
+    /// and after a resize or a failed render, else the base colour Vello
+    /// rendered it over. A partial frame updates it in place only while it
+    /// holds a frame over the base colour this frame needs.
+    pub(crate) ui_base: Option<Color>,
+    /// Why `ui_base` was last cleared, for the full frame that repairs it.
+    pub(crate) ui_lost: rinch_dom::perf::FullRepaintReason,
+    /// The target a partial frame is rendered into, reused while it is big
+    /// enough (sizes rounded up to [`PARTIAL_TARGET_STEP`]).
+    pub(crate) partial_target: Option<Texture>,
 }
+
+/// A partial frame's target grows in steps of this many device pixels, so a
+/// hover that moves a few pixels reuses it (#1718).
+const PARTIAL_TARGET_STEP: u32 = 128;
 
 impl WgpuRenderer {
     /// Create a new GPU renderer for the given window.
@@ -470,6 +484,9 @@ impl WgpuRenderer {
             composite_layers: Vec::new(),
             gpu_layers: Vec::new(),
             composited_texture: None,
+            ui_base: None,
+            ui_lost: rinch_dom::perf::FullRepaintReason::FirstFrame,
+            partial_target: None,
         })
     }
 
@@ -490,9 +507,11 @@ impl WgpuRenderer {
             sample_count: 1,
             dimension: TextureDimension::D2,
             format,
+            // COPY_DST: a partial frame's rects are copied in (#1718).
             usage: TextureUsages::STORAGE_BINDING
                 | TextureUsages::TEXTURE_BINDING
-                | TextureUsages::COPY_SRC,
+                | TextureUsages::COPY_SRC
+                | TextureUsages::COPY_DST,
             view_formats: &[],
         })
     }
@@ -512,27 +531,232 @@ impl WgpuRenderer {
         )
         .map_err(|e| format!("{e}"))
     }
-}
 
-impl PlatformRenderer for WgpuRenderer {
-    fn resize(&mut self, width: u32, height: u32) {
-        let width = width.max(1);
-        let height = height.max(1);
-        self.surface_config.width = width;
-        self.surface_config.height = height;
-        self.surface.configure(&self.device, &self.surface_config);
-        self.render_texture =
-            Self::create_render_texture(&self.device, TextureFormat::Rgba8Unorm, width, height);
-        self.composited_texture = None;
+    /// The colour Vello renders the UI over this frame: transparent under
+    /// composite layers (they show through), else the window's base.
+    fn vello_base_color(&self, base_color: Color) -> Color {
+        if !self.composite_layers.is_empty() {
+            Color::TRANSPARENT
+        } else {
+            base_color
+        }
     }
 
-    fn render_scene(
+    fn window_base_color(transparent: bool) -> Color {
+        if transparent {
+            Color::TRANSPARENT
+        } else {
+            Color::WHITE
+        }
+    }
+
+    /// Why the UI texture cannot take a partial frame this frame (#1718):
+    /// it holds no frame, or one rendered over another base colour (layers
+    /// came or went). `None` when it holds the last frame painted.
+    pub fn ui_invalid_reason(
+        &self,
+        transparent: bool,
+    ) -> Option<rinch_dom::perf::FullRepaintReason> {
+        let base = self.vello_base_color(Self::window_base_color(transparent));
+        match self.ui_base {
+            Some(b) if b == base => None,
+            Some(_) => Some(rinch_dom::perf::FullRepaintReason::Invalidated),
+            None => Some(self.ui_lost),
+        }
+    }
+
+    /// Render and present a frame [`crate::app::RinchApp::build_gpu_frame`]
+    /// built (#1718). A full frame renders the whole UI texture; a partial
+    /// one renders its scene into a target the size of its damage and copies
+    /// each damage rect into the UI texture; an unchanged one renders
+    /// nothing. Each then presents the UI texture (over the layers).
+    pub fn paint_frame(
+        &mut self,
+        frame: crate::app::GpuFrame<'_>,
+        transparent: bool,
+    ) -> Result<(), String> {
+        use crate::app::GpuFrame;
+        let base_color = Self::window_base_color(transparent);
+        let (w, h) = (self.surface_config.width, self.surface_config.height);
+        match frame {
+            GpuFrame::Full(scene) => self.render_ui(scene, w, h, base_color),
+            GpuFrame::Partial { scene, size, rects } => {
+                self.render_ui_partial(scene, size, &rects, base_color)
+            }
+            GpuFrame::Unchanged => Ok(()),
+        }
+        .and_then(|()| self.present(base_color))
+        .map_err(|e| format!("{e}"))
+    }
+
+    /// Render `scene` into the whole UI texture.
+    fn render_ui(
         &mut self,
         scene: &Scene,
         width: u32,
         height: u32,
         base_color: Color,
     ) -> Result<(), RenderError> {
+        let base = self.vello_base_color(base_color);
+        let view = self
+            .render_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        self.ui_base = None;
+        self.ui_lost = rinch_dom::perf::FullRepaintReason::Invalidated;
+        self.renderer
+            .render_to_texture(
+                &self.device,
+                &self.queue,
+                scene,
+                &view,
+                &RenderParams {
+                    base_color: base,
+                    width,
+                    height,
+                    antialiasing_method: AaConfig::Msaa16,
+                },
+            )
+            .map_err(|e| RenderError::Internal(format!("render_to_texture failed: {:?}", e)))?;
+        self.ui_base = Some(base);
+        Ok(())
+    }
+
+    /// Render a partial frame into the UI texture: see [`render_partial`].
+    fn render_ui_partial(
+        &mut self,
+        scene: &Scene,
+        size: (u32, u32),
+        rects: &[(u32, u32, u32, u32)],
+        base_color: Color,
+    ) -> Result<(), RenderError> {
+        let base = self.vello_base_color(base_color);
+        debug_assert_eq!(
+            self.ui_base,
+            Some(base),
+            "a partial frame over an invalid UI texture"
+        );
+        self.ui_base = None;
+        self.ui_lost = rinch_dom::perf::FullRepaintReason::Invalidated;
+        render_partial(
+            &self.device,
+            &self.queue,
+            &mut self.renderer,
+            &self.render_texture,
+            &mut self.partial_target,
+            PartialFrame {
+                scene,
+                size,
+                rects,
+                base,
+            },
+        )?;
+        self.ui_base = Some(base);
+        Ok(())
+    }
+}
+
+/// A partial frame for [`render_partial`].
+pub(crate) struct PartialFrame<'a> {
+    pub scene: &'a Scene,
+    pub size: (u32, u32),
+    pub rects: &'a [(u32, u32, u32, u32)],
+    pub base: Color,
+}
+
+/// Render a partial frame's `scene` into `partial_target` (grown in
+/// [`PARTIAL_TARGET_STEP`]s when smaller than `size`, never past `ui`) and
+/// copy each of its `rects` from there into `ui` (#1718). The scene is drawn
+/// where a full frame draws it, so each rect's pixels are a full render's
+/// (`gpu_partial_frame_1718_tests`).
+pub(crate) fn render_partial(
+    device: &Device,
+    queue: &Queue,
+    renderer: &mut VelloRenderer,
+    ui: &Texture,
+    partial_target: &mut Option<Texture>,
+    frame: PartialFrame<'_>,
+) -> Result<(), RenderError> {
+    let PartialFrame {
+        scene,
+        size,
+        rects,
+        base,
+    } = frame;
+    let (uw, uh) = (ui.width(), ui.height());
+    let step =
+        |v: u32, max: u32| (v.div_ceil(PARTIAL_TARGET_STEP).max(1) * PARTIAL_TARGET_STEP).min(max);
+    let (want_w, want_h) = (step(size.0, uw), step(size.1, uh));
+    let (have_w, have_h) = partial_target
+        .as_ref()
+        .map_or((0, 0), |t| (t.width(), t.height()));
+    if have_w < want_w || have_h < want_h {
+        *partial_target = Some(WgpuRenderer::create_render_texture(
+            device,
+            TextureFormat::Rgba8Unorm,
+            want_w.max(have_w),
+            want_h.max(have_h),
+        ));
+    }
+    let target = partial_target.as_ref().expect("created above");
+    // Rendered over the part of the target the frame needs, which a target
+    // grown for an earlier, larger frame may exceed.
+    let (tw, th) = (want_w, want_h);
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    renderer
+        .render_to_texture(
+            device,
+            queue,
+            scene,
+            &view,
+            &RenderParams {
+                base_color: base,
+                width: tw,
+                height: th,
+                antialiasing_method: AaConfig::Msaa16,
+            },
+        )
+        .map_err(|e| RenderError::Internal(format!("render_to_texture failed: {:?}", e)))?;
+    let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+        label: Some("rinch-dom partial frame copy"),
+    });
+    for &(x, y, rw, rh) in rects {
+        // Clamped to both textures: the surface may have been resized
+        // between the app's frame and this render.
+        let rw = rw.min(uw.saturating_sub(x)).min(tw.saturating_sub(x));
+        let rh = rh.min(uh.saturating_sub(y)).min(th.saturating_sub(y));
+        if rw == 0 || rh == 0 {
+            continue;
+        }
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: target,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: ui,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            Extent3d {
+                width: rw,
+                height: rh,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+    queue.submit(Some(encoder.finish()));
+    Ok(())
+}
+
+impl WgpuRenderer {
+    /// Present the UI texture (over the composite layers, if any) to the
+    /// window surface. Vello has already rendered into it: a surface that
+    /// cannot be acquired this frame skips the present, and the UI texture
+    /// still holds the frame for the next one.
+    fn present(&mut self, base_color: Color) -> Result<(), RenderError> {
         let surface_texture = match self.surface.get_current_texture() {
             Ok(t) => t,
             // Swapchain went stale (resize/DPI/occlusion/GPU reset) — recreate it and retry once.
@@ -547,33 +771,6 @@ impl PlatformRenderer for WgpuRenderer {
             Err(wgpu::SurfaceError::Timeout) => return Ok(()),
             Err(e) => return Err(RenderError::Internal(format!("get_current_texture: {e:?}"))),
         };
-
-        let render_texture_view = self
-            .render_texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        // When composite layers are present, render Vello with transparent background
-        // so we can composite it on top of the layer content.
-        let vello_base_color = if !self.composite_layers.is_empty() {
-            Color::TRANSPARENT
-        } else {
-            base_color
-        };
-
-        self.renderer
-            .render_to_texture(
-                &self.device,
-                &self.queue,
-                scene,
-                &render_texture_view,
-                &RenderParams {
-                    base_color: vello_base_color,
-                    width,
-                    height,
-                    antialiasing_method: AaConfig::Msaa16,
-                },
-            )
-            .map_err(|e| RenderError::Internal(format!("render_to_texture failed: {:?}", e)))?;
 
         let mut encoder = self
             .device
@@ -783,6 +980,32 @@ impl PlatformRenderer for WgpuRenderer {
             .map_err(|e| RenderError::Internal(format!("GPU poll failed: {:?}", e)))?;
 
         Ok(())
+    }
+}
+
+impl PlatformRenderer for WgpuRenderer {
+    fn resize(&mut self, width: u32, height: u32) {
+        let width = width.max(1);
+        let height = height.max(1);
+        self.surface_config.width = width;
+        self.surface_config.height = height;
+        self.surface.configure(&self.device, &self.surface_config);
+        self.render_texture =
+            Self::create_render_texture(&self.device, TextureFormat::Rgba8Unorm, width, height);
+        self.composited_texture = None;
+        self.ui_base = None;
+        self.ui_lost = rinch_dom::perf::FullRepaintReason::Resize;
+    }
+
+    fn render_scene(
+        &mut self,
+        scene: &Scene,
+        width: u32,
+        height: u32,
+        base_color: Color,
+    ) -> Result<(), RenderError> {
+        self.render_ui(scene, width, height, base_color)?;
+        self.present(base_color)
     }
 
     fn set_composite_layers(&mut self, layers: Vec<CompositeLayer>) {
