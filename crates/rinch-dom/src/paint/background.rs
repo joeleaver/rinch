@@ -423,10 +423,7 @@ impl TileCache {
         }
         self.bytes += n;
         let last_used = self.frame;
-        if let Some(old) = self
-            .entries
-            .insert(key, TileEntry { pixels, last_used })
-        {
+        if let Some(old) = self.entries.insert(key, TileEntry { pixels, last_used }) {
             self.bytes -= old.pixels.len();
         }
     }
@@ -530,9 +527,7 @@ fn fill_as_pattern(
                     &PaintShape::Rect(unit),
                 );
                 let blob = Blob::from(raster.pixels().to_vec());
-                tree.background_tiles
-                    .borrow_mut()
-                    .insert(key, blob.clone());
+                tree.background_tiles.borrow_mut().insert(key, blob.clone());
                 blob
             }
         };

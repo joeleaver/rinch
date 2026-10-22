@@ -4524,9 +4524,18 @@ layer that repeats on either axis is **one**
 `Painter::fill_repeating` — its tile rasterised by a `TinySkiaPainter` at the
 device size it covers (`ceil`; the tile is laid out in CSS space under `scale(w/tw, h/th)` so an angled
 gradient keeps its slope under `scaleX`/skew; then a scaling pattern transform, bilinear when
-that is not exact; a `scale()`d box rasterises bigger), cached per thread by
+that is not exact; a `scale()`d box rasterises bigger), cached **per document**
+(`NodeTree::background_tiles`, freed with it) by
 image (gradient angle + resolved stops, or url + `DecodedImage::id()` — never a
-data pointer, which the allocator reuses) + raster size (`background_tile_rasters` / `background_tile_cache_hits`),
+data pointer, which the allocator reuses) + raster size (`background_tile_rasters` / `background_tile_cache_hits`).
+The cache holds at most 32 MB: a tile that would pass it evicts the least recently
+used tiles, never one the frame being painted has used, and is otherwise drawn and not kept (#1156:
+it was cleared whole, so a working set just over 32 MB rasterised every tile every
+frame), and each `paint_document` forgets the tiles no frame has used for
+`TILE_CACHE_IDLE_FRAMES` (60) painted frames (#1157: it was a thread-local never
+released; an idle window paints no frame and keeps what it holds until it paints;
+`NodeTree::background_tile_cache_bytes`). Pins: `background_tile_cache_eviction_1156_tests.rs`.
+The tile is
 filled as a tiny-skia `Pattern` or a Vello `Extend::Repeat` image brush from the
 same pixels (the brush's parameters are pinned; no test renders it on a GPU), and clipped to the one-tile strip on an axis that does not repeat.
 Only a build without the software painter (`embed`), a `no-repeat` tile, or a

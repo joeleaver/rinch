@@ -24,8 +24,7 @@ const VW: f32 = 900.0;
 const VH: f32 = 900.0;
 
 fn paint(doc: &mut RinchDocument) {
-    let mut painter =
-        TinySkiaPainter::new((VW as f64 * SCALE) as u32, (VH as f64 * SCALE) as u32);
+    let mut painter = TinySkiaPainter::new((VW as f64 * SCALE) as u32, (VH as f64 * SCALE) as u32);
     let mut layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
     rinch_dom::paint::paint_document(
         &doc.tree,
