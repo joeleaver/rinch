@@ -17,6 +17,8 @@ rinch-core.workspace = true
 rinch-macros.workspace = true
 rinch-platform = { workspace = true }
 tracing.workspace = true
+# `init_logging` on every target (#1773); also the desktop shell's subscriber.
+tracing-subscriber = { workspace = true }
 
 # Desktop-only rendering deps (optional, enabled by `desktop` feature)
 rinch-dom = { workspace = true, optional = true }
@@ -39,7 +41,6 @@ muda = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 pollster = { version = "0.4", optional = true }
 futures-util = { version = "0.3", optional = true }
-tracing-subscriber = { workspace = true, optional = true }
 png = { version = "0.17", optional = true }
 base64 = { version = "0.22", optional = true }
 keyboard-types = { version = "0.7", optional = true }
@@ -134,6 +135,8 @@ web-sys = { version = "0.3", features = [
     "MouseEvent", "WheelEvent", "PointerEvent",
     "EventTarget", "AddEventListenerOptions",
     "ResizeObserver", "ResizeObserverEntry", "ResizeObserverSize", "DomRectReadOnly",
+    # `init_logging`'s console writer and panic hook (#1773).
+    "console",
 ] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
@@ -177,7 +180,6 @@ desktop = [
     "dep:peniko", "dep:serde_json",
     "dep:winit", "dep:muda",
     "dep:x11rb", "dep:objc2",
-    "dep:tracing-subscriber",
     "dep:png", "dep:base64", "dep:keyboard-types",
     "dep:bytemuck",
     "dep:softbuffer", "rinch-dom/software-renderer",
@@ -198,7 +200,6 @@ desktop = [
 android = [
     "dep:rinch-dom", "dep:rinch-editable", "dep:parley",
     "dep:peniko", "dep:serde_json",
-    "dep:tracing-subscriber",
     "dep:png", "dep:base64", "dep:keyboard-types",
     "dep:bytemuck",
     # No softbuffer: the Android shell presents straight into the

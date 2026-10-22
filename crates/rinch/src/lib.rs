@@ -93,6 +93,8 @@ pub mod windows_stub;
 
 #[cfg(feature = "image-network")]
 pub mod image_loader;
+mod logging;
+pub use logging::{init_logging, init_logging_with_filter};
 
 /// Image loading: the [`ImageLoader`](image::ImageLoader) an app implements to
 /// answer for its own URL schemes ([`register_image_scheme`](image::register_image_scheme),

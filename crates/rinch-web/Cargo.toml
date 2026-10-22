@@ -115,6 +115,8 @@ web-sys = { version = "0.3", features = ["DragEventInit", "FilePropertyBag", "Ht
 # The browser's message dialogs (tests/confirm_dialog_1773.rs): `rinch::dialogs`
 # is behind `file-dialogs`, which on wasm32 links no crate.
 rinch = { workspace = true, default-features = false, features = ["file-dialogs"] }
+# Emitting events at `rinch::init_logging`'s console writer (tests/init_logging_1773.rs).
+tracing.workspace = true
 
 [features]
 # Collaborative editing (M9): forwards to the editor view's collab adapter, which

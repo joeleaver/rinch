@@ -5312,6 +5312,7 @@ dependencies = [
  "rinch-editor-collab",
  "rinch-editor-core",
  "rinch-editor-view",
+ "tracing",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
