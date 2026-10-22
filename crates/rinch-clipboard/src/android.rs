@@ -60,6 +60,13 @@ pub fn copy_text_async(text: impl AsRef<str>) {
     let _ = copy_text(text);
 }
 
+pub fn copy_text_then(
+    text: impl AsRef<str>,
+    on_done: impl FnOnce(ClipboardResult<()>) + Send + 'static,
+) {
+    on_done(copy_text(text));
+}
+
 pub fn paste_text_timeout(_timeout: Duration) -> ClipboardResult<String> {
     paste_text()
 }
@@ -80,6 +87,14 @@ pub fn paste_image_async(
 
 pub fn copy_html_async(html: impl AsRef<str>, alt_text: Option<&str>) {
     let _ = copy_html(html, alt_text);
+}
+
+pub fn copy_html_then(
+    html: impl AsRef<str>,
+    alt_text: Option<&str>,
+    on_done: impl FnOnce(ClipboardResult<()>) + Send + 'static,
+) {
+    on_done(copy_html(html, alt_text));
 }
 
 pub fn paste_html_timeout(_timeout: Duration) -> ClipboardResult<String> {

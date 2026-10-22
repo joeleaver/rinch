@@ -438,6 +438,19 @@ pub fn copy_text_async(text: impl AsRef<str>) {
     }));
 }
 
+/// Copy text **without waiting**, and report the write's result: `on_done` is
+/// called with what the clipboard said, **on the clipboard worker thread** (see
+/// the module docs for hopping back to the UI). The shape a "Copied" confirmation
+/// needs on every target — on the web it is the browser's answer to
+/// `navigator.clipboard.writeText`.
+pub fn copy_text_then(
+    text: impl AsRef<str>,
+    on_done: impl FnOnce(ClipboardResult<()>) + Send + 'static,
+) {
+    let text = text.as_ref().to_string();
+    run_async(move |b| b.set_text(&text), on_done);
+}
+
 /// Paste text from the clipboard.
 ///
 /// Blocks until the clipboard owner answers — potentially seconds. Prefer
@@ -518,6 +531,18 @@ pub fn copy_html_async(html: impl AsRef<str>, alt_text: Option<&str>) {
     submit(Box::new(move |b| {
         let _ = b.set_html(&html, alt.as_deref());
     }));
+}
+
+/// [`copy_html`] without waiting, reporting the write's result as
+/// [`copy_text_then`] does (on the clipboard worker thread).
+pub fn copy_html_then(
+    html: impl AsRef<str>,
+    alt_text: Option<&str>,
+    on_done: impl FnOnce(ClipboardResult<()>) + Send + 'static,
+) {
+    let html = html.as_ref().to_string();
+    let alt = alt_text.map(str::to_string);
+    run_async(move |b| b.set_html(&html, alt.as_deref()), on_done);
 }
 
 /// Paste HTML from the clipboard.
