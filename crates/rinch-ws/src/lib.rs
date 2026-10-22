@@ -105,6 +105,7 @@ use wasm as backend;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rinch_core::reactive::{Owner, current_owner, unowned};
@@ -146,13 +147,20 @@ pub struct WsClose {
     pub reason: String,
 }
 
-/// An event produced by the platform backend and delivered to the registry on
-/// the main thread. `Send` (only plain data), so it can hop worker→main on
-/// native.
-pub(crate) enum WsEvent {
+/// Something that happened on a connection: what the four callbacks are told,
+/// as one value. A [`WsStream`] yields these (issue #1767).
+///
+/// Plain data and `Send`; the backend also uses it to carry an event from the
+/// native worker thread to the main thread.
+#[derive(Debug, Clone)]
+pub enum WsEvent {
+    /// The connection is open (`on_open`).
     Open,
+    /// A frame arrived (`on_message`).
     Message(WsMessage),
+    /// The connection closed (`on_close`).
     Close(WsClose),
+    /// Something failed (`on_error`).
     Error(WsError),
 }
 
@@ -463,6 +471,124 @@ impl WsHandle {
     /// once the close completes. Dropping the handle does the same.
     pub fn close(&self) {
         self.backend.close();
+    }
+}
+
+impl WsHandle {
+    /// Read this connection's events by awaiting them instead of through
+    /// callbacks (issue #1767).
+    ///
+    /// ```ignore
+    /// let mut feed = rinch_ws::connect(url)?.into_stream();
+    /// feed.send_text("subscribe");
+    /// while let Some(event) = feed.next().await {
+    ///     if let WsEvent::Message(msg) = event { log.update(|l| l.push(msg)) }
+    /// }
+    /// ```
+    ///
+    /// The stream takes the connection's four callback slots (whatever was
+    /// registered on them is replaced) and owns the handle, so dropping the
+    /// stream — or the task awaiting it, which is what a component's unmount
+    /// does to a task it spawned — closes the connection.
+    pub fn into_stream(self) -> WsStream {
+        let queue: Rc<RefCell<StreamQueue>> = Rc::default();
+        // Unowned: these only fill the queue; the stream's holder decides how
+        // long the connection lives, and dropping the stream removes them.
+        unowned(|| {
+            let q = queue.clone();
+            self.on_open(move || q.borrow_mut().push(WsEvent::Open));
+            let q = queue.clone();
+            self.on_message(move |m| q.borrow_mut().push(WsEvent::Message(m)));
+            let q = queue.clone();
+            self.on_close(move |c| q.borrow_mut().push(WsEvent::Close(c)));
+            let q = queue.clone();
+            self.on_error(move |e| q.borrow_mut().push(WsEvent::Error(e)));
+        });
+        WsStream {
+            handle: self,
+            queue,
+        }
+    }
+}
+
+/// What a [`WsStream`] has received and not yet yielded.
+#[derive(Default)]
+struct StreamQueue {
+    events: std::collections::VecDeque<WsEvent>,
+    opened: bool,
+    /// No event after this is yielded: a close arrived, or an error before the
+    /// connection opened.
+    ended: bool,
+    waker: Option<std::task::Waker>,
+}
+
+impl StreamQueue {
+    fn push(&mut self, event: WsEvent) {
+        if self.ended {
+            return;
+        }
+        match &event {
+            WsEvent::Open => self.opened = true,
+            WsEvent::Close(_) => self.ended = true,
+            // A failed connect: the native backend reports only the error, the
+            // browser an error and then a close. Ending at the error makes the
+            // two the same stream.
+            WsEvent::Error(_) if !self.opened => self.ended = true,
+            _ => {}
+        }
+        self.events.push_back(event);
+        if let Some(waker) = self.waker.take() {
+            waker.wake();
+        }
+    }
+}
+
+/// A connection read by awaiting its events — made with
+/// [`WsHandle::into_stream`].
+///
+/// Not `Send`: poll it on the main (UI) thread, inside
+/// [`spawn_local`](rinch_core::spawn_local) say. Dropping it closes the
+/// connection.
+pub struct WsStream {
+    handle: WsHandle,
+    queue: Rc<RefCell<StreamQueue>>,
+}
+
+impl WsStream {
+    /// The next event, in the order the callbacks would have seen them.
+    ///
+    /// `None` once the stream has ended: after the [`WsEvent::Close`], or after
+    /// a [`WsEvent::Error`] that came before the connection opened (a failed
+    /// connect; on the web the close that follows it is not yielded).
+    pub async fn next(&mut self) -> Option<WsEvent> {
+        std::future::poll_fn(|cx| {
+            let mut queue = self.queue.borrow_mut();
+            match queue.events.pop_front() {
+                Some(event) => std::task::Poll::Ready(Some(event)),
+                None if queue.ended => std::task::Poll::Ready(None),
+                None => {
+                    queue.waker = Some(cx.waker().clone());
+                    std::task::Poll::Pending
+                }
+            }
+        })
+        .await
+    }
+
+    /// Queue a text frame; see [`WsHandle::send_text`].
+    pub fn send_text(&self, text: impl Into<String>) {
+        self.handle.send_text(text);
+    }
+
+    /// Queue a binary frame; see [`WsHandle::send_bytes`].
+    pub fn send_bytes(&self, bytes: Vec<u8>) {
+        self.handle.send_bytes(bytes);
+    }
+
+    /// Begin a graceful close; [`next`](Self::next) then yields the
+    /// [`WsEvent::Close`] and ends.
+    pub fn close(&self) {
+        self.handle.close();
     }
 }
 

@@ -235,6 +235,12 @@ impl Scope {
         self.0.cleanups.borrow_mut().push(Box::new(f));
     }
 
+    /// How many cleanups are registered and not yet run.
+    #[cfg(test)]
+    pub(crate) fn cleanup_count(&self) -> usize {
+        self.0.cleanups.borrow().len()
+    }
+
     /// Dispose of all effects, child scopes, and run cleanup functions.
     ///
     /// After dispose, this scope should not be used.
@@ -757,6 +763,13 @@ impl Owner {
     pub fn run<R>(&self, f: impl FnOnce() -> R) -> R {
         let _owner = self.push();
         f()
+    }
+
+    /// An identity for the referenced scope, stable for as long as this
+    /// `Owner` (or any clone of it) exists: the `Weak` keeps the allocation, so
+    /// the address is not reused while a key taken from it is still held.
+    pub(crate) fn key(&self) -> usize {
+        self.0.as_ptr() as usize
     }
 
     /// What the referenced scope owns, or `None` if it is gone.
