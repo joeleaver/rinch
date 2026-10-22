@@ -201,6 +201,16 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
                         #elem_var.set_attribute("data-onfiledrop", &__handler_id.0.to_string());
                     }
                 }
+            } else if event_name == "ondropfiles" {
+                // Files dropped from the OS, handed as `LocalFile`s on the
+                // desktop and the web (issue #1771).
+                quote! {
+                    {
+                        #handler_shadows
+                        let __handler_id = __scope.register_files_drop_handler(#handler);
+                        #elem_var.set_attribute("data-ondropfiles", &__handler_id.0.to_string());
+                    }
+                }
             } else {
                 // Every other supported event is a `Fn()` handler written to
                 // its own `data-` attribute, so the runtime can tell them apart
@@ -606,6 +616,7 @@ mod event_and_fn_prop_tests {
             ("onsubmit", "data-onsubmit"),
             ("onscroll", "data-onscroll"),
             ("onfiledrop", "data-onfiledrop"),
+            ("ondropfiles", "data-ondropfiles"),
             ("onfiledragenter", "data-onfiledragenter"),
             ("onfiledragleave", "data-onfiledragleave"),
             ("ondragstart", "data-ondragstart"),

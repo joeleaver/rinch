@@ -3401,8 +3401,9 @@ impl RinchApp {
         }
     }
 
-    /// Walk up from `hit_id` looking for a `data-onfiledrop` attribute.
-    /// Returns the node ID of the first file-drop target ancestor (or self).
+    /// Walk up from `hit_id` looking for a `data-onfiledrop` or
+    /// `data-ondropfiles` attribute. Returns the node ID of the first
+    /// file-drop target ancestor (or self).
     pub(crate) fn find_file_drop_target(
         tree: &rinch_dom::NodeTree,
         hit_id: usize,
@@ -3410,7 +3411,9 @@ impl RinchApp {
         let mut current = Some(hit_id);
         while let Some(nid) = current {
             if let Some(node) = tree.get(nid) {
-                if node.attributes.contains_key("data-onfiledrop") {
+                if node.attributes.contains_key("data-onfiledrop")
+                    || node.attributes.contains_key("data-ondropfiles")
+                {
                     return Some(nid);
                 }
                 current = node.parent;
@@ -3421,8 +3424,10 @@ impl RinchApp {
         None
     }
 
-    /// Dispatch an OS file-drop event by walking up from `hit_id` looking for
-    /// `data-onfiledrop` and invoking the registered `FileDropCallback`.
+    /// Dispatch an OS file-drop event by walking up from `hit_id` to the first
+    /// node carrying a live `data-onfiledrop` (paths) or `data-ondropfiles`
+    /// ([`LocalFile`](rinch_core::file::LocalFile)s, issue #1771) handler, and
+    /// invoking each of the two that node carries, paths first.
     ///
     /// `(x, y, viewport_width, viewport_height, modifiers)` is the click
     /// context the handler reads through `get_click_context()` (#1650): the
@@ -3440,47 +3445,65 @@ impl RinchApp {
             events::ModifierState,
         ),
     ) {
-        let handler_id = {
+        // A stale attribute must not stop the walk: disposing a scope frees
+        // its handlers (issue #141) while nothing strips the attribute from a
+        // node that outlives them, and this walk commits to the first node
+        // carrying a live one.
+        let live = |node: &rinch_dom::node::Node, attr: &str, has: fn(events::EventHandlerId) -> bool| {
+            node.attributes
+                .get(attr)
+                .and_then(|v| v.parse::<usize>().ok())
+                .filter(|&id| has(events::EventHandlerId(id)))
+        };
+        let found = {
             let d = doc.borrow();
             let mut current = Some(hit_id);
             let mut found = None;
             while let Some(nid) = current {
-                if let Some(node) = d.tree.get(nid) {
-                    // A stale attribute must not stop the walk: disposing a
-                    // scope frees its handlers (issue #141) while nothing strips
-                    // the attribute from a node that outlives them, and this
-                    // walk commits to the first node carrying one.
-                    if let Some(id) = node
-                        .attributes
-                        .get("data-onfiledrop")
-                        .and_then(|v| v.parse::<usize>().ok())
-                        .filter(|&id| events::has_file_drop_handler(events::EventHandlerId(id)))
-                    {
-                        found = Some((id, painted_element_box(&d.tree, nid)));
-                        break;
-                    }
-                    current = node.parent;
-                } else {
+                let Some(node) = d.tree.get(nid) else { break };
+                let path_handler = live(node, "data-onfiledrop", events::has_file_drop_handler);
+                let file_handler = live(node, "data-ondropfiles", events::has_files_drop_handler);
+                if path_handler.is_some() || file_handler.is_some() {
+                    found = Some((path_handler, file_handler, painted_element_box(&d.tree, nid)));
                     break;
                 }
+                current = node.parent;
             }
             found
         };
-        if let Some((id, (elem_x, elem_y, elem_w, elem_h))) = handler_id {
-            events::set_click_context(events::ClickContext {
-                mouse_x: x,
-                mouse_y: y,
-                element_x: elem_x,
-                element_y: elem_y,
-                element_width: elem_w,
-                element_height: elem_h,
-                text_hit: events::TextHitInfo::default(),
-                viewport_width,
-                viewport_height,
-                button: events::MouseButton::Left,
-                modifiers,
-            });
+        let Some((path_handler, file_handler, (elem_x, elem_y, elem_w, elem_h))) = found else {
+            return;
+        };
+        let context = events::ClickContext {
+            mouse_x: x,
+            mouse_y: y,
+            element_x: elem_x,
+            element_y: elem_y,
+            element_width: elem_w,
+            element_height: elem_h,
+            text_hit: events::TextHitInfo::default(),
+            viewport_width,
+            viewport_height,
+            button: events::MouseButton::Left,
+            modifiers,
+        };
+        // A path that cannot be `stat`ed now (gone since the drop) is left
+        // out of the `LocalFile`s; the paths handler still gets every path.
+        let files: Vec<rinch_core::file::LocalFile> = if file_handler.is_some() {
+            paths
+                .iter()
+                .filter_map(|p| rinch_core::file::LocalFile::from_path(p).ok())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if let Some(id) = path_handler {
+            events::set_click_context(context);
             events::dispatch_file_drop_event(events::EventHandlerId(id), paths);
+        }
+        if let Some(id) = file_handler {
+            events::set_click_context(context);
+            events::dispatch_files_drop_event(events::EventHandlerId(id), files);
         }
     }
 

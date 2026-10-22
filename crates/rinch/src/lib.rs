@@ -97,6 +97,10 @@ pub mod shell;
 /// [`scale_factor`](window::scale_factor), [`window_size`](window::window_size)
 /// and [`window_focused`](window::window_focused).
 pub mod window;
+/// Files from the user on the desktop and the web (issue #1771): the
+/// [`FilePicker`](file::FilePicker) and the [`LocalFile`](file::LocalFile)s an
+/// `ondropfiles` handler receives.
+pub mod file;
 #[cfg(feature = "desktop")]
 pub mod windows;
 #[cfg(all(feature = "android", not(feature = "desktop")))]
@@ -208,6 +212,8 @@ pub mod prelude {
     // Futures on the UI thread (issue #1767): `spawn_local(async { … })` and
     // `sleep(duration).await`.
     pub use rinch_core::{TaskHandle, sleep, spawn_local};
+    // A file the user picked or dropped (`ondropfiles`), read on demand (#1771).
+    pub use rinch_core::file::LocalFile;
     // Context and stores for sharing state across components
     pub use rinch_core::{
         create_context, create_store, try_use_context, try_use_store, use_context, use_store,

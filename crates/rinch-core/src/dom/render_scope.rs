@@ -1041,6 +1041,17 @@ impl RenderScope {
         crate::events::register_file_drop_handler(crate::events::FileDropCallback::new(callback))
     }
 
+    /// Register an `ondropfiles` handler (issue #1771) and return its id: the
+    /// files dropped from the OS onto an element carrying `data-ondropfiles`,
+    /// as [`LocalFile`](crate::file::LocalFile)s.
+    #[doc(hidden)]
+    pub fn register_files_drop_handler<F: Fn(Vec<crate::file::LocalFile>) + 'static>(
+        &mut self,
+        callback: F,
+    ) -> crate::events::EventHandlerId {
+        crate::events::register_files_drop_handler(callback)
+    }
+
     /// Register a scroll event handler and return its ID.
     ///
     /// The handler receives a [`ScrollEvent`](crate::events::ScrollEvent)

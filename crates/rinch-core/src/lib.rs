@@ -27,6 +27,7 @@ pub mod dom;
 pub mod element;
 pub mod event;
 pub mod events;
+pub mod file;
 pub mod for_loop;
 pub mod image;
 pub mod main_thread;
@@ -112,7 +113,8 @@ pub use events::{
     clear_configuration_change_handler, clear_handlers, clear_keyboard_interceptor,
     clear_paste_interceptor, clear_selection_callback, clear_selection_snapshot,
     clear_selection_sync_callback, click_ancestors, dispatch_configuration_change,
-    dispatch_dismiss, dispatch_event, dispatch_file_drop_event, dispatch_input_event,
+    dispatch_dismiss, dispatch_event, dispatch_file_drop_event, dispatch_files_drop_event,
+    dispatch_input_event, has_files_drop_handler, register_files_drop_handler,
     dispatch_key_handler, dispatch_key_handler_chain, dispatch_keyboard_event,
     dispatch_paste_event, dispatch_selection, find_click_ancestor, finish_drag,
     finish_drag_for_button, fire_selection_sync, get_click_context, get_input_context,

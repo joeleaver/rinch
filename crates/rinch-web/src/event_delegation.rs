@@ -1721,6 +1721,115 @@ fn nearest_live_rid(el: &web_sys::Element) -> Option<(web_sys::Element, events::
     None
 }
 
+/// The nearest ancestor-or-self of `el` carrying a **live** `ondropfiles`
+/// handler (issue #1771); a freed one is walked past, as desktop's drop walk
+/// does.
+fn nearest_files_drop(el: &web_sys::Element) -> Option<(web_sys::Element, events::EventHandlerId)> {
+    let mut current = nearest_handler(el, "data-ondropfiles");
+    while let Some((handler_el, id)) = current {
+        if events::has_files_drop_handler(id) {
+            return Some((handler_el, id));
+        }
+        current = handler_el
+            .parent_element()
+            .and_then(|p| nearest_handler(&p, "data-ondropfiles"));
+    }
+    None
+}
+
+/// Whether a drag carries files from outside the page (`types` holds
+/// `"Files"`).
+pub(crate) fn drag_carries_files(event: &web_sys::DragEvent) -> bool {
+    event.data_transfer().is_some_and(|dt| {
+        let types = dt.types();
+        (0..types.length()).any(|i| types.get(i).as_string().as_deref() == Some("Files"))
+    })
+}
+
+/// The element a drag event is over (its target, or a text node's parent).
+fn drag_target_element(event: &web_sys::DragEvent) -> Option<web_sys::Element> {
+    let target = event.target()?.dyn_into::<web_sys::Node>().ok()?;
+    match target.dyn_ref::<web_sys::Element>() {
+        Some(el) => Some(el.clone()),
+        None => target.parent_element(),
+    }
+}
+
+/// Every file a drop carries, in order. Read while the event is dispatched,
+/// the only time a `DataTransfer` can be; the `File`s stay readable after.
+pub(crate) fn dropped_files(dt: &web_sys::DataTransfer) -> Vec<web_sys::File> {
+    dt.files()
+        .map(|list| (0..list.length()).filter_map(|i| list.get(i)).collect())
+        .unwrap_or_default()
+}
+
+/// Hand `files`, dropped by `event`, to the `ondropfiles` handler nearest the
+/// drop target (issue #1771), with the click context desktop gives a drop
+/// handler. `false` when no live handler is there.
+pub(crate) fn dispatch_dropped_files(event: &web_sys::DragEvent, files: Vec<web_sys::File>) -> bool {
+    let Some((handler_el, id)) = drag_target_element(event).and_then(|el| nearest_files_drop(&el))
+    else {
+        return false;
+    };
+    set_click_context_for(
+        &handler_el,
+        Some((event.client_x() as f32, event.client_y() as f32)),
+        events::TextHitInfo::default(),
+        events::MouseButton::Left,
+        modifiers_from_event(event),
+    );
+    let files = files.into_iter().map(rinch::file::from_web_file).collect();
+    events::dispatch_files_drop_event(id, files)
+}
+
+/// `dragover` / `drop` of files from outside the page over an `ondropfiles`
+/// element (issue #1771). Bubble phase, after the editor's capture listeners:
+/// a drop an editor already handled (it prevented the default, and handed the
+/// files it did not take to [`dispatch_dropped_files`] itself) is left alone.
+/// Over a handler both events are prevented — `dragover`, or the browser never
+/// delivers the drop; `drop`, or it opens the file in place of the page.
+fn install_file_drop(browser_doc: &web_sys::Document) {
+    let over = Closure::wrap(Box::new(move |event: web_sys::DragEvent| {
+        if event.default_prevented() || !drag_carries_files(&event) {
+            return;
+        }
+        if drag_target_element(&event)
+            .and_then(|el| nearest_files_drop(&el))
+            .is_some()
+        {
+            event.prevent_default();
+            if let Some(dt) = event.data_transfer() {
+                dt.set_drop_effect("copy");
+            }
+        }
+    }) as Box<dyn FnMut(_)>);
+    browser_doc
+        .add_event_listener_with_callback("dragover", over.as_ref().unchecked_ref())
+        .unwrap();
+    over.forget();
+    let drop = Closure::wrap(Box::new(move |event: web_sys::DragEvent| {
+        if event.default_prevented() || !drag_carries_files(&event) {
+            return;
+        }
+        if drag_target_element(&event)
+            .and_then(|el| nearest_files_drop(&el))
+            .is_none()
+        {
+            return;
+        }
+        event.prevent_default();
+        let files = event
+            .data_transfer()
+            .map(|dt| dropped_files(&dt))
+            .unwrap_or_default();
+        dispatch_dropped_files(&event, files);
+    }) as Box<dyn FnMut(_)>);
+    browser_doc
+        .add_event_listener_with_callback("drop", drop.as_ref().unchecked_ref())
+        .unwrap();
+    drop.forget();
+}
+
 /// Ancestor chain of `rid_el` (immediate parent → root, absolute viewport
 /// bounds) so handlers can use `find_click_ancestor()`/`click_ancestors()` —
 /// matches the desktop backend. getBoundingClientRect already returns
@@ -3598,6 +3707,9 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             .unwrap();
     }
     copy_closure.forget();
+
+    // Files dropped from outside the page on an `ondropfiles` element (#1771).
+    install_file_drop(&browser_doc);
 
     // Scroll delegation: the native `scroll` event fires on the scrolled element
     // and does NOT bubble, so register in the capture phase to catch all
