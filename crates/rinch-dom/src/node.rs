@@ -3029,6 +3029,11 @@ pub struct NodeTree {
     /// reason. `0` proves no node has a title, and the desktop runtime's title
     /// tooltip (#1646) then skips its ancestor walk on a pointer move.
     pub title_sources: usize,
+    /// How many `<option>` elements this document has ever created. Never
+    /// decremented, so `0` proves no node is an option, and
+    /// `note_select_content_changed` (which walks a mutated node's ancestors
+    /// looking for one) returns at once (#1128).
+    pub option_elements: usize,
     /// Text nodes whose Taffy measure context (`NodeContext::Text`) no longer
     /// matches the typography their parent now computes (issue #678).
     ///
@@ -3370,6 +3375,7 @@ impl NodeTree {
             hit_cache: Default::default(),
             mousemove_handlers: 0,
             title_sources: 0,
+            option_elements: 0,
             dirty_text_contexts: HashSet::new(),
             dirty_atomic_inlines: BTreeSet::new(),
             keyword_inline_cb_width: HashMap::new(),

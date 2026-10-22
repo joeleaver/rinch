@@ -14,6 +14,7 @@
 //! |---|---|---|
 //! | `shape_paint` | `paint/select.rs` (closed `<select>` label) | [`a_select_label_is_shaped_by_paint`] |
 //! | `shape_select_label` | `select.rs` `widest_select_label` (an auto-width select's size) | [`an_auto_width_select_shapes_its_labels_only_when_they_change`] |
+//! | `shape_select_label` | the same, after a label edited inside an option's wrapper or through its `label` attribute (#1128) | [`an_option_label_edited_through_a_wrapper_or_its_label_attribute_reshapes_once`] |
 //! | `shape_form_control_metrics` | `form_control.rs` `cached_char_metrics` (a text control's intrinsic width, #1177) | [`a_text_control_finds_its_font_only_when_the_font_changes`] |
 //! | `shape_form_control_label` | `form_control.rs` `cached_label_width` (a button label or picker representative string, #1195, review of #1302) | [`a_form_control_label_is_shaped_only_when_the_font_changes`] |
 //! | `shape_paint` | `paint/contenteditable.rs` (`<input>` value) | [`an_input_value_is_shaped_by_paint`] |
@@ -307,6 +308,103 @@ fn an_auto_width_select_shapes_its_labels_only_when_they_change() {
             // own root still builds.
             (ShapeIfcBuild, 1),
             (IfcMeasureInvalidations, 4),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (InlineBlockComputes, 1),
+        ],
+    );
+}
+
+/// An option's label edited through an element inside the option — the
+/// `display: contents` span a reactive `option { {|| name} }` puts its text
+/// in — or through its `label` attribute re-sizes the select, shaping its
+/// labels once (#1128); a text edit outside any option re-syncs no select,
+/// and its frame is the frame of the same edit in a document with no select.
+#[test]
+fn an_option_label_edited_through_a_wrapper_or_its_label_attribute_reshapes_once() {
+    fn build(with_select: bool) -> (RinchDocument, NodeId, Option<(NodeId, NodeId)>) {
+        let mut doc = doc_with("p { width: 200px; }");
+        let body = doc.body();
+        let select = with_select.then(|| {
+            let sel = el(&mut doc, body, "select", "");
+            let o = el(&mut doc, sel, "option", "");
+            let span = el(&mut doc, o, "span", "");
+            doc.set_attribute(span, "style", "display: contents");
+            let t = text(&mut doc, span, "Apple");
+            (o, t)
+        });
+        let p = el(&mut doc, body, "p", "");
+        let pt = text(&mut doc, p, "outside");
+        doc.resolve_layout(VP.0, VP.1);
+        doc.resolve_layout(VP.0, VP.1);
+        doc.tree.perf.reset();
+        (doc, pt, select)
+    }
+    let outside_edit = |with_select: bool| {
+        let (mut doc, pt, _) = build(with_select);
+        doc.set_text_content(pt, "outside edited");
+        doc.resolve_layout(VP.0, VP.1);
+        doc.tree.perf.end_frame()
+    };
+    let without = outside_edit(false);
+    let with = outside_edit(true);
+    assert_eq!(
+        perf_expect::baseline_text(&with),
+        perf_expect::baseline_text(&without),
+        "a text edit outside the select costs what it costs with no select"
+    );
+    expect(
+        "text edit outside the select",
+        &with,
+        &[
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 3),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+        ],
+    );
+
+    let (mut doc, _, select) = build(true);
+    let (o, t) = select.unwrap();
+    doc.set_text_content(t, "Blueberry");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "option label edited in its wrapper",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (ShapeSelectLabel, 1),
+            (IfcMeasureInvalidations, 3),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (InlineBlockComputes, 1),
+        ],
+    );
+
+    doc.set_attribute(o, "label", "Cherry pie");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "option label attribute",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (ShapeSelectLabel, 1),
+            (IfcMeasureInvalidations, 1),
             (LayoutResolves, 1),
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 1),

@@ -37,6 +37,9 @@ impl DomDocument for RinchDocument {
             // An SVG element's tooltip text (#1646).
             self.tree.title_sources += 1;
         }
+        if tag == "option" {
+            self.tree.option_elements += 1;
+        }
         let mut node = Node::element(id, tag, self.tree.guard.clone());
         // Use CSS-standard defaults based on element type:
         // Block elements (div, p, h1, etc.): flex-column (emulates block stacking)
@@ -770,6 +773,11 @@ impl DomDocument for RinchDocument {
         if selects_this_option {
             crate::select::set_option_selectedness(&mut self.tree, node.0, true);
         }
+        // An option's `label` attribute is its label, which the closed
+        // select is sized from (#1128).
+        if name == "label" && self.tree.nodes[node.0].tag() == Some("option") {
+            self.note_select_content_changed(node.0);
+        }
         // A `<select>`'s own `value` write is a live selection write too
         // (#757): it is the freshest of the two mechanisms until a later
         // `selected` write on one of its options clears it — see
@@ -885,6 +893,10 @@ impl DomDocument for RinchDocument {
         // first non-disabled option, which is HTML's "ask for a reset".
         if deselects_this_option {
             crate::select::set_option_selectedness(&mut self.tree, node.0, false);
+        }
+        // Without its `label` the option's label is its text again (#1128).
+        if name == "label" && self.tree.nodes[node.0].tag() == Some("option") {
+            self.note_select_content_changed(node.0);
         }
         // Removing the select's own `value` attribute retires its claim to
         // freshness too (#757) — there's nothing left for step 1 to answer
@@ -2105,16 +2117,26 @@ impl RinchDocument {
         serialize_declarations(&decls)
     }
 
-    /// Called when the children or text under `node` changed: when `node` is,
-    /// or sits inside the options of, a `<select>`, queue that select for a
-    /// Taffy style re-sync. An unstyled closed select is as wide as its widest
+    /// Called when the children or text under `node` changed, or an
+    /// `<option>`'s `label` attribute did: when `node` is, or sits anywhere
+    /// inside the options of, a `<select>`, queue that select for a Taffy
+    /// style re-sync. An unstyled closed select is as wide as its widest
     /// option label (`apply_stylo_styles_to_taffy`), which is an input no
-    /// selector and no style of the select's own carries. Walks at most the
-    /// `option` / `optgroup` levels a select's content can have.
+    /// selector and no style of the select's own carries.
+    ///
+    /// An option's label is the text of its whole subtree (`select::element_text`),
+    /// so the walk passes any element on its way up to the `<option>` — a
+    /// reactive `option { {|| name} }` puts its text in a `display: contents`
+    /// span (#1128). Past the option, only `<optgroup>` may stand between it
+    /// and the select. In a document that has never created an `<option>`
+    /// this returns at once; otherwise it walks the node's ancestors.
     fn note_select_content_changed(&mut self, node: usize) {
+        if self.tree.option_elements == 0 {
+            return;
+        }
         let mut current = Some(node);
-        for _ in 0..4 {
-            let Some(id) = current else { return };
+        let mut in_option = false;
+        while let Some(id) = current {
             let Some(n) = self.tree.nodes.get(id) else {
                 return;
             };
@@ -2124,10 +2146,13 @@ impl RinchDocument {
                     self.tree.styles_dirty = true;
                     return;
                 }
-                Some("option" | "optgroup") => current = n.parent,
-                None if !n.is_element() => current = n.parent,
-                _ => return,
+                Some("option") if !in_option => in_option = true,
+                Some("optgroup") => {}
+                // Above the option nothing else may stand before the select.
+                Some(_) if in_option => return,
+                _ => {}
             }
+            current = n.parent;
         }
     }
 
