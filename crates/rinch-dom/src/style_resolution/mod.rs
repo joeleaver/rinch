@@ -998,16 +998,12 @@ impl RinchDocument {
             // The label is shaped by the builder paint draws it with
             // (`select_label_layout`), and the width is cached on the node
             // against its labels and font, so a restyle that moves neither
-            // re-shapes nothing. Not shaped under a `px` width, which never asks
-            // the measure for one (a percentage can, while it is indefinite). The
-            // line is the select's `line-height`, which the UA sheet forces to
-            // `normal`.
-            if node.tag() == Some("select")
-                && !matches!(
-                    new_style.width,
-                    crate::computed_style::DimensionValue::Length(_)
-                )
-            {
+            // re-shapes nothing. Shaped whatever the `width`: even under a `px`
+            // width a flex item's automatic minimum size asks the measure for
+            // its content size, and a width cached before the `px` was set would
+            // answer stale (review of #1739). The line is the select's
+            // `line-height`, which the UA sheet forces to `normal`.
+            if node.tag() == Some("select") {
                 let model = crate::select::resolve_select_model(&self.tree, node_id);
                 let labels: Vec<&str> = model.options.iter().map(|o| o.label.as_str()).collect();
                 let (key, widest) = crate::select::widest_select_label(
