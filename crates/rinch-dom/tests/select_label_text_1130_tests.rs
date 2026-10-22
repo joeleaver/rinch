@@ -113,7 +113,10 @@ fn width(select_css: &str, options: &[Opt]) -> f32 {
 
 fn check(case: &str, select_css: &str, options: &[Opt], chrome: f32) {
     let got = width(select_css, options);
-    assert_eq!(got, chrome, "{case}: width {got} where Chrome 155 gives {chrome}");
+    assert_eq!(
+        got, chrome,
+        "{case}: width {got} where Chrome 155 gives {chrome}"
+    );
 }
 
 /// Kills: the text label trimmed but not collapsed (55), and a collapse that
@@ -148,7 +151,12 @@ fn the_selects_word_spacing_sets_the_label() {
 /// the uppercase case is what pins the transform itself.
 #[test]
 fn the_selects_text_transform_sets_the_label() {
-    check("uppercase", "text-transform: uppercase", &[text("abc")], 56.0);
+    check(
+        "uppercase",
+        "text-transform: uppercase",
+        &[text("abc")],
+        56.0,
+    );
     check(
         "capitalize",
         "text-transform: capitalize",
@@ -274,5 +282,8 @@ fn the_painted_label_carries_the_spacing_at_every_scale() {
 fn the_painted_label_is_transformed() {
     let lower = rightmost_label_ink("", "abc", 1.0);
     let upper = rightmost_label_ink("text-transform: uppercase", "abc", 1.0);
-    assert!(upper >= lower + 4, "uppercase ink ends at {upper}, lowercase at {lower}");
+    assert!(
+        upper >= lower + 4,
+        "uppercase ink ends at {upper}, lowercase at {lower}"
+    );
 }

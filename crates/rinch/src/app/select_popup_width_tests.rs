@@ -192,8 +192,11 @@ fn probe(
                     .unwrap_or(-1.0);
                 o.rows.push((text_w, content_w));
                 o.row_spacing.push((cs.letter_spacing, cs.word_spacing));
-                if let Some(rinch_dom::node::NodeKind::Text(t)) =
-                    n.children.first().and_then(|&c| d.tree.get(c)).map(|c| &c.kind)
+                if let Some(rinch_dom::node::NodeKind::Text(t)) = n
+                    .children
+                    .first()
+                    .and_then(|&c| d.tree.get(c))
+                    .map(|c| &c.kind)
                 {
                     o.row_text.push(t.content.clone());
                 }
@@ -227,8 +230,15 @@ fn the_popup_moves_left_to_end_where_the_select_ends_1132() {
         "positive control: the rows need more than is left ({rows_need} vs {})",
         800.0 - o.sel_x
     );
-    assert_eq!(o.panel_w, rows_need, "the popup keeps the width its rows need");
-    assert_eq!(o.panel_x + o.panel_w, 740.0, "it ends where the select ends");
+    assert_eq!(
+        o.panel_w, rows_need,
+        "the popup keeps the width its rows need"
+    );
+    assert_eq!(
+        o.panel_x + o.panel_w,
+        740.0,
+        "it ends where the select ends"
+    );
     assert!(o.rows.iter().all(|(t, c)| t <= c), "{:?}", o.rows);
 }
 
@@ -238,7 +248,10 @@ fn the_popup_moves_left_to_end_where_the_select_ends_1132() {
 #[test]
 fn a_popup_that_cannot_fit_beside_the_select_stays_on_screen_1132() {
     let o = probe(
-        &["A really very long option label indeed, and longer still", "b"],
+        &[
+            "A really very long option label indeed, and longer still",
+            "b",
+        ],
         "position: absolute; left: 100px; width: 60px; font-size: 16px",
         "",
         (400.0, 600.0),
@@ -256,7 +269,11 @@ fn a_popup_that_cannot_fit_beside_the_select_stays_on_screen_1132() {
         "",
         (200.0, 600.0),
     );
-    assert_eq!((o.panel_x, o.panel_w), (0.0, 200.0), "capped at the viewport");
+    assert_eq!(
+        (o.panel_x, o.panel_w),
+        (0.0, 200.0),
+        "capped at the viewport"
+    );
 }
 
 /// A popup that fits to the right of the select still opens at its left edge.
@@ -355,5 +372,9 @@ fn a_label_attributes_spaces_reach_the_popup_row_1130() {
     assert!(laid.layout.full_width() <= content_w);
     // The spaces are laid out: wider than "x y" would be (two glyphs and one
     // space at 14px is well under 30px).
-    assert!(laid.layout.full_width() > 30.0, "{}", laid.layout.full_width());
+    assert!(
+        laid.layout.full_width() > 30.0,
+        "{}",
+        laid.layout.full_width()
+    );
 }

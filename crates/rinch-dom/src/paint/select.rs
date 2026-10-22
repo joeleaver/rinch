@@ -77,7 +77,7 @@ pub(super) fn paint_select_value(
         font_cx,
         layout_cx,
         cs,
-        cs.font_size * scale as f32,
+        scale as f32,
         Brush::Solid(base_color),
         label,
     );
