@@ -61,8 +61,6 @@
 //! [`ComputedStyle::background_layers`](crate::computed_style::ComputedStyle).
 
 #[cfg(feature = "software-renderer")]
-use std::cell::RefCell;
-#[cfg(feature = "software-renderer")]
 use std::collections::HashMap;
 #[cfg(feature = "software-renderer")]
 use std::hash::{Hash, Hasher};
@@ -329,22 +327,109 @@ const MAX_PATTERN_TILE_PX: f64 = 4.0 * 1024.0 * 1024.0;
 #[cfg(feature = "software-renderer")]
 /// Rasterised tiles, keyed by what decides their pixels: the image (the
 /// gradient's angle and stops, or the url and the decoded image's identity)
-/// and the raster size. Bounded by [`TILE_CACHE_BUDGET`] bytes; cleared when
-/// a new entry would pass it.
-struct TileCache {
-    entries: HashMap<(u64, u32, u32), Blob<u8>>,
+/// and the raster size. One per document (`NodeTree::background_tiles`), so it
+/// goes with the document (#1157).
+///
+/// Bounded by [`TILE_CACHE_BUDGET`] bytes. A new tile that would pass it evicts
+/// the least recently used entries, but never one the frame being painted has
+/// used: if it still does not fit, it is drawn and not kept (#1156). The cache
+/// was cleared whole there, so a working set just over the budget rasterised
+/// every tile on every frame. Each painted frame ([`TileCache::begin_frame`],
+/// from `paint_document`) also forgets the tiles no frame has used for
+/// [`TILE_CACHE_IDLE_FRAMES`] frames (#1157), so the memory of a page that no
+/// longer shows them is given back.
+#[derive(Default)]
+pub(crate) struct TileCache {
+    entries: HashMap<(u64, u32, u32), TileEntry>,
     bytes: usize,
+    /// The painted-frame clock: moved by every `begin_frame`.
+    frame: u64,
+}
+
+#[cfg(feature = "software-renderer")]
+struct TileEntry {
+    pixels: Blob<u8>,
+    /// The `frame` that last used it.
+    last_used: u64,
 }
 
 #[cfg(feature = "software-renderer")]
 const TILE_CACHE_BUDGET: usize = 32 * 1024 * 1024;
 
 #[cfg(feature = "software-renderer")]
-thread_local! {
-    static TILE_CACHE: RefCell<TileCache> = RefCell::new(TileCache {
-        entries: HashMap::new(),
-        bytes: 0,
-    });
+/// How many painted frames a tile may go unused before it is forgotten. A
+/// partial repaint that does not reach the box counts as a frame that did not
+/// use it, so this is generous: a caret blinking twice a second over a page
+/// with a tiled background evicts its tile after 30 s, and the next paint of
+/// the box rasterises it once again.
+pub(crate) const TILE_CACHE_IDLE_FRAMES: u64 = 60;
+
+#[cfg(feature = "software-renderer")]
+impl TileCache {
+    /// Start a painted frame: move the clock and forget every tile not used
+    /// in the last [`TILE_CACHE_IDLE_FRAMES`] frames.
+    pub(crate) fn begin_frame(&mut self) {
+        self.frame += 1;
+        let frame = self.frame;
+        let mut freed = 0;
+        self.entries.retain(|_, e| {
+            let keep = frame - e.last_used <= TILE_CACHE_IDLE_FRAMES;
+            if !keep {
+                freed += e.pixels.len();
+            }
+            keep
+        });
+        self.bytes -= freed;
+    }
+
+    /// The bytes of tile pixels held.
+    pub(crate) fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    fn get(&mut self, key: &(u64, u32, u32)) -> Option<Blob<u8>> {
+        let frame = self.frame;
+        self.entries.get_mut(key).map(|e| {
+            e.last_used = frame;
+            e.pixels.clone()
+        })
+    }
+
+    /// Keep `pixels` under `key` if it fits the budget once the least recently
+    /// used tiles not used this frame are evicted; otherwise keep nothing new
+    /// and evict nothing.
+    fn insert(&mut self, key: (u64, u32, u32), pixels: Blob<u8>) {
+        let n = pixels.len();
+        if self.bytes + n > TILE_CACHE_BUDGET {
+            let frame = self.frame;
+            let mut idle: Vec<(u64, (u64, u32, u32), usize)> = self
+                .entries
+                .iter()
+                .filter(|(_, e)| e.last_used < frame)
+                .map(|(k, e)| (e.last_used, *k, e.pixels.len()))
+                .collect();
+            let reclaimable: usize = idle.iter().map(|e| e.2).sum();
+            if self.bytes - reclaimable + n > TILE_CACHE_BUDGET {
+                return;
+            }
+            idle.sort_unstable_by_key(|e| e.0);
+            for (_, k, len) in idle {
+                if self.bytes + n <= TILE_CACHE_BUDGET {
+                    break;
+                }
+                self.entries.remove(&k);
+                self.bytes -= len;
+            }
+        }
+        self.bytes += n;
+        let last_used = self.frame;
+        if let Some(old) = self
+            .entries
+            .insert(key, TileEntry { pixels, last_used })
+        {
+            self.bytes -= old.pixels.len();
+        }
+    }
 }
 
 #[cfg(feature = "software-renderer")]
@@ -424,7 +509,7 @@ fn fill_as_pattern(
         }
         let (w, h) = (w as u32, h as u32);
         let key = (image_key(tree, image), w, h);
-        let cached = TILE_CACHE.with(|c| c.borrow().entries.get(&key).cloned());
+        let cached = tree.background_tiles.borrow_mut().get(&key);
         let pixels = match cached {
             Some(blob) => {
                 tree.perf.bump(Counter::BackgroundTileCacheHits);
@@ -445,16 +530,9 @@ fn fill_as_pattern(
                     &PaintShape::Rect(unit),
                 );
                 let blob = Blob::from(raster.pixels().to_vec());
-                TILE_CACHE.with(|c| {
-                    let mut c = c.borrow_mut();
-                    let n = blob.len();
-                    if c.bytes + n > TILE_CACHE_BUDGET {
-                        c.entries.clear();
-                        c.bytes = 0;
-                    }
-                    c.bytes += n;
-                    c.entries.insert(key, blob.clone());
-                });
+                tree.background_tiles
+                    .borrow_mut()
+                    .insert(key, blob.clone());
                 blob
             }
         };

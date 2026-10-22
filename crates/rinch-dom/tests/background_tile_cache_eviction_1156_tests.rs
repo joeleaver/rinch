@@ -99,3 +99,76 @@ fn a_working_set_under_the_budget_rasterises_nothing_after_the_first_frame() {
         assert_eq!(frame(&mut doc), (0, 2));
     }
 }
+
+fn small_tile_box(doc: &mut RinchDocument, colour: &str) -> NodeId {
+    let body = doc.body();
+    let node = doc.create_element("div");
+    doc.set_attribute(
+        node,
+        "style",
+        &format!(
+            "position: absolute; left: 0; top: 0; width: 50px; height: 50px; \
+             background-image: linear-gradient(to right, {colour}, rgb(1, 2, 3)); \
+             background-size: 10px 7px"
+        ),
+    );
+    doc.append_child(body, node);
+    node
+}
+
+/// #1157: a tile no painted frame has used for `TILE_CACHE_IDLE_FRAMES` (60)
+/// frames is forgotten; one painted on every frame is kept and still hits.
+#[test]
+fn a_tile_unused_for_sixty_painted_frames_is_released() {
+    let mut doc = RinchDocument::new();
+    doc.load_css("html, body { margin: 0; }");
+    let kept = small_tile_box(&mut doc, "rgb(250, 0, 0)");
+    let gone = small_tile_box(&mut doc, "rgb(0, 250, 0)");
+    doc.resolve_layout(VW, VH);
+    assert_eq!(frame(&mut doc), (2, 0));
+    let both = doc.tree.background_tile_cache_bytes();
+    // 20 x 14 device px, 4 bytes each, per tile.
+    assert_eq!(both, 2 * 20 * 14 * 4);
+    let _ = kept;
+    doc.remove_node(gone);
+    doc.resolve_layout(VW + 1.0, VH);
+    for i in 0..60 {
+        assert_eq!(frame(&mut doc), (0, 1), "idle frame {i}");
+        assert_eq!(
+            doc.tree.background_tile_cache_bytes(),
+            both,
+            "idle frame {i}: within the idle window the unused tile is kept"
+        );
+    }
+    assert_eq!(frame(&mut doc), (0, 1));
+    assert_eq!(
+        doc.tree.background_tile_cache_bytes(),
+        both / 2,
+        "the 61st frame without it forgets the unused tile, and only it"
+    );
+    // Painted again, it is rasterised again.
+    let again = small_tile_box(&mut doc, "rgb(0, 250, 0)");
+    let _ = again;
+    doc.resolve_layout(VW, VH);
+    assert_eq!(frame(&mut doc), (1, 1));
+}
+
+/// #1157: the cache belongs to the document, not the thread: a second
+/// document painting the same tile rasterises it (a thread-local cache
+/// answered it from the first document's entry, and kept that entry for the
+/// thread's life after the first document was dropped).
+#[test]
+fn the_cache_goes_with_its_document() {
+    let mut a = RinchDocument::new();
+    a.load_css("html, body { margin: 0; }");
+    small_tile_box(&mut a, "rgb(9, 99, 199)");
+    a.resolve_layout(VW, VH);
+    assert_eq!(frame(&mut a), (1, 0));
+    assert!(a.tree.background_tile_cache_bytes() > 0);
+    drop(a);
+    let mut b = RinchDocument::new();
+    b.load_css("html, body { margin: 0; }");
+    small_tile_box(&mut b, "rgb(9, 99, 199)");
+    b.resolve_layout(VW, VH);
+    assert_eq!(frame(&mut b), (1, 0));
+}
