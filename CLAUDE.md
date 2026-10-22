@@ -4499,13 +4499,21 @@ rinch:       NetworkImageLoader (rinch-http, gated behind image-network feature)
 5. `drain_pending_images()` at the start of layout picks up decoded images, updates Taffy intrinsic dims
 6. `paint_image()` renders via `Painter::draw_image` with proper affine transforms. Vello 0.7's fine shader samples an image from each pixel's top-left **corner** (bilinear then reads half a texel up-left, so an image at a whole-pixel origin came out averaged with its neighbours), so `VelloPainter::draw_image` and `fill_repeating` hand it a brush transform that moves the image half a device pixel up-left (`vello_painter::centre_sampling`), which samples at the centre as tiny-skia does (#1027). Pins: `vello_painter::sampling_tests` (a CPU model of the shader arm) and the `#[ignore]`d `compositor::gpu_alpha_tests::gpu_alpha_vello_draw_image_*` (real GPU)
 
-**Background layers** (#468, `crates/rinch-dom/src/paint/background.rs`): the
-**first** layer of `background-image` is sized, positioned and tiled by
-`background-size`/`-position`/`-repeat`/`-origin` (all in `ComputedStyle`), over
-a painting area that is always the border box (`background-clip` is not read),
-with `background-color` painted under it (`ComputedStyle::background_underlay` —
-`BackgroundValue` holds one value, so the colour and the image used to be one or
-the other). `space`/`round` paint as `repeat`. **No layer is ever dropped**
+**Background layers** (#468, `crates/rinch-dom/src/paint/background.rs`):
+**every** layer of `background-image` (#1142) is sized, positioned and tiled by
+its entry of `background-size`/`-position`/`-repeat`/`-origin`, a shorter list
+repeating to the image count (css-backgrounds-3 §2.2), over a painting area that
+is always the border box (`background-clip` is not read), painted from the last
+listed to the first over `background-color`. The first layer is
+`ComputedStyle::background` plus `background_size`/`_position_x`/`_y`/
+`_repeat_x`/`_y`/`_origin` (with the colour under it in `background_underlay`);
+the layers below it are `ComputedStyle::background_layers` (top to bottom, empty
+for one image, a `none` or conic layer left out). A transition or animation of
+`background-position` moves the **first** layer only; the others snap to their
+new values. Before #1142 every list was read at its first entry, so
+`ColorSwatch`'s four-layer checkerboard drew one layer. Not Chrome's: a
+gradient pixel whose centre lies exactly on a hard stop can take the colour
+after the stop where Chrome takes the one before (#1740). `space`/`round` paint as `repeat`. **No layer is ever dropped**
 (#1143's second review): a layer whose one tile covers the box is one fill (a
 gradient) or one clipped image draw (`cover`), never rasterised; any other
 layer that repeats on either axis is **one**

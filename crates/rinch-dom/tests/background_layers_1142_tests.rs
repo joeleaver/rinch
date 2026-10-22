@@ -76,7 +76,7 @@ const CHECKER: &str = "width: 32px; height: 32px; \
 
 /// Chrome 155: a 4px checker, `rgb(204, 204, 204)` where `x / 4 + y / 4` is
 /// odd and white elsewhere, every pixel of the 32x32 box (no seam on the
-/// diagonals the triangles meet on). One layer of four (before #1142) is 448
+/// diagonals the triangles meet on). One layer of four (before #1142) is 352
 /// pixels off it.
 #[test]
 fn a_the_colour_swatch_checkerboard_is_a_checkerboard() {
@@ -91,10 +91,9 @@ fn a_the_colour_swatch_checkerboard_is_a_checkerboard() {
                 [255, 255, 255, 255]
             };
             let got = px(&p, x, y);
-            // Known, separate from #1142 (#TIE): two pixels a tile whose
-            // centre lies exactly on the first layer's 25% hard stop
-            // (`(0.5, 4.5)` and `(1.5, 5.5)` in the tile) take the colour
-            // after the stop, white, where Chrome takes `#ccc`.
+            // Known, separate from #1142 (#1740): two pixels a tile, at
+            // `(0, 4)` and `(1, 5)` in it, whose centres lie exactly on a
+            // diagonal hard stop, are white where Chrome draws `#ccc`.
             let on_the_stop = matches!((x % 8, y % 8), (0, 4) | (1, 5));
             if !close(got, want) && !(on_the_stop && got == [255, 255, 255, 255]) {
                 bad.push((x, y, got));
