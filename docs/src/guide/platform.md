@@ -1091,7 +1091,11 @@ The default level is `info`; `init_logging_with_filter("warn,my_app=debug")`
 takes another filter: a level and `target=level` directives (`RUST_LOG` still
 wins natively). The desktop build reads all of `tracing`'s `EnvFilter` syntax;
 the browser reads levels and targets only, so a web app's dependencies gain
-nothing. A second call, or a logger something else set first, is left alone.
+nothing. A second call changes nothing. The `tracing` subscriber and the `log`
+logger are two global slots, each filled only if empty: if the app set up a
+`log` logger first (`env_logger`, `console_log`), `init_logging` still installs
+its `tracing` output, and `log` records keep going to the app's logger; if a
+`tracing` subscriber was set first, it keeps the `tracing` events.
 
 ## Enabling Features
 

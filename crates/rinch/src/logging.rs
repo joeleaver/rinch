@@ -20,8 +20,15 @@
 ///   Android shell already arranges.
 ///
 /// Call it first thing in `main` (or the wasm start function). It is
-/// idempotent: a later call, or a logger set up by anything else first, is
-/// left as it is.
+/// idempotent: a second call changes nothing.
+///
+/// The `tracing` subscriber and the `log` logger are two global slots, each
+/// set only if empty. If the app installed a `log` logger first
+/// (`env_logger`, `console_log`), `init_logging` still installs its `tracing`
+/// subscriber, but cannot route `log` records to it: they keep going to the
+/// app's logger, and `log`'s max level stays what the app set. If something
+/// installed a `tracing` subscriber first, that one keeps the `tracing` events
+/// (and, if it bridged `log`, the `log` records); `init_logging` adds nothing.
 ///
 /// ```ignore
 /// fn main() {

@@ -831,6 +831,13 @@ would break CSS semantics and make desktop diverge from rinch-web.
   (already in every lock through `tracing`); `log::set_logger` with a leaked
   box, since `set_boxed_logger` needs `log`'s `std` feature. The web panic hook
   has no fixture: a wasm32 panic aborts, so a test cannot survive one.
+  With a `log` logger already set, tracing-subscriber's `try_init` sets the
+  subscriber first and then fails at `LogTracer` (`util.rs` in 0.3.22), so
+  `tracing` events reach rinch's output and `log` records stay with the app's
+  logger; `simple::install` sets the two slots independently, same result.
+  Pinned natively by child processes in `rinch/tests/init_logging_1773.rs`
+  (`log_records_and_tracing_events_both_reach_stderr`,
+  `an_app_logger_set_first_keeps_the_log_records`).
 - **`rinch_storage::open_app_store`** (`crates/rinch-storage/src/app_store.rs`):
   native `dirs::data_dir()/<app>/<store>` (Android: always `Unavailable`,
   since `dirs` reads it as Linux and answers a path the app cannot write;
