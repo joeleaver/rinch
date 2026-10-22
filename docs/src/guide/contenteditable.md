@@ -159,6 +159,10 @@ Command names are case-sensitive. The full catalogue:
 > holding the caret, the upper one for a caret drawn at the end of a
 > soft-wrapped line — and takes its logical start and end: after a hanging space
 > at a soft wrap, before a hard break (Shift+Enter).
+> ArrowUp / ArrowDown inside a wrapped paragraph read the line above or below
+> from the same layout on desktop, at the column the caret had, so they move
+> within the paragraph even when its lines are scrolled out of view, and the
+> caret is then scrolled back into view, as in Chrome (#1121).
 >
 > **Caret affinity at a soft wrap.** The end of one visual line and the start of
 > the next are one model position, so a caret there could be drawn in either
