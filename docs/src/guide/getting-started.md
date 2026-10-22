@@ -95,4 +95,4 @@ Your `app` function ran exactly once. It will never run again. The closures hand
 - [Components](./components.md) — The full component library.
 - [Theming](./theming.md) — Colors, dark mode, CSS variables.
 - [Writing Components](./writing-components.md) — Build your own.
-- [WASM](./wasm.md) — Run in the browser.
+- [WASM](./wasm.md) — Run in the browser: the same `App` chain runs there through `rinch_web::AppExt`.

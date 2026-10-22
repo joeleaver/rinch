@@ -2,12 +2,15 @@
 //!
 //! The DOM backend (`WebDocument`), event delegation, and mount sequence live in
 //! the `rinch-web` crate. This file only declares the app wrapper, its global
-//! CSS, and the `#[wasm_bindgen(start)]` entry point that mounts it.
+//! CSS, and the `#[wasm_bindgen(start)]` entry point that mounts it — with the
+//! same `App` builder chain `paint-desktop` runs, through `rinch_web::AppExt`
+//! (#1769).
 
 use wasm_bindgen::prelude::*;
 
 use rinch::prelude::*;
 use rinch_core::element::ThemeProviderProps;
+use rinch_web::AppExt as _;
 
 /// Global CSS for the paint app.
 const CSS_WEB: &str = r#"
@@ -55,7 +58,11 @@ pub fn start() {
         ..Default::default()
     };
 
-    rinch_web::mount(theme, web_app);
+    App::new(web_app)
+        .title("Paint Demo")
+        .size(1150, 750)
+        .theme(theme)
+        .run();
 
     log::info!("Paint demo mounted with browser-native DOM rendering");
 }
