@@ -2227,7 +2227,7 @@ const FOCUSABLE_SELECTOR: &str =
 /// Deliberately the same two questions desktop's `RinchApp::node_is_visible`
 /// asks — a non-zero box and a `visibility` that is not `hidden`/`collapse` —
 /// so a closed `Modal` (whose root is `display: none`) is skipped by both.
-fn element_is_visible(el: &web_sys::Element) -> bool {
+pub(crate) fn element_is_visible(el: &web_sys::Element) -> bool {
     let rect = el.get_bounding_client_rect();
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return false;
@@ -2255,7 +2255,9 @@ fn trap_root(browser_doc: &web_sys::Document) -> Option<web_sys::Element> {
     //    whether or not it is showing, so a hidden one is stepped over rather
     //    than accepted, which is how an outer trap takes back over the moment a
     //    nested one closes.
-    let mut probe = browser_doc.active_element();
+    //    A focused editor counts as its container, not the capture field in
+    //    `<body>` it holds the keyboard through (issue #1126).
+    let mut probe = crate::editor_input::effective_active_element(browser_doc);
     while let Some(el) = probe {
         let Some(hit) = el.closest(TRAP_SELECTOR).ok().flatten() else {
             break;
@@ -2392,7 +2394,9 @@ fn handle_trapped_tab(browser_doc: &web_sys::Document, shift: bool) -> bool {
     });
     let seq_pos = |el: &web_sys::HtmlElement| items.iter().position(|i| i.is_same_node(Some(el)));
 
-    let active = browser_doc.active_element();
+    // A focused editor is where its container is (issue #1126), so Tab moves
+    // on from it rather than entering the ring at its first stop.
+    let active = crate::editor_input::effective_active_element(browser_doc);
     let current = active.as_ref().and_then(|a| {
         items
             .iter()

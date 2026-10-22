@@ -1208,6 +1208,62 @@ fn on_capture_blur() {
     }
 }
 
+/// The editor holding the keyboard, as `(container id, container element)`:
+/// the focused editor, while the capture textarea is `doc`'s focused element
+/// (issue #1126).
+///
+/// The capture field lives in `<body>`, outside every editor, so
+/// `document.activeElement` alone says the focus is outside whatever holds the
+/// editor. Every question rinch asks of the focus means the editor there, which
+/// is what this answers. The container may be detached (its overlay's subtree
+/// already taken out); `contains` still answers for it.
+pub(crate) fn keyboard_editor(doc: &web_sys::Document) -> Option<(usize, web_sys::Element)> {
+    let ta = capture_target()?;
+    let ta: &web_sys::Element = ta.as_ref();
+    if doc.active_element().as_ref() != Some(ta) {
+        return None;
+    }
+    let id = focused_editor()?;
+    registry::editor_for(id)?;
+    let el = crate::web_document::registered_node(id)?
+        .dyn_into::<web_sys::Element>()
+        .ok()?;
+    Some((id, el))
+}
+
+/// `doc.activeElement`, except that the capture textarea of the editor that
+/// holds the keyboard answers that editor's container ([`keyboard_editor`]).
+/// What "where is the focus" means to rinch's own focus rules: the overlay
+/// restore, Tab containment, `NodeHandle::active_element`, a removal's focus
+/// release.
+pub(crate) fn effective_active_element(doc: &web_sys::Document) -> Option<web_sys::Element> {
+    keyboard_editor(doc)
+        .map(|(_, el)| el)
+        .or_else(|| doc.active_element())
+}
+
+/// Take the keyboard from the editor at `container_nid`, if it holds it —
+/// [`EditorHandle::blur`]'s path: the capture field is blurred (a live
+/// composition ends into this editor first) and the editor is released.
+pub(crate) fn release_editor(container_nid: usize) {
+    blur_editor(container_nid);
+}
+
+/// Give the editor at `container_nid` the keyboard, as [`EditorHandle::focus`]
+/// does. Answers whether it holds it afterwards.
+/// Refused, as a browser's `focus()` refuses, for an editor whose container is
+/// detached or not rendered.
+pub(crate) fn give_editor_keyboard(doc: &web_sys::Document, container_nid: usize) -> bool {
+    let shown = crate::web_document::registered_node(container_nid)
+        .and_then(|n| n.dyn_into::<web_sys::Element>().ok())
+        .is_some_and(|el| el.is_connected() && crate::event_delegation::element_is_visible(&el));
+    if !shown {
+        return false;
+    }
+    focus_editor(container_nid);
+    keyboard_editor(doc).is_some_and(|(id, _)| id == container_nid)
+}
+
 /// Whether an editor holds the keyboard right now: one is focused and the
 /// capture textarea is the document's focused element.
 fn editor_owns_keyboard(doc: &web_sys::Document) -> bool {

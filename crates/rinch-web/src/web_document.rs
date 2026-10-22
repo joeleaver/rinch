@@ -271,6 +271,11 @@ pub(crate) fn node_by_nid(nid: usize) -> Option<web_sys::Node> {
         .filter(|n| n.is_connected())
 }
 
+/// The browser node rinch registered under `nid`, attached or not.
+pub(crate) fn registered_node(nid: usize) -> Option<web_sys::Node> {
+    NODE_REGISTRY.with(|m| m.borrow().get(&nid).cloned())
+}
+
 /// The browser element behind `handle`.
 ///
 /// Attached or not: a node view is mounted on its host while the editor's
@@ -1516,7 +1521,15 @@ fn restore_focus_now(
     root_el: &web_sys::Element,
     opener: Option<web_sys::HtmlElement>,
 ) {
-    let active = browser_doc.active_element();
+    // A focused editor's capture field answers its container (issue #1126):
+    // the field is in `<body>`, so read as itself an editor inside the overlay
+    // looked like a focus the user had moved outside, and the closed overlay
+    // kept the keyboard.
+    let editor = crate::editor_input::keyboard_editor(browser_doc);
+    let active = match &editor {
+        Some((_, container)) => Some(container.clone()),
+        None => browser_doc.active_element(),
+    };
     // `<body>` is the browser's spelling of "nothing is focused", and a
     // browser restores from it too, so it counts as inside.
     let body = browser_doc.body();
@@ -1532,18 +1545,38 @@ fn restore_focus_now(
     if !inside {
         return;
     }
+    // The editor inside lets the keyboard go first, as a press elsewhere would
+    // take it: its capture field is blurred and the editor released (a
+    // composition ends into it), whether or not the opener then takes it.
+    if let Some((id, _)) = &editor {
+        crate::editor_input::release_editor(*id);
+    }
 
     if let Some(el) = opener {
-        let _ = el.focus();
-        if browser_doc
-            .active_element()
-            .is_some_and(|a| el.is_same_node(Some(a.unchecked_ref())))
-        {
-            return;
+        // An editor opener is given the keyboard back through its capture
+        // field: its container is no focus target of its own.
+        if el.has_attribute("data-pm-editor") {
+            if let Some(id) = get_nid(el.unchecked_ref())
+                && crate::editor_input::give_editor_keyboard(browser_doc, id.0)
+            {
+                return;
+            }
+        } else {
+            let _ = el.focus();
+            if browser_doc
+                .active_element()
+                .is_some_and(|a| el.is_same_node(Some(a.unchecked_ref())))
+            {
+                return;
+            }
         }
     }
 
-    if let Some(el) = active.and_then(|a| a.dyn_into::<web_sys::HtmlElement>().ok()) {
+    // An editor was released above; anything else that held the keyboard
+    // inside the overlay is blurred.
+    if editor.is_none()
+        && let Some(el) = active.and_then(|a| a.dyn_into::<web_sys::HtmlElement>().ok())
+    {
         el.blur().ok();
     }
 }
@@ -2651,6 +2684,17 @@ impl DomDocument for WebDocument {
         if children_only && n.node_type() != web_sys::Node::ELEMENT_NODE {
             return None;
         }
+        // A focused editor in the part that goes holds the keyboard through
+        // its capture field in `<body>`, which no removal reaches (issue
+        // #1126): release the editor, as the browser blurs a focused element
+        // it takes out.
+        if let Some((id, container)) = crate::editor_input::keyboard_editor(&self.browser_doc) {
+            let goes = n.contains(Some(container.unchecked_ref()))
+                && !(children_only && n.is_same_node(Some(container.unchecked_ref())));
+            return goes.then(|| {
+                Box::new(move || crate::editor_input::release_editor(id)) as Box<dyn FnOnce()>
+            });
+        }
         let active = self.browser_doc.active_element()?;
         if !n.contains(Some(active.unchecked_ref())) {
             return None;
@@ -3060,8 +3104,14 @@ impl DomDocument for WebDocument {
     /// itself — answers `None`. That is the documented meaning of `None`
     /// (*unknown*, not *nothing*), and it is the honest answer: this document
     /// cannot name that node.
+    ///
+    /// The focused rich-text editor's capture textarea answers the editor's
+    /// container (issue #1126): it is how that editor holds the keyboard, and
+    /// it sits in `<body>`, outside everything. So an overlay opened from an
+    /// editor remembers the editor, and a key entry whose owner holds the
+    /// editor counts the focus as inside it.
     fn active_element(&self) -> Option<NodeId> {
-        let active = self.browser_doc.active_element()?;
+        let active = crate::editor_input::effective_active_element(&self.browser_doc)?;
         get_nid(&active)
     }
 
