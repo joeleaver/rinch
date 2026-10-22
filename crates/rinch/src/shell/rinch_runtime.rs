@@ -3140,17 +3140,21 @@ impl RinchRuntime {
         let Some(w) = &self.window else { return };
         let desired = self.app.ime_state();
 
-        let to_area = |a: (f32, f32, f32, f32)| {
-            let (x, y, width, height) = a;
+        let to_area = |a: rinch_core::ElementBounds| {
             (
-                winit::dpi::LogicalPosition::new(x as f64, y as f64),
-                winit::dpi::LogicalSize::new(width.max(1.0) as f64, height.max(1.0) as f64),
+                winit::dpi::LogicalPosition::new(a.x as f64, a.y as f64),
+                winit::dpi::LogicalSize::new(a.width.max(1.0) as f64, a.height.max(1.0) as f64),
             )
         };
 
         match self.ime_applied.change_to(desired) {
-            Some(crate::app::ImeChange::Enable { cursor_area }) => {
-                let area = cursor_area.unwrap_or((0.0, 0.0, 1.0, 16.0));
+            Some(crate::app::ImeChange::Enable { cursor_area, .. }) => {
+                let area = cursor_area.unwrap_or(rinch_core::ElementBounds {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1.0,
+                    height: 16.0,
+                });
                 let (pos, size) = to_area(area);
                 let caps = ImeCapabilities::new().with_cursor_area();
                 let data = ImeRequestData::default().with_cursor_area(pos.into(), size.into());
@@ -3158,7 +3162,7 @@ impl RinchRuntime {
                     let _ = w.window.request_ime_update(ImeRequest::Enable(req));
                 }
             }
-            Some(crate::app::ImeChange::Update { cursor_area }) => {
+            Some(crate::app::ImeChange::Update { cursor_area, .. }) => {
                 let (pos, size) = to_area(cursor_area);
                 let data = ImeRequestData::default().with_cursor_area(pos.into(), size.into());
                 let _ = w.window.request_ime_update(ImeRequest::Update(data));

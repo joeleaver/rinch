@@ -201,7 +201,7 @@ fn ime_area_in_padded_paragraph() {
     let block = p.block(1);
     p.caret_at(3);
     let want = p.expected_caret(block, 2);
-    let ime = p.app.ime_state().cursor_area.expect("an IME area");
+    let ime = p.app.ime_state().cursor_tuple().expect("an IME area");
     assert!(
         (ime.0 - want.0).abs() <= 0.05 && (ime.1 - want.1).abs() <= 0.05,
         "IME area {ime:?}, caret {want:?}"

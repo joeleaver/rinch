@@ -9,6 +9,8 @@
 //! interceptor-then-fallback chain.
 
 use super::*;
+#[cfg(any(feature = "desktop", feature = "embed", test))]
+use rinch_core::ElementBounds;
 
 /// The IME state the focus arbiter wants the platform input method to be in.
 ///
@@ -21,36 +23,40 @@ use super::*;
 // The Android shell drives no platform IME from the arbiter yet (#372).
 #[cfg(any(feature = "desktop", feature = "embed", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
 pub struct ImeState {
     /// Whether a text target is focused, the window has focus, and the target
     /// takes composition: an `<input>`/`<textarea>`, an editor that is not
     /// read-only, or a node registered with `FocusEntry::on_ime`.
     pub enabled: bool,
-    /// The caret's rect `(x, y, w, h)` for candidate-box placement, in
-    /// **logical** (CSS) pixels from the document's top-left, where the caret
-    /// is painted (transforms and a field's horizontal scroll included), when
-    /// known.
-    pub cursor_area: Option<(f32, f32, f32, f32)>,
+    /// The caret's rect for candidate-box placement, in **logical** (CSS)
+    /// pixels from the document's top-left, where the caret is painted
+    /// (transforms and a field's horizontal scroll included), when known.
+    pub cursor_area: Option<ElementBounds>,
 }
 
 /// One request that moves a platform input method from the state last applied
-/// to the state wanted now — what [`ImeState::change_to`] answers. The desktop
-/// shell turns it into a winit `ImeRequest`; an embedded host into its own
-/// platform's call.
+/// to the state wanted now. The desktop shell turns it into a winit
+/// `ImeRequest`; an embedded host gets it from
+/// [`RinchContext::take_ime_change`](crate::embed::RinchContext::take_ime_change)
+/// and makes its own platform's call.
 #[cfg(any(feature = "desktop", feature = "embed", test))]
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub enum ImeChange {
     /// Switch the input method on. `cursor_area` is where the candidate box
     /// goes, or `None` when the target has no caret rect yet (the desktop shell
     /// then uses a 1x16 box at the origin).
+    #[non_exhaustive]
     Enable {
         /// The candidate box, logical px.
-        cursor_area: Option<(f32, f32, f32, f32)>,
+        cursor_area: Option<ElementBounds>,
     },
     /// The input method stays on; the candidate box moves.
+    #[non_exhaustive]
     Update {
         /// The candidate box, logical px.
-        cursor_area: (f32, f32, f32, f32),
+        cursor_area: ElementBounds,
     },
     /// Switch the input method off.
     Disable,
@@ -61,11 +67,10 @@ impl ImeState {
     /// Advance `self`, the state last applied to the platform, to `desired`,
     /// and answer the request that does it, or `None` when nothing needs
     /// saying. The one decision the desktop shell's `sync_ime` and
-    /// [`RinchContext::take_ime_change`](crate::embed::RinchContext::take_ime_change)
-    /// both make: an enable/disable flip is one `Enable`/`Disable`; while on, a
+    /// `RinchContext::take_ime_change` both make: an enable/disable flip is one `Enable`/`Disable`; while on, a
     /// moved caret is an `Update` (a caret that goes away asks for nothing and
     /// is forgotten, so its return is an `Update`); while off, nothing.
-    pub fn change_to(&mut self, desired: ImeState) -> Option<ImeChange> {
+    pub(crate) fn change_to(&mut self, desired: ImeState) -> Option<ImeChange> {
         if desired.enabled != self.enabled {
             *self = if desired.enabled {
                 desired
@@ -87,6 +92,23 @@ impl ImeState {
                 .map(|cursor_area| ImeChange::Update { cursor_area });
         }
         None
+    }
+
+    /// `cursor_area` as `(x, y, w, h)`, for the crate's own tests.
+    #[cfg(test)]
+    pub(crate) fn cursor_tuple(&self) -> Option<(f32, f32, f32, f32)> {
+        self.cursor_area.map(|b| (b.x, b.y, b.width, b.height))
+    }
+}
+
+/// `(x, y, w, h)` in logical px as the public rect.
+#[cfg(any(feature = "desktop", feature = "embed", test))]
+fn bounds(area: (f32, f32, f32, f32)) -> ElementBounds {
+    ElementBounds {
+        x: area.0,
+        y: area.1,
+        width: area.2,
+        height: area.3,
     }
 }
 
@@ -435,7 +457,7 @@ impl RinchApp {
     /// the single bridge from focus → the platform IME surface (see
     /// [`ImeState`]).
     #[cfg(any(feature = "desktop", feature = "embed", test))]
-    pub fn ime_state(&self) -> ImeState {
+    pub(crate) fn ime_state(&self) -> ImeState {
         // A blurred window drives no IME, whatever holds the in-document claim
         // (issue #147): the claim is deliberately *kept* across a window blur,
         // so without this gate the OS candidate window would keep following a
@@ -458,7 +480,7 @@ impl RinchApp {
                 let cursor_area = handle.and_then(|handle| {
                     let head = handle.selection().head();
                     self.editor_caret_point(&handle, head)
-                        .map(|(x, y, h)| (x, y, 1.0, h))
+                        .map(|(x, y, h)| bounds((x, y, 1.0, h)))
                 });
                 ImeState {
                     enabled,
@@ -467,7 +489,7 @@ impl RinchApp {
             }
             FocusTarget::Input(node_id) => ImeState {
                 enabled: true,
-                cursor_area: self.input_caret_area(node_id),
+                cursor_area: self.input_caret_area(node_id).map(bounds),
             },
             // A registered target that consumes composition (`FocusEntry::on_ime`)
             // is a text target and drives IME exactly like the two built-in
@@ -486,7 +508,8 @@ impl RinchApp {
             {
                 ImeState {
                     enabled: true,
-                    cursor_area: crate::focus_registry::caret_rect_of(self.doc_key(), node_id),
+                    cursor_area: crate::focus_registry::caret_rect_of(self.doc_key(), node_id)
+                        .map(bounds),
                 }
             }
             // A generic focusable node is not a text target — explicit rather
@@ -754,12 +777,22 @@ impl RinchApp {
 /// share (#1147).
 #[cfg(test)]
 mod ime_change_tests {
-    use super::{ImeChange, ImeState};
+    use super::{ElementBounds, ImeChange, ImeState};
 
-    const A: (f32, f32, f32, f32) = (12.0, 30.0, 1.0, 18.0);
-    const B: (f32, f32, f32, f32) = (47.0, 30.0, 1.0, 18.0);
+    const A: ElementBounds = ElementBounds {
+        x: 12.0,
+        y: 30.0,
+        width: 1.0,
+        height: 18.0,
+    };
+    const B: ElementBounds = ElementBounds {
+        x: 47.0,
+        y: 30.0,
+        width: 1.0,
+        height: 18.0,
+    };
 
-    fn on(area: Option<(f32, f32, f32, f32)>) -> ImeState {
+    fn on(area: Option<ElementBounds>) -> ImeState {
         ImeState {
             enabled: true,
             cursor_area: area,
@@ -781,6 +814,8 @@ mod ime_change_tests {
             applied.change_to(on(Some(B))),
             Some(ImeChange::Update { cursor_area: B })
         );
+        // An Update is made once: the moved caret is now the applied one.
+        assert_eq!(applied.change_to(on(Some(B))), None);
         // A caret that goes away asks for nothing, and its return moves the box.
         assert_eq!(applied.change_to(on(None)), None);
         assert_eq!(

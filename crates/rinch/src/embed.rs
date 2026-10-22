@@ -72,6 +72,8 @@ use rinch_platform::{AppAction, PlatformEvent};
 use crate::app::RinchApp;
 use crate::app::hit_testing::hit_test;
 pub use crate::app::{ImeChange, ImeState};
+/// The rect type of [`ImeState::cursor_area`].
+pub use rinch_core::ElementBounds;
 
 // ── LayoutRect ───────────────────────────────────────────────────────────────
 
@@ -638,8 +640,8 @@ impl RinchContext {
     /// changed. Call it after each [`update`](Self::update) and apply the
     /// answer: [`ImeChange::Enable`] / [`ImeChange::Disable`] switch the
     /// platform input method on or off, [`ImeChange::Update`] moves its
-    /// candidate box. The decision is the desktop shell's (`ImeState::change_to`),
-    /// so a host that applies every answer tracks the IME as a desktop window
+    /// candidate box. It is the decision the desktop shell makes for its
+    /// window, so a host that applies every answer tracks the IME as a desktop window
     /// does. Composition comes back in through [`update`](Self::update) as
     /// `PlatformEvent::Ime` events, which go to the focused target.
     pub fn take_ime_change(&mut self) -> Option<ImeChange> {

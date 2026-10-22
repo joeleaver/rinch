@@ -186,7 +186,7 @@ fn a_registered_text_target_enables_ime_with_its_own_caret_rect() {
     let state = f.app.ime_state();
     assert!(state.enabled, "a focused custom text target drives IME");
     assert_eq!(
-        state.cursor_area,
+        state.cursor_tuple(),
         Some((10.0, 20.0, 2.0, 16.0)),
         "the candidate box sits at the target's own caret rect"
     );
@@ -221,11 +221,14 @@ fn a_focusable_node_that_is_not_a_text_target_drives_no_ime() {
 fn the_candidate_box_follows_the_caret() {
     let mut f = mount_fixture();
     click_node(&mut f.app, f.text_id);
-    assert_eq!(f.app.ime_state().cursor_area, Some((10.0, 20.0, 2.0, 16.0)));
+    assert_eq!(
+        f.app.ime_state().cursor_tuple(),
+        Some((10.0, 20.0, 2.0, 16.0))
+    );
 
     f.caret.set(Some((120.0, 44.0, 2.0, 18.0)));
     assert_eq!(
-        f.app.ime_state().cursor_area,
+        f.app.ime_state().cursor_tuple(),
         Some((120.0, 44.0, 2.0, 18.0)),
         "the rect is polled, not captured"
     );
@@ -235,7 +238,8 @@ fn the_candidate_box_follows_the_caret() {
     let state = f.app.ime_state();
     assert!(state.enabled, "still a text target");
     assert_eq!(
-        state.cursor_area, None,
+        state.cursor_tuple(),
+        None,
         "placement falls back to the platform"
     );
 }
@@ -390,5 +394,5 @@ fn window_blur_disables_ime_without_releasing_the_registered_target() {
     window_focus(&mut f.app, true);
     let state = f.app.ime_state();
     assert!(state.enabled, "…and it comes back");
-    assert_eq!(state.cursor_area, Some((10.0, 20.0, 2.0, 16.0)));
+    assert_eq!(state.cursor_tuple(), Some((10.0, 20.0, 2.0, 16.0)));
 }

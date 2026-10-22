@@ -18,7 +18,7 @@
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
 
-use rinch::embed::{ImeChange, RinchContext, RinchContextConfig};
+use rinch::embed::{ElementBounds, ImeChange, ImeState, RinchContext, RinchContextConfig};
 use rinch::platform::{ImeEvent, MouseButton, PlatformEvent};
 use rinch::prelude::*;
 
@@ -101,81 +101,108 @@ fn input_context() -> RinchContext {
 
 // ── tests ────────────────────────────────────────────────────────────────────
 
+/// The area an `Enable` carries, `None` for any other request.
+fn enabled_at(change: Option<ImeChange>) -> Option<Option<ElementBounds>> {
+    match change {
+        Some(ImeChange::Enable { cursor_area, .. }) => Some(cursor_area),
+        _ => None,
+    }
+}
+
+/// The area an `Update` carries, `None` for any other request.
+fn updated_to(change: Option<ImeChange>) -> Option<ElementBounds> {
+    match change {
+        Some(ImeChange::Update { cursor_area, .. }) => Some(cursor_area),
+        _ => None,
+    }
+}
+
+struct InputRun {
+    before: (ImeState, Option<ImeChange>),
+    first: Option<ImeChange>,
+    enabled: ImeState,
+    again: Option<ImeChange>,
+    one_char: (ImeState, Option<ImeChange>),
+    six_chars: (ImeState, Option<ImeChange>),
+    blurred: (ImeState, Option<ImeChange>),
+}
+
 #[test]
 fn a_focused_input_enables_ime_at_its_caret_and_a_blur_disables_it() {
-    let (before, first, enabled, again, after_typing, typed, blurred, blurred_state) =
-        on_ui_thread(|| {
-            let mut ctx = input_context();
-            ctx.update(&[]);
-            let before = (ctx.ime_state(), ctx.take_ime_change());
+    let run = on_ui_thread(|| {
+        let mut ctx = input_context();
+        ctx.update(&[]);
+        let before = (ctx.ime_state(), ctx.take_ime_change());
 
-            ctx.update(&click(150.0, 115.0));
-            let first = ctx.take_ime_change();
-            let enabled = ctx.ime_state();
-            // Nothing moved: no second request.
-            let again = ctx.take_ime_change();
+        ctx.update(&click(150.0, 115.0));
+        let first = ctx.take_ime_change();
+        let enabled = ctx.ime_state();
+        // Nothing moved: no second request.
+        let again = ctx.take_ime_change();
 
-            // A composition fed back in moves the caret; the host is told
-            // where the candidate box goes now.
-            ctx.update(&[PlatformEvent::Ime(ImeEvent::Commit("abcdef".into()))]);
-            let after_typing = ctx.ime_state();
-            let typed = ctx.take_ime_change();
+        // A composition fed back in moves the caret; the host is told where
+        // the candidate box goes now. The vertical baseline is the caret after
+        // one character: an empty field's area is its text origin, which is
+        // not the typed caret's y to the pixel under every stylesheet.
+        let mut commit = |text: &str| {
+            ctx.update(&[PlatformEvent::Ime(ImeEvent::Commit(text.into()))]);
+            (ctx.ime_state(), ctx.take_ime_change())
+        };
+        let one_char = commit("a");
+        let six_chars = commit("bcdef");
 
-            ctx.update(&click(600.0, 500.0));
-            let blurred = ctx.take_ime_change();
-            (
-                before,
-                first,
-                enabled,
-                again,
-                after_typing,
-                typed,
-                blurred,
-                ctx.ime_state(),
-            )
-        });
+        ctx.update(&click(600.0, 500.0));
+        let blurred = (ctx.ime_state(), ctx.take_ime_change());
+        InputRun {
+            before,
+            first,
+            enabled,
+            again,
+            one_char,
+            six_chars,
+            blurred,
+        }
+    });
 
-    assert!(!before.0.enabled, "nothing focused: no IME");
-    assert_eq!(before.1, None, "and nothing to tell the host");
+    assert!(!run.before.0.enabled, "nothing focused: no IME");
+    assert_eq!(run.before.1, None, "and nothing to tell the host");
 
-    assert!(enabled.enabled, "a focused <input> wants the IME");
-    let (x, y, _w, h) = enabled.cursor_area.expect("a caret area");
+    assert!(run.enabled.enabled, "a focused <input> wants the IME");
+    let start = run.enabled.cursor_area.expect("a caret area");
     assert!(
-        (100.0..=110.0).contains(&x) && (100.0..=130.0).contains(&y) && h > 0.0,
-        "the caret area is at the start of the field's text: {:?}",
-        enabled.cursor_area
+        (100.0..=110.0).contains(&start.x)
+            && (100.0..=130.0).contains(&start.y)
+            && start.height > 0.0,
+        "the caret area is at the start of the field's text: {start:?}"
     );
-    assert_eq!(
-        first,
-        Some(ImeChange::Enable {
-            cursor_area: enabled.cursor_area
-        })
-    );
-    assert_eq!(again, None, "an unchanged state asks for nothing");
+    assert_eq!(enabled_at(run.first), Some(Some(start)), "{:?}", run.first);
+    assert_eq!(run.again, None, "an unchanged state asks for nothing");
 
-    let (x2, y2, _, _) = after_typing.cursor_area.expect("a caret area");
+    let a = run.one_char.0.cursor_area.expect("a caret area");
     assert!(
-        x2 > x + 20.0 && (y2 - y).abs() < 0.5,
-        "the caret moved right past the committed text: {x} -> {x2}"
+        a.x > start.x,
+        "one character moves the caret: {start:?} -> {a:?}"
+    );
+    assert_eq!(updated_to(run.one_char.1), Some(a), "{:?}", run.one_char.1);
+
+    let f = run.six_chars.0.cursor_area.expect("a caret area");
+    assert!(
+        f.x > a.x + 20.0 && (f.y - a.y).abs() < 0.5,
+        "the caret moved right along the line past the committed text: {a:?} -> {f:?}"
     );
     assert_eq!(
-        typed,
-        Some(ImeChange::Update {
-            cursor_area: (
-                x2,
-                y2,
-                after_typing.cursor_area.unwrap().2,
-                after_typing.cursor_area.unwrap().3
-            )
-        })
+        updated_to(run.six_chars.1),
+        Some(f),
+        "{:?}",
+        run.six_chars.1
     );
 
     assert_eq!(
-        blurred,
+        run.blurred.1,
         Some(ImeChange::Disable),
         "a blur turns the IME off"
     );
-    assert!(!blurred_state.enabled);
+    assert!(!run.blurred.0.enabled);
 }
 
 #[test]
@@ -193,12 +220,7 @@ fn a_window_blur_disables_ime_and_refocus_enables_it_again() {
         (blur, ctx.take_ime_change())
     });
     assert_eq!(blur, Some(ImeChange::Disable));
-    assert!(matches!(
-        refocus,
-        Some(ImeChange::Enable {
-            cursor_area: Some(_)
-        })
-    ));
+    assert!(matches!(enabled_at(refocus), Some(Some(_))), "{refocus:?}");
 }
 
 #[test]
@@ -230,13 +252,14 @@ fn a_registered_on_ime_node_drives_ime_with_its_own_caret_rect_and_a_plain_one_d
         (text_node, plain_node)
     });
     assert!(text_node.0.enabled, "an `on_ime` target is a text target");
-    assert_eq!(text_node.0.cursor_area, Some((37.0, 51.0, 2.0, 19.0)));
-    assert_eq!(
-        text_node.1,
-        Some(ImeChange::Enable {
-            cursor_area: Some((37.0, 51.0, 2.0, 19.0))
-        })
-    );
+    let rect = ElementBounds {
+        x: 37.0,
+        y: 51.0,
+        width: 2.0,
+        height: 19.0,
+    };
+    assert_eq!(text_node.0.cursor_area, Some(rect));
+    assert_eq!(enabled_at(text_node.1), Some(Some(rect)));
     // A key-consuming node wants the keyboard and no IME: the question
     // `wants_keyboard` cannot answer.
     assert!(plain_node.1, "control: it does take the keys");
@@ -279,18 +302,12 @@ fn a_focused_editor_enables_ime_at_its_caret_and_read_only_turns_it_off() {
         (focused, change, (ctx.ime_state(), ctx.take_ime_change()))
     });
     assert!(focused.enabled, "a focused editor wants the IME");
-    let (x, y, _, h) = focused.cursor_area.expect("the editor's caret");
+    let caret = focused.cursor_area.expect("the editor's caret");
     assert!(
-        x >= 80.0 && y >= 60.0 && h > 0.0,
-        "{:?}",
-        focused.cursor_area
+        caret.x >= 80.0 && caret.y >= 60.0 && caret.height > 0.0,
+        "{caret:?}"
     );
-    assert_eq!(
-        change,
-        Some(ImeChange::Enable {
-            cursor_area: focused.cursor_area
-        })
-    );
+    assert_eq!(enabled_at(change), Some(Some(caret)));
     assert!(!read_only.0.enabled, "a read-only editor composes nothing");
     assert_eq!(read_only.1, Some(ImeChange::Disable));
 }

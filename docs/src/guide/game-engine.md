@@ -555,35 +555,39 @@ the focused target wants; you switch the input method on and off and place its
 candidate window, and feed the composition back in:
 
 ```rust
+// The caret area is an `ElementBounds` in the context's logical px; your
+// platform probably wants physical px.
+let to_physical = |b: ElementBounds, s: f32| (b.x * s, b.y * s, b.width * s, b.height * s);
+
 let actions = ctx.update(&events);
 match ctx.take_ime_change() {
-    Some(ImeChange::Enable { cursor_area }) => {
-        // Switch the platform IME on. `cursor_area` is the caret, (x, y, w, h)
-        // in the context's logical px — multiply by the scale factor for
-        // physical — or None until it has one.
-        platform_ime_enable(cursor_area.map(|a| to_physical(a, scale)));
+    Some(ImeChange::Enable { cursor_area, .. }) => {
+        // Switch the platform IME on, its candidate box at the caret — or
+        // wherever the platform likes while the target has no caret yet.
+        platform_ime_enable(cursor_area.map(|b| to_physical(b, scale)));
     }
-    Some(ImeChange::Update { cursor_area }) => {
+    Some(ImeChange::Update { cursor_area, .. }) => {
         platform_ime_move_candidate_box(to_physical(cursor_area, scale));
     }
     Some(ImeChange::Disable) => platform_ime_disable(),
-    None => {}
+    // `ImeChange` is `#[non_exhaustive]`: a later request kind lands here.
+    Some(_) | None => {}
 }
 // The platform's composition events go back in on the next update:
 // PlatformEvent::Ime(ImeEvent::Enabled / Preedit { .. } / Commit(..) / Disabled)
 ```
 
 `take_ime_change()` answers the change from what it last reported, so call it
-once per frame and apply every answer — exactly what the desktop shell does to
-its window after every event-loop turn (they share one function,
-`ImeState::change_to`). `ime_state()` reads the wanted state itself
-(`ImeState { enabled, cursor_area }`) without consuming anything. The IME is on
-for a focused `<input>`/`<textarea>`, an editor that is not read-only, and a
-node registered with `FocusEntry::on_ime`; it is off for everything else and
-while you have reported the window blurred (`PlatformEvent::WindowFocus(false)`).
-That is not `wants_keyboard()`: a node that reads keys but takes no text wants
-the keyboard and no input method. The caret area is where the caret is painted,
-so it follows transforms and a text field's horizontal scroll.
+once per frame and apply every answer: it is the same decision the desktop
+shell makes for its window after every event-loop turn. `ime_state()` reads the
+wanted state itself (`ImeState { enabled, cursor_area, .. }`) without consuming
+anything. The IME is on for a focused `<input>`/`<textarea>`, an editor that is
+not read-only, and a node registered with `FocusEntry::on_ime`; it is off for
+everything else and while you have reported the window blurred
+(`PlatformEvent::WindowFocus(false)`). That is not `wants_keyboard()`: a node
+that reads keys but takes no text wants the keyboard and no input method. The
+caret area is where the caret is painted, so it follows transforms and a text
+field's horizontal scroll.
 
 ### Split Layout (Viewport Hole)
 

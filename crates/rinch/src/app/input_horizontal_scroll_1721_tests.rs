@@ -260,7 +260,7 @@ fn the_ime_cursor_area_follows_the_scrolled_caret() {
     app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
     let area = app
         .ime_state()
-        .cursor_area
+        .cursor_tuple()
         .expect("a focused field places its IME");
     let x = caret_x(&field);
     assert!(
@@ -435,7 +435,7 @@ fn the_ime_area_follows_a_composition() {
             }),
         );
         app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
-        let area = app.ime_state().cursor_area.expect("an IME area");
+        let area = app.ime_state().cursor_tuple().expect("an IME area");
         assert!(
             (CONTENT_RIGHT - 3.0..CONTENT_RIGHT).contains(&area.0),
             "{preedit}: the area at the composition's end, at the right edge, got {area:?}"
