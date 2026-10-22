@@ -65,9 +65,26 @@ or opt out explicitly:
 rinch::reactive::unowned(|| spawn_local(async move { save().await }));
 ```
 
+A task spawned inside an effect or a reactive closure belongs to the
+component, not to that run of the effect, so it is **not** cancelled when the
+effect re-runs. For a fetch per query change, keep the previous `TaskHandle`
+and `abort()` it before spawning the next:
+
+```rust
+let current: Rc<Cell<Option<TaskHandle>>> = Rc::default();
+Effect::new(move || {
+    let q = query.get();
+    if let Some(previous) = current.take() {
+        previous.abort();
+    }
+    current.set(Some(spawn_local(async move { results.set(search(q).await) })));
+});
+```
+
 `TaskHandle::abort()` stops a task early; `is_finished()` says whether it has
-completed, been aborted, or been dropped with its component. Dropping the
-handle does not stop the task.
+completed, been aborted, panicked, or been dropped with its component. Dropping
+the handle does not stop the task. Call both on the UI thread: the handle is
+`Send`, but `abort()` from another thread finds no task and does nothing.
 
 ## How tasks are driven
 

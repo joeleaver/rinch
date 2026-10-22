@@ -178,7 +178,8 @@ pub struct TaskHandle(u64);
 impl TaskHandle {
     /// Stop the task: its future is dropped without being polled again. A no-op
     /// when it has finished or was aborted already. Call on the thread that
-    /// spawned it.
+    /// spawned it: the handle is `Send`, but tasks are kept per thread, so on
+    /// any other thread `abort` finds nothing and does nothing.
     ///
     /// Called from inside the task's own poll, the future is dropped when that
     /// poll returns.
@@ -186,8 +187,9 @@ impl TaskHandle {
         abort_task(self.0);
     }
 
-    /// Whether the task has completed, been aborted, or been dropped because the
-    /// component that spawned it unmounted. Call on the thread that spawned it.
+    /// Whether the task has completed, been aborted, panicked, or been dropped
+    /// because the component that spawned it unmounted. Call on the thread that
+    /// spawned it (on another it answers `true`).
     pub fn is_finished(&self) -> bool {
         !TASKS.with(|t| t.borrow().contains_key(&self.0))
     }
@@ -317,6 +319,13 @@ pub fn poll_task(id: u64) {
 
     task.waker.scheduled.store(false, Ordering::Release);
     let waker = Waker::from(task.waker.clone());
+    // A panic in the poll unwinds past the code below that takes the
+    // `Running` marker out; without this the task would stay "being polled"
+    // for good. The future itself is dropped by the unwind.
+    let unwind = PollUnwind {
+        id,
+        owner: task.owner.clone(),
+    };
     let poll = {
         let Task {
             future,
@@ -331,6 +340,8 @@ pub fn poll_task(id: u64) {
             None => unowned(|| future.as_mut().poll(&mut cx)),
         })
     };
+
+    std::mem::forget(unwind);
 
     let state = TASKS.with(|t| t.borrow_mut().remove(&id));
     match (poll, state) {
@@ -350,6 +361,27 @@ pub fn poll_task(id: u64) {
             }
         }
         _ => finish(id, task),
+    }
+}
+
+/// Armed around a task's poll: dropped only by an unwind out of it, when it
+/// takes the task's `Running` marker and its id out of its owner's set.
+struct PollUnwind {
+    id: u64,
+    owner: Option<Owner>,
+}
+
+impl Drop for PollUnwind {
+    fn drop(&mut self) {
+        let _ = TASKS.try_with(|t| t.try_borrow_mut().map(|mut t| t.remove(&self.id)));
+        let _ = OWNER_TASKS.try_with(|o| {
+            if let Ok(mut o) = o.try_borrow_mut()
+                && let Some(owner) = &self.owner
+                && let Some((_, ids)) = o.get_mut(&owner.key())
+            {
+                ids.remove(&self.id);
+            }
+        });
     }
 }
 
@@ -507,7 +539,10 @@ mod tests {
 
         let unwound =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| poll_task(handle.0)));
-        assert!(unwound.is_err(), "the panic reaches the drain that polled it");
+        assert!(
+            unwound.is_err(),
+            "the panic reaches the drain that polled it"
+        );
         assert!(handle.is_finished());
         assert_eq!(tasks_of(&scope), Some(0), "its id left the component's set");
         handle.abort(); // a no-op, not a mark on a stale entry
