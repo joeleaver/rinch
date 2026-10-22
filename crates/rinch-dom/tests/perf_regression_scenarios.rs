@@ -380,7 +380,8 @@ fn an_option_label_edited_through_a_wrapper_or_its_label_attribute_reshapes_once
         &[
             (StyleResolves, 1),
             (TaffyStyleSyncs, 1),
-            (TaffyStyleChanges, 1),
+            // `TaffyStyleChanges` 1 → 0 (#1129): the label width is the
+            // select's measure context, not its Taffy style.
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
             (ShapeSelectLabel, 1),
@@ -402,7 +403,8 @@ fn an_option_label_edited_through_a_wrapper_or_its_label_attribute_reshapes_once
             (StyleResolves, 1),
             (StyleInvalidations, 1),
             (TaffyStyleSyncs, 1),
-            (TaffyStyleChanges, 1),
+            // `TaffyStyleChanges` 1 → 0 (#1129): the label width is the
+            // select's measure context, not its Taffy style.
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
             (ShapeSelectLabel, 1),
