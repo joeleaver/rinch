@@ -146,8 +146,9 @@ pub fn set_interval(period_ms: u32, cb: impl FnMut() + 'static) -> IntervalHandl
             (cb.borrow_mut())();
             let now = Instant::now();
             let mut next = deadline + period;
-            if next + period <= now {
-                // More than a period behind: skip the missed ticks.
+            if next <= now {
+                // The next tick is already due: more than a period behind.
+                // Skip the missed ticks rather than fire them back to back.
                 next = now + period;
             }
             // Re-armed only if the callback did not clear it.
