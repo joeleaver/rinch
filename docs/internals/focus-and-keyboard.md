@@ -588,9 +588,9 @@ register_focus_target(
   is inside no overlay's root and a long list in a dialog was unscrollable.
   Exempt is a separate list because `scroll_lock_roots` is also the count:
   putting the popup there would freeze the page whenever a `<select>` was open.
-  `ContextMenu` is the other body portal and needs none *today* — its dropdown
-  declares no `overflow`/`max-height`, so it is not a scroll container; give it
-  either and it needs the attribute below. **The portable spelling of the
+  `ContextMenu` is the other body portal: since #1761 its
+  `.rinch-context-menu__frame` (the window less a 4px margin, which scrolls a
+  menu taller than the window) carries the attribute below. **The portable spelling of the
   exemption is `data-scroll-lock-exempt`** (#701,
   `rinch_core::events::SCROLL_LOCK_EXEMPT_ATTRIBUTE`): `push_scroll_lock_exempt`
   is a `NodeTree` method, reachable from the runtime and not through
