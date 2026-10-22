@@ -755,3 +755,166 @@ mod trailing_break_paths {
         );
     }
 }
+
+// ── #1120: the selection highlight beside an image ──────────────────────
+//
+// An image has no bytes, so a selection's flat byte range cannot say which
+// side of it an endpoint is on, nor whether the image itself is selected:
+// `[5, 7)` is both "from before the image over `br`" and "from after it", and
+// `[5, 5)` is "just the image" and nothing. The view now hands the host the
+// selected images by model position (`query_selection_rects_with_boxes`).
+
+impl Page {
+    /// Select chars `i..j` of the paragraph and answer the highlight rects.
+    fn select(&mut self, i: usize, j: usize) -> Vec<(f32, f32, f32, f32)> {
+        self.handle
+            .set_selection(Selection::text(Pos(i + 1), Pos(j + 1)));
+        idle(&mut self.app);
+        self.highlights()
+    }
+}
+
+#[track_caller]
+fn assert_span(r: (f32, f32, f32, f32), left: f32, right: f32, what: &str) {
+    assert!(
+        (r.0 - left).abs() < 1.5 && (r.0 + r.2 - right).abs() < 1.5,
+        "{what}: {}..{}, want {left}..{right}",
+        r.0,
+        r.0 + r.2
+    );
+}
+
+/// From right after an image over `br`: the highlight starts at the image's
+/// right edge, where the caret after it is drawn. It started at its left edge
+/// and covered the image, which is not selected.
+#[test]
+fn a_selection_from_after_an_image_starts_at_its_right_edge() {
+    let mut p = page(&format!("<p>alpha{IMG}bravo</p>"));
+    let img = p.images()[0];
+    let hl = p.select(6, 8);
+    assert_eq!(hl.len(), 1, "{hl:?}");
+    let after_r = p.local(8).0 + p.block_box().0;
+    assert_span(hl[0], img.0 + img.2, after_r, "after the image over `br`");
+}
+
+/// Just the image (Shift+Right from before it): the highlight is its box,
+/// one line high. It painted nothing: the byte range was empty.
+#[test]
+fn a_selection_of_just_an_image_covers_its_box() {
+    let mut p = page(&format!("<p>alpha{IMG}bravo</p>"));
+    let img = p.images()[0];
+    let hl = p.select(5, 6);
+    assert_eq!(hl.len(), 1, "{hl:?}");
+    assert_span(hl[0], img.0, img.0 + img.2, "the image");
+    let (_, by, _, _) = p.block_box();
+    assert_eq!((hl[0].1, hl[0].3), (by, LINE), "its line box: {hl:?}");
+}
+
+/// A selection ending right after an image covers it, and one ending right
+/// before it stops at its left edge (the control: that was right).
+#[test]
+fn a_selection_ending_beside_an_image_ends_on_its_side() {
+    let mut p = page(&format!("<p>alpha{IMG}bravo</p>"));
+    let img = p.images()[0];
+    let bx = p.block_box().0;
+    let start = bx + p.local(1).0;
+    let hl = p.select(1, 6);
+    assert_eq!(hl.len(), 1, "{hl:?}");
+    assert_span(hl[0], start, img.0 + img.2, "`lpha` and the image");
+    let hl = p.select(1, 5);
+    assert_eq!(hl.len(), 1, "{hl:?}");
+    assert_span(hl[0], start, img.0, "`lpha`, not the image");
+}
+
+/// Text, the image and text: one rect over all three.
+#[test]
+fn a_selection_across_an_image_is_one_rect_over_it() {
+    let mut p = page(&format!("<p>alpha{IMG}bravo</p>"));
+    let bx = p.block_box().0;
+    let (l, r) = (bx + p.local(3).0, bx + p.local(8).0);
+    let hl = p.select(3, 8);
+    assert_eq!(hl.len(), 1, "{hl:?}");
+    assert_span(hl[0], l, r, "`ha`, the image, `br`");
+}
+
+/// Two images in a row share one byte with all four of their sides: each
+/// alone, both, and the second with the text after it.
+#[test]
+fn selections_of_two_adjacent_images_are_each_their_own() {
+    let mut p = page(&format!("<p>ab{IMG}{IMG}cd</p>"));
+    let imgs = p.images();
+    assert_eq!(imgs.len(), 2, "positive control");
+    let (a, b) = (imgs[0], imgs[1]);
+    let hl = p.select(2, 3);
+    assert_eq!(hl.len(), 1, "{hl:?}");
+    assert_span(hl[0], a.0, a.0 + a.2, "the first image");
+    let hl = p.select(3, 4);
+    assert_eq!(hl.len(), 1, "{hl:?}");
+    assert_span(hl[0], b.0, b.0 + b.2, "the second image");
+    let hl = p.select(2, 4);
+    assert_eq!(hl.len(), 1, "{hl:?}");
+    assert_span(hl[0], a.0, b.0 + b.2, "both images");
+    let c_end = p.block_box().0 + p.local(5).0;
+    let hl = p.select(3, 5);
+    assert_eq!(hl.len(), 1, "{hl:?}");
+    assert_span(hl[0], b.0, c_end, "the second image and `c`");
+}
+
+/// An image that starts a soft-wrapped line: selected alone, it is
+/// highlighted on line 2 and nothing on line 1; selected with the end of
+/// line 1, both lines are.
+#[test]
+fn a_selected_image_that_starts_a_wrapped_line_is_highlighted_there() {
+    let mut p = page(&format!("<p>mmmmmmmmmmmmmmmmmmmmmmm {IMG}bravo</p>"));
+    let img = p.images()[0];
+    let (_, by, _, _) = p.block_box();
+    assert!(
+        img.1 > by + LINE * 0.9,
+        "positive control: the image wrapped {img:?}"
+    );
+    let hl = p.select(24, 25);
+    assert_eq!(hl.len(), 1, "{hl:?}");
+    assert_span(hl[0], img.0, img.0 + img.2, "the image alone");
+    assert_eq!(hl[0].1, by + LINE, "on line 2: {hl:?}");
+    let hl = p.select(20, 25);
+    assert_eq!(hl.len(), 2, "{hl:?}");
+    assert_eq!(hl[1].1, by + LINE, "line 2: {hl:?}");
+    assert_span(hl[1], img.0, img.0 + img.2, "line 2: the image");
+}
+
+/// An image that ends a soft-wrapped line (the space after it hangs there):
+/// selected alone, it is highlighted on line 1; from after it, no rect
+/// covers it.
+#[test]
+fn a_selected_image_that_ends_a_wrapped_line_is_highlighted_there() {
+    let mut p = page(&format!(
+        "<p>mmmmmmmmmmmmmmmmmmmm{IMG} bravocharliedeltaecho</p>"
+    ));
+    let img = p.images()[0];
+    let (_, by, _, _) = p.block_box();
+    assert!(img.1 < by + LINE, "positive control: on line 1 {img:?}");
+    assert!(
+        p.local(22).1 >= LINE,
+        "positive control: `bravo…` wrapped to line 2"
+    );
+    let hl = p.select(20, 21);
+    assert_eq!(hl.len(), 1, "{hl:?}");
+    assert_span(hl[0], img.0, img.0 + img.2, "the image alone");
+    assert_eq!(hl[0].1, by, "on line 1: {hl:?}");
+    let hl = p.select(21, 24);
+    assert!(!hl.is_empty(), "{hl:?}");
+    for r in &hl {
+        assert!(
+            r.1 >= by + LINE || r.0 >= img.0 + img.2 - 1.5,
+            "a rect from after the image covers it: {r:?} vs {img:?}"
+        );
+    }
+    let hl = p.select(19, 21);
+    assert_eq!(hl.len(), 1, "{hl:?}");
+    assert_span(
+        hl[0],
+        p.block_box().0 + p.local(19).0,
+        img.0 + img.2,
+        "the last `m` and the image",
+    );
+}
