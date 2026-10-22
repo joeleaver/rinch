@@ -56,8 +56,12 @@ pub struct SelectOption {
     /// Submit value: the `value` attribute, or the label if there is no `value`
     /// attribute (HTML falls back to the text content).
     pub value: String,
-    /// Display label: the `label` attribute if present, else the trimmed text
-    /// content.
+    /// Display label: the `label` attribute **verbatim** if it is not empty
+    /// (a tab or newline in it as a space, a CR or form feed dropped, as
+    /// Chrome 155 draws them), else the text content with ASCII whitespace
+    /// stripped and collapsed — HTML's `option.label` / `option.text`
+    /// (#1130). Untransformed: [`label_as_set`] applies the select's
+    /// `text-transform`.
     pub label: String,
     /// Whether the option carries a `selected` attribute — its *default*
     /// selectedness (`defaultSelected` in the IDL), which is not in general the
@@ -88,23 +92,45 @@ pub const SELECT_ARROW_BOX: f32 = 16.0;
 /// Space above and below the label's line inside the content box, CSS px.
 pub const SELECT_INNER_BLOCK: f32 = 1.0;
 
-/// Shape a closed select's label the one way both its **measure** (the
+/// `label` as a select in `style` sets it: in the select's `text-transform`
+/// (#1130). Chrome 155 transforms the closed label and its popup rows alike.
+pub fn label_as_set<'a>(
+    style: &crate::computed_style::ComputedStyle,
+    label: &'a str,
+) -> std::borrow::Cow<'a, str> {
+    match style.text_transform.apply(label) {
+        Some(t) => t.into(),
+        None => label.into(),
+    }
+}
+
+/// Shape a select's label the one way both its **measure** (the
 /// widest-option width `apply_stylo_styles_to_taffy` sizes it from) and its
 /// **paint** (`paint::select`) do, so the width the box was given is the width
 /// of the text drawn in it — the #320 rule for form-control text, one
-/// builder for both. `font_size` is in the units the caller lays out in: CSS
-/// px for the measure, physical px for paint.
+/// builder for both. `scale` multiplies every length in `style` (the font size
+/// and the letter- and word-spacing): 1 for the measure, the device scale for
+/// paint.
+///
+/// The label is set in `style`'s family, size, weight, `letter-spacing`,
+/// `word-spacing` and `text-transform` (#1130, Chrome 155: all three spacing
+/// and case properties of the select reach its closed label; an option's own
+/// do not).
 pub(crate) fn select_label_layout(
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<peniko::Brush>,
     style: &crate::computed_style::ComputedStyle,
-    font_size: f32,
+    scale: f32,
     brush: peniko::Brush,
     label: &str,
 ) -> parley::Layout<peniko::Brush> {
+    let label = label_as_set(style, label);
+    let label = label.as_ref();
     let font_family = crate::fonts::parley_text_family(font_cx, &style.font_family, label);
     let mut builder = layout_cx.ranged_builder(font_cx, label, 1.0, true);
-    builder.push_default(parley::style::StyleProperty::FontSize(font_size));
+    builder.push_default(parley::style::StyleProperty::FontSize(
+        style.font_size * scale,
+    ));
     builder.push_default(parley::style::StyleProperty::Brush(brush));
     font_family.push_to(&mut builder);
     if (style.font_weight - 400.0).abs() > 1.0 {
@@ -112,6 +138,12 @@ pub(crate) fn select_label_layout(
             parley::style::FontWeight::new(style.font_weight),
         ));
     }
+    builder.push_default(parley::style::StyleProperty::LetterSpacing(
+        style.letter_spacing * scale,
+    ));
+    builder.push_default(parley::style::StyleProperty::WordSpacing(
+        style.word_spacing * scale,
+    ));
     let mut layout = builder.build(label);
     // Single line, clipped: never wrap the closed control's label.
     layout.break_all_lines(None);
@@ -136,12 +168,25 @@ pub(crate) fn widest_select_label(
     style.font_family.hash(&mut h);
     style.font_size.to_bits().hash(&mut h);
     style.font_weight.to_bits().hash(&mut h);
+    style.letter_spacing.to_bits().hash(&mut h);
+    style.word_spacing.to_bits().hash(&mut h);
+    (style.text_transform as u8).hash(&mut h);
     let key = h.finish();
     if let Some((k, w)) = cached
         && k == key
     {
         return (key, w);
     }
+    (key, widest_shaped(font_cx, layout_cx, style, labels, perf))
+}
+
+fn widest_shaped(
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+    style: &crate::computed_style::ComputedStyle,
+    labels: &[&str],
+    perf: &crate::perf::PerfCounters,
+) -> f32 {
     let mut widest = 0.0f32;
     for label in labels.iter().filter(|l| !l.is_empty()) {
         perf.bump(crate::perf::Counter::ShapeSelectLabel);
@@ -149,41 +194,34 @@ pub(crate) fn widest_select_label(
             font_cx,
             layout_cx,
             style,
-            style.font_size,
-            peniko::Brush::default(),
-            label,
-        );
-        widest = widest.max(layout.full_width());
-    }
-    (key, widest)
-}
-
-/// The widest of `labels` in CSS px, shaped by [`select_label_layout`] in
-/// `style`'s font family and weight at `font_size` CSS px. For a caller that
-/// sets option labels in a font other than the closed control's — the desktop
-/// runtime's native popup, whose rows are 14px in the body's font — and must
-/// size its own box to them. Uncached: it shapes every non-empty label, and
-/// counts each in `shape_select_label`.
-pub fn widest_label_at(
-    doc: &mut crate::RinchDocument,
-    style: &crate::computed_style::ComputedStyle,
-    font_size: f32,
-    labels: &[&str],
-) -> f32 {
-    let mut widest = 0.0f32;
-    for label in labels.iter().filter(|l| !l.is_empty()) {
-        doc.tree.perf.bump(crate::perf::Counter::ShapeSelectLabel);
-        let layout = select_label_layout(
-            &mut doc.font_cx,
-            &mut doc.layout_cx,
-            style,
-            font_size,
+            1.0,
             peniko::Brush::default(),
             label,
         );
         widest = widest.max(layout.full_width());
     }
     widest
+}
+
+/// The widest of `labels` in CSS px, shaped by [`select_label_layout`] in
+/// `style` — its family, size, weight, spacing and `text-transform`. For a
+/// caller that sets option labels in a style other than the closed
+/// control's — the desktop runtime's native popup, whose rows are 14px in the
+/// body's font with no letter- or word-spacing and the select's
+/// `text-transform` — and must size its own box to them. Uncached: it shapes
+/// every non-empty label, and counts each in `shape_select_label`.
+pub fn widest_label_at(
+    doc: &mut crate::RinchDocument,
+    style: &crate::computed_style::ComputedStyle,
+    labels: &[&str],
+) -> f32 {
+    widest_shaped(
+        &mut doc.font_cx,
+        &mut doc.layout_cx,
+        style,
+        labels,
+        &doc.tree.perf,
+    )
 }
 
 /// The resolved options of a `<select>` plus which one is currently selected.
@@ -246,20 +284,22 @@ fn collect_options(tree: &NodeTree, parent_id: RawNodeId, out: &mut Vec<SelectOp
         };
         match child.tag() {
             Some("option") => {
-                let label_text = element_text(tree, child_id);
+                // HTML's `option.text`: the text content, ASCII whitespace
+                // stripped and collapsed (Chrome 155: `"  a   b  "` is
+                // drawn and sized as `"a b"`; an NBSP stays).
+                let label_text = strip_and_collapse_ascii_whitespace(&element_text(tree, child_id));
+                // A non-empty `label` attribute is the label as written:
+                // Chrome 155 keeps its spaces (`"  x   y "` is 22px wider than
+                // `"x y"`), not even trimming them.
                 let label = child
                     .attributes
                     .get("label")
-                    .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| label_text.trim().to_string());
-                // HTML: an option's value defaults to its text content when the
-                // `value` attribute is absent.
-                let value = child
-                    .attributes
-                    .get("value")
-                    .cloned()
-                    .unwrap_or_else(|| label_text.trim().to_string());
+                    .map(|s| label_attribute_as_drawn(s))
+                    .unwrap_or_else(|| label_text.clone());
+                // HTML: an option's value defaults to its text (`option.text`)
+                // when the `value` attribute is absent.
+                let value = child.attributes.get("value").cloned().unwrap_or(label_text);
                 out.push(SelectOption {
                     node_id: child_id,
                     value,
@@ -278,6 +318,33 @@ fn collect_options(tree: &NodeTree, parent_id: RawNodeId, out: &mut Vec<SelectOp
             _ => {}
         }
     }
+}
+
+/// HTML's "strip and collapse ASCII whitespace": every run of tab, LF, FF, CR
+/// and space is one space, and none at either end.
+pub fn strip_and_collapse_ascii_whitespace(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for word in s
+        .split(|c: char| c.is_ascii_whitespace())
+        .filter(|w| !w.is_empty())
+    {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    out
+}
+
+/// A `label` attribute as Chrome 155 draws it in the closed control: a tab or
+/// a newline as a space, a carriage return or a form feed as nothing (measured:
+/// `"x\ty"` and `"x\ny"` are as wide as `"x y"`, `"x\ry"` and `"x\u{c}y"` as
+/// `"xy"`). Every other character is kept, spaces included.
+fn label_attribute_as_drawn(s: &str) -> String {
+    s.chars()
+        .filter(|&c| c != '\r' && c != '\u{c}')
+        .map(|c| if c == '\t' || c == '\n' { ' ' } else { c })
+        .collect()
 }
 
 /// Concatenate the text of a subtree (an option's visible label).

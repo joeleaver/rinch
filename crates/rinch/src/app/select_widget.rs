@@ -95,7 +95,10 @@ const NATIVE_SELECT_CSS: &str = r#"
     font-size: 14px;
     line-height: 1.4;
     color: var(--rinch-color-text, #212529);
-    white-space: nowrap;
+    white-space: pre;
+    letter-spacing: normal;
+    word-spacing: normal;
+    text-transform: none;
     cursor: pointer;
 }
 .rinch-nsel-option[data-selected]:not([data-highlighted]) {
@@ -229,32 +232,57 @@ impl RinchApp {
 
         let panel = d.create_element("div");
         d.set_attribute(panel, "class", "rinch-nsel-panel");
-        d.set_style(panel, "left", &format!("{sx}px"));
-        d.set_style(panel, "top", &format!("{top}px"));
         // At least the control's width, and wide enough for the widest row, as
         // Chrome's popup is. (A `width: auto` fixed block fills the viewport, so
         // the width is spelled out.) The control's own width is no stand-in for
         // the rows': since #1098 it is exactly its label plus 22px at the
         // select's font, with no slack for the panel's 30px of chrome, and the
         // rows are set at `POPUP_ROW_FONT_SIZE` in the body's font, which can be
-        // wider than the select's. Capped at the viewport's right edge (never
-        // below the control's width); a row wider than that clips (option is
-        // `white-space: nowrap`).
-        let row_style = d
+        // wider than the select's.
+        //
+        // A row is the label as the select sets it (#1130), measured by the
+        // builder the closed control is: Chrome 155's popup rows take the
+        // select's `text-transform` and no `letter-spacing` or
+        // `word-spacing`, so the row style is the body's at 14px with the
+        // select's transform and both spacings 0, and `NATIVE_SELECT_CSS`
+        // gives a row `letter-spacing: normal; word-spacing: normal;
+        // text-transform: none` and holds the already-transformed text. A row
+        // is `white-space: pre`, as the measure is: a `label` attribute's
+        // spaces are drawn as written.
+        let select_style = d
+            .tree
+            .get(select_id)
+            .map(|n| n.computed_style.clone())
+            .unwrap_or_default();
+        let mut row_style = d
             .tree
             .get(body.0)
             .map(|n| n.computed_style.clone())
             .unwrap_or_default();
+        row_style.font_size = POPUP_ROW_FONT_SIZE;
+        row_style.letter_spacing = 0.0;
+        row_style.word_spacing = 0.0;
+        row_style.text_transform = select_style.text_transform;
         let label_refs: Vec<&str> = model.options.iter().map(|o| o.label.as_str()).collect();
-        let widest = rinch_dom::select::widest_label_at(
-            &mut d,
-            &row_style,
-            POPUP_ROW_FONT_SIZE,
-            &label_refs,
-        );
+        let widest = rinch_dom::select::widest_label_at(&mut d, &row_style, &label_refs);
         let rows_w = widest.ceil() + POPUP_ROW_CHROME;
-        let panel_w = rows_w.min(vp_w - sx).max(sw);
-        d.set_style(panel, "min-width", &format!("{sw}px"));
+        // Never wider than the viewport, never narrower than the control
+        // (unless the control is wider than the viewport).
+        let panel_w = rows_w.max(sw).min(vp_w);
+        // Horizontal placement, Chrome 155's (#1132; measured): at the
+        // select's left edge when the popup fits there; otherwise it ends
+        // where the select ends (an 80px select at x = 900 in a 1000px
+        // window opens a 464px popup whose right edge is the select's, 980);
+        // and kept on screen either way. It used to stay at the select's left
+        // edge and shrink to the viewport's, clipping its widest rows.
+        let left = if sx + panel_w <= vp_w {
+            sx
+        } else {
+            (sx + sw - panel_w).min(vp_w - panel_w)
+        }
+        .max(0.0);
+        d.set_style(panel, "left", &format!("{left}px"));
+        d.set_style(panel, "top", &format!("{top}px"));
         d.set_style(panel, "width", &format!("{panel_w}px"));
         d.set_style(panel, "max-height", &format!("{max_h}px"));
 
@@ -282,17 +310,22 @@ impl RinchApp {
             // `nowrap` a row of either collapses to zero height, as a plain
             // space does (#1154). Only the row's text: `labels` below keeps
             // the real label.
+            let set = rinch_dom::select::label_as_set(&row_style, &opt.label);
             let row_text = if opt.label.is_empty() {
                 "\u{200B}"
             } else {
-                opt.label.as_str()
+                set.as_ref()
             };
             let t = d.create_text(row_text);
             d.append_child(o, t);
             d.append_child(panel, o);
             option_ids.push(o.0);
             values.push(opt.value.clone());
-            labels.push(opt.label.clone());
+            // Type-ahead matches the label's words, not a `label`
+            // attribute's leading spaces.
+            labels.push(rinch_dom::select::strip_and_collapse_ascii_whitespace(
+                &opt.label,
+            ));
             disabled.push(opt.disabled);
         }
         d.append_child(body, panel);
