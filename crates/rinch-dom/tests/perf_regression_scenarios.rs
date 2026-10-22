@@ -3368,3 +3368,93 @@ fn a_whole_document_pass_over_percentage_chips_measures_each_row_twice() {
         ],
     );
 }
+
+// ── paint_nodes_visited, stacking_order_builds: a scroller's rows (#1719) ────
+
+/// A 200x200 scroller at the window's top left holding 500 20px rows of
+/// `row_css`, each with `kids` 10x5 children of `kid_css`.
+fn scroller_rows(scroller_css: &str, row_css: &str, kids: usize, kid_css: &str) -> RinchDocument {
+    let mut doc = doc_with("");
+    let body = doc.body();
+    let s = doc.create_element("div");
+    doc.set_attribute(
+        s,
+        "style",
+        &format!("width: 200px; height: 200px; overflow-y: auto; {scroller_css}"),
+    );
+    doc.append_child(body, s);
+    for _ in 0..500 {
+        let r = doc.create_element("div");
+        doc.set_attribute(
+            r,
+            "style",
+            &format!("height: 20px; background-color: rgb(0, 0, 200); {row_css}"),
+        );
+        doc.append_child(s, r);
+        for _ in 0..kids {
+            let k = doc.create_element("div");
+            doc.set_attribute(
+                k,
+                "style",
+                &format!("width: 10px; height: 5px; background-color: rgb(0, 200, 0); {kid_css}"),
+            );
+            doc.append_child(r, k);
+        }
+    }
+    doc
+}
+
+/// Rows `position: relative` (`z-index: auto`, hoisted to the body's sequence
+/// with the scroller in their chain), each holding three `position: relative;
+/// z-index: 1` children — stacking contexts, entries of the same sequence.
+/// Paint visits the rows the clip and its ink margin let through, with their
+/// children, and the chain above them: **56**. On main it entered every
+/// child of every row to cull it on arrival (**1516**), and built a sequence
+/// for each of the 40 children it drew, though they have none (**41** builds;
+/// now the body's alone).
+#[test]
+fn positioned_rows_with_layered_children_paint_the_rows_on_screen() {
+    let mut doc = scroller_rows(
+        "",
+        "position: relative",
+        3,
+        "position: relative; z-index: 1",
+    );
+    let s = repaint_frame(&mut doc);
+    expect(
+        "500 relative rows with three z-index children each, full repaint",
+        &s,
+        &[
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 56),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// Rows that are stacking contexts (`position: relative; z-index: 0`) in a
+/// scroller that is one too: each is an entry of the scroller's sequence, and
+/// paint entered every one to cull it on arrival (**516** visits on main). Now
+/// the loop asks `subtree_is_entirely_outside` itself: **30**. Each row drawn
+/// still builds its sequence, as do the scroller and the body (16).
+#[test]
+fn stacking_context_rows_paint_the_rows_on_screen() {
+    let mut doc = scroller_rows(
+        "position: relative; z-index: 0",
+        "position: relative; z-index: 0",
+        1,
+        "",
+    );
+    let s = repaint_frame(&mut doc);
+    expect(
+        "500 stacking-context rows in a stacking-context scroller, full repaint",
+        &s,
+        &[
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 30),
+            (StackingOrderBuilds, 16),
+        ],
+    );
+}

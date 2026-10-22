@@ -140,6 +140,7 @@ struct State {
     /// The generation `extents` and `orders` were filled at.
     filled_at: u64,
     extents: Vec<Option<Extent>>,
+    hoists: Vec<Option<bool>>,
     orders: HashMap<OrderKey, Rc<PaintOrder>>,
 }
 
@@ -185,6 +186,7 @@ impl HitCache {
         if s.filled_at != self.generation.get() {
             s.filled_at = self.generation.get();
             s.extents.clear();
+            s.hoists.clear();
             s.orders.clear();
         }
         s
@@ -245,6 +247,22 @@ impl HitCache {
     #[inline]
     pub fn extent(&self, id: usize) -> Option<Extent> {
         self.state().extents.get(id).copied().flatten()
+    }
+
+    /// Whether the flow walk under `id` passes over a box painted at a
+    /// stacking root (#1719), stored for the current generation.
+    #[inline]
+    pub fn hoists(&self, id: usize) -> Option<bool> {
+        self.state().hoists.get(id).copied().flatten()
+    }
+
+    /// Store `id`'s hoisting bit for the current generation.
+    pub fn store_hoists(&self, id: usize, hoists: bool) {
+        let mut s = self.state();
+        if s.hoists.len() <= id {
+            s.hoists.resize(id + 1, None);
+        }
+        s.hoists[id] = Some(hoists);
     }
 
     /// Store `id`'s extent for the current generation.

@@ -363,7 +363,7 @@ fn a_plain_tree_scrolls_at_mains_cost_and_a_draggable_one_pays_for_its_rows() {
             (Counter::DamageRects, 1),
             (Counter::RepaintedPx, 122816),
             (Counter::SurfacePx, 480000),
-            (Counter::PaintNodesVisited, 46),
+            (Counter::PaintNodesVisited, 45),
             (Counter::StackingOrderBuilds, 2),
             (Counter::GlyphCacheHits, 55),
             (Counter::ClipMasks, 2),

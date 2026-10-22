@@ -3924,7 +3924,21 @@ exact: a hoisted entry's clip chain, the #545 lift around a `position: fixed`
 entry and an elided bracket are whatever the painter was told. A box the cull
 would draw nothing for is dismissed by its parent's loop
 (`paints_nothing_without_visit`) without entering `paint_node`, so a 500-row
-scroller costs its ~20 visible rows. The ink margin is the window cull's
+scroller costs its ~20 visible rows. Since #1719 that question is bounded by a
+count of nodes (`PAINTS_NOTHING_BUDGET`, 128 per question), not a depth of 3,
+which a `Tree` row (`li > content > icon > svg > path`) and every open folder
+around it exceeded; it looks through a `display: contents` wrapper (rsx's
+`for`/`if`/reactive text) instead of answering "visit"; a box with no area
+and nothing to walk answers "paints nothing", as `paint_node` returns for one;
+and a **stacking-context** entry outside the cull is answered by the walk
+`paint_node` would make (`subtree_is_entirely_outside`), so rows that are
+stacking contexts, and `z-index` children of hoisted `position: relative`
+rows, are culled too. A box with nothing in its box tree builds no paint
+sequence. Pins: `rinch-dom/tests/positioned_row_cull_1719_tests.rs` (pixels
+against an oracle, scrolled four ways, full and partial repaints),
+`perf_regression_scenarios::*rows_paint_the_rows_on_screen`,
+`perf_regression_tests::a_scrolled_open_tree_paints_the_rows_on_screen` (the
+real `Tree`, 363 open rows: 604 → 172 visits). The ink margin is the window cull's
 policy, with its known loss: ink cast more than 64 CSS px from a box that sits
 outside a clip is not drawn back into it.
 
@@ -4133,12 +4147,14 @@ its last sample, and so stays a context (#783). The `HitStyleKey` keys
 `is_none`, not identity.
 
 **An identity transform costs what any stacking context costs**, the same as
-`opacity: 0.99`: it is hoisted, so the off-screen paint cull and hit testing's
-flow-extent prune do not skip it. Pinned by
-`perf_regression_tests::identity_transform_rows_cost_what_any_stacking_context_costs`
-against its `transform: none` twin — 300 rows in a 400px scroller:
-`PaintNodesVisited` 24 → 303 and `StackingOrderBuilds` 2 → 313 on a wheel
-notch, `HitTestNodesVisited` 4 → 285 on a warm pointer move. So a component's
+`opacity: 0.99`: it is hoisted, and until #1719 neither the off-screen paint
+cull nor hit testing's flow-extent prune skipped one — 300 rows in a 400px
+scroller cost `PaintNodesVisited` 24 → 303 and `StackingOrderBuilds` 2 → 313
+on a wheel notch, `HitTestNodesVisited` 4 → 285 on a warm pointer move,
+against the `transform: none` twin. #1719 culls and prunes such rows (24, 2,
+2: `perf_regression_tests::identity_transform_rows_cost_what_any_stacking_context_costs`);
+a stacking context whose subtree hoists something, or a non-identity
+transform (inverted on entry), is still entered by the hit test. So a component's
 resting state says `transform: none`, not `scale(1)` / `translateY(0)` /
 `rotate(0deg)`: `Checkbox`'s icon, `Radio`'s dot, `Slider`'s label and
 `Select`'s chevron were changed for it (`none` interpolates with the other
@@ -4252,9 +4268,16 @@ transition or animation tick moves a `transform` without moving the generation
 `NodeTree::mousemove_handlers` is 0. The walk skips a child whose **flow
 extent** misses the point — the union of every box `hit_test_node` can test when
 it enters that child as an ordinary node (its own box, plus its non-hoisted
-children's extents unless it clips). Only in-flow and positioned `z-index: auto`
-entries are pruned; a stacking context is always entered, since its hoisted
-descendants can be anywhere. Extents and hit-test stacking sequences live in
+children's extents unless it clips). In-flow and positioned `z-index: auto`
+entries are pruned on it, and so is a stacking context whose flow walk passes
+over no box painted at a stacking root (#1719: its sequence is then exactly its
+flow walk; that bit is a separate memo, `HitCache::hoists`, computed only for a
+stacking context the hit test asks about, and a box that clips answers it
+conservatively, "hoists", without walking). A stacking context
+that hoists something is always entered, since its hoisted descendants can be
+anywhere; one with nothing in its box tree builds no sequence. Pin:
+`prune_tests::stacking_context_rows_hit_identically` (against the unpruned
+walk). Extents and hit-test stacking sequences live in
 `NodeTree::hit_cache` (`rinch_dom::hit_cache`), valid until its generation
 moves: every mutating `DomDocument` method that changes something (an identical
 attribute or text write returns first), `resolve_styles`, `resolve_layout`

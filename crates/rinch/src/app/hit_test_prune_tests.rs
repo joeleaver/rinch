@@ -333,6 +333,83 @@ fn a_scrolled_list_hits_identically() {
     }
 }
 
+/// Rows that are stacking contexts (#1719), which the prune now skips on their
+/// flow extent when nothing under them is hoisted — and must not when
+/// something is: every fifth row holds an absolute box that escapes a clipping
+/// child to hang 30px below the row (the row is its containing block), every
+/// seventh a `position: relative; z-index: 1` badge, every ninth a rotated
+/// leaf. Probed scrolled to three places against the unpruned walk.
+///
+/// Kills: the hoisting bit dropped (every stacking context pruned on its flow
+/// extent: the escaping absolutes go unhit), and a clipping box answering
+/// "hoists nothing" without looking (the absolute under the clipper).
+#[test]
+fn stacking_context_rows_hit_identically() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let scroller = doc.create_element("div");
+    doc.set_attribute(
+        scroller,
+        "style",
+        "height: 400px; overflow-y: auto; margin: 10px; position: relative; z-index: 0",
+    );
+    doc.append_child(body, scroller);
+    let div = |doc: &mut RinchDocument, parent: NodeId, style: &str| {
+        let d = doc.create_element("div");
+        doc.set_attribute(d, "style", style);
+        doc.append_child(parent, d);
+        d
+    };
+    for i in 0..300 {
+        let row = div(
+            &mut doc,
+            scroller,
+            &format!(
+                "position: relative; z-index: 0; width: 90px; height: 20px; margin-left: {}px",
+                i % 5
+            ),
+        );
+        div(&mut doc, row, "width: 40px; height: 10px");
+        if i % 5 == 0 {
+            let clip = div(&mut doc, row, "overflow: hidden; width: 60px; height: 10px");
+            div(
+                &mut doc,
+                clip,
+                "position: absolute; left: 100px; top: 30px; width: 30px; height: 15px",
+            );
+        }
+        if i % 7 == 0 {
+            div(
+                &mut doc,
+                row,
+                "position: relative; z-index: 1; left: 200px; top: -5px; width: 20px; height: 20px",
+            );
+        }
+        if i % 9 == 0 {
+            div(
+                &mut doc,
+                row,
+                "transform: rotate(30deg); width: 30px; height: 6px; margin-left: 300px",
+            );
+        }
+    }
+    doc.resolve_layout(800.0, 600.0);
+    for top in [0.0, 1234.5, 5000.0] {
+        doc.set_scroll_top(scroller, top);
+        assert_agree(&doc, &format!("scrolled to {top}"));
+    }
+    // Positive control: an escaping absolute is hit where it hangs, below its
+    // row (row 250 at 5000: content y 0, the box at 30..45, x 100..130 plus
+    // the scroller's 10px margin; the rows are 90px wide, so none covers it).
+    let hit = hit_test(&doc.tree, 125.0, 52.0).expect("a hit");
+    let style = doc.tree.nodes[hit]
+        .attributes
+        .get("style")
+        .cloned()
+        .unwrap_or_default();
+    assert!(style.contains("absolute"), "hit {hit}: {style}");
+}
+
 /// Scrollers inside scrollers, each holding `sticky`, `fixed`, `absolute`
 /// and `relative` children, scrolled one at a time with the cache warm
 /// between — the shape #911's partial invalidation has to get right. A scroll
@@ -942,4 +1019,36 @@ fn reference_hit_test_node_is_per_axis_like_the_real_one() {
         "real={real:?} oracle={oracle:?} — reference_hit_test_node must agree \
          with hit_test_node's per-axis check_children (#535)"
     );
+}
+
+/// A stacking-context row, cache warm with "hoists nothing" (#1719), then a
+/// child restyled into an absolute box hanging far below the row: the restyle
+/// drops the memo, and the box is hit where it hangs (review of #1720).
+#[test]
+fn a_stacking_row_that_starts_hoisting_is_hit() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let row = doc.create_element("div");
+    doc.set_attribute(
+        row,
+        "style",
+        "position: relative; z-index: 0; width: 100px; height: 20px; margin-top: 10px",
+    );
+    doc.append_child(body, row);
+    let kid = doc.create_element("div");
+    doc.set_attribute(kid, "style", "width: 50px; height: 10px");
+    doc.append_child(row, kid);
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        hit_test(&doc.tree, 300.0, 300.0).map(|h| h == kid.0),
+        Some(false)
+    );
+    doc.set_attribute(
+        kid,
+        "style",
+        "position: absolute; left: 280px; top: 280px; width: 50px; height: 50px",
+    );
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(hit_test(&doc.tree, 300.0, 300.0), Some(kid.0));
+    assert_agree(&doc, "after hoisting");
 }

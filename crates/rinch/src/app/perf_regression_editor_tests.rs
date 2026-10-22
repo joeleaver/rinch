@@ -182,7 +182,7 @@ fn one_caret_blink_repaints_the_caret() {
             (RepaintedPx, 320),
             (SurfacePx, 480000),
             (PaintNodesVisited, 5),
-            (StackingOrderBuilds, 3),
+            (StackingOrderBuilds, 2),
             (GlyphCacheHits, 19),
             (ClipMasks, 2),
             (ClipMaskPx, 504),
@@ -237,7 +237,7 @@ fn typing_one_character() {
             (RepaintedPx, 18112),
             (SurfacePx, 480000),
             (PaintNodesVisited, 5),
-            (StackingOrderBuilds, 3),
+            (StackingOrderBuilds, 2),
             (GlyphCacheHits, 19),
             (GlyphCacheMisses, 1),
             (ClipMasks, 2),
@@ -278,7 +278,7 @@ fn arrow_right() {
             (RepaintedPx, 608),
             (SurfacePx, 480000),
             (PaintNodesVisited, 5),
-            (StackingOrderBuilds, 3),
+            (StackingOrderBuilds, 2),
             (GlyphCacheHits, 19),
             (ClipMasks, 2),
             (ClipMaskPx, 828),
@@ -336,7 +336,7 @@ fn enter_splits_a_paragraph() {
             (RepaintedPx, 480000),
             (SurfacePx, 480000),
             (PaintNodesVisited, 22),
-            (StackingOrderBuilds, 3),
+            (StackingOrderBuilds, 2),
             (GlyphCacheHits, 286),
             // #536: the editor's bordered scroll container clips to its
             // padding box now, a border-width's worth smaller on every side
@@ -395,7 +395,7 @@ fn backspace_joins_two_paragraphs() {
             (SurfacePx, 480000),
             (RemovalDamageSteps, 4),
             (PaintNodesVisited, 22),
-            (StackingOrderBuilds, 3),
+            (StackingOrderBuilds, 2),
             (GlyphCacheHits, 324),
             // #536, see `enter_splits_a_paragraph` above.
             (ClipMasks, 1),
@@ -414,9 +414,10 @@ fn backspace_joins_two_paragraphs() {
 /// `settle` runs it (#1001). Before that, the click itself created the
 /// highlight's `data-pm-selection` div — a second layout, a scoped IFC pass
 /// over 37 nodes, and a full repaint. The hit-test caches are cold at the click
-/// (69 extents, 8 stacking sequences) because the overlay pass's resolve in
-/// `settle` moved their generation; a pointer move before the click warms them
-/// (36 extents, 6 sequences).
+/// (69 extents) because the overlay pass's resolve in `settle` moved their
+/// generation; a pointer move before the click warms them (36 extents, 6
+/// sequences). #1719: 8 → 6 sequences built over the frame, because paint
+/// builds none for a stacking context with no children (the editor's caret).
 #[test]
 fn a_toolbar_bold_over_a_word() {
     let mut page = page();
@@ -456,7 +457,7 @@ fn a_toolbar_bold_over_a_word() {
             (RepaintedPx, 18112),
             (SurfacePx, 480000),
             (PaintNodesVisited, 6),
-            (StackingOrderBuilds, 8),
+            (StackingOrderBuilds, 6),
             (GlyphCacheHits, 19),
             (ClipMasks, 2),
             (ClipMaskPx, 20520),
