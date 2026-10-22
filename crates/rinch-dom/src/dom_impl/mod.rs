@@ -492,15 +492,21 @@ impl RinchDocument {
 
             /* A closed <select> shows the selected option's label (painted by the
                backend) plus a dropdown arrow — its <option>/<optgroup> children are
-               not laid out, so its size comes from its widest option label
-               (`apply_stylo_styles_to_taffy`, issue #1098). Chrome 153's values,
+               not laid out, so its size comes from its widest option label,
+               answered as its content size by a Taffy measure (issue #1098,
+               #1129: author `width`/`min-*`/`max-*` apply to it as to any box's).
+               Chrome 153's values,
                measured: no padding and no `min-width` — the label inset and the
                arrow box are the control's own inner box, kept inside any author
                padding (`select::SELECT_ARROW_BOX`) — a 1px grey border, and a
                line-height forced to `normal`, which an author declaration does
                not move (`!important` from the UA origin outranks every author
-               declaration, important ones included). The interactive popup is
-               drawn by the app/shell layer (issue #121). */
+               declaration, important ones included). `overflow: clip
+               !important` is Chrome 155's computed value whatever the author
+               declares (`auto`, `scroll` and `hidden` all compute `clip`): a
+               clip box is no scroll container, so as a flex or grid item its
+               automatic minimum size is its label width (#1129). The
+               interactive popup is drawn by the app/shell layer (issue #121). */
             option, optgroup {
                 display: none;
             }
@@ -530,7 +536,7 @@ impl RinchDocument {
                 border: 1px solid rgb(118, 118, 118);
                 line-height: normal !important;
                 white-space: nowrap;
-                overflow: hidden;
+                overflow: clip !important;
             }
 
             /* Default list indentation (matches browser default).

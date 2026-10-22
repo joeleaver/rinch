@@ -136,6 +136,13 @@ pub(crate) fn form_control_content_height(node: &Node) -> Option<f32> {
             1.0
         }
         "br" => 1.0,
+        // A closed `<select>`: one line of its label plus its inner box's 1px
+        // above and below (#1098, #1129; `select::SELECT_INNER_BLOCK`).
+        "select" => {
+            return Some(
+                node.computed_style.line_height_px() + 2.0 * crate::select::SELECT_INNER_BLOCK,
+            );
+        }
         _ => return None,
     };
     Some(rows * node.computed_style.line_height_px())
@@ -444,6 +451,14 @@ fn form_control_content_width_any(
     font_generation: u64,
     perf: &crate::perf::PerfCounters,
 ) -> f32 {
+    if node.tag() == Some("select") {
+        // Its widest option label, shaped and cached on the node by the
+        // cascade (`apply_stylo_styles_to_taffy`), plus the label inset and
+        // the arrow box (#1098). No label shaped yet (a `px` width, which
+        // never asks) is the inner box alone.
+        let label = node.select_label_width.get().map_or(0.0, |(_, w)| w.ceil());
+        return label + crate::select::SELECT_LABEL_INSET + crate::select::SELECT_ARROW_BOX;
+    }
     if node.tag() == Some("textarea") {
         let factor = size_attribute(node, "cols");
         let metrics = cached_char_metrics(node, font_cx, layout_cx, font_generation, perf);
