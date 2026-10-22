@@ -165,3 +165,73 @@ fn a_label_on_another_element_does_not_touch_the_select() {
     doc.set_text_content(t, "Hello world option");
     assert_eq!(width(&mut doc, sel, 802.0), 160.0);
 }
+
+/// The width of a select built fresh with `labels`, laid out once: the oracle
+/// for an edit history ending in the same options (a browser sizes a select
+/// from the options it has, so it agrees by construction).
+fn fresh(labels: &[&str]) -> f32 {
+    let mut doc = document();
+    let sel = select(&mut doc);
+    for label in labels {
+        option_with_text(&mut doc, sel, label);
+    }
+    width(&mut doc, sel, 800.0)
+}
+
+/// An option moved to another select re-sizes both: the one it left and the
+/// one it joined, through `append_child` and `insert_before` alike (review of
+/// #1737, F1 — the old select kept the moved option's 160).
+#[test]
+fn an_option_moved_to_another_select_resizes_both() {
+    for use_insert_before in [false, true] {
+        let mut doc = document();
+        let a = select(&mut doc);
+        let (wide, _) = option_with_text(&mut doc, a, "Hello world option");
+        option_with_text(&mut doc, a, "a");
+        let b = select(&mut doc);
+        let (b_first, _) = option_with_text(&mut doc, b, "a");
+        assert_eq!(width(&mut doc, a, 800.0), 160.0);
+        if use_insert_before {
+            doc.insert_before(b, wide, b_first);
+        } else {
+            doc.append_child(b, wide);
+        }
+        assert_eq!(width(&mut doc, a, 801.0), fresh(&["a"]), "the select it left");
+        assert_eq!(width(&mut doc, b, 802.0), 160.0, "the select it joined");
+    }
+}
+
+/// `set_inner_html` on an option replaces its label, an empty string included
+/// (review of #1737, F2 — clearing it left the select at 160).
+#[test]
+fn set_inner_html_on_an_option_resizes_the_select() {
+    let mut doc = document();
+    let sel = select(&mut doc);
+    let (o, _) = option_with_text(&mut doc, sel, "a");
+    assert_eq!(width(&mut doc, sel, 800.0), 31.0);
+    doc.set_inner_html(o, "<b>Hello <i>world option</i></b>");
+    assert_eq!(width(&mut doc, sel, 801.0), 160.0);
+    doc.set_inner_html(o, "");
+    assert_eq!(width(&mut doc, sel, 802.0), fresh(&[""]));
+}
+
+/// An edit inside an option in an `<optgroup>`: the walk passes the group on
+/// its way to the select (review of #1737, F3). 160 is rinch's unindented
+/// width; Chrome 155 indents an option in a group (178, #1736).
+#[test]
+fn an_edit_inside_an_option_in_an_optgroup_resizes_the_select() {
+    let mut doc = document();
+    let sel = select(&mut doc);
+    let group = doc.create_element("optgroup");
+    doc.append_child(sel, group);
+    let o = doc.create_element("option");
+    doc.append_child(group, o);
+    let span = doc.create_element("span");
+    doc.set_attribute(span, "style", "display: contents");
+    doc.append_child(o, span);
+    let t = doc.create_text("a");
+    doc.append_child(span, t);
+    assert_eq!(width(&mut doc, sel, 800.0), 31.0);
+    doc.set_text_content(t, "Hello world option");
+    assert_eq!(width(&mut doc, sel, 801.0), 160.0);
+}
