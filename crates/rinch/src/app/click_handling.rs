@@ -792,6 +792,42 @@ impl RinchApp {
         Some((ax as f32, ay as f32, 1.0, (ay2 - ay).abs() as f32))
     }
 
+    /// The box of the glyph cluster at byte `offset` of a field's value, in
+    /// window px `(x, y, width, height)`, over the layout it is painted and
+    /// hit-tested with ([`Self::input_text_layout`]: its text column, a
+    /// single-line field's scroll and centring, bullets for a password field)
+    /// and carried through the painted box's transform like
+    /// [`Self::input_caret_rect_with_affinity`]. `None` for an empty field, a
+    /// missing node or an offset past the value.
+    pub(super) fn input_glyph_rect(
+        tree: &rinch_dom::NodeTree,
+        font_cx: &mut parley::FontContext,
+        layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+        node_id: usize,
+        offset: usize,
+    ) -> Option<(f32, f32, f32, f32)> {
+        let it = Self::input_text_layout(tree, font_cx, layout_cx, node_id)?;
+        let display_offset = if it.is_password {
+            let clamped = offset.min(it.value.len());
+            it.value[..clamped].chars().count() * PASSWORD_BULLET.len()
+        } else {
+            offset
+        };
+        let g = rinch_dom::text_query::glyph_bounds_for_offset_layout(&it.layout, display_offset)?;
+        let bx = (it.padding_left - it.scroll_x + g.x) as f64;
+        let by = (it.padding_top + it.vertical_offset + g.y) as f64;
+        let fwd =
+            |x: f64, y: f64| rinch_dom::paint::point_from_painted_box(tree, node_id, 1.0, x, y);
+        let (x0, y0) = fwd(bx, by);
+        let (x1, y1) = fwd(bx + g.width as f64, by + g.height as f64);
+        Some((
+            x0.min(x1) as f32,
+            y0.min(y1) as f32,
+            (x1 - x0).abs() as f32,
+            (y1 - y0).abs() as f32,
+        ))
+    }
+
     /// The Parley layout `paint_input_value` draws a field's text with, rebuilt
     /// with the app's own contexts — one builder, shared by the click→offset
     /// map and the offset→caret map so the two agree. `None` for a missing

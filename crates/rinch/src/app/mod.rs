@@ -394,10 +394,6 @@ use rinch_dom::paint::skia_painter::TinySkiaPainter;
 #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
 use rinch_dom::paint::vello_painter::VelloPainter;
 use rinch_dom::text_query::byte_offset_from_position;
-#[cfg(feature = "debug")]
-use rinch_dom::text_query::caret_position_for_offset_layout;
-#[cfg(feature = "debug")]
-use rinch_dom::text_query::glyph_bounds_for_offset_layout;
 use rinch_editable::{EditCommand, EditableDocument, EditableState, Selection, StringDocument};
 use rinch_platform::{
     AppAction, ImeEvent, Instant, KeyCode, KeyRepeat, Modifiers, MouseButton, PlatformEvent,
