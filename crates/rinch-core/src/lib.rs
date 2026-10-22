@@ -79,7 +79,10 @@ pub use main_thread::{
 pub use task::{Sleep, TaskHandle, sleep, spawn_local};
 
 // Re-export cross-platform timers
-pub use timer::{TimeoutHandle, clear_timeout, fire_timeout, set_timeout, set_timer_backend};
+pub use timer::{
+    IntervalHandle, TimeoutHandle, clear_interval, clear_timeout, fire_timeout, set_interval,
+    set_timeout, set_timer_backend,
+};
 
 // Re-export reactive types for convenience
 pub use reactive::{
