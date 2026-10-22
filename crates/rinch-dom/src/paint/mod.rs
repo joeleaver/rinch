@@ -3730,6 +3730,8 @@ fn paint_node(
                 if matches!(node.tag(), Some("input" | "textarea")) {
                     let value = crate::form_control::control_value(&tree.nodes, node_id)
                         .unwrap_or_default();
+                    let scroll_x =
+                        crate::form_control::input_scroll_x(tree, font_cx, layout_cx, node_id);
                     paint_input_value(
                         node,
                         &value,
@@ -3743,6 +3745,7 @@ fn paint_node(
                         font_cx,
                         layout_cx,
                         node_transform,
+                        scroll_x,
                     );
                 } else if node.tag() == Some("select") {
                     // The closed control's label + arrow. Options are display:none

@@ -179,6 +179,8 @@ mod implicit_focus_tests;
 mod inline_menu_spacer_529_tests;
 #[cfg(test)]
 mod input_commit_tests;
+#[cfg(all(test, software_shell))]
+mod input_horizontal_scroll_1721_tests;
 #[cfg(test)]
 mod input_ime_tests;
 #[cfg(all(test, feature = "clipboard"))]
@@ -3823,6 +3825,12 @@ impl RinchApp {
             d.tree.paint_dirty_nodes.push(node_id);
         }
         d.tree.dirty_nodes.insert(node_id);
+        // A single-line field scrolls its caret into view at the move that
+        // put it there (#1721), so a run of keys between two frames scrolls
+        // as they would one frame apart. Paint and the hit-test builders read
+        // the same offset afterwards.
+        let d = &mut *d;
+        rinch_dom::form_control::input_scroll_x(&d.tree, &mut d.font_cx, &mut d.layout_cx, node_id);
     }
 
     /// Set the focused field's dirty value flag: write its text to `value`,
@@ -3872,6 +3880,9 @@ impl RinchApp {
             node.attributes
                 .remove(rinch_dom::form_control::CARET_AFFINITY_ATTR);
             node.attributes.remove("data-preedit");
+            // A blur scrolls a single-line field back to its start (Chrome
+            // 155), and the next focus starts from there (#1721).
+            node.input_scroll_x.set(f32::NAN);
         }
         // The blurred field's caret and selection highlight go with these
         // attributes, and paint reads them straight off the node: name it, or

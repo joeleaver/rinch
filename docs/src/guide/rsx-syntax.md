@@ -489,6 +489,14 @@ So a notes field takes line breaks with no ceremony, a chat composer sends on
 Enter and takes a break on Shift+Enter, and a single-line `<input>` is
 unchanged — a line break is not representable in its value.
 
+A value wider than a single-line `<input>` stays on one line, as in a browser
+(#1721): it is clipped to the field's content box and scrolled horizontally to
+keep the caret in view. Moving the caret or typing past an edge scrolls by the
+least that shows it, focusing a field whose caret is out of view centres it,
+and losing focus scrolls back to the start (Chrome 155's behaviour). Clicks,
+the selection highlight, the caret, `NodeHandle::caret_rect` and the IME
+candidate box all follow the scroll. A `<textarea>` wraps at its width.
+
 `onsubmit` is read the way `onchange` is: from the control, then up its
 ancestors, so an `onsubmit` on the wrapper around a field submits that field.
 One backend difference to know about: on web, **Shift+Enter in an `<input>`

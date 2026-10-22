@@ -1570,7 +1570,10 @@ mod anchor {
         let (bx, by, _, bh) = abs_box(&app, input);
         left_press(&mut app, bx + 1.0, by + bh / 2.0);
         let s = app.text_edit_state().unwrap();
-        assert_eq!(s.anchor, (bx, by, 1.0, bh));
+        // The text origin is the content box: the UA `<input>`'s 2px border
+        // in from the border box (#1721; it was the left padding, over the
+        // border).
+        assert_eq!(s.anchor, (bx + 2.0, by, 1.0, bh));
     }
 }
 
