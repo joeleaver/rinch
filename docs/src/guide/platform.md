@@ -99,13 +99,21 @@ without the software painter (`embed`) has nothing to rasterise a tile with and
 draws one fill per visible tile instead. No layer is ever dropped for having too
 many tiles.
 
-**One known difference from browsers** (tracked separately as #1151): rinch
-places a tile on whole device pixels, rounding a fractional
-`background-position` (and a fractional translate) to the nearest one. Chrome
-keeps the fraction and blends the pixel on the tile's edge. The result is within
-one device pixel of Chrome's, but a `background-position` animation — the
-striped `Progress` bar — moves in one-device-pixel steps in rinch where Chrome's
-moves smoothly.
+Tiles start from the element's box rounded to a whole pixel, as in Chrome, so
+a box at a fractional layout position (`left: 10.5px`) still draws crisp tiles.
+With the software renderer, a tile on an axis that repeats keeps a fractional
+`background-position` (or a fractional translate) and blends the pixel on its
+edge, as Chrome does, so a `background-position` animation — the striped
+`Progress` bar — moves smoothly (#1151). A full window of such a background
+costs about 2.7x more to paint at a fractional position than at a whole one.
+**The GPU renderer still moves it in whole-device-pixel steps**: its image
+sampler cannot blend across a tile boundary, and a fractional phase there made
+the stripes pulse in width during an animation. On an axis that does not
+repeat, a fractional `background-position` is rounded to a device pixel, as
+Chrome rounds it; rinch also rounds a fractional translate there, where Chrome
+blends. A build without the software painter, or a tile over 4 million device
+pixels, rounds every tile to a device pixel. (Separately, a scaled image tile
+has hard edges where Chrome's are blended, #1753.)
 
 An image used to be stretched over the element's border box whatever its
 `background-size`; one that relied on that now tiles at its natural size.

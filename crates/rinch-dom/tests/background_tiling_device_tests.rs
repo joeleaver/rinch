@@ -123,8 +123,11 @@ fn probe_rows() {
 }
 
 /// The Vello path: the same document emits ONE image draw whose sampler is
-/// Repeat/Low (nearest) on both axes, whose image is the tile at device size,
-/// and whose brush transform places tile (0,0) where tiny-skia's pattern does.
+/// Repeat/Low (nearest) on both axes (the tile's 19.5-device-px origin is
+/// placed on a whole pixel on the GPU; #1151 keeps the fraction in software
+/// only), whose image is the tile at device size,
+/// and whose brush transform places tile (0,0) on the device pixel nearest
+/// to where tiny-skia's pattern does.
 #[test]
 fn vello_brush_matches_the_pattern_path() {
     use rinch_dom::paint::vello_painter::VelloPainter;
@@ -175,7 +178,7 @@ fn vello_brush_matches_the_pattern_path() {
     assert_eq!(
         (sa >> 12) & 3,
         0,
-        "quality Low (nearest), as tiny-skia's Nearest"
+        "quality Low (nearest): the GPU steps by whole device pixels"
     );
     assert_eq!(n_img, 1, "one image draw for 5625 tiles");
 }

@@ -7,9 +7,12 @@
 //!   antialiased rect; two tiles meeting mid device pixel each covered it by
 //!   half and composited to 75%, a page-coloured line at every boundary.
 //!   Chrome draws none. Fixed by placing tiles on whole device pixels (the
-//!   pattern's origin, and `LayerGeometry::tiles` on the tile-by-tile path).
+//!   pattern's origin, which since #1151 keeps its fraction instead: a
+//!   pattern has no tile edges to seam; and `LayerGeometry::tiles` on the
+//!   tile-by-tile path).
 //!   Both red before that, green after. (Chrome keeps a fractional phase and
-//!   blends the edge pixel instead; rinch rounds it — #1151.)
+//!   blends the edge pixel instead; since #1151 so does rinch, on the pattern
+//!   path.)
 //! - `r4` — **many tiles** (review F2). An 8px tile on a 600x600 box is 5625
 //!   tiles; past the old 4096 cap the layer was painted as one stretched tile
 //!   (left half red, right half blue). It is now one repeating pattern
@@ -89,9 +92,10 @@ fn r1_no_seam_at_a_fractional_position() {
     assert!(bad.is_empty(), "seams: {bad:?}");
 }
 
-/// `r1` on the tile-by-tile path: `repeat-x` is not a pattern (it repeats on
-/// one axis), so each tile is filled on its own and only the device-pixel
-/// snap keeps the seams shut. Chrome 153 (measured): every column pure red.
+/// `r1` with `repeat-x`. Written when a layer repeating on one axis was drawn
+/// tile by tile; it is a pattern clipped to its one-tile strip now, which keeps
+/// the fraction on x (#1151) and has no tile edges to seam. Chrome 153
+/// (measured): every column pure red.
 #[test]
 fn r1b_no_seam_at_a_fractional_position_tile_by_tile() {
     let (mut doc, _) = mount(

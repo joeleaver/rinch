@@ -44,11 +44,22 @@
 //!    which has nothing to rasterise a tile with. Never skipped, however many
 //!    tiles that is.
 //!
-//! **Positions are whole device pixels** (tracked separately as #1151): the
-//! tile phase is rounded in device space, so tiles meet on pixel edges and a
-//! `background-position` animation moves in one-device-pixel steps. Chrome
-//! keeps the fractional phase and blends the edge pixel, so its stripes move
-//! smoothly; rinch's are within one device pixel of it at every frame.
+//! **Tiles start from the box rounded to a whole pixel** of its own
+//! (pre-transform) space, as Chrome snaps the border box; only
+//! `background-position` and a transform carry a fraction from there.
+//!
+//! **A repeating axis keeps that sub-pixel position** (#1151), as Chrome's
+//! does: the pattern's origin keeps its fraction and is sampled bilinearly,
+//! so the pixel on a tile edge blends the two sides and a
+//! `background-position` animation moves smoothly. A pattern has no tile
+//! edges to seam. The Vello painter steps such a pattern to a whole device
+//! pixel instead (its sampler clamps at the tile boundary; see
+//! `VelloPainter::fill_repeating`). An axis that does **not** repeat rounds
+//! the tile's origin to a device pixel (`DeviceSnap`), as Chrome rounds a
+//! fractional `background-position` (Chrome blends a fractional translate
+//! there; rinch rounds it too); so does step 3 on every axis, since its tiles
+//! are separate antialiased fills that would seam where two met mid-pixel.
+//! Step 1's covering tile keeps the fraction on an axis that repeats.
 //!
 //! **Every layer** of a comma-separated `background-image` list is painted
 //! (#1142), from the last listed (the bottom) to the first, over the
@@ -167,9 +178,15 @@ fn paint_layer(
         BackgroundValue::None | BackgroundValue::Color(_) => return,
         _ => None,
     };
-    let Some(layer) = layer_geometry(cs, geometry, scale, rect, intrinsic) else {
+    let Some(mut layer) = layer_geometry(cs, geometry, scale, rect, intrinsic) else {
         return;
     };
+    // The box itself is placed on a whole pixel of its own (pre-transform,
+    // scaled) space before its tiles are laid out from it, as Chrome snaps
+    // the border box: a box at `left: 10.5px` draws crisp tiles from pixel 11.
+    // Only `background-position` (and a transform) keeps its fraction.
+    layer.origin.0 += rect.x0.round() - rect.x0;
+    layer.origin.1 += rect.y0.round() - rect.y0;
     let snap = DeviceSnap::of(transform);
 
     // 1. One tile covering the whole painting area needs no clip:
@@ -273,6 +290,24 @@ impl DeviceSnap {
         match self {
             Self::Translate(_, ty) => (v + ty).round() - ty,
             Self::None => v,
+        }
+    }
+    /// `v` snapped when its axis does not repeat, kept where it is when it
+    /// does (#1151): Chrome rounds a `no-repeat` tile's origin to a device
+    /// pixel and keeps a repeating one's fractional phase, blending the edge
+    /// pixel.
+    fn x_unless(self, v: f64, repeats: bool) -> f64 {
+        if repeats { v } else { self.x(v) }
+    }
+    fn y_unless(self, v: f64, repeats: bool) -> f64 {
+        if repeats { v } else { self.y(v) }
+    }
+    /// Whether shape-space `(x, y)` is on a device pixel corner.
+    #[cfg(feature = "software-renderer")]
+    fn on_grid(self, x: f64, y: f64) -> bool {
+        match self {
+            Self::Translate(..) => (self.x(x) - x).abs() < 1e-6 && (self.y(y) - y).abs() < 1e-6,
+            Self::None => false,
         }
     }
 }
@@ -551,9 +586,16 @@ fn fill_as_pattern(
                 blob
             }
         };
-        // Tile (0, 0) at the positioned tile's device-snapped origin, the
-        // raster scaled back to the tile's shape-space size.
-        let origin = (snap.x(layer.origin.0), snap.y(layer.origin.1));
+        // Tile (0, 0) at the positioned tile's origin, the raster scaled back
+        // to the tile's shape-space size. The origin keeps its fraction on an
+        // axis that repeats (#1151): the pattern has no tile edges to seam,
+        // and bilinear sampling blends the edge pixel as Chrome does. On an
+        // axis that does not repeat it is rounded to a device pixel, as
+        // Chrome rounds it.
+        let origin = (
+            snap.x_unless(layer.origin.0, layer.repeats_x),
+            snap.y_unless(layer.origin.1, layer.repeats_y),
+        );
         let exact = (dw - w as f64).abs() < 1e-6 && (dh - h as f64).abs() < 1e-6;
         let tile = RepeatTile {
             pixels: &pixels,
@@ -561,7 +603,7 @@ fn fill_as_pattern(
             height: h,
             transform: Affine::translate(origin)
                 * Affine::scale_non_uniform(tw / w as f64, th / h as f64),
-            smooth: !(exact && matches!(snap, DeviceSnap::Translate(..))),
+            smooth: !(exact && snap.on_grid(origin.0, origin.1)),
         };
         // An axis that does not repeat: the pattern is clipped to the strip
         // the one tile occupies on it.
@@ -651,12 +693,19 @@ impl LayerGeometry {
         }
     }
 
-    /// The one tile, snapped, when it alone covers all of `rect`.
+    /// The one tile when it alone covers all of `rect`, snapped on an axis
+    /// that does not repeat (one that does keeps its fraction, #1151).
     fn covering_tile(&self, rect: Rect, snap: DeviceSnap) -> Option<Rect> {
         let (tw, th) = self.size;
-        let x = Self::first_start(self.origin.0, tw, rect.x0, self.repeats_x);
-        let y = Self::first_start(self.origin.1, th, rect.y0, self.repeats_y);
-        let tile = Rect::new(snap.x(x), snap.y(y), snap.x(x + tw), snap.y(y + th));
+        let (rx, ry) = (self.repeats_x, self.repeats_y);
+        let x = Self::first_start(self.origin.0, tw, rect.x0, rx);
+        let y = Self::first_start(self.origin.1, th, rect.y0, ry);
+        let tile = Rect::new(
+            snap.x_unless(x, rx),
+            snap.y_unless(y, ry),
+            snap.x_unless(x + tw, rx),
+            snap.y_unless(y + th, ry),
+        );
         (tile.x0 <= rect.x0 && tile.y0 <= rect.y0 && tile.x1 >= rect.x1 && tile.y1 >= rect.y1)
             .then_some(tile)
     }
