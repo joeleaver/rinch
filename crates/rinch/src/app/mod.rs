@@ -1066,6 +1066,9 @@ pub struct RinchApp {
     /// `rinch::window` (#1770): on for a shell's main window, off for the
     /// DevTools panel and an embedded context.
     pub(crate) publishes_window_state: bool,
+    /// The logical size this app's window was last mounted or resized to,
+    /// for [`set_publishes_window_state`](Self::set_publishes_window_state).
+    pub(crate) window_logical_size: Option<(f64, f64)>,
 }
 
 impl RinchApp {
@@ -1169,6 +1172,7 @@ impl RinchApp {
             #[cfg(feature = "debug")]
             debug_modifiers_to_restore: None,
             publishes_window_state: false,
+            window_logical_size: None,
         }
     }
 
@@ -1180,10 +1184,21 @@ impl RinchApp {
     /// [`scale_factor`](crate::window::scale_factor) and
     /// [`window_focused`](crate::window::window_focused) answer. Off by
     /// default; the desktop and Android shells turn it on for their main
-    /// window. An embed host that owns one window per thread may turn it on
-    /// for its `RinchApp`. Call before `mount_component`.
+    /// window. The display scale is published by
+    /// [`set_device_pixel_ratio`](Self::set_device_pixel_ratio) too, so a
+    /// window re-created at another scale is followed.
+    ///
+    /// Turning it on publishes the scale at once, and the size when the app
+    /// has been mounted, so it may be turned on after the mount — which is
+    /// how an embed host that owns one window per thread uses it with
+    /// `RinchContext`, whose constructor mounts.
     pub fn set_publishes_window_state(&mut self, publish: bool) {
         self.publishes_window_state = publish;
+        self.publish_window_state(crate::window::WindowFacts {
+            scale: Some(self.device_pixel_ratio),
+            size: self.window_logical_size,
+            focused: None,
+        });
     }
 
     /// Publish `state` if this app publishes its window (#1770).
@@ -1415,9 +1430,10 @@ impl RinchApp {
         doc.borrow_mut().tree.device_scale = self.device_pixel_ratio;
         // The window `rinch::window` describes (#1770); the shell's main
         // window is not focused until the system says so.
+        self.window_logical_size = Some((viewport_width as f64, viewport_height as f64));
         self.publish_window_state(crate::window::WindowFacts {
             scale: Some(self.device_pixel_ratio),
-            size: Some((viewport_width as f64, viewport_height as f64)),
+            size: self.window_logical_size,
             focused: None,
         });
 
@@ -5429,6 +5445,13 @@ impl RinchApp {
     /// the value is unchanged.
     pub fn set_device_pixel_ratio(&mut self, dpr: f64) {
         self.device_pixel_ratio = dpr;
+        // Every route a new scale takes — `ScaleFactorChanged`, a desktop
+        // window re-created by `show_window`, Android's `InitWindow` at a new
+        // density — goes through here (#1770).
+        self.publish_window_state(crate::window::WindowFacts {
+            scale: Some(dpr),
+            ..Default::default()
+        });
         if let Some(doc) = &self.doc {
             let mut d = doc.borrow_mut();
             let previous = d.tree.device_scale;

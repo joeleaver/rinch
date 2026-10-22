@@ -329,8 +329,9 @@ impl RinchApp {
             PlatformEvent::Resized { width, height } => {
                 self.resize_layout(width, height);
                 actions.push(AppAction::RequestRedraw);
+                self.window_logical_size = Some((width as f64, height as f64));
                 self.publish_window_state(crate::window::WindowFacts {
-                    size: Some((width as f64, height as f64)),
+                    size: self.window_logical_size,
                     ..Default::default()
                 });
             }
@@ -1418,10 +1419,6 @@ impl RinchApp {
                 }
             }
             PlatformEvent::WindowFocus(focused) => {
-                self.publish_window_state(crate::window::WindowFacts {
-                    focused: Some(focused),
-                    ..Default::default()
-                });
                 // Modifiers a debug `mouse_down` is holding are released with
                 // the keyboard, as a physical key would be: a window that lost
                 // focus holds no key down, and the matching debug `mouse_up`
@@ -1490,6 +1487,13 @@ impl RinchApp {
                     self.scene_dirty = true;
                     actions.push(AppAction::RequestRedraw);
                 }
+                // Last, so a reader of `window_focused` (#1770) runs after the
+                // app's own blur handling above: keys released, menus closed,
+                // the drag healed, key entries told.
+                self.publish_window_state(crate::window::WindowFacts {
+                    focused: Some(focused),
+                    ..Default::default()
+                });
             }
             PlatformEvent::KeyDown {
                 key,
@@ -1995,10 +1999,6 @@ impl RinchApp {
                 // just need a redraw.
                 self.set_device_pixel_ratio(sf);
                 actions.push(AppAction::RequestRedraw);
-                self.publish_window_state(crate::window::WindowFacts {
-                    scale: Some(sf),
-                    ..Default::default()
-                });
             }
             PlatformEvent::UserEvent(UserEvent::ReRender) => {
                 if self.resolve_and_repaint(vp_w, vp_h) {

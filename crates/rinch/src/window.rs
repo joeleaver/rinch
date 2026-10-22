@@ -35,8 +35,10 @@
 //!   window — so the getters answer their defaults (`1.0`, `(0.0, 0.0)`,
 //!   `false`) unless the host's `RinchApp` turns publishing on.
 //!
-//! The getters are for the UI thread (they read signals); [`set_window_title`]
-//! may be called from any thread on the desktop.
+//! The getters are for the UI thread (they read signals, which belong to the
+//! thread): read on another thread they answer that thread's defaults, and
+//! say so once per thread in a `tracing` warning. [`set_window_title`] may be
+//! called from any thread on the desktop.
 //!
 //! [`Memo`]: rinch_core::Memo
 //! [`Effect`]: rinch_core::Effect
@@ -50,9 +52,16 @@ use rinch_core::Signal;
 #[non_exhaustive]
 pub enum OpenUrlError {
     /// The string is not a URL rinch will hand on: it has no scheme
-    /// (`https:`, `mailto:`, `file:` …), starts with `-` (it would read as an
-    /// option to the desktop launcher), or holds a control character.
+    /// (`https:`, `mailto:`, `file:` …), its "scheme" is one letter (a Windows
+    /// path, `C:\…`, which the system would open as a program), it starts with
+    /// `-` (it would read as an option to the desktop launcher), or it holds a
+    /// control character.
     Invalid,
+    /// The URL's scheme runs code rather than naming something to open:
+    /// `javascript:`, `vbscript:` or `data:`. In a browser such a URL would run
+    /// in (or with the reach of) the app's own page — `window.open` gives a
+    /// `javascript:` URL the opener's origin — so it is refused everywhere.
+    ScriptScheme,
     /// This platform has no way to open a URL from rinch (Android, for now).
     Unsupported,
     /// The browser refused to open a new tab — a popup blocker, usually
@@ -67,6 +76,9 @@ impl std::fmt::Display for OpenUrlError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             OpenUrlError::Invalid => f.write_str("not a URL with a scheme"),
+            OpenUrlError::ScriptScheme => {
+                f.write_str("javascript:, vbscript: and data: URLs are not opened")
+            }
             OpenUrlError::Unsupported => f.write_str("opening a URL is not supported here"),
             OpenUrlError::Blocked => f.write_str("the browser blocked the new tab"),
             OpenUrlError::Launch(why) => write!(f, "could not start the URL launcher: {why}"),
@@ -76,19 +88,31 @@ impl std::fmt::Display for OpenUrlError {
 
 impl std::error::Error for OpenUrlError {}
 
-/// Whether `url` is something [`open_url`] hands on: a scheme
-/// (RFC 3986: a letter, then letters, digits, `+`, `-` or `.`, then `:`), no
-/// leading `-`, no control character.
-fn is_openable(url: &str) -> bool {
+/// Whether [`open_url`] hands `url` on: a scheme of two or more characters
+/// (RFC 3986: a letter, then letters, digits, `+`, `-` or `.`, then `:`; a
+/// one-letter one is a Windows drive), no leading `-`, no control character,
+/// and not a scheme that runs code.
+fn check_url(url: &str) -> Result<(), OpenUrlError> {
     if url.starts_with('-') || url.chars().any(char::is_control) {
-        return false;
+        return Err(OpenUrlError::Invalid);
     }
     let Some((scheme, _)) = url.split_once(':') else {
-        return false;
+        return Err(OpenUrlError::Invalid);
     };
     let mut chars = scheme.chars();
-    chars.next().is_some_and(|c| c.is_ascii_alphabetic())
-        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    let well_formed = scheme.len() >= 2
+        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    if !well_formed {
+        return Err(OpenUrlError::Invalid);
+    }
+    if ["javascript", "vbscript", "data"]
+        .iter()
+        .any(|s| scheme.eq_ignore_ascii_case(s))
+    {
+        return Err(OpenUrlError::ScriptScheme);
+    }
+    Ok(())
 }
 
 /// Open `url` in the system's default handler: the default browser for
@@ -102,14 +126,20 @@ fn is_openable(url: &str) -> bool {
 ///   gesture; outside one it is usually [`OpenUrlError::Blocked`].
 /// - **Android**: [`OpenUrlError::Unsupported`].
 ///
-/// The URL is handed on as given — a `file:` URL opens that file with its
-/// default application — so do not pass a URL an untrusted party chose without
-/// checking its scheme. Rinch only refuses what is not a URL
-/// ([`OpenUrlError::Invalid`]).
+/// Refused on every target: what is not a URL ([`OpenUrlError::Invalid`],
+/// a one-letter "scheme" — a Windows path — included) and `javascript:`,
+/// `vbscript:` and `data:` ([`OpenUrlError::ScriptScheme`]).
+///
+/// **Everything else is handed to the system as given, and the system may run
+/// a program with it.** A `file:` URL opens that file with its default
+/// application — an executable or a script runs; a custom scheme
+/// (`steam:`, `ms-settings:`, an app's own) goes to whatever program
+/// registered it, with the rest of the URL as its input. So never pass a URL
+/// an untrusted party chose (a link in a document, a message, a web response)
+/// without checking that its scheme is one you mean to open — usually just
+/// `https:` (and `http:`, `mailto:`).
 pub fn open_url(url: &str) -> Result<(), OpenUrlError> {
-    if !is_openable(url) {
-        return Err(OpenUrlError::Invalid);
-    }
+    check_url(url)?;
     platform::open_url(url)
 }
 
@@ -119,8 +149,10 @@ pub fn open_url(url: &str) -> Result<(), OpenUrlError> {
 /// the tray is shown again.
 ///
 /// On the desktop it may be called from any thread and is applied on the event
-/// loop's next turn (before the loop starts: when the window is created). A
-/// no-op on Android.
+/// loop's next turn (before the loop starts: when the window is created). The
+/// title is stored, not queued: with no desktop window to apply it to (an embed
+/// host, which owns its window and its title) it only replaces the stored
+/// one. A no-op on Android.
 pub fn set_window_title(title: &str) {
     platform::set_window_title(title);
 }
@@ -174,6 +206,12 @@ thread_local! {
 fn signals() -> WindowSignals {
     if let Some(s) = SIGNALS.with(Cell::get) {
         return s;
+    }
+    if !rinch_core::is_main_thread() {
+        tracing::warn!(
+            "rinch::window was read off the UI thread: the window facts belong to the \
+             UI thread, so this thread sees its own defaults"
+        );
     }
     let initial = platform::initial_state();
     let s = rinch_core::unowned(|| WindowSignals {
@@ -239,6 +277,20 @@ struct Initial {
     focused: bool,
 }
 
+/// The title [`set_window_title`] stored on the desktop (#1770): taken by the
+/// shell when it creates its window and on each `ApplyWindowTitle`.
+#[cfg(all(not(target_arch = "wasm32"), feature = "desktop"))]
+static STORED_TITLE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Take the title [`set_window_title`] stored, if any.
+#[cfg(all(not(target_arch = "wasm32"), feature = "desktop"))]
+pub(crate) fn take_stored_title() -> Option<String> {
+    STORED_TITLE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 mod platform {
     use super::{Initial, OpenUrlError};
@@ -256,9 +308,18 @@ mod platform {
 
     pub(super) fn set_window_title(title: &str) {
         #[cfg(feature = "desktop")]
-        crate::shell::rinch_runtime::send_native_event(
-            crate::shell::rinch_runtime::RinchNativeEvent::SetWindowTitle(title.to_string()),
-        );
+        {
+            *super::STORED_TITLE.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(title.to_string());
+            // Wake a running shell to apply it; before the loop starts (or
+            // with no shell at all) nothing is queued: the window takes it
+            // when it is created.
+            if crate::shell::rinch_runtime::GLOBAL_PROXY.get().is_some() {
+                crate::shell::rinch_runtime::send_native_event(
+                    crate::shell::rinch_runtime::RinchNativeEvent::ApplyWindowTitle,
+                );
+            }
+        }
         #[cfg(not(feature = "desktop"))]
         let _ = title;
     }
@@ -463,8 +524,10 @@ mod tests {
             "mailto:a@b.c",
             "file:///tmp/x",
             "x-app+v1.2:thing",
+            "js:x",
+            "datax:y",
         ] {
-            assert!(is_openable(ok), "{ok}");
+            assert_eq!(check_url(ok), Ok(()), "{ok}");
         }
         for bad in [
             "",
@@ -476,9 +539,25 @@ mod tests {
             "ht tp://x",
             "https://x\ny",
             "https://x\0",
+            "C:\\Windows\\System32\\calc.exe",
+            "c:/Windows/notepad.exe",
+            "z:thing",
         ] {
-            assert!(!is_openable(bad), "{bad:?}");
             assert_eq!(open_url(bad), Err(OpenUrlError::Invalid), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn script_schemes_are_refused_in_any_case() {
+        for bad in [
+            "javascript:alert(1)",
+            "JavaScript:alert(localStorage.x)",
+            "vbscript:msgbox(1)",
+            "VBSCRIPT:x",
+            "data:text/html,<script>alert(1)</script>",
+            "DATA:text/html;base64,PHNjcmlwdD4=",
+        ] {
+            assert_eq!(open_url(bad), Err(OpenUrlError::ScriptScheme), "{bad:?}");
         }
     }
 

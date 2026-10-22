@@ -276,8 +276,8 @@ pub enum RinchNativeEvent {
     SetWindowPosition(f64, f64),
     /// Resize the window's inner area to this logical size (#1546).
     SetWindowSize(f64, f64),
-    /// Set the main window's title (`rinch::window::set_window_title`, #1770).
-    SetWindowTitle(String),
+    /// Apply the title `rinch::window::set_window_title` stored (#1770).
+    ApplyWindowTitle,
     /// Show a Wayland layer-shell window on this output (#1523).
     SetWindowOutput(Option<String>),
     /// Start moving the window with the pointer (#1523).
@@ -1334,7 +1334,21 @@ impl RinchRuntime {
             .is_some_and(|p| p.effective_level() != rinch_core::element::WindowLevel::Normal)
     }
 
+    /// Take a title `set_window_title` stored (#1770) into `self.title`, so a
+    /// window created later (or re-created by `show_window`) has it, and set
+    /// it on the live window.
+    fn take_stored_title(&mut self) {
+        if let Some(title) = crate::window::take_stored_title() {
+            if let Some(w) = &self.window {
+                w.raw().set_title(&title);
+            }
+            self.title = title;
+        }
+    }
+
     fn create_window(&mut self, event_loop: &dyn ActiveEventLoop) {
+        // A title set before the loop started (#1770).
+        self.take_stored_title();
         let hidden = starts_hidden(self.app.window_props.as_ref());
         let backend = Backend::of(event_loop);
         let steps = self.main_window_steps(backend, true);
@@ -3397,13 +3411,8 @@ impl RinchRuntime {
                 }
                 return;
             }
-            RinchNativeEvent::SetWindowTitle(title) => {
-                // Kept, so a window re-created by `show_window` (or created
-                // later, when this arrives before the loop) has it too.
-                if let Some(w) = &self.window {
-                    w.raw().set_title(&title);
-                }
-                self.title = title;
+            RinchNativeEvent::ApplyWindowTitle => {
+                self.take_stored_title();
                 return;
             }
             RinchNativeEvent::SetWindowOutput(output) => {
@@ -5110,6 +5119,17 @@ mod bundled_font_tests {
     /// window and touches no event loop. [`App::run`](crate::App::run) around
     /// it is not, which is exactly why the registration lives here rather than
     /// further in.
+    #[test]
+    fn hiding_the_window_publishes_not_focused_1770() {
+        let mut runtime = RinchRuntime::new("Hidden", 640, 480, component, &[]);
+        runtime
+            .app
+            .handle_event(PlatformEvent::WindowFocus(true), (640, 480), 1.0);
+        assert!(crate::window::window_focused(), "positive control");
+        runtime.hide_window();
+        assert!(!crate::window::window_focused());
+    }
+
     #[test]
     fn the_runtime_registers_bundled_fonts_at_construction() {
         let runtime = RinchRuntime::new(

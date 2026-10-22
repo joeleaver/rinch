@@ -141,3 +141,16 @@ fn a_string_that_is_not_a_url_opens_nothing() {
         );
     }
 }
+
+/// `window.open("javascript:…")` runs the script with this page's origin,
+/// `opener` cleared or not: refused before the browser sees it.
+#[wasm_bindgen_test]
+fn script_urls_are_refused() {
+    for bad in ["javascript:void(0)", "JAVASCRIPT:void(0)", "data:text/html,x", "vbscript:x"] {
+        assert_eq!(
+            rinch::open_url(bad),
+            Err(rinch::OpenUrlError::ScriptScheme),
+            "{bad:?}"
+        );
+    }
+}
