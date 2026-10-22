@@ -601,6 +601,14 @@ Neither affects layout: rinch's bar is an overlay drawn on top of content and
 takes no space, so `thin` and `none` change what you see, not where anything
 sits.
 
+"On top of content" includes the scroller's positioned descendants: a
+`position: relative` row, one with a `z-index`, an absolute whose containing
+block is inside the scroller. Those are painted in the enclosing stacking
+context's order, so the bar is drawn there, right after the last of them, as
+Chrome draws it (#1717). A box that is *not* the scroller's content — a later
+positioned sibling, a box at a higher `z-index` than any of its rows, an
+absolute that escapes it — can still cover the bar, in Chrome as in rinch.
+
 ### The default follows your palette
 
 `auto` is **not** a fixed colour. The thumb is 40% black or 40% white, chosen by

@@ -4,7 +4,7 @@ use super::ScrollAxis;
 use rinch_dom::paint::scrollbar::ScrollbarAxis;
 use std::rc::Rc;
 
-use rinch_dom::stacking::{PaintOrder, paints_at_stacking_root, stacking_paint_order};
+use rinch_dom::stacking::{PaintOrder, paints_at_stacking_root, stacking_hit_order};
 
 /// Simple hit testing: find the deepest node whose layout rect contains (x, y).
 /// Respects CSS stacking contexts so that elements with higher z-index
@@ -390,7 +390,7 @@ fn cached_paint_order(tree: &rinch_dom::NodeTree, root: usize, ox: f64, oy: f64)
     if let Some(order) = tree.hit_cache.order(root, ox, oy) {
         return order;
     }
-    let order = Rc::new(stacking_paint_order(tree, root, 1.0, ox, oy));
+    let order = Rc::new(stacking_hit_order(tree, root, 1.0, ox, oy));
     tree.hit_cache.store_order(root, ox, oy, order.clone());
     order
 }

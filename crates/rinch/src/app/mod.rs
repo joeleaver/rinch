@@ -276,6 +276,8 @@ mod scroll_request_no_write_1145_tests;
 #[cfg(test)]
 mod scrollbar_corner_444_tests;
 #[cfg(test)]
+mod scrollbar_over_hoisted_1717_tests;
+#[cfg(test)]
 mod scrollbar_thumb_press_443_tests;
 #[cfg(test)]
 mod select_keyboard_434_tests;
