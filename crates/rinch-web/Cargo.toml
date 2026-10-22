@@ -113,8 +113,11 @@ rinch-editor-collab = { workspace = true, features = ["test-util"] }
 # (tests/editor_image_input.rs); `HTMLImageElement.decode()` / `naturalWidth`
 # in tests/image_sources.rs: that the browser really decodes what an app's
 # image loader answered with. A same-origin `<iframe>` whose permissions policy
-# refuses `clipboard-write` (tests/clipboard_copy_then.rs, #1780).
-web-sys = { version = "0.3", features = ["DragEventInit", "FilePropertyBag", "HtmlImageElement", "HtmlIFrameElement", "Clipboard"] }
+# refuses `clipboard-write` (tests/clipboard_copy_then.rs, #1780). A
+# `BroadcastChannel` (tests/worker_1772.rs).
+web-sys = { version = "0.3", features = ["DragEventInit", "FilePropertyBag", "HtmlImageElement", "HtmlIFrameElement", "Clipboard", "BroadcastChannel"] }
+# `rinch::worker` in a real browser (tests/worker_1772.rs).
+rinch = { workspace = true, default-features = false, features = ["components", "theme", "worker"] }
 
 [features]
 # Collaborative editing (M9): forwards to the editor view's collab adapter, which

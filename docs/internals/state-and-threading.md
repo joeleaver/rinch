@@ -345,3 +345,53 @@ registered `unowned`: the future's holder decides the lifetime). Pins:
 `rinch-core/tests/task_1767.rs`, `task_default_wake_1767.rs`,
 `rinch-http/tests/fetch_async_1767.rs`, `rinch-ws/tests/stream_1767.rs`,
 `rinch-web/tests/spawn_local_1767.rs` (Chrome 155).
+
+## Background workers (`rinch::worker`, #1772)
+
+Feature `worker` (off by default). `crates/rinch/src/worker/`: `mod.rs` is the
+platform-neutral half, `native.rs` and `web.rs` the backends. A `Worker` is an
+`Rc<Inner>` listed in a UI-thread-local `WORKERS` map (id → type-erased
+receiver); a backend hands the UI thread a `Raw` (`Reply` bytes, a recoverable
+`Error`, or `Failed`, which ends the worker) and `deliver(id, raw)` finds the
+receiver, or drops the event when the worker has ended. The receiver decodes
+(`WorkerMessage::from_bytes`) and calls the `on_event` callback — in `batch`,
+under the callback's owner (or `unowned`) and `CallbackFrame`, dropped once
+its owner is dead — or queues it for `next()` and wakes the waiting task.
+`spawn` registers one `on_cleanup` that ends the worker (unmount), and `Drop`
+ends it too. Ending unlists the id first, so a reply already on its way is
+dropped on the UI side whatever the backend does.
+
+**Desktop**: one thread per worker (`rinch-worker-<id>`), an `mpsc` channel in,
+`dispatch_main_callback` out — so replies arrive where `Signal::send`'s do, in
+order. The handler runs under `catch_unwind`; a panic posts `Failed` and ends
+the thread. `terminate` sets a shared `AtomicBool` (read by
+`Replies::is_terminated` and checked before each message and each reply) and
+drops the sender: cooperative, the running handler is not interrupted. Messages
+go through bytes here too (Joe's decision, recorded on #1772), so a lossy codec
+fails on both backends.
+
+**Web**: shared memory is not available — `+atomics` needs `-Z build-std`, i.e.
+nightly (measured on 1.99.0: `rust-lld: --shared-memory is disallowed by std …
+not compiled with 'atomics'`) — so each worker is a second instance of the app's
+own module. The UI creates a module `Worker` from a `blob:` loader (`LOADER`,
+one URL per page, never revoked) and posts `{glue, module, shim, handler}`:
+`glue` is `import.meta.url` read through a `js_namespace = ["import", "meta"]`
+static (so the glue must be an ES module, `--target web`), `module` is
+`wasm_bindgen::module()` (the compiled module, structured-cloned), and `shim` /
+`handler` are `fn` addresses. The loader `import()`s the glue and instantiates
+the module — which runs the app's start function; `rinch_web::mount` and
+`mount_with_menu_bar` return when there is no document (`page_document()`) —
+and calls the exported `__rinch_worker_run(shim, handler, bytes)` per message,
+queuing those that arrive before the instance is up. `__rinch_worker_run` turns
+the addresses back into `fn`s (`fn_at`, the one `unsafe`: the instances are the
+same module and share one function table) and the monomorphised `run_shim`
+decodes and calls the handler. Bytes travel as transferred `ArrayBuffer`s; a
+decode failure posts `{rinchError}`, a thrown call (a panic traps the instance)
+or a failed start posts `{rinchFailed}` and closes the worker, and the worker's
+`error` event (the loader itself refused, e.g. by a CSP without `blob:`) is
+`Failed` too. `terminate` is `Worker.terminate()`: Firefox stops a busy
+worker at once, Chrome after its ~2 s forcible-termination delay (measured: a
+1.5 s busy loop runs to its end, a 5 s one does not). Pins:
+`crates/rinch/tests/worker_1772.rs` (desktop), `crates/rinch-web/tests/worker_1772.rs`
+(Chrome 155 and Firefox 155; a `BroadcastChannel` shows whether a terminated
+handler reached its end).

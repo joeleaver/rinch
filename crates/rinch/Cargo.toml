@@ -80,6 +80,11 @@ accesskit = { version = "0.24", optional = true }
 softbuffer = { git = "https://github.com/rust-windowing/softbuffer", rev = "672d180", optional = true }
 
 [dev-dependencies]
+# Turns `worker` on for this crate's own test targets, so `tests/worker_1772.rs`
+# runs under a plain `cargo test -p rinch` / `--workspace` (CI's) and is linted
+# by `clippy --all-targets`. A build that does not resolve dev-dependencies
+# never sees it.
+rinch = { path = ".", default-features = false, features = ["worker"] }
 # Test-only: the headless DomDocument double, used by the new editor view's tests.
 rinch-core = { workspace = true, features = ["test-util"] }
 # Test-only: direct tree/text queries against RinchDocument (tests/multi_context.rs).
@@ -137,6 +142,9 @@ web-sys = { version = "0.3", features = [
     "ResizeObserver", "ResizeObserverEntry", "ResizeObserverSize", "DomRectReadOnly",
     # `rinch::window` (#1770): the page's resolution media query.
     "MediaQueryList",
+    # `rinch::worker` (#1772): a Web Worker running the app's own module.
+    "Worker", "WorkerOptions", "WorkerType", "MessageEvent", "ErrorEvent",
+    "DedicatedWorkerGlobalScope", "Blob", "BlobPropertyBag", "Url",
 ] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
@@ -290,6 +298,11 @@ global-hotkeys = [
     "dep:zbus", "dep:futures-lite", "dep:x11rb",
     "dep:tokio", "tokio/rt", "tokio/sync", "tokio/time",
 ]
+
+# Background workers that reply on the UI thread (`rinch::worker`, issue
+# #1772): a thread on the desktop, a Web Worker running the app's own wasm
+# module on the web. Off by default.
+worker = []
 
 # Probe app for the ignored e2e test tests/debug_event_latency.rs (issue #153).
 [[example]]
