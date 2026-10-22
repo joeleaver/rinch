@@ -292,6 +292,7 @@ impl DeviceSnap {
         if repeats { v } else { self.y(v) }
     }
     /// Whether shape-space `(x, y)` is on a device pixel corner.
+    #[cfg(feature = "software-renderer")]
     fn on_grid(self, x: f64, y: f64) -> bool {
         match self {
             Self::Translate(..) => (self.x(x) - x).abs() < 1e-6 && (self.y(y) - y).abs() < 1e-6,
