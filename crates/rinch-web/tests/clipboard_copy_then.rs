@@ -332,7 +332,8 @@ async fn a_copy_button_shows_a_refused_write() {
 
 /// A trusted click — a user activation, which is what lets a page write the
 /// clipboard — on the mounted copy buttons: the browser accepts both writes and
-/// the buttons say so; with the policy-denied frame's clipboard, the same
+/// the buttons say so, and the system clipboard then holds the html copy's
+/// `text/html` and its `text/plain` fallback; with the policy-denied frame's clipboard, the same
 /// trusted click is still refused.
 #[wasm_bindgen_test]
 #[ignore = "needs trusted clicks: run tests/support/run_real_keys.sh"]
@@ -348,6 +349,8 @@ async fn a_trusted_click_on_a_copy_button_shows_the_browsers_answer() {
     let text = buttons.shown_after("idle").await;
     real_click(&buttons.button("html")).await;
     let html = buttons.shown_after(&text).await;
+    // What the html copy put on the system clipboard, read back.
+    let flavours = read_system_clipboard().await;
 
     let (frame, clipboard) = refusing_clipboard().await;
     *buttons.refuse.borrow_mut() = Some(clipboard);
@@ -360,4 +363,65 @@ async fn a_trusted_click_on_a_copy_button_shows_the_browsers_answer() {
         (text.as_str(), html.as_str(), refused.as_str()),
         ("Copied text", "Copied html", "Copy text failed")
     );
+    let html_flavour = flavours.iter().find(|(t, _)| t == "text/html");
+    let text_flavour = flavours.iter().find(|(t, _)| t == "text/plain");
+    assert!(
+        html_flavour.is_some_and(|(_, v)| v.contains("<b>from a button</b>")),
+        "the html copy put its html on the system clipboard: {flavours:?}"
+    );
+    assert_eq!(
+        text_flavour.map(|(_, v)| v.as_str()),
+        Some("from a button"),
+        "and its plain-text fallback beside it: {flavours:?}"
+    );
+}
+
+/// Ask the helper to grant this origin clipboard read and write, then read every
+/// flavour of the system clipboard: `(type, content)` pairs.
+async fn read_system_clipboard() -> Vec<(String, String)> {
+    use wasm_bindgen_futures::JsFuture;
+    let n = CLICK_N.with(|c| {
+        c.set(c.get() + 1);
+        c.get()
+    });
+    document().set_title(&format!("RINCH-GRANT-CLIPBOARD:{n}"));
+    let sent = format!("RINCH-GRANT-CLIPBOARD-SENT:{n}:");
+    let mut granted = None;
+    for _ in 0..200 {
+        settle().await;
+        let title = document().title();
+        if let Some(outcome) = title.strip_prefix(&sent) {
+            granted = Some(outcome.to_string());
+            break;
+        }
+    }
+    assert_eq!(
+        granted.as_deref(),
+        Some("OK"),
+        "the helper granted clipboard access"
+    );
+    let clipboard = web_sys::window().unwrap().navigator().clipboard();
+    let items = JsFuture::from(clipboard.read())
+        .await
+        .expect("clipboard.read()");
+    let mut flavours = Vec::new();
+    for item in js_sys::Array::from(&items).iter() {
+        let types = js_sys::Reflect::get(&item, &"types".into()).unwrap();
+        for ty in js_sys::Array::from(&types).iter() {
+            let get_type: js_sys::Function = js_sys::Reflect::get(&item, &"getType".into())
+                .unwrap()
+                .unchecked_into();
+            let blob = JsFuture::from(js_sys::Promise::from(get_type.call1(&item, &ty).unwrap()))
+                .await
+                .unwrap();
+            let text_fn: js_sys::Function = js_sys::Reflect::get(&blob, &"text".into())
+                .unwrap()
+                .unchecked_into();
+            let content = JsFuture::from(js_sys::Promise::from(text_fn.call0(&blob).unwrap()))
+                .await
+                .unwrap();
+            flavours.push((ty.as_string().unwrap(), content.as_string().unwrap()));
+        }
+    }
+    flavours
 }

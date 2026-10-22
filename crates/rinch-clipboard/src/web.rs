@@ -96,7 +96,11 @@ pub fn copy_text(text: impl AsRef<str>) -> ClipboardResult<()> {
     let text = text.as_ref().to_string();
     store_text(&text);
     if let Some(clipboard) = navigator_clipboard() {
-        let _ = clipboard.write_text(&text);
+        // Awaited, so a refused write is handled rather than reported by the
+        // browser as an uncaught rejection.
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = write_text(&clipboard, &text).await;
+        });
     }
     Ok(())
 }
@@ -126,7 +130,12 @@ pub fn copy_text_then(
         on_done(Err(ClipboardError::NotAvailable));
         return;
     };
-    settle(clipboard.write_text(&text), on_done);
+    // `writeText` is called before this returns (inside the caller's user
+    // activation); only its answer is awaited.
+    let write = start_write(&clipboard, "writeText", &text.as_str().into());
+    wasm_bindgen_futures::spawn_local(async move {
+        on_done(finish_write(write).await);
+    });
 }
 
 fn store_text(text: &str) {
@@ -135,12 +144,35 @@ fn store_text(text: &str) {
     });
 }
 
-/// Await a clipboard write's promise and hand its outcome to `on_done`.
-fn settle(promise: js_sys::Promise, on_done: impl FnOnce(ClipboardResult<()>) + 'static) {
-    wasm_bindgen_futures::spawn_local(async move {
-        let result = wasm_bindgen_futures::JsFuture::from(promise).await;
-        on_done(result.map(|_| ()).map_err(rejection));
-    });
+/// Call `clipboard[method](arg)`: the promise it returned, or an error when the
+/// method is missing, is not a function, threw, or returned no promise.
+fn start_write(
+    clipboard: &web_sys::Clipboard,
+    method: &str,
+    arg: &wasm_bindgen::JsValue,
+) -> ClipboardResult<js_sys::Promise> {
+    use wasm_bindgen::JsCast;
+    let function = js_sys::Reflect::get(clipboard, &method.into())
+        .ok()
+        .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+        .ok_or(ClipboardError::NotSupported)?;
+    let returned = function.call1(clipboard, arg).map_err(rejection)?;
+    returned
+        .dyn_into::<js_sys::Promise>()
+        .map_err(|_| ClipboardError::AccessFailed(format!("{method} returned no promise")))
+}
+
+/// Await a started write: `Ok(())` when its promise resolved.
+async fn finish_write(write: ClipboardResult<js_sys::Promise>) -> ClipboardResult<()> {
+    wasm_bindgen_futures::JsFuture::from(write?)
+        .await
+        .map(|_| ())
+        .map_err(rejection)
+}
+
+/// `writeText(text)`, awaited.
+async fn write_text(clipboard: &web_sys::Clipboard, text: &str) -> ClipboardResult<()> {
+    finish_write(start_write(clipboard, "writeText", &text.into())).await
 }
 
 /// A rejected clipboard promise as an error: `"<name>: <message>"` for a
@@ -264,14 +296,18 @@ pub fn has_image() -> bool {
 /// On WASM, stores both in the in-app buffers and asks the browser to write the
 /// system clipboard without waiting: a `ClipboardItem` carrying `text/html` (and
 /// `text/plain` when `alt_text` is given), or just `alt_text` through
-/// `writeText` where the browser has no `ClipboardItem`. As with [`copy_text`],
+/// `writeText` where that write cannot be made or the browser refuses it. As with [`copy_text`],
 /// `Ok` means the buffers were written; [`copy_html_then`] reports the browser's
 /// answer.
 pub fn copy_html(html: impl AsRef<str>, alt_text: Option<&str>) -> ClipboardResult<()> {
     let html = html.as_ref();
     store_html(html, alt_text);
     if let Some(clipboard) = navigator_clipboard() {
-        let _ = write_html(&clipboard, html, alt_text);
+        let write = start_html_write(&clipboard, html, alt_text);
+        let alt = alt_text.map(str::to_string);
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = finish_html_write(&clipboard, write, alt.as_deref()).await;
+        });
     }
     Ok(())
 }
@@ -284,9 +320,11 @@ pub fn copy_html_async(html: impl AsRef<str>, alt_text: Option<&str>) {
 
 /// [`copy_html`], reporting the browser's answer as [`copy_text_then`] does.
 ///
-/// Where the browser has no `ClipboardItem`, only `alt_text` can be written, and
-/// the answer is that write's; with no `alt_text` either, nothing can reach the
-/// system clipboard and the answer is [`ClipboardError::NotSupported`].
+/// When the `ClipboardItem` write cannot be made (no `ClipboardItem` or
+/// `clipboard.write`) or the browser refuses it, `alt_text` is written alone
+/// through `writeText` and the answer is that write's; with no `alt_text`, the
+/// answer is the html write's error ([`ClipboardError::NotSupported`] when it
+/// could not be made at all).
 pub fn copy_html_then(
     html: impl AsRef<str>,
     alt_text: Option<&str>,
@@ -298,10 +336,11 @@ pub fn copy_html_then(
         on_done(Err(ClipboardError::NotAvailable));
         return;
     };
-    match write_html(&clipboard, html, alt_text) {
-        Ok(promise) => settle(promise, on_done),
-        Err(e) => on_done(Err(e)),
-    }
+    let write = start_html_write(&clipboard, html, alt_text);
+    let alt = alt_text.map(str::to_string);
+    wasm_bindgen_futures::spawn_local(async move {
+        on_done(finish_html_write(&clipboard, write, alt.as_deref()).await);
+    });
 }
 
 fn store_html(html: &str, alt_text: Option<&str>) {
@@ -313,20 +352,30 @@ fn store_html(html: &str, alt_text: Option<&str>) {
     }
 }
 
-/// Start the system-clipboard write for an html copy: a `ClipboardItem` with
-/// `text/html` (and `text/plain` for `alt_text`) when the browser has one,
-/// otherwise `alt_text` alone through `writeText`.
-fn write_html(
+/// Start the `ClipboardItem` write of an html copy (`clipboard.write`), called
+/// before the copy returns so it runs inside the caller's user activation.
+fn start_html_write(
     clipboard: &web_sys::Clipboard,
     html: &str,
     alt_text: Option<&str>,
 ) -> ClipboardResult<js_sys::Promise> {
-    if let Some(item) = clipboard_item(html, alt_text) {
-        return Ok(clipboard.write(&js_sys::Array::of1(&item)));
-    }
-    match alt_text {
-        Some(text) => Ok(clipboard.write_text(text)),
-        None => Err(ClipboardError::NotSupported),
+    let item = clipboard_item(html, alt_text).ok_or(ClipboardError::NotSupported)?;
+    start_write(clipboard, "write", &js_sys::Array::of1(&item))
+}
+
+/// Await the html write; when it could not be made or was refused, write
+/// `alt_text` through `writeText` instead and answer with that.
+async fn finish_html_write(
+    clipboard: &web_sys::Clipboard,
+    write: ClipboardResult<js_sys::Promise>,
+    alt_text: Option<&str>,
+) -> ClipboardResult<()> {
+    match finish_write(write).await {
+        Ok(()) => Ok(()),
+        Err(e) => match alt_text {
+            Some(text) => write_text(clipboard, text).await,
+            None => Err(e),
+        },
     }
 }
 
