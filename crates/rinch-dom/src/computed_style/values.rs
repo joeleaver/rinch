@@ -1332,6 +1332,30 @@ pub enum BackgroundOriginValue {
     ContentBox,
 }
 
+/// How one background layer is sized, positioned and tiled: the per-layer
+/// entries of `background-size`, `-position`, `-repeat` and `-origin` (#468,
+/// #1142).
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct BackgroundLayerGeometry {
+    pub size: BackgroundSizeValue,
+    pub position_x: LengthPercentageValue,
+    pub position_y: LengthPercentageValue,
+    pub repeat_x: BackgroundRepeatValue,
+    pub repeat_y: BackgroundRepeatValue,
+    pub origin: BackgroundOriginValue,
+}
+
+/// A `background-image` layer below the first (#1142): its image and the
+/// entries of the other background lists at its index, each list repeated
+/// to the number of images (css-backgrounds-3 §2.2).
+#[derive(Debug, Clone, Serialize)]
+pub struct BackgroundLayer {
+    /// `LinearGradient`, `RadialGradient` or `Image`, never `None` or
+    /// `Color`: a layer with nothing rinch can paint is not kept.
+    pub image: BackgroundValue,
+    pub geometry: BackgroundLayerGeometry,
+}
+
 /// A gradient color stop.
 #[derive(Debug, Clone, Serialize)]
 pub struct GradientStop {

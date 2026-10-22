@@ -1555,9 +1555,11 @@ impl RinchDocument {
                 .tree
                 .nodes
                 .iter()
-                .filter_map(|(id, node)| match &node.computed_style.background {
-                    crate::computed_style::BackgroundValue::Image { url } if url == src => Some(id),
-                    _ => None,
+                .filter_map(|(id, node)| {
+                    node.computed_style
+                        .background_image_urls()
+                        .any(|url| url == src)
+                        .then_some(id)
                 })
                 .collect();
             for node_id in bg_ids {

@@ -140,6 +140,13 @@ pub struct ComputedStyle {
     pub background_repeat_x: BackgroundRepeatValue,
     pub background_repeat_y: BackgroundRepeatValue,
     pub background_origin: BackgroundOriginValue,
+    /// The `background-image` layers below the first, top to bottom (#1142).
+    /// The first layer is `background` and the six fields above, which is
+    /// what a transition or animation of `background-position` moves; these
+    /// are painted under it, bottom first, over the colour. Empty for a
+    /// single image (no allocation), and a layer with nothing to paint
+    /// (`none`, a conic gradient) is left out.
+    pub background_layers: Vec<BackgroundLayer>,
     #[serde(serialize_with = "values::color_serde::serialize")]
     pub color: Option<peniko::Color>,
 
@@ -346,6 +353,7 @@ impl Default for ComputedStyle {
             background_repeat_x: BackgroundRepeatValue::Repeat,
             background_repeat_y: BackgroundRepeatValue::Repeat,
             background_origin: BackgroundOriginValue::PaddingBox,
+            background_layers: Vec::new(),
             color: None,
 
             opacity: 1.0,
@@ -481,6 +489,29 @@ impl ComputedStyle {
 
             ..Self::default()
         }
+    }
+
+    /// The first background layer's geometry (#1142): `background_size`,
+    /// the two positions, the two repeats and `background_origin`.
+    pub fn first_background_geometry(&self) -> BackgroundLayerGeometry {
+        BackgroundLayerGeometry {
+            size: self.background_size,
+            position_x: self.background_position_x,
+            position_y: self.background_position_y,
+            repeat_x: self.background_repeat_x,
+            repeat_y: self.background_repeat_y,
+            origin: self.background_origin,
+        }
+    }
+
+    /// Every `url()` among the background layers, first layer first (#1142).
+    pub fn background_image_urls(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(&self.background)
+            .chain(self.background_layers.iter().map(|l| &l.image))
+            .filter_map(|b| match b {
+                BackgroundValue::Image { url } => Some(url.as_str()),
+                _ => None,
+            })
     }
 
     /// Get the background color (convenience accessor for BackgroundValue::Color).

@@ -78,7 +78,9 @@ impl ComputedStyle {
         let inherited_box = cv.get_inherited_box();
         let outline_style = cv.get_outline();
         let inherited_ui = cv.get_inherited_ui();
-        let background_repeat = background_repeat_from_stylo(background);
+        // The first background layer (#468); the rest are
+        // `background_layers` (#1142).
+        let background_first = background_geometry_from_stylo(background, 0);
         // Shared by the `font_size` field below and by
         // `letter_spacing_from_stylo`/`word_spacing_from_stylo` (#743), so the
         // percentage basis can never disagree with the element's own computed
@@ -194,16 +196,13 @@ impl ComputedStyle {
             // Background (color or gradient)
             background: background_from_stylo(background, &text.color),
             background_underlay: background_underlay_from_stylo(background, &text.color),
-            background_size: background_size_from_stylo(background),
-            background_position_x: background_position_from_stylo(
-                &background.background_position_x.0,
-            ),
-            background_position_y: background_position_from_stylo(
-                &background.background_position_y.0,
-            ),
-            background_repeat_x: background_repeat.0,
-            background_repeat_y: background_repeat.1,
-            background_origin: background_origin_from_stylo(background),
+            background_size: background_first.size,
+            background_position_x: background_first.position_x,
+            background_position_y: background_first.position_y,
+            background_repeat_x: background_first.repeat_x,
+            background_repeat_y: background_first.repeat_y,
+            background_origin: background_first.origin,
+            background_layers: background_layers_from_stylo(background, &text.color),
             color: color_from_absolute(&text.color),
 
             // Visual
