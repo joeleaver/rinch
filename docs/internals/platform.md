@@ -413,7 +413,19 @@ Same three for `paste_html`/`paste_image`. `paste_rich`/`paste_rich_async` resol
 never stacks three worst-case waits. `paste_rich_with_text*` answer the same plus the
 `text/plain` offered beside an html answer, still one read (the editor's Ctrl+V uses it
 so its paste hook sees both flavours). `copy_text_async`/`copy_html_async` queue a write
-without waiting.
+without waiting and drop its result; `copy_text_then`/`copy_html_then` (#1780) queue it
+and call back with it — on the web, the settled `navigator.clipboard.write(Text)`
+promise (rejection → `AccessFailed("<name>: <message>")`, no `navigator.clipboard` →
+`NotAvailable` synchronously). The web's synchronous `copy_text`/`copy_html` still
+answer `Ok` for the in-app buffer whatever the browser does. Web tests reach a
+deterministic refusal through the doc-hidden `__set_clipboard_source` (the clipboard
+of an `<iframe allow="clipboard-write 'none'">` in Chrome; in Firefox, which ignores
+that policy, the same frame detached, whose write rejects with `InvalidStateError`); the
+html copy falls back to `writeText(alt)` when its `ClipboardItem` write cannot be made or
+is refused; every write promise is awaited, so a refused fire-and-forget copy is not an
+uncaught rejection; the accepted write needs a user
+activation in headless Chrome, so it is a trusted click from `real_keys.mjs`
+(`rinch-web/tests/clipboard_copy_then.rs`, run by `run_real_keys.sh`).
 
 On native all of them are served by **one clipboard worker thread** owning the
 `arboard::Clipboard` (`crates/rinch-clipboard/src/native.rs`). That's what makes the
@@ -807,3 +819,46 @@ bar's dismiss overlay (`.rinch-app-menu-bar__overlay`), are fixed at
 cover the chrome, or clicking the title bar leaves the menu open. Do **not**
 "fix" an overlay of your own by insetting the fixed containing block — that
 would break CSS semantics and make desktop diverge from rinch-web.
+
+### Cross-target platform calls (#1773)
+
+- **Message dialogs on the web.** `crates/rinch/src/dialogs.rs` is two modules:
+  `native` (rfd, every dialog) and `web` (wasm32: `message` /
+  `MessageDialogBuilder` / `MessageLevel` over `window.alert` /
+  `window.confirm`). `rfd` is a `cfg(not(target_arch = "wasm32"))` dependency,
+  so `file-dialogs` on wasm links no crate. Pin:
+  `rinch-web/tests/confirm_dialog_1773.rs` (stubs `window.confirm`/`alert`; a
+  real one would block headless Chrome).
+- **`rinch::init_logging()`** (`crates/rinch/src/logging.rs`): desktop (and
+  the `android` feature on a non-Android host) = tracing-subscriber `fmt` to
+  stderr, `RUST_LOG` else the given filter, `log` bridged by tracing-log;
+  Android = `android_logger::init_once`, no tracing-subscriber (its `LogTracer`
+  would take the `log` slot logcat needs); wasm32 and a native build without
+  the desktop shell = `logging::simple`, a hand-written `tracing::Subscriber`
+  plus `log::Log` (filter: a level and `target=level` directives, longest
+  target wins) writing to the console method of the event's level on wasm32
+  and to stderr natively, and on wasm32 a panic hook (message + JS stack to
+  `console.error`, then the previous hook, so a test harness's still runs).
+  Hand-written so that a web app's lock gains nothing: tracing-subscriber on
+  wasm brought eight packages into every web app's dependency tree (measured
+  on `examples/menu-bar-web/Cargo.lock`). `log` is a plain rinch dependency
+  (already in every lock through `tracing`); `log::set_logger` with a leaked
+  box, since `set_boxed_logger` needs `log`'s `std` feature. The web panic hook
+  has no fixture: a wasm32 panic aborts, so a test cannot survive one.
+  With a `log` logger already set, tracing-subscriber's `try_init` sets the
+  subscriber first and then fails at `LogTracer` (`util.rs` in 0.3.22), so
+  `tracing` events reach rinch's output and `log` records stay with the app's
+  logger; `simple::install` sets the two slots independently, same result.
+  Pinned natively by child processes in `rinch/tests/init_logging_1773.rs`
+  (`log_records_and_tracing_events_both_reach_stderr`,
+  `an_app_logger_set_first_keeps_the_log_records`).
+- **`rinch_storage::open_app_store`** (`crates/rinch-storage/src/app_store.rs`):
+  native `dirs::data_dir()/<app>/<store>` (Android: always `Unavailable`,
+  since `dirs` reads it as Linux and answers a path the app cannot write;
+  names are checked against Windows' rule on every target, since `C:` joined
+  onto the data dir replaces it and `app:x` names an NTFS stream), web the
+  IndexedDB database
+  `"<app>/<store>"`. One database per store because `IdbStore::open` creates
+  its object store only in `onupgradeneeded`, which an existing database never
+  fires: a second store name in one database is never created
+  (`rinch-storage/tests/idb.rs::a_second_store_in_an_existing_database_is_not_created`).

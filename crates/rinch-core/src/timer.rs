@@ -1,4 +1,4 @@
-//! Cross-platform one-shot timers.
+//! Cross-platform timers: one-shot ([`set_timeout`]) and repeating ([`set_interval`]).
 //!
 //! rinch-core is platform-agnostic, so *scheduling* is pluggable while the
 //! callback lives in the shared main-thread registry ([`crate::main_thread`]):
@@ -80,6 +80,104 @@ pub fn set_timeout(delay_ms: u32, cb: impl FnOnce() + 'static) -> TimeoutHandle 
 /// but [`fire_timeout`] then finds nothing to run.
 pub fn clear_timeout(handle: TimeoutHandle) {
     cancel_main_callback(handle.0);
+}
+
+/// A repeating timer started by [`set_interval`]. Pass to [`clear_interval`]
+/// to stop it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct IntervalHandle(u64);
+
+thread_local! {
+    /// Each live interval's pending tick. An interval is a chain of one-shot
+    /// timeouts, each re-arming the next; this map is what keeps the handle
+    /// stable across the chain. An entry leaves on [`clear_interval`] or when
+    /// the component that armed it unmounts.
+    static INTERVALS: std::cell::RefCell<std::collections::HashMap<u64, TimeoutHandle>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+static NEXT_INTERVAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Run `cb` on the main (UI) thread every `period_ms` milliseconds, until
+/// [`clear_interval`] stops it.
+///
+/// The first call comes one period after this one. The rate is fixed, as a
+/// browser's `setInterval` is: each tick is scheduled from the previous tick's
+/// deadline, not from when its callback finished, so a slow callback does not
+/// make the ticks drift. A tick that comes more than one period late (a busy
+/// main thread, a suspended laptop, a backgrounded tab) skips the ticks it
+/// missed rather than firing them in a burst. A `period_ms` of 0 is treated as
+/// 1.
+///
+/// Like [`set_timeout`], the callback runs on the main thread, need not be
+/// `Send`, and runs as one batch. An interval armed **during a render** stops
+/// when that component unmounts; one armed outside any render runs until
+/// cleared. It may clear itself from inside its own callback.
+///
+/// ```ignore
+/// let elapsed = Signal::new(0u32);
+/// let tick = set_interval(1000, move || elapsed.update(|s| *s += 1));
+/// // later:
+/// clear_interval(tick);
+/// ```
+pub fn set_interval(period_ms: u32, cb: impl FnMut() + 'static) -> IntervalHandle {
+    use web_time::{Duration, Instant};
+
+    let period = Duration::from_millis(u64::from(period_ms.max(1)));
+    let id = NEXT_INTERVAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let cb = std::rc::Rc::new(std::cell::RefCell::new(cb));
+
+    /// Arm the tick due at `deadline`.
+    fn arm(
+        id: u64,
+        deadline: Instant,
+        period: Duration,
+        cb: std::rc::Rc<std::cell::RefCell<dyn FnMut()>>,
+    ) -> TimeoutHandle {
+        let delay = deadline.saturating_duration_since(Instant::now());
+        let delay_ms = u32::try_from(delay.as_millis()).unwrap_or(u32::MAX);
+        set_timeout(delay_ms, move || {
+            // Stopped since this tick was armed: nothing to run or re-arm.
+            if !INTERVALS.with(|m| m.borrow().contains_key(&id)) {
+                return;
+            }
+            // The callback is called with no registry borrow held, so it may
+            // clear this interval or arm others.
+            (cb.borrow_mut())();
+            let now = Instant::now();
+            let mut next = deadline + period;
+            if next <= now {
+                // The next tick is already due: more than a period behind.
+                // Skip the missed ticks rather than fire them back to back.
+                next = now + period;
+            }
+            // Re-armed only if the callback did not clear it.
+            if INTERVALS.with(|m| m.borrow().contains_key(&id)) {
+                let pending = arm(id, next, period, cb);
+                INTERVALS.with(|m| {
+                    if let Some(slot) = m.borrow_mut().get_mut(&id) {
+                        *slot = pending;
+                    }
+                });
+            }
+        })
+    }
+
+    let first = arm(id, Instant::now() + period, period, cb);
+    INTERVALS.with(|m| m.borrow_mut().insert(id, first));
+    // Unmounting the component that armed it stops it. The ticks' own owner
+    // check would end the chain anyway; this also drops the map entry.
+    crate::reactive::on_cleanup(move || clear_interval(IntervalHandle(id)));
+    IntervalHandle(id)
+}
+
+/// Stop an interval started by [`set_interval`]. Idempotent; safe to call
+/// from inside the interval's own callback.
+pub fn clear_interval(handle: IntervalHandle) {
+    let pending = INTERVALS.with(|m| m.borrow_mut().remove(&handle.0));
+    if let Some(pending) = pending {
+        clear_timeout(pending);
+    }
 }
 
 /// Run the callback parked for `id`, if it hasn't been cancelled.
@@ -195,14 +293,16 @@ mod tests {
     /// Drive timers synchronously: record what was scheduled, fire it on demand.
     /// (Mirrors what a real backend does, minus the waiting.)
     fn install_manual_backend() {
-        fn manual(id: u64, _delay_ms: u32) {
+        fn manual(id: u64, delay_ms: u32) {
             SCHEDULED.with(|s| s.borrow_mut().push(id));
+            DELAYS.with(|d| d.borrow_mut().push(delay_ms));
         }
         set_timer_backend(manual);
     }
 
     thread_local! {
         static SCHEDULED: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
+        static DELAYS: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
     }
 
     fn drain_and_fire() {
@@ -314,5 +414,142 @@ mod tests {
 
         drain_and_fire();
         assert_eq!(*log.borrow(), vec!["second"]);
+    }
+
+    fn take_delays() -> Vec<u32> {
+        DELAYS.with(|d| std::mem::take(&mut *d.borrow_mut()))
+    }
+
+    fn intervals_alive() -> usize {
+        INTERVALS.with(|m| m.borrow().len())
+    }
+
+    #[test]
+    fn an_interval_fires_every_period_until_cleared() {
+        install_manual_backend();
+        let hits = Rc::new(std::cell::Cell::new(0));
+        let h = hits.clone();
+        let tick = set_interval(10, move || h.set(h.get() + 1));
+        for expected in 1..=3 {
+            drain_and_fire();
+            assert_eq!(hits.get(), expected, "tick {expected} fired and re-armed");
+        }
+        // (The manual backend fires each tick early, so the delays it saw
+        // are not periods; the two rate tests below wait for real.)
+        take_delays();
+
+        clear_interval(tick);
+        assert_eq!(intervals_alive(), 0);
+        drain_and_fire();
+        assert_eq!(hits.get(), 3, "a cleared interval does not fire");
+        assert!(
+            SCHEDULED.with(|s| s.borrow().is_empty()),
+            "and nothing re-armed it"
+        );
+        clear_interval(tick); // idempotent
+    }
+
+    #[test]
+    fn an_interval_may_clear_itself_from_its_own_callback() {
+        install_manual_backend();
+        let hits = Rc::new(std::cell::Cell::new(0));
+        let me: Rc<std::cell::Cell<Option<IntervalHandle>>> = Rc::new(std::cell::Cell::new(None));
+        let (h, m) = (hits.clone(), me.clone());
+        let tick = set_interval(5, move || {
+            h.set(h.get() + 1);
+            if h.get() == 2 {
+                clear_interval(m.get().unwrap());
+            }
+        });
+        me.set(Some(tick));
+        drain_and_fire();
+        drain_and_fire();
+        assert_eq!(hits.get(), 2);
+        assert!(
+            SCHEDULED.with(|s| s.borrow().is_empty()),
+            "the tick that cleared it armed no further tick"
+        );
+        assert_eq!(intervals_alive(), 0);
+    }
+
+    #[test]
+    fn an_interval_armed_in_a_component_stops_when_it_unmounts() {
+        install_manual_backend();
+        let hits = Rc::new(std::cell::Cell::new(0));
+        let scope = crate::reactive::Scope::new();
+        let h = hits.clone();
+        scope.run(|| set_interval(10, move || h.set(h.get() + 1)));
+        drain_and_fire();
+        assert_eq!(hits.get(), 1);
+        assert_eq!(intervals_alive(), 1);
+
+        scope.dispose();
+        assert_eq!(intervals_alive(), 0, "unmount drops the interval");
+        drain_and_fire();
+        assert_eq!(hits.get(), 1, "and it does not fire again");
+    }
+
+    /// Fixed rate, not fixed delay: the next tick is scheduled from the last
+    /// tick's deadline, so a callback that takes 25ms of a 40ms period leaves
+    /// about 15ms to the next tick (a fixed-delay timer would wait 40).
+    #[test]
+    fn a_slow_callback_does_not_push_the_next_tick_back() {
+        install_manual_backend();
+        set_interval(40, || {
+            std::thread::sleep(std::time::Duration::from_millis(25))
+        });
+        take_delays();
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        drain_and_fire();
+        let next = take_delays();
+        assert_eq!(next.len(), 1);
+        assert!(
+            next[0] < 30,
+            "the next tick keeps the rate, got {}ms",
+            next[0]
+        );
+    }
+
+    /// Between one and two periods late (here ~1.5): the tick it missed is
+    /// skipped too, not fired at once. Off the fixed points: exactly one or
+    /// two periods late is where a `<` / `<=` or a `+ period` slip agrees.
+    #[test]
+    fn a_tick_one_and_a_half_periods_late_skips_the_missed_tick() {
+        install_manual_backend();
+        set_interval(40, || {
+            std::thread::sleep(std::time::Duration::from_millis(60))
+        });
+        take_delays();
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        drain_and_fire();
+        let next = take_delays();
+        assert_eq!(next.len(), 1);
+        assert!(
+            next[0] >= 20,
+            "the tick due 20ms ago is skipped; the next is a period from now \
+             (got {}ms)",
+            next[0]
+        );
+    }
+
+    /// A tick more than a period late skips the ticks it missed instead of
+    /// firing them back to back.
+    #[test]
+    fn a_tick_more_than_a_period_late_skips_the_missed_ticks() {
+        install_manual_backend();
+        set_interval(20, || {
+            std::thread::sleep(std::time::Duration::from_millis(60))
+        });
+        take_delays();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        drain_and_fire();
+        let next = take_delays();
+        assert_eq!(next.len(), 1);
+        assert!(
+            next[0] >= 10,
+            "two ticks were missed; the next comes a period from now, not at once \
+             (got {}ms)",
+            next[0]
+        );
     }
 }

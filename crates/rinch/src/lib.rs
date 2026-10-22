@@ -108,6 +108,8 @@ pub mod windows_stub;
 
 #[cfg(feature = "image-network")]
 pub mod image_loader;
+mod logging;
+pub use logging::{init_logging, init_logging_with_filter};
 
 /// Image loading: the [`ImageLoader`](image::ImageLoader) an app implements to
 /// answer for its own URL schemes ([`register_image_scheme`](image::register_image_scheme),
@@ -206,9 +208,12 @@ pub mod prelude {
     pub use android_activity::AndroidApp;
     pub use rinch_core::element::*;
     pub use rinch_core::{Memo, Scope, Signal, batch, derived, untracked};
-    // Cross-platform one-shot timers (debounce / throttle / delayed work) and the
+    // Cross-platform timers (one-shot and repeating) and the
     // helper to run a closure on the main (UI) thread from a background thread.
-    pub use rinch_core::{TimeoutHandle, clear_timeout, run_on_main_thread, set_timeout};
+    pub use rinch_core::{
+        IntervalHandle, TimeoutHandle, clear_interval, clear_timeout, run_on_main_thread,
+        set_interval, set_timeout,
+    };
     // Futures on the UI thread (issue #1767): `spawn_local(async { … })` and
     // `sleep(duration).await`.
     pub use rinch_core::{TaskHandle, sleep, spawn_local};

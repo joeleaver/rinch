@@ -4,7 +4,13 @@
 //   (`editor_node_view_real_tab.rs`);
 // - a touch: `RINCH-REAL-TOUCH:<n>:<x>,<y>[;<x>,<y>…]` → `RINCH-REAL-TOUCH-SENT:<n>`,
 //   one finger down at the first point (viewport CSS px), moved through the rest,
-//   lifted at the last (`real_touch_1582_1588.rs`).
+//   lifted at the last (`real_touch_1582_1588.rs`);
+// - a mouse click: `RINCH-REAL-CLICK:<n>:<x>,<y>` → `RINCH-REAL-CLICK-SENT:<n>`, the
+//   primary button pressed and released at that point (viewport CSS px), which
+//   gives the page a user activation (`clipboard_copy_then.rs`);
+// - a clipboard grant: `RINCH-GRANT-CLIPBOARD:<n>` → `RINCH-GRANT-CLIPBOARD-SENT:<n>`,
+//   `Browser.grantPermissions` of clipboard read and write to the page's origin, so
+//   the page can read back what it copied (`clipboard_copy_then.rs`).
 // Used by `run_real_keys.sh`. Usage: node real_keys.mjs <debugging port>
 const port = process.argv[2];
 const deadline = Date.now() + 300_000;
@@ -55,6 +61,13 @@ async function touch(s, points) {
   await s.send("Emulation.setTouchEmulationEnabled", { enabled: false });
 }
 
+async function click(s, x, y) {
+  const base = { x, y, button: "left", clickCount: 1 };
+  await s.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+  await s.send("Input.dispatchMouseEvent", { type: "mousePressed", buttons: 1, ...base });
+  await s.send("Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, ...base });
+}
+
 const sessions = new Map();
 while (Date.now() < deadline) {
   let pages = [];
@@ -83,6 +96,23 @@ while (Date.now() < deadline) {
       await touch(s, points);
       await s.send("Runtime.evaluate", { expression: `document.title = "RINCH-REAL-TOUCH-SENT:${t[1]}"` });
       console.log(`real_keys: touched #${t[1]} ${t[2]}`);
+    }
+    const c = /^RINCH-REAL-CLICK:(\d+):([-0-9.]+),([-0-9.]+)$/.exec(title);
+    if (c && !done.has(`${p.id}:click:${c[1]}`)) {
+      done.add(`${p.id}:click:${c[1]}`);
+      await click(s, Number(c[2]), Number(c[3]));
+      await s.send("Runtime.evaluate", { expression: `document.title = "RINCH-REAL-CLICK-SENT:${c[1]}"` });
+      console.log(`real_keys: clicked #${c[1]} ${c[2]},${c[3]}`);
+    }
+    const g = /^RINCH-GRANT-CLIPBOARD:(\d+)$/.exec(title);
+    if (g && !done.has(`${p.id}:grant:${g[1]}`)) {
+      done.add(`${p.id}:grant:${g[1]}`);
+      const o = await s.send("Runtime.evaluate", { expression: "location.origin", returnByValue: true });
+      const origin = o.result?.result?.value;
+      const r = await s.send("Browser.grantPermissions", { origin, permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"] });
+      const outcome = r.error ? `ERR ${r.error.message}` : "OK";
+      await s.send("Runtime.evaluate", { expression: `document.title = "RINCH-GRANT-CLIPBOARD-SENT:${g[1]}:${outcome}"` });
+      console.log(`real_keys: granted clipboard #${g[1]} to ${origin}: ${outcome}`);
     }
   }
   await sleep(50);
