@@ -30,9 +30,28 @@ thread_local! {
     static HTML_CLIPBOARD_BUFFER: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
+thread_local! {
+    /// A test's stand-in for `navigator.clipboard` (see [`__set_clipboard_source`]).
+    static CLIPBOARD_SOURCE: RefCell<Option<Option<web_sys::Clipboard>>> = const { RefCell::new(None) };
+}
+
+/// Point every system-clipboard call at `source` instead of this window's
+/// `navigator.clipboard`: `Some(Some(c))` uses `c` (another frame's clipboard,
+/// say), `Some(None)` behaves as a context with no clipboard, `None` restores
+/// the window's own. For tests, which need a write the browser refuses
+/// deterministically (an iframe whose permissions policy denies
+/// `clipboard-write`); not part of the API.
+#[doc(hidden)]
+pub fn __set_clipboard_source(source: Option<Option<web_sys::Clipboard>>) {
+    CLIPBOARD_SOURCE.with(|s| *s.borrow_mut() = source);
+}
+
 /// The browser's `navigator.clipboard`, if this context has one (it is absent on
 /// insecure origins and in some embedded webviews).
 fn navigator_clipboard() -> Option<web_sys::Clipboard> {
+    if let Some(source) = CLIPBOARD_SOURCE.with(|s| s.borrow().clone()) {
+        return source;
+    }
     let window = web_sys::window()?;
     let navigator = js_sys::Reflect::get(&window, &"navigator".into()).ok()?;
     let clipboard = js_sys::Reflect::get(&navigator, &"clipboard".into()).ok()?;
@@ -67,21 +86,22 @@ pub fn fill_buffers_from_event(text: Option<String>, html: Option<String>) {
 
 /// Copy text to the clipboard.
 ///
-/// On WASM, this stores the text in a local buffer and also attempts
-/// to write to the system clipboard asynchronously.
+/// On WASM, this stores the text in the in-app buffer (so a later [`paste_text`]
+/// sees it) and asks the browser to write the system clipboard **without
+/// waiting** for its answer. `Ok` therefore means the buffer was written, not
+/// that the browser accepted the write: a refused permission, a write with no
+/// user gesture or focus, or an insecure origin all still answer `Ok` here. Use
+/// [`copy_text_then`] to learn what the browser said.
 pub fn copy_text(text: impl AsRef<str>) -> ClipboardResult<()> {
     let text = text.as_ref().to_string();
-
-    // Always store locally for synchronous paste_text() to work
-    CLIPBOARD_BUFFER.with(|buf| {
-        *buf.borrow_mut() = Some(text.clone());
-    });
-
-    // Also try to write to the system clipboard (fire-and-forget)
+    store_text(&text);
     if let Some(clipboard) = navigator_clipboard() {
-        let _ = clipboard.write_text(&text);
+        // Awaited, so a refused write is handled rather than reported by the
+        // browser as an uncaught rejection.
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = write_text(&clipboard, &text).await;
+        });
     }
-
     Ok(())
 }
 
@@ -89,6 +109,89 @@ pub fn copy_text(text: impl AsRef<str>) -> ClipboardResult<()> {
 /// already fire-and-forget. Present so the async API is the same on every target.
 pub fn copy_text_async(text: impl AsRef<str>) {
     let _ = copy_text(text);
+}
+
+/// Copy text and report **the browser's answer**: `on_done` runs once the
+/// promise `navigator.clipboard.writeText` returned settles — `Ok(())` when it
+/// resolved, [`ClipboardError::AccessFailed`] carrying the `DOMException`'s name
+/// and message when it rejected (`NotAllowedError` for a refused permission or
+/// an unfocused document), [`ClipboardError::NotAvailable`] (synchronously, before
+/// this returns) when the context has no `navigator.clipboard` (an insecure
+/// origin). The in-app buffer is written either way, as [`copy_text`] writes it.
+///
+/// `on_done` runs on the browser's single thread, i.e. the UI thread.
+pub fn copy_text_then(
+    text: impl AsRef<str>,
+    on_done: impl FnOnce(ClipboardResult<()>) + Send + 'static,
+) {
+    let text = text.as_ref().to_string();
+    store_text(&text);
+    let Some(clipboard) = navigator_clipboard() else {
+        on_done(Err(ClipboardError::NotAvailable));
+        return;
+    };
+    // `writeText` is called before this returns (inside the caller's user
+    // activation); only its answer is awaited.
+    let write = start_write(&clipboard, "writeText", &text.as_str().into());
+    wasm_bindgen_futures::spawn_local(async move {
+        on_done(finish_write(write).await);
+    });
+}
+
+fn store_text(text: &str) {
+    CLIPBOARD_BUFFER.with(|buf| {
+        *buf.borrow_mut() = Some(text.to_string());
+    });
+}
+
+/// Call `clipboard[method](arg)`: the promise it returned, or an error when the
+/// method is missing or not a function, or threw. Function-ness is asked with
+/// `typeof`, and the result adopted with `Promise.resolve`, rather than with
+/// `instanceof`, which fails for a clipboard of another frame (another realm).
+fn start_write(
+    clipboard: &web_sys::Clipboard,
+    method: &str,
+    arg: &wasm_bindgen::JsValue,
+) -> ClipboardResult<js_sys::Promise> {
+    use wasm_bindgen::JsCast;
+    let function = js_sys::Reflect::get(clipboard, &method.into())
+        .ok()
+        .filter(|f| f.is_function())
+        .ok_or(ClipboardError::NotSupported)?
+        .unchecked_into::<js_sys::Function>();
+    let returned = function.call1(clipboard, arg).map_err(rejection)?;
+    Ok(js_sys::Promise::resolve(&returned))
+}
+
+/// Await a started write: `Ok(())` when its promise resolved.
+async fn finish_write(write: ClipboardResult<js_sys::Promise>) -> ClipboardResult<()> {
+    wasm_bindgen_futures::JsFuture::from(write?)
+        .await
+        .map(|_| ())
+        .map_err(rejection)
+}
+
+/// `writeText(text)`, awaited.
+async fn write_text(clipboard: &web_sys::Clipboard, text: &str) -> ClipboardResult<()> {
+    finish_write(start_write(clipboard, "writeText", &text.into())).await
+}
+
+/// A rejected clipboard promise as an error: `"<name>: <message>"` for a
+/// `DOMException` (or any `Error`), the value's string form otherwise.
+fn rejection(reason: wasm_bindgen::JsValue) -> ClipboardError {
+    let field = |key: &str| {
+        js_sys::Reflect::get(&reason, &key.into())
+            .ok()
+            .and_then(|v| v.as_string())
+    };
+    let message = match (field("name"), field("message")) {
+        (Some(name), Some(message)) => format!("{name}: {message}"),
+        (Some(only), None) | (None, Some(only)) => only,
+        (None, None) => reason
+            .as_string()
+            .unwrap_or_else(|| "the browser refused the clipboard write".to_string()),
+    };
+    ClipboardError::AccessFailed(message)
 }
 
 /// Paste text from the clipboard.
@@ -191,32 +294,22 @@ pub fn has_image() -> bool {
 
 /// Copy HTML to the clipboard with a plain-text fallback.
 ///
-/// On WASM, stores both HTML and plain text in local buffers.
+/// On WASM, stores both in the in-app buffers and asks the browser to write the
+/// system clipboard without waiting: a `ClipboardItem` carrying `text/html` (and
+/// `text/plain` when `alt_text` is given), or just `alt_text` through
+/// `writeText` where that write cannot be made or the browser refuses it. As with [`copy_text`],
+/// `Ok` means the buffers were written; [`copy_html_then`] reports the browser's
+/// answer.
 pub fn copy_html(html: impl AsRef<str>, alt_text: Option<&str>) -> ClipboardResult<()> {
-    let html = html.as_ref().to_string();
-
-    // Store HTML locally
-    HTML_CLIPBOARD_BUFFER.with(|buf| {
-        *buf.borrow_mut() = Some(html.clone());
-    });
-
-    // Also store plain text version
-    if let Some(text) = alt_text {
-        CLIPBOARD_BUFFER.with(|buf| {
-            *buf.borrow_mut() = Some(text.to_string());
+    let html = html.as_ref();
+    store_html(html, alt_text);
+    if let Some(clipboard) = navigator_clipboard() {
+        let write = start_html_write(&clipboard, html, alt_text);
+        let alt = alt_text.map(str::to_string);
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = finish_html_write(&clipboard, write, alt.as_deref()).await;
         });
     }
-
-    // Try to write to system clipboard (fire-and-forget)
-    // Note: browser Clipboard API doesn't have a simple setHtml, but we can
-    // use ClipboardItem with text/html blob for modern browsers
-    if let Some(clipboard) = navigator_clipboard() {
-        // Fall back to writing plain text for broad compatibility
-        if let Some(text) = alt_text {
-            let _ = clipboard.write_text(text);
-        }
-    }
-
     Ok(())
 }
 
@@ -224,6 +317,91 @@ pub fn copy_html(html: impl AsRef<str>, alt_text: Option<&str>) -> ClipboardResu
 /// fire-and-forget). Present so the async API is the same on every target.
 pub fn copy_html_async(html: impl AsRef<str>, alt_text: Option<&str>) {
     let _ = copy_html(html, alt_text);
+}
+
+/// [`copy_html`], reporting the browser's answer as [`copy_text_then`] does.
+///
+/// When the `ClipboardItem` write cannot be made (no `ClipboardItem` or
+/// `clipboard.write`) or the browser refuses it, `alt_text` is written alone
+/// through `writeText` and the answer is that write's; with no `alt_text`, the
+/// answer is the html write's error ([`ClipboardError::NotSupported`] when it
+/// could not be made at all).
+pub fn copy_html_then(
+    html: impl AsRef<str>,
+    alt_text: Option<&str>,
+    on_done: impl FnOnce(ClipboardResult<()>) + Send + 'static,
+) {
+    let html = html.as_ref();
+    store_html(html, alt_text);
+    let Some(clipboard) = navigator_clipboard() else {
+        on_done(Err(ClipboardError::NotAvailable));
+        return;
+    };
+    let write = start_html_write(&clipboard, html, alt_text);
+    let alt = alt_text.map(str::to_string);
+    wasm_bindgen_futures::spawn_local(async move {
+        on_done(finish_html_write(&clipboard, write, alt.as_deref()).await);
+    });
+}
+
+fn store_html(html: &str, alt_text: Option<&str>) {
+    HTML_CLIPBOARD_BUFFER.with(|buf| {
+        *buf.borrow_mut() = Some(html.to_string());
+    });
+    if let Some(text) = alt_text {
+        store_text(text);
+    }
+}
+
+/// Start the `ClipboardItem` write of an html copy (`clipboard.write`), called
+/// before the copy returns so it runs inside the caller's user activation.
+fn start_html_write(
+    clipboard: &web_sys::Clipboard,
+    html: &str,
+    alt_text: Option<&str>,
+) -> ClipboardResult<js_sys::Promise> {
+    let item = clipboard_item(html, alt_text).ok_or(ClipboardError::NotSupported)?;
+    start_write(clipboard, "write", &js_sys::Array::of1(&item))
+}
+
+/// Await the html write; when it could not be made or was refused, write
+/// `alt_text` through `writeText` instead and answer with that.
+async fn finish_html_write(
+    clipboard: &web_sys::Clipboard,
+    write: ClipboardResult<js_sys::Promise>,
+    alt_text: Option<&str>,
+) -> ClipboardResult<()> {
+    match finish_write(write).await {
+        Ok(()) => Ok(()),
+        Err(e) => match alt_text {
+            Some(text) => write_text(clipboard, text).await,
+            None => Err(e),
+        },
+    }
+}
+
+/// `new ClipboardItem({"text/html": Blob, "text/plain": Blob})`, or `None`
+/// where the browser has no `ClipboardItem` (or refuses to build one).
+fn clipboard_item(html: &str, alt_text: Option<&str>) -> Option<web_sys::ClipboardItem> {
+    let global = js_sys::global();
+    let ctor = js_sys::Reflect::get(&global, &"ClipboardItem".into()).ok()?;
+    if ctor.is_undefined() || ctor.is_null() {
+        return None;
+    }
+    let record = js_sys::Object::new();
+    let blob = |content: &str, mime: &str| -> Option<web_sys::Blob> {
+        let parts = js_sys::Array::of1(&content.into());
+        let options = web_sys::BlobPropertyBag::new();
+        options.set_type(mime);
+        web_sys::Blob::new_with_str_sequence_and_options(&parts, &options).ok()
+    };
+    let html_blob: wasm_bindgen::JsValue = blob(html, "text/html")?.into();
+    js_sys::Reflect::set(&record, &"text/html".into(), &html_blob).ok()?;
+    if let Some(text) = alt_text {
+        let text_blob: wasm_bindgen::JsValue = blob(text, "text/plain")?.into();
+        js_sys::Reflect::set(&record, &"text/plain".into(), &text_blob).ok()?;
+    }
+    web_sys::ClipboardItem::new_with_record_from_str_to_blob_promise(&record).ok()
 }
 
 /// Paste HTML from the clipboard.

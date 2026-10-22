@@ -527,6 +527,46 @@ in a browser: an `<input>` of a text type strips its line breaks, so `"a\nb"`
 shows and edits as `"ab"` (`url` and `email` also trim surrounding
 whitespace), while the attribute keeps what was written.
 
+### Knowing whether a copy worked
+
+`copy_text` answers `Ok` on the web as soon as rinch has stored the text in its
+in-app buffer — before the browser has answered `navigator.clipboard.writeText`.
+A refused permission, a write made with no user gesture or from an unfocused
+page, or an insecure origin all still answer `Ok`. To show "Copied" honestly, use
+`copy_text_then` (or `copy_html_then`), which calls back with the platform's own
+answer on every target:
+
+```rust
+use rinch::clipboard::copy_text_then;
+
+let status = Signal::new(String::new());
+rsx! {
+    button {
+        onclick: move || copy_text_then(link.get(), move |result| {
+            // `send`, not `set`: on native the callback runs on the clipboard
+            // worker thread (on the web, `send` applies at once).
+            status.send(if result.is_ok() { "Copied".into() } else { "Could not copy".into() });
+        }),
+        "Copy link"
+    }
+}
+```
+
+- **Web:** the callback runs when the browser's promise settles, on the UI
+  thread: `Ok(())` when it accepted the write, `Err(ClipboardError::AccessFailed(..))`
+  carrying the browser's `DOMException` (`NotAllowedError: …`) when it refused,
+  `Err(ClipboardError::NotAvailable)` (before the call returns) when the page has
+  no `navigator.clipboard`. Browsers accept a write made while handling a click
+  or key press, so call it from the handler itself, not from a later timer.
+  `copy_html_then` writes a `ClipboardItem` holding `text/html` and the
+  plain-text fallback (as `copy_html` now does too); where that write cannot be
+  made or the browser refuses it, the fallback is written alone through
+  `writeText` and its answer is the one reported.
+- **Native:** the write is queued on the clipboard worker and the callback runs
+  **on that worker thread** with its result, like `paste_text_async`'s, so a
+  signal write from it goes through `Signal::send`, as in the example.
+- **Android:** the callback runs before the call returns.
+
 ### Web: reaching content copied outside the app
 
 The browser has no synchronous system-clipboard read, so on `wasm32`
