@@ -485,21 +485,36 @@ fn status() -> NodeHandle {
 
 Notes:
 
-- `open_url` refuses a string with no scheme, a leading `-` or a control
-  character (`OpenUrlError::Invalid`) and otherwise hands the URL on as given:
-  a `file:` URL opens that file, so check the scheme of a URL someone else
-  chose. On the desktop `Ok` means the launcher started. In a browser call it
-  from a click handler, or the popup blocker answers `OpenUrlError::Blocked`.
-  On Android it is `OpenUrlError::Unsupported`.
+- `open_url` refuses, on every target, a string that is not a URL — no
+  scheme, a one-letter "scheme" (a Windows path such as `C:\…`), a leading
+  `-`, a control character: `OpenUrlError::Invalid` — and the schemes that
+  run code, `javascript:`, `vbscript:` and `data:`
+  (`OpenUrlError::ScriptScheme`; in a browser `window.open("javascript:…")`
+  runs with the page's own origin).
+- **Everything else goes to the system's handler, which can launch a
+  program.** A `file:` URL opens the file with its default application (an
+  executable or script runs), and a custom scheme hands the rest of the URL to
+  whatever program registered it. Never pass a URL from untrusted input (a
+  document, a message, a server response) without checking its scheme —
+  usually allow only `https:` (and `http:`, `mailto:`).
+- On the desktop `Ok` means the launcher started. In a browser call it from a
+  click handler, or the popup blocker answers `OpenUrlError::Blocked`. On
+  Android it is `OpenUrlError::Unsupported`.
 - `set_window_title` replaces `App::title` and is kept across
-  `hide_current_window` / `show_current_window`. A no-op on Android.
+  `hide_current_window` / `show_current_window`. On the desktop the title is
+  stored and the running window updated; nothing is queued, so an embed host
+  (which owns its window's title) is unaffected. A no-op on Android.
 - On the desktop the values describe the main window (not the DevTools
   window); a window hidden to the tray reads as not focused; the size is the
   logical size layout uses, in whole pixels. `current_window_size()` answers
   the same size from any thread without subscribing.
+- The three getters belong to the UI thread; read on another thread they
+  answer that thread's defaults (and log a warning once per thread).
 - In a native embed (`RinchContext`) nothing publishes them — the host owns
   the window — so they answer `1.0`, `(0.0, 0.0)` and `false` unless the host
-  calls `RinchApp::set_publishes_window_state(true)`.
+  turns publishing on for its `RinchApp`
+  (`set_publishes_window_state(true)`, which publishes the current scale and
+  size at once, so it can follow `RinchContext::new`'s mount).
 
 An element's own size is still its `bounds_signal()`, which the runtime
 refreshes after every layout pass.
