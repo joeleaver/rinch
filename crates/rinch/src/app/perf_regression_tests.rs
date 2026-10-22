@@ -1569,7 +1569,8 @@ fn transform_row_frames(transform: &'static str) -> (FrameStats, FrameStats) {
 /// since its sequence is then its flow walk. The notch is now the twin's in
 /// paint (24 visits), builds 2 sequences (313), and its hit test visits 2
 /// nodes (291); the warm move visits 2 (285). A fix to the cull or the prune
-/// must *lower* these.
+/// must *lower* these. The rows are hoisted past the scroller, so its bars are
+/// drawn after them by the body's sequence (#1717): 1 deferred scroller.
 #[test]
 fn identity_transform_rows_cost_what_any_stacking_context_costs() {
     let (notch, warm) = transform_row_frames("translateX(0)");
@@ -1586,6 +1587,7 @@ fn identity_transform_rows_cost_what_any_stacking_context_costs() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 24),
             (StackingOrderBuilds, 2),
+            (DeferredScrollbarsPainted, 1),
             (ClipMasks, 3),
             (ClipMaskPx, 367044),
             (HitTests, 1),
@@ -2139,7 +2141,9 @@ fn mount_open_tree() -> (RinchApp, NodeHandle) {
 /// hit test built every one's sequence (**129** builds on main). It now prunes
 /// a stacking context that hoists nothing on its flow extent before building
 /// its sequence: **9**. The rotated chevrons are still entered (one visit
-/// each, 135 nodes) — their transform is inverted on entry.
+/// each, 135 nodes) — their transform is inverted on entry. The chevrons are
+/// hoisted past the tree's scroller, so its bar is drawn after them, over the
+/// rows (#1717 — the app's tree view): 1 deferred scroller.
 #[test]
 fn a_scrolled_open_tree_paints_the_rows_on_screen() {
     let (mut app, scroller) = mount_open_tree();
@@ -2173,6 +2177,7 @@ fn a_scrolled_open_tree_paints_the_rows_on_screen() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 172),
             (StackingOrderBuilds, 9),
+            (DeferredScrollbarsPainted, 1),
             (GlyphCacheHits, 325),
             (ClipMasks, 3),
             (ClipMaskPx, 367044),
