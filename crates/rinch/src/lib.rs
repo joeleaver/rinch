@@ -409,12 +409,10 @@ pub fn generate_theme_css_string(props: &ThemeProviderProps) -> String {
     }
 
     let theme = builder.build();
-    let mut css = generate_theme_css(&theme);
+    let css = generate_theme_css(&theme);
 
     #[cfg(feature = "components")]
-    {
-        css.push_str(&rinch_components::generate_component_css());
-    }
+    let css = css + &rinch_components::generate_component_css();
 
     css
 }
