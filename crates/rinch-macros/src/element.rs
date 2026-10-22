@@ -24,10 +24,14 @@ impl Parse for RsxElement {
         let mut children = Vec::new();
 
         while !content.is_empty() {
-            // Try to parse as a prop (name: value)
-            if content.peek(Ident)
+            // Try to parse as a prop (name: value). `ref` is a keyword, which
+            // `peek(Ident)` does not see; `ref:` binds a node ref (#1779).
+            if (content.peek(Ident)
                 && (content.peek2(Token![:]) && !content.peek2(Token![::])
-                    || content.peek2(Token![-]))
+                    || content.peek2(Token![-])))
+                || (content.peek(Token![ref])
+                    && content.peek2(Token![:])
+                    && !content.peek2(Token![::]))
             {
                 let prop: RsxProp = content.parse()?;
                 props.push(prop);
