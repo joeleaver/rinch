@@ -792,6 +792,47 @@ impl RinchApp {
         Some((ax as f32, ay as f32, 1.0, (ay2 - ay).abs() as f32))
     }
 
+    /// The box of the glyph cluster at byte `offset` of a field's value, in
+    /// window px `(x, y, width, height)`, over the layout it is painted and
+    /// hit-tested with ([`Self::input_text_layout`]: its text column, a
+    /// single-line field's scroll and centring, bullets for a password field)
+    /// and carried through the painted box's transform (the bounding box of its
+    /// four corners, [`rinch_dom::paint::rect_from_painted_box`]) like
+    /// [`Self::input_caret_rect_with_affinity`]. `None` for an empty field, a
+    /// missing node or an offset past the value.
+    #[cfg(feature = "debug")]
+    pub(super) fn input_glyph_rect(
+        tree: &rinch_dom::NodeTree,
+        font_cx: &mut parley::FontContext,
+        layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+        node_id: usize,
+        offset: usize,
+    ) -> Option<(f32, f32, f32, f32)> {
+        let it = Self::input_text_layout(tree, font_cx, layout_cx, node_id)?;
+        // An offset inside a char is the char boundary before it, as
+        // `painted_caret_rect` takes it (slicing there panics, review of
+        // PR #1745).
+        let mut offset = offset.min(it.value.len());
+        while !it.value.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        let display_offset = if it.is_password {
+            it.value[..offset].chars().count() * PASSWORD_BULLET.len()
+        } else {
+            offset
+        };
+        let g = rinch_dom::text_query::glyph_bounds_for_offset_layout(&it.layout, display_offset)?;
+        let bx = (it.padding_left - it.scroll_x + g.x) as f64;
+        let by = (it.padding_top + it.vertical_offset + g.y) as f64;
+        let (x, y, w, h) = rinch_dom::paint::rect_from_painted_box(
+            tree,
+            node_id,
+            1.0,
+            (bx, by, g.width as f64, g.height as f64),
+        );
+        Some((x as f32, y as f32, w as f32, h as f32))
+    }
+
     /// The Parley layout `paint_input_value` draws a field's text with, rebuilt
     /// with the app's own contexts — one builder, shared by the click→offset
     /// map and the offset→caret map so the two agree. `None` for a missing

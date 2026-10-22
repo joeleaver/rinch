@@ -878,72 +878,43 @@ impl RinchApp {
                         message: "No document".into(),
                     };
                 };
-
-                // Everything below is in logical (CSS) px, like `absolute` and
-                // the input tools: the box comes from
-                // `compute_absolute_position_and_transform(.., 1.0)`, so the
-                // offset inside it — paddings, and the probe layout's font size
-                // against its logical `max_width` — must be unscaled too (#421).
-                // The window's scale factor plays no part.
-                let d = doc.borrow();
+                // Logical (CSS) px at every scale factor, like `absolute` and
+                // the input tools (#421). Both answers are the app's own
+                // painter-matched geometry, never a copy of it (#1136): a
+                // field's caret is where `paint_input_value` draws it (its
+                // text column, a single-line field's scroll and centring,
+                // password bullets, the placeholder rule; `painted_caret_rect`,
+                // #1678, which `NodeHandle::caret_rect` asks too), and IFC
+                // text's is the caret the editor overlays and `caret_rect`
+                // draw, in the content box (`text_caret_window_rect`).
+                let mut d = doc.borrow_mut();
+                let d = &mut *d;
                 let Some(node) = d.tree.get(node_id) else {
                     return DebugResult::Error {
                         message: format!("Node {} not found", node_id),
                     };
                 };
-
-                // The node's painted frame. Every coordinate reported below is a
-                // position *inside* the box, so it is pushed forward through the
-                // composed transform rather than added to an origin — under a
-                // `scale()` container the two differ (#203). Copied out before
-                // the document borrow is released for the Parley rebuild.
-                let (box_x, box_y, node_transform) =
-                    rinch_dom::paint::compute_absolute_position_and_transform(
-                        &d.tree, node_id, 1.0,
-                    );
-                let fwd = move |lx: f64, ly: f64| -> (f64, f64) {
-                    let p = node_transform * peniko::kurbo::Point::new(box_x + lx, box_y + ly);
-                    (p.x, p.y)
-                };
-
-                let tag = node.tag();
-                if matches!(tag, Some("input" | "textarea")) {
-                    // Where paint draws the caret: the text column, a
-                    // single-line field's horizontal scroll (#1721), the
-                    // vertical centring and the placeholder rule, from the
-                    // builder `NodeHandle::caret_rect` asks
-                    // (`painted_caret_rect`, #1678; Refs #1136).
-                    drop(d);
-                    let mut dm = doc.borrow_mut();
-                    let dm = &mut *dm;
-                    return match rinch_dom::form_control::painted_caret_rect(
-                        &dm.tree,
-                        &mut dm.font_cx,
-                        &mut dm.layout_cx,
+                let rect = if matches!(node.tag(), Some("input" | "textarea")) {
+                    rinch_dom::form_control::painted_caret_rect(
+                        &d.tree,
+                        &mut d.font_cx,
+                        &mut d.layout_cx,
                         node_id,
                         byte_offset,
                         rinch_core::dom::CaretAffinity::Downstream,
-                    ) {
-                        Some((cx, cy, _)) => DebugResult::Json {
-                            data: json!({ "x": cx as f64, "y": cy as f64 }),
-                        },
-                        None => DebugResult::Error {
-                            message: "Node has no caret".into(),
-                        },
-                    };
-                }
-
-                if let Some(ref inline_layout) = node.text_layout {
-                    let (x, y) =
-                        caret_position_for_offset_layout(&inline_layout.layout, byte_offset);
-                    let (cx, cy) = fwd(x as f64, y as f64);
-                    return DebugResult::Json {
-                        data: json!({ "x": cx, "y": cy }),
-                    };
-                }
-
-                DebugResult::Error {
-                    message: "Node does not have text layout".into(),
+                    )
+                    .ok_or("Node has no caret")
+                } else {
+                    d.text_caret_window_rect(node_id, byte_offset)
+                        .ok_or("Node does not have text layout")
+                };
+                match rect {
+                    Ok((x, y, _)) => DebugResult::Json {
+                        data: json!({ "x": x as f64, "y": y as f64 }),
+                    },
+                    Err(message) => DebugResult::Error {
+                        message: message.into(),
+                    },
                 }
             }
             DebugCommandKind::GetGlyphBounds {
@@ -955,108 +926,48 @@ impl RinchApp {
                         message: "No document".into(),
                     };
                 };
-
-                // Everything below is in logical (CSS) px, like `absolute` and
-                // the input tools: the box comes from
-                // `compute_absolute_position_and_transform(.., 1.0)`, so the
-                // offset inside it — paddings, and the probe layout's font size
-                // against its logical `max_width` — must be unscaled too (#421).
-                // The window's scale factor plays no part.
+                // Logical px, the app's own geometry (#421, #1136): a field's
+                // glyph over the layout it is painted and hit-tested with
+                // (`input_glyph_rect`), IFC text's from the document's glyph
+                // query, in the content box (`text_glyph_window_rect`).
                 let d = doc.borrow();
                 let Some(node) = d.tree.get(node_id) else {
                     return DebugResult::Error {
                         message: format!("Node {} not found", node_id),
                     };
                 };
-
-                // The node's painted frame. Every coordinate reported below is a
-                // position *inside* the box, so it is pushed forward through the
-                // composed transform rather than added to an origin — under a
-                // `scale()` container the two differ (#203). Copied out before
-                // the document borrow is released for the Parley rebuild.
-                let (box_x, box_y, node_transform) =
-                    rinch_dom::paint::compute_absolute_position_and_transform(
-                        &d.tree, node_id, 1.0,
-                    );
-                let fwd = move |lx: f64, ly: f64| -> (f64, f64) {
-                    let p = node_transform * peniko::kurbo::Point::new(box_x + lx, box_y + ly);
-                    (p.x, p.y)
-                };
-
-                let tag = node.tag();
-                if matches!(tag, Some("input" | "textarea")) {
-                    let value = rinch_dom::form_control::control_value(&d.tree.nodes, node_id)
-                        .map(|v| v.into_owned())
-                        .unwrap_or_default();
-                    if value.is_empty() {
+                let rect = if matches!(node.tag(), Some("input" | "textarea")) {
+                    let empty = rinch_dom::form_control::control_value(&d.tree.nodes, node_id)
+                        .is_none_or(|v| v.is_empty());
+                    if empty {
                         return DebugResult::Error {
                             message: "No text content".into(),
                         };
                     }
-
-                    // The layout the field is painted and hit-tested with:
-                    // its text column, a single-line field's horizontal scroll
-                    // and centring (#1721), bullets for a password field.
-                    let Some(it) = Self::input_text_layout(
+                    Self::input_glyph_rect(
                         &d.tree,
                         &mut self.hit_test_font_cx,
                         &mut self.hit_test_layout_cx,
                         node_id,
-                    ) else {
-                        return DebugResult::Error {
-                            message: "No text content".into(),
-                        };
-                    };
-                    let display_offset = if it.is_password {
-                        let clamped = byte_offset.min(it.value.len());
-                        it.value[..clamped].chars().count() * "\u{2022}".len()
-                    } else {
-                        byte_offset
-                    };
-                    return match glyph_bounds_for_offset_layout(&it.layout, display_offset) {
-                        Some(bounds) => {
-                            let (gx, gy) = fwd(
-                                (it.padding_left - it.scroll_x + bounds.x) as f64,
-                                (it.padding_top + it.vertical_offset + bounds.y) as f64,
-                            );
-                            DebugResult::Json {
-                                data: json!({
-                                    "x": gx,
-                                    "y": gy,
-                                    "width": bounds.width,
-                                    "height": bounds.height,
-                                }),
-                            }
-                        }
-                        None => DebugResult::Error {
-                            message: "Byte offset out of bounds".into(),
-                        },
-                    };
-                }
-
-                if let Some(ref inline_layout) = node.text_layout {
-                    match glyph_bounds_for_offset_layout(&inline_layout.layout, byte_offset) {
-                        Some(bounds) => {
-                            let (gx, gy) = fwd(bounds.x as f64, bounds.y as f64);
-                            return DebugResult::Json {
-                                data: json!({
-                                    "x": gx,
-                                    "y": gy,
-                                    "width": bounds.width,
-                                    "height": bounds.height,
-                                }),
-                            };
-                        }
-                        None => {
-                            return DebugResult::Error {
-                                message: "Byte offset out of bounds".into(),
-                            };
-                        }
-                    }
-                }
-
-                DebugResult::Error {
-                    message: "Node does not have text layout".into(),
+                        byte_offset,
+                    )
+                    .ok_or("Byte offset out of bounds")
+                } else {
+                    d.text_glyph_window_rect(node_id, byte_offset)
+                        .ok_or("No glyph at this offset (no text layout, or past the text; for text in a block, query the block element)")
+                };
+                match rect {
+                    Ok((x, y, width, height)) => DebugResult::Json {
+                        data: json!({
+                            "x": x as f64,
+                            "y": y as f64,
+                            "width": width,
+                            "height": height,
+                        }),
+                    },
+                    Err(message) => DebugResult::Error {
+                        message: message.into(),
+                    },
                 }
             }
         }

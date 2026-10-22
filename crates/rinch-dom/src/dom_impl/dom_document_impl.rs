@@ -2441,6 +2441,29 @@ impl RinchDocument {
         self.caret_to_window(node_id, local_x, local_y, height)
     }
 
+    /// The box of the glyph cluster at `byte_offset` in the text-bearing
+    /// element `node_id`, as `(x, y, width, height)` in logical window pixels:
+    /// [`DomDocument::query_glyph_bounds`] (border-box-local, so an IFC root's
+    /// padding and border are in it, as paint draws the text) pushed forward
+    /// through the composed transform of its ancestors (#203): the bounding box
+    /// of its four corners, so a `scale()` stretches it and a `rotate()` holds
+    /// the turned glyph. `None` where that query answers
+    /// `None` (no text layout, an offset past the text).
+    pub fn text_glyph_window_rect(
+        &self,
+        node_id: usize,
+        byte_offset: usize,
+    ) -> Option<(f32, f32, f32, f32)> {
+        let g = self.query_glyph_bounds(node_id as u64, byte_offset)?;
+        let (x, y, w, h) = crate::paint::rect_from_painted_box(
+            &self.tree,
+            node_id,
+            1.0,
+            (g.x as f64, g.y as f64, g.width as f64, g.height as f64),
+        );
+        Some((x as f32, y as f32, w as f32, h as f32))
+    }
+
     /// A caret `(x, y, height)` relative to `node_id`'s border box (what the
     /// `DomDocument` text queries answer), pushed through the composed
     /// transform of its ancestors into logical window pixels.
