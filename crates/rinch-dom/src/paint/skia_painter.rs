@@ -1574,13 +1574,25 @@ impl Painter for TinySkiaPainter {
         } else {
             tiny_skia::FilterQuality::Nearest
         };
+        let mut pattern_ts = affine_to_transform(tile.transform);
+        if tile.smooth {
+            // tiny-skia samples a pattern whose image-to-device map is a pure
+            // translation nearest, fractional or not (`Pattern::push_stages`),
+            // so a tile at a fractional device position (#1151) would be
+            // drawn rounded, with no blended edge. One ulp of scale keeps it
+            // bilinear: under 0.002px of drift across 10,000 device px.
+            let total = affine_to_transform(transform).pre_concat(pattern_ts);
+            if total.is_translate() {
+                pattern_ts.sx = f32::from_bits(pattern_ts.sx.to_bits() + 1);
+            }
+        }
         let paint = Paint {
             shader: tiny_skia::Pattern::new(
                 pixmap,
                 tiny_skia::SpreadMode::Repeat,
                 quality,
                 1.0,
-                affine_to_transform(tile.transform),
+                pattern_ts,
             ),
             anti_alias: true,
             ..Paint::default()

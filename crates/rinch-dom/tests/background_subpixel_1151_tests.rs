@@ -246,3 +246,23 @@ fn a_position_animation_moves_by_less_than_a_pixel() {
         );
     }
 }
+
+/// An image tile at DPR 1.5 and `0.5px` (`0.75` device px), scaled 1.5x:
+/// pixel 0 blends the tile's first column with the last, as Chrome's does.
+/// Chrome reads `(79, 0, 175)` there; rinch reads `(64, 0, 191)` because it
+/// rasterises a scaled image tile nearest and samples that raster again
+/// (#1753), which is also why its inner red/blue edge is not blended. The
+/// fraction itself is kept: rounded, pixel 0 was pure blue.
+#[test]
+fn an_image_tile_at_dpr_1_5_keeps_its_fraction() {
+    let p = render("background: url(t1151.png) 0.5px 0 / 10px 10px", 1.5, true);
+    for x in [0, 15] {
+        let [r, g, b] = rgb(&p, x, 10);
+        assert!(
+            g == 0 && (40..=120).contains(&r) && r as u32 + b as u32 >= 250,
+            "pixel {x}: {:?}, not a red/blue blend",
+            [r, g, b]
+        );
+    }
+    check(&p, 10, &[(1, R), (6, R), (9, B), (14, B)], 3);
+}
