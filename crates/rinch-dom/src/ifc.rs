@@ -649,51 +649,156 @@ pub(crate) fn with_first_baseline(
     out
 }
 
-/// Break a text **leaf**'s layout — a flex or grid item's own text, measured
-/// through `NodeContext::Text` rather than an IFC — at `max_width`, without
-/// the empty line parley commits after a final newline ([`phantom_last_line`],
-/// #1172), and without a break after an NBSP parley hung ([`unglue`], #1218).
-/// A leaf hangs no spaces (it never has), so this is
-/// [`break_lines_hanging_spaces`] without its spaces.
-pub(crate) fn break_leaf_lines(
-    layout: &mut parley::Layout<Brush>,
-    text: &str,
-    max_width: Option<f32>,
-) -> HangStats {
-    layout.break_all_lines(max_width);
-    let glue = max_width.filter(|max| max.is_finite() && any_hung_nbsp_line(layout, text, *max));
-    let mut stats = match glue {
-        Some(max) => hang_pass(
-            layout,
-            text,
-            max,
-            None,
-            &UnhungSpaces::default(),
-            false,
-            false,
-            false,
-        ),
-        None => HangStats::default(),
-    };
-    if let Some(keep) = phantom_last_line(layout) {
-        match glue {
-            Some(max) => {
-                stats = hang_pass(
-                    layout,
-                    text,
-                    max,
-                    Some(keep),
-                    &UnhungSpaces::default(),
-                    false,
-                    false,
-                    false,
-                )
+/// A text **leaf**'s text — a flex or grid item's own text, measured through
+/// `NodeContext::Text` rather than an IFC — as parley lays it out (#1279,
+/// #1672): its white space processed by its element's `white-space` exactly
+/// as an IFC processes a text node's ([`IfcText::push_text_node`]: collapsed
+/// for `normal`/`nowrap`, spaces collapsed and newlines kept for `pre-line`,
+/// a held space at the end removed, U+2028/U+2029/U+0085 substituted). A
+/// preserved tab stays a tab: a leaf's tabs are not set to their stops
+/// (#1585).
+///
+/// Offsets into a leaf's layout are offsets into this text, as an IFC
+/// root's are into its flat text.
+pub(crate) struct LeafText<'a> {
+    pub text: std::borrow::Cow<'a, str>,
+    /// Its spaces are preserved: only then can they hang or end a line as
+    /// content ([`break_lines_hanging_spaces`],
+    /// [`crate::node::measured_width_of`]).
+    pub preserved: bool,
+    /// The `pre` and `break-spaces` text, whose spaces do not hang.
+    pub unhung: UnhungSpaces,
+}
+
+impl<'a> LeafText<'a> {
+    pub(crate) fn of(raw: &'a str, white_space: crate::computed_style::WhiteSpaceValue) -> Self {
+        use crate::computed_style::WhiteSpaceValue;
+        let mut ifc = IfcText::new(false);
+        ifc.push_text_node(
+            std::borrow::Cow::Borrowed(raw),
+            SpaceCollapse::of(white_space),
+        );
+        ifc.finish();
+        let preserved = ifc.preserved();
+        let tabs = ifc.tab_offsets();
+        let mut text = ifc.into_text();
+        if !tabs.is_empty() {
+            let t = text.to_mut();
+            for at in tabs {
+                t.replace_range(at..at + 1, "\t");
             }
-            None => break_lines_up_to(layout, max_width, keep),
         }
-        stats.phantom_rebreaks = 1;
+        let mut unhung = UnhungSpaces::default();
+        if !text.is_empty() {
+            match white_space {
+                WhiteSpaceValue::Pre => unhung.pre.push(0..text.len()),
+                WhiteSpaceValue::BreakSpaces => unhung.breaking.push(0..text.len()),
+                _ => {}
+            }
+        }
+        Self {
+            text,
+            preserved,
+            unhung,
+        }
     }
-    stats
+}
+
+/// A text leaf shaped and broken at `wrap_width`, and the size its measure
+/// reports ([`crate::node::measured_width_of`]). The one place a leaf's
+/// layout is built: the root compute's measure and an atomic inline's
+/// (`measure_inline_blocks`) both call it.
+pub(crate) fn shape_text_leaf(
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<Brush>,
+    text: &crate::node::TextMeasure,
+    wrap_width: Option<f32>,
+) -> LeafShape {
+    let leaf = LeafText::of(&text.content, text.white_space);
+    let font_family = crate::fonts::parley_text_family(font_cx, &text.font_family, &leaf.text);
+    let mut builder = layout_cx.ranged_builder(font_cx, &leaf.text, 1.0, true);
+    use parley::style::StyleProperty as P;
+    builder.push_default(P::FontSize(text.font_size));
+    if (text.font_weight - 400.0).abs() > 1.0 {
+        builder.push_default(P::FontWeight(parley::style::FontWeight::new(
+            text.font_weight,
+        )));
+    }
+    if let Some(lh) = layout::css_line_height_to_parley(&text.line_height_css) {
+        builder.push_default(P::LineHeight(lh));
+    }
+    font_family.push_to(&mut builder);
+    // So the cached layout can be rendered with a colour (paint draws a leaf
+    // in its parent's current one, #904).
+    builder.push_default(P::Brush(Brush::Solid(text.color)));
+    // Emergency line breaking.
+    builder.push_default(P::OverflowWrap(text.overflow_wrap.to_parley()));
+    // letter-/word-spacing (#698). The builder's scale is 1.0, so these are
+    // CSS pixels either way.
+    builder.push_default(P::LetterSpacing(text.letter_spacing));
+    builder.push_default(P::WordSpacing(text.word_spacing));
+    let mut layout = builder.build(&leaf.text);
+    let hang = break_lines_hanging_spaces(
+        &mut layout,
+        &leaf.text,
+        wrap_width,
+        leaf.preserved,
+        &leaf.unhung,
+        false,
+        false,
+    );
+    // A flex or grid container's text that is all white space is not
+    // rendered, whatever its `white-space` (css-flexbox-1 §4, css-grid-1
+    // §6): Chrome 155 lays `"   "` out as nothing under `pre-wrap` too. Here
+    // it measures 0x0 with no baseline, but is still an item (#1760).
+    let blank = text
+        .content
+        .bytes()
+        .all(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'));
+    let (width, height) = if blank {
+        (0.0, 0.0)
+    } else {
+        let width = crate::node::measured_width_of(
+            &layout,
+            &leaf.text,
+            leaf.preserved,
+            wrap_width.unwrap_or(f32::INFINITY),
+            &leaf.unhung.breaking,
+        );
+        (width, layout.height())
+    };
+    LeafShape {
+        layout,
+        hang,
+        width,
+        height,
+        blank,
+    }
+}
+
+/// What [`shape_text_leaf`] answers.
+pub(crate) struct LeafShape {
+    pub layout: parley::Layout<Brush>,
+    pub hang: HangStats,
+    /// The width the measure reports.
+    pub width: f32,
+    /// The height the measure reports.
+    pub height: f32,
+    /// All white space: measured 0x0, and reports no first baseline, so it
+    /// moves no baseline-aligned item. It is still an item (a `gap` is laid
+    /// out beside it), where Chrome makes none (#1760).
+    pub blank: bool,
+}
+
+impl LeafShape {
+    /// Its first line's baseline, from the content-box top; `None` when blank.
+    pub(crate) fn first_baseline(&self) -> Option<f32> {
+        if self.blank {
+            None
+        } else {
+            first_line_baseline(&self.layout)
+        }
+    }
 }
 
 /// The line count to keep when `layout` ends in an empty line parley 0.11.1
@@ -1330,6 +1435,21 @@ impl<'a> IfcText<'a> {
     /// The final length, after [`Self::finish`].
     pub(crate) fn final_len(&self) -> usize {
         self.len - self.dropped.len()
+    }
+
+    /// The final text, after [`Self::finish`]: its text ops end to end. A
+    /// single text node's is the node's own text, borrowed, when nothing was
+    /// collapsed.
+    pub(crate) fn into_text(self) -> std::borrow::Cow<'a, str> {
+        let mut texts = self.ops.into_iter().filter_map(|op| match op {
+            IfcOp::Text(t) => Some(t),
+            _ => None,
+        });
+        let first = texts.next().unwrap_or_default();
+        texts.fold(first, |mut all, t| {
+            all.to_mut().push_str(&t);
+            all
+        })
     }
 }
 
@@ -6871,58 +6991,24 @@ impl RinchDocument {
                                     return taffy::Size::ZERO;
                                 }
                                 perf.bump(crate::perf::Counter::ShapeAtomicInline);
-                                let font_family = crate::fonts::parley_text_family(
-                                    font_cx,
-                                    &text.font_family,
-                                    &text.content,
-                                );
-                                let mut builder =
-                                    layout_cx.ranged_builder(font_cx, &text.content, 1.0, true);
-                                builder.push_default(parley::style::StyleProperty::FontSize(
-                                    text.font_size,
-                                ));
-                                if (text.font_weight - 400.0).abs() > 1.0 {
-                                    builder.push_default(parley::style::StyleProperty::FontWeight(
-                                        parley::style::FontWeight::new(text.font_weight),
-                                    ));
-                                }
-                                if let Some(lh) =
-                                    layout::css_line_height_to_parley(&text.line_height_css)
-                                {
-                                    builder
-                                        .push_default(parley::style::StyleProperty::LineHeight(lh));
-                                }
-                                font_family.push_to(&mut builder);
-                                // Apply overflow-wrap for emergency line-breaking
-                                builder.push_default(parley::style::StyleProperty::OverflowWrap(
-                                    text.overflow_wrap.to_parley(),
-                                ));
-                                // letter-/word-spacing (#698). The builder's scale is
-                                // 1.0 here, so these are CSS pixels either way.
-                                builder.push_default(parley::style::StyleProperty::LetterSpacing(
-                                    text.letter_spacing,
-                                ));
-                                builder.push_default(parley::style::StyleProperty::WordSpacing(
-                                    text.word_spacing,
-                                ));
-                                let mut layout = builder.build(&text.content);
                                 // If no_wrap is set (white-space: nowrap), don't constrain width
                                 let wrap_width = if text.no_wrap {
                                     None
                                 } else {
                                     known_dims.width.or(max_width)
                                 };
-                                break_leaf_lines(&mut layout, &text.content, wrap_width)
-                                    .record(perf);
+                                let leaf = shape_text_leaf(font_cx, layout_cx, text, wrap_width);
+                                leaf.hang.record(perf);
+                                first_baseline = leaf.first_baseline();
+                                let layout = leaf.layout;
                                 let size = taffy::Size {
-                                    width: known_dims.width.unwrap_or(layout.width()),
-                                    height: known_dims.height.unwrap_or(layout.height()),
+                                    width: known_dims.width.unwrap_or(leaf.width),
+                                    height: known_dims.height.unwrap_or(leaf.height),
                                 };
                                 // Keyed exactly as the root compute keys its own text
                                 // leaves, so `copy_cached_text_layouts` picks between
                                 // them by the same rule.
                                 let wrap_bits = wrap_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
-                                first_baseline = first_line_baseline(&layout);
                                 leaf_layouts.insert((text.node_id, wrap_bits), layout);
                                 size
                             }

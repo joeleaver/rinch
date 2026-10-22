@@ -112,6 +112,7 @@ impl DomDocument for RinchDocument {
             no_wrap: false,                                      // default, updated from parent
             letter_spacing: 0.0,                                 // default, updated from parent
             word_spacing: 0.0,                                   // default, updated from parent
+            white_space: crate::computed_style::WhiteSpaceValue::Normal,
             overflow_wrap: crate::computed_style::OverflowWrapValue::default(),
             text_overflow: crate::computed_style::TextOverflowValue::default(),
             parent_overflow_hidden: false,
@@ -652,6 +653,7 @@ impl DomDocument for RinchDocument {
                     node_id: text_id,
                     color: AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255),
                     no_wrap: false,
+                    white_space: crate::computed_style::WhiteSpaceValue::Normal,
                     letter_spacing: 0.0,
                     word_spacing: 0.0,
                     overflow_wrap: crate::computed_style::OverflowWrapValue::default(),

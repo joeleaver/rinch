@@ -193,7 +193,7 @@ define_counters! {
     /// Parley layouts (of any of the kinds above) broken a second time to
     /// hang preserved trailing spaces at a soft wrap, or to move a break
     /// parley put after a no-break space it hung (#1218)
-    /// (`break_lines_hanging_spaces`, `break_leaf_lines`). At most one per
+    /// (`break_lines_hanging_spaces`, which a text leaf is broken by too). At most one per
     /// layout, however many lines it fixes — the linearity pin.
     IfcHangPasses = "ifc_hang_passes",
     /// Lines those passes broke again: at a widened width to keep their

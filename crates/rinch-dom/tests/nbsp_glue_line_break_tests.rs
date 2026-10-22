@@ -9,7 +9,7 @@
 //! an overflowing space (`Whitespace::is_space_or_nbsp` in its hang branch)
 //! and commits the line right after it, so `x yyx&nbsp;Wkxxpq` in 40px broke
 //! as `x yyx&nbsp;` / `Wkxxpq`. `ifc::break_lines_hanging_spaces` (and
-//! `break_leaf_lines`, a flex item's own text) break such a line again.
+//! `shape_text_leaf`, a flex item's own text) break such a line again.
 //!
 //! Every expectation is Chrome 153's, on the same markup: the bundled Inter
 //! registered as `ProbeFace`, `font: 16px/25px`, `* { margin: 0 }`, and the

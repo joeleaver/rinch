@@ -48,7 +48,7 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     as `"\n"`, so `<div>a<br></div>` and `<pre>a\n</pre>` were two lines where CSS makes one (a
     line after the last forced break exists only when something follows it). `phantom_last_line`
     drops that line too — last line, empty text range, no inline box, after an `Explicit`
-    break — for an IFC and for a text leaf (`ifc::break_leaf_lines`, both leaf measure sites)
+    break — for an IFC and for a text leaf (`ifc::shape_text_leaf`, both leaf measure sites)
     (#1172); `crates/rinch-dom/tests/trailing_forced_break_tests.rs` is the pin. **Not** a
     `<textarea>`, which is laid out by the form-control path and keeps its empty last line, as
     Chrome does (that is where its caret goes). The rich-text editor needs the line after a
@@ -67,7 +67,7 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
   - **An overflowing NBSP is hung like a space** (`is_space_or_nbsp` in the breaker's hang
     branch) and the line committed right after it, where UAX #14 class GL allows no break:
     `x yyx&nbsp;Wkxxpq` at 40px broke as `x yyx&nbsp;` / `Wkxxpq`. `ifc::unglue` breaks such a
-    line again inside `break_lines_hanging_spaces`' pass (and `break_leaf_lines`, a flex item's
+    line again inside `break_lines_hanging_spaces`' pass (and `shape_text_leaf`, a flex item's
     own text), where Chrome 153 does: at the last opportunity before the NBSP; right before it
     after an atomic inline or a hyphen (LB12a), or for `overflow-wrap` with nothing else; and
     with no opportunity before it, the glued word overflows to the next one (#1218). That last
@@ -85,7 +85,7 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     breaks its lines, and puts the spaces back on the line they hang from; upstream's rework
     (#790, #785) is unreleased. Spaces and tabs hang, NBSP does not (it glues, and after a hung run starts the next line).
     A `break-spaces` space or tab in an IFC never hangs (#1043, `WhiteSpaceValue::BreakSpaces`; it read as
-    `pre-wrap` before; a flex or grid item's own text still hangs them, #1672): the same pass breaks a line parley ended past the box in such spaces
+    `pre-wrap` before; and, since #1672, a flex or grid item's own text too): the same pass breaks a line parley ended past the box in such spaces
     (`ifc::break_overflowing_spaces`) after the last one that fits, else before the word they follow,
     else after their first space, committed by length; the line is aligned with them as content and
     `measured_width` counts them (Chrome 155, `tests/white_space_break_spaces_1043_tests.rs`). It is **one**
@@ -115,7 +115,7 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     layout (`ifc_hang_passes`; `perf_regression_scenarios::a_right_aligned_paragraph_ending_in_spaces_pays_one_pass`).
     Not done: a right-to-left line, by parley's inferred direction or CSS `direction: rtl`
     (parley offsets it by its trailing white space, so narrowing would move it the wrong way;
-    #1666), a flex or grid item's own text (a text leaf, `break_leaf_lines`), a `nowrap`/`pre`
+    #1666), a flex or grid item's own text (a text leaf, `shape_text_leaf`), a `nowrap`/`pre`
     root with no wrapping text (#1237).
     `crates/rinch-dom/tests/text_align_trailing_spaces_1042_tests.rs` is the pin.
   - **parley counts a justified line's opportunities as it breaks it** (`num_spaces`, not
@@ -166,8 +166,18 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     change; `letter-spacing`/`word-spacing` on the substitutes still differ from Chrome's).
     The rich-text editor's caret map counts the same bytes for each through
     `DomDocument::substituted_char_flat_bytes`, answered from the table `laid_out_as` reads
-    (`ifc::PRESERVED_SUBSTITUTES`) — as it counts a tab through `tab_flat_bytes` (#1109; 1 since #1122). Only in an IFC: a flex or grid item's own text (a text leaf) still breaks at
-    U+2028/U+2029 and draws U+0085 (#1268).
+    (`ifc::PRESERVED_SUBSTITUTES`) — as it counts a tab through `tab_flat_bytes` (#1109; 1 since #1122).
+    **A flex or grid item's own text (a text leaf) goes through the same functions** (#1279,
+    #1672): `ifc::LeafText` collapses it with `IfcText` by its element's `white-space`
+    (substitutes included, a preserved tab kept as a tab — #1585), `ifc::shape_text_leaf` breaks
+    it with `break_lines_hanging_spaces` (hung preserved spaces, `break-spaces`, the final
+    forced break) and measures it with `node::measured_width_of`, `InlineLayout::measured_width`'s
+    rule; it used to hand parley its text raw, so `<div style="display:flex">Use </div>` was two
+    lines tall. A leaf that is all spaces, tabs and newlines measures 0x0 and reports
+    no first baseline (`LeafShape::blank`), under every `white-space`; Chrome makes no item of it at
+    all (css-flexbox-1 §4), rinch's is still an item and takes a `gap` (#1760). Offsets into a leaf's layout are offsets into its collapsed text,
+    as an IFC root's are into its flat text; the leaf keeps no DOM↔flat map.
+    `crates/rinch-dom/tests/text_leaf_white_space_1279_tests.rs` is the pin.
     **The flat offsets index that collapsed text** — the caret maps,
     inline backgrounds and decorations, the visibility mask; they used to count the pushed text,
     one byte late per collapsed byte — and `IfcTextRange::offset_map` is each text node's
