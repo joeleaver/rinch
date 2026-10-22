@@ -417,7 +417,11 @@ promise (rejection → `AccessFailed("<name>: <message>")`, no `navigator.clipbo
 `NotAvailable` synchronously). The web's synchronous `copy_text`/`copy_html` still
 answer `Ok` for the in-app buffer whatever the browser does. Web tests reach a
 deterministic refusal through the doc-hidden `__set_clipboard_source` (the clipboard
-of an `<iframe allow="clipboard-write 'none'">`); the accepted write needs a user
+of an `<iframe allow="clipboard-write 'none'">` in Chrome; in Firefox, which ignores
+that policy, the same frame detached, whose write rejects with `InvalidStateError`); the
+html copy falls back to `writeText(alt)` when its `ClipboardItem` write cannot be made or
+is refused; every write promise is awaited, so a refused fire-and-forget copy is not an
+uncaught rejection; the accepted write needs a user
 activation in headless Chrome, so it is a trusted click from `real_keys.mjs`
 (`rinch-web/tests/clipboard_copy_then.rs`, run by `run_real_keys.sh`).
 

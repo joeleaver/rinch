@@ -559,8 +559,9 @@ rsx! {
   no `navigator.clipboard`. Browsers accept a write made while handling a click
   or key press, so call it from the handler itself, not from a later timer.
   `copy_html_then` writes a `ClipboardItem` holding `text/html` and the
-  plain-text fallback (as `copy_html` now does too), or the fallback alone where
-  the browser has no `ClipboardItem`.
+  plain-text fallback (as `copy_html` now does too); where that write cannot be
+  made or the browser refuses it, the fallback is written alone through
+  `writeText` and its answer is the one reported.
 - **Native:** the write is queued on the clipboard worker and the callback runs
   **on that worker thread** with its result, like `paste_text_async`'s, so a
   signal write from it goes through `Signal::send`, as in the example.

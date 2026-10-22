@@ -11,7 +11,8 @@
 //! the clipboard of a same-origin `<iframe allow="clipboard-write 'none'">`
 //! (handed to the crate through its doc-hidden `__set_clipboard_source`), whose
 //! write Chrome rejects with `NotAllowedError` whatever the page's own
-//! permission state (Firefox rejects it too, for want of a user activation).
+//! permission state; in Firefox, which ignores that policy, the frame is
+//! detached first and its write rejects with `InvalidStateError`.
 //! An *accepted* write needs a user activation in a headless browser, so that
 //! case is a trusted click sent over the DevTools protocol: it is `#[ignore]`d
 //! in an ordinary run and runs through `support/run_real_keys.sh` (Chrome only,
@@ -28,6 +29,9 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
+
+#[path = "support/engine.rs"]
+mod engine;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -72,7 +76,12 @@ async fn answer(slot: &Answer) -> ClipboardResult<()> {
 }
 
 /// A same-origin iframe whose permissions policy denies `clipboard-write`, and
-/// its `navigator.clipboard`.
+/// its `navigator.clipboard`: a write Chrome refuses (`NotAllowedError`).
+/// Firefox does not apply that policy (and Playwright's Firefox accepted the
+/// frame's write with no user activation), so there the frame is detached
+/// first: a detached frame's clipboard refuses every write
+/// (`InvalidStateError`, measured in Firefox). Chrome, by contrast, *resolved*
+/// a detached frame's write, so it keeps the frame attached.
 async fn refusing_clipboard() -> (web_sys::HtmlIFrameElement, web_sys::Clipboard) {
     let frame: web_sys::HtmlIFrameElement = document()
         .create_element("iframe")
@@ -95,12 +104,24 @@ async fn refusing_clipboard() -> (web_sys::HtmlIFrameElement, web_sys::Clipboard
                 .and_then(|d| d.body())
                 .is_some_and(|b| b.text_content().unwrap_or_default().contains("refusing"));
             if loaded && !cb.is_undefined() {
+                if engine::is_gecko() {
+                    frame.remove();
+                }
                 return (frame, cb.unchecked_into());
             }
         }
         settle().await;
     }
     panic!("the refusing iframe never loaded");
+}
+
+/// The `DOMException` name of the refusal [`refusing_clipboard`] gives.
+fn refusal_name() -> &'static str {
+    if engine::is_gecko() {
+        "InvalidStateError"
+    } else {
+        "NotAllowedError"
+    }
 }
 
 /// The browser itself refuses the frame's write — the fact the refusal cases
@@ -112,7 +133,7 @@ async fn the_browser_refuses_a_write_from_the_policy_denied_frame() {
     frame.remove();
     let reason = outcome.expect_err("the frame's write is refused");
     let name = js_sys::Reflect::get(&reason, &"name".into()).unwrap();
-    assert_eq!(name.as_string().as_deref(), Some("NotAllowedError"));
+    assert_eq!(name.as_string().as_deref(), Some(refusal_name()));
 }
 
 /// The defect: the fire-and-forget `copy_text` answers `Ok` for a write the
@@ -144,9 +165,9 @@ async fn copy_text_then_reports_a_refused_write_as_an_error() {
     frame.remove();
     match result {
         Err(ClipboardError::AccessFailed(message)) => {
-            assert!(message.starts_with("NotAllowedError"), "{message}")
+            assert!(message.starts_with(refusal_name()), "{message}")
         }
-        other => panic!("expected AccessFailed(NotAllowedError..), got {other:?}"),
+        other => panic!("expected AccessFailed({}..), got {other:?}", refusal_name()),
     }
 }
 
@@ -160,7 +181,7 @@ async fn copy_html_then_reports_a_refused_write_as_an_error() {
     let result = answer(&slot).await;
     frame.remove();
     assert!(
-        matches!(result, Err(ClipboardError::AccessFailed(ref m)) if m.starts_with("NotAllowedError")),
+        matches!(result, Err(ClipboardError::AccessFailed(ref m)) if m.starts_with(refusal_name())),
         "{result:?}"
     );
 }
