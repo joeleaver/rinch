@@ -109,6 +109,43 @@ pub fn start() {
 fn main() {}
 ```
 
+## One entry point for desktop and web
+
+The desktop's `App` builder runs in the browser too. `rinch_web::AppExt` adds
+`run()` to it on `wasm32`, so one `main` serves both targets — the only
+per-target line is the import:
+
+```rust
+use rinch::prelude::*;
+#[cfg(target_arch = "wasm32")]
+use rinch_web::AppExt as _;
+
+fn main() {
+    App::new(my_app::app)
+        .title("My App")
+        .size(800, 600)
+        .theme(ThemeProviderProps { dark_mode: true, ..Default::default() })
+        .menu(vec![("File", file_menu())])
+        .run();
+}
+```
+
+With Trunk, a binary crate's `fn main` is the wasm entry point, so no
+`#[wasm_bindgen(start)]` is needed. In the browser `run()` mounts a whole-page
+app (as `rinch_web::mount` does) and returns:
+
+| Builder setting | In the browser |
+|-----------------|----------------|
+| `.theme(..)` | Installed, as by `mount` |
+| `.menu(..)` | The app is mounted under the DOM menu bar, as by `mount_with_menu_bar` |
+| `.title(..)` | Becomes `document.title`; without a title the page keeps its own `<title>` |
+| `.image_scheme(..)` | Registered, as on the desktop |
+| `.size(..)`, `.window_props(..)` | Ignored: the page sizes the browser window |
+| `.fonts(..)` | Not available on a web build — load fonts with `@font-face` in the page's CSS, and put `.fonts(..)` behind `#[cfg(not(target_arch = "wasm32"))]` |
+| GPU and other desktop-only settings (`.gpu_config`, `.renderer`, …) | Not available: the browser composites |
+
+For islands, or a menu bar on an island, use the `mount_*` functions below.
+
 ## Islands (multiple roots per page)
 
 `mount` boots a single whole-page app. For a **static-first** page (e.g.

@@ -41,6 +41,7 @@ fn main() {
 | `.gpu_config(RinchGpuConfig)` / `.external_gpu(ExternalGpu)` | GPU device (`gpu` feature) |
 | `.run()` | Start on desktop; runs until the event loop exits |
 | `.run_android(android_app)` | Start on Android (`android` feature, Android target) |
+| `rinch_web::AppExt::run()` | Start in the browser (`wasm32`, #1769) |
 
 `.title()` / `.size()` are applied **over** `.window_props()` in either call
 order, so an explicit title is never silently lost to a later `window_props`.
@@ -61,6 +62,24 @@ fn main() {
         .run();
 }
 ```
+
+**`App` also builds for `wasm32`** (#1769): the `app_builder` module and its
+re-exports are gated `any(desktop, android on Android, target_arch = "wasm32")`,
+and `rinch_web::AppExt::run` runs a builder chain in the browser, so a
+cross-platform app writes one chain and imports
+`#[cfg(target_arch = "wasm32")] use rinch_web::AppExt as _;`. rinch cannot call
+rinch-web (rinch-web depends on rinch), so the web terminal method lives in
+rinch-web and reads the builder through `App::into_web_parts` (doc-hidden,
+pure; pinned by `app_builder::tests::web_parts_*`): the theme (installed as by
+`mount`), the menus (`mount_with_menu_bar` when set, else `mount`) and the title
+(`.title()`, else a `window_props` title that is not `WindowProps::default()`'s,
+written to `document.title`; with neither the page keeps its own `<title>`).
+`.menu()` is therefore no longer `desktop`-gated (an Android build has it too,
+and `run_android` warns). `.image_scheme()` registers when called, on both targets; `.size()` and the
+rest of `.window_props()` have no web effect. `.fonts()` stays gated on the `font` module
+(`desktop`/`android`/`embed`): `AppFont` names parley's `GenericFamily`, which a
+web build does not link. The GPU and desktop-only methods do not exist there.
+Pins: `rinch-web/tests/app_ext_1769.rs`, `app_ext_menu_1769.rs` (Chrome 155).
 
 The seven `run_*` functions (`run`, `run_with_theme`, `run_with_menu`,
 `run_with_window_props`, `run_with_window_props_and_menu`, `run_with_gpu_config`,

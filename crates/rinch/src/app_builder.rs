@@ -33,15 +33,27 @@ use rinch_core::element::{ThemeProviderProps, WindowProps};
 
 /// A rinch application, configured by builder methods and started by a terminal
 /// method ([`run`](App::run) on desktop, `run_android` on Android — the latter
-/// exists only when building for Android, so it is not linked here).
+/// exists only when building for Android, so it is not linked here — and
+/// `rinch_web::AppExt::run` in the browser, #1769).
 ///
 /// Every configuration method is independent, so any combination is
 /// expressible. The `F` parameter is the root component; it is usually an
 /// unnameable closure, but `App<Box<dyn FnOnce(&mut RenderScope) -> NodeHandle>>`
 /// is a real type, so an `App` can be stored in a struct or passed to a
-/// function when configuration has to be built up across call sites. Nothing happens until a terminal method is called; a terminal
+/// function when configuration has to be built up across call sites. Nothing happens until a terminal method is called; on the desktop a terminal
 /// method takes over the thread and returns only when the application exits its
-/// event loop.
+/// event loop, and in the browser it mounts the app and returns.
+///
+/// One builder chain serves both targets; a web build adds one import:
+///
+/// ```ignore
+/// #[cfg(target_arch = "wasm32")]
+/// use rinch_web::AppExt as _;
+///
+/// fn main() {
+///     App::new(app).title("Hello").size(640, 480).theme(theme()).run();
+/// }
+/// ```
 ///
 /// # Example
 ///
@@ -57,8 +69,8 @@ use rinch_core::element::{ThemeProviderProps, WindowProps};
 ///     App::new(app).title("Hello").size(640, 480).run();
 /// }
 /// ```
-#[must_use = "an App does nothing until a terminal method (`run` on desktop, \
-              `run_android` on Android) is called"]
+#[must_use = "an App does nothing until a terminal method (`run` on desktop or, \
+              through `rinch_web::AppExt`, on the web; `run_android` on Android) is called"]
 pub struct App<F> {
     pub(crate) component: F,
     /// The window configuration. [`title`](App::title) and [`size`](App::size)
@@ -70,8 +82,8 @@ pub struct App<F> {
     pub(crate) theme: Option<ThemeProviderProps>,
     /// Faces the build carries, in the order they were added. Not an `Option`:
     /// "no bundled fonts" and "an empty list of them" are the same startup.
+    #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
     pub(crate) fonts: Vec<crate::font::AppFont>,
-    #[cfg(feature = "desktop")]
     pub(crate) menus: Option<Vec<(String, crate::menu::Menu)>>,
     #[cfg(feature = "desktop")]
     pub(crate) renderer: crate::shell::renderer::Renderer,
@@ -104,8 +116,8 @@ where
             title: None,
             size: None,
             theme: None,
+            #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
             fonts: Vec::new(),
-            #[cfg(feature = "desktop")]
             menus: None,
             #[cfg(feature = "desktop")]
             renderer: crate::shell::renderer::Renderer::Auto,
@@ -187,6 +199,13 @@ where
     ///
     /// Applies on Android too — the one configuration method besides
     /// [`theme`](App::theme) that does, and the platform that needs it most.
+    ///
+    /// Not on a web build: [`AppFont`](crate::font::AppFont) names its generic
+    /// families through the desktop text stack, which a browser build does
+    /// not link, and the browser loads fonts from the page's CSS
+    /// (`@font-face`). A cross-platform app puts `.fonts(..)` behind
+    /// `#[cfg(not(target_arch = "wasm32"))]` (#1769).
+    #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
     pub fn fonts(mut self, fonts: &[crate::font::AppFont]) -> Self {
         self.fonts.extend_from_slice(fonts);
         self
@@ -244,17 +263,14 @@ where
         self
     }
 
-    /// Add a native menu bar. Each `(label, Menu)` pair becomes a top-level
+    /// Add a menu bar. Each `(label, Menu)` pair becomes a top-level
     /// submenu. Calling this twice replaces the menu rather than appending to
     /// it.
     ///
-    /// Desktop only, in every sense that matters: Android has no window menu
-    /// bar, and an Android build does not have this method — it is gated on
-    /// `desktop`, which cannot currently be enabled for an Android target at
-    /// all (`muda` has no Android backend). The `run_android` path therefore
-    /// carries a warning for a configured menu that nothing can presently
-    /// reach.
-    #[cfg(feature = "desktop")]
+    /// On the desktop it is the native menu bar (the DOM bar on Linux); on the
+    /// web, run through `rinch_web::AppExt`, it is the DOM menu bar
+    /// `rinch_web::mount_with_menu_bar` draws (#1769). Android has no window
+    /// menu bar: `run_android` warns and ignores it.
     pub fn menu(mut self, menus: Vec<(&str, crate::menu::Menu)>) -> Self {
         self.menus = Some(
             menus
@@ -433,6 +449,30 @@ where
         }
     }
 
+    /// The parts of the configuration a web mount reads, for `rinch_web::AppExt`
+    /// (#1769). Not for apps: call `run()` (desktop) or `rinch_web::AppExt::run`
+    /// (web). Pure, so a test can check what a builder chain hands the web.
+    ///
+    /// `title` is [`title`](App::title) if one was set, else the title carried
+    /// by [`window_props`](App::window_props) when it is not the default one
+    /// (`WindowProps::default().title`), else `None` — so a web page keeps its
+    /// own `<title>` unless the app named one. Size, the other window props,
+    /// fonts and the GPU configuration have no web counterpart and are not
+    /// handed over.
+    #[doc(hidden)]
+    pub fn into_web_parts(self) -> WebParts<F> {
+        let default_title = WindowProps::default().title;
+        let title = self
+            .title
+            .or_else(|| (self.props.title != default_title).then(|| self.props.title.clone()));
+        WebParts {
+            component: self.component,
+            title,
+            theme: self.theme.unwrap_or_default(),
+            menus: self.menus,
+        }
+    }
+
     /// Start the application on the desktop.
     ///
     /// Takes over the thread and returns only when the application exits its
@@ -536,7 +576,6 @@ where
     /// ```
     #[cfg(all(feature = "android", target_os = "android"))]
     pub fn run_android(self, android_app: android_activity::AndroidApp) {
-        #[cfg(feature = "desktop")]
         if self.menus.is_some() {
             tracing::warn!(
                 "App::menu() has no effect on Android — there is no window menu bar; \
@@ -726,6 +765,19 @@ fn run_desktop_linux<F>(
     );
 }
 
+/// What [`App::into_web_parts`] hands a web mount (#1769). Not for apps.
+#[doc(hidden)]
+pub struct WebParts<F> {
+    /// The root component.
+    pub component: F,
+    /// The document title to set, if the app named one.
+    pub title: Option<String>,
+    /// The theme to install (the default when none was configured).
+    pub theme: ThemeProviderProps,
+    /// The menu bar, if one was configured.
+    pub menus: Option<Vec<(String, crate::menu::Menu)>>,
+}
+
 /// Everything a terminal method needs, with every builder rule already applied.
 ///
 /// This is the seam that makes the chain testable. [`App::run`] itself takes
@@ -835,6 +887,62 @@ mod tests {
     /// [`App::into_startup`], which runs no user code.
     fn component(scope: &mut RenderScope) -> NodeHandle {
         scope.create_element("div")
+    }
+
+    /// #1769: what a web mount reads. An explicit `title()` wins over a
+    /// window-props title; a window-props title that is not the default one is
+    /// kept; with neither, `None`, so the page keeps its own `<title>`.
+    #[test]
+    fn web_parts_title_follows_title_then_a_named_window_props_title() {
+        let explicit = App::new(component)
+            .window_props(distinctive_props())
+            .title("From title()")
+            .into_web_parts();
+        assert_eq!(explicit.title.as_deref(), Some("From title()"));
+
+        let from_props = App::new(component)
+            .window_props(distinctive_props())
+            .into_web_parts();
+        assert_eq!(from_props.title.as_deref(), Some("From props"));
+
+        let unnamed = App::new(component)
+            .window_props(WindowProps::default())
+            .into_web_parts();
+        assert_eq!(unnamed.title, None);
+        assert_eq!(App::new(component).into_web_parts().title, None);
+    }
+
+    /// #1769: the theme and the menu bar reach the web mount; no theme is the
+    /// default theme, as on the desktop.
+    #[test]
+    fn web_parts_carry_the_theme_and_the_menus() {
+        let theme = ThemeProviderProps {
+            primary_color: Some("grape".into()),
+            ..Default::default()
+        };
+        let parts = App::new(component)
+            .theme(theme)
+            .menu(vec![
+                ("File", crate::menu::Menu::new()),
+                ("Edit", crate::menu::Menu::new()),
+            ])
+            .into_web_parts();
+        assert_eq!(parts.theme.primary_color.as_deref(), Some("grape"));
+        let labels: Vec<&str> = parts
+            .menus
+            .as_ref()
+            .expect("the menus reach the web mount")
+            .iter()
+            .map(|(label, _)| label.as_str())
+            .collect();
+        assert_eq!(labels, ["File", "Edit"]);
+
+        let bare = App::new(component).into_web_parts();
+        assert!(bare.menus.is_none());
+        assert_eq!(
+            bare.theme.primary_color,
+            ThemeProviderProps::default().primary_color
+        );
     }
 
     /// The GPU choice is one field, so the last of

@@ -58,8 +58,13 @@ pub mod app;
 pub use rinch_dom::perf;
 
 /// The [`App`] builder — the single entry point that composes every startup
-/// option (issue #493).
-#[cfg(any(feature = "desktop", all(feature = "android", target_os = "android")))]
+/// option (issue #493). Also built for `wasm32`, where `rinch_web::AppExt`
+/// runs it in the browser (issue #1769).
+#[cfg(any(
+    feature = "desktop",
+    all(feature = "android", target_os = "android"),
+    target_arch = "wasm32"
+))]
 pub mod app_builder;
 
 /// The ProseMirror-style desktop rich-text editor view. Part of the `desktop`
@@ -162,7 +167,11 @@ pub mod components {
 pub mod prelude {
     //! Common imports for rinch applications.
     // The one entry point that composes every startup option (issue #493).
-    #[cfg(any(feature = "desktop", all(feature = "android", target_os = "android")))]
+    #[cfg(any(
+        feature = "desktop",
+        all(feature = "android", target_os = "android"),
+        target_arch = "wasm32"
+    ))]
     pub use crate::app_builder::App;
     #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
     pub use crate::font::{AppFont, GenericFamily};
@@ -325,7 +334,11 @@ pub use rinch_core::element::{
 // prelude, alongside `Effect`, for the same reason: they are advanced tools, and
 // `unowned` in particular is an attractive nuisance — it turns a lifetime bug
 // into a permanent leak. Reach for `Signal::try_get` / `is_alive` first.
-#[cfg(any(feature = "desktop", all(feature = "android", target_os = "android")))]
+#[cfg(any(
+    feature = "desktop",
+    all(feature = "android", target_os = "android"),
+    target_arch = "wasm32"
+))]
 pub use app_builder::App;
 pub use rinch_core::{
     Effect, Memo, Owner, Scope, Signal, batch, current_owner, derived, unowned, untracked,
