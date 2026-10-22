@@ -205,7 +205,15 @@ pub fn cancel_main_callback(id: MainCallbackId) {
     // Taken out first: the callback closes over arbitrary user state whose
     // `Drop` may itself park or cancel a callback, and dropping it inside the
     // `borrow_mut` would make that a `BorrowMutError`.
-    let entry = PARKED.with(|p| p.borrow_mut().remove(&id.0));
+    //
+    // `try_with`: a cancel can come from a `Drop` at thread exit, after this
+    // registry is gone — a `spawn_local` task still waiting on a `sleep` when the
+    // thread ends (issue #1767). Nothing is parked then, and panicking in a TLS
+    // destructor aborts the process.
+    let entry = PARKED
+        .try_with(|p| p.borrow_mut().remove(&id.0))
+        .ok()
+        .flatten();
     drop(entry);
 }
 

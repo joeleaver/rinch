@@ -331,3 +331,32 @@ dispatcher (or queues plainly when there is none) and, unlike
 `run_on_main_thread`, does not panic for a missing dispatcher and never runs
 inline — the shape a `Drop` needs. (The queue and the desktop dispatcher it
 reaches still `unwrap` their own locks.) A host's own dispatcher is the one place a bare push belongs.
+
+## Futures on the UI thread (`rinch_core::task`, #1767)
+
+`spawn_local` keeps tasks in a main-thread-local table keyed by id
+(`TASKS`); a task's `Waker` is an `Arc` holding the id and a `scheduled` flag,
+so it is `Send + Sync` and coalesces wakes into one poll. A wake calls the
+installed scheduler (`set_task_scheduler`; `rinch-web` installs a
+`queueMicrotask` one in `ensure_global_init`) or, with none, queues
+`poll_task(id)` through `dispatch_main_callback` — the queue the desktop and
+Android loops drain and embed drains in `update()`. Installing a scheduler
+re-schedules every task still waiting for a poll, so a task spawned before the
+first web mount is not stranded on a queue a browser never drains.
+`poll_task` takes the task out of the table (a `Slot::Running` marker stays,
+which records an abort or a nested drain's poll that arrives during the poll),
+polls it in `batch`, under its owner (or `unowned`) and its `CallbackFrame`,
+then puts it back or drops it outside every borrow. Lifetime: one
+`on_cleanup` per owning scope (`OWNER_TASKS`, keyed by `Owner::key`, the
+owner kept beside the ids so the address is not reused), which aborts — drops
+— the scope's live tasks at unmount; a finished task leaves its owner's set.
+At thread exit the table forgets pending futures instead of dropping them,
+because their `Drop` reaches for thread-locals that may already be gone (a
+panic in a TLS destructor aborts); `cancel_main_callback` reads its registry
+with `try_with` for the same reason. `Sleep` arms `set_timeout` (unowned) on
+first poll and clears it on drop. `rinch_http::fetch_async` and
+`rinch_ws::WsStream` are thin adapters over the callback APIs (their callbacks
+registered `unowned`: the future's holder decides the lifetime). Pins:
+`rinch-core/tests/task_1767.rs`, `task_default_wake_1767.rs`,
+`rinch-http/tests/fetch_async_1767.rs`, `rinch-ws/tests/stream_1767.rs`,
+`rinch-web/tests/spawn_local_1767.rs` (Chrome 155).

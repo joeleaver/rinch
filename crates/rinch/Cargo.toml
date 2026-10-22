@@ -20,6 +20,11 @@ tracing.workspace = true
 # `init_logging` (#1773) hands `log` records to the same output as `tracing`
 # events. Already in every lock: `tracing` depends on it.
 log = "0.4"
+# The CSS generic-family enum `AppFont` names (#1769). It is the very type
+# parley/fontique re-export (`fontique::GenericFamily` is `parlance::GenericFamily`),
+# named here directly so `rinch::font` builds without the desktop text stack —
+# on wasm32 too. Already in Cargo.lock through parley; no dependencies of its own.
+parlance = { version = "0.1", default-features = false }
 
 # Desktop-only rendering deps (optional, enabled by `desktop` feature)
 rinch-dom = { workspace = true, optional = true }
@@ -139,6 +144,8 @@ web-sys = { version = "0.3", features = [
     "ResizeObserver", "ResizeObserverEntry", "ResizeObserverSize", "DomRectReadOnly",
     # `init_logging`'s console output and panic hook (#1773).
     "console",
+    # `rinch::window` (#1770): the page's resolution media query.
+    "MediaQueryList",
 ] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
@@ -152,6 +159,8 @@ windows-sys = { version = "0.59", features = [
     # thread's message pump.
     "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_System_LibraryLoader",
     "Win32_System_SystemInformation",
+    # `rinch::window::open_url` (#1770): ShellExecuteW.
+    "Win32_UI_Shell",
 ] }
 # Toast notifications (`notifications`, #1522): WinRT `Windows.UI.Notifications`
 # and the HKCU AppUserModelId registration. 0.62 is already in Cargo.lock.

@@ -34,6 +34,7 @@ pub mod match_dom;
 pub mod reactive;
 pub mod reconcile;
 pub mod show;
+pub mod task;
 pub mod timer;
 pub mod virtual_list;
 
@@ -74,6 +75,9 @@ pub use main_thread::{
     MainCallbackId, cancel_main_callback, park_main_callback, resume_main_callback,
 };
 
+// Futures on the UI thread (issue #1767)
+pub use task::{Sleep, TaskHandle, sleep, spawn_local};
+
 // Re-export cross-platform timers
 pub use timer::{
     IntervalHandle, TimeoutHandle, clear_interval, clear_timeout, fire_timeout, set_interval,
@@ -85,9 +89,9 @@ pub use reactive::{
     Effect, ElementBounds, Memo, OwnedCounts, Owner, PollRate, Scope, Signal,
     SignalChangeSubscription, TrackingSuspended, batch, clear_main_callbacks,
     clear_on_signal_change, clear_signals_changed, current_owner, derived, dispatch_main_callback,
-    drain_main_callbacks, drain_polls, flush_pending_effects, main_callbacks_pending,
-    note_host_change, poll_signal, queue_main_callback, register_bounds_signal,
-    register_main_thread, run_on_main_thread, set_cross_thread_dispatcher,
+    drain_main_callbacks, drain_polls, flush_pending_effects, is_main_thread,
+    main_callbacks_pending, note_host_change, poll_signal, queue_main_callback,
+    register_bounds_signal, register_main_thread, run_on_main_thread, set_cross_thread_dispatcher,
     set_cross_thread_dispatcher_if_unset, set_on_signal_change, signals_changed,
     subscribe_signal_change, suppress_effect_flush, suspend_tracking, unowned, untracked,
     untracked_handler, update_bounds_signals,

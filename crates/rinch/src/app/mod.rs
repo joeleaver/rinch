@@ -1062,6 +1062,13 @@ pub struct RinchApp {
     /// `modifiers`; the next debug `mouse_up` restores it after its release.
     #[cfg(feature = "debug")]
     pub(crate) debug_modifiers_to_restore: Option<Modifiers>,
+    /// Whether this app's window size, scale and focus are published to
+    /// `rinch::window` (#1770): on for a shell's main window, off for the
+    /// DevTools panel and an embedded context.
+    pub(crate) publishes_window_state: bool,
+    /// The logical size this app's window was last mounted or resized to,
+    /// for [`set_publishes_window_state`](Self::set_publishes_window_state).
+    pub(crate) window_logical_size: Option<(f64, f64)>,
 }
 
 impl RinchApp {
@@ -1164,6 +1171,40 @@ impl RinchApp {
             _debug_server: None,
             #[cfg(feature = "debug")]
             debug_modifiers_to_restore: None,
+            publishes_window_state: false,
+            window_logical_size: None,
+        }
+    }
+
+    /// Publish this app's window to [`rinch::window`](crate::window) (issue
+    /// #1770): its size at [`mount_component`](Self::mount_component), and
+    /// every [`PlatformEvent::Resized`], [`PlatformEvent::ScaleFactorChanged`]
+    /// and [`PlatformEvent::WindowFocus`] it handles, become what
+    /// [`window_size`](crate::window::window_size),
+    /// [`scale_factor`](crate::window::scale_factor) and
+    /// [`window_focused`](crate::window::window_focused) answer. Off by
+    /// default; the desktop and Android shells turn it on for their main
+    /// window. The display scale is published by
+    /// [`set_device_pixel_ratio`](Self::set_device_pixel_ratio) too, so a
+    /// window re-created at another scale is followed.
+    ///
+    /// Turning it on publishes the scale at once, and the size when the app
+    /// has been mounted, so it may be turned on after the mount — which is
+    /// how an embed host that owns one window per thread uses it with
+    /// `RinchContext`, whose constructor mounts.
+    pub fn set_publishes_window_state(&mut self, publish: bool) {
+        self.publishes_window_state = publish;
+        self.publish_window_state(crate::window::WindowFacts {
+            scale: Some(self.device_pixel_ratio),
+            size: self.window_logical_size,
+            focused: None,
+        });
+    }
+
+    /// Publish `state` if this app publishes its window (#1770).
+    pub(crate) fn publish_window_state(&self, state: crate::window::WindowFacts) {
+        if self.publishes_window_state {
+            crate::window::publish(state);
         }
     }
 
@@ -1387,6 +1428,14 @@ impl RinchApp {
         doc.borrow_mut()
             .set_device_pixel_ratio(self.device_pixel_ratio as f32);
         doc.borrow_mut().tree.device_scale = self.device_pixel_ratio;
+        // The window `rinch::window` describes (#1770); the shell's main
+        // window is not focused until the system says so.
+        self.window_logical_size = Some((viewport_width as f64, viewport_height as f64));
+        self.publish_window_state(crate::window::WindowFacts {
+            scale: Some(self.device_pixel_ratio),
+            size: self.window_logical_size,
+            focused: None,
+        });
 
         // Set up network image loader if feature enabled (replaces default FileImageLoader)
         #[cfg(all(feature = "image-network", not(target_arch = "wasm32")))]
@@ -5396,6 +5445,13 @@ impl RinchApp {
     /// the value is unchanged.
     pub fn set_device_pixel_ratio(&mut self, dpr: f64) {
         self.device_pixel_ratio = dpr;
+        // Every route a new scale takes — `ScaleFactorChanged`, a desktop
+        // window re-created by `show_window`, Android's `InitWindow` at a new
+        // density — goes through here (#1770).
+        self.publish_window_state(crate::window::WindowFacts {
+            scale: Some(dpr),
+            ..Default::default()
+        });
         if let Some(doc) = &self.doc {
             let mut d = doc.borrow_mut();
             let previous = d.tree.device_scale;
@@ -11611,6 +11667,8 @@ mod editor_table_span_1182_tests;
 mod grapheme_hit_1684_tests;
 #[cfg(test)]
 mod review_1687_tests;
+#[cfg(test)]
+mod window_facts_1770_tests;
 
 /// What [`RinchApp::collect_tab_stops_from`] found under a root.
 struct TabStops {

@@ -101,6 +101,8 @@ pub(crate) fn run_component<F>(
     // `rinch_dom::fonts`).
     let mut app = RinchApp::new(component);
     app.register_app_fonts(fonts);
+    // The window's size, scale and focus reach `rinch::window` (#1770).
+    app.set_publishes_window_state(true);
     run_loop(android_app, app);
 }
 

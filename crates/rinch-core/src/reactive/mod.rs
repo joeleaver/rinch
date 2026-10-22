@@ -483,7 +483,7 @@ pub fn clear_main_callbacks() {
 ///
 /// Returns `true` if `register_main_thread()` hasn't been called yet
 /// (backwards compatibility for tests and non-rinch usage).
-pub(crate) fn is_main_thread() -> bool {
+pub fn is_main_thread() -> bool {
     match MAIN_THREAD_ID.get() {
         Some(id) => std::thread::current().id() == *id,
         None => true,

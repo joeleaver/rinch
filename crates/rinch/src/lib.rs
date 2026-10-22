@@ -58,8 +58,13 @@ pub mod app;
 pub use rinch_dom::perf;
 
 /// The [`App`] builder — the single entry point that composes every startup
-/// option (issue #493).
-#[cfg(any(feature = "desktop", all(feature = "android", target_os = "android")))]
+/// option (issue #493). Also built for `wasm32`, where `rinch_web::AppExt`
+/// runs it in the browser (issue #1769).
+#[cfg(any(
+    feature = "desktop",
+    all(feature = "android", target_os = "android"),
+    target_arch = "wasm32"
+))]
 pub mod app_builder;
 
 /// The ProseMirror-style desktop rich-text editor view. Part of the `desktop`
@@ -73,7 +78,8 @@ pub mod embed;
 #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
 pub mod focus_registry;
 /// App-bundled fonts: the bytes a build carries and the CSS names they answer to.
-#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+/// Built on every target (a web build accepts them in `App::fonts` and ignores
+/// them, #1769); only the desktop, Android and embed hosts register them.
 pub mod font;
 /// [`Menu`](menu::Menu) / [`MenuItem`](menu::MenuItem) and the DOM menu bar.
 ///
@@ -85,6 +91,11 @@ pub mod menu;
 pub mod render_surface;
 #[cfg(any(feature = "desktop", feature = "android"))]
 pub mod shell;
+/// Window-level facts and acts that work on the desktop and in the browser
+/// alike (issue #1770): [`open_url`](window::open_url),
+/// [`set_window_title`](window::set_window_title), and the reactive
+/// [`scale_factor`](window::scale_factor), [`window_size`](window::window_size)
+/// and [`window_focused`](window::window_focused).
 pub mod window;
 #[cfg(feature = "desktop")]
 pub mod windows;
@@ -161,12 +172,21 @@ pub mod components {
     pub use rinch_components::*;
 }
 
+/// Futures on the UI thread (issue #1767): [`spawn_local`](task::spawn_local),
+/// [`sleep`](task::sleep). The same on desktop, Android, embed and the web.
+pub mod task {
+    pub use rinch_core::task::{Sleep, TaskHandle, sleep, spawn_local};
+}
+
 pub mod prelude {
     //! Common imports for rinch applications.
     // The one entry point that composes every startup option (issue #493).
-    #[cfg(any(feature = "desktop", all(feature = "android", target_os = "android")))]
+    #[cfg(any(
+        feature = "desktop",
+        all(feature = "android", target_os = "android"),
+        target_arch = "wasm32"
+    ))]
     pub use crate::app_builder::App;
-    #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
     pub use crate::font::{AppFont, GenericFamily};
     #[cfg(feature = "desktop")]
     pub use crate::shell::activation::ActivationPolicy;
@@ -190,6 +210,9 @@ pub mod prelude {
         IntervalHandle, TimeoutHandle, clear_interval, clear_timeout, run_on_main_thread,
         set_interval, set_timeout,
     };
+    // Futures on the UI thread (issue #1767): `spawn_local(async { … })` and
+    // `sleep(duration).await`.
+    pub use rinch_core::{TaskHandle, sleep, spawn_local};
     // Context and stores for sharing state across components
     pub use rinch_core::{
         create_context, create_store, try_use_context, try_use_store, use_context, use_store,
@@ -224,6 +247,10 @@ pub mod prelude {
     // lives in core rather than in `rinch-android`.
     pub use rinch_core::{clear_configuration_change_handler, set_configuration_change_handler};
     pub use rinch_macros::{component, rsx};
+    // Window facts and acts on every target (#1770)
+    pub use crate::window::{
+        OpenUrlError, open_url, scale_factor, set_window_title, window_focused, window_size,
+    };
     // Window control functions
     #[cfg(feature = "desktop")]
     pub use crate::windows::{
@@ -330,7 +357,11 @@ pub use rinch_core::element::{
 // prelude, alongside `Effect`, for the same reason: they are advanced tools, and
 // `unowned` in particular is an attractive nuisance — it turns a lifetime bug
 // into a permanent leak. Reach for `Signal::try_get` / `is_alive` first.
-#[cfg(any(feature = "desktop", all(feature = "android", target_os = "android")))]
+#[cfg(any(
+    feature = "desktop",
+    all(feature = "android", target_os = "android"),
+    target_arch = "wasm32"
+))]
 pub use app_builder::App;
 pub use rinch_core::{
     Effect, Memo, Owner, Scope, Signal, batch, current_owner, derived, unowned, untracked,
@@ -349,6 +380,9 @@ pub use shell::{
 #[cfg(feature = "gpu")]
 #[allow(deprecated)]
 pub use shell::{run_with_external_device, run_with_gpu_config};
+pub use window::{
+    OpenUrlError, open_url, scale_factor, set_window_title, window_focused, window_size,
+};
 
 /// Re-export of the exact `wgpu` rinch links against.
 ///

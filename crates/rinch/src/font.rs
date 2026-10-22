@@ -44,13 +44,16 @@
 
 /// The CSS generic families a bundled face can answer to.
 ///
-/// Re-exported from `fontique` rather than mirrored, so that the set is
-/// whatever the text stack actually understands and cannot drift from it.
+/// Not mirrored: this is the very type `fontique` (and so parley) uses —
+/// `fontique::GenericFamily` is a re-export of `parlance::GenericFamily`,
+/// which this names directly so the module builds without the desktop text
+/// stack (on `wasm32` too, #1769). The set is whatever the text stack
+/// understands and cannot drift from it.
 /// The CSS names are the ones [`GenericFamily::parse`] accepts: `serif`,
 /// `sans-serif`, `monospace`, `cursive`, `fantasy`, `system-ui`, `ui-serif`,
 /// `ui-sans-serif`, `ui-monospace`, `ui-rounded`, `emoji`, `math`,
 /// `fangsong`.
-pub use parley::fontique::GenericFamily;
+pub use parlance::GenericFamily;
 
 /// A font file the application carries in its own binary, and the CSS names it
 /// answers to.

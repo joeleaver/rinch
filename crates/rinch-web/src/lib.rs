@@ -16,6 +16,8 @@
 //!   [`RootHandle`] that can later [`unmount`](RootHandle::unmount) that root.
 //! - [`mount_with_menu_bar`] and its `_into` / `_selector` twins — the same,
 //!   under a menu bar built from [`Menu`] / [`MenuItem`].
+//! - [`AppExt`] — run a [`rinch::App`] builder chain in the browser, so one
+//!   `App::new(app).title(..).theme(..).menu(..).run()` serves desktop and web.
 //! - [`set_suppress_native_context_menu`] — for a whole-page app that renders
 //!   its own right-click menus.
 //!
@@ -43,6 +45,21 @@
 //! alone and cannot be claimed — which ones depends on the browser and the
 //! platform; see the [WASM
 //! guide](https://github.com/joeleaver/rinch/blob/main/docs/src/guide/wasm.md).
+//!
+//! ## One entry point for desktop and web
+//!
+//! The desktop's [`rinch::App`] builder runs here too, through [`AppExt`]; the
+//! only per-target line is the import:
+//!
+//! ```ignore
+//! use rinch::prelude::*;
+//! #[cfg(target_arch = "wasm32")]
+//! use rinch_web::AppExt as _;
+//!
+//! fn main() {
+//!     App::new(app).title("My App").size(800, 600).theme(theme()).run();
+//! }
+//! ```
 //!
 //! ## Whole-page app
 //!
@@ -250,6 +267,22 @@ fn web_set_timeout(id: u64, delay_ms: u32) {
     }
 }
 
+/// Poll a `spawn_local` task in a microtask (issue #1767): as soon as the
+/// current JS task is done, as `wasm_bindgen_futures::spawn_local` does, with
+/// no thread and no frame to wait for.
+fn web_schedule_task(id: u64) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::closure::Closure;
+
+    let poll = Closure::once_into_js(move || rinch_core::task::poll_task(id));
+    let global = js_sys::global();
+    if let Ok(queue) = js_sys::Reflect::get(&global, &"queueMicrotask".into())
+        && let Some(queue) = queue.dyn_ref::<js_sys::Function>()
+    {
+        let _ = queue.call1(&global, &poll);
+    }
+}
+
 /// First-mount-only global init shared by every mount. Clearing handlers/context
 /// must NOT run per-root, or a second island would wipe the first.
 fn ensure_global_init() {
@@ -267,6 +300,9 @@ fn ensure_global_init() {
         // no threads, so rinch-core's built-in shared-thread scheduler cannot run
         // here — the web runtime supplies the scheduling half.
         rinch_core::set_timer_backend(web_set_timeout);
+        // And `rinch_core::spawn_local`'s polls off microtasks: nothing drains
+        // the main-thread callback queue in a browser.
+        rinch_core::task::set_task_scheduler(web_schedule_task);
 
         // Sample `poll_signal`s: the native hosts drain them once per frame,
         // and the browser has no rinch frame loop to do it (#1773).
@@ -521,4 +557,95 @@ where
     let doc = web_sys::window()?.document()?;
     let host = doc.query_selector(selector).ok().flatten()?;
     Some(mount_into_with_menu_bar(&host, theme, menus, build))
+}
+
+// ============================================================================
+// The desktop `App` builder, run in the browser (#1769)
+// ============================================================================
+
+/// Runs a [`rinch::App`] builder chain in the browser, so a cross-platform app
+/// configures itself once and calls `run()` on both targets (#1769).
+///
+/// ```ignore
+/// use rinch::prelude::*;
+/// #[cfg(target_arch = "wasm32")]
+/// use rinch_web::AppExt as _;
+///
+/// fn main() {
+///     App::new(app).title("My App").size(800, 600).theme(theme()).menu(menus()).run();
+/// }
+/// ```
+///
+/// On a desktop build `App::run` is the inherent method and this trait is not
+/// consulted; import it only on `wasm32`, the one target this crate builds it
+/// for.
+///
+/// Forgetting the import fails with `error[E0599]: no method named `run`
+/// found for struct `rinch::App``; the compiler suggests this trait only if the
+/// crate already names `rinch_web` elsewhere.
+///
+/// Implemented once per menu-bar state ([`NoMenuBar`](rinch::app_builder::NoMenuBar),
+/// [`WithMenuBar`](rinch::app_builder::WithMenuBar)), so an app with no
+/// `.menu(..)` does not link the DOM menu bar.
+#[cfg(target_arch = "wasm32")]
+pub trait AppExt {
+    /// Mount the app as a whole-page app under `#rinch-body` and return.
+    ///
+    /// What each builder setting does here:
+    /// - [`theme`](rinch::App::theme): installed, as by [`mount`].
+    /// - [`menu`](rinch::App::menu): the app is mounted under the DOM menu bar,
+    ///   as by [`mount_with_menu_bar`]; without one, as by [`mount`].
+    /// - [`title`](rinch::App::title) (or a non-default `WindowProps::title`):
+    ///   becomes `document.title`. Without one the page keeps its own `<title>`.
+    /// - [`image_scheme`](rinch::App::image_scheme): registered when called, as
+    ///   on the desktop.
+    /// - [`size`](rinch::App::size) and the rest of
+    ///   [`window_props`](rinch::App::window_props): ignored — the page, not the
+    ///   app, sizes a browser window.
+    /// - [`fonts`](rinch::App::fonts): accepted and ignored — the browser loads
+    ///   fonts from the page's CSS (`@font-face`).
+    /// - The GPU configuration (`gpu_config`, `external_gpu`, `renderer`): does
+    ///   not exist on a web build — the browser composites, and a
+    ///   `RenderSurface` app owns its own canvas context.
+    fn run(self);
+}
+
+/// Sets `document.title` from the builder, when it names one.
+#[cfg(target_arch = "wasm32")]
+fn apply_title<F>(parts: &rinch::app_builder::WebParts<F>) {
+    if let (Some(title), Some(doc)) = (&parts.title, web_sys::window().and_then(|w| w.document())) {
+        doc.set_title(title);
+    }
+}
+
+/// No `.menu()` on the chain: mounted as by [`mount`]. Implemented apart from
+/// the [`WithMenuBar`](rinch::app_builder::WithMenuBar) state so that an app
+/// with no menu bar does not link it.
+#[cfg(target_arch = "wasm32")]
+impl<F> AppExt for rinch::App<F, rinch::app_builder::NoMenuBar>
+where
+    F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
+{
+    fn run(self) {
+        let parts = self.into_web_parts();
+        apply_title(&parts);
+        mount(parts.theme, parts.component);
+    }
+}
+
+/// `.menu(..)` on the chain: mounted under the DOM menu bar, as by
+/// [`mount_with_menu_bar`].
+#[cfg(target_arch = "wasm32")]
+impl<F> AppExt for rinch::App<F, rinch::app_builder::WithMenuBar>
+where
+    F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
+{
+    fn run(self) {
+        let parts = self.into_web_parts();
+        apply_title(&parts);
+        let (labels, menus): (Vec<String>, Vec<Menu>) =
+            parts.menus.unwrap_or_default().into_iter().unzip();
+        let menus: Vec<(&str, Menu)> = labels.iter().map(String::as_str).zip(menus).collect();
+        mount_with_menu_bar(parts.theme, menus, parts.component);
+    }
 }

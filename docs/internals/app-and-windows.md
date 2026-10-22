@@ -41,6 +41,7 @@ fn main() {
 | `.gpu_config(RinchGpuConfig)` / `.external_gpu(ExternalGpu)` | GPU device (`gpu` feature) |
 | `.run()` | Start on desktop; runs until the event loop exits |
 | `.run_android(android_app)` | Start on Android (`android` feature, Android target) |
+| `rinch_web::AppExt::run()` | Start in the browser (`wasm32`, #1769) |
 
 `.title()` / `.size()` are applied **over** `.window_props()` in either call
 order, so an explicit title is never silently lost to a later `window_props`.
@@ -61,6 +62,31 @@ fn main() {
         .run();
 }
 ```
+
+**`App` also builds for `wasm32`** (#1769): the `app_builder` module and its
+re-exports are gated `any(desktop, android on Android, target_arch = "wasm32")`,
+and `rinch_web::AppExt::run` runs a builder chain in the browser, so a
+cross-platform app writes one chain and imports
+`#[cfg(target_arch = "wasm32")] use rinch_web::AppExt as _;`. rinch cannot call
+rinch-web (rinch-web depends on rinch), so the web terminal method lives in
+rinch-web and reads the builder through `App::into_web_parts` (doc-hidden,
+pure; pinned by `app_builder::tests::web_parts_*`): the theme (installed as by
+`mount`), the menus (`mount_with_menu_bar` when set, else `mount`) and the title
+(`.title()`, else a `window_props` title that is not `WindowProps::default()`'s,
+written to `document.title`; with neither the page keeps its own `<title>`).
+`.menu()` is therefore no longer `desktop`-gated (an Android build has it too,
+and `run_android` warns). The menu bar is a **compile-time** choice on the web:
+`App<F, M = NoMenuBar>`, and on `wasm32` only `.menu()` returns
+`App<F, WithMenuBar>` (elsewhere it returns `Self`, so desktop code is
+unchanged); `AppExt` is implemented once per state, so an app with no menu does
+not link `mount_with_menu_bar` (paint-web release wasm, pre-wasm-opt: a runtime
+branch cost +93 KB over main). `.image_scheme()` registers when called, on both targets; `.size()` and the
+rest of `.window_props()` have no web effect. `.fonts()` exists on every target and a web mount ignores the faces
+(`WebParts::fonts`): `rinch::font` is ungated because `GenericFamily` is named
+from `parlance` directly — the very type fontique re-exports, so nothing
+changes for an `AppFont` user — and parlance builds for wasm with no
+dependencies. The GPU and desktop-only methods do not exist there.
+Pins: `rinch-web/tests/app_ext_1769.rs`, `app_ext_menu_1769.rs` (Chrome 155).
 
 The seven `run_*` functions (`run`, `run_with_theme`, `run_with_menu`,
 `run_with_window_props`, `run_with_window_props_and_menu`, `run_with_gpu_config`,
@@ -348,6 +374,40 @@ menu bar is detached at hide (Windows: `remove_for_hwnd`, which also clears
 Pins: `shell::window_geometry::tests`, and the `#[ignore]`d live
 `crates/rinch/tests/hide_show_geometry.rs` (a private X server; its `wm_`
 tests inside a private headless KWin, `kwin_wayland --virtual --xwayland`).
+
+### Window facts on every target (`rinch::window`, #1770)
+
+`crates/rinch/src/window.rs`. `scale_factor`, `window_size` and
+`window_focused` read three thread-local signals made `unowned` on first use.
+Desktop and Android: `RinchApp::publishes_window_state` (set by
+`RinchRuntime::new` for the main window and by Android's `run_component`; off
+for the DevTools `RinchApp` and for `RinchContext`) makes `mount_component`
+publish the mount size and scale, `set_device_pixel_ratio` publishes every
+scale (so `show_window`'s re-creation and Android's `InitWindow` are
+followed, not only `ScaleFactorChanged`), the `Resized` arm the size, and the
+`WindowFocus` arm the focus **last**, after the app's own blur handling
+(`window::publish`, one `batch`, `set_if_changed`); turning the flag on
+publishes the scale and last size at once; `hide_window` publishes not
+focused. The size is `Resized`'s logical `u32`s. Web (`cfg(wasm32)`, in
+`rinch` itself, no rinch-web code): the first read installs window `resize`,
+`focus`/`blur` (bubble phase, target must be the `Window`: a synthetic
+bubbling element blur reaches `window` too) and a re-armed
+`(resolution: Ndppx)` media query. `set_window_title` stores the
+title in `window::STORED_TITLE` and, only while a shell's event loop runs
+(`GLOBAL_PROXY` set), wakes it with `RinchNativeEvent::ApplyWindowTitle`;
+`create_window` takes a stored title too, and `RinchRuntime::title` keeps it
+for re-creation. Web: `document.title`. `open_url` first refuses non-URLs
+(one-letter schemes included: `C:\…` would be run by `ShellExecuteW`) and
+`javascript:`/`vbscript:`/`data:` (`ScriptScheme`; Chrome runs
+`window.open("javascript:…")` with the opener's origin even after
+`opener = null`). Then `launch` spawns `xdg-open`/`open`
+with null stdio and reaps it on a thread; Windows `ShellExecuteW`
+(`Win32_UI_Shell`); web `window.open(url, "_blank")` then `opener = null`
+(`noopener` would make it answer null and hide a block). Pins:
+`window::tests`, `app/window_facts_1770_tests.rs`,
+`rinch-web/tests/window_facts_1770.rs` (Chrome 155, Firefox). The browser's
+`resize` and resolution listeners have no fixture (a test cannot resize the
+page or change its scale).
 
 ### Overlay windows (non-activating, click-through, skip-taskbar)
 
