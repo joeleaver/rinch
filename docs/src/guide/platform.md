@@ -263,7 +263,9 @@ browser; a `background-image: url(…)` there is the browser's own.
 
 Enable with: `features = ["file-dialogs"]`
 
-Native file dialogs for opening, saving, and folder selection.
+Native file dialogs for opening, saving, and folder selection, and message
+dialogs (alert, confirm). In the browser only the message dialogs exist — see
+[Message Dialogs](#message-dialogs).
 
 ### Opening Files
 
@@ -351,6 +353,14 @@ if delete {
     // User clicked Yes
 }
 ```
+
+**In the browser** (`wasm32`), `message(..)` with `show`, `confirm` and `ask` is
+the page's own `window.alert` / `window.confirm`: the same call, synchronous as
+natively, and `file-dialogs` links no crate there. The browser draws no title
+(it becomes the message's first line) and no level icon, and `ask`'s buttons
+read OK / Cancel (OK is yes). `confirm` answers `false` when the browser
+suppresses the dialog. The file and folder pickers are native-only: a browser
+file picker is asynchronous and returns no path — use an `<input type="file">`.
 
 ---
 
@@ -999,6 +1009,84 @@ The feature adds no crate to `Cargo.lock`. On Windows and macOS it adds tokio to
 
 ---
 
+## Timers
+
+`set_timeout` runs a closure once after a delay; `set_interval` runs one every
+period until `clear_interval` stops it. Both are in the prelude and work the
+same natively and in the browser (`window.setTimeout` underneath).
+
+```rust
+let seconds = Signal::new(0u32);
+let tick = set_interval(1000, move || seconds.update(|s| *s += 1));
+// ...
+clear_interval(tick);
+```
+
+- The callback runs on the main thread, as one batch, and need not be `Send`.
+- The rate is fixed, like a browser's `setInterval`: each tick is scheduled from
+  the previous tick's due time, so a slow callback does not make the interval
+  drift. A tick more than one period late (a busy main thread, a sleeping
+  laptop, a background tab the browser throttles) skips the ticks it missed
+  instead of firing them back to back.
+- An interval (or timeout) armed while a component renders stops when that
+  component unmounts. One armed outside any render runs until cleared. An
+  interval may clear itself from its own callback.
+
+## Polled signals
+
+`poll_signal(source, rate)` mirrors a value that something outside the
+reactive graph changes — an atomic an audio thread writes, a hardware reading —
+into a `Signal`, by calling `source` on the main thread at `rate`
+(`PollRate::EveryFrame`, `Hz(n)` or `Millis(n)`) and setting the signal when the
+value changed. Natively the runtime samples it once per frame. In the browser
+rinch keeps a drain scheduled while any poll is registered: a
+`requestAnimationFrame` loop while an `EveryFrame` poll exists, else a
+`setTimeout` until the soonest timed poll is due. A hidden tab runs no animation
+frames, so there an `EveryFrame` poll is not sampled until the tab is shown. A
+poll stops when its signal is freed (its component unmounts).
+
+## Storage
+
+`rinch-storage` is a key → bytes store with one backend per target: `FsStore`
+(a directory of files) natively and `IdbStore` (an IndexedDB object store) in
+the browser. `open_app_store` opens one the same way on both, so an app needs no
+`cfg` split:
+
+```rust
+use rinch_storage::{open_app_store, Store};
+
+let store = open_app_store("com.example.notes", "drafts").await?;
+store.put("current", b"hello").await?;
+```
+
+Natively the store is the directory `<user data dir>/<app_id>/<store_name>`
+(`$XDG_DATA_HOME` or `~/.local/share` on Linux, `~/Library/Application Support`
+on macOS, `%APPDATA%` on Windows); where the platform names no data directory
+it answers `StorageError::Unavailable`. On Android, open an `FsStore` under the
+app's files directory instead: the user data directory is not the app's
+sandbox there. In the browser it is the IndexedDB database
+`"<app_id>/<store_name>"`, one per store. Both names must be non-empty, contain
+no `/`, `\` or NUL, and not be `.` or `..`. The native future never waits, so
+any executor (or a one-poll `block_on`) runs it.
+
+## Logging
+
+`rinch::init_logging()` turns on logging for whatever target the app is built
+for. Call it first thing in `main` or the wasm start function:
+
+- **Native:** `tracing` events and `log` records go to stderr; `RUST_LOG`, when
+  set, chooses what is shown.
+- **Browser:** each event goes to the console method of its level
+  (`console.error`, `.warn`, `.info`, `.log` for debug, `.debug` for trace), and
+  a panic is written to `console.error` with its message and the JavaScript
+  stack — what `console_log` and `console_error_panic_hook` used to be added
+  for.
+- **Android:** `log` records go to logcat under the tag `rinch`.
+
+The default level is `info`; `init_logging_with_filter("warn,my_app=debug")`
+takes another filter in `tracing`'s `EnvFilter` syntax (`RUST_LOG` still wins
+natively). A second call, or a logger something else set first, is left alone.
+
 ## Enabling Features
 
 Add features to your `Cargo.toml`:
@@ -1010,15 +1098,18 @@ rinch = { version = "0.1", features = ["file-dialogs", "clipboard", "system-tray
 
 ## Platform Support
 
-| Feature | Windows | macOS | Linux | Android |
-|---------|---------|-------|-------|---------|
-| File Dialogs | ✓ | ✓ | ✓ | SAF (`rinch_android::file_picker`) |
-| Clipboard (Text) | ✓ | ✓ | ✓ | ✓ |
-| Clipboard (Image) | ✓ | ✓ | ✓* | – |
-| Text-selection toolbar | DOM menu | DOM menu | DOM menu | native (`ActionMode`) |
-| System Tray | ✓ | ✓ | ✓** | – |
-| Notifications | toast | ✓ (in an `.app` bundle) | ✓ (freedesktop server) | – |
-| Global hotkeys | ✓ | ✓ | ✓ (X11, Wayland portal) | – |
+| Feature | Windows | macOS | Linux | Android | Web |
+|---------|---------|-------|-------|---------|-----|
+| File Dialogs | ✓ | ✓ | ✓ | SAF (`rinch_android::file_picker`) | – |
+| Message Dialogs | ✓ | ✓ | ✓ | – | `alert` / `confirm` |
+| Timers, polled signals, `init_logging` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `open_app_store` | ✓ | ✓ | ✓ | use `FsStore` (see [Storage](#storage)) | IndexedDB |
+| Clipboard (Text) | ✓ | ✓ | ✓ | ✓ | see [Web](#web-reaching-content-copied-outside-the-app) |
+| Clipboard (Image) | ✓ | ✓ | ✓* | – | – |
+| Text-selection toolbar | DOM menu | DOM menu | DOM menu | native (`ActionMode`) | browser |
+| System Tray | ✓ | ✓ | ✓** | – | – |
+| Notifications | toast | ✓ (in an `.app` bundle) | ✓ (freedesktop server) | – | – |
+| Global hotkeys | ✓ | ✓ | ✓ (X11, Wayland portal) | – | – |
 
 \* Linux image clipboard requires X11 or Wayland clipboard support.
 

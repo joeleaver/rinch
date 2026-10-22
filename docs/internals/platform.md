@@ -805,3 +805,29 @@ bar's dismiss overlay (`.rinch-app-menu-bar__overlay`), are fixed at
 cover the chrome, or clicking the title bar leaves the menu open. Do **not**
 "fix" an overlay of your own by insetting the fixed containing block — that
 would break CSS semantics and make desktop diverge from rinch-web.
+
+### Cross-target platform calls (#1773)
+
+- **Message dialogs on the web.** `crates/rinch/src/dialogs.rs` is two modules:
+  `native` (rfd, every dialog) and `web` (wasm32: `message` /
+  `MessageDialogBuilder` / `MessageLevel` over `window.alert` /
+  `window.confirm`). `rfd` is a `cfg(not(target_arch = "wasm32"))` dependency,
+  so `file-dialogs` on wasm links no crate. Pin:
+  `rinch-web/tests/confirm_dialog_1773.rs` (stubs `window.confirm`/`alert`; a
+  real one would block headless Chrome).
+- **`rinch::init_logging()`** (`crates/rinch/src/logging.rs`): native =
+  tracing-subscriber `fmt` to stderr, `RUST_LOG` else the given filter, `log`
+  bridged by tracing-log; wasm = the same `fmt` with a `MakeWriter` that sends
+  each event to the console method of its level (`without_time`:
+  `SystemTime::now` panics on wasm32-unknown-unknown) plus a panic hook
+  (message + JS stack to `console.error`, then the previous hook, so a test
+  harness's still runs); Android = `android_logger::init_once`, no
+  tracing-subscriber (its `LogTracer` would take the `log` slot logcat needs).
+  tracing-subscriber is a non-optional rinch dependency since. The web panic
+  hook has no fixture: a wasm32 panic aborts, so a test cannot survive one.
+- **`rinch_storage::open_app_store`** (`crates/rinch-storage/src/app_store.rs`):
+  native `dirs::data_dir()/<app>/<store>`, web the IndexedDB database
+  `"<app>/<store>"`. One database per store because `IdbStore::open` creates
+  its object store only in `onupgradeneeded`, which an existing database never
+  fires: a second store name in one database is never created
+  (`rinch-storage/tests/idb.rs::a_second_store_in_an_existing_database_is_not_created`).

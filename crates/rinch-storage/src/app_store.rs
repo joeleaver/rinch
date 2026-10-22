@@ -24,8 +24,9 @@ pub type PlatformStore = crate::IdbStore;
 /// - **Native:** the directory `<data dir>/<app_id>/<store_name>`, where the
 ///   data directory is the user's (`$XDG_DATA_HOME` or `~/.local/share` on
 ///   Linux, `~/Library/Application Support` on macOS, `%APPDATA%` on Windows).
-///   [`StorageError::Unavailable`] where the platform names none (Android: open
-///   an [`FsStore`](crate::FsStore) under the app's files directory instead).
+///   [`StorageError::Unavailable`] where the platform names none. On Android
+///   open an [`FsStore`](crate::FsStore) under the app's files directory
+///   instead.
 /// - **Web:** the IndexedDB database `"<app_id>/<store_name>"` holding one
 ///   object store `store_name`. One database per store, so a second store of
 ///   the same app is a database of its own and is created like the first.

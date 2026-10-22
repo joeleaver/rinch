@@ -85,7 +85,6 @@ rinch-core = { git = "..." }
 rinch-web = { git = "..." }   # browser-native DOM backend: WebDocument + mount
 my-app = { path = "../my-app" }
 wasm-bindgen = "0.2"
-console_error_panic_hook = "0.1"
 ```
 
 ```rust
@@ -95,7 +94,9 @@ use rinch_core::element::ThemeProviderProps;
 
 #[wasm_bindgen(start)]
 pub fn start() {
-    console_error_panic_hook::set_once();
+    // Logs and panic messages to the browser console (the same call logs to
+    // stderr in the desktop build).
+    rinch::init_logging();
 
     // `rinch_web::mount` creates the WebDocument, builds your component tree,
     // wires browser event delegation, and installs the theme CSS.
@@ -442,6 +443,8 @@ position (the element's centre) and no modifier held.
   own DOM menu bar instead, from the same `Menu`/`MenuItem` declarations the
   desktop uses — see [Mounting with a menu bar](#mounting-with-a-menu-bar).
 - **File dialogs** — Use the browser's `<input type="file">` or the File System Access API.
+  The message dialogs (`rinch::dialogs::message(..).confirm()`) do work: they
+  are `window.alert` / `window.confirm` (see [Platform Features](platform.md#message-dialogs)).
 - **System tray** — Not a thing in browsers.
 
 ## Theme in WASM

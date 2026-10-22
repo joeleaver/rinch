@@ -233,6 +233,21 @@ fn child_component() -> NodeHandle {
 }
 ```
 
+### Intervals and polled signals off the native frame loop (#1773)
+
+`set_interval` (`rinch-core/src/timer.rs`) is a chain of `set_timeout` ticks,
+so it needs no backend of its own: a thread-local `INTERVALS` map holds each
+interval's pending `TimeoutHandle` (the handle the app keeps is a stable id),
+each tick re-arms from its own deadline (fixed rate; more than a period late it
+re-arms from now), and `on_cleanup` drops the entry when the arming component
+unmounts. `poll_signal` is drained by the native hosts once per frame; the web
+has no frame loop, so `poll_signal` calls a waker hook
+(`reactive::set_poll_waker`) after each registration and `rinch-web/src/polls.rs`
+keeps one drain scheduled (rAF while `polls_want_every_frame()`, else
+`setTimeout(next_poll_due())`, nothing when the registry is empty), each drain
+inside a `batch`. Pins: `timer::tests` (`an_interval_*`, the two rate tests),
+`poll::waker_tests`, `rinch-web/tests/poll_signal_1773.rs`.
+
 ## Threading Model
 
 Rinch **owns the main thread**. `App::run()` calls winit's event loop, which takes over the thread and returns only once the application exits it (`close_current_window`, or an `on_close_requested` answering `true`). All UI state (`Signal`, `Effect`, `NodeHandle`, `RenderScope`) is `!Send` — the reactive system is thread-local.
