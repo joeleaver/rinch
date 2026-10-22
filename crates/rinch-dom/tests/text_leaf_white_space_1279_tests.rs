@@ -336,11 +336,18 @@ fn line_and_paragraph_separators_in_a_leaf_1268() {
 /// A blank leaf reports no first baseline, so it moves no baseline-aligned
 /// item (review of #1759). Chrome 155, 40px/50px container, two 10px/12px
 /// spans around `"   "` under `align-items: baseline`: the spans at y 0, the
-/// row 12 tall, under `normal` and `pre-wrap` alike. With the blank leaf's
+/// row 12 tall, under `normal` and `pre-wrap` alike, `flex` and
+/// `inline-flex`. With the blank leaf's
 /// 40px first line as a baseline, rinch put them 29px down.
 #[test]
 fn a_blank_leaf_has_no_baseline() {
-    for ws in ["normal", "pre-wrap"] {
+    // `inline-flex` is the second measure site (the atomic inline's compute).
+    for (display, ws) in [
+        ("flex", "normal"),
+        ("flex", "pre-wrap"),
+        ("inline-flex", "normal"),
+        ("inline-flex", "pre-wrap"),
+    ] {
         let mut d = doc();
         let body = d.body();
         let root = el(&mut d, body, "div", "margin: 0; font: 40px/50px ProbeFace");
@@ -348,7 +355,7 @@ fn a_blank_leaf_has_no_baseline() {
             &mut d,
             root,
             "div",
-            &format!("display: flex; align-items: baseline; white-space: {ws}"),
+            &format!("display: {display}; align-items: baseline; white-space: {ws}"),
         );
         let a = el(&mut d, flex, "span", "font: 10px/12px ProbeFace");
         let t = d.create_text("a");
@@ -361,7 +368,7 @@ fn a_blank_leaf_has_no_baseline() {
         d.resolve_layout(800.0, 600.0);
         let ay = d.tree.get(a.0).unwrap().layout.y;
         let h = d.tree.get(flex.0).unwrap().layout.height;
-        assert_eq!((ay, h), (0.0, 12.0), "{ws}");
+        assert_eq!((ay, h), (0.0, 12.0), "{display} {ws}");
     }
 }
 

@@ -828,7 +828,7 @@ impl RinchDocument {
                                     // Use wrap_width bits as part of the key since layout depends on it
                                     let wrap_bits =
                                         wrap_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
-                                    first_baseline = crate::ifc::first_line_baseline(&leaf.layout);
+                                    first_baseline = leaf.first_baseline();
                                     text_layout_cache
                                         .borrow_mut()
                                         .insert((text.node_id, wrap_bits), leaf.layout);

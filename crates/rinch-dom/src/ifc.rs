@@ -749,7 +749,8 @@ pub(crate) fn shape_text_leaf(
     );
     // A flex or grid container's text that is all white space is not
     // rendered, whatever its `white-space` (css-flexbox-1 §4, css-grid-1
-    // §6): Chrome 155 lays `"   "` out as nothing under `pre-wrap` too.
+    // §6): Chrome 155 lays `"   "` out as nothing under `pre-wrap` too. Here
+    // it measures 0x0 with no baseline, but is still an item (#1760).
     let blank = text
         .content
         .bytes()
@@ -771,6 +772,7 @@ pub(crate) fn shape_text_leaf(
         hang,
         width,
         height,
+        blank,
     }
 }
 
@@ -782,6 +784,21 @@ pub(crate) struct LeafShape {
     pub width: f32,
     /// The height the measure reports.
     pub height: f32,
+    /// All white space: measured 0x0, and reports no first baseline, so it
+    /// moves no baseline-aligned item. It is still an item (a `gap` is laid
+    /// out beside it), where Chrome makes none (#1760).
+    pub blank: bool,
+}
+
+impl LeafShape {
+    /// Its first line's baseline, from the content-box top; `None` when blank.
+    pub(crate) fn first_baseline(&self) -> Option<f32> {
+        if self.blank {
+            None
+        } else {
+            first_line_baseline(&self.layout)
+        }
+    }
 }
 
 /// The line count to keep when `layout` ends in an empty line parley 0.11.1
@@ -6982,6 +6999,7 @@ impl RinchDocument {
                                 };
                                 let leaf = shape_text_leaf(font_cx, layout_cx, text, wrap_width);
                                 leaf.hang.record(perf);
+                                first_baseline = leaf.first_baseline();
                                 let layout = leaf.layout;
                                 let size = taffy::Size {
                                     width: known_dims.width.unwrap_or(leaf.width),
@@ -6991,7 +7009,6 @@ impl RinchDocument {
                                 // leaves, so `copy_cached_text_layouts` picks between
                                 // them by the same rule.
                                 let wrap_bits = wrap_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
-                                first_baseline = first_line_baseline(&layout);
                                 leaf_layouts.insert((text.node_id, wrap_bits), layout);
                                 size
                             }

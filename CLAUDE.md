@@ -85,7 +85,7 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     breaks its lines, and puts the spaces back on the line they hang from; upstream's rework
     (#790, #785) is unreleased. Spaces and tabs hang, NBSP does not (it glues, and after a hung run starts the next line).
     A `break-spaces` space or tab in an IFC never hangs (#1043, `WhiteSpaceValue::BreakSpaces`; it read as
-    `pre-wrap` before; a flex or grid item's own text still hangs them, #1672): the same pass breaks a line parley ended past the box in such spaces
+    `pre-wrap` before; and, since #1672, a flex or grid item's own text too): the same pass breaks a line parley ended past the box in such spaces
     (`ifc::break_overflowing_spaces`) after the last one that fits, else before the word they follow,
     else after their first space, committed by length; the line is aligned with them as content and
     `measured_width` counts them (Chrome 155, `tests/white_space_break_spaces_1043_tests.rs`). It is **one**
@@ -173,8 +173,9 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     it with `break_lines_hanging_spaces` (hung preserved spaces, `break-spaces`, the final
     forced break) and measures it with `node::measured_width_of`, `InlineLayout::measured_width`'s
     rule; it used to hand parley its text raw, so `<div style="display:flex">Use </div>` was two
-    lines tall. A leaf that is all spaces, tabs and newlines is no item (0x0, css-flexbox-1 §4),
-    under every `white-space`. Offsets into a leaf's layout are offsets into its collapsed text,
+    lines tall. A leaf that is all spaces, tabs and newlines measures 0x0 and reports
+    no first baseline (`LeafShape::blank`), under every `white-space`; Chrome makes no item of it at
+    all (css-flexbox-1 §4), rinch's is still an item and takes a `gap` (#1760). Offsets into a leaf's layout are offsets into its collapsed text,
     as an IFC root's are into its flat text; the leaf keeps no DOM↔flat map.
     `crates/rinch-dom/tests/text_leaf_white_space_1279_tests.rs` is the pin.
     **The flat offsets index that collapsed text** — the caret maps,
