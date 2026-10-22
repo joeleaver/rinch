@@ -123,7 +123,9 @@ fn probe_rows() {
 }
 
 /// The Vello path: the same document emits ONE image draw whose sampler is
-/// Repeat/Low (nearest) on both axes, whose image is the tile at device size,
+/// Repeat on both axes and Medium (bilinear): the tile's origin is 19.5 device
+/// px, and since #1151 a repeating axis keeps that fraction, as tiny-skia's
+/// bilinear pattern does, whose image is the tile at device size,
 /// and whose brush transform places tile (0,0) where tiny-skia's pattern does.
 #[test]
 fn vello_brush_matches_the_pattern_path() {
@@ -174,8 +176,8 @@ fn vello_brush_matches_the_pattern_path() {
     assert_eq!((sa >> 8) & 3, 1, "y Repeat");
     assert_eq!(
         (sa >> 12) & 3,
-        0,
-        "quality Low (nearest), as tiny-skia's Nearest"
+        1,
+        "quality Medium (bilinear) at a fractional origin, as tiny-skia's Bilinear"
     );
     assert_eq!(n_img, 1, "one image draw for 5625 tiles");
 }

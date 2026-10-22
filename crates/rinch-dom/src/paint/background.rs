@@ -44,11 +44,15 @@
 //!    which has nothing to rasterise a tile with. Never skipped, however many
 //!    tiles that is.
 //!
-//! **Positions are whole device pixels** (tracked separately as #1151): the
-//! tile phase is rounded in device space, so tiles meet on pixel edges and a
-//! `background-position` animation moves in one-device-pixel steps. Chrome
-//! keeps the fractional phase and blends the edge pixel, so its stripes move
-//! smoothly; rinch's are within one device pixel of it at every frame.
+//! **A repeating axis keeps its sub-pixel position** (#1151), as Chrome's
+//! does: the pattern's origin keeps its fraction and is sampled bilinearly,
+//! so the pixel on a tile edge blends the two sides and a
+//! `background-position` animation moves smoothly. A pattern has no tile
+//! edges to seam. An axis that does **not** repeat rounds the tile's origin
+//! to a device pixel (`DeviceSnap`), as Chrome does; so does step 3 on
+//! every axis, since its tiles are separate antialiased fills that would
+//! seam where two met mid-pixel. Step 1's covering tile keeps the fraction
+//! on an axis that repeats.
 //!
 //! **Every layer** of a comma-separated `background-image` list is painted
 //! (#1142), from the last listed (the bottom) to the first, over the

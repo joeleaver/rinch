@@ -99,13 +99,15 @@ without the software painter (`embed`) has nothing to rasterise a tile with and
 draws one fill per visible tile instead. No layer is ever dropped for having too
 many tiles.
 
-**One known difference from browsers** (tracked separately as #1151): rinch
-places a tile on whole device pixels, rounding a fractional
-`background-position` (and a fractional translate) to the nearest one. Chrome
-keeps the fraction and blends the pixel on the tile's edge. The result is within
-one device pixel of Chrome's, but a `background-position` animation — the
-striped `Progress` bar — moves in one-device-pixel steps in rinch where Chrome's
-moves smoothly.
+A tile on an axis that repeats keeps a fractional `background-position` (or a
+fractional translate) and blends the pixel on its edge, as Chrome does, so a
+`background-position` animation — the striped `Progress` bar — moves smoothly
+(#1151). On an axis that does not repeat the tile's origin is rounded to a
+device pixel, as Chrome rounds it. Two differences remain: on the GPU the pixel
+on a boundary between two tiles takes one tile's edge colour rather than a blend,
+and a build without the software painter, or a tile over 4 million device
+pixels, rounds every tile to a device pixel. (Separately, a scaled image tile
+has hard edges where Chrome's are blended, #1753.)
 
 An image used to be stretched over the element's border box whatever its
 `background-size`; one that relied on that now tiles at its natural size.

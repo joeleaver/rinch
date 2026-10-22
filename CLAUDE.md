@@ -4527,11 +4527,20 @@ filled as a tiny-skia `Pattern` or a Vello `Extend::Repeat` image brush from the
 same pixels (the brush's parameters are pinned; no test renders it on a GPU), and clipped to the one-tile strip on an axis that does not repeat.
 Only a build without the software painter (`embed`), a `no-repeat` tile, or a
 tile over 4M device px goes tile by tile, over the **visible** tiles only
-(`visible_paint_rect`), uncapped. Positions are **rounded to device pixels**,
-in device space under a plain translation (`DeviceSnap`; snapping in shape space
-seamed under a fractional translate) — Chrome keeps the fraction and blends the
-edge pixel, so rinch's `background-position` animations step by a device pixel:
-tracked separately as #1151. The common case — one
+(`visible_paint_rect`), uncapped. **A repeating axis keeps its sub-pixel position** (#1151): the
+pattern's origin keeps its fraction and is sampled bilinearly, so the edge pixel
+blends as Chrome 155 blends it (a red/blue tile at `0.5px` reads `(128,0,128)`
+there) and a `background-position` animation moves smoothly. tiny-skia samples a
+pattern whose map is a pure translation nearest, fractional or not, so
+`TinySkiaPainter::fill_repeating` adds one ulp of scale to keep it bilinear.
+Vello clamps its bilinear taps at the image's edge after `Extend::Repeat`, so on
+the GPU the pixel on a boundary *between* tiles takes one side's texel. An axis
+that does **not** repeat rounds the tile's origin to a device pixel, as Chrome
+does, in device space under a plain translation (`DeviceSnap`; snapping in shape
+space seamed under a fractional translate); so does the tile-by-tile path on
+every axis, to keep its tiles from seaming (`embed`, a tile over 4M px). A
+scaled image tile is rasterised nearest and sampled again, where Chrome samples
+once (#1753). The common case — one
 tile covering the box — is one fill and no clip, as before. `background-position-x`/`-y` are
 `TransitionProperty`s (paint-only: `affects_layout` is `false`), and
 `transition: background-position` expands to both. An image's `auto` size is
