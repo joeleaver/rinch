@@ -1084,8 +1084,10 @@ for. Call it first thing in `main` or the wasm start function:
 - **Android:** `log` records go to logcat under the tag `rinch`.
 
 The default level is `info`; `init_logging_with_filter("warn,my_app=debug")`
-takes another filter in `tracing`'s `EnvFilter` syntax (`RUST_LOG` still wins
-natively). A second call, or a logger something else set first, is left alone.
+takes another filter: a level and `target=level` directives (`RUST_LOG` still
+wins natively). The desktop build reads all of `tracing`'s `EnvFilter` syntax;
+the browser reads levels and targets only, so a web app's dependencies gain
+nothing. A second call, or a logger something else set first, is left alone.
 
 ## Enabling Features
 

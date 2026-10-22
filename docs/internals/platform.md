@@ -815,16 +815,22 @@ would break CSS semantics and make desktop diverge from rinch-web.
   so `file-dialogs` on wasm links no crate. Pin:
   `rinch-web/tests/confirm_dialog_1773.rs` (stubs `window.confirm`/`alert`; a
   real one would block headless Chrome).
-- **`rinch::init_logging()`** (`crates/rinch/src/logging.rs`): native =
-  tracing-subscriber `fmt` to stderr, `RUST_LOG` else the given filter, `log`
-  bridged by tracing-log; wasm = the same `fmt` with a `MakeWriter` that sends
-  each event to the console method of its level (`without_time`:
-  `SystemTime::now` panics on wasm32-unknown-unknown) plus a panic hook
-  (message + JS stack to `console.error`, then the previous hook, so a test
-  harness's still runs); Android = `android_logger::init_once`, no
-  tracing-subscriber (its `LogTracer` would take the `log` slot logcat needs).
-  tracing-subscriber is a non-optional rinch dependency since. The web panic
-  hook has no fixture: a wasm32 panic aborts, so a test cannot survive one.
+- **`rinch::init_logging()`** (`crates/rinch/src/logging.rs`): desktop (and
+  the `android` feature on a non-Android host) = tracing-subscriber `fmt` to
+  stderr, `RUST_LOG` else the given filter, `log` bridged by tracing-log;
+  Android = `android_logger::init_once`, no tracing-subscriber (its `LogTracer`
+  would take the `log` slot logcat needs); wasm32 and a native build without
+  the desktop shell = `logging::simple`, a hand-written `tracing::Subscriber`
+  plus `log::Log` (filter: a level and `target=level` directives, longest
+  target wins) writing to the console method of the event's level on wasm32
+  and to stderr natively, and on wasm32 a panic hook (message + JS stack to
+  `console.error`, then the previous hook, so a test harness's still runs).
+  Hand-written so that a web app's lock gains nothing: tracing-subscriber on
+  wasm brought eight packages into every web app's dependency tree (measured
+  on `examples/menu-bar-web/Cargo.lock`). `log` is a plain rinch dependency
+  (already in every lock through `tracing`); `log::set_logger` with a leaked
+  box, since `set_boxed_logger` needs `log`'s `std` feature. The web panic hook
+  has no fixture: a wasm32 panic aborts, so a test cannot survive one.
 - **`rinch_storage::open_app_store`** (`crates/rinch-storage/src/app_store.rs`):
   native `dirs::data_dir()/<app>/<store>`, web the IndexedDB database
   `"<app>/<store>"`. One database per store because `IdbStore::open` creates
