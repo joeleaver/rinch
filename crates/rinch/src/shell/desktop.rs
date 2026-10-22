@@ -1093,9 +1093,13 @@ pub(crate) fn presented_texture<'a, T: ?Sized>(
 /// The colour Vello renders the UI over: transparent under composite layers
 /// (CPU-pixel layers and zero-copy GPU texture layers), so they show through
 /// the UI's viewport holes, else the window's base.
+///
+/// It used to look at the CPU layers alone, so a window whose only layer was a
+/// GPU texture (a `GpuTextureRegistrar` surface) rendered its UI over opaque
+/// white, which covered the layer: the hole showed white unless the window was
+/// transparent, whose base is transparent anyway (#1774).
 pub(crate) fn ui_base_color(window_base: Color, cpu_layers: bool, gpu_layers: bool) -> Color {
-    let _ = gpu_layers;
-    if cpu_layers {
+    if cpu_layers || gpu_layers {
         Color::TRANSPARENT
     } else {
         window_base
