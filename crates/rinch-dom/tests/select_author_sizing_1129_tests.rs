@@ -210,3 +210,37 @@ fn the_measure_follows_a_later_option_and_a_width_taken_back_to_auto() {
         "Chrome 153: with `Hello world option` it is 160 wide"
     );
 }
+
+/// A percentage width is resolved against a container sized from the select
+/// itself: the container takes the select's label width (the measure answers
+/// it although the width is not `auto`), and the select half of that. Chrome
+/// 155: in `div(display: inline-block)` the container is 160 and a
+/// `display: block; width: 50%` select 80 x 24.
+#[test]
+fn a_percentage_width_in_a_content_sized_container_sizes_the_container_from_the_label() {
+    let mut doc = document();
+    let body = doc.body();
+    let outer = doc.create_element("div");
+    doc.set_attribute(outer, "style", "font: 16px/20px ProbeFace; width: 600px");
+    doc.append_child(body, outer);
+    let host = doc.create_element("div");
+    doc.set_attribute(host, "style", "display: inline-block");
+    doc.append_child(outer, host);
+    let sel = doc.create_element("select");
+    doc.set_attribute(
+        sel,
+        "style",
+        "font: 16px/20px ProbeFace; display: block; width: 50%",
+    );
+    doc.append_child(host, sel);
+    for label in ["a", "Hello world option"] {
+        let o = doc.create_element("option");
+        doc.append_child(sel, o);
+        let t = doc.create_text(label);
+        doc.append_child(o, t);
+    }
+    doc.resolve_layout(800.0, 600.0);
+    let h = doc.tree.get(host.0).unwrap().layout;
+    let s = doc.tree.get(sel.0).unwrap().layout;
+    assert_eq!((h.width, s.width), (160.0, 80.0), "Chrome 155: 160 and 80");
+}
