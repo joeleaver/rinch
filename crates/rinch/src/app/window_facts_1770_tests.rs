@@ -160,5 +160,9 @@ fn a_blur_reader_runs_after_the_apps_own_blur_handling() {
     };
     app.handle_event(PlatformEvent::WindowFocus(false), (643, 481), 1.0);
     assert!(told.get(), "positive control: the key entry was told");
-    assert_eq!(seen.get(), Some(true), "the reader ran before the entry was told");
+    assert_eq!(
+        seen.get(),
+        Some(true),
+        "the reader ran before the entry was told"
+    );
 }

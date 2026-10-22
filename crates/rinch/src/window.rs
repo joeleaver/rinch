@@ -309,8 +309,9 @@ mod platform {
     pub(super) fn set_window_title(title: &str) {
         #[cfg(feature = "desktop")]
         {
-            *super::STORED_TITLE.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some(title.to_string());
+            *super::STORED_TITLE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(title.to_string());
             // Wake a running shell to apply it; before the loop starts (or
             // with no shell at all) nothing is queued: the window takes it
             // when it is created.
