@@ -1911,6 +1911,100 @@ mod text_geometry_units_tests {
         (a - b).abs() < 0.01
     }
 
+    /// The top-left of the caret **painted** in field `input` with its caret
+    /// at byte `byte`, in logical px, read from the pixels of a scale-2 paint:
+    /// the field marked focused with its caret at `byte`, and the caret found as the dark ink in the column the engine's
+    /// caret rect names (only the caret is drawn there: its x is at a glyph
+    /// edge, and an empty field draws no glyph at all).
+    fn painted_caret_top_left(app: &mut RinchApp, input: usize, byte: usize) -> (f64, f64) {
+        let (_, by, _, bh) = {
+            let d = app.doc.as_ref().unwrap().borrow();
+            crate::app::hit_testing::painted_element_box(&d.tree, input)
+        };
+        // Focused with its caret at `byte`, as the runtime's caret sync
+        // writes it (the attributes paint, the scroll and MCP all read).
+        {
+            let doc = app.doc.clone().unwrap();
+            let mut d = doc.borrow_mut();
+            let n = d.tree.nodes.get_mut(input).unwrap();
+            n.attributes.insert("data-focused".into(), "true".into());
+            n.attributes
+                .insert("data-cursor-pos".into(), byte.to_string());
+            n.attributes
+                .insert("data-selection-start".into(), byte.to_string());
+            d.tree.mark_paint_dirty(input);
+        }
+        app.resolve_and_repaint(800.0, 600.0);
+        app.scene_dirty = true;
+        app.has_previous_frame = false;
+        // The column: the caret paint draws is 3 device px wide from its x.
+        let rect = {
+            let doc = app.doc.clone().unwrap();
+            let mut d = doc.borrow_mut();
+            let d = &mut *d;
+            rinch_dom::form_control::painted_caret_rect(
+                &d.tree,
+                &mut d.font_cx,
+                &mut d.layout_cx,
+                input,
+                byte,
+                rinch_core::dom::CaretAffinity::Downstream,
+            )
+            .unwrap()
+        };
+        let (px, w, _) = app.build_pixels(2.0, (1600, 1200), true);
+        let w = w as usize;
+        let (cx0, cx1) = (
+            ((rect.0 - 1.0) * 2.0) as usize,
+            ((rect.0 + 3.0) * 2.0) as usize,
+        );
+        let (mut left, mut top) = (usize::MAX, usize::MAX);
+        for (i, p) in px.as_chunks::<4>().0.iter().enumerate() {
+            let (x, y) = (i % w, i / w);
+            let inside = x >= cx0
+                && x < cx1
+                && (y as f32) > (by + 2.5) * 2.0
+                && (y as f32) < (by + bh - 2.5) * 2.0;
+            if inside && p[3] > 200 && p[0] < 100 && p[1] < 100 && p[2] < 100 {
+                left = left.min(x);
+                top = top.min(y);
+            }
+        }
+        assert!(left != usize::MAX, "positive control: a caret is painted");
+        (left as f64 / 2.0, top as f64 / 2.0)
+    }
+
+    /// MCP `get_caret_position` answers the caret paint draws, at scale 2
+    /// (#1721): pixel oracle for the two fixtures above, at byte 0 and at the
+    /// end of a value.
+    #[test]
+    fn painted_caret_matches_mcp_at_scale_two() {
+        let ids: Ids = Rc::default();
+        let mut app = app_with_text_fields(ids.clone());
+        let (input, _, _) = ids.get().unwrap();
+        for byte in [0, 11] {
+            let painted = painted_caret_top_left(&mut app, input, byte);
+            let mcp = caret(&mut app, input, byte, 2.0);
+            assert!(
+                (mcp.0 - painted.0).abs() <= 0.5 && (mcp.1 - painted.1).abs() <= 0.5,
+                "byte {byte}: MCP {mcp:?} vs painted {painted:?}"
+            );
+        }
+        // And emptied: the early-return branch, the caret at the column start.
+        {
+            let doc = app.doc.clone().unwrap();
+            doc.borrow_mut()
+                .set_attribute(rinch_core::dom::NodeId(input), "value", "");
+        }
+        app.resolve_and_repaint(800.0, 600.0);
+        let painted = painted_caret_top_left(&mut app, input, 0);
+        let mcp = caret(&mut app, input, 0, 2.0);
+        assert!(
+            (mcp.0 - painted.0).abs() <= 0.5 && (mcp.1 - painted.1).abs() <= 0.5,
+            "empty: MCP {mcp:?} vs painted {painted:?}"
+        );
+    }
+
     /// The input's caret at scale 2 is where it is at scale 1, and at byte 0
     /// it is the box's logical origin plus its logical paddings.
     #[test]
@@ -1919,10 +2013,17 @@ mod text_geometry_units_tests {
         let mut app = app_with_text_fields(ids.clone());
         let (input, _, _) = ids.get().unwrap();
 
+        // Byte 0 is where paint draws the caret (#1721): x at the content
+        // box — the UA input's 2px border plus the 13px padding — and y where
+        // paint centres the line in the 28px box, not at the top padding.
+        // `painted_caret_matches_mcp_at_scale_two` checks this against the
+        // painted pixels.
         let (x0, y0) = caret(&mut app, input, 0, 1.0);
+        let painted = painted_caret_top_left(&mut app, input, 0);
         assert!(
-            close(x0, 40.0 + 13.0) && close(y0, 30.0 + 5.0),
-            "byte 0 sits at the logical content origin (53, 35), got ({x0}, {y0})"
+            close(x0, 40.0 + 2.0 + 13.0) && (y0 - painted.1).abs() < 0.5,
+            "byte 0 sits at the painted caret, x 55 (border + padding) and y {}, got ({x0}, {y0})",
+            painted.1
         );
         for byte in [0, 5, 11] {
             let one = caret(&mut app, input, byte, 1.0);
@@ -2000,10 +2101,16 @@ mod text_geometry_units_tests {
         app.resolve_and_repaint(800.0, 600.0);
         let input = id.get();
 
+        // Where paint draws the empty field's caret (#1721): x at the content
+        // box (the UA 2px border plus the 13px padding), y with the line
+        // centred in the 20px box as paint centres it, not at the top padding
+        // (33). The empty case is checked against the pixels in the taller
+        // field of `painted_caret_matches_mcp_at_scale_two`; this 20px one is
+        // shorter than its line, so its caret runs over the border.
         let one = caret(&mut app, input, 0, 1.0);
         assert!(
-            close(one.0, 40.0 + 13.0) && close(one.1, 30.0 + 3.0),
-            "the empty input's caret is its logical content origin (53, 33), got {one:?}"
+            close(one.0, 40.0 + 2.0 + 13.0) && one.1 > 30.0 && one.1 < 33.0,
+            "the empty input's caret: x 55 (border + padding), y centred above the 33 top padding, got {one:?}"
         );
         let two = caret(&mut app, input, 0, 2.0);
         assert!(
