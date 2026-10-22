@@ -10,7 +10,7 @@
 use std::sync::mpsc;
 use std::time::Duration;
 
-use rinch::clipboard::{copy_html_then, copy_text_then, paste_html, paste_text, ClipboardResult};
+use rinch::clipboard::{ClipboardResult, copy_html_then, copy_text_then, paste_html, paste_text};
 
 #[test]
 fn a_copy_reports_the_workers_answer_after_the_write() {

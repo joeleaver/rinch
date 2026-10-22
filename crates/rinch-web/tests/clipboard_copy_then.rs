@@ -79,8 +79,12 @@ async fn refusing_clipboard() -> (web_sys::HtmlIFrameElement, web_sys::Clipboard
         .unwrap()
         .dyn_into()
         .unwrap();
-    frame.set_attribute("allow", "clipboard-write 'none'").unwrap();
-    frame.set_attribute("srcdoc", "<p>refusing frame</p>").unwrap();
+    frame
+        .set_attribute("allow", "clipboard-write 'none'")
+        .unwrap();
+    frame
+        .set_attribute("srcdoc", "<p>refusing frame</p>")
+        .unwrap();
     document().body().unwrap().append_child(&frame).unwrap();
     for _ in 0..50 {
         if let Some(win) = frame.content_window() {
@@ -169,8 +173,15 @@ fn copy_text_then_without_a_clipboard_is_not_available_at_once() {
     let (slot, on_done) = answer_slot();
     rinch_clipboard::copy_text_then("nowhere", on_done);
     rinch_clipboard::__set_clipboard_source(None);
-    let result = slot.lock().unwrap().take().expect("called back synchronously");
-    assert!(matches!(result, Err(ClipboardError::NotAvailable)), "{result:?}");
+    let result = slot
+        .lock()
+        .unwrap()
+        .take()
+        .expect("called back synchronously");
+    assert!(
+        matches!(result, Err(ClipboardError::NotAvailable)),
+        "{result:?}"
+    );
 }
 
 thread_local! {
@@ -313,7 +324,10 @@ async fn a_copy_button_shows_a_refused_write() {
     let html = buttons.shown_after(&text).await;
     frame.remove();
     buttons.unmount();
-    assert_eq!((text.as_str(), html.as_str()), ("Copy text failed", "Copy html failed"));
+    assert_eq!(
+        (text.as_str(), html.as_str()),
+        ("Copy text failed", "Copy html failed")
+    );
 }
 
 /// A trusted click — a user activation, which is what lets a page write the

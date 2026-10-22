@@ -411,7 +411,15 @@ Same three for `paste_html`/`paste_image`. `paste_rich`/`paste_rich_async` resol
 never stacks three worst-case waits. `paste_rich_with_text*` answer the same plus the
 `text/plain` offered beside an html answer, still one read (the editor's Ctrl+V uses it
 so its paste hook sees both flavours). `copy_text_async`/`copy_html_async` queue a write
-without waiting.
+without waiting and drop its result; `copy_text_then`/`copy_html_then` (#1780) queue it
+and call back with it — on the web, the settled `navigator.clipboard.write(Text)`
+promise (rejection → `AccessFailed("<name>: <message>")`, no `navigator.clipboard` →
+`NotAvailable` synchronously). The web's synchronous `copy_text`/`copy_html` still
+answer `Ok` for the in-app buffer whatever the browser does. Web tests reach a
+deterministic refusal through the doc-hidden `__set_clipboard_source` (the clipboard
+of an `<iframe allow="clipboard-write 'none'">`); the accepted write needs a user
+activation in headless Chrome, so it is a trusted click from `real_keys.mjs`
+(`rinch-web/tests/clipboard_copy_then.rs`, run by `run_real_keys.sh`).
 
 On native all of them are served by **one clipboard worker thread** owning the
 `arboard::Clipboard` (`crates/rinch-clipboard/src/native.rs`). That's what makes the
