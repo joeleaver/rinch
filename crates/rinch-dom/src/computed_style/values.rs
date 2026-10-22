@@ -387,7 +387,7 @@ impl DimensionValue {
     ///
     /// Either way the used size is derived — from the content or from the
     /// containing block — rather than read off the declaration, which is the
-    /// question the IFC wrap tolerance and the `<select>` intrinsic floor ask.
+    /// question the IFC wrap tolerance asks.
     /// It is **not** "lays out like `auto`": since #691 the keywords lay out as
     /// themselves on `width`/`height`/`flex-basis`.
     pub fn is_auto_or_keyword(&self) -> bool {

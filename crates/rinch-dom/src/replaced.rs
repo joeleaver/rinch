@@ -117,7 +117,9 @@ pub fn measures_aspect_ratio(node: &Node) -> bool {
 /// reaches its measure. Its Taffy `display` may still say `Flex`; Taffy runs
 /// the measure of any childless node whatever its display.
 pub fn ignores_inner_display(node: &Node) -> bool {
-    crate::form_control::is_value_control(node) || is_replaced_without_content(node)
+    crate::form_control::is_value_control(node)
+        || is_replaced_without_content(node)
+        || node.tag() == Some("select")
 }
 
 /// Whether a block container sizes `node` as a replaced element rather than

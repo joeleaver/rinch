@@ -2718,8 +2718,7 @@ impl RinchDocument {
             // A hollow control (#1159): its children are its value, which
             // `paint_input_value` draws; nothing lays them out as content.
             // A canvas, video or iframe renders none of its children (#1173).
-            if crate::form_control::is_value_control(&self.tree.nodes[root_id])
-                || crate::replaced::is_replaced_without_content(&self.tree.nodes[root_id])
+            if crate::replaced::ignores_inner_display(&self.tree.nodes[root_id])
             {
                 self.tree.nodes[root_id].text_layout = None;
                 continue;
@@ -4655,8 +4654,7 @@ impl RinchDocument {
             // element collapsed to 0x0 — and the hollow arm below gives it its
             // own measure context.
             let hollow_with_children = !own_children.is_empty()
-                && (crate::form_control::is_value_control(node)
-                    || crate::replaced::is_replaced_without_content(node));
+                && crate::replaced::ignores_inner_display(node);
             if (has_non_comment_inline || all_children_are_comments || hollow_with_children)
                 // A node whose own `display` isn't `none` can still sit under
                 // an ancestor that is: `display` does not inherit, so this
@@ -4844,8 +4842,7 @@ impl RinchDocument {
                 {
                     *ctx = NodeContext::Element;
                 }
-            } else if crate::form_control::is_value_control(&self.tree.nodes[root_id])
-                || crate::replaced::is_replaced_without_content(&self.tree.nodes[root_id])
+            } else if crate::replaced::ignores_inner_display(&self.tree.nodes[root_id])
             {
                 // A hollow control (#1159): its children are its value, not
                 // content, so it is measured exactly as a childless control is
