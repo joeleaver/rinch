@@ -332,7 +332,10 @@ const MAX_PATTERN_TILE_PX: f64 = 4.0 * 1024.0 * 1024.0;
 ///
 /// Bounded by [`TILE_CACHE_BUDGET`] bytes. A new tile that would pass it evicts
 /// the least recently used entries, but never one the frame being painted has
-/// used: if it still does not fit, it is drawn and not kept (#1156). The cache
+/// used: if it still does not fit, it is kept for the rest of the frame only,
+/// in `overflow` (cleared by the next `begin_frame`, bounded by the same
+/// budget), so every other box of the frame that paints it hits (#1156,
+/// review of #1758). The cache
 /// was cleared whole there, so a working set just over the budget rasterised
 /// every tile on every frame. Each painted frame ([`TileCache::begin_frame`],
 /// from `paint_document`) also forgets the tiles no frame has used for
@@ -342,6 +345,9 @@ const MAX_PATTERN_TILE_PX: f64 = 4.0 * 1024.0 * 1024.0;
 pub(crate) struct TileCache {
     entries: HashMap<(u64, u32, u32), TileEntry>,
     bytes: usize,
+    /// Tiles that did not fit, kept for the frame that drew them.
+    overflow: HashMap<(u64, u32, u32), Blob<u8>>,
+    overflow_bytes: usize,
     /// The painted-frame clock: moved by every `begin_frame`.
     frame: u64,
 }
@@ -370,6 +376,8 @@ impl TileCache {
     /// in the last [`TILE_CACHE_IDLE_FRAMES`] frames.
     pub(crate) fn begin_frame(&mut self) {
         self.frame += 1;
+        self.overflow.clear();
+        self.overflow_bytes = 0;
         let frame = self.frame;
         let mut freed = 0;
         self.entries.retain(|_, e| {
@@ -382,22 +390,23 @@ impl TileCache {
         self.bytes -= freed;
     }
 
-    /// The bytes of tile pixels held.
+    /// The bytes of tile pixels held, the frame's overflow included.
     pub(crate) fn bytes(&self) -> usize {
-        self.bytes
+        self.bytes + self.overflow_bytes
     }
 
     fn get(&mut self, key: &(u64, u32, u32)) -> Option<Blob<u8>> {
         let frame = self.frame;
-        self.entries.get_mut(key).map(|e| {
+        if let Some(e) = self.entries.get_mut(key) {
             e.last_used = frame;
-            e.pixels.clone()
-        })
+            return Some(e.pixels.clone());
+        }
+        self.overflow.get(key).cloned()
     }
 
     /// Keep `pixels` under `key` if it fits the budget once the least recently
-    /// used tiles not used this frame are evicted; otherwise keep nothing new
-    /// and evict nothing.
+    /// used tiles not used this frame are evicted; otherwise evict nothing and
+    /// keep it in the frame's overflow.
     fn insert(&mut self, key: (u64, u32, u32), pixels: Blob<u8>) {
         let n = pixels.len();
         if self.bytes + n > TILE_CACHE_BUDGET {
@@ -410,6 +419,17 @@ impl TileCache {
                 .collect();
             let reclaimable: usize = idle.iter().map(|e| e.2).sum();
             if self.bytes - reclaimable + n > TILE_CACHE_BUDGET {
+                // Bounded too: past the budget, the frame's earlier overflow
+                // tiles make room (n alone never passes it: a tile is at most
+                // `MAX_PATTERN_TILE_PX` * 4 bytes).
+                if self.overflow_bytes + n > TILE_CACHE_BUDGET {
+                    self.overflow.clear();
+                    self.overflow_bytes = 0;
+                }
+                self.overflow_bytes += n;
+                if let Some(old) = self.overflow.insert(key, pixels) {
+                    self.overflow_bytes -= old.len();
+                }
                 return;
             }
             idle.sort_unstable_by_key(|e| e.0);

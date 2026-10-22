@@ -4,10 +4,10 @@
 //! - #1156: the cache was cleared whole when an insert would pass its 32 MB
 //!   budget, so a working set just over the budget re-rasterised **every**
 //!   tile on every frame. It now evicts the least recently used entries, never
-//!   one the frame being painted has used, and declines to keep a tile that
-//!   would need one: a working set of three 11.6 MB tiles (34.7 MB) rasterises
-//!   three tiles on its first frame and one on each later frame (the two that
-//!   fit stay; the third is drawn uncached).
+//!   one the frame being painted has used, and keeps a tile that would need
+//!   one for the frame that drew it only: a working set of three 11.6 MB tiles
+//!   (34.7 MB) rasterises three tiles on its first frame and one on each later
+//!   frame (the two that fit stay; the third is rasterised once a frame).
 //! - #1157: the cache was a thread-local that lived as long as the thread. It
 //!   now belongs to the document (dropped with it) and forgets a tile no frame
 //!   has used for `TILE_CACHE_IDLE_FRAMES` painted frames.

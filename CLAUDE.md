@@ -4529,7 +4529,8 @@ that is not exact; a `scale()`d box rasterises bigger), cached **per document**
 image (gradient angle + resolved stops, or url + `DecodedImage::id()` — never a
 data pointer, which the allocator reuses) + raster size (`background_tile_rasters` / `background_tile_cache_hits`).
 The cache holds at most 32 MB: a tile that would pass it evicts the least recently
-used tiles, never one the frame being painted has used, and is otherwise drawn and not kept (#1156:
+used tiles, never one the frame being painted has used, and is otherwise kept for that frame only
+(a per-frame overflow map, also ≤ 32 MB, so the frame's other boxes hit it) (#1156:
 it was cleared whole, so a working set just over 32 MB rasterised every tile every
 frame), and each `paint_document` forgets the tiles no frame has used for
 `TILE_CACHE_IDLE_FRAMES` (60) painted frames (#1157: it was a thread-local never
