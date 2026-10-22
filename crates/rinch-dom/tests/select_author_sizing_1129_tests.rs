@@ -33,6 +33,7 @@
 //! | `display: grid; width: 50px` | — | 160 x 24 |
 //! | `display: flex; flex-direction: column` | — | 600 x 24 |
 //! | `display: grid` | — | 600 x 24 |
+//! | `display: inline-block` | `display: block; width: 50%` | 80 x 24, container 160 |
 //!
 //! Chrome computes a select's `overflow` as `clip`, not `hidden`: a `clip`
 //! box is no scroll container, so its automatic minimum size as a flex or
