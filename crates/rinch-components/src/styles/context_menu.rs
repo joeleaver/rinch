@@ -10,6 +10,17 @@ pub fn styles() -> String {
     display: contents;
 }
 
+/* #1761: the spacers placing the dropdown are physical, so a right-to-left
+   page must not mirror the row holding them; the dropdown's own content keeps
+   the page's direction. */
+.rinch-context-menu__line:dir(rtl) {
+    direction: ltr;
+}
+
+.rinch-context-menu__dropdown:dir(rtl) {
+    direction: rtl;
+}
+
 .rinch-context-menu__dropdown {
     min-width: 180px;
     padding: var(--rinch-spacing-xs, 4px) 0;

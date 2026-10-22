@@ -26,6 +26,8 @@ mod click_handling;
 #[cfg(test)]
 mod color_input_dismiss_465_tests;
 #[cfg(test)]
+mod context_menu_viewport_1761_tests;
+#[cfg(test)]
 mod review_1589_tests;
 #[cfg(test)]
 mod review_1601_tests;

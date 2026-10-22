@@ -1125,6 +1125,12 @@ Sub-components: **PopoverTarget** (no props), **PopoverDropdown** (no props).
 
 A right-click context menu. No props on the wrapper — state is managed internally.
 
+The dropdown opens at the pointer and is kept inside the viewport: if it would
+run past the bottom or right edge it is shifted back by the overflow, 4px from
+the edge, and a menu taller than the viewport scrolls. The placement is CSS (a
+viewport-sized flex frame with spacers around the dropdown), so it is the same
+on the desktop and in a browser and costs no extra layout.
+
 Sub-components: **ContextMenuTarget** (no props), **ContextMenuDropdown** (no props).
 
 Use `DropdownMenuItem` and `DropdownMenuDivider` as children of `ContextMenuDropdown`.
