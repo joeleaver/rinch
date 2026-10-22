@@ -24,16 +24,18 @@ pub type PlatformStore = crate::IdbStore;
 /// - **Native:** the directory `<data dir>/<app_id>/<store_name>`, where the
 ///   data directory is the user's (`$XDG_DATA_HOME` or `~/.local/share` on
 ///   Linux, `~/Library/Application Support` on macOS, `%APPDATA%` on Windows).
-///   [`StorageError::Unavailable`] where the platform names none. On Android
-///   open an [`FsStore`](crate::FsStore) under the app's files directory
-///   instead.
+///   [`StorageError::Unavailable`] where the platform names none, and always
+///   on Android, which has no user data directory an app can write: open an
+///   [`FsStore`](crate::FsStore) under the app's files directory there.
 /// - **Web:** the IndexedDB database `"<app_id>/<store_name>"` holding one
 ///   object store `store_name`. One database per store, so a second store of
 ///   the same app is a database of its own and is created like the first.
 ///
-/// Both names must be non-empty and contain no `/`, `\` or NUL, and neither may
-/// be `.` or `..` — checked the same way on both targets, so a name that works
-/// on one works on the other. Pick an `app_id` unique to the app (a reverse-DNS
+/// Both names must be usable directory names on every target, which means
+/// Windows' rule: non-empty, none of `/ \ : * ? " < > |` or a control
+/// character, not ending in `.` or a space, and not `.`, `..` or a device name
+/// (`CON`, `NUL`, `COM1`, … with any extension). Checked the same way on every
+/// target, so a name that works on one works on the others. Pick an `app_id` unique to the app (a reverse-DNS
 /// name is a good choice): it is shared with every other app of the user.
 ///
 /// ```ignore
@@ -47,7 +49,16 @@ pub async fn open_app_store(app_id: &str, store_name: &str) -> StorageResult<Pla
     validate_name("app_id", app_id)?;
     validate_name("store_name", store_name)?;
 
-    #[cfg(not(target_arch = "wasm32"))]
+    // `dirs` reads Android as Linux and answers a path the app cannot write.
+    #[cfg(target_os = "android")]
+    {
+        Err(StorageError::Unavailable(
+            "no user data directory on Android: open an FsStore under the app's files directory"
+                .to_string(),
+        ))
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
     {
         let data = dirs::data_dir().ok_or_else(|| {
             StorageError::Unavailable("the platform names no user data directory".to_string())
@@ -62,7 +73,7 @@ pub async fn open_app_store(app_id: &str, store_name: &str) -> StorageResult<Pla
 }
 
 /// Where a native app store lives under the data directory `data`.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 pub(crate) fn app_store_dir(
     data: &std::path::Path,
     app_id: &str,
@@ -71,11 +82,30 @@ pub(crate) fn app_store_dir(
     data.join(app_id).join(store_name)
 }
 
+/// The rule every target applies, so a name accepted on one is a usable
+/// directory name on all of them: the strictest of them, Windows', plus
+/// path separators and `.`/`..`.
 fn validate_name(what: &str, name: &str) -> StorageResult<()> {
-    let bad = name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', '\0']);
+    const WINDOWS_DEVICES: [&str; 22] = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    // A device name is reserved with any extension (`nul.txt`).
+    let stem = name.split('.').next().unwrap_or(name).trim_end();
+    let bad = name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.chars().any(|c| {
+            c.is_ascii_control()
+                || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+        })
+        || name.ends_with(['.', ' '])
+        || WINDOWS_DEVICES.iter().any(|d| d.eq_ignore_ascii_case(stem));
     if bad {
         return Err(StorageError::InvalidKey(format!(
-            "{what} {name:?} must be non-empty, not `.` or `..`, and contain no `/`, `\\` or NUL"
+            "{what} {name:?} must be non-empty, contain no `/ \\ : * ? \" < > |` or \
+             control character, not end in `.` or a space, and not be `.`, `..` or a \
+             Windows device name (CON, NUL, COM1, …)"
         )));
     }
     Ok(())
@@ -84,7 +114,6 @@ fn validate_name(what: &str, name: &str) -> StorageResult<()> {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-    use crate::Store;
 
     fn block_on<F: std::future::Future>(f: F) -> F::Output {
         // The native futures never pend: one poll finishes them.
@@ -152,8 +181,10 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "android"))]
     #[test]
     fn a_native_app_store_is_a_directory_per_app_and_store() {
+        use crate::Store;
         let tmp = tempfile::tempdir().unwrap();
         let a = crate::FsStore::open(app_store_dir(tmp.path(), "com.example.app", "one")).unwrap();
         let b = crate::FsStore::open(app_store_dir(tmp.path(), "com.example.app", "two")).unwrap();

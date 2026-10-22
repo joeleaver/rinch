@@ -832,7 +832,11 @@ would break CSS semantics and make desktop diverge from rinch-web.
   box, since `set_boxed_logger` needs `log`'s `std` feature. The web panic hook
   has no fixture: a wasm32 panic aborts, so a test cannot survive one.
 - **`rinch_storage::open_app_store`** (`crates/rinch-storage/src/app_store.rs`):
-  native `dirs::data_dir()/<app>/<store>`, web the IndexedDB database
+  native `dirs::data_dir()/<app>/<store>` (Android: always `Unavailable`,
+  since `dirs` reads it as Linux and answers a path the app cannot write;
+  names are checked against Windows' rule on every target, since `C:` joined
+  onto the data dir replaces it and `app:x` names an NTFS stream), web the
+  IndexedDB database
   `"<app>/<store>"`. One database per store because `IdbStore::open` creates
   its object store only in `onupgradeneeded`, which an existing database never
   fires: a second store name in one database is never created

@@ -1062,11 +1062,15 @@ store.put("current", b"hello").await?;
 Natively the store is the directory `<user data dir>/<app_id>/<store_name>`
 (`$XDG_DATA_HOME` or `~/.local/share` on Linux, `~/Library/Application Support`
 on macOS, `%APPDATA%` on Windows); where the platform names no data directory
-it answers `StorageError::Unavailable`. On Android, open an `FsStore` under the
-app's files directory instead: the user data directory is not the app's
-sandbox there. In the browser it is the IndexedDB database
-`"<app_id>/<store_name>"`, one per store. Both names must be non-empty, contain
-no `/`, `\` or NUL, and not be `.` or `..`. The native future never waits, so
+it answers `StorageError::Unavailable`, and on Android it always does (there is
+no user data directory an app can write): open an `FsStore` under the app's
+files directory there. In the browser it is the IndexedDB database
+`"<app_id>/<store_name>"`, one per store. Both names must be usable directory
+names everywhere, which is Windows' rule: non-empty, none of
+`/ \ : * ? " < > |` or a control character, not ending in `.` or a space, and
+not `.`, `..` or a device name (`CON`, `NUL`, `COM1`, … with any extension) —
+checked on every target, so a name that works on one works on all.
+The native future never waits, so
 any executor (or a one-poll `block_on`) runs it.
 
 ## Logging
@@ -1105,7 +1109,7 @@ rinch = { version = "0.1", features = ["file-dialogs", "clipboard", "system-tray
 | File Dialogs | ✓ | ✓ | ✓ | SAF (`rinch_android::file_picker`) | – |
 | Message Dialogs | ✓ | ✓ | ✓ | – | `alert` / `confirm` |
 | Timers, polled signals, `init_logging` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `open_app_store` | ✓ | ✓ | ✓ | use `FsStore` (see [Storage](#storage)) | IndexedDB |
+| `open_app_store` | ✓ | ✓ | ✓ | `Unavailable`: use `FsStore` (see [Storage](#storage)) | IndexedDB |
 | Clipboard (Text) | ✓ | ✓ | ✓ | ✓ | see [Web](#web-reaching-content-copied-outside-the-app) |
 | Clipboard (Image) | ✓ | ✓ | ✓* | – | – |
 | Text-selection toolbar | DOM menu | DOM menu | DOM menu | native (`ActionMode`) | browser |
