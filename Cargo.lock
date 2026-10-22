@@ -5221,6 +5221,7 @@ dependencies = [
 name = "rinch-storage"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "js-sys",
  "tempfile",
  "thiserror 1.0.69",
