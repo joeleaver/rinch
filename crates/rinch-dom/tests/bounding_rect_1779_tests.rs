@@ -272,9 +272,6 @@ fn an_inline_span_in_a_scrolled_block_moves_with_the_scroll() {
 /// the first fragment's left nor the last one's right.
 #[test]
 fn a_span_wrapped_from_mid_line_answers_the_union_not_its_ends() {
-    let r = inline_rect(
-        "width: 120px",
-        r#"aaaa <span id="s">bbbbbb cc</span> ff"#,
-    );
+    let r = inline_rect("width: 120px", r#"aaaa <span id="s">bbbbbb cc</span> ff"#);
     assert_close(r, (111.0, 57.0, 99.21875, 40.0));
 }
