@@ -9,22 +9,107 @@
 //! interceptor-then-fallback chain.
 
 use super::*;
+#[cfg(any(feature = "desktop", feature = "embed", test))]
+use rinch_core::ElementBounds;
 
-/// The IME state the focus arbiter wants the window to be in. The runtime
-/// ([`crate::shell`]) diffs this against the window's current IME state each tick
-/// and issues a winit `request_ime_update` only on change — so enable/disable and
+/// The IME state the focus arbiter wants the platform input method to be in.
+///
+/// The desktop shell diffs it against the window's current IME state each tick
+/// and issues a winit `request_ime_update` only on change, so enable/disable and
 /// candidate-box placement follow focus and the caret uniformly across targets.
-// Read only by the desktop shell (`shell::rinch_runtime`, which applies it to the
-// winit window) and by tests: the Android shell and embed drive no platform IME
-// from the arbiter yet (#372).
-#[cfg(any(feature = "desktop", test))]
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct ImeState {
-    /// Whether a text target is focused and wants IME composition.
+/// An embedded host reads the same answer through
+/// [`RinchContext::ime_state`](crate::embed::RinchContext::ime_state) and drives
+/// its own input method from it (#1147).
+// The Android shell drives no platform IME from the arbiter yet (#372).
+#[cfg(any(feature = "desktop", feature = "embed", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
+pub struct ImeState {
+    /// Whether a text target is focused, the window has focus, and the target
+    /// takes composition: an `<input>`/`<textarea>`, an editor that is not
+    /// read-only, or a node registered with `FocusEntry::on_ime`.
     pub enabled: bool,
-    /// The caret's logical window-space rect `(x, y, w, h)` for candidate-box
-    /// placement, when known.
-    pub cursor_area: Option<(f32, f32, f32, f32)>,
+    /// The caret's rect for candidate-box placement, in **logical** (CSS)
+    /// pixels from the document's top-left, where the caret is painted
+    /// (transforms and a field's horizontal scroll included), when known.
+    pub cursor_area: Option<ElementBounds>,
+}
+
+/// One request that moves a platform input method from the state last applied
+/// to the state wanted now. The desktop shell turns it into a winit
+/// `ImeRequest`; an embedded host gets it from
+/// [`RinchContext::take_ime_change`](crate::embed::RinchContext::take_ime_change)
+/// and makes its own platform's call.
+#[cfg(any(feature = "desktop", feature = "embed", test))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub enum ImeChange {
+    /// Switch the input method on. `cursor_area` is where the candidate box
+    /// goes, or `None` when the target has no caret rect yet (the desktop shell
+    /// then uses a 1x16 box at the origin).
+    #[non_exhaustive]
+    Enable {
+        /// The candidate box, logical px.
+        cursor_area: Option<ElementBounds>,
+    },
+    /// The input method stays on; the candidate box moves.
+    #[non_exhaustive]
+    Update {
+        /// The candidate box, logical px.
+        cursor_area: ElementBounds,
+    },
+    /// Switch the input method off.
+    Disable,
+}
+
+#[cfg(any(feature = "desktop", feature = "embed", test))]
+impl ImeState {
+    /// Advance `self`, the state last applied to the platform, to `desired`,
+    /// and answer the request that does it, or `None` when nothing needs
+    /// saying. The one decision the desktop shell's `sync_ime` and
+    /// `RinchContext::take_ime_change` both make: an enable/disable flip is one `Enable`/`Disable`; while on, a
+    /// moved caret is an `Update` (a caret that goes away asks for nothing and
+    /// is forgotten, so its return is an `Update`); while off, nothing.
+    pub(crate) fn change_to(&mut self, desired: ImeState) -> Option<ImeChange> {
+        if desired.enabled != self.enabled {
+            *self = if desired.enabled {
+                desired
+            } else {
+                ImeState::default()
+            };
+            return Some(if desired.enabled {
+                ImeChange::Enable {
+                    cursor_area: desired.cursor_area,
+                }
+            } else {
+                ImeChange::Disable
+            });
+        }
+        if desired.enabled && desired.cursor_area != self.cursor_area {
+            self.cursor_area = desired.cursor_area;
+            return desired
+                .cursor_area
+                .map(|cursor_area| ImeChange::Update { cursor_area });
+        }
+        None
+    }
+
+    /// `cursor_area` as `(x, y, w, h)`, for the crate's own tests.
+    #[cfg(test)]
+    pub(crate) fn cursor_tuple(&self) -> Option<(f32, f32, f32, f32)> {
+        self.cursor_area.map(|b| (b.x, b.y, b.width, b.height))
+    }
+}
+
+/// `(x, y, w, h)` in logical px as the public rect.
+#[cfg(any(feature = "desktop", feature = "embed", test))]
+fn bounds(area: (f32, f32, f32, f32)) -> ElementBounds {
+    ElementBounds {
+        x: area.0,
+        y: area.1,
+        width: area.2,
+        height: area.3,
+    }
 }
 
 /// User code owed to the widget that just lost focus, collected during teardown
@@ -371,7 +456,7 @@ impl RinchApp {
     /// target, disabled otherwise. The runtime applies it via the window. This is
     /// the single bridge from focus → the platform IME surface (see
     /// [`ImeState`]).
-    #[cfg(any(feature = "desktop", test))]
+    #[cfg(any(feature = "desktop", feature = "embed", test))]
     pub(crate) fn ime_state(&self) -> ImeState {
         // A blurred window drives no IME, whatever holds the in-document claim
         // (issue #147): the claim is deliberately *kept* across a window blur,
@@ -395,7 +480,7 @@ impl RinchApp {
                 let cursor_area = handle.and_then(|handle| {
                     let head = handle.selection().head();
                     self.editor_caret_point(&handle, head)
-                        .map(|(x, y, h)| (x, y, 1.0, h))
+                        .map(|(x, y, h)| bounds((x, y, 1.0, h)))
                 });
                 ImeState {
                     enabled,
@@ -404,7 +489,7 @@ impl RinchApp {
             }
             FocusTarget::Input(node_id) => ImeState {
                 enabled: true,
-                cursor_area: self.input_caret_area(node_id),
+                cursor_area: self.input_caret_area(node_id).map(bounds),
             },
             // A registered target that consumes composition (`FocusEntry::on_ime`)
             // is a text target and drives IME exactly like the two built-in
@@ -423,7 +508,8 @@ impl RinchApp {
             {
                 ImeState {
                     enabled: true,
-                    cursor_area: crate::focus_registry::caret_rect_of(self.doc_key(), node_id),
+                    cursor_area: crate::focus_registry::caret_rect_of(self.doc_key(), node_id)
+                        .map(bounds),
                 }
             }
             // A generic focusable node is not a text target — explicit rather
@@ -684,5 +770,69 @@ impl RinchApp {
             key_without_modifiers,
             self.text_target_holds_keyboard(),
         )
+    }
+}
+
+/// `ImeState::change_to`, the decision the desktop shell and an embed host
+/// share (#1147).
+#[cfg(test)]
+mod ime_change_tests {
+    use super::{ElementBounds, ImeChange, ImeState};
+
+    const A: ElementBounds = ElementBounds {
+        x: 12.0,
+        y: 30.0,
+        width: 1.0,
+        height: 18.0,
+    };
+    const B: ElementBounds = ElementBounds {
+        x: 47.0,
+        y: 30.0,
+        width: 1.0,
+        height: 18.0,
+    };
+
+    fn on(area: Option<ElementBounds>) -> ImeState {
+        ImeState {
+            enabled: true,
+            cursor_area: area,
+        }
+    }
+
+    #[test]
+    fn each_request_is_made_once_and_only_on_a_change() {
+        let mut applied = ImeState::default();
+        assert_eq!(applied.change_to(ImeState::default()), None);
+        assert_eq!(
+            applied.change_to(on(Some(A))),
+            Some(ImeChange::Enable {
+                cursor_area: Some(A)
+            })
+        );
+        assert_eq!(applied.change_to(on(Some(A))), None);
+        assert_eq!(
+            applied.change_to(on(Some(B))),
+            Some(ImeChange::Update { cursor_area: B })
+        );
+        // An Update is made once: the moved caret is now the applied one.
+        assert_eq!(applied.change_to(on(Some(B))), None);
+        // A caret that goes away asks for nothing, and its return moves the box.
+        assert_eq!(applied.change_to(on(None)), None);
+        assert_eq!(
+            applied.change_to(on(Some(B))),
+            Some(ImeChange::Update { cursor_area: B })
+        );
+        // Off: the area it reports does not matter, and nothing is asked twice.
+        let off = ImeState {
+            enabled: false,
+            cursor_area: Some(A),
+        };
+        assert_eq!(applied.change_to(off), Some(ImeChange::Disable));
+        assert_eq!(applied.change_to(off), None);
+        // Back on with no caret yet: an Enable without an area.
+        assert_eq!(
+            applied.change_to(on(None)),
+            Some(ImeChange::Enable { cursor_area: None })
+        );
     }
 }

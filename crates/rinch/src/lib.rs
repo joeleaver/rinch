@@ -253,7 +253,8 @@ pub mod prelude {
     // Embed API for game engine integration
     #[cfg(any(feature = "gpu", feature = "embed"))]
     pub use crate::embed::{
-        GameViewport, LayoutRect, RinchContext, RinchContextConfig, RinchOverlayRenderer,
+        GameViewport, ImeChange, ImeState, LayoutRect, RinchContext, RinchContextConfig,
+        RinchOverlayRenderer,
     };
 
     // Focus lifecycle for custom keyboard-owning components (issue #147): a

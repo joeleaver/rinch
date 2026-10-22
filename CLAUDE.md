@@ -5744,7 +5744,21 @@ desktop's paint does — physical layout size, render callbacks, frames painted
 inline — and skips the pass (a document walk) while the thread has no inline
 surface registered, so an unchanged `scene()` stays a cache hit. The compositor path
 (named `data-viewport` surfaces, video, a `GpuTextureRegistrar` texture) is the
-host's to composite, and IME state is not surfaced to the host at all (#1147).
+host's to composite.
+
+**The host drives its own input method** (#1147): `RinchContext::ime_state()`
+is the focus arbiter's `ImeState { enabled, cursor_area }` — on for a focused
+`<input>`/`<textarea>`, a non-read-only editor or an `on_ime` target, off
+otherwise and after a host-fed `WindowFocus(false)`; the area is the painted
+caret as an `ElementBounds` in the context's **logical** px — and
+`take_ime_change()` answers the `ImeChange::{Enable, Update, Disable}` that
+takes the host from what it last reported to that state, through the
+crate-private `ImeState::change_to`, the decision the desktop shell's
+`sync_ime` applies to winit. `ImeState`, `ImeChange` and its two struct
+variants are `#[non_exhaustive]` (a purpose hint or surrounding text can be
+added later). Composition comes back in through
+`update` as `PlatformEvent::Ime`. A `wants_keyboard()` node that takes no text
+wants no IME. Pins: `rinch/tests/embed_ime_state_1147.rs`.
 
 **`wants_mouse`/`wants_keyboard` decide HUD input routing, and `wants_keyboard`
 does not mean "any node is focused"** (#548). A `<button>`/`<a href>` is

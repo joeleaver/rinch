@@ -26,6 +26,14 @@
 //!   [`GameViewport`] hole. Query the viewport rect with
 //!   [`RinchContext::viewport_rect`] and render the game into that region.
 //!
+//! # Input methods (IME)
+//!
+//! The host owns the window, so it owns the platform input method. After each
+//! [`update`](RinchContext::update), [`RinchContext::take_ime_change`] says
+//! whether to switch it on (a text field, an editor or an `on_ime` target took
+//! focus), move its candidate box (the caret moved), or switch it off; feed
+//! the composition back in as `PlatformEvent::Ime` events on the next update.
+//!
 //! # Example
 //!
 //! ```ignore
@@ -63,6 +71,9 @@ use rinch_platform::{AppAction, PlatformEvent};
 
 use crate::app::RinchApp;
 use crate::app::hit_testing::hit_test;
+pub use crate::app::{ImeChange, ImeState};
+/// The rect type of [`ImeState::cursor_area`].
+pub use rinch_core::ElementBounds;
 
 // ── LayoutRect ───────────────────────────────────────────────────────────────
 
@@ -117,6 +128,9 @@ pub struct RinchContext {
     /// When the focused editor's caret next toggles, as of the last
     /// [`update`](RinchContext::update) — see [`RinchContext::next_wake`].
     next_wake: Option<rinch_platform::Instant>,
+    /// The IME state [`take_ime_change`](RinchContext::take_ime_change) last
+    /// reported, which its next answer is the change from.
+    ime_reported: ImeState,
     /// The `RenderSurface` ids in this context's document, as of the last
     /// [`scene`](RinchContext::scene): what its surface pass drives, and what
     /// `update` / `needs_update` ask about a new frame for.
@@ -229,6 +243,7 @@ impl RinchContext {
             scale_factor,
             dirty,
             next_wake: None,
+            ime_reported: ImeState::default(),
             surface_ids: Vec::new(),
             surface_passes: 0,
             _signal_change_sub: signal_change_sub,
@@ -601,6 +616,37 @@ impl RinchContext {
         self.app.has_focused_input()
             || self.app.has_focused_contenteditable()
             || self.app.has_focused_key_consumer()
+    }
+
+    /// The IME state the focused target wants: whether the host's platform
+    /// input method should be on, and where its candidate box goes, in
+    /// **logical** pixels of this context (multiply by the scale factor for
+    /// physical). The same answer the desktop shell applies to its window
+    /// after every event-loop turn: on for a focused `<input>`/`<textarea>`,
+    /// an editor that is not read-only, or a node registered with
+    /// [`FocusEntry::on_ime`](crate::focus_registry::FocusEntry::on_ime); off
+    /// for anything else and while the host reported the window blurred
+    /// (`PlatformEvent::WindowFocus(false)`). The caret area is where the caret
+    /// is painted, a field's horizontal scroll and transforms included.
+    ///
+    /// This is a different question from [`wants_keyboard`](Self::wants_keyboard):
+    /// a node that reads keys but takes no text wants the keyboard and no IME.
+    pub fn ime_state(&self) -> ImeState {
+        self.app.ime_state()
+    }
+
+    /// The request that brings the host's input method from what this method
+    /// last reported to [`ime_state`](Self::ime_state), or `None` when nothing
+    /// changed. Call it after each [`update`](Self::update) and apply the
+    /// answer: [`ImeChange::Enable`] / [`ImeChange::Disable`] switch the
+    /// platform input method on or off, [`ImeChange::Update`] moves its
+    /// candidate box. It is the decision the desktop shell makes for its
+    /// window, so a host that applies every answer tracks the IME as a desktop window
+    /// does. Composition comes back in through [`update`](Self::update) as
+    /// `PlatformEvent::Ime` events, which go to the focused target.
+    pub fn take_ime_change(&mut self) -> Option<ImeChange> {
+        let desired = self.app.ime_state();
+        self.ime_reported.change_to(desired)
     }
 
     /// Register font data for text rendering **after** the initial mount.
