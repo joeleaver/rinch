@@ -908,37 +908,28 @@ impl RinchApp {
 
                 let tag = node.tag();
                 if matches!(tag, Some("input" | "textarea")) {
-                    let value = rinch_dom::form_control::control_value(&d.tree.nodes, node_id)
-                        .map(|v| v.into_owned())
-                        .unwrap_or_default();
-                    if value.is_empty() {
-                        let padding_left = node.computed_style.padding_left.to_px() as f64;
-                        let padding_top = node.computed_style.padding_top.to_px() as f64;
-                        let (cx, cy) = fwd(padding_left, padding_top);
-                        return DebugResult::Json {
-                            data: json!({ "x": cx, "y": cy }),
-                        };
-                    }
-
-                    let computed_style = node.computed_style.clone();
-                    let input_width = node.layout.width;
+                    // Where paint draws the caret: the text column, a
+                    // single-line field's horizontal scroll (#1721), the
+                    // vertical centring and the placeholder rule, from the
+                    // builder `NodeHandle::caret_rect` asks
+                    // (`painted_caret_rect`, #1678; Refs #1136).
                     drop(d);
-
-                    let layout = computed_style.build_parley_layout(
-                        &value,
-                        1.0,
-                        &mut self.hit_test_font_cx,
-                        &mut self.paint_layout_cx,
-                        Some(input_width),
-                    );
-
-                    let (x, y) = caret_position_for_offset_layout(&layout, byte_offset);
-                    let padding_left = computed_style.padding_left.to_px() as f64;
-                    let padding_top = computed_style.padding_top.to_px() as f64;
-
-                    let (cx, cy) = fwd(padding_left + x as f64, padding_top + y as f64);
-                    return DebugResult::Json {
-                        data: json!({ "x": cx, "y": cy }),
+                    let mut dm = doc.borrow_mut();
+                    let dm = &mut *dm;
+                    return match rinch_dom::form_control::painted_caret_rect(
+                        &dm.tree,
+                        &mut dm.font_cx,
+                        &mut dm.layout_cx,
+                        node_id,
+                        byte_offset,
+                        rinch_core::dom::CaretAffinity::Downstream,
+                    ) {
+                        Some((cx, cy, _)) => DebugResult::Json {
+                            data: json!({ "x": cx as f64, "y": cy as f64 }),
+                        },
+                        None => DebugResult::Error {
+                            message: "Node has no caret".into(),
+                        },
                     };
                 }
 
@@ -1003,41 +994,44 @@ impl RinchApp {
                         };
                     }
 
-                    let computed_style = node.computed_style.clone();
-                    let input_width = node.layout.width;
-                    drop(d);
-
-                    let layout = computed_style.build_parley_layout(
-                        &value,
-                        1.0,
+                    // The layout the field is painted and hit-tested with:
+                    // its text column, a single-line field's horizontal scroll
+                    // and centring (#1721), bullets for a password field.
+                    let Some(it) = Self::input_text_layout(
+                        &d.tree,
                         &mut self.hit_test_font_cx,
-                        &mut self.paint_layout_cx,
-                        Some(input_width),
-                    );
-
-                    match glyph_bounds_for_offset_layout(&layout, byte_offset) {
+                        &mut self.hit_test_layout_cx,
+                        node_id,
+                    ) else {
+                        return DebugResult::Error {
+                            message: "No text content".into(),
+                        };
+                    };
+                    let display_offset = if it.is_password {
+                        let clamped = byte_offset.min(it.value.len());
+                        it.value[..clamped].chars().count() * "\u{2022}".len()
+                    } else {
+                        byte_offset
+                    };
+                    return match glyph_bounds_for_offset_layout(&it.layout, display_offset) {
                         Some(bounds) => {
-                            let padding_left = computed_style.padding_left.to_px() as f64;
-                            let padding_top = computed_style.padding_top.to_px() as f64;
                             let (gx, gy) = fwd(
-                                padding_left + bounds.x as f64,
-                                padding_top + bounds.y as f64,
+                                (it.padding_left - it.scroll_x + bounds.x) as f64,
+                                (it.padding_top + it.vertical_offset + bounds.y) as f64,
                             );
-                            return DebugResult::Json {
+                            DebugResult::Json {
                                 data: json!({
                                     "x": gx,
                                     "y": gy,
                                     "width": bounds.width,
                                     "height": bounds.height,
                                 }),
-                            };
+                            }
                         }
-                        None => {
-                            return DebugResult::Error {
-                                message: "Byte offset out of bounds".into(),
-                            };
-                        }
-                    }
+                        None => DebugResult::Error {
+                            message: "Byte offset out of bounds".into(),
+                        },
+                    };
                 }
 
                 if let Some(ref inline_layout) = node.text_layout {

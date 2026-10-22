@@ -175,6 +175,12 @@ define_counters! {
     /// weight, style, letter-spacing or word-spacing changes; a restyle that
     /// moves none of them shapes none.
     ShapeFormControlLabel = "shape_form_control_label",
+    /// Parley layouts built to scroll a focused single-line `<input>`
+    /// (#1721): its displayed text, unwrapped, to find the caret's x and the
+    /// line's width. One per change of that text, its caret or its font; paint,
+    /// the IME poll, a click and the caret rect at an unchanged state reuse it
+    /// (`form_control::displayed_line_metrics`).
+    ShapeInputScroll = "shape_input_scroll",
     /// IFC measures served from `ifc_measure_cache` without shaping.
     IfcMeasureCacheHits = "ifc_measure_cache_hits",
     /// Per-root invalidations of the IFC measure cache by a restyle or a

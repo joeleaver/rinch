@@ -989,6 +989,230 @@ pub fn byte_of_utf16(text: &str, units: usize) -> usize {
     text.len()
 }
 
+/// The width of the caret paint draws in a text control, in logical px.
+pub const CARET_WIDTH: f32 = 1.5;
+
+/// Whether `node` lays its text out as **one unwrapped line** scrolled
+/// horizontally to keep the caret in view (#1721): every `<input>`, as in
+/// Chrome 155. A `<textarea>` wraps at its content box instead.
+pub fn is_single_line(node: &Node) -> bool {
+    node.tag() == Some("input")
+}
+
+/// A text control's text column, `(left, width)` in logical px from its
+/// border-box left edge: where its text starts and how wide the run it shows
+/// is. A single-line `<input>` uses its content box (border and padding on
+/// each side, #1721); a `<textarea>` keeps the column it always had, its left
+/// padding in from the border box on both sides.
+pub fn text_column(node: &Node) -> (f32, f32) {
+    let style = &node.computed_style;
+    let padding_left = style.padding_left.to_px();
+    if is_single_line(node) {
+        let left = style.border_left_width.to_px() + padding_left;
+        let right = style.border_right_width.to_px() + style.padding_right.to_px();
+        (left, (node.layout.width - left - right).max(0.0))
+    } else {
+        (padding_left, node.layout.width - padding_left * 2.0)
+    }
+}
+
+/// The width a control's text is broken at: none for a single-line `<input>`
+/// (one line, scrolled), its column for a `<textarea>`. `scale` is the
+/// layout's device scale.
+pub fn wrap_width(node: &Node, scale: f32) -> Option<f32> {
+    (!is_single_line(node)).then(|| text_column(node).1 * scale)
+}
+
+/// The text a control paints and the byte its caret stands at in it: the
+/// value with an IME composition spliced in at the caret, password bullets,
+/// or the placeholder (`None` for the caret: a placeholder never scrolls).
+/// Paint's own rule ([`crate::paint`]'s `paint_input_value`), for
+/// [`input_scroll_x`].
+fn displayed_text(node: &Node, value: &str) -> (String, Option<usize>) {
+    let attr = |k: &str| node.attributes.get(k).map(String::as_str);
+    let focused = attr("data-focused") == Some("true");
+    let is_password = attr("type") == Some("password");
+    let mut cursor = attr("data-cursor-pos")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0)
+        .min(value.len());
+    while !value.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    let preedit = attr("data-preedit").unwrap_or("");
+    if focused && !preedit.is_empty() && !is_password {
+        let text = format!("{}{}{}", &value[..cursor], preedit, &value[cursor..]);
+        return (text, Some(cursor + preedit.len()));
+    }
+    if value.is_empty() {
+        return (String::new(), None);
+    }
+    if is_password {
+        const BULLET: &str = "\u{2022}";
+        let caret = value[..cursor].chars().count() * BULLET.len();
+        return (BULLET.repeat(value.chars().count()), Some(caret));
+    }
+    (value.to_string(), Some(cursor))
+}
+
+/// A single-line field's displayed line, `(caret x, full width, height)` in
+/// logical px: `text` shaped at scale 1 in the field's font, unwrapped, and the
+/// downstream caret at byte `caret` in it. Kept on the node
+/// ([`Node::input_line_metrics`]) under a hash of everything it is shaped
+/// from — the text, the caret, the font generation, family, size and weight —
+/// so the calls a frame or an event-loop pass makes at an unchanged state
+/// (paint, the IME poll, a click, the caret rect) shape nothing; each shape is
+/// counted as [`Counter::ShapeInputScroll`](crate::perf::Counter::ShapeInputScroll).
+fn displayed_line_metrics(
+    node: &Node,
+    text: &str,
+    caret: usize,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+    tree: &NodeTree,
+) -> (f32, f32, f32) {
+    use std::hash::{Hash, Hasher};
+    let style = &node.computed_style;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    tree.font_generation.hash(&mut h);
+    text.hash(&mut h);
+    caret.hash(&mut h);
+    style.font_family.hash(&mut h);
+    style.font_size.to_bits().hash(&mut h);
+    style.font_weight.to_bits().hash(&mut h);
+    let key = h.finish();
+    if let Some((k, m)) = node.input_line_metrics.get()
+        && k == key
+    {
+        return m;
+    }
+    tree.perf.bump(crate::perf::Counter::ShapeInputScroll);
+    let family = crate::fonts::parley_text_family(font_cx, &style.font_family, text);
+    let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
+    builder.push_default(parley::style::StyleProperty::FontSize(style.font_size));
+    family.push_to(&mut builder);
+    if (style.font_weight - 400.0).abs() > 1.0 {
+        builder.push_default(parley::style::StyleProperty::FontWeight(
+            parley::style::FontWeight::new(style.font_weight),
+        ));
+    }
+    let mut layout = builder.build(text);
+    layout.break_all_lines(None);
+    let caret_x = crate::text_query::caret_position_for_offset_layout_with_affinity(
+        &layout,
+        caret.min(text.len()),
+        rinch_core::dom::CaretAffinity::Downstream,
+    )
+    .0;
+    let m = (caret_x, layout.full_width(), layout.height());
+    node.input_line_metrics.set(Some((key, m)));
+    m
+}
+
+/// Where a focused single-line `<input>`'s caret is painted, `(x, y, height)`
+/// in logical window px — the caret of the **displayed** text, so during an IME
+/// composition the end of the composition (paint's caret), through the field's
+/// horizontal scroll (#1721). The IME candidate box's anchor: it reads the
+/// cached line ([`displayed_line_metrics`]) and shapes nothing at an unchanged
+/// state, so the per-pass IME poll costs no shaping. `None` for anything but
+/// a focused `<input>`.
+pub fn input_displayed_caret_rect(
+    tree: &NodeTree,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+    node_id: usize,
+) -> Option<(f32, f32, f32)> {
+    let node = tree.get(node_id)?;
+    if !is_single_line(node)
+        || node.attributes.get("data-focused").map(String::as_str) != Some("true")
+    {
+        return None;
+    }
+    let scroll = input_scroll_x(tree, font_cx, layout_cx, node_id);
+    let value = control_value(&tree.nodes, node_id).unwrap_or_default();
+    let (text, caret) = displayed_text(node, &value);
+    let caret_h = node.computed_style.font_size * 1.2;
+    let (caret_x, line_h) = match caret {
+        Some(caret) => {
+            let (x, _, height) =
+                displayed_line_metrics(node, &text, caret, font_cx, layout_cx, tree);
+            (x, height)
+        }
+        // An empty field: the caret at the column's start, centred.
+        None => (0.0, caret_h),
+    };
+    let (column_left, _) = text_column(node);
+    let bx = (column_left - scroll + caret_x) as f64;
+    let by = ((node.layout.height - line_h) / 2.0) as f64;
+    let (ax, ay) = crate::paint::point_from_painted_box(tree, node_id, 1.0, bx, by);
+    let (_, ay2) =
+        crate::paint::point_from_painted_box(tree, node_id, 1.0, bx, by + caret_h as f64);
+    Some((ax as f32, ay as f32, (ay2 - ay).abs() as f32))
+}
+
+/// How far a single-line `<input>`'s text is scrolled left, in logical px
+/// (#1721): 0 for a `<textarea>`, an unfocused field (Chrome 155 scrolls a
+/// field back to its start on blur) or one showing its placeholder.
+///
+/// A focused field keeps its scroll in [`Node::input_scroll_x`] and moves it by
+/// the least that shows its caret — an arrow, Home/End, typing or a press past
+/// an edge — or, the first time after focus, centres a caret that is out of
+/// view; then clamps it to the text's width plus the caret's. Chrome 155,
+/// measured: a 120px field scrolls 0 → 6 → 15 as ArrowRight crosses its right
+/// edge, by one character's advance a step, and focus restores a caret 192px
+/// in at a scroll of 133.
+///
+/// Every consumer of the field's text geometry asks this — paint (text,
+/// selection, caret, IME underline), the press → offset map, the caret rect,
+/// the IME cursor area — so they agree on one offset; each call is idempotent
+/// once the caret is in view. It shapes the displayed text at scale 1, with
+/// the font properties paint uses, only for a focused field, and only when
+/// that text or caret changed ([`displayed_line_metrics`]).
+pub fn input_scroll_x(
+    tree: &NodeTree,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+    node_id: usize,
+) -> f32 {
+    let Some(node) = tree.get(node_id) else {
+        return 0.0;
+    };
+    if !is_single_line(node) {
+        return 0.0;
+    }
+    if node.attributes.get("data-focused").map(String::as_str) != Some("true") {
+        node.input_scroll_x.set(f32::NAN);
+        return 0.0;
+    }
+    let value = control_value(&tree.nodes, node_id).unwrap_or_default();
+    let (text, caret) = displayed_text(node, &value);
+    let Some(caret) = caret else {
+        node.input_scroll_x.set(0.0);
+        return 0.0;
+    };
+    let (caret_x, full_width, _) =
+        displayed_line_metrics(node, &text, caret, font_cx, layout_cx, tree);
+    let (_, visible) = text_column(node);
+    let stored = node.input_scroll_x.get();
+    let fresh = stored.is_nan();
+    let mut scroll = if fresh { 0.0 } else { stored };
+    let out_left = caret_x < scroll;
+    let out_right = caret_x + CARET_WIDTH > scroll + visible;
+    if out_left || out_right {
+        scroll = if fresh {
+            caret_x + CARET_WIDTH / 2.0 - visible / 2.0
+        } else if out_left {
+            caret_x
+        } else {
+            caret_x + CARET_WIDTH - visible
+        };
+    }
+    let max = (full_width + CARET_WIDTH - visible).max(0.0);
+    let scroll = scroll.clamp(0.0, max);
+    node.input_scroll_x.set(scroll);
+    scroll
+}
+
 /// Where a caret at byte `offset` of a text control's value is **painted**,
 /// `(x, y, height)` in logical window px (issue #1678).
 ///
@@ -1035,11 +1259,12 @@ pub fn painted_caret_rect(
         (value, offset)
     };
 
+    let scroll = input_scroll_x(tree, font_cx, layout_cx, node_id);
     let style = &node.computed_style;
     let font_size = style.font_size;
-    let padding_left = style.padding_left.to_px();
+    let (column_left, _) = text_column(node);
     let padding_top = style.padding_top.to_px();
-    let (w, h) = (node.layout.width, node.layout.height);
+    let h = node.layout.height;
     let family = crate::fonts::parley_text_family(font_cx, &style.font_family, text);
     let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
     builder.push_default(parley::style::StyleProperty::FontSize(font_size));
@@ -1050,7 +1275,7 @@ pub fn painted_caret_rect(
         ));
     }
     let mut layout = builder.build(text);
-    layout.break_all_lines(Some(w - padding_left * 2.0));
+    layout.break_all_lines(wrap_width(node, 1.0));
     let text_y = if node.tag() == Some("textarea") {
         padding_top
     } else {
@@ -1061,7 +1286,7 @@ pub fn painted_caret_rect(
     } else {
         crate::text_query::caret_position_for_offset_layout_with_affinity(&layout, offset, affinity)
     };
-    let bx = (padding_left + cx) as f64;
+    let bx = (column_left - scroll + cx) as f64;
     let by = (text_y + cy) as f64;
     let caret_h = font_size as f64 * 1.2;
     let (ax, ay) = crate::paint::point_from_painted_box(tree, node_id, 1.0, bx, by);

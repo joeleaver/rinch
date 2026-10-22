@@ -824,6 +824,10 @@ impl std::fmt::Debug for InlineLayout {
     }
 }
 
+/// A single-line `<input>`'s displayed line: `(caret x, full width, height)`
+/// in logical px (#1721).
+pub(crate) type InputLineMetrics = (f32, f32, f32);
+
 /// A node in the DOM tree.
 pub struct Node {
     /// This node's ID (its slab key).
@@ -895,6 +899,14 @@ pub struct Node {
     /// browser's flag, and only a form reset clears that — which desktop does
     /// not model — so nothing clears this either.
     pub value_dirty: bool,
+    /// A single-line `<input>`'s horizontal scroll, in logical px: how far its
+    /// one unwrapped line of text is moved left so the caret stays in view
+    /// (#1721). `NaN` until the field is focused (and again after it loses
+    /// focus), which [`crate::form_control::input_scroll_x`] reads as "start
+    /// from 0 and centre the caret if it is out of view", Chrome 155's focus
+    /// reveal. Read and written only through that function, which every
+    /// consumer of the field's text geometry asks.
+    pub input_scroll_x: Cell<f32>,
     /// Dirty flags for incremental updates.
     pub dirty: DirtyFlags,
     /// Scroll offset (x, y), on the device pixel grid once
@@ -1344,6 +1356,10 @@ pub struct Node {
     /// shaped under (#1195, review of #1302) — so a restyle that moves
     /// neither shapes nothing. `None` until the control is first sized.
     pub(crate) form_label_width: Cell<Option<(u64, f32)>>,
+    /// A focused single-line `<input>`'s displayed line, `(caret x, full
+    /// width, height)`, under the hash of what it was shaped from
+    /// (`form_control::displayed_line_metrics`, #1721).
+    pub(crate) input_line_metrics: Cell<Option<(u64, InputLineMetrics)>>,
 
     /// When set, this block uses a fixed estimated height in Taffy instead of
     /// measuring via Parley. Used by contenteditable block virtualization to
@@ -1538,6 +1554,7 @@ impl Node {
             id_atom: None,
             text_sel: false,
             value_dirty: false,
+            input_scroll_x: Cell::new(f32::NAN),
             dirty: DirtyFlags::empty(),
             scroll_offset: (0.0, 0.0),
             scroll_remainder: (0.0, 0.0),
@@ -1596,6 +1613,7 @@ impl Node {
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
+            input_line_metrics: Cell::new(None),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1616,6 +1634,7 @@ impl Node {
             id_atom: None,
             text_sel: false,
             value_dirty: false,
+            input_scroll_x: Cell::new(f32::NAN),
             dirty: DirtyFlags::STYLE | DirtyFlags::LAYOUT,
             scroll_offset: (0.0, 0.0),
             scroll_remainder: (0.0, 0.0),
@@ -1674,6 +1693,7 @@ impl Node {
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
+            input_line_metrics: Cell::new(None),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1693,6 +1713,7 @@ impl Node {
             id_atom: None,
             text_sel: false,
             value_dirty: false,
+            input_scroll_x: Cell::new(f32::NAN),
             dirty: DirtyFlags::LAYOUT,
             scroll_offset: (0.0, 0.0),
             scroll_remainder: (0.0, 0.0),
@@ -1751,6 +1772,7 @@ impl Node {
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
+            input_line_metrics: Cell::new(None),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,
@@ -1768,6 +1790,7 @@ impl Node {
             id_atom: None,
             text_sel: false,
             value_dirty: false,
+            input_scroll_x: Cell::new(f32::NAN),
             dirty: DirtyFlags::empty(),
             scroll_offset: (0.0, 0.0),
             scroll_remainder: (0.0, 0.0),
@@ -1826,6 +1849,7 @@ impl Node {
             select_label_width: Cell::new(None),
             form_char_metrics: Cell::new(None),
             form_label_width: Cell::new(None),
+            input_line_metrics: Cell::new(None),
             estimated_height: None,
             contents_spliced: false,
             ifc_detached: false,

@@ -207,12 +207,17 @@ fn a_focused_input_idles_for_free() {
     // the new (smaller) one. One extra `push_clip` — the field's own, where
     // before only something else in this frame's damage pushed one — and the
     // extra pixels are that bracket's own area.
+    // #1721 added `shape_input_scroll` 1: a single-line field's displayed
+    // line is shaped once per change of its text or caret, to keep the caret
+    // in view; the paint and the IME poll at the unchanged state reuse it, so
+    // the idle turns above stay at 0.
     let typed = interaction(&mut app, |app| key(app, KeyCode::KeyX, Some("x")));
     expect_frame(
         "type one character into an input",
         &typed,
         &[
             (ShapePaint, 1),
+            (ShapeInputScroll, 1),
             (LayoutResolves, 1),
             (LayoutSkippedPaintOnly, 1),
             (PaintFrames, 1),

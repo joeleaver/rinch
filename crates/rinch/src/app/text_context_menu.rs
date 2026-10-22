@@ -328,9 +328,9 @@ impl RinchApp {
                     };
                     // Clipped to the field's own box. Paint does not clip there:
                     // it draws a `<textarea>`'s first-line caret 1px above the
-                    // box (measured: caret top y 24, box top 25), and a long
-                    // `<input>` value wraps and overflows the box (#827). A
-                    // toolbar anchored to the field should not overhang it.
+                    // box (measured: caret top y 24, box top 25), and a
+                    // `<textarea>`'s text can overflow it (#827). A toolbar
+                    // anchored to the field should not overhang it.
                     match (caret(start), caret(end)) {
                         (Some(a), Some(b)) => Some(clip_rect(
                             union_of_caret_rects(a, b),
@@ -340,9 +340,9 @@ impl RinchApp {
                     }
                 };
                 // An empty field has no layout to measure: the IME candidate
-                // box's approximation (the text origin, full height) stands in.
+                // box's old approximation (the text origin, full height) stands in.
                 let anchor = anchor
-                    .or_else(|| self.input_caret_area(node_id))
+                    .or_else(|| self.input_text_origin_area(node_id))
                     .unwrap_or_else(|| painted_element_box(&doc.borrow().tree, node_id));
                 // None of the three is ever decided by reading the clipboard —
                 // see the type's doc — and all three are off without one.

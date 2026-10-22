@@ -241,8 +241,8 @@ drawn — at the selection's head, or at a UTF-16 offset — as an `ElementBound
 of width 0, in logical window px on desktop and client px on the web, the
 space `EditorHandle::caret_rect` answers in, so one popup positioning works
 for both. Desktop measures with the layout paint draws the field with
-(password bullets, a single-line field's centring, the placeholder's start in
-an empty field); an IME composition's text, which is not in the value yet, is
+(password bullets, a single-line field's centring and horizontal scroll, the
+placeholder's start in an empty field); an IME composition's text, which is not in the value yet, is
 not counted. A browser exposes no caret geometry for a form control, so the web
 lays the value out in a hidden copy of the control with its computed text
 styles at the width the control lays its text out in; Chrome 155's and

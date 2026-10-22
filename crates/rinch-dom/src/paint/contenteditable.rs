@@ -181,11 +181,12 @@ pub(super) fn paint_input_value(
     scale: f64,
     x: f64,
     y: f64,
-    w: f64,
+    _w: f64,
     h: f64,
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<Brush>,
     transform: Affine,
+    scroll_x: f32,
 ) {
     // `value` is `form_control::control_value`: the `value` attribute, else a
     // textarea's text children (#1159), which nothing else draws.
@@ -281,9 +282,15 @@ pub(super) fn paint_input_value(
         base_color
     };
 
-    // Get padding from computed style
-    let padding_left = node.computed_style.padding_left.to_px() as f64 * scale;
+    // The text column: a single-line `<input>`'s content box, a textarea's
+    // left padding in on both sides (`form_control::text_column`), and the
+    // input's horizontal scroll (#1721), all shared with the hit-test and
+    // caret-rect builders.
+    let (column_left, column_width) = crate::form_control::text_column(node);
+    let column_left = column_left as f64 * scale;
+    let column_width = column_width as f64 * scale;
     let padding_top = node.computed_style.padding_top.to_px() as f64 * scale;
+    let scroll = scroll_x as f64 * scale;
 
     // Check if this is a textarea (multi-line) or input (single-line)
     let is_textarea = node.tag() == Some("textarea");
@@ -306,7 +313,8 @@ pub(super) fn paint_input_value(
     }
 
     let mut text_layout = builder.build(text);
-    text_layout.break_all_lines(Some((w - padding_left * 2.0) as f32));
+    // A single-line `<input>` is one unwrapped line (#1721); a textarea wraps.
+    text_layout.break_all_lines(crate::form_control::wrap_width(node, scale as f32));
 
     // For textarea, align to top with padding; for input, center vertically
     let text_height = text_layout.height() as f64;
@@ -315,7 +323,28 @@ pub(super) fn paint_input_value(
     } else {
         y + (h - text_height) / 2.0
     };
-    let text_x = x + padding_left;
+    let text_x = x + column_left - scroll;
+
+    // A single-line field's text, selection, caret and composition underline
+    // are clipped to its content box horizontally (and its padding box
+    // vertically) whenever its line overflows the column or is scrolled, as
+    // Chrome's inner editor clips them. A line that fits needs no clip.
+    let clipped = !is_textarea
+        && (scroll > 0.0
+            || text_layout.full_width() as f64 + crate::form_control::CARET_WIDTH as f64 * scale
+                > column_width);
+    if clipped {
+        let style = &node.computed_style;
+        let top = style.border_top_width.to_px() as f64 * scale;
+        let bottom = style.border_bottom_width.to_px() as f64 * scale;
+        let clip = Rect::new(
+            x + column_left,
+            y + top,
+            x + column_left + column_width,
+            (y + h - bottom).max(y + top),
+        );
+        painter.push_clip(Fill::NonZero, transform, &clip.into());
+    }
 
     // Draw selection highlight if there's a selection
     if is_focused && cursor_pos != selection_start && !is_placeholder && !text.is_empty() {
@@ -405,6 +434,10 @@ pub(super) fn paint_input_value(
             underline_y + scale,
         );
         painter.fill_color(Fill::NonZero, transform, base_color, &ul_rect.into());
+    }
+
+    if clipped {
+        painter.pop_layer();
     }
 }
 

@@ -4189,16 +4189,45 @@ impl RinchApp {
         // The composition is painted inline from `data-preedit`: name the
         // field, or a partial frame keeps the old composition on screen.
         d.tree.mark_paint_dirty(node_id);
+        // A single-line field scrolls the composition's end into view (#1721).
+        let d = &mut *d;
+        rinch_dom::form_control::input_scroll_x(&d.tree, &mut d.font_cx, &mut d.layout_cx, node_id);
     }
 
-    /// The focused `<input>`'s caret rect in logical window space, for the IME
-    /// candidate box. Approximated at the field's text origin (left padding, full
-    /// height); the exact caret-x is a follow-up.
+    /// The focused field's caret rect in logical window space, for the IME
+    /// candidate box. A single-line `<input>` answers the caret paint draws —
+    /// the displayed text's, so the end of an IME composition, through the
+    /// field's horizontal scroll (#1721) — from the line it keeps cached
+    /// (`rinch_dom::form_control::input_displayed_caret_rect`), so the poll
+    /// every event-loop pass makes shapes nothing at an unchanged state. A
+    /// `<textarea>`, or a document already borrowed, answers the text origin,
+    /// full height ([`Self::input_text_origin_area`]).
+    #[cfg(any(feature = "desktop", test))]
     pub(crate) fn input_caret_area(&self, node_id: usize) -> Option<(f32, f32, f32, f32)> {
+        let doc = self.doc.as_ref()?;
+        if let Ok(mut d) = doc.try_borrow_mut() {
+            let d = &mut *d;
+            if let Some((x, y, h)) = rinch_dom::form_control::input_displayed_caret_rect(
+                &d.tree,
+                &mut d.font_cx,
+                &mut d.layout_cx,
+                node_id,
+            ) {
+                return Some((x, y, 1.0, h));
+            }
+        }
+        self.input_text_origin_area(node_id)
+    }
+
+    /// A field's text origin (the start of its text column,
+    /// `rinch_dom::form_control::text_column`), full height, in logical window
+    /// space: the text context menu's anchor for an empty field, and the IME
+    /// area's fallback.
+    pub(crate) fn input_text_origin_area(&self, node_id: usize) -> Option<(f32, f32, f32, f32)> {
         let doc = self.doc.as_ref()?;
         let d = doc.borrow();
         let node = d.tree.get(node_id)?;
-        let pad_l = node.computed_style.padding_left.to_px();
+        let (pad_l, _) = rinch_dom::form_control::text_column(node);
         let (_, _, _, h) = d.query_node_layout(node_id as u64)?;
         // The candidate box goes where the field is *painted*, so the text
         // origin is pushed forward through the composed transform rather than
