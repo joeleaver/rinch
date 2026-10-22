@@ -64,7 +64,11 @@ fn a_press_on_the_thumb_over_a_relative_row_grabs_the_thumb() {
         1.0,
     );
     app.resolve_and_repaint(800.0, 600.0);
-    let scroll = |app: &RinchApp| app.doc.as_ref().unwrap().borrow().tree.nodes[id].scroll_offset.1;
+    let scroll = |app: &RinchApp| {
+        app.doc.as_ref().unwrap().borrow().tree.nodes[id]
+            .scroll_offset
+            .1
+    };
     let s = scroll(&app);
     let t = {
         let d = app.doc.as_ref().unwrap().borrow();
