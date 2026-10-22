@@ -494,13 +494,19 @@ mod tests {
     #[test]
     fn a_slow_callback_does_not_push_the_next_tick_back() {
         install_manual_backend();
-        set_interval(40, || std::thread::sleep(std::time::Duration::from_millis(25)));
+        set_interval(40, || {
+            std::thread::sleep(std::time::Duration::from_millis(25))
+        });
         take_delays();
         std::thread::sleep(std::time::Duration::from_millis(40));
         drain_and_fire();
         let next = take_delays();
         assert_eq!(next.len(), 1);
-        assert!(next[0] < 30, "the next tick keeps the rate, got {}ms", next[0]);
+        assert!(
+            next[0] < 30,
+            "the next tick keeps the rate, got {}ms",
+            next[0]
+        );
     }
 
     /// A tick more than a period late skips the ticks it missed instead of
@@ -508,7 +514,9 @@ mod tests {
     #[test]
     fn a_tick_more_than_a_period_late_skips_the_missed_ticks() {
         install_manual_backend();
-        set_interval(20, || std::thread::sleep(std::time::Duration::from_millis(60)));
+        set_interval(20, || {
+            std::thread::sleep(std::time::Duration::from_millis(60))
+        });
         take_delays();
         std::thread::sleep(std::time::Duration::from_millis(20));
         drain_and_fire();

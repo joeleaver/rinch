@@ -614,7 +614,10 @@ mod waker_tests {
         set_poll_waker(count_wake);
         let a = poll_signal(|| 0u8, PollRate::Millis(100));
         assert_eq!(WAKES.with(|w| w.get()), 1);
-        assert!(!polls_want_every_frame(), "a timed poll alone wants no frames");
+        assert!(
+            !polls_want_every_frame(),
+            "a timed poll alone wants no frames"
+        );
 
         let b = poll_signal(|| 0u8, PollRate::EveryFrame);
         assert_eq!(WAKES.with(|w| w.get()), 2);

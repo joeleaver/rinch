@@ -49,7 +49,11 @@ fn mount_poll(source: Rc<Cell<i32>>, rate: PollRate) -> (Signal<i32>, Rc<Cell<u3
         host.query_selector("[data-poll-1773]").unwrap().is_some(),
         "the root rendered"
     );
-    (out.get().expect("the render registered the poll"), reads, root)
+    (
+        out.get().expect("the render registered the poll"),
+        reads,
+        root,
+    )
 }
 
 async fn sleep_ms(ms: i32) {
@@ -91,7 +95,11 @@ async fn an_unmounted_poll_stops_being_read() {
     let source = Rc::new(Cell::new(0));
     let (_sig, reads, root) = mount_poll(source, PollRate::Hz(100));
     sleep_ms(100).await;
-    assert!(reads.get() > 2, "the poll ran while mounted ({})", reads.get());
+    assert!(
+        reads.get() > 2,
+        "the poll ran while mounted ({})",
+        reads.get()
+    );
     root.unmount();
     sleep_ms(50).await;
     let after = reads.get();

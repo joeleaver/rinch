@@ -17,8 +17,9 @@ rinch-core.workspace = true
 rinch-macros.workspace = true
 rinch-platform = { workspace = true }
 tracing.workspace = true
-# `init_logging` on every target (#1773); also the desktop shell's subscriber.
-tracing-subscriber = { workspace = true }
+# `init_logging` (#1773) hands `log` records to the same output as `tracing`
+# events. Already in every lock: `tracing` depends on it.
+log = "0.4"
 
 # Desktop-only rendering deps (optional, enabled by `desktop` feature)
 rinch-dom = { workspace = true, optional = true }
@@ -41,6 +42,7 @@ muda = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 pollster = { version = "0.4", optional = true }
 futures-util = { version = "0.3", optional = true }
+tracing-subscriber = { workspace = true, optional = true }
 png = { version = "0.17", optional = true }
 base64 = { version = "0.22", optional = true }
 keyboard-types = { version = "0.7", optional = true }
@@ -135,7 +137,7 @@ web-sys = { version = "0.3", features = [
     "MouseEvent", "WheelEvent", "PointerEvent",
     "EventTarget", "AddEventListenerOptions",
     "ResizeObserver", "ResizeObserverEntry", "ResizeObserverSize", "DomRectReadOnly",
-    # `init_logging`'s console writer and panic hook (#1773).
+    # `init_logging`'s console output and panic hook (#1773).
     "console",
 ] }
 
@@ -169,7 +171,6 @@ block2 = { version = "0.6", optional = true }
 android-activity = { version = "0.6", features = ["native-activity"], optional = true }
 ndk = { version = "0.9", optional = true }
 raw-window-handle = { version = "0.6", optional = true }
-log = { version = "0.4", optional = true }
 android_logger = { version = "0.14", optional = true }
 rinch-android = { workspace = true, optional = true }
 
@@ -180,6 +181,7 @@ desktop = [
     "dep:peniko", "dep:serde_json",
     "dep:winit", "dep:muda",
     "dep:x11rb", "dep:objc2",
+    "dep:tracing-subscriber",
     "dep:png", "dep:base64", "dep:keyboard-types",
     "dep:bytemuck",
     "dep:softbuffer", "rinch-dom/software-renderer",
@@ -200,6 +202,7 @@ desktop = [
 android = [
     "dep:rinch-dom", "dep:rinch-editable", "dep:parley",
     "dep:peniko", "dep:serde_json",
+    "dep:tracing-subscriber",
     "dep:png", "dep:base64", "dep:keyboard-types",
     "dep:bytemuck",
     # No softbuffer: the Android shell presents straight into the
@@ -208,7 +211,7 @@ android = [
     # whose `AndroidWindow` is its only user in an Android build.
     "rinch-dom/software-renderer",
     "dep:android-activity", "dep:ndk",
-    "dep:log", "dep:android_logger",
+    "dep:android_logger",
     "dep:rinch-android",
     # Text fields split words as the editor does (#1619); parley's
     # `complex-scripts` links the same ICU data, so the dictionary is free here.

@@ -5305,6 +5305,7 @@ name = "rinch-web"
 version = "0.1.0"
 dependencies = [
  "js-sys",
+ "log",
  "rinch",
  "rinch-clipboard",
  "rinch-core",

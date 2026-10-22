@@ -117,6 +117,7 @@ web-sys = { version = "0.3", features = ["DragEventInit", "FilePropertyBag", "Ht
 rinch = { workspace = true, default-features = false, features = ["file-dialogs"] }
 # Emitting events at `rinch::init_logging`'s console writer (tests/init_logging_1773.rs).
 tracing.workspace = true
+log = "0.4"
 
 [features]
 # Collaborative editing (M9): forwards to the editor view's collab adapter, which

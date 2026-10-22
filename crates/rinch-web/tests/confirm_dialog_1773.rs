@@ -48,7 +48,11 @@ fn confirm_answers_what_the_browser_answers() {
         .confirm();
     let first = seen();
     restore("confirm", original);
-    assert_eq!(first, ["Confirm Delete\n\nDelete the file?"], "window.confirm was asked");
+    assert_eq!(
+        first,
+        ["Confirm Delete\n\nDelete the file?"],
+        "window.confirm was asked"
+    );
     assert!(yes);
 
     let original = stub("confirm", false);

@@ -72,10 +72,7 @@ pub(crate) fn app_store_dir(
 }
 
 fn validate_name(what: &str, name: &str) -> StorageResult<()> {
-    let bad = name.is_empty()
-        || name == "."
-        || name == ".."
-        || name.contains(['/', '\\', '\0']);
+    let bad = name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', '\0']);
     if bad {
         return Err(StorageError::InvalidKey(format!(
             "{what} {name:?} must be non-empty, not `.` or `..`, and contain no `/`, `\\` or NUL"

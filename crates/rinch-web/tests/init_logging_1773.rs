@@ -1,5 +1,5 @@
 //! `rinch::init_logging` in the browser (issue #1773): `tracing` events reach
-//! the console method of their level.
+//! the console method of their level, and so do `log` records.
 #![cfg(target_arch = "wasm32")]
 
 use wasm_bindgen::JsValue;
@@ -47,13 +47,25 @@ fn events_go_to_the_console_by_level() {
     tracing::warn!("disk nearly full 1773");
     tracing::info!("saved 1773");
     tracing::debug!("not at info 1773");
-    let (w, i, l) = (recorded("__w1773"), recorded("__i1773"), recorded("__l1773"));
+    log::warn!("a log record 1773");
+    let (w, i, l) = (
+        recorded("__w1773"),
+        recorded("__i1773"),
+        recorded("__l1773"),
+    );
     restore_console("warn", warn);
     restore_console("info", info);
     restore_console("log", log);
 
-    assert_eq!(w.len(), 1, "{w:?}");
-    assert!(w[0].contains("WARN") && w[0].contains("disk nearly full 1773"), "{w:?}");
+    assert_eq!(w.len(), 2, "{w:?}");
+    assert!(
+        w[0].contains("WARN") && w[0].contains("disk nearly full 1773"),
+        "{w:?}"
+    );
+    assert!(
+        w[1].contains("a log record 1773"),
+        "`log` records reach it too: {w:?}"
+    );
     assert_eq!(i.len(), 1, "{i:?}");
     assert!(i[0].contains("saved 1773"), "{i:?}");
     assert!(l.is_empty(), "debug is below the default info: {l:?}");
