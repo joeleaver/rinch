@@ -246,6 +246,35 @@ Space, PageUp/Down and the arrow keys can scroll the page, and Tab leaves the ca
 game steering with any of those must claim them via `set_key_handler`, or the page scrolls
 under it.
 
+### How often the render callback runs
+
+`set_render_callback` keeps each backend's original pacing until you choose one: on desktop
+it runs whenever the window paints (for any reason), on the web on every animation frame.
+`set_continuous` picks the same behaviour on both:
+
+```rust
+// A game in play: every frame, on desktop and in the browser.
+surface.set_continuous(true);
+
+// An editor viewport: only when something changed.
+surface.set_continuous(false);
+// …and wherever the scene changes (an event handler, a signal effect):
+surface.request_frame();
+```
+
+- `set_continuous(true)` — every frame while the surface is mounted. On desktop each run asks
+  the window for the next paint; on the web the `requestAnimationFrame` loop keeps going.
+- `set_continuous(false)` — on demand: once when the surface first has a size, once more
+  whenever its size changes, and once for each `request_frame()` (several requests before the
+  next frame are one frame). Nothing else runs it, and the web's loop stops in between.
+- `request_frame()` works in every mode, including from inside the render callback — an
+  on-demand surface that is mid-animation calls it each frame until it is done.
+
+`layout_rect()` returns `(x, y, width, height)`: the surface's top-left in logical (CSS)
+pixels relative to the window — on the web, the canvas's `getBoundingClientRect`, read when
+you call it — and its size in physical pixels. Use it to place a menu or tooltip at a
+surface-local point on both targets.
+
 ### Web (canvas viewport)
 
 The **same** `RenderSurface` + `create_render_surface()` API works on `rinch-web`, but the model is inverted. On the web the **browser** composites, so rinch only creates and manages a real `<canvas>` "viewport hole" sized by layout; the **app owns the GPU context** (rinch links no wgpu on web). This mirrors desktop symmetrically: **desktop** = rinch owns the window and you submit frames; **web** = you own the canvas surface.
@@ -302,6 +331,9 @@ Notes:
 | `set_event_handler(handler)` | Set input event callback (main thread closure) |
 | `set_key_handler(handler)` | `Fn(&SurfaceKeyData) -> bool`; whether a key already delivered to `set_event_handler` should stop here instead of continuing to a window-level host keybinding (web) or DevTools/inspect/Tab (desktop). Unset: claims nothing (issue #482) |
 | `set_render_callback(cb)` | Per-frame `FnMut(&SurfaceWriter, w, h)` — drives `requestAnimationFrame` on web |
+| `set_continuous(on)` | `true`: run the render callback every frame; `false`: on demand (first size, each resize, each `request_frame`). Same on desktop and web (#1768) |
+| `request_frame()` | Run the render callback once more at the next frame; callable from inside it |
+| `layout_rect()` | `(x, y, w, h)`: top-left in logical window px (web: the canvas's client rect), size in physical px |
 | `set_resize_callback(cb)` | `FnMut(w, h)` fired on backing-size change (physical px) — reconfigure a GPU surface |
 | `layout_size()` | Get current physical `(width, height)` (web: CSS px × devicePixelRatio) |
 | `canvas_element()` | **(web only)** the `<canvas>` after mount — create a WebGPU/WebGL context on it |

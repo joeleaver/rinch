@@ -1627,7 +1627,9 @@ impl RinchRuntime {
         for (surface_id, rect) in self.app.all_surface_layout_rects() {
             let phys_w = (rect.2 * s) as u32;
             let phys_h = (rect.3 * s) as u32;
-            crate::render_surface::update_layout_size_by_id(surface_id, phys_w, phys_h);
+            crate::render_surface::update_layout_rect_by_id(
+                surface_id, rect.0, rect.1, phys_w, phys_h,
+            );
         }
 
         // Invoke per-frame render callbacks before collecting frames.
@@ -1752,7 +1754,9 @@ impl RinchRuntime {
         for (surface_id, rect) in self.app.all_surface_layout_rects() {
             let phys_w = (rect.2 * s) as u32;
             let phys_h = (rect.3 * s) as u32;
-            crate::render_surface::update_layout_size_by_id(surface_id, phys_w, phys_h);
+            crate::render_surface::update_layout_rect_by_id(
+                surface_id, rect.0, rect.1, phys_w, phys_h,
+            );
         }
 
         // Also update layout sizes for video/GameViewport surfaces that still

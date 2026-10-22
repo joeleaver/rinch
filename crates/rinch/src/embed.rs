@@ -304,7 +304,10 @@ impl RinchContext {
         // A `RenderSurface` frame submitted since the last scene — from its
         // render callback's previous run, another thread, a decoder — is
         // something to draw. `scene` collects it.
-        if crate::render_surface::inline_surfaces_dirty(&self.surface_ids)
+        // So is a surface that wants its render callback run again: a
+        // continuous one, or one with a frame requested (#1768).
+        if (crate::render_surface::inline_surfaces_dirty(&self.surface_ids)
+            || crate::render_surface::surfaces_want_frame(&self.surface_ids))
             && !all_actions.contains(&AppAction::RequestRedraw)
         {
             all_actions.push(AppAction::RequestRedraw);
@@ -417,7 +420,13 @@ impl RinchContext {
         let s = self.scale_factor as f32;
         self.surface_ids.clear();
         for (surface_id, rect) in self.app.all_surface_layout_rects() {
-            rs::update_layout_size_by_id(surface_id, (rect.2 * s) as u32, (rect.3 * s) as u32);
+            rs::update_layout_rect_by_id(
+                surface_id,
+                rect.0,
+                rect.1,
+                (rect.2 * s) as u32,
+                (rect.3 * s) as u32,
+            );
             self.surface_ids.push(surface_id);
         }
         rs::invoke_render_callbacks_for(&self.surface_ids);
@@ -671,6 +680,7 @@ impl RinchContext {
             || self.app.has_dirty_nodes()
             || self.app.has_deferred_work()
             || crate::render_surface::inline_surfaces_dirty(&self.surface_ids)
+            || crate::render_surface::surfaces_want_frame(&self.surface_ids)
             || self
                 .next_wake()
                 .is_some_and(|t| rinch_platform::Instant::now() >= t)
