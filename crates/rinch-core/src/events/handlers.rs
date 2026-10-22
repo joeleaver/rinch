@@ -610,6 +610,29 @@ pub fn dispatch_file_drop_event(id: EventHandlerId, paths: Vec<PathBuf>) -> bool
     }
 }
 
+thread_local! {
+    static PRESS_WITHOUT_ACTIVATION: std::cell::Cell<Option<i32>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Set by a backend for the length of a click it dispatches from a press
+/// that grants the page no user activation: on the web a touch or pen
+/// `pointerdown`, whose click runs on contact unless the element can scroll
+/// (#1582). `Some(pointer id)`; `None` after. Code that needs activation (the
+/// file picker, #1771) asks [`press_without_activation`] and waits for that
+/// pointer's release, which does grant it.
+#[doc(hidden)]
+pub fn set_press_without_activation(pointer: Option<i32>) {
+    PRESS_WITHOUT_ACTIVATION.with(|p| p.set(pointer));
+}
+
+/// The pointer whose press is being dispatched without user activation, if
+/// any. See [`set_press_without_activation`].
+#[doc(hidden)]
+pub fn press_without_activation() -> Option<i32> {
+    PRESS_WITHOUT_ACTIVATION.with(std::cell::Cell::get)
+}
+
 /// Register an `ondropfiles` handler (issue #1771) and return its id: called
 /// with the files dropped from the OS onto an element carrying
 /// `data-ondropfiles`, as [`LocalFile`](crate::file::LocalFile)s, on the

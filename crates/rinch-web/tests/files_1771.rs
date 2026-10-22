@@ -116,11 +116,15 @@ fn recorder(got: &Got) -> impl Fn(Vec<LocalFile>) + 'static {
 async fn dropped_files_reach_ondropfiles_with_their_names_and_bytes() {
     let got: Got = Rc::default();
     let on_drop = recorder(&got);
+    let on_drop_outer = recorder(&got);
     let (root, host) = mount(move |__scope: &mut RenderScope| {
         rsx! {
             div {
                 div { id: "zone", style: "height: 60px;", ondropfiles: on_drop, span { "drop here" } }
                 div { id: "elsewhere", style: "height: 60px;", "not a zone" }
+                div { id: "outer", style: "height: 60px;", ondropfiles: on_drop_outer,
+                    div { id: "inner", style: "height: 30px;", onfiledrop: |_| {}, "paths only" }
+                }
             }
         }
     });
@@ -161,6 +165,25 @@ async fn dropped_files_reach_ondropfiles_with_their_names_and_bytes() {
     );
     wait(30).await;
     assert_eq!(got.borrow().len(), 2);
+    // Nested zones: the nearest of either kind wins, as on desktop. A
+    // paths-only `onfiledrop` zone takes nothing in a browser, but the drop is
+    // still prevented (the browser must not open the file); the `ondropfiles`
+    // zone around it is not reached.
+    let inner = host.query_selector("#inner").unwrap().unwrap();
+    assert_eq!(drop_on(&inner, &[file("y.bin", "", b"y")]), (true, true));
+    wait(30).await;
+    assert_eq!(got.borrow().len(), 2, "the outer zone is not the nearest");
+    // Positive control: the outer zone itself does take a drop.
+    let outer = host.query_selector("#outer").unwrap().unwrap();
+    let r = outer.get_bounding_client_rect();
+    let below_inner = document()
+        .element_from_point(r.x() as f32 + 5.0, (r.y() + r.height()) as f32 - 5.0)
+        .unwrap();
+    assert_eq!(
+        drop_on(&below_inner, &[file("z.bin", "", b"z")]),
+        (true, true)
+    );
+    assert!(wait_for(|| got.borrow().len() == 3).await);
     root.unmount();
     host.remove();
 }
@@ -331,6 +354,36 @@ async fn the_guide_example_reads_a_dropped_file() {
         "{:?}",
         p.text_content()
     );
+    root.unmount();
+    host.remove();
+}
+
+#[wasm_bindgen_test]
+async fn a_picker_with_no_answer_ends_when_the_window_focus_comes_back() {
+    let (root, host) = mount(|__scope: &mut RenderScope| rsx! { div { "picker" } });
+    rinch::file::__set_require_user_activation(false);
+    rinch::file::__force_focus_return_watch(true);
+    let picked: Rc<RefCell<Option<usize>>> = Rc::default();
+    let into = picked.clone();
+    FilePicker::new().open(move |files| *into.borrow_mut() = Some(files.len()));
+    assert!(picker_input().is_some(), "the picker's input is up");
+    wait(50).await;
+    assert!(
+        picked.borrow().is_none(),
+        "no answer before the focus comes back"
+    );
+    web_sys::window()
+        .unwrap()
+        .dispatch_event(&web_sys::Event::new("focus").unwrap())
+        .unwrap();
+    assert!(
+        wait_for(|| picked.borrow().is_some()).await,
+        "resolved after focus returned"
+    );
+    assert_eq!(*picked.borrow(), Some(0));
+    assert!(picker_input().is_none(), "and the input is gone");
+    rinch::file::__force_focus_return_watch(false);
+    rinch::file::__set_require_user_activation(true);
     root.unmount();
     host.remove();
 }

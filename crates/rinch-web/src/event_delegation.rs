@@ -1721,18 +1721,35 @@ fn nearest_live_rid(el: &web_sys::Element) -> Option<(web_sys::Element, events::
     None
 }
 
-/// The nearest ancestor-or-self of `el` carrying a **live** `ondropfiles`
-/// handler (issue #1771); a freed one is walked past, as desktop's drop walk
-/// does.
-fn nearest_files_drop(el: &web_sys::Element) -> Option<(web_sys::Element, events::EventHandlerId)> {
-    let mut current = nearest_handler(el, "data-ondropfiles");
-    while let Some((handler_el, id)) = current {
-        if events::has_files_drop_handler(id) {
-            return Some((handler_el, id));
+/// The nearest ancestor-or-self of `el` carrying a **live** file-drop handler
+/// of either kind — `onfiledrop` (paths, which a browser never has) or
+/// `ondropfiles` (issue #1771) — and the `ondropfiles` id it carries, if any.
+/// Desktop's drop walk stops at the same element, so nested zones pick the
+/// same one on both; a freed handler is walked past, as there.
+fn nearest_drop_zone(
+    el: &web_sys::Element,
+) -> Option<(web_sys::Element, Option<events::EventHandlerId>)> {
+    let live = |zone: &web_sys::Element, attr: &str, has: fn(events::EventHandlerId) -> bool| {
+        zone.get_attribute(attr)
+            .and_then(|v| v.parse::<usize>().ok())
+            .map(events::EventHandlerId)
+            .filter(|&id| has(id))
+    };
+    let mut current = el
+        .closest("[data-onfiledrop],[data-ondropfiles]")
+        .ok()
+        .flatten();
+    while let Some(zone) = current {
+        let files = live(&zone, "data-ondropfiles", events::has_files_drop_handler);
+        let paths = live(&zone, "data-onfiledrop", events::has_file_drop_handler);
+        if files.is_some() || paths.is_some() {
+            return Some((zone, files));
         }
-        current = handler_el
-            .parent_element()
-            .and_then(|p| nearest_handler(&p, "data-ondropfiles"));
+        current = zone.parent_element().and_then(|p| {
+            p.closest("[data-onfiledrop],[data-ondropfiles]")
+                .ok()
+                .flatten()
+        });
     }
     None
 }
@@ -1770,7 +1787,8 @@ pub(crate) fn dispatch_dropped_files(
     event: &web_sys::DragEvent,
     files: Vec<web_sys::File>,
 ) -> bool {
-    let Some((handler_el, id)) = drag_target_element(event).and_then(|el| nearest_files_drop(&el))
+    let Some((handler_el, Some(id))) =
+        drag_target_element(event).and_then(|el| nearest_drop_zone(&el))
     else {
         return false;
     };
@@ -1793,8 +1811,8 @@ pub(crate) fn dispatch_dropped_files(
     events::dispatch_files_drop_event(id, files)
 }
 
-/// `dragover` / `drop` of files from outside the page over an `ondropfiles`
-/// element (issue #1771). Bubble phase, after the editor's capture listeners:
+/// `dragover` / `drop` of files from outside the page over a file-drop zone
+/// (issue #1771). Bubble phase, after the editor's capture listeners:
 /// a drop an editor already handled (it prevented the default, and handed the
 /// files it did not take to [`dispatch_dropped_files`] itself) is left alone.
 /// Over a handler both events are prevented — `dragover`, or the browser never
@@ -1804,13 +1822,14 @@ fn install_file_drop(browser_doc: &web_sys::Document) {
         if event.default_prevented() || !drag_carries_files(&event) {
             return;
         }
-        if drag_target_element(&event)
-            .and_then(|el| nearest_files_drop(&el))
-            .is_some()
+        // Over a paths-only (`onfiledrop`) zone the drop is prevented too,
+        // with nothing to take it: it is the nearest zone, as on desktop, and
+        // the browser must not open the file in place of the page.
+        if let Some((_, files)) = drag_target_element(&event).and_then(|el| nearest_drop_zone(&el))
         {
             event.prevent_default();
             if let Some(dt) = event.data_transfer() {
-                dt.set_drop_effect("copy");
+                dt.set_drop_effect(if files.is_some() { "copy" } else { "none" });
             }
         }
     }) as Box<dyn FnMut(_)>);
@@ -1823,7 +1842,7 @@ fn install_file_drop(browser_doc: &web_sys::Document) {
             return;
         }
         if drag_target_element(&event)
-            .and_then(|el| nearest_files_drop(&el))
+            .and_then(|el| nearest_drop_zone(&el))
             .is_none()
         {
             return;
@@ -2848,7 +2867,14 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                         });
                     });
                 } else {
+                    // A touch or pen `pointerdown` grants no user activation
+                    // (its `pointerup` does): a handler that needs it — the
+                    // file picker (#1771) — is told which pointer to wait for.
+                    if kind.uses_long_press() {
+                        events::set_press_without_activation(Some(event.pointer_id()));
+                    }
                     dispatch_click_at(&el, &browser_doc_for_click, event);
+                    events::set_press_without_activation(None);
 
                     // If that click armed a pointer-capture `Drag` (slider, panel,
                     // resize handle — started from the handler via `Drag::start()`),

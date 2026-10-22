@@ -190,3 +190,39 @@ fn an_editor_that_takes_pictures_hands_the_rest_to_ondropfiles() {
         vec![pdf]
     );
 }
+
+/// File-drag enter/leave fire on a node that has `ondropfiles` and no
+/// `onfiledrop`: the hover walk counts either kind of drop zone.
+#[test]
+fn file_drag_enter_and_leave_fire_on_an_ondropfiles_zone() {
+    let log: Rc<RefCell<Vec<&'static str>>> = Rc::default();
+    let l = log.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "width: 800px; height: 600px");
+        let zone = scope.create_element("div");
+        zone.set_attribute("style", "height: 200px");
+        let id = scope.register_files_drop_handler(|_| {});
+        zone.set_attribute("data-ondropfiles", &id.0.to_string());
+        let (a, b) = (l.clone(), l.clone());
+        let enter = rinch_core::register_handler(Rc::new(move || a.borrow_mut().push("enter")));
+        let leave = rinch_core::register_handler(Rc::new(move || b.borrow_mut().push("leave")));
+        zone.set_attribute("data-onfiledragenter", &enter.0.to_string());
+        zone.set_attribute("data-onfiledragleave", &leave.0.to_string());
+        root.append_child(&zone);
+        root
+    });
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    app.handle_event(
+        PlatformEvent::FileHoverEnter {
+            path: PathBuf::from("/tmp/x.bin"),
+            position: (400.0, 100.0),
+        },
+        VP,
+        1.0,
+    );
+    assert_eq!(*log.borrow(), vec!["enter"]);
+    app.handle_event(PlatformEvent::FileHoverCancelled, VP, 1.0);
+    assert_eq!(*log.borrow(), vec!["enter", "leave"]);
+}

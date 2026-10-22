@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the trusted-input tests (`editor_node_view_real_tab`, `real_touch_1582_1588`):
+# Runs the trusted-input tests (`editor_node_view_real_tab`, `real_touch_1582_1588`, `real_touch_picker_1771`):
 # builds each with RINCH_REAL_KEYS=1, starts Chrome (through CHROMEDRIVER) with a
 # DevTools port and runs `real_keys.mjs` beside it, which sends the keys and touches
 # the page asks for. Needs node >= 22 (a global WebSocket). Arguments after the
@@ -9,7 +9,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 crate="$(cd "$here/../.." && pwd)"
 port="${RINCH_REAL_KEYS_PORT:-9555}"
 : "${CHROMEDRIVER:?set CHROMEDRIVER to a chromedriver matching your Chrome}"
-tests=(editor_node_view_real_tab real_touch_1582_1588)
+tests=(editor_node_view_real_tab real_touch_1582_1588 real_touch_picker_1771)
 cd "$crate"
 wasms=()
 for t in "${tests[@]}"; do

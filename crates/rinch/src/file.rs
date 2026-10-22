@@ -180,9 +180,6 @@ mod web {
 
     type Slot<T> = Rc<RefCell<(Option<T>, Option<Waker>)>>;
 
-    /// The picker input's `change` / `cancel` listener.
-    type EventClosure = Closure<dyn FnMut(web_sys::Event)>;
-
     fn fill<T>(slot: &Slot<T>, value: T) {
         let waker = {
             let mut s = slot.borrow_mut();
@@ -248,7 +245,9 @@ mod web {
 
     thread_local! {
         static REQUIRE_ACTIVATION: Cell<bool> = const { Cell::new(true) };
+        static FORCE_FOCUS_RETURN: Cell<bool> = const { Cell::new(false) };
         static WARNED: Cell<bool> = const { Cell::new(false) };
+        static LAST_OUTCOME: Cell<&'static str> = const { Cell::new("") };
     }
 
     /// Tests only: open the picker input with `click()`, which needs no user
@@ -259,47 +258,250 @@ mod web {
         REQUIRE_ACTIVATION.with(|r| r.set(require));
     }
 
+    /// Tests only: watch for the window's focus coming back even where the
+    /// browser fires `cancel` (see [`Session::watch_focus_return`]).
+    #[doc(hidden)]
+    pub fn __force_focus_return_watch(on: bool) {
+        FORCE_FOCUS_RETURN.with(|r| r.set(on));
+    }
+
+    /// Tests only: how the last picker was opened — `"shown"` (the browser
+    /// took `showPicker()`), `"clicked"`, `"deferred"` (waiting for a touch
+    /// release), `"refused"` (no gesture: resolved empty).
+    #[doc(hidden)]
+    pub fn __last_picker_outcome() -> &'static str {
+        LAST_OUTCOME.with(Cell::get)
+    }
+
+    fn outcome(o: &'static str) {
+        LAST_OUTCOME.with(|c| c.set(o));
+    }
+
     /// The attribute the picker's hidden input carries.
     pub const PICKER_ATTR: &str = "data-rinch-file-picker";
 
-    /// Show `input`'s picker. `showPicker()` where the browser has it: it
-    /// refuses outright (`NotAllowedError`) without a user gesture, where
-    /// `click()` is silently ignored and no `change` or `cancel` ever comes.
-    /// `false` when the picker was refused.
-    fn show(input: &web_sys::HtmlInputElement) -> bool {
-        if !REQUIRE_ACTIVATION.with(Cell::get) {
-            input.click();
-            return true;
+    /// How long after the window's focus comes back, with no `change`, a
+    /// picker is taken as cancelled where the browser has no `cancel` event.
+    const FOCUS_RETURN_MS: i32 = 1000;
+
+    type EventClosure = Closure<dyn FnMut(web_sys::Event)>;
+
+    /// One open picker: its input, where its answer goes, and the listeners
+    /// that end it. [`finish`](Self::finish) runs once.
+    struct Session {
+        input: web_sys::HtmlInputElement,
+        slot: Slot<Vec<LocalFile>>,
+        done: Cell<bool>,
+        /// `change` / `cancel` on the input.
+        input_listener: RefCell<Option<EventClosure>>,
+        /// `pointerup` / `pointercancel` on the document, while a touch press
+        /// waits for its release.
+        release_listener: RefCell<Option<EventClosure>>,
+        /// `focus` on the window, where the browser has no `cancel`.
+        focus_listener: RefCell<Option<EventClosure>>,
+    }
+
+    impl Session {
+        fn finish(&self, files: Vec<LocalFile>) {
+            if self.done.replace(true) {
+                return;
+            }
+            self.detach();
+            fill(&self.slot, files);
+            // The closures may be the ones running: wasm-bindgen drops a
+            // closure taken out during its own call when that call returns.
+            self.input_listener.borrow_mut().take();
+            self.release_listener.borrow_mut().take();
+            self.focus_listener.borrow_mut().take();
         }
-        let show_picker = js_sys::Reflect::get(input, &JsValue::from_str("showPicker"))
-            .ok()
-            .and_then(|f| f.dyn_into::<js_sys::Function>().ok());
-        let Some(show_picker) = show_picker else {
-            input.click();
-            return true;
-        };
-        match show_picker.call0(input) {
-            Ok(_) => true,
-            Err(e) => {
-                let name = js_sys::Reflect::get(&e, &JsValue::from_str("name"))
-                    .ok()
-                    .and_then(|n| n.as_string())
-                    .unwrap_or_default();
-                if name != "NotAllowedError" {
-                    // Any other refusal (an engine that wants the input
-                    // rendered differently, say): the old way still works.
-                    input.click();
-                    return true;
-                }
-                if !WARNED.with(|w| w.replace(true)) {
-                    tracing::warn!(
-                        "FilePicker opened outside a user gesture; the browser shows no picker. \
-                         Call pick()/open() from an event handler."
+
+        /// Take the input out of the page and the document and window
+        /// listeners off.
+        fn detach(&self) {
+            self.input.remove();
+            if let Some(doc) = web_sys::window().and_then(|w| w.document())
+                && let Some(l) = self.release_listener.borrow().as_ref()
+            {
+                for name in ["pointerup", "pointercancel"] {
+                    let _ = doc.remove_event_listener_with_callback_and_bool(
+                        name,
+                        l.as_ref().unchecked_ref(),
+                        true,
                     );
                 }
-                false
+            }
+            if let (Some(w), Some(l)) = (web_sys::window(), self.focus_listener.borrow().as_ref()) {
+                let _ = w.remove_event_listener_with_callback("focus", l.as_ref().unchecked_ref());
             }
         }
+
+        fn refuse(&self) {
+            outcome("refused");
+            if !WARNED.with(|w| w.replace(true)) {
+                tracing::warn!(
+                    "FilePicker opened outside a user gesture; the browser shows no picker. \
+                     Call pick()/open() from an event handler."
+                );
+            }
+            self.finish(Vec::new());
+        }
+
+        /// Show the picker. `showPicker()` where the browser has it: it
+        /// refuses outright (`NotAllowedError`) without user activation,
+        /// where `click()` is ignored silently and no `change` or `cancel`
+        /// would ever come.
+        fn show(self: &Rc<Self>) {
+            if !REQUIRE_ACTIVATION.with(Cell::get) {
+                self.click();
+                return;
+            }
+            let show_picker = js_sys::Reflect::get(&self.input, &JsValue::from_str("showPicker"))
+                .ok()
+                .and_then(|f| f.dyn_into::<js_sys::Function>().ok());
+            let Some(show_picker) = show_picker else {
+                self.click();
+                return;
+            };
+            match show_picker.call0(&self.input) {
+                Ok(_) => {
+                    outcome("shown");
+                    self.watch_focus_return();
+                }
+                Err(e) => {
+                    let name = js_sys::Reflect::get(&e, &JsValue::from_str("name"))
+                        .ok()
+                        .and_then(|n| n.as_string())
+                        .unwrap_or_default();
+                    if name != "NotAllowedError" {
+                        // Any other refusal: the old way may still work.
+                        self.click();
+                    } else if let Some(pointer) = rinch_core::events::press_without_activation() {
+                        // A touch or pen press runs its click on contact,
+                        // which grants no activation; its release does.
+                        self.show_on_release(pointer);
+                    } else {
+                        self.refuse();
+                    }
+                }
+            }
+        }
+
+        /// `click()`, unless the browser says the page has no user
+        /// activation, in which case it would be ignored with no event.
+        fn click(self: &Rc<Self>) {
+            if REQUIRE_ACTIVATION.with(Cell::get) && !has_user_activation() {
+                self.refuse();
+                return;
+            }
+            outcome("clicked");
+            self.input.click();
+            self.watch_focus_return();
+        }
+
+        /// Open the picker at `pointer`'s `pointerup` (a release grants
+        /// activation for touch and pen); a `pointercancel` (the press became
+        /// a pan) gives no files.
+        fn show_on_release(self: &Rc<Self>, pointer: i32) {
+            let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+                self.finish(Vec::new());
+                return;
+            };
+            outcome("deferred");
+            let session = Rc::downgrade(self);
+            let listener: EventClosure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+                let Some(session) = session.upgrade() else {
+                    return;
+                };
+                let Some(event) = event.dyn_ref::<web_sys::PointerEvent>() else {
+                    return;
+                };
+                if event.pointer_id() != pointer || session.done.get() {
+                    return;
+                }
+                if let Some(doc) = web_sys::window().and_then(|w| w.document())
+                    && let Some(l) = session.release_listener.borrow().as_ref()
+                {
+                    for name in ["pointerup", "pointercancel"] {
+                        let _ = doc.remove_event_listener_with_callback_and_bool(
+                            name,
+                            l.as_ref().unchecked_ref(),
+                            true,
+                        );
+                    }
+                }
+                if event.type_() == "pointerup" {
+                    // No pointer to wait for any more: a second refusal ends it.
+                    session.show();
+                } else {
+                    session.finish(Vec::new());
+                }
+            })
+                as Box<dyn FnMut(web_sys::Event)>);
+            for name in ["pointerup", "pointercancel"] {
+                let _ = doc.add_event_listener_with_callback_and_bool(
+                    name,
+                    listener.as_ref().unchecked_ref(),
+                    true,
+                );
+            }
+            *self.release_listener.borrow_mut() = Some(listener);
+        }
+
+        /// Where the browser has no `cancel` event for a file input (or a
+        /// test forces it): once the window's focus comes back from the
+        /// picker, a picker with no `change` [`FOCUS_RETURN_MS`] later was
+        /// cancelled. Without it a dismissed picker's future would never
+        /// resolve and its input would stay in `<body>`.
+        fn watch_focus_return(self: &Rc<Self>) {
+            let has_cancel =
+                js_sys::Reflect::has(&self.input, &JsValue::from_str("oncancel")).unwrap_or(false);
+            if has_cancel && !FORCE_FOCUS_RETURN.with(Cell::get) {
+                return;
+            }
+            let Some(window) = web_sys::window() else {
+                return;
+            };
+            let session = Rc::downgrade(self);
+            let listener: EventClosure = Closure::wrap(Box::new(move |_: web_sys::Event| {
+                let session = session.clone();
+                let later = Closure::once_into_js(move || {
+                    if let Some(session) = session.upgrade() {
+                        session.finish(Vec::new());
+                    }
+                });
+                if let Some(w) = web_sys::window() {
+                    let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                        later.unchecked_ref(),
+                        FOCUS_RETURN_MS,
+                    );
+                }
+            })
+                as Box<dyn FnMut(web_sys::Event)>);
+            let _ =
+                window.add_event_listener_with_callback("focus", listener.as_ref().unchecked_ref());
+            *self.focus_listener.borrow_mut() = Some(listener);
+        }
+    }
+
+    impl Drop for Session {
+        fn drop(&mut self) {
+            if !self.done.get() {
+                self.detach();
+            }
+        }
+    }
+
+    /// `navigator.userActivation.isActive`, or `true` where a browser does not
+    /// say.
+    fn has_user_activation() -> bool {
+        let get = |o: &JsValue, k: &str| js_sys::Reflect::get(o, &JsValue::from_str(k)).ok();
+        web_sys::window()
+            .and_then(|w| get(&w, "navigator"))
+            .and_then(|n| get(&n, "userActivation"))
+            .filter(|a| a.is_object())
+            .and_then(|a| get(&a, "isActive"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true)
     }
 
     pub(super) fn pick(
@@ -307,30 +509,34 @@ mod web {
         multiple: bool,
     ) -> impl std::future::Future<Output = Vec<LocalFile>> + 'static {
         let slot: Slot<Vec<LocalFile>> = Rc::default();
-        if !open_input(&accept, multiple, &slot) {
+        // The future holds the session; its listeners hold it weakly, so a
+        // future dropped while the picker is up takes the input and the
+        // listeners with it (`Drop for Session`).
+        let session = open_input(&accept, multiple, &slot);
+        if session.is_none() {
             fill(&slot, Vec::new());
         }
-        wait(slot)
+        let wait = wait(slot);
+        async move {
+            let files = wait.await;
+            drop(session);
+            files
+        }
     }
 
     /// Put a hidden `<input type=file>` in the page and show its picker.
-    /// `false` when there is nothing to wait for (no page, or no user gesture).
-    fn open_input(accept: &str, multiple: bool, slot: &Slot<Vec<LocalFile>>) -> bool {
-        let Some(window) = web_sys::window() else {
-            return false;
-        };
-        let Some(document) = window.document() else {
-            return false;
-        };
-        let Some(body) = document.body() else {
-            return false;
-        };
-        let Ok(input) = document
+    /// `None` when there is no page to put it in.
+    fn open_input(
+        accept: &str,
+        multiple: bool,
+        slot: &Slot<Vec<LocalFile>>,
+    ) -> Option<Rc<Session>> {
+        let document = web_sys::window()?.document()?;
+        let body = document.body()?;
+        let input = document
             .create_element("input")
-            .map(|e| e.unchecked_into::<web_sys::HtmlInputElement>())
-        else {
-            return false;
-        };
+            .ok()?
+            .unchecked_into::<web_sys::HtmlInputElement>();
         input.set_type("file");
         input.set_multiple(multiple);
         if !accept.is_empty() {
@@ -343,49 +549,52 @@ mod web {
             "style",
             "position: fixed; left: -10000px; top: 0; width: 1px; height: 1px; opacity: 0",
         );
-        // One closure for `change` (files picked) and `cancel` (none); it
-        // removes the input and drops itself when either arrives.
-        let handler: Rc<RefCell<Option<EventClosure>>> = Rc::default();
-        let closure = {
-            let input = input.clone();
-            let handler = handler.clone();
-            let slot = slot.clone();
-            Closure::wrap(Box::new(move |event: web_sys::Event| {
-                let files = if event.type_() == "change" {
-                    input
-                        .files()
-                        .map(|list| {
-                            (0..list.length())
-                                .filter_map(|i| list.get(i))
-                                .map(from_web_file)
-                                .collect()
-                        })
-                        .unwrap_or_default()
-                } else {
-                    Vec::new()
-                };
-                input.remove();
-                fill(&slot, files);
-                handler.borrow_mut().take();
-            }) as Box<dyn FnMut(web_sys::Event)>)
-        };
+        let session = Rc::new(Session {
+            input: input.clone(),
+            slot: slot.clone(),
+            done: Cell::new(false),
+            input_listener: RefCell::new(None),
+            release_listener: RefCell::new(None),
+            focus_listener: RefCell::new(None),
+        });
+        // One closure for `change` (files picked) and `cancel` (none).
+        let weak = Rc::downgrade(&session);
+        let listener: EventClosure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+            let Some(session) = weak.upgrade() else {
+                return;
+            };
+            let files = if event.type_() == "change" {
+                session
+                    .input
+                    .files()
+                    .map(|list| {
+                        (0..list.length())
+                            .filter_map(|i| list.get(i))
+                            .map(from_web_file)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            session.finish(files);
+        }) as Box<dyn FnMut(web_sys::Event)>);
         for name in ["change", "cancel"] {
-            let _ = input.add_event_listener_with_callback(name, closure.as_ref().unchecked_ref());
+            let _ = input.add_event_listener_with_callback(name, listener.as_ref().unchecked_ref());
         }
-        *handler.borrow_mut() = Some(closure);
+        *session.input_listener.borrow_mut() = Some(listener);
         if body.append_child(&input).is_err() {
-            handler.borrow_mut().take();
-            return false;
+            session.finish(Vec::new());
+            return Some(session);
         }
-        if !show(&input) {
-            input.remove();
-            handler.borrow_mut().take();
-            return false;
-        }
-        true
+        session.show();
+        Some(session)
     }
 }
 
 #[cfg(target_arch = "wasm32")]
 #[doc(hidden)]
-pub use web::{__set_require_user_activation, PICKER_ATTR as __PICKER_ATTR};
+pub use web::{
+    __force_focus_return_watch, __last_picker_outcome, __set_require_user_activation,
+    PICKER_ATTR as __PICKER_ATTR,
+};

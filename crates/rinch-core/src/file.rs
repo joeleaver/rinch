@@ -80,8 +80,9 @@ impl LocalFile {
     }
 
     /// The file at `path`, read on a worker thread when asked. Takes one
-    /// `stat` (for the size); fails when that does. A directory is accepted
-    /// and fails when read, as a dropped folder does in a browser.
+    /// `stat` (for the size); fails when that does. A directory, a FIFO or a
+    /// device is accepted and fails when read (only a regular file is read),
+    /// as a dropped folder does in a browser. A read is of the whole file.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_path(path: impl Into<PathBuf>) -> io::Result<Self> {
         let path = path.into();
@@ -170,7 +171,16 @@ impl FileSource for OnDisk {
                 let filled = shared.clone();
                 let path = path.clone();
                 std::thread::spawn(move || {
-                    let result = std::fs::read(&path);
+                    // A regular file only: a FIFO or a device (dropped from a
+                    // file manager, picked from /dev) would block or never end.
+                    let result = match std::fs::metadata(&path) {
+                        Ok(meta) if meta.is_file() => std::fs::read(&path),
+                        Ok(_) => Err(io::Error::other(format!(
+                            "{} is not a regular file",
+                            path.display()
+                        ))),
+                        Err(e) => Err(e),
+                    };
                     let waker = {
                         let mut slot = filled.lock().unwrap_or_else(|e| e.into_inner());
                         slot.0 = Some(result);
@@ -225,6 +235,31 @@ mod tests {
         assert_eq!(file.size(), 3);
         assert_eq!(file.path(), None);
         assert_eq!(block_on(file.bytes()).unwrap(), vec![1, 2, 3]);
+    }
+
+    /// A FIFO is not read (the read would block until a writer came): the
+    /// read fails at once. Unix only; skipped where `mkfifo` is missing.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_is_refused_not_read() {
+        let path = std::env::temp_dir().join(format!("rinch-fifo-1771-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let Ok(status) = std::process::Command::new("mkfifo").arg(&path).status() else {
+            return;
+        };
+        assert!(status.success());
+        let file = LocalFile::from_path(&path).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(block_on(file.bytes()).is_err());
+        });
+        let refused = rx.recv_timeout(std::time::Duration::from_secs(5));
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            refused,
+            Ok(true),
+            "a FIFO read must fail at once, not block"
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]
