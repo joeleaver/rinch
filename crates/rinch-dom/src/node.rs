@@ -175,6 +175,9 @@ pub struct TextMeasure {
     pub color: AlphaColor<Srgb>,
     /// Whether text wrapping is disabled (white-space: nowrap/pre).
     pub no_wrap: bool,
+    /// The parent's `white-space`: how the text's white space is collapsed,
+    /// and whether its spaces hang (#1279, #1672).
+    pub white_space: crate::computed_style::WhiteSpaceValue,
     /// Extra advance after every typographic character unit, in CSS pixels
     /// (inherited from parent; 0 is `normal`).
     pub letter_spacing: f32,
@@ -729,90 +732,116 @@ impl InlineLayout {
     /// (#1154): parley counts U+00A0 in a line's `trailing_whitespace`, and
     /// so leaves it out of `Layout::width`, where CSS Text 3 §4.1.3 hangs
     /// only spaces and tabs. `x&nbsp;` is as wide as `x` and its NBSP in
-    /// Chrome. See [`Self::width_keeping_nbsp`].
+    /// Chrome. See [`width_keeping_nbsp`].
     pub fn measured_width(&self) -> f32 {
-        let width = self.layout.width();
-        if !self.preserves_spaces {
-            return self.width_keeping_nbsp(width);
-        }
-        use parley::layout::BreakReason;
-        let mut extent = width;
-        for line in self.layout.lines() {
-            if matches!(
-                line.break_reason(),
-                BreakReason::Regular | BreakReason::Emergency
-            ) {
-                continue;
-            }
-            let m = line.metrics();
-            extent = extent.max(m.inline_min_coord + m.advance);
-        }
-        // An NBSP never hangs, not even conditionally (#1154).
-        extent
-            .min(self.max_width.max(width))
-            .max(self.width_keeping_nbsp(width))
+        measured_width_of(
+            &self.layout,
+            &self.text_content,
+            self.preserves_spaces,
+            self.max_width,
+            &self.break_spaces,
+        )
     }
+}
 
-    /// `width` (parley's, which drops every line's trailing white space)
-    /// widened to the lines whose trailing white space holds an NBSP: such a
-    /// line keeps everything up to and including its last NBSP, and drops
-    /// only the spaces, tabs and newline after it. Not clamped to the
-    /// available width: an NBSP never hangs, not even conditionally, so a
-    /// min-content measure must count it. A `break-spaces` space or tab is
-    /// kept like an NBSP: it never hangs either (#1043). A text with no NBSP
-    /// and no `break-spaces` text (every ordinary one) returns `width` after
-    /// one scan of its bytes.
-    fn width_keeping_nbsp(&self, width: f32) -> f32 {
-        if !self.text_content.contains('\u{a0}') && self.break_spaces.is_empty() {
-            return width;
-        }
-        let in_break_spaces = |byte: usize| {
-            let i = self.break_spaces.partition_point(|r| r.end <= byte);
-            self.break_spaces.get(i).is_some_and(|r| r.contains(&byte))
-        };
-        let mut extent = width;
-        for line in self.layout.lines() {
-            let m = line.metrics();
-            if m.trailing_whitespace <= 0.0 {
-                continue;
-            }
-            // The line's clusters in logical order, last first: the trailing
-            // end is logical whatever the direction.
-            let mut clusters: Vec<(usize, f32, bool)> = Vec::new();
-            for run in line.runs() {
-                for c in run.clusters() {
-                    let range = c.text_range();
-                    // A `break-spaces` space or tab is kept the same way: it
-                    // never hangs either (#1043).
-                    let nbsp = self.text_content.get(range.clone()) == Some("\u{a0}")
-                        || (!self.break_spaces.is_empty()
-                            && matches!(self.text_content.get(range.clone()), Some(" " | "\t"))
-                            && in_break_spaces(range.start));
-                    clusters.push((range.start, c.advance(), nbsp));
-                }
-            }
-            clusters.sort_by_key(|&(start, _, _)| start);
-            let mut hung = 0.0;
-            let mut kept_nbsp = false;
-            for &(start, advance, nbsp) in clusters.iter().rev() {
-                if nbsp {
-                    kept_nbsp = true;
-                    break;
-                }
-                let t = self.text_content.get(start..).unwrap_or("");
-                if !t.starts_with([' ', '\t', '\n', '\r']) {
-                    break;
-                }
-                hung += advance;
-            }
-            if kept_nbsp {
-                extent = extent.max(m.inline_min_coord + m.advance - hung);
-            }
-        }
-        // Unlike a preserved space, an NBSP never hangs, so no clamp to the
-        // available width: a min-content measure (width 0) must keep it.
-        extent
+/// [`InlineLayout::measured_width`] for any laid-out text: `layout` built
+/// from `text`, broken at `max_width` (`f32::INFINITY` for none), with
+/// `preserves_spaces` and the `break-spaces` ranges `break_spaces` as the
+/// layout was built with. A text leaf (a flex or grid item's own text) is
+/// measured by it too (#1279).
+pub(crate) fn measured_width_of(
+    layout: &parley::Layout<Brush>,
+    text: &str,
+    preserves_spaces: bool,
+    max_width: f32,
+    break_spaces: &[std::ops::Range<usize>],
+) -> f32 {
+    let width = layout.width();
+    if !preserves_spaces {
+        return width_keeping_nbsp(layout, text, break_spaces, width);
     }
+    use parley::layout::BreakReason;
+    let mut extent = width;
+    for line in layout.lines() {
+        if matches!(
+            line.break_reason(),
+            BreakReason::Regular | BreakReason::Emergency
+        ) {
+            continue;
+        }
+        let m = line.metrics();
+        extent = extent.max(m.inline_min_coord + m.advance);
+    }
+    // An NBSP never hangs, not even conditionally (#1154).
+    extent
+        .min(max_width.max(width))
+        .max(width_keeping_nbsp(layout, text, break_spaces, width))
+}
+
+/// `width` (parley's, which drops every line's trailing white space)
+/// widened to the lines whose trailing white space holds an NBSP: such a
+/// line keeps everything up to and including its last NBSP, and drops
+/// only the spaces, tabs and newline after it. Not clamped to the
+/// available width: an NBSP never hangs, not even conditionally, so a
+/// min-content measure must count it. A `break-spaces` space or tab is
+/// kept like an NBSP: it never hangs either (#1043). A text with no NBSP
+/// and no `break-spaces` text (every ordinary one) returns `width` after
+/// one scan of its bytes.
+fn width_keeping_nbsp(
+    layout: &parley::Layout<Brush>,
+    text_content: &str,
+    break_spaces: &[std::ops::Range<usize>],
+    width: f32,
+) -> f32 {
+    if !text_content.contains('\u{a0}') && break_spaces.is_empty() {
+        return width;
+    }
+    let in_break_spaces = |byte: usize| {
+        let i = break_spaces.partition_point(|r| r.end <= byte);
+        break_spaces.get(i).is_some_and(|r| r.contains(&byte))
+    };
+    let mut extent = width;
+    for line in layout.lines() {
+        let m = line.metrics();
+        if m.trailing_whitespace <= 0.0 {
+            continue;
+        }
+        // The line's clusters in logical order, last first: the trailing
+        // end is logical whatever the direction.
+        let mut clusters: Vec<(usize, f32, bool)> = Vec::new();
+        for run in line.runs() {
+            for c in run.clusters() {
+                let range = c.text_range();
+                // A `break-spaces` space or tab is kept the same way: it
+                // never hangs either (#1043).
+                let nbsp = text_content.get(range.clone()) == Some("\u{a0}")
+                    || (!break_spaces.is_empty()
+                        && matches!(text_content.get(range.clone()), Some(" " | "\t"))
+                        && in_break_spaces(range.start));
+                clusters.push((range.start, c.advance(), nbsp));
+            }
+        }
+        clusters.sort_by_key(|&(start, _, _)| start);
+        let mut hung = 0.0;
+        let mut kept_nbsp = false;
+        for &(start, advance, nbsp) in clusters.iter().rev() {
+            if nbsp {
+                kept_nbsp = true;
+                break;
+            }
+            let t = text_content.get(start..).unwrap_or("");
+            if !t.starts_with([' ', '\t', '\n', '\r']) {
+                break;
+            }
+            hung += advance;
+        }
+        if kept_nbsp {
+            extent = extent.max(m.inline_min_coord + m.advance - hung);
+        }
+    }
+    // Unlike a preserved space, an NBSP never hangs, so no clamp to the
+    // available width: a min-content measure (width 0) must keep it.
+    extent
 }
 
 impl std::fmt::Debug for InlineLayout {

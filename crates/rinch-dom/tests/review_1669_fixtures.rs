@@ -187,7 +187,7 @@ fn only_a_line_aligned_away_from_its_start_pays_the_pass() {
 }
 
 /// Review of #1669, finding 4 (scope, not a regression): a flex item's own
-/// text (a text leaf, `break_leaf_lines`) is aligned by parley's rule still.
+/// text (a text leaf, `shape_text_leaf`) is aligned by parley's rule still.
 /// Chrome 155: 158.58.
 #[test]
 #[ignore = "text leaves are not covered by #1669"]

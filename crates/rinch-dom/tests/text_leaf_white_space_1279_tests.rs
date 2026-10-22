@@ -64,7 +64,12 @@ fn measure(ws: &str, text: &str, font: (f32, f32), width: f32) -> (f32, f32, f32
     let t = d.create_text(text);
     d.append_child(flex, t);
     let line = el(&mut d, root, "div", "");
-    let inline = el(&mut d, line, "div", &format!("display: inline-flex; {typo}"));
+    let inline = el(
+        &mut d,
+        line,
+        "div",
+        &format!("display: inline-flex; {typo}"),
+    );
     let t = d.create_text(text);
     d.append_child(inline, t);
     d.resolve_layout(800.0, 600.0);
@@ -98,11 +103,30 @@ fn check(rows: &[Row]) {
 fn a_collapsible_space_at_the_end_makes_no_line_1279() {
     check(&[
         ("normal", "Use ", (16.0, 25.0), 300.0, 25.0, 29.6875, 25.0),
-        ("normal", "Use  x ", (16.0, 25.0), 300.0, 25.0, 42.921875, 25.0),
-        ("normal", "  a  b  ", (16.0, 25.0), 300.0, 25.0, 23.28125, 25.0),
+        (
+            "normal",
+            "Use  x ",
+            (16.0, 25.0),
+            300.0,
+            25.0,
+            42.921875,
+            25.0,
+        ),
+        (
+            "normal",
+            "  a  b  ",
+            (16.0, 25.0),
+            300.0,
+            25.0,
+            23.28125,
+            25.0,
+        ),
         ("normal", "Use ", (16.0, 25.0), 20.0, 25.0, 29.6875, 25.0),
         ("normal", "aa bb ", (16.0, 25.0), 30.0, 50.0, 42.0625, 25.0),
         ("nowrap", "a b ", (16.0, 25.0), 300.0, 25.0, 23.28125, 25.0),
+        // All white space: no item at all, preserved or not.
+        ("normal", "   ", (16.0, 25.0), 300.0, 0.0, 0.0, 0.0),
+        ("pre-wrap", "   ", (16.0, 25.0), 300.0, 0.0, 0.0, 0.0),
     ]);
 }
 
@@ -112,18 +136,119 @@ fn a_collapsible_space_at_the_end_makes_no_line_1279() {
 fn preserved_white_space_at_the_end_1279() {
     check(&[
         ("pre-wrap", "a\n  ", (10.0, 20.0), 300.0, 40.0, 5.625, 40.0),
-        ("pre-wrap", "a\n  \n", (10.0, 20.0), 300.0, 40.0, 5.625, 40.0),
+        (
+            "pre-wrap",
+            "a\n  \n",
+            (10.0, 20.0),
+            300.0,
+            40.0,
+            5.625,
+            40.0,
+        ),
         ("pre-line", "a\n ", (10.0, 20.0), 300.0, 20.0, 5.625, 20.0),
         ("pre-line", "a\n  ", (10.0, 20.0), 300.0, 20.0, 5.625, 20.0),
-        ("pre-line", "a\n  \n", (10.0, 20.0), 300.0, 40.0, 5.625, 40.0),
-        ("break-spaces", "a\n  ", (10.0, 20.0), 300.0, 40.0, 5.625, 40.0),
-        ("break-spaces", "a\n  \n", (10.0, 20.0), 300.0, 40.0, 5.625, 40.0),
-        ("pre-wrap", "a   ", (16.0, 25.0), 300.0, 25.0, 22.484375, 25.0),
-        ("pre-wrap", "aa   bb", (16.0, 25.0), 30.0, 50.0, 51.0625, 25.0),
+        (
+            "pre-line",
+            "a\n  \n",
+            (10.0, 20.0),
+            300.0,
+            40.0,
+            5.625,
+            40.0,
+        ),
+        (
+            "break-spaces",
+            "a\n  ",
+            (10.0, 20.0),
+            300.0,
+            40.0,
+            5.625,
+            40.0,
+        ),
+        (
+            "break-spaces",
+            "a\n  \n",
+            (10.0, 20.0),
+            300.0,
+            40.0,
+            5.625,
+            40.0,
+        ),
+        (
+            "pre-wrap",
+            "a   ",
+            (16.0, 25.0),
+            300.0,
+            25.0,
+            22.484375,
+            25.0,
+        ),
+        (
+            "pre-wrap",
+            "aa   bb",
+            (16.0, 25.0),
+            30.0,
+            50.0,
+            51.0625,
+            25.0,
+        ),
+        // Spaces at a soft wrap hang, all of them: parley hangs one and
+        // commits the line, and the rest made a line of their own.
+        (
+            "pre-wrap",
+            "aa      ",
+            (16.0, 25.0),
+            30.0,
+            25.0,
+            44.96875,
+            25.0,
+        ),
+        (
+            "pre-wrap",
+            "aa      bb",
+            (16.0, 25.0),
+            30.0,
+            50.0,
+            64.5625,
+            25.0,
+        ),
+        (
+            "pre-wrap",
+            "aa  \n  bb",
+            (16.0, 25.0),
+            30.0,
+            50.0,
+            28.59375,
+            50.0,
+        ),
         ("pre-wrap", "Use ", (16.0, 25.0), 300.0, 25.0, 34.1875, 25.0),
-        ("break-spaces", "a   ", (16.0, 25.0), 300.0, 25.0, 22.484375, 25.0),
-        ("pre-line", "a  b  \nc ", (16.0, 25.0), 300.0, 50.0, 23.28125, 50.0),
-        ("pre-line", "  a\n  b", (16.0, 25.0), 300.0, 50.0, 9.796875, 50.0),
+        (
+            "break-spaces",
+            "a   ",
+            (16.0, 25.0),
+            300.0,
+            25.0,
+            22.484375,
+            25.0,
+        ),
+        (
+            "pre-line",
+            "a  b  \nc ",
+            (16.0, 25.0),
+            300.0,
+            50.0,
+            23.28125,
+            50.0,
+        ),
+        (
+            "pre-line",
+            "  a\n  b",
+            (16.0, 25.0),
+            300.0,
+            50.0,
+            9.796875,
+            50.0,
+        ),
         ("pre", "a  ", (16.0, 25.0), 300.0, 25.0, 17.984375, 25.0),
     ]);
 }
@@ -133,8 +258,24 @@ fn preserved_white_space_at_the_end_1279() {
 #[test]
 fn break_spaces_spaces_do_not_hang_in_a_leaf_1672() {
     check(&[
-        ("break-spaces", "bullet text  x", (16.0, 25.0), 75.0, 50.0, 92.140625, 25.0),
-        ("break-spaces", "bullet text  x", (16.0, 25.0), 40.0, 50.0, 92.140625, 25.0),
+        (
+            "break-spaces",
+            "bullet text  x",
+            (16.0, 25.0),
+            75.0,
+            50.0,
+            92.140625,
+            25.0,
+        ),
+        (
+            "break-spaces",
+            "bullet text  x",
+            (16.0, 25.0),
+            40.0,
+            50.0,
+            92.140625,
+            25.0,
+        ),
     ]);
 }
 
@@ -145,7 +286,12 @@ fn break_spaces_spaces_do_not_hang_in_a_leaf_1672() {
 fn a_split_text_component_is_one_line_tall_1279() {
     let mut d = doc();
     let body = d.body();
-    let root = el(&mut d, body, "div", "margin: 0; font-family: ProbeFace; width: 300px");
+    let root = el(
+        &mut d,
+        body,
+        "div",
+        "margin: 0; font-family: ProbeFace; width: 300px",
+    );
     let flex = el(
         &mut d,
         root,
@@ -172,7 +318,15 @@ fn a_split_text_component_is_one_line_tall_1279() {
 #[test]
 fn line_and_paragraph_separators_in_a_leaf_1268() {
     check(&[
-        ("normal", "x\u{2028}x", (16.0, 25.0), 300.0, 25.0, 21.97, 25.0),
+        (
+            "normal",
+            "x\u{2028}x",
+            (16.0, 25.0),
+            300.0,
+            25.0,
+            21.97,
+            25.0,
+        ),
         ("pre", "x\u{2028}x", (16.0, 25.0), 300.0, 25.0, 21.97, 25.0),
         ("normal", "x\u{85}x", (16.0, 25.0), 300.0, 25.0, 17.47, 25.0),
     ]);

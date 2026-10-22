@@ -6,7 +6,6 @@ use peniko::Brush;
 use peniko::color::{AlphaColor, Srgb};
 
 use crate::RinchDocument;
-use crate::layout;
 use crate::node::{LayoutResult, NodeContext, NodeKind};
 
 /// The parent-inherited text properties a text node's [`TextMeasure`] carries.
@@ -30,6 +29,7 @@ struct TextContextFields {
     line_height_css: String,
     color: AlphaColor<Srgb>,
     no_wrap: bool,
+    white_space: crate::computed_style::WhiteSpaceValue,
     letter_spacing: f32,
     word_spacing: f32,
     overflow_wrap: crate::computed_style::OverflowWrapValue,
@@ -50,6 +50,7 @@ impl TextContextFields {
                 line_height_css: String::new(),
                 color: AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255),
                 no_wrap: false,
+                white_space: WhiteSpaceValue::Normal,
                 letter_spacing: 0.0,
                 word_spacing: 0.0,
                 overflow_wrap: crate::computed_style::OverflowWrapValue::default(),
@@ -79,6 +80,7 @@ impl TextContextFields {
                 cs.white_space,
                 WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre
             ),
+            white_space: cs.white_space,
             letter_spacing: cs.letter_spacing,
             word_spacing: cs.word_spacing,
             overflow_wrap: cs.overflow_wrap,
@@ -99,6 +101,7 @@ impl TextContextFields {
         tm.node_id = node_id;
         tm.color = self.color;
         tm.no_wrap = self.no_wrap;
+        tm.white_space = self.white_space;
         tm.letter_spacing = self.letter_spacing;
         tm.word_spacing = self.word_spacing;
         tm.overflow_wrap = self.overflow_wrap;
@@ -808,93 +811,31 @@ impl RinchDocument {
                                     }
 
                                     shape_text.set(shape_text.get() + 1);
-                                    let font_family = crate::fonts::parley_text_family(
-                                        font_cx,
-                                        &text.font_family,
-                                        &text.content,
-                                    );
-                                    let mut builder =
-                                        layout_cx.ranged_builder(font_cx, &text.content, 1.0, true);
-                                    builder.push_default(parley::style::StyleProperty::FontSize(
-                                        text.font_size,
-                                    ));
-                                    if (text.font_weight - 400.0).abs() > 1.0 {
-                                        builder.push_default(
-                                            parley::style::StyleProperty::FontWeight(
-                                                parley::style::FontWeight::new(text.font_weight),
-                                            ),
-                                        );
-                                    }
-                                    if let Some(lh) =
-                                        layout::css_line_height_to_parley(&text.line_height_css)
-                                    {
-                                        builder.push_default(
-                                            parley::style::StyleProperty::LineHeight(lh),
-                                        );
-                                    }
-                                    font_family.push_to(&mut builder);
-                                    // Add brush so the cached layout can be rendered with color
-                                    builder.push_default(parley::style::StyleProperty::Brush(
-                                        Brush::Solid(text.color),
-                                    ));
-                                    // Apply overflow-wrap for emergency line-breaking
-                                    builder.push_default(
-                                        parley::style::StyleProperty::OverflowWrap(
-                                            text.overflow_wrap.to_parley(),
-                                        ),
-                                    );
-                                    // letter-/word-spacing (#698). The builder's scale
-                                    // is 1.0 here, so these are CSS pixels either way.
-                                    builder.push_default(
-                                        parley::style::StyleProperty::LetterSpacing(
-                                            text.letter_spacing,
-                                        ),
-                                    );
-                                    builder.push_default(
-                                        parley::style::StyleProperty::WordSpacing(
-                                            text.word_spacing,
-                                        ),
-                                    );
-                                    let mut layout = builder.build(&text.content);
                                     // If no_wrap is set (white-space: nowrap), don't constrain width
                                     let wrap_width = if text.no_wrap {
                                         None
                                     } else {
                                         known_dims.width.or(max_width)
                                     };
-                                    let leaf = crate::ifc::break_leaf_lines(
-                                        &mut layout,
-                                        &text.content,
-                                        wrap_width,
+                                    let leaf = crate::ifc::shape_text_leaf(
+                                        font_cx, layout_cx, text, wrap_width,
                                     );
                                     let mut h = hang.get();
-                                    h.add(leaf);
+                                    h.add(leaf.hang);
                                     hang.set(h);
 
                                     // Cache the layout for use during paint
                                     // Use wrap_width bits as part of the key since layout depends on it
                                     let wrap_bits =
                                         wrap_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
-                                    first_baseline = crate::ifc::first_line_baseline(&layout);
+                                    first_baseline = crate::ifc::first_line_baseline(&leaf.layout);
                                     text_layout_cache
                                         .borrow_mut()
-                                        .insert((text.node_id, wrap_bits), layout);
+                                        .insert((text.node_id, wrap_bits), leaf.layout);
 
                                     taffy::Size {
-                                        width: known_dims.width.unwrap_or_else(|| {
-                                            text_layout_cache
-                                                .borrow()
-                                                .get(&(text.node_id, wrap_bits))
-                                                .map(|l| l.width())
-                                                .unwrap_or(0.0)
-                                        }),
-                                        height: known_dims.height.unwrap_or_else(|| {
-                                            text_layout_cache
-                                                .borrow()
-                                                .get(&(text.node_id, wrap_bits))
-                                                .map(|l| l.height())
-                                                .unwrap_or(0.0)
-                                        }),
+                                        width: known_dims.width.unwrap_or(leaf.width),
+                                        height: known_dims.height.unwrap_or(leaf.height),
                                     }
                                 }
                                 Some(NodeContext::Image {
