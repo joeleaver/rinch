@@ -122,7 +122,11 @@ fn check(container: &str, select_css: &str, chrome: (f32, f32)) {
 fn an_author_max_width_below_the_label_width_wins() {
     check("", "max-width: 30px", (30.0, 24.0));
     check("", "padding: 4px 10px; max-width: 30px", (30.0, 32.0));
-    check("width: 100px", "display: block; max-width: 50%", (50.0, 24.0));
+    check(
+        "width: 100px",
+        "display: block; max-width: 50%",
+        (50.0, 24.0),
+    );
 }
 
 #[test]
@@ -143,7 +147,10 @@ fn a_block_select_keeps_its_label_width() {
 fn a_percentage_min_or_max_height_resolves() {
     let got = size("height: 300px", "display: block; min-height: 50%");
     assert_eq!(got, (160.0, 150.0), "Chrome 155: 160 x 150");
-    let got = size("height: 300px", "display: block; max-height: 10%; height: 200px");
+    let got = size(
+        "height: 300px",
+        "display: block; max-height: 10%; height: 200px",
+    );
     assert_eq!(got, (160.0, 30.0), "Chrome 155: 160 x 30");
 }
 
