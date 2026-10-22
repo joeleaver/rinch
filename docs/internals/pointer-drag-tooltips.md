@@ -300,9 +300,11 @@ fails it is left out of the files, not the paths), and the hover walk
 (`find_file_drop_target`) counts either attribute. The editor's leftovers
 (`editor_file_drop`'s `rest`) reach both kinds. Web
 (`event_delegation::install_file_drop`): document **bubble** `dragover`/`drop`
-listeners that prevent the default and dispatch over a live
-`closest("[data-ondropfiles]")` when the drag carries `Files`, and skip an
-event already prevented — the editor's capture `on_drop` prevents every drop it
+listeners that prevent the default over the nearest element with a live
+handler of **either** kind (`nearest_drop_zone`, the desktop walk's rule, so
+nested zones agree) when the drag carries `Files`, dispatch when that element
+has `ondropfiles`, and skip an event already prevented (so a host page's own
+earlier document listener that prevents the drop silences them) — the editor's capture `on_drop` prevents every drop it
 is involved in and hands the files it did not take (non-images, everything on a
 read-only editor or a drop with no picture) to `dispatch_dropped_files` itself.
 Pins: `rinch/src/app/files_drop_1771_tests.rs`, `rinch-web/tests/files_1771.rs`.
@@ -314,10 +316,23 @@ Native: the blocking `rfd` dialog, the future already resolved. Web: a hidden
 but rendered `<input type=file data-rinch-file-picker>` in `<body>` (an input
 that is not rendered makes `showPicker()` throw `NotSupportedError`), one
 closure on `change` and `cancel` that removes the input and drops itself, and
-`showPicker()` — which throws `NotAllowedError` without a user gesture where
+`showPicker()` — which throws `NotAllowedError` without user activation where
 `click()` is ignored silently and no event would ever come; then the future
-resolves empty and a warning is logged once. `click()` where `showPicker` is
-missing or refuses for another reason. Playwright's Firefox grants every page
+resolves empty and a warning is logged once — **unless** the click is being
+dispatched from a touch/pen `pointerdown` (which grants no activation; #1582
+runs such a click on contact when nothing can scroll): rinch-web marks that
+dispatch with `rinch_core::events::set_press_without_activation(Some(pointer
+id))`, and the picker (`Session::show_on_release`) opens on that pointer's
+`pointerup` (activation-triggering for touch and pen), resolving empty on its
+`pointercancel`. `click()` where `showPicker` is missing or refuses for another
+reason, refused when `navigator.userActivation.isActive` says no. Where the
+input has no `oncancel`, a `focus` listener on the window resolves empty
+`FOCUS_RETURN_MS` (1 s) after the focus returns with no `change`. The future
+holds the `Session` (listeners hold it weakly; its `Drop` takes the input and
+listeners away). A desktop read is `std::fs::read` of a regular file only (a
+FIFO or device is refused, `metadata().is_file()`), whole. Pins add
+`rinch-web/tests/real_touch_picker_1771.rs` (trusted CDP touch, run by
+`tests/support/run_real_keys.sh`). Playwright's Firefox grants every page
 activation, so the test's no-gesture phase runs only when
 `navigator.userActivation.isActive` is false.
 

@@ -302,15 +302,23 @@ fn importer() -> NodeHandle {
   [Async Tasks](./async.md)). `file.read(|result| …)` is the callback form; it
   runs later on the UI thread, and is dropped unrun if the component that
   called it unmounts first. Either reads the whole file, again on each call:
-  on the desktop on a worker thread, in a browser with a `FileReader`. A folder
-  dropped from the OS arrives as a file whose read fails.
+  on the desktop on a worker thread, in a browser with a `FileReader`. There is
+  no partial or streamed read: check `size()` first for files that may be
+  large. On the desktop only a regular file is read; a folder, a FIFO or a
+  device dropped from the OS arrives as a file whose read fails (a folder does
+  in a browser too).
 - **The picker.** `FilePicker::new()` (or `rinch::file::pick_files()`), with
   `add_filter(name, &["ext", …])`, `multiple(true)` and, on the desktop,
   `set_title`. `pick()` returns a future of the files (empty when the user
   cancelled); `open(callback)` hands them to a callback. Both open the picker
   **when called**, so call them in the event handler: a browser shows a picker
   only during a user gesture. Outside one the browser refuses, and the picker
-  logs a warning and resolves to no files. On the web a filter's extensions
+  logs a warning and resolves to no files. A touch or pen tap runs its click
+  on contact (unless the element can scroll), before the browser counts the
+  tap as a gesture; the picker then opens when the finger lifts, and gives no
+  files if the touch turns into a pan. Where a browser has no `cancel` event
+  for a file input, a picker with no answer a second after the window's focus
+  comes back is taken as cancelled. On the web a filter's extensions
   are the input's `accept`, which the browser treats as a suggestion. On the
   desktop the picker is the native dialog of [File Dialogs](#file-dialogs) and
   needs the `file-dialogs` feature; it is modal, so `pick()` returns once it
@@ -320,10 +328,16 @@ fn importer() -> NodeHandle {
   on the web, and reads the drop point through `get_click_context()` as
   `onfiledrop` does. The nearest element with a drop handler takes the drop;
   one carrying both `onfiledrop` (paths, desktop only) and `ondropfiles` gets
-  both. An editor that takes pictures (`EditorHandle::on_image_input`) keeps
+  both. Nested zones resolve the same way on both platforms: a drop on an
+  inner `onfiledrop`-only zone inside an `ondropfiles` one goes to the inner
+  zone, which in a browser takes nothing (the drop is still kept from the
+  browser). An editor that takes pictures (`EditorHandle::on_image_input`) keeps
   the image files of a drop on it and hands the rest to the handler around it.
   In a browser, dropping a file anywhere without a handler still opens it in
-  place of the page, as it does on any web page.
+  place of the page, as it does on any web page. rinch listens for drops on
+  the document, after the event has passed through the page: a host page
+  script of its own that cancels the `drop` (`preventDefault`) before it gets
+  there silences `ondropfiles`.
 
 `onfiledrop` (`Vec<PathBuf>`) and `rinch::dialogs` are unchanged and remain
 the desktop-only, path-based forms.
