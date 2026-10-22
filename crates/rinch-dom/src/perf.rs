@@ -331,7 +331,8 @@ define_counters! {
     RepaintFullTheme = "repaint_full_theme",
     /// ...the previous frame was invalidated for a reason not listed above.
     RepaintFullInvalidated = "repaint_full_invalidated",
-    /// ...the GPU backend, which always re-encodes the whole scene.
+    /// ...a whole-scene GPU encode (`build_scene`: embed, Android, DevTools;
+    /// the desktop window repaints its damage, #1718).
     RepaintFullGpu = "repaint_full_gpu",
     /// Area of the software dirty region repainted, in physical pixels
     /// (the whole surface for a full repaint).

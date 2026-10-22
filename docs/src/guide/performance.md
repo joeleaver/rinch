@@ -180,8 +180,15 @@ Some limits on what these numbers mean:
   between repaint the list's own rect. A change that reaches pixels without a `DomDocument`
   write must name its node (`NodeTree::mark_paint_dirty`) or call
   `RinchApp::mark_scene_dirty`, which is counted as `repaint_full_unattributed`.
-- **The GPU backend always repaints in full.** Every painted frame on that
-  backend counts as `repaint_full_gpu`.
+- **The desktop GPU backend repaints the damage too** (#1718). While its UI
+  texture holds the last frame it built, a frame encodes only what its damage
+  reaches, renders that into a target reaching from the window's origin to
+  the damage's far corner, and copies each damage rect into the UI texture;
+  the counters are the software path's (`repaint_partial`, `repaint_none`,
+  `repaint_full_<reason>`). A first frame, a resize, and composite layers
+  coming or going (Vello then renders over another base colour) repaint in
+  full. The embed and Android GPU paths, and DevTools, still encode and render
+  the whole scene each frame, counted as `repaint_full_gpu`.
 - **The software-painter counters are the desktop and Android shells' only.**
   `TinySkiaPainter` counts into its own `SkiaPainterStats` (`stats()`,
   `take_stats()`), which the shell folds into the frame after each software
