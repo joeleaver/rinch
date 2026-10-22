@@ -490,4 +490,28 @@ mod tests {
         scope.dispose();
         assert_eq!(tasks_of(&scope), None, "the entry goes with the component");
     }
+
+    /// A panic inside a task's poll ends the task: it leaves the table and its
+    /// component's set, rather than staying "being polled" for good (where
+    /// `is_finished` answered `false` forever and a later abort or wake only
+    /// marked the stale entry).
+    #[test]
+    fn a_task_that_panics_in_its_poll_is_finished_and_forgotten() {
+        let scope = Scope::new();
+        let handle = scope.run(|| {
+            spawn_local(async {
+                panic!("a task's own panic");
+            })
+        });
+        assert_eq!(tasks_of(&scope), Some(1));
+
+        let unwound =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| poll_task(handle.0)));
+        assert!(unwound.is_err(), "the panic reaches the drain that polled it");
+        assert!(handle.is_finished());
+        assert_eq!(tasks_of(&scope), Some(0), "its id left the component's set");
+        handle.abort(); // a no-op, not a mark on a stale entry
+        assert!(TASKS.with(|t| !t.borrow().contains_key(&handle.0)));
+        scope.dispose();
+    }
 }
