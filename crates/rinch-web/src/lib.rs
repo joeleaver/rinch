@@ -249,6 +249,22 @@ fn web_set_timeout(id: u64, delay_ms: u32) {
     }
 }
 
+/// Poll a `spawn_local` task in a microtask (issue #1767): as soon as the
+/// current JS task is done, as `wasm_bindgen_futures::spawn_local` does, with
+/// no thread and no frame to wait for.
+fn web_schedule_task(id: u64) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::closure::Closure;
+
+    let poll = Closure::once_into_js(move || rinch_core::task::poll_task(id));
+    let global = js_sys::global();
+    if let Ok(queue) = js_sys::Reflect::get(&global, &"queueMicrotask".into())
+        && let Some(queue) = queue.dyn_ref::<js_sys::Function>()
+    {
+        let _ = queue.call1(&global, &poll);
+    }
+}
+
 /// First-mount-only global init shared by every mount. Clearing handlers/context
 /// must NOT run per-root, or a second island would wipe the first.
 fn ensure_global_init() {
@@ -266,6 +282,9 @@ fn ensure_global_init() {
         // no threads, so rinch-core's built-in shared-thread scheduler cannot run
         // here — the web runtime supplies the scheduling half.
         rinch_core::set_timer_backend(web_set_timeout);
+        // And `rinch_core::spawn_local`'s polls off microtasks: nothing drains
+        // the main-thread callback queue in a browser.
+        rinch_core::task::set_task_scheduler(web_schedule_task);
 
         // Theme CSS is page-global (one shared `<style>`). On any signal change
         // (e.g. dark-mode toggle), refresh it once — regardless of which root

@@ -159,6 +159,12 @@ pub mod components {
     pub use rinch_components::*;
 }
 
+/// Futures on the UI thread (issue #1767): [`spawn_local`](task::spawn_local),
+/// [`sleep`](task::sleep). The same on desktop, Android, embed and the web.
+pub mod task {
+    pub use rinch_core::task::{Sleep, TaskHandle, sleep, spawn_local};
+}
+
 pub mod prelude {
     //! Common imports for rinch applications.
     // The one entry point that composes every startup option (issue #493).
@@ -185,6 +191,9 @@ pub mod prelude {
     // Cross-platform one-shot timers (debounce / throttle / delayed work) and the
     // helper to run a closure on the main (UI) thread from a background thread.
     pub use rinch_core::{TimeoutHandle, clear_timeout, run_on_main_thread, set_timeout};
+    // Futures on the UI thread (issue #1767): `spawn_local(async { … })` and
+    // `sleep(duration).await`.
+    pub use rinch_core::{TaskHandle, sleep, spawn_local};
     // Context and stores for sharing state across components
     pub use rinch_core::{
         create_context, create_store, try_use_context, try_use_store, use_context, use_store,

@@ -8,6 +8,7 @@
 - [RSX Syntax](./guide/rsx-syntax.md)
 - [State Management](./guide/hooks.md)
   - [Reactivity](./guide/reactivity.md)
+  - [Async Tasks](./guide/async.md)
   - [Signals](./guide/signals.md)
   - [Effects](./guide/effects.md)
   - [Memos](./guide/memos.md)

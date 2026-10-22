@@ -34,6 +34,7 @@ pub mod match_dom;
 pub mod reactive;
 pub mod reconcile;
 pub mod show;
+pub mod task;
 pub mod timer;
 pub mod virtual_list;
 
@@ -73,6 +74,9 @@ pub use reconcile::{ListOp, diff_keyed};
 pub use main_thread::{
     MainCallbackId, cancel_main_callback, park_main_callback, resume_main_callback,
 };
+
+// Futures on the UI thread (issue #1767)
+pub use task::{Sleep, TaskHandle, sleep, spawn_local};
 
 // Re-export cross-platform timers
 pub use timer::{TimeoutHandle, clear_timeout, fire_timeout, set_timeout, set_timer_backend};

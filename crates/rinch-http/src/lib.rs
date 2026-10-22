@@ -41,6 +41,63 @@ mod wasm;
 #[cfg(target_arch = "wasm32")]
 pub use wasm::fetch;
 
+/// Issue `request` and resolve to its result — the `async` face of [`fetch`]
+/// (issue #1767).
+///
+/// ```ignore
+/// rinch_core::spawn_local(async move {
+///     let session = rinch_http::fetch_async(Request::post(login)).await?;
+///     let projects = rinch_http::fetch_async(Request::get(list)).await?;
+///     projects_signal.set(projects.text());
+/// });
+/// ```
+///
+/// The request starts when the future is first polled, and the future is ready
+/// on the main (UI) thread, as `fetch`'s callback runs there. Poll it on the
+/// main thread — inside [`spawn_local`](rinch_core::spawn_local), say. Dropping
+/// it before it completes discards the result; the request itself is not
+/// cancelled (natively it is a blocking call on a worker thread).
+pub fn fetch_async(
+    request: Request,
+) -> impl std::future::Future<Output = Result<Response, HttpError>> + 'static {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::task::{Poll, Waker};
+
+    type Shared = Rc<RefCell<(Option<Result<Response, HttpError>>, Option<Waker>)>>;
+    async move {
+        let shared: Shared = Rc::default();
+        let filled = shared.clone();
+        // Unowned: the callback only hands the result to this future, whose own
+        // lifetime (its task's) decides when it goes. Owned by the ambient
+        // component, a future polled by something that outlived it would wait
+        // for a callback that was dropped unrun.
+        rinch_core::reactive::unowned(|| {
+            fetch(request, move |result| {
+                let waker = {
+                    let mut slot = filled.borrow_mut();
+                    slot.0 = Some(result);
+                    slot.1.take()
+                };
+                if let Some(waker) = waker {
+                    waker.wake();
+                }
+            })
+        });
+        std::future::poll_fn(move |cx| {
+            let mut slot = shared.borrow_mut();
+            match slot.0.take() {
+                Some(result) => Poll::Ready(result),
+                None => {
+                    slot.1 = Some(cx.waker().clone());
+                    Poll::Pending
+                }
+            }
+        })
+        .await
+    }
+}
+
 /// HTTP request method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
