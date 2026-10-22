@@ -3449,12 +3449,13 @@ impl RinchApp {
         // its handlers (issue #141) while nothing strips the attribute from a
         // node that outlives them, and this walk commits to the first node
         // carrying a live one.
-        let live = |node: &rinch_dom::node::Node, attr: &str, has: fn(events::EventHandlerId) -> bool| {
-            node.attributes
-                .get(attr)
-                .and_then(|v| v.parse::<usize>().ok())
-                .filter(|&id| has(events::EventHandlerId(id)))
-        };
+        let live =
+            |node: &rinch_dom::node::Node, attr: &str, has: fn(events::EventHandlerId) -> bool| {
+                node.attributes
+                    .get(attr)
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .filter(|&id| has(events::EventHandlerId(id)))
+            };
         let found = {
             let d = doc.borrow();
             let mut current = Some(hit_id);
@@ -3464,7 +3465,11 @@ impl RinchApp {
                 let path_handler = live(node, "data-onfiledrop", events::has_file_drop_handler);
                 let file_handler = live(node, "data-ondropfiles", events::has_files_drop_handler);
                 if path_handler.is_some() || file_handler.is_some() {
-                    found = Some((path_handler, file_handler, painted_element_box(&d.tree, nid)));
+                    found = Some((
+                        path_handler,
+                        file_handler,
+                        painted_element_box(&d.tree, nid),
+                    ));
                     break;
                 }
                 current = node.parent;

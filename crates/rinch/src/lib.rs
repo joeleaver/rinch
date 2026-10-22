@@ -73,6 +73,10 @@ pub mod app_builder;
 pub mod editor;
 #[cfg(any(feature = "gpu", feature = "embed"))]
 pub mod embed;
+/// Files from the user on the desktop and the web (issue #1771): the
+/// [`FilePicker`](file::FilePicker) and the [`LocalFile`](file::LocalFile)s an
+/// `ondropfiles` handler receives.
+pub mod file;
 /// Focus-target registration for custom keyboard-owning components (issue #147).
 /// Gated with [`app`], whose focus arbiter it serves.
 #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
@@ -97,10 +101,6 @@ pub mod shell;
 /// [`scale_factor`](window::scale_factor), [`window_size`](window::window_size)
 /// and [`window_focused`](window::window_focused).
 pub mod window;
-/// Files from the user on the desktop and the web (issue #1771): the
-/// [`FilePicker`](file::FilePicker) and the [`LocalFile`](file::LocalFile)s an
-/// `ondropfiles` handler receives.
-pub mod file;
 #[cfg(feature = "desktop")]
 pub mod windows;
 #[cfg(all(feature = "android", not(feature = "desktop")))]

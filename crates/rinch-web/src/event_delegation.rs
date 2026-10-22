@@ -1766,7 +1766,10 @@ pub(crate) fn dropped_files(dt: &web_sys::DataTransfer) -> Vec<web_sys::File> {
 /// Hand `files`, dropped by `event`, to the `ondropfiles` handler nearest the
 /// drop target (issue #1771), with the click context desktop gives a drop
 /// handler. `false` when no live handler is there.
-pub(crate) fn dispatch_dropped_files(event: &web_sys::DragEvent, files: Vec<web_sys::File>) -> bool {
+pub(crate) fn dispatch_dropped_files(
+    event: &web_sys::DragEvent,
+    files: Vec<web_sys::File>,
+) -> bool {
     let Some((handler_el, id)) = drag_target_element(event).and_then(|el| nearest_files_drop(&el))
     else {
         return false;

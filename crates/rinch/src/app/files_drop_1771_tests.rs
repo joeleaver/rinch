@@ -14,7 +14,8 @@ struct Dir(PathBuf);
 
 impl Dir {
     fn new(test: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("rinch-files-1771-{test}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("rinch-files-1771-{test}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         Self(dir)
     }
@@ -113,13 +114,22 @@ fn a_drop_hands_ondropfiles_named_sized_files_that_read_on_demand() {
     assert!(band.borrow().is_empty() && both.borrow().is_empty());
     let got = files.borrow().clone();
     assert_eq!(got.len(), 1, "one dispatch");
-    let names: Vec<_> = got[0].iter().map(|f| (f.name().to_string(), f.size())).collect();
-    assert_eq!(names, vec![("model.glb".into(), 8), ("notes.txt".into(), 5)]);
+    let names: Vec<_> = got[0]
+        .iter()
+        .map(|f| (f.name().to_string(), f.size()))
+        .collect();
+    assert_eq!(
+        names,
+        vec![("model.glb".into(), 8), ("notes.txt".into(), 5)]
+    );
     assert_eq!(got[0][0].path(), Some(glb.as_path()));
     // Read lazily: a write after the drop is what the read sees.
     std::fs::write(&txt, b"rewritten").unwrap();
     assert_eq!(block_on(got[0][1].bytes()).unwrap(), b"rewritten");
-    assert_eq!(block_on(got[0][0].bytes()).unwrap(), b"glTF\x02\x00\x00\x00");
+    assert_eq!(
+        block_on(got[0][0].bytes()).unwrap(),
+        b"glTF\x02\x00\x00\x00"
+    );
 }
 
 #[test]
@@ -173,7 +183,10 @@ fn an_editor_that_takes_pictures_hands_the_rest_to_ondropfiles() {
     let got = files.borrow();
     assert_eq!(got.len(), 1, "the rest of the drop reaches ondropfiles");
     assert_eq!(
-        got[0].iter().map(|f| f.path().unwrap().to_path_buf()).collect::<Vec<_>>(),
+        got[0]
+            .iter()
+            .map(|f| f.path().unwrap().to_path_buf())
+            .collect::<Vec<_>>(),
         vec![pdf]
     );
 }

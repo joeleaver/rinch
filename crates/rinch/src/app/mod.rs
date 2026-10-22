@@ -119,8 +119,6 @@ mod editor_image_drop_review_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_image_drop_tests;
 #[cfg(all(test, feature = "desktop"))]
-mod files_drop_1771_tests;
-#[cfg(all(test, feature = "desktop"))]
 mod editor_image_hover_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_inline_leaf_tests;
@@ -163,6 +161,8 @@ mod element_key_1678_tests;
 mod event_dispatch;
 #[cfg(test)]
 mod file_drop_click_context_1650_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod files_drop_1771_tests;
 mod focus;
 #[cfg(test)]
 mod focus_lifecycle_tests;

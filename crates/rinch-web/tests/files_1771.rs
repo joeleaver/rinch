@@ -78,7 +78,9 @@ fn drop_on(target: &web_sys::Element, files: &[web_sys::File]) -> (bool, bool) {
     (fire("dragover"), fire("drop"))
 }
 
-fn mount(build: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static) -> (RootHandle, web_sys::Element) {
+fn mount(
+    build: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static,
+) -> (RootHandle, web_sys::Element) {
     let host = document().create_element("div").unwrap();
     host.set_attribute("style", "width: 300px;").unwrap();
     document().body().unwrap().append_child(&host).unwrap();
@@ -94,7 +96,11 @@ fn recorder(got: &Got) -> impl Fn(Vec<LocalFile>) + 'static {
     move |files: Vec<LocalFile>| {
         for f in files {
             let got = got.clone();
-            let (name, size, path) = (f.name().to_string(), f.size(), f.path().map(|p| p.to_path_buf()));
+            let (name, size, path) = (
+                f.name().to_string(),
+                f.size(),
+                f.path().map(|p| p.to_path_buf()),
+            );
             f.read(move |bytes| {
                 got.borrow_mut()
                     .push((name, size, path, bytes.expect("a dropped file reads")));
@@ -120,20 +126,36 @@ async fn dropped_files_reach_ondropfiles_with_their_names_and_bytes() {
     let a = file("model.glb", "model/gltf-binary", b"glTF\x02\x00\x00\x00");
     let b = file("notes.txt", "text/plain", b"hello");
     // Dropped on a child: the nearest `ondropfiles` ancestor takes it.
-    assert_eq!(drop_on(&span, &[a, b]), (true, true), "both events prevented over a zone");
-    assert!(wait_for(|| got.borrow().len() == 2).await, "both files read: {:?}", got.borrow());
+    assert_eq!(
+        drop_on(&span, &[a, b]),
+        (true, true),
+        "both events prevented over a zone"
+    );
+    assert!(
+        wait_for(|| got.borrow().len() == 2).await,
+        "both files read: {:?}",
+        got.borrow()
+    );
     let mut seen = got.borrow().clone();
     seen.sort_by(|x, y| x.0.cmp(&y.0));
     assert_eq!(
         seen,
         vec![
-            ("model.glb".into(), 8, None, b"glTF\x02\x00\x00\x00".to_vec()),
+            (
+                "model.glb".into(),
+                8,
+                None,
+                b"glTF\x02\x00\x00\x00".to_vec()
+            ),
             ("notes.txt".into(), 5, None, b"hello".to_vec()),
         ]
     );
     // Outside a zone the browser keeps the drop, and nothing is dispatched.
     let elsewhere = host.query_selector("#elsewhere").unwrap().unwrap();
-    assert_eq!(drop_on(&elsewhere, &[file("x.bin", "", b"x")]), (false, false));
+    assert_eq!(
+        drop_on(&elsewhere, &[file("x.bin", "", b"x")]),
+        (false, false)
+    );
     wait(30).await;
     assert_eq!(got.borrow().len(), 2);
     root.unmount();
@@ -261,6 +283,51 @@ async fn the_picker_resolves_on_change_and_cancel_and_not_without_a_gesture() {
     assert_eq!(*cancelled.borrow(), Some(0));
     assert!(picker_input().is_none());
     rinch::file::__set_require_user_activation(true);
+    root.unmount();
+    host.remove();
+}
+
+/// The guide's example (`docs/src/guide/platform.md#files-from-the-user-web-and-desktop`),
+/// verbatim, so it keeps compiling; a drop on its zone reads the file.
+#[component]
+fn importer() -> NodeHandle {
+    let status = Signal::new(String::from("pick or drop a model"));
+    let load = move |files: Vec<LocalFile>| {
+        for file in files {
+            spawn_local(async move {
+                match file.bytes().await {
+                    Ok(bytes) => status.set(format!("{}: {} bytes", file.name(), bytes.len())),
+                    Err(e) => status.set(format!("{}: {e}", file.name())),
+                }
+            });
+        }
+    };
+    rsx! {
+        div {
+            button {
+                onclick: move || FilePicker::new().add_filter("glTF", &["glb", "gltf"]).open(load),
+                "Import…"
+            }
+            div { ondropfiles: load, style: "height: 120px", "drop a model here" }
+            p { {|| status.get()} }
+        }
+    }
+}
+
+#[wasm_bindgen_test]
+async fn the_guide_example_reads_a_dropped_file() {
+    let (root, host) = mount(|__scope: &mut RenderScope| importer(__scope));
+    let zone = host
+        .query_selector("div[data-ondropfiles]")
+        .unwrap()
+        .unwrap();
+    assert_eq!(drop_on(&zone, &[file("m.glb", "", b"12345")]), (true, true));
+    let p = host.query_selector("p").unwrap().unwrap();
+    assert!(
+        wait_for(|| p.text_content().as_deref() == Some("m.glb: 5 bytes")).await,
+        "{:?}",
+        p.text_content()
+    );
     root.unmount();
     host.remove();
 }

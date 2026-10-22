@@ -208,8 +208,8 @@ mod web {
         fn read(&self) -> ReadFuture {
             let file = self.0.clone();
             Box::pin(async move {
-                let reader = web_sys::FileReader::new()
-                    .map_err(|e| io::Error::other(format!("{e:?}")))?;
+                let reader =
+                    web_sys::FileReader::new().map_err(|e| io::Error::other(format!("{e:?}")))?;
                 let slot: Slot<io::Result<Vec<u8>>> = Rc::default();
                 let filled = slot.clone();
                 // `loadend` fires once, after a success or a failure; the
@@ -385,4 +385,4 @@ mod web {
 
 #[cfg(target_arch = "wasm32")]
 #[doc(hidden)]
-pub use web::{PICKER_ATTR as __PICKER_ATTR, __set_require_user_activation};
+pub use web::{__set_require_user_activation, PICKER_ATTR as __PICKER_ATTR};
