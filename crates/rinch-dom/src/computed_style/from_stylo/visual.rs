@@ -285,58 +285,57 @@ pub(super) fn box_shadow_from_stylo(
         .collect()
 }
 
+/// One `background-image` entry as rinch paints it: a linear or radial
+/// gradient, or a `url()`. `None` for `none`, a conic gradient, a gradient
+/// with no stops and an empty url.
+fn background_image_from_stylo(
+    image: &style::values::computed::image::Image,
+    text_color: &style::color::AbsoluteColor,
+) -> Option<BackgroundValue> {
+    use style::values::computed::image::Image;
+    use style::values::generics::image::GenericGradient;
+    match image {
+        Image::Gradient(boxed_gradient) => match &**boxed_gradient {
+            GenericGradient::Linear {
+                direction, items, ..
+            } => {
+                let stops = gradient_stops_from_stylo(items, text_color);
+                (!stops.is_empty()).then(|| BackgroundValue::LinearGradient {
+                    angle_degrees: gradient_direction_to_angle(direction),
+                    stops,
+                })
+            }
+            GenericGradient::Radial { items, .. } => {
+                let stops = gradient_stops_from_stylo(items, text_color);
+                (!stops.is_empty()).then_some(BackgroundValue::RadialGradient { stops })
+            }
+            _ => None, // conic gradients not supported yet
+        },
+        Image::Url(url_value) => {
+            let url_str = match url_value {
+                style::values::computed::url::ComputedUrl::Valid(url) => url.as_str().to_string(),
+                style::values::computed::url::ComputedUrl::Invalid(s) => s.to_string(),
+            };
+            (!url_str.is_empty()).then_some(BackgroundValue::Image { url: url_str })
+        }
+        _ => None,
+    }
+}
+
+/// The first background layer's image, else the `background-color`.
 pub(super) fn background_from_stylo(
     bg: &style::properties::style_structs::Background,
     text_color: &style::color::AbsoluteColor,
 ) -> BackgroundValue {
-    use style::values::computed::image::Image;
-    use style::values::generics::image::GenericGradient;
-
-    // Check for gradient or image URL in background-image first
-    if !bg.background_image.0.is_empty() {
-        match &bg.background_image.0[0] {
-            Image::Gradient(boxed_gradient) => {
-                let gradient = &**boxed_gradient;
-                match gradient {
-                    GenericGradient::Linear {
-                        direction, items, ..
-                    } => {
-                        let angle = gradient_direction_to_angle(direction);
-                        let stops = gradient_stops_from_stylo(items, text_color);
-                        if !stops.is_empty() {
-                            return BackgroundValue::LinearGradient {
-                                angle_degrees: angle,
-                                stops,
-                            };
-                        }
-                    }
-                    GenericGradient::Radial { items, .. } => {
-                        let stops = gradient_stops_from_stylo(items, text_color);
-                        if !stops.is_empty() {
-                            return BackgroundValue::RadialGradient { stops };
-                        }
-                    }
-                    _ => {} // conic gradients not supported yet
-                }
-            }
-            Image::Url(url_value) => {
-                let url_str = match url_value {
-                    style::values::computed::url::ComputedUrl::Valid(url) => {
-                        url.as_str().to_string()
-                    }
-                    style::values::computed::url::ComputedUrl::Invalid(s) => s.to_string(),
-                };
-                if !url_str.is_empty() {
-                    return BackgroundValue::Image { url: url_str };
-                }
-            }
-            _ => {}
-        }
+    if let Some(image) = bg
+        .background_image
+        .0
+        .first()
+        .and_then(|i| background_image_from_stylo(i, text_color))
+    {
+        return image;
     }
-
-    // Fall back to background-color
-    let color = color_from_computed(&bg.background_color, text_color);
-    match color {
+    match color_from_computed(&bg.background_color, text_color) {
         Some(c) => BackgroundValue::Color(c),
         None => BackgroundValue::None,
     }
@@ -366,10 +365,58 @@ pub(super) fn background_underlay_from_stylo(
     }
 }
 
-/// The first layer's `background-size` (#468). A `NonNegativeLengthPercentage`
-/// that is a genuine mixed `calc()` keeps its affine pair.
-pub(super) fn background_size_from_stylo(
+/// The background layers after the first (#1142), top to bottom, each with
+/// the entries of the other lists at its index. A list shorter than the
+/// image list repeats (css-backgrounds-3 §2.2: index `i` takes entry
+/// `i mod len`). Layers with nothing to paint are left out, so a single
+/// image — or none — allocates nothing.
+pub(super) fn background_layers_from_stylo(
     bg: &style::properties::style_structs::Background,
+    text_color: &style::color::AbsoluteColor,
+) -> Vec<BackgroundLayer> {
+    let images = &bg.background_image.0;
+    if images.len() < 2 {
+        return Vec::new();
+    }
+    images
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter_map(|(i, image)| {
+            Some(BackgroundLayer {
+                image: background_image_from_stylo(image, text_color)?,
+                geometry: background_geometry_from_stylo(bg, i),
+            })
+        })
+        .collect()
+}
+
+/// Layer `i`'s geometry, each list indexed modulo its length.
+pub(super) fn background_geometry_from_stylo(
+    bg: &style::properties::style_structs::Background,
+    i: usize,
+) -> BackgroundLayerGeometry {
+    let (repeat_x, repeat_y) = background_repeat_from_stylo(bg, i);
+    BackgroundLayerGeometry {
+        size: background_size_from_stylo(bg, i),
+        position_x: background_position_from_stylo(&bg.background_position_x.0, i),
+        position_y: background_position_from_stylo(&bg.background_position_y.0, i),
+        repeat_x,
+        repeat_y,
+        origin: background_origin_from_stylo(bg, i),
+    }
+}
+
+/// Entry `i` of a background list, repeated to any index (§2.2).
+fn nth<T>(list: &[T], i: usize) -> Option<&T> {
+    (!list.is_empty()).then(|| &list[i % list.len()])
+}
+
+/// Layer `i`'s `background-size` (#468). A `NonNegativeLengthPercentage`
+/// that is a genuine mixed `calc()` keeps its affine pair.
+fn background_size_from_stylo(
+    bg: &style::properties::style_structs::Background,
+    i: usize,
 ) -> BackgroundSizeValue {
     use style::values::generics::background::BackgroundSize;
     use style::values::generics::length::LengthPercentageOrAuto;
@@ -387,7 +434,7 @@ pub(super) fn background_size_from_stylo(
             }
         }
     };
-    match bg.background_size.0.first() {
+    match nth(&bg.background_size.0, i) {
         Some(BackgroundSize::ExplicitSize { width, height }) => BackgroundSizeValue::Explicit {
             width: axis(width),
             height: axis(height),
@@ -398,13 +445,14 @@ pub(super) fn background_size_from_stylo(
     }
 }
 
-/// The first layer's `background-position-x` or `-y` (#468). A zero length is
+/// Layer `i`'s `background-position-x` or `-y` (#468). A zero length is
 /// `Zero`, the unitless value that interpolates against a percentage as well
 /// as a length, so an animation from `0 0` to `-200% 0` does not snap.
-pub(super) fn background_position_from_stylo(
+fn background_position_from_stylo(
     list: &[style::values::computed::LengthPercentage],
+    i: usize,
 ) -> LengthPercentageValue {
-    let Some(lp) = list.first() else {
+    let Some(lp) = nth(list, i) else {
         return LengthPercentageValue::Zero;
     };
     match super::calc::split_length_percentage(lp) {
@@ -415,9 +463,10 @@ pub(super) fn background_position_from_stylo(
     }
 }
 
-/// The first layer's `background-repeat`, per axis (#468).
-pub(super) fn background_repeat_from_stylo(
+/// Layer `i`'s `background-repeat`, per axis (#468).
+fn background_repeat_from_stylo(
     bg: &style::properties::style_structs::Background,
+    i: usize,
 ) -> (BackgroundRepeatValue, BackgroundRepeatValue) {
     use style::values::specified::background::BackgroundRepeatKeyword as K;
     let one = |k: K| match k {
@@ -426,18 +475,19 @@ pub(super) fn background_repeat_from_stylo(
         K::Round => BackgroundRepeatValue::Round,
         K::NoRepeat => BackgroundRepeatValue::NoRepeat,
     };
-    match bg.background_repeat.0.first() {
+    match nth(&bg.background_repeat.0, i) {
         Some(r) => (one(r.0), one(r.1)),
         None => (BackgroundRepeatValue::Repeat, BackgroundRepeatValue::Repeat),
     }
 }
 
-/// The first layer's `background-origin` (#468).
-pub(super) fn background_origin_from_stylo(
+/// Layer `i`'s `background-origin` (#468).
+fn background_origin_from_stylo(
     bg: &style::properties::style_structs::Background,
+    i: usize,
 ) -> BackgroundOriginValue {
     use style::properties::longhands::background_origin::single_value::computed_value::T;
-    match bg.background_origin.0.first() {
+    match nth(&bg.background_origin.0, i) {
         Some(T::BorderBox) => BackgroundOriginValue::BorderBox,
         Some(T::ContentBox) => BackgroundOriginValue::ContentBox,
         _ => BackgroundOriginValue::PaddingBox,

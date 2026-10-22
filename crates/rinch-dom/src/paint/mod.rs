@@ -3748,11 +3748,12 @@ fn paint_node(
             // to decide something is not worth drawing; the style has to keep
             // the colour it was given.
             let paints_a_background = visible
-                && match &node.computed_style.background {
-                    BackgroundValue::None => false,
-                    BackgroundValue::Color(c) => c.components[3] > 0.0,
-                    _ => true,
-                };
+                && (!node.computed_style.background_layers.is_empty()
+                    || match &node.computed_style.background {
+                        BackgroundValue::None => false,
+                        BackgroundValue::Color(c) => c.components[3] > 0.0,
+                        _ => true,
+                    });
 
             // **Two ways a clip layer can be certain to clip nothing, and
             // neither of them is free to push.**

@@ -1,6 +1,7 @@
-//! Painting an element's background: the colour, and the first image layer
-//! sized, positioned and tiled by `background-size`, `background-position`,
-//! `background-repeat` and `background-origin` (#468).
+//! Painting an element's background: the colour, and every image layer
+//! sized, positioned and tiled by its entries of `background-size`,
+//! `background-position`, `background-repeat` and `background-origin` (#468,
+//! #1142).
 //!
 //! Before #468 none of those four reached `ComputedStyle`, and an image layer
 //! was stretched over the border box. That is also what this module still
@@ -49,9 +50,15 @@
 //! keeps the fractional phase and blends the edge pixel, so its stripes move
 //! smoothly; rinch's are within one device pixel of it at every frame.
 //!
-//! Only the **first** layer is read: a comma-separated `background-image`
-//! list paints its first image. The `background-color` is painted under it
-//! ([`ComputedStyle::background_underlay`](crate::computed_style::ComputedStyle)).
+//! **Every layer** of a comma-separated `background-image` list is painted
+//! (#1142), from the last listed (the bottom) to the first, over the
+//! `background-color`. Each layer takes the entry of every other background
+//! list at its index, a shorter list repeating (css-backgrounds-3 §2.2), and
+//! is drawn by the steps above on its own, so each repeating layer is its
+//! own cached pattern. The first layer is `ComputedStyle::background` and
+//! its six geometry fields, the only layer a transition or animation of
+//! `background-position` moves; the others are
+//! [`ComputedStyle::background_layers`](crate::computed_style::ComputedStyle).
 
 #[cfg(feature = "software-renderer")]
 use std::cell::RefCell;
@@ -70,9 +77,9 @@ use super::painter::RepeatTile;
 use super::painter::{PaintShape, Painter};
 use super::svg::{build_linear_gradient_brush, build_radial_gradient_brush};
 use crate::computed_style::{
-    BackgroundOriginValue, BackgroundRepeatValue, BackgroundSizeValue, BackgroundValue,
-    BorderStyleValue, ComputedStyle, LengthPercentageAutoValue, LengthPercentageValue,
-    ObjectFitValue,
+    BackgroundLayerGeometry, BackgroundOriginValue, BackgroundRepeatValue, BackgroundSizeValue,
+    BackgroundValue, BorderStyleValue, ComputedStyle, LengthPercentageAutoValue,
+    LengthPercentageValue, ObjectFitValue,
 };
 use crate::node::NodeTree;
 #[cfg(feature = "software-renderer")]
@@ -80,7 +87,8 @@ use crate::perf::Counter;
 
 /// Paint the element's background into `shape` (its border box, rounded or
 /// with viewport holes cut out, already built by the caller), whose bounding
-/// rect is `rect`.
+/// rect is `rect`: the colour, then every image layer from the bottom of the
+/// list to its top (#1142).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_background(
     painter: &mut dyn Painter,
@@ -92,75 +100,125 @@ pub(super) fn paint_background(
     shape: &PaintShape,
     transform: Affine,
 ) {
-    match &cs.background {
-        BackgroundValue::None => {}
-        BackgroundValue::Color(c) => painter.fill_color(fill, transform, *c, shape),
-        image => {
-            if let Some(under) = cs.background_underlay {
-                painter.fill_color(fill, transform, under, shape);
-            }
-            let intrinsic = match image {
-                BackgroundValue::Image { url } => match tree.image_cache.get(url) {
-                    Some(decoded) => {
-                        Some((decoded.width as f64 * scale, decoded.height as f64 * scale))
-                    }
-                    // Not loaded yet: nothing to draw.
-                    None => return,
-                },
-                _ => None,
-            };
-            let Some(layer) = layer_geometry(cs, scale, rect, intrinsic) else {
-                return;
-            };
-            let snap = DeviceSnap::of(transform);
-
-            // 1. One tile covering the whole painting area needs no clip:
-            // the shape is the clip. A gradient is filled *into the shape*,
-            // so a tile that covers it is enough; an image is drawn into its
-            // tile rect, so only a tile that *is* the shape (a plain rect).
-            if let Some(tile) = layer.covering_tile(rect, snap) {
-                let direct = match image {
-                    BackgroundValue::Image { .. } => {
-                        matches!(shape, PaintShape::Rect(_)) && same_rect(tile, rect)
-                    }
-                    _ => true,
-                };
-                if direct {
-                    draw_tile(painter, tree, image, scale, fill, transform, tile, shape);
-                } else {
-                    // One image tile covering the box (`cover`): one clipped
-                    // draw, no raster (the pattern path resamples it into a
-                    // device-size copy first).
-                    painter.push_clip(fill, transform, shape);
-                    draw_tile(painter, tree, image, scale, fill, transform, tile, shape);
-                    painter.pop_layer();
-                }
-                return;
-            }
-
-            // 2. A repeating layer is one pattern (#468's review, F2/N1).
-            if (layer.repeats_x || layer.repeats_y)
-                && fill_as_pattern(
-                    painter, tree, image, scale, fill, transform, &layer, rect, shape, snap,
-                )
-            {
-                return;
-            }
-
-            // 3. Tile by tile, over the tiles that can be seen.
-            let visible = visible_in_shape_space(rect, transform);
-            let tiles = layer.tiles(visible, snap);
-            if tiles.is_empty() {
-                return;
-            }
-            painter.push_clip(fill, transform, shape);
-            for tile in &tiles {
-                let target = PaintShape::Rect(tile.intersect(rect));
-                draw_tile(painter, tree, image, scale, fill, transform, *tile, &target);
-            }
-            painter.pop_layer();
+    let colour = match &cs.background {
+        BackgroundValue::None => None,
+        BackgroundValue::Color(c) => Some(*c),
+        _ => cs.background_underlay,
+    };
+    if let Some(c) = colour {
+        // A transparent colour under image layers writes no pixel (card K24;
+        // without layers, paint does not get here for one).
+        if c.components[3] > 0.0 || cs.background_layers.is_empty() {
+            painter.fill_color(fill, transform, c, shape);
         }
     }
+    for layer in cs.background_layers.iter().rev() {
+        paint_layer(
+            painter,
+            tree,
+            cs,
+            &layer.image,
+            layer.geometry,
+            scale,
+            rect,
+            fill,
+            shape,
+            transform,
+        );
+    }
+    if !matches!(
+        cs.background,
+        BackgroundValue::None | BackgroundValue::Color(_)
+    ) {
+        paint_layer(
+            painter,
+            tree,
+            cs,
+            &cs.background,
+            cs.first_background_geometry(),
+            scale,
+            rect,
+            fill,
+            shape,
+            transform,
+        );
+    }
+}
+
+/// Paint one image layer (a gradient or a `url()`), sized, positioned and
+/// tiled by `geometry`.
+#[allow(clippy::too_many_arguments)]
+fn paint_layer(
+    painter: &mut dyn Painter,
+    tree: &NodeTree,
+    cs: &ComputedStyle,
+    image: &BackgroundValue,
+    geometry: BackgroundLayerGeometry,
+    scale: f64,
+    rect: Rect,
+    fill: Fill,
+    shape: &PaintShape,
+    transform: Affine,
+) {
+    let intrinsic = match image {
+        BackgroundValue::Image { url } => match tree.image_cache.get(url) {
+            Some(decoded) => Some((decoded.width as f64 * scale, decoded.height as f64 * scale)),
+            // Not loaded yet: nothing to draw.
+            None => return,
+        },
+        BackgroundValue::None | BackgroundValue::Color(_) => return,
+        _ => None,
+    };
+    let Some(layer) = layer_geometry(cs, geometry, scale, rect, intrinsic) else {
+        return;
+    };
+    let snap = DeviceSnap::of(transform);
+
+    // 1. One tile covering the whole painting area needs no clip:
+    // the shape is the clip. A gradient is filled *into the shape*,
+    // so a tile that covers it is enough; an image is drawn into its
+    // tile rect, so only a tile that *is* the shape (a plain rect).
+    if let Some(tile) = layer.covering_tile(rect, snap) {
+        let direct = match image {
+            BackgroundValue::Image { .. } => {
+                matches!(shape, PaintShape::Rect(_)) && same_rect(tile, rect)
+            }
+            _ => true,
+        };
+        if direct {
+            draw_tile(painter, tree, image, scale, fill, transform, tile, shape);
+        } else {
+            // One image tile covering the box (`cover`): one clipped
+            // draw, no raster (the pattern path resamples it into a
+            // device-size copy first).
+            painter.push_clip(fill, transform, shape);
+            draw_tile(painter, tree, image, scale, fill, transform, tile, shape);
+            painter.pop_layer();
+        }
+        return;
+    }
+
+    // 2. A repeating layer is one pattern (#468's review, F2/N1).
+    if (layer.repeats_x || layer.repeats_y)
+        && fill_as_pattern(
+            painter, tree, image, scale, fill, transform, &layer, rect, shape, snap,
+        )
+    {
+        return;
+    }
+
+    // 3. Tile by tile, over the tiles that can be seen.
+    let visible = visible_in_shape_space(rect, transform);
+    let tiles = layer.tiles(visible, snap);
+    if tiles.is_empty() {
+        return;
+    }
+    painter.push_clip(fill, transform, shape);
+    for tile in &tiles {
+        let target = PaintShape::Rect(tile.intersect(rect));
+        draw_tile(painter, tree, image, scale, fill, transform, *tile, &target);
+    }
+    painter.pop_layer();
 }
 
 /// The part of `rect` (shape space) that can be seen: the window, the open
@@ -454,7 +512,7 @@ fn same_rect(a: Rect, b: Rect) -> bool {
         && (a.y1 - b.y1).abs() < 1e-6
 }
 
-/// Where the first image layer's tiles go: the positioned tile's origin and
+/// Where an image layer's tiles go: the positioned tile's origin and
 /// size, in the same (scaled) space as the border box, and which axes repeat.
 pub(super) struct LayerGeometry {
     pub origin: (f64, f64),
@@ -467,24 +525,25 @@ pub(super) struct LayerGeometry {
 /// the image's size in the border box's space; `None` for a gradient.
 pub(super) fn layer_geometry(
     cs: &ComputedStyle,
+    g: BackgroundLayerGeometry,
     scale: f64,
     rect: Rect,
     intrinsic: Option<(f64, f64)>,
 ) -> Option<LayerGeometry> {
-    let area = positioning_area(cs, scale, rect);
+    let area = positioning_area(cs, g.origin, scale, rect);
     let (aw, ah) = (area.width(), area.height());
-    let (tw, th) = tile_size(cs.background_size, scale, aw, ah, intrinsic);
+    let (tw, th) = tile_size(g.size, scale, aw, ah, intrinsic);
     if !(tw > 0.0 && th > 0.0 && tw.is_finite() && th.is_finite()) {
         return None;
     }
     Some(LayerGeometry {
         origin: (
-            area.x0 + resolve_lp(cs.background_position_x, scale, aw - tw),
-            area.y0 + resolve_lp(cs.background_position_y, scale, ah - th),
+            area.x0 + resolve_lp(g.position_x, scale, aw - tw),
+            area.y0 + resolve_lp(g.position_y, scale, ah - th),
         ),
         size: (tw, th),
-        repeats_x: !matches!(cs.background_repeat_x, BackgroundRepeatValue::NoRepeat),
-        repeats_y: !matches!(cs.background_repeat_y, BackgroundRepeatValue::NoRepeat),
+        repeats_x: !matches!(g.repeat_x, BackgroundRepeatValue::NoRepeat),
+        repeats_y: !matches!(g.repeat_y, BackgroundRepeatValue::NoRepeat),
     })
 }
 
@@ -553,8 +612,13 @@ impl LayerGeometry {
 /// The `background-origin` box. Border widths count only where the side has a
 /// style (a `none` border is 0 wide); padding percentages resolve to 0, as in
 /// the rest of paint (they need the containing block).
-fn positioning_area(cs: &ComputedStyle, scale: f64, rect: Rect) -> Rect {
-    if matches!(cs.background_origin, BackgroundOriginValue::BorderBox) {
+fn positioning_area(
+    cs: &ComputedStyle,
+    origin: BackgroundOriginValue,
+    scale: f64,
+    rect: Rect,
+) -> Rect {
+    if matches!(origin, BackgroundOriginValue::BorderBox) {
         return rect;
     }
     let bw = |w: &LengthPercentageValue, s: BorderStyleValue| {
@@ -568,7 +632,7 @@ fn positioning_area(cs: &ComputedStyle, scale: f64, rect: Rect) -> Rect {
     let mut t = bw(&cs.border_top_width, cs.border_top_style);
     let mut r = bw(&cs.border_right_width, cs.border_right_style);
     let mut b = bw(&cs.border_bottom_width, cs.border_bottom_style);
-    if matches!(cs.background_origin, BackgroundOriginValue::ContentBox) {
+    if matches!(origin, BackgroundOriginValue::ContentBox) {
         l += cs.padding_left.to_px().max(0.0) as f64 * scale;
         t += cs.padding_top.to_px().max(0.0) as f64 * scale;
         r += cs.padding_right.to_px().max(0.0) as f64 * scale;

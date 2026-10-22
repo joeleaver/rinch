@@ -3238,16 +3238,17 @@ impl Default for NodeTree {
 }
 
 impl NodeTree {
-    /// Record `style`'s `background-image` URL for
+    /// Record `style`'s `background-image` URLs (every layer's, #1142) for
     /// `RinchDocument::request_background_image_loads` if it is not cached
     /// yet. Called by the cascade for every style it produces.
     #[inline]
     pub(crate) fn note_background_image(&mut self, style: &crate::computed_style::ComputedStyle) {
-        if let crate::computed_style::BackgroundValue::Image { url } = &style.background
-            && !self.image_cache.contains(url)
-            && !self.pending_background_urls.iter().any(|u| u == url)
-        {
-            self.pending_background_urls.push(url.clone());
+        for url in style.background_image_urls() {
+            if !self.image_cache.contains(url)
+                && !self.pending_background_urls.iter().any(|u| u == url)
+            {
+                self.pending_background_urls.push(url.to_string());
+            }
         }
     }
 
