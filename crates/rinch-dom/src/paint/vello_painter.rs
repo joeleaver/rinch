@@ -449,4 +449,54 @@ mod sampling_tests {
             );
         }
     }
+
+    /// #1151: a repeating background at a fractional position reaches the
+    /// Vello image brush with its fraction. The shader reads each pixel at
+    /// `inverse(brush) * corner - 0.5`; for a red/blue 10px tile at `0.5px`
+    /// (DPR 1, so one raster texel per device pixel) the pixel whose left
+    /// edge is the tile's inner edge reads texels 4 and 5 half and half, as
+    /// Chrome blends that pixel. Rounded, it read texel 5 alone.
+    ///
+    /// Vello clamps its bilinear taps at the image's edge after `Extend::
+    /// Repeat` (`fine.wgsl`, `CMD_IMAGE`), so on the GPU the pixel on a
+    /// boundary *between* tiles takes one side's texel rather than a blend;
+    /// only the software pattern wraps its taps there.
+    #[cfg(feature = "software-renderer")]
+    #[test]
+    fn a_background_at_a_fractional_position_keeps_its_fraction_in_the_brush() {
+        use rinch_core::dom::DomDocument;
+        let mut doc = crate::RinchDocument::new();
+        doc.load_css("html, body { margin: 0; }");
+        let body = doc.body();
+        let node = doc.create_element("div");
+        doc.set_attribute(
+            node,
+            "style",
+            "position: absolute; left: 0; top: 0; width: 60px; height: 20px; \
+             background: linear-gradient(to right, red 0 50%, blue 50% 100%) 0.5px 0 / 10px 10px",
+        );
+        doc.append_child(body, node);
+        doc.resolve_layout(100.0, 40.0);
+        let mut p = VelloPainter::new();
+        let mut layout_cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
+        crate::paint::paint_document(
+            &doc.tree,
+            &mut p,
+            1.0,
+            (100.0, 40.0),
+            &mut doc.font_cx,
+            &mut layout_cx,
+        );
+        let (m, t) = brush_transform(&p);
+        let inv_det = 1.0 / (m[0] * m[3] - m[1] * m[2]);
+        let (a, c) = (inv_det * m[3], -inv_det * m[2]);
+        let u = |x: f32, y: f32| a * x + c * y - (a * t[0] + c * t[1]);
+        // The corner of device pixel 5 (row 7), then the shader's half texel.
+        let tap = u(5.0, 7.0) - 0.5;
+        assert!(
+            (tap - 4.5).abs() < 1e-3,
+            "pixel 5 taps the raster at {tap}; 4.5 blends texels 4 and 5 half and half"
+        );
+        assert!((m[0] - 1.0).abs() < 1e-6 && m[1] == 0.0 && m[2] == 0.0);
+    }
 }
