@@ -275,6 +275,8 @@ mod screenshot_capture_tests;
 mod scroll_device_snap_1543_tests;
 #[cfg(test)]
 mod scroll_request_no_write_1145_tests;
+#[cfg(all(test, feature = "theme"))]
+mod theme_only_change_1144_tests;
 #[cfg(test)]
 mod scrollbar_corner_444_tests;
 #[cfg(test)]
