@@ -196,7 +196,11 @@ fn an_option_moved_to_another_select_resizes_both() {
         } else {
             doc.append_child(b, wide);
         }
-        assert_eq!(width(&mut doc, a, 801.0), fresh(&["a"]), "the select it left");
+        assert_eq!(
+            width(&mut doc, a, 801.0),
+            fresh(&["a"]),
+            "the select it left"
+        );
         assert_eq!(width(&mut doc, b, 802.0), 160.0, "the select it joined");
     }
 }
