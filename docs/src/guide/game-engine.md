@@ -269,6 +269,17 @@ surface.request_frame();
   next frame are one frame). Nothing else runs it, and the web's loop stops in between.
 - `request_frame()` works in every mode, including from inside the render callback — an
   on-demand surface that is mid-animation calls it each frame until it is done.
+- A surface with no size is not run, in any mode: one under `display: none`, one whose node
+  has left the document (a handle hidden by an `if`), or one not laid out yet. A
+  `request_frame()` made meanwhile waits, and draws once the surface has a size; it does not
+  keep the app, the browser's animation-frame loop or an embedding host busy in between.
+- A surface under `visibility: hidden` **is** run: it is still rendered, with its size, the
+  way a `Loader` in a closed `Drawer` keeps animating. A continuous surface in an overlay that
+  closes that way goes on drawing every frame; call `set_continuous(false)` when you close it
+  (and `true` when you open it again).
+- `RenderSurfaceHandle` is not `Send`, so `set_continuous` and `request_frame` are
+  main-thread calls. From another thread, deliver a frame with the `SurfaceWriter` from
+  `writer()` (`submit_frame` is `Send + Sync` and asks for the paint itself).
 
 `layout_rect()` returns `(x, y, width, height)`: the surface's top-left in logical (CSS)
 pixels relative to the window — on the web, the canvas's `getBoundingClientRect`, read when

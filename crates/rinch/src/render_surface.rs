@@ -836,6 +836,14 @@ impl RenderSurfaceHandle {
         self.wake_for_frame();
     }
 
+    /// Whether a `requestAnimationFrame` loop is driving this surface (web
+    /// only). For tests of the loop's pacing.
+    #[cfg(target_arch = "wasm32")]
+    #[doc(hidden)]
+    pub fn __render_loop_running(&self) -> bool {
+        self.raf_running.get()
+    }
+
     /// Get a frame scheduled: desktop asks the window for a paint (suppressed
     /// inside the callbacks, which ask afterwards), the web starts the loop.
     fn wake_for_frame(&self) {
@@ -1503,9 +1511,13 @@ fn set_and_notify_size(surface: &RenderSurfaceHandle, width: u32, height: u32) {
         if let Some(cb) = surface.resize_callback.borrow_mut().as_mut() {
             cb(width, height);
         }
-        // An on-demand surface draws once at each new size (#1768).
-        if surface.continuous.get() == Some(false) && width > 0 && height > 0 {
-            surface.frame_requested.set(true);
+        if width > 0 && height > 0 {
+            // An on-demand surface draws once at each new size (#1768).
+            if surface.continuous.get() == Some(false) {
+                surface.frame_requested.set(true);
+            }
+            // The web's loop stops while the surface has no size; a size
+            // starts it again (a no-op while it runs).
             #[cfg(target_arch = "wasm32")]
             if surface.render_callback.borrow().is_some() {
                 start_raf_loop(surface.id, surface.raf_running.clone());
@@ -1538,6 +1550,24 @@ pub fn update_layout_rect_by_id(surface_id: usize, x: f32, y: f32, width: u32, h
     });
 }
 
+/// Zero the layout size of every registered inline surface (a `RenderSurface`
+/// component) not in `present` — the ones in the document — without calling
+/// its resize callback (#1768). A surface whose component is still alive but
+/// whose node left the document (a captured handle hidden by an `if`) kept
+/// its last size, so its render callback went on running for nothing, and a
+/// continuous one asked for a paint every frame. Its size comes back, with a
+/// resize callback, when it is shown again.
+#[cfg(any(feature = "desktop", feature = "embed"))]
+pub fn forget_absent_inline_surface_sizes(present: &[usize]) {
+    SURFACE_REGISTRY.with(|reg| {
+        for surface in reg.borrow().iter() {
+            if is_inline_surface(surface) && !present.contains(&surface.id) {
+                *surface.layout_size.lock().unwrap() = (0, 0);
+            }
+        }
+    });
+}
+
 /// Whether one of the surfaces `ids` wants its render callback run at the next
 /// frame: a continuous surface, or one with a frame requested (#1768). An
 /// embedded context reports it through `needs_update` and `update`'s
@@ -1548,7 +1578,12 @@ pub fn surfaces_want_frame(ids: &[usize]) -> bool {
     }
     SURFACE_REGISTRY.with(|reg| {
         reg.borrow().iter().any(|s| {
+            let (w, h) = *s.layout_size.lock().unwrap();
+            // A surface with no size (hidden, `display: none`) is not run, so it
+            // wants nothing yet; a request made meanwhile waits for its size.
             ids.contains(&s.id)
+                && w > 0
+                && h > 0
                 && s.render_callback.borrow().is_some()
                 && (s.continuous.get() == Some(true) || s.frame_requested.get())
         })
@@ -2247,8 +2282,10 @@ fn start_raf_loop(surface_id: usize, running: std::rc::Rc<Cell<bool>>) {
                     }
                     // The original pacing and a continuous surface loop for as
                     // long as the callback exists; an on-demand one only while
-                    // a frame is requested (#1768).
-                    continuous != Some(false) || surface.frame_requested.get()
+                    // a frame is requested (#1768). With no size yet nothing can
+                    // draw: the loop stops, and the ResizeObserver's first size
+                    // starts it again (`set_and_notify_size`).
+                    w > 0 && h > 0 && (continuous != Some(false) || surface.frame_requested.get())
                 } else {
                     false // callback removed, stop
                 }
@@ -2861,7 +2898,7 @@ mod compositor_routing_tests {
 /// Held by every test that installs the process-global redraw callback, so
 /// one test's `clear_redraw_callback` cannot land inside another's count.
 #[cfg(all(test, feature = "desktop"))]
-static REDRAW_CALLBACK_TEST_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static REDRAW_CALLBACK_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 // ── #1768: how often the render callback runs ───────────────────────────────
 

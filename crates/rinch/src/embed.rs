@@ -419,16 +419,7 @@ impl RinchContext {
         self.surface_passes += 1;
         let s = self.scale_factor as f32;
         self.surface_ids.clear();
-        for (surface_id, rect) in self.app.all_surface_layout_rects() {
-            rs::update_layout_rect_by_id(
-                surface_id,
-                rect.0,
-                rect.1,
-                (rect.2 * s) as u32,
-                (rect.3 * s) as u32,
-            );
-            self.surface_ids.push(surface_id);
-        }
+        self.surface_ids = self.app.update_render_surface_layouts(s, false);
         rs::invoke_render_callbacks_for(&self.surface_ids);
         let (pixels, fresh) = rs::collect_surface_pixels_for(&self.surface_ids);
         if !fresh.is_empty() {

@@ -1624,13 +1624,7 @@ impl RinchRuntime {
         // data-render-surface attributes rather than relying on the registry,
         // so surfaces survive reactive scope rebuilds (where unregister runs
         // after re-mount, temporarily removing the surface from the registry).
-        for (surface_id, rect) in self.app.all_surface_layout_rects() {
-            let phys_w = (rect.2 * s) as u32;
-            let phys_h = (rect.3 * s) as u32;
-            crate::render_surface::update_layout_rect_by_id(
-                surface_id, rect.0, rect.1, phys_w, phys_h,
-            );
-        }
+        self.app.update_render_surface_layouts(s, true);
 
         // Invoke per-frame render callbacks before collecting frames.
         crate::render_surface::invoke_render_callbacks();
@@ -1751,13 +1745,7 @@ impl RinchRuntime {
 
         // Update layout sizes for all render surfaces. DOM-based scan
         // so surfaces survive reactive scope rebuilds.
-        for (surface_id, rect) in self.app.all_surface_layout_rects() {
-            let phys_w = (rect.2 * s) as u32;
-            let phys_h = (rect.3 * s) as u32;
-            crate::render_surface::update_layout_rect_by_id(
-                surface_id, rect.0, rect.1, phys_w, phys_h,
-            );
-        }
+        self.app.update_render_surface_layouts(s, true);
 
         // Also update layout sizes for video/GameViewport surfaces that still
         // use the viewport_name path (data-viewport attribute).

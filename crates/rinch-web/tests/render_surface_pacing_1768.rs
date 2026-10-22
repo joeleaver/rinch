@@ -190,3 +190,55 @@ async fn a_callback_that_requests_a_frame_gets_it() {
     assert_eq!(m.calls.get(), 3, "the first draw and the two it asked for");
     unmount(m);
 }
+
+/// A surface with no size (its host `display: none`, so the ResizeObserver
+/// reports nothing) does not keep an empty animation-frame loop running for a
+/// request; the request draws once the surface gets a size.
+#[wasm_bindgen_test]
+async fn a_request_without_a_size_runs_no_loop_until_a_size_arrives() {
+    let surface = create_render_surface();
+    surface.set_continuous(false);
+    let calls: Rc<Cell<u32>> = Rc::default();
+    {
+        let c = calls.clone();
+        surface.set_render_callback(move |_writer, _w, _h| c.set(c.get() + 1));
+    }
+    let host = document().create_element("div").unwrap();
+    host.set_attribute("style", "display: none; width: 90px; height: 30px;")
+        .unwrap();
+    document().body().unwrap().append_child(&host).unwrap();
+    let mounted = surface.clone();
+    let root = rinch_web::mount_into(
+        &host,
+        ThemeProviderProps::default(),
+        move |scope: &mut RenderScope| {
+            RenderSurface {
+                surface: Some(mounted.clone()),
+            }
+            .render(scope, &[])
+        },
+    );
+    frames(4).await;
+    surface.request_frame();
+    assert!(
+        surface.__render_loop_running(),
+        "control: the request started the loop"
+    );
+    frames(4).await;
+    assert!(
+        !surface.__render_loop_running(),
+        "no size: the loop stopped"
+    );
+    assert_eq!(calls.get(), 0, "and nothing drew");
+
+    host.set_attribute("style", "width: 90px; height: 30px;")
+        .unwrap();
+    frames(4).await;
+    assert_eq!(calls.get(), 1, "a size: the request drew once");
+    assert!(
+        !surface.__render_loop_running(),
+        "and the loop stopped again"
+    );
+    root.unmount();
+    host.remove();
+}

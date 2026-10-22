@@ -98,13 +98,23 @@ afterwards: desktop then calls `request_repaint()` once the `IN_RENDER_CALLBACK`
 the surface has no size. `set_and_notify_size` requests a frame for an on-demand surface on every
 size change, and `schedule_canvas_init` on every web mount (a new canvas is blank). An embedded
 context reports a wanted frame through `render_surface::surfaces_want_frame` in `needs_update`
-and as `update`'s `RequestRedraw`. On the web `wake_for_frame` uses `try_borrow` on the callback
+and as `update`'s `RequestRedraw` — only for a surface with a non-zero size, or a continuous
+surface under `display: none` made the host spin at 100% with no callback run (review of
+#1790). No size, no frame, everywhere: the web loop also stops at size 0 and
+`set_and_notify_size` restarts it at the next size. The desktop paint runs **every** registered
+surface's callback, and a surface whose node left the document while its component lived on (a
+captured handle hidden by an `if`) kept its last size, so `RinchApp::update_render_surface_layouts`
+(`forget_absent: true` on the desktop window only — the registry is per thread, and an embedded
+context sharing it would zero another context's surfaces; it runs only its own ids) zeroes the
+size of every registered inline surface not in the document, with no resize callback;
+`all_surface_layout_rects` also skips a surface node inside a detached subtree. On the web `wake_for_frame` uses `try_borrow` on the callback
 cell: inside the callback it is borrowed, and the running loop picks the request up. Position:
 an inline `RenderSurface` got only its size before (`update_layout_size_by_id`), so
 `layout_rect()` said `(0, 0)` on desktop, in embed and on the web alike; the desktop paints and
 `RinchContext::prepare_render_surfaces` now call `update_layout_rect_by_id` with the painted
 box, and on wasm `layout_rect()` reads the canvas's `getBoundingClientRect` when called. Pins:
-`render_surface::pacing_tests_1768`, `tests/embed_render_surface_pacing_1768.rs`,
+`render_surface::pacing_tests_1768`, `app/render_surface_pacing_1768_tests.rs`,
+`tests/embed_render_surface_pacing_1768.rs`,
 `rinch-web/tests/render_surface_pacing_1768.rs` (Chrome 155; also passes in Firefox via
 Playwright).
 
