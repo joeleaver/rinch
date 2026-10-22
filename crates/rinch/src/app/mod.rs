@@ -4685,7 +4685,7 @@ impl RinchApp {
             // return — a browser restores from `<body>` too — so the hand-back
             // still runs and rule 3 has nothing to release.
             if let Some(id) = restorable {
-                self.focus_element(id);
+                self.restore_onto(id);
             }
             return;
         };
@@ -4693,15 +4693,31 @@ impl RinchApp {
             return;
         }
         if let Some(id) = restorable {
-            self.focus_element(id);
+            self.restore_onto(id);
             if matches!(
                 self.focus_target,
                 FocusTarget::Input(cur) | FocusTarget::Node(cur) if cur == id
             ) {
                 return;
             }
+            #[cfg(feature = "desktop")]
+            if self.focus_target == FocusTarget::Editor(id) {
+                return;
+            }
         }
         self.blur_node(claim);
+    }
+
+    /// Give `id` the keyboard for [`Self::apply_focus_restore`]: an editor's
+    /// container through `try_focus_input`, which hands it to the editor as
+    /// `EditorHandle::focus` does (issue #1126), anything else as a Tab move.
+    fn restore_onto(&mut self, id: usize) {
+        #[cfg(feature = "desktop")]
+        if crate::editor::editor_for_doc(self.doc_key(), id).is_some() {
+            self.try_focus_input(id);
+            return;
+        }
+        self.focus_element(id);
     }
 
     /// The node the keyboard claim names, falling back to the DOM's own focused
@@ -4740,6 +4756,10 @@ impl RinchApp {
     /// a node inside a closed overlay is attached with a zero box, so an
     /// attachment test alone would accept that. Both are ordinary at the moment
     /// an overlay closes.
+    ///
+    /// A rich-text editor's container counts too (issue #1126): it is what an
+    /// overlay opened from a focused editor remembers as its opener, and
+    /// `try_focus_input` gives it the keyboard as `EditorHandle::focus` does.
     fn node_can_take_focus_now(&self, node_id: usize) -> bool {
         let Some(doc) = &self.doc else { return false };
         let d = doc.borrow();
@@ -4751,6 +4771,10 @@ impl RinchApp {
         }
         if !Self::node_is_visible(node) || Self::node_is_disabled_in_tree(&d.tree, node_id) {
             return false;
+        }
+        #[cfg(feature = "desktop")]
+        if crate::editor::editor_for_doc(d.doc_key(), node_id).is_some() {
+            return true;
         }
         Self::effective_tabindex(node).is_some()
             || (Self::node_takes_text_focus(node) && node.attributes.contains_key("data-oninput"))

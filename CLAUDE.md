@@ -2516,7 +2516,22 @@ not checked, so a recycled node id (issue #304, live on desktop through
 `NodeTree::remove_subtree`) would still be focused.
 `crates/rinch/src/app/overlay_focus_tests.rs` and
 `crates/rinch-web/tests/overlay_focus.rs` are the pins, twins like the
-containment pair.
+containment pair. **A focused rich-text editor is where its container is**
+(#1126): the web editor holds the keyboard through the capture
+`<textarea data-pm-capture>` in `<body>`, so every rinch-web focus question
+reads it through `editor_input::keyboard_editor` / `effective_active_element`
+— `WebDocument::active_element` answers the container, `restore_focus`
+releases an editor inside the closing overlay (`release_editor`, the
+`EditorHandle::blur` path) before restoring, and `release_focus_within`
+releases one inside the part that goes. Desktop's arbiter mirrors an
+`FocusTarget::Editor` claim into `NodeTree::keyboard_editor`
+(`RinchApp::sync_keyboard_editor`, at every `focus_target` write), which its
+`active_element` answers. So an overlay opened from an editor gives the
+keyboard back to it on close, on both backends (`try_focus_input` /
+`give_editor_keyboard`). Tab containment never sees a Tab from an editor (its
+keymap consumes Tab) and reads the raw `activeElement`. Pins:
+`rinch-web/tests/overlay_editor_focus_1126.rs`, `overlay_focus_tests.rs`'s
+section 7.
 
 **Tab walks the HTML sequential order** (issue #435): positive `tabindex`
 ascending, ties in tree order, then every `0` / tag-focusable stop in tree

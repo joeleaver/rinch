@@ -454,6 +454,17 @@ Nesting needs no special case: an inner overlay remembers whatever the outer one
 focused, so closing the inner restores into the outer and closing the outer
 restores to the page.
 
+A rich-text `Editor` counts as an element here, on both backends (issue #1126).
+An editor inside the overlay that holds the keyboard when it closes lets it go
+(its caret disappears, a composition is committed first) and the opener gets it;
+an overlay opened while an editor held the keyboard gives it back to that
+editor, caret and selection where they were. On the web the editor holds the
+keyboard through a hidden field in `<body>`, outside every overlay, so
+`NodeHandle::active_element()` answers the editor's container for it, and a
+removal that takes a focused editor out of the page (`NodeHandle::remove` of a
+part holding it) releases the editor, as the browser blurs any focused element
+it takes out.
+
 Three things to know about the machinery:
 
 - **Desktop decides both a turn later.** An overlay opening or closing is a class

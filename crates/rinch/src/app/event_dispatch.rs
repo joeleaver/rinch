@@ -1715,6 +1715,7 @@ impl RinchApp {
                             // fall through to the global handlers instead of being
                             // silently swallowed.
                             self.focus_target = FocusTarget::None;
+                            self.sync_keyboard_editor();
                         }
                     }
                     FocusTarget::Surface(surface_id) => {
@@ -1934,6 +1935,7 @@ impl RinchApp {
                         } else {
                             // Focused editor unmounted out from under us.
                             self.focus_target = FocusTarget::None;
+                            self.sync_keyboard_editor();
                         }
                     }
                     FocusTarget::Input(node_id) => {

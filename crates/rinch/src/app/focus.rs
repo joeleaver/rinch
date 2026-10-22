@@ -59,6 +59,24 @@ pub(crate) struct PendingFocusWork {
 }
 
 impl RinchApp {
+    /// Mirror an editor claim into the document's `keyboard_editor` (issue
+    /// #1126), which `DomDocument::active_element` answers: an editor takes no
+    /// CSS `:focus`, so `focused_node` never names it, and an overlay opened
+    /// from it remembered no opener. Called wherever `focus_target` is written.
+    pub(crate) fn sync_keyboard_editor(&self) {
+        let editor = match self.focus_target {
+            #[cfg(feature = "desktop")]
+            FocusTarget::Editor(id) => Some(id),
+            _ => None,
+        };
+        // `borrow_mut`, not `try_`: every caller writes `focus_target` with no
+        // document borrow held (the arbiter's teardown borrows it too), and a
+        // skipped write would leave the mirror naming the wrong editor.
+        if let Some(doc) = &self.doc {
+            doc.borrow_mut().tree.keyboard_editor = editor;
+        }
+    }
+
     /// Switch keyboard/IME focus to `target`, tearing down whatever was focused
     /// before. Returns `true` if the focus target actually changed.
     ///
@@ -332,6 +350,7 @@ impl RinchApp {
             }
         }
         self.focus_target = target;
+        self.sync_keyboard_editor();
         crate::focus_registry::note_claim(
             self.doc_key(),
             match target {
