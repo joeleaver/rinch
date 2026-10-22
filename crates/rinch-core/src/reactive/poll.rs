@@ -50,6 +50,32 @@ struct PollEntry {
 
 thread_local! {
     static POLL_REGISTRY: RefCell<Vec<PollEntry>> = const { RefCell::new(Vec::new()) };
+    /// Called after every [`poll_signal`] registration; see [`set_poll_waker`].
+    static POLL_WAKER: std::cell::Cell<Option<fn()>> = const { std::cell::Cell::new(None) };
+}
+
+/// Install the function a host with no frame loop of its own uses to schedule
+/// [`drain_polls`].
+///
+/// The desktop, Android and embed hosts drain once per frame and need none.
+/// `rinch-web` has no frame loop — the browser repaints on its own — so it
+/// installs a waker that schedules a drain (`requestAnimationFrame` for an
+/// [`EveryFrame`](PollRate::EveryFrame) poll, `setTimeout` for a timed one) and
+/// keeps scheduling while polls are registered. [`poll_signal`] calls the
+/// waker after each registration, so a new poll is sampled promptly.
+///
+/// A backend entry point, not app API.
+#[doc(hidden)]
+pub fn set_poll_waker(waker: fn()) {
+    POLL_WAKER.with(|w| w.set(Some(waker)));
+}
+
+/// Whether any registered poll asks to be sampled on every frame
+/// ([`PollRate::EveryFrame`]). With [`next_poll_due`], what a host that
+/// schedules its own drains (`rinch-web`) needs to pick its next wake.
+#[doc(hidden)]
+pub fn polls_want_every_frame() -> bool {
+    POLL_REGISTRY.with(|reg| reg.borrow().iter().any(|entry| entry.interval_ms == 0))
 }
 
 /// Bridge a high-frequency external source (audio-thread atomic, network status flag,
@@ -134,6 +160,10 @@ where
             alive: Box::new(move || signal.is_alive()),
         });
     });
+
+    if let Some(waker) = POLL_WAKER.with(|w| w.get()) {
+        waker();
+    }
 
     signal
 }
@@ -561,5 +591,41 @@ mod resilience_tests {
             0,
             "reclamation must not wait for the poll's own interval"
         );
+    }
+}
+
+#[cfg(test)]
+mod waker_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    thread_local! {
+        static WAKES: Cell<u32> = const { Cell::new(0) };
+    }
+
+    fn count_wake() {
+        WAKES.with(|w| w.set(w.get() + 1));
+    }
+
+    /// A host with no frame loop (`rinch-web`) learns of each registration, so
+    /// a poll is sampled without anything else waking the page (#1773).
+    #[test]
+    fn every_registration_wakes_the_installed_waker() {
+        set_poll_waker(count_wake);
+        let a = poll_signal(|| 0u8, PollRate::Millis(100));
+        assert_eq!(WAKES.with(|w| w.get()), 1);
+        assert!(!polls_want_every_frame(), "a timed poll alone wants no frames");
+
+        let b = poll_signal(|| 0u8, PollRate::EveryFrame);
+        assert_eq!(WAKES.with(|w| w.get()), 2);
+        assert!(polls_want_every_frame());
+
+        b.free_for_tests();
+        drain_polls();
+        assert!(
+            !polls_want_every_frame(),
+            "the every-frame poll was reaped with its signal"
+        );
+        let _ = a;
     }
 }
