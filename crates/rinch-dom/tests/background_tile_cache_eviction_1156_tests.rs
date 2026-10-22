@@ -171,3 +171,51 @@ fn the_cache_goes_with_its_document() {
     b.resolve_layout(VW, VH);
     assert_eq!(frame(&mut b), (1, 0));
 }
+
+/// A 10 CSS px strip painting the tile `big_tile_box` paints for `colour`.
+fn strip_box(doc: &mut RinchDocument, colour: &str, top: f32) -> NodeId {
+    let body = doc.body();
+    let node = doc.create_element("div");
+    doc.set_attribute(
+        node,
+        "style",
+        &format!(
+            "position: absolute; left: 0; top: {top}px; width: 900px; height: 10px; \
+             background-image: linear-gradient(to right, {colour}, rgb(1, 2, 3)); \
+             background-size: 850px 850px"
+        ),
+    );
+    doc.append_child(body, node);
+    node
+}
+
+/// Review of #1758 (F1): a tile that does not fit the budget, painted by ten
+/// boxes. Declining to keep it rasterised it once per box on every frame
+/// (10, 2); the frame's overflow map keeps it for the frame that drew it, so
+/// each frame rasterises it once and the other nine boxes hit (main's
+/// clear-all gave (3, 9) every frame). Its bytes are released by the first
+/// frame that does not paint it.
+#[test]
+fn a_tile_that_does_not_fit_is_rasterised_once_a_frame_however_many_boxes_paint_it() {
+    let (mut doc, _) = document(&["rgb(250, 0, 0)", "rgb(0, 250, 0)"]);
+    let strips: Vec<NodeId> = (0..10)
+        .map(|i| strip_box(&mut doc, "rgb(0, 0, 250)", i as f32 * 20.0))
+        .collect();
+    doc.resolve_layout(VW, VH);
+    assert_eq!(frame(&mut doc), (3, 9), "first frame");
+    for i in 1..4 {
+        assert_eq!(frame(&mut doc), (1, 11), "frame {i}");
+    }
+    let tile = 1700 * 1700 * 4;
+    assert_eq!(doc.tree.background_tile_cache_bytes(), 3 * tile);
+    for s in strips {
+        doc.remove_node(s);
+    }
+    doc.resolve_layout(VW + 1.0, VH);
+    assert_eq!(frame(&mut doc), (0, 2));
+    assert_eq!(
+        doc.tree.background_tile_cache_bytes(),
+        2 * tile,
+        "the overflow tile is released by the first frame that does not paint it"
+    );
+}
