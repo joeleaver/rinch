@@ -5366,6 +5366,69 @@ mod native_event_queue_tests {
         callback_queued_mid_wake_keeps_its_wake(true);
     }
 
+    /// Issue #1733: what made the two tests above flaky. Dropping a
+    /// [`RinchRuntime`] runs its shutdown, which **drops** every queued
+    /// main-thread callback without running it (`clear_main_callbacks`) — and
+    /// the runtime-building tests in this binary did that on other threads
+    /// while a wake test's injected callback sat in the shared queue: neither
+    /// run nor owed a wake. A real process has one runtime, dropped at exit,
+    /// so only the test binary had the race. Every test runtime now holds
+    /// `RERENDER_EVENTS_TEST_LOCK` for its lifetime (`RinchRuntime::_queue_lock`).
+    ///
+    /// The runtime here is built and dropped on another thread, inside the
+    /// wake test's window: before the fix its drop landed there every time.
+    #[test]
+    fn a_runtime_dropped_on_another_thread_mid_wake_strands_nothing() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let _lock = crate::app::RERENDER_EVENTS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+        rinch_core::drain_main_callbacks();
+        run_on_main_thread(|| {});
+        let injected_ran = Arc::new(AtomicBool::new(false));
+        let flag = injected_ran.clone();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let dropped_flag = dropped.clone();
+        let mut dropper = None;
+        drain_wake_queues(
+            &mut (),
+            |_| {
+                rinch_core::drain_main_callbacks();
+                run_on_main_thread(move || flag.store(true, Ordering::SeqCst));
+                dropper = Some(std::thread::spawn(move || {
+                    drop(RinchRuntime::new(
+                        "t",
+                        800,
+                        600,
+                        |s: &mut RenderScope| s.create_element("div"),
+                        &[],
+                    ));
+                    dropped_flag.store(true, Ordering::SeqCst);
+                }));
+                // Long enough for an unserialised runtime to be built and
+                // dropped; a serialised one waits for this test's lock.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                while !dropped.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            },
+            |_| {
+                let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+            },
+        );
+        let wake_owed = rerenders(&NATIVE_EVENT_QUEUE.lock().unwrap().drain()) > 0;
+        let ran = injected_ran.load(Ordering::SeqCst);
+        rinch_core::drain_main_callbacks();
+        drop(_lock);
+        dropper.unwrap().join().unwrap();
+        assert!(
+            wake_owed || ran,
+            "a runtime dropped mid-wake threw away the queued callback"
+        );
+    }
+
     /// Why every dispatch asks for a `ReRender` (#1540) rather than only a push
     /// onto an empty main queue: the queue can be non-empty with no wake owed
     /// for it — a closure pushed past the dispatcher (#1035's shape), or one
