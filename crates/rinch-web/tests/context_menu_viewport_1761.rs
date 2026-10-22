@@ -223,3 +223,60 @@ fn a_menu_taller_than_the_viewport_starts_at_the_margin_and_scrolls() {
     );
     f.teardown();
 }
+
+/// Puts `<html dir="rtl">` back to its default when the test ends, passed or
+/// not, since every wasm test shares one page.
+struct RtlPage;
+
+impl RtlPage {
+    fn set() -> Self {
+        document()
+            .document_element()
+            .unwrap()
+            .set_attribute("dir", "rtl")
+            .unwrap();
+        RtlPage
+    }
+}
+
+impl Drop for RtlPage {
+    fn drop(&mut self) {
+        let _ = document()
+            .document_element()
+            .unwrap()
+            .remove_attribute("dir");
+    }
+}
+
+/// On a right-to-left page the spacers' row must not be mirrored: a press at
+/// x = 150 still opens the menu starting at 150 (mirrored, it ends at
+/// `vw - 150`), while the menu's own content stays right-to-left.
+#[wasm_bindgen_test]
+fn an_rtl_page_does_not_mirror_the_placement() {
+    let _rtl = RtlPage::set();
+    let (vw, _vh) = viewport();
+    let x = 150.0;
+    assert!(
+        vw - x - 200.0 > x + 50.0,
+        "fixture: a point well left of the centre, where the mirror would put it"
+    );
+    let f = Fixture::mount(3, 120.0);
+    f.right_click(x, 70.0);
+    let m = f.menu();
+    assert_eq!((m.left(), m.top()), (x, 70.0), "starts at the pointer");
+    let dropdown = document()
+        .query_selector(".rinch-context-menu__dropdown")
+        .unwrap()
+        .unwrap();
+    let direction = window()
+        .get_computed_style(&dropdown)
+        .unwrap()
+        .unwrap()
+        .get_property_value("direction")
+        .unwrap();
+    assert_eq!(
+        direction, "rtl",
+        "the menu's own content stays right-to-left"
+    );
+    f.teardown();
+}

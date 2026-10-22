@@ -105,6 +105,13 @@ const FRAME_STYLE: &str = "position: absolute; top: 0; left: 0; right: 0; bottom
      overflow-x: hidden; overflow-y: auto; pointer-events: none;";
 
 /// The row holding the dropdown between its two horizontal spacers.
+///
+/// The spacers are physical (`h_head` is the left one), so on a right-to-left
+/// page the row must not be mirrored: the component stylesheet gives the line
+/// `direction: ltr` and the dropdown `direction: rtl` back under `:dir(rtl)`
+/// (a `dir` attribute on an ancestor). A page made right-to-left by the CSS
+/// `direction` property alone is not seen by `:dir()`, and its row is
+/// mirrored. rinch-dom does not parse `:dir()` and does not mirror a flex row.
 const LINE_STYLE: &str = "display: flex; flex-direction: row; flex: none;";
 
 /// The dropdown itself: its own size, wherever the spacers leave it.
@@ -240,11 +247,17 @@ impl Component for ContextMenu {
         // (#1761, see `Placement`).
         let frame = rinch_macros::rsx! { div { class: "rinch-context-menu__frame" } };
         frame.set_attribute(rinch_core::events::SCROLL_LOCK_EXEMPT_ATTRIBUTE, "");
-        let v_head = __scope.create_element("div");
-        let v_tail = __scope.create_element("div");
+        let spacer = |scope: &mut RenderScope| {
+            let s = scope.create_element("div");
+            s.set_attribute("class", "rinch-context-menu__spacer");
+            s
+        };
+        let v_head = spacer(__scope);
+        let v_tail = spacer(__scope);
+        let h_head = spacer(__scope);
+        let h_tail = spacer(__scope);
         let line = __scope.create_element("div");
-        let h_head = __scope.create_element("div");
-        let h_tail = __scope.create_element("div");
+        line.set_attribute("class", "rinch-context-menu__line");
         line.set_attribute("style", LINE_STYLE);
         line.append_child(&h_head);
         line.append_child(&dropdown);
