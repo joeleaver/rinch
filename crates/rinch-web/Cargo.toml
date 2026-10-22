@@ -112,8 +112,9 @@ rinch-editor-collab = { workspace = true, features = ["test-util"] }
 # A synthetic `drop` carrying a `File`, and a `File` to put on a `paste`
 # (tests/editor_image_input.rs); `HTMLImageElement.decode()` / `naturalWidth`
 # in tests/image_sources.rs: that the browser really decodes what an app's
-# image loader answered with.
-web-sys = { version = "0.3", features = ["DragEventInit", "FilePropertyBag", "HtmlImageElement"] }
+# image loader answered with. A same-origin `<iframe>` whose permissions policy
+# refuses `clipboard-write` (tests/clipboard_copy_then.rs, #1780).
+web-sys = { version = "0.3", features = ["DragEventInit", "FilePropertyBag", "HtmlImageElement", "HtmlIFrameElement", "Clipboard"] }
 # The browser's message dialogs (tests/confirm_dialog_1773.rs): `rinch::dialogs`
 # is behind `file-dialogs`, which on wasm32 links no crate.
 rinch = { workspace = true, default-features = false, features = ["file-dialogs"] }

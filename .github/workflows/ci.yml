@@ -444,7 +444,9 @@ jobs:
       # `Input.dispatchKeyEvent` here. The real Tab is the only evidence that focus
       # actually leaves a node view (review 2 of #1595). The same script runs
       # `real_touch_1582_1588` with trusted touches (`Input.dispatchTouchEvent`):
-      # a real pan and the compatibility mouse events after a real tap.
+      # a real pan and the compatibility mouse events after a real tap. And
+      # `clipboard_copy_then` with a trusted click: a clipboard write the browser
+      # accepts needs a user activation (#1780).
       - name: Set up Node (trusted-key test)
         uses: actions/setup-node@v4
         with:
