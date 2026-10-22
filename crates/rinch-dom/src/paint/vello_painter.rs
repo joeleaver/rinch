@@ -199,7 +199,32 @@ impl Painter for VelloPainter {
             width: tile.width,
             height: tile.height,
         };
-        let quality = if tile.smooth {
+        // A tile whose texels are device pixels is placed on whole device
+        // pixels and sampled nearest, as before #1151. Vello clamps its
+        // bilinear taps at the image's edge after `Extend::Repeat`
+        // (`fine.wgsl`, `CMD_IMAGE`), so at a fractional phase the pixel on a
+        // boundary between tiles takes one side's texel while the inner edges
+        // blend: during a sub-pixel animation the stripes pulse in width
+        // (4.5–5.5px for a 10px tile) and brightness (±9%), which looks worse
+        // than whole-pixel steps. The software pattern wraps its taps and
+        // keeps the fraction.
+        let mut tile_transform = tile.transform;
+        let mut smooth = tile.smooth;
+        let total = (transform * tile.transform).as_coeffs();
+        let det = transform.determinant();
+        if smooth
+            && det.is_finite()
+            && det != 0.0
+            && (total[0] - 1.0).abs() < 1e-9
+            && total[1].abs() < 1e-9
+            && total[2].abs() < 1e-9
+            && (total[3] - 1.0).abs() < 1e-9
+        {
+            let stepped = Affine::translate((total[4].round(), total[5].round()));
+            tile_transform = transform.inverse() * stepped;
+            smooth = false;
+        }
+        let quality = if smooth {
             peniko::ImageQuality::Medium
         } else {
             peniko::ImageQuality::Low
@@ -208,7 +233,7 @@ impl Painter for VelloPainter {
             .with_extend(peniko::Extend::Repeat)
             .with_quality(quality)
             .into();
-        let brush_transform = Some(centre_sampling(transform, tile.transform));
+        let brush_transform = Some(centre_sampling(transform, tile_transform));
         match shape {
             PaintShape::Rect(r) => self.scene.fill(fill, transform, &brush, brush_transform, r),
             PaintShape::RoundedRect(r) => {
@@ -450,20 +475,18 @@ mod sampling_tests {
         }
     }
 
-    /// #1151: a repeating background at a fractional position reaches the
-    /// Vello image brush with its fraction. The shader reads each pixel at
-    /// `inverse(brush) * corner - 0.5`; for a red/blue 10px tile at `0.5px`
-    /// (DPR 1, so one raster texel per device pixel) the pixel whose left
-    /// edge is the tile's inner edge reads texels 4 and 5 half and half, as
-    /// Chrome blends that pixel. Rounded, it read texel 5 alone.
-    ///
-    /// Vello clamps its bilinear taps at the image's edge after `Extend::
-    /// Repeat` (`fine.wgsl`, `CMD_IMAGE`), so on the GPU the pixel on a
-    /// boundary *between* tiles takes one side's texel rather than a blend;
-    /// only the software pattern wraps its taps there.
+    /// #1151, GPU half: a repeating background at a fractional position is
+    /// placed on a whole device pixel on the Vello brush and sampled nearest,
+    /// as before #1151 (the software pattern keeps the fraction). Vello clamps
+    /// its bilinear taps at the image's edge after `Extend::Repeat`, so a
+    /// fractional phase blended the inner edges but not the boundary between
+    /// tiles, and a sub-pixel animation pulsed the stripe width. A red/blue
+    /// 10px tile at `0.5px`, DPR 1: the tile starts on pixel 1, so pixel 5's
+    /// centre is texel 4.5 (nearest: texel 4, red). Kept fractional, it read
+    /// 5.0, and blended there.
     #[cfg(feature = "software-renderer")]
     #[test]
-    fn a_background_at_a_fractional_position_keeps_its_fraction_in_the_brush() {
+    fn a_background_at_a_fractional_position_steps_on_the_gpu() {
         use rinch_core::dom::DomDocument;
         let mut doc = crate::RinchDocument::new();
         doc.load_css("html, body { margin: 0; }");
@@ -491,11 +514,12 @@ mod sampling_tests {
         let inv_det = 1.0 / (m[0] * m[3] - m[1] * m[2]);
         let (a, c) = (inv_det * m[3], -inv_det * m[2]);
         let u = |x: f32, y: f32| a * x + c * y - (a * t[0] + c * t[1]);
-        // The corner of device pixel 5 (row 7), then the shader's half texel.
-        let tap = u(5.0, 7.0) - 0.5;
+        // The corner of device pixel 5 (row 7) maps to its centre's texel
+        // coordinate (`centre_sampling`); nearest reads its floor.
+        let at = u(5.0, 7.0);
         assert!(
-            (tap - 4.5).abs() < 1e-3,
-            "pixel 5 taps the raster at {tap}; 4.5 blends texels 4 and 5 half and half"
+            (at - 4.5).abs() < 1e-3,
+            "pixel 5's centre is texel {at}; 4.5 is the tile placed on pixel 1"
         );
         assert!((m[0] - 1.0).abs() < 1e-6 && m[1] == 0.0 && m[2] == 0.0);
     }

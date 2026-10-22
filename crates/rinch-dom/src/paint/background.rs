@@ -173,9 +173,15 @@ fn paint_layer(
         BackgroundValue::None | BackgroundValue::Color(_) => return,
         _ => None,
     };
-    let Some(layer) = layer_geometry(cs, geometry, scale, rect, intrinsic) else {
+    let Some(mut layer) = layer_geometry(cs, geometry, scale, rect, intrinsic) else {
         return;
     };
+    // The box itself is placed on a whole pixel of its own (pre-transform,
+    // scaled) space before its tiles are laid out from it, as Chrome snaps
+    // the border box: a box at `left: 10.5px` draws crisp tiles from pixel 11.
+    // Only `background-position` (and a transform) keeps its fraction.
+    layer.origin.0 += rect.x0.round() - rect.x0;
+    layer.origin.1 += rect.y0.round() - rect.y0;
     let snap = DeviceSnap::of(transform);
 
     // 1. One tile covering the whole painting area needs no clip:
