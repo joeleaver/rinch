@@ -771,6 +771,17 @@ mod gpu_alpha_tests {
         target: &Texture,
         scene: &vello::Scene,
     ) {
+        render_over(device, queue, renderer, target, scene, Color::TRANSPARENT);
+    }
+
+    fn render_over(
+        device: &Device,
+        queue: &Queue,
+        renderer: &mut vello::Renderer,
+        target: &Texture,
+        scene: &vello::Scene,
+        base_color: Color,
+    ) {
         let view = target.create_view(&TextureViewDescriptor::default());
         renderer
             .render_to_texture(
@@ -779,7 +790,7 @@ mod gpu_alpha_tests {
                 scene,
                 &view,
                 &vello::RenderParams {
-                    base_color: Color::TRANSPARENT,
+                    base_color,
                     width: W,
                     height: H,
                     antialiasing_method: vello::AaConfig::Area,
@@ -943,7 +954,95 @@ mod gpu_alpha_tests {
         assert_eq!(px[W as usize - 1], [0, 0, 0, 0]);
     }
 
-    fn present_into(
+/// #1774: a zero-copy GPU texture layer in an **opaque** window shows
+    /// through the UI's hole. The window's present path, step by step: Vello
+    /// renders the UI over the base colour `WgpuRenderer` picks
+    /// (`ui_base_color`, here with only a GPU layer), the layer is blitted into
+    /// the right half over the window's white base, and the UI is blended on
+    /// top. The UI paints blue in column 0 and nothing over the hole. The UI
+    /// was rendered over opaque white whenever no *CPU* layer was present, so
+    /// the hole came out white whatever the layer held.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_alpha_a_gpu_layer_shows_in_an_opaque_window_1774() {
+        let (device, queue) = device();
+        let window_base = Color::WHITE; // an opaque window's base
+        let usage = wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC;
+
+        // The UI: an opaque blue column 0, nothing elsewhere.
+        let ui = texture(&device, TextureFormat::Rgba8Unorm, usage);
+        let mut scene = vello::Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::new([0.0, 0.0, 1.0, 1.0]),
+            None,
+            &Rect::new(0.0, 0.0, 1.0, H as f64),
+        );
+        let base = crate::shell::desktop::ui_base_color(window_base, false, true);
+        render_over(&device, &queue, &mut renderer(&device), &ui, &scene, base);
+
+        // The app's layer: all red.
+        let layer = texture(
+            &device,
+            TextureFormat::Rgba8Unorm,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        );
+        let layer_view = layer.create_view(&TextureViewDescriptor::default());
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &layer_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::RED),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
+
+        let compositor = LayerCompositor::new(&device, TextureFormat::Rgba8Unorm);
+        let target = texture(
+            &device,
+            TextureFormat::Rgba8Unorm,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        let view = target.create_view(&TextureViewDescriptor::default());
+        compositor.blit_layer_view(
+            &device,
+            &queue,
+            &mut encoder,
+            &layer_view,
+            &view,
+            ((W / 2) as f32, 0.0, (W / 2) as f32, H as f32),
+            (W, H),
+            Some(wgpu::Color::WHITE),
+            [0.0; 4],
+            None,
+        );
+        compositor.overlay_ui(&device, &mut encoder, &ui, &view);
+        queue.submit(Some(encoder.finish()));
+        let px = read(&device, &queue, &target);
+        for y in 0..H as usize {
+            let row = &px[y * W as usize..(y + 1) * W as usize];
+            assert_eq!(row[0], [0, 0, 255, 255], "row {y}: the UI's own paint");
+            assert_eq!(row[2], [255, 255, 255, 255], "row {y}: the window base");
+            for (x, p) in row.iter().enumerate().skip((W / 2) as usize) {
+                assert_eq!(*p, [255, 0, 0, 255], "row {y} col {x}: the layer, through the hole");
+            }
+        }
+    }
+
+        fn present_into(
         device: &Device,
         queue: &Queue,
         compositor: &LayerCompositor,

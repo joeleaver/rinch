@@ -535,11 +535,11 @@ impl WgpuRenderer {
     /// The colour Vello renders the UI over this frame: transparent under
     /// composite layers (they show through), else the window's base.
     fn vello_base_color(&self, base_color: Color) -> Color {
-        if !self.composite_layers.is_empty() {
-            Color::TRANSPARENT
-        } else {
-            base_color
-        }
+        ui_base_color(
+            base_color,
+            !self.composite_layers.is_empty(),
+            !self.gpu_layers.is_empty(),
+        )
     }
 
     fn window_base_color(transparent: bool) -> Color {
@@ -1087,6 +1087,18 @@ pub(crate) fn presented_texture<'a, T: ?Sized>(
     match composited {
         Some(c) if layers => c,
         _ => ui,
+    }
+}
+
+/// The colour Vello renders the UI over: transparent under composite layers
+/// (CPU-pixel layers and zero-copy GPU texture layers), so they show through
+/// the UI's viewport holes, else the window's base.
+pub(crate) fn ui_base_color(window_base: Color, cpu_layers: bool, gpu_layers: bool) -> Color {
+    let _ = gpu_layers;
+    if cpu_layers {
+        Color::TRANSPARENT
+    } else {
+        window_base
     }
 }
 
