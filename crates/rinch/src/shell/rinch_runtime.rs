@@ -577,6 +577,61 @@ pub struct RinchRuntime {
     /// when the focused editor actually changed.
     #[cfg(feature = "a11y")]
     a11y_last: Option<(rinch_editor_core::Node, rinch_editor_core::Selection)>,
+
+    /// Test builds only (#1733): the lock every test that queues or drains the
+    /// process-wide main-thread and native queues holds. Dropping a runtime
+    /// runs [`Self::shutdown`], which drops every queued main-thread callback
+    /// unrun, so a test runtime holds the lock from construction until after
+    /// that clear (fields drop after `Drop::drop`). Last, so it is released
+    /// last. Shared by every runtime alive on one thread, so a test may hold
+    /// two.
+    #[cfg(test)]
+    _queue_lock: TestQueueLock,
+}
+
+/// One thread's share of `RERENDER_EVENTS_TEST_LOCK` for its test runtimes
+/// (#1733): the first runtime on the thread takes the lock, the last to drop
+/// releases it.
+#[cfg(test)]
+struct TestQueueLock;
+
+#[cfg(test)]
+thread_local! {
+    static TEST_QUEUE_LOCK: RefCell<Option<(std::sync::MutexGuard<'static, ()>, usize)>> =
+        const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+impl TestQueueLock {
+    fn hold() -> Self {
+        TEST_QUEUE_LOCK.with(|held| {
+            let mut held = held.borrow_mut();
+            match held.as_mut() {
+                Some((_, count)) => *count += 1,
+                None => {
+                    let guard = crate::app::RERENDER_EVENTS_TEST_LOCK
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    *held = Some((guard, 1));
+                }
+            }
+        });
+        TestQueueLock
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestQueueLock {
+    fn drop(&mut self) {
+        // The guard is dropped after the thread-local's borrow ends.
+        let released = TEST_QUEUE_LOCK.with(|held| {
+            let mut held = held.borrow_mut();
+            let (_guard, count) = held.as_mut()?;
+            *count -= 1;
+            if *count == 0 { held.take() } else { None }
+        });
+        drop(released);
+    }
 }
 
 impl RinchRuntime {
@@ -591,6 +646,8 @@ impl RinchRuntime {
         // first layout pass: an app-bundled face has to be in the font context
         // that measures the first frame, or that frame is measured against a
         // fallback and reflows once the real face arrives.
+        #[cfg(test)]
+        let _queue_lock = TestQueueLock::hold();
         let mut app = RinchApp::new(component);
         app.register_app_fonts(fonts);
         Self {
@@ -631,6 +688,8 @@ impl RinchRuntime {
             a11y: None,
             #[cfg(feature = "a11y")]
             a11y_last: None,
+            #[cfg(test)]
+            _queue_lock,
         }
     }
 
@@ -5409,7 +5468,7 @@ mod native_event_queue_tests {
                 }));
                 // Long enough for an unserialised runtime to be built and
                 // dropped; a serialised one waits for this test's lock.
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
                 while !dropped.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
                     std::thread::sleep(std::time::Duration::from_millis(5));
                 }
