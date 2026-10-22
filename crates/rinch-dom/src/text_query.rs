@@ -248,7 +248,7 @@ pub fn visual_line_edges(
     at: LineOf,
 ) -> Option<VisualLineEdges> {
     use parley::layout::PositionedLayoutItem;
-    let line = layout.lines().nth(line_index(layout, at)?)?;
+    let line = layout.lines().nth(line_index_of(layout, at)?)?;
     let as_box = |item: PositionedLayoutItem<'_, Brush>| match item {
         PositionedLayoutItem::InlineBox(b) => Some(b.id),
         PositionedLayoutItem::GlyphRun(_) => None,
@@ -281,42 +281,96 @@ pub fn visual_line_edges_for_node(
     None
 }
 
-/// The line box `(top, height)` of the visual line above (`down = false`) or
-/// below (`down = true`) the line `at` names, in the layout's own space —
-/// where ArrowUp / ArrowDown move a caret inside one inline formatting
-/// context (#1121). Read from the layout, not hit-tested, so it answers the
-/// same for a line scrolled out of view. `None` when `at` is the layout's
-/// first (up) or last (down) line, or names nothing in it.
-pub fn adjacent_line_box(
+/// Where a caret at layout-local `x` on line `line_index` goes, as a press
+/// at `x` on that line would place it, but with the line given by index
+/// rather than by a y coordinate — line boxes can overlap (an image on a
+/// baseline, a 72px span in 24px lines, a `line-height` smaller than the
+/// font), so a y in one line's box can name another (#1121): the caret byte
+/// (Parley's `Cursor::from_point` rule for the cluster under or nearest
+/// `x`, snapped to a grapheme boundary of `text` as
+/// [`grapheme_offset_from_position`] snaps it) and, when `x` is over an
+/// inline box on the line (or past a line that ends in one), that box and
+/// whether `x` is on its right half, as [`inline_box_at_point`] answers.
+/// `None` for a line the layout does not have, or one with neither text
+/// nor a box.
+pub fn caret_on_line(
     layout: &parley::layout::Layout<Brush>,
-    at: LineOf,
-    down: bool,
-) -> Option<(f32, f32)> {
-    let index = line_index(layout, at)?;
-    let target = if down {
-        index + 1
-    } else {
-        index.checked_sub(1)?
+    text: &str,
+    line_index: usize,
+    x: f32,
+) -> Option<(usize, Option<(u64, bool)>)> {
+    use parley::layout::{BreakReason, PositionedLayoutItem};
+    let line = layout.get(line_index)?;
+    // Each run's visual left edge (its first glyph run's offset; a run is
+    // split into several glyph runs by style), and the inline box under `x`.
+    let mut runs = Vec::new();
+    let mut inline_box = None;
+    let mut last_box: Option<(u64, f32)> = None;
+    for item in line.items() {
+        match item {
+            PositionedLayoutItem::GlyphRun(g) => {
+                last_box = None;
+                let run = g.run().clone();
+                if runs
+                    .last()
+                    .is_none_or(|(_, r): &(f32, parley::layout::Run<'_, Brush>)| {
+                        r.index() != run.index()
+                    })
+                {
+                    runs.push((g.offset(), run));
+                }
+            }
+            PositionedLayoutItem::InlineBox(b) => {
+                if inline_box.is_none() && (b.x..b.x + b.width).contains(&x) {
+                    inline_box = Some((b.id, x >= b.x + b.width / 2.0));
+                }
+                last_box = Some((b.id, b.x + b.width));
+            }
+        }
+    }
+    if inline_box.is_none()
+        && let Some((id, end)) = last_box
+        && x >= end
+    {
+        inline_box = Some((id, true));
+    }
+    // The cluster, as `Cluster::from_point` picks it once it has the line.
+    let mut byte = None;
+    let last_run = runs.len().saturating_sub(1);
+    'runs: for (i, (start, run)) in runs.iter().enumerate() {
+        let is_last_run = i == last_run;
+        if x > start + run.advance() && !is_last_run {
+            continue;
+        }
+        let last_cluster = run.cluster_range().len().saturating_sub(1);
+        let mut edge = *start;
+        for (v, cluster) in run.visual_clusters().enumerate() {
+            let advance = cluster.advance();
+            if x > edge + advance && !(is_last_run && v == last_cluster) {
+                edge += advance;
+                continue;
+            }
+            let leading = x <= edge + advance * 0.5;
+            let range = cluster.text_range();
+            // `Cursor::from_point`'s side rule.
+            byte = Some(if cluster.is_rtl() {
+                if leading { range.end } else { range.start }
+            } else if leading || cluster.is_line_break() == Some(BreakReason::Explicit) {
+                range.start
+            } else {
+                range.end
+            });
+            break 'runs;
+        }
+    }
+    let byte = match byte {
+        Some(b) => snap_to_grapheme_boundary(layout, text, b, x),
+        None => {
+            inline_box?;
+            line.text_range().start
+        }
     };
-    let m = *layout.lines().nth(target)?.metrics();
-    Some((m.block_min_coord, m.block_max_coord - m.block_min_coord))
-}
-
-/// [`adjacent_line_box`] in the text-bearing element `node_id`'s layout.
-pub fn adjacent_line_box_for_node(
-    doc: &crate::dom_impl::RinchDocument,
-    node_id: u64,
-    at: LineOf,
-    down: bool,
-) -> Option<(f32, f32)> {
-    let node = doc.tree.nodes.get(node_id as usize)?;
-    if let Some(ref inline_layout) = node.text_layout {
-        return adjacent_line_box(&inline_layout.layout, at, down);
-    }
-    if let Some(ref layout) = node.cached_text_parley {
-        return adjacent_line_box(layout, at, down);
-    }
-    None
+    Some((byte, inline_box))
 }
 
 /// A line's bytes as [`visual_line_range`] gives them: up to the hard break
@@ -338,8 +392,9 @@ fn line_edge_range(
     range.start..end.max(range.start)
 }
 
-/// The index of the line `at` names (see [`LineOf`]).
-fn line_index(layout: &parley::layout::Layout<Brush>, at: LineOf) -> Option<usize> {
+/// The index of the line `at` names (see [`LineOf`]): the line Parley draws
+/// that caret on, or the line holding that inline box.
+pub fn line_index_of(layout: &parley::layout::Layout<Brush>, at: LineOf) -> Option<usize> {
     use parley::layout::PositionedLayoutItem;
     match at {
         LineOf::Caret(byte, affinity) => caret_line_index(layout, byte, affinity),
@@ -357,22 +412,43 @@ fn caret_line_index(
     byte_offset: usize,
     affinity: CaretAffinity,
 ) -> Option<usize> {
-    layout.lines().len().checked_sub(1)?;
-    // Parley draws a caret from its line box's top, `block_min_coord`: the
-    // caret's line is the last one starting at or above it. Line boxes can
-    // overlap — a line holding an image on its baseline reaches below the
-    // next line's top (`-2..42` over `40..64` for a 16px image in 24px
-    // lines) — so the first box that merely CONTAINS the caret's top named
-    // the line above, and Up, Down, Home and End stepped from it (#1121).
-    let (_, cy) = caret_position_for_offset_layout_with_affinity(layout, byte_offset, affinity);
-    let mut index = 0;
-    for (i, line) in layout.lines().enumerate() {
-        if line.metrics().block_min_coord > cy + 0.5 {
-            break;
+    use parley::layout::Affinity as A;
+    let last = layout.lines().len().checked_sub(1)?;
+    // The line of the cluster `Cursor::geometry` draws the caret from — the
+    // same choice, made the same way — read as an index. Not by the caret's
+    // y: line boxes can overlap and need not even start in order (an image
+    // on a baseline reaches past the next line's top; a 72px span in 24px
+    // lines makes a box that starts above the line before it), so no rule
+    // on `block_min_coord` names the line every time (#1121).
+    let affinity = match affinity {
+        CaretAffinity::Downstream => A::Downstream,
+        CaretAffinity::Upstream => A::Upstream,
+    };
+    let cursor = Cursor::from_byte_index(layout, byte_offset, affinity);
+    // The cursor's own affinity: at the text's end and at 0 Parley forces one.
+    let affinity = cursor.affinity();
+    let cluster = match cursor.visual_clusters(layout) {
+        [Some(left), Some(right)] => {
+            if left.is_end_of_line() && left.is_soft_line_break() {
+                if left.is_rtl() && affinity == A::Downstream
+                    || !left.is_rtl() && affinity == A::Upstream
+                {
+                    left
+                } else {
+                    right
+                }
+            } else if left.is_end_of_line() {
+                right
+            } else {
+                left
+            }
         }
-        index = i;
-    }
-    Some(index)
+        [Some(left), None] if left.is_hard_line_break() => return Some(last),
+        [Some(left), _] => left,
+        [_, Some(right)] => right,
+        _ => return Some(last),
+    };
+    Some(cluster.path().line_index().min(last))
 }
 
 /// [`caret_position_for_offset_layout`] for a caret with `affinity` at a soft

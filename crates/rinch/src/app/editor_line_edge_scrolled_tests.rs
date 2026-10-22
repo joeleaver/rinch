@@ -33,19 +33,30 @@ struct Page {
 /// `first` (a paragraph's inner html) and the filler in a 180px x 150px
 /// `overflow: auto` editor, focused and settled.
 fn page(first: &str) -> Page {
+    page_styled(first, "24px", "")
+}
+
+/// [`page`] with another editor `line-height` and an app stylesheet `css`.
+fn page_styled(first: &str, line_height: &str, css: &str) -> Page {
     let handle = crate::editor::create_editor();
     assert!(handle.load_html(&format!("<p>{first}</p>{FILLER}")));
     let handle_in = handle.clone();
+    let style = format!(
+        "width: 180px; height: 150px; overflow: auto; font-size: 16px; \
+         line-height: {line_height}; font-family: sans-serif"
+    );
+    let css = css.to_string();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
         root.set_attribute("style", "width: 800px; height: 600px");
         let editor = handle_in.mount(scope);
-        editor.set_attribute(
-            "style",
-            "width: 180px; height: 150px; overflow: auto; font-size: 16px; \
-             line-height: 24px; font-family: sans-serif",
-        );
+        editor.set_attribute("style", &style);
         root.append_child(&editor);
+        if !css.is_empty() {
+            let sheet = scope.create_element("style");
+            sheet.append_child(&scope.create_text(&css));
+            root.append_child(&sheet);
+        }
         root
     });
     app.register_app_font(AppFont::sans_serif(INTER));
@@ -609,4 +620,115 @@ fn home_under_a_line_holding_an_image_stays_on_its_line() {
         key(&mut p.app, KeyCode::Home, false);
         assert_eq!(p.head(), 12, "line 2's start (scrolled: {scrolled})");
     }
+}
+
+/// The Parley line the caret is drawn on, read independently of the code
+/// under test: the line whose box top is exactly the caret's top (Parley
+/// draws a caret from its line's `block_min_coord`). `None` outside the
+/// first paragraph.
+fn drawn_line(p: &Page) -> Option<usize> {
+    let head = p.handle.selection().head();
+    let (tb, byte) = p.handle.caret_address(head)?;
+    if tb != p.block() {
+        return None;
+    }
+    let doc = p.app.doc.as_ref().unwrap().borrow();
+    let layout = &doc.tree.nodes.get(tb)?.text_layout.as_ref()?.layout;
+    let (_, cy) = rinch_dom::text_query::caret_position_for_offset_layout_with_affinity(
+        layout,
+        byte,
+        p.handle.caret_affinity(),
+    );
+    let lines: Vec<f32> = layout
+        .lines()
+        .map(|l| l.metrics().block_min_coord)
+        .collect();
+    assert_eq!(
+        lines.iter().filter(|&&m| m == cy).count(),
+        1,
+        "control: one line box starts at the caret's top, {lines:?}"
+    );
+    lines.iter().position(|&m| m == cy)
+}
+
+/// Down from line 0 until the caret leaves the first paragraph, then Up
+/// back into it: one line per press each way (Chromium 155 moves one line
+/// per press in both shapes below), in view and scrolled away.
+fn walks_one_line_per_press(first: &str, line_height: &str, css: &str) {
+    for scrolled in [false, true] {
+        let mut p = page_styled(first, line_height, css);
+        let lines = {
+            let doc = p.app.doc.as_ref().unwrap().borrow();
+            let layout = &doc
+                .tree
+                .nodes
+                .get(p.block())
+                .unwrap()
+                .text_layout
+                .as_ref()
+                .unwrap()
+                .layout;
+            layout.len()
+        };
+        assert!(lines >= 4, "positive control: 4+ lines");
+        p.caret_at(2);
+        if scrolled {
+            p.scroll_first_paragraph_away();
+        }
+        let mut seen = vec![drawn_line(&p)];
+        for _ in 0..lines {
+            key(&mut p.app, KeyCode::ArrowDown, false);
+            seen.push(drawn_line(&p));
+        }
+        let want: Vec<Option<usize>> = (0..lines).map(Some).chain([None]).collect();
+        assert_eq!(seen, want, "Down, scrolled: {scrolled}");
+        if scrolled {
+            p.scroll_first_paragraph_away();
+        }
+        let mut up = Vec::new();
+        for _ in 0..lines {
+            key(&mut p.app, KeyCode::ArrowUp, false);
+            up.push(drawn_line(&p));
+        }
+        let want: Vec<Option<usize>> = (0..lines).rev().map(Some).collect();
+        assert_eq!(up, want, "Up, scrolled: {scrolled}");
+    }
+}
+
+/// A 72px span in 24px lines: its line's box starts ABOVE the line before
+/// it (`[24,48]` then `[16,103]`), so neither a y probe nor the first or
+/// last box around the caret's top names the line. Down used to stay on
+/// the span's line for good (review of #1732).
+#[test]
+fn a_tall_span_in_short_lines_is_one_line_per_press() {
+    walks_one_line_per_press(
+        "alpha bravo charlie <strong>XY</strong> delta echo foxtrot golf hotel india juliet",
+        "24px",
+        "[data-pm-editor] strong { font-size: 72px; }",
+    );
+}
+
+/// 16px text in 10px lines: every line box overlaps the next by half, and
+/// a y in the target line's middle named the line after it, so Down skipped
+/// every other line (review of #1732).
+#[test]
+fn overlapping_tight_lines_are_one_line_per_press() {
+    walks_one_line_per_press(WORDS, "10px", "");
+}
+
+/// The goal column survives a short line and comes back: `x` is alone on
+/// its line between three `alpha bravo` lines. Positions are model
+/// positions minus one (chars, a break counting one).
+#[test]
+fn the_goal_column_survives_a_short_line() {
+    let first = "alpha bravo<br>x<br>alpha bravo<br>alpha bravo";
+    let place = |p: &mut Page| p.caret_at(9); // column 9 of line 1
+    let downs = [true, true, true, false, false, false];
+    let mut got = Vec::new();
+    for n in 1..=downs.len() {
+        got.push(same_in_view_and_scrolled(first, place, &downs[..n]).0);
+    }
+    // 13 = after "x" (the short line's end), 23 and 35 = column 9 of lines
+    // 3 and 4, then back up the same way.
+    assert_eq!(got, vec![13, 23, 35, 23, 13, 9]);
 }
