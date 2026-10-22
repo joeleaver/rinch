@@ -199,6 +199,29 @@ rsx! {
 }
 ```
 
+### `ref:` and `NodeHandle::bounding_rect`
+
+**`ref: target`** (#1779) is pulled out of the props by `html::element_to_dom_html`
+and the three component sites, and becomes `rinch::core::dom::bind_node_ref(__scope,
+target, &elem)` — after the element's attributes and children, before the caller
+appends it; on a component, after `Component::render` on its root (inside the
+render closure on a re-rendering component, so each render binds its own root in
+its own scope). `target` is a `Signal<Option<NodeHandle>>`; the cleanup that clears
+it runs on the building scope's disposal, untracked, and only while the signal
+still holds that node (compared by node id and `Weak::ptr_eq` of the document, no
+document borrow). `ref` is a keyword: `element.rs` peeks `Token![ref]` beside
+`Ident` to see it as a prop. Pins: `rinch-macros/tests/rsx_node_ref_1779.rs`.
+
+**`NodeHandle::bounding_rect`** is `DomDocument::bounding_rect` (default `None`):
+rinch-dom answers `paint::painted_border_box(tree, id, 1.0)` — the conversion
+`ClickContext` and the bounds signals use — from the last layout, a zero rect
+under `display: none` or for a `display: contents` element (Chrome's answer; the
+layout of such a box is zeroed, so a sum up the chain would give its parent's
+origin), and `None` for a text node or one not connected; rinch-web answers
+`getBoundingClientRect()` for a connected element. Pins:
+`rinch-dom/tests/bounding_rect_1779_tests.rs`,
+`rinch-web/tests/bounding_rect_and_ref_1779.rs` (Chrome 155, Firefox).
+
 ### RSX Prop Transformation Rules (IMPORTANT - Read Before Using Components)
 
 The `rsx!` macro **automatically wraps** component prop values. You must NOT manually wrap them or you'll get confusing type errors from double-wrapping.

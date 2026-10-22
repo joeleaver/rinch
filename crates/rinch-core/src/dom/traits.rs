@@ -991,6 +991,21 @@ pub trait DomDocument {
     /// Returns the (x, y, width, height) of the node's layout box.
     fn query_node_layout(&self, node_id: u64) -> Option<(f32, f32, f32, f32)>;
 
+    /// The box element `node` is **painted** in, in viewport-relative logical
+    /// pixels: the frame of `ClickContext::element_x` and of
+    /// [`NodeHandle::bounds_signal`], so a transform on the element or an
+    /// ancestor moves and scales it (issue #1779). The browser backend answers
+    /// `getBoundingClientRect()`; rinch-dom answers the last layout's painted
+    /// border box (it does not lay out on demand).
+    ///
+    /// `None` for a text node, an unknown node, or one not in the document. A
+    /// `Some` zero rect for an element under `display: none` (itself or an
+    /// ancestor) or one that is `display: contents` itself, as Chrome answers.
+    /// Default `None`: a host with no geometry (the mock document).
+    fn bounding_rect(&self, _node: NodeId) -> Option<crate::reactive::ElementBounds> {
+        None
+    }
+
     /// The `(left, top)` inset from a node's box origin (the origin
     /// [`query_node_layout`](Self::query_node_layout) reports against) to the origin an
     /// absolutely-positioned child anchors to. On the web that is the node's border

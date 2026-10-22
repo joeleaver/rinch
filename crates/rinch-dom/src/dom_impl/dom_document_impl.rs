@@ -1705,6 +1705,34 @@ impl DomDocument for RinchDocument {
         ))
     }
 
+    /// The painted border box, as `ClickContext` and the bounds signals report
+    /// it (`paint::painted_border_box` at scale 1), from the last layout
+    /// (issue #1779).
+    fn bounding_rect(&self, node: NodeId) -> Option<rinch_core::reactive::ElementBounds> {
+        use crate::computed_style::values::DisplayValue;
+        let n = self.tree.get(node.0)?;
+        if !n.is_element() || !self.is_connected(node) {
+            return None;
+        }
+        // An element that generates no box: Chrome answers all zeros.
+        let boxless = n.computed_style.display == DisplayValue::Contents
+            || std::iter::successors(Some(node.0), |&id| self.tree.get(id)?.parent).any(|id| {
+                self.tree
+                    .get(id)
+                    .is_some_and(|a| a.computed_style.display == DisplayValue::None)
+            });
+        if boxless {
+            return Some(rinch_core::reactive::ElementBounds::default());
+        }
+        let r = crate::paint::painted_border_box(&self.tree, node.0, 1.0);
+        Some(rinch_core::reactive::ElementBounds {
+            x: r.x0 as f32,
+            y: r.y0 as f32,
+            width: r.width() as f32,
+            height: r.height() as f32,
+        })
+    }
+
     /// The node's left and top border widths, as Taffy laid them out
     /// (`taffy_conversion` hands it the computed widths). A child's
     /// [`LayoutResult`](crate::node::LayoutResult) origin is relative to its parent's

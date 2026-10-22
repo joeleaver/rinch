@@ -3222,6 +3222,23 @@ impl DomDocument for WebDocument {
         // No-op: browser handles layout natively.
     }
 
+    /// `getBoundingClientRect()` (issue #1779). A disconnected element answers
+    /// `None`, as rinch-dom does; the browser gives a zero rect there.
+    fn bounding_rect(&self, node: NodeId) -> Option<rinch_core::reactive::ElementBounds> {
+        let n = self.nodes.get(&node.0)?;
+        if !n.is_connected() {
+            return None;
+        }
+        let el: &web_sys::Element = n.dyn_ref()?;
+        let r = el.get_bounding_client_rect();
+        Some(rinch_core::reactive::ElementBounds {
+            x: r.x() as f32,
+            y: r.y() as f32,
+            width: r.width() as f32,
+            height: r.height() as f32,
+        })
+    }
+
     fn query_node_layout(&self, node_id: u64) -> Option<(f32, f32, f32, f32)> {
         let n = self.nodes.get(&(node_id as usize))?;
         let el: web_sys::Element = n.clone().dyn_into().ok()?;

@@ -1253,9 +1253,31 @@ impl NodeHandle {
     /// Get the layout bounds of this node relative to its parent.
     ///
     /// Returns (x, y, width, height) if the node has been laid out.
+    /// For where the node is on screen, use [`Self::bounding_rect`].
     pub fn get_layout_bounds(&self) -> Option<(f32, f32, f32, f32)> {
         let doc = self.accessed_doc()?;
         doc.borrow().query_node_layout(self.node_id.0 as u64)
+    }
+
+    /// Where this element is **now**: the box it is painted in, in
+    /// viewport-relative logical pixels — the frame of
+    /// [`crate::events::ClickContext::element_x`] and of
+    /// [`Self::bounds_signal`], so a CSS transform on the element or an
+    /// ancestor moves and scales it, and a `position: fixed` element reports
+    /// its viewport box (issue #1779).
+    ///
+    /// Synchronous, for an event handler: on the web it is the element's
+    /// `getBoundingClientRect()`; on desktop it is the box as of the **last
+    /// layout** (a style the same handler just wrote is reflected from the next
+    /// frame on, where a browser lays out to answer). Any effects the handler
+    /// queued run first, as for every `NodeHandle` operation.
+    ///
+    /// `None` for a text node, a node no longer in the document, or one whose
+    /// document is gone. An element under `display: none`, or one that is
+    /// `display: contents`, generates no box and answers a zero rect.
+    pub fn bounding_rect(&self) -> Option<crate::reactive::ElementBounds> {
+        let doc = self.accessed_doc()?;
+        doc.borrow().bounding_rect(self.node_id)
     }
 
     /// Reactive bounds signal for this element, refreshed by the runtime after
@@ -1277,6 +1299,8 @@ impl NodeHandle {
     ///
     /// Initial value is `ElementBounds::default()` (zero rect). The first real
     /// bounds arrive after the next layout pass.
+    /// Each call registers a new signal; to ask where the element is once —
+    /// from an event handler, say — use [`Self::bounding_rect`].
     ///
     /// Typical use: derive zoom / scroll / domain-coordinate math from a
     /// strip's measured pixel width without hand-rolling a polling thread.
@@ -1515,6 +1539,43 @@ pub fn release_scratch_container(scope: &RenderScope, container: &NodeHandle) {
         }
     }
     container.discard();
+}
+
+/// What `ref: target` on an element in `rsx!` does (issue #1779): hand the app
+/// the element's [`NodeHandle`] through `target`, and take it back when the
+/// element goes.
+///
+/// `target` is set to `Some(node)` now — `rsx!` calls this once the element's
+/// attributes and children are built, before it is appended to its parent — and
+/// to `None` when `scope` is disposed: the branch it was in is hidden, its `for`
+/// row is removed, its component re-renders or unmounts. The clear happens only
+/// while `target` still holds **this** node, so an element that replaced it (a
+/// re-shown branch, a component's next render) is not cleared by the old one's
+/// cleanup, whichever order the two run in; and only while `target` is alive.
+/// It is made untracked, so a cleanup that runs inside an effect subscribes
+/// that effect to nothing.
+///
+/// On a component, `rsx!` binds the component's **root** element.
+pub fn bind_node_ref(
+    scope: &mut RenderScope,
+    target: crate::reactive::Signal<Option<NodeHandle>>,
+    node: &NodeHandle,
+) {
+    let (doc, node_id) = (node.doc.clone(), node.node_id);
+    target.set(Some(node.clone()));
+    scope.on_cleanup(move || {
+        crate::reactive::untracked_handler(|| {
+            let holds_this = target
+                .try_with(|held| {
+                    held.as_ref()
+                        .is_some_and(|h| h.node_id == node_id && Weak::ptr_eq(&h.doc, &doc))
+                })
+                .unwrap_or(false);
+            if holds_this {
+                target.set(None);
+            }
+        });
+    });
 }
 
 /// A `render_fn` that **memoises** — one that hands back a subtree it built
