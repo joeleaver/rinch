@@ -266,3 +266,20 @@ fn an_image_tile_at_dpr_1_5_keeps_its_fraction() {
     }
     check(&p, 10, &[(1, R), (6, R), (9, B), (14, B)], 3);
 }
+
+/// One repeating tile that covers the whole box (drawn as one fill, no
+/// pattern) keeps its fraction too: a 2px red-to-blue ramp at `49px..51px`
+/// of a 100px tile at `-0.5px` is half way at pixel 49. Rounded (to `-1px`)
+/// pixel 49 was 64 red; at `0` Chrome reads 191 there.
+#[test]
+fn a_covering_repeating_tile_keeps_its_fraction() {
+    let ramp = "linear-gradient(to right, rgb(255, 0, 0) 49px, rgb(0, 0, 255) 51px)";
+    let p = render(
+        &format!("background: {ramp} -0.5px 0 / 100px 40px"),
+        1.0,
+        false,
+    );
+    check(&p, 7, &[(48, R), (49, [127, 0, 127]), (50, B)], 4);
+    let p = render(&format!("background: {ramp} 0 0 / 100px 40px"), 1.0, false);
+    check(&p, 7, &[(49, [191, 0, 64]), (50, [64, 0, 191])], 4);
+}
