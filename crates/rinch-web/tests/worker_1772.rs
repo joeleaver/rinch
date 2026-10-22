@@ -242,3 +242,37 @@ async fn a_panic_ends_the_worker() {
     assert!(matches!(&got[1], WorkerEvent::Error(_)), "{:?}", got[1]);
     assert!(worker.is_ended());
 }
+
+fn uses_spawn_local(_: String, _: &Replies<String>) {
+    spawn_local(async {});
+}
+
+fn spawns_a_worker(_: String, replies: &Replies<String>) {
+    let inner = Worker::<String, String>::spawn(numbered);
+    replies.send(format!("ended:{}", inner.is_ended()));
+}
+
+#[wasm_bindgen_test]
+async fn spawn_local_in_a_handler_refuses_loudly() {
+    let _root = mount_page();
+    let worker = Worker::<String, String>::spawn(uses_spawn_local);
+    let got = collect(&worker);
+    worker.send("go".into());
+    assert!(wait_for(|| !got.borrow().is_empty()).await);
+    assert!(
+        matches!(&got.borrow()[0], WorkerEvent::Error(_)),
+        "{:?}",
+        got.borrow()
+    );
+    assert!(worker.is_ended(), "a panic ends the worker");
+}
+
+#[wasm_bindgen_test]
+async fn a_worker_spawns_no_worker() {
+    let _root = mount_page();
+    let worker = Worker::<String, String>::spawn(spawns_a_worker);
+    let got = collect(&worker);
+    worker.send("go".into());
+    assert!(wait_for(|| !got.borrow().is_empty()).await);
+    assert_eq!(*got.borrow(), vec![msg("ended:true")]);
+}

@@ -34,6 +34,11 @@
 //!   It needs the wasm-bindgen glue built for `--target web` (trunk's default)
 //!   and a Content-Security-Policy that allows `blob:` workers.
 //!
+//! A handler is synchronous: nothing in a worker runs rinch tasks or timers,
+//! so [`spawn_local`](rinch_core::spawn_local) and
+//! [`set_timeout`](rinch_core::set_timeout) panic inside one, and a worker
+//! cannot [`spawn`](Worker::spawn) workers.
+//!
 //! Messages cross as bytes, through [`WorkerMessage`], on every platform, so a
 //! codec that loses something loses it on the desktop as well as on the web.
 //! Each worker has its own state: a `thread_local!` in the handler's module is
@@ -188,8 +193,12 @@ struct Inner<Out> {
     id: u64,
     handle: RefCell<Option<backend::Handle>>,
     events: RefCell<VecDeque<WorkerEvent<Out>>>,
-    waker: RefCell<Option<Waker>>,
+    /// Every task waiting in [`Worker::next`]; all are woken.
+    wakers: RefCell<Vec<Waker>>,
     callback: RefCell<Option<Slot<Out>>>,
+    /// The callback's component has unmounted: events are dropped, not
+    /// queued for `next`, until `on_event` is called again.
+    discarding: Cell<bool>,
     ended: Cell<bool>,
 }
 
@@ -209,6 +218,9 @@ impl<Out: WorkerMessage> Inner<Out> {
                 WorkerEvent::Error(e)
             }
         };
+        if self.discarding.get() {
+            return;
+        }
         let callback = self
             .callback
             .borrow()
@@ -217,7 +229,11 @@ impl<Out: WorkerMessage> Inner<Out> {
         match callback {
             Some((owner, frame, f)) => {
                 if owner.as_ref().is_some_and(|o| !o.is_alive()) {
+                    // The receiver is gone with its component: drop this event
+                    // and the ones after it rather than piling them up for a
+                    // `next` nobody may call.
                     self.callback.borrow_mut().take();
+                    self.discarding.set(true);
                     return;
                 }
                 let _frame = frame.enter();
@@ -242,7 +258,8 @@ impl<Out: WorkerMessage> Inner<Out> {
     }
 
     fn wake(&self) {
-        if let Some(waker) = self.waker.borrow_mut().take() {
+        let wakers = std::mem::take(&mut *self.wakers.borrow_mut());
+        for waker in wakers {
             waker.wake();
         }
     }
@@ -265,16 +282,40 @@ impl<In: WorkerMessage, Out: WorkerMessage> Worker<In, Out> {
     ///
     /// Spawned while a component renders, the worker is terminated when the
     /// component unmounts.
+    ///
+    /// Called inside a worker (see [`is_worker`]) it starts nothing: the
+    /// `Worker` it returns has ended, and its [`next`](Self::next) yields one
+    /// [`WorkerEvent::Error`] saying why. On the web this is what stops an app
+    /// whose start function spawns a worker from spawning one per instance.
     pub fn spawn(handler: fn(In, &Replies<Out>)) -> Self {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let inner = Rc::new(Inner {
             id,
             handle: RefCell::new(None),
             events: RefCell::new(VecDeque::new()),
-            waker: RefCell::new(None),
+            wakers: RefCell::new(Vec::new()),
             callback: RefCell::new(None),
+            discarding: Cell::new(false),
             ended: Cell::new(false),
         });
+        if is_worker() {
+            // On the web the app's start function runs again in every worker
+            // instance, so a worker it spawns would spawn itself without end.
+            // Refused on both backends: a worker spawns no worker.
+            const REFUSED: &str = "Worker::spawn was called inside a worker; a worker cannot spawn \
+                 workers (on the web the app's start function runs again in each worker: \
+                 check rinch::worker::is_worker() there)";
+            tracing::warn!("{REFUSED}");
+            inner
+                .events
+                .borrow_mut()
+                .push_back(WorkerEvent::Error(REFUSED.into()));
+            inner.ended.set(true);
+            return Self {
+                inner,
+                _in: PhantomData,
+            };
+        }
         let weak: Weak<Inner<Out>> = Rc::downgrade(&inner);
         let receiver: Receiver = Rc::new(move |raw| {
             if let Some(inner) = weak.upgrade() {
@@ -310,8 +351,10 @@ impl<In: WorkerMessage, Out: WorkerMessage> Worker<In, Out> {
     /// [`next`](Self::next); events that arrived before it stay there.
     ///
     /// Registered while a component renders, the callback stops being called
-    /// when that component unmounts.
+    /// when that component unmounts, and the worker's events from then on are
+    /// dropped (not kept for `next`) until `on_event` is called again.
     pub fn on_event(&self, f: impl Fn(WorkerEvent<Out>) + 'static) {
+        self.inner.discarding.set(false);
         *self.inner.callback.borrow_mut() = Some(Slot {
             owner: current_owner(),
             frame: CallbackFrame::current(),
@@ -322,6 +365,8 @@ impl<In: WorkerMessage, Out: WorkerMessage> Worker<In, Out> {
     /// The next event, awaited — inside [`spawn_local`](rinch_core::spawn_local)
     /// say. `None` once the worker has ended (terminated, dropped with its
     /// component, or failed) and every event it sent before has been read.
+    /// Several tasks may wait at once: each event goes to one of them, and all
+    /// see the end.
     pub async fn next(&self) -> Option<WorkerEvent<Out>> {
         std::future::poll_fn(|cx| {
             if let Some(event) = self.inner.events.borrow_mut().pop_front() {
@@ -330,7 +375,10 @@ impl<In: WorkerMessage, Out: WorkerMessage> Worker<In, Out> {
             if self.inner.ended.get() {
                 return Poll::Ready(None);
             }
-            *self.inner.waker.borrow_mut() = Some(cx.waker().clone());
+            let mut wakers = self.inner.wakers.borrow_mut();
+            if !wakers.iter().any(|w| w.will_wake(cx.waker())) {
+                wakers.push(cx.waker().clone());
+            }
             Poll::Pending
         })
         .await

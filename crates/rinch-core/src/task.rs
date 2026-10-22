@@ -65,6 +65,31 @@ use crate::context::CallbackFrame;
 use crate::reactive::{Owner, current_owner, unowned};
 use crate::timer::{TimeoutHandle, clear_timeout, set_timeout};
 
+thread_local! {
+    /// Set on a `rinch::worker` thread (desktop) or in a worker's wasm instance
+    /// (web), where nothing drives tasks or timers (issue #1772).
+    static IN_WORKER: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Mark this thread as running `rinch::worker` handlers: [`spawn_local`] and
+/// [`set_timeout`] panic here from now on instead of silently never running.
+#[doc(hidden)]
+pub fn __enter_worker_context() {
+    IN_WORKER.with(|w| w.set(true));
+}
+
+/// Panic when called inside a `rinch::worker` handler. A handler is
+/// synchronous: no loop polls a task or fires a timer in a worker, so a task
+/// or timer armed there would never run.
+pub(crate) fn refuse_in_worker(what: &str) {
+    if IN_WORKER.with(Cell::get) {
+        panic!(
+            "{what} cannot be used inside a rinch::worker handler: handlers are \
+             synchronous, and nothing in a worker runs tasks or timers"
+        );
+    }
+}
+
 /// Schedules [`poll_task`] for a task id **on the main thread**, later. Called
 /// from whatever thread woke the task. Installed with [`set_task_scheduler`].
 type TaskScheduler = fn(id: u64);
@@ -206,6 +231,7 @@ impl TaskHandle {
 /// spawn under [`unowned`](crate::reactive::unowned) for one that must outlive
 /// it — see the [module docs](self#lifetime).
 pub fn spawn_local(future: impl Future<Output = ()> + 'static) -> TaskHandle {
+    refuse_in_worker("spawn_local");
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let owner = current_owner();
     let waker = Arc::new(TaskWaker {

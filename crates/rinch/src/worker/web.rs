@@ -150,10 +150,16 @@ pub(super) fn spawn<In: WorkerMessage, Out: WorkerMessage>(
         Ok(handle) => Some(handle),
         Err(err) => {
             let message = format!("the worker could not start: {}", describe(&err));
-            // Reported after `spawn` returns, as every event is.
-            rinch_core::reactive::unowned(|| {
-                rinch_core::spawn_local(async move { deliver(id, Raw::Failed(message)) })
-            });
+            // Reported after `spawn` returns, as every event is — in a
+            // microtask of its own, not a rinch task: before the first mount
+            // there is no task scheduler on the page to run one.
+            let report = Closure::once_into_js(move || deliver(id, Raw::Failed(message)));
+            let global = js_sys::global();
+            if let Ok(queue) = js_sys::Reflect::get(&global, &"queueMicrotask".into()) {
+                let _ = queue
+                    .unchecked_into::<js_sys::Function>()
+                    .call1(&global, &report);
+            }
             None
         }
     }
@@ -264,6 +270,9 @@ fn run_shim<In: WorkerMessage, Out: WorkerMessage>(handler: usize, bytes: Vec<u8
 #[doc(hidden)]
 #[wasm_bindgen]
 pub fn __rinch_worker_run(shim: usize, handler: usize, bytes: Vec<u8>) {
+    // Nothing in a worker instance runs rinch tasks or timers: make
+    // `spawn_local` / `set_timeout` in a handler panic rather than never run.
+    rinch_core::task::__enter_worker_context();
     // SAFETY: `shim` is the address of a `run_shim::<In, Out>` posted by
     // `start` in an instance of this same module.
     let shim: fn(usize, Vec<u8>) = unsafe { fn_at(shim) };

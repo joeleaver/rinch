@@ -270,12 +270,119 @@ fn a_callback_stops_with_its_component() {
     drain_until("one call", || calls.get() == 1);
     scope.dispose();
     worker.send("two".into());
+    worker.send("three".into());
     drain_for(30);
     assert_eq!(calls.get(), 1, "not called after its component unmounted");
     assert!(
         !worker.is_ended(),
         "the worker itself was spawned outside it"
     );
+
+    // What arrived after the unmount was dropped, not kept for `next`.
+    let worker = Rc::new(worker);
+    let seen = Rc::new(RefCell::new(None));
+    let (s, w) = (seen.clone(), worker.clone());
+    rinch_core::spawn_local(async move { *s.borrow_mut() = Some(w.next().await) });
+    drain_for(20);
+    worker.terminate();
+    drain_until("next resolved", || seen.borrow().is_some());
+    assert_eq!(
+        seen.borrow_mut().take().unwrap(),
+        None,
+        "nothing piled up for next() after the callback's component unmounted"
+    );
+
+    // A new callback receives again.
+    let worker = Worker::<String, String>::spawn(echo);
+    let scope = Scope::new();
+    scope.run(|| worker.on_event(|_| {}));
+    scope.dispose();
+    worker.send("dropped".into());
+    drain_for(20);
+    let got = collect(&worker);
+    worker.send("kept".into());
+    drain_until("the new callback's event", || got.borrow().len() == 1);
+    assert_eq!(*got.borrow(), vec![msg("kept")]);
+}
+
+fn two_waiters_are_both_served() {
+    let worker = Rc::new(Worker::<String, String>::spawn(echo));
+    let results: Rc<RefCell<Vec<Option<WorkerEvent<String>>>>> = Rc::default();
+    for _ in 0..2 {
+        let (r, w) = (results.clone(), worker.clone());
+        rinch_core::spawn_local(async move {
+            let event = w.next().await;
+            r.borrow_mut().push(event);
+        });
+    }
+    drain_for(20);
+    worker.send("a".into());
+    worker.send("b".into());
+    drain_until("both waiters", || results.borrow().len() == 2);
+    let mut got: Vec<_> = results.borrow_mut().drain(..).collect();
+    got.sort_by_key(|e| format!("{e:?}"));
+    assert_eq!(got, vec![Some(msg("a")), Some(msg("b"))]);
+
+    // And both see the end.
+    for _ in 0..2 {
+        let (r, w) = (results.clone(), worker.clone());
+        rinch_core::spawn_local(async move {
+            let event = w.next().await;
+            r.borrow_mut().push(event);
+        });
+    }
+    drain_for(20);
+    worker.terminate();
+    drain_until("both ended", || results.borrow().len() == 2);
+    assert_eq!(*results.borrow(), vec![None, None]);
+}
+
+fn uses_spawn_local(_: String, _: &Replies<String>) {
+    rinch_core::spawn_local(async {});
+}
+
+fn uses_set_timeout(_: String, _: &Replies<String>) {
+    rinch_core::set_timeout(1, || {});
+}
+
+fn spawns_a_worker(_: String, replies: &Replies<String>) {
+    let inner = Worker::<String, String>::spawn(echo);
+    replies.send(format!("ended:{}", inner.is_ended()));
+}
+
+fn tasks_and_timers_refuse_inside_a_handler() {
+    for handler in [uses_spawn_local, uses_set_timeout] {
+        let worker = Rc::new(Worker::<String, String>::spawn(handler));
+        worker.send("go".into());
+        let events = Rc::new(RefCell::new(None));
+        let (e, w) = (events.clone(), worker.clone());
+        rinch_core::spawn_local(async move {
+            let mut all = Vec::new();
+            while let Some(event) = w.next().await {
+                all.push(event);
+            }
+            *e.borrow_mut() = Some(all);
+        });
+        drain_until("the worker ended", || events.borrow().is_some());
+        let all = events.borrow_mut().take().unwrap();
+        assert!(
+            matches!(&all[..], [WorkerEvent::Error(e)] if e.contains("inside a rinch::worker handler")),
+            "{all:?}"
+        );
+    }
+    // The UI thread is unaffected.
+    let ran = Rc::new(Cell::new(false));
+    let r = ran.clone();
+    rinch_core::spawn_local(async move { r.set(true) });
+    drain_until("a UI task still runs", || ran.get());
+}
+
+fn a_worker_spawns_no_worker() {
+    let worker = Worker::<String, String>::spawn(spawns_a_worker);
+    let got = collect(&worker);
+    worker.send("go".into());
+    drain_until("a reply", || got.borrow().len() == 1);
+    assert_eq!(*got.borrow(), vec![msg("ended:true")]);
 }
 
 fn dropping_terminates() {
@@ -307,5 +414,8 @@ fn workers_on_the_desktop() {
     replies_are_awaitable();
     unmount_terminates();
     a_callback_stops_with_its_component();
+    two_waiters_are_both_served();
+    tasks_and_timers_refuse_inside_a_handler();
+    a_worker_spawns_no_worker();
     dropping_terminates();
 }

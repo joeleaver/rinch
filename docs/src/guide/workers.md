@@ -40,8 +40,12 @@ fn word_count() -> NodeHandle {
 - **`worker.send(msg)`** queues a message; **`replies.send(msg)`** in the
   handler sends one back.
 - **`worker.on_event(|event| …)`** receives the replies on the UI thread, one
-  `batch` each. **`worker.next().await`** receives them inside a
-  [task](./async.md) instead; it yields `None` once the worker has ended.
+  `batch` each. Registered while a component renders, it stops when the
+  component unmounts, and the worker's events are dropped from then on until
+  `on_event` is called again. **`worker.next().await`** receives them inside a
+  [task](./async.md) instead (events that arrive while a callback is set do
+  not reach it); it yields `None` once the worker has ended. Several tasks may
+  await `next()` at once: each event goes to one of them, and all see the end.
 - **`WorkerEvent::Error`** reports a message that could not be decoded (the
   worker goes on), or a handler that panicked or a worker that could not start
   (the worker has ended; nothing follows).
@@ -50,6 +54,18 @@ fn word_count() -> NodeHandle {
   `Worker` terminates it too.
 - **`rinch::worker::is_worker()`** says whether the calling code runs inside a
   worker.
+
+## Handlers are synchronous
+
+A handler runs to completion for each message; nothing in a worker runs rinch
+tasks or timers. `spawn_local` and `set_timeout` called inside a handler
+**panic** (the worker then ends with a `WorkerEvent::Error`) rather than
+silently never running. Do the work in the handler, and send a reply for each
+step of progress you want the UI to see.
+
+A worker cannot spawn workers: `Worker::spawn` inside a worker starts nothing,
+and returns a `Worker` that has already ended, whose `next()` yields one
+`WorkerEvent::Error` saying why.
 
 ## Messages
 
@@ -105,7 +121,9 @@ module**: no second build, no extra file. What that requires and implies:
 - The app's start function runs again in every worker. `rinch_web::mount`,
   `mount_with_menu_bar` and the web `App::run` return without mounting there
   (there is no `document`); code that runs before them and needs the page
-  should check `is_worker()` first.
+  should check `is_worker()` first. A `Worker::spawn` in the start function is
+  refused in the worker instances (above), so it does not spawn itself in
+  each of them.
 - Each worker is a separate instance with its own memory: statics start at
   their initial values, and nothing is shared with the page. Each costs the
   module's initial memory; the compiled module itself is shared.

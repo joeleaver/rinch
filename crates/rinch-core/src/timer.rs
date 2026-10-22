@@ -69,6 +69,7 @@ pub fn set_timer_backend(backend: TimerBackend) {
 /// rinch_core::reactive::unowned(|| set_timeout(500, move || flush_to_disk()));
 /// ```
 pub fn set_timeout(delay_ms: u32, cb: impl FnOnce() + 'static) -> TimeoutHandle {
+    crate::task::refuse_in_worker("set_timeout");
     let id = park_main_callback::<()>(move |()| cb());
     schedule(id.raw(), delay_ms);
     TimeoutHandle(id)

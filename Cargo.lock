@@ -4915,7 +4915,6 @@ dependencies = [
  "pollster",
  "raw-window-handle",
  "rfd",
- "rinch",
  "rinch-android",
  "rinch-clipboard",
  "rinch-components",

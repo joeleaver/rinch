@@ -157,6 +157,9 @@ jobs:
           # tests in that configuration, which is where a *behavioural* regression
           # in the cfg'd-down half would show.
           cargo test -p rinch --no-default-features --features components,theme
+          # `rinch::worker` (#1772) on the desktop: off by default, and nothing
+          # in the workspace turns it on for a host build.
+          cargo test -p rinch --no-default-features --features worker --test worker_1772
 
   clippy:
     runs-on: ubuntu-latest

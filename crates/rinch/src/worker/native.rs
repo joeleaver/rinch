@@ -72,6 +72,8 @@ pub(super) fn spawn<In: WorkerMessage, Out: WorkerMessage>(
         .name(format!("rinch-worker-{id}"))
         .spawn(move || {
             IN_WORKER.with(|w| w.set(true));
+            // No loop runs rinch tasks or timers on this thread.
+            rinch_core::task::__enter_worker_context();
             let replies = Replies::<Out> {
                 sink: Sink {
                     id,

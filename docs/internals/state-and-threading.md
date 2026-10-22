@@ -358,7 +358,19 @@ receiver, or drops the event when the worker has ended. The receiver decodes
 under the callback's owner (or `unowned`) and `CallbackFrame`, dropped once
 its owner is dead — or queues it for `next()` and wakes the waiting task.
 `spawn` registers one `on_cleanup` that ends the worker (unmount), and `Drop`
-ends it too. Ending unlists the id first, so a reply already on its way is
+ends it too. A callback found with a dead owner is taken and sets
+`discarding`, which drops later events (instead of queueing them for a `next`
+nobody may call) until the next `on_event`. `next()` keeps a list of wakers,
+all woken per event. `Worker::spawn` inside a worker (`is_worker()`) returns an
+already-ended worker holding one `Error`: on the web the app's start function
+re-runs in every instance and would otherwise spawn itself recursively. A
+worker thread and a worker instance call `rinch_core::task::__enter_worker_context`
+(desktop: at thread start; web: in `__rinch_worker_run`), after which
+`spawn_local` and `set_timeout` panic (`refuse_in_worker`) — nothing drives
+tasks or timers there (on the web `ensure_global_init` never runs in the
+instance; on the desktop the task table and timer queue are the UI thread's).
+A startup failure on the web is reported from a `queueMicrotask`, not a rinch
+task: before the first mount no task scheduler is installed. Ending unlists the id first, so a reply already on its way is
 dropped on the UI side whatever the backend does.
 
 **Desktop**: one thread per worker (`rinch-worker-<id>`), an `mpsc` channel in,
@@ -394,4 +406,6 @@ worker at once, Chrome after its ~2 s forcible-termination delay (measured: a
 1.5 s busy loop runs to its end, a 5 s one does not). Pins:
 `crates/rinch/tests/worker_1772.rs` (desktop), `crates/rinch-web/tests/worker_1772.rs`
 (Chrome 155 and Firefox 155; a `BroadcastChannel` shows whether a terminated
-handler reached its end).
+handler reached its end), `crates/rinch-web/tests/worker_start_failure_1772.rs`
+(a failed start before any mount). CI runs the desktop file through its own
+line in the feature-gated step (`[[test]] required-features = ["worker"]`).
