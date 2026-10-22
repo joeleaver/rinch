@@ -998,11 +998,14 @@ pub trait DomDocument {
     /// `getBoundingClientRect()`; rinch-dom answers the last layout's painted
     /// border box (it does not lay out on demand).
     ///
-    /// `None` for a text node, an unknown node, or one not in the document. A
-    /// `Some` zero rect for an element under `display: none` (itself or an
-    /// ancestor) or one that is `display: contents` itself, as Chrome answers.
+    /// A flowed inline element (`<span>`, `<a>`) answers the union of its line
+    /// fragments, as `getBoundingClientRect()` does. `None` for a text node,
+    /// an unknown node, or one not in the document. A `Some` zero rect for an
+    /// element under `display: none` (itself or an ancestor) or one that is
+    /// `display: contents` itself, as Chrome answers. `&mut` because rinch-dom
+    /// may shape a font probe to measure an inline's fragments.
     /// Default `None`: a host with no geometry (the mock document).
-    fn bounding_rect(&self, _node: NodeId) -> Option<crate::reactive::ElementBounds> {
+    fn bounding_rect(&mut self, _node: NodeId) -> Option<crate::reactive::ElementBounds> {
         None
     }
 

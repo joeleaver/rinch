@@ -553,6 +553,11 @@ pub(crate) struct SpanFragments {
     top: f32,
     right: f32,
     bottom: f32,
+    /// The leftmost and rightmost edge of **any** of its fragments, for the
+    /// union of them all (`RinchDocument::inline_element_rect`, #1779): a
+    /// wrapped span's second line can start left of its first fragment.
+    union_left: f32,
+    union_right: f32,
 }
 
 /// The containing block a positioned **inline** element forms (CSS 2.1
@@ -598,6 +603,10 @@ struct ClusterBox {
     x1: f32,
     line: usize,
     rtl: bool,
+    /// White space; and, once the lines are walked, white space at the
+    /// logical end of its line — hung there, and no part of a fragment's
+    /// extent in `getClientRects` (#1779).
+    space: bool,
 }
 
 /// What a span holds in its inline formatting context, gathered in one walk
@@ -705,6 +714,7 @@ fn measure_span_fragments(
                             x1: x + advance,
                             line: index,
                             rtl: cluster.is_rtl(),
+                            space: cluster.is_space_or_nbsp(),
                         });
                         x += advance;
                     }
@@ -717,6 +727,15 @@ fn measure_span_fragments(
         }
     }
     clusters.sort_by_key(|c| c.start);
+    // Keep `space` only on the white space that ends its line.
+    let (mut current, mut trailing) = (usize::MAX, false);
+    for c in clusters.iter_mut().rev() {
+        if c.line != current {
+            (current, trailing) = (c.line, true);
+        }
+        trailing &= c.space;
+        c.space = trailing;
+    }
 
     // Each text node's bytes of the flat text.
     let mut text_of: HashMap<RawNodeId, (usize, usize)> = HashMap::new();
@@ -821,6 +840,14 @@ fn measure_span_fragments(
             }
             shift
         };
+        // The extent of every fragment, for the union (#1779).
+        let mut extent: Option<(f32, f32)> = None;
+        let mut join_extent = |x0: f32, x1: f32| {
+            extent = Some(match extent {
+                Some((a, b)) => (a.min(x0), b.max(x1)),
+                None => (x0, x1),
+            });
+        };
         // (line, x) of the first fragment's left and the last one's right.
         let mut first: Option<(usize, f32)> = None;
         let mut last: Option<(usize, f32)> = None;
@@ -842,6 +869,9 @@ fn measure_span_fragments(
             let from = clusters.partition_point(|c| c.start < a);
             let to = clusters.partition_point(|c| c.start < b);
             if from < to {
+                for c in clusters[from..to].iter().filter(|c| !c.space) {
+                    join_extent(c.x0, c.x1);
+                }
                 let line = clusters[from].line;
                 for c in clusters[from..to].iter().take_while(|c| c.line == line) {
                     *steps += 1;
@@ -860,6 +890,7 @@ fn measure_span_fragments(
         }
         for &(line, left, right) in &held.boxes {
             *steps += 1;
+            join_extent(left, right);
             join_first(line, left);
             join_last(line, right);
         }
@@ -895,6 +926,7 @@ fn measure_span_fragments(
         else {
             continue;
         };
+        let (union_left, union_right) = extent.unwrap_or((first.1, last.1));
         out.insert(
             span_id,
             Some(SpanFragments {
@@ -902,6 +934,8 @@ fn measure_span_fragments(
                 top: base_first + shift - ascent.round(),
                 right: last.1,
                 bottom: base_last + shift + descent.round(),
+                union_left,
+                union_right,
             }),
         );
     }
@@ -2172,6 +2206,60 @@ fn is_box_ancestor(tree: &NodeTree, ancestor: RawNodeId, node_id: RawNodeId) -> 
 }
 
 impl RinchDocument {
+    /// The rect a flowed inline element (`<span>`, `<a>`, `<strong>`, which
+    /// own no box of their own) is painted over: the union of its fragments
+    /// in the lines of the inline formatting context that flows it — what
+    /// `getBoundingClientRect()` answers for an inline (#1779). Each fragment
+    /// is the element's own font's ascent and descent around the line's
+    /// baseline and the extent of its content on the line, grown by the
+    /// element's padding (rinch gives that padding no room on the line,
+    /// #1426, and draws no inline border); the union is pushed into window
+    /// space through the host's painted transform, less the host's own
+    /// scroll. Read from the measurement the lines keep when a positioned
+    /// box hangs from the span (#631), else measured now, uncached.
+    ///
+    /// `None` when the element has no fragment in the lines it holds now: no
+    /// lines yet, a **split** inline (#513), or lines rebuilt as flat text to
+    /// draw a `text-overflow: ellipsis` "…".
+    pub(crate) fn inline_element_rect(
+        &mut self,
+        span_id: RawNodeId,
+    ) -> Option<(f64, f64, f64, f64)> {
+        let tree = &self.tree;
+        let span = tree.get(span_id)?;
+        let root_id = span.ifc_root?;
+        let inline = tree.get(root_id)?.text_layout.as_ref()?;
+        let f = match inline.span_fragments.get(&span_id) {
+            Some(cached) => (*cached)?,
+            None => {
+                let (font_cx, layout_cx) = (&mut self.font_cx, &mut self.layout_cx);
+                let mut font = |style: &ComputedStyle| font_box(font_cx, layout_cx, style);
+                let mut steps = 0;
+                measure_span_fragments(tree, root_id, &[span_id], &mut font, &mut steps)
+                    .remove(&span_id)
+                    .flatten()?
+            }
+        };
+        let cs = &span.computed_style;
+        let left = f.union_left.min(f.left - cs.padding_left.to_px());
+        let right = f.union_right.max(f.right + cs.padding_right.to_px());
+        let top = f.top - cs.padding_top.to_px();
+        let bottom = f.bottom + cs.padding_bottom.to_px();
+        let (host, (ox, oy)) = inline_host(tree, root_id)?;
+        let (sx, sy) = tree.get(host)?.scroll_offset;
+        Some(crate::paint::rect_from_painted_box(
+            tree,
+            host,
+            1.0,
+            (
+                (ox + left) as f64 - sx,
+                (oy + top) as f64 - sy,
+                (right - left).max(0.0) as f64,
+                (bottom - top).max(0.0) as f64,
+            ),
+        ))
+    }
+
     /// Measure, in the lines as they stand, every inline span an absolute box
     /// hangs from (#631) — the spans of the boxes the read-back placed and of
     /// the ancestor-resolved ones — and keep the answers beside the lines

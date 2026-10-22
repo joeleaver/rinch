@@ -3224,7 +3224,7 @@ impl DomDocument for WebDocument {
 
     /// `getBoundingClientRect()` (issue #1779). A disconnected element answers
     /// `None`, as rinch-dom does; the browser gives a zero rect there.
-    fn bounding_rect(&self, node: NodeId) -> Option<rinch_core::reactive::ElementBounds> {
+    fn bounding_rect(&mut self, node: NodeId) -> Option<rinch_core::reactive::ElementBounds> {
         let n = self.nodes.get(&node.0)?;
         if !n.is_connected() {
             return None;

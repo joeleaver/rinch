@@ -1707,8 +1707,9 @@ impl DomDocument for RinchDocument {
 
     /// The painted border box, as `ClickContext` and the bounds signals report
     /// it (`paint::painted_border_box` at scale 1), from the last layout
-    /// (issue #1779).
-    fn bounding_rect(&self, node: NodeId) -> Option<rinch_core::reactive::ElementBounds> {
+    /// (issue #1779); for a flowed inline element, the union of its line
+    /// fragments (`RinchDocument::inline_element_rect`).
+    fn bounding_rect(&mut self, node: NodeId) -> Option<rinch_core::reactive::ElementBounds> {
         use crate::computed_style::values::DisplayValue;
         let n = self.tree.get(node.0)?;
         if !n.is_element() || !self.is_connected(node) {
@@ -1723,6 +1724,18 @@ impl DomDocument for RinchDocument {
             });
         if boxless {
             return Some(rinch_core::reactive::ElementBounds::default());
+        }
+        // A flowed inline element owns no box (its layout is a 0x0 ghost):
+        // the union of its line fragments, as a browser answers (#1779).
+        if n.is_flowed_inline_element()
+            && let Some((x, y, w, h)) = self.inline_element_rect(node.0)
+        {
+            return Some(rinch_core::reactive::ElementBounds {
+                x: x as f32,
+                y: y as f32,
+                width: w as f32,
+                height: h as f32,
+            });
         }
         let r = crate::paint::painted_border_box(&self.tree, node.0, 1.0);
         Some(rinch_core::reactive::ElementBounds {

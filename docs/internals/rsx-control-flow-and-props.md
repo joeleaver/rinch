@@ -209,11 +209,25 @@ render closure on a re-rendering component, so each render binds its own root in
 its own scope). `target` is a `Signal<Option<NodeHandle>>`; the cleanup that clears
 it runs on the building scope's disposal, untracked, and only while the signal
 still holds that node (compared by node id and `Weak::ptr_eq` of the document, no
-document borrow). `ref` is a keyword: `element.rs` peeks `Token![ref]` beside
-`Ident` to see it as a prop. Pins: `rinch-macros/tests/rsx_node_ref_1779.rs`.
+document borrow). The guard matters where an element other than the one going
+holds the signal (`for` rows sharing one ref; `a_removed_row_clears_its_ref`); a
+branch or component re-render cannot reach it, since `show_dom`, `match_dom` and
+`reactive_component_dom` dispose the old scope before building the new output.
+`ref` is a keyword: `element.rs` peeks `Token![ref]` beside `Ident` to see it as
+a prop (`r#ref:` was already an `Ident`, an attribute named `ref`; it is now the
+binding too). Pins: `rinch-macros/tests/rsx_node_ref_1779.rs`.
 
 **`NodeHandle::bounding_rect`** is `DomDocument::bounding_rect` (default `None`):
-rinch-dom answers `paint::painted_border_box(tree, id, 1.0)` — the conversion
+for a flowed inline element (a 0x0 ghost box) rinch-dom answers
+`RinchDocument::inline_element_rect`: the union of its line fragments, from
+`out_of_flow::measure_span_fragments` (the #631 measurement, read from
+`InlineLayout::span_fragments` when a positioned box already had it measured,
+else measured on demand and not cached; `SpanFragments::union_left/right` hold
+every fragment's extent less the white space that ends a line), grown by the
+element's padding and pushed through the host's painted transform less its own
+scroll. A split inline (#513) or an ellipsis-rebuilt line has no fragments and
+falls back to the ghost box. Every other element: rinch-dom answers
+`paint::painted_border_box(tree, id, 1.0)` — the conversion
 `ClickContext` and the bounds signals use — from the last layout, a zero rect
 under `display: none` or for a `display: contents` element (Chrome's answer; the
 layout of such a box is zeroed, so a sum up the chain would give its parent's

@@ -1272,12 +1272,17 @@ impl NodeHandle {
     /// frame on, where a browser lays out to answer). Any effects the handler
     /// queued run first, as for every `NodeHandle` operation.
     ///
-    /// `None` for a text node, a node no longer in the document, or one whose
-    /// document is gone. An element under `display: none`, or one that is
-    /// `display: contents`, generates no box and answers a zero rect.
+    /// An inline element (`<span>`, `<a>`, `<strong>`) answers the union of
+    /// the fragments it has on its lines — a wrapped one, the box around all
+    /// of them — as `getBoundingClientRect()` does. `None` for a text node, a
+    /// node no longer in the document, or one whose document is gone. An
+    /// element under `display: none`, or one that is `display: contents`,
+    /// generates no box and answers a zero rect. On desktop an inline that
+    /// holds a block-level child, or sits in a line cut by
+    /// `text-overflow: ellipsis`, answers its own (zero-size) box instead.
     pub fn bounding_rect(&self) -> Option<crate::reactive::ElementBounds> {
         let doc = self.accessed_doc()?;
-        doc.borrow().bounding_rect(self.node_id)
+        doc.borrow_mut().bounding_rect(self.node_id)
     }
 
     /// Reactive bounds signal for this element, refreshed by the runtime after
@@ -1554,6 +1559,13 @@ pub fn release_scratch_container(scope: &RenderScope, container: &NodeHandle) {
 /// cleanup, whichever order the two run in; and only while `target` is alive.
 /// It is made untracked, so a cleanup that runs inside an effect subscribes
 /// that effect to nothing.
+///
+/// The set runs a reader at once when no batch is open (a mount, an effect
+/// re-rendering a branch): the node is not attached to its parent yet, so
+/// [`NodeHandle::bounding_rect`] answers `None` there — read the handle from
+/// an event handler, or after mount. A `target` named by two elements holds
+/// the last one built and is cleared when **that** one goes, even if the other
+/// is still mounted.
 ///
 /// On a component, `rsx!` binds the component's **root** element.
 pub fn bind_node_ref(

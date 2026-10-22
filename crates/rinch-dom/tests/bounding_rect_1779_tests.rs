@@ -6,7 +6,8 @@
 //! right one: the element is offset inside its parent (so a parent-relative
 //! answer differs), under a `scale(2)` ancestor (so an untransformed sum
 //! differs), and inside a scrolled container (so a sum that ignores scroll
-//! differs). Every box is sized by declaration; no text is measured.
+//! differs). Those boxes are sized by declaration. The inline-element
+//! fixtures below measure text, against Chrome 153 with the bundled Inter.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -156,4 +157,124 @@ fn a_text_node_or_a_node_out_of_the_document_answers_none() {
     assert_eq!(inner.bounding_rect(), None);
     parent.append_child(&inner);
     assert!(inner.bounding_rect().is_some());
+}
+
+// ── a flowed inline element: the union of its line fragments ──────────────
+//
+// A `<span>`/`<a>` owns no box (its layout is a 0x0 ghost); `getBoundingClientRect`
+// answers the union of its fragments. Every expectation is Chrome 153's
+// (`--headless=new`, standards mode, `* { box-sizing: border-box }`, 800x600),
+// with this crate's bundled Inter loaded through `@font-face` as `ProbeFace`.
+// Inter at 16px has a rounded ascent + descent of 20px, the declared
+// line-height, so each fragment is its line box.
+
+const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
+const C: &str = "position: absolute; left: 100px; top: 50px; width: 400px; \
+                 font: 16px/20px ProbeFace; padding: 7px 0 0 11px; margin: 0";
+
+fn inline_case(extra: &str, inner: &str) -> (Rc<RefCell<RinchDocument>>, NodeId) {
+    use parley::fontique::{Blob, FontInfoOverride};
+    let mut doc = RinchDocument::new();
+    doc.font_cx.collection.register_fonts(
+        Blob::new(std::sync::Arc::new(FACE)),
+        Some(FontInfoOverride {
+            family_name: Some("ProbeFace"),
+            ..Default::default()
+        }),
+    );
+    let body = doc.body();
+    let wrap = doc.create_element("div");
+    doc.set_inner_html(wrap, &format!(r#"<div style="{C}; {extra}">{inner}</div>"#));
+    doc.append_child(body, wrap);
+    doc.resolve_layout(800.0, 600.0);
+    let s = *rinch_dom::testing::query_selector(&doc.tree, "[id=s]")
+        .first()
+        .expect("[id=s]");
+    (Rc::new(RefCell::new(doc)), NodeId(s))
+}
+
+fn inline_rect(extra: &str, inner: &str) -> ElementBounds {
+    let (doc, s) = inline_case(extra, inner);
+    let dyn_doc: Rc<RefCell<dyn DomDocument>> = doc.clone();
+    NodeHandle::new(s, Rc::downgrade(&dyn_doc))
+        .bounding_rect()
+        .expect("a laid-out inline has a rect")
+}
+
+fn assert_close(got: ElementBounds, want: (f32, f32, f32, f32)) {
+    let near = |a: f32, b: f32| (a - b).abs() < 0.05;
+    assert!(
+        near(got.x, want.0)
+            && near(got.y, want.1)
+            && near(got.width, want.2)
+            && near(got.height, want.3),
+        "got {got:?}, Chrome 153 {want:?}"
+    );
+}
+
+/// `aaaa <span>bbbb</span> cc` — the span's one fragment.
+#[test]
+fn an_inline_span_answers_its_fragment() {
+    let r = inline_rect("", r#"aaaa <span id="s">bbbb</span> cc"#);
+    assert_close(r, (151.4375, 57.0, 39.1875, 20.0));
+}
+
+/// A span wrapped over two lines: the box around both fragments, from the
+/// second line's start to the widest right edge.
+#[test]
+fn a_wrapped_inline_span_answers_the_union_of_its_fragments() {
+    let r = inline_rect(
+        "width: 120px",
+        r#"aaaa aaaa <span id="s">bbbb cccc dddd eeee</span> ff"#,
+    );
+    assert_close(r, (111.0, 77.0, 81.0, 40.0));
+}
+
+/// Under a `scale(2)` on the block holding the line, the painted union.
+#[test]
+fn an_inline_span_under_a_transform_answers_its_painted_union() {
+    let r = inline_rect(
+        "transform: scale(2); transform-origin: 0 0",
+        r#"aaaa <span id="s">bbbb</span> cc"#,
+    );
+    assert_close(r, (202.875, 64.0, 78.375, 40.0));
+}
+
+/// An `<a>` holding a nested `<strong>`: its whole content.
+#[test]
+fn an_inline_link_answers_its_whole_content() {
+    let r = inline_rect(
+        "",
+        r##"aaaa <a id="s" href="#">bb<strong>cc</strong>dd</a> ee"##,
+    );
+    assert_close(r, (151.4375, 57.0, 57.46875, 20.0));
+}
+
+/// A span on the third line of a block that scrolls its own lines moves up by
+/// the scroll, with no layout in between.
+#[test]
+fn an_inline_span_in_a_scrolled_block_moves_with_the_scroll() {
+    let (doc, s) = inline_case(
+        "width: 60px; height: 27px; overflow: auto",
+        r#"aaaa aaaa <span id="s">bbbb</span>"#,
+    );
+    let dyn_doc: Rc<RefCell<dyn DomDocument>> = doc.clone();
+    let span = NodeHandle::new(s, Rc::downgrade(&dyn_doc));
+    let before = span.bounding_rect().unwrap();
+    span.parent_node().unwrap().set_scroll_top(13.0);
+    let after = span.bounding_rect().unwrap();
+    assert_eq!(before.y, 97.0, "third line: 50 + 7 + 2 x 20");
+    assert_eq!((after.x, after.y), (before.x, before.y - 13.0));
+}
+
+/// A span that starts mid-line and ends on a shorter next line: the union
+/// runs from that line's start to the first fragment's right edge — neither
+/// the first fragment's left nor the last one's right.
+#[test]
+fn a_span_wrapped_from_mid_line_answers_the_union_not_its_ends() {
+    let r = inline_rect(
+        "width: 120px",
+        r#"aaaa <span id="s">bbbbbb cc</span> ff"#,
+    );
+    assert_close(r, (111.0, 57.0, 99.21875, 40.0));
 }
