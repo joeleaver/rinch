@@ -99,14 +99,56 @@ mod tests {
 
     #[test]
     fn bad_names_are_refused_before_anything_is_created() {
-        for bad in ["", ".", "..", "a/b", "a\\b", "a\0b"] {
-            for (app, store) in [(bad, "s"), ("app", bad)] {
-                let err = block_on(open_app_store(app, store)).err();
-                assert!(
-                    matches!(err, Some(StorageError::InvalidKey(_))),
-                    "({app:?}, {store:?}) is refused, got {err:?}"
-                );
-            }
+        // Checked through `validate_name`: an `open_app_store` call that
+        // accepted one would create it in the user's real data directory.
+        for bad in [
+            "",
+            ".",
+            "..",
+            "a/b",
+            "a\\b",
+            "a\0b",
+            // Windows: `C:` joined onto the data dir replaces it, `a:x` names
+            // an NTFS stream; the rest are refused by NTFS (#1773 review).
+            "C:",
+            "app:x",
+            "a*b",
+            "a?b",
+            "a\"b",
+            "a<b",
+            "a>b",
+            "a|b",
+            "a\tb",
+            "trailing.",
+            "trailing ",
+            "CON",
+            "con",
+            "nul.txt",
+            "COM1",
+            "lpt9",
+        ] {
+            assert!(
+                matches!(
+                    validate_name("app_id", bad),
+                    Err(StorageError::InvalidKey(_))
+                ),
+                "{bad:?} is refused"
+            );
+        }
+        // And `open_app_store` checks both names before touching the disk.
+        for (app, store) in [("", "s"), ("app", "")] {
+            let err = block_on(open_app_store(app, store)).err();
+            assert!(matches!(err, Some(StorageError::InvalidKey(_))), "{err:?}");
+        }
+    }
+
+    #[test]
+    fn names_windows_reads_differently_are_still_accepted_where_harmless() {
+        for good in ["com.example.app", "CONSOLE", "com1x", "a.b", "my app"] {
+            assert!(
+                validate_name("app_id", good).is_ok(),
+                "{good:?} is accepted"
+            );
         }
     }
 
