@@ -5082,8 +5082,11 @@ impl RinchApp {
         (CaretAffinity::Downstream, down)
     }
 
-    /// One vertical cursor step (Up / Down), as a text cursor. First tries the
-    /// visual line above or below via Parley geometry; when that is **stuck** — the
+    /// One vertical cursor step (Up / Down), as a text cursor. Inside one
+    /// textblock it reads the line above or below from the layout
+    /// ([`Self::line_step_in_textblock`], no hit test, #1121); off the
+    /// textblock's first or last line it hit-tests the point above or below
+    /// the caret; when that is **stuck** — the
     /// caret would stay on the same visual line because a block atom (a horizontal
     /// rule) or a large gap blocks the way — it steps **over** the atom to the
     /// next/previous textblock (`Selection::near_text`, which skips atoms). `None`
@@ -5099,6 +5102,15 @@ impl RinchApp {
         use rinch_core::dom::CaretAffinity;
         use rinch_editor_core::{Pos, Selection};
         let doc = handle.doc();
+        // A line above or below the caret's in the same textblock is read from
+        // its layout, with no hit test: a clipping scroller hides a line
+        // scrolled out of view, where a hit test found nothing and the step
+        // jumped to the next block (#1121). Only a step out of the caret's
+        // first or last line hit-tests its way into another block.
+        if let Some((p, ty)) = self.line_step_in_textblock(handle, head, down, goal_x) {
+            let (affinity, _) = self.editor_hit_affinity(handle, p, ty);
+            return Some((Selection::cursor(p), affinity));
+        }
         if let Some((cx, cy, ch)) = self.editor_caret_point(handle, head)
             && let ty = if down { cy + ch * 1.5 } else { cy - ch * 0.5 }
             && let Some(hit) = {
@@ -5153,6 +5165,86 @@ impl RinchApp {
             if down { 1 } else { -1 },
         )
         .map(|sel| (sel, CaretAffinity::Downstream))
+    }
+
+    /// Where Up (`down = false`) or Down puts a caret at `head` when the line
+    /// above or below the caret's is in the same textblock: the position at
+    /// the goal column (`goal_x`, window px, else the caret's own x) on that
+    /// line, and the window y of the point it was resolved at (the line box's
+    /// middle, for [`Self::editor_hit_affinity`]). Read from the textblock's
+    /// Parley layout ([`rinch_dom::text_query::adjacent_line_box_for_node`]):
+    /// the caret's line is the one it is drawn on, an image's box's beside an
+    /// image (#1116) and the affinity hint's side of a soft wrap (#301), and
+    /// the column is resolved as a press there would be — inline boxes, the
+    /// half of an image, grapheme clusters — but with no hit test, so it
+    /// answers for a line scrolled out of view (#1121). `None` on the
+    /// textblock's first (up) or last (down) line, or with no layout.
+    fn line_step_in_textblock(
+        &self,
+        handle: &crate::editor::EditorHandle,
+        head: rinch_editor_core::Pos,
+        down: bool,
+        goal_x: Option<f32>,
+    ) -> Option<(rinch_editor_core::Pos, f32)> {
+        use rinch_dom::text_query::{
+            LineOf, adjacent_line_box_for_node, visual_line_edges_for_node,
+        };
+        let (tb, flat) = handle.caret_address(head)?;
+        let affinity = handle.caret_affinity_at(head);
+        let (cx, cy, ch) = self.editor_caret_point(handle, head)?;
+        let leaf = handle
+            .caret_inline_box(head, affinity)
+            .filter(|&(leaf_tb, _, _)| leaf_tb == tb)
+            .map(|(_, leaf, _)| leaf);
+        let (byte, inline_box, window_y) = {
+            let doc = self.doc.clone()?;
+            let d = doc.borrow();
+            let id = tb as u64;
+            // A caret beside an image is on the image's line (#1116), when the
+            // layout holds the image.
+            let at = match leaf {
+                Some(leaf)
+                    if visual_line_edges_for_node(&d, id, LineOf::InlineBox(leaf as u64))
+                        .is_some() =>
+                {
+                    LineOf::InlineBox(leaf as u64)
+                }
+                _ => LineOf::Caret(flat, affinity),
+            };
+            let (top, height) = adjacent_line_box_for_node(&d, id, at, down)?;
+            let node = d.tree.get(tb)?;
+            let layout = node.text_layout.as_ref()?;
+            // The layout's own space, as `editor_point_address_in` maps a
+            // press: the goal column at the caret's height (a transform can
+            // couple x and y), then the target line box's middle.
+            let (local_x, _) = pointer_in_node(&d.tree, tb, goal_x.unwrap_or(cx), cy + ch * 0.5);
+            let pad_l = node.computed_style.padding_left.to_px();
+            let pad_t = node.computed_style.padding_top.to_px();
+            let (sx, sy) = (node.scroll_offset.0 as f32, node.scroll_offset.1 as f32);
+            let rel_x = local_x - pad_l + sx;
+            let rel_y = top + height * 0.5;
+            let byte = rinch_dom::text_query::grapheme_offset_from_position(
+                &layout.layout,
+                &layout.text_content,
+                rel_x,
+                rel_y,
+            );
+            let inline_box =
+                rinch_dom::text_query::inline_box_at_point(&layout.layout, rel_x, rel_y)
+                    .map(|(id, after)| (id as usize, after));
+            let (_, window_y) = rinch_dom::paint::point_from_painted_box(
+                &d.tree,
+                tb,
+                1.0,
+                (rel_x + pad_l - sx) as f64,
+                (rel_y + pad_t - sy) as f64,
+            );
+            (byte, inline_box, window_y as f32)
+        };
+        let p = inline_box
+            .and_then(|(leaf, after)| handle.pos_beside_inline_leaf(leaf, after))
+            .or_else(|| handle.pos_at(tb, byte))?;
+        Some((p, window_y))
     }
 
     /// The model position at the start (`end = false`) or end (`end = true`) of the

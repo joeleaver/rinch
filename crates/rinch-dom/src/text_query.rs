@@ -186,16 +186,9 @@ pub fn line_box_for_offset(
     byte_offset: usize,
     affinity: CaretAffinity,
 ) -> Option<(f32, f32)> {
-    let last = layout.lines().len().checked_sub(1)?;
-    let (_, cy) = caret_position_for_offset_layout_with_affinity(layout, byte_offset, affinity);
-    let index = layout
+    let line = layout
         .lines()
-        .position(|l| {
-            let m = l.metrics();
-            cy >= m.block_min_coord - 0.5 && cy < m.block_max_coord - 0.5
-        })
-        .unwrap_or(last);
-    let line = layout.lines().nth(index)?;
+        .nth(caret_line_index(layout, byte_offset, affinity)?)?;
     let m = line.metrics();
     Some((m.block_min_coord, m.block_max_coord - m.block_min_coord))
 }
@@ -255,14 +248,7 @@ pub fn visual_line_edges(
     at: LineOf,
 ) -> Option<VisualLineEdges> {
     use parley::layout::PositionedLayoutItem;
-    let index = match at {
-        LineOf::Caret(byte, affinity) => caret_line_index(layout, byte, affinity)?,
-        LineOf::InlineBox(id) => layout.lines().position(|l| {
-            l.items()
-                .any(|it| matches!(it, PositionedLayoutItem::InlineBox(b) if b.id == id))
-        })?,
-    };
-    let line = layout.lines().nth(index)?;
+    let line = layout.lines().nth(line_index(layout, at)?)?;
     let as_box = |item: PositionedLayoutItem<'_, Brush>| match item {
         PositionedLayoutItem::InlineBox(b) => Some(b.id),
         PositionedLayoutItem::GlyphRun(_) => None,
@@ -295,6 +281,44 @@ pub fn visual_line_edges_for_node(
     None
 }
 
+/// The line box `(top, height)` of the visual line above (`down = false`) or
+/// below (`down = true`) the line `at` names, in the layout's own space —
+/// where ArrowUp / ArrowDown move a caret inside one inline formatting
+/// context (#1121). Read from the layout, not hit-tested, so it answers the
+/// same for a line scrolled out of view. `None` when `at` is the layout's
+/// first (up) or last (down) line, or names nothing in it.
+pub fn adjacent_line_box(
+    layout: &parley::layout::Layout<Brush>,
+    at: LineOf,
+    down: bool,
+) -> Option<(f32, f32)> {
+    let index = line_index(layout, at)?;
+    let target = if down {
+        index + 1
+    } else {
+        index.checked_sub(1)?
+    };
+    let m = *layout.lines().nth(target)?.metrics();
+    Some((m.block_min_coord, m.block_max_coord - m.block_min_coord))
+}
+
+/// [`adjacent_line_box`] in the text-bearing element `node_id`'s layout.
+pub fn adjacent_line_box_for_node(
+    doc: &crate::dom_impl::RinchDocument,
+    node_id: u64,
+    at: LineOf,
+    down: bool,
+) -> Option<(f32, f32)> {
+    let node = doc.tree.nodes.get(node_id as usize)?;
+    if let Some(ref inline_layout) = node.text_layout {
+        return adjacent_line_box(&inline_layout.layout, at, down);
+    }
+    if let Some(ref layout) = node.cached_text_parley {
+        return adjacent_line_box(layout, at, down);
+    }
+    None
+}
+
 /// A line's bytes as [`visual_line_range`] gives them: up to the hard break
 /// that ends it, if one does.
 fn line_edge_range(
@@ -314,6 +338,18 @@ fn line_edge_range(
     range.start..end.max(range.start)
 }
 
+/// The index of the line `at` names (see [`LineOf`]).
+fn line_index(layout: &parley::layout::Layout<Brush>, at: LineOf) -> Option<usize> {
+    use parley::layout::PositionedLayoutItem;
+    match at {
+        LineOf::Caret(byte, affinity) => caret_line_index(layout, byte, affinity),
+        LineOf::InlineBox(id) => layout.lines().position(|l| {
+            l.items()
+                .any(|it| matches!(it, PositionedLayoutItem::InlineBox(b) if b.id == id))
+        }),
+    }
+}
+
 /// The index of the line Parley draws a caret at `byte_offset` with
 /// `affinity` on (see [`visual_line_range`]). `None` for an empty layout.
 fn caret_line_index(
@@ -321,17 +357,22 @@ fn caret_line_index(
     byte_offset: usize,
     affinity: CaretAffinity,
 ) -> Option<usize> {
-    let last = layout.lines().len().checked_sub(1)?;
+    layout.lines().len().checked_sub(1)?;
+    // Parley draws a caret from its line box's top, `block_min_coord`: the
+    // caret's line is the last one starting at or above it. Line boxes can
+    // overlap — a line holding an image on its baseline reaches below the
+    // next line's top (`-2..42` over `40..64` for a 16px image in 24px
+    // lines) — so the first box that merely CONTAINS the caret's top named
+    // the line above, and Up, Down, Home and End stepped from it (#1121).
     let (_, cy) = caret_position_for_offset_layout_with_affinity(layout, byte_offset, affinity);
-    Some(
-        layout
-            .lines()
-            .position(|l| {
-                let m = l.metrics();
-                cy >= m.block_min_coord - 0.5 && cy < m.block_max_coord - 0.5
-            })
-            .unwrap_or(last),
-    )
+    let mut index = 0;
+    for (i, line) in layout.lines().enumerate() {
+        if line.metrics().block_min_coord > cy + 0.5 {
+            break;
+        }
+        index = i;
+    }
+    Some(index)
 }
 
 /// [`caret_position_for_offset_layout`] for a caret with `affinity` at a soft
