@@ -329,6 +329,10 @@ impl RinchApp {
             PlatformEvent::Resized { width, height } => {
                 self.resize_layout(width, height);
                 actions.push(AppAction::RequestRedraw);
+                self.publish_window_state(crate::window::WindowFacts {
+                    size: Some((width as f64, height as f64)),
+                    ..Default::default()
+                });
             }
             PlatformEvent::RedrawRequested => {
                 // Paint is handled by the shell after building the scene
@@ -1414,6 +1418,10 @@ impl RinchApp {
                 }
             }
             PlatformEvent::WindowFocus(focused) => {
+                self.publish_window_state(crate::window::WindowFacts {
+                    focused: Some(focused),
+                    ..Default::default()
+                });
                 // Modifiers a debug `mouse_down` is holding are released with
                 // the keyboard, as a physical key would be: a window that lost
                 // focus holds no key down, and the matching debug `mouse_up`
@@ -1987,6 +1995,10 @@ impl RinchApp {
                 // just need a redraw.
                 self.set_device_pixel_ratio(sf);
                 actions.push(AppAction::RequestRedraw);
+                self.publish_window_state(crate::window::WindowFacts {
+                    scale: Some(sf),
+                    ..Default::default()
+                });
             }
             PlatformEvent::UserEvent(UserEvent::ReRender) => {
                 if self.resolve_and_repaint(vp_w, vp_h) {

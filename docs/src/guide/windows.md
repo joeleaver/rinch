@@ -451,23 +451,58 @@ fn main() {
 }
 ```
 
-## Observing Window Resizes
+## Window Facts on Every Target
 
-There is no separate resize event. The supported way to observe viewport size
-changes is a root element's `bounds_signal()`, which the runtime refreshes after
-every layout pass — including pure window resizes:
+`rinch::window` (also in the prelude) works the same in a desktop window and in
+the browser (issue #1770):
+
+| Function | Desktop | Web |
+|----------|---------|-----|
+| `open_url(url) -> Result<(), OpenUrlError>` | `xdg-open` / `open` / `ShellExecuteW` | a new tab (`window.open`, `opener` cleared) |
+| `set_window_title(title)` | the main window's title bar (any thread) | `document.title` |
+| `scale_factor() -> f64` | the main window's display scale | `devicePixelRatio` |
+| `window_size() -> (f64, f64)` | the main window's content size, logical px | `innerWidth`, `innerHeight` |
+| `window_focused() -> bool` | the main window has the system's focus | the page's window has focus |
+
+The last three are **reactive**: a `{|| …}`, a `Memo` or an `Effect` that reads
+one runs again when it changes, and an equal value wakes nothing. That is how an
+app hears a resize, a move to a display with another scale, or the window losing
+focus:
 
 ```rust
 #[component]
-fn app() -> NodeHandle {
-    let root = __scope.create_element("div");
-    root.set_attribute("style", "width: 100%; height: 100%");
-    let bounds = root.bounds_signal(); // Signal<ElementBounds>
-
-    // bounds.get().width / bounds.get().height track the viewport reactively.
-    root
+fn status() -> NodeHandle {
+    rsx! {
+        p { {|| { let (w, h) = window_size(); format!("{w}x{h} at {}x", scale_factor()) }} }
+        p { {|| if window_focused() { "" } else { "Paused while in the background" }} }
+        button {
+            onclick: || { let _ = open_url("https://example.com/help"); },
+            "Help"
+        }
+    }
 }
 ```
+
+Notes:
+
+- `open_url` refuses a string with no scheme, a leading `-` or a control
+  character (`OpenUrlError::Invalid`) and otherwise hands the URL on as given:
+  a `file:` URL opens that file, so check the scheme of a URL someone else
+  chose. On the desktop `Ok` means the launcher started. In a browser call it
+  from a click handler, or the popup blocker answers `OpenUrlError::Blocked`.
+  On Android it is `OpenUrlError::Unsupported`.
+- `set_window_title` replaces `App::title` and is kept across
+  `hide_current_window` / `show_current_window`. A no-op on Android.
+- On the desktop the values describe the main window (not the DevTools
+  window); a window hidden to the tray reads as not focused; the size is the
+  logical size layout uses, in whole pixels. `current_window_size()` answers
+  the same size from any thread without subscribing.
+- In a native embed (`RinchContext`) nothing publishes them — the host owns
+  the window — so they answer `1.0`, `(0.0, 0.0)` and `false` unless the host
+  calls `RinchApp::set_publishes_window_state(true)`.
+
+An element's own size is still its `bounds_signal()`, which the runtime
+refreshes after every layout pass.
 
 ## Overlay Windows
 

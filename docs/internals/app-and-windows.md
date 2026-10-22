@@ -349,6 +349,31 @@ Pins: `shell::window_geometry::tests`, and the `#[ignore]`d live
 `crates/rinch/tests/hide_show_geometry.rs` (a private X server; its `wm_`
 tests inside a private headless KWin, `kwin_wayland --virtual --xwayland`).
 
+### Window facts on every target (`rinch::window`, #1770)
+
+`crates/rinch/src/window.rs`. `scale_factor`, `window_size` and
+`window_focused` read three thread-local signals made `unowned` on first use.
+Desktop and Android: `RinchApp::publishes_window_state` (set by
+`RinchRuntime::new` for the main window and by Android's `run_component`; off
+for the DevTools `RinchApp` and for `RinchContext`) makes `mount_component`
+publish the mount size and scale, and `handle_event`'s `Resized`,
+`ScaleFactorChanged` and `WindowFocus` arms publish theirs
+(`window::publish`, one `batch`, `set_if_changed`); `hide_window` publishes
+not focused. The size is `Resized`'s logical `u32`s. Web (`cfg(wasm32)`, in
+`rinch` itself, no rinch-web code): the first read installs window `resize`,
+`focus`/`blur` (bubble phase, target must be the `Window`: a synthetic
+bubbling element blur reaches `window` too) and a re-armed
+`(resolution: Ndppx)` media query. `set_window_title` is
+`RinchNativeEvent::SetWindowTitle` (kept in `RinchRuntime::title` for
+re-creation) / `document.title`. `open_url`: `launch` spawns `xdg-open`/`open`
+with null stdio and reaps it on a thread; Windows `ShellExecuteW`
+(`Win32_UI_Shell`); web `window.open(url, "_blank")` then `opener = null`
+(`noopener` would make it answer null and hide a block). Pins:
+`window::tests`, `app/window_facts_1770_tests.rs`,
+`rinch-web/tests/window_facts_1770.rs` (Chrome 155, Firefox). The browser's
+`resize` and resolution listeners have no fixture (a test cannot resize the
+page or change its scale).
+
 ### Overlay windows (non-activating, click-through, skip-taskbar)
 
 `WindowProps::non_activating`, `click_through` and `skip_taskbar` (#1519,

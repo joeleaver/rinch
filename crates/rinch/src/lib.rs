@@ -85,6 +85,11 @@ pub mod menu;
 pub mod render_surface;
 #[cfg(any(feature = "desktop", feature = "android"))]
 pub mod shell;
+/// Window-level facts and acts that work on the desktop and in the browser
+/// alike (issue #1770): [`open_url`](window::open_url),
+/// [`set_window_title`](window::set_window_title), and the reactive
+/// [`scale_factor`](window::scale_factor), [`window_size`](window::window_size)
+/// and [`window_focused`](window::window_focused).
 pub mod window;
 #[cfg(feature = "desktop")]
 pub mod windows;
@@ -219,6 +224,10 @@ pub mod prelude {
     // lives in core rather than in `rinch-android`.
     pub use rinch_core::{clear_configuration_change_handler, set_configuration_change_handler};
     pub use rinch_macros::{component, rsx};
+    // Window facts and acts on every target (#1770)
+    pub use crate::window::{
+        OpenUrlError, open_url, scale_factor, set_window_title, window_focused, window_size,
+    };
     // Window control functions
     #[cfg(feature = "desktop")]
     pub use crate::windows::{
@@ -344,6 +353,9 @@ pub use shell::{
 #[cfg(feature = "gpu")]
 #[allow(deprecated)]
 pub use shell::{run_with_external_device, run_with_gpu_config};
+pub use window::{
+    OpenUrlError, open_url, scale_factor, set_window_title, window_focused, window_size,
+};
 
 /// Re-export of the exact `wgpu` rinch links against.
 ///

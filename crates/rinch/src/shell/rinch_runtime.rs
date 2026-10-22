@@ -276,6 +276,8 @@ pub enum RinchNativeEvent {
     SetWindowPosition(f64, f64),
     /// Resize the window's inner area to this logical size (#1546).
     SetWindowSize(f64, f64),
+    /// Set the main window's title (`rinch::window::set_window_title`, #1770).
+    SetWindowTitle(String),
     /// Show a Wayland layer-shell window on this output (#1523).
     SetWindowOutput(Option<String>),
     /// Start moving the window with the pointer (#1523).
@@ -647,6 +649,9 @@ impl RinchRuntime {
         let _queue_lock = TestQueueLock::hold();
         let mut app = RinchApp::new(component);
         app.register_app_fonts(fonts);
+        // The main window's size, scale and focus reach `rinch::window`
+        // (#1770); the DevTools window's do not.
+        app.set_publishes_window_state(true);
         Self {
             app,
             window: None,
@@ -1432,6 +1437,11 @@ impl RinchRuntime {
                 crate::menu::detach_menu_from_window(menu, w.raw());
             }
         }
+        // A window hidden to the tray has no focus to report losing (#1770).
+        self.app.publish_window_state(crate::window::WindowFacts {
+            focused: Some(false),
+            ..Default::default()
+        });
         // Clear the direct redraw callback before dropping the window.
         crate::render_surface::clear_redraw_callback();
         // Drop renderer first — it holds a reference to the window surface.
@@ -3385,6 +3395,15 @@ impl RinchRuntime {
                         window_geometry::publish_hidden(None, Some((width, height)));
                     }
                 }
+                return;
+            }
+            RinchNativeEvent::SetWindowTitle(title) => {
+                // Kept, so a window re-created by `show_window` (or created
+                // later, when this arrives before the loop) has it too.
+                if let Some(w) = &self.window {
+                    w.raw().set_title(&title);
+                }
+                self.title = title;
                 return;
             }
             RinchNativeEvent::SetWindowOutput(output) => {
