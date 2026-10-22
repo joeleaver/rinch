@@ -13,6 +13,11 @@ name: Visual Regression Tests
 on:
   workflow_dispatch:
 
+# A second dispatch on the same branch supersedes the first.
+concurrency:
+  group: visual-tests-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   visual-tests:
     runs-on: ubuntu-latest

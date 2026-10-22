@@ -24,6 +24,12 @@ Regenerate with PERF_BASELINE_PRINT=1 (a failing assertion also prints the
 paste-ready frame).
 -->
 
-- [ ] The `Perf` job's instruction counts rose past the threshold, and this PR
-      carries the `perf-regression-accepted` label: which benchmark, by how
-      much, and why the cost is accepted.
+- [ ] This PR is expected to make a hot path more expensive (the `Perf` job
+      runs on the batch PR, not here — see `docs/internals/ci.md`): which
+      benchmark, roughly how much, and why the cost is accepted. The lead puts
+      the `perf-regression-accepted` label on the batch that carries it.
+
+<!--
+A batch PR (head branch `batch/…`): list the PRs it carries, one `Refs #N` per
+line, and copy each one's Performance notes here.
+-->
