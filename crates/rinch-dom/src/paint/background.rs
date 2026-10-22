@@ -44,15 +44,22 @@
 //!    which has nothing to rasterise a tile with. Never skipped, however many
 //!    tiles that is.
 //!
-//! **A repeating axis keeps its sub-pixel position** (#1151), as Chrome's
+//! **Tiles start from the box rounded to a whole pixel** of its own
+//! (pre-transform) space, as Chrome snaps the border box; only
+//! `background-position` and a transform carry a fraction from there.
+//!
+//! **A repeating axis keeps that sub-pixel position** (#1151), as Chrome's
 //! does: the pattern's origin keeps its fraction and is sampled bilinearly,
 //! so the pixel on a tile edge blends the two sides and a
 //! `background-position` animation moves smoothly. A pattern has no tile
-//! edges to seam. An axis that does **not** repeat rounds the tile's origin
-//! to a device pixel (`DeviceSnap`), as Chrome does; so does step 3 on
-//! every axis, since its tiles are separate antialiased fills that would
-//! seam where two met mid-pixel. Step 1's covering tile keeps the fraction
-//! on an axis that repeats.
+//! edges to seam. The Vello painter steps such a pattern to a whole device
+//! pixel instead (its sampler clamps at the tile boundary; see
+//! `VelloPainter::fill_repeating`). An axis that does **not** repeat rounds
+//! the tile's origin to a device pixel (`DeviceSnap`), as Chrome rounds a
+//! fractional `background-position` (Chrome blends a fractional translate
+//! there; rinch rounds it too); so does step 3 on every axis, since its tiles
+//! are separate antialiased fills that would seam where two met mid-pixel.
+//! Step 1's covering tile keeps the fraction on an axis that repeats.
 //!
 //! **Every layer** of a comma-separated `background-image` list is painted
 //! (#1142), from the last listed (the bottom) to the first, over the
