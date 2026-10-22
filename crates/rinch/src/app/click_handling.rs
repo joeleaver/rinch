@@ -799,6 +799,7 @@ impl RinchApp {
     /// and carried through the painted box's transform like
     /// [`Self::input_caret_rect_with_affinity`]. `None` for an empty field, a
     /// missing node or an offset past the value.
+    #[cfg(feature = "debug")]
     pub(super) fn input_glyph_rect(
         tree: &rinch_dom::NodeTree,
         font_cx: &mut parley::FontContext,
