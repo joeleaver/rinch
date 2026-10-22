@@ -3411,7 +3411,9 @@ fn scroller_rows(scroller_css: &str, row_css: &str, kids: usize, kid_css: &str) 
 /// children, and the chain above them: **56**. On main it entered every
 /// child of every row to cull it on arrival (**1516**), and built a sequence
 /// for each of the 40 children it drew, though they have none (**41** builds;
-/// now the body's alone).
+/// now the body's alone). The scroller's bars are drawn by the body's
+/// sequence after its last row, over the rows (#1717): **1** deferred
+/// scroller.
 #[test]
 fn positioned_rows_with_layered_children_paint_the_rows_on_screen() {
     let mut doc = scroller_rows(
@@ -3429,6 +3431,7 @@ fn positioned_rows_with_layered_children_paint_the_rows_on_screen() {
             (LayoutSkippedPaintOnly, 1),
             (PaintNodesVisited, 56),
             (StackingOrderBuilds, 1),
+            (DeferredScrollbarsPainted, 1),
         ],
     );
 }
