@@ -3022,6 +3022,11 @@ pub struct NodeTree {
     /// The hit tester's memo (subtree extents, stacking sequences), valid
     /// until something bumps its generation. See [`crate::hit_cache`].
     pub hit_cache: crate::hit_cache::HitCache,
+    /// The rasterised background tiles the pattern path draws from (#468),
+    /// bounded and aged per painted frame (#1156, #1157). The document's own,
+    /// so it is freed with the document.
+    #[cfg(feature = "software-renderer")]
+    pub(crate) background_tiles: std::cell::RefCell<crate::paint::background::TileCache>,
     /// How many `data-onmousemove` attributes `set_attribute` has written and
     /// `remove_attribute` has not taken back. Never under-counts (a node freed
     /// with the attribute on keeps its share), so `0` proves no node in the
@@ -3238,6 +3243,12 @@ impl Default for NodeTree {
 }
 
 impl NodeTree {
+    /// The bytes of rasterised background tiles this document holds (#1157).
+    #[cfg(feature = "software-renderer")]
+    pub fn background_tile_cache_bytes(&self) -> usize {
+        self.background_tiles.borrow().bytes()
+    }
+
     /// Record `style`'s `background-image` URLs (every layer's, #1142) for
     /// `RinchDocument::request_background_image_loads` if it is not cached
     /// yet. Called by the cascade for every style it produces.
@@ -3381,6 +3392,8 @@ impl NodeTree {
             perf: crate::perf::PerfCounters::default(),
             font_generation: 0,
             hit_cache: Default::default(),
+            #[cfg(feature = "software-renderer")]
+            background_tiles: Default::default(),
             mousemove_handlers: 0,
             title_sources: 0,
             option_elements: 0,

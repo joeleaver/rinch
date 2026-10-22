@@ -3,7 +3,7 @@
 //! Walks the node tree and emits drawing commands via the `Painter` trait
 //! for backgrounds, borders, and text.
 
-mod background;
+pub(crate) mod background;
 mod blur;
 mod borders;
 pub mod clip;
@@ -2215,6 +2215,10 @@ pub fn paint_document(
             None
         })
     });
+    // One painted frame on the background-tile cache's clock: tiles unused
+    // for a while are forgotten (#1157).
+    #[cfg(feature = "software-renderer")]
+    tree.background_tiles.borrow_mut().begin_frame();
     ClipTrackingPainter::run(painter, scale, &tree.perf, |painter| {
         paint_node(
             tree,
