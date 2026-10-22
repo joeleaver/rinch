@@ -2210,6 +2210,142 @@ pub fn paint_document(
     VIEWPORT.with(|v| v.set(None));
 }
 
+thread_local! {
+    /// Scroll containers whose bars the stacking-context sequence being
+    /// painted draws itself, after their last contained entry (#1717): their
+    /// own `paint_node` skips them. A stack, since sequences nest; each
+    /// sequence pushes its [`crate::stacking::PaintOrder::bars`] and truncates
+    /// on the way out.
+    static DEFERRED_BARS: RefCell<Vec<RawNodeId>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Whether the sequence being painted draws `node_id`'s bars itself.
+fn bars_deferred(node_id: RawNodeId) -> bool {
+    DEFERRED_BARS.with(|d| d.borrow().contains(&node_id))
+}
+
+/// Pushes a sequence's deferred scrollers and takes them back off on drop.
+struct DeferredBarsScope(usize);
+
+impl DeferredBarsScope {
+    fn enter(bars: &[crate::stacking::DeferredBars]) -> Self {
+        DEFERRED_BARS.with(|d| {
+            let mut d = d.borrow_mut();
+            let len = d.len();
+            d.extend(bars.iter().map(|b| b.node_id));
+            Self(len)
+        })
+    }
+}
+
+impl Drop for DeferredBarsScope {
+    fn drop(&mut self) {
+        DEFERRED_BARS.with(|d| d.borrow_mut().truncate(self.0));
+    }
+}
+
+/// Draw `node_id`'s overlay scrollbars, its border box at device-space
+/// `(x, y)` under `transform`.
+///
+/// Both axes, from one set of metrics (#178): thickness 6, margin 2, minimum
+/// thumb 20, 40% black, fully rounded — the numbers the vertical bar has
+/// always used, so the two read as one feature.
+///
+/// The geometry itself lives in `paint::scrollbar`, shared with the desktop
+/// input path, because the two used to derive it separately and had drifted
+/// apart (#400): a drag did not move the thumb the distance the pointer
+/// moved. Anything about *where* a bar is belongs there; what is left here is
+/// how it is drawn.
+///
+/// Called from the container's own `paint_node`, or — when the container's
+/// positioned descendants are hoisted past it — from the stacking-context
+/// sequence after the last of them (#1717).
+fn paint_scrollbars(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    painter: &mut dyn Painter,
+    scale: f64,
+    x: f64,
+    y: f64,
+    node_transform: Affine,
+) {
+    let Some(node) = tree.get(node_id) else {
+        return;
+    };
+    let w = node.layout.width as f64 * scale;
+    let h = node.layout.height as f64 * scale;
+    let bars = scrollbar::scrollbars(tree, node_id, scale);
+    let thickness = bars.thickness;
+    let margin = bars.margin;
+
+    // The thumb's colour follows `--rinch-scrollbar-color`, or the
+    // container's own palette when that says `auto` (#416).
+    // `--rinch-scrollbar-width: none` reaches here as "no bars",
+    // so nothing below runs for it.
+    let mut fill_rounded = |rect: Rect, colour: AlphaColor<Srgb>| {
+        let shape = RoundedRect::from_rect(rect, thickness * 0.5);
+        painter.fill(
+            Fill::NonZero,
+            node_transform,
+            &Brush::Solid(colour),
+            &shape.into(),
+        );
+    };
+
+    if let Some(track) = bars.vertical {
+        let scrollbar_x = x + w - thickness - margin;
+        // A track is only painted when asked for: rinch's bar is an
+        // overlay, and a track under it would change the look of
+        // every existing app.
+        if let Some(track_color) = bars.track_color {
+            fill_rounded(
+                Rect::new(
+                    scrollbar_x,
+                    y + track.track_start,
+                    scrollbar_x + thickness,
+                    y + track.track_start + track.track_len,
+                ),
+                track_color,
+            );
+        }
+        let thumb_y = y + track.thumb_start(node.scroll_offset.1 * scale);
+        fill_rounded(
+            Rect::new(
+                scrollbar_x,
+                thumb_y,
+                scrollbar_x + thickness,
+                thumb_y + track.thumb_len,
+            ),
+            bars.thumb_color,
+        );
+    }
+
+    if let Some(track) = bars.horizontal {
+        let scrollbar_y = y + h - thickness - margin;
+        if let Some(track_color) = bars.track_color {
+            fill_rounded(
+                Rect::new(
+                    x + track.track_start,
+                    scrollbar_y,
+                    x + track.track_start + track.track_len,
+                    scrollbar_y + thickness,
+                ),
+                track_color,
+            );
+        }
+        let thumb_x = x + track.thumb_start(node.scroll_offset.0 * scale);
+        fill_rounded(
+            Rect::new(
+                thumb_x,
+                scrollbar_y,
+                thumb_x + track.thumb_len,
+                scrollbar_y + thickness,
+            ),
+            bars.thumb_color,
+        );
+    }
+}
+
 /// Paint the children of `node_id`, front to back.
 ///
 /// A stacking-context root (and the body, which is one by fiat) paints the
@@ -2318,96 +2454,42 @@ fn paint_children_with_stacking(
 
     if node_id == tree.body_id || node.creates_stacking_context() {
         let order = stacking_paint_order(tree, node_id, scale, offset_x, offset_y);
+        let _deferred = DeferredBarsScope::enter(&order.bars);
         let mut open = ClipSpan::EMPTY;
-        for entry in order.iter() {
-            let child = tree.get(entry.node_id);
-            if let Some(child) = child
-                && already_drawn_inline(child, entry.kind)
-            {
-                continue;
-            }
-            if entry.clips != open {
-                // Keep the outer clips the two chains share open and change
-                // only what differs. Popping and pushing the whole chain for
-                // every entry pushed hundreds of window-sized clip layers a
-                // frame in an app with many positioned boxes under a few
-                // full-size clipping ancestors, which overflowed vello's tile
-                // buffer: the frame was dropped, and a transparent window went
-                // blank as soon as a resize made a fresh texture.
-                let open_chain = order.clips_for_span(open);
-                let new_chain = order.clips_for(entry);
-                let shared = shared_clip_prefix(open_chain, new_chain);
-                for _ in shared..open_chain.len() {
-                    painter.pop_layer();
-                }
-                open = entry.clips;
-                for clip in &new_chain[shared..] {
-                    let shape: PaintShape = clip.radii.shape(clip.rect);
-                    painter.push_clip(Fill::NonZero, node_transform, &shape);
-                }
-            }
-
-            // A `position: fixed` entry is hoisted no further than this root
-            // (#545), but this root is not its containing block: neither the
-            // bracket `paint_node` opened around this sequence nor this root's
-            // transform applies to it. Lift the bracket for the length of the
-            // entry and put back the very same shape; and paint it under the
-            // body's transform, which is the space its `layout` coordinates and
-            // `compute_absolute_position_and_transform` both already use.
-            //
-            // `open` is necessarily `EMPTY` here — a fixed entry's own chain is
-            // empty (`Collector::span`), so the branch above has just popped
-            // whatever the previous entry left open — which is what makes the
-            // root's bracket the top of the clip stack and safe to pop.
-            let escapes_root =
-                child.is_some_and(|c| c.computed_style.position == PositionValue::Fixed);
-            let (entry_transform, lifted) = if escapes_root {
-                debug_assert!(
-                    open.is_empty(),
-                    "a fixed entry's clip chain is empty, so nothing may be open over the root's bracket"
-                );
-                if let Some(shape) = root_clip {
-                    painter.pop_layer();
-                    (body_paint_transform(tree, scale), Some(shape))
-                } else {
-                    (body_paint_transform(tree, scale), None)
-                }
-            } else {
-                (node_transform, None)
-            };
-
-            // Asked here, after the entry's chain is pushed, so the cull it
-            // reads is the one the entry would paint under (#910). A lifted
-            // fixed entry is never asked — the helper answers `false` for one.
-            // A stacking-context entry is (#1719): a list whose rows are
-            // stacking contexts entered every row to cull it on arrival.
-            if lifted.is_none()
-                && paints_nothing_without_visit(
-                    tree,
-                    entry.node_id,
-                    scale,
-                    entry.offset_x,
-                    entry.offset_y,
-                    entry_transform,
-                )
-            {
-                continue;
-            }
-
-            paint_node(
+        let mut bars = order.bars.iter().peekable();
+        for (index, entry) in order.iter().enumerate() {
+            paint_sequence_entry(
                 tree,
-                entry.node_id,
+                &order,
+                entry,
+                &mut open,
                 painter,
                 scale,
-                entry.offset_x,
-                entry.offset_y,
                 font_cx,
                 layout_cx,
-                entry_transform,
+                node_transform,
+                root_clip,
             );
-
-            if let Some(shape) = lifted {
-                painter.push_clip(Fill::NonZero, node_transform, shape);
+            // The bars of the scrollers whose last contained entry this was,
+            // under the clips the scroller itself is drawn under (#1717).
+            while let Some(bar) = bars.next_if(|b| b.after == index) {
+                switch_clip_chain(&order, bar.clips, &mut open, painter, node_transform);
+                if let Some(owner) = tree.get(bar.node_id)
+                    && !matches!(
+                        owner.computed_style.visibility,
+                        VisibilityValue::Hidden | VisibilityValue::Collapse
+                    )
+                {
+                    paint_scrollbars(
+                        tree,
+                        bar.node_id,
+                        painter,
+                        scale,
+                        bar.origin_x,
+                        bar.origin_y,
+                        node_transform,
+                    );
+                }
             }
         }
         for _ in 0..open.len() {
@@ -2447,6 +2529,124 @@ fn paint_children_with_stacking(
                 node_transform,
             );
         }
+    }
+}
+
+/// Paint one entry of a stacking-context sequence: switch the clip chain to
+/// the entry's, lift the root's bracket around a `position: fixed` entry, cull,
+/// and descend.
+#[allow(clippy::too_many_arguments)]
+fn paint_sequence_entry(
+    tree: &NodeTree,
+    order: &crate::stacking::PaintOrder,
+    entry: &crate::stacking::PaintEntry,
+    open: &mut ClipSpan,
+    painter: &mut dyn Painter,
+    scale: f64,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<Brush>,
+    node_transform: Affine,
+    root_clip: Option<&PaintShape>,
+) {
+    let child = tree.get(entry.node_id);
+    if let Some(child) = child
+        && drawn_by_its_ifc(tree, child)
+    {
+        return;
+    }
+    switch_clip_chain(order, entry.clips, open, painter, node_transform);
+
+    // A `position: fixed` entry is hoisted no further than this root
+    // (#545), but this root is not its containing block: neither the
+    // bracket `paint_node` opened around this sequence nor this root's
+    // transform applies to it. Lift the bracket for the length of the
+    // entry and put back the very same shape; and paint it under the
+    // body's transform, which is the space its `layout` coordinates and
+    // `compute_absolute_position_and_transform` both already use.
+    //
+    // `open` is necessarily `EMPTY` here — a fixed entry's own chain is
+    // empty (`Collector::span`), so the branch above has just popped
+    // whatever the previous entry left open — which is what makes the
+    // root's bracket the top of the clip stack and safe to pop.
+    let escapes_root = child.is_some_and(|c| c.computed_style.position == PositionValue::Fixed);
+    let (entry_transform, lifted) = if escapes_root {
+        debug_assert!(
+            open.is_empty(),
+            "a fixed entry's clip chain is empty, so nothing may be open over the root's bracket"
+        );
+        if let Some(shape) = root_clip {
+            painter.pop_layer();
+            (body_paint_transform(tree, scale), Some(shape))
+        } else {
+            (body_paint_transform(tree, scale), None)
+        }
+    } else {
+        (node_transform, None)
+    };
+
+    // Asked here, after the entry's chain is pushed, so the cull it
+    // reads is the one the entry would paint under (#910). A lifted
+    // fixed entry is never asked — the helper answers `false` for one.
+    // A stacking-context entry is (#1719): a list whose rows are
+    // stacking contexts entered every row to cull it on arrival.
+    if lifted.is_none()
+        && paints_nothing_without_visit(
+            tree,
+            entry.node_id,
+            scale,
+            entry.offset_x,
+            entry.offset_y,
+            entry_transform,
+        )
+    {
+        return;
+    }
+
+    paint_node(
+        tree,
+        entry.node_id,
+        painter,
+        scale,
+        entry.offset_x,
+        entry.offset_y,
+        font_cx,
+        layout_cx,
+        entry_transform,
+    );
+
+    if let Some(shape) = lifted {
+        painter.push_clip(Fill::NonZero, node_transform, shape);
+    }
+}
+
+/// Make `span` the clip chain open on `painter`, `open` being the one open now.
+///
+/// Keep the outer clips the two chains share open and change only what
+/// differs. Popping and pushing the whole chain for every entry pushed
+/// hundreds of window-sized clip layers a frame in an app with many positioned
+/// boxes under a few full-size clipping ancestors, which overflowed vello's
+/// tile buffer: the frame was dropped, and a transparent window went blank as
+/// soon as a resize made a fresh texture.
+fn switch_clip_chain(
+    order: &crate::stacking::PaintOrder,
+    span: ClipSpan,
+    open: &mut ClipSpan,
+    painter: &mut dyn Painter,
+    node_transform: Affine,
+) {
+    if span == *open {
+        return;
+    }
+    let open_chain = order.clips_for_span(*open);
+    let new_chain = order.clips_for_span(span);
+    let shared = shared_clip_prefix(open_chain, new_chain);
+    for _ in shared..open_chain.len() {
+        painter.pop_layer();
+    }
+    *open = span;
+    for clip in &new_chain[shared..] {
+        let shape: PaintShape = clip.radii.shape(clip.rect);
+        painter.push_clip(Fill::NonZero, node_transform, &shape);
     }
 }
 
@@ -3854,17 +4054,9 @@ fn paint_node(
                 painter.pop_layer();
             }
 
-            // Paint scrollbar overlays for scroll containers.
-            //
-            // Both axes, from one set of metrics (#178): thickness 6, margin 2,
-            // minimum thumb 20, 40% black, fully rounded — the numbers the
-            // vertical bar has always used, so the two read as one feature.
-            //
-            // The geometry itself lives in `paint::scrollbar`, shared with the
-            // desktop input path, because the two used to derive it separately
-            // and had drifted apart (#400): a drag did not move the thumb the
-            // distance the pointer moved. Anything about *where* a bar is
-            // belongs there; what is left here is how it is drawn.
+            // Paint scrollbar overlays for scroll containers — unless the
+            // stacking context this box is drawn in draws them later, over the
+            // box's own hoisted positioned descendants (#1717).
             //
             // Gated up front on `scrolls_y`/`scrolls_x`, so a node that scrolls
             // on neither axis — almost every node — pays a few enum checks and
@@ -3872,78 +4064,8 @@ fn paint_node(
             //
             // A scrollbar is the container's own visual, so a hidden container
             // draws none (#829) — hit testing already offers none to press.
-            if visible && (node.scrolls_y() || node.scrolls_x()) {
-                let node = tree.get(node_id).unwrap(); // re-borrow after children done
-                let bars = scrollbar::scrollbars(tree, node_id, scale);
-                let thickness = bars.thickness;
-                let margin = bars.margin;
-
-                // The thumb's colour follows `--rinch-scrollbar-color`, or the
-                // container's own palette when that says `auto` (#416).
-                // `--rinch-scrollbar-width: none` reaches here as "no bars",
-                // so nothing below runs for it.
-                let mut fill_rounded = |rect: Rect, colour: AlphaColor<Srgb>| {
-                    let shape = RoundedRect::from_rect(rect, thickness * 0.5);
-                    painter.fill(
-                        Fill::NonZero,
-                        node_transform,
-                        &Brush::Solid(colour),
-                        &shape.into(),
-                    );
-                };
-
-                if let Some(track) = bars.vertical {
-                    let scrollbar_x = x + w - thickness - margin;
-                    // A track is only painted when asked for: rinch's bar is an
-                    // overlay, and a track under it would change the look of
-                    // every existing app.
-                    if let Some(track_color) = bars.track_color {
-                        fill_rounded(
-                            Rect::new(
-                                scrollbar_x,
-                                y + track.track_start,
-                                scrollbar_x + thickness,
-                                y + track.track_start + track.track_len,
-                            ),
-                            track_color,
-                        );
-                    }
-                    let thumb_y = y + track.thumb_start(node.scroll_offset.1 * scale);
-                    fill_rounded(
-                        Rect::new(
-                            scrollbar_x,
-                            thumb_y,
-                            scrollbar_x + thickness,
-                            thumb_y + track.thumb_len,
-                        ),
-                        bars.thumb_color,
-                    );
-                }
-
-                if let Some(track) = bars.horizontal {
-                    let scrollbar_y = y + h - thickness - margin;
-                    if let Some(track_color) = bars.track_color {
-                        fill_rounded(
-                            Rect::new(
-                                x + track.track_start,
-                                scrollbar_y,
-                                x + track.track_start + track.track_len,
-                                scrollbar_y + thickness,
-                            ),
-                            track_color,
-                        );
-                    }
-                    let thumb_x = x + track.thumb_start(node.scroll_offset.0 * scale);
-                    fill_rounded(
-                        Rect::new(
-                            thumb_x,
-                            scrollbar_y,
-                            thumb_x + track.thumb_len,
-                            scrollbar_y + thickness,
-                        ),
-                        bars.thumb_color,
-                    );
-                }
+            if visible && (node.scrolls_y() || node.scrolls_x()) && !bars_deferred(node_id) {
+                paint_scrollbars(tree, node_id, painter, scale, x, y, node_transform);
             }
 
             // Apply CSS filter approximations (after content is painted, before opacity pop)

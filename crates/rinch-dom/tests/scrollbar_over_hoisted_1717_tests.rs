@@ -61,7 +61,11 @@ const SCROLLER: &str = "position: absolute; left: 20px; top: 20px; width: 200px;
 /// The bar strip of the scroller at (20, 20): x in [210, 220), its full height.
 const STRIP: Rect = Rect::new(210.0, 20.0, 220.0, 170.0);
 
-fn build(scroller_css: &str, row_css: &str, extra: impl FnOnce(&mut RinchDocument, NodeId, NodeId)) -> (RinchDocument, NodeId) {
+fn build(
+    scroller_css: &str,
+    row_css: &str,
+    extra: impl FnOnce(&mut RinchDocument, NodeId, NodeId),
+) -> (RinchDocument, NodeId) {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     doc.set_attribute(body, "style", "margin: 0");
@@ -87,7 +91,14 @@ fn paint_at(doc: &mut RinchDocument, scale: f64, damage: Option<Rect>) -> TinySk
         rinch_dom::paint::set_dirty_rects(Some(&[d]));
         p.push_clip(Fill::NonZero, Affine::IDENTITY, &PaintShape::Rect(d));
     }
-    rinch_dom::paint::paint_document(&doc.tree, &mut p, scale, (VW, VH), &mut doc.font_cx, &mut lcx);
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut p,
+        scale,
+        (VW, VH),
+        &mut doc.font_cx,
+        &mut lcx,
+    );
     if damage.is_some() {
         p.pop_layer();
         rinch_dom::paint::set_dirty_region(None);
@@ -115,7 +126,12 @@ fn thumb_centre(doc: &RinchDocument, s: NodeId) -> (u32, u32) {
     (x as u32, (top + t.thumb_len / 2.0) as u32)
 }
 
-fn first_difference(a: &TinySkiaPainter, b: &TinySkiaPainter, region: Rect, scale: f64) -> Option<(u32, u32, [u8; 4], [u8; 4])> {
+fn first_difference(
+    a: &TinySkiaPainter,
+    b: &TinySkiaPainter,
+    region: Rect,
+    scale: f64,
+) -> Option<(u32, u32, [u8; 4], [u8; 4])> {
     for y in (region.y0 * scale) as u32..(region.y1 * scale) as u32 {
         for x in (region.x0 * scale) as u32..(region.x1 * scale) as u32 {
             let (pa, pb) = (px(a, x, y), px(b, x, y));
@@ -129,13 +145,21 @@ fn first_difference(a: &TinySkiaPainter, b: &TinySkiaPainter, region: Rect, scal
 
 /// The strip of `positioned` must equal the strip of the static-rows twin, and
 /// the thumb's centre must not be the bare row colour.
-fn assert_bar_on_top(positioned: (RinchDocument, NodeId), twin: (RinchDocument, NodeId), what: &str) {
+fn assert_bar_on_top(
+    positioned: (RinchDocument, NodeId),
+    twin: (RinchDocument, NodeId),
+    what: &str,
+) {
     let (mut a, s) = positioned;
     let (mut b, _) = twin;
     let pa = paint(&mut a);
     let pb = paint(&mut b);
     let (cx, cy) = thumb_centre(&a, s);
-    assert_ne!(px(&pa, cx, cy), RED, "{what}: the thumb at ({cx}, {cy}) is covered by a row");
+    assert_ne!(
+        px(&pa, cx, cy),
+        RED,
+        "{what}: the thumb at ({cx}, {cy}) is covered by a row"
+    );
     assert_eq!(
         first_difference(&pa, &pb, STRIP, 1.0),
         None,
@@ -193,7 +217,11 @@ fn the_selected_row_does_not_cover_the_left_of_the_thumb() {
     let pb = paint(&mut b);
     let (_, cy) = thumb_centre(&a, s);
     // The thumb's left column (x 212) is over the rows' 4px (they end at 216).
-    assert!(matches!(px(&pa, 212, cy), p if p != RED && p != BLUE), "{:?}", px(&pa, 212, cy));
+    assert!(
+        matches!(px(&pa, 212, cy), p if p != RED && p != BLUE),
+        "{:?}",
+        px(&pa, 212, cy)
+    );
     assert_eq!(first_difference(&pa, &pb, STRIP, 1.0), None);
 }
 
@@ -205,8 +233,16 @@ fn the_bar_is_drawn_over_a_contained_absolute() {
         build(SCROLLER, "", move |doc, _, s| {
             let rows = doc.get_children(s);
             doc.set_style(rows[1], "position", "relative");
-            let pos = if abs { "position: absolute; left: 150px; top: 0" } else { "margin-left: 150px" };
-            child(doc, rows[1], &format!("{pos}; width: 60px; height: 30px; background-color: rgb(0, 0, 255)"));
+            let pos = if abs {
+                "position: absolute; left: 150px; top: 0"
+            } else {
+                "margin-left: 150px"
+            };
+            child(
+                doc,
+                rows[1],
+                &format!("{pos}; width: 60px; height: 30px; background-color: rgb(0, 0, 255)"),
+            );
         })
     };
     // The twin draws the same blue box in flow, under the bar.
@@ -216,7 +252,11 @@ fn the_bar_is_drawn_over_a_contained_absolute() {
     let pb = paint(&mut b);
     // The wrapper row sits at content y 40, so on screen 20 + 40 - 23 = 37.
     let (cx, _) = thumb_centre(&a, s);
-    assert_ne!(px(&pa, cx, 50), BLUE, "the thumb under the contained absolute is covered");
+    assert_ne!(
+        px(&pa, cx, 50),
+        BLUE,
+        "the thumb under the contained absolute is covered"
+    );
     assert_eq!(first_difference(&pa, &pb, STRIP, 1.0), None);
 }
 
@@ -282,13 +322,21 @@ fn the_bar_takes_the_place_of_its_last_contained_entry() {
     let (mut over, s) = build(SCROLLER, "position: relative; z-index: 5", sibling(3));
     let p = paint(&mut over);
     let (cx, cy) = thumb_centre(&over, s);
-    assert_ne!(px(&p, cx, cy), BLUE, "rows at z 5: the bar is above a z 3 sibling");
+    assert_ne!(
+        px(&p, cx, cy),
+        BLUE,
+        "rows at z 5: the bar is above a z 3 sibling"
+    );
     assert_ne!(px(&p, cx, cy), RED);
 
     let (mut under, s) = build(SCROLLER, "position: relative", sibling(1));
     let p = paint(&mut under);
     let (cx, cy) = thumb_centre(&under, s);
-    assert_eq!(px(&p, cx, cy), BLUE, "rows at z auto: a z 1 sibling covers the bar");
+    assert_eq!(
+        px(&p, cx, cy),
+        BLUE,
+        "rows at z auto: a z 1 sibling covers the bar"
+    );
 }
 
 /// Two scrollers nested, the inner one positioned (hoisted) and holding
@@ -351,7 +399,10 @@ fn a_partial_repaint_over_a_row_keeps_the_bar_on_top() {
     assert_eq!(first_difference(&part, &full, damage, 1.0), None);
     let (mut b, _) = build(SCROLLER, "", no_extra);
     let twin = paint(&mut b);
-    assert_eq!(first_difference(&part, &twin, damage.intersect(STRIP), 1.0), None);
+    assert_eq!(
+        first_difference(&part, &twin, damage.intersect(STRIP), 1.0),
+        None
+    );
 }
 
 /// The command stream both painters are handed: the thumb's fill comes after
@@ -384,7 +435,14 @@ fn the_thumb_is_the_last_fill_in_the_command_stream() {
         }
         fn draw_image(&mut self, _: &rinch_dom::paint::painter::PaintImage<'_>, _: Affine) {}
         fn push_clip(&mut self, _: Fill, _: Affine, _: &PaintShape) {}
-        fn push_layer(&mut self, _: rinch_dom::paint::painter::BlendMode, _: f32, _: Affine, _: &PaintShape) {}
+        fn push_layer(
+            &mut self,
+            _: rinch_dom::paint::painter::BlendMode,
+            _: f32,
+            _: Affine,
+            _: &PaintShape,
+        ) {
+        }
         fn pop_layer(&mut self) {}
     }
     let (mut doc, _) = build(SCROLLER, "position: relative", no_extra);

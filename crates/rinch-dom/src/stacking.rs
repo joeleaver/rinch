@@ -277,6 +277,39 @@ pub struct PaintEntry {
 ///
 /// Derefs to the entries, so `order.iter()`, `order[i]` and `order.len()` read
 /// as they did when this was a plain `Vec<PaintEntry>`.
+/// A scroll container whose overlay scrollbars this sequence draws (#1717).
+///
+/// A scroller that is no stacking context draws its bars at the end of its
+/// own `paint_node`, after its in-flow content. Its positioned descendants are
+/// not drawn there: they are hoisted to this sequence and drawn after the
+/// scroller, so they used to cover its thumb. Chrome 155 draws a scroller's
+/// bars right after the last entry of the enclosing stacking context's
+/// sequence the scroller *contains* — one whose clip chain runs through it,
+/// i.e. whose containing-block chain does — and so below anything after that
+/// entry: a later sibling, a box at a higher `z-index`, an absolute that
+/// escapes the scroller. That entry is [`Self::after`].
+///
+/// Only entries at `z >= 0` count: a negative-`z` one is drawn before the
+/// scroller itself, so a scroller whose contained entries are all negative is
+/// not deferred and draws its bars itself.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DeferredBars {
+    /// The scroll container.
+    pub node_id: RawNodeId,
+    /// Draw the bars right after the entry at this index of
+    /// [`PaintOrder::entries`].
+    pub after: usize,
+    /// The container's border-box origin in the sequence's own space (the
+    /// space of the entries' offsets); a box does not move with its own scroll.
+    pub origin_x: f64,
+    /// Likewise, the Y origin.
+    pub origin_y: f64,
+    /// The clips the container itself is drawn under, which its bars are
+    /// drawn under too, as a range of [`PaintOrder::clips`] (read it through
+    /// [`PaintOrder::clips_for_span`]).
+    pub clips: ClipSpan,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PaintOrder {
     /// The children, back to front.
@@ -285,6 +318,10 @@ pub struct PaintOrder {
     /// collection and never reordered afterwards, so a [`ClipSpan`] survives the
     /// sort that orders `entries`.
     pub clips: Vec<ClipRect>,
+    /// Scroll containers in this sequence whose overlay scrollbars are drawn
+    /// here, after an entry, rather than by the container's own `paint_node`
+    /// (#1717). Sorted by [`DeferredBars::after`].
+    pub bars: Vec<DeferredBars>,
 }
 
 impl PaintOrder {
@@ -409,13 +446,18 @@ pub fn stacking_paint_order(
         live: Vec::new(),
         cb_depth: 0,
         order: 0,
+        bar_owners: Vec::new(),
+        open_bars: Vec::new(),
     };
     // The box tree, not the element tree (#566).
     let box_children = crate::RinchDocument::box_tree_children(&tree.nodes, node_id);
     collector.collect_hoisted(&box_children, offset_x, offset_y);
 
     let Collector {
-        mut hoisted, clips, ..
+        mut hoisted,
+        mut clips,
+        bar_owners,
+        ..
     } = collector;
     hoisted.sort_by_key(|(dom_order, e)| (e.z_index, *dom_order));
 
@@ -438,8 +480,43 @@ pub fn stacking_paint_order(
         })
     }));
 
+    let first_hoisted = entries.len();
     entries.extend(hoisted[split..].iter().map(|(_, e)| *e));
-    PaintOrder { entries, clips }
+
+    // The scrollers whose bars wait for their last contained entry (#1717).
+    // Their chains go after every entry's, so the entries' tail reuse in
+    // `Collector::span` is untouched.
+    let mut bars: Vec<DeferredBars> = bar_owners
+        .into_iter()
+        .filter_map(|owner| {
+            let last = owner.last?;
+            let at = hoisted[split..].partition_point(|(d, e)| (e.z_index, *d) <= last);
+            debug_assert!(at > 0, "a contained entry is in the sequence");
+            let span = if owner.chain.is_empty() {
+                ClipSpan::EMPTY
+            } else {
+                let start = clips.len();
+                clips.extend_from_slice(&owner.chain);
+                ClipSpan {
+                    start: start as u32,
+                    end: clips.len() as u32,
+                }
+            };
+            Some(DeferredBars {
+                node_id: owner.node_id,
+                after: first_hoisted + at - 1,
+                origin_x: owner.origin_x,
+                origin_y: owner.origin_y,
+                clips: span,
+            })
+        })
+        .collect();
+    bars.sort_by_key(|b| b.after);
+    PaintOrder {
+        entries,
+        clips,
+        bars,
+    }
 }
 
 /// The hoisting walk's state: the entries found so far, and the chain of
@@ -463,19 +540,65 @@ struct Collector<'a> {
     /// its own absolute children.
     cb_depth: usize,
     order: usize,
+    /// Scroll containers met on the way down, whose bars may be deferred to
+    /// this sequence (#1717), in the order they were met.
+    bar_owners: Vec<BarOwner>,
+    /// Indices into [`Self::bar_owners`] of the scroll containers the cursor
+    /// is inside, outermost first.
+    open_bars: Vec<usize>,
+}
+
+/// A scroll container the collector descended into, and the last entry it
+/// contains so far — see [`DeferredBars`].
+struct BarOwner {
+    node_id: RawNodeId,
+    /// The index of the container's own clip in [`Collector::live`]: an entry
+    /// whose chain takes more links than this is clipped, so contained, by it.
+    own: usize,
+    /// How many links of `live` the container itself is drawn under.
+    chain_len: usize,
+    origin_x: f64,
+    origin_y: f64,
+    /// The greatest `(z_index, tree order)` sort key of a contained entry at
+    /// `z >= 0`.
+    last: Option<(i32, usize)>,
+    /// `live[..chain_len]`, copied when the first contained entry is met: by
+    /// the time the sequence is sorted `live` has moved on.
+    chain: Vec<ClipRect>,
 }
 
 impl Collector<'_> {
-    /// Materialise the chain that applies to `node`, as a range of
-    /// [`Self::clips`].
-    fn span(&mut self, node: &Node) -> ClipSpan {
-        let n = match node.computed_style.position {
+    /// How many links of [`Self::live`] apply to `node` — what [`Self::span`]
+    /// materialises.
+    fn chain_len(&self, node: &Node) -> usize {
+        match node.computed_style.position {
             // Viewport-relative: no ancestor between here and the root is in
             // its containing-block chain.
             PositionValue::Fixed => 0,
             PositionValue::Absolute => self.cb_depth,
             _ => self.live.len(),
-        };
+        }
+    }
+
+    /// An entry at `key` with a chain of `chain_len` links was hoisted: every
+    /// open scroll container whose clip is in that chain contains it.
+    fn note_contained(&mut self, chain_len: usize, key: (i32, usize)) {
+        for &b in &self.open_bars {
+            let owner = &mut self.bar_owners[b];
+            if owner.own >= chain_len {
+                continue;
+            }
+            if owner.last.is_none() {
+                owner.chain = self.live[..owner.chain_len].to_vec();
+            }
+            owner.last = owner.last.max(Some(key));
+        }
+    }
+
+    /// Materialise the chain that applies to `node`, as a range of
+    /// [`Self::clips`].
+    fn span(&mut self, node: &Node) -> ClipSpan {
+        let n = self.chain_len(node);
         if n == 0 {
             return ClipSpan::EMPTY;
         }
@@ -537,6 +660,10 @@ impl Collector<'_> {
             // opens that bracket itself when it enters the entry, and hit
             // testing gates on it there.
             let clips = self.span(child);
+            let z_index = child.computed_style.z_index.unwrap_or(0);
+            if z_index >= 0 && !self.open_bars.is_empty() {
+                self.note_contained(clips.len(), (z_index, dom_order));
+            }
 
             // No `ifc_content_box_offset` on the entry itself, deliberately, though
             // the obvious symmetry with `descend` below says there should be — and
@@ -562,7 +689,7 @@ impl Collector<'_> {
                     },
                     offset_x: base_x,
                     offset_y: base_y,
-                    z_index: child.computed_style.z_index.unwrap_or(0),
+                    z_index,
                     clips,
                 },
             ));
@@ -596,6 +723,7 @@ impl Collector<'_> {
         let x = cx - child.scroll_offset.0 * self.scale;
         let y = cy - child.scroll_offset.1 * self.scale;
 
+        let chain_len = self.chain_len(child);
         let pushed = match clip_shape(child, self.scale, cx, cy) {
             Some((rect, radii)) => {
                 self.live.push(ClipRect { rect, radii });
@@ -603,6 +731,22 @@ impl Collector<'_> {
             }
             None => false,
         };
+        // A scroll container that may draw bars: its contained entries are
+        // noted as they are hoisted (#1717). Only one that clips — its clip is
+        // what an entry's chain is checked against.
+        let bar_owner = pushed && (child.scrolls_y() || child.scrolls_x());
+        if bar_owner {
+            self.open_bars.push(self.bar_owners.len());
+            self.bar_owners.push(BarOwner {
+                node_id: child.id,
+                own: self.live.len() - 1,
+                chain_len,
+                origin_x: cx,
+                origin_y: cy,
+                last: None,
+                chain: Vec::new(),
+            });
+        }
         let outer_cb = self.cb_depth;
         if child.establishes_abs_containing_block() {
             self.cb_depth = self.live.len();
@@ -615,6 +759,9 @@ impl Collector<'_> {
         );
 
         self.cb_depth = outer_cb;
+        if bar_owner {
+            self.open_bars.pop();
+        }
         if pushed {
             self.live.pop();
         }
