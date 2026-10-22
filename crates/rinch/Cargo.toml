@@ -130,6 +130,8 @@ web-sys = { version = "0.3", features = [
     "MouseEvent", "WheelEvent", "PointerEvent",
     "EventTarget", "AddEventListenerOptions",
     "ResizeObserver", "ResizeObserverEntry", "ResizeObserverSize", "DomRectReadOnly",
+    # `rinch::window` (#1770): the page's resolution media query.
+    "MediaQueryList",
 ] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
@@ -143,6 +145,8 @@ windows-sys = { version = "0.59", features = [
     # thread's message pump.
     "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_System_LibraryLoader",
     "Win32_System_SystemInformation",
+    # `rinch::window::open_url` (#1770): ShellExecuteW.
+    "Win32_UI_Shell",
 ] }
 # Toast notifications (`notifications`, #1522): WinRT `Windows.UI.Notifications`
 # and the HKCU AppUserModelId registration. 0.62 is already in Cargo.lock.

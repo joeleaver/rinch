@@ -329,6 +329,11 @@ impl RinchApp {
             PlatformEvent::Resized { width, height } => {
                 self.resize_layout(width, height);
                 actions.push(AppAction::RequestRedraw);
+                self.window_logical_size = Some((width as f64, height as f64));
+                self.publish_window_state(crate::window::WindowFacts {
+                    size: self.window_logical_size,
+                    ..Default::default()
+                });
             }
             PlatformEvent::RedrawRequested => {
                 // Paint is handled by the shell after building the scene
@@ -1482,6 +1487,13 @@ impl RinchApp {
                     self.scene_dirty = true;
                     actions.push(AppAction::RequestRedraw);
                 }
+                // Last, so a reader of `window_focused` (#1770) runs after the
+                // app's own blur handling above: keys released, menus closed,
+                // the drag healed, key entries told.
+                self.publish_window_state(crate::window::WindowFacts {
+                    focused: Some(focused),
+                    ..Default::default()
+                });
             }
             PlatformEvent::KeyDown {
                 key,
