@@ -378,3 +378,68 @@ fn a_label_attributes_spaces_reach_the_popup_row_1130() {
         laid.layout.full_width()
     );
 }
+
+// ---- review of #1744 probes ----
+
+/// A select that itself runs past the viewport's right edge: its popup is kept
+/// on screen, ending at the viewport's edge.
+#[test]
+fn review1744_a_select_past_the_right_edge_keeps_its_popup_on_screen() {
+    let o = probe(
+        &["abc", "b"],
+        "position: absolute; left: 700px; width: 200px; font-size: 12px",
+        "",
+        (800.0, 600.0),
+    );
+    assert_eq!((o.sel_x, o.sel_w), (700.0, 200.0));
+    assert_eq!(o.panel_w, 200.0);
+    assert_eq!(
+        o.panel_x + o.panel_w,
+        800.0,
+        "x {} w {}",
+        o.panel_x,
+        o.panel_w
+    );
+}
+
+/// ß uppercases to SS in the row and the row fits.
+#[test]
+fn review1744_eszett_row() {
+    let o = probe(
+        &["straße straße straße", "b"],
+        "text-transform: uppercase; font-size: 12px",
+        "",
+        (800.0, 600.0),
+    );
+    assert_eq!(o.row_text, ["STRASSE STRASSE STRASSE", "B"]);
+    assert!(o.rows.iter().all(|(t, c)| t <= c), "{:?}", o.rows);
+}
+
+/// Type-ahead labels: a label attribute's leading spaces do not hide it.
+#[test]
+fn review1744_typeahead_labels_are_collapsed() {
+    let sid: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+    let s2 = sid.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let select = scope.create_element("select");
+        for (l, t) in [("  zeta  one", "a"), ("", "  beta   two ")] {
+            let o = scope.create_element("option");
+            if !l.is_empty() {
+                o.set_attribute("label", l);
+            }
+            let tx = scope.create_text(t);
+            o.append_child(&tx);
+            select.append_child(&o);
+        }
+        root.append_child(&select);
+        s2.set(Some(select.node_id().0));
+        root
+    });
+    app.mount_component(VP.0, VP.1);
+    app.resolve_and_repaint(VP.0, VP.1);
+    app.open_select_popup(sid.get().unwrap(), VP.0, VP.1);
+    let open = app.open_select.as_ref().unwrap();
+    assert_eq!(open.labels, ["zeta one", "beta two"]);
+    assert_eq!(open.values, ["a", "beta two"]);
+}

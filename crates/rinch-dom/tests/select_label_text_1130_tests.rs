@@ -272,7 +272,28 @@ fn the_painted_label_carries_the_spacing_at_every_scale() {
             (shift - 30.0).abs() <= 1.0,
             "scale {scale}: the second letter moved {shift} CSS px, not 30"
         );
+        // And `word-spacing`, on the space of `i i`. Kills: word-spacing
+        // pushed unscaled under a device-px font size (review of #1744).
+        let plain = rightmost_label_ink("", "i i", scale) as f32;
+        let spaced = rightmost_label_ink("word-spacing: 30px", "i i", scale) as f32;
+        let shift = (spaced - plain) / scale;
+        assert!(
+            (shift - 30.0).abs() <= 1.0,
+            "scale {scale}: word-spacing moved the last letter {shift} CSS px, not 30"
+        );
     }
+}
+
+/// An option with a `label` attribute and no `value` reports its **text** as
+/// its value, stripped and collapsed — not the label (Chrome 155:
+/// `<option label="L">  t   x </option>` has `value` `"t x"`, `label` `"L"`).
+/// Kills: the value fallback taking the label (review of #1744).
+#[test]
+fn a_labelled_options_value_is_its_text() {
+    let (doc, sel) = build("", &[labelled("L", "  t   x ")]);
+    let m = rinch_dom::select::resolve_select_model(&doc.tree, sel);
+    assert_eq!(m.options[0].label, "L");
+    assert_eq!(m.options[0].value, "t x");
 }
 
 /// The painted label is the transformed one: uppercase `abc` is wider ink
