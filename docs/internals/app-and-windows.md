@@ -41,6 +41,7 @@ fn main() {
 | `.gpu_config(RinchGpuConfig)` / `.external_gpu(ExternalGpu)` | GPU device (`gpu` feature) |
 | `.run()` | Start on desktop; runs until the event loop exits |
 | `.run_android(android_app)` | Start on Android (`android` feature, Android target) |
+| `rinch_web::AppExt::run()` | Start in the browser (`wasm32`, #1769) |
 
 `.title()` / `.size()` are applied **over** `.window_props()` in either call
 order, so an explicit title is never silently lost to a later `window_props`.
@@ -61,6 +62,31 @@ fn main() {
         .run();
 }
 ```
+
+**`App` also builds for `wasm32`** (#1769): the `app_builder` module and its
+re-exports are gated `any(desktop, android on Android, target_arch = "wasm32")`,
+and `rinch_web::AppExt::run` runs a builder chain in the browser, so a
+cross-platform app writes one chain and imports
+`#[cfg(target_arch = "wasm32")] use rinch_web::AppExt as _;`. rinch cannot call
+rinch-web (rinch-web depends on rinch), so the web terminal method lives in
+rinch-web and reads the builder through `App::into_web_parts` (doc-hidden,
+pure; pinned by `app_builder::tests::web_parts_*`): the theme (installed as by
+`mount`), the menus (`mount_with_menu_bar` when set, else `mount`) and the title
+(`.title()`, else a `window_props` title that is not `WindowProps::default()`'s,
+written to `document.title`; with neither the page keeps its own `<title>`).
+`.menu()` is therefore no longer `desktop`-gated (an Android build has it too,
+and `run_android` warns). The menu bar is a **compile-time** choice on the web:
+`App<F, M = NoMenuBar>`, and on `wasm32` only `.menu()` returns
+`App<F, WithMenuBar>` (elsewhere it returns `Self`, so desktop code is
+unchanged); `AppExt` is implemented once per state, so an app with no menu does
+not link `mount_with_menu_bar` (paint-web release wasm, pre-wasm-opt: a runtime
+branch cost +93 KB over main). `.image_scheme()` registers when called, on both targets; `.size()` and the
+rest of `.window_props()` have no web effect. `.fonts()` exists on every target and a web mount ignores the faces
+(`WebParts::fonts`): `rinch::font` is ungated because `GenericFamily` is named
+from `parlance` directly — the very type fontique re-exports, so nothing
+changes for an `AppFont` user — and parlance builds for wasm with no
+dependencies. The GPU and desktop-only methods do not exist there.
+Pins: `rinch-web/tests/app_ext_1769.rs`, `app_ext_menu_1769.rs` (Chrome 155).
 
 The seven `run_*` functions (`run`, `run_with_theme`, `run_with_menu`,
 `run_with_window_props`, `run_with_window_props_and_menu`, `run_with_gpu_config`,

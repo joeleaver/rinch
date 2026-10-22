@@ -17,6 +17,11 @@ rinch-core.workspace = true
 rinch-macros.workspace = true
 rinch-platform = { workspace = true }
 tracing.workspace = true
+# The CSS generic-family enum `AppFont` names (#1769). It is the very type
+# parley/fontique re-export (`fontique::GenericFamily` is `parlance::GenericFamily`),
+# named here directly so `rinch::font` builds without the desktop text stack —
+# on wasm32 too. Already in Cargo.lock through parley; no dependencies of its own.
+parlance = { version = "0.1", default-features = false }
 
 # Desktop-only rendering deps (optional, enabled by `desktop` feature)
 rinch-dom = { workspace = true, optional = true }
