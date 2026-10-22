@@ -1084,6 +1084,7 @@ fn an_opener_inside_an_already_closed_overlay_is_not_restored() {
 
 /// A page with an opener button and a `trap_focus` `Modal` holding an editor
 /// (`editor_inside`), or with the editor on the page and a button in the modal.
+#[cfg(feature = "desktop")]
 fn editor_modal_page(
     open: Signal<bool>,
     editor_inside: bool,
@@ -1129,6 +1130,7 @@ fn editor_modal_page(
 /// claim (`claim_node_or_dom_focus`), so this held before the web was fixed;
 /// the twin is `rinch-web/tests/overlay_editor_focus_1126.rs`.
 #[test]
+#[cfg(feature = "desktop")]
 fn closing_a_modal_hands_the_keyboard_from_its_editor_to_the_opener() {
     let open = Signal::new(false);
     let (mut app, handle, opener, ed, _) = editor_modal_page(open, true);
@@ -1144,12 +1146,17 @@ fn closing_a_modal_hands_the_keyboard_from_its_editor_to_the_opener() {
     );
     open.set(false);
     settle(&mut app);
-    assert_eq!(focused(&app), Some(opener), "the opener got the keyboard back");
+    assert_eq!(
+        focused(&app),
+        Some(opener),
+        "the opener got the keyboard back"
+    );
 }
 
 /// A modal opened while an editor held the keyboard gives it back to that
 /// editor when it closes — what the web does since #1126.
 #[test]
+#[cfg(feature = "desktop")]
 fn closing_a_modal_opened_from_an_editor_gives_the_editor_the_keyboard() {
     let open = Signal::new(false);
     let (mut app, handle, _, ed, inside) = editor_modal_page(open, false);
