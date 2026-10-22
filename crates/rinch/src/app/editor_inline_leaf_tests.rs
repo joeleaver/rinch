@@ -918,3 +918,56 @@ fn a_selected_image_that_ends_a_wrapped_line_is_highlighted_there() {
         "the last `m` and the image",
     );
 }
+
+impl Page {
+    /// The painted pixel at the image's centre on a full frame.
+    fn pixel_at_image_centre(&mut self) -> [u8; 4] {
+        let img = self.images()[0];
+        let (x, y) = ((img.0 + img.2 / 2.0) as u32, (img.1 + img.3 / 2.0) as u32);
+        self.app.has_previous_frame = false;
+        self.app.scene_dirty = true;
+        let (px, w, _) = self.app.build_pixels(1.0, VP, false);
+        let i = ((y * w + x) * 4) as usize;
+        [px[i], px[i + 1], px[i + 2], px[i + 3]]
+    }
+}
+
+/// The pixels (#1120): with nothing selected, with the image selected alone,
+/// and from after it. Only the second tints the image's box.
+#[test]
+fn only_a_selected_image_is_painted_selected() {
+    let mut p = page(&format!("<p>alpha{IMG}bravo</p>"));
+    p.handle.set_selection(Selection::cursor(Pos(1)));
+    idle(&mut p.app);
+    let plain = p.pixel_at_image_centre();
+    p.select(5, 6);
+    let selected = p.pixel_at_image_centre();
+    assert_ne!(selected, plain, "the selected image is tinted");
+    p.select(6, 8);
+    assert_eq!(
+        p.pixel_at_image_centre(),
+        plain,
+        "from after the image: it is not"
+    );
+    p.select(4, 5);
+    assert_eq!(
+        p.pixel_at_image_centre(),
+        plain,
+        "up to before the image: it is not"
+    );
+}
+
+/// An image that ends a paragraph: a selection up to before it stops at its
+/// left edge. The byte range ends at the line's end, whose caret Parley
+/// draws after the image.
+#[test]
+fn a_selection_up_to_a_trailing_image_stops_before_it() {
+    let mut p = page(&format!("<p>alpha{IMG}</p>"));
+    let img = p.images()[0];
+    let start = p.block_box().0 + p.local(1).0;
+    let hl = p.select(1, 5);
+    assert_eq!(hl.len(), 1, "{hl:?}");
+    assert_span(hl[0], start, img.0, "`lpha`, not the image");
+    let hl = p.select(1, 6);
+    assert_span(hl[0], start, img.0 + img.2, "`lpha` and the image");
+}
