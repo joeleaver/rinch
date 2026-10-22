@@ -162,7 +162,12 @@ async fn an_editor_that_takes_pictures_hands_the_other_files_to_ondropfiles() {
     let png = file("pic.png", "image/png", b"\x89PNG\r\n\x1a\nrest");
     let pdf = file("doc.pdf", "application/pdf", b"%PDF-1.7");
     assert_eq!(drop_on(&para, &[png, pdf]), (true, true));
-    assert!(wait_for(|| offered.borrow().len() == 1 && got.borrow().len() == 1).await);
+    assert!(
+        wait_for(|| offered.borrow().len() == 1 && got.borrow().len() == 1).await,
+        "offered {:?}, dropped {:?}",
+        offered.borrow(),
+        got.borrow()
+    );
     assert_eq!(*offered.borrow(), vec!["pic.png".to_string()]);
     assert_eq!(got.borrow()[0].0, "doc.pdf");
     // Read-only: the editor takes nothing, so every file is the zone's.
@@ -184,18 +189,32 @@ fn picker_input() -> Option<web_sys::HtmlInputElement> {
         .map(|e| e.unchecked_into())
 }
 
+/// `navigator.userActivation.isActive` (Chrome 155 and Firefox 155 have it).
+fn user_activation_is_active() -> bool {
+    let get = |o: &wasm_bindgen::JsValue, k: &str| {
+        js_sys::Reflect::get(o, &wasm_bindgen::JsValue::from_str(k)).unwrap()
+    };
+    let navigator = get(&web_sys::window().unwrap(), "navigator");
+    let activation = get(&navigator, "userActivation");
+    get(&activation, "isActive").as_bool().unwrap()
+}
+
 #[wasm_bindgen_test]
 async fn the_picker_resolves_on_change_and_cancel_and_not_without_a_gesture() {
     // A mount installs the browser's task scheduler, which `open` rides.
     let (root, host) = mount(|__scope: &mut RenderScope| rsx! { div { "picker" } });
-    // No user gesture in a test: the picker says so and resolves empty
-    // rather than wait for an event that never comes.
-    let picked: Rc<RefCell<Option<Vec<LocalFile>>>> = Rc::default();
-    let into = picked.clone();
-    FilePicker::new().open(move |files| *into.borrow_mut() = Some(files));
-    assert!(picker_input().is_none(), "no input without a gesture");
-    assert!(wait_for(|| picked.borrow().is_some()).await);
-    assert!(picked.borrow().as_ref().unwrap().is_empty());
+    // No user gesture: the browser refuses `showPicker()`, and the picker
+    // resolves empty rather than wait for an event that never comes. A
+    // harness that grants every page a gesture (Playwright's Firefox does)
+    // would open a real picker here, so the phase runs only without one.
+    if !user_activation_is_active() {
+        let picked: Rc<RefCell<Option<Vec<LocalFile>>>> = Rc::default();
+        let into = picked.clone();
+        FilePicker::new().open(move |files| *into.borrow_mut() = Some(files));
+        assert!(picker_input().is_none(), "no input left without a gesture");
+        assert!(wait_for(|| picked.borrow().is_some()).await);
+        assert!(picked.borrow().as_ref().unwrap().is_empty());
+    }
 
     rinch::file::__set_require_user_activation(false);
     // `change`: the files picked, filters as `accept`.

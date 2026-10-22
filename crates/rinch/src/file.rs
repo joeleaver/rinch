@@ -248,8 +248,9 @@ mod web {
         static WARNED: Cell<bool> = const { Cell::new(false) };
     }
 
-    /// Tests only: open the picker input without asking whether the page has
-    /// a user gesture (a test has none), so a test can answer it itself.
+    /// Tests only: open the picker input with `click()`, which needs no user
+    /// gesture to put the input in the page (a test has none), so a test can
+    /// answer it itself.
     #[doc(hidden)]
     pub fn __set_require_user_activation(require: bool) {
         REQUIRE_ACTIVATION.with(|r| r.set(require));
@@ -258,16 +259,44 @@ mod web {
     /// The attribute the picker's hidden input carries.
     pub const PICKER_ATTR: &str = "data-rinch-file-picker";
 
-    /// `navigator.userActivation.isActive`, or `true` where a browser does not
-    /// say.
-    fn has_user_activation(window: &web_sys::Window) -> bool {
-        let get = |o: &JsValue, k: &str| js_sys::Reflect::get(o, &JsValue::from_str(k)).ok();
-        get(window, "navigator")
-            .and_then(|n| get(&n, "userActivation"))
-            .filter(|a| a.is_object())
-            .and_then(|a| get(&a, "isActive"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true)
+    /// Show `input`'s picker. `showPicker()` where the browser has it: it
+    /// refuses outright (`NotAllowedError`) without a user gesture, where
+    /// `click()` is silently ignored and no `change` or `cancel` ever comes.
+    /// `false` when the picker was refused.
+    fn show(input: &web_sys::HtmlInputElement) -> bool {
+        if !REQUIRE_ACTIVATION.with(Cell::get) {
+            input.click();
+            return true;
+        }
+        let show_picker = js_sys::Reflect::get(input, &JsValue::from_str("showPicker"))
+            .ok()
+            .and_then(|f| f.dyn_into::<js_sys::Function>().ok());
+        let Some(show_picker) = show_picker else {
+            input.click();
+            return true;
+        };
+        match show_picker.call0(input) {
+            Ok(_) => true,
+            Err(e) => {
+                let name = js_sys::Reflect::get(&e, &JsValue::from_str("name"))
+                    .ok()
+                    .and_then(|n| n.as_string())
+                    .unwrap_or_default();
+                if name != "NotAllowedError" {
+                    // Any other refusal (an engine that wants the input
+                    // rendered differently, say): the old way still works.
+                    input.click();
+                    return true;
+                }
+                if !WARNED.with(|w| w.replace(true)) {
+                    tracing::warn!(
+                        "FilePicker opened outside a user gesture; the browser shows no picker. \
+                         Call pick()/open() from an event handler."
+                    );
+                }
+                false
+            }
+        }
     }
 
     pub(super) fn pick(
@@ -281,23 +310,12 @@ mod web {
         wait(slot)
     }
 
-    /// Put a hidden `<input type=file>` in the page and click it. `false`
-    /// when there is nothing to wait for (no page, or no user gesture).
+    /// Put a hidden `<input type=file>` in the page and show its picker.
+    /// `false` when there is nothing to wait for (no page, or no user gesture).
     fn open_input(accept: &str, multiple: bool, slot: &Slot<Vec<LocalFile>>) -> bool {
         let Some(window) = web_sys::window() else {
             return false;
         };
-        if REQUIRE_ACTIVATION.with(Cell::get) && !has_user_activation(&window) {
-            // `click()` would do nothing and no `change` or `cancel` would
-            // ever come: say so once rather than wait for ever.
-            if !WARNED.with(|w| w.replace(true)) {
-                tracing::warn!(
-                    "FilePicker opened outside a user gesture; the browser shows no picker. \
-                     Call pick()/open() from an event handler."
-                );
-            }
-            return false;
-        }
         let Some(document) = window.document() else {
             return false;
         };
@@ -316,7 +334,12 @@ mod web {
             input.set_accept(accept);
         }
         let _ = input.set_attribute(PICKER_ATTR, "");
-        let _ = input.set_attribute("style", "display: none");
+        // Rendered but out of sight: `showPicker()` refuses an input that is
+        // not being rendered (`display: none`).
+        let _ = input.set_attribute(
+            "style",
+            "position: fixed; left: -10000px; top: 0; width: 1px; height: 1px; opacity: 0",
+        );
         // One closure for `change` (files picked) and `cancel` (none); it
         // removes the input and drops itself when either arrives.
         let handler: Rc<RefCell<Option<Closure<dyn FnMut(web_sys::Event)>>>> = Rc::default();
@@ -351,7 +374,11 @@ mod web {
             handler.borrow_mut().take();
             return false;
         }
-        input.click();
+        if !show(&input) {
+            input.remove();
+            handler.borrow_mut().take();
+            return false;
+        }
         true
     }
 }
