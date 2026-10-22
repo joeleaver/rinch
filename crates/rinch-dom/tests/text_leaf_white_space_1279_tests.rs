@@ -124,7 +124,8 @@ fn a_collapsible_space_at_the_end_makes_no_line_1279() {
         ("normal", "Use ", (16.0, 25.0), 20.0, 25.0, 29.6875, 25.0),
         ("normal", "aa bb ", (16.0, 25.0), 30.0, 50.0, 42.0625, 25.0),
         ("nowrap", "a b ", (16.0, 25.0), 300.0, 25.0, 23.28125, 25.0),
-        // All white space: no item at all, preserved or not.
+        // All white space: measured 0x0, preserved or not. (Chrome makes no
+        // item of it at all; rinch's is still an item and takes a `gap`, #1760.)
         ("normal", "   ", (16.0, 25.0), 300.0, 0.0, 0.0, 0.0),
         ("pre-wrap", "   ", (16.0, 25.0), 300.0, 0.0, 0.0, 0.0),
     ]);
@@ -329,5 +330,48 @@ fn line_and_paragraph_separators_in_a_leaf_1268() {
         ),
         ("pre", "x\u{2028}x", (16.0, 25.0), 300.0, 25.0, 21.97, 25.0),
         ("normal", "x\u{85}x", (16.0, 25.0), 300.0, 25.0, 17.47, 25.0),
+    ]);
+}
+
+/// A blank leaf reports no first baseline, so it moves no baseline-aligned
+/// item (review of #1759). Chrome 155, 40px/50px container, two 10px/12px
+/// spans around `"   "` under `align-items: baseline`: the spans at y 0, the
+/// row 12 tall, under `normal` and `pre-wrap` alike. With the blank leaf's
+/// 40px first line as a baseline, rinch put them 29px down.
+#[test]
+fn a_blank_leaf_has_no_baseline() {
+    for ws in ["normal", "pre-wrap"] {
+        let mut d = doc();
+        let body = d.body();
+        let root = el(&mut d, body, "div", "margin: 0; font: 40px/50px ProbeFace");
+        let flex = el(
+            &mut d,
+            root,
+            "div",
+            &format!("display: flex; align-items: baseline; white-space: {ws}"),
+        );
+        let a = el(&mut d, flex, "span", "font: 10px/12px ProbeFace");
+        let t = d.create_text("a");
+        d.append_child(a, t);
+        let blank = d.create_text("   ");
+        d.append_child(flex, blank);
+        let b = el(&mut d, flex, "span", "font: 10px/12px ProbeFace");
+        let t = d.create_text("b");
+        d.append_child(b, t);
+        d.resolve_layout(800.0, 600.0);
+        let ay = d.tree.get(a.0).unwrap().layout.y;
+        let h = d.tree.get(flex.0).unwrap().layout.height;
+        assert_eq!((ay, h), (0.0, 12.0), "{ws}");
+    }
+}
+
+/// A preserved tab in a leaf stays a tab (its stops are #1585): pinned at
+/// the widths rinch drew before #1279, so that a tab turned into a space by
+/// the collapsing pass is seen. Not Chrome's numbers.
+#[test]
+fn a_preserved_tab_in_a_leaf_stays_a_tab() {
+    check(&[
+        ("pre", "a\tb\tc", (16.0, 25.0), 300.0, 25.0, 49.0, 25.0),
+        ("pre-wrap", "a\t\tb", (16.0, 25.0), 300.0, 25.0, 40.0, 25.0),
     ]);
 }
