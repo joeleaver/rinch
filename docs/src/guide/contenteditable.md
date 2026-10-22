@@ -206,7 +206,11 @@ Command names are case-sensitive. The full catalogue:
 > wrap between two images End on the upper line lands after the first and Home
 > on the lower line before the second, as in Chrome 155 (#1116); Home and End
 > pressed again stay there. The caret beside an image is drawn on its side, and
-> a drag or Up/Down onto an image lands on the half it reaches (#1104); a hard
+> a drag or Up/Down onto an image lands on the half it reaches (#1104). The
+> selection highlight covers an image exactly when the selection holds it, on
+> both platforms: a selection from right after an image starts at its right
+> edge, one ending right after it takes it in, and an image selected alone
+> (Shift+Right from before it) is highlighted over its box (#1120); a hard
 > break is resolved on both sides on both platforms (#1099, #1025), and the web
 > resolves both sides of an image too — a click, Home, a soft-line delete, and
 > an IME commit or autocorrect right after one.

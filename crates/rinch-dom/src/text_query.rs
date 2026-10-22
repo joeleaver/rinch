@@ -694,19 +694,19 @@ fn selection_rects_impl(
         };
         let (mut left, mut right) = (left, right);
         if selected.is_some() {
-            // The byte carets stand before every box at their byte: past an
-            // unselected box at the start byte (the selection starts after
-            // it), before an unselected one at the end byte (it ends before
-            // it, which a caret at a wrapped line's end is not), and around
-            // every selected box (one at the end byte is after the caret).
+            // The byte carets stand before every box at their byte, so the
+            // range is moved past an unselected box at the start byte (the
+            // selection starts after it) and grown over every selected box
+            // (one at the end byte is after the end caret). An unselected box
+            // at the end byte is already outside: the end caret stands before
+            // it (measured at a paragraph's end, whose line's range ends at
+            // the box).
             for &(id, index, bl, br) in &boxes {
                 if is_selected(id) {
                     left = left.min(bl);
                     right = right.max(br);
                 } else if index == start {
                     left = left.max(br);
-                } else if index == end {
-                    right = right.min(bl);
                 }
             }
         }
