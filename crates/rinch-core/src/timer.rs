@@ -509,6 +509,28 @@ mod tests {
         );
     }
 
+    /// Between one and two periods late (here ~1.5): the tick it missed is
+    /// skipped too, not fired at once. Off the fixed points: exactly one or
+    /// two periods late is where a `<` / `<=` or a `+ period` slip agrees.
+    #[test]
+    fn a_tick_one_and_a_half_periods_late_skips_the_missed_tick() {
+        install_manual_backend();
+        set_interval(40, || {
+            std::thread::sleep(std::time::Duration::from_millis(60))
+        });
+        take_delays();
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        drain_and_fire();
+        let next = take_delays();
+        assert_eq!(next.len(), 1);
+        assert!(
+            next[0] >= 20,
+            "the tick due 20ms ago is skipped; the next is a period from now \
+             (got {}ms)",
+            next[0]
+        );
+    }
+
     /// A tick more than a period late skips the ticks it missed instead of
     /// firing them back to back.
     #[test]
