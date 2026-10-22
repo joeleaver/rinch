@@ -180,6 +180,9 @@ mod web {
 
     type Slot<T> = Rc<RefCell<(Option<T>, Option<Waker>)>>;
 
+    /// The picker input's `change` / `cancel` listener.
+    type EventClosure = Closure<dyn FnMut(web_sys::Event)>;
+
     fn fill<T>(slot: &Slot<T>, value: T) {
         let waker = {
             let mut s = slot.borrow_mut();
@@ -342,7 +345,7 @@ mod web {
         );
         // One closure for `change` (files picked) and `cancel` (none); it
         // removes the input and drops itself when either arrives.
-        let handler: Rc<RefCell<Option<Closure<dyn FnMut(web_sys::Event)>>>> = Rc::default();
+        let handler: Rc<RefCell<Option<EventClosure>>> = Rc::default();
         let closure = {
             let input = input.clone();
             let handler = handler.clone();

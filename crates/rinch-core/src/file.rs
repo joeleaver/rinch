@@ -227,6 +227,7 @@ mod tests {
         assert_eq!(block_on(file.bytes()).unwrap(), vec![1, 2, 3]);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_file_on_disk_is_stat_ed_not_read_until_asked() {
         let dir = std::env::temp_dir().join(format!("rinch-file-1771-{}", std::process::id()));

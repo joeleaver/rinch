@@ -1781,7 +1781,15 @@ pub(crate) fn dispatch_dropped_files(
         events::MouseButton::Left,
         modifiers_from_event(event),
     );
+    // `rinch::file`'s browser half exists only on wasm32; a host build of
+    // this crate (a workspace check) has no browser files to convert.
+    #[cfg(target_arch = "wasm32")]
     let files = files.into_iter().map(rinch::file::from_web_file).collect();
+    #[cfg(not(target_arch = "wasm32"))]
+    let files = {
+        drop(files);
+        Vec::new()
+    };
     events::dispatch_files_drop_event(id, files)
 }
 

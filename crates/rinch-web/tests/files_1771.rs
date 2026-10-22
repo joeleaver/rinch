@@ -88,6 +88,9 @@ fn mount(
     (root, host)
 }
 
+/// Each picked file's name and bytes.
+type NamedBytes = Vec<(String, Vec<u8>)>;
+
 type Got = Rc<RefCell<Vec<(String, u64, Option<std::path::PathBuf>, Vec<u8>)>>>;
 
 /// Record each dropped file's name, size, path and (after reading) bytes.
@@ -255,7 +258,7 @@ async fn the_picker_resolves_on_change_and_cancel_and_not_without_a_gesture() {
     input
         .dispatch_event(&web_sys::Event::new("change").unwrap())
         .unwrap();
-    let result: Rc<RefCell<Option<Vec<(String, Vec<u8>)>>>> = Rc::default();
+    let result: Rc<RefCell<Option<NamedBytes>>> = Rc::default();
     let out = result.clone();
     spawn_local(async move {
         let mut v = Vec::new();
