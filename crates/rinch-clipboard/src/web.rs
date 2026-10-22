@@ -145,7 +145,9 @@ fn store_text(text: &str) {
 }
 
 /// Call `clipboard[method](arg)`: the promise it returned, or an error when the
-/// method is missing, is not a function, threw, or returned no promise.
+/// method is missing or not a function, or threw. Function-ness is asked with
+/// `typeof`, and the result adopted with `Promise.resolve`, rather than with
+/// `instanceof`, which fails for a clipboard of another frame (another realm).
 fn start_write(
     clipboard: &web_sys::Clipboard,
     method: &str,
@@ -154,12 +156,11 @@ fn start_write(
     use wasm_bindgen::JsCast;
     let function = js_sys::Reflect::get(clipboard, &method.into())
         .ok()
-        .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
-        .ok_or(ClipboardError::NotSupported)?;
+        .filter(|f| f.is_function())
+        .ok_or(ClipboardError::NotSupported)?
+        .unchecked_into::<js_sys::Function>();
     let returned = function.call1(clipboard, arg).map_err(rejection)?;
-    returned
-        .dyn_into::<js_sys::Promise>()
-        .map_err(|_| ClipboardError::AccessFailed(format!("{method} returned no promise")))
+    Ok(js_sys::Promise::resolve(&returned))
 }
 
 /// Await a started write: `Ok(())` when its promise resolved.
