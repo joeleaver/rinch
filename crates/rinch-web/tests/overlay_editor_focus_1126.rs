@@ -4,11 +4,12 @@
 //! On the web an editor holds the keyboard through one hidden capture
 //! `<textarea data-pm-capture>` appended to `<body>`, so `document.activeElement`
 //! is never inside the editor's container. Every question rinch asks of the
-//! focus — "is it inside this overlay" (`restore_focus`), "which trap is it in"
-//! (Tab containment), "who holds it" (`NodeHandle::active_element`, which key
-//! entries and the opener memory read), "is it inside the part a removal
-//! takes" (`release_focus_within`) — has to read the capture field as the
-//! editor's container. Before the fix it read as "focus is outside": closing a
+//! focus — "is it inside this overlay" (`restore_focus`), "who holds it"
+//! (`NodeHandle::active_element`, which key entries and the opener memory read),
+//! "is it inside the part a removal takes" (`release_focus_within`) — has to
+//! read the capture field as the editor's container. (Tab containment never
+//! sees a Tab from an editor: its keymap consumes Tab.) Before the fix it read
+//! as "focus is outside": closing a
 //! `trap_focus` `Modal` left the keyboard on the hidden editor and never gave
 //! it back to the opener.
 //!
@@ -278,11 +279,13 @@ async fn unmounting_the_open_modal_hands_the_keyboard_from_its_editor_to_the_ope
     purge();
 }
 
-/// Tab from an editor inside a trap moves to the stop after the editor, and
-/// Shift+Tab to the one before it: the trap reads the editor as where the
-/// focus is, not the field in `<body>` (which put Tab on the first stop).
+/// Tab inside a trap stays the editor's: its keymap binds Tab (to
+/// `sinkListItem`) and consumes it even where that does nothing, so the trap's
+/// own Tab handling never sees a Tab from a focused editor and needs no reading
+/// of the capture field. This pins that premise; if the editor ever lets Tab
+/// go, the trap must learn to count the capture field as the editor too.
 #[wasm_bindgen_test]
-async fn tab_from_an_editor_in_a_trap_moves_from_the_editor() {
+async fn tab_in_an_editor_inside_a_trap_stays_with_the_editor() {
     let h = host("h3");
     let open = Signal::new(false);
     let m = editor("<p>modal</p>");
@@ -291,11 +294,10 @@ async fn tab_from_an_editor_in_a_trap_moves_from_the_editor() {
         ThemeProviderProps::default(),
         move |s: &mut RenderScope| {
             let page = s.create_element("div");
-            let first = input(s, "first");
             let before = button(s, "before");
             let ed = m.mount(s);
             let after = input(s, "after");
-            let dialog = modal(s, open, &[first, before, ed, after]);
+            let dialog = modal(s, open, &[before, ed, after]);
             page.append_child(&dialog);
             page
         },
@@ -303,10 +305,9 @@ async fn tab_from_an_editor_in_a_trap_moves_from_the_editor() {
     open.set(true);
     press_editor("h3");
     tab(false);
-    assert_eq!(active_desc(), "after", "Tab: the stop after the editor");
-    press_editor("h3");
+    assert!(capture_active(), "Tab moved to {}", active_desc());
     tab(true);
-    assert_eq!(active_desc(), "before", "Shift+Tab: the stop before it");
+    assert!(capture_active(), "Shift+Tab moved to {}", active_desc());
     open.set(false);
     root.unmount();
     purge();

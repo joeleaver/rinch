@@ -1079,3 +1079,91 @@ fn an_opener_inside_an_already_closed_overlay_is_not_restored() {
         ids.outer_a
     );
 }
+
+// ── 7. an editor inside, or as the opener (#1126) ───────────────────────────
+
+/// A page with an opener button and a `trap_focus` `Modal` holding an editor
+/// (`editor_inside`), or with the editor on the page and a button in the modal.
+fn editor_modal_page(
+    open: Signal<bool>,
+    editor_inside: bool,
+) -> (RinchApp, crate::editor::EditorHandle, usize, usize, usize) {
+    let handle = crate::editor::create_editor();
+    assert!(handle.load_html("<p>modal</p>"));
+    let ids: Rc<Cell<(usize, usize, usize)>> = Rc::default();
+    let (out, ed_in) = (ids.clone(), handle.clone());
+    let app = mount(move |scope: &mut RenderScope| {
+        let page = scope.create_element("div");
+        let opener = button(scope, "opener");
+        page.append_child(&opener);
+        let ed = ed_in.mount(scope);
+        ed.set_attribute(
+            "style",
+            "width: 300px; height: 60px; font-size: 16px; line-height: 24px",
+        );
+        let inside = button(scope, "inside");
+        let children = if editor_inside {
+            vec![ed.clone()]
+        } else {
+            page.append_child(&ed);
+            vec![inside.clone()]
+        };
+        let modal = Modal {
+            opened_fn: Some(Rc::new(move || open.get())),
+            trap_focus: true,
+            with_close_button: false,
+            ..Default::default()
+        }
+        .render(scope, &children);
+        page.append_child(&modal);
+        out.set((opener.node_id().0, ed.node_id().0, inside.node_id().0));
+        page
+    });
+    let (opener, ed, inside) = ids.get();
+    (app, handle, opener, ed, inside)
+}
+
+/// The web's #1126 case on desktop: the keyboard on an editor inside a
+/// `trap_focus` modal goes back to the opener when the modal closes, and the
+/// editor lets it go. Desktop's arbiter names the editor's container as the
+/// claim (`claim_node_or_dom_focus`), so this held before the web was fixed;
+/// the twin is `rinch-web/tests/overlay_editor_focus_1126.rs`.
+#[test]
+fn closing_a_modal_hands_the_keyboard_from_its_editor_to_the_opener() {
+    let open = Signal::new(false);
+    let (mut app, handle, opener, ed, _) = editor_modal_page(open, true);
+    app.focus_element(opener);
+    open.set(true);
+    settle(&mut app);
+    handle.focus();
+    settle(&mut app);
+    assert_eq!(
+        app.focus_target,
+        FocusTarget::Editor(ed),
+        "precondition: the editor holds the keyboard"
+    );
+    open.set(false);
+    settle(&mut app);
+    assert_eq!(focused(&app), Some(opener), "the opener got the keyboard back");
+}
+
+/// A modal opened while an editor held the keyboard gives it back to that
+/// editor when it closes — what the web does since #1126.
+#[test]
+fn closing_a_modal_opened_from_an_editor_gives_the_editor_the_keyboard() {
+    let open = Signal::new(false);
+    let (mut app, handle, _, ed, inside) = editor_modal_page(open, false);
+    handle.focus();
+    settle(&mut app);
+    assert_eq!(app.focus_target, FocusTarget::Editor(ed), "precondition");
+    open.set(true);
+    settle(&mut app);
+    assert_eq!(focused(&app), Some(inside), "the modal took the keyboard");
+    open.set(false);
+    settle(&mut app);
+    assert_eq!(
+        app.focus_target,
+        FocusTarget::Editor(ed),
+        "the editor got the keyboard back"
+    );
+}
