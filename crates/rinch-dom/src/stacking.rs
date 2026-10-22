@@ -434,7 +434,7 @@ pub fn stacking_paint_order(
     offset_x: f64,
     offset_y: f64,
 ) -> PaintOrder {
-    build_order(tree, node_id, scale, offset_x, offset_y, true)
+    build_order::<true>(tree, node_id, scale, offset_x, offset_y)
 }
 
 /// [`stacking_paint_order`] without [`PaintOrder::bars`], which only paint
@@ -448,16 +448,17 @@ pub fn stacking_hit_order(
     offset_x: f64,
     offset_y: f64,
 ) -> PaintOrder {
-    build_order(tree, node_id, scale, offset_x, offset_y, false)
+    build_order::<false>(tree, node_id, scale, offset_x, offset_y)
 }
 
-fn build_order(
+/// The sequence, with [`PaintOrder::bars`] when `BARS`. A const parameter, so
+/// the hit-test copy of the walk carries none of the bar bookkeeping.
+fn build_order<const BARS: bool>(
     tree: &NodeTree,
     node_id: RawNodeId,
     scale: f64,
     offset_x: f64,
     offset_y: f64,
-    collect_bars: bool,
 ) -> PaintOrder {
     tree.perf.bump(crate::perf::Counter::StackingOrderBuilds);
     let Some(_node) = tree.get(node_id) else {
@@ -467,7 +468,7 @@ fn build_order(
     // Steps 1, 3 and 4: everything hoisted to this root, gathered in tree order
     // and then sorted by (z, tree order). Collected first so `order` counts
     // every node the walk passes, direct children included.
-    let mut collector = Collector {
+    let mut collector = Collector::<BARS> {
         tree,
         scale,
         hoisted: Vec::new(),
@@ -477,7 +478,6 @@ fn build_order(
         order: 0,
         bar_owners: Vec::new(),
         open_bars: Vec::new(),
-        collect_bars,
     };
     // The box tree, not the element tree (#566).
     let box_children = crate::RinchDocument::box_tree_children(&tree.nodes, node_id);
@@ -554,7 +554,7 @@ fn build_order(
 
 /// The hoisting walk's state: the entries found so far, and the chain of
 /// clipping ancestors currently open above the cursor.
-struct Collector<'a> {
+struct Collector<'a, const BARS: bool> {
     tree: &'a NodeTree,
     scale: f64,
     /// Hoisted entries, paired with the tree-order index that breaks ties
@@ -579,8 +579,6 @@ struct Collector<'a> {
     /// Indices into [`Self::bar_owners`] of the scroll containers the cursor
     /// is inside, outermost first.
     open_bars: Vec<usize>,
-    /// Whether to record [`Self::bar_owners`] at all — paint's sequence only.
-    collect_bars: bool,
 }
 
 /// A scroll container the collector descended into, and the last entry it
@@ -602,7 +600,7 @@ struct BarOwner {
     chain: Vec<ClipRect>,
 }
 
-impl Collector<'_> {
+impl<const BARS: bool> Collector<'_, BARS> {
     /// How many links of [`Self::live`] apply to `node` — what [`Self::span`]
     /// materialises.
     fn chain_len(&self, node: &Node) -> usize {
@@ -696,7 +694,7 @@ impl Collector<'_> {
             // testing gates on it there.
             let clips = self.span(child);
             let z_index = child.computed_style.z_index.unwrap_or(0);
-            if z_index >= 0 && !self.open_bars.is_empty() {
+            if BARS && z_index >= 0 && !self.open_bars.is_empty() {
                 self.note_contained(clips.len(), (z_index, dom_order));
             }
 
@@ -768,7 +766,7 @@ impl Collector<'_> {
         // A scroll container that may draw bars: its contained entries are
         // noted as they are hoisted (#1717). Only one that clips — its clip is
         // what an entry's chain is checked against.
-        let bar_owner = self.collect_bars && pushed && (child.scrolls_y() || child.scrolls_x());
+        let bar_owner = BARS && pushed && (child.scrolls_y() || child.scrolls_x());
         if bar_owner {
             // The links `child` itself is drawn under: `chain_len` as it was
             // before its own clip was pushed.
