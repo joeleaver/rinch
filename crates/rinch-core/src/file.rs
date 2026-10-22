@@ -228,6 +228,30 @@ mod tests {
         }
     }
 
+    /// Poll `fut` until it is ready or `limit` has passed.
+    #[cfg(unix)]
+    fn poll_for<F: Future>(fut: F, limit: std::time::Duration) -> Option<F::Output> {
+        use std::sync::Arc;
+        use std::task::{Context, Poll, Wake};
+        struct Thread(std::thread::Thread);
+        impl Wake for Thread {
+            fn wake(self: Arc<Self>) {
+                self.0.unpark();
+            }
+        }
+        let waker = Arc::new(Thread(std::thread::current())).into();
+        let mut cx = Context::from_waker(&waker);
+        let mut fut = std::pin::pin!(fut);
+        let start = std::time::Instant::now();
+        while start.elapsed() < limit {
+            if let Poll::Ready(v) = fut.as_mut().poll(&mut cx) {
+                return Some(v);
+            }
+            std::thread::park_timeout(std::time::Duration::from_millis(50));
+        }
+        None
+    }
+
     #[test]
     fn a_file_in_memory_reads_its_bytes() {
         let file = LocalFile::from_bytes("a.bin", vec![1, 2, 3]);
@@ -249,15 +273,13 @@ mod tests {
         };
         assert!(status.success());
         let file = LocalFile::from_path(&path).unwrap();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(block_on(file.bytes()).is_err());
-        });
-        let refused = rx.recv_timeout(std::time::Duration::from_secs(5));
+        // Polled here with a deadline: without the check the read would
+        // block its worker thread for ever (no writer ever comes).
+        let refused = poll_for(file.bytes(), std::time::Duration::from_secs(5)).map(|r| r.is_err());
         let _ = std::fs::remove_file(&path);
         assert_eq!(
             refused,
-            Ok(true),
+            Some(true),
             "a FIFO read must fail at once, not block"
         );
     }
