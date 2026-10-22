@@ -1,7 +1,7 @@
 # AGENTS.md
 
-Guidance for AI agents working on the rinch codebase. `CLAUDE.md` is the detailed API
-and usage reference — read it for *how to write rinch code*. This file is about
+Guidance for AI agents working on the rinch codebase. `CLAUDE.md` is the short orientation and
+index, and `docs/internals/` holds the detailed reference it points to — read them for *how to write rinch code*. This file is about
 *working on rinch itself*: where things live, which invariants you must not break, and
 how to verify a change.
 
@@ -398,5 +398,5 @@ disabled at runtime with `RINCH_DEBUG=0`.
 
 User-facing changes must update the docs in the same change: the relevant page under
 `docs/src/guide/`, `docs/src/architecture/` for structural changes, doc comments on new
-public APIs, and `CLAUDE.md` when adding a reactive primitive, an element type, or an
-architectural boundary. Add new pages to `docs/src/SUMMARY.md`.
+public APIs, and the matching `docs/internals/` page for how a mechanism works (not
+`CLAUDE.md`, which stays a short index). Add new pages to `docs/src/SUMMARY.md`.

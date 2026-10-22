@@ -411,7 +411,7 @@ rinch-debug        <- TCP IPC server for tooling
 rinch-mcp-server   <- MCP server for Claude Code integration
 ```
 
-The full layout is in `CLAUDE.md` if you want the gory details.
+The full layout is in `CLAUDE.md`, and the gory details are in `docs/internals/`.
 
 ## Standing On Shoulders
 
