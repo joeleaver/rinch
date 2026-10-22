@@ -1,0 +1,486 @@
+# App entry, fonts, windows and overlays
+
+Read this page when your task touches: App builder, app fonts, Wayland app_id, transparent/borderless windows, overlay windows, hide/show, window control.
+
+Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New mechanism notes for this area go on this page, not in `CLAUDE.md`. A code comment that cites a `CLAUDE.md` section by name means a section now on one of these pages: `grep -rn '<name>' docs/internals/`.
+
+## Application Entry Point
+
+**`App` is the entry point** (issue #493). Every startup option is one method and
+they all compose. Theme and component CSS load automatically when those features
+are enabled, so components work out of the box even with no `.theme(...)`:
+
+```rust
+use rinch::prelude::*;
+
+#[component]
+fn app() -> NodeHandle {
+    let count = Signal::new(0);
+    rsx! {
+        div {
+            p { "Count: " {|| count.get().to_string()} }
+            button { onclick: move || count.update(|n| *n += 1), "+" }
+        }
+    }
+}
+
+fn main() {
+    App::new(app).title("My App").size(800, 600).run();
+}
+```
+
+| Method | Purpose |
+|--------|---------|
+| `App::new(component)` | Start configuring around the root component |
+| `.title(title)` / `.size(w, h)` | Window title and initial logical size |
+| `.theme(ThemeProviderProps)` | Colors, radius, dark mode |
+| `.fonts(&[AppFont])` | Typefaces the build carries in its own binary (issue #286) |
+| `.menu(Vec<(&str, Menu)>)` | Native menu bar |
+| `.window_props(WindowProps)` | Borderless, transparent, icon, `app_id`, `on_close_requested`, … |
+| `.renderer(Renderer)` | `Auto` (GPU, falling back to software), `Gpu` or `Software`; `RINCH_RENDERER` overrides it |
+| `.gpu_config(RinchGpuConfig)` / `.external_gpu(ExternalGpu)` | GPU device (`gpu` feature) |
+| `.run()` | Start on desktop; runs until the event loop exits |
+| `.run_android(android_app)` | Start on Android (`android` feature, Android target) |
+
+`.title()` / `.size()` are applied **over** `.window_props()` in either call
+order, so an explicit title is never silently lost to a later `window_props`.
+Everything else comes from `props`. Nothing runs until a terminal method.
+
+```rust
+fn main() {
+    let theme = ThemeProviderProps {
+        primary_color: Some("cyan".into()),
+        default_radius: Some("md".into()),
+        dark_mode: false,
+        ..Default::default()
+    };
+    App::new(app)
+        .title("My App")
+        .size(800, 600)
+        .theme(theme)
+        .run();
+}
+```
+
+The seven `run_*` functions (`run`, `run_with_theme`, `run_with_menu`,
+`run_with_window_props`, `run_with_window_props_and_menu`, `run_with_gpu_config`,
+`run_with_external_device`) and the two Android ones (`run_android`,
+`run_android_with_theme`) are now **`#[deprecated]` shims over `App`**, and each
+deprecation note names its builder chain. Behaviour is unchanged with one
+deliberate exception: unifying the startup paths also unified the Linux
+**Wayland `app_id`**, which is now derived per application from the executable
+name instead of the shared constant `"rinch-app"` (an explicit
+`WindowProps::app_id` still wins). Every non-Linux platform is untouched. See
+**Window identity on Wayland** below.
+They exist because none of them could express its own combinations:
+`run_with_menu` took no window props, `run_with_window_props` took no menu
+without a second function, and neither could take whatever landed next.
+
+### App-bundled fonts (`.fonts`)
+
+`App::fonts(&[AppFont])` registers typefaces the build carries, before the
+first layout pass — which is the whole reason it is a builder method and not a
+function you call beforehand: a face that arrives after the first measurement
+cannot un-measure it, so the first frame renders in a fallback and reflows.
+Applies on Android too (the platform that needs it most), and it is the one
+configuration method besides `.theme()` that does. A second `.fonts()` call
+**appends**, unlike `.title()` / `.menu()`, which replace.
+
+**A face is reachable by its own family name, and by nothing else, unless it
+asks.** Registering `Newsreader.ttf` answers `font-family: Newsreader`
+immediately. A *generic* — `serif`, `sans-serif`, `monospace`, `system-ui` — is
+not the name of anything; it is a slot the platform fills, and a bundled face is
+in one only by declaring it: `AppFont::serif/sans_serif/monospace(bytes)`, or a
+struct literal over `generics` for the rest. Since essentially every real stack
+ends in a generic, a face that claims none will usually not be picked at all.
+
+**A claim is a prepend, not an append** (`rinch_dom::fonts::claim_generic_families`).
+The #322 Android repair fills an empty generic slot by *appending* a platform
+family into the collection's own list, at context construction, before any app
+font can register — so an appended claim would sit behind it and silently lose,
+on Android only. What was in the slot stays behind the claim, so a character the
+declared face lacks still falls through to the platform's entry.
+
+**`AppFont::script_fallback` is off by default and should stay off wherever the
+platform has fonts.** fontique resolves a script's fallback from the app's own
+list first and the platform's second — as an alternative, not a chain — so an
+entry there *replaces* that script's platform fallback. Measured, not argued:
+with it set on a Latin face, `漢字` in a stack headed by that face resolves to
+the bundled face at **glyph 0** (`.notdef`), where without it the platform's CJK
+face answers with real glyphs. It is on for `RinchApp::register_font_data`, the
+wasm/embed front door, because wasm has no system fonts and a last-resort face
+is the only thing that renders a character the author did not name a font for.
+
+Guide: `docs/src/guide/fonts.md`. Fixtures live in `crates/rinch/assets/fonts/`
+and `crates/rinch-dom/assets/fonts/` rather than under `examples/`, because
+`cargo package` does not carry `examples/` and each crate has to be able to
+compile its own test target.
+
+### Window identity on Wayland
+
+A window's `app_id` is how a Wayland compositor decides which `.desktop` entry,
+icon and taskbar group a window belongs to. rinch derives it from the
+executable's file name unless `WindowProps::app_id` says otherwise
+(`resolved_app_id`, `shell/rinch_runtime.rs`), at **both** the initial
+`create_window` and the `show_window` re-creation path that minimize-to-tray
+restores through. On X11 an **explicit** `app_id` is the window's `WM_CLASS`
+(instance and class) since #1519: a window has one platform-attributes box,
+read by the backend the event loop runs on, and rinch used to hand X11 the
+Wayland one, which X11 discards, so an explicit `app_id` never reached
+`WM_CLASS`. Without one, X11 keeps winit's default (`argv[0]`'s file name,
+`RESOURCE_NAME` for the instance), which can differ from the executable name
+the Wayland `app_id` is derived from — deliberately unchanged.
+
+It used to default to the constant `"rinch-app"` for every app that did not set
+one. That is not merely a label: `install_wayland_icon` writes
+`~/.local/share/applications/{app_id}.desktop` carrying `Name={app_id}`, so
+under one shared constant the first rinch app to ship an icon supplied the dock
+icon *and* the displayed name for every other rinch app on the machine, and
+they grouped together as a single application. The whole name is used, not the
+`file_stem` — a stem truncates at the last dot, so a reverse-DNS binary name
+like `com.example.notes` would register as `com.example` and collide with its
+own siblings.
+
+The `#[component]` macro auto-injects `__scope: &mut RenderScope` as the first parameter, which is required by the `rsx!` macro. Components return a `NodeHandle`. You can also write `fn app(__scope: &mut RenderScope) -> NodeHandle` manually if preferred.
+
+
+## Transparent Windows
+
+Transparent/borderless windows are configured via `WindowProps { transparent: true, borderless: true }`. The software renderer presents premultiplied pixels through softbuffer. The GPU renderer (`shell::desktop::WgpuRenderer::try_new_transparent`, PR #1597) renders Vello over a transparent base and configures the surface with `surface_alpha_mode`: `Auto` for an opaque window (unchanged), and for a transparent one the first of `PreMultiplied`, `PostMultiplied`, `Inherit` the surface offers, else `Auto` (wgpu's `Auto` is `Opaque` on Vulkan, which drew every unpainted pixel black). **Vello 0.7 stores straight alpha** (`fine.wgsl` divides by alpha at its final store), so `present_step` converts on the way to the surface: a `PreMultiplied` (or `Inherit`) surface gets Vello's frame through the compositor's `fs_present_premultiply` pass, a straight copy of which showed 50% white over green as opaque white; a `PostMultiplied` one gets it as it is; an opaque window is copied as before (a Bgra8 surface goes through a `REPLACE` pass that writes every pixel, where it blended over an uncleared image). The layer compositor's `fs_ui` premultiplies Vello's colour before its `One, OneMinusSrcAlpha` blend, so translucent UI over a video or render-surface layer is no longer too bright, in opaque windows too, and the composited texture holds premultiplied pixels (copied to a premultiplied surface, made straight by `fs_present_unpremultiply` for a `PostMultiplied` one). Measured in a nested KWin on RADV (`Opaque | PreMultiplied` only; Mesa's Wayland and X11 WSI never offer `PostMultiplied`): `rgba(255,255,255,0.5)` over green reads `(128,228,128)` on GPU and software alike; pinned by the `#[ignore]`d `compositor::gpu_alpha_tests` (run with `--ignored gpu_alpha` on a host with a GPU) and `desktop::alpha_mode_tests`. **macOS** (not tested): Metal offers `Opaque | PostMultiplied`, and wgpu's `PostMultiplied` there is a `CAMetalLayer` with `opaque = false`, whose contents Core Animation composites as premultiplied, so `present_step` premultiplies for it on macOS only; a transparent window there used to be opaque and now blends. A layer's own pixels (a `RenderSurface` frame) are blitted as they are and read as premultiplied.
+
+> **Windows caveat:** true per-pixel transparency on Windows needs an alpha-capable presentation path (PreMultiplied alpha + DX12 DirectComposition + `WS_EX_NOREDIRECTIONBITMAP`) that is **not currently wired** into `WgpuRenderer` — so `transparent: true` renders opaque on Windows today. Tracked in **issue #89**. (The old `TransparentWindowRenderer` held that path but was never constructed by the runtime and has been removed as dead code.)
+
+Configure via `WindowProps`:
+
+```rust
+use rinch::prelude::*;
+use rinch_core::element::WindowProps;
+
+#[component]
+fn app() -> NodeHandle {
+    rsx! {
+        div { class: "custom-titlebar",
+            // ... your custom titlebar and content
+        }
+    }
+}
+
+fn main() {
+    let window_props = WindowProps {
+        title: "My App".into(),
+        borderless: true,      // Remove native decorations
+        transparent: true,     // Enable transparency
+        resize_inset: Some(12.0),  // Enable resize handles (matches CSS margin)
+        ..Default::default()
+    };
+
+    App::new(app).window_props(window_props).run();
+}
+```
+
+### Resize Handles for Borderless Windows
+
+Borderless windows don't have native resize handles. Use `resize_inset` to enable custom resize handling:
+
+- `resize_inset: Some(f32)` - Enables resize handles within **`inset`** px of the edges. The shell defaults it to `Some(8.0)` for any borderless resizable window.
+- `resize_inset: None` (default before that fill-in) - Disables custom resize handles
+- Only active when `borderless: true` AND `resizable: true`
+- The cursor automatically changes to indicate resize direction on hover
+- A **corner** is simply where two edge zones meet — an `inset` x `inset` square. It is *not* enlarged. `detect_resize_edge` used to carry a second `inset * 2` radius, but every guard reading it was implied by the `near_*` its arm already required, so the enlargement never took effect in any form the code has had; it has been removed rather than documented (#423). An app that wants bigger handles raises `resize_inset`.
+- On Windows, transparent areas don't receive mouse events, so resize detection relies on the zone reaching into visible content
+
+The `resize_inset` value should match your CSS content margin/padding to align the resize handles with the visible window edge. `BorderlessWindow` does **not** do this — its root is `100vw` x `100vh` with no margin — so on that component the zone genuinely overlaps your content, and the rule below is what keeps it usable.
+
+**A visible scrollbar thumb wins an edge press (#399, #420).** Because the zone
+overlaps content, the overlay scrollbar of a container flush with the window
+edge is painted *entirely inside* it: at the default 8px inset the East zone is
+`x > width - 8` and the thumb is drawn in `[width - 8, width - 2)`, so every
+pixel of the thumb you could see used to be a resize handle. The rule now is
+**what you can see, you can grab**, applied per axis. **Along** the track, a
+press (and the hover cursor) at the thumb's extent goes to the scrollbar, while
+the empty track past the thumb — and every edge with no bar on it — still
+resizes. **Across** the bar the grab is edge-forgiving: the whole 16px hit
+strip at thumb height goes to the scrollbar, *including* the 2px margin between
+the thumb and the window edge — the way a browser's bar in a maximised window
+is grabbable at the very last pixel. A **corner** never yields, so a diagonal
+resize stays reachable however tall the thumb grows. The predicate is
+`hit_testing::pointer_on_scrollbar_thumb`, which reads the thumb's along-axis
+extent from the shared `rinch_dom::paint::scrollbar` geometry — the same
+numbers paint draws with — over `find_scrollbar_hit`'s across-axis strip.
+
+A browser has no equivalent conflict: its resize border lives in the window
+frame *outside* the client area, so its scrollbars are grabbable right up to the
+edge. A borderless window has no frame to put it in, so something has to give,
+and the visible target is the one the user is aiming at.
+
+**What true Windows transparency would require (see issue #89 — not yet wired):**
+- DX12 backend with DirectComposition (`WGPU_DX12_PRESENTATION_SYSTEM=DxgiFromVisual`)
+- `CompositeAlphaMode::PreMultiplied`
+- `WS_EX_NOREDIRECTIONBITMAP` window style
+- Patched wgpu for Rgba8Unorm storage textures (see wgpu fork below)
+
+### BorderlessWindow Component
+
+The `BorderlessWindow` component provides a complete container for borderless/transparent windows with:
+- Rounded corners
+- Custom titlebar with drag support
+- Window control buttons (minimize, maximize, close)
+- Optional left/right custom sections in the titlebar
+- Proper theming via CSS variables
+
+```rust
+use rinch::prelude::*;
+
+#[component]
+fn app() -> NodeHandle {
+    // For custom left section (e.g., menu button)
+    let menu_signal = Signal::new(false);
+    let left_section: SectionRenderer = Rc::new(move |__scope| {
+        rsx! {
+            ActionIcon { onclick: move || menu_signal.update(|v| *v = !*v) }
+        }
+    });
+
+    rsx! {
+        BorderlessWindow {
+            title: "My App",
+            radius: "md",  // none, xs, sm, md, lg, xl
+            left_section: Some(left_section),
+            on_minimize: || minimize_current_window(),
+            on_maximize: || toggle_maximize_current_window(),
+            on_close: || close_current_window(),
+
+            // Content goes here
+            div { "Hello, world!" }
+        }
+    }
+}
+```
+
+**Props:**
+| Prop | Type | Description |
+|------|------|-------------|
+| `title` | `String` | Window title displayed in titlebar (empty = not set) |
+| `radius` | `String` | Corner radius: none, xs, sm, md, lg, xl (empty = default `md`) |
+| `show_minimize` | `bool` | Show minimize button (default: true) |
+| `show_maximize` | `bool` | Show maximize button (default: true) |
+| `show_close` | `bool` | Show close button (default: true) |
+| `left_section` | `Option<SectionRenderer>` | Custom content for left side of titlebar |
+| `right_section` | `Option<SectionRenderer>` | Custom content before window controls |
+| `on_minimize` | `Option<Callback>` | Callback for minimize button |
+| `on_maximize` | `Option<Callback>` | Callback for maximize button |
+| `on_close` | `Option<Callback>` | Callback for close button |
+
+**With `WindowProps::menu_in_titlebar` (Linux in-app menu bar)** the menu row —
+`left_section`, the branded `title` and the top-level labels — is an absolutely
+positioned layer drawn over the titlebar, and an empty
+`.rinch-borderlesswindow__menu-spacer` in the titlebar's flex row holds that
+space open for the right section and the controls. The spacer is sized from the
+**row's measured box** (the row's right edge minus the spacer's left edge), not
+from a count of the labels (#529): the shell's
+`MenuBarContext::spacer_width` is only the first frame's estimate, made before
+any document exists, and costs one extra layout to replace. The subtraction is
+made in the window root's **layout** frame — `NodeHandle::get_layout_bounds`
+summed over root > layer > row and root > titlebar > spacer — because the
+result is written as a CSS width (#1375); the two `bounds_signal`s are painted
+boxes, scaled by any transform on the window or above it, and are read only to
+re-run the effect. `rinch-web` publishes no bounds signals and no shell builds
+the inline layout there, so this is a desktop path; a web one could not reuse
+`get_layout_bounds`, which is `getBoundingClientRect`-based (painted) on that
+backend. Pins: `app/inline_menu_spacer_529_tests.rs`.
+
+### Window Control Functions
+
+For custom window chrome (minimize/maximize/close buttons):
+
+```rust
+use rinch::prelude::*;
+
+// In event handlers:
+button { onclick: || minimize_current_window(), "−" }
+button { onclick: || toggle_maximize_current_window(), "□" }
+button { onclick: || close_current_window(), "×" }
+
+// Window visibility (for minimize-to-tray):
+button { onclick: || hide_current_window(), "Hide to Tray" }
+// From a tray menu callback:
+MenuItem::new("Show").on_click(|| show_current_window())
+
+// Pointer events pass through the window, or stop doing so (any thread):
+set_click_through_current_window(true);
+
+// Geometry, logical px, any thread (#1546); kept while hidden:
+let pos: Option<(f64, f64)> = current_window_position(); // None on Wayland
+let size: Option<(f64, f64)> = current_window_size();
+set_current_window_position(300.0, 200.0); // while hidden: where it comes back
+set_current_window_size(700.0, 200.0);
+```
+
+These functions are available in the prelude and work from onclick handlers.
+
+**Hide / show keeps the geometry** (#1546, `shell/window_geometry.rs`).
+`hide_window` still destroys the OS window (Wayland has no invisible toplevel;
+macOS `set_visible(true)` is `makeKeyAndOrderFront`, which would activate a
+non-activating panel). The normal (restore) geometry — outer position and
+logical inner size — is noted while the window is live (`SavedGeometry::note`,
+on creation, `Moved`, `SurfaceResized`, `ScaleFactorChanged`; not while it is
+maximized or minimized — Windows reports a minimized window at -32000 — and
+not for the never-shown sizing window of a hidden start), `record` at hide adds
+whether it is maximized, and `main_window_attributes` creates the next window
+with them
+(`SavedGeometry::apply`: saved geometry, else `WindowProps::x`/`y` on a first
+appearance only). The position is kept in desktop pixels (X11, Windows) or
+points (macOS), the size in logical pixels; a maximized window comes back
+maximized with its earlier normal geometry as the restore geometry. A
+recorded position on no connected monitor at show (`on_some_monitor`) is
+dropped. Wayland restores the size only; a position set while hidden there is
+dropped. **On
+X11 the frame position is read by rinch** (`overlay_window::outer_position`:
+the client's root coordinates less `_NET_FRAME_EXTENTS`), because winit's
+`outer_position` subtracts extents cached before the window manager wrote
+them, which under KWin moved the window down by its title bar on every
+hide/show; with no `_NET_FRAME_EXTENTS` published it falls back to winit's
+answer. On Windows the content size is requested again after the menu bar is
+re-attached (`SetMenu` takes it out of the client area). The published geometry the getters read is a `Mutex` updated on
+creation, `Moved`, `SurfaceResized`, `ScaleFactorChanged` and hide. The native
+menu bar is detached at hide (Windows: `remove_for_hwnd`, which also clears
+`NATIVE_ACCELERATOR_ATTACHED`) and attached to the re-created window (#1533).
+Pins: `shell::window_geometry::tests`, and the `#[ignore]`d live
+`crates/rinch/tests/hide_show_geometry.rs` (a private X server; its `wm_`
+tests inside a private headless KWin, `kwin_wayland --virtual --xwayland`).
+
+### Overlay windows (non-activating, click-through, skip-taskbar)
+
+`WindowProps::non_activating`, `click_through` and `skip_taskbar` (#1519,
+`shell/overlay_window.rs`) make a window that never takes keyboard focus or
+activation — on creation, on `show_current_window`, or on a click — while its
+DOM still takes pointer clicks. The decision is pure (`WindowSteps::plan`, per
+`Backend`), executed as an ordered action list (`after_create_actions`, also
+pure). A window without the three fields gets **no** action — no hit-test call
+— and a tray re-show is not moved to `WindowProps::x/y` (only the first
+appearance is placed; a re-show comes back where it was hidden, #1546). On Windows and X11 a window that needs a tweak
+winit cannot make at creation is created hidden, adjusted, and then shown:
+
+- **Windows**: the window procedure is replaced (`SetWindowLongPtrW`) so
+  `WM_MOUSEACTIVATE` answers `MA_NOACTIVATE` and every `WM_STYLECHANGING` of
+  `GWL_EXSTYLE` re-adds `WS_EX_NOACTIVATE` / `WS_EX_TOOLWINDOW` (minus
+  `WS_EX_APPWINDOW`) — winit rewrites the whole extended style on every flag
+  change (`set_cursor_hittest`, `set_visible`), so setting them once is not
+  enough; `with_active(false)` gives the first show `SW_SHOWNOACTIVATE`.
+- **macOS**: winit's `with_panel(true)` (a `NonactivatingPanel` `NSPanel`),
+  then `setBecomesKeyOnlyIfNeeded:YES` and `setHidesOnDeactivate:NO` through
+  `objc2`. **Not** created hidden: in winit-appkit `set_visible(true)` is
+  `makeKeyAndOrderFront` whatever `active` says, which would make the panel
+  key; only the creation-time show honours `with_active(false)`
+  (`orderFront`). A tray re-show re-creates the window, so it takes the same
+  path.
+- **X11**: `WM_HINTS.input = False` and `_NET_WM_STATE_SKIP_TASKBAR` /
+  `_SKIP_PAGER` written over a separate `x11rb` connection before the map,
+  then a round trip; `always_on_top` is asked again after the map, since a
+  level set on an unmapped window is a client message the WM ignores.
+- **Wayland** (#1523, `shell/layer_shell.rs`): xdg-toplevel cannot refuse
+  focus or a taskbar entry (KWin decides activation at map time and ignores
+  winit's `with_active(false)`), so a `non_activating` window (or
+  `WindowProps::wayland_layer_shell: Some(true)`; `Some(false)` opts out,
+  `skip_taskbar` alone does not opt in) is a `wlr-layer-shell` surface instead,
+  through the winit fork's `WindowAttributesWayland::with_layer_shell`
+  (`zwlr_layer_surface_v1` on the window's `wl_surface`; its configure goes
+  through the window state's ordinary resize path, so both renderers and
+  input are unchanged). Layer `top`, keyboard none (on-demand when forced and
+  not non-activating), anchored top-left with the #1546 position as margins
+  (output-relative logical px; no position = unanchored, compositor-centred),
+  `WindowProps::output` / `set_current_window_output` by connector name. The
+  compositor has no move or resize for it, so `AppAction::DragWindow` /
+  `DragResizeWindow` (`data-drag-window`, `resize_inset`,
+  `start_window_drag` / `start_window_resize`) start a `layer_shell::Gesture`
+  that the shell's `PointerMoved` intercept follows (consuming the moves) and
+  any press or release ends, and that starts only while the primary button is
+  held (so does a `start_window_*` call on any window); the fork commits a
+  margin change at once and sends only requests the bound layer-shell version
+  has. **A move is confirmed in the event stream** (PR #1597): after a
+  margin commit the fork sends a `wl_display.sync` and, when its callback is
+  done, pushes `WindowEvent::Moved` (the margins times the scale) in order
+  with the pointer's events; `LayerState` (`layer_shell.rs`) reads each
+  pointer position against the origin the last `Moved` reported
+  (`LayerState::applied`), never against the position last set, and drops
+  none. Reading against the last set position added each move again for
+  every position already on its way (one burst read in one batch ran the
+  window to 18380,11040); dropping positions until the compositor caught up
+  put fast drags 30–590 px off. Measured in a nested KWin with fake input:
+  60 moves at 0–16 ms apart all land exactly under the pointer, and nothing
+  moves after the release. Pins: `layer_shell::tests::a_drag_lands_under_the_pointer_at_every_lag`,
+  `rinch_runtime::layer_drag_tests`. The compositor closes a layer surface whose output went away: the
+  shell's `CloseRequested` for a layer surface re-creates it
+  (`layer_surface_closed`, output name dropped; with no output left it retries
+  every second) instead of quitting. A
+  mouse `PointerEntered` now queues a pointer move for every window, so a press
+  with no move before it is judged where the pointer is. Where the compositor
+  has no layer shell (GNOME) the fork makes an xdg-toplevel and one
+  `tracing::warn!` says so (`AfterCreate::CheckLayerShell`);
+  `current_window_surface_kind()` answers which. Tested live in a private
+  `kwin_wayland --virtual` (no focus taken on map, click, hide/show; move,
+  resize, output, hide/show geometry; software and GPU); the GNOME fallback
+  is not (no such compositor on the host). `App::prefer_x11(true)`
+  builds the event loop on X11 whenever `DISPLAY` is set (XWayland), and
+  falls back to the default backend with a warning when that server refuses
+  the connection.
+- **Click-through** is winit's `set_cursor_hittest(false)` everywhere but X11,
+  where winit's XFixes requests are refused (it never negotiates the XFixes
+  version), so rinch sets an empty `ShapeInput` region itself over its own
+  x11rb connection (`xfixes_query_version` first) and restores `None` to turn
+  it off. It is kept by
+  the runtime (`RinchRuntime::click_through`) across a hide/show re-creation;
+  `set_click_through_current_window` posts `RinchNativeEvent::SetClickThrough`,
+  which the shell applies without reaching the app.
+
+**Level and workspaces** (#1549): `WindowProps::level: WindowLevel`
+(`Normal` / `Floating` / `StatusBar` / `ScreenSaver`, macOS's names;
+`always_on_top` is `Floating`, read through `WindowProps::effective_level()`)
+and `visible_on_all_workspaces`. Every raised level is winit's `AlwaysOnTop`
+at creation (`HWND_TOPMOST`, `_NET_WM_STATE_ABOVE`, `NSFloatingWindowLevel`),
+and is re-asserted after an X11 map; macOS then `setLevel:`s 25 or 1000 for
+`StatusBar` / `ScreenSaver`. All workspaces: macOS `canJoinAllSpaces |
+fullScreenAuxiliary`; X11 `_NET_WM_DESKTOP = 0xFFFFFFFF` +
+`_NET_WM_STATE_STICKY` before the map (so the window is created hidden);
+**Windows and Wayland nothing**. On macOS `skip_taskbar` now adds `ignoresCycle
+| stationary` (out of Cmd-` and Mission Control; Cmd-Tab is the app's
+activation policy, #1528). Collection bits are merged into the window's own,
+dropping the ones AppKit says exclude them (`overlay_window::mac::merge`). The
+steps come from the props on every creation, so a hide/show re-creation (#1546)
+keeps them. On native Wayland a level places a layer-shell window (#1523):
+`Normal`/`Floating` in the `top` layer, `StatusBar`/`ScreenSaver` in
+`overlay`; it does nothing for an xdg-toplevel.
+
+Only the Linux paths have run; Windows and macOS are type-checked. Examples:
+`examples/overlay-pill`, `examples/wayland-overlay`. Guide:
+`docs/src/guide/windows.md#overlay-windows`.
+
+**`on_close_requested` callback:** Intercept the window close button to hide instead of exit:
+
+```rust
+use std::sync::Arc;
+
+let window_props = WindowProps {
+    on_close_requested: Some(Arc::new(|| {
+        hide_current_window();
+        false // Return false to cancel exit, true to proceed
+    })),
+    ..Default::default()
+};
+```
+
+### wgpu Fork
+
+Transparent windows require a patched wgpu to enable Rgba8Unorm storage textures for Vello rendering on DX12. The patches are in `[patch.crates-io]` in `Cargo.toml`:
+
+- **Repository**: https://github.com/joeleaver/wgpu-fork
+- **Branch**: `rinch-patch`
+- **Upstream PR**: https://github.com/gfx-rs/wgpu/pull/8908
+
+**The patch is one commit touching one file**: `wgpu-core/src/instance.rs`, forcing storage
+capabilities for Rgba8Unorm/Bgra8Unorm (16 added lines). Checked against the revision `Cargo.lock`
+actually pins — `54b7ce083ac9575b27884054ae74eb652cb541b3` — and against upstream PR #8908, which
+carries the same single file. This list used to name `device/resource.rs` and `present.rs` too;
+**neither is patched, in this fork or upstream**, so do not add them back.
+
+**Downstream projects** must copy the `[patch.crates-io]` section from the workspace `Cargo.toml` into their own `Cargo.toml` for transparent windows to work on Windows. This is required because Cargo patches are not transitive — they only apply to the workspace that declares them.
