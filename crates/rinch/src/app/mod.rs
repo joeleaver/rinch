@@ -4685,7 +4685,7 @@ impl RinchApp {
             // return — a browser restores from `<body>` too — so the hand-back
             // still runs and rule 3 has nothing to release.
             if let Some(id) = restorable {
-                self.focus_element(id);
+                self.restore_onto(id);
             }
             return;
         };
@@ -4693,7 +4693,7 @@ impl RinchApp {
             return;
         }
         if let Some(id) = restorable {
-            self.focus_element(id);
+            self.restore_onto(id);
             if matches!(
                 self.focus_target,
                 FocusTarget::Input(cur) | FocusTarget::Node(cur) if cur == id
@@ -4706,6 +4706,18 @@ impl RinchApp {
             }
         }
         self.blur_node(claim);
+    }
+
+    /// Give `id` the keyboard for [`Self::apply_focus_restore`]: an editor's
+    /// container through `try_focus_input`, which hands it to the editor as
+    /// `EditorHandle::focus` does (issue #1126), anything else as a Tab move.
+    fn restore_onto(&mut self, id: usize) {
+        #[cfg(feature = "desktop")]
+        if crate::editor::editor_for_doc(self.doc_key(), id).is_some() {
+            self.try_focus_input(id);
+            return;
+        }
+        self.focus_element(id);
     }
 
     /// The node the keyboard claim names, falling back to the DOM's own focused
