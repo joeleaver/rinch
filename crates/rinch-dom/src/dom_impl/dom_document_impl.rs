@@ -1360,6 +1360,28 @@ impl DomDocument for RinchDocument {
             .collect()
     }
 
+    fn query_selection_rects_with_boxes(
+        &self,
+        node_id: u64,
+        byte_a: usize,
+        byte_b: usize,
+        selected_boxes: &[u64],
+    ) -> Vec<(f32, f32, f32, f32)> {
+        let Some(node) = self.tree.nodes.get(node_id as usize) else {
+            return Vec::new();
+        };
+        let layout = match (&node.text_layout, &node.cached_text_parley) {
+            (Some(inline), _) => &inline.layout,
+            (None, Some(layout)) => layout,
+            (None, None) => return Vec::new(),
+        };
+        let (ox, oy) = self.text_layout_origin(node_id as usize);
+        crate::text_query::selection_rects_with_boxes(layout, byte_a, byte_b, selected_boxes)
+            .into_iter()
+            .map(|(x, y, w, h)| (ox + x, oy + y, w, h))
+            .collect()
+    }
+
     fn query_glyph_bounds(
         &self,
         node_id: u64,

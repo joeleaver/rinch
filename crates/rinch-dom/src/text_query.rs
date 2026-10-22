@@ -536,6 +536,57 @@ pub fn selection_rects_for_layout(
     a: usize,
     b: usize,
 ) -> Vec<(f32, f32, f32, f32)> {
+    selection_rects_impl(layout, a, b, None)
+}
+
+/// [`selection_rects_for_layout`] for a selection that says which inline
+/// boxes it holds (#1120): `selected` names every selected inline box (an
+/// image) by its id, and the rest are not selected, whatever their index.
+///
+/// An inline box occupies no bytes, so `[a, b)` cannot say on which side of a
+/// box at `a` or `b` the selection starts or ends, nor whether a box at
+/// `a == b` is selected at all. A caller that knows (the rich-text editor's
+/// view, from model positions) says so here: a line's highlight then starts
+/// past an unselected box at its start byte and ends before an unselected
+/// box at its end byte, takes in every selected box on the line, and a line
+/// holding a selected box and no selected byte is highlighted over the box.
+/// Left-to-right lines as below; a line holding a right-to-left run is
+/// walked in visual order with the boxes `selected` names.
+pub fn selection_rects_with_boxes(
+    layout: &parley::layout::Layout<Brush>,
+    a: usize,
+    b: usize,
+    selected: &[u64],
+) -> Vec<(f32, f32, f32, f32)> {
+    selection_rects_impl(layout, a, b, Some(selected))
+}
+
+/// The inline boxes on `line`, as `(id, index, left, right)`, layout-local.
+fn line_inline_boxes(
+    layout: &parley::layout::Layout<Brush>,
+    line: &parley::layout::Line<'_, Brush>,
+) -> Vec<(u64, usize, f32, f32)> {
+    line.items()
+        .filter_map(|item| match item {
+            parley::layout::PositionedLayoutItem::InlineBox(bx) => {
+                let index = layout
+                    .inline_boxes()
+                    .iter()
+                    .find(|ib| ib.id == bx.id)
+                    .map(|ib| ib.index)?;
+                Some((bx.id, index, bx.x, bx.x + bx.width))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn selection_rects_impl(
+    layout: &parley::layout::Layout<Brush>,
+    a: usize,
+    b: usize,
+    selected: Option<&[u64]>,
+) -> Vec<(f32, f32, f32, f32)> {
     let (a, b) = if a <= b { (a, b) } else { (b, a) };
     let mut rects = Vec::new();
     let mut lines = layout.lines().peekable();
@@ -543,7 +594,15 @@ pub fn selection_rects_for_layout(
         let range = line.text_range();
         let start = a.max(range.start);
         let end = b.min(range.end);
-        if start >= end {
+        // The line's inline boxes, when the caller says which are selected
+        // (#1120); none read otherwise.
+        let boxes = match selected {
+            Some(_) => line_inline_boxes(layout, &line),
+            None => Vec::new(),
+        };
+        let is_selected = |id: u64| selected.is_some_and(|s| s.contains(&id));
+        let holds_selected_box = boxes.iter().any(|bx| is_selected(bx.0));
+        if start >= end && !holds_selected_box {
             continue;
         }
         let metrics = line.metrics();
@@ -576,9 +635,29 @@ pub fn selection_rects_for_layout(
         // A line with none — every line of left-to-right text — keeps the one
         // start-to-end rect below and pays one pass over its runs.
         if line.runs().any(|run| run.is_rtl()) {
-            bidi_line_pieces(layout, &line, start, end, |l, r| {
+            let box_selected = |id: u64, index: usize| match selected {
+                Some(s) => s.contains(&id),
+                None => (start..end).contains(&index),
+            };
+            bidi_line_pieces(layout, &line, start, end, box_selected, |l, r| {
                 rects.push((l, top, (r - l).max(1.0), height))
             });
+            continue;
+        }
+        if start >= end {
+            // Only selected boxes on this line (an image selected alone, or
+            // one that starts or ends a wrapped line): their span.
+            let l = boxes
+                .iter()
+                .filter(|bx| is_selected(bx.0))
+                .map(|bx| bx.2)
+                .fold(f32::INFINITY, f32::min);
+            let r = boxes
+                .iter()
+                .filter(|bx| is_selected(bx.0))
+                .map(|bx| bx.3)
+                .fold(f32::NEG_INFINITY, f32::max);
+            rects.push((l, top, (r - l).max(1.0), height));
             continue;
         }
         let left = Cursor::from_byte_index(layout, start, Affinity::Downstream)
@@ -613,6 +692,24 @@ pub fn selection_rects_for_layout(
                 .geometry(layout, 0.0)
                 .x0 as f32
         };
+        let (mut left, mut right) = (left, right);
+        if selected.is_some() {
+            // The byte carets stand before every box at their byte: past an
+            // unselected box at the start byte (the selection starts after
+            // it), before an unselected one at the end byte (it ends before
+            // it, which a caret at a wrapped line's end is not), and around
+            // every selected box (one at the end byte is after the caret).
+            for &(id, index, bl, br) in &boxes {
+                if is_selected(id) {
+                    left = left.min(bl);
+                    right = right.max(br);
+                } else if index == start {
+                    left = left.max(br);
+                } else if index == end {
+                    right = right.min(bl);
+                }
+            }
+        }
         rects.push((left, top, (right - left).max(1.0), height));
     }
     rects
@@ -621,8 +718,9 @@ pub fn selection_rects_for_layout(
 /// The visual pieces `(left, right)` of the byte range `[a, b)` on `line`,
 /// left to right: each contiguous stretch of clusters whose first byte is in
 /// the range, walked in visual order (Parley's `Selection::geometry_with`
-/// rule). An inline box (an image, an `inline-block`) whose index is in the
-/// range is selected; a cluster with no advance (a bidi control, a zero-width
+/// rule). An inline box (an image, an `inline-block`) is selected when
+/// `box_selected(id, index)` says so (its index in the range, or the
+/// caller's own list, #1120); a cluster with no advance (a bidi control, a zero-width
 /// space) adds no piece. A selected hard break (`<br>`, a preserved `\n`) that
 /// is in no cluster of the line is a newline's width (a quarter of ascent +
 /// descent) from the caret before it, joined to the piece it touches — what
@@ -634,6 +732,7 @@ fn bidi_line_pieces(
     line: &parley::layout::Line<'_, Brush>,
     a: usize,
     b: usize,
+    box_selected: impl Fn(u64, usize) -> bool,
     mut emit: impl FnMut(f32, f32),
 ) {
     let mut pieces: Vec<(f32, f32)> = Vec::new();
@@ -647,7 +746,7 @@ fn bidi_line_pieces(
                     .iter()
                     .find(|ib| ib.id == bx.id)
                     .map(|ib| ib.index);
-                if index.is_some_and(|i| (a..b).contains(&i)) {
+                if index.is_some_and(|i| box_selected(bx.id, i)) {
                     let (x0, x1) = (bx.x, bx.x + bx.width);
                     open = Some(match open {
                         Some((l, _)) => (l, x1),

@@ -2608,9 +2608,11 @@ impl RinchDomEditorView {
         let rects: Vec<(f32, f32, f32, f32)> = {
             let d = doc.borrow();
             let mut out = Vec::new();
-            for (block_id, byte_a, byte_b) in targets {
+            for (block_id, byte_a, byte_b, boxes) in targets {
                 let (ox, oy) = self.block_offset_in_container(&*d, block_id);
-                for (rx, ry, rw, rh) in d.query_selection_rects(block_id as u64, byte_a, byte_b) {
+                for (rx, ry, rw, rh) in
+                    d.query_selection_rects_with_boxes(block_id as u64, byte_a, byte_b, &boxes)
+                {
                     out.push((ox + rx, oy + ry, rw, rh));
                 }
             }
@@ -2619,9 +2621,18 @@ impl RinchDomEditorView {
         self.set_selection_rects(&rects);
     }
 
-    /// For each textblock overlapping `[from, to)`, the host element id and the
-    /// flat UTF-8 byte range of the selection within that block.
-    fn selection_targets(&self, doc: &Node, from: Pos, to: Pos) -> Vec<(usize, usize, usize)> {
+    /// For each textblock overlapping `[from, to)`, the host element id, the
+    /// flat UTF-8 byte range of the selection within that block, and the host
+    /// element ids of the zero-byte inline leaves (images) the selection holds
+    /// — which the byte range cannot say: an image has no bytes, so the bytes
+    /// on its two sides are one number (#1120).
+    #[allow(clippy::type_complexity)]
+    fn selection_targets(
+        &self,
+        doc: &Node,
+        from: Pos,
+        to: Pos,
+    ) -> Vec<(usize, usize, usize, Vec<u64>)> {
         let mut targets = Vec::new();
         doc.nodes_between(from.0, to.0, &mut |node, pos, _parent| {
             if node.is_textblock() {
@@ -2636,6 +2647,12 @@ impl RinchDomEditorView {
                         block_id,
                         textblock_flat_byte(node, a - content_start, self.flat),
                         textblock_flat_byte(node, b - content_start, self.flat),
+                        self.selected_zero_byte_leaves(
+                            doc,
+                            content_start,
+                            a - content_start,
+                            b - content_start,
+                        ),
                     ));
                 }
                 false // don't descend into the textblock's inline content
@@ -2644,6 +2661,46 @@ impl RinchDomEditorView {
             }
         });
         targets
+    }
+
+    /// The host element ids of the zero-byte inline leaves (images) whose
+    /// offsets in the textblock whose content starts at `content_start` are in
+    /// `[a, b)` — the leaves a selection over those offsets holds (#1120).
+    fn selected_zero_byte_leaves(
+        &self,
+        doc: &Node,
+        content_start: usize,
+        a: usize,
+        b: usize,
+    ) -> Vec<u64> {
+        let mut out = Vec::new();
+        let Ok(r) = doc.resolve(Pos(content_start)) else {
+            return out;
+        };
+        let mut desc = &self.root;
+        for d in 0..r.depth() {
+            match desc.children.get(r.index(d)) {
+                Some(c) => desc = c,
+                None => return out,
+            }
+        }
+        let block = &desc.node;
+        let mut at = 0usize;
+        for i in 0..block.child_count() {
+            if at >= b {
+                break;
+            }
+            let child = block.child(i);
+            if at >= a
+                && child.text().is_none()
+                && leaf_flat_bytes(child, self.flat) == 0
+                && let Some(c) = desc.children.get(i)
+            {
+                out.push(c.dom.node_id().0 as u64);
+            }
+            at += child.node_size();
+        }
+        out
     }
 
     /// Reconcile the selection-highlight divs (container children) to `rects`
