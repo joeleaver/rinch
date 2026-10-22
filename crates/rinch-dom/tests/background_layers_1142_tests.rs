@@ -16,6 +16,7 @@
 //!   `background-size` gives the third layer the first size, a one-entry
 //!   `background-repeat` all three.
 //! - `e` — a first layer of `none` and a gradient below it.
+//! - `g` — three overlapping layers: the order of the lower ones.
 //! - `f` — an image named only by a lower layer is requested.
 #![cfg(feature = "software-renderer")]
 
@@ -194,6 +195,30 @@ fn d_shorter_lists_repeat_to_the_image_count() {
         (50, 15, [255, 255, 255, 255]),
         (5, 15, [255, 255, 255, 255]),
         (15, 5, [255, 255, 255, 255]),
+    ] {
+        let got = px(&p, x, y);
+        assert!(close(got, want), "({x},{y}): {got:?}, Chrome {want:?}");
+    }
+}
+
+/// Chrome 155: three opaque layers, each larger than the one above it —
+/// (5,5) red, (15,15) green, (25,25) blue, (35,35) the white page. Pins the
+/// order of the layers below the first among themselves.
+#[test]
+fn g_three_layers_stack_in_list_order() {
+    let (mut doc, _) = mount(
+        "width: 40px; height: 40px; \
+         background-image: linear-gradient(rgb(255, 0, 0), rgb(255, 0, 0)), \
+         linear-gradient(rgb(0, 255, 0), rgb(0, 255, 0)), \
+         linear-gradient(rgb(0, 0, 255), rgb(0, 0, 255)); \
+         background-size: 10px 10px, 20px 20px, 30px 30px; background-repeat: no-repeat;",
+    );
+    let p = paint(&mut doc);
+    for (x, y, want) in [
+        (5, 5, [255, 0, 0, 255]),
+        (15, 15, [0, 255, 0, 255]),
+        (25, 25, [0, 0, 255, 255]),
+        (35, 35, [255, 255, 255, 255]),
     ] {
         let got = px(&p, x, y);
         assert!(close(got, want), "({x},{y}): {got:?}, Chrome {want:?}");
