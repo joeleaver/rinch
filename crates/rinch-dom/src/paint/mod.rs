@@ -2036,6 +2036,31 @@ pub fn point_from_painted_box(
     (p.x, p.y)
 }
 
+/// The rect `(x, y, w, h)` in `node_id`'s border box, carried like
+/// [`point_from_painted_box`] into window space: the bounding box of its four
+/// transformed corners, so a `scale()` stretches it and a `rotate()` or skew
+/// gives the box that holds what is painted there (#1136).
+pub fn rect_from_painted_box(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    rect: (f64, f64, f64, f64),
+) -> (f64, f64, f64, f64) {
+    let (x, y, transform) = compute_absolute_position_and_transform(tree, node_id, scale);
+    let (lx, ly, w, h) = rect;
+    let corners = [(lx, ly), (lx + w, ly), (lx, ly + h), (lx + w, ly + h)]
+        .map(|(cx, cy)| transform * Point::new(x + cx, y + cy));
+    let (mut x0, mut y0) = (f64::INFINITY, f64::INFINITY);
+    let (mut x1, mut y1) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for p in corners {
+        x0 = x0.min(p.x);
+        y0 = y0.min(p.y);
+        x1 = x1.max(p.x);
+        y1 = y1.max(p.y);
+    }
+    (x0, y0, x1 - x0, y1 - y0)
+}
+
 /// Find viewport descendant rects (absolute pixel positions) for hole-punching.
 /// Returns a list of viewport rects in physical pixel coordinates.
 fn find_viewport_rects(

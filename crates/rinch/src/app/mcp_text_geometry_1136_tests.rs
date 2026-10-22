@@ -353,3 +353,243 @@ fn an_unpadded_paragraph_answers_its_painted_glyph() {
         "ink {ink:?} vs {g:?}"
     );
 }
+
+// ---- From the review of PR #1745 ----
+
+fn page_html(
+    build: impl Fn(&mut RenderScope) -> (NodeHandle, NodeHandle) + 'static,
+) -> (RinchApp, usize) {
+    let id: Rc<Cell<usize>> = Rc::default();
+    let id_in = id.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let (root, target) = build(scope);
+        id_in.set(target.node_id().0);
+        root
+    });
+    app.register_app_font(AppFont::sans_serif(INTER));
+    app.mount_component(VP.0 as f32, VP.1 as f32);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    (app, id.get())
+}
+
+fn glyph_result(app: &mut RinchApp, node_id: usize, byte_offset: usize) -> DebugResult {
+    let mut actions = Vec::new();
+    app.execute_debug_command(
+        DebugCommandKind::GetGlyphBounds {
+            node_id,
+            byte_offset,
+        },
+        &mut actions,
+        1.0,
+        VP,
+    )
+}
+
+fn root_div(scope: &mut RenderScope) -> NodeHandle {
+    let root = scope.create_element("div");
+    root.set_attribute(
+        "style",
+        "position: relative; width: 500px; height: 400px; margin: 0; \
+         font-family: sans-serif; font-size: 14px; line-height: 20px",
+    );
+    root
+}
+
+/// A padded `<p>` inside a scroller scrolled down by 37px.
+#[test]
+fn r1745_scrolled_scroller() {
+    let (mut app, id) = page_html(|scope| {
+        let root = root_div(scope);
+        let sc = scope.create_element("div");
+        sc.set_attribute(
+            "style",
+            "position: absolute; left: 30px; top: 50px; width: 300px; height: 200px; overflow: auto; --rinch-scrollbar-width: none",
+        );
+        let spacer = scope.create_element("div");
+        spacer.set_attribute("style", "height: 100px");
+        let p = scope.create_element("p");
+        p.set_attribute(
+            "style",
+            "margin: 0; padding: 9px 0 0 17px; color: rgb(0,0,255); font-size: 14px; line-height: 20px",
+        );
+        p.append_child(&scope.create_text("H"));
+        let tail = scope.create_element("div");
+        tail.set_attribute("style", "height: 600px");
+        sc.append_child(&spacer);
+        sc.append_child(&p);
+        sc.append_child(&tail);
+        root.append_child(&sc);
+        (root, p)
+    });
+    {
+        let doc = app.doc.clone().unwrap();
+        let mut d = doc.borrow_mut();
+        let sc = d.tree.nodes[id].parent.unwrap();
+        d.tree.nodes[sc].scroll_offset.1 = 37.0;
+        d.tree.mark_scrolled(sc);
+    }
+    for scale in [1.0, 1.5] {
+        let ink = ink_box(&mut app, scale);
+        let g = mcp_glyph(&mut app, id, 0, scale);
+        eprintln!("scroll scale {scale}: ink {ink:?} glyph {g:?}");
+        assert!(
+            ink.0 >= g[0] - 0.7
+                && ink.0 - g[0] < 2.5
+                && ink.1 >= g[1] - 0.7
+                && ink.3 <= g[1] + g[3] + 0.7,
+            "scrolled, scale {scale}: ink {ink:?} vs glyph {g:?}"
+        );
+    }
+}
+
+/// A rotated ancestor: the reported box should contain the ink.
+#[test]
+fn r1745_rotated_ancestor() {
+    let (mut app, id) = page_html(|scope| {
+        let root = root_div(scope);
+        let w = scope.create_element("div");
+        w.set_attribute(
+            "style",
+            "position: absolute; left: 150px; top: 150px; width: 100px; height: 40px; transform: rotate(45deg)",
+        );
+        let p = scope.create_element("p");
+        p.set_attribute(
+            "style",
+            "margin: 0; color: rgb(0,0,255); font-size: 28px; line-height: 40px",
+        );
+        p.append_child(&scope.create_text("H"));
+        w.append_child(&p);
+        root.append_child(&w);
+        (root, p)
+    });
+    let ink = ink_box(&mut app, 1.0);
+    let g = mcp_glyph(&mut app, id, 0, 1.0);
+    eprintln!("rotate: ink {ink:?} glyph {g:?}");
+    assert!(
+        g[2] > 5.0 && g[3] > 5.0,
+        "rotated glyph box degenerate: {g:?} ink {ink:?}"
+    );
+    assert!(
+        ink.0 >= g[0] - 1.0
+            && ink.2 <= g[0] + g[2] + 1.0
+            && ink.1 >= g[1] - 1.0
+            && ink.3 <= g[1] + g[3] + 1.0,
+        "rotated: ink {ink:?} outside glyph AABB {g:?}"
+    );
+}
+
+/// A scaled ancestor: the box is the painted size.
+#[test]
+fn r1745_scaled_ancestor() {
+    let (mut app, id) = page_html(|scope| {
+        let root = root_div(scope);
+        let w = scope.create_element("div");
+        w.set_attribute(
+            "style",
+            "position: absolute; left: 60px; top: 70px; width: 100px; height: 40px; transform: scale(2); transform-origin: 0 0",
+        );
+        let p = scope.create_element("p");
+        p.set_attribute(
+            "style",
+            "margin: 0; padding-left: 5px; color: rgb(0,0,255); font-size: 14px; line-height: 20px",
+        );
+        p.append_child(&scope.create_text("H"));
+        w.append_child(&p);
+        root.append_child(&w);
+        (root, p)
+    });
+    let ink = ink_box(&mut app, 1.0);
+    let g = mcp_glyph(&mut app, id, 0, 1.0);
+    eprintln!("scale: ink {ink:?} glyph {g:?}");
+    assert!(
+        ink.0 >= g[0] - 0.7
+            && ink.2 <= g[0] + g[2] + 0.7
+            && ink.0 - g[0] < 5.0
+            && ink.1 >= g[1] - 0.7
+            && ink.3 <= g[1] + g[3] + 0.7,
+        "scaled: ink {ink:?} vs glyph {g:?}"
+    );
+}
+
+/// Text inside an inline-block with padding, inside a padded p.
+#[test]
+fn r1745_inline_block() {
+    let (mut app, id) = page_html(|scope| {
+        let root = root_div(scope);
+        let p = scope.create_element("p");
+        p.set_attribute("style", "position: absolute; left: 30px; top: 40px; margin: 0; padding: 11px 0 0 23px; color: transparent; font-size: 14px; line-height: 20px");
+        p.append_child(&scope.create_text("xx "));
+        let ib = scope.create_element("span");
+        ib.set_attribute(
+            "style",
+            "display: inline-block; padding: 6px 0 0 9px; color: rgb(0,0,255)",
+        );
+        ib.append_child(&scope.create_text("H"));
+        p.append_child(&ib);
+        root.append_child(&p);
+        (root, ib)
+    });
+    let ink = ink_box(&mut app, 1.0);
+    let g = mcp_glyph(&mut app, id, 0, 1.0);
+    eprintln!("inline-block: ink {ink:?} glyph {g:?}");
+    assert!(
+        ink.0 >= g[0] - 0.7
+            && ink.0 - g[0] < 2.5
+            && ink.1 >= g[1] - 0.7
+            && ink.3 <= g[1] + g[3] + 0.7,
+        "inline-block: ink {ink:?} vs glyph {g:?}"
+    );
+}
+
+/// A password field with a multi-byte value, offset inside a char.
+#[test]
+fn r1745_password_mid_char() {
+    let (mut app, id) = page(
+        "input",
+        Some("password"),
+        format!("position: absolute; left: 41px; top: 33px; width: 300px; height: 30px; {FIELD}"),
+        "\u{e9}\u{e9}",
+    );
+    // Byte 1 is inside the first `é`: answered at the char before it, as
+    // `painted_caret_rect` snaps it, never a panic on the app's thread.
+    assert!(
+        matches!(glyph_result(&mut app, id, 1), DebugResult::Json { .. }),
+        "an offset inside a char answers"
+    );
+    assert_eq!(
+        mcp_glyph(&mut app, id, 1, 1.0),
+        mcp_glyph(&mut app, id, 0, 1.0)
+    );
+}
+
+/// A focused single-line input scrolled horizontally (#1723): the glyph box
+/// at the last character sits between the painted carets.
+#[test]
+fn r1745_scrolled_input_glyph() {
+    let v = "wax was a vow a raw saw a war wax";
+    let (mut app, id) = page(
+        "input",
+        None,
+        format!(
+            "position: absolute; left: 41px; top: 33px; width: 90px; height: 30px; padding: 0 0 0 13px; {FIELD}"
+        ),
+        v,
+    );
+    let n = v.len();
+    let painted_end = painted_caret(&mut app, id, n, 1.0);
+    let mcp_end = mcp_caret(&mut app, id, n, 1.0);
+    let g = mcp_glyph(&mut app, id, n - 1, 1.0);
+    eprintln!("scrolled input: painted end {painted_end:?} mcp end {mcp_end:?} glyph {g:?}");
+    assert!(
+        (mcp_end.0 - painted_end.0).abs() <= 0.5,
+        "caret {mcp_end:?} vs painted {painted_end:?}"
+    );
+    assert!(
+        painted_end.0 < 41.0 + 90.0,
+        "positive control: the field is scrolled, end caret in view"
+    );
+    assert!(
+        (g[0] + g[2] - painted_end.0).abs() <= 0.7,
+        "glyph {g:?} ends at painted caret {painted_end:?}"
+    );
+}

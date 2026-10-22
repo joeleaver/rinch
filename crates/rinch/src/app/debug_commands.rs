@@ -954,7 +954,7 @@ impl RinchApp {
                     .ok_or("Byte offset out of bounds")
                 } else {
                     d.text_glyph_window_rect(node_id, byte_offset)
-                        .ok_or("No glyph at this offset (no text layout, or past the text)")
+                        .ok_or("No glyph at this offset (no text layout, or past the text; for text in a block, query the block element)")
                 };
                 match rect {
                     Ok((x, y, width, height)) => DebugResult::Json {
