@@ -69,10 +69,11 @@ impl RinchApp {
             FocusTarget::Editor(id) => Some(id),
             _ => None,
         };
-        if let Some(doc) = &self.doc
-            && let Ok(mut d) = doc.try_borrow_mut()
-        {
-            d.tree.keyboard_editor = editor;
+        // `borrow_mut`, not `try_`: every caller writes `focus_target` with no
+        // document borrow held (the arbiter's teardown borrows it too), and a
+        // skipped write would leave the mirror naming the wrong editor.
+        if let Some(doc) = &self.doc {
+            doc.borrow_mut().tree.keyboard_editor = editor;
         }
     }
 
