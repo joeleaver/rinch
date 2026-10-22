@@ -158,6 +158,9 @@ impl DomDocument for RinchDocument {
             }
             // A move *out of* the document is a detach (#702).
             self.detach_subtree_styles_if_moved_out(c, old_parent, p);
+            // The select the option left is sized from its options too (review
+            // of #1737).
+            self.note_select_content_changed(old_parent);
         }
         self.tree.nodes[c].parent = Some(p);
         // At the end of the element's own children: before an `::after` box
@@ -270,6 +273,9 @@ impl DomDocument for RinchDocument {
             }
             // A move *out of* the document is a detach (#702).
             self.detach_subtree_styles_if_moved_out(c, old_parent, p);
+            // The select the option left is sized from its options too (review
+            // of #1737).
+            self.note_select_content_changed(old_parent);
         }
         self.tree.nodes[c].parent = Some(p);
         // A reference that is no child of `p` is an append. Either way the
@@ -374,6 +380,9 @@ impl DomDocument for RinchDocument {
                 }
                 // A move *out of* the document is a detach (#702).
                 self.detach_subtree_styles_if_moved_out(new.0, old_parent, parent_id);
+                // The select the option left is sized from its options too (review
+                // of #1737).
+                self.note_select_content_changed(old_parent);
             }
             // Replace old with new in parent's children
             if let Some(pos) = self.tree.nodes[parent_id]
@@ -1048,6 +1057,9 @@ impl DomDocument for RinchDocument {
             }
             // A move *out of* the document is a detach (#702).
             self.detach_subtree_styles_if_moved_out(c, old_parent, p);
+            // The select the option left is sized from its options too (review
+            // of #1737).
+            self.note_select_content_changed(old_parent);
         }
         self.tree.nodes[c].parent = Some(p);
         let len = self.tree.nodes[p].children.len();
@@ -1153,6 +1165,10 @@ impl DomDocument for RinchDocument {
         // its children, can have moved (each re-append below notes its own
         // insertion; a clear-to-empty has none).
         self.note_child_list_changed(node.0, 0);
+        // Under a select the cleared children were (part of) a label; a
+        // clear-to-empty re-appends nothing that would say so (review of
+        // #1737).
+        self.note_select_content_changed(node.0);
         // Clearing a subtree is a structural change: without these flags a
         // clear-to-empty `set_inner_html` (nothing re-appended below) leaves
         // `resolve_layout`'s dirty gate closed and the old geometry — the
