@@ -134,26 +134,29 @@ fn a_node_handle_style_from_a_no_write_handler_gets_a_frame() {
 }
 
 /// A theme change made **outside** any batch — `run_on_main_thread` called on
-/// the main thread, a surface event, a selection callback — is still picked
-/// up by the next handler, even one that writes nothing (PR #1134 round-2
-/// review, N1). Before #234 every outermost batch notified, so the user's next
-/// click delivered it; a gate that compared a counter only across the batch
-/// itself left it waiting for a batch that wrote a signal.
+/// the main thread, a surface event, a selection callback — is not left
+/// waiting (PR #1134 round-2 review, N1). Before #234 every outermost batch
+/// notified, so the user's next click delivered it; a gate that compared a
+/// counter only across the batch itself left it waiting for a batch that
+/// wrote a signal. Since #1144 the host's own next wake applies it with no
+/// notification at all: `has_dirty_nodes` asks `theme_change_owed`, so
+/// `AboutToWait` resolves and asks for a frame. The next no-write click still
+/// leaves it applied.
 #[cfg(feature = "theme")]
 #[test]
-fn a_theme_change_outside_a_batch_is_picked_up_by_the_next_no_write_handler() {
+fn a_theme_change_outside_a_batch_is_applied_by_the_next_wake() {
     let mut app = mount_probe();
     rinch_core::set_current_theme_css(Some(":root { --probe-c: rgb(0, 0, 255); }".into()));
     // The host's own wake afterwards: nothing dirty, nothing notified.
-    app.handle_event(PlatformEvent::AboutToWait, (W as u32, H as u32), 1.0);
-    let before_click = color_of(&app, "theme-pin");
+    let actions = app.handle_event(PlatformEvent::AboutToWait, (W as u32, H as u32), 1.0);
+    let at_wake = color_of(&app, "theme-pin");
     desktop_turn(&mut app, || {});
     let c = color_of(&app, "theme-pin");
     rinch_core::set_current_theme_css(None);
-    assert_eq!(
-        before_click,
-        Some((255, 0, 0)),
-        "precondition: nothing applied it without a notification"
+    assert_eq!(at_wake, Some((0, 0, 255)), "the wake applies it");
+    assert!(
+        actions.contains(&AppAction::RequestRedraw),
+        "and asks for the frame that shows it"
     );
-    assert_eq!(c, Some((0, 0, 255)), "the next no-write click applies it");
+    assert_eq!(c, Some((0, 0, 255)), "a later no-write click keeps it");
 }
