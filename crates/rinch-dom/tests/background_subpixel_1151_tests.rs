@@ -269,17 +269,55 @@ fn an_image_tile_at_dpr_1_5_keeps_its_fraction() {
 
 /// One repeating tile that covers the whole box (drawn as one fill, no
 /// pattern) keeps its fraction too: a 2px red-to-blue ramp at `49px..51px`
-/// of a 100px tile at `-0.5px` is half way at pixel 49. Rounded (to `-1px`)
-/// pixel 49 was 64 red; at `0` Chrome reads 191 there.
+/// of a 100px tile at `-0.3px` reads 153 red at pixel 49 and 26 at 50.
+/// Rounded to `0`, it read what `0` reads, 191 and 64.
 #[test]
 fn a_covering_repeating_tile_keeps_its_fraction() {
     let ramp = "linear-gradient(to right, rgb(255, 0, 0) 49px, rgb(0, 0, 255) 51px)";
     let p = render(
-        &format!("background: {ramp} -0.5px 0 / 100px 40px"),
+        &format!("background: {ramp} -0.3px 0 / 100px 40px"),
         1.0,
         false,
     );
-    check(&p, 7, &[(48, R), (49, [127, 0, 127]), (50, B)], 4);
+    check(
+        &p,
+        7,
+        &[(48, R), (49, [153, 0, 102]), (50, [26, 0, 229]), (51, B)],
+        4,
+    );
     let p = render(&format!("background: {ramp} 0 0 / 100px 40px"), 1.0, false);
     check(&p, 7, &[(49, [191, 0, 64]), (50, [64, 0, 191])], 4);
+}
+
+/// The mirror of `only_the_repeating_axis_keeps_its_fraction`: `repeat-y`
+/// at `0.5px 0.5px` rounds x (columns 1-5 red, 6-10 blue, 11 white) and
+/// keeps y (rows 0, 5 and 10 blend a top/bottom tile).
+#[test]
+fn repeat_y_rounds_x_and_keeps_y() {
+    let p = render(
+        &format!("background: rgb(255, 255, 255) {RB} 0.5px 0.5px / 10px 10px repeat-y"),
+        1.0,
+        false,
+    );
+    check(
+        &p,
+        7,
+        &[(0, W), (1, R), (5, R), (6, B), (10, B), (11, W)],
+        0,
+    );
+    let tb = "linear-gradient(rgb(255, 0, 0) 0 50%, rgb(0, 0, 255) 50% 100%)";
+    let p = render(
+        &format!("background: rgb(255, 255, 255) {tb} 0.5px 0.5px / 10px 10px repeat-y"),
+        1.0,
+        false,
+    );
+    for (y, c) in [
+        (0, [128, 0, 128]),
+        (1, R),
+        (5, [128, 0, 128]),
+        (6, B),
+        (10, [128, 0, 128]),
+    ] {
+        check(&p, y, &[(3, c)], 3);
+    }
 }
