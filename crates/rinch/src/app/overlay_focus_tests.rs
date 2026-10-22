@@ -1174,3 +1174,107 @@ fn closing_a_modal_opened_from_an_editor_gives_the_editor_the_keyboard() {
         "the editor got the keyboard back"
     );
 }
+
+// ── 8. review of #1734 ───────────────────────────────────────────────────────
+
+/// Two editors: A on the page holds the keyboard, a modal (button + editor B)
+/// opens, B takes the keyboard, the modal closes: A gets it back.
+#[test]
+#[cfg(feature = "desktop")]
+fn an_editor_inside_releases_and_the_editor_opener_gets_the_keyboard() {
+    let open = Signal::new(false);
+    let a = crate::editor::create_editor();
+    assert!(a.load_html("<p>outer</p>"));
+    let b = crate::editor::create_editor();
+    assert!(b.load_html("<p>inner</p>"));
+    let ids: Rc<Cell<(usize, usize)>> = Rc::default();
+    let (out, a2, b2) = (ids.clone(), a.clone(), b.clone());
+    let mut app = mount(move |scope: &mut RenderScope| {
+        let page = scope.create_element("div");
+        let ea = a2.mount(scope);
+        ea.set_attribute(
+            "style",
+            "width: 300px; height: 60px; font-size: 16px; line-height: 24px",
+        );
+        page.append_child(&ea);
+        let inside = button(scope, "inside");
+        let eb = b2.mount(scope);
+        eb.set_attribute(
+            "style",
+            "width: 300px; height: 60px; font-size: 16px; line-height: 24px",
+        );
+        let modal = Modal {
+            opened_fn: Some(Rc::new(move || open.get())),
+            trap_focus: true,
+            with_close_button: false,
+            ..Default::default()
+        }
+        .render(scope, &[inside, eb.clone()]);
+        page.append_child(&modal);
+        out.set((ea.node_id().0, eb.node_id().0));
+        page
+    });
+    let (ea, eb) = ids.get();
+    a.focus();
+    settle(&mut app);
+    assert_eq!(app.focus_target, FocusTarget::Editor(ea));
+    open.set(true);
+    settle(&mut app);
+    b.focus();
+    settle(&mut app);
+    assert_eq!(app.focus_target, FocusTarget::Editor(eb), "precondition");
+    open.set(false);
+    settle(&mut app);
+    assert_eq!(
+        app.focus_target,
+        FocusTarget::Editor(ea),
+        "outer editor restored"
+    );
+}
+
+/// A focused editor unmounted by a branch is not where the focus is: the
+/// mirror must not name its detached container (review of #1734, F1).
+#[test]
+#[cfg(feature = "desktop")]
+fn an_unmounted_editor_is_not_where_the_focus_is() {
+    let shown = Signal::new(true);
+    let h = crate::editor::create_editor();
+    assert!(h.load_html("<p>x</p>"));
+    let ids: Rc<Cell<usize>> = Rc::default();
+    let (out, h2) = (ids.clone(), h.clone());
+    let mut app = mount(move |scope: &mut RenderScope| {
+        let page = scope.create_element("div");
+        let h3 = h2.clone();
+        let out2 = out.clone();
+        rinch_core::show_dom(
+            scope,
+            &page,
+            move || shown.get(),
+            move |s: &mut RenderScope| {
+                let e = h3.mount(s);
+                e.set_attribute(
+                    "style",
+                    "width: 300px; height: 60px; font-size: 16px; line-height: 24px",
+                );
+                out2.set(e.node_id().0);
+                e
+            },
+            None::<fn(&mut RenderScope) -> NodeHandle>,
+        );
+        page
+    });
+    h.focus();
+    settle(&mut app);
+    let ed = ids.get();
+    assert_eq!(app.focus_target, FocusTarget::Editor(ed));
+    shown.set(false);
+    settle(&mut app);
+    let ae = app
+        .doc
+        .as_ref()
+        .unwrap()
+        .borrow()
+        .active_element()
+        .map(|n| n.0);
+    assert_eq!(ae, None, "a removed editor is not where the focus is");
+}

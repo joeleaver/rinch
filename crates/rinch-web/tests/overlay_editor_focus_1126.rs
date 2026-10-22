@@ -441,3 +441,46 @@ async fn closing_a_modal_with_no_opener_releases_its_editor() {
     root.unmount();
     purge();
 }
+
+/// The opener editor hidden while the modal was open: the modal's input is
+/// released, nothing is focused (body), no editor holds the keyboard.
+#[wasm_bindgen_test]
+async fn a_hidden_editor_opener_is_refused() {
+    let h = host("h8");
+    let open = Signal::new(false);
+    let m = editor("<p>x</p>");
+    let wrap_cell: Rc<RefCell<Option<NodeHandle>>> = Rc::default();
+    let keep = wrap_cell.clone();
+    let root = rinch_web::mount_into(
+        &h,
+        ThemeProviderProps::default(),
+        move |s: &mut RenderScope| {
+            let page = s.create_element("div");
+            let wrap = s.create_element("div");
+            wrap.append_child(&m.mount(s));
+            page.append_child(&wrap);
+            *keep.borrow_mut() = Some(wrap);
+            let field = input(s, "in-modal");
+            let dialog = modal(s, open, &[field]);
+            page.append_child(&dialog);
+            page
+        },
+    );
+    press_editor("h8");
+    open.set(true);
+    assert_eq!(active_desc(), "in-modal");
+    wrap_cell
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .set_style("display", "none");
+    open.set(false);
+    microtask().await;
+    assert!(
+        !capture_active(),
+        "hidden editor must not take the keyboard"
+    );
+    assert_eq!(active_desc(), "<body>");
+    root.unmount();
+    purge();
+}
