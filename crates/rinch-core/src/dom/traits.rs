@@ -1136,6 +1136,28 @@ pub trait DomDocument {
         Vec::new()
     }
 
+    /// [`Self::query_selection_rects`] for a selection that names the
+    /// zero-byte inline leaves it holds (images; on a host whose `<br>` has no
+    /// bytes, hard breaks too): `selected_boxes` lists every selected one by
+    /// its host element id (as for [`Self::query_inline_box_caret`]), and no
+    /// other is selected.
+    ///
+    /// Such a leaf has no bytes, so the byte range cannot say whether one at
+    /// `byte_a` or `byte_b` is inside the selection, nor whether one at
+    /// `byte_a == byte_b` is selected at all (#1120). Default: the byte range
+    /// alone ([`Self::query_selection_rects`]). rinch-dom and the browser
+    /// backend answer it.
+    fn query_selection_rects_with_boxes(
+        &self,
+        node_id: u64,
+        byte_a: usize,
+        byte_b: usize,
+        selected_boxes: &[u64],
+    ) -> Vec<(f32, f32, f32, f32)> {
+        let _ = selected_boxes;
+        self.query_selection_rects(node_id, byte_a, byte_b)
+    }
+
     /// Where a text caret at `byte_offset` inside the text-bearing element
     /// `node_id` is **on screen**, as `(x, y, height)`: its top, in the frame an
     /// app positions a popup in. Logical window pixels on desktop (the frame of

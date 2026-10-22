@@ -1301,6 +1301,45 @@ pub(crate) fn find_text_node_at_byte_offset(
     find_text_node_recursive(node, &mut remaining)
 }
 
+/// [`find_text_node_at_byte_offset`], but the **last** position at that byte:
+/// at a text node's end, the start of the next text node, past the elements
+/// with no bytes between them (an image, a `<br>`). `None` when no text
+/// follows the byte (only images, or nothing, after it).
+fn find_text_node_at_byte_offset_latest(
+    node: &web_sys::Node,
+    byte_offset: usize,
+) -> Option<(web_sys::Node, u32)> {
+    let mut remaining = byte_offset;
+    find_text_node_latest_recursive(node, &mut remaining)
+}
+
+fn find_text_node_latest_recursive(
+    node: &web_sys::Node,
+    remaining: &mut usize,
+) -> Option<(web_sys::Node, u32)> {
+    if node.node_type() == web_sys::Node::TEXT_NODE {
+        let text = node.text_content().unwrap_or_default();
+        if *remaining < text.len() {
+            let utf16_offset = utf8_byte_to_utf16_offset(&text, *remaining);
+            return Some((node.clone(), utf16_offset as u32));
+        }
+        *remaining -= text.len();
+        return None;
+    }
+    if is_node_view_host(node) {
+        return None;
+    }
+    let children = node.child_nodes();
+    for i in 0..children.length() {
+        if let Some(child) = children.item(i)
+            && let Some(result) = find_text_node_latest_recursive(&child, remaining)
+        {
+            return Some(result);
+        }
+    }
+    None
+}
+
 fn find_text_node_recursive(
     node: &web_sys::Node,
     remaining: &mut usize,
@@ -3242,6 +3281,67 @@ impl DomDocument for WebDocument {
         })
     }
 
+    /// The range starts at the last position at `byte_a` (past an unselected
+    /// image there) or before the first selected box, whichever comes first,
+    /// and ends at the first position at `byte_b` or after the last selected
+    /// box, whichever comes last (#1120): an image has no bytes here either,
+    /// so the byte range alone started a selection from right after an image
+    /// at the end of the text before it, over the image, and drew an image
+    /// selected alone not at all.
+    fn query_selection_rects_with_boxes(
+        &self,
+        node_id: u64,
+        byte_a: usize,
+        byte_b: usize,
+        selected_boxes: &[u64],
+    ) -> Vec<(f32, f32, f32, f32)> {
+        if byte_a >= byte_b && selected_boxes.is_empty() {
+            return Vec::new();
+        }
+        let Some(n) = self.nodes.get(&(node_id as usize)) else {
+            return Vec::new();
+        };
+        let boxes: Vec<&web_sys::Node> = selected_boxes
+            .iter()
+            .filter_map(|id| self.nodes.get(&(*id as usize)))
+            .collect();
+        let precedes = |a: &web_sys::Node, b: &web_sys::Node| {
+            b.compare_document_position(a) & web_sys::Node::DOCUMENT_POSITION_PRECEDING != 0
+        };
+        let resolve = || -> Option<web_sys::DomRectList> {
+            let range = self.browser_doc.create_range().ok()?;
+            let start = find_text_node_at_byte_offset_latest(n, byte_a);
+            match (boxes.first(), start) {
+                (Some(first), Some((t, _))) if precedes(first, &t) => {
+                    range.set_start_before(first).ok()?
+                }
+                (_, Some((t, off))) => range.set_start(&t, off).ok()?,
+                (Some(first), None) => range.set_start_before(first).ok()?,
+                (None, None) => return None,
+            }
+            // Byte 0 with boxes: the end is after the last selected box (the
+            // first text node's start is after every leading image).
+            let end = if byte_b == 0 && !boxes.is_empty() {
+                None
+            } else {
+                find_text_node_at_byte_offset(n, byte_b)
+            };
+            match (boxes.last(), end) {
+                (Some(last), Some((t, _))) if precedes(&t, last) => {
+                    range.set_end_after(last).ok()?
+                }
+                (_, Some((t, off))) => range.set_end(&t, off).ok()?,
+                (Some(last), None) => range.set_end_after(last).ok()?,
+                (None, None) => return None,
+            }
+            range.get_client_rects()
+        };
+        let Some(rects) = resolve() else {
+            return Vec::new();
+        };
+        self.block_local_rects(n, &rects)
+    }
+
     fn query_selection_rects(
         &self,
         node_id: u64,
@@ -3269,6 +3369,19 @@ impl DomDocument for WebDocument {
         let Some(rects) = resolve() else {
             return Vec::new();
         };
+        self.block_local_rects(n, &rects)
+    }
+}
+
+impl WebDocument {
+    /// `rects` (client px) relative to the block element `n`'s top-left,
+    /// zero-area ones dropped: what [`DomDocument::query_selection_rects`]
+    /// answers.
+    fn block_local_rects(
+        &self,
+        n: &web_sys::Node,
+        rects: &web_sys::DomRectList,
+    ) -> Vec<(f32, f32, f32, f32)> {
         let Ok(el) = n.clone().dyn_into::<web_sys::Element>() else {
             return Vec::new();
         };

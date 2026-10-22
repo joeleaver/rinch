@@ -430,3 +430,35 @@ fn review_1595_control_unclaimed_image_at_the_end_of_its_line() {
         "a press past its edge: after the image"
     );
 }
+
+// review of #1730 (scratch): a claimed image selected alone / from after it.
+#[test]
+fn rv1730_a_claimed_image_selected_alone_is_highlighted_over_its_span() {
+    let mut p = page(LINE, Rc::new(View::default()));
+    p.handle.focus();
+    p.app.resolve_and_repaint(800.0, 600.0);
+    let sp = box_of(&p, span(&p));
+    p.handle
+        .set_selection(Selection::text(Pos(IMAGE), Pos(IMAGE + 1)));
+    for _ in 0..3 {
+        ev(&mut p.app, PlatformEvent::AboutToWait);
+        p.app.resolve_and_repaint(800.0, 600.0);
+    }
+    let hl: Vec<_> = {
+        let doc = p.app.doc.as_ref().unwrap().borrow();
+        doc.query_selector_all("[data-pm-selection]")
+            .into_iter()
+            .filter(|id| {
+                doc.tree.nodes[id.0].computed_style.display
+                    != rinch_dom::computed_style::DisplayValue::None
+            })
+            .map(|id| painted_element_box(&doc.tree, id.0))
+            .filter(|b| b.2 > 0.0 && b.3 > 0.0)
+            .collect()
+    };
+    assert_eq!(hl.len(), 1, "{hl:?} span {sp:?}");
+    assert!(
+        (hl[0].0 - sp.0).abs() < 1.5 && (hl[0].0 + hl[0].2 - sp.0 - sp.2).abs() < 1.5,
+        "{hl:?} vs {sp:?}"
+    );
+}
