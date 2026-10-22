@@ -1164,10 +1164,14 @@ must keep bumping the counter, and **state outside the signal graph that a host
 reads only when a signal-change callback tells it to** must call
 `rinch_core::note_host_change()` when it changes — `set_current_theme_css`
 (`rinch::update_theme`) does, or a no-write handler's theme change never
-reached desktop or the web's theme `<style>` (PR #1134 review; Android never
-applies a theme-only change at all, #1144). The change is *owed* until the
-next notification, so one made outside any batch is delivered by the next
-handler of any kind. State a host polls itself (dirty nodes, focus requests,
+reached desktop or the web's theme `<style>` (PR #1134 review). The change is
+*owed* until the next notification, so one made outside any batch is delivered
+by the next handler of any kind. A theme change is also polled since #1144:
+`RinchApp::theme_change_owed` (`theme_key` against `last_theme_key`) is folded
+into `has_dirty_nodes` and `has_pending_layout`, so the Android loop, which
+resolves only when `has_pending_layout` says so, applies a theme-only change
+(it never did), and desktop's `AboutToWait` and an embed `update` apply one
+with no notification (`theme_only_change_1144_tests.rs`). State a host polls itself (dirty nodes, focus requests,
 the editor's owed overlay pass, image decodes, a queued
 `NodeHandle::scroll_into_view` / `scroll_to_fraction` — #1145, which used to
 wait for an unrelated layout) does not need it. Thread-local save/restore guards go through
