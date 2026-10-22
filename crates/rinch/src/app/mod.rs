@@ -275,8 +275,6 @@ mod screenshot_capture_tests;
 mod scroll_device_snap_1543_tests;
 #[cfg(test)]
 mod scroll_request_no_write_1145_tests;
-#[cfg(all(test, feature = "theme"))]
-mod theme_only_change_1144_tests;
 #[cfg(test)]
 mod scrollbar_corner_444_tests;
 #[cfg(test)]
@@ -328,6 +326,8 @@ mod textarea_newline_tests;
 mod textarea_text_child_tests;
 #[cfg(test)]
 mod textarea_vertical_arrow_tests;
+#[cfg(all(test, feature = "theme"))]
+mod theme_only_change_1144_tests;
 mod title_tooltip;
 #[cfg(all(test, software_shell))]
 mod title_tooltip_tests;

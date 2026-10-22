@@ -84,7 +84,11 @@ fn a_theme_change_is_owed_until_applied_and_then_nothing_is() {
     rinch_core::set_current_theme_css(None);
     assert_eq!(owed, (true, true), "both predicates see the change");
     assert_eq!(after, (false, false), "applied, the loop goes idle");
-    assert_eq!(same_again, (false, false), "an identical theme owes nothing");
+    assert_eq!(
+        same_again,
+        (false, false),
+        "an identical theme owes nothing"
+    );
 }
 
 /// An embed context's own theme (`RinchContext::set_theme`) is keyed by the
