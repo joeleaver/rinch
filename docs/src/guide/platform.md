@@ -65,8 +65,12 @@ no ratio. The other legacy attributes (`hspace`, `vspace`, `border`, `align`,
 ### Background layers
 
 A background image — a `url(...)` or a `linear-gradient`/`radial-gradient` —
-is sized, placed and tiled the way a browser does it, for the **first** layer
-of the list (#468):
+is sized, placed and tiled the way a browser does it, for **every** layer of a
+comma-separated list (#468, #1142): the colour is painted first, then the
+layers from the last to the first, each with its own entry of the size,
+position, repeat and origin lists (a shorter list repeats). A
+`background-position` transition or animation moves only the first layer; the
+others take their new value at once (#1742). Per layer:
 
 - `background-size`: lengths, percentages, `auto`, `cover`, `contain`. An
   image's `auto` is its intrinsic size; a gradient's is the positioning area.
