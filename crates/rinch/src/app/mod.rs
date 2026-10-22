@@ -123,6 +123,8 @@ mod editor_line_edge_scrolled_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_line_separator_caret_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_link_tab_1127_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_link_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_list_item_space_tests;
