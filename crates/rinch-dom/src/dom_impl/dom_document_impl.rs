@@ -1592,7 +1592,11 @@ impl DomDocument for RinchDocument {
     /// as a node id. Reading it here means the *document* can answer "who has
     /// focus" without the runtime having to publish its enum.
     fn active_element(&self) -> Option<NodeId> {
-        self.tree.focused_node.map(NodeId)
+        // The editor holding the keyboard is where the focus is (issue #1126).
+        self.tree
+            .keyboard_editor
+            .or(self.tree.focused_node)
+            .map(NodeId)
     }
 
     /// `showModal()`'s focusing steps (issue #695), parked for the runtime.

@@ -2807,6 +2807,12 @@ pub struct NodeTree {
     pub hovered_node: Option<RawNodeId>,
     /// Currently focused node ID (for CSS :focus).
     pub focused_node: Option<RawNodeId>,
+    /// The container of the rich-text editor holding the keyboard, when one
+    /// does (issue #1126). Kept by the runtime's focus arbiter; an editor takes
+    /// no CSS `:focus`, so it is not [`Self::focused_node`]. What
+    /// `DomDocument::active_element` answers for it, so an overlay opened from
+    /// an editor remembers the editor as its opener.
+    pub keyboard_editor: Option<RawNodeId>,
     /// Currently active (mouse-pressed) node ID (for CSS :active).
     pub active_node: Option<RawNodeId>,
     /// The roots of every overlay currently holding a **scroll lock** (#474) —
@@ -3344,6 +3350,7 @@ impl NodeTree {
             viewport: crate::layout::Viewport::default(),
             hovered_node: None,
             focused_node: None,
+            keyboard_editor: None,
             active_node: None,
             scroll_lock_roots: Vec::new(),
             scroll_lock_exempt: Vec::new(),

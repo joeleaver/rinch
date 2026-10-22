@@ -2255,9 +2255,7 @@ fn trap_root(browser_doc: &web_sys::Document) -> Option<web_sys::Element> {
     //    whether or not it is showing, so a hidden one is stepped over rather
     //    than accepted, which is how an outer trap takes back over the moment a
     //    nested one closes.
-    //    A focused editor counts as its container, not the capture field in
-    //    `<body>` it holds the keyboard through (issue #1126).
-    let mut probe = crate::editor_input::effective_active_element(browser_doc);
+    let mut probe = browser_doc.active_element();
     while let Some(el) = probe {
         let Some(hit) = el.closest(TRAP_SELECTOR).ok().flatten() else {
             break;
@@ -2394,9 +2392,7 @@ fn handle_trapped_tab(browser_doc: &web_sys::Document, shift: bool) -> bool {
     });
     let seq_pos = |el: &web_sys::HtmlElement| items.iter().position(|i| i.is_same_node(Some(el)));
 
-    // A focused editor is where its container is (issue #1126), so Tab moves
-    // on from it rather than entering the ring at its first stop.
-    let active = crate::editor_input::effective_active_element(browser_doc);
+    let active = browser_doc.active_element();
     let current = active.as_ref().and_then(|a| {
         items
             .iter()

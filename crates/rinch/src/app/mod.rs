@@ -4700,6 +4700,10 @@ impl RinchApp {
             ) {
                 return;
             }
+            #[cfg(feature = "desktop")]
+            if self.focus_target == FocusTarget::Editor(id) {
+                return;
+            }
         }
         self.blur_node(claim);
     }
@@ -4740,6 +4744,10 @@ impl RinchApp {
     /// a node inside a closed overlay is attached with a zero box, so an
     /// attachment test alone would accept that. Both are ordinary at the moment
     /// an overlay closes.
+    ///
+    /// A rich-text editor's container counts too (issue #1126): it is what an
+    /// overlay opened from a focused editor remembers as its opener, and
+    /// `try_focus_input` gives it the keyboard as `EditorHandle::focus` does.
     fn node_can_take_focus_now(&self, node_id: usize) -> bool {
         let Some(doc) = &self.doc else { return false };
         let d = doc.borrow();
@@ -4751,6 +4759,10 @@ impl RinchApp {
         }
         if !Self::node_is_visible(node) || Self::node_is_disabled_in_tree(&d.tree, node_id) {
             return false;
+        }
+        #[cfg(feature = "desktop")]
+        if crate::editor::editor_for_doc(d.doc_key(), node_id).is_some() {
+            return true;
         }
         Self::effective_tabindex(node).is_some()
             || (Self::node_takes_text_focus(node) && node.attributes.contains_key("data-oninput"))
