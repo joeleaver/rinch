@@ -161,11 +161,20 @@ fn a_focused_input_enables_ime_at_its_caret_and_a_blur_disables_it() {
     assert_eq!(
         typed,
         Some(ImeChange::Update {
-            cursor_area: (x2, y2, after_typing.cursor_area.unwrap().2, after_typing.cursor_area.unwrap().3)
+            cursor_area: (
+                x2,
+                y2,
+                after_typing.cursor_area.unwrap().2,
+                after_typing.cursor_area.unwrap().3
+            )
         })
     );
 
-    assert_eq!(blurred, Some(ImeChange::Disable), "a blur turns the IME off");
+    assert_eq!(
+        blurred,
+        Some(ImeChange::Disable),
+        "a blur turns the IME off"
+    );
     assert!(!blurred_state.enabled);
 }
 
@@ -174,14 +183,22 @@ fn a_window_blur_disables_ime_and_refocus_enables_it_again() {
     let (blur, refocus) = on_ui_thread(|| {
         let mut ctx = input_context();
         ctx.update(&click(150.0, 115.0));
-        assert!(matches!(ctx.take_ime_change(), Some(ImeChange::Enable { .. })));
+        assert!(matches!(
+            ctx.take_ime_change(),
+            Some(ImeChange::Enable { .. })
+        ));
         ctx.update(&[PlatformEvent::WindowFocus(false)]);
         let blur = ctx.take_ime_change();
         ctx.update(&[PlatformEvent::WindowFocus(true)]);
         (blur, ctx.take_ime_change())
     });
     assert_eq!(blur, Some(ImeChange::Disable));
-    assert!(matches!(refocus, Some(ImeChange::Enable { cursor_area: Some(_) })));
+    assert!(matches!(
+        refocus,
+        Some(ImeChange::Enable {
+            cursor_area: Some(_)
+        })
+    ));
 }
 
 #[test]
@@ -263,7 +280,11 @@ fn a_focused_editor_enables_ime_at_its_caret_and_read_only_turns_it_off() {
     });
     assert!(focused.enabled, "a focused editor wants the IME");
     let (x, y, _, h) = focused.cursor_area.expect("the editor's caret");
-    assert!(x >= 80.0 && y >= 60.0 && h > 0.0, "{:?}", focused.cursor_area);
+    assert!(
+        x >= 80.0 && y >= 60.0 && h > 0.0,
+        "{:?}",
+        focused.cursor_area
+    );
     assert_eq!(
         change,
         Some(ImeChange::Enable {

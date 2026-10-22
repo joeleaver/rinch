@@ -560,13 +560,10 @@ pub struct RinchRuntime {
     frame_times: VecDeque<f64>,
 
     // ── IME ──────────────────────────────────────────────────────
-    /// Whether IME composition is currently enabled on the window. Mirrors the
-    /// desired state from the focus arbiter so [`Self::sync_ime`] only issues a
-    /// winit `request_ime_update` on an actual change.
-    ime_enabled: bool,
-    /// Last-applied IME cursor area (logical window `x, y, w, h`), to avoid
-    /// re-issuing identical `Update` requests every frame.
-    ime_cursor_area: Option<(f32, f32, f32, f32)>,
+    /// The IME state last applied to the window, so [`Self::sync_ime`] only
+    /// issues a winit `request_ime_update` on an actual change
+    /// ([`ImeState::change_to`](crate::app::ImeState::change_to)).
+    ime_applied: crate::app::ImeState,
 
     // ── Accessibility (M7b) ──────────────────────────────────────
     /// The per-platform AccessKit bridge (Linux AT-SPI; no-op elsewhere). Created
@@ -625,8 +622,7 @@ impl RinchRuntime {
             devtools_prev_hovered: None,
             last_paint_time: None,
             frame_times: VecDeque::with_capacity(60),
-            ime_enabled: false,
-            ime_cursor_area: None,
+            ime_applied: crate::app::ImeState::default(),
             #[cfg(feature = "a11y")]
             a11y: None,
             #[cfg(feature = "a11y")]
@@ -3152,28 +3148,25 @@ impl RinchRuntime {
             )
         };
 
-        if desired.enabled != self.ime_enabled {
-            if desired.enabled {
-                let area = desired.cursor_area.unwrap_or((0.0, 0.0, 1.0, 16.0));
+        match self.ime_applied.change_to(desired) {
+            Some(crate::app::ImeChange::Enable { cursor_area }) => {
+                let area = cursor_area.unwrap_or((0.0, 0.0, 1.0, 16.0));
                 let (pos, size) = to_area(area);
                 let caps = ImeCapabilities::new().with_cursor_area();
                 let data = ImeRequestData::default().with_cursor_area(pos.into(), size.into());
                 if let Some(req) = ImeEnableRequest::new(caps, data) {
                     let _ = w.window.request_ime_update(ImeRequest::Enable(req));
                 }
-                self.ime_cursor_area = desired.cursor_area;
-            } else {
-                let _ = w.window.request_ime_update(ImeRequest::Disable);
-                self.ime_cursor_area = None;
             }
-            self.ime_enabled = desired.enabled;
-        } else if desired.enabled && desired.cursor_area != self.ime_cursor_area {
-            if let Some(area) = desired.cursor_area {
-                let (pos, size) = to_area(area);
+            Some(crate::app::ImeChange::Update { cursor_area }) => {
+                let (pos, size) = to_area(cursor_area);
                 let data = ImeRequestData::default().with_cursor_area(pos.into(), size.into());
                 let _ = w.window.request_ime_update(ImeRequest::Update(data));
             }
-            self.ime_cursor_area = desired.cursor_area;
+            Some(crate::app::ImeChange::Disable) => {
+                let _ = w.window.request_ime_update(ImeRequest::Disable);
+            }
+            None => {}
         }
     }
 

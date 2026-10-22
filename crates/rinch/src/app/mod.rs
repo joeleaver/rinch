@@ -344,6 +344,8 @@ mod visibility_hidden_overlay_paint_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod zero_box_overlay_1696_tests;
 
+#[cfg(any(feature = "desktop", feature = "embed", test))]
+pub use focus::{ImeChange, ImeState};
 pub(crate) use hit_testing::*;
 pub use text_context_menu::{TextContextMenuPresentation, TextEditAction, TextEditState};
 pub use title_tooltip::{TITLE_TOOLTIP_DELAY, set_title_tooltips_default};

@@ -4204,7 +4204,7 @@ impl RinchApp {
     /// every event-loop pass makes shapes nothing at an unchanged state. A
     /// `<textarea>`, or a document already borrowed, answers the text origin,
     /// full height ([`Self::input_text_origin_area`]).
-    #[cfg(any(feature = "desktop", test))]
+    #[cfg(any(feature = "desktop", feature = "embed", test))]
     pub(crate) fn input_caret_area(&self, node_id: usize) -> Option<(f32, f32, f32, f32)> {
         let doc = self.doc.as_ref()?;
         if let Ok(mut d) = doc.try_borrow_mut() {
