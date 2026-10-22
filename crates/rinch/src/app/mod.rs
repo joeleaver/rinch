@@ -328,6 +328,8 @@ mod textarea_newline_tests;
 mod textarea_text_child_tests;
 #[cfg(test)]
 mod textarea_vertical_arrow_tests;
+#[cfg(all(test, feature = "theme"))]
+mod theme_only_change_1144_tests;
 mod title_tooltip;
 #[cfg(all(test, software_shell))]
 mod title_tooltip_tests;
@@ -1338,6 +1340,25 @@ impl RinchApp {
         }
     }
 
+    /// Whether the theme CSS moved since this document last applied it
+    /// ([`Self::theme_key`] against `last_theme_key`). A theme change dirties
+    /// no node, so, like a decoded image, it is folded into both "is there
+    /// anything to do?" predicates: the Android loop resolves only when
+    /// [`Self::has_pending_layout`] says so, and a dark-mode toggle from a
+    /// menu item or a timer used to restyle nothing there (#1144).
+    /// `resolve_and_repaint` applies it and records the key. Before a mount
+    /// there is no document to restyle, so nothing is owed.
+    pub(crate) fn theme_change_owed(&self) -> bool {
+        #[cfg(feature = "theme")]
+        {
+            self.doc.is_some() && self.last_theme_key != Some(self.theme_key())
+        }
+        #[cfg(not(feature = "theme"))]
+        {
+            false
+        }
+    }
+
     /// The theme CSS this document should be using: the per-document owned CSS
     /// when set (embed contexts, issue #138), otherwise the thread-global slot
     /// (the single-root shell/web/android default).
@@ -1541,7 +1562,7 @@ impl RinchApp {
         #[cfg(feature = "theme")]
         {
             let key = self.theme_key();
-            theme_changed = self.last_theme_key != Some(key);
+            theme_changed = self.theme_change_owed();
 
             if theme_changed {
                 self.last_theme_key = Some(key);
@@ -2693,7 +2714,8 @@ impl RinchApp {
     /// Check if there are dirty nodes that need repaint.
     ///
     /// A finished image decode counts, even though it dirties no node — see
-    /// [`Self::has_pending_images`]. Every "is there anything to do?" gate in
+    /// [`Self::has_pending_images`] — and so does a theme change not yet
+    /// applied ([`Self::theme_change_owed`]). Every "is there anything to do?" gate in
     /// the workspace is one of these two predicates, so answering it here is
     /// what makes the drain reachable from *every* host (the desktop paint
     /// preamble and wake, the `AboutToWait` frame clock, the Android loop, an
@@ -2709,6 +2731,7 @@ impl RinchApp {
             .unwrap_or(false)
             || self.has_pending_images()
             || self.has_owed_editor_overlay_pass()
+            || self.theme_change_owed()
     }
 
     /// Whether a `NodeHandle::scroll_into_view` / `scroll_to_fraction` is
@@ -2749,9 +2772,10 @@ impl RinchApp {
 
     /// Check if there are pending layout changes that need resolving
     /// before the next paint. Covers DOM mutations, style changes,
-    /// structural changes that set layout_dirty directly, and a decoded
+    /// structural changes that set layout_dirty directly, a decoded
     /// image waiting to be taken into the cache
-    /// ([`Self::has_pending_images`]).
+    /// ([`Self::has_pending_images`]), and a theme change not yet applied
+    /// ([`Self::theme_change_owed`]).
     pub fn has_pending_layout(&self) -> bool {
         self.doc
             .as_ref()
@@ -2765,6 +2789,7 @@ impl RinchApp {
             .unwrap_or(false)
             || self.has_pending_images()
             || self.has_owed_editor_overlay_pass()
+            || self.theme_change_owed()
     }
 
     /// The framebuffer rect `paint_inspect_overlay` touches for `highlight`
