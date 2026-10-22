@@ -387,7 +387,12 @@ ContextMenu {
 
 The `ContextMenu` component automatically:
 - Wires up the `oncontextmenu` handler on the target
-- Positions the dropdown at the click coordinates using `position: fixed`
+- Positions the dropdown at the click coordinates: it hangs from the pointer, or
+  stands on it when there is little room below, and starts at the pointer, or
+  ends there when its minimum width does not fit to the right
+- Keeps it inside the window: a menu that would run past the bottom or right edge
+  is shifted back by its overflow, 4px from the edge, as native menus are; a menu
+  taller than the whole window starts 4px below the top and scrolls
 - Shows an invisible overlay for click-outside-to-close
 - Reuses `DropdownMenuItem` and `DropdownMenuDivider` for consistent styling
 

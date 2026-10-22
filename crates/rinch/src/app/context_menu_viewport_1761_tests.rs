@@ -138,9 +138,19 @@ fn a_menu_that_fits_is_unchanged_and_settles_at_once() {
     right_press(&mut app, (53.0, 70.0));
     assert!(opened.get());
     assert_eq!(menu(&app), (53.0, 70.0, 233.0, 182.0));
+    // The frame around the menu takes no pointer events, the menu does: a
+    // press on it is the menu's, not the overlay's.
+    left_press(&mut app, (100.0, 120.0));
+    assert!(
+        opened.get(),
+        "a press on the menu reached the dismiss overlay"
+    );
     // A press near the bottom still stands on the pointer.
     left_press(&mut app, (781.0, 20.0));
-    assert!(!opened.get(), "positive control: the outside press closed it");
+    assert!(
+        !opened.get(),
+        "positive control: the outside press closed it"
+    );
     right_press(&mut app, (53.0, 400.0));
     assert_eq!(menu(&app), (53.0, 288.0, 233.0, 400.0));
 
@@ -166,7 +176,10 @@ fn reopening_at_a_new_point_starts_from_the_new_placement() {
     right_press(&mut app, (53.0, 70.0));
     assert_eq!(menu(&app).1, 34.0, "first open shifted up");
     left_press(&mut app, (781.0, 20.0));
-    assert!(!opened.get(), "positive control: the outside press closed it");
+    assert!(
+        !opened.get(),
+        "positive control: the outside press closed it"
+    );
     right_press(&mut app, (90.0, 30.0));
     assert!(opened.get());
     assert_eq!(menu(&app), (90.0, 30.0, 270.0, 472.0));
@@ -194,7 +207,10 @@ fn a_menu_taller_than_the_window_scrolls() {
     assert_eq!(t, EDGE, "starts EDGE_MARGIN below the top");
     assert_eq!(b - t, 622.0);
     let last = painted(&app, "row-19");
-    assert!(last.3 > VP.1 as f32, "positive control: the last row is off-screen");
+    assert!(
+        last.3 > VP.1 as f32,
+        "positive control: the last row is off-screen"
+    );
 
     for _ in 0..5 {
         app.handle_event(

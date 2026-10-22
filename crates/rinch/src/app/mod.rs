@@ -10,8 +10,6 @@
 mod animation_theme_change_tests;
 #[cfg(test)]
 mod backdrop_any_button_1093_tests;
-#[cfg(test)]
-mod context_menu_viewport_1761_tests;
 #[cfg(all(test, software_shell))]
 mod background_animation_component_tests;
 #[cfg(all(test, software_shell))]
@@ -27,6 +25,8 @@ mod caret_visibility_paint_tests;
 mod click_handling;
 #[cfg(test)]
 mod color_input_dismiss_465_tests;
+#[cfg(test)]
+mod context_menu_viewport_1761_tests;
 #[cfg(test)]
 mod review_1589_tests;
 #[cfg(test)]
