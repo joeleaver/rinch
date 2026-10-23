@@ -208,18 +208,21 @@ fn remove_columns(
         while row < map.height() {
             let index = row * width + col;
             let pos = map.map()[index];
+            // A cell met in an earlier column: its rectangle is known. Asking
+            // `cell_rect` again walks back to the cell's left edge, so a row
+            // of 1000-wide cells cost 1000 steps a column (#1874).
+            if let Some(e) = found.get_mut(&pos) {
+                e.1 += 1;
+                row = e.0.bottom.max(row + 1);
+                continue;
+            }
             // A hole: this row has nothing in the column.
             let Some(rect) = map.cell_rect(index) else {
                 row += 1;
                 continue;
             };
-            found
-                .entry(pos)
-                .and_modify(|e| e.1 += 1)
-                .or_insert_with(|| {
-                    order.push(pos);
-                    (rect, 1)
-                });
+            order.push(pos);
+            found.insert(pos, (rect, 1));
             row = rect.bottom.max(row + 1);
         }
     }
@@ -373,15 +376,20 @@ fn remove_rows(
         while col < width {
             let index = row * width + col;
             let pos = map.map()[index];
+            // A cell met in a row below: its rectangle is known. Asking
+            // `cell_rect` again walks up to the cell's top, once per row it
+            // covers (#1874).
+            if let Some(rect) = found.get(&pos) {
+                col = rect.right.max(col + 1);
+                continue;
+            }
             // A hole: this row has nothing in the column.
             let Some(rect) = map.cell_rect(index) else {
                 col += 1;
                 continue;
             };
-            found.entry(pos).or_insert_with(|| {
-                order.push(pos);
-                rect
-            });
+            order.push(pos);
+            found.insert(pos, rect);
             col = rect.right.max(col + 1);
         }
     }
