@@ -1276,12 +1276,17 @@ pub enum BackgroundValue {
     #[default]
     None,
     Color(#[serde(serialize_with = "color_serde::serialize_direct")] peniko::Color),
+    /// `#[non_exhaustive]` (#1798): a gradient feature not read yet
+    /// (interpolation hints, a colour space) can add a field without
+    /// breaking a match.
+    #[non_exhaustive]
     LinearGradient {
         angle_degrees: f32,
         stops: Vec<GradientStop>,
         /// `repeating-linear-gradient()` (#1798).
         repeating: bool,
     },
+    #[non_exhaustive]
     RadialGradient {
         stops: Vec<GradientStop>,
         /// The ending shape and its size (#1798).
@@ -1365,8 +1370,10 @@ pub struct BackgroundLayer {
     pub geometry: BackgroundLayerGeometry,
 }
 
-/// A gradient color stop.
+/// A gradient color stop. `#[non_exhaustive]`, as the gradient variants
+/// are (#1798).
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct GradientStop {
     /// Where the stop is along the gradient line (a percentage of its
     /// length, a length, or both). `None` for a stop written without a
