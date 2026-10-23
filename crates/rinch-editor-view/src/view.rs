@@ -372,13 +372,13 @@ fn build_run_host(
 /// tree: because the model shares `Rc`s, [`Node::same_ref`] lets the diff skip an
 /// unchanged subtree wholesale (design A12).
 ///
-/// **Inline marks (M5.5a):** a marked inline run (`text("ab", [bold, italic])`)
-/// projects to a *chain* of host nodes — `<strong><em>#text</em></strong>` — so
-/// [`Self::dom`] (the inner text/leaf node, used for caret geometry and the A15
-/// position map) is distinct from [`Self::outer`] (the outermost wrapper, the node
-/// actually placed in / removed from the parent). For an unmarked node the two are
-/// the same node. Wrappers are built **per run** (no cross-run sharing yet); a
-/// shared-wrapper pass is a later refinement.
+/// **Inline marks (M5.5a, #1833):** a marked inline run (`text("ab", [bold,
+/// italic])`) sits in a *chain* of mark wrappers — `<em><strong>#text</strong></em>`.
+/// [`Self::dom`] is the inner text/leaf node (caret geometry, the A15 position
+/// map); the wrappers belong to the textblock, which places its inline children
+/// in them ([`Self::regroup_inline`]) and shares a wrapper between adjacent runs
+/// whose mark continues, so inline code split by bold is one `<code>`. A run's
+/// chain is [`Self::wraps`].
 pub(crate) struct ViewDesc {
     /// The model node this descriptor currently projects.
     node: Node,
@@ -981,7 +981,7 @@ impl ViewDesc {
 
     /// Patch this descriptor in place to project `new`. Returns `false` if the
     /// kinds are incompatible (text vs element, a different node type or element
-    /// tag, or a changed mark set whose wrapper chain differs) and the caller
+    /// tag) and the caller
     /// must replace the whole subtree instead.
     ///
     /// `pos` is the position just before `new` in the new document. A node a
@@ -1194,8 +1194,8 @@ impl ViewDesc {
             }
             regroup = true;
             // Kind changed — build a replacement and swap it into the host
-            // (by the placed `outer` node, which differs from `dom` for a
-            // mark-wrapped run).
+            // (inside the old one's mark wrappers; `regroup_inline` moves it
+            // if its marks want others).
             if let Some(replacement) = ViewDesc::build(new_child, cx) {
                 // `replace_with` *detaches* the node it displaces (issue
                 // #719); the `ViewDesc` holding it is overwritten here, so
@@ -3288,17 +3288,16 @@ impl RinchDomEditorView {
             desc = desc.children.get(r.index(d))?;
         }
         let child = desc.children.get(r.index(r.depth()))?;
-        // The *inner* leaf element (`dom`), not the mark wrapper (`outer`): a node
-        // selection outlines the image / hr box itself, even when the leaf carries
-        // marks (e.g. a linked image, where `outer` is the `<a>`). For an unmarked
-        // leaf `dom == outer`, so this is unchanged for the common case.
+        // The *inner* leaf element (`dom`), not a mark wrapper: a node selection
+        // outlines the image / hr box itself, even when the leaf carries marks
+        // (e.g. a linked image, inside an `<a>`).
         Some(child.dom.node_id().0)
     }
 
     /// The model position immediately **before** the node whose placed host element
     /// is `target`, plus that node — the inverse of [`Self::node_host_at`], used to
     /// node-select a leaf (image / horizontal rule) the user clicks. Matches either
-    /// the node's inner element (`dom`) or its outermost mark wrapper (`outer`), so a
+    /// the node's inner element (`dom`) or one of its mark wrappers (`wraps`), so a
     /// hit on a marked inline image still resolves. `None` if `target` isn't a placed
     /// node in this view.
     pub(crate) fn node_pos_for_host(&self, target: usize) -> Option<(usize, Node)> {
@@ -3587,7 +3586,8 @@ fn find_block(desc: &ViewDesc, target: usize, content_start: usize) -> Option<(u
 }
 
 /// Walk the descriptor tree for the node whose placed host element is `target`
-/// (matching either its inner `dom` or its outermost mark wrapper `outer`),
+/// (matching its inner `dom`, a decoration segment, or a mark wrapper it sits
+/// in — a wrapper shared by several runs resolves to the first, #1833),
 /// returning its model **position-before** and the node. `content_start` is the
 /// position just inside `desc`'s content (0 for the root/doc). The successor lookup
 /// to [`find_block`] for *node* (not text-cursor) addressing.
@@ -4374,11 +4374,10 @@ mod tests {
     /// A run inserted in front of an unchanged **mark-wrapped** run goes in
     /// before the run's outermost wrapper, not inside it (issue #905's review).
     ///
-    /// The suffix a new child is inserted before is placed by its `outer`
-    /// node; for a bold run that is the `<strong>`, while its `dom` is the text
-    /// node inside it. Inserting before `dom` would put the plain text inside
-    /// the `<strong>`. A block's `outer` and `dom` are one node, so no
-    /// block-level fixture can tell the two apart.
+    /// For a bold run the `<strong>` is a wrapper the textblock places, while
+    /// its `dom` is the text node inside it. Inserting before `dom` would put
+    /// the plain text inside the `<strong>`; `regroup_inline` places each run
+    /// by its own marks (#1833). No block-level fixture can tell the two apart.
     #[test]
     fn a_run_typed_in_front_of_a_bold_run_lands_outside_its_wrapper() {
         let h = harness();
@@ -4748,7 +4747,7 @@ mod tests {
     fn marked_inline_leaf_node_host_is_the_inner_element() {
         // A node selection of a *marked* inline leaf (a linked image) must outline
         // the inner <img>, not the <a> mark wrapper — so node_host_at returns the
-        // img host id (the inner `dom`), not the wrapper id (`outer`).
+        // img host id (the inner `dom`), not the `<a>` wrapper id.
         let h = harness();
         let s = schema();
         let slice = rinch_editor_core::serialize::slice_from_html(
@@ -5425,8 +5424,9 @@ mod tests {
     #[test]
     fn a_decoration_reaching_across_a_mark_boundary_decorates_both_runs() {
         // Known limitation, pinned here: the model's runs are the unit of
-        // wrapping, so a decoration crossing a mark boundary becomes one segment
-        // per run rather than one continuous element. Visually identical for an
+        // decorating (a mark wrapper is shared across runs since #1833, a
+        // decoration segment is not), so a decoration crossing a mark boundary
+        // becomes one segment per run rather than one continuous element. Visually identical for an
         // underline; worth knowing for anything that draws a box.
         let h = harness();
         let s = schema();
