@@ -16,6 +16,9 @@ use rinch_core::element::ThemeProviderProps;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
 
+#[path = "support/real_input.rs"]
+mod real_input;
+
 wasm_bindgen_test_configure!(run_in_browser);
 
 fn document() -> web_sys::Document {
@@ -34,15 +37,9 @@ async fn sleep(ms: i32) {
 
 /// Ask `support/real_keys.mjs` for one trusted tap at `(x, y)`.
 async fn real_tap(x: f64, y: f64) {
-    document().set_title(&format!("RINCH-REAL-TOUCH:1:{},{}", x.round(), y.round()));
-    for _ in 0..200 {
-        sleep(50).await;
-        if document().title() == "RINCH-REAL-TOUCH-SENT:1" {
-            sleep(400).await;
-            return;
-        }
-    }
-    panic!("the helper never sent the touch (is support/real_keys.mjs running?)");
+    let request = format!("RINCH-REAL-TOUCH:1:{},{}", x.round(), y.round());
+    real_input::ask_helper(&request, "RINCH-REAL-TOUCH-SENT:1", "the touch").await;
+    sleep(400).await;
 }
 
 #[wasm_bindgen_test]

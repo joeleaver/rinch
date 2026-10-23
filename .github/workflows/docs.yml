@@ -129,16 +129,25 @@ jobs:
       - name: Install trunk
         run: cargo install trunk --locked
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      # Dependency artifacts only, never the workspace crates' (#1836). This
+      # was an `actions/cache` of the whole `target/`, and cargo decides a
+      # workspace crate is fresh by comparing its source mtimes (the checkout
+      # time) with its fingerprint's mtimes (the time they were built, kept by
+      # tar). When another run built and saved the cache AFTER this job's
+      # checkout (a main push finishing while a batch was installing trunk),
+      # every restored fingerprint was newer than the sources: cargo printed
+      # no `Checking rinch-core`, documented `rinch` against the cached
+      # rinch-core metadata from an older main, and failed with E0432 on any
+      # item the PR had just added. A re-run, checked out after that save,
+      # rebuilt and passed. `Swatinem/rust-cache` prunes the workspace crates'
+      # artifacts before saving, so they are always built from this checkout;
+      # it is what ci.yml's `test` and perf.yml use. Only a push to `main`
+      # writes the entry, as for `test`, so a PR or batch cannot evict it.
+      - name: Cache cargo (dependencies)
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-docs-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-docs-
+          shared-key: docs
+          save-if: ${{ github.event_name == 'push' }}
 
       - name: Build API documentation
         run: |
