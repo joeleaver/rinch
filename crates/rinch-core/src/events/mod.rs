@@ -3,6 +3,7 @@
 //! This module provides the event handler registry that maps element IDs
 //! to Rust callbacks, enabling reactive event handling in the UI.
 
+mod app_key;
 mod configuration;
 mod dismiss;
 mod drag;
@@ -15,6 +16,7 @@ mod paste;
 mod selection;
 
 // Re-export all public items so external code continues to work.
+pub use app_key::*;
 pub use configuration::*;
 pub use dismiss::*;
 pub use drag::*;

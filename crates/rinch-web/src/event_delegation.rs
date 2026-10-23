@@ -2171,6 +2171,16 @@ fn offer_element_key(
     !ids.is_empty() && events::dispatch_key_handler_chain(ids, data)
 }
 
+/// Whether a key event's target is a rich-text editor's: its capture
+/// textarea, or an element inside an editor that is not a node view's
+/// component (see [`editor_owning`]).
+fn key_target_is_editor(event: &web_sys::KeyboardEvent) -> bool {
+    event
+        .target()
+        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+        .is_some_and(|el| el.has_attribute("data-pm-capture") || editor_owning(&el).is_some())
+}
+
 /// `(editor container, view host)` when `el` is inside a node view's component
 /// (see [`editor_owning`]).
 pub(crate) fn node_view_around(
@@ -3336,10 +3346,29 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                 );
             }
             if rinch::render_surface::dispatch_surface_key_event(surface_id, &surface_key_data) {
+                // A claimed key is the surface's, release and all (#1784).
+                events::withhold_app_key_release(&surface_key_data.code);
                 event.prevent_default();
                 event.stop_propagation();
                 return;
             }
+        }
+
+        // 3. The app-wide key listeners (`on_app_key`, issue #1784): after
+        //    everything that owns a key, before the Tab trap, activation and
+        //    `onsubmit` below — desktop's order. This listener is on
+        //    `document`, so it hears a key with nothing focused (it targets
+        //    `<body>` and bubbles here). Not a key the rich-text editor holds
+        //    (the ones it acts on never get here; the rest are not offered,
+        //    as on desktop), nor one an input method is composing with.
+        if !event.is_composing()
+            && event.key() != "Process"
+            && !key_target_is_editor(event)
+            && events::dispatch_app_key(&key_data)
+        {
+            event.prevent_default();
+            event.stop_propagation();
+            return;
         }
 
         if key_data.key == "Tab" && handle_trapped_tab(&browser_doc_for_tab, event.shift_key()) {
@@ -3439,6 +3468,9 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         // as on desktop.
         offer_element_key(event, "data-onkeyup", &key_data);
         events::dispatch_keyboard_event(&key_data);
+        // Every release reaches the app-wide listeners, but one whose press a
+        // focused surface claimed (#1784).
+        events::dispatch_app_key(&key_data);
 
         if let Some(surface_id) = rinch::render_surface::focused_surface_id() {
             let key_data = rinch::render_surface::SurfaceKeyData {

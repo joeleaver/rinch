@@ -2029,6 +2029,15 @@ impl DomDocument for WebDocument {
         }
     }
 
+    /// The element's local name: lowercase for an HTML element, the author's
+    /// spelling for an SVG one — what desktop stores (#1784, so a key listener
+    /// can ask `active_element()?.tag_name()` on both backends).
+    fn tag_name(&self, node: NodeId) -> Option<String> {
+        let n = self.nodes.get(&node.0)?;
+        let el: &web_sys::Element = n.dyn_ref()?;
+        Some(el.local_name())
+    }
+
     fn get_attribute(&self, node: NodeId, name: &str) -> Option<String> {
         let n = self.nodes.get(&node.0)?;
         let el: web_sys::Element = n.clone().dyn_into().ok()?;

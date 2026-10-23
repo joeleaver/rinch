@@ -758,6 +758,77 @@ Everything under [Window focus](#window-focus) applies: while the window is
 blurred, IME reports disabled and no composition is routed, but the claim — and
 `on_ime` with it — comes back on refocus.
 
+## App-wide key listeners
+
+`on_app_key` registers a listener that hears every key press and release the
+window (desktop) or page (`rinch-web`) receives that nothing ahead of it
+consumed — whatever has focus, **including nothing** (issue #1784). It is what a
+browser app gets from `window.addEventListener("keydown", …)`, written once for
+both backends, and any number of parties can register one: an app's shortcuts
+next to an embedded code editor's.
+
+```rust
+#[component]
+fn studio() -> NodeHandle {
+    let root = rsx! { div { /* … */ } };
+    let r = root.clone();
+    on_app_key(move |k: &KeyEventData| {
+        // Leave keys typed into a text field to the field.
+        let in_field = r
+            .active_element()
+            .and_then(|el| el.tag_name())
+            .is_some_and(|t| t == "input" || t == "textarea");
+        if !k.is_down() || in_field {
+            return false;
+        }
+        match k.key.as_str() {
+            "Delete" => { /* delete the selection */ true }
+            "z" if k.ctrl => { /* undo */ true }
+            _ => false,
+        }
+    });
+    root
+}
+```
+
+- **Where it runs.** After everything that owns a key: menu chords, a focused
+  editor's `on_key`, the focused element's `onkeydown` and its ancestors',
+  `set_keyboard_interceptor`, an open popup's key entry, the dismiss stack, a
+  focused [registered widget's](#registering-a-focus-target) `on_key` (desktop),
+  and a focused render surface's `set_key_handler` claim. Before the focused
+  element's default: typing into a field, Tab, Enter/Space activation,
+  `onsubmit`. So an open `Select` list keeps its arrows, a `Modal` still closes
+  on Escape, and a key typed into a text field reaches the listener first, as
+  a browser's `window` listener does — check the focused element if your
+  shortcut should leave fields alone.
+- **Consuming.** Listeners are offered a press in registration order; the first
+  to answer `true` consumes it: no later listener and no default sees it, and on
+  the web the event is `preventDefault`ed and stops propagating. A release goes
+  to every listener and the answer is ignored.
+- **Not offered:** a press while the rich-text editor holds the keyboard (its
+  keys are its own), while an input method is composing, and on desktop while
+  the built-in text context menu or an open native `<select>` list owns the
+  keyboard. A key a focused render surface claims is the surface's, press and
+  release.
+- **Lifetime.** A listener belongs to the component that registered it and is
+  released when it unmounts; registered outside any render (from `main`) it
+  lives for the life of the app. `AppKeyListener::remove()` releases one early;
+  dropping the handle releases nothing.
+- **Which document's keys.** On desktop, a listener registered while a
+  document's code runs (its render, an effect, a handler) hears only that
+  document's keys; one registered from `main` hears every document on the
+  thread — the DevTools window's included. `rinch-web` marks no document, so a
+  listener there hears every key the page's `document` sees: every island's
+  (`mount_into` roots) and keys typed into page inputs outside any root. Check
+  the focused element if that matters.
+- **Tab.** A listener that consumes Tab takes it before `trap_focus`
+  containment, which runs in the default stage (as a browser `window` listener
+  can `preventDefault` a Tab a dialog would otherwise trap).
+- **Auto-repeat.** A held key arrives as repeated presses, and `KeyEventData`
+  does not tell a repeat from a fresh press (#797): a toggle shortcut fires on
+  every repeat. Track held keys by `k.code` (press until release) if that
+  matters.
+
 ## The dismiss stack
 
 Escape is the one key an overlay has to answer without holding the keyboard: a
