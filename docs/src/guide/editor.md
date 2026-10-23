@@ -762,7 +762,12 @@ sits between two blocks (between a rule and a paragraph in a cell) it refuses, a
 Enter there puts an empty paragraph at the gap instead (`create_paragraph_near`,
 ProseMirror's `createParagraphNear`, in Enter's chain after the list-item split);
 `insertHorizontalRule` and the other block inserts go in at such a gap without
-splitting the cell around it. A selection that crosses cells as a text range, or a
+splitting the cell around it. Backspace at the start of a block right after a table
+(at the top level, or inside a list item or a quote) neither joins, wraps nor lifts:
+an empty paragraph there is deleted and the caret goes to the end of the table's last
+textblock, and any other block **selects the table**, so a second Backspace deletes
+it (ProseMirror's `joinBackward` empty-block branch and `selectNodeBackward`; the
+select-first rule rinch keeps beside a rule or an embed). A selection that crosses cells as a text range, or a
 node selection of a cell or a row, is not covered (#1847).
 
 ## History

@@ -1110,21 +1110,95 @@ fn find_cut_after(r: &ResolvedPos) -> Option<usize> {
     None
 }
 
-/// Whether a join across `cut` must not touch the nodes on either side of it: an
-/// isolating node (a table cell), a table or a table row. ProseMirror's
-/// `deleteBarrier` neither joins nor wraps across an `isolating` node, and
-/// prosemirror-tables makes the table isolating; rinch's table is not (that
-/// would change paste and lift), so the table parts are named here. Joining
-/// two tables, or wrapping the block after a table into a new row of it,
-/// left a row with another cell count than the table's (#1232).
+/// Whether a join across `cut` must not touch the node before it: an isolating
+/// node (a table cell), a table or a table row. ProseMirror's `deleteBarrier`
+/// neither joins nor wraps across an `isolating` node, and prosemirror-tables
+/// makes the table isolating; rinch's table is not (that would change paste and
+/// lift), so the table parts are named here. Joining two tables, or wrapping the
+/// block after a table into a new row of it, left a row with another cell count
+/// than the table's (#1232).
+///
+/// Only the node *before* the cut is asked. The node after it is the caret's
+/// own block for Backspace; for Delete a table after a block other than a table
+/// cannot be joined (its rows are not that block's content, so the step fails)
+/// and the lift that follows stops at the cell (`build_lift_after`'s floor).
 fn table_barrier(doc: &Node, cut: usize) -> bool {
     let Ok(r) = doc.resolve(Pos(cut)) else {
         return true;
     };
-    let barrier = |n: &Node| {
-        n.node_type().is_isolating() || crate::tables::is_table(n) || crate::tables::is_row(n)
+    r.node_before().is_some_and(|n| {
+        n.node_type().is_isolating() || crate::tables::is_table(&n) || crate::tables::is_row(&n)
+    })
+}
+
+/// Whether `node`'s last descendant down its last children is a textblock (PM
+/// `textblockAt(node, "end")`).
+fn ends_in_textblock(node: &Node) -> bool {
+    let mut n = node.clone();
+    loop {
+        if n.is_textblock() {
+            return true;
+        }
+        if n.is_leaf() || n.child_count() == 0 {
+            return false;
+        }
+        n = n.child(n.child_count() - 1).clone();
+    }
+}
+
+/// Backspace at the start of a block right after a table (`cut` from
+/// [`find_cut_before`]), ProseMirror's base keymap there (`joinBackward`'s
+/// empty-block branch, then `selectNodeBackward`): an empty block is deleted
+/// (with each ancestor it is the only child of, while that is not valid) and
+/// the caret goes to the end of the table's last textblock (the table is
+/// node-selected when it ends in no textblock); any other block leaves the
+/// document as it is and **selects the table**, so a second Backspace deletes it
+/// — the select-first rule rinch keeps next to an atom ([`select_atom_across`]).
+/// Nothing is joined into, wrapped into or lifted out past the table (#1232).
+/// `None` when the node before the cut is a row or a cell.
+fn backspace_after_table(state: &EditorState, r: &ResolvedPos, cut: usize) -> Option<Transaction> {
+    use crate::selection::{NodeSelection, Selection};
+    let table = state.doc.resolve(Pos(cut)).ok()?.node_before()?;
+    if !crate::tables::is_table(&table) {
+        return None;
+    }
+    let table_pos = cut - table.node_size();
+    let table_sel = || {
+        Selection::Node(NodeSelection {
+            anchor: Pos(table_pos),
+            head: Pos(cut),
+        })
     };
-    r.node_before().is_some_and(|n| barrier(&n)) || r.node_after().is_some_and(|n| barrier(&n))
+    if r.parent().is_textblock() && r.parent().content().size() == 0 {
+        let mut d = r.depth();
+        while d >= 1 {
+            let (Some(from), Some(to)) = (r.before(d), r.after(d)) else {
+                break;
+            };
+            let mut tr = state.tr();
+            if tr
+                .step(Box::new(ReplaceStep::new(from, to, crate::Slice::empty())))
+                .is_ok()
+                && tr.doc_changed()
+            {
+                // The deletion is after the table: `cut` and `table_pos` hold.
+                let sel = if ends_in_textblock(&table) {
+                    Selection::near(tr.doc(), Pos(cut), -1)
+                } else {
+                    table_sel()
+                };
+                tr.set_selection(sel);
+                return Some(tr);
+            }
+            if d == 1 || r.node(d - 1).child_count() > 1 {
+                break;
+            }
+            d -= 1;
+        }
+    }
+    let mut tr = state.tr();
+    tr.set_selection(table_sel());
+    Some(tr)
 }
 
 /// Lift the block that begins just after `cut` out of its wrapper (PM
@@ -1307,7 +1381,8 @@ fn select_atom_across(
 ///
 /// An atom before the cut (a horizontal rule, an image, an `embed`) is
 /// **selected** instead ([`select_atom_across`]), so a second Backspace removes
-/// it; an empty block right after it goes in the same step.
+/// it; an empty block right after it goes in the same step. After a table,
+/// [`backspace_after_table`]: nothing is joined, wrapped or lifted.
 ///
 /// Not ported (a rare `deleteBarrier` tail): the content-move `ReplaceAround`
 /// (merge into the before-container's last textblock).
@@ -1343,7 +1418,12 @@ pub fn delete_char_backward() -> Command {
             if let Some(tr) = select_atom_across(state, &r, cut, true) {
                 return Some(tr);
             }
-            if !table_barrier(&state.doc, cut) {
+            // After a table (or at a row or cell boundary) nothing is joined,
+            // wrapped or lifted: see [`backspace_after_table`].
+            if table_barrier(&state.doc, cut) {
+                return backspace_after_table(state, &r, cut);
+            }
+            {
                 let mut tr = state.tr();
                 if tr
                     .step(Box::new(ReplaceStep::structural(
