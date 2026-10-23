@@ -27,7 +27,9 @@ pub type PlatformStore = crate::IdbStore;
 ///   On Unix the store's directory is `0700` (an existing one is made so) and
 ///   its files `0600`, so another local user cannot read them (#1819); a
 ///   missing `<app_id>` directory is created `0700`, an existing one is left as
-///   it is.
+///   it is. Making an existing store directory `0700` fails with
+///   [`StorageError::Io`] when it belongs to another user, and a store directory
+///   that is a symlink has the directory it points to tightened.
 ///   [`StorageError::Unavailable`] where the platform names none, and always
 ///   on Android, which has no user data directory an app can write: open an
 ///   [`FsStore`](crate::FsStore) under the app's files directory there.
