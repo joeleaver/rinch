@@ -36,6 +36,10 @@ web-sys = { version = "0.3", features = [
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tempfile = "3"
 
+# `umask` for tests/owner_only_1819.rs, which sets a permissive one (#1819).
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
+
 # Browser-driven tests for the IndexedDB backend. Run with a matching chromedriver:
 #   CHROMEDRIVER=/path/to/chromedriver \
 #     cargo test -p rinch-storage --target wasm32-unknown-unknown
