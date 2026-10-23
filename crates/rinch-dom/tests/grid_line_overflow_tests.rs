@@ -59,14 +59,11 @@ fn rect(doc: &RinchDocument, id: NodeId) -> Rect {
 /// 10,000 tracks of 10px, and every item from the 10,000th on sits at the same
 /// `y`. Chrome 153: 400,000px tall, item `n` at `y = 10 n`.
 ///
-/// Ignored by default for its cost, which is not the grid's: building and
-/// laying out 40,000 siblings of one parent takes minutes in a debug build
-/// whatever the parent's `display` (a flex column or a block of 36,000 rows
-/// costs the same order in release, #1247). Run it with `--ignored`; the
-/// routes past 32,767 lines that CI runs are the span fixtures below, and the
-/// clamp itself is `ten_and_a_half_thousand_rows_are_now_clamped_too`.
+/// It used to be `#[ignore]`d: building 40,000 siblings of one parent before
+/// the first layout walked the whole document's styles per insertion, minutes
+/// in a debug build whatever the parent's `display` (#1247). That is linear
+/// now, and the fixture runs in about 2 s in a debug build.
 #[test]
-#[ignore = "40,000 siblings: minutes in a debug build (rinch-side, not Taffy: #1247)"]
 fn forty_thousand_auto_placed_rows_lay_out_clamped_at_ten_thousand_tracks() {
     let (doc, g, items) = grid("grid-template-columns: 100px", "height: 10px", 40_000);
     let (_, _, w, h) = rect(&doc, g);
