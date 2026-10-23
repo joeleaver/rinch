@@ -5968,7 +5968,8 @@ impl RinchApp {
 
     /// Find all DOM nodes with `data-render-surface` and return their surface
     /// IDs and frame boxes: the painted box's top-left in logical window px,
-    /// and the size a frame needs to fill the box sharply — the layout box
+    /// and the size a frame needs to fill its content box sharply — the
+    /// content box (inside border and padding, where paint draws the frame)
     /// times the composed transform's scale along each axis (#1768). Not the
     /// painted bounding box: under `rotate(90deg)` that is the box turned on
     /// its side, and a frame of that shape drawn into the (untransformed) box
@@ -6005,9 +6006,10 @@ impl RinchApp {
                     &d.tree, node_id, 1.0,
                 );
                 let [a, b, c, dd, _, _] = t.as_coeffs();
+                let (l, t, r, bottom) = rinch_dom::paint::content_box_insets(node);
                 let (w, h) = (
-                    node.layout.width * a.hypot(b) as f32,
-                    node.layout.height * c.hypot(dd) as f32,
+                    (node.layout.width - l - r).max(0.0) * a.hypot(b) as f32,
+                    (node.layout.height - t - bottom).max(0.0) * c.hypot(dd) as f32,
                 );
                 results.push((surface_id, (abs_x, abs_y, w, h)));
             }

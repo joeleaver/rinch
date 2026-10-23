@@ -189,6 +189,22 @@ arm in paint clips its frame to its own `border-radius`, GPU and CPU. *Pacing:* 
 surface is on demand (`invoke_render_callbacks_where`). The registration is
 `desktop::SurfaceImages`, which the GPU tests drive too.
 
+**Review 3 of #1861: the frame is the element's content.** The `data-render-surface` arm that
+painted a frame over the whole border box (background square, border never painted) is gone:
+the generic element arm paints the surface's background, shadow, border and outline as for any
+element, and then `paint_surface_frame` draws the frame — GPU image or CPU pixels — into the
+**content box** (`paint::content_box_insets`: border plus padding; a percentage padding counts
+as zero there), `contain`-fitted, clipped to the inner radius (`BorderRadii::inner` by those
+insets). The target size follows (`all_surface_layout_rects`: content box × the transform's axis
+scales), so `layout_size()`, `layout_rect()`'s size and the resize callback report the content
+box now, where they reported the border box. Pins: `gpu_render_callback_frames_sit_in_the_content_box`
+(rounded background, square and rounded border, padding; GPU and CPU),
+`gpu_render_callback_target_is_the_content_box`.
+
+**No device-lost handling.** Nothing in rinch's desktop shell handles a lost GPU device, and with
+one shared device for every window a lost device is never replaced: surfaces, Vello and every
+window stop presenting until the app restarts (#1788).
+
 **Part 4 notes:** the API is under `cfg(feature = "gpu")`, and `gpu` implies `desktop`, so the web
 half needs a feature of its own: widen to `cfg(any(feature = "gpu", all(target_arch = "wasm32",
 feature = "web-gpu")))` — an off-by-default `rinch` feature adding `dep:wgpu` (WebGPU only) —

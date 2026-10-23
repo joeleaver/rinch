@@ -772,15 +772,23 @@ impl RenderSurfaceHandle {
 
     /// Get the surface position and size in window coordinates.
     ///
-    /// Returns `(x, y, width, height)` where `(x, y)` is the top-left corner
-    /// in logical pixels relative to the window, and `(width, height)` is in
-    /// physical pixels. Returns `(0.0, 0.0, 0, 0)` before the first paint.
+    /// Returns `(x, y, width, height)`. The two halves describe different
+    /// boxes, and say so:
     ///
-    /// On the web `(x, y)` is the canvas's top-left in CSS pixels relative to the
-    /// viewport (`getBoundingClientRect`), read when this is called, so it
-    /// follows page scrolling. On desktop and in an embedded context it is the
-    /// surface's painted box as of the last paint (#1768: an inline
-    /// `RenderSurface` reported `(0, 0)` on every backend before).
+    /// - `(x, y)`, in logical pixels relative to the window: the top-left of
+    ///   the surface element's **painted bounding box** — its border box after
+    ///   any transform. On the web the canvas's top-left relative to the
+    ///   viewport (`getBoundingClientRect`), read when this is called, so it
+    ///   follows page scrolling; on desktop and in an embedded context as of
+    ///   the last paint (#1768: an inline `RenderSurface` reported `(0, 0)` on
+    ///   every backend before).
+    /// - `(width, height)`, in physical pixels: the **frame size**, the same as
+    ///   [`layout_size`](Self::layout_size) — on desktop the element's content
+    ///   box (inside border and padding, where the frame is drawn) times the
+    ///   transform's scale along each axis and the display scale; on the web
+    ///   the canvas's CSS size times `devicePixelRatio`.
+    ///
+    /// Returns `(0.0, 0.0, 0, 0)` before the first paint.
     pub fn layout_rect(&self) -> (f32, f32, u32, u32) {
         #[cfg(target_arch = "wasm32")]
         if let Some(canvas) = self.canvas.borrow().as_ref() {
@@ -3596,6 +3604,162 @@ mod compositor_routing_tests {
             assert_eq!(px[0], [255, 0, 0, 255], "gpu={gpu}: the frame");
             assert_eq!(px[1], [255, 255, 255, 255], "gpu={gpu}: the corner is cut");
         }
+    }
+
+    /// Review 3 of #1861: a surface is an element like an `<img>` — its
+    /// background is rounded, its border and padding are painted around the
+    /// frame, the frame fills the content box and is rounded by the inner
+    /// radius. A 100×60 surface at (50, 50), red frame, on the GPU route and
+    /// the CPU one.
+    #[cfg(feature = "gpu")]
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_render_callback_frames_sit_in_the_content_box() {
+        let _p = presenting_lock();
+        test_gpu();
+        let mut vello = vello_renderer();
+        const RED: [u8; 4] = [255, 0, 0, 255];
+        const GREEN: [u8; 4] = [0, 128, 0, 255];
+        const BLUE: [u8; 4] = [0, 0, 255, 255];
+        const WHITE: [u8; 4] = [255, 255, 255, 255];
+        type Case = (&'static str, &'static str, &'static [((u32, u32), [u8; 4])]);
+        let cases: &[Case] = &[
+            (
+                "a rounded background is rounded",
+                "border-radius: 30px; background-color: rgb(0, 0, 255)",
+                &[((100, 80), RED), ((51, 51), WHITE)],
+            ),
+            (
+                "a square border is painted around the frame",
+                "border: 5px solid rgb(0, 128, 0)",
+                &[
+                    ((52, 80), GREEN),
+                    ((100, 52), GREEN),
+                    ((100, 80), RED),
+                    ((56, 80), RED),
+                ],
+            ),
+            (
+                "a rounded border: the frame is cut by the inner radius",
+                "border: 5px solid rgb(0, 128, 0); border-radius: 20px",
+                // Radius 20 and a 5px border: the inner corner circle has
+                // radius 15, centred at (70, 70). (58, 58) lies in the border
+                // ring (well off its edges); (57, 65) inside the inner curve — where an outer-radius
+                // clip of the content box (centre (75, 75), radius 20) would
+                // cut the frame.
+                &[
+                    ((100, 80), RED),
+                    ((52, 80), GREEN),
+                    ((51, 51), WHITE),
+                    ((58, 58), GREEN),
+                    ((57, 65), RED),
+                ],
+            ),
+            (
+                "padding is the background around the frame",
+                "padding: 10px; background-color: rgb(0, 0, 255)",
+                &[
+                    ((55, 80), BLUE),
+                    ((100, 55), BLUE),
+                    ((100, 80), RED),
+                    ((61, 80), RED),
+                ],
+            ),
+        ];
+        let mut failures = Vec::new();
+        for (label, style, expect) in cases {
+            for gpu in [true, false] {
+                crate::shell::renderer::set_gpu_presenting(gpu);
+                let surface = create_render_surface();
+                surface.set_gpu_render_callback(|f| clear_to(f, [255, 0, 0, 255]));
+                surface.set_render_callback(|writer, w, h| {
+                    writer.submit_frame(&[255, 0, 0, 255].repeat((w * h) as usize), w, h)
+                });
+                let mounted = surface.clone();
+                let style: &'static str = style;
+                let mut app = crate::app::RinchApp::new(move |scope: &mut RenderScope| {
+                    let root = scope.create_element("div");
+                    let w = scope.create_element("div");
+                    w.set_attribute(
+                        "style",
+                        "position: absolute; left: 50px; top: 50px; width: 100px; height: 60px;",
+                    );
+                    let node = RenderSurface {
+                        surface: Some(mounted.clone()),
+                    }
+                    .render(scope, &[]);
+                    node.set_style("box-sizing", "border-box");
+                    for decl in style.split(';') {
+                        if let Some((k, v)) = decl.split_once(':') {
+                            node.set_style(k.trim(), v.trim());
+                        }
+                    }
+                    w.append_child(&node);
+                    root.append_child(&w);
+                    root
+                });
+                app.mount_component(400.0, 300.0);
+                app.resolve_and_repaint(400.0, 300.0);
+                if !gpu {
+                    paint_like_paint_gpu(&mut app, 1.0);
+                    rinch_dom::paint::set_surface_pixels(Some(collect_surface_pixels_by_id()));
+                }
+                let at: Vec<(u32, u32)> = expect.iter().map(|e| e.0).collect();
+                let got = render_pixels(&mut app, &mut vello, &at);
+                rinch_dom::paint::set_surface_pixels(None);
+                for ((xy, want), got) in expect.iter().zip(got) {
+                    if !want.iter().zip(got).all(|(a, b)| a.abs_diff(b) <= 2) {
+                        failures.push(format!(
+                            "{label} gpu={gpu}: at {xy:?} want {want:?} got {got:?}"
+                        ));
+                    }
+                }
+                unregister_render_surface(surface.id());
+            }
+        }
+        crate::shell::renderer::set_gpu_presenting(false);
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// The frame is sized from the content box: a 100×60 surface with a 5px
+    /// border and 10px padding gets a 70×30 frame (at scale 1).
+    #[cfg(feature = "gpu")]
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_render_callback_target_is_the_content_box() {
+        let _p = presenting_lock();
+        test_gpu();
+        crate::shell::renderer::set_gpu_presenting(true);
+        let surface = create_render_surface();
+        surface.set_continuous(false);
+        let mounted = surface.clone();
+        let mut app = crate::app::RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let w = scope.create_element("div");
+            w.set_attribute(
+                "style",
+                "position: absolute; left: 0; top: 0; width: 100px; height: 60px;",
+            );
+            let node = RenderSurface {
+                surface: Some(mounted.clone()),
+            }
+            .render(scope, &[]);
+            node.set_style("box-sizing", "border-box");
+            node.set_style("border", "5px solid green");
+            node.set_style("padding", "10px");
+            w.append_child(&node);
+            root.append_child(&w);
+            root
+        });
+        app.mount_component(400.0, 300.0);
+        app.resolve_and_repaint(400.0, 300.0);
+        let (draws, _) = record(&surface);
+        paint_like_paint_gpu(&mut app, 1.0);
+        let d = draws.borrow().clone();
+        crate::shell::renderer::set_gpu_presenting(false);
+        unregister_render_surface(surface.id());
+        assert_eq!(d, vec![(70, 30)]);
+        assert_eq!(surface.layout_size(), (70, 30));
     }
 
     /// Review of #1861, item 2: the atlas share held only for the surfaces

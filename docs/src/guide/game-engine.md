@@ -101,7 +101,9 @@ rsx! { div { style: "flex: 1;", RenderSurface { surface: Some(surface) } } }
 - **It is an element.** Ancestor backgrounds are beneath it; an element painted after it, or
   with a higher `z-index`, covers it; `border-radius` and `overflow` clipping on an ancestor
   clip it; an ancestor's `opacity` fades it; a transform moves, scales and rotates it; it
-  scrolls with its scroller. There is no hole and nothing to opt into.
+  scrolls with its scroller. Its own background, border, padding, outline and shadow are
+  painted as an `<img>`'s are, with the frame in the **content box**, rounded by the inner
+  radius. There is no hole and nothing to opt into.
 - **Pacing.** The target is reallocated when the surface's size changes, and the callback is
   paced by `set_continuous` / `request_frame` (see below) — **on demand until you call
   `set_continuous`**: a frame at the first size, at each new size, and for each
@@ -112,7 +114,7 @@ rsx! { div { style: "flex: 1;", RenderSurface { surface: Some(surface) } } }
   premultiplied alpha: clear an opaque viewport to an opaque colour. Its bytes are
   sRGB-encoded (`f.format` is `Rgba8Unorm` on desktop); for linear-light blending, create a
   view of `f.texture` with format `Rgba8UnormSrgb`, which it allows.
-- **Size and transforms.** The target is the surface's layout box at the window's scale,
+- **Size and transforms.** The target is the surface's content box at the window's scale,
   times the transform's scale along each axis, as a CPU frame's is: under a `scale(2)` it is
   twice the layout size, so it stays sharp; under a `rotate()` it keeps the box's shape and
   turns with it. The surface's own `border-radius` rounds the frame, as an `<img>`'s does.
@@ -352,9 +354,10 @@ surface.request_frame();
   main-thread calls. From another thread, deliver a frame with the `SurfaceWriter` from
   `writer()` (`submit_frame` is `Send + Sync` and asks for the paint itself).
 
-`layout_rect()` returns `(x, y, width, height)`: the surface's top-left in logical (CSS)
-pixels relative to the window — on the web, the canvas's `getBoundingClientRect`, read when
-you call it — and its size in physical pixels. Use it to place a menu or tooltip at a
+`layout_rect()` returns `(x, y, width, height)`: the top-left of the surface's painted box
+(its border box after any transform) in logical (CSS) pixels relative to the window — on the
+web, the canvas's `getBoundingClientRect`, read when you call it — and its frame size
+(`layout_size()`, the content box on desktop) in physical pixels. Use it to place a menu or tooltip at a
 surface-local point on both targets.
 
 ### Web (canvas viewport)
@@ -415,9 +418,9 @@ Notes:
 | `set_render_callback(cb)` | Per-frame `FnMut(&SurfaceWriter, w, h)` — drives `requestAnimationFrame` on web |
 | `set_continuous(on)` | `true`: run the render callback every frame; `false`: on demand (first size, each resize, each `request_frame`). Same on desktop and web (#1768) |
 | `request_frame()` | Run the render callback once more at the next frame; callable from inside it |
-| `layout_rect()` | `(x, y, w, h)`: top-left in logical window px (web: the canvas's client rect), size in physical px |
+| `layout_rect()` | `(x, y, w, h)`: the painted box's top-left in logical window px (web: the canvas's client rect), and the frame size (as `layout_size()`) in physical px |
 | `set_resize_callback(cb)` | `FnMut(w, h)` fired on backing-size change (physical px) — reconfigure a GPU surface |
-| `layout_size()` | Get current physical `(width, height)` (web: CSS px × devicePixelRatio) |
+| `layout_size()` | Get the current frame size in physical px: desktop, the content box (inside border and padding) × transform scale × display scale; web, the canvas's CSS px × devicePixelRatio |
 | `canvas_element()` | **(web only)** the `<canvas>` after mount — create a WebGPU/WebGL context on it |
 | `set_gpu_render_callback(cb)` | **(gpu)** `FnMut(&GpuSurfaceFrame)`: draw the surface with rinch's device into a target drawn in the scene as the element's content; paced like `set_render_callback`, which runs instead when no GPU frame can be given (#1768) |
 | `gpu_frames_available()` | **(gpu)** whether a GPU frame can be given now (a GPU renderer presents the window) |
