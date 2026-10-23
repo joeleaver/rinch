@@ -327,3 +327,46 @@ fn unmounting_the_registering_component_releases_its_listener() {
     f.press(KeyCode::KeyQ, Some("q"));
     assert!(take(&f.branch_log).is_empty());
 }
+
+/// A focused registered widget (`register_focus_target` with `on_key`) gets
+/// first refusal on its own keys, ahead of the app listeners — it owns the
+/// keyboard, as a focused element's own keydown handler runs before a
+/// browser's `window` listener. What it leaves, the listeners hear.
+#[test]
+fn a_focused_registered_widget_takes_its_keys_before_the_listeners() {
+    let mut f = mount();
+    let tile = f.tile.clone();
+    let widget: Log = Default::default();
+    let w = widget.clone();
+    // Registered outside any render: app lifetime, released with the thread.
+    crate::focus_registry::register_focus_target(
+        &tile,
+        crate::focus_registry::FocusEntry::new().on_key(move |k| {
+            w.borrow_mut().push(k.key.clone());
+            k.key == "ArrowDown"
+        }),
+    );
+    tile.focus();
+    f.app.handle_event(PlatformEvent::AboutToWait, VP, 1.0);
+    assert!(matches!(f.app.focus_target, FocusTarget::Node(_)));
+    let log: Log = Default::default();
+    listen("app", &log, &["ArrowDown", "ArrowUp"]);
+    f.press(KeyCode::ArrowDown, None);
+    f.press(KeyCode::ArrowUp, None);
+    assert_eq!(
+        take(&log),
+        ["app:Up:ArrowDown", "app:Down:ArrowUp", "app:Up:ArrowUp"]
+    );
+    // The widget is offered its releases too, after the listeners.
+    assert_eq!(
+        widget.borrow().iter().filter(|k| *k == "ArrowDown").count(),
+        2,
+        "{:?}",
+        widget.borrow()
+    );
+    assert!(
+        widget.borrow().contains(&"ArrowUp".to_string()),
+        "{:?}",
+        widget.borrow()
+    );
+}

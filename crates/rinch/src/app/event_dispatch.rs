@@ -1814,12 +1814,10 @@ impl RinchApp {
                             return actions;
                         } else if self.handle_unclaimed_key_fallback(
                             key,
-                            key_str.as_ref(),
                             text.as_ref(),
                             shift,
                             ctrl,
                             alt,
-                            modifiers.meta,
                             modifiers,
                             repeat,
                             vp_w,
@@ -1845,6 +1843,17 @@ impl RinchApp {
                     // inspect / Tab navigation / read-only text-selection caret
                     // motion.
                     FocusTarget::Input(_) | FocusTarget::None | FocusTarget::Node(_) => {
+                        if self.offer_registered_node_key(
+                            key,
+                            key_str.as_ref(),
+                            ctrl,
+                            shift,
+                            alt,
+                            modifiers.meta,
+                            &mut actions,
+                        ) {
+                            return actions;
+                        }
                         // The app-wide key listeners (issue #1784), ahead of
                         // the field's editing, Tab, activation and `onsubmit`
                         // — as a browser's `window` listener runs before its
@@ -1861,12 +1870,10 @@ impl RinchApp {
                         }
                         if self.handle_unclaimed_key_fallback(
                             key,
-                            key_str.as_ref(),
                             text.as_ref(),
                             shift,
                             ctrl,
                             alt,
-                            modifiers.meta,
                             modifiers,
                             repeat,
                             vp_w,
@@ -2288,42 +2295,19 @@ impl RinchApp {
         actions
     }
 
-    /// The global `KeyDown` fallback — DevTools (F12) / inspect mode (Alt+I) /
-    /// Tab navigation / clipboard chords / Enter-Space activation / the
-    /// catch-all text-input path.
-    ///
-    /// Shared by two callers of the focus arbiter's match in
-    /// [`Self::handle_event`]: `FocusTarget::Input/None/Node`, where it always
-    /// ran, and — since issue #482 — `FocusTarget::Surface` once the surface
-    /// itself has declined the key (`set_key_handler`, default: declines
-    /// everything). A focused `RenderSurface` used to swallow every key
-    /// unconditionally; routing an unclaimed one through here instead means a
-    /// game canvas with focus still lets DevTools, inspect mode, Tab and the
-    /// rest work, exactly as an unfocused canvas always did.
-    ///
-    /// `focus_target` reads inside this function (the `FocusTarget::Node`
-    /// guards) correctly do nothing when called from the `Surface` arm, since
-    /// `self.focus_target` is `Surface(_)` there — no caller-specific branching
-    /// needed.
-    ///
-    /// Returns `true` if the caller should return `actions` immediately
-    /// (an action already fully answers this key); `false` if the key fell
-    /// through everything (including plain text input, already attempted),
-    /// in which case the caller's match arm ends normally.
+    /// Self-heal a stale `FocusTarget::Node` claim, then give a focused
+    /// registered widget (`register_focus_target`'s `on_key`) first refusal on
+    /// the key. Runs ahead of the app-wide key listeners (#1784) and of
+    /// [`Self::handle_unclaimed_key_fallback`]. Answers whether it consumed.
     #[allow(clippy::too_many_arguments)]
-    fn handle_unclaimed_key_fallback(
+    fn offer_registered_node_key(
         &mut self,
         key: KeyCode,
         key_str: Option<&String>,
-        text: Option<&String>,
-        shift: bool,
         ctrl: bool,
+        shift: bool,
         alt: bool,
         meta: bool,
-        modifiers: Modifiers,
-        repeat: KeyRepeat,
-        vp_w: f32,
-        vp_h: f32,
         actions: &mut Vec<AppAction>,
     ) -> bool {
         // Self-heal a stale Node claim before routing, exactly like the
@@ -2360,6 +2344,48 @@ impl RinchApp {
                 return true;
             }
         }
+        false
+    }
+
+    /// The global `KeyDown` fallback — DevTools (F12) / inspect mode (Alt+I) /
+    /// Tab navigation / clipboard chords / Enter-Space activation / the
+    /// catch-all text-input path.
+    ///
+    /// Shared by two callers of the focus arbiter's match in
+    /// [`Self::handle_event`]: `FocusTarget::Input/None/Node`, where it always
+    /// ran, and — since issue #482 — `FocusTarget::Surface` once the surface
+    /// itself has declined the key (`set_key_handler`, default: declines
+    /// everything). A focused `RenderSurface` used to swallow every key
+    /// unconditionally; routing an unclaimed one through here instead means a
+    /// game canvas with focus still lets DevTools, inspect mode, Tab and the
+    /// rest work, exactly as an unfocused canvas always did.
+    ///
+    /// `focus_target` reads inside this function (the `FocusTarget::Node`
+    /// guards) correctly do nothing when called from the `Surface` arm, since
+    /// `self.focus_target` is `Surface(_)` there — no caller-specific branching
+    /// needed.
+    ///
+    /// Returns `true` if the caller should return `actions` immediately
+    /// (an action already fully answers this key); `false` if the key fell
+    /// through everything (including plain text input, already attempted),
+    /// in which case the caller's match arm ends normally.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_unclaimed_key_fallback(
+        &mut self,
+        key: KeyCode,
+        text: Option<&String>,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+        modifiers: Modifiers,
+        repeat: KeyRepeat,
+        vp_w: f32,
+        vp_h: f32,
+        actions: &mut Vec<AppAction>,
+    ) -> bool {
+        // The registered widget's `on_key` (issue #147) was offered by the
+        // caller, ahead of the app-wide key listeners (#1784):
+        // `offer_registered_node_key`.
 
         #[cfg(feature = "desktop")]
         if key == KeyCode::F12 {

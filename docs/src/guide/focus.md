@@ -793,8 +793,9 @@ fn studio() -> NodeHandle {
 
 - **Where it runs.** After everything that owns a key: menu chords, a focused
   editor's `on_key`, the focused element's `onkeydown` and its ancestors',
-  `set_keyboard_interceptor`, an open popup's key entry, the dismiss stack, and
-  a focused render surface's `set_key_handler` claim. Before the focused
+  `set_keyboard_interceptor`, an open popup's key entry, the dismiss stack, a
+  focused [registered widget's](#registering-a-focus-target) `on_key` (desktop),
+  and a focused render surface's `set_key_handler` claim. Before the focused
   element's default: typing into a field, Tab, Enter/Space activation,
   `onsubmit`. So an open `Select` list keeps its arrows, a `Modal` still closes
   on Escape, and a key typed into a text field reaches the listener first, as
@@ -812,8 +813,21 @@ fn studio() -> NodeHandle {
 - **Lifetime.** A listener belongs to the component that registered it and is
   released when it unmounts; registered outside any render (from `main`) it
   lives for the life of the app. `AppKeyListener::remove()` releases one early;
-  dropping the handle releases nothing. A listener registered while a
-  document's code runs hears only that document's keys.
+  dropping the handle releases nothing.
+- **Which document's keys.** On desktop, a listener registered while a
+  document's code runs (its render, an effect, a handler) hears only that
+  document's keys; one registered from `main` hears every document on the
+  thread — the DevTools window's included. `rinch-web` marks no document, so a
+  listener there hears every key the page's `document` sees: every island's
+  (`mount_into` roots) and keys typed into page inputs outside any root. Check
+  the focused element if that matters.
+- **Tab.** A listener that consumes Tab takes it before `trap_focus`
+  containment, which runs in the default stage (as a browser `window` listener
+  can `preventDefault` a Tab a dialog would otherwise trap).
+- **Auto-repeat.** A held key arrives as repeated presses, and `KeyEventData`
+  does not tell a repeat from a fresh press (#797): a toggle shortcut fires on
+  every repeat. Track held keys by `k.code` (press until release) if that
+  matters.
 
 ## The dismiss stack
 

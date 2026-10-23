@@ -13,7 +13,8 @@
 //! / node view's `on_key` → the focused element's `onkeydown` and its
 //! ancestors' → [`set_keyboard_interceptor`](super::set_keyboard_interceptor)
 //! → open popups' [key entries](super::push_key_handler) → the
-//! [dismiss stack](super::push_dismiss_handler) → a focused render surface's
+//! [dismiss stack](super::push_dismiss_handler) → a focused registered
+//! widget's `FocusEntry::on_key` (desktop) → a focused render surface's
 //! own claim (`RenderSurfaceHandle::set_key_handler`) → **these listeners** →
 //! the focused element's default (text editing, Tab, Enter/Space activation,
 //! `onsubmit`). So everything that owns a key while it is open or focused — an
@@ -28,6 +29,17 @@
 //! (its keys are its own on both backends), while an input method composes,
 //! and on desktop while the built-in text context menu or an open native
 //! `<select>` list owns the keyboard.
+//!
+//! **Whose keys.** On desktop a listener registered while a document's code
+//! runs hears that document's keys, and one registered from `main` every
+//! document's on the thread — a DevTools window's included. rinch-web marks no
+//! document, so there a listener hears every key the page's `document` sees:
+//! every island's, and keys typed into page inputs outside any rinch root.
+//!
+//! **Tab and repeats.** A listener that consumes Tab takes it before
+//! `trap_focus` containment, which belongs to the default stage. A held key
+//! arrives as repeated presses that [`KeyEventData`] does not mark (#797), so a
+//! toggle shortcut fires on each repeat.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;

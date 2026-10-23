@@ -21,7 +21,8 @@ after it hears the press. Offered to the arbiter's `FocusTarget::Input` /
 at the first that consumes (`dispatch_key_handler_chain`; ids read before any
 runs). Order, both backends: menu chords → the editor's / a node view's
 `on_key` → **element handlers** → `set_keyboard_interceptor` → key entries →
-dismiss stack → a focused render surface's claim → **app key listeners**
+dismiss stack → (desktop) a focused registered widget's `FocusEntry::on_key`
+→ a focused render surface's claim → **app key listeners**
 (#1784) → the element's own handling (`RinchApp::offer_element_key`,
 `event_delegation::offer_element_key`). Focus requests a handler made are
 applied before the key's default, so an unconsumed key lands in the field a
@@ -52,14 +53,18 @@ next delivered press of the code). Entries are keyed by
 (dead owner skipped and pruned, `on_cleanup` removes at disposal), run
 untracked inside it; the handle's drop releases nothing (`remove()` does).
 Desktop: `RinchApp::offer_app_key`, called in `event_dispatch.rs`'s KeyDown arm
-for `FocusTarget::Input/None/Node` before `handle_unclaimed_key_fallback`, in
+for `FocusTarget::Input/None/Node` after `offer_registered_node_key` (the
+#147 registry's first refusal, moved out of `handle_unclaimed_key_fallback`)
+and before the fallback, in
 the `Surface` arm for an unclaimed key, and after the interceptor on every
 KeyUp; not for `Editor` or `Select`, nor while the text context menu is open or
 the focused field shows a `data-preedit`. Web: the document bubble keydown
 delegate (a key with nothing focused targets `<body>` and bubbles there) after
 the surface block and before the Tab trap, skipping `isComposing`/`Process`
 and a key whose target is an editor's (`key_target_is_editor`); the keyup
-delegate after the interceptor. Pins: `app/app_key_1784_tests.rs`,
+delegate after the interceptor. rinch-web marks no document, so a web listener
+hears every island's keys and page inputs' outside any root; a desktop one
+registered from `main` hears the DevTools window's. Pins: `app/app_key_1784_tests.rs`,
 `rinch-web/tests/app_key_1784.rs`, `rinch-core` `events::app_key::tests`.
 
 **`NodeHandle::selection_range()` / `caret_rect()` / `caret_rect_at(offset)`**
