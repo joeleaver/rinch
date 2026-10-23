@@ -38,7 +38,7 @@ use layer_bounds::{
 use svg::*;
 pub(crate) use text::take_span_line_visits;
 use text::*;
-pub use text::{set_reference_text_walk, take_text_line_walks};
+pub use text::{set_reference_text_walk, take_text_glyphs_collected, take_text_line_walks};
 pub use text_shadow::{
     TAP_GLYPH_BUDGET, TAP_GLYPHS_PER_SHADOW, clear_text_shadow_cache, force_tapped_text_shadows,
     text_shadow_scratch_size,

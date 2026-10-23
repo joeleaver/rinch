@@ -360,3 +360,176 @@ fn an_anonymous_boxs_ellipsis_takes_its_containers_colour() {
         "the \u{2026} is the container's blue: blue {blue:?}, red {red:?}"
     );
 }
+
+// ── review of #1860 ─────────────────────────────────────────────────────────
+
+/// The red text of `<div class=c>` boxes of each width drawn right of its
+/// "…"'s left edge: `(width, red px)` for every width where any is.
+fn red_past_the_ellipsis(
+    family: &str,
+    size: &str,
+    widths: &[f32],
+    text: &str,
+) -> Vec<(f32, usize)> {
+    let mut bad = Vec::new();
+    let mut cuts = 0;
+    for &w in widths {
+        let mut d = doc();
+        let body = d.body();
+        d.set_inner_html(
+            body,
+            &format!(
+                r#"<div class="c" style="width: {w}px; font-family: {family}; {size}"><span style="color: rgb(255, 0, 0)">{text}</span></div>"#
+            ),
+        );
+        let div = d.get_children(body)[0];
+        let px = paint(&mut d);
+        let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
+        let Some(cut) = il.ellipsis.as_ref() else {
+            continue;
+        };
+        cuts += 1;
+        let from = cut.marks[0].x.ceil() as usize + 1;
+        let vw = VW as usize;
+        let red = (0..40)
+            .flat_map(|y| (from..vw).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let p = &px[(y * vw + x) * 4..];
+                p[0] > 150 && p[1] < 140 && p[2] < 140
+            })
+            .count();
+        if red > 0 {
+            bad.push((w, red));
+        }
+    }
+    assert!(
+        cuts > widths.len() / 2,
+        "positive control: the lines are cut ({cuts})"
+    );
+    bad
+}
+
+/// A ligature is kept or hidden whole with the cluster its glyph starts at:
+/// paint draws the glyph with that cluster, so hiding only the clusters past
+/// the cut drew the whole ligature under the "…" (Chrome 155 with DejaVu
+/// Sans in a 92px box: `offi affi fi…`). DejaVu Sans (the CI host's face)
+/// has the `fi`/`ffl` ligatures; the bundled Inter has none.
+#[test]
+fn a_ligature_is_not_drawn_under_the_ellipsis() {
+    let text = "offi affi fiffl office affluent fifl";
+    {
+        // Positive control: the face makes ligatures here.
+        let mut d = doc();
+        let body = d.body();
+        d.set_inner_html(
+            body,
+            &format!(
+                r#"<div class="c" style="width: 92px; font-family: 'DejaVu Sans'">{text}</div>"#
+            ),
+        );
+        let div = d.get_children(body)[0];
+        d.resolve_layout(VW, VH);
+        let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
+        let ligs = il
+            .layout
+            .lines()
+            .flat_map(|l| l.runs().collect::<Vec<_>>())
+            .flat_map(|r| {
+                r.visual_clusters()
+                    .map(|c| c.is_ligature_continuation())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|&c| c)
+            .count();
+        assert!(
+            ligs > 0,
+            "DejaVu Sans makes no ligature here: is it installed?"
+        );
+    }
+    let widths: Vec<f32> = (40..140).map(|w| w as f32).collect();
+    let bad = red_past_the_ellipsis("'DejaVu Sans'", "", &widths, text);
+    assert!(bad.is_empty(), "text drawn under the \u{2026}: {bad:?}");
+}
+
+/// A grapheme is kept or hidden whole: Inter draws `e` + U+0301 as one
+/// glyph, which parley makes two clusters, so hiding the accent's cluster
+/// alone drew `é` under the "…".
+#[test]
+fn a_grapheme_is_not_split_by_the_cut() {
+    let e = "e\u{301}";
+    let widths: Vec<f32> = (40..100).map(|w| w as f32).collect();
+    let bad = red_past_the_ellipsis(
+        "T1100",
+        "font-size: 24px; line-height: 30px",
+        &widths,
+        &format!("caf{e} caf{e}s caf{e}"),
+    );
+    assert!(bad.is_empty(), "text drawn under the \u{2026}: {bad:?}");
+}
+
+/// Paint walks a cut line only up to its cut: the glyphs it collects do not
+/// grow with the hidden text (review of #1860: a 40-line `pre` block of
+/// 6,400-character lines took 12.4 ms a paint, against 2.3 ms when the cut
+/// text was rebuilt short).
+#[test]
+fn a_paint_of_cut_lines_does_not_walk_the_hidden_text() {
+    let glyphs = |len: usize| {
+        let mut d = doc();
+        let body = d.body();
+        let line = "abcdefghij ".repeat(len / 11 + 1);
+        let text = vec![line.as_str(); 40].join("\n");
+        d.set_inner_html(
+            body,
+            &format!(r#"<div class="c" style="width: 200px; height: auto; white-space: pre">{text}</div>"#),
+        );
+        d.resolve_layout(VW, VH);
+        rinch_dom::paint::take_text_glyphs_collected();
+        paint(&mut d);
+        rinch_dom::paint::take_text_glyphs_collected()
+    };
+    let (short, long) = (glyphs(400), glyphs(6400));
+    assert!(short > 0, "positive control: paint collected glyphs");
+    assert_eq!(
+        short, long,
+        "glyphs collected for 400- and 6400-character lines"
+    );
+}
+
+/// No cut falls inside a grapheme, whatever clusters parley makes of it and
+/// whether or not the face draws it as one glyph: stacked combining marks,
+/// emoji ZWJ sequences, flags, Thai.
+#[test]
+fn no_cut_falls_inside_a_grapheme() {
+    let texts = [
+        "a\u{308}\u{323}b\u{308}\u{323}c\u{308}\u{323}d\u{308}\u{323}e\u{308}\u{323}f\u{308}\u{323}g\u{308}\u{323}h\u{308}\u{323}",
+        "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}",
+        "\u{1F1FA}\u{1F1F8}\u{1F1EC}\u{1F1E7}\u{1F1EB}\u{1F1F7}\u{1F1E9}\u{1F1EA}\u{1F1EF}\u{1F1F5}\u{1F1FA}\u{1F1F8}",
+        "\u{0E01}\u{0E33}\u{0E19}\u{0E49}\u{0E33}\u{0E2A}\u{0E35}\u{0E48}\u{0E01}\u{0E33}\u{0E19}\u{0E49}\u{0E33}\u{0E2A}\u{0E35}\u{0E48}",
+    ];
+    let mut cuts = 0;
+    let mut bad = Vec::new();
+    for t in texts {
+        for w in (20..120).step_by(3) {
+            let mut d = doc();
+            let body = d.body();
+            d.set_inner_html(
+                body,
+                &format!(r#"<div class="c" style="width: {w}px">{t}</div>"#),
+            );
+            let div = d.get_children(body)[0];
+            d.resolve_layout(VW, VH);
+            let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
+            let Some(cut) = il.ellipsis.as_ref() else {
+                continue;
+            };
+            cuts += 1;
+            for r in &cut.hidden {
+                if !rinch_words::is_grapheme_boundary(&il.text_content, r.start) {
+                    bad.push((w, r.clone()));
+                }
+            }
+        }
+    }
+    assert!(cuts > 40, "positive control: the lines are cut ({cuts})");
+    assert!(bad.is_empty(), "cuts inside a grapheme: {bad:?}");
+}

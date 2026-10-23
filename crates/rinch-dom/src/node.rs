@@ -667,14 +667,15 @@ pub struct InlineLayout {
 /// draws the "…".
 ///
 /// The cut is made at paint time over the lines as they were laid out, as
-/// Chrome makes it: every glyph, decoration and atomic inline past the point
-/// where the "…" still fits (at the line's end edge — the right of a
-/// left-to-right paragraph, the left of a right-to-left one) is hidden, and
-/// the "…" is drawn right after what is kept, in the root's own font and
-/// colour, undecorated. Inline backgrounds and borders are not cut: an inline
-/// box keeps its extent and the root's clip cuts it at the padding edge, as
-/// Chrome 155 draws a pill cut inside its padding. Text offsets, hit testing
-/// and caret mapping read the lines, so they are unaffected by the cut.
+/// Chrome makes it: every grapheme (a ligature with every cluster its glyph
+/// covers) and atomic inline that passes the point where the "…" still fits
+/// at the line's end edge — the side the line leaves the box by — is hidden
+/// whole, decorations and shadows with it, and the "…" is drawn right after
+/// what is kept, in the block container's font and colour, undecorated.
+/// Inline backgrounds and borders are not cut: an inline element keeps its
+/// extent and the root's clip cuts it at the root's padding edge, as Chrome
+/// 155 draws a pill the cut falls in. Text offsets, hit testing and caret
+/// mapping read the lines, so they are unaffected by the cut.
 #[derive(Clone)]
 pub struct EllipsisCut {
     /// The layout byte ranges hidden, sorted and disjoint.
@@ -698,6 +699,9 @@ pub struct EllipsisMark {
     pub x: f32,
     /// The top of the "…"'s layout.
     pub y: f32,
+    /// When the "…" is at the line's right: the x past which everything on
+    /// the line is hidden, so paint need not walk what lies past it.
+    pub hidden_past: Option<f32>,
 }
 
 /// An out-of-flow box (`position: absolute` or `fixed`) met in an inline

@@ -8842,19 +8842,27 @@ impl RinchDocument {
         let mut hidden: Vec<std::ops::Range<usize>> = Vec::new();
         let mut hidden_boxes = Vec::new();
         let mut marks = Vec::new();
-        // One line's items: `(x0, x1, what)`, in visual order within a run.
+        // One line's items: `(x0, x1, what)`. A cluster item is a unit that
+        // is kept or hidden whole: a grapheme, and a ligature with every
+        // cluster its glyph covers. Paint draws a glyph with the first
+        // cluster it belongs to, so hiding part of either drew the whole
+        // glyph under the "…" (review of #1860).
         enum Item {
-            Cluster(std::ops::Range<usize>, bool),
+            Cluster(Vec<std::ops::Range<usize>>, bool),
             Edge,
             Atomic(usize),
         }
         let mut items: Vec<(f32, f32, Item)> = Vec::new();
+        // `(range, x0, x1, space, starts a unit)` per cluster of a line.
+        let mut clusters: Vec<(std::ops::Range<usize>, f32, f32, bool, bool)> = Vec::new();
+        let text = il.text_content.as_str();
         for (index, line) in il.layout.lines().enumerate() {
             if !overflowing(&line) {
                 continue;
             }
             let m = line.metrics();
             items.clear();
+            clusters.clear();
             for run in line.runs() {
                 let Some(mut x) = run.visual_clusters().next().and_then(|c| c.visual_offset())
                 else {
@@ -8862,12 +8870,24 @@ impl RinchDocument {
                 };
                 for cluster in run.visual_clusters() {
                     let x1 = x + cluster.advance();
-                    items.push((
-                        x,
-                        x1,
-                        Item::Cluster(cluster.text_range(), cluster.is_space_or_nbsp()),
-                    ));
+                    let r = cluster.text_range();
+                    let starts = !cluster.is_ligature_continuation()
+                        && rinch_words::is_grapheme_boundary(text, r.start);
+                    clusters.push((r, x, x1, cluster.is_space_or_nbsp(), starts));
                     x = x1;
+                }
+            }
+            // Group the clusters into units in text order.
+            clusters.sort_by_key(|c| c.0.start);
+            for (r, x0, x1, space, starts) in clusters.drain(..) {
+                match items.last_mut() {
+                    Some((ux0, ux1, Item::Cluster(ranges, uspace))) if !starts => {
+                        *ux0 = ux0.min(x0);
+                        *ux1 = ux1.max(x1);
+                        *uspace &= space;
+                        ranges.push(r);
+                    }
+                    _ => items.push((x0, x1, Item::Cluster(vec![r], space))),
                 }
             }
             for item in line.items() {
@@ -8912,7 +8932,9 @@ impl RinchDocument {
             for (x0, x1, what) in items.drain(..) {
                 if past(x0, x1) {
                     match what {
-                        Item::Cluster(r, _) if !r.is_empty() => hidden.push(r),
+                        Item::Cluster(ranges, _) => {
+                            hidden.extend(ranges.into_iter().filter(|r| !r.is_empty()))
+                        }
                         Item::Atomic(id) => hidden_boxes.push(id),
                         _ => {}
                     }
@@ -8935,6 +8957,9 @@ impl RinchDocument {
                 line: index,
                 x,
                 y: m.baseline - glyph_baseline,
+                // Past this x, in the line's visual order, everything is
+                // hidden: paint stops walking the line there.
+                hidden_past: (!at_left).then_some(container_width - ellipsis_width + EPS),
             });
         }
         hidden.sort_by_key(|r| r.start);

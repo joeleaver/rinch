@@ -363,9 +363,11 @@ input a shaped layout is built from:
   (#1100; `ifc::ellipsis_cut`, `node::EllipsisCut`, `InlineLayout::ellipsis`):
   on each overflowing line everything whose visual extent passes the point
   where the "…" still fits before the line's end edge is hidden — each
-  cluster, through every `TextMask` an IFC paint draws with (text,
-  decorations, shadows, wavy underlines: `TextMask::cut`), and each atomic
-  inline whole — and the "…" is drawn right after what is kept, in the
+  grapheme whole, a ligature with every cluster its glyph covers (paint
+  draws a glyph with its first cluster, so a cut inside one drew the whole
+  glyph under the "…"), through every `TextMask` an IFC paint draws with
+  (text, decorations, shadows, wavy underlines: `TextMask::cut`), and each
+  atomic inline whole — and the "…" is drawn right after what is kept, in the
   block container's font and current colour, undecorated, casting its
   `text-shadow` (an anonymous block box's container's, #1071). Inline
   backgrounds and borders are not cut: a pill keeps its extent and the
@@ -378,10 +380,17 @@ input a shaped layout is built from:
   and leaves by the right, so its "…" goes there and what shows is its
   visual left, where Chrome under `direction: rtl` shows its logical start.
   Nothing but the "…" is shaped, so `ellipsis_shapes` is 1 per layout
-  however many lines are cut. Text offsets, carets, hit testing and span
+  however many lines are cut. A paint walks a line cut at its right only up
+  to the cut (`EllipsisMark::hidden_past`, `paint::text::shown_clusters`:
+  the glyph collection, the hidden-glyph cursor and the shadow extent stop
+  there; the limits are by line index, since parley's text ranges wrap past
+  65,535 bytes, #1267), so the glyphs collected do not grow with the hidden
+  text (`paint::take_text_glyphs_collected`); parley's own `Line::items`
+  still walks each run's glyphs once per collection, and a line cut at its
+  left is walked whole. Text offsets, carets, hit testing and span
   fragments read the lines, so they are those of the uncut text: a press
   past the cut maps to the hidden text under it, and a hidden atomic
-  inline keeps its box, which hit testing is not told is hidden. The clip proof
+  inline keeps its box, which hit testing is not told is hidden (#1864). The clip proof
   measures an ellipsised root's text no wider than its box
   (`InlineLayout::painted_width`), so a plain ellipsised title still elides
   its clip (`clip_elision_tests`). Until #1100 the "…" was drawn by
