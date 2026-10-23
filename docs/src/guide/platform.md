@@ -130,8 +130,9 @@ covers on the device, and cached until the image, gradient or tile size
 changes. A tile that is a fractional number of device pixels (10px at 125%
 scaling) is rasterised at the next whole size and sampled back down smoothly;
 an axis that does not repeat clips the pattern to its one-tile strip. A build
-without the software painter (`embed`) has nothing to rasterise a tile with and
-draws one fill per visible tile instead. No layer is ever dropped for having too
+without the software painter (`embed`) has nothing to rasterise a tile with:
+it draws a repeating `url()` image as one pattern from the image itself, and a
+repeating gradient as one fill per visible tile. No layer is ever dropped for having too
 many tiles.
 
 Tiles start from the element's box rounded to a whole pixel, as in Chrome, so
@@ -146,8 +147,10 @@ sampler cannot blend across a tile boundary, and a fractional phase there made
 the stripes pulse in width during an animation. On an axis that does not
 repeat, a fractional `background-position` is rounded to a device pixel, as
 Chrome rounds it; rinch also rounds a fractional translate there, where Chrome
-blends. A build without the software painter, or a tile over 4 million device
-pixels, rounds every tile to a device pixel. (Separately, a scaled image tile
+blends. A build without the software painter rounds every tile of a repeating
+gradient to a device pixel, and places a repeating image's pattern by the GPU
+renderer's rule above; a tile over 4 million device pixels rounds every tile
+too. (Separately, a scaled image tile
 has hard edges where Chrome's are blended, #1753.)
 
 An image used to be stretched over the element's border box whatever its

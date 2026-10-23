@@ -77,6 +77,9 @@ default = ["software-renderer"]
 software-renderer = ["tiny-skia", "swash"]
 
 [dev-dependencies]
+# The `#[ignore]`d GPU probes of `background_tiling_embed_tests.rs` (#1158)
+# block on wgpu's adapter request. Already in the lock through `rinch`.
+pollster = "0.4"
 # Integration tests name taffy types (the IFC leaf invariant tests, #466,
 # inspect `NodeTree::taffy` directly). Resolves to the same pinned 0.14, with
 # the same features as the dependency above (see there).

@@ -186,6 +186,7 @@ fn the_default_fill_repeating_agrees_with_the_software_pattern() {
         height: 5,
         transform: Affine::translate((3.0, -2.0)),
         smooth: false,
+        premultiplied: true,
     };
     let shape = PaintShape::Rect(Rect::new(4.0, 6.0, 57.0, 38.0));
     let t = Affine::translate((5.0, 1.0));

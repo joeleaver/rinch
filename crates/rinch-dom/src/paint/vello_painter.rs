@@ -204,7 +204,11 @@ impl Painter for VelloPainter {
         let image = ImageData {
             data: tile.pixels.clone(),
             format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::AlphaPremultiplied,
+            alpha_type: if tile.premultiplied {
+                ImageAlphaType::AlphaPremultiplied
+            } else {
+                ImageAlphaType::Alpha
+            },
             width: tile.width,
             height: tile.height,
         };
@@ -470,6 +474,7 @@ mod sampling_tests {
                 height: H,
                 transform: tile_transform,
                 smooth: true,
+                premultiplied: true,
             },
             &PaintShape::Rect(Rect::new(0.0, 0.0, 6.0, 3.0)),
         );

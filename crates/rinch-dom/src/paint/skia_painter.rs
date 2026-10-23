@@ -1564,9 +1564,14 @@ impl Painter for TinySkiaPainter {
         tile: &crate::paint::painter::RepeatTile<'_>,
         shape: &PaintShape,
     ) {
-        let Some(pixmap) =
-            tiny_skia::PixmapRef::from_bytes(tile.pixels.data(), tile.width, tile.height)
-        else {
+        let premultiplied;
+        let bytes = if tile.premultiplied {
+            tile.pixels.data()
+        } else {
+            premultiplied = crate::image_cache::premultiply_rgba(tile.pixels.data());
+            &premultiplied[..]
+        };
+        let Some(pixmap) = tiny_skia::PixmapRef::from_bytes(bytes, tile.width, tile.height) else {
             return;
         };
         let quality = if tile.smooth {
