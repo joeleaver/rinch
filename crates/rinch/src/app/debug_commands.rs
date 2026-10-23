@@ -2577,7 +2577,8 @@ mod drop_files_1806_tests {
     /// a context that reported (0, 0) or the box's corner would fail.
     #[test]
     fn a_drop_reaches_the_target_under_the_point_as_an_os_drop_does() {
-        let dir = std::env::temp_dir().join(format!("rinch-drop-files-1806-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("rinch-drop-files-1806-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let real = dir.join("model.glb");
         std::fs::write(&real, b"glTF").unwrap();
