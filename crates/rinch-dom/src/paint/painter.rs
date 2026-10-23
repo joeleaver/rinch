@@ -128,6 +128,12 @@ pub enum BlendMode {
     /// such a layer inside the layer holding the element. Never elided at
     /// opacity 1.
     DestinationIn,
+    /// Erase what is beneath the layer where the layer is opaque, scaled by
+    /// its alpha (Porter-Duff `destination-out`): the layer is an eraser. A
+    /// `GameViewport` clears its box to transparent this way when paint
+    /// reaches it, so the compositor's layer under the UI shows there and
+    /// nothing painted before it does (#1866). Never elided at opacity 1.
+    DestinationOut,
 }
 
 // ── Image data ──────────────────────────────────────────────────────────────
@@ -339,6 +345,25 @@ pub trait Painter {
                 self.draw_image(&image, transform * tile.transform * at);
             }
         }
+        self.pop_layer();
+    }
+
+    /// Clear `shape` to transparent: erase what has been drawn there, as an
+    /// opaque fill composited `destination-out` would, through the open clips
+    /// and anti-aliased at its edges (#1866). Inside a layer it erases the
+    /// layer's own pixels.
+    ///
+    /// The default opens a [`BlendMode::DestinationOut`] layer over the
+    /// shape's bounding box and fills the shape in it (Vello has no per-draw
+    /// blend mode); the software painter erases in place, with no layer.
+    fn erase(&mut self, fill: Fill, transform: Affine, shape: &PaintShape) {
+        self.push_layer(
+            BlendMode::DestinationOut,
+            1.0,
+            transform,
+            &PaintShape::Rect(shape.bounding_box()),
+        );
+        self.fill_color(fill, transform, AlphaColor::<Srgb>::BLACK, shape);
         self.pop_layer();
     }
 

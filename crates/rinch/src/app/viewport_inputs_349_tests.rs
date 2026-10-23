@@ -227,8 +227,8 @@ fn a_frame_that_arrives_without_being_fresh_is_painted() {
 }
 
 /// The hole set alone: the same frame, no longer punching. A 2:1 frame in a
-/// 4:1 box leaves 100px bars either side, and a bar is the hole — the window's
-/// clear colour. A frame that punches none is fitted over an opaque black
+/// 4:1 box leaves 100px bars either side, and a bar is the hole — cleared to
+/// transparent, window base included (#1866). A frame that punches none is fitted over an opaque black
 /// backdrop instead (#354), so with the hole gone the bar is black.
 #[test]
 fn a_viewport_that_stops_punching_is_repainted_without_its_hole() {
@@ -238,7 +238,7 @@ fn a_viewport_that_stops_punching_is_repainted_without_its_hole() {
     paint(&mut app);
     assert!(is(pixel_at(&app, 220, 80), MAGENTA), "the frame");
     assert!(
-        is(pixel_at(&app, 60, 80), [255, 255, 255]),
+        pixel_at(&app, 60, 80)[3] == 0,
         "positive control: the bar is the hole, got {:?}",
         pixel_at(&app, 60, 80)
     );
@@ -320,8 +320,8 @@ fn every_viewport_punches_is_a_change_for_every_viewport() {
 
     let stats = frame(&mut app, None);
     assert!(
-        is(pixel_at(&app, 300, 130), [255, 255, 255]),
-        "the viewport punches through the card, got {:?} ({stats:?})",
+        pixel_at(&app, 300, 130)[3] == 0,
+        "the viewport clears the card and the window base under it, got {:?} ({stats:?})",
         pixel_at(&app, 300, 130)
     );
     assert_eq!(stats.get(Counter::RepaintedPx), 400 * 200, "{stats:?}");

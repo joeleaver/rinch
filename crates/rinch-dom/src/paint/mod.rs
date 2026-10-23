@@ -1267,6 +1267,9 @@ impl Painter for ClipTrackingPainter<'_> {
         self.inner
             .draw_alpha_mask(mask, width, height, color, transform);
     }
+    fn erase(&mut self, fill: Fill, transform: Affine, shape: &PaintShape) {
+        self.inner.erase(fill, transform, shape);
+    }
     fn push_clip(&mut self, fill: Fill, transform: Affine, shape: &PaintShape) {
         let bounds = transform
             .transform_rect_bbox(shape.bounding_box())
@@ -2220,43 +2223,207 @@ pub fn rect_from_painted_box(
     (x0, y0, x1 - x0, y1 - y0)
 }
 
-/// Find viewport descendant rects (absolute pixel positions) for hole-punching.
-/// Returns a list of viewport rects in physical pixel coordinates.
-fn find_viewport_rects(
+/// Clear the punching `data-viewport` node `node_id`'s border box (`rect`,
+/// rounded by its own `border-radius`) to transparent: the base-layer rule of
+/// #1866. Everything painted so far under the box — ancestor backgrounds,
+/// earlier siblings, the window base — is erased; what paints after it
+/// (the viewport's own border and children, later siblings, popups) draws
+/// over the compositor's layer as usual.
+///
+/// It is drawn where the node is painted, so it goes through the node's own
+/// clip chain and transform, and its damage is the node's own painted box.
+/// It replaced the holes cut into the backgrounds of *clipping* ancestors
+/// (`find_viewport_rects`, #974), which a non-clipping ancestor's background
+/// covered, and which were cut at the untransformed rect outside every clip
+/// (#1386).
+///
+/// `composited` is whether the frame is a compositor layer under the UI (a
+/// GPU window, an embed host) rather than drawn into the scene right after
+/// this (the software window's inline arm), for the transform warning.
+#[allow(clippy::too_many_arguments)]
+fn clear_viewport_box(
     tree: &NodeTree,
     node_id: RawNodeId,
+    node: &Node,
+    painter: &mut dyn Painter,
     scale: f64,
-    offset_x: f64,
-    offset_y: f64,
-    result: &mut Vec<Rect>,
+    rect: Rect,
+    node_transform: Affine,
+    composited: bool,
 ) {
-    let Some(node) = tree.get(node_id) else {
-        return;
-    };
-    let nx = offset_x + node.layout.x as f64 * scale;
-    let ny = offset_y + node.layout.y as f64 * scale;
+    #[cfg(debug_assertions)]
+    warn_where_the_viewport_cannot_be_the_base(tree, node_id, node, node_transform, composited);
+    #[cfg(not(debug_assertions))]
+    let _ = (tree, node_id, composited);
+    painter.erase(
+        Fill::NonZero,
+        node_transform,
+        &border_radii(node, scale).shape(rect),
+    );
+}
 
-    if let Some(viewport_name) = node.attributes.get("data-viewport") {
-        if viewport_punches(node, viewport_name) {
-            let vw = node.layout.width as f64 * scale;
-            let vh = node.layout.height as f64 * scale;
-            result.push(Rect::new(nx, ny, nx + vw, ny + vh));
-        }
-        return;
+/// What [`warn_where_the_viewport_cannot_be_the_base`] has said on this thread.
+#[cfg(debug_assertions)]
+#[derive(Default)]
+struct ViewportWarnings {
+    /// `(viewport name, problem)` pairs already warned about.
+    warned: HashSet<(String, &'static str)>,
+    /// The messages since the last [`take_viewport_warnings`].
+    log: Vec<String>,
+}
+
+#[cfg(debug_assertions)]
+thread_local! {
+    static VIEWPORT_WARNINGS: RefCell<ViewportWarnings> = RefCell::new(ViewportWarnings::default());
+}
+
+/// The base-layer warnings (#1866) logged on this thread since the last
+/// call, oldest first. Always empty in a release build, which neither looks
+/// nor logs. A test hook, not a stable API.
+#[doc(hidden)]
+pub fn take_viewport_warnings() -> Vec<String> {
+    #[cfg(debug_assertions)]
+    {
+        VIEWPORT_WARNINGS.with(|w| std::mem::take(&mut w.borrow_mut().log))
     }
-
-    // Account for scroll offset when recursing into children
-    let sx = node.scroll_offset.0 * scale;
-    let sy = node.scroll_offset.1 * scale;
-    // The box tree, not the element tree (#566) — see `box_tree_children`. A
-    // viewport hole inside an inline run would otherwise be unreachable.
-    for &child_id in crate::RinchDocument::box_tree_children(&tree.nodes, node_id).iter() {
-        find_viewport_rects(tree, child_id, scale, nx - sx, ny - sy, result);
+    #[cfg(not(debug_assertions))]
+    {
+        Vec::new()
     }
 }
 
-/// Whether the `data-viewport` node `node`, named `viewport_name`, cuts a hole
-/// through its ancestors' backgrounds this paint.
+/// `div#id.class1.class2`, for naming an element in a warning.
+#[cfg(debug_assertions)]
+fn describe_element(node: &Node) -> String {
+    let mut s = node.tag().unwrap_or("node").to_string();
+    if let Some(id) = node.attributes.get("id") {
+        s.push('#');
+        s.push_str(id);
+    }
+    if let Some(class) = node.attributes.get("class") {
+        for c in class.split_whitespace() {
+            s.push('.');
+            s.push_str(c);
+        }
+    }
+    s
+}
+
+/// The group effect `node` paints its subtree in, if any: the ones rinch
+/// paints as a layer over its content — `opacity` below 1, `mask-image`,
+/// and the `filter` functions paint approximates (`brightness`,
+/// `grayscale`). rinch parses no `mix-blend-mode`.
+#[cfg(debug_assertions)]
+fn group_effect(node: &Node) -> Option<String> {
+    let cs = &node.computed_style;
+    if cs.opacity < 1.0 {
+        Some(format!("`opacity: {}`", cs.opacity))
+    } else if !cs.mask_image.is_empty() {
+        Some("`mask-image`".to_string())
+    } else if cs.filter_brightness != 1.0 || cs.filter_grayscale > 0.0 {
+        Some("`filter`".to_string())
+    } else {
+        None
+    }
+}
+
+/// Debug builds: say once per viewport where #1866's rule cannot hold exactly.
+///
+/// - **A group effect** on the viewport or an ancestor ([`group_effect`]):
+///   the clear erases only the group's own pixels, and the group is then
+///   composited *over* what is beneath it, so that shows through.
+/// - **A transform other than a translation** on the viewport or an
+///   ancestor, when the frame is a compositor layer: the clear turns or
+///   scales with the element while the layer is composited axis-aligned at
+///   the viewport's box. (A software window draws the frame in the scene,
+///   under the same transform, so there it holds.)
+#[cfg(debug_assertions)]
+fn warn_where_the_viewport_cannot_be_the_base(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    node: &Node,
+    node_transform: Affine,
+    composited: bool,
+) {
+    let name = node
+        .attributes
+        .get("data-viewport")
+        .map(String::as_str)
+        .unwrap_or_default();
+    let seen = |kind: &'static str| {
+        VIEWPORT_WARNINGS.with(|w| w.borrow().warned.contains(&(name.to_string(), kind)))
+    };
+    let ancestors = || {
+        std::iter::successors(Some((node_id, node)), |(_, n)| {
+            let p = n.parent?;
+            Some((p, tree.get(p)?))
+        })
+    };
+    let mut warnings: Vec<(&'static str, String)> = Vec::new();
+    if !seen("group")
+        && let Some((id, effect)) = ancestors().find_map(|(id, n)| Some((id, group_effect(n)?)))
+    {
+        let who = if id == node_id {
+            "the viewport itself has".to_string()
+        } else {
+            format!(
+                "its ancestor `{}` has",
+                describe_element(tree.get(id).unwrap_or(node))
+            )
+        };
+        warnings.push((
+            "group",
+            format!(
+                "[rinch] GameViewport \"{name}\": {who} {effect}, which paints its subtree as a \
+                 group. The viewport clears its box only inside that group, and the group is \
+                 then composited over what is beneath it, so content behind the viewport shows \
+                 through over the game. Move the viewport out of that element, or put the \
+                 effect on its other children instead (#1866)."
+            ),
+        ));
+    }
+    let m = node_transform.as_coeffs();
+    let linear = (m[0] - 1.0).abs() > 1e-9
+        || m[1].abs() > 1e-9
+        || m[2].abs() > 1e-9
+        || (m[3] - 1.0).abs() > 1e-9;
+    if composited && linear && !seen("transform") {
+        let offender = ancestors()
+            .map(|(_, n)| n)
+            .find(|n| {
+                n.has_applied_transform() && {
+                    let [a, b, c, d, ..] = n.computed_style.transform.matrix;
+                    (a - 1.0).abs() > 1e-9
+                        || b.abs() > 1e-9
+                        || c.abs() > 1e-9
+                        || (d - 1.0).abs() > 1e-9
+                }
+            })
+            .unwrap_or(node);
+        warnings.push((
+            "transform",
+            format!(
+                "[rinch] GameViewport \"{name}\": `{}` has a `transform` other than a \
+                 translation (a rotation, scale or skew). The viewport's cleared box turns with \
+                 it, but the game's layer is composited axis-aligned at the viewport's box, so \
+                 the two do not line up. Keep transforms on the viewport and its ancestors to \
+                 translations (#1866).",
+                describe_element(offender)
+            ),
+        ));
+    }
+    for (kind, message) in warnings {
+        tracing::warn!("{message}");
+        VIEWPORT_WARNINGS.with(|w| {
+            let mut w = w.borrow_mut();
+            w.warned.insert((name.to_string(), kind));
+            w.log.push(message);
+        });
+    }
+}
+
+/// Whether the `data-viewport` node `node`, named `viewport_name`, clears its
+/// box for a compositor layer this paint ([`clear_viewport_box`], #1866).
 fn viewport_punches(node: &Node, viewport_name: &str) -> bool {
     // If ACTIVE_VIEWPORTS is set, only cut holes for viewports with active frames
     let active = ACTIVE_VIEWPORTS.with(|v| {
@@ -3854,14 +4021,27 @@ fn paint_node_unmasked(
                     let radii = border_radii(node, scale);
                     (radii.shape(rect), !radii.is_square())
                 };
-                // Except over a hole. A viewport that punches one — a
-                // `GameViewport`, which stamps no `data-viewport-ready` and is
-                // active whenever it has a frame — has had its ancestors'
-                // backgrounds cut away under it, and its letterbox *is* that
-                // hole: see-through on a transparent window, as it was when
-                // the frame was blitted over the finished pixels (#361).
+                // Except for a `GameViewport` (which stamps no
+                // `data-viewport-ready` and is active whenever it has a
+                // frame): it is the base layer (#1866), so it clears its box
+                // of everything painted before it instead, and its letterbox
+                // is that clear — see-through on a transparent window, as it
+                // was when the frame was blitted over the finished pixels
+                // (#361). The frame is drawn here, under the same transform,
+                // so no transform warns; a group effect still does.
                 let viewport_name = node.attributes.get("data-viewport").map(String::as_str);
-                if !viewport_name.is_some_and(|name| viewport_punches(node, name)) {
+                if viewport_name.is_some_and(|name| viewport_punches(node, name)) {
+                    clear_viewport_box(
+                        tree,
+                        node_id,
+                        node,
+                        painter,
+                        scale,
+                        rect,
+                        node_transform,
+                        false,
+                    );
+                } else {
                     painter.fill_color(
                         Fill::NonZero,
                         node_transform,
@@ -3938,8 +4118,7 @@ fn paint_node_unmasked(
                 painter.push_layer(BlendMode::Normal, opacity, node_transform, &bounds);
             }
 
-            // Handle overflow clipping — detect early so we can cut holes
-            // in the background for viewport descendants. (The scrollbar
+            // Handle overflow clipping. (The scrollbar
             // overlays at the bottom ask a different question — is this a
             // *scroll* container, `Node::scrolls_y`/`scrolls_x` — than the clip
             // bracket does.)
@@ -3948,7 +4127,6 @@ fn paint_node_unmasked(
             // `layer_bounds` and the dirty-region prune today, a hoisted
             // entry's clip chain in #324's second stage.
             let clip = clip_shape(node, scale, x, y);
-            let clips = clip.is_some();
 
             // Whether the background below is going to write a pixel at all.
             //
@@ -4020,15 +4198,10 @@ fn paint_node_unmasked(
             // [`intersects_dirty_region`] this takes the frame from 17.8ms of
             // GPU to 12.0ms. See card K43 for the full per-class table.
             //
-            // **The suppression applies to the clip layer and deliberately not
-            // to `clips`.** The two are one variable in the commit this came
-            // from, and that was wrong even there: `clips` is also the cheap
-            // gate on the viewport hole-punch walk below, and a box whose clip
-            // is elided still has to cut holes for any compositor viewport
-            // underneath it — eliding a layer that removes no pixels must not
-            // also stop the background being cut. So the shape goes to `None`,
-            // the fact stays true, and the pop at the bottom follows the push
-            // rather than the fact.
+            // The shape goes to `None` and the pop at the bottom follows the
+            // push. (Whether the box clips at all used to gate the viewport
+            // hole-punch walk too, so it had to survive the elision; a
+            // `GameViewport` now clears its own box, #1866.)
             //
             // **Both cases require a square clip, and that is not a detail.**
             // A rounded clip removes the corners *of its own box*, so "nothing
@@ -4073,26 +4246,17 @@ fn paint_node_unmasked(
             let clip = if useless { None } else { clip };
             let pushes_clip = clip.is_some();
 
-            // Find viewport descendants — their rects will be cut out of
-            // the background fill so the compositor layer shows through.
-            //
-            // Only worth walking the subtree for when there *is* a background
-            // fill or an inset shadow to cut them out of (#974): the holes
-            // have no other consumer, and `clips` is true of every
-            // `overflow: hidden` box on the page.
-            let mut viewport_holes = Vec::new();
-            let has_inset_shadow =
-                visible && node.computed_style.box_shadow.iter().any(|s| s.inset);
-            if clips && (paints_a_background || has_inset_shadow) {
-                find_viewport_rects(
-                    tree,
-                    node_id,
-                    scale,
-                    offset_x,
-                    offset_y,
-                    &mut viewport_holes,
-                );
-            }
+            // A `GameViewport` whose frame is a compositor layer under the UI
+            // is the base layer (#1866): it clears its box when paint reaches
+            // it, over its own background and inset shadow and under its
+            // border, so nothing painted before it shows there. Only while it
+            // is visible: a `visibility: hidden` viewport (one in a closed
+            // `Drawer`) is its own visual, and clears nothing (#854's paint
+            // half; the old hole was cut regardless).
+            let clears_for_viewport = node
+                .attributes
+                .get("data-viewport")
+                .is_some_and(|name| viewport_punches(node, name));
 
             // Only paint this element's own visuals if visible
             // (children may override with visibility: visible)
@@ -4113,31 +4277,15 @@ fn paint_node_unmasked(
                 }
 
                 // Get background from computed style (solid color or gradient).
-                // When viewport_holes is non-empty, we paint the background with
-                // holes cut out (EvenOdd fill) so compositor layers show through.
-                // `viewport_holes` is collected for a background that will be
-                // painted or an inset shadow (#974), so the background arm
-                // asks `paints_a_background` too.
                 if paints_a_background {
-                    // With viewport holes the background is one compound
-                    // path (outer shape + inner holes wound opposite, EvenOdd)
-                    // so compositor layers show through.
-                    let (bg_fill, bg_shape): (Fill, PaintShape) = if !viewport_holes.is_empty() {
-                        (
-                            Fill::EvenOdd,
-                            radii.path_with_holes(rect, &viewport_holes).into(),
-                        )
-                    } else {
-                        (Fill::NonZero, radii.shape(rect))
-                    };
                     background::paint_background(
                         painter,
                         tree,
                         &node.computed_style,
                         scale,
                         rect,
-                        bg_fill,
-                        &bg_shape,
+                        Fill::NonZero,
+                        &radii.shape(rect),
                         node_transform,
                     );
                 }
@@ -4156,8 +4304,23 @@ fn paint_node_unmasked(
                         radii,
                         node,
                         node_transform,
-                        &viewport_holes,
                         &tree.perf,
+                    );
+                }
+
+                // The base-layer clear (#1866): over everything painted so far
+                // in this box, the viewport's own background and inset shadow
+                // included, which are beneath the game too.
+                if clears_for_viewport {
+                    clear_viewport_box(
+                        tree,
+                        node_id,
+                        node,
+                        painter,
+                        scale,
+                        rect,
+                        node_transform,
+                        true,
                     );
                 }
 

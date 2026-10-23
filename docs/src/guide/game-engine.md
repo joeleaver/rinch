@@ -739,12 +739,45 @@ if let Some(rect) = ctx.viewport_rect("main") {
 }
 ```
 
-> **A hole with nothing behind it: `data-viewport-ready`.** Cutting the hole
-> removes the ancestors' background — `<body>`'s included, since the UA sheet
-> makes it `overflow-y: auto` — so on a transparent window a hole nothing fills
-> is see-through to the desktop, not to your app ([#186]). A viewport whose
+#### The viewport is the base layer
+
+**Nothing behind a `GameViewport` is ever visible.** Its box shows the game's
+pixels: when rinch paints the viewport it clears its box to transparent in the
+UI, erasing everything painted beneath it so far — ancestor backgrounds
+(whether or not they clip), earlier siblings, the window's base colour. What
+is painted *after* it draws over the game as usual: its own border, its
+children, later siblings, an element with a higher `z-index`, popups, your
+HUD. So a full-window panel with a background around the viewport needs no
+special treatment.
+
+The clear is the viewport's own shape — a `border-radius` on it rounds the
+game's corners, the UI covering them — and it is clipped by the viewport's
+clipping ancestors and moved by its transform, like any paint of the element.
+It holds on the desktop GPU window (the game is a layer under the UI) and in
+an embedded context (your host composites the game under rinch's
+`RinchOverlayRenderer` texture), and on the software window, which draws the
+frame in the scene right after the clear.
+
+Two things break the rule, and a **debug build warns once per viewport**,
+naming it and the element responsible:
+
+- **A group effect** on the viewport or an ancestor — `opacity` below 1,
+  `mask-image`, or `filter`. The clear happens inside the group, and the group
+  is then composited over what is beneath it, so that shows through over the
+  game. Put the effect on the viewport's siblings instead, or move the
+  viewport out of the element.
+- **A transform other than a translation** (a rotation, scale or skew) on the
+  viewport or an ancestor: the clear turns with the element, but the game's
+  layer is composited axis-aligned at the viewport's box. Keep the viewport's
+  transforms to translations. (The software window draws the frame under the
+  same transform, so there only the group warning applies.)
+
+> **A hole with nothing behind it: `data-viewport-ready`.** The clear removes
+> everything beneath the viewport, the window's base included, so on a
+> transparent window a hole nothing fills is see-through to the desktop, not
+> to your app ([#186]). A viewport whose
 > content can be *absent* opts out by stamping `data-viewport-ready="false"` on
-> the hole; paint then leaves the backgrounds alone and the node paints its own
+> the hole; paint then clears nothing and the node paints its own
 > `background`, which is the natural seat for a poster or an error affordance.
 > Set it back to `"true"` once there is something to show.
 >
@@ -775,7 +808,7 @@ if let Some(rect) = ctx.viewport_rect("main") {
 > path only: video is drawn in the scene on the GPU too (below), with the same
 > black bars the software backend paints. The GPU compositor **aspect-fits** a frame inside its viewport,
 > so a source whose aspect ratio differs from the box leaves letterbox or
-> pillarbox bars — inside the punched hole, but covered by no layer. That was
+> pillarbox bars — inside the cleared box, but covered by no layer. That was
 > see-through to the desktop for a video playing perfectly. The compositor now
 > pushes an opaque black layer over the **whole** viewport box under the frame's
 > own layer, so the bars come out black exactly as a browser paints them for
@@ -806,8 +839,9 @@ if let Some(rect) = ctx.viewport_rect("main") {
 > `DropdownMenu`, `Select`'s popup, tooltips, a HUD, DevTools — was overwritten.
 > GPU has no such problem: its layers go down *first* and the Vello UI
 > alpha-blends on top, so an opaque drawer already covers the layer there. But a
-> layer under the UI shows only through the backgrounds of *clipping* ancestors
-> (where paint cuts its hole), and takes no ancestor's opacity or transform, so
+> layer under the UI showed only through the backgrounds of *clipping* ancestors
+> (where paint then cut its hole; since #1866 the viewport clears its own box),
+> and took no ancestor's opacity or transform, so
 > since #1768 video is drawn in the scene on the GPU as on software: an element
 > like any other. Cost, measured on an integrated GPU (Radeon 890M): a 4K
 > full-window video is about 25 ms a frame in the scene against 6 ms as a layer;
@@ -840,10 +874,11 @@ if let Some(rect) = ctx.viewport_rect("main") {
 >   the active-viewport set and #186's filter reads "absent ⇒ do not punch". The
 >   node fills opaque black under the frame, and the `contain` fit plus that fill
 >   *are* #354's letterbox bars on this backend.
-> - **`GameViewport`** keeps its hole while it has a frame, as it always had: its
->   ancestors' backgrounds are cut away under it and no black is drawn, so where
->   the frame does not reach — a letterbox, or pixels the game left transparent —
->   is the hole, see-through on a transparent window.
+> - **`GameViewport`** keeps its hole while it has a frame: it is the base layer
+>   (above), so its box is cleared of everything painted beneath it and no black
+>   is drawn, and where the frame does not reach — a letterbox, or pixels the
+>   game left transparent — is the hole: see-through on a transparent window,
+>   black on an opaque one.
 >
 > The two are told apart by an explicit flag set at video's registration site,
 > **not** by the viewport's name — they share `create_render_surface_with_name`,

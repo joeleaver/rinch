@@ -970,6 +970,14 @@ impl RinchOverlayRenderer {
 /// scene to show through. Use [`RinchContext::viewport_rect`] to query
 /// the computed layout rect and render your game into that region.
 ///
+/// The viewport is the **base layer** (#1866): paint clears its box (its own
+/// `border-radius`, clipped and transformed as the element is) to transparent
+/// when it reaches it, so nothing painted beneath it — ancestor backgrounds,
+/// earlier siblings — covers the game, and anything painted after it — its
+/// children, later siblings, popups — draws over it. A debug build warns once
+/// where that cannot hold: the viewport inside an `opacity < 1`, `mask-image`
+/// or `filter` group, or under a rotation, scale or skew.
+///
 /// The component renders as a transparent, **hittable** `div`. Hittability is
 /// what routes input: [`RinchContext::wants_mouse`] hit-tests the DOM and walks
 /// up from the hit node looking for `data-viewport`, so a pointer that lands on

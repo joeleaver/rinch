@@ -1557,6 +1557,18 @@ impl Painter for TinySkiaPainter {
         self.fill_with_paint(fill, transform, &paint, shape);
     }
 
+    /// In place, with no layer: an opaque anti-aliased fill blended
+    /// `destination-out` straight into the target through the clip mask.
+    fn erase(&mut self, fill: Fill, transform: Affine, shape: &PaintShape) {
+        let mut paint = Paint {
+            anti_alias: true,
+            blend_mode: tiny_skia::BlendMode::DestinationOut,
+            ..Paint::default()
+        };
+        paint.set_color_rgba8(0, 0, 0, 255);
+        self.fill_with_paint(fill, transform, &paint, shape);
+    }
+
     fn fill_repeating(
         &mut self,
         fill: Fill,
@@ -2232,8 +2244,10 @@ impl Painter for TinySkiaPainter {
     ) {
         // A `Plus` layer at opacity 1 still adds rather than covers, so it
         // never takes the fast path below.
-        if !matches!(blend, BlendMode::Plus | BlendMode::DestinationIn)
-            && (opacity - 1.0).abs() < f32::EPSILON
+        if !matches!(
+            blend,
+            BlendMode::Plus | BlendMode::DestinationIn | BlendMode::DestinationOut
+        ) && (opacity - 1.0).abs() < f32::EPSILON
         {
             // Near-opaque: compositing a layer back at this alpha changes no
             // pixel, so no layer is allocated. The push still has to happen —
@@ -2279,6 +2293,7 @@ impl Painter for TinySkiaPainter {
         let blend = match blend {
             BlendMode::Plus => tiny_skia::BlendMode::Plus,
             BlendMode::DestinationIn => tiny_skia::BlendMode::DestinationIn,
+            BlendMode::DestinationOut => tiny_skia::BlendMode::DestinationOut,
             BlendMode::Normal | BlendMode::Saturation => tiny_skia::BlendMode::SourceOver,
         };
         self.open_layer(opacity, blend);

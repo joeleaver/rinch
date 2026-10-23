@@ -226,15 +226,15 @@ fn ready_false_fills_the_hole() {
     submit(&game, MAGENTA, 40, 20);
     paint(&mut app);
     assert!(
-        is(pixel_at(&app, 60, 80), [255, 255, 255]),
-        "control: bar is the hole {:?}",
+        pixel_at(&app, 60, 80)[3] == 0,
+        "control: bar is the hole (cleared, #1866) {:?}",
         pixel_at(&app, 60, 80)
     );
     vps[0].set_attribute("data-viewport-ready", "false");
     settle(&mut app);
     let stats = paint(&mut app);
     assert!(
-        !is(pixel_at(&app, 60, 80), [255, 255, 255]),
+        pixel_at(&app, 60, 80)[3] != 0,
         "the hole is still cut after ready=false ({stats:?}) {:?}",
         pixel_at(&app, 60, 80)
     );
@@ -312,10 +312,7 @@ fn a_swap_of_which_viewport_punches_at_constant_count_is_a_change() {
         f
     };
     paint_with(&mut app, only("rv-hswap-a"));
-    assert!(
-        is(pixel_at(&app, 40, 50), [255, 255, 255]),
-        "control: a punches"
-    );
+    assert!(pixel_at(&app, 40, 50)[3] == 0, "control: a punches");
     assert!(
         is(pixel_at(&app, 40, 150), [0, 0, 0]),
         "control: b does not"
@@ -329,7 +326,7 @@ fn a_swap_of_which_viewport_punches_at_constant_count_is_a_change() {
         pixel_at(&app, 40, 50)
     );
     assert!(
-        is(pixel_at(&app, 40, 150), [255, 255, 255]),
+        pixel_at(&app, 40, 150)[3] == 0,
         "b started: {:?}",
         pixel_at(&app, 40, 150)
     );

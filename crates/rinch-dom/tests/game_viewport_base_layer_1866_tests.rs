@@ -113,7 +113,11 @@ fn a_later_sibling_and_a_popup_still_cover_the_viewport() {
          background: rgb(255,0,0)\"></div>\
          </div>",
     );
-    assert_eq!(rgba(&p, 60, 110), RED, "the later sibling over the viewport");
+    assert_eq!(
+        rgba(&p, 60, 110),
+        RED,
+        "the later sibling over the viewport"
+    );
     assert_eq!(rgba(&p, 140, 40), BLUE, "the popup over the viewport");
     assert_eq!(rgba(&p, 60, 60), CLEAR, "the viewport elsewhere");
     assert_eq!(rgba(&p, 250, 60), GREEN, "the container beside it");
@@ -185,6 +189,19 @@ fn a_viewport_that_is_not_ready_clears_nothing() {
         "<div style=\"background: rgb(0,128,0); padding: 20px\">\
          <div data-viewport=\"base-g\" data-viewport-ready=\"false\" \
          style=\"width: 100px; height: 60px\"></div></div>",
+    );
+    assert_eq!(rgba(&p, 70, 50), GREEN);
+}
+
+/// A `visibility: hidden` viewport (one in a closed `Drawer`) clears nothing:
+/// a hidden box draws none of its own visuals. The old hole was cut through
+/// a clipping ancestor regardless (#854).
+#[test]
+fn a_hidden_viewport_clears_nothing() {
+    let p = painted(
+        "<div style=\"background: rgb(0,128,0); padding: 20px; overflow: hidden\">\
+         <div data-viewport=\"base-h\" style=\"width: 100px; height: 60px; \
+         visibility: hidden\"></div></div>",
     );
     assert_eq!(rgba(&p, 70, 50), GREEN);
 }

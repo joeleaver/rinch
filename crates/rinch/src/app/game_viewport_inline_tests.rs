@@ -273,6 +273,44 @@ fn video_keeps_its_black_bars_beside_a_game_viewport() {
     unregister_render_surface(game.id());
 }
 
+/// #1866 on the software window: the game is the base layer, so where its
+/// frame does not reach (a letterbox bar) nothing painted before it shows —
+/// here a white card that does **not** clip, whose background used to be cut
+/// only when it did (#974). The frame itself is drawn over the clear.
+#[test]
+fn a_game_letterbox_clears_a_non_clipping_ancestors_background() {
+    let game = create_render_surface_with_name("game-1866");
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "width: 800px; height: 600px;");
+        let card = scope.create_element("div");
+        card.set_attribute(
+            "style",
+            "width: 400px; height: 100px; background-color: white;",
+        );
+        let viewport = scope.create_element("div");
+        viewport.set_attribute("style", "width: 100%; height: 100%;");
+        viewport.set_attribute("data-viewport", "game-1866");
+        card.append_child(&viewport);
+        root.append_child(&card);
+        root
+    });
+    app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+
+    // A 2:1 frame in a 4:1 box: 100px bars either side.
+    submit(&game, MAGENTA);
+    paint(&mut app);
+
+    assert!(is(pixel_at(&app, 200, 50), MAGENTA), "the game frame");
+    assert_eq!(
+        pixel_at(&app, 40, 50),
+        [0, 0, 0, 0],
+        "the bar is cleared, not the card's white"
+    );
+
+    unregister_render_surface(game.id());
+}
+
 // ── Cost: the inline frame against the blit it replaced (review of PR #1002) ──
 //
 // `cargo test --release -p rinch --features embed,theme,clipboard --lib --

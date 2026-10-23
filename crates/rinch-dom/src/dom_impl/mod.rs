@@ -716,7 +716,7 @@ impl RinchDocument {
             }
 
             /* A `data-viewport` node is a compositing hole: the game/video frame
-               shows through it (find_viewport_rects punches the background,
+               shows through it (paint clears the node's box when it reaches it, #1866,
                unless the node stamps `data-viewport-ready="false"` to say
                nothing will fill the hole yet — issue #186) and a
                pointer landing on it belongs to whatever renders into it, not to

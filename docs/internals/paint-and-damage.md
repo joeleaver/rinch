@@ -209,15 +209,39 @@ whole of #416, with no opt-in. Only the polarity follows the palette, so a
 `color: red` container does not get a red thumb; `color` is read rather than
 `background-color` because backgrounds are transparent by default.
 
-**Viewport holes.** A `data-viewport` node is a compositing hole: `find_viewport_rects`
-(`crates/rinch-dom/src/paint/mod.rs`) cuts its rect out of every clipping ancestor's
-background fill, `<body>` included (the UA sheet makes it `overflow-y: auto`), so the
-layer underneath shows through. Only the part of the rect inside the ancestor's
-(rounded) shape is cut (`BorderRadii::path_with_holes`, #1030), for its background and its
-inset shadow's clip alike: a hole reaching past a rounded corner or past the box used to
-fill that part under `EvenOdd`, painting outside the box. On a **transparent** window a hole nothing fills is
+**Viewport holes: a `GameViewport` is the base layer (#1866).** Nothing painted beneath a
+punching `data-viewport` node in paint order shows inside its box: when paint reaches the
+node it **erases** its border box, rounded by its own `border-radius`, to transparent
+(`clear_viewport_box` → `Painter::erase`, in `crates/rinch-dom/src/paint/mod.rs`) — over its
+own background and inset shadow, under its border and children. Ancestor backgrounds,
+earlier siblings and the window base go; later siblings, a higher `z-index`, popups draw over
+it as usual. The erase is drawn at the node, so it goes through the node's own clip chain and
+transform, and it lies inside the node's painted box (the damage #349 names). `Painter::erase`
+is an opaque fill composited `destination-out`: Vello opens a `BlendMode::DestinationOut`
+layer (it has no per-draw blend mode), the software painter blends the fill in place (no
+layer, so no perf counter moves for it). Software windows erase too, in the inline arm, before
+the frame is drawn, so a letterbox is the erase: on an opaque software window it is
+presented black (softbuffer drops alpha; it was the window's white base before), the colour
+the GPU compositor's backdrop gives a `GameViewport` frame's bars (#354). A `visibility: hidden` viewport erases nothing (#854's paint half). Where it used to be
+a hole cut out of the backgrounds of **clipping** ancestors only (`find_viewport_rects`, #974,
+with `BorderRadii::path_with_holes` keeping the cut inside a rounded box, #1030): a
+non-clipping ancestor's background covered the game, the cut ignored the viewport's own
+radius, and it was cut at the untransformed rect outside every clip (#1386). An arc pixel of a
+rounded clipping ancestor keeps `c (1 - c)` of its background at coverage `c` (the two edges
+conflate; at most a quarter). **Where the rule cannot hold** a debug build warns once per
+viewport (`tracing::warn!`, and `paint::take_viewport_warnings` for tests), naming the viewport
+and the element: a **group effect** on the viewport or an ancestor (`opacity < 1`,
+`mask-image`, and the `filter` functions paint approximates; rinch parses no
+`mix-blend-mode`), where the erase clears only the group's own pixels and the group is then
+composited over what is beneath it; and, for a compositor layer only, a **transform other
+than a translation**, where the erase turns or scales while the layer is blitted axis-aligned.
+Pins: `crates/rinch-dom/tests/game_viewport_base_layer_1866_tests.rs` (software painter),
+`crates/rinch/src/app/game_viewport_base_layer_1866_tests.rs` (desktop GPU window, `#[ignore]`d
+`gpu_…`), `crates/rinch/tests/embed_game_viewport_base_layer_1866.rs` (`RinchOverlayRenderer`,
+`#[ignore]`d `gpu_…`), `game_viewport_inline_tests::a_game_letterbox_clears_a_non_clipping_ancestors_background`.
+On a **transparent** window a hole nothing fills is
 see-through to the desktop, so a viewport whose content can be absent opts out by
-stamping **`data-viewport-ready="false"`** — paint then leaves the backgrounds alone and
+stamping **`data-viewport-ready="false"`** — paint then erases nothing and
 the node paints its own `background` (a placeholder, poster, or error affordance). The
 attribute is an **opt-out and absence means ready**: `GameViewport` stamps nothing and
 punches unconditionally, unchanged. `VideoViewport` opts in — it stays `"false"` until
@@ -244,11 +268,10 @@ what that node draws with the node untouched. The shell hands every paint's sets
 (`ViewportPaintInputs`) and marks paint-dirty the viewport nodes whose membership in either
 set changed (every viewport node on a change between `None` and a set), plus
 `request_repaint`: the viewport's painted, clipped box on software, a re-encoded scene on
-GPU, and nothing at all on a frame whose sets are the last one's. **That box is the frame,
-and the hole only where the hole lies inside it**: `find_viewport_rects` cuts a hole without
-the node's clip chain or transform, so under a clipping ancestor the viewport is partly
-scrolled out of, or under a transform, hole pixels outside the damage outlive the surface
-until something else repaints them (#1386). Before, the cached pixmap
+GPU, and nothing at all on a frame whose sets are the last one's. **That box is the frame
+and the hole**: since #1866 the hole is the node's own erase, through its clip chain and
+transform (it used to be cut out of ancestor backgrounds at the untransformed rect, and hole
+pixels outside the damage outlived the surface, #1386). Before, the cached pixmap
 or scene kept the last frame and its hole until something unrelated repainted that area. A
 shell that calls `rinch_dom::paint::set_active_viewports` itself, around the app, gets none
 of this. `unregister_render_surface` also asks the window for a redraw when it removed a

@@ -180,6 +180,8 @@ mod focus_registry_reissued_id_1490_tests;
 mod font_tests;
 #[cfg(test)]
 mod frozen_component_box_tests;
+#[cfg(all(test, feature = "gpu"))]
+mod game_viewport_base_layer_1866_tests;
 #[cfg(all(test, software_shell, feature = "desktop"))]
 mod game_viewport_inline_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
@@ -5746,12 +5748,11 @@ impl RinchApp {
     /// says so: a surface that unregisters while its node stays in the
     /// document is the plain case. What is marked is those nodes, so the
     /// frame stays a partial one, and the damage is each node's painted box,
-    /// clipped as any node's is. That covers the frame, and the hole where the
-    /// hole lies inside that box. It does not where the hole reaches further:
-    /// `find_viewport_rects` cuts it without the node's clip chain or
-    /// transform, so under a clipping ancestor the viewport is partly scrolled
-    /// out of, or under a transform, hole pixels outside the damage outlive
-    /// the surface until something else repaints them (#1386).
+    /// clipped as any node's is. That covers the frame and the hole alike:
+    /// since #1866 the hole is the node clearing its own box when paint
+    /// reaches it, through its clip chain and transform, so it lies inside
+    /// that box (it used to be cut out of ancestor backgrounds at the
+    /// untransformed rect, outside the damage, #1386).
     ///
     /// A change between `None` and a set marks every viewport node, whether or
     /// not its own hole changed. An unchanged set (every ordinary frame)
