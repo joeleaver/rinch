@@ -312,3 +312,51 @@ fn k_a_positioned_descendant_is_masked_too() {
         3,
     );
 }
+
+/// Review of #1811: the background tile cache was keyed by raster size only,
+/// while stop positions are absolute lengths in the tile's own space. Box A's
+/// 40px tile and box B's 20px tile under `scale(2)` both rasterise at 40x40,
+/// so B took A's tile (black 0..5 of 40 instead of 0..5 of 20) and drew white
+/// at device x = 7.
+#[test]
+fn l_tiles_of_one_raster_size_and_different_tile_sizes_are_not_shared() {
+    let css = "html, body { margin: 0; background: #fff; }
+div { position: absolute; left: 0; }
+#a { top: 0; width: 200px; height: 40px; background: linear-gradient(90deg, black 0 5px, white 5px); background-size: 40px 40px; }
+#b { top: 100px; width: 100px; height: 20px; background: linear-gradient(90deg, black 0 5px, white 5px); background-size: 20px 20px; transform: scale(2); transform-origin: 0 0; }";
+    let alone = paint_case(css, &["b"], 300, 200);
+    assert_eq!(px(&alone, 7, 110), [0, 0, 0]);
+    let both = paint_case(css, &["a", "b"], 300, 200);
+    assert_eq!(px(&both, 7, 10), [255, 255, 255]);
+    assert_eq!(px(&both, 7, 110), [0, 0, 0]);
+}
+
+/// Review of #1811: a repeating radial gradient whose period is rotated to
+/// start at radius 0 must end the period with the colour just *before* that
+/// point. `red -5px, red 0, blue 0, blue 15px` is red from radius 15 to 20;
+/// Chrome 155's pixels along the radius.
+#[test]
+fn m_a_repeating_radial_period_closes_on_the_colour_before_its_start() {
+    let css = "html, body { margin: 0; background: #fff; }
+#r { position: absolute; left: 0; top: 0; width: 100px; height: 100px;
+  background: repeating-radial-gradient(circle at 50px 50px, red -5px, red 0px, blue 0px, blue 15px); }";
+    let p = paint_case(css, &["r"], 100, 100);
+    let (red, blue) = ([255, 0, 0], [0, 0, 255]);
+    expect(
+        &p,
+        &[
+            ((52, 50), blue),
+            ((60, 50), blue),
+            ((64, 50), blue),
+            ((66, 50), red),
+            ((67, 50), red),
+            ((68, 50), red),
+            ((69, 50), red),
+            ((71, 50), blue),
+            ((80, 50), blue),
+            ((86, 50), red),
+            ((87, 50), red),
+        ],
+        3,
+    );
+}
