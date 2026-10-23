@@ -264,3 +264,57 @@ fn the_files_an_editor_hands_back_carry_the_drop_point() {
     assert_eq!((ctx.mouse_x, ctx.mouse_y), (44.0, 22.0));
     assert_box(&ctx, (7.0, 9.0, 700.0, 500.0));
 }
+
+/// Issue #1822: an `ondropfiles` handler (#1771) reads the same context an
+/// `onfiledrop` one does — the drop point and its own element's box, not the
+/// child the drop landed on.
+#[test]
+fn an_ondropfiles_handler_reads_the_drop_point_and_its_elements_box() {
+    let d = std::env::temp_dir().join(format!("rinch-1822-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    let glb = d.join("model.glb");
+    std::fs::write(&glb, b"glTF").unwrap();
+
+    type FilesSeen = Rc<RefCell<Vec<(Vec<String>, ClickContext)>>>;
+    let seen: FilesSeen = Rc::default();
+    let s = seen.clone();
+    let mut app = app_of(move |scope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "position: relative; width: 800px; height: 600px");
+        let target = scope.create_element("div");
+        target.set_attribute(
+            "style",
+            "position: absolute; left: 120px; top: 70px; width: 200px; height: 100px",
+        );
+        let child = scope.create_element("div");
+        child.set_attribute("style", "margin: 10px; height: 40px");
+        target.append_child(&child);
+        let s = s.clone();
+        let id = scope.register_files_drop_handler(move |files| {
+            let names = files.iter().map(|f| f.name().to_string()).collect();
+            s.borrow_mut()
+                .push((names, rinch_core::events::get_click_context()));
+        });
+        target.set_attribute("data-ondropfiles", &id.0.to_string());
+        root.append_child(&target);
+        root
+    });
+    poison();
+    app.handle_event(
+        PlatformEvent::FileDropped {
+            paths: vec![glb],
+            position: (141.0, 89.0),
+        },
+        VP,
+        1.0,
+    );
+    let got = seen.borrow().clone();
+    let _ = std::fs::remove_dir_all(&d);
+    assert_eq!(got.len(), 1, "the handler ran once");
+    assert_eq!(got[0].0, vec!["model.glb".to_string()]);
+    let ctx = got[0].1;
+    assert_eq!((ctx.mouse_x, ctx.mouse_y), (141.0, 89.0));
+    assert_box(&ctx, (120.0, 70.0, 200.0, 100.0));
+    assert_eq!((ctx.viewport_width, ctx.viewport_height), (800.0, 600.0));
+    assert_eq!(ctx.button, MouseButton::Left);
+}

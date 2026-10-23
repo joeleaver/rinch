@@ -361,7 +361,10 @@ fn importer() -> NodeHandle {
 - **Drops.** `ondropfiles: move |files: Vec<LocalFile>| …` on any element
   takes files dropped from the OS onto it or a descendant, on the desktop and
   on the web, and reads the drop point through `get_click_context()` as
-  `onfiledrop` does. The nearest element with a drop handler takes the drop;
+  `onfiledrop` does: `mouse_x`/`mouse_y` where the files were dropped (the
+  frame clicks use: logical window px on the desktop, client px in a browser),
+  `element_*` the box of the element carrying `ondropfiles`, the viewport size
+  and the modifiers held. The nearest element with a drop handler takes the drop;
   one carrying both `onfiledrop` (paths, desktop only) and `ondropfiles` gets
   both. Nested zones resolve the same way on both platforms: a drop on an
   inner `onfiledrop`-only zone inside an `ondropfiles` one goes to the inner
@@ -374,7 +377,7 @@ fn importer() -> NodeHandle {
   script of its own that cancels the `drop` (`preventDefault`) before it gets
   there silences `ondropfiles`.
 
-`onfiledrop` (`Vec<PathBuf>`) and `rinch::dialogs` are unchanged and remain
+`onfiledrop` (`Vec<PathBuf>`) and the `rinch::dialogs` file pickers are unchanged and remain
 the desktop-only, path-based forms.
 
 **Testing a drop.** With the `debug` feature, the rinch MCP server's
@@ -390,7 +393,8 @@ directly needs the MCP server disconnected first.
 
 ## File Dialogs
 
-Enable with: `features = ["file-dialogs"]`
+Enable with: `features = ["file-dialogs"]` (natively; a browser build has the
+message dialogs without it)
 
 Native file dialogs for opening, saving, and folder selection, and message
 dialogs (alert, confirm). In the browser only the message dialogs exist — see
@@ -485,7 +489,8 @@ if delete {
 
 **In the browser** (`wasm32`), `message(..)` with `show`, `confirm` and `ask` is
 the page's own `window.alert` / `window.confirm`: the same call, synchronous as
-natively, and `file-dialogs` links no crate there. The browser draws no title
+natively. In a browser build `rinch::dialogs` needs no feature: a web build
+without `file-dialogs` has it, and `file-dialogs` links no crate there. The browser draws no title
 (it becomes the message's first line) and no level icon, and `ask`'s buttons
 read OK / Cancel (OK is yes). `confirm` answers `false` when the browser
 suppresses the dialog. The file and folder pickers are native-only: a browser
@@ -1239,6 +1244,13 @@ names everywhere, which is Windows' rule: non-empty, none of
 `/ \ : * ? " < > |` or a control character, not ending in `.` or a space, and
 not `.`, `..` or a device name (`CON`, `NUL`, `COM1`, … with any extension) —
 checked on every target, so a name that works on one works on all.
+On Linux and macOS an `FsStore`'s files are readable by the user alone (mode
+`0600`, the directories it creates `0700`, whatever the umask), so a store can
+keep a session token; `open_app_store` also makes its store directory `0700` if
+it already exists, and an `FsStore` opened on an existing directory leaves that
+directory's mode as it is. A file written before is made `0600` by its next
+`put`. On Windows the files take the permissions of the directory they are in,
+and the user's data directory is the user's own.
 The native future never waits, so
 any executor (or a one-poll `block_on`) runs it.
 

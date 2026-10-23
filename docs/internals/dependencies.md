@@ -206,6 +206,31 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     (#1585), and the `text-overflow: ellipsis` rebuild, which refuses the
     per-line cut for a paragraph with a tab and draws it one space wide in the
     whole cut (#1586). `tests/tab_stop_1122_tests.rs` is the pin.
+  - **parley has no per-span padding; rinch pushes edge boxes** (#1426). A
+    `display: inline` element's inline-start margin + border + padding is a
+    zero-height in-flow `InlineBox` before its content and its inline-end ones
+    one after (`IfcText::push_edge_box`, ids `ifc::EDGE_BOX` | owner, inside 32
+    bits so a 32-bit target cannot read one as a node id), so what follows
+    moves by them, the start ones stay on the first line and the end ones on
+    the last (`box-decoration-break: slice`), and right to left takes the
+    right side first. They hold no text bytes: flat offsets, the DOM↔flat maps
+    and the editor's caret maps are unchanged, and a byte's caret is drawn
+    before the box at it (`|x` inside a span outside its start padding,
+    `|tail` after it inside its end padding; the caret rule is part 2 of
+    #1426). **Every walker of a layout's inline boxes that maps a box to a
+    node asks `ifc::is_edge_box` first** (positions, paint, layer bounds,
+    span fragments, text queries). parley 0.11.1 allows a break after every
+    in-flow box and before one that does not fit, which is wrong for an edge
+    box, so a paragraph with a soft wrap next to one takes the hang pass
+    (`any_line_split_at_edge`), and a line parley ended where CSS does not
+    break (`edge_break_allowed`: after the run's end boxes and before its
+    start boxes, at a UAX #14 opportunity of the text around them, not after
+    `nowrap` text) is committed again by length at the last allowed break
+    that fits, else the first (`rebreak_at_edge`) — one extra break of such
+    a paragraph per layout. A percentage margin or padding counts 0 and a
+    negative total is clamped to 0 (Chrome lets a negative margin pull the
+    content back). A split inline (#513) gets no edge boxes.
+    `tests/inline_edge_room_1426_tests.rs` is the pin.
 - **skrifa** - read directly by rinch-dom only to size a text control from its font's OS/2 and `head` tables (#1177). Pinned at **0.44**, the version parley 0.11.1 depends on; parley does not re-export it, so a parley bump that moves skrifa silently builds a second copy unless this pin moves with it.
 - **vello** - 2D GPU rendering via wgpu (GPU mode, enabled with `features = ["gpu"]`)
 - **tiny-skia** - 2D software rendering (default mode, no GPU required)

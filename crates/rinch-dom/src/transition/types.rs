@@ -155,6 +155,22 @@ impl TransitionProperty {
         matches!(self, Self::FontSize | Self::All)
     }
 
+    /// Whether this property is part of a `display: inline` element's edge
+    /// boxes (#1426): its horizontal margins, borders and paddings take room
+    /// on its lines, so a frame of one re-measures the text around it. Asked
+    /// only of an inline element; a block's padding is a Taffy property.
+    pub fn changes_inline_edge(&self) -> bool {
+        matches!(
+            self,
+            Self::PaddingLeft
+                | Self::PaddingRight
+                | Self::MarginLeft
+                | Self::MarginRight
+                | Self::BorderLeftWidth
+                | Self::BorderRightWidth
+        )
+    }
+
     /// Whether a transition on this property animates an inset (`left`,
     /// `top`, `right`, `bottom`).
     ///

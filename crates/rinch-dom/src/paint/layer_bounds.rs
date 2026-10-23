@@ -981,8 +981,8 @@ impl Walk<'_> {
             // column of identical cells whether the pill was clipped followed
             // how each cell's height rounded against its line.
             if !inline.background_spans.is_empty() {
-                super::text::inline_background_rects(self.tree, inline, self.scale, |_, r| {
-                    reach = reach.union(r + Vec2::new(content_x, content_y));
+                super::text::inline_background_rects(self.tree, inline, self.scale, |frag| {
+                    reach = reach.union(frag.rect + Vec2::new(content_x, content_y));
                 });
             }
             extent = extent.union(Extent::Within(transform.transform_rect_bbox(reach)));
@@ -1157,6 +1157,9 @@ impl Walk<'_> {
                     let parley::layout::PositionedLayoutItem::InlineBox(positioned) = item else {
                         continue;
                     };
+                    if crate::ifc::is_edge_box(positioned.id) {
+                        continue;
+                    }
                     acc = acc.union(self.node(
                         positioned.id as RawNodeId,
                         content_x,

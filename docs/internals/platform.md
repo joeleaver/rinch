@@ -884,7 +884,10 @@ would break CSS semantics and make desktop diverge from rinch-web.
   `native` (rfd, every dialog) and `web` (wasm32: `message` /
   `MessageDialogBuilder` / `MessageLevel` over `window.alert` /
   `window.confirm`). `rfd` is a `cfg(not(target_arch = "wasm32"))` dependency,
-  so `file-dialogs` on wasm links no crate. Pin:
+  so `file-dialogs` on wasm links no crate, and the module is compiled on
+  wasm32 with or without that feature (`lib.rs`:
+  `cfg(any(feature = "file-dialogs", target_arch = "wasm32"))`, #1821). Pin
+  (built without `file-dialogs`, rinch-web's dev-dependency):
   `rinch-web/tests/confirm_dialog_1773.rs` (stubs `window.confirm`/`alert`; a
   real one would block headless Chrome).
 - **`rinch::init_logging()`** (`crates/rinch/src/logging.rs`): desktop (and
@@ -920,3 +923,13 @@ would break CSS semantics and make desktop diverge from rinch-web.
   its object store only in `onupgradeneeded`, which an existing database never
   fires: a second store name in one database is never created
   (`rinch-storage/tests/idb.rs::a_second_store_in_an_existing_database_is_not_created`).
+- **Owner-only `FsStore` files** (#1819, `crates/rinch-storage/src/native.rs`):
+  on Unix each `put`'s temp file is opened `create_new` with mode `0600`
+  (`OpenOptionsExt::mode`, so the mode is there from creation and the umask
+  can only narrow it), then renamed into place, so a file written with another
+  mode is replaced by a `0600` one at its next `put`; `FsStore::open` creates
+  missing directories with `DirBuilder` mode `0700` and leaves an existing
+  base alone; `open_app_store` `chmod`s its own store directory to `0700`
+  (`native::restrict_dir`), which covers files not written since. Windows:
+  nothing set, the parent's inherited ACL applies. Pin, its own binary because
+  it sets the process umask to 0: `rinch-storage/tests/owner_only_1819.rs`.

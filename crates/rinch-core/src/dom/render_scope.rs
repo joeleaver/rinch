@@ -1043,7 +1043,9 @@ impl RenderScope {
 
     /// Register an `ondropfiles` handler (issue #1771) and return its id: the
     /// files dropped from the OS onto an element carrying `data-ondropfiles`,
-    /// as [`LocalFile`](crate::file::LocalFile)s.
+    /// as [`LocalFile`](crate::file::LocalFile)s. While it runs,
+    /// [`get_click_context`](crate::events::get_click_context) holds the drop
+    /// point and that element's box, on the desktop and on the web (#1822).
     #[doc(hidden)]
     pub fn register_files_drop_handler<F: Fn(Vec<crate::file::LocalFile>) + 'static>(
         &mut self,

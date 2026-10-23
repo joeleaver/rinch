@@ -143,8 +143,93 @@ pub(crate) fn has_inline_background(cs: &crate::computed_style::ComputedStyle) -
     cs.background_color().is_some_and(|c| c.components[3] > 0.0)
 }
 
+/// The bit an **edge box**'s parley id carries (#1426).
+///
+/// parley 0.11.1 has no per-span padding, so the room a `display: inline`
+/// element's inline-start margin, border and padding take on its first line,
+/// and its inline-end ones on its last, is an `InlineBox` of that width and
+/// no height pushed before and after its content
+/// ([`IfcText::push_edge_box`]). Such a box holds no node: its id is this bit,
+/// [`EDGE_BOX_END`] for the end box, and the owner's node id, all inside 32
+/// bits so that `id as usize` cannot name a real node on a 32-bit target
+/// either. Every walker of a layout's inline boxes that maps a box to a node
+/// asks [`is_edge_box`] first.
+pub const EDGE_BOX: u64 = 1 << 31;
+/// Set with [`EDGE_BOX`] on an element's inline-end box.
+pub const EDGE_BOX_END: u64 = 1 << 30;
+
+/// Whether an inline box id is an edge box ([`EDGE_BOX`]) rather than an
+/// atomic inline's node id.
+pub fn is_edge_box(id: u64) -> bool {
+    id & EDGE_BOX != 0
+}
+
+/// The owner of an edge box and whether it is the inline-end one.
+pub(crate) fn edge_box_owner(id: u64) -> Option<(usize, bool)> {
+    is_edge_box(id).then_some(((id & (EDGE_BOX_END - 1)) as usize, id & EDGE_BOX_END != 0))
+}
+
+/// An edge box's id ([`EDGE_BOX`]).
+fn edge_box_id(owner: usize, end: bool) -> u64 {
+    debug_assert!((owner as u64) < EDGE_BOX_END);
+    EDGE_BOX | if end { EDGE_BOX_END } else { 0 } | (owner as u64 & (EDGE_BOX_END - 1))
+}
+
+/// The room a `display: inline` element takes before its content on its
+/// first line and after it on its last (#1426): its inline-start and
+/// inline-end margin + border + padding, in CSS px, `(start, end)`. With
+/// `ltr` false the start is the right side. A percentage margin or padding is
+/// taken as 0 (its basis is the containing block's width, which the IFC does
+/// not know when it is built), and a negative total as 0.
+pub(crate) fn inline_edge_widths(
+    cs: &crate::computed_style::ComputedStyle,
+    ltr: bool,
+) -> (f32, f32) {
+    use crate::computed_style::BorderStyleValue as S;
+    use crate::computed_style::LengthPercentageAutoValue as M;
+    let margin = |m: M| match m {
+        M::Length(px) => px,
+        _ => 0.0,
+    };
+    let border = |w: f32, s: S| {
+        if matches!(s, S::None | S::Hidden) {
+            0.0
+        } else {
+            w
+        }
+    };
+    let left = margin(cs.margin_left)
+        + border(cs.border_left_width.to_px(), cs.border_left_style)
+        + cs.padding_left.to_px();
+    let right = margin(cs.margin_right)
+        + border(cs.border_right_width.to_px(), cs.border_right_style)
+        + cs.padding_right.to_px();
+    let (start, end) = if ltr { (left, right) } else { (right, left) };
+    (start.max(0.0), end.max(0.0))
+}
+
+/// Whether an element's own direction is left to right.
+pub(crate) fn element_is_ltr(node: &Node) -> bool {
+    node.stylo_element_data
+        .borrow()
+        .as_ref()
+        .and_then(|d| d.styles.get_primary().map(|p| p.writing_mode.is_bidi_ltr()))
+        .unwrap_or(true)
+}
+
+/// Whether an inline element draws a border of its own on its fragments.
+pub(crate) fn has_inline_border(cs: &crate::computed_style::ComputedStyle) -> bool {
+    use crate::computed_style::BorderStyleValue as S;
+    let on = |w: f32, s: S| w > 0.0 && !matches!(s, S::None | S::Hidden);
+    on(cs.border_left_width.to_px(), cs.border_left_style)
+        || on(cs.border_right_width.to_px(), cs.border_right_style)
+        || on(cs.border_top_width.to_px(), cs.border_top_style)
+        || on(cs.border_bottom_width.to_px(), cs.border_bottom_style)
+}
+
 /// The background span inline element `owner` draws over `start..end`, from
-/// its style as it is now; `None` when it has no background to draw.
+/// its style as it is now; `None` when it has neither a background nor a
+/// border to draw (a border alone gives a span of transparent colour, #1426).
 ///
 /// Called at the build, which records one span per element that has one, and
 /// by paint for each recorded span, so the rectangle follows a colour,
@@ -155,14 +240,15 @@ pub(crate) fn inline_background_span(
     end: usize,
 ) -> Option<crate::node::InlineBackgroundSpan> {
     let cs = &owner.computed_style;
-    if !has_inline_background(cs) {
-        return None;
-    }
+    let color = cs
+        .background_color()
+        .filter(|_| has_inline_background(cs))
+        .or_else(|| has_inline_border(cs).then_some(peniko::Color::TRANSPARENT))?;
     Some(crate::node::InlineBackgroundSpan {
         owner: owner.id,
         start,
         end,
-        color: cs.background_color()?,
+        color,
         padding_left: cs.padding_left.to_px(),
         padding_right: cs.padding_right.to_px(),
         padding_top: cs.padding_top.to_px(),
@@ -409,6 +495,7 @@ pub(crate) fn break_lines_hanging_spaces(
             || any_emergency_box_line_before_white_space(layout, text)
             || (count_trailing && any_counted_trailing_line(layout, text, preserves_spaces))
             || (justify && any_miscounted_justified_line(layout, text, max))
+            || any_line_split_at_edge(layout)
     });
     let fix = fix.map(|max| (max, preserves_spaces));
     let mut stats = match fix {
@@ -970,6 +1057,8 @@ pub(crate) struct IfcText<'a> {
     /// offset in [`Self::len`]'s terms)`. A tab is pushed as one space and
     /// widened to its tab stop when replayed ([`Self::replay`], #1122).
     tabs: Vec<(usize, usize, usize)>,
+    /// An edge box was pushed ([`Self::push_edge_box`], #1426).
+    edge_boxes: bool,
 }
 
 /// Start a new stretch of a DOM↔flat `offset_map` at `(flat, dom)` when the
@@ -1104,6 +1193,7 @@ impl<'a> IfcText<'a> {
             last_box: None,
             out_of_flow: Vec::new(),
             tabs: Vec::new(),
+            edge_boxes: false,
         }
     }
 
@@ -1135,6 +1225,82 @@ impl<'a> IfcText<'a> {
         self.prev_space = false;
         self.last_box = Some((inline_box.id as usize, self.len));
         self.ops.push(IfcOp::InlineBox(inline_box));
+    }
+
+    /// An inline element's start or end edge box (#1426): `width` CSS px
+    /// (already scaled) of room and no height. Not content to white-space
+    /// processing — CSS collapses spaces across an inline box's padding
+    /// (css-text-3 §4.1.1: "even one outside the boundary of the inline"),
+    /// and removes a space at a line's start whatever padding precedes it —
+    /// so the held space, the line start and the last atomic inline are left
+    /// as they were.
+    ///
+    /// An end box after a forced break that ends the element's content (a
+    /// `<br>`, a preserved newline, with only closing spans after it) goes
+    /// before that break: the element's last fragment is the line the break
+    /// ends, and what follows starts the next line at its edge, as in Chrome
+    /// 155 (review of #1823).
+    pub(crate) fn push_edge_box(&mut self, owner: usize, end: bool, width: f32) {
+        let edge = IfcOp::InlineBox(parley::InlineBox {
+            id: edge_box_id(owner, end),
+            index: 0,
+            width,
+            height: 0.0,
+            kind: parley::InlineBoxKind::InFlow,
+        });
+        self.edge_boxes = true;
+        if end {
+            // The last text op, past closing spans and end boxes only.
+            let at = self.ops.iter().rposition(|op| match op {
+                IfcOp::Pop => false,
+                IfcOp::InlineBox(b) => !(is_edge_box(b.id) && b.id & EDGE_BOX_END != 0),
+                _ => true,
+            });
+            if let Some(at) = at
+                && let IfcOp::Text(text) = &self.ops[at]
+                && text.ends_with('\n')
+            {
+                if text.len() > 1 {
+                    // Split the newline off; tabs recorded in this op are
+                    // before it and keep their op and byte.
+                    let IfcOp::Text(text) = &mut self.ops[at] else {
+                        unreachable!()
+                    };
+                    let mut prefix = std::mem::take(text).into_owned();
+                    prefix.pop();
+                    *text = prefix.into();
+                    self.ops.insert(at + 1, IfcOp::Text("\n".into()));
+                    self.shift_ops_after(at + 1);
+                    self.ops.insert(at + 1, edge);
+                    self.shift_ops_after(at + 1);
+                } else {
+                    self.ops.insert(at, edge);
+                    self.shift_ops_after(at);
+                }
+                return;
+            }
+        }
+        self.ops.push(edge);
+    }
+
+    /// An op was inserted at `at`: the recorded op indices from there on
+    /// move up one.
+    fn shift_ops_after(&mut self, at: usize) {
+        for tab in &mut self.tabs {
+            if tab.0 >= at {
+                tab.0 += 1;
+            }
+        }
+        if let Some(p) = &mut self.pending
+            && p.0 >= at
+        {
+            p.0 += 1;
+        }
+    }
+
+    /// Whether any edge box ([`Self::push_edge_box`]) was pushed.
+    pub(crate) fn has_edge_boxes(&self) -> bool {
+        self.edge_boxes
     }
 
     /// An out-of-flow box stands here in the content. It is not content — a
@@ -1597,6 +1763,7 @@ fn hang_pass(
     use parley::layout::{BreakReason, YieldData};
     let mut stats = HangStats::default();
     let units = logical_units(layout, text, unhung);
+    let has_edges = units.iter().any(|u| u.edge != 0);
     stats.passes = 1;
     let mut breaker = layout.break_lines();
     // The first unit of the line being broken, and the state it starts from.
@@ -1617,12 +1784,40 @@ fn hang_pass(
             break;
         };
         // Only a committed line ends one; nothing else is yielded here.
-        let YieldData::LineBreak(data) = yielded else {
+        let YieldData::LineBreak(mut data) = yielded else {
             continue;
         };
         committed += 1;
         if !in_step {
             continue;
+        }
+        // #1426: a break parley made next to an edge box where CSS does
+        // not break is moved to where it does.
+        if has_edges && matches!(data.reason, BreakReason::Regular | BreakReason::Emergency) {
+            let Some(end) = line_end(&units, cursor, data.advance) else {
+                in_step = false;
+                continue;
+            };
+            let emergency = data.reason == BreakReason::Emergency;
+            let mut breaks =
+                TextBreaks::new(text, units.get(cursor).map_or(text.len(), |u| u.byte));
+            if !edge_break_allowed(&units, &mut breaks, &unhung.nowrap, end, emergency) {
+                let Some((reason, advance)) = rebreak_at_edge(
+                    &mut breaker,
+                    &units,
+                    text,
+                    &unhung.nowrap,
+                    cursor,
+                    &line_start,
+                    max,
+                ) else {
+                    in_step = false;
+                    continue;
+                };
+                stats.lines += 1;
+                data.reason = reason;
+                data.advance = advance;
+            }
         }
         // The last line is committed as it is (`BreakReason::None`; an empty
         // one after a final newline even copies the previous line's advance),
@@ -2163,6 +2358,10 @@ pub(crate) struct UnhungSpaces {
     /// `break-spaces` text (#1043): its spaces never hang
     /// ([`LineUnit::breaks`]).
     pub breaking: Vec<std::ops::Range<usize>>,
+    /// Text whose element does not wrap (`nowrap`, `pre`), filled only for
+    /// an IFC holding edge boxes (#1426): no soft wrap after it
+    /// ([`edge_break_allowed`]).
+    pub nowrap: Vec<std::ops::Range<usize>>,
 }
 
 impl UnhungSpaces {
@@ -2262,7 +2461,219 @@ struct LineUnit {
     /// layout put it on (`usize::MAX` for a box): parley counts a line's
     /// trailing white space in its last run only (#1042).
     run: usize,
+    /// An inline element's edge box (#1426): [`EDGE_START`] or [`EDGE_END`],
+    /// else 0. Not an [`Self::inline_box`].
+    edge: u8,
+    /// The byte a cluster starts at, or a box stands at.
+    byte: usize,
 }
+
+/// Whether a line may end before `units[e]` as far as edge boxes go (#1426).
+///
+/// parley 0.11.1 allows a break after every in-flow inline box and before
+/// one that does not fit, which is right for an atomic inline and wrong for
+/// an edge box ([`EDGE_BOX`]): an element's start padding belongs with its
+/// first content and its end padding with its last. So where edge boxes meet
+/// the break, CSS's answer is asked instead: the break must fall after the
+/// run's end boxes and before its start boxes, and there must be an
+/// opportunity between what precedes and what follows the run — a UAX #14
+/// opportunity in the text (not after text that does not wrap), or an atomic
+/// inline on either side. A break no edge box is next to is parley's and is
+/// allowed. With `emergency` (an `overflow-wrap` break) only the side of the
+/// boxes is checked.
+fn edge_break_allowed(
+    units: &[LineUnit],
+    breaks: &mut TextBreaks<'_>,
+    nowrap: &[std::ops::Range<usize>],
+    e: usize,
+    emergency: bool,
+) -> bool {
+    if e == 0 {
+        return false;
+    }
+    if e >= units.len() {
+        return true;
+    }
+    let mut i0 = e;
+    while i0 > 0 && units[i0 - 1].edge != 0 {
+        i0 -= 1;
+    }
+    let mut i1 = e;
+    while i1 < units.len() && units[i1].edge != 0 {
+        i1 += 1;
+    }
+    let split = i0
+        + units[i0..i1]
+            .iter()
+            .take_while(|u| u.edge == EDGE_END)
+            .count();
+    if i0 < i1 && e != split {
+        return false;
+    }
+    if emergency {
+        return true;
+    }
+    let Some(p) = i0.checked_sub(1).map(|i| &units[i]) else {
+        return false;
+    };
+    let Some(n) = units.get(i1) else {
+        return true;
+    };
+    if p.newline || p.inline_box || n.inline_box {
+        return true;
+    }
+    if in_ranges(nowrap, p.byte) {
+        return false;
+    }
+    breaks.at(n.byte)
+}
+
+/// The UAX #14 line segmenter [`TextBreaks`] reads: no complex-script
+/// dictionaries, which a break next to an inline element's padding does not
+/// need. A `const`, so it is built once, at compile time.
+const LINE_SEGMENTER: icu_segmenter::LineSegmenterBorrowed<'static> =
+    icu_segmenter::LineSegmenter::new_for_non_complex_scripts(
+        icu_segmenter::options::LineBreakOptions::default(),
+    );
+
+/// The UAX #14 break opportunities of a text from some byte on — what
+/// parley's own analysis marks — read once, in order: asked about bytes in
+/// increasing order, as a line is scanned, the text is segmented once
+/// (review of #1823: a 64-byte window segmented per unit asked about made
+/// the re-break of a paragraph of padded words several times its cost).
+struct TextBreaks<'t> {
+    iter: Box<dyn Iterator<Item = usize> + 't>,
+    next: Option<usize>,
+}
+
+impl<'t> TextBreaks<'t> {
+    /// Opportunities of `text` from `from` on, segmented from up to 32
+    /// bytes before it for context.
+    fn new(text: &'t str, from: usize) -> Self {
+        let mut start = from.saturating_sub(32).min(text.len());
+        while !text.is_char_boundary(start) {
+            start -= 1;
+        }
+        Self {
+            iter: Box::new(
+                LINE_SEGMENTER
+                    .segment_str(&text[start..])
+                    .map(move |b| b + start),
+            ),
+            next: None,
+        }
+    }
+
+    /// Whether there is an opportunity at `byte`. Asked of bytes in
+    /// non-decreasing order.
+    fn at(&mut self, byte: usize) -> bool {
+        loop {
+            if let Some(b) = self.next
+                && b >= byte
+            {
+                return b == byte;
+            }
+            match self.iter.next() {
+                Some(b) => self.next = Some(b),
+                None => return false,
+            }
+        }
+    }
+}
+
+/// Break again a line parley ended next to an edge box where CSS does not
+/// break ([`edge_break_allowed`], #1426), and return the reason and advance
+/// of the line that replaces it; `None` when the unit table and the breaker
+/// disagree.
+///
+/// The line from `units[cursor]` is committed by length up to the last
+/// allowed break whose content (its hanging spaces left out) fits `max`,
+/// or, when none fits, up to the first allowed break — the unbreakable
+/// stretch overflows, as in CSS — or a forced break, whichever comes first.
+fn rebreak_at_edge(
+    breaker: &mut parley::layout::BreakLines<'_, Brush>,
+    units: &[LineUnit],
+    text: &str,
+    nowrap: &[std::ops::Range<usize>],
+    cursor: usize,
+    line_start: &parley::layout::BreakerState,
+    max: f32,
+) -> Option<(parley::layout::BreakReason, f32)> {
+    use parley::layout::BreakReason;
+    // The table's cursor can sit on the zero-width newline that ended the
+    // line before; a newline is never the first unit of a line.
+    let first = cursor + units[cursor..].iter().take_while(|u| u.newline).count();
+    let mut breaks = TextBreaks::new(text, units.get(first).map_or(text.len(), |u| u.byte));
+    let mut x = 0.0f32;
+    // The run of hanging spaces the line would end in.
+    let mut hanging = 0.0f32;
+    let mut fit: Option<(usize, f32)> = None;
+    let mut chosen = None;
+    for e in first + 1..=units.len() {
+        let u = &units[e - 1];
+        if u.newline {
+            chosen = Some((e, x));
+            break;
+        }
+        x += u.advance;
+        hanging = if u.hangs { hanging + u.advance } else { 0.0 };
+        if !edge_break_allowed(units, &mut breaks, nowrap, e, false) {
+            continue;
+        }
+        if x - hanging <= max + 0.005 {
+            fit = Some((e, x));
+        } else {
+            chosen = Some(fit.unwrap_or((e, x)));
+            break;
+        }
+    }
+    let (e, advance) = chosen.or(fit).unwrap_or((units.len(), x));
+    let n = units[first..e].iter().filter(|u| u.counted).count();
+    breaker.revert_to(line_start.clone());
+    breaker.break_next_with_length(u32::try_from(n).ok()?)?;
+    breaker.set_prior_line_width(max);
+    let reason = if e >= units.len() {
+        BreakReason::None
+    } else if units[e - 1].newline {
+        BreakReason::Explicit
+    } else {
+        BreakReason::Regular
+    };
+    Some((reason, advance))
+}
+
+/// Whether some soft-wrapped line of `layout` begins or ends with an edge
+/// box (#1426): the cheap test that sends a paragraph through [`hang_pass`]
+/// for [`rebreak_at_edge`]. A break edge boxes are not next to is parley's
+/// own, and a break next to one is always looked at again.
+fn any_line_split_at_edge(layout: &parley::Layout<Brush>) -> bool {
+    use parley::PositionedLayoutItem;
+    use parley::layout::BreakReason;
+    let edge = |item: Option<PositionedLayoutItem<'_, Brush>>| matches!(item, Some(PositionedLayoutItem::InlineBox(b)) if is_edge_box(b.id));
+    if !layout.inline_boxes().iter().any(|b| is_edge_box(b.id)) {
+        return false;
+    }
+    // Items are in visual order: on a right-to-left line the logical end is
+    // the first item, so both ends of every line next to a soft wrap are
+    // looked at.
+    let mut prev_soft = false;
+    for line in layout.lines() {
+        let soft = matches!(
+            line.break_reason(),
+            BreakReason::Regular | BreakReason::Emergency
+        );
+        if (prev_soft || soft) && (edge(line.items().next()) || edge(line.items().last())) {
+            return true;
+        }
+        prev_soft = soft;
+    }
+    false
+}
+
+/// [`LineUnit::edge`] of an inline element's inline-start box.
+const EDGE_START: u8 = 1;
+/// [`LineUnit::edge`] of an inline element's inline-end box.
+const EDGE_END: u8 = 2;
 
 /// Re-set the alignment width of the line just committed, `line` its units
 /// and `reason` what ended it, when it ends in white space that does not
@@ -2564,6 +2975,8 @@ fn logical_units(
                             .and_then(|t| t.chars().next_back())
                             .is_some_and(breaks_before_glue),
                         run: run_index,
+                        edge: 0,
+                        byte: range.start,
                     },
                 ));
             }
@@ -2583,9 +2996,15 @@ fn logical_units(
                 nbsp: false,
                 space: false,
                 counted: in_flow,
-                inline_box: in_flow,
+                inline_box: in_flow && !is_edge_box(b.id),
                 breaks_before_glue: false,
                 run: usize::MAX,
+                edge: match edge_box_owner(b.id) {
+                    Some((_, false)) => EDGE_START,
+                    Some((_, true)) => EDGE_END,
+                    None => 0,
+                },
+                byte: b.index,
             },
         ));
     }
@@ -2683,10 +3102,9 @@ fn any_emergency_box_line_before_white_space(layout: &parley::Layout<Brush>, tex
     let mut lines = layout.lines().peekable();
     while let Some(line) = lines.next() {
         if line.break_reason() != BreakReason::Emergency
-            || !line
-                .items()
-                .last()
-                .is_some_and(|item| matches!(item, PositionedLayoutItem::InlineBox(_)))
+            || !line.items().last().is_some_and(
+                |item| matches!(item, PositionedLayoutItem::InlineBox(b) if !is_edge_box(b.id)),
+            )
         {
             continue;
         }
@@ -3219,6 +3637,9 @@ impl RinchDocument {
                         // Text runs don't map to individual child nodes
                     }
                     parley::layout::PositionedLayoutItem::InlineBox(positioned_box) => {
+                        if is_edge_box(positioned_box.id) {
+                            continue;
+                        }
                         let child_id = positioned_box.id as usize;
                         if let Some(child) = self.tree.nodes.get_mut(child_id) {
                             // A move is a move, whoever makes it: push the box
@@ -8334,6 +8755,26 @@ impl RinchDocument {
                 }
             }
         }
+        // #1426: where an edge box's false break opportunities are undone,
+        // text that may not wrap offers no opportunity either.
+        if ifc_text.has_edge_boxes() {
+            for r in text_ranges
+                .iter()
+                .filter(|r| !r.is_br && r.flat_end > r.flat_start)
+            {
+                let wraps = nodes
+                    .get(r.node_id)
+                    .and_then(|t| t.parent)
+                    .and_then(|el| nodes.get(el))
+                    .is_none_or(|el| {
+                        Self::text_wrap_mode(&el.computed_style)
+                            == parley::style::TextWrapMode::Wrap
+                    });
+                if !wraps {
+                    unhung.nowrap.push(r.flat_start..r.flat_end);
+                }
+            }
+        }
         // Build and break; with preserved tabs, again until each tab ends at
         // its stop (#1122): a tab's width depends on where its line puts it.
         let tabs = ifc_text.tab_offsets();
@@ -9074,11 +9515,17 @@ impl RinchDocument {
         owner: &Node,
         start: usize,
         end: usize,
+        has_edges: bool,
         background_spans: &mut Vec<crate::node::InlineBackgroundSpan>,
         decoration_spans: &mut Vec<crate::node::InlineDecorationSpan>,
         vertical_align_spans: &mut Vec<crate::node::InlineVerticalAlignSpan>,
     ) {
         if end <= start {
+            // An element with no text still has its edge boxes (#1426), and
+            // draws its background and border over them.
+            if has_edges && let Some(span) = inline_background_span(owner, start, end) {
+                background_spans.push(span);
+            }
             return;
         }
         // A wavy underline is not a Parley style, so it is recorded as a span and
@@ -9229,6 +9676,7 @@ impl RinchDocument {
                             owner,
                             start,
                             *flat_pos,
+                            false,
                             background_spans,
                             decoration_spans,
                             vertical_align_spans,
@@ -9379,6 +9827,20 @@ impl RinchDocument {
                     ));
                     child_positions.push((child_id, LayoutResult::default()));
 
+                    // #1426: the room its inline-start margin, border and
+                    // padding take before its content, and the end ones after
+                    // it — as zero-height boxes, which hold no text.
+                    // The direction is read only when the two sides differ.
+                    let (left, right) = inline_edge_widths(child_computed, true);
+                    let (edge_start, edge_end) = if left != right && !element_is_ltr(child) {
+                        (right, left)
+                    } else {
+                        (left, right)
+                    };
+                    if edge_start > 0.0 {
+                        builder.push_edge_box(child_id, false, edge_start * scale);
+                    }
+
                     // Recurse into inline element's children
                     Self::walk_inline_children(
                         nodes,
@@ -9396,18 +9858,25 @@ impl RinchDocument {
                         atomic,
                     );
 
+                    if edge_end > 0.0 {
+                        builder.push_edge_box(child_id, true, edge_end * scale);
+                    }
                     builder.pop_span();
 
                     // Record background and/or vertical-align span if the
                     // inline element has one. Through the shared helper, so
                     // this and the split-inline bridge below cannot drift
-                    // about padding, radius, or the vertical shift.
-                    if has_bg || has_valign {
+                    // about padding, radius, or the vertical shift. An empty
+                    // element with edge boxes still draws its background and
+                    // border over them (#1426).
+                    let has_edges = edge_start > 0.0 || edge_end > 0.0;
+                    if has_bg || has_valign || has_inline_border(child_computed) {
                         Self::push_inline_spans(
                             nodes,
                             child,
                             bg_start,
                             *flat_pos,
+                            has_edges,
                             background_spans,
                             decoration_spans,
                             vertical_align_spans,
@@ -9574,6 +10043,7 @@ impl RinchDocument {
                     owner,
                     start,
                     *flat_pos,
+                    false,
                     background_spans,
                     decoration_spans,
                     vertical_align_spans,

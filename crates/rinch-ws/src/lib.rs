@@ -576,7 +576,9 @@ impl WsHandle {
     /// Register the connection-closed callback (replaces any previous one).
     ///
     /// Fires once, whether the close was initiated locally, by the peer, or by an
-    /// abnormal drop (reported with code `1006`).
+    /// abnormal drop (reported with code `1006`). A connect that fails (nothing
+    /// listening, a refused handshake) fires `on_error` and then `on_close` with
+    /// `1006`, on both targets, as a browser does.
     pub fn on_close(&self, cb: impl FnMut(WsClose) + 'static) -> &Self {
         install(self.id, |h| &mut h.on_close, Box::new(cb));
         self

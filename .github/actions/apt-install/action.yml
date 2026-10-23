@@ -45,8 +45,8 @@ runs:
         list=$(printf '%s\n' $PACKAGES | sort -u | tr '\n' ' ')
         hash=$(printf '%s' "$list" | sha256sum | cut -c1-16)
         echo "list=$list" >> "$GITHUB_OUTPUT"
-        echo "prefix=apt-${ImageOS:-unknown}-$hash-" >> "$GITHUB_OUTPUT"
-        echo "key=apt-${ImageOS:-unknown}-$hash-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+        echo "prefix=apt-norec-${ImageOS:-unknown}-$hash-" >> "$GITHUB_OUTPUT"
+        echo "key=apt-norec-${ImageOS:-unknown}-$hash-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
         echo "dir=$HOME/.apt-archives" >> "$GITHUB_OUTPUT"
 
     - name: Restore the downloaded packages
@@ -83,8 +83,15 @@ runs:
         sudo apt-get update
         # Keep what was downloaded, whatever the image's apt config says, so
         # it can be copied out for the cache below.
+        # No recommended packages: the build needs only the -dev packages and
+        # what they depend on. With recommends, libmpv-dev alone pulled in
+        # speech and codec data (pocketsphinx, flite, ...) and the install was
+        # 141–156 MB, about 45 minutes on a slow mirror in batch 6's first
+        # cold-cache run. (`norec` in the cache key keeps those fat entries
+        # from being restored.)
         # shellcheck disable=SC2086 # the list is split into words on purpose
-        sudo apt-get install -y -o APT::Keep-Downloaded-Packages=true $PACKAGES
+        sudo apt-get install -y --no-install-recommends \
+          -o APT::Keep-Downloaded-Packages=true $PACKAGES
 
         # Drop versions the mirror no longer serves (a restored entry from an
         # older image can carry them), so the cache does not grow for ever,
