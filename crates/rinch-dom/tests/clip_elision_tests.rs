@@ -321,6 +321,79 @@ fn a_clip_whose_text_overflows_it_is_still_pushed() {
     );
 }
 
+/// An ellipsised row title: the line overflows the box as laid out, but
+/// `text-overflow: ellipsis` hides everything past the "…" at paint (#1100),
+/// so nothing drawn reaches past the box and the clip is not pushed — the
+/// case this optimisation was written for. Measured from the lines' own
+/// width, it would be pushed.
+#[test]
+fn an_ellipsised_lines_clip_is_not_pushed() {
+    let c = count_doc(
+        |doc| {
+            let body = doc.body();
+            let title = div(
+                doc,
+                body,
+                "width: 60px; height: 24px; overflow: hidden; font-size: 16px; \
+                 white-space: nowrap; text-overflow: ellipsis",
+            );
+            let t = doc.create_text("MMMMMMMMMMMMMMMMMMMM");
+            doc.append_child(title, t);
+        },
+        1.0,
+    );
+    let ellipsised = {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let title = div(
+            &mut doc,
+            body,
+            "width: 60px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis",
+        );
+        let t = doc.create_text("MMMMMMMMMMMMMMMMMMMM");
+        doc.append_child(title, t);
+        doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+        doc.tree
+            .get(title.0)
+            .unwrap()
+            .text_layout
+            .as_ref()
+            .unwrap()
+            .ellipsis
+            .is_some()
+    };
+    assert!(ellipsised, "positive control: the line is cut");
+    assert_eq!(
+        c.clips, 0,
+        "nothing drawn past the \u{2026} reaches the box's edge"
+    );
+}
+
+/// The control: an inline background is not cut by the ellipsis (Chrome 155
+/// draws a pill cut at the box's padding edge), so it reaches past the box
+/// and the clip is pushed.
+#[test]
+fn an_ellipsised_line_with_a_background_past_the_box_is_still_clipped() {
+    let c = count_doc(
+        |doc| {
+            let body = doc.body();
+            let title = div(
+                doc,
+                body,
+                "width: 60px; height: 24px; overflow: hidden; font-size: 16px; \
+                 white-space: nowrap; text-overflow: ellipsis",
+            );
+            let s = doc.create_element("span");
+            doc.set_attribute(s, "style", "background: rgb(0, 0, 255)");
+            doc.append_child(title, s);
+            let t = doc.create_text("MMMMMMMMMMMMMMMMMMMM");
+            doc.append_child(s, t);
+        },
+        1.0,
+    );
+    assert_eq!(c.clips, 1, "the background is cut by the clip");
+}
+
 /// The same question with the overflow coming from the container's **padding**
 /// rather than from the run being long. Paint draws the text at the content
 /// origin; a fit test that measures from the border-box origin says this fits.

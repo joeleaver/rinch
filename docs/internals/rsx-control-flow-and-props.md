@@ -225,8 +225,8 @@ for a flowed inline element (a 0x0 ghost box) rinch-dom answers
 else measured on demand and not cached; `SpanFragments::union_left/right` hold
 every fragment's extent less the white space that ends a line), grown by the
 element's padding and pushed through the host's painted transform less its own
-scroll. A split inline (#513) or an ellipsis-rebuilt line has no fragments and
-falls back to the ghost box. Every other element: rinch-dom answers
+scroll. A split inline (#513) has no fragments and falls back to the ghost box
+(a line `text-overflow: ellipsis` cuts keeps them since #1100). Every other element: rinch-dom answers
 `paint::painted_border_box(tree, id, 1.0)` — the conversion
 `ClickContext` and the bounds signals use — from the last layout, a zero rect
 under `display: none` or for a `display: contents` element (Chrome's answer; the

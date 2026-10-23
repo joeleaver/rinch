@@ -467,23 +467,27 @@ fn ellipsis_ifc(extra: &str, text: &str) -> (String, f32) {
         .text_layout
         .as_ref()
         .expect("no inline layout");
-    (il.text_content.clone(), il.layout.width())
+    // What paint draws, and where its "…" ends (#1100: the lines are kept
+    // and cut at paint).
+    let text = il.painted_text().unwrap_or_else(|| il.text_content.clone());
+    let end = il.ellipsis.as_ref().map_or(il.layout.width(), |c| {
+        c.marks.last().map_or(0.0, |m| m.x) + c.glyph.width()
+    });
+    (text, end)
 }
 
-/// `text-overflow: ellipsis` binary-searches for the longest prefix that fits,
-/// building a throwaway layout per probe. Spacing has to be in **all** of them:
-/// the prefix probes decide how much fits, and the final layout is what paints.
+/// `text-overflow: ellipsis` cuts the line where the "…" still fits, in the
+/// line as laid out (#1100) — with the spacing — and draws a "…" shaped with
+/// it. Spacing has to be in both: the cut decides how much fits, and the
+/// "…" is what paints after it.
 ///
-/// This is the IFC-root path (`build_ellipsis_layout`).
+/// This is the IFC-root path (`ellipsis_cut`).
 ///
-/// Two assertions, because the path has two halves and one mutant each, and
-/// **the second is self-calibrating rather than a threshold**. A prefix probe
-/// without the spacing keeps fitting the unspaced number of characters, so the
-/// *content* stays long. A final layout without it draws the characters that
-/// were chosen at exactly the width those same characters measure unspaced —
-/// so laying the truncated string out again with no declaration gives the
-/// mutant's answer directly, and the real one has to beat it by the spacing it
-/// applied. Measured here: `abcdefgh…` is 144.369 spaced against 108.369
+/// Two assertions, and **the second is self-calibrating rather than a
+/// threshold**. A cut that ignored the spacing would keep the unspaced number
+/// of characters, so the *content* stays long. The painted text is laid out
+/// again with no declaration, which is what it would measure unspaced, and
+/// what paint draws has to beat it by the spacing it applied. Measured here: `abcdefgh…` is 144.369 spaced against 108.369
 /// unspaced, `a b c d…` is 126.328 against 96.328.
 ///
 /// A fixed lower bound would have had to be different per property — the two

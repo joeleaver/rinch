@@ -130,11 +130,12 @@ fn every_clipping_box_draws_its_ellipsis_as_an_ifc_root() {
             failures.push(format!("{name}: the clip has no inline layout"));
             continue;
         };
-        if !layout.text_content.ends_with('\u{2026}') {
+        let Some(cut) = layout.ellipsis.as_ref() else {
             failures.push(format!("{name}: no ellipsis: {:?}", layout.text_content));
             continue;
-        }
-        let w = layout.layout.width();
+        };
+        // Where the "…" ends: what paint draws of the line (#1100).
+        let w = cut.marks.last().map_or(0.0, |m| m.x) + cut.glyph.width();
         if w > 60.0 {
             failures.push(format!(
                 "{name}: the line is {w}px, wider than its 60px box"

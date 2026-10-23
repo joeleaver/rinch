@@ -167,7 +167,35 @@ pub(super) fn paint_inline_layout(
         }
     }
 
+    // The "…" of each line `text-overflow: ellipsis` cuts (#1100), after the
+    // text it ends, in the style of the block container whose ellipsis it is:
+    // an anonymous block box's own style is a copy of its container's
+    // inherited properties, made when the box was (#1071).
+    if let Some(cut) = inline_layout.ellipsis.as_deref()
+        && !root_hidden
+    {
+        let owner = root
+            .parent
+            .filter(|_| root.is_anonymous_block_box)
+            .and_then(|p| tree.get(p))
+            .unwrap_or(root);
+        paint_ellipsis(
+            painter,
+            cut,
+            parent_x,
+            parent_y,
+            transform,
+            scale,
+            &owner.computed_style.text_shadow,
+            crate::ifc::root_text_color(&owner.computed_style),
+        );
+    }
+
     // Paint inline-block boxes by looking them up in tree and painting
+    let hidden_boxes = inline_layout
+        .ellipsis
+        .as_deref()
+        .map_or(&[][..], |c| c.hidden_boxes.as_slice());
     for line in inline_layout.layout.lines() {
         for item in line.items() {
             if let parley::layout::PositionedLayoutItem::InlineBox(positioned_box) = item {
@@ -175,12 +203,60 @@ pub(super) fn paint_inline_layout(
                     continue;
                 }
                 let child_id = positioned_box.id as usize;
+                // An atomic inline past an ellipsis cut is hidden whole.
+                if hidden_boxes.contains(&child_id) {
+                    continue;
+                }
                 paint_node(
                     tree, child_id, painter, scale, parent_x, parent_y, font_cx, layout_cx,
                     transform,
                 );
             }
         }
+    }
+}
+
+/// Draw the "…" of every line a `text-overflow: ellipsis` cut ends (#1100):
+/// the root's `text-shadow` list under it, then the glyph in the root's
+/// colour as it is now (a transition frame writes it with no re-shape).
+#[allow(clippy::too_many_arguments)]
+fn paint_ellipsis(
+    painter: &mut dyn Painter,
+    cut: &crate::node::EllipsisCut,
+    parent_x: f64,
+    parent_y: f64,
+    transform: Affine,
+    scale: f64,
+    text_shadows: &[TextShadowValue],
+    color: peniko::Color,
+) {
+    let text = PaintText::new(&cut.glyph);
+    let brush = Brush::Solid(color);
+    for mark in &cut.marks {
+        let x = parent_x + mark.x as f64 * scale;
+        let y = parent_y + mark.y as f64 * scale;
+        render_text_shadows(
+            painter,
+            &text,
+            x,
+            y,
+            text_shadows,
+            transform,
+            scale,
+            None,
+            None,
+        );
+        draw_text(
+            painter,
+            &text,
+            transform * Affine::translate((x, y)),
+            scale,
+            None,
+            Some(&brush),
+            None,
+            None,
+            None,
+        );
     }
 }
 
@@ -738,9 +814,9 @@ impl<'a> ShadowGroup<'a> {
     /// The non-empty lists `inline_layout`'s text casts, in the order their
     /// text first appears; `None` when every run casts `root_shadows` — the
     /// fast path, drawn exactly as before per-run shadows were consulted.
-    /// Bytes no range covers cast the root's list: the "…" of a
-    /// `text-overflow: ellipsis` layout among them, whose other text keeps
-    /// its ranges (#1065).
+    /// Bytes no range covers cast the root's list. The "…" of a
+    /// `text-overflow: ellipsis` cut is drawn apart and casts the root's
+    /// list too (#1065, #1100).
     pub(super) fn for_ifc(
         tree: &'a NodeTree,
         inline_layout: &crate::node::InlineLayout,
@@ -805,13 +881,15 @@ impl<'a> ShadowGroup<'a> {
                                 (s.min(rs), e.max(re))
                             })
                     });
+                    let mut mask = TextMask {
+                        ranges: mask_ranges,
+                        default_hidden,
+                        shown_span,
+                    };
+                    mask.cut(inline_layout);
                     Self {
                         shadows: list,
-                        mask: TextMask {
-                            ranges: mask_ranges,
-                            default_hidden,
-                            shown_span,
-                        },
+                        mask,
                     }
                 })
                 .collect(),
@@ -1182,13 +1260,17 @@ impl<'a> TextFragment<'a> {
         changes_pixels.then(|| {
             pieces
                 .into_iter()
-                .map(|p| Self {
-                    shadows: p.shadows,
-                    mask: TextMask {
+                .map(|p| {
+                    let mut mask = TextMask {
                         ranges: vec![(p.start, p.end, false)],
                         default_hidden: true,
                         shown_span: Some((p.start, p.end)),
-                    },
+                    };
+                    mask.cut(inline_layout);
+                    Self {
+                        shadows: p.shadows,
+                        mask,
+                    }
                 })
                 .collect()
         })
@@ -1203,9 +1285,9 @@ impl<'a> TextFragment<'a> {
 /// visibility of its text node's **DOM parent**. That is per element, not per
 /// Parley run: two adjacent elements that differ only in visibility share one
 /// style, so Parley shapes them into one glyph run, and the split has to be
-/// made glyph by glyph (see [`GlyphCursor`]). Bytes no range covers — the
-/// "…" of an ellipsis layout, whose other text keeps its ranges (#853) —
-/// take the IFC root's visibility.
+/// made glyph by glyph (see [`GlyphCursor`]). Bytes no range covers take
+/// the IFC root's visibility. What a `text-overflow: ellipsis` cut hides is
+/// hidden too ([`Self::cut`], #1100).
 pub(super) struct TextMask {
     /// `(start, end, hidden)` per text range, in layout byte offsets.
     ranges: Vec<(usize, usize, bool)>,
@@ -1234,17 +1316,88 @@ impl TextMask {
                 (r.flat_start, r.flat_end, hidden)
             })
             .collect::<Vec<_>>();
-        if !root_hidden && ranges.iter().all(|&(_, _, h)| !h) {
+        if !root_hidden && inline_layout.ellipsis.is_none() && ranges.iter().all(|&(_, _, h)| !h) {
             return None;
         }
         // Already in text order; the sort is a linear pass that keeps
         // `hidden_at`'s binary search honest if that ever changes.
         ranges.sort_by_key(|&(s, _, _)| s);
-        Some(Self {
+        let mut mask = Self {
             ranges,
             default_hidden: root_hidden,
             shown_span: None,
-        })
+        };
+        mask.cut(inline_layout);
+        Some(mask)
+    }
+
+    /// Hide, as well, what `inline_layout`'s `text-overflow: ellipsis` cut
+    /// hides (#1100): its bytes are split out of the ranges that hold them
+    /// and marked hidden, and those no range holds are added hidden. Every
+    /// mask an IFC paint draws through takes the cut, so each pass — text,
+    /// decorations, shadows, wavy underlines — stops at it.
+    pub(super) fn cut(&mut self, inline_layout: &crate::node::InlineLayout) {
+        let Some(cut) = inline_layout.ellipsis.as_ref() else {
+            return;
+        };
+        if cut.hidden.is_empty() {
+            return;
+        }
+        let mut out: Vec<(usize, usize, bool)> =
+            Vec::with_capacity(self.ranges.len() + 2 * cut.hidden.len());
+        // The ranges, split by the cut: both lists are sorted and disjoint.
+        let mut c = 0;
+        for &(s, e, h) in &self.ranges {
+            while c < cut.hidden.len() && cut.hidden[c].end <= s {
+                c += 1;
+            }
+            let mut at = s;
+            let mut k = c;
+            while at < e && k < cut.hidden.len() && cut.hidden[k].start < e {
+                let r = &cut.hidden[k];
+                if r.start > at {
+                    out.push((at, r.start, h));
+                }
+                let end = r.end.min(e);
+                out.push((r.start.max(at), end, true));
+                at = end;
+                if r.end <= e {
+                    k += 1;
+                } else {
+                    break;
+                }
+            }
+            if at < e {
+                out.push((at, e, h));
+            }
+        }
+        // The cut's bytes no range holds.
+        let mut i = 0;
+        for r in &cut.hidden {
+            let mut at = r.start;
+            while i < self.ranges.len() && self.ranges[i].1 <= at {
+                i += 1;
+            }
+            let mut j = i;
+            while at < r.end {
+                match self.ranges.get(j) {
+                    Some(&(s, e, _)) if s < r.end => {
+                        if s > at {
+                            out.push((at, s, true));
+                        }
+                        at = at.max(e);
+                        j += 1;
+                    }
+                    _ => {
+                        out.push((at, r.end, true));
+                        at = r.end;
+                    }
+                }
+            }
+        }
+        out.retain(|&(s, e, _)| s < e);
+        out.sort_by_key(|&(s, _, _)| s);
+        self.ranges = out;
     }
 
     /// Whether anything in the byte range `range` (a line's) may be shown.
@@ -1469,11 +1622,9 @@ impl Recolour {
 /// range. Like visibility ([`TextMask`]) that is per element and not per
 /// Parley run.
 ///
-/// Bytes no range covers — the "…" of a `text-overflow: ellipsis` rebuild —
-/// were shaped in the root's own colour and follow that. The rebuild shapes
-/// all of its text in the root's colour and records that colour on every
-/// range it keeps, so a span of another colour is drawn in its own here
-/// (#1065, #1451).
+/// Bytes no range covers were shaped in the root's own colour and follow
+/// that. The "…" of a `text-overflow: ellipsis` cut is drawn apart, in the
+/// root's colour as it is now (#1100).
 pub(super) struct LiveColours {
     /// `(start, end, recolour)` per text range, in layout byte offsets.
     ranges: Vec<(usize, usize, Recolour)>,

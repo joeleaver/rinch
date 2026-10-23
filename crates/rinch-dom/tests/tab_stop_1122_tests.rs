@@ -352,17 +352,42 @@ fn a_selected_tab_is_highlighted_to_its_stop() {
     );
 }
 
-/// A line cut by `text-overflow: ellipsis` is drawn from a flat rebuild of
-/// the paragraph's text, where a tab would be one space wide; a paragraph
-/// holding a preserved tab is clipped instead, its tabs at their stops.
+/// A line cut by `text-overflow: ellipsis` keeps the lines as laid out, its
+/// tabs at their stops (#1100: the cut is made at paint; it used to be drawn
+/// from a flat rebuild, where a tab was one space wide, so a paragraph with
+/// a tab was clipped with no "…").
 #[test]
 fn an_ellipsis_cut_keeps_its_tabs_at_their_stops() {
-    let got = xs(
-        "white-space: pre-wrap; width: 100px; overflow: hidden; text-overflow: ellipsis",
-        "a\tb bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    );
+    let style = "white-space: pre-wrap; width: 100px; overflow: hidden; text-overflow: ellipsis";
+    let html = "a\tb bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let got = xs(style, html);
     // The first line, `a`, the tab and `b`, fits; the second is cut.
     assert_xs(&got[..4], &[0.0, 8.98, 36.0, 45.80]);
+    assert_cut(style, html);
+}
+
+/// The whole-line cut of a `pre` root (#1586): Chrome 155 keeps the tab at
+/// its stop, `b` at 36, and draws the "…". The flat rebuild before #1100 drew
+/// the tab one space wide, `b` at 13.48.
+#[test]
+fn a_pre_lines_ellipsis_keeps_its_tab_at_its_stop() {
+    let style = "white-space: pre; width: 100px; overflow: hidden; text-overflow: ellipsis";
+    let html = "a\tbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let got = xs(style, html);
+    assert_xs(&got[..3], &[0.0, 8.98, 36.0]);
+    assert_cut(style, html);
+}
+
+/// A line of the block is cut and ends in "…".
+#[track_caller]
+fn assert_cut(style: &str, html: &str) {
+    let (d, c) = block(style, html);
+    let il = d.tree.get(c.0).unwrap().text_layout.as_ref().unwrap();
+    let painted = il.painted_lines().expect("a line is cut");
+    assert!(
+        painted.iter().any(|l| l.ends_with('\u{2026}')),
+        "{painted:?}"
+    );
 }
 /// Sixteen `xxx\t` words in a 400px `pre-wrap` block: each ends at a stop
 /// 36px on, so the first line holds eleven and ends at 396, and the second
