@@ -1348,19 +1348,20 @@ pub fn set_active_viewports(names: Option<HashSet<String>>) {
     ACTIVE_VIEWPORTS.with(|v| *v.borrow_mut() = names);
 }
 
+/// Hand this paint the `RenderSurface` GPU frames to draw in the scene, keyed
+/// by surface ID (#1768). Each image must be registered with the renderer that
+/// renders the scene (`vello::Renderer::register_texture`); only the Vello
+/// painter draws them. A surface with an image here draws it in place of its
+/// CPU pixels. `None` clears.
+pub fn set_surface_gpu_images(images: Option<HashMap<usize, peniko::ImageData>>) {
+    SURFACE_GPU_IMAGES.with(|v| *v.borrow_mut() = images);
+}
+
 /// Set surface pixel data for inline painting during the current paint cycle.
 ///
 /// Call with `Some(map)` before `paint_document()` and `None` after.
 /// When set, `paint_node()` will draw surface pixels inline at the
 /// element's position, like `<img>` elements.
-/// Hand this paint the `RenderSurface` GPU frames to draw in the scene, keyed
-/// by surface ID (#1768). Each image must be registered with the renderer that
-/// renders the scene (`vello::Renderer::register_texture`); only the Vello
-/// painter draws them. `None` clears.
-pub fn set_surface_gpu_images(images: Option<HashMap<usize, peniko::ImageData>>) {
-    SURFACE_GPU_IMAGES.with(|v| *v.borrow_mut() = images);
-}
-
 pub fn set_surface_pixels(pixels: Option<HashMap<usize, SurfacePixelData>>) {
     SURFACE_PIXELS.with(|v| *v.borrow_mut() = pixels);
 }
@@ -3852,6 +3853,17 @@ fn paint_node_unmasked(
                                     &rect.into(),
                                 );
                             }
+                            // Rounded by its own `border-radius`, as an
+                            // `<img>`'s content and a video's frame are.
+                            let radii = border_radii(node, scale);
+                            let rounded = !radii.is_square();
+                            if rounded {
+                                painter.push_clip(
+                                    Fill::NonZero,
+                                    node_transform,
+                                    &radii.shape(rect),
+                                );
+                            }
                             image::paint_gpu_image(
                                 painter,
                                 &image,
@@ -3859,6 +3871,9 @@ fn paint_node_unmasked(
                                 crate::computed_style::ObjectFitValue::Contain,
                                 node_transform,
                             );
+                            if rounded {
+                                painter.pop_layer();
+                            }
                         }
                         if opacity < 1.0 {
                             painter.pop_layer();
@@ -3902,6 +3917,15 @@ fn paint_node_unmasked(
                                     // frame source must not be cloned into a
                                     // `DecodedImage` first: that is a whole
                                     // frame of memcpy per frame, for nothing.
+                                    let radii = border_radii(node, scale);
+                                    let rounded = surface_visible && !radii.is_square();
+                                    if rounded {
+                                        painter.push_clip(
+                                            Fill::NonZero,
+                                            node_transform,
+                                            &radii.shape(rect),
+                                        );
+                                    }
                                     if surface_visible {
                                         image::paint_frame_data(
                                             painter,
@@ -3914,6 +3938,9 @@ fn paint_node_unmasked(
                                             crate::computed_style::ObjectFitValue::Contain,
                                             node_transform,
                                         );
+                                    }
+                                    if rounded {
+                                        painter.pop_layer();
                                     }
 
                                     if opacity < 1.0 {

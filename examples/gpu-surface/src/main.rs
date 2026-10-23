@@ -172,6 +172,15 @@ fn app() -> NodeHandle {
                     {|| if animate.get() { "Pause" } else { "Animate" }}
                 }
                 Button { onclick: move || step.request_frame(), "One frame" }
+                // Hiding destroys the window and showing makes a new one; the
+                // surface keeps drawing on the same device (#1768).
+                Button {
+                    onclick: move || {
+                        hide_current_window();
+                        set_timeout(800, show_current_window);
+                    },
+                    "Hide for a moment"
+                }
                 span { {|| format!("frames drawn: {}", frames.get())} }
             }
             div {

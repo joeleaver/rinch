@@ -150,8 +150,8 @@ frame is drawn — the `data-render-surface` node's content, `object-fit: contai
 `Painter::draw_gpu_image` (a no-op by default; `VelloPainter` fills with the image brush and the
 half-pixel brush transform of #1027; `ClipTrackingPainter` forwards it — a wrapper that does not
 draws nothing) — so every clip, layer, opacity group and transform around the node applies.
-Nothing is a hole or a `data-viewport` any more; the surface is sized from its painted box like
-a CPU surface, which also ended the two-sizes-a-paint under a transform of the layer version
+Nothing is a hole or a `data-viewport` any more; the surface is sized like a CPU surface (its
+layout box times the transform's axis scales, see review 2 below), which also ended the two-sizes-a-paint under a transform of the layer version
 (review D1). **Atlas:** Vello packs every image of a scene into one atlas of at most 8192²
 (`VELLO_ATLAS_SIDE`), re-created each frame, and silently drops an image it cannot place.
 `gpu_target_size` clamps a target to `min(max_texture_dimension_2d, 8192)` a side and
@@ -169,12 +169,31 @@ the scene against 1–3 as a layer, full-window 1080p 12 against 2, 4K 15 agains
 element above, z-index order, ancestor transform, overflow clip),
 `…_frames_scroll_with_their_scroller`, `…_frames_go_to_the_scene`, `…_under_a_transform_has_one_size`,
 `…_target_is_clamped_to_the_device_limit`, `…_frames_share_the_atlas`,
-`…_never_draws_into_an_app_texture`, `gpu_video_frames_are_drawn_as_elements`; and
+`…_never_draws_into_an_app_texture`, `…_frames_are_rounded_by_their_own_radius`,
+`…_atlas_share_holds_for_idle_surfaces`, `…_unset_pacing_is_on_demand`,
+`a_later_window_presents_with_the_shared_device`, `gpu_video_frames_are_drawn_as_elements`; and
 `without_a_gpu_compositor_the_gpu_callback_falls_back_to_the_render_callback` everywhere.
-**Part 4 gating:** the API is under `cfg(feature = "gpu")`, which implies `desktop`; the web half
-will widen it to `cfg(any(feature = "gpu", all(target_arch = "wasm32", feature = "web-gpu")))` —
-an off-by-default `rinch` feature adding `dep:wgpu` (WebGPU only) — with the canvas's current
-texture as the target and a `SurfaceRoute` arm of its own.
+**Review 2 of #1861.** *One device:* `WgpuRenderer::try_new_transparent` used to request a
+new instance, adapter and device for every window, and a window re-created by hide/show (a tray
+app, a layer-shell output loss) got a second device while `gpu_handle()` kept the first — GPU
+frames were drawn on one and registered with a renderer on the other. Now the first window's
+instance is kept beside `GPU_HANDLE` (`RINCH_INSTANCE`) and `shared_gpu_stack` hands every later
+window that stack (as `App::external_gpu` always did); a shared adapter that cannot present to
+the new window is an `Err`, i.e. the software fallback under `Renderer::Auto`. Checked live: a
+hide/show in a nested KWin makes two renderers and one instance, and the surface draws after.
+*Atlas:* a target whose size differs from the one it has (a new layout size, or the share
+moving) is drawn again, idle or not, so the share holds for every surface and a shrunk one
+recovers. *Size:* `all_surface_layout_rects` reports the layout size times the transform's axis
+scales (not the painted bounding box, which letterboxed a rotated frame). *Radius:* the surface
+arm in paint clips its frame to its own `border-radius`, GPU and CPU. *Pacing:* an unset GPU
+surface is on demand (`invoke_render_callbacks_where`). The registration is
+`desktop::SurfaceImages`, which the GPU tests drive too.
+
+**Part 4 notes:** the API is under `cfg(feature = "gpu")`, and `gpu` implies `desktop`, so the web
+half needs a feature of its own: widen to `cfg(any(feature = "gpu", all(target_arch = "wasm32",
+feature = "web-gpu")))` — an off-by-default `rinch` feature adding `dep:wgpu` (WebGPU only) —
+with the canvas's current texture as the target. `SurfaceRoute::GpuImage` holds the desktop
+`GpuHandle`; the web arm needs its own variant (or a device abstraction) rather than that type.
 
 **Sharing a high-capability GPU device (issue #57):** zero-copy compositing needs your texture on the *same* device rinch composites with (`gpu_handle()` → `device`/`queue`/**`adapter`**). `gpu_handle()` is `None` whenever the window presents with the software renderer (`RINCH_RENDERER=cpu`, or the `Renderer::Auto` fallback), so handle `None` unless you use one of the two entry points below — they always present on the GPU. By default that device is created with `Features::default()` / `Limits::default()`. To raise it:
 

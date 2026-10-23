@@ -102,29 +102,38 @@ rsx! { div { style: "flex: 1;", RenderSurface { surface: Some(surface) } } }
   with a higher `z-index`, covers it; `border-radius` and `overflow` clipping on an ancestor
   clip it; an ancestor's `opacity` fades it; a transform moves, scales and rotates it; it
   scrolls with its scroller. There is no hole and nothing to opt into.
-- The target is reallocated when the surface's size changes, and is paced like the
-  ordinary render callback (`set_continuous`, `request_frame`, see below). A frame drawn is
-  the next paint's damage; a quiet surface costs nothing.
+- **Pacing.** The target is reallocated when the surface's size changes, and the callback is
+  paced by `set_continuous` / `request_frame` (see below) — **on demand until you call
+  `set_continuous`**: a frame at the first size, at each new size, and for each
+  `request_frame()`. (An unset CPU render callback runs at every paint, but only damages
+  when it submits a frame; a GPU frame always damages, so it is not run for a caret blink.)
+  A frame drawn is the next paint's damage; a quiet surface costs nothing.
 - Draw with `queue.submit` before the callback returns. The texture is drawn as
   premultiplied alpha: clear an opaque viewport to an opaque colour. Its bytes are
   sRGB-encoded (`f.format` is `Rgba8Unorm` on desktop); for linear-light blending, create a
   view of `f.texture` with format `Rgba8UnormSrgb`, which it allows.
-- **Size and transforms.** The target is the surface's painted box at the window's scale,
-  as a CPU frame's is: under a `scale(2)` it is twice the layout size, so it stays sharp.
+- **Size and transforms.** The target is the surface's layout box at the window's scale,
+  times the transform's scale along each axis, as a CPU frame's is: under a `scale(2)` it is
+  twice the layout size, so it stays sharp; under a `rotate()` it keeps the box's shape and
+  turns with it. The surface's own `border-radius` rounds the frame, as an `<img>`'s does.
 - **Large and many surfaces.** A frame lives in Vello's image atlas for the paint: one
   texture of at most 8192×8192 shared by every image in the scene. A surface past the
   device's largest texture or 8192 px a side gets a target scaled down to fit (aspect kept;
   `f.size` says how big; `layout_size()` stays the real size), and when the GPU frames of a
-  paint together pass half the atlas, all of them are drawn at one smaller scale. Either way
-  the frame is drawn — scaled up into the box, so softer — and rinch logs a warning once.
+  paint together pass half the atlas, all of them — idle ones included, which are redrawn —
+  are drawn at one smaller scale, and at full size again once there is room. Either way the
+  frame is drawn — scaled up into the box, so softer — and rinch logs a warning once. A
+  surface laid out off screen counts toward the share; one under `display: none` does not.
 - **Cost.** Each frame the surface draws costs a Vello render of (at least) its region.
   Measured on an integrated GPU (Radeon 890M): a 640×360 surface 3–7 ms a frame, a
   full-window 1080p one about 12 ms, a full-window 4K one about 15 ms.
 - A GPU frame needs a GPU renderer presenting the window (`gpu_frames_available()`). Under
   the software renderer and in an embedded context the ordinary render callback runs
   instead, if you set one.
-- The device is never replaced on desktop, so `f.generation` stays the same there; a lost
-  device stays lost (#1788).
+- The device is never replaced on desktop: every window — including one re-created by
+  hiding and showing — presents with the device rinch made first (or yours, with
+  `App::external_gpu`), so `f.generation` stays the same there. A lost device stays lost
+  (#1788).
 - **Mixing with `set_texture_source`.** The GPU render callback draws into a target of its
   own; a texture registered with `set_texture_source` is not drawn into and, while the GPU
   callback draws, not shown. Use one or the other per surface.
