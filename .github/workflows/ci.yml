@@ -203,18 +203,13 @@ jobs:
           df -h /
 
       - name: Install system dependencies
-        run: |
-          # The runner image ships a Google Chrome apt source no rinch build
-          # uses. Its CDN intermittently serves a `Packages.gz` whose hash does
-          # not match the index it advertises, and `apt-get update` treats one
-          # bad repo as a fatal error — so the step fails, every step after it
-          # is **skipped**, and the job reports a red `clippy`/`test`/`build`
-          # that never ran a line of Rust. Three re-runs did not clear it.
-          # Drop the source rather than make a Rust build depend on Google's CDN.
-          sudo rm -f /etc/apt/sources.list.d/google-chrome*.list \
-                     /etc/apt/sources.list.d/google-chrome*.sources
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev libpango1.0-dev libgdk-pixbuf2.0-dev libxdo-dev libmpv-dev
+        # Cached .debs, and the Google Chrome apt source dropped first
+        # (.github/actions/apt-install explains both, #1792).
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev
+            libpango1.0-dev libgdk-pixbuf2.0-dev libxdo-dev libmpv-dev
 
       - name: Install Rust toolchain
         id: rust
@@ -235,18 +230,13 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install system dependencies
-        run: |
-          # The runner image ships a Google Chrome apt source no rinch build
-          # uses. Its CDN intermittently serves a `Packages.gz` whose hash does
-          # not match the index it advertises, and `apt-get update` treats one
-          # bad repo as a fatal error — so the step fails, every step after it
-          # is **skipped**, and the job reports a red `clippy`/`test`/`build`
-          # that never ran a line of Rust. Three re-runs did not clear it.
-          # Drop the source rather than make a Rust build depend on Google's CDN.
-          sudo rm -f /etc/apt/sources.list.d/google-chrome*.list \
-                     /etc/apt/sources.list.d/google-chrome*.sources
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev libpango1.0-dev libgdk-pixbuf2.0-dev libxdo-dev libmpv-dev
+        # Cached .debs, and the Google Chrome apt source dropped first
+        # (.github/actions/apt-install explains both, #1792).
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev
+            libpango1.0-dev libgdk-pixbuf2.0-dev libxdo-dev libmpv-dev
 
       - name: Install Rust toolchain
         id: rust
@@ -303,6 +293,33 @@ jobs:
           cargo clippy -p rinch --no-default-features --features embed --all-targets -- -D warnings
           cargo clippy -p rinch --features gpu,embed --all-targets -- -D warnings
           cargo clippy -p rinch --no-default-features --features components,theme -- -D warnings
+
+      # Every optional feature of `rinch` that builds on this host, in one
+      # build (#1786). Nothing else in the workspace turns `file-dialogs` on,
+      # and `system-tray`, `notifications`, `global-hotkeys`, `image-network`,
+      # `memory-profile`, `a11y`, `video`, `serde` and `worker` are linted only if
+      # some example happens to enable them, so a break there reached an
+      # app first. One combined build rather than one per feature: each line
+      # here rebuilds `rinch` and whatever the feature pulls in.
+      #
+      # Excluded, and why:
+      #   * `android`, `android-gpu`: Android-target features, linted for
+      #     `aarch64-linux-android` / `x86_64-linux-android` by `check-android`.
+      #     On this host their shell is cfg'd out and they only add the
+      #     Android crates' host stubs.
+      # An explicit list rather than `--all-features` (which, scoped to
+      # `-p rinch`, does build on 1.99.0 today; the `feature-gated` shard's
+      # ashpd note is about the workspace-wide set) so that leaving a feature
+      # out is a decision written here. A new optional feature of `rinch` goes
+      # on this line.
+      #
+      # `gpu` is in the list, so `software_shell` code is not linted here; the
+      # crate-scoped run above is the one that lints it.
+      - name: Check every optional rinch feature
+        run: |
+          cargo clippy -p rinch --all-targets --features \
+            desktop,gpu,embed,file-dialogs,clipboard,system-tray,memory-profile,theme,components,debug,video,image-network,a11y,serde,collaboration,notifications,global-hotkeys,worker \
+            -- -D warnings
 
   # Lint the wasm target too. `clippy --workspace` above only ever sees the native
   # cfg, so anything behind `cfg(target_arch = "wasm32")` — the whole rinch-web

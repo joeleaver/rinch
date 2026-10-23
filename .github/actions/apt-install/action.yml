@@ -1,0 +1,104 @@
+name: Install apt packages (cached)
+description: >-
+  `apt-get install` with the downloaded .deb files cached between runs, keyed
+  on the package list and the runner image (#1792).
+
+# Why this exists (#1792). Every job that builds the desktop stack installs
+# the same GTK / mpv development packages, and the runner fetches them from
+# the Azure Ubuntu mirror every time. When the mirror is slow it dominates the
+# job: in the first full run on the batched-CI shards, `test (integration-n-z)`
+# spent 55 of its 70 minutes downloading 156 MB at 47 kB/s, and four shards
+# plus the other jobs all paid the same.
+#
+# What is cached is apt's own download directory, /var/cache/apt/archives,
+# copied to and from a runner-owned directory (actions/cache runs as the
+# runner user, and apt's directory is root's). On a hit the .debs are put back
+# before `apt-get install`, which then installs them with nothing to download
+# unless the mirror moved a version on since (then only those are fetched).
+# `apt-get update` still runs: the package lists are not cached, so apt always
+# resolves against the mirror's current versions and a stale cache costs a
+# download, never a wrong package.
+#
+# The key is the runner image (`ImageOS` + `ImageVersion`, which moves about
+# weekly) and a hash of the sorted package list. A new image or a changed list
+# misses the exact key, restores the newest entry for the same image OS and
+# list as a starting point, and saves a fresh entry once. A cache save that
+# loses a race with another job saving the same key only warns.
+#
+# No third-party action: a few lines of shell and actions/cache do it, and a
+# pinned third-party action would be one more thing to audit and bump.
+
+inputs:
+  packages:
+    description: Whitespace-separated apt package names.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Compute the apt cache key
+      id: key
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        list=$(printf '%s\n' $PACKAGES | sort -u | tr '\n' ' ')
+        hash=$(printf '%s' "$list" | sha256sum | cut -c1-16)
+        echo "list=$list" >> "$GITHUB_OUTPUT"
+        echo "prefix=apt-${ImageOS:-unknown}-$hash-" >> "$GITHUB_OUTPUT"
+        echo "key=apt-${ImageOS:-unknown}-$hash-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+        echo "dir=$HOME/.apt-archives" >> "$GITHUB_OUTPUT"
+
+    - name: Restore the downloaded packages
+      id: restore
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/.apt-archives
+        key: ${{ steps.key.outputs.key }}
+        restore-keys: ${{ steps.key.outputs.prefix }}
+
+    - name: Install
+      shell: bash
+      env:
+        PACKAGES: ${{ steps.key.outputs.list }}
+        DIR: ${{ steps.key.outputs.dir }}
+      run: |
+        # The runner image ships a Google Chrome apt source no rinch build
+        # uses. Its CDN intermittently serves a `Packages.gz` whose hash does
+        # not match the index it advertises, and `apt-get update` treats one
+        # bad repo as a fatal error — so the step fails, every step after it
+        # is **skipped**, and the job reports a red `clippy`/`test`/`build`
+        # that never ran a line of Rust. Three re-runs did not clear it.
+        # Drop the source rather than make a Rust build depend on Google's CDN.
+        sudo rm -f /etc/apt/sources.list.d/google-chrome*.list \
+                   /etc/apt/sources.list.d/google-chrome*.sources
+
+        mkdir -p "$DIR"
+        restored=$(find "$DIR" -maxdepth 1 -name '*.deb' | wc -l)
+        echo "restored $restored cached .deb files"
+        if [ "$restored" -gt 0 ]; then
+          sudo cp "$DIR"/*.deb /var/cache/apt/archives/
+        fi
+
+        sudo apt-get update
+        # Keep what was downloaded, whatever the image's apt config says, so
+        # it can be copied out for the cache below.
+        # shellcheck disable=SC2086 # the list is split into words on purpose
+        sudo apt-get install -y -o APT::Keep-Downloaded-Packages=true $PACKAGES
+
+        # Drop versions the mirror no longer serves (a restored entry from an
+        # older image can carry them), so the cache does not grow for ever,
+        # then write back what is left.
+        sudo apt-get autoclean -y
+        rm -f "$DIR"/*.deb
+        sudo find /var/cache/apt/archives -maxdepth 1 -name '*.deb' \
+          -exec cp -t "$DIR" {} +
+        sudo chown -R "$(id -u):$(id -g)" "$DIR"
+        du -sh "$DIR"
+
+    - name: Save the downloaded packages
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ~/.apt-archives
+        key: ${{ steps.key.outputs.key }}
