@@ -517,7 +517,20 @@ Notes:
   size at once, so it can follow `RinchContext::new`'s mount).
 
 An element's own size is still its `bounds_signal()`, which the runtime
-refreshes after every layout pass.
+refreshes after every layout pass. In a browser it is refreshed from
+`getBoundingClientRect()` in the frame after anything that can move the element:
+its own resize (an animated one included), a DOM write anywhere in the page, a
+scroll, a window resize, an image or font load, or the end of a transition or
+animation. Two things move a box without any of those and are not seen until
+the next one: a `:hover` rule that moves but does not resize it, and the middle
+frames of a transition that moves it. It starts at the zero rect on both
+backends; the first real rect arrives after the next layout (the next frame on
+the web).
+
+Calling `bounds_signal()` again for the same element from the same owner — the
+same component render, effect run or handler — returns the same signal, so
+asking for it per event costs nothing after the first call. A call from
+another component gets a signal of its own, freed with that component.
 
 ## Overlay Windows
 
