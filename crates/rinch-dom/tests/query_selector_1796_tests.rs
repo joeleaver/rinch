@@ -210,3 +210,27 @@ fn a_state_query_marks_nothing_sensitive() {
         "a stylesheet :hover marks its subjects"
     );
 }
+
+/// Nor does a query record selector flags: they are what makes an insertion
+/// or removal restyle siblings (`HAS_SLOW_SELECTOR*`, `HAS_EDGE_CHILD_SELECTOR`,
+/// `HAS_EMPTY_SELECTOR`), and a query is no stylesheet rule.
+#[test]
+fn a_structural_query_records_no_selector_flags() {
+    let mut doc = doc_with_markup();
+    doc.resolve_layout(400.0, 300.0);
+    let host = by_id(&doc, "host");
+    let flags = |doc: &RinchDocument| -> Vec<(usize, usize)> {
+        doc.tree
+            .nodes
+            .iter()
+            .map(|(id, n)| (id, n.selector_flags.borrow().bits()))
+            .collect()
+    };
+    let before = flags(&doc);
+    let found = doc.query_selector_all_in(
+        host,
+        "li:nth-child(2), li:last-child, li:empty, header + section, #b1 ~ p",
+    );
+    assert_eq!(found.len(), 5, "positive control: the query matched");
+    assert_eq!(flags(&doc), before, "the query recorded selector flags");
+}
