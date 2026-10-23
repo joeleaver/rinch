@@ -149,12 +149,13 @@ jobs:
 
       - name: Install system dependencies
         if: steps.cache.outputs.cache-hit != 'true'
-        run: |
-          sudo rm -f /etc/apt/sources.list.d/google-chrome*.list \
-                     /etc/apt/sources.list.d/google-chrome*.sources
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libglib2.0-dev libatk1.0-dev \
-            libcairo2-dev libpango1.0-dev libgdk-pixbuf2.0-dev libxdo-dev
+        # Cached .debs, and the Google Chrome apt source dropped first
+        # (.github/actions/apt-install explains both, #1792).
+        uses: ./head/.github/actions/apt-install
+        with:
+          packages: >-
+            libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev
+            libpango1.0-dev libgdk-pixbuf2.0-dev libxdo-dev
 
       # An exact hit means the dependency tree is already cached for this
       # Cargo.lock and toolchain: there is nothing to build or save.
@@ -250,19 +251,18 @@ jobs:
           df -h /
 
       - name: Install system dependencies
-        run: |
-          # Drop the runner's Google Chrome apt source: its CDN intermittently
-          # serves a Packages.gz that fails its hash check, which fails
-          # `apt-get update` (ci.yml explains the full story).
-          sudo rm -f /etc/apt/sources.list.d/google-chrome*.list \
-                     /etc/apt/sources.list.d/google-chrome*.sources
-          sudo apt-get update
-          # `rinch` is built with `desktop` (the software shell), which links GTK
-          # through muda; valgrind runs the benchmarks.
-          sudo apt-get install -y valgrind libgtk-3-dev libglib2.0-dev \
-            libatk1.0-dev libcairo2-dev libpango1.0-dev libgdk-pixbuf2.0-dev \
-            libxdo-dev
-          valgrind --version
+        # Cached .debs, and the Google Chrome apt source dropped first
+        # (.github/actions/apt-install explains both, #1792).
+        # `rinch` is built with `desktop` (the software shell), which links GTK
+        # through muda; valgrind runs the benchmarks.
+        uses: ./head/.github/actions/apt-install
+        with:
+          packages: >-
+            valgrind libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev
+            libpango1.0-dev libgdk-pixbuf2.0-dev libxdo-dev
+
+      - name: Check valgrind
+        run: valgrind --version
 
       - name: Seed the base's target dir from the same cache
         run: |
