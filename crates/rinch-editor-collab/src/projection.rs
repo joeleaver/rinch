@@ -1265,9 +1265,15 @@ fn reconcile_text(
     let o: Vec<char> = old.chars().collect();
     let n: Vec<char> = b.text.chars().collect();
     // A block whose stored text the model reads differently from how it is stored
-    // (#1227) is diffed as it reads: see `reconcile_read_text`.
+    // (#1227) is diffed as it reads: see `reconcile_read_text`. Only an inline atom
+    // can read as anything but itself, so a block with none the model reads
+    // otherwise (every plain keystroke) skips the per-char pass below.
     if let Some((before, after)) = model.filter(|(before, after)| {
-        before.is_textblock() && after.is_textblock() && after.type_name() == b.type_name
+        old_marks.iter().any(|m| m.name == ATOM_MARK)
+            && before.is_textblock()
+            && after.is_textblock()
+            && after.type_name() == b.type_name
+            && reads_otherwise(before.node_type(), after.node_type(), &old_marks, &o)
     }) {
         let (old_typ, new_typ) = (before.node_type(), after.node_type());
         let new_kinds: Vec<CharKind> = (0..o.len())
@@ -1347,6 +1353,35 @@ fn reconcile_text(
         );
     }
     Ok(())
+}
+
+/// Whether some inline atom of a textblock's stored text (`o`, its spans `spans`) reads
+/// as anything but an atom in [`reconcile_text`]'s read of it (#1227): as `old_typ`
+/// where that hides it, else as `new_typ`. The cheap test that gates that read's
+/// per-char pass: it visits only the chars an [`ATOM_MARK`] span covers, and
+/// [`kind_in`] reads every other char as itself, so `false` here is exactly
+/// [`TextView::normalised`] being `false` there.
+fn reads_otherwise(old_typ: &NodeType, new_typ: &NodeType, spans: &[SpanMark], o: &[char]) -> bool {
+    spans
+        .iter()
+        .filter(|m| m.name == ATOM_MARK)
+        .flat_map(|m| m.start..m.end.min(o.len()))
+        .any(|i| {
+            let new_kind = kind_in(new_typ, spans, o, i, o[i]);
+            let old_kind = if old_typ.name() == new_typ.name() {
+                new_kind
+            } else {
+                kind_in(old_typ, spans, o, i, o[i])
+            };
+            let read = if old_kind == CharKind::Atom
+                || matches!(old_kind, CharKind::Text(c) if c == o[i])
+            {
+                new_kind
+            } else {
+                old_kind
+            };
+            !matches!(read, CharKind::Atom) && read != CharKind::Text(o[i])
+        })
 }
 
 /// [`reconcile_text`] for a block whose stored text the model reads differently from
