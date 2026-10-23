@@ -32,6 +32,8 @@ use wasm_bindgen_test::*;
 
 #[path = "support/engine.rs"]
 mod engine;
+#[path = "support/real_input.rs"]
+mod real_input;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -218,15 +220,13 @@ async fn real_click(el: &web_sys::Element) {
     });
     let r = el.get_bounding_client_rect();
     let (x, y) = (r.x() + r.width() / 2.0, r.y() + r.height() / 2.0);
-    document().set_title(&format!("RINCH-REAL-CLICK:{n}:{},{}", x.round(), y.round()));
-    let sent = format!("RINCH-REAL-CLICK-SENT:{n}");
-    for _ in 0..200 {
-        settle().await;
-        if document().title() == sent {
-            return;
-        }
-    }
-    panic!("the helper never sent click #{n} (is support/real_keys.mjs running?)");
+    real_input::ask_helper(
+        &format!("RINCH-REAL-CLICK:{n}:{},{}", x.round(), y.round()),
+        &format!("RINCH-REAL-CLICK-SENT:{n}"),
+        &format!("click #{n}"),
+    )
+    .await;
+    settle().await;
 }
 
 /// Two buttons the way an app writes them: each copies from its click and
@@ -405,22 +405,13 @@ async fn read_system_clipboard() -> Vec<(String, String)> {
         c.set(c.get() + 1);
         c.get()
     });
-    document().set_title(&format!("RINCH-GRANT-CLIPBOARD:{n}"));
-    let sent = format!("RINCH-GRANT-CLIPBOARD-SENT:{n}:");
-    let mut granted = None;
-    for _ in 0..200 {
-        settle().await;
-        let title = document().title();
-        if let Some(outcome) = title.strip_prefix(&sent) {
-            granted = Some(outcome.to_string());
-            break;
-        }
-    }
-    assert_eq!(
-        granted.as_deref(),
-        Some("OK"),
-        "the helper granted clipboard access"
-    );
+    let granted = real_input::ask_helper(
+        &format!("RINCH-GRANT-CLIPBOARD:{n}"),
+        &format!("RINCH-GRANT-CLIPBOARD-SENT:{n}:"),
+        &format!("clipboard grant #{n}"),
+    )
+    .await;
+    assert_eq!(granted, "OK", "the helper granted clipboard access");
     let clipboard = web_sys::window().unwrap().navigator().clipboard();
     let items = JsFuture::from(clipboard.read())
         .await
