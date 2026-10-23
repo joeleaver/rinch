@@ -411,13 +411,12 @@ mod dedupe_tests_1781 {
     #[test]
     fn repeated_calls_from_one_owner_share_one_signal() {
         let scope = Scope::new();
-        let (a, b) = scope.run(|| {
-            (
-                register_bounds_signal(41, 5),
-                register_bounds_signal(41, 5),
-            )
-        });
-        assert_eq!(a.identity(), b.identity(), "one owner, one node: one signal");
+        let (a, b) = scope.run(|| (register_bounds_signal(41, 5), register_bounds_signal(41, 5)));
+        assert_eq!(
+            a.identity(),
+            b.identity(),
+            "one owner, one node: one signal"
+        );
         let n = registry_entries_for_tests()
             .iter()
             .filter(|e| **e == (41, 5))
@@ -452,7 +451,10 @@ mod dedupe_tests_1781 {
         );
         first.dispose();
         assert!(!a.is_alive());
-        assert!(b.is_alive(), "the second owner's signal survives the first scope");
+        assert!(
+            b.is_alive(),
+            "the second owner's signal survives the first scope"
+        );
         update_bounds_signals(44, |_| Some((1.0, 2.0, 3.0, 4.0)));
         assert_eq!(b.get().width, 3.0);
         second.dispose();

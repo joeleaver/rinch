@@ -90,8 +90,16 @@ fn browser_rect(el: &web_sys::Element) -> ElementBounds {
 
 fn assert_tracks(sig: Signal<ElementBounds>, el: &web_sys::Element, what: &str) {
     let want = browser_rect(el);
-    assert_ne!(want, ElementBounds::default(), "{what}: the browser's rect is not the zero rect");
-    assert_eq!(sig.get(), want, "{what}: the signal holds the browser's rect");
+    assert_ne!(
+        want,
+        ElementBounds::default(),
+        "{what}: the browser's rect is not the zero rect"
+    );
+    assert_eq!(
+        sig.get(),
+        want,
+        "{what}: the signal holds the browser's rect"
+    );
 }
 
 type Target = Signal<Option<NodeHandle>>;
@@ -225,12 +233,25 @@ async fn calls_share_one_signal_and_the_watch_ends_with_it() {
     let (a, b) = scope.run(|| (handle.bounds_signal(), handle.bounds_signal()));
     assert_eq!(a.identity(), b.identity());
     frames(2).await;
-    assert!(rinch_web::__bounds_watch_count() >= 1, "the element is watched");
+    assert!(
+        rinch_web::__bounds_watch_count() >= 1,
+        "the element is watched"
+    );
     scope.dispose();
     // A DOM write wakes a refresh, which finds the signal gone.
-    f.el("target-1781").style().set_property("width", "50px").unwrap();
+    f.el("target-1781")
+        .style()
+        .set_property("width", "50px")
+        .unwrap();
     frames(2).await;
-    assert_eq!(rinch_web::__bounds_watch_count(), 0, "nothing is watched any more");
-    assert!(!rinch_web::__bounds_watch_installed(), "the observers are gone");
+    assert_eq!(
+        rinch_web::__bounds_watch_count(),
+        0,
+        "nothing is watched any more"
+    );
+    assert!(
+        !rinch_web::__bounds_watch_installed(),
+        "the observers are gone"
+    );
     f.teardown();
 }

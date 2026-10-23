@@ -219,7 +219,12 @@ fn refresh() {
                 continue;
             }
             let r = w.el.get_bounding_client_rect();
-            let rect = (r.x() as f32, r.y() as f32, r.width() as f32, r.height() as f32);
+            let rect = (
+                r.x() as f32,
+                r.y() as f32,
+                r.width() as f32,
+                r.height() as f32,
+            );
             match out.iter_mut().find(|(k, _)| *k == w.doc_key) {
                 Some((_, v)) => v.push((w.node_id, rect)),
                 None => out.push((w.doc_key, vec![(w.node_id, rect)])),
@@ -229,10 +234,7 @@ fn refresh() {
     });
     for (doc_key, rects) in measured {
         rinch_core::reactive::update_bounds_signals(doc_key, |node_id| {
-            rects
-                .iter()
-                .find(|(id, _)| *id == node_id)
-                .map(|(_, r)| *r)
+            rects.iter().find(|(id, _)| *id == node_id).map(|(_, r)| *r)
         });
     }
 }

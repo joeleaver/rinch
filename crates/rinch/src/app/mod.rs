@@ -7058,7 +7058,11 @@ mod layout_notification_tests {
     fn repeated_bounds_signal_calls_share_one_signal() {
         use rinch_core::reactive::{ElementBounds, Scope, Signal};
 
-        type Three = (Signal<ElementBounds>, Signal<ElementBounds>, Signal<ElementBounds>);
+        type Three = (
+            Signal<ElementBounds>,
+            Signal<ElementBounds>,
+            Signal<ElementBounds>,
+        );
         let captured: Rc<Cell<Option<Three>>> = Rc::new(Cell::new(None));
         let captured_in = captured.clone();
         let mut app = RinchApp::new(move |scope: &mut RenderScope| {
