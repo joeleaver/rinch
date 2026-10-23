@@ -5,7 +5,8 @@
 //! walked the whole document's style tree (`resolve_styles` chose its full walk
 //! whenever transitions were not yet armed, and the insertion fast path
 //! `resolve_inserted_subtree` declined for the same reason). Building N rows
-//! visited about N²/2 nodes: 36,000 rows took 40–70 s in release.
+//! visited about N²/2 nodes: 36,000 rows took about 15.5 s to build in
+//! release (150 ms after the fix).
 //!
 //! These fixtures count operations, not time. Each builds the same document at
 //! two sizes, 1,000 and 4,000 rows, lays it out once, and asserts that **no

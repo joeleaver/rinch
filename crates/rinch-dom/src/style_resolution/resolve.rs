@@ -146,7 +146,8 @@ impl RinchDocument {
         // is still being built" and forced this walk, so every insertion
         // before the first layout — the whole initial render of an app —
         // visited every node already in the document. Building N rows visited
-        // about N²/2 nodes; 36,000 rows took 40–70 s in release. The targeted
+        // about N²/2 nodes; 36,000 rows took about 15.5 s to build in release
+        // (150 ms after). The targeted
         // walk below needs nothing the first layout provides: every route
         // that connects a node pushes it as a root, and attribute and state
         // changes on styled elements are snapshotted whether or not

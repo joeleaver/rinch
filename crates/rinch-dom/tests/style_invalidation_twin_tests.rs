@@ -1511,8 +1511,18 @@ fn run_pre_layout_seed(seed: u64, transitions: bool) -> usize {
     }
     // Boxes too against the forced twin: both took the same mutations and the
     // same one layout, so only the walk differs.
-    assert_twin_opts(&l.doc, &lf.doc, &format!("{label}\n(vs forced full walks)"), true);
-    assert_twin_opts(&l.doc, &fresh(&spec), &format!("{label}\n(vs fresh)"), false);
+    assert_twin_opts(
+        &l.doc,
+        &lf.doc,
+        &format!("{label}\n(vs forced full walks)"),
+        true,
+    );
+    assert_twin_opts(
+        &l.doc,
+        &fresh(&spec),
+        &format!("{label}\n(vs fresh)"),
+        false,
+    );
     assert_twin_opts(
         &l.doc,
         &from_scratch(&spec),
@@ -1570,7 +1580,10 @@ fn random_pre_layout_sequences_start_no_transition() {
         started += run_pre_layout_seed(seed, true);
     }
     CSS_CUR.with(|c| *c.borrow_mut() = CSS.to_string());
-    assert!(started > 0, "positive control: no change after the first layout transitioned");
+    assert!(
+        started > 0,
+        "positive control: no change after the first layout transitioned"
+    );
 }
 
 /// Named pre-layout shapes: each op resolves styles (as an insertion does)
@@ -1598,7 +1611,11 @@ fn pre_layout_scenario(name: &str, spec: Spec, ops: &[Op]) {
     l.doc.resolve_layout(800.0, 600.0);
     lf.doc.resolve_layout(800.0, 600.0);
     assert_twin(&l.doc, &lf.doc, &format!("{name}: vs forced"));
-    assert_twin(&l.doc, &from_scratch(&spec), &format!("{name}: vs from scratch"));
+    assert_twin(
+        &l.doc,
+        &from_scratch(&spec),
+        &format!("{name}: vs from scratch"),
+    );
     CSS_CUR.with(|c| *c.borrow_mut() = CSS.to_string());
 }
 
@@ -1625,7 +1642,11 @@ fn named_pre_layout_shapes_match_a_full_restyle() {
     // `:empty` on the parent, and `:only-child`.
     let mut s = Spec::new();
     let p = s.add(0, 0, "div", &["d"]);
-    pre_layout_scenario("empty", s, &[ins(p, 0, "span", &["b"]), ins(p, 1, "span", &[])]);
+    pre_layout_scenario(
+        "empty",
+        s,
+        &[ins(p, 0, "span", &["b"]), ins(p, 1, "span", &[])],
+    );
     // Inherited properties and custom properties set on an ancestor later.
     let mut s = Spec::new();
     let w = s.add(0, 0, "div", &[]);
