@@ -579,6 +579,42 @@ impl RinchApp {
                 actions.push(AppAction::RequestRedraw);
                 DebugResult::Json { data: json!(null) }
             }
+            DebugCommandKind::DropFiles { x, y, paths } => {
+                // An OS file drop, as the shell translates winit's (#1806):
+                // `DragEntered` with its paths is one `FileHoverEnter` per
+                // path at the point (X11 and Windows name the paths on
+                // entry), and `DragDropped` is one `FileDropped`. Through
+                // `handle_event`, so the drag-enter/leave attributes, the
+                // editor's drop caret and picture claim, and the drop
+                // handlers under the point all run as for a real drop. The
+                // paths go over verbatim: a missing file is the app's to
+                // find, as one deleted between a drop and its read is.
+                if paths.is_empty() {
+                    return DebugResult::Error {
+                        message: "drop_files needs at least one path".into(),
+                    };
+                }
+                let position = (x as f64, y as f64);
+                let paths: Vec<std::path::PathBuf> =
+                    paths.into_iter().map(std::path::PathBuf::from).collect();
+                for path in &paths {
+                    actions.extend(self.handle_event(
+                        PlatformEvent::FileHoverEnter {
+                            path: path.clone(),
+                            position,
+                        },
+                        window_size,
+                        scale_factor,
+                    ));
+                }
+                actions.extend(self.handle_event(
+                    PlatformEvent::FileDropped { paths, position },
+                    window_size,
+                    scale_factor,
+                ));
+                actions.push(AppAction::RequestRedraw);
+                DebugResult::Json { data: json!(null) }
+            }
             DebugCommandKind::MouseMove { x, y } => {
                 // Route through the real input path so MCP matches a real move
                 // (drag-select, hover, surface dispatch all live in `handle_event`).
@@ -2450,5 +2486,149 @@ mod key_release_485_tests {
             }
             other => panic!("expected an error, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod drop_files_1806_tests {
+    //! MCP `drop_files` (#1806) delivers a file drop the way the OS does:
+    //! `data-onfiledragenter` on the target under the point, then the drop's
+    //! handlers there (`data-onfiledrop` with the paths, `data-ondropfiles`
+    //! with the files that exist) with the drop point in the click context,
+    //! then `data-onfiledragleave`.
+
+    use super::*;
+    use std::cell::RefCell;
+    use std::path::PathBuf;
+
+    const VIEWPORT: (u32, u32) = (800, 600);
+
+    /// What each handler saw, in order.
+    #[derive(Debug, Clone, PartialEq)]
+    enum Seen {
+        Enter,
+        Leave,
+        Paths(Vec<PathBuf>, (f32, f32), (f32, f32, f32, f32)),
+        Files(Vec<String>),
+    }
+
+    type Log = Rc<RefCell<Vec<Seen>>>;
+
+    /// An 800x600 root holding, 150px down, a 300x100 drop target at
+    /// x = 40 with all four file-drop handlers.
+    fn app(log: Log) -> RinchApp {
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "width: 800px; height: 600px");
+            let spacer = scope.create_element("div");
+            spacer.set_attribute("style", "height: 150px");
+            root.append_child(&spacer);
+            let target = scope.create_element("div");
+            target.set_attribute("style", "margin-left: 40px; width: 300px; height: 100px");
+            let l = log.clone();
+            let id = scope.register_handler(move || l.borrow_mut().push(Seen::Enter));
+            target.set_attribute("data-onfiledragenter", &id.0.to_string());
+            let l = log.clone();
+            let id = scope.register_handler(move || l.borrow_mut().push(Seen::Leave));
+            target.set_attribute("data-onfiledragleave", &id.0.to_string());
+            let l = log.clone();
+            let id = scope.register_file_drop_handler(move |paths| {
+                let c = events::get_click_context();
+                l.borrow_mut().push(Seen::Paths(
+                    paths,
+                    (c.mouse_x, c.mouse_y),
+                    (c.element_x, c.element_y, c.element_width, c.element_height),
+                ));
+            });
+            target.set_attribute("data-onfiledrop", &id.0.to_string());
+            let l = log.clone();
+            let id = scope.register_files_drop_handler(move |files| {
+                l.borrow_mut().push(Seen::Files(
+                    files.iter().map(|f| f.name().to_string()).collect(),
+                ));
+            });
+            target.set_attribute("data-ondropfiles", &id.0.to_string());
+            root.append_child(&target);
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        app.resolve_and_repaint(800.0, 600.0);
+        app
+    }
+
+    fn drop_files(app: &mut RinchApp, x: f32, y: f32, paths: &[&str]) -> DebugResult {
+        let mut actions = Vec::new();
+        app.execute_debug_command(
+            DebugCommandKind::DropFiles {
+                x,
+                y,
+                paths: paths.iter().map(|p| p.to_string()).collect(),
+            },
+            &mut actions,
+            1.0,
+            VIEWPORT,
+        )
+    }
+
+    /// The feature: the target under the point hears the drag enter, then
+    /// the drop with every path verbatim — a missing one included — and the
+    /// drop point and its own box in the click context, then the files that
+    /// exist, then the drag leave. The point is off the target's origin, so
+    /// a context that reported (0, 0) or the box's corner would fail.
+    #[test]
+    fn a_drop_reaches_the_target_under_the_point_as_an_os_drop_does() {
+        let dir = std::env::temp_dir().join(format!("rinch-drop-files-1806-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let real = dir.join("model.glb");
+        std::fs::write(&real, b"glTF").unwrap();
+        let missing = dir.join("gone.png");
+        let log: Log = Rc::default();
+        let mut app = app(log.clone());
+
+        let result = drop_files(
+            &mut app,
+            123.0,
+            187.0,
+            &[real.to_str().unwrap(), missing.to_str().unwrap()],
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(matches!(result, DebugResult::Json { .. }), "{result:?}");
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                Seen::Enter,
+                Seen::Paths(
+                    vec![real.clone(), missing.clone()],
+                    (123.0, 187.0),
+                    (40.0, 150.0, 300.0, 100.0),
+                ),
+                Seen::Files(vec!["model.glb".into()]),
+                Seen::Leave,
+            ]
+        );
+    }
+
+    /// A drop beside the target reaches none of its handlers: what is
+    /// dispatched follows the point, as for a real drop.
+    #[test]
+    fn a_drop_beside_the_target_reaches_none_of_it() {
+        let log: Log = Rc::default();
+        let mut app = app(log.clone());
+        let result = drop_files(&mut app, 500.0, 187.0, &["/tmp/x.txt"]);
+        assert!(matches!(result, DebugResult::Json { .. }), "{result:?}");
+        assert!(log.borrow().is_empty(), "{:?}", log.borrow());
+        // Positive control: the same app takes a drop on the target.
+        drop_files(&mut app, 100.0, 160.0, &["/tmp/x.txt"]);
+        assert!(log.borrow().contains(&Seen::Enter), "{:?}", log.borrow());
+    }
+
+    /// No OS drop is empty: an empty list is an error and dispatches nothing.
+    #[test]
+    fn an_empty_drop_is_an_error_and_dispatches_nothing() {
+        let log: Log = Rc::default();
+        let mut app = app(log.clone());
+        let result = drop_files(&mut app, 123.0, 187.0, &[]);
+        assert!(matches!(result, DebugResult::Error { .. }), "{result:?}");
+        assert!(log.borrow().is_empty(), "{:?}", log.borrow());
     }
 }
