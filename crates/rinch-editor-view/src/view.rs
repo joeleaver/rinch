@@ -1891,7 +1891,7 @@ impl RinchDomEditorView {
                 return Some(rect);
             }
         }
-        for (element, end, after) in self.mark_edges_beside(doc, pos, stored) {
+        for (element, end, after) in self.mark_edges_beside(doc, pos, stored, affinity) {
             if let Some(rect) =
                 host.query_inline_edge_caret_rect(block_id, element as u64, end, after)
             {
@@ -2001,6 +2001,9 @@ impl RinchDomEditorView {
     ///
     /// A wrapper with no padding has no edge and the host answers `None` for
     /// it, so each side lists every wrapper, the one to use first.
+    /// An `Upstream` caret (the upper line's end at a soft wrap) is never
+    /// placed against the run after's start edges, which are on the lower
+    /// line.
     ///
     /// [`ResolvedPos::marks`]: rinch_editor_core::ResolvedPos::marks
     pub(crate) fn mark_edges_beside(
@@ -2008,6 +2011,7 @@ impl RinchDomEditorView {
         doc: &Node,
         pos: Pos,
         stored: Option<&[Mark]>,
+        affinity: CaretAffinity,
     ) -> Vec<(usize, bool, bool)> {
         let Ok(r) = doc.resolve(pos) else {
             return Vec::new();
@@ -2060,13 +2064,20 @@ impl RinchDomEditorView {
             }
             out
         };
+        // An `Upstream` caret is the upper line's end at a soft wrap: the
+        // run after's start edges are on the lower line, so only the run
+        // before's end edges can place it.
+        let starts = if affinity == CaretAffinity::Upstream {
+            Vec::new()
+        } else {
+            wrappers(next)
+        };
         let typed = stored.map_or_else(|| r.marks(), <[Mark]>::to_vec);
         let joins = |i: Option<usize>| {
             i.map(|i| block.child(i))
                 .is_some_and(|n| n.is_text() && n.marks() == typed.as_slice())
         };
         let ends = wrappers(before);
-        let starts = wrappers(next);
         // Leading side of the run before's end edges, innermost first.
         let inside_before = ends.iter().map(|&e| (e, true, false));
         // Trailing side of its end edges, outermost first.
@@ -2260,7 +2271,7 @@ impl RinchDomEditorView {
             }
         }
         // #1426: past a mark wrapper's padding, on the side its marks say.
-        for (element, end, after) in self.mark_edges_beside(doc, pos, stored) {
+        for (element, end, after) in self.mark_edges_beside(doc, pos, stored, affinity) {
             if let Some((x, y, height)) =
                 d.query_inline_edge_caret(block_id as u64, element as u64, end, after)
             {

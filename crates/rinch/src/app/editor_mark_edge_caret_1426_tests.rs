@@ -246,3 +246,44 @@ fn toggling_code_at_a_code_runs_start() {
     idle(&mut p.app);
     p.assert_typed_lands_at_the_caret("toggled code at the run's start");
 }
+
+/// End on the line before a soft-wrapped line that starts with a code run:
+/// the caret is `Upstream` at the upper line's end, and stays there — the
+/// code's start edge is on the lower line, and a start edge does not draw an
+/// upstream caret.
+#[test]
+fn end_before_a_soft_wrapped_code_run_stays_on_the_upper_line() {
+    let mut p = page("<p>aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa <code>bbbbbbbb</code> c</p>");
+    let start = 1 + "aaaa ".len() * 8;
+    p.caret_at(3);
+    p.app.handle_event(
+        PlatformEvent::KeyDown {
+            key: KeyCode::End,
+            logical_key: None,
+            text: None,
+            modifiers: Modifiers::default(),
+            repeat: KeyRepeat::Fresh,
+        },
+        VP,
+        1.0,
+    );
+    idle(&mut p.app);
+    assert_eq!(p.handle.selection().head(), Pos(start), "End");
+    assert_eq!(
+        p.handle.caret_affinity(),
+        rinch_core::dom::CaretAffinity::Upstream
+    );
+    let doc = p.app.doc.as_ref().unwrap().borrow();
+    let id = doc
+        .query_selector_all("[data-pm-caret]")
+        .into_iter()
+        .next()
+        .unwrap();
+    let caret = painted_element_box(&doc.tree, id.0);
+    let block = p.handle.caret_address(Pos(start)).unwrap().0;
+    let (_, by, ..) = painted_element_box(&doc.tree, block);
+    assert!(
+        caret.1 < by + 20.0,
+        "the caret is on the first line: {caret:?}, block top {by}"
+    );
+}
