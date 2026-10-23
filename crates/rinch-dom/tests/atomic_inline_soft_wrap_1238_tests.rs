@@ -491,3 +491,217 @@ fn the_boxes_own_white_space_and_the_spans_spaces_and_text() {
         &["aa[1]", "[2][3]"],
     );
 }
+
+/// A `w`px-wide inline-block with `id`.
+fn bw(id: &str, w: f32) -> String {
+    format!("<b id=\"{id}\" style=\"display:inline-block;width:{w}px;height:10px\"></b>")
+}
+
+/// Review of #1878, class A: a space at the end of a `nowrap`/`pre`
+/// element. Chrome puts the opportunity of a run of spaces before the run,
+/// so it is the white space of the text before the spaces that decides it,
+/// and that text does not wrap: no break between the spaces and what
+/// follows, even though the element closes into a wrapping one.
+#[test]
+fn a_space_ending_a_nowrap_element_offers_no_wrap() {
+    let cases: &[(&str, &str, String, &[&str])] = &[
+        (
+            "v1",
+            "white-space:normal;width:55px",
+            format!("{}{}", nowrap("abc def "), bw("B3", 60.0)),
+            &["abc_def_[B3]"],
+        ),
+        (
+            "v2",
+            "white-space:normal;width:55px",
+            format!(
+                "<span style=\"white-space:pre\">abc def </span>{}",
+                bw("B3", 60.0)
+            ),
+            &["abc_def_[B3]"],
+        ),
+        (
+            "v3",
+            "white-space:normal;width:55px",
+            format!("{}xyz{}", nowrap("abc def "), bw("B3", 10.0)),
+            &["abc_def_xyz", "[B3]"],
+        ),
+        (
+            "v4",
+            "white-space:normal;width:55px",
+            format!(
+                "{}{}",
+                nowrap(&format!("{} ", bw("B2", 45.0))),
+                bw("B3", 30.0)
+            ),
+            &["[B2]_[B3]"],
+        ),
+        (
+            "v7",
+            "white-space:normal;width:120px",
+            format!(
+                "lorem ipsum {}{} amet",
+                nowrap("dolor sit "),
+                bw("B3", 60.0)
+            ),
+            &["lorem_ipsum", "dolor_sit_[B3]", "amet"],
+        ),
+    ];
+    for (name, style, inner, want) in cases {
+        check(name, style, inner, want);
+    }
+}
+
+/// Review of #1878, class B: the root's `nowrap` spaces after a wrapping
+/// span's text. The opportunity before them is the span's, as parley has
+/// it: `aaddddhello` ends the first line.
+#[test]
+fn nowrap_spaces_after_wrapping_text_still_break_before_them() {
+    for root in ["white-space:nowrap", "white-space:pre"] {
+        for w in [55, 80] {
+            check(
+                "g1/g3",
+                &format!("{root};width:{w}px"),
+                &format!("aa{} ccc ccc{}", normal("ddddhello"), b("B2")),
+                &["aaddddhello", "ccc_ccc[B2]"],
+            );
+        }
+    }
+}
+
+/// Review of #1878, class C: a `pre-wrap` space hangs at a forced break
+/// even with the span's end padding after it: `[B1]q-r` fits 71.5px. A
+/// `break-spaces` space does not hang, and the line breaks after `q-`.
+#[test]
+fn a_hanging_space_before_end_padding_and_a_forced_break_still_hangs() {
+    let inner = format!(
+        "<span style=\"padding:0 3px\">{}q-r </span><br>xy",
+        bw("B1", 45.0)
+    );
+    check(
+        "y2_71.5",
+        "white-space:pre-wrap;width:71.5px",
+        &inner,
+        &["[B1]q-r", "xy"],
+    );
+    check(
+        "y1_71.5",
+        "white-space:pre-wrap;width:71.5px",
+        &format!(
+            "<span style=\"padding:0 3px\">{}q-r </span>\nxy",
+            bw("B1", 45.0)
+        ),
+        &["[B1]q-r", "xy"],
+    );
+    check(
+        "y3_71.5",
+        "white-space:break-spaces;width:71.5px",
+        &inner,
+        &["[B1]q-", "r", "xy"],
+    );
+}
+
+/// Review of #1878: a re-broken line asks the same segmenter parley does
+/// (with the complex-script dictionaries), so there is no break between
+/// the end of a Thai or Khmer run and the Latin letter after it (Chrome 155
+/// has none either). Only whether `w` starts a line is compared, which no
+/// host font changes: everything before it overflows 55px.
+#[test]
+fn no_break_between_a_complex_script_run_and_the_latin_after_it() {
+    for (name, text) in [("t1", "ภาษาไทยง่ายมาก"), ("t4", "ខ្មែរភាសា")]
+    {
+        let laid = lay_out(
+            "white-space:normal;width:55px",
+            &format!("{}w", nowrap(&format!("{}{text}", bw("B1", 20.0)))),
+        );
+        assert_eq!(laid.lines.len(), 1, "{name}: {:?}", laid.lines);
+    }
+}
+
+/// A `nowrap` root whose only wrapping element holds no text of its own
+/// (its text is in a `nowrap` span inside it) still breaks at the width:
+/// the span closes into the `normal` one before the box (Chrome 155).
+#[test]
+fn a_wrapping_element_around_nowrap_text_reaches_the_width() {
+    check(
+        "o1",
+        "white-space:nowrap;width:40px",
+        &format!("{}{}", normal(&nowrap("xx")), b("B1")),
+        &["xx", "[B1]"],
+    );
+}
+
+/// A box wider than the line at its start overflows, and what is glued to
+/// it stays with it: parley's emergency break after the box is not taken
+/// inside `nowrap` content (Chrome 155: `[B1]cc` on one line).
+#[test]
+fn a_too_wide_box_keeps_the_nowrap_text_after_it() {
+    check(
+        "o4",
+        "white-space:normal;width:60px",
+        &format!("aa {} dd", nowrap(&format!("{}cc", bw("B1", 80.0)))),
+        &["aa", "[B1]cc", "dd"],
+    );
+    check(
+        "o3",
+        "white-space:nowrap;width:60px",
+        &format!("aa{}cc", normal(&bw("B1", 80.0))),
+        &["aa[B1]", "cc"],
+    );
+}
+
+/// `break-spaces` breaks between two spaces: trailing spaces that overflow
+/// before a forced break go to a line of their own (Chrome 155), in a
+/// paragraph re-broken by CSS's rules (a `nowrap` span gives it seams).
+#[test]
+fn break_spaces_trailing_spaces_take_a_line_of_their_own() {
+    let after = format!("\n{}", nowrap("ab"));
+    check(
+        "q1_66",
+        "white-space:pre-wrap;width:66px",
+        &format!(
+            "<span style=\"white-space:break-spaces\">{}xy z  </span>{after}",
+            b("B1")
+        ),
+        &["[B1]xy_z", "", "ab"],
+    );
+    check(
+        "q2_62",
+        "white-space:break-spaces;width:62px",
+        &format!("{}xy z   {after}", b("B1")),
+        &["[B1]xy", "z", "ab"],
+    );
+}
+
+/// A line re-broken around a padded span keeps the dictionary breaks of the
+/// Thai before it (Chrome 155: `ภาษา` / `ไทย` / `ง่าย` / `มากw`). The widths
+/// are the host's Thai font's, so only where the lines break is checked:
+/// at word boundaries, more than once, `w` glued to the last word.
+#[test]
+fn a_re_broken_line_keeps_thai_word_breaks() {
+    let laid = lay_out(
+        "white-space:normal;width:30px",
+        "ภาษาไทยง่ายมาก<span style=\"padding:0 3px\">w</span>",
+    );
+    let words = ["ภาษา", "ไทย", "ง่าย", "มาก"];
+    assert!(laid.lines.len() >= 2, "{:?}", laid.lines);
+    assert!(
+        laid.lines.last().unwrap().ends_with("มากw"),
+        "{:?}",
+        laid.lines
+    );
+    let mut rest = laid.lines.concat();
+    for line in &laid.lines {
+        let mut l = line.as_str();
+        while let Some(w) = words.iter().find(|w| l.starts_with(**w)) {
+            l = &l[w.len()..];
+        }
+        assert!(
+            l.is_empty() || l == "w",
+            "line {line:?} not whole words: {:?}",
+            laid.lines
+        );
+    }
+    rest.retain(|c| c != 'w');
+    assert_eq!(rest, words.concat());
+}
