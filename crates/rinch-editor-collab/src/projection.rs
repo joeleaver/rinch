@@ -2882,9 +2882,9 @@ fn build_node(schema: &Schema, nd: &NodeData) -> Result<Node> {
 /// read as ProseMirror's `setBlockType` (`clearIncompatible`) would leave it: a
 /// `hard_break` in a [`code`](rinch_editor_core::NodeSpec::code) block is the line break
 /// `"\n"`, any other is dropped ([`char_kind`]). Every replica reads the same CRDT, so
-/// this converges by construction; the CRDT keeps the stray formatting until a local
-/// edit of the block writes it back from the model ([`reconcile_text`] diffs the CRDT's
-/// own text and marks against the model's, so the first such edit clears them).
+/// this converges by construction. The stored text keeps the hidden atoms; a local edit
+/// of the block is diffed as the block reads ([`TextView`], `reconcile_read_text`) and
+/// clears the stray marks.
 fn build_block(schema: &Schema, b: &BlockData) -> Result<Node> {
     // Inbound scope guard (A22): a peer CRDT must not be able to materialize a
     // non-flat block here — `create_node` would happily build a `blockquote`/`list`,
