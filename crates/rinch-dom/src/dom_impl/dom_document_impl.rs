@@ -1343,7 +1343,11 @@ impl DomDocument for RinchDocument {
         element: u64,
         end: bool,
     ) -> Option<(f32, f32, f32)> {
-        self.query_inline_box_caret(node_id, crate::ifc::edge_box_id(element as usize, end), true)
+        self.query_inline_box_caret(
+            node_id,
+            crate::ifc::edge_box_id(element as usize, end),
+            true,
+        )
     }
 
     fn query_inline_edge_caret_rect(

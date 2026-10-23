@@ -215,9 +215,10 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     the last (`box-decoration-break: slice`), and right to left takes the
     right side first. They hold no text bytes: flat offsets, the DOM↔flat maps
     and the editor's caret maps are unchanged, and a byte's caret is drawn
-    before the box at it (`|x` inside a span outside its start padding,
-    `|tail` after it inside its end padding; the caret rule is part 2 of
-    #1426). **Every walker of a layout's inline boxes that maps a box to a
+    before the box at it, except at a line's start (`|x` inside a span
+    mid-line outside its start padding,
+    `|tail` after it inside its end padding; the editor draws its caret on
+    the side its marks say, `docs/internals/editor.md`). **Every walker of a layout's inline boxes that maps a box to a
     node asks `ifc::is_edge_box` first** (positions, paint, layer bounds,
     span fragments, text queries). parley 0.11.1 allows a break after every
     in-flow box and before one that does not fit, which is wrong for an edge
