@@ -239,6 +239,10 @@ pub mod prelude {
     pub use rinch_core::{PasteEventData, clear_paste_interceptor, set_paste_interceptor};
     // What an element's `onkeydown` / `onkeyup` handler is given (issue #1678).
     pub use rinch_core::{KeyEventData, KeyEventKind};
+    // App-wide key listeners (issue #1784): every key the window receives that
+    // nothing ahead consumed, with or without a focused element; any number of
+    // parties, released with the registering scope.
+    pub use rinch_core::{AppKeyListener, on_app_key};
     // The dismiss stack (issue #474): who gets Escape, topmost overlay first.
     // A custom overlay joins it the way `Modal`, `Drawer` and `Popover` do, and
     // should — a lone `set_keyboard_interceptor` is one slot per document, so
