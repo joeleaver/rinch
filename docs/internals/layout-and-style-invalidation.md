@@ -105,8 +105,8 @@ box:
   answer differently in the new colour, glyph by glyph where two ranges share a
   Parley run. An underline or line-through follows only where it was
   `currentcolor` (no `text-decoration-color` from the range's element up to the
-  IFC root); a wavy underline and an inline element's background rectangle
-  (colour, padding, radius) are read from their owner's style on every paint
+  IFC root); a wavy underline and an inline element's background rectangle and border
+  (colour, padding, radius; its horizontal extent from its edge boxes, #1426) are read from their owner's style on every paint
   (`ifc::wavy_underline_color`, `ifc::inline_background_span`). Two things a
   tick still rebuilds a paint layout for, with no Taffy compute
   (`settle_ticked_text`): the frame an inline element's background **appears**

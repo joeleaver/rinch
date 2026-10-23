@@ -225,3 +225,72 @@ fn a_positioned_spans_padding_box_starts_at_its_padding() {
         [x, y, w, h]
     );
 }
+
+// ── Paint ───────────────────────────────────────────────────────────────────
+
+/// The columns, relative to the container's border box, of the fully opaque
+/// pixels of exactly `rgb` in the container's rows `y0..y1`.
+fn columns(c: &Case, rgb: (u8, u8, u8), y0: f32, y1: f32) -> Vec<i32> {
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+    let (w, h) = (VIEWPORT.0 as u32, VIEWPORT.1 as u32);
+    let mut painter = TinySkiaPainter::new(w, h);
+    let mut layout_cx = parley::LayoutContext::new();
+    let mut font_cx = c.doc.font_cx.clone();
+    rinch_dom::paint::paint_document(
+        &c.doc.tree,
+        &mut painter,
+        1.0,
+        VIEWPORT,
+        &mut font_cx,
+        &mut layout_cx,
+    );
+    let px = painter.pixels();
+    let (cx, cy) = rinch_dom::paint::compute_absolute_position(&c.doc.tree, c.c, 1.0);
+    let mut out = Vec::new();
+    for y in (cy as f32 + y0) as u32..(cy as f32 + y1) as u32 {
+        for x in 0..w {
+            let i = ((y * w + x) * 4) as usize;
+            if px[i + 3] == 255 && (px[i], px[i + 1], px[i + 2]) == rgb {
+                out.push(x as i32 - cx as i32);
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Pimble's pill: its background is drawn from the content box's left edge
+/// (Chrome's fragment: `11 .. 52.969`), not 7px left of it, where the
+/// container's `overflow: hidden` cut its cap off.
+#[test]
+fn a_pill_at_the_line_start_is_painted_inside_the_box() {
+    let c = Case::with(
+        "width: 100px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
+        r#"<span style="padding: 0 7px; background: rgb(0, 0, 255); color: rgb(0, 0, 255)">Pay</span>"#,
+    );
+    let blue = columns(&c, (0, 0, 255), 8.0, 26.0);
+    let (lo, hi) = (blue[0], *blue.last().unwrap());
+    assert!(
+        (10..=11).contains(&lo) && (52..=53).contains(&hi),
+        "the pill spans {lo}..={hi}; Chrome 155 paints 11..53"
+    );
+}
+
+/// An inline border is drawn, on the sides its fragment closes: its left
+/// edge where the span starts (`lead ` ends at 47.641) and its right edge
+/// `2 + 5 + text + 5 + 2` = 42.328 later, at 89.969 (Chrome's border box with
+/// `margin: 0 4px 0 3px` is `50.641, 5, 42.328 x 24`; here without them).
+#[test]
+fn an_inline_border_is_drawn() {
+    let c = Case::new(
+        r#"lead <span style="border: 2px solid rgb(0, 200, 0); padding: 0 5px">text</span>tail"#,
+    );
+    let green = columns(&c, (0, 200, 0), 5.0, 31.0);
+    assert!(!green.is_empty(), "no border drawn");
+    let (lo, hi) = (green[0], *green.last().unwrap());
+    assert!(
+        (47..=48).contains(&lo) && (88..=89).contains(&hi),
+        "the border spans {lo}..={hi}"
+    );
+}

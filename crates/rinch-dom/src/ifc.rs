@@ -9745,8 +9745,13 @@ impl RinchDocument {
                     // #1426: the room its inline-start margin, border and
                     // padding take before its content, and the end ones after
                     // it — as zero-height boxes, which hold no text.
-                    let (edge_start, edge_end) =
-                        inline_edge_widths(child_computed, element_is_ltr(child));
+                    // The direction is read only when the two sides differ.
+                    let (left, right) = inline_edge_widths(child_computed, true);
+                    let (edge_start, edge_end) = if left != right && !element_is_ltr(child) {
+                        (right, left)
+                    } else {
+                        (left, right)
+                    };
                     if edge_start > 0.0 {
                         builder.push_edge_box(child_id, false, edge_start * scale);
                     }
