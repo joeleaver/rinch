@@ -972,6 +972,19 @@ impl Walk<'_> {
                     reach = reach.union(text_shadow_reach(text, list, self.scale));
                 }
             }
+            // An inline element's background reaches past its line box by
+            // its padding — on the block axis always, an inline's vertical
+            // padding taking no room — so text that fits its box says nothing
+            // about the pill drawn around it (#1762). These are the rectangles
+            // `paint_inline_backgrounds` fills, from the same function. Before
+            // this, a clip was elided whenever the text alone fitted, and in a
+            // column of identical cells whether the pill was clipped followed
+            // how each cell's height rounded against its line.
+            if !inline.background_spans.is_empty() {
+                super::text::inline_background_rects(self.tree, inline, self.scale, |frag| {
+                    reach = reach.union(frag.rect + Vec2::new(content_x, content_y));
+                });
+            }
             extent = extent.union(Extent::Within(transform.transform_rect_bbox(reach)));
         }
 

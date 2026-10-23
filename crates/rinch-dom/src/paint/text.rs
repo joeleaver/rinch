@@ -44,7 +44,15 @@ pub(super) fn paint_inline_layout(
 
     // Paint inline element backgrounds BEFORE text so text renders on top
     if !inline_layout.background_spans.is_empty() {
-        paint_inline_backgrounds(tree, painter, parent_x, parent_y, inline_layout, transform);
+        paint_inline_backgrounds(
+            tree,
+            painter,
+            scale,
+            parent_x,
+            parent_y,
+            inline_layout,
+            transform,
+        );
     }
 
     // Chrome paints each text fragment's shadows and then its text before
@@ -178,27 +186,126 @@ pub(super) fn paint_inline_layout(
 
 /// Paint the background and border of inline elements (code, mark, etc.).
 ///
-/// One rectangle per line the element is on (a fragment): its glyphs'
-/// extent, by Parley's cluster byte-to-position mapping, joined with its edge
-/// boxes on that line less their margins (#1426) — the start padding and
-/// border on its first line, the end ones on its last (CSS
-/// `box-decoration-break: slice`) — grown vertically by its padding and
-/// border. The background covers the border box; the border is drawn solid
-/// (any style but `none`/`hidden`), its left and right sides on the
-/// fragments that close them.
+/// The rectangles are [`inline_background_rects`]'s, which the clip proof
+/// (`layer_bounds`, #1762) reads too: they reach past the line box by the
+/// element's padding and border, so a box whose text fits can still have
+/// something to clip. The background covers the border box; the border is
+/// drawn solid (any style but `none`/`hidden`), its left and right sides on
+/// the fragments that close them (#1426).
 fn paint_inline_backgrounds(
     tree: &NodeTree,
     painter: &mut dyn Painter,
+    scale: f64,
     parent_x: f64,
     parent_y: f64,
     inline_layout: &crate::node::InlineLayout,
     css_transform: Affine,
 ) {
+    use peniko::kurbo::RoundedRect;
+
+    let transform = css_transform * Affine::translate((parent_x, parent_y));
+    inline_background_rects(tree, inline_layout, scale, |frag| {
+        let bg_span = frag.span;
+        let rect = frag.rect;
+        if bg_span.color.components[3] > 0.0 {
+            let brush = Brush::Solid(bg_span.color);
+            if bg_span.border_radius > 0.0 {
+                let r = bg_span.border_radius as f64 * scale;
+                let rrect = RoundedRect::from_rect(rect, r);
+                painter.fill(Fill::NonZero, transform, &brush, &rrect.into());
+            } else {
+                painter.fill(Fill::NonZero, transform, &brush, &rect.into());
+            }
+        }
+        // The border: top and bottom on every fragment, the left and right
+        // on the fragments that close them.
+        let Some(cs) = tree.get(bg_span.owner).map(|o| &o.computed_style) else {
+            return;
+        };
+        let [bt, br, bb, bl] = inline_border_widths(cs).map(|w| w * scale);
+        let current = cs.color.unwrap_or(peniko::Color::BLACK);
+        let mut strip = |r: Rect, c: Option<peniko::Color>| {
+            if r.width() > 0.0 && r.height() > 0.0 {
+                let brush = Brush::Solid(c.unwrap_or(current));
+                painter.fill(Fill::NonZero, transform, &brush, &r.into());
+            }
+        };
+        strip(
+            Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + bt),
+            cs.border_top_color,
+        );
+        strip(
+            Rect::new(rect.x0, rect.y1 - bb, rect.x1, rect.y1),
+            cs.border_bottom_color,
+        );
+        if frag.closes_left {
+            strip(
+                Rect::new(rect.x0, rect.y0, rect.x0 + bl, rect.y1),
+                cs.border_left_color,
+            );
+        }
+        if frag.closes_right {
+            strip(
+                Rect::new(rect.x1 - br, rect.y0, rect.x1, rect.y1),
+                cs.border_right_color,
+            );
+        }
+    });
+}
+
+/// An inline element's border widths, `[top, right, bottom, left]` in CSS
+/// px: 0 for a side styled `none` or `hidden`.
+fn inline_border_widths(cs: &crate::computed_style::ComputedStyle) -> [f64; 4] {
+    use crate::computed_style::BorderStyleValue as S;
+    let border = |w: f32, s: S| {
+        if matches!(s, S::None | S::Hidden) {
+            0.0
+        } else {
+            w.max(0.0) as f64
+        }
+    };
+    [
+        border(cs.border_top_width.to_px(), cs.border_top_style),
+        border(cs.border_right_width.to_px(), cs.border_right_style),
+        border(cs.border_bottom_width.to_px(), cs.border_bottom_style),
+        border(cs.border_left_width.to_px(), cs.border_left_style),
+    ]
+}
+
+/// One line's piece of an inline element's box ([`inline_background_rects`]).
+pub(super) struct InlineBoxFragment<'a> {
+    /// The element's span, as it is styled now.
+    pub span: &'a crate::node::InlineBackgroundSpan,
+    /// The fragment's border box, in device px relative to the IFC root's
+    /// content origin.
+    pub rect: Rect,
+    /// The fragment holds the element's left edge (its start on a
+    /// left-to-right line, its end on a right-to-left one).
+    pub closes_left: bool,
+    /// The fragment holds the element's right edge.
+    pub closes_right: bool,
+}
+
+/// Every fragment [`paint_inline_backgrounds`] fills, in device px relative
+/// to the IFC root's content origin (before its CSS transform).
+///
+/// One per line the element is on: its glyphs' extent, by Parley's cluster
+/// byte-to-position mapping, joined with its edge boxes on that line less
+/// their margins (#1426) — the start padding and border on its first line,
+/// the end ones on its last (CSS `box-decoration-break: slice`) — grown
+/// vertically by its padding and border.
+///
+/// The layout is built in CSS px, so everything here is multiplied by
+/// `scale`, as [`render_text`] scales the glyphs drawn over it (#1762).
+pub(super) fn inline_background_rects(
+    tree: &NodeTree,
+    inline_layout: &crate::node::InlineLayout,
+    scale: f64,
+    mut f: impl FnMut(InlineBoxFragment<'_>),
+) {
     use parley::layout::{Cluster, PositionedLayoutItem};
-    use peniko::kurbo::{Rect, RoundedRect};
 
     let layout = &inline_layout.layout;
-    let transform = css_transform * Affine::translate((parent_x, parent_y));
 
     for bg_span in &inline_layout.background_spans {
         // The background is the inline element's own visual, so it follows
@@ -225,7 +332,6 @@ fn paint_inline_backgrounds(
             }
             None => bg_span,
         };
-        let brush = Brush::Solid(bg_span.color);
         let style = owner.map(|o| &o.computed_style);
         let ltr = owner.is_none_or(crate::ifc::element_is_ltr);
         let px = |v: crate::computed_style::LengthPercentageAutoValue| match v {
@@ -234,27 +340,8 @@ fn paint_inline_backgrounds(
         };
         let (margin_left, margin_right) =
             style.map_or((0.0, 0.0), |cs| (px(cs.margin_left), px(cs.margin_right)));
-        let border = |w: f32, s: crate::computed_style::BorderStyleValue| {
-            use crate::computed_style::BorderStyleValue as S;
-            if matches!(s, S::None | S::Hidden) {
-                0.0
-            } else {
-                w.max(0.0) as f64
-            }
-        };
-        let (bt, br, bb, bl) = style.map_or((0.0, 0.0, 0.0, 0.0), |cs| {
-            (
-                border(cs.border_top_width.to_px(), cs.border_top_style),
-                border(cs.border_right_width.to_px(), cs.border_right_style),
-                border(cs.border_bottom_width.to_px(), cs.border_bottom_style),
-                border(cs.border_left_width.to_px(), cs.border_left_style),
-            )
-        });
+        let [bt, _, bb, _] = style.map_or([0.0; 4], inline_border_widths);
 
-        // Iterate lines to find each fragment of the element: the stretch of
-        // its text on the line, and its edge boxes (#1426) — its start
-        // margin, border and padding on its first line, its end ones on its
-        // last.
         for line in layout.lines() {
             let line_range = line.text_range();
 
@@ -309,8 +396,6 @@ fn paint_inline_backgrounds(
             pieces.extend(end_box.map(|b| inner(b, !ltr)));
             let left = pieces.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
             let right = pieces.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
-            // Which physical sides this fragment closes: the start box's on
-            // its first line, the end box's on its last.
             let (closes_left, closes_right) = if ltr {
                 (start_box.is_some(), end_box.is_some())
             } else {
@@ -325,56 +410,19 @@ fn paint_inline_backgrounds(
             let pb = bg_span.padding_bottom as f64;
 
             // The border box: the content area grown by the padding and the
-            // border (the padding and border of the sides it closes are in
-            // its edge boxes already).
+            // border (those of the sides it closes are in its edge boxes).
             let rect = Rect::new(
-                left,
-                baseline - ascent - pt - bt,
-                right.max(left),
-                baseline + descent + pb + bb,
+                left * scale,
+                (baseline - ascent - pt - bt) * scale,
+                right.max(left) * scale,
+                (baseline + descent + pb + bb) * scale,
             );
-
-            if bg_span.color.components[3] > 0.0 {
-                if bg_span.border_radius > 0.0 {
-                    let r = bg_span.border_radius as f64;
-                    let rrect = RoundedRect::from_rect(rect, r);
-                    painter.fill(Fill::NonZero, transform, &brush, &rrect.into());
-                } else {
-                    painter.fill(Fill::NonZero, transform, &brush, &rect.into());
-                }
-            }
-
-            // The border, drawn solid: top and bottom on every fragment, the
-            // left and right on the fragments that close them.
-            if let Some(cs) = style {
-                let current = cs.color.unwrap_or(peniko::Color::BLACK);
-                let side = |c: Option<peniko::Color>| Brush::Solid(c.unwrap_or(current));
-                let mut strip = |r: Rect, c: Option<peniko::Color>| {
-                    if r.width() > 0.0 && r.height() > 0.0 {
-                        painter.fill(Fill::NonZero, transform, &side(c), &r.into());
-                    }
-                };
-                strip(
-                    Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + bt),
-                    cs.border_top_color,
-                );
-                strip(
-                    Rect::new(rect.x0, rect.y1 - bb, rect.x1, rect.y1),
-                    cs.border_bottom_color,
-                );
-                if closes_left {
-                    strip(
-                        Rect::new(rect.x0, rect.y0, rect.x0 + bl, rect.y1),
-                        cs.border_left_color,
-                    );
-                }
-                if closes_right {
-                    strip(
-                        Rect::new(rect.x1 - br, rect.y0, rect.x1, rect.y1),
-                        cs.border_right_color,
-                    );
-                }
-            }
+            f(InlineBoxFragment {
+                span: bg_span,
+                rect,
+                closes_left,
+                closes_right,
+            });
         }
     }
 }
