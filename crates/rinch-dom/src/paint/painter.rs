@@ -152,8 +152,11 @@ pub struct PaintImage<'a> {
     pub opaque: bool,
 }
 
-/// A premultiplied RGBA8 image tiled edge to edge by
-/// [`Painter::fill_repeating`] (#468).
+/// An RGBA8 image, premultiplied or straight ([`Self::premultiplied`]), tiled
+/// edge to edge by [`Painter::fill_repeating`] (#468). Only the `embed` build
+/// hands a straight-alpha tile (a decoded `url()` image, #1158), and only to
+/// Vello; the straight-alpha branches of the other painters are reached by no
+/// caller today.
 #[derive(Clone, Copy, Debug)]
 pub struct RepeatTile<'a> {
     /// `width * height * 4` bytes of RGBA8, rows top to bottom, premultiplied
