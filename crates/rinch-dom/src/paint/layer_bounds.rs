@@ -1144,6 +1144,9 @@ impl Walk<'_> {
                     let parley::layout::PositionedLayoutItem::InlineBox(positioned) = item else {
                         continue;
                     };
+                    if crate::ifc::is_edge_box(positioned.id) {
+                        continue;
+                    }
                     acc = acc.union(self.node(
                         positioned.id as RawNodeId,
                         content_x,

@@ -131,7 +131,7 @@ impl ComputedStyle {
     /// | [`Self::build_parley_layout`] | `font_size`, `font_family`, `font_weight`, `font_style`, `line_height`, `letter_spacing`, `word_spacing`, `overflow_wrap` |
     /// | `RinchDocument::build_inline_layout`'s `root_text_style` | the above plus `color`, `text_decoration`, `text_underline_offset`, `white_space` (both the collapse mode and whether `max_width` applies at all) and `text_align` |
     /// | `RinchDocument::inline_style_props`, the per-span properties | `font_size`, `font_family` (#677), `font_weight`, `font_style`, `color`, `text_decoration`, `text_underline_offset`, `line_height`, `letter_spacing`, `word_spacing` |
-    /// | `RinchDocument::push_inline_spans`, which builds `InlineLayout::background_spans` and `::decoration_spans` | `background_color()`, the four paddings, `border_radius_top_left`, `text_decoration` |
+    /// | `RinchDocument::push_inline_spans`, which builds `InlineLayout::background_spans` and `::decoration_spans`, and the edge boxes `walk_inline_children` pushes (#1426) | `background_color()`, the four paddings, the border widths and styles, the horizontal margins, `border_radius_top_left`, `text_decoration` |
     /// | the `TextMeasure` context `RinchDocument::sync_text_contexts` fills | `font_size`, `font_weight`, `font_family`, `line_height`, `color`, `white_space`, `letter_spacing`, `word_spacing`, `overflow_wrap`, `text_overflow`, `overflow_x` |
     ///
     /// `letter_spacing` and `word_spacing` reached only the first of those rows
@@ -242,6 +242,23 @@ impl ComputedStyle {
             && self.padding_top.to_px() == other.padding_top.to_px()
             && self.padding_bottom.to_px() == other.padding_bottom.to_px()
             && self.border_radius_top_left.to_px() == other.border_radius_top_left.to_px()
+            && self.same_inline_edge_inputs(other)
+            && self.border_top_width.to_px() == other.border_top_width.to_px()
+            && self.border_bottom_width.to_px() == other.border_bottom_width.to_px()
+            && self.border_top_style == other.border_top_style
+            && self.border_bottom_style == other.border_bottom_style
+    }
+
+    /// What the edge boxes of a `display: inline` element are built from
+    /// (`ifc::inline_edge_widths`, #1426): its horizontal margins, borders
+    /// and paddings, which take room on its first and last lines — so they
+    /// move a measured size too ([`Self::same_measured_text_inputs`]).
+    fn same_inline_edge_inputs(&self, other: &ComputedStyle) -> bool {
+        crate::ifc::inline_edge_widths(self, true) == crate::ifc::inline_edge_widths(other, true)
+            && self.border_left_width.to_px() == other.border_left_width.to_px()
+            && self.border_right_width.to_px() == other.border_right_width.to_px()
+            && self.border_left_style == other.border_left_style
+            && self.border_right_style == other.border_right_style
     }
 
     /// The subset of [`Self::same_text_layout_inputs`] that can change a
@@ -270,14 +287,20 @@ impl ComputedStyle {
     /// is already caught by the Taffy style comparison that sets `layout_dirty`
     /// in the first place. The same is true of the paddings inside that group,
     /// and of the flex-or-grid bit of `display` (#1046), which only decides
-    /// whether the ellipsis rebuild runs.
+    /// whether the ellipsis rebuild runs. One part of that group is back, for a
+    /// `display: inline` element only: its horizontal margins, borders and
+    /// paddings are its edge boxes (#1426), which take room on its lines; it
+    /// has no Taffy box of its own, so nothing else would re-measure its IFC.
     ///
     /// `color` is the one pinned by a fixture
     /// (`frozen_box_remeasure_tests::a_colour_only_restyle_still_skips_taffy`),
     /// because it is the cheap path's whole reason for existing; the others are
     /// documented rather than pinned.
     pub fn same_measured_text_inputs(&self, other: &ComputedStyle) -> bool {
+        use super::values::DisplayValue;
         use super::values::LineHeightValue;
+        let inline_level =
+            self.display == DisplayValue::Inline || other.display == DisplayValue::Inline;
         let same_line_height = match (self.line_height, other.line_height) {
             (LineHeightValue::Normal, LineHeightValue::Normal) => true,
             (LineHeightValue::Absolute(x), LineHeightValue::Absolute(y)) => x == y,
@@ -294,5 +317,6 @@ impl ComputedStyle {
             && self.text_transform == other.text_transform
             && self.white_space == other.white_space
             && self.overflow_wrap == other.overflow_wrap
+            && (!inline_level || self.same_inline_edge_inputs(other))
     }
 }

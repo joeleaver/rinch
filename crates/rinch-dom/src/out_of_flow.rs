@@ -721,6 +721,9 @@ fn measure_span_fragments(
                 }
                 PositionedLayoutItem::InlineBox(b) => {
                     last_run = None;
+                    if crate::ifc::is_edge_box(b.id) {
+                        continue;
+                    }
                     box_at.insert(b.id as usize, (index, b.x, b.x + b.width));
                 }
             }

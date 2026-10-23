@@ -163,6 +163,9 @@ pub(super) fn paint_inline_layout(
     for line in inline_layout.layout.lines() {
         for item in line.items() {
             if let parley::layout::PositionedLayoutItem::InlineBox(positioned_box) = item {
+                if crate::ifc::is_edge_box(positioned_box.id) {
+                    continue;
+                }
                 let child_id = positioned_box.id as usize;
                 paint_node(
                     tree, child_id, painter, scale, parent_x, parent_y, font_cx, layout_cx,
@@ -173,11 +176,16 @@ pub(super) fn paint_inline_layout(
     }
 }
 
-/// Paint background rectangles for inline elements (code, mark, etc.).
+/// Paint the background and border of inline elements (code, mark, etc.).
 ///
-/// Uses Parley's cluster-based byte-to-position mapping to determine the
-/// exact visual bounds of each inline background span. Handles multi-line
-/// spans by iterating lines and computing per-line background rectangles.
+/// One rectangle per line the element is on (a fragment): its glyphs'
+/// extent, by Parley's cluster byte-to-position mapping, joined with its edge
+/// boxes on that line less their margins (#1426) — the start padding and
+/// border on its first line, the end ones on its last (CSS
+/// `box-decoration-break: slice`) — grown vertically by its padding and
+/// border. The background covers the border box; the border is drawn solid
+/// (any style but `none`/`hidden`), its left and right sides on the
+/// fragments that close them.
 fn paint_inline_backgrounds(
     tree: &NodeTree,
     painter: &mut dyn Painter,
@@ -186,7 +194,7 @@ fn paint_inline_backgrounds(
     inline_layout: &crate::node::InlineLayout,
     css_transform: Affine,
 ) {
-    use parley::layout::Cluster;
+    use parley::layout::{Cluster, PositionedLayoutItem};
     use peniko::kurbo::{Rect, RoundedRect};
 
     let layout = &inline_layout.layout;
@@ -196,7 +204,8 @@ fn paint_inline_backgrounds(
         // The background is the inline element's own visual, so it follows
         // that element's visibility — not the visibility of the text inside
         // it, which a `visibility: visible` child can override (#829).
-        if tree.get(bg_span.owner).is_some_and(is_hidden) {
+        let owner = tree.get(bg_span.owner);
+        if owner.is_some_and(is_hidden) {
             continue;
         }
         // The rectangle is the element's as it is styled **now**: a
@@ -204,7 +213,7 @@ fn paint_inline_backgrounds(
         // with no re-shape (#679). A background faded out to nothing draws
         // nothing; only an owner that is gone falls back to what was recorded.
         let live;
-        let bg_span = match tree.get(bg_span.owner) {
+        let bg_span = match owner {
             Some(owner) => {
                 match crate::ifc::inline_background_span(owner, bg_span.start, bg_span.end) {
                     Some(span) => {
@@ -217,71 +226,154 @@ fn paint_inline_backgrounds(
             None => bg_span,
         };
         let brush = Brush::Solid(bg_span.color);
+        let style = owner.map(|o| &o.computed_style);
+        let ltr = owner.is_none_or(crate::ifc::element_is_ltr);
+        let px = |v: crate::computed_style::LengthPercentageAutoValue| match v {
+            crate::computed_style::LengthPercentageAutoValue::Length(px) => px as f64,
+            _ => 0.0,
+        };
+        let (margin_left, margin_right) =
+            style.map_or((0.0, 0.0), |cs| (px(cs.margin_left), px(cs.margin_right)));
+        let border = |w: f32, s: crate::computed_style::BorderStyleValue| {
+            use crate::computed_style::BorderStyleValue as S;
+            if matches!(s, S::None | S::Hidden) {
+                0.0
+            } else {
+                w.max(0.0) as f64
+            }
+        };
+        let (bt, br, bb, bl) = style.map_or((0.0, 0.0, 0.0, 0.0), |cs| {
+            (
+                border(cs.border_top_width.to_px(), cs.border_top_style),
+                border(cs.border_right_width.to_px(), cs.border_right_style),
+                border(cs.border_bottom_width.to_px(), cs.border_bottom_style),
+                border(cs.border_left_width.to_px(), cs.border_left_style),
+            )
+        });
 
-        // Iterate lines to find those overlapping this background span
+        // Iterate lines to find each fragment of the element: the stretch of
+        // its text on the line, and its edge boxes (#1426) — its start
+        // margin, border and padding on its first line, its end ones on its
+        // last.
         for line in layout.lines() {
             let line_range = line.text_range();
 
-            // Skip lines that don't overlap the background span
-            if line_range.end <= bg_span.start || line_range.start >= bg_span.end {
+            // The element's edge boxes on this line, as `(x, width)`.
+            let (mut start_box, mut end_box) = (None, None);
+            for item in line.items() {
+                if let PositionedLayoutItem::InlineBox(b) = item
+                    && let Some((o, end)) = crate::ifc::edge_box_owner(b.id)
+                    && o == bg_span.owner
+                {
+                    let slot = if end { &mut end_box } else { &mut start_box };
+                    *slot = Some((b.x as f64, b.width as f64));
+                }
+            }
+
+            // The element's text on this line, as its glyphs' extent.
+            let mut text_extent = None;
+            if bg_span.end > bg_span.start
+                && line_range.end > bg_span.start
+                && line_range.start < bg_span.end
+            {
+                let overlap_start = bg_span.start.max(line_range.start);
+                let overlap_end = bg_span.end.min(line_range.end);
+                let end_byte = overlap_end.saturating_sub(1).max(overlap_start);
+                if let (Some(sc), Some(ec)) = (
+                    Cluster::from_byte_index(layout, overlap_start),
+                    Cluster::from_byte_index(layout, end_byte),
+                ) && let (Some(x_start), Some(ec_offset)) =
+                    (sc.visual_offset(), ec.visual_offset())
+                {
+                    let x_end = ec_offset + ec.advance();
+                    text_extent = Some((x_start.min(x_end) as f64, x_start.max(x_end) as f64));
+                }
+            }
+            if start_box.is_none() && end_box.is_none() && text_extent.is_none() {
                 continue;
             }
+
+            // Each edge box without its margin, which is on its outer side:
+            // the left of a left-to-right start box and of a right-to-left
+            // end box.
+            let inner = |(x, w): (f64, f64), outer_left: bool| {
+                if outer_left {
+                    (x + margin_left, x + w)
+                } else {
+                    (x, x + w - margin_right)
+                }
+            };
+            let mut pieces: Vec<(f64, f64)> = Vec::with_capacity(3);
+            pieces.extend(text_extent);
+            pieces.extend(start_box.map(|b| inner(b, ltr)));
+            pieces.extend(end_box.map(|b| inner(b, !ltr)));
+            let left = pieces.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+            let right = pieces.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+            // Which physical sides this fragment closes: the start box's on
+            // its first line, the end box's on its last.
+            let (closes_left, closes_right) = if ltr {
+                (start_box.is_some(), end_box.is_some())
+            } else {
+                (end_box.is_some(), start_box.is_some())
+            };
 
             let line_metrics = line.metrics();
             let baseline = line_metrics.baseline as f64;
             let ascent = line_metrics.ascent as f64;
             let descent = line_metrics.descent as f64;
-
-            // Clamp background span to this line's text range
-            let overlap_start = bg_span.start.max(line_range.start);
-            let overlap_end = bg_span.end.min(line_range.end);
-
-            // Use Parley's cluster API for exact byte-to-position mapping
-            let Some(sc) = Cluster::from_byte_index(layout, overlap_start) else {
-                continue;
-            };
-            let end_byte = overlap_end.saturating_sub(1).max(overlap_start);
-            let Some(ec) = Cluster::from_byte_index(layout, end_byte) else {
-                continue;
-            };
-
-            let Some(x_start) = sc.visual_offset() else {
-                continue;
-            };
-            let Some(ec_offset) = ec.visual_offset() else {
-                continue;
-            };
-            let x_end = ec_offset + ec.advance();
-
-            // Determine if this line segment gets padding
-            let is_first_line = overlap_start == bg_span.start;
-            let is_last_line = overlap_end == bg_span.end;
-            let pl = if is_first_line {
-                bg_span.padding_left as f64
-            } else {
-                0.0
-            };
-            let pr = if is_last_line {
-                bg_span.padding_right as f64
-            } else {
-                0.0
-            };
             let pt = bg_span.padding_top as f64;
             let pb = bg_span.padding_bottom as f64;
 
+            // The border box: the content area grown by the padding and the
+            // border (the padding and border of the sides it closes are in
+            // its edge boxes already).
             let rect = Rect::new(
-                x_start as f64 - pl,
-                baseline - ascent - pt,
-                x_end as f64 + pr,
-                baseline + descent + pb,
+                left,
+                baseline - ascent - pt - bt,
+                right.max(left),
+                baseline + descent + pb + bb,
             );
 
-            if bg_span.border_radius > 0.0 {
-                let r = bg_span.border_radius as f64;
-                let rrect = RoundedRect::from_rect(rect, r);
-                painter.fill(Fill::NonZero, transform, &brush, &rrect.into());
-            } else {
-                painter.fill(Fill::NonZero, transform, &brush, &rect.into());
+            if bg_span.color.components[3] > 0.0 {
+                if bg_span.border_radius > 0.0 {
+                    let r = bg_span.border_radius as f64;
+                    let rrect = RoundedRect::from_rect(rect, r);
+                    painter.fill(Fill::NonZero, transform, &brush, &rrect.into());
+                } else {
+                    painter.fill(Fill::NonZero, transform, &brush, &rect.into());
+                }
+            }
+
+            // The border, drawn solid: top and bottom on every fragment, the
+            // left and right on the fragments that close them.
+            if let Some(cs) = style {
+                let current = cs.color.unwrap_or(peniko::Color::BLACK);
+                let side = |c: Option<peniko::Color>| Brush::Solid(c.unwrap_or(current));
+                let mut strip = |r: Rect, c: Option<peniko::Color>| {
+                    if r.width() > 0.0 && r.height() > 0.0 {
+                        painter.fill(Fill::NonZero, transform, &side(c), &r.into());
+                    }
+                };
+                strip(
+                    Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + bt),
+                    cs.border_top_color,
+                );
+                strip(
+                    Rect::new(rect.x0, rect.y1 - bb, rect.x1, rect.y1),
+                    cs.border_bottom_color,
+                );
+                if closes_left {
+                    strip(
+                        Rect::new(rect.x0, rect.y0, rect.x0 + bl, rect.y1),
+                        cs.border_left_color,
+                    );
+                }
+                if closes_right {
+                    strip(
+                        Rect::new(rect.x1 - br, rect.y0, rect.x1, rect.y1),
+                        cs.border_right_color,
+                    );
+                }
             }
         }
     }

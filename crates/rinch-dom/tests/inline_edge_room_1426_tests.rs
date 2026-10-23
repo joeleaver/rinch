@@ -59,11 +59,11 @@ impl Case {
         let wrap = doc.create_element("div");
         doc.set_inner_html(
             wrap,
-            &format!(r#"<div data-m="c" style="{C}{c_extra}">{inner}</div>"#),
+            &format!(r#"<div data-m="cnt" style="{C}{c_extra}">{inner}</div>"#),
         );
         doc.append_child(body, wrap);
         doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
-        let c = one(&doc, "[data-m=c]");
+        let c = one(&doc, "[data-m=cnt]");
         Case { doc, c }
     }
 
@@ -102,9 +102,7 @@ fn one(doc: &RinchDocument, selector: &str) -> usize {
 /// Before: 75.969, the padding taking no room.
 #[test]
 fn padding_moves_what_follows_the_span() {
-    let c = Case::new(
-        r#"lead <span style="padding: 3px 5px 4px 6px">text</span><i M=a></i>tail"#,
-    );
+    let c = Case::new(r#"lead <span style="padding: 3px 5px 4px 6px">text</span><i M=a></i>tail"#);
     c.at("a", 86.969, 23.0);
 }
 
@@ -165,12 +163,13 @@ fn a_span_wrapped_at_the_space_before_it_takes_its_start_padding_along() {
 
 /// No break between a word and a padded span inside it: `xxxx`, the span
 /// and `zzzz` are one word and go to the second line together (the marker
-/// after them, an opportunity of its own, to the third).
+/// after them, an opportunity of its own, to the third, with `ww` so that
+/// line has text: a line of only atomic inlines has no strut, #624).
 #[test]
 fn a_padded_span_inside_a_word_is_no_break_opportunity() {
     let c = Case::with(
         "width: 110px;",
-        r#"aa xxxx<span style="padding: 0 6px">yyyy</span>zzzz<i M=b></i>"#,
+        r#"aa xxxx<span style="padding: 0 6px">yyyy</span>zzzz<i M=b></i>ww"#,
     );
     c.at("b", 11.0, 63.0);
 }
@@ -183,16 +182,30 @@ fn an_empty_span_takes_its_padding() {
 }
 
 /// Right to left: `padding: 0 3px 0 9px` — the right (start) padding is 3px,
-/// the left (end) one 9px, and what follows the span is 9px left of it.
+/// the left (end) one 9px. Chrome 155: `s` 375.141, `a` 372.141, `b` 353.438,
+/// `c` 344.438. The Hebrew falls back to a host font, whose advances differ
+/// from Chrome's, so only the paddings — the gaps around the content — are
+/// asserted.
 #[test]
 fn right_to_left_takes_the_right_padding_first() {
     let c = Case::with(
         "direction: rtl;",
-        "אבג <span style=\"padding: 0 3px 0 9px\"><i M=a></i>דהו<i M=b></i></span><i M=c></i> זח",
+        "אבג <i M=s></i><span style=\"padding: 0 3px 0 9px\"><i M=a></i>דהו<i M=b></i></span><i M=c></i> זח",
     );
-    c.at("a", 372.141, 23.0);
-    c.at("b", 353.438, 23.0);
-    c.at("c", 344.438, 23.0);
+    let x = |m: &str| c.rect(m)[0];
+    assert!(
+        (x("s") - x("a") - 3.0).abs() <= 0.55,
+        "start padding: {} {}",
+        x("s"),
+        x("a")
+    );
+    assert!(
+        (x("b") - x("c") - 9.0).abs() <= 0.55,
+        "end padding: {} {}",
+        x("b"),
+        x("c")
+    );
+    assert!(x("a") > x("b"), "the content runs right to left");
 }
 
 /// A positioned span's padding box is the containing block of an absolute
