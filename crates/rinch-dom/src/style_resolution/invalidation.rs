@@ -246,6 +246,9 @@ impl RinchDocument {
             // A canvas's natural size is its `width` and `height` (#1173,
             // `replaced.rs`), re-read by the same restyle.
             (Some("canvas"), "width" | "height") => self.mark_restyle(node, false),
+            // An `<svg>`'s natural ratio is its `viewBox`'s (#1797,
+            // `replaced.rs`), re-read by the same restyle.
+            (Some("svg"), "viewBox") => self.mark_restyle(node, false),
             // The two dimension attributes are presentational hints on these
             // (#684): declarations of the element's own cascade, and a ratio
             // its measure reads (`replaced.rs`).
