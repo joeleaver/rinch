@@ -954,7 +954,7 @@ mod gpu_alpha_tests {
         assert_eq!(px[W as usize - 1], [0, 0, 0, 0]);
     }
 
-/// #1774: a zero-copy GPU texture layer in an **opaque** window shows
+    /// #1774: a zero-copy GPU texture layer in an **opaque** window shows
     /// through the UI's hole. The window's present path, step by step: Vello
     /// renders the UI over the base colour `WgpuRenderer` picks
     /// (`ui_base_color`, here with only a GPU layer), the layer is blitted into
@@ -1037,12 +1037,16 @@ mod gpu_alpha_tests {
             assert_eq!(row[0], [0, 0, 255, 255], "row {y}: the UI's own paint");
             assert_eq!(row[2], [255, 255, 255, 255], "row {y}: the window base");
             for (x, p) in row.iter().enumerate().skip((W / 2) as usize) {
-                assert_eq!(*p, [255, 0, 0, 255], "row {y} col {x}: the layer, through the hole");
+                assert_eq!(
+                    *p,
+                    [255, 0, 0, 255],
+                    "row {y} col {x}: the layer, through the hole"
+                );
             }
         }
     }
 
-        fn present_into(
+    fn present_into(
         device: &Device,
         queue: &Queue,
         compositor: &LayerCompositor,
