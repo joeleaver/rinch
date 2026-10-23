@@ -959,31 +959,31 @@ impl Walk<'_> {
             let (off_x, off_y) = super::ifc_root_content_origin(node);
             let content_x = x + off_x as f64 * self.scale - scroll.x;
             let content_y = y + off_y as f64 * self.scale - scroll.y;
-            let text = Rect::new(
+            let mut text = Rect::new(
                 content_x,
                 content_y,
                 content_x + inline.layout.width() as f64 * self.scale,
                 content_y + inline.layout.height() as f64 * self.scale,
             );
+            // What it draws past those line boxes: text `vertical-align`
+            // moves off its line, inline elements' backgrounds and borders
+            // (which reach past the line by their padding and border, #1762)
+            // and wavy underlines (#1817) — measured by the one function the
+            // damage ink reads too, from the geometry paint draws with.
+            // Before #1762 and #1817 a clip was elided whenever the unshifted
+            // lines fitted, and the pill, the raised text or the wave painted
+            // outside the box.
+            if let Some(past) =
+                super::text::inline_ink_past_lines(|id| self.tree.get(id), inline, self.scale)
+            {
+                text = text.union(past + Vec2::new(content_x, content_y));
+            }
             // The shadows its inline elements declare are drawn with it (#1048).
             let mut reach = text_shadow_reach(text, &node.computed_style.text_shadow, self.scale);
             if self.tree.inline_text_shadows {
                 for list in super::member_text_shadows(node, true, |id| self.tree.get(id)) {
                     reach = reach.union(text_shadow_reach(text, list, self.scale));
                 }
-            }
-            // An inline element's background reaches past its line box by
-            // its padding — on the block axis always, an inline's vertical
-            // padding taking no room — so text that fits its box says nothing
-            // about the pill drawn around it (#1762). These are the rectangles
-            // `paint_inline_backgrounds` fills, from the same function. Before
-            // this, a clip was elided whenever the text alone fitted, and in a
-            // column of identical cells whether the pill was clipped followed
-            // how each cell's height rounded against its line.
-            if !inline.background_spans.is_empty() {
-                super::text::inline_background_rects(self.tree, inline, self.scale, |frag| {
-                    reach = reach.union(frag.rect + Vec2::new(content_x, content_y));
-                });
             }
             extent = extent.union(Extent::Within(transform.transform_rect_bbox(reach)));
         }

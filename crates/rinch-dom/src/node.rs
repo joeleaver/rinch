@@ -590,6 +590,9 @@ pub struct InlineDecorationSpan {
 /// this crate does not lay out at all.
 #[derive(Debug, Clone, Copy)]
 pub struct InlineVerticalAlignSpan {
+    /// The element whose `vertical-align` this is. Its background and border
+    /// move with its text ([`InlineLayout::element_shift`], #1817).
+    pub owner: RawNodeId,
     /// Byte range start in the IFC `text_content`.
     pub start: usize,
     /// Byte range end (exclusive) in the IFC `text_content`.
@@ -685,6 +688,31 @@ pub(crate) struct OutOfFlowMark {
 }
 
 impl InlineLayout {
+    /// The `vertical-align` shift an inline element's own box is drawn at —
+    /// its background, border and edge boxes: the shift of the nearest
+    /// element from `owner` up whose `vertical-align` moved it (#1817). Its
+    /// text moves by the same amount ([`Self::vertical_align_shift_at`]),
+    /// unless something inside it is shifted again. `get` looks a node up.
+    pub(crate) fn element_shift<'a>(
+        &self,
+        owner: RawNodeId,
+        get: impl Fn(RawNodeId) -> Option<&'a Node>,
+    ) -> f32 {
+        if self.vertical_align_spans.is_empty() {
+            return 0.0;
+        }
+        let mut cur = Some(owner);
+        // Inline nesting is shallow; the bound only guards a cycle.
+        for _ in 0..64 {
+            let Some(id) = cur else { break };
+            if let Some(s) = self.vertical_align_spans.iter().find(|s| s.owner == id) {
+                return s.shift_px;
+            }
+            cur = get(id).and_then(|n| n.parent);
+        }
+        0.0
+    }
+
     /// The `vertical-align` shift (#724) at layout byte `byte`, or `0.0` when
     /// no span covers it (the common case: no descendant declared a non-
     /// `baseline` `vertical-align`).
@@ -3729,13 +3757,7 @@ impl NodeTree {
         // screen were never drawn with — its ink and transform, and the
         // clipping and position the damage's clip chain reads (#909). O(n),
         // on a frame that has just restyled and repainted all n.
-        if self.whole_document_damaged && !members {
-            for (_, node) in nodes.iter_mut() {
-                if node.painted.is_some() {
-                    node.painted = Some(PaintedState::of(node));
-                }
-            }
-        } else if self.whole_document_damaged {
+        if self.whole_document_damaged {
             let painted: Vec<RawNodeId> = nodes
                 .iter()
                 .filter(|(_, n)| n.painted.is_some())
@@ -3746,23 +3768,45 @@ impl NodeTree {
             }
         }
         let mut dirty = std::mem::take(&mut self.paint_dirty_nodes);
+        // Once per node, however many times it was pushed.
+        dirty.sort_unstable();
+        dirty.dedup();
+        // A box-less inline's own `text-shadow`, background, border,
+        // `vertical-align` shift and wavy underline are ink of the IFC root
+        // that draws them, and the paint that consumes it redrew that root
+        // with them as they are now (#1048, #1815). A root whose painted ink
+        // stayed behind would name a pill's old padding nowhere once the pill
+        // shrinks again. Each root once, after its members, and not at all
+        // when it was itself dirty (refreshed above): a root's ink walks its
+        // spans' lines, and once per member was quadratic in the pills of a
+        // paragraph (review of #1837: one text edit among 500 pills, 500 ms).
+        let mut roots: Vec<RawNodeId> = Vec::new();
         for &id in &dirty {
             refresh(nodes, id, true);
-            // A box-less inline's own `text-shadow` is ink of the IFC root
-            // that draws its text, and the paint that consumes it redrew that
-            // root's text with the shadow as it is now (#1048).
-            if members
-                && let Some(root) = nodes.get(id).and_then(|n| n.ifc_root)
+            if let Some(root) = nodes.get(id).and_then(|n| n.ifc_root)
                 && root != id
-                && nodes.get(root).is_some_and(|r| r.painted.is_some())
             {
-                let Some(r) = nodes.get(root) else { continue };
-                let ink = crate::paint::ink_outsets_in(r, true, |i| nodes.get(i));
-                if let Some(state) = nodes[root].painted.as_mut() {
-                    state.ink = ink;
-                }
+                roots.push(root);
             }
         }
+        roots.sort_unstable();
+        roots.dedup();
+        for root in roots {
+            if dirty.binary_search(&root).is_ok() {
+                continue;
+            }
+            let Some(r) = nodes.get(root).filter(|r| r.painted.is_some()) else {
+                continue;
+            };
+            let ink = crate::paint::ink_outsets_in(r, members, |i| nodes.get(i));
+            if let Some(state) = nodes[root].painted.as_mut() {
+                state.ink = ink;
+            }
+        }
+        self.perf.add(
+            crate::perf::Counter::InlineSpanLineVisits,
+            crate::paint::take_span_line_visits(),
+        );
         dirty.clear();
         self.paint_dirty_nodes = dirty;
         self.paint_dirty_removed_rects.clear();

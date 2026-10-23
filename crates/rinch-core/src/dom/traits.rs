@@ -1189,6 +1189,45 @@ pub trait DomDocument {
         None
     }
 
+    /// The caret on one side of one edge of the inline element `element` (a
+    /// `<code>`, a `<mark>`) in the text-bearing element `node_id`, as
+    /// [`Self::query_inline_box_caret`] answers for an atomic inline: its
+    /// inline-start margin, border and padding (`end == false`) or its
+    /// inline-end ones (`end == true`), on their trailing side with `after`
+    /// (inside the element at its start; outside it after its end) or their
+    /// leading side (outside before its start; inside at its end), at the top
+    /// of the line and one line high.
+    ///
+    /// Those take room on their lines (#1426) but hold no flat bytes, so the
+    /// offsets on either side of an edge are one number, and a byte's caret
+    /// is drawn before every edge at that byte. A caller that knows which
+    /// side of an element the caret is on (the rich-text editor's view, from
+    /// the marks the caret carries) asks this. `None` when the element takes
+    /// no room at that edge or is not in `node_id`'s inline layout; the
+    /// caller then asks by byte. Default `None`: the browser backend draws
+    /// its own caret, and the mock has no geometry.
+    fn query_inline_edge_caret(
+        &self,
+        _node_id: u64,
+        _element: u64,
+        _end: bool,
+        _after: bool,
+    ) -> Option<(f32, f32, f32)> {
+        None
+    }
+
+    /// [`Self::query_inline_edge_caret`] **on screen**, in the frame of
+    /// [`Self::query_caret_rect`]. Default `None`.
+    fn query_inline_edge_caret_rect(
+        &self,
+        _node_id: u64,
+        _element: u64,
+        _end: bool,
+        _after: bool,
+    ) -> Option<(f32, f32, f32)> {
+        None
+    }
+
     /// [`Self::query_inline_box_caret`] **on screen**, in the frame of
     /// [`Self::query_caret_rect`]. Default `None`.
     fn query_inline_box_caret_rect(

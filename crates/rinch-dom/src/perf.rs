@@ -297,6 +297,12 @@ define_counters! {
     AbsStaticLookupSteps = "abs_static_lookup_steps",
 
     // ── Paint ──────────────────────────────────────────────────────────
+    /// (span, line) pairs looked at to find what IFC roots draw past their
+    /// line boxes — inline backgrounds and borders, `vertical-align`-shifted
+    /// text, wavy underlines (`paint::text::inline_ink_past_lines`, #1815,
+    /// #1817): by paint, the clip proof, damage and the painted-state refresh.
+    /// A span visits only the lines it is on.
+    InlineSpanLineVisits = "inline_span_line_visits",
     /// Frames actually painted (a scene or pixel buffer rebuilt).
     PaintFrames = "paint_frames",
     /// Redraws served from the cached scene/pixels with nothing dirty.

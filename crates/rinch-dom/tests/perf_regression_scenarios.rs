@@ -3563,3 +3563,117 @@ fn stacking_context_rows_paint_the_rows_on_screen() {
         ],
     );
 }
+
+// ── inline_span_line_visits ────────────────────────────────────────────────
+
+/// A paragraph of `pills` padded inline backgrounds wrapped over many lines,
+/// painted and consumed once, its counters zeroed.
+fn pill_paragraph(pills: usize) -> (RinchDocument, Vec<NodeId>) {
+    let mut doc = doc_with(
+        ".p { width: 380px; font-size: 14px; line-height: 18px; } \
+         .pill { background: rgb(0, 128, 0); padding: 2px 3px; }",
+    );
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    let mut texts = Vec::new();
+    for _ in 0..pills {
+        text(&mut doc, p, "lorem ipsum ");
+        let s = el(&mut doc, p, "span", "pill");
+        texts.push(text(&mut doc, s, "pill"));
+    }
+    let _ = cold_frame(&mut doc);
+    doc.tree.consume_paint_dirty();
+    doc.tree.perf.reset();
+    (doc, texts)
+}
+
+/// One text edit inside one of a paragraph's pills (review of #1837). The
+/// paragraph's ink — what it draws past its box, inline backgrounds among it
+/// (#1815) — is measured where paint, the clip proof, damage and the
+/// painted-state refresh ask, each span over the lines it is on. The refresh
+/// used to run once per dirty member of the paragraph (the edited text node
+/// and its span) and every span walked every line: 500 pills, one edit took
+/// 253 ms of damage and consume (release). Now a pill costs the lines it is on
+/// in each walk — about six walks a frame (damage, paint and its prune, the
+/// refresh) — at two sizes: the visits grow with the pills (255 → 525), not
+/// their square.
+#[test]
+fn a_text_edit_in_a_paragraph_of_pills_walks_each_pill_s_lines_once() {
+    for (pills, visits, hang_lines) in [(40, 255, 22), (80, 525, 50)] {
+        let (mut doc, texts) = pill_paragraph(pills);
+        doc.set_text_content(texts[pills / 2], "pilx");
+        doc.resolve_layout(VP.0, VP.1);
+        let _ = rinch_dom::paint::compute_damage(&doc.tree, 1.0, VP.0 as f64, VP.1 as f64);
+        paint(&mut doc);
+        doc.tree.consume_paint_dirty();
+        let s = doc.tree.perf.end_frame();
+        expect(
+            &format!("one text edit among {pills} pills"),
+            &s,
+            &[
+                (ShapeMeasureIfc, 1),
+                (ShapeIfcBuild, 1),
+                (IfcMeasureInvalidations, 3),
+                (IfcHangPasses, 2),
+                (IfcHangLines, hang_lines),
+                (LayoutResolves, 1),
+                (TaffyRootComputes, 1),
+                (TaffyMeasureCalls, 1),
+                (InlineSpanLineVisits, visits),
+                (PaintNodesVisited, 2),
+                (StackingOrderBuilds, 1),
+            ],
+        );
+    }
+}
+
+/// Every pill of a paragraph mid-way through a `background-color`
+/// transition: a tick writes each span's colour with no re-shape, so each
+/// span is dirty and the paragraph is not (#679). The paragraph's painted ink
+/// is refreshed once for all its spans, not once per span — once per span
+/// was quadratic (review of #1837: recolouring 500 pills, 704 ms of damage
+/// and consume). A span still costs the lines it is on in each walk.
+#[test]
+fn a_colour_tick_on_every_pill_refreshes_the_paragraph_once() {
+    for (pills, visits) in [(40, 255), (80, 525)] {
+        let (mut doc, texts) = pill_paragraph(pills);
+        let spans: Vec<NodeId> = texts
+            .iter()
+            .map(|t| NodeId(doc.tree.get(t.0).unwrap().parent.unwrap()))
+            .collect();
+        for s in &spans {
+            doc.set_attribute(*s, "style", "transition: background-color 100000s linear");
+        }
+        let _ = cold_frame(&mut doc);
+        doc.tree.consume_paint_dirty();
+        for s in &spans {
+            doc.set_attribute(
+                *s,
+                "style",
+                "transition: background-color 100000s linear; background-color: rgb(0, 0, 200)",
+            );
+        }
+        doc.resolve_layout(VP.0, VP.1);
+        let _ = rinch_dom::paint::compute_damage(&doc.tree, 1.0, VP.0 as f64, VP.1 as f64);
+        paint(&mut doc);
+        doc.tree.consume_paint_dirty();
+        doc.tree.perf.reset();
+        assert!(doc.tick_transitions(), "precondition: the transitions run");
+        doc.resolve_layout(VP.0, VP.1);
+        let _ = rinch_dom::paint::compute_damage(&doc.tree, 1.0, VP.0 as f64, VP.1 as f64);
+        paint(&mut doc);
+        doc.tree.consume_paint_dirty();
+        let s = doc.tree.perf.end_frame();
+        expect(
+            &format!("a colour tick on {pills} pills"),
+            &s,
+            &[
+                (LayoutResolves, 1),
+                (LayoutSkippedPaintOnly, 1),
+                (InlineSpanLineVisits, visits),
+                (PaintNodesVisited, 2),
+                (StackingOrderBuilds, 1),
+            ],
+        );
+    }
+}

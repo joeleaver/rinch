@@ -170,7 +170,7 @@ pub(crate) fn edge_box_owner(id: u64) -> Option<(usize, bool)> {
 }
 
 /// An edge box's id ([`EDGE_BOX`]).
-fn edge_box_id(owner: usize, end: bool) -> u64 {
+pub(crate) fn edge_box_id(owner: usize, end: bool) -> u64 {
     debug_assert!((owner as u64) < EDGE_BOX_END);
     EDGE_BOX | if end { EDGE_BOX_END } else { 0 } | (owner as u64 & (EDGE_BOX_END - 1))
 }
@@ -9554,6 +9554,7 @@ impl RinchDocument {
             let shift = Self::vertical_align_shift_px(&owner.computed_style, parent_font_size);
             if shift != 0.0 {
                 vertical_align_spans.push(crate::node::InlineVerticalAlignSpan {
+                    owner: owner.id,
                     start,
                     end,
                     shift_px: shift,
