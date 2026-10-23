@@ -34,6 +34,16 @@ that answers `clips_overflow` — when the clip covers the render target, or whe
 require **square corners**: a rounded clip cuts the corners of its own box, so a
 subtree fitting the box does not mean the shape cuts nothing.
 
+"Reaches past it" is measured on what paint draws, not on the line boxes: an
+IFC root's extent includes the rectangles `paint_inline_backgrounds` fills for
+an inline element's background (`paint::text::inline_background_rects`, one
+function for both), which reach past the line by the element's padding (#1762).
+Before that, a clip was elided whenever the text alone fitted, so in a column of
+identical `overflow: hidden` cells a padded pill was clipped only in the cells
+whose height rounded below the line. Those rectangles are scaled by the device
+scale like the glyphs since #1762 (they were drawn in CSS px). Glyph ink past
+the line box (an italic's overhang) is still not measured.
+
 This weakens no answer above, and consumers must not assume it does — the
 predicate and the shape are unchanged, and everything reasoning about *where
 content ends up* (the clip chain, hit testing, `layer_bounds`' own intersection)

@@ -108,7 +108,10 @@ fn outside(doc: &mut RinchDocument, cell: NodeId, scale: f64) -> (usize, usize, 
     let p = paint(doc, scale);
     let s = |v: f64| (v * scale).round() as u32;
     let above = green_in(&p, (s(LEFT), s(LEFT + 120.0), s(TOP - 10.0), s(TOP)));
-    let below = green_in(&p, (s(LEFT), s(LEFT + 120.0), s(TOP + h), s(TOP + h + 10.0)));
+    let below = green_in(
+        &p,
+        (s(LEFT), s(LEFT + 120.0), s(TOP + h), s(TOP + h + 10.0)),
+    );
     let left = green_in(&p, (s(LEFT - 10.0), s(LEFT), s(TOP), s(TOP + h)));
     (above, below, left)
 }
@@ -139,11 +142,17 @@ fn a_hidden_cell_clips_the_pill_at_every_height() {
             let (mut doc, cell) = doc_with_cell(h, "hidden");
             let got = outside(&mut doc, cell, scale);
             if got != (0, 0, 0) {
-                failures.push(format!("height {h} scale {scale}: (above, below, left) = {got:?}"));
+                failures.push(format!(
+                    "height {h} scale {scale}: (above, below, left) = {got:?}"
+                ));
             }
         }
     }
-    assert!(failures.is_empty(), "green painted outside the clip:\n{}", failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "green painted outside the clip:\n{}",
+        failures.join("\n")
+    );
 }
 
 /// The bounding box of the opaque pill-green pixels, in device px.
@@ -176,7 +185,10 @@ fn an_inline_background_scales_with_the_display() {
     let doubled = (one.0 * 2, one.1 * 2, one.2 * 2, one.3 * 2);
     let near = |a: u32, b: u32| a.abs_diff(b) <= 2;
     assert!(
-        near(two.0, doubled.0) && near(two.1, doubled.1) && near(two.2, doubled.2) && near(two.3, doubled.3),
+        near(two.0, doubled.0)
+            && near(two.1, doubled.1)
+            && near(two.2, doubled.2)
+            && near(two.3, doubled.3),
         "scale 1 bbox {one:?}, scale 2 bbox {two:?}, expected about {doubled:?}"
     );
 }
