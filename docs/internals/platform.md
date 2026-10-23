@@ -153,6 +153,24 @@ ratio of an image with no natural size (not loaded, or failed) —
 `<img width=100 height=50 style="width: 200px; height: auto">` is 200x100
 before the image arrives — and a loaded image's own ratio replaces it. A
 `<canvas>`'s two attributes stay its bitmap size, read as integers (#1173).
+**An `<svg>` is a replaced element too** (#1797, `replaced::svg_context`): its
+`width`/`height` are presentation attributes, mapped into the same hint block
+but read as a CSS `<length-percentage>` with a bare number in pixels
+(`replaced::svg_length`: `"14"`, `"14PX"`, `"2em"`, `"1e1"`, `"50%"`; not
+`"14 px"`); and it has a `NodeContext::Replaced` measure whose natural size
+is the attributes that are absolute lengths (`em` against its own font
+size; a negative one is 0) and whose natural ratio is theirs when both are,
+else the `viewBox`'s. A missing dimension comes through the ratio, else from
+300x150; with neither and a ratio it fills its parent's width
+(`replaced::SVG_FILL_WIDTH`). It is hollow (`ignores_inner_display`): its
+children are its drawing, detached from Taffy, never CSS content. A
+`viewBox` write restyles it. Before, an `<svg width="14" height="14">` with
+no CSS size was 0x0. Not Chrome's (pinned in
+`tests/svg_size_attributes_1797_tests.rs`): an **inline** `<svg>` with a
+ratio and no natural size is 300 wide where Chrome fills its containing
+block (a block-level one fills it); an invalid attribute (`"abc"`) counts as
+absent, where Chrome lays an `<svg>` with an invalid `width` out at its
+containing block's width.
 **CSS `aspect-ratio`** (#1286) is `ComputedStyle::aspect_ratio`
 (`AspectRatioValue { auto, ratio }`, a degenerate ratio is `auto`): a
 non-replaced box hands it to Taffy's `Style::aspect_ratio` (block, flex,
@@ -345,9 +363,9 @@ Build first with `cargo build -p rinch-mcp-server`. Using `cargo run` instead wo
 |------|-------------|
 | `list_apps` | List all running rinch apps with debug enabled |
 | `connect` | Connect to a specific app by name or PID |
-| `screenshot` | Capture a PNG screenshot (returns as inline MCP image, directly viewable) |
+| `screenshot` | Capture a PNG screenshot (returns as inline MCP image, directly viewable). On the GPU renderer it reads the texture the window is presented from (`desktop::presented_texture`): the composited one while compositor layers are up, else the UI texture. It used to read the composited texture whenever one had ever been made, so after a `GameViewport` or named surface unmounted every screenshot showed its last frame while the window itself was right (#1799) |
 | `dom_tree` | Get the DOM tree as JSON with layout bounds (depth 3 by default — `max_depth` goes deeper, `root_id` scopes to a subtree, `verbose: true` adds each node's computed styles) |
-| `query_selector` | Query nodes by tag, `.class`, `[attr]`, or `[attr=value]` |
+| `query_selector` | Query `<body>` and the nodes under it by any CSS selector (`rinch_dom::testing::query_selector`, Stylo-matched since #1796); a string that is not valid CSS (`[data-rid=5]`) is read as one tag, `.class`, `[attr]` or `[attr=value]` |
 | `get_node` | Get detailed info for a specific node by ID (includes computed styles, display mode) |
 | `get_computed_styles` | Get computed CSS styles for a specific DOM node |
 | `get_text_content` | Get text content within a node subtree |
@@ -358,6 +376,7 @@ Build first with `cargo build -p rinch-mcp-server`. Using `cargo run` instead wo
 | `right_click` | Simulate a right-click at (x, y) |
 | `mouse_down` / `mouse_move` / `mouse_up` | The pointer primitives. **This trio is the only way to drive a drag** — `click` cannot, so any test of the DnD suite or a scrollbar thumb needs these. `mouse_down`'s `modifiers` stay held (through moves: a Shift- or Alt-drag) until the next `mouse_up`, which restores the state from before that press after its release; `mouse_up` takes its own `modifiers` for the release |
 | `scroll` | Scroll a container at (x, y) |
+| `drop_files` | Drop files on the window at (x, y), logical px (#1806): what the shell makes of an OS drop, through `handle_event` — one `FileHoverEnter` per path at the point (the X11/Windows shape; Wayland names no path before the drop and is not reproduced), then one `FileDropped`. So `data-onfiledragenter`/`-leave`, an editor's drop caret and picture claim, and `data-onfiledrop` (paths) / `data-ondropfiles` (`LocalFile`s) under the point run as for a real drop, with the point in `get_click_context()`. Paths go over verbatim, unchecked: a missing one reaches `data-onfiledrop` and is left out of `data-ondropfiles`, as a file deleted between a drop and its read is. An empty list is an error. Desktop only: rinch-web has no debug server (turning paths into `File`s there is not done) |
 | `key_press` | Press and release a single key (with modifiers) — one physical keystroke, as distinct from `type_text`'s literal text. Issue #485: now sends a matching `KeyUp` after the `KeyDown`, so a release-aware app (a document-level interceptor, a registered node's `on_key`) sees both halves, not just the press |
 | `key_down` / `key_up` | The keyboard primitives, mirroring `mouse_down`/`mouse_up` (issue #485) — **the only way to hold a key** across other commands ("is W still held", a chord that ends on release, a drag armed by a key), which `key_press`'s single press+release cannot drive. `key_up`'s `key` (and modifiers) should match the `key_down` it releases so the press and release pair up by the same string a real keystroke's would |
 | `get_caret_position` | A caret point (`x`, `y`) for a `byte_offset`, in logical px in the same frame as `absolute` (#421). For an `<input>`/`<textarea>` it is the top of the caret paint draws (`form_control::painted_caret_rect`: password bullets, centring, a single-line field's horizontal scroll, #1721); for other text it is the top of the caret the editor overlays draw (`RinchDocument::text_caret_window_rect`, in the content box). Both tools ask those painter-matched helpers and keep no geometry of their own (#1136) |

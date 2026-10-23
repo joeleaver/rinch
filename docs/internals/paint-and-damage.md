@@ -259,3 +259,16 @@ keep a stale frame. Pins: `crates/rinch/src/app/viewport_inputs_349_tests.rs` an
 `perf_regression_tests::idle_viewports_repaint_nothing` is the exact-frame pin that an
 unchanged set costs nothing. The GPU shell's own call site
 (`paint` in `shell/rinch_runtime.rs`) has no fixture: it needs a window and a device.
+
+**SVG paint.** `paint/svg.rs` draws an `<svg>`'s direct children (`path`,
+`rect`, `circle`, `line`, `polyline`, `polygon`) itself. rinch's Stylo build
+has no `fill`/`stroke` property (Gecko-only in Stylo), so `declared_paint`
+reads each shape's own: its inline `style` declaration, which beats the
+presentation attribute, else the attribute, with every `var()` substituted
+from the element's computed custom properties (#1800,
+`substitute_vars`; a fallback may hold a `var()`). A missing variable with no
+fallback is invalid at computed-value time, so the shape takes the `<svg>`'s
+paint; a literal `style` value that is no paint is dropped and the attribute
+applies, as Chrome 155 does. Not read: a `fill`/`stroke` in a stylesheet
+rule, and `stroke-width`/`stroke-linecap`/`stroke-linejoin` in `style` (still
+attributes only). Pins: `crates/rinch-dom/tests/svg_paint_var_1800_tests.rs`.

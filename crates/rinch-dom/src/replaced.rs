@@ -38,6 +38,14 @@
 //! the ratio. Its context stays `NodeContext::Image`, which the image cache
 //! writes; an image not yet loaded has no natural size.
 //!
+//! An **`<svg>`** is the fifth (#1797, [`svg_context`]): its natural size is
+//! its `width`/`height` attributes when they are absolute lengths, its ratio
+//! theirs when both are, else its `viewBox`'s, and with no natural size it is
+//! the default object size. Its children are its drawing, not CSS content,
+//! so it is hollow ([`ignores_inner_display`]); `paint/svg.rs` draws them.
+//! Its attributes are presentation attributes, mapped like the dimension
+//! attributes below but read as CSS lengths ([`svg_length`]).
+//!
 //! **The `width` and `height` attributes of an `<img>`, `<video>` and
 //! `<iframe>` are presentational hints** (#684), not natural dimensions:
 //! HTML maps each to the property of its name, read by the rules for parsing
@@ -102,7 +110,7 @@ pub fn is_replaced_without_content(node: &Node) -> bool {
 /// [`is_replaced_without_content`]'s three) rather than by Taffy (#1286).
 pub fn measures_aspect_ratio(node: &Node) -> bool {
     node.tag()
-        .is_some_and(|tag| tag == "img" || has_default_object_size(tag))
+        .is_some_and(|tag| tag == "img" || tag == "svg" || has_default_object_size(tag))
 }
 
 /// Whether `node` renders none of its children and so has no inner display
@@ -119,7 +127,7 @@ pub fn measures_aspect_ratio(node: &Node) -> bool {
 pub fn ignores_inner_display(node: &Node) -> bool {
     crate::form_control::is_value_control(node)
         || is_replaced_without_content(node)
-        || node.tag() == Some("select")
+        || matches!(node.tag(), Some("select" | "svg"))
 }
 
 /// Whether a block container sizes `node` as a replaced element rather than
@@ -134,15 +142,16 @@ pub fn ignores_inner_display(node: &Node) -> bool {
 /// into Taffy's `item_is_replaced`.
 pub fn is_unstretched_replaced(node: &Node) -> bool {
     node.tag()
-        .is_some_and(|tag| tag == "img" || has_default_object_size(tag))
+        .is_some_and(|tag| tag == "img" || tag == "svg" || has_default_object_size(tag))
         || crate::form_control::form_control_content_height(node).is_some()
 }
 
 /// Whether HTML maps the `width` and `height` attributes of `tag` to the
-/// properties of those names (#684). A canvas's are its bitmap's size
+/// properties of those names (#684), or SVG does (an `<svg>`'s are
+/// presentation attributes, #1797). A canvas's are its bitmap's size
 /// instead ([`replaced_context`]).
 pub fn maps_dimension_attributes(tag: &str) -> bool {
-    matches!(tag, "img" | "video" | "iframe")
+    matches!(tag, "img" | "video" | "iframe" | "svg")
 }
 
 fn dimension_attribute(node: &Node, name: &str) -> Option<rinch_core::dom::HtmlDimension> {
@@ -156,6 +165,19 @@ pub(crate) fn dimension_hints_css(node: &Node) -> Option<String> {
     use rinch_core::dom::HtmlDimension;
     use std::fmt::Write;
     let mut css = String::new();
+    if node.tag() == Some("svg") {
+        // A presentation attribute: the property's own grammar, a bare
+        // number being pixels (#1797).
+        for name in ["width", "height"] {
+            // A negative length is invalid as a property, which Stylo
+            // drops; it is still a natural size of 0 ([`svg_natural_length`]).
+            if let Some((v, unit)) = node.attributes.get(name).and_then(|v| svg_length(v)) {
+                let unit = if unit.is_empty() { "px" } else { unit.as_str() };
+                write!(css, "{name}: {v}{unit};").unwrap();
+            }
+        }
+        return (!css.is_empty()).then_some(css);
+    }
     for name in ["width", "height"] {
         match dimension_attribute(node, name) {
             Some(HtmlDimension::Length(v)) => write!(css, "{name}: {v}px;").unwrap(),
@@ -195,6 +217,153 @@ pub fn attribute_ratio(node: &Node) -> Option<f32> {
     }
 }
 
+/// An `<svg>` `width`/`height` attribute read as a CSS `<length-percentage>`
+/// in which a bare number is pixels (SVG 2 §8.2, a presentation attribute):
+/// the number and its unit, lowercased — empty for a bare number, `%`, or a length unit. CSS's
+/// number grammar (`1e1`, `+14`, `.5`; not `5.` or `14 px`) after leading and
+/// trailing ASCII whitespace. `None` for anything else, which maps nothing.
+pub(crate) fn svg_length(value: &str) -> Option<(f64, String)> {
+    let v = value.trim_matches(|c: char| c.is_ascii_whitespace());
+    let b = v.as_bytes();
+    let mut i = 0;
+    if matches!(b.first(), Some(b'+' | b'-')) {
+        i += 1;
+    }
+    let int_start = i;
+    while b.get(i).is_some_and(u8::is_ascii_digit) {
+        i += 1;
+    }
+    let mut digits = i > int_start;
+    if b.get(i) == Some(&b'.') && b.get(i + 1).is_some_and(u8::is_ascii_digit) {
+        i += 1;
+        while b.get(i).is_some_and(u8::is_ascii_digit) {
+            i += 1;
+        }
+        digits = true;
+    }
+    if !digits {
+        return None;
+    }
+    // An exponent only when digits follow it; otherwise the `e` starts the
+    // unit (`1em`).
+    if matches!(b.get(i), Some(b'e' | b'E')) {
+        let mut j = i + 1;
+        if matches!(b.get(j), Some(b'+' | b'-')) {
+            j += 1;
+        }
+        if b.get(j).is_some_and(u8::is_ascii_digit) {
+            while b.get(j).is_some_and(u8::is_ascii_digit) {
+                j += 1;
+            }
+            i = j;
+        }
+    }
+    let number: f64 = v[..i].parse().ok()?;
+    if !number.is_finite() {
+        return None;
+    }
+    let unit = v[i..].to_ascii_lowercase();
+    let known = matches!(
+        unit.as_str(),
+        "" | "%"
+            | "px"
+            | "em"
+            | "rem"
+            | "ex"
+            | "ch"
+            | "vw"
+            | "vh"
+            | "vmin"
+            | "vmax"
+            | "cm"
+            | "mm"
+            | "q"
+            | "in"
+            | "pt"
+            | "pc"
+    );
+    known.then_some((number, unit))
+}
+
+/// An `<svg>`'s natural size along one axis: its attribute when that is an
+/// absolute length (or `em`, against its own font size), else none — a
+/// percentage, a viewport or font-relative unit other than `em`, or no
+/// attribute.
+fn svg_natural_length(node: &Node, name: &str) -> Option<f32> {
+    let (v, unit) = svg_length(node.attributes.get(name)?)?;
+    let px = match unit.as_str() {
+        "" | "px" => v,
+        "in" => v * 96.0,
+        "cm" => v * 96.0 / 2.54,
+        "mm" => v * 96.0 / 25.4,
+        "q" => v * 96.0 / 101.6,
+        "pt" => v * 96.0 / 72.0,
+        "pc" => v * 16.0,
+        "em" => v * f64::from(node.computed_style.font_size),
+        _ => return None,
+    } as f32;
+    // A negative attribute maps no property, but Chrome 155 reads it as a
+    // natural size of 0: `height="-3"` alone is 300x0, beside a `viewBox`
+    // the ratio still answers (`width="30" height="-3"` is 30x15).
+    px.is_finite().then_some(px.max(0.0))
+}
+
+/// The measure context of an `<svg>` (#1797): CSS's default sizing of a
+/// replaced element whose natural dimensions are its `width` and `height`
+/// attributes ([`svg_natural_length`]) and whose natural ratio is theirs
+/// when both are, else its `viewBox`'s. A missing dimension comes through the
+/// ratio from the other, else from the default object size (300x150); with
+/// neither dimension but a ratio the width is the containing block's
+/// ([`SVG_FILL_WIDTH`]). Measured in Chrome 155: `width=14` alone is 14x150,
+/// `viewBox="0 0 16 8"` alone 400x200 in a 400px block, nothing 300x150.
+fn svg_context(node: &Node) -> NodeContext {
+    let (dw, dh) = DEFAULT_OBJECT_SIZE;
+    let view_box = node.attributes.get("viewBox").and_then(|v| {
+        let n: Vec<f64> = v
+            .split(|c: char| c.is_ascii_whitespace() || c == ',')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.parse::<f64>())
+            .collect::<Result<_, _>>()
+            .ok()?;
+        match n[..] {
+            [_, _, w, h] if w > 0.0 && h > 0.0 && (w / h).is_finite() => Some((w / h) as f32),
+            _ => None,
+        }
+    });
+    let nw = svg_natural_length(node, "width");
+    let nh = svg_natural_length(node, "height");
+    // Both attributes' ratio first, the viewBox's after: Chrome 155 lays
+    // `width="30" height="10" viewBox="0 0 16 16"` at `width: 60px; height:
+    // auto` out 60x20.
+    let ratio = match (nw, nh) {
+        (Some(w), Some(h)) if w > 0.0 && h > 0.0 => Some(w / h),
+        _ => view_box,
+    };
+    let (width, height) = match (nw, nh, ratio) {
+        (Some(w), Some(h), _) => (w, h),
+        (Some(w), None, Some(r)) => (w, w / r),
+        (Some(w), None, None) => (w, dh),
+        (None, Some(h), Some(r)) => (h * r, h),
+        (None, Some(h), None) => (dw, h),
+        (None, None, Some(r)) => (SVG_FILL_WIDTH, dw / r),
+        (None, None, None) => (dw, dh),
+    };
+    NodeContext::Replaced {
+        width,
+        height,
+        ratio,
+        aspect: node.computed_style.aspect_ratio,
+    }
+}
+
+/// The natural width [`svg_context`] gives an `<svg>` with a ratio and no
+/// natural dimension: [`measure`] reads it as the parent's width (less the
+/// element's padding and border), or the default object size's when that is
+/// not definite — which an inline `<svg>`, sized as an atomic inline, always
+/// finds, so it is 300 wide where Chrome 155 fills its containing block. Infinity rather than `NaN`, so that two
+/// contexts compare equal and a cascade leaves Taffy's cache alone.
+pub const SVG_FILL_WIDTH: f32 = f32::INFINITY;
+
 /// An `<img>`'s natural size and the ratio it is measured with: its own once
 /// loaded, with no natural size before, and the ratio its computed
 /// `aspect-ratio` makes of that ([`AspectRatioValue::used_ratio`]).
@@ -214,6 +383,9 @@ pub(crate) fn image_natural_size(
 /// The measure context `node` is owed, or `None` for any other element.
 pub fn replaced_context(node: &Node) -> Option<NodeContext> {
     let tag = node.tag()?;
+    if tag == "svg" {
+        return Some(svg_context(node));
+    }
     if !has_default_object_size(tag) {
         return None;
     }
@@ -371,6 +543,15 @@ pub(crate) fn measure(
     let clamp_h = |v: f32| clamp(v, min.height, max.height);
 
     let (nw, nh) = natural;
+    // An `<svg>` with a ratio and no natural size fills its containing
+    // block's width ([`SVG_FILL_WIDTH`]).
+    let nw = if nw.is_infinite() {
+        parent
+            .width
+            .map_or(DEFAULT_OBJECT_SIZE.0, |p| (p - pb.width).max(0.0))
+    } else {
+        nw
+    };
     let (width, height) = if let Some(UsedRatio {
         value: r,
         box_sizing_box,

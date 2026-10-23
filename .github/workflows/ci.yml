@@ -349,6 +349,15 @@ jobs:
               --all-targets -- -D warnings
             echo "::endgroup::"
           done
+          # `rinch` itself in the configurations a wasm app builds it in:
+          # `rinch-web`'s (components, theme) is covered through rinch-web
+          # above, but `embed` on wasm32 is reached by no crate in the
+          # workspace and broke unnoticed (an OS file-drop path calling a
+          # native-only `LocalFile::from_path`).
+          echo "::group::clippy rinch embed (wasm32)"
+          cargo clippy -p rinch --no-default-features --features components,theme,embed \
+            --target wasm32-unknown-unknown -- -D warnings
+          echo "::endgroup::"
 
       # The web examples are excluded from the workspace (they pin their own
       # `Cargo.lock` and must build for wasm32 alone), so nothing above reaches
