@@ -303,3 +303,91 @@ fn a_rotated_ancestor_warns_and_a_translated_one_does_not() {
         warnings[0]
     );
 }
+
+/// Paint `html` at `scale` into a fresh painter, in reference mode or not.
+fn painted_at(html: &str, scale: f64, reference: bool) -> TinySkiaPainter {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    doc.set_attribute(body, "style", "margin: 0");
+    let wrap = doc.create_element("div");
+    doc.set_inner_html(wrap, html);
+    doc.append_child(body, wrap);
+    doc.resolve_layout(W as f32, H as f32);
+    let (pw, ph) = ((W as f64 * scale) as u32, (H as f64 * scale) as u32);
+    let mut painter = TinySkiaPainter::new(pw, ph);
+    painter.set_reference_mode(reference);
+    let mut lcx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut painter,
+        scale,
+        (W as f32, H as f32),
+        &mut doc.font_cx,
+        &mut lcx,
+    );
+    painter
+}
+
+/// Review of #1883: a square, unrotated viewport with no clip mask where it
+/// lands is erased as a plain transparent rect fill (`rect_erases`), not a
+/// path blended `destination-out` — the same pixels, at a fraction of the
+/// cost. At scale 1.5 from a fractional position, so its edges are
+/// anti-aliased, the pixels are those of reference mode (which always takes
+/// the blended path). A rounded viewport and one under a partial clip take
+/// the blended path.
+#[test]
+fn a_square_unclipped_erase_is_a_rect_fill_with_the_blended_erases_pixels() {
+    let square = "<div style=\"background: rgb(0,128,0); padding: 20.3px 10.7px\">\
+         <div data-viewport=\"fast-a\" style=\"width: 100.4px; height: 60.2px\"></div></div>";
+    let fast = painted_at(square, 1.5, false);
+    let slow = painted_at(square, 1.5, true);
+    assert_eq!(fast.stats().rect_erases, 1, "the fast path");
+    assert_eq!(slow.stats().rect_erases, 0, "reference mode blends");
+    let (a, b) = (fast.pixels(), slow.pixels());
+    let worst = a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap();
+    assert!(worst <= 1, "the fast path's pixels differ by up to {worst}");
+    // And it erased: the middle of the viewport is clear.
+    let w = (W as f64 * 1.5) as usize;
+    let i = (((20.3 + 30.0) * 1.5) as usize * w + ((10.7 + 50.0) * 1.5) as usize) * 4;
+    assert_eq!(&a[i..i + 4], &[0, 0, 0, 0]);
+
+    let rounded = painted_at(
+        "<div style=\"background: rgb(0,128,0); padding: 20px\">\
+         <div data-viewport=\"fast-b\" style=\"width: 100px; height: 60px; \
+         border-radius: 10px\"></div></div>",
+        1.0,
+        false,
+    );
+    assert_eq!(rounded.stats().rect_erases, 0, "a rounded box blends");
+    let clipped = painted_at(
+        "<div style=\"background: rgb(0,128,0); width: 80px; height: 50px; \
+         overflow: hidden; border-radius: 10px\">\
+         <div data-viewport=\"fast-c\" style=\"width: 100px; height: 60px\"></div></div>",
+        1.0,
+        false,
+    );
+    assert_eq!(clipped.stats().rect_erases, 0, "a partial clip blends");
+}
+
+/// Review of #1883: a `filter` is no group in rinch — its approximation is
+/// laid over the box after its content — and the warning says what it does:
+/// `grayscale` covers the game with grey, it does not let the background
+/// through.
+#[cfg(debug_assertions)]
+#[test]
+fn a_grayscale_ancestor_warns_that_it_covers_the_game_with_grey() {
+    let _ = rinch_dom::paint::take_viewport_warnings();
+    painted(
+        "<div id=\"gs\" style=\"filter: grayscale(1)\">\
+         <div data-viewport=\"warn-grey\" style=\"width: 100px; height: 60px\"></div></div>",
+    );
+    let warnings = rinch_dom::paint::take_viewport_warnings();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("grayscale(1)")
+            && warnings[0].contains("grey")
+            && !warnings[0].contains("shows through"),
+        "{}",
+        warnings[0]
+    );
+}

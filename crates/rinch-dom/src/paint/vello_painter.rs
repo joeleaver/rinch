@@ -12,6 +12,20 @@ use super::painter::{BlendMode, PaintGlyph, PaintImage, PaintShape, Painter};
 /// to the Vello rendering pipeline for GPU execution.
 pub struct VelloPainter {
     scene: Scene,
+    /// What is open on the scene, innermost last: each clip with what it was
+    /// pushed with, so [`Painter::erase`] can close and reopen them (#1866).
+    open: Vec<Open>,
+}
+
+/// One entry of [`VelloPainter::open`].
+enum Open {
+    Clip {
+        fill: Fill,
+        transform: Affine,
+        shape: PaintShape,
+    },
+    /// A blend or opacity layer: a group the erase does not reach past.
+    Layer,
 }
 
 impl VelloPainter {
@@ -19,6 +33,7 @@ impl VelloPainter {
     pub fn new() -> Self {
         Self {
             scene: Scene::new(),
+            open: Vec::new(),
         }
     }
 
@@ -121,6 +136,7 @@ macro_rules! dispatch_push_layer {
 impl Painter for VelloPainter {
     fn reset(&mut self) {
         self.scene.reset();
+        self.open.clear();
     }
 
     fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {
@@ -274,6 +290,11 @@ impl Painter for VelloPainter {
 
     fn push_clip(&mut self, fill: Fill, transform: Affine, shape: &PaintShape) {
         dispatch_clip!(self.scene, fill, transform, shape);
+        self.open.push(Open::Clip {
+            fill,
+            transform,
+            shape: shape.clone(),
+        });
     }
 
     fn push_layer(
@@ -295,10 +316,74 @@ impl Painter for VelloPainter {
             }
         };
         dispatch_push_layer!(self.scene, Fill::NonZero, mix, opacity, transform, bounds);
+        self.open.push(Open::Layer);
     }
 
     fn pop_layer(&mut self) {
         self.scene.pop_layer();
+        self.open.pop();
+    }
+
+    /// Erase through the clips that are open, not just inside them (#1866).
+    ///
+    /// Vello renders a clip, in every 16px tile its outline crosses, as a
+    /// layer: the backdrop is saved, the clip's content is drawn from
+    /// transparent, and the result is composited back (`fine.wgsl`,
+    /// `CMD_BEGIN_CLIP`/`CMD_END_CLIP`). A `destination-out` drawn inside the
+    /// clip therefore erased only what was drawn *inside* it, and the
+    /// backdrop — the clipping box's own background, everything beneath it —
+    /// came back in a band along the clip's edges. So the clips open above
+    /// the innermost group are closed (their content so far is composited),
+    /// the shape is erased from what is then the backdrop, cut to those same
+    /// clips (pushed again inside the eraser, whose own backdrop starts
+    /// transparent), and the clips are reopened for what is drawn next.
+    ///
+    /// A blend or opacity layer is not closed: its content is composited
+    /// with its effect, so closing it early would change what it draws. The
+    /// erase stops at it, as it does on every backend (the debug warning of
+    /// `clear_viewport_box`). Reopening a clip splits its content into two
+    /// composites, which differs from one only in pixels partly covered by
+    /// the clip where both halves drew.
+    fn erase(&mut self, fill: Fill, transform: Affine, shape: &PaintShape) {
+        let from = self
+            .open
+            .iter()
+            .rposition(|o| matches!(o, Open::Layer))
+            .map_or(0, |i| i + 1);
+        let clips = &self.open[from..];
+        for _ in clips {
+            self.scene.pop_layer();
+        }
+        let eraser = peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::DestOut);
+        let bounds = shape.bounding_box();
+        self.scene
+            .push_layer(Fill::NonZero, eraser, 1.0, transform, &bounds);
+        for clip in clips {
+            if let Open::Clip {
+                fill,
+                transform,
+                shape,
+            } = clip
+            {
+                dispatch_clip!(self.scene, *fill, *transform, shape);
+            }
+        }
+        let black = Brush::Solid(peniko::Color::BLACK);
+        dispatch_fill!(self.scene, fill, transform, &black, shape);
+        for _ in clips {
+            self.scene.pop_layer();
+        }
+        self.scene.pop_layer();
+        for clip in clips {
+            if let Open::Clip {
+                fill,
+                transform,
+                shape,
+            } = clip
+            {
+                dispatch_clip!(self.scene, *fill, *transform, shape);
+            }
+        }
     }
 
     fn append(&mut self, other: &Self) {

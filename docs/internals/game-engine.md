@@ -233,7 +233,10 @@ build warns once per viewport where the rule cannot hold: an ancestor (or the vi
 `opacity < 1`, `mask-image` or a `filter`, whose group is composited over what is beneath it
 after the erase, and a rotate/scale/skew transform, whose erase is not the axis-aligned rect the
 layer is blitted at. The software window draws the frame in the scene right after the erase,
-under the same transform, so only the group warning applies there. Mechanism and pins:
+under the same transform, so only the group warning applies there. The game fills the viewport's **border box** (its border and children paint over it, its
+padding shows it; `viewport_rect` reports that box), where a `RenderSurface` frame sits in its
+content box. On Vello the erase has to close and reopen the clips around it, which a clip
+renders as a layer in its edge tiles. Mechanism and pins:
 `paint-and-damage.md`, "Viewport holes". `RenderSurface` frames are drawn in the scene and erase
 nothing.
 

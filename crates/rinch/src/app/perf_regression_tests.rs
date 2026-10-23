@@ -1744,6 +1744,9 @@ fn idle_viewports_repaint_nothing() {
             (ClipMasks, 1),
             (ClipMaskPx, 21008),
             (OpaqueImageCopies, 1),
+            // The game viewport clearing its box before its frame (#1866), as
+            // the plain rect fill: square, unrotated, unclipped where it lands.
+            (RectErases, 1),
         ],
     );
 

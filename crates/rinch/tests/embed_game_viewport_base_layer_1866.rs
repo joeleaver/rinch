@@ -175,3 +175,133 @@ fn gpu_game_viewport_base_layer_on_the_embed_overlay() {
         .collect();
     assert!(bad.is_empty(), "(what, point, got, want): {bad:?}");
 }
+
+/// Review of #1883, D1, on the embed overlay: under a clipping ancestor that
+/// paints a background — square (content overflowing, so the clip is kept),
+/// rounded, and a scroller with the viewport part-scrolled out — every pixel
+/// of the viewport's visible part is transparent in `RinchOverlayRenderer`'s
+/// texture. Vello renders a clip as a layer in every tile its outline
+/// crosses, and an erase made only inside the clip left the panel's navy in
+/// a band along the clip's edges. The navy panel is (20, 20)..(380, 280) on
+/// a green page in every case; the desktop window's version is
+/// `app::game_viewport_base_layer_1866_tests`.
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_game_viewport_base_layer_under_clipping_ancestors_on_the_embed_overlay() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    const GREEN: [u8; 4] = [0, 128, 0, 255];
+    const NAVY: [u8; 4] = [0, 0, 128, 255];
+    let root = "position: absolute; left: 0; top: 0; width: 400px; height: 300px; \
+                background: rgb(0,128,0)";
+    let panel = "position: absolute; left: 20px; top: 20px; width: 360px; height: 260px; \
+                 background: rgb(0,0,128)";
+    // (label, html, scrollTop of #sc, game rect, its radius, UI points)
+    #[allow(clippy::type_complexity)]
+    let cases: Vec<(
+        &str,
+        String,
+        Option<f64>,
+        (u32, u32, u32, u32),
+        f64,
+        Vec<((u32, u32), [u8; 4])>,
+    )> = vec![
+        (
+            "square overflow: hidden, content overflowing",
+            format!(
+                "<div style=\"{root}\"><div style=\"{panel}; overflow: hidden\">\
+                 <div data-viewport=\"embed-clip-square\" style=\"width: 360px; height: 260px\"></div>\
+                 <div style=\"width: 900px; height: 10px\"></div></div></div>"
+            ),
+            None,
+            (20, 20, 380, 280),
+            0.0,
+            vec![((10, 150), GREEN), ((390, 150), GREEN), ((200, 290), GREEN)],
+        ),
+        (
+            "rounded overflow: hidden (24px)",
+            format!(
+                "<div style=\"{root}\"><div style=\"{panel}; overflow: hidden; border-radius: 24px\">\
+                 <div data-viewport=\"embed-clip-rounded\" style=\"width: 360px; height: 260px\"></div>\
+                 </div></div>"
+            ),
+            None,
+            (20, 20, 380, 280),
+            24.0,
+            vec![((21, 21), GREEN), ((378, 278), GREEN), ((10, 150), GREEN)],
+        ),
+        (
+            "scroller, viewport part-scrolled out",
+            format!(
+                "<div style=\"{root}\"><div id=\"sc\" style=\"{panel}; overflow: auto\">\
+                 <div data-viewport=\"embed-clip-scrolled\" style=\"width: 300px; height: 600px\"></div>\
+                 </div></div>"
+            ),
+            Some(100.0),
+            (20, 20, 320, 280),
+            0.0,
+            vec![((340, 150), NAVY), ((10, 150), GREEN), ((200, 290), GREEN)],
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (label, html, scroll, (x0, y0, x1, y1), r, ui) in cases {
+        let scroller: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+        let keep = scroller.clone();
+        let mut ctx = RinchContext::new(
+            RinchContextConfig {
+                width: W,
+                height: H,
+                scale_factor: 1.0,
+                theme: None,
+                fonts: Vec::new(),
+            },
+            move |scope: &mut RenderScope| {
+                let root = scope.create_element("div");
+                root.set_inner_html(&html);
+                *keep.borrow_mut() = root.query_selector("#sc");
+                root
+            },
+        );
+        ctx.update(&[]);
+        if let Some(top) = scroll {
+            let sc = scroller.borrow().clone().expect("the #sc scroller");
+            sc.set_scroll_top(top);
+            assert_eq!(sc.scroll_top(), top, "{label}: positive control");
+            ctx.update(&[]);
+        }
+        let px = render(&mut ctx);
+        let at = |x: u32, y: u32| px[(y * W + x) as usize];
+        let read = |x: u32, y: u32| {
+            if x < x0 || x >= x1 || y < y0 || y >= y1 {
+                return false;
+            }
+            if r == 0.0 {
+                return true;
+            }
+            let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
+            let cx = px.clamp(x0 as f64 + r, x1 as f64 - r);
+            let cy = py.clamp(y0 as f64 + r, y1 as f64 - r);
+            ((px - cx).powi(2) + (py - cy).powi(2)).sqrt() <= r - 1.5
+        };
+        let mut wrong = 0;
+        let mut first = None;
+        for y in 0..H {
+            for x in 0..W {
+                if read(x, y) && at(x, y)[3] != 0 {
+                    wrong += 1;
+                    first.get_or_insert(((x, y), at(x, y)));
+                }
+            }
+        }
+        if wrong > 0 {
+            failures.push(format!("{label}: {wrong} px not clear, first {first:?}"));
+        }
+        for ((x, y), want) in ui {
+            if at(x, y).iter().zip(want).any(|(a, b)| a.abs_diff(b) > 2) {
+                failures.push(format!("{label}: ({x}, {y}) {:?}, want {want:?}", at(x, y)));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}

@@ -839,6 +839,13 @@ impl RinchContext {
 /// scene directly. This struct manages a [`vello::Renderer`] and an
 /// intermediate render texture sized to the window.
 ///
+/// **The texture holds straight (non-premultiplied) alpha**, which is what
+/// Vello writes: composite it over your game with straight-alpha blending
+/// (`wgpu::BlendState::ALPHA_BLENDING`, `src * a + dst * (1 - a)`), or
+/// premultiply in your shader first. `PREMULTIPLIED_ALPHA_BLENDING` on the
+/// raw texture adds the full colour of every translucent pixel. Where a
+/// [`GameViewport`] is, the texture is transparent (#1866).
+///
 /// # Usage
 ///
 /// ```ignore
@@ -891,7 +898,8 @@ impl RinchOverlayRenderer {
     ///
     /// Returns a [`TextureView`] that the game can sample/composite.
     /// The texture has a transparent background so it can be alpha-blended
-    /// over the game scene.
+    /// over the game scene; its alpha is straight, not premultiplied (see the
+    /// type's docs).
     pub fn render(&mut self, device: &Device, queue: &Queue, scene: &Scene) -> TextureView {
         let view = self
             .render_texture

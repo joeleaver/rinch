@@ -217,10 +217,28 @@ own background and inset shadow, under its border and children. Ancestor backgro
 earlier siblings and the window base go; later siblings, a higher `z-index`, popups draw over
 it as usual. The erase is drawn at the node, so it goes through the node's own clip chain and
 transform, and it lies inside the node's painted box (the damage #349 names). `Painter::erase`
-is an opaque fill composited `destination-out`: Vello opens a `BlendMode::DestinationOut`
-layer (it has no per-draw blend mode), the software painter blends the fill in place (no
-layer, so no perf counter moves for it). Software windows erase too, in the inline arm, before
-the frame is drawn, so a letterbox is the erase: on an opaque software window it is
+is an opaque fill composited `destination-out`. **Vello** (`VelloPainter::erase`) renders a
+clip, in every 16px tile its outline crosses, as a layer — backdrop saved, content drawn from
+transparent, composited back (`fine.wgsl` `CMD_BEGIN_CLIP`/`END_CLIP`) — so an erase made inside
+the clip erased only the clip's own content and the clipping box's background came back in a
+band along its edges (review of #1883, D1: 12,960 of 93,600 px in a flush `overflow: hidden`
+panel). The painter keeps the stack of what it has open (`VelloPainter::open`), closes the clips
+above the innermost blend or opacity layer, erases with a `BlendMode::DestinationOut` layer whose
+content is the shape under those same clips (pushed again inside the eraser, whose own backdrop
+is transparent), and reopens them; reopening splits a clip's content into two composites, which
+differs only in pixels the clip partly covers. A group is not closed (its effect would change),
+so the erase stops there, as the warning says. Pins: the `#[ignore]`d
+`gpu_game_viewport_base_layer_under_clipping_ancestors_on_the_{desktop_window,embed_overlay}`
+(square, rounded, part-scrolled scroller). The **software** painter blends the fill in place;
+a square box under no rotation, skew or clip mask where it lands is written `Source`
+transparent instead (the same pixels; 0.16 ms against 3.6–5.3 ms for a 1080p game frame),
+counted as `rect_erases`. On the **software window** a `GameViewport` with a frame no longer
+takes the inline arm (which drew the frame and nothing else, not its border or children —
+review D2): the element arm erases, draws the frame `contain`-fitted in the border box
+(`paint_viewport_frame`), then the border and children over it, as the GPU window composites
+its layer under them. **The game fills the border box** on every backend: a border covers its
+edge, the padding shows it (a `RenderSurface` frame sits in its content box instead, #1861).
+The letterbox is the erase: on an opaque software window it is
 presented black (softbuffer drops alpha; it was the window's white base before), the colour
 the GPU compositor's backdrop gives a `GameViewport` frame's bars (#354). A `visibility: hidden` viewport erases nothing (#854's paint half). Where it used to be
 a hole cut out of the backgrounds of **clipping** ancestors only (`find_viewport_rects`, #974,

@@ -756,7 +756,18 @@ clipping ancestors and moved by its transform, like any paint of the element.
 It holds on the desktop GPU window (the game is a layer under the UI) and in
 an embedded context (your host composites the game under rinch's
 `RinchOverlayRenderer` texture), and on the software window, which draws the
-frame in the scene right after the clear.
+frame in the scene right after the clear. A clipping ancestor with a
+background — an `overflow: hidden` panel, square or rounded, or a scroller
+the viewport is partly scrolled out of — is cleared under the viewport's
+visible part, edges included, on all three.
+
+**The game fills the viewport's border box.** The viewport is a base layer,
+not a framed element: the game's layer (or, on the software window, its
+frame, fitted `contain`) covers the whole box, and the viewport's own border
+and its children are painted over it, so a border hides the game's edge and
+the padding shows the game. That differs from a `RenderSurface`, whose frame
+sits in its content box, inside its padding. `RinchContext::viewport_rect`
+reports that border box, so render the game at its size.
 
 Two things break the rule, and a **debug build warns once per viewport**,
 naming it and the element responsible:

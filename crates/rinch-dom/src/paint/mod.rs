@@ -2262,6 +2262,54 @@ fn clear_viewport_box(
     );
 }
 
+/// Draw the inline frame [`set_viewport_pixels`] holds for the `data-viewport`
+/// node `node`, `object-fit: contain` in its border box `rect`, clipped to its
+/// own rounded shape when `rounded`. Nothing when the map has no drawable
+/// frame for it (the GPU window's `GameViewport`, whose frame is a layer).
+fn paint_viewport_frame(
+    painter: &mut dyn Painter,
+    node: &Node,
+    scale: f64,
+    rect: Rect,
+    rounded: bool,
+    node_transform: Affine,
+) {
+    VIEWPORT_PIXELS.with(|vp| {
+        let guard = vp.borrow();
+        // `viewport_frame_bytes` re-derives the exact slice length the
+        // painter needs, because a buffer longer than `w * h * 4` would be
+        // rejected outright.
+        let Some((pixels, bytes)) = guard
+            .as_ref()
+            .and_then(|map| map.get(node.attributes.get("data-viewport")?))
+            .and_then(|pixels| Some((pixels, viewport_frame_bytes(pixels)?)))
+        else {
+            return;
+        };
+        if rounded {
+            painter.push_clip(
+                Fill::NonZero,
+                node_transform,
+                &border_radii(node, scale).shape(rect),
+            );
+        }
+        image::paint_frame_data(
+            painter,
+            &pixels.data[..bytes],
+            pixels.width,
+            pixels.height,
+            pixels.opaque,
+            rect,
+            scale,
+            crate::computed_style::ObjectFitValue::Contain,
+            node_transform,
+        );
+        if rounded {
+            painter.pop_layer();
+        }
+    });
+}
+
 /// What [`warn_where_the_viewport_cannot_be_the_base`] has said on this thread.
 #[cfg(debug_assertions)]
 #[derive(Default)]
@@ -2309,19 +2357,33 @@ fn describe_element(node: &Node) -> String {
     s
 }
 
-/// The group effect `node` paints its subtree in, if any: the ones rinch
-/// paints as a layer over its content — `opacity` below 1, `mask-image`,
-/// and the `filter` functions paint approximates (`brightness`,
-/// `grayscale`). rinch parses no `mix-blend-mode`.
+/// The effect `node` paints over its subtree, if any, as `(what, why it
+/// breaks the rule)`: `opacity` below 1 and `mask-image`, which paint the
+/// subtree as a group composited over what is beneath it, and the `filter`
+/// functions paint approximates (`brightness`, `grayscale`), which paint an
+/// overlay over the box after its content. rinch parses no `mix-blend-mode`.
 #[cfg(debug_assertions)]
-fn group_effect(node: &Node) -> Option<String> {
+fn group_effect(node: &Node) -> Option<(String, &'static str)> {
+    const GROUP: &str = "which paints its subtree as a group. The viewport clears its box \
+                         only inside that group, and the group is then composited over what is \
+                         beneath it, so content behind the viewport shows through over the game";
     let cs = &node.computed_style;
     if cs.opacity < 1.0 {
-        Some(format!("`opacity: {}`", cs.opacity))
+        Some((format!("`opacity: {}`", cs.opacity), GROUP))
     } else if !cs.mask_image.is_empty() {
-        Some("`mask-image`".to_string())
-    } else if cs.filter_brightness != 1.0 || cs.filter_grayscale > 0.0 {
-        Some("`filter`".to_string())
+        Some(("`mask-image`".to_string(), GROUP))
+    } else if cs.filter_grayscale > 0.0 {
+        Some((
+            format!("`filter: grayscale({})`", cs.filter_grayscale),
+            "which rinch paints as grey laid over the box after its content, so the game is \
+             covered by grey (opaque at `grayscale(1)`) rather than shown",
+        ))
+    } else if cs.filter_brightness != 1.0 {
+        Some((
+            format!("`filter: brightness({})`", cs.filter_brightness),
+            "which rinch paints as black or white laid over the box after its content, so the \
+             game is darkened or washed out",
+        ))
     } else {
         None
     }
@@ -2361,7 +2423,8 @@ fn warn_where_the_viewport_cannot_be_the_base(
     };
     let mut warnings: Vec<(&'static str, String)> = Vec::new();
     if !seen("group")
-        && let Some((id, effect)) = ancestors().find_map(|(id, n)| Some((id, group_effect(n)?)))
+        && let Some((id, (effect, why))) =
+            ancestors().find_map(|(id, n)| Some((id, group_effect(n)?)))
     {
         let who = if id == node_id {
             "the viewport itself has".to_string()
@@ -2374,11 +2437,8 @@ fn warn_where_the_viewport_cannot_be_the_base(
         warnings.push((
             "group",
             format!(
-                "[rinch] GameViewport \"{name}\": {who} {effect}, which paints its subtree as a \
-                 group. The viewport clears its box only inside that group, and the group is \
-                 then composited over what is beneath it, so content behind the viewport shows \
-                 through over the game. Move the viewport out of that element, or put the \
-                 effect on its other children instead (#1866)."
+                "[rinch] GameViewport \"{name}\": {who} {effect}, {why}. Move the viewport out \
+                 of that element, or put the effect on its other children instead (#1866)."
             ),
         ));
     }
@@ -2404,9 +2464,9 @@ fn warn_where_the_viewport_cannot_be_the_base(
             "transform",
             format!(
                 "[rinch] GameViewport \"{name}\": `{}` has a `transform` other than a \
-                 translation (a rotation, scale or skew). The viewport's cleared box turns with \
-                 it, but the game's layer is composited axis-aligned at the viewport's box, so \
-                 the two do not line up. Keep transforms on the viewport and its ancestors to \
+                 translation (a rotation, scale or skew). The viewport's cleared box is \
+                 rotated, scaled or skewed with it, but the game's layer is composited \
+                 axis-aligned at the viewport's layout size, so the two do not line up. Keep transforms on the viewport and its ancestors to \
                  translations (#1866).",
                 describe_element(offender)
             ),
@@ -3975,8 +4035,10 @@ fn paint_node_unmasked(
         // The guard is the map first: with no entry for this name
         // the node falls through to normal element painting, which is what
         // leaves the whole GPU compositor path untouched — that backend never
-        // sets `VIEWPORT_PIXELS` at all. A `GameViewport` takes this arm too
-        // (issue #361); what sets it apart from video is its hole, below.
+        // sets `VIEWPORT_PIXELS` for a `GameViewport`. A software `GameViewport`
+        // (issue #361) does not take this arm either: it punches, and the element
+        // arm draws its frame over the erase of its box, under its border and
+        // children (#1866).
         //
         // And a node that says it is not ready (#348) falls through the same
         // way, frame in the map or not: a video that errored mid-stream keeps
@@ -3985,10 +4047,9 @@ fn paint_node_unmasked(
         // the compositor.
         NodeKind::Element(_)
             if viewport_ready(node)
-                && node
-                    .attributes
-                    .get("data-viewport")
-                    .is_some_and(|name| has_viewport_pixels(name)) =>
+                && node.attributes.get("data-viewport").is_some_and(|name| {
+                    has_viewport_pixels(name) && !viewport_punches(node, name)
+                }) =>
         {
             let rect = Rect::new(x, y, x + w, y + h);
             let opacity = node.computed_style.opacity;
@@ -4021,66 +4082,17 @@ fn paint_node_unmasked(
                     let radii = border_radii(node, scale);
                     (radii.shape(rect), !radii.is_square())
                 };
-                // Except for a `GameViewport` (which stamps no
-                // `data-viewport-ready` and is active whenever it has a
-                // frame): it is the base layer (#1866), so it clears its box
-                // of everything painted before it instead, and its letterbox
-                // is that clear — see-through on a transparent window, as it
-                // was when the frame was blitted over the finished pixels
-                // (#361). The frame is drawn here, under the same transform,
-                // so no transform warns; a group effect still does.
-                let viewport_name = node.attributes.get("data-viewport").map(String::as_str);
-                if viewport_name.is_some_and(|name| viewport_punches(node, name)) {
-                    clear_viewport_box(
-                        tree,
-                        node_id,
-                        node,
-                        painter,
-                        scale,
-                        rect,
-                        node_transform,
-                        false,
-                    );
-                } else {
-                    painter.fill_color(
-                        Fill::NonZero,
-                        node_transform,
-                        AlphaColor::<Srgb>::BLACK,
-                        &backdrop,
-                    );
-                }
-
-                if has_radius {
-                    painter.push_clip(Fill::NonZero, node_transform, &backdrop);
-                }
-                VIEWPORT_PIXELS.with(|vp| {
-                    let guard = vp.borrow();
-                    // The guard above already proved this entry exists and is
-                    // drawable; `viewport_frame_bytes` re-derives the exact
-                    // slice length the painter needs, because a buffer longer
-                    // than `w * h * 4` would be rejected outright.
-                    let Some((pixels, bytes)) = guard
-                        .as_ref()
-                        .and_then(|map| map.get(node.attributes.get("data-viewport")?))
-                        .and_then(|pixels| Some((pixels, viewport_frame_bytes(pixels)?)))
-                    else {
-                        return;
-                    };
-                    image::paint_frame_data(
-                        painter,
-                        &pixels.data[..bytes],
-                        pixels.width,
-                        pixels.height,
-                        pixels.opaque,
-                        rect,
-                        scale,
-                        crate::computed_style::ObjectFitValue::Contain,
-                        node_transform,
-                    );
-                });
-                if has_radius {
-                    painter.pop_layer();
-                }
+                // A `GameViewport` (which stamps no `data-viewport-ready` and
+                // punches whenever it has a frame) does not take this arm: it
+                // is the base layer (#1866), drawn by the element arm below
+                // over the erase of its box and under its border and children.
+                painter.fill_color(
+                    Fill::NonZero,
+                    node_transform,
+                    AlphaColor::<Srgb>::BLACK,
+                    &backdrop,
+                );
+                paint_viewport_frame(painter, node, scale, rect, has_radius, node_transform);
             }
 
             if opacity < 1.0 {
@@ -4320,7 +4332,26 @@ fn paint_node_unmasked(
                         scale,
                         rect,
                         node_transform,
-                        true,
+                        !has_viewport_pixels(
+                            node.attributes
+                                .get("data-viewport")
+                                .map_or("", String::as_str),
+                        ),
+                    );
+                    // The software window's frame (#361), drawn over the
+                    // erase in the border box, as the GPU window's layer is
+                    // composited there; the border and children below then
+                    // draw over it on both (review of #1883, D2). The
+                    // letterbox is the erase: see-through on a transparent
+                    // window. Nothing on the GPU window, which has no inline
+                    // frame for a `GameViewport`.
+                    paint_viewport_frame(
+                        painter,
+                        node,
+                        scale,
+                        rect,
+                        !radii.is_square(),
+                        node_transform,
                     );
                 }
 

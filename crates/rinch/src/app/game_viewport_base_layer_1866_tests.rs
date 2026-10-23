@@ -49,6 +49,124 @@ fn app_with(html: String) -> RinchApp {
     app
 }
 
+/// A viewport under a clipping ancestor that paints a background (review of
+/// #1883, D1): Vello renders a clip as a layer in every tile its outline
+/// crosses, so an erase made only inside the clip left the ancestor's navy
+/// in a band along the clip's edges.
+struct ClipCase {
+    label: &'static str,
+    html: String,
+    /// `scrollTop` for the `#sc` scroller, if any.
+    scroll: Option<f64>,
+    /// Where the game must show: a rect, rounded by `radius` (pixels whose
+    /// centre is within 1.5px of the arc are the arc's anti-aliasing and are
+    /// not read).
+    game: (u32, u32, u32, u32),
+    radius: f64,
+    /// Points that must keep the UI's own colour.
+    ui: Vec<((u32, u32), [u8; 4])>,
+}
+
+const GREEN: [u8; 4] = [0, 128, 0, 255];
+const NAVY: [u8; 4] = [0, 0, 128, 255];
+
+/// The navy panel is (20, 20)..(380, 280) on a green page in every case.
+fn clip_cases(prefix: &str) -> Vec<(ClipCase, String)> {
+    let root = "position: absolute; left: 0; top: 0; width: 400px; height: 300px; \
+                background: rgb(0,128,0)";
+    let panel = "position: absolute; left: 20px; top: 20px; width: 360px; height: 260px; \
+                 background: rgb(0,0,128)";
+    let name = |s: &str| format!("{prefix}-{s}");
+    vec![
+        (
+            ClipCase {
+                label: "square overflow: hidden, content overflowing",
+                html: format!(
+                    "<div style=\"{root}\"><div style=\"{panel}; overflow: hidden\">\
+                     <div data-viewport=\"{}\" style=\"width: 360px; height: 260px\"></div>\
+                     <div style=\"width: 900px; height: 10px\"></div></div></div>",
+                    name("square")
+                ),
+                scroll: None,
+                game: (20, 20, 380, 280),
+                radius: 0.0,
+                ui: vec![((10, 150), GREEN), ((390, 150), GREEN), ((200, 290), GREEN)],
+            },
+            name("square"),
+        ),
+        (
+            ClipCase {
+                label: "rounded overflow: hidden (24px)",
+                html: format!(
+                    "<div style=\"{root}\"><div style=\"{panel}; overflow: hidden; \
+                     border-radius: 24px\">\
+                     <div data-viewport=\"{}\" style=\"width: 360px; height: 260px\"></div>\
+                     </div></div>",
+                    name("rounded")
+                ),
+                scroll: None,
+                game: (20, 20, 380, 280),
+                radius: 24.0,
+                ui: vec![((21, 21), GREEN), ((378, 278), GREEN), ((10, 150), GREEN)],
+            },
+            name("rounded"),
+        ),
+        (
+            ClipCase {
+                label: "scroller, viewport part-scrolled out",
+                html: format!(
+                    "<div style=\"{root}\"><div id=\"sc\" style=\"{panel}; overflow: auto\">\
+                     <div data-viewport=\"{}\" style=\"width: 300px; height: 600px\"></div>\
+                     </div></div>",
+                    name("scrolled")
+                ),
+                scroll: Some(100.0),
+                game: (20, 20, 320, 280),
+                radius: 0.0,
+                ui: vec![((340, 150), NAVY), ((10, 150), GREEN), ((200, 290), GREEN)],
+            },
+            name("scrolled"),
+        ),
+    ]
+}
+
+/// Whether pixel `(x, y)` is one to read for `case`: inside its game rect,
+/// and, under a radius, at least 1.5px inside the rounded shape.
+fn read_pixel(case: &ClipCase, x: u32, y: u32) -> bool {
+    let (x0, y0, x1, y1) = case.game;
+    if x < x0 || x >= x1 || y < y0 || y >= y1 {
+        return false;
+    }
+    let r = case.radius;
+    if r == 0.0 {
+        return true;
+    }
+    let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
+    let cx = px.clamp(x0 as f64 + r, x1 as f64 - r);
+    let cy = py.clamp(y0 as f64 + r, y1 as f64 - r);
+    ((px - cx).powi(2) + (py - cy).powi(2)).sqrt() <= r - 1.5
+}
+
+/// Mount `case`, scrolled as it says.
+fn mount_case(case: &ClipCase) -> RinchApp {
+    let scroller: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let keep = scroller.clone();
+    let html = case.html.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_inner_html(&html);
+        *keep.borrow_mut() = root.query_selector("#sc");
+        root
+    });
+    app.mount_component(W as f32, H as f32);
+    if let Some(top) = case.scroll {
+        let sc = scroller.borrow().clone().expect("the #sc scroller");
+        sc.set_scroll_top(top);
+        assert_eq!(sc.scroll_top(), top, "{}: positive control", case.label);
+    }
+    app
+}
+
 /// Build the scene the GPU window builds for a frame in which `name` has a
 /// compositor layer.
 fn build(app: &mut RinchApp, name: &str) {
@@ -247,6 +365,48 @@ mod gpu {
 
     fn near(a: [u8; 4], b: [u8; 4]) -> bool {
         a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 2)
+    }
+
+    /// Review of #1883, D1: under a clipping ancestor that paints a
+    /// background — square, rounded, and a scroller with the viewport
+    /// part-scrolled out — every pixel of the viewport's visible part is the
+    /// game on the desktop window. An erase made only inside the clip left
+    /// the navy in a band along the clip's edges (12,960 px in the square case).
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_game_viewport_base_layer_under_clipping_ancestors_on_the_desktop_window() {
+        let mut failures = Vec::new();
+        for (case, name) in clip_cases("desk-clip") {
+            let mut app = mount_case(&case);
+            let px = composite(&mut app, &name);
+            let at = |x: u32, y: u32| px[(y * W + x) as usize];
+            let mut wrong = 0;
+            let mut first = None;
+            for y in 0..H {
+                for x in 0..W {
+                    if read_pixel(&case, x, y) && !near(at(x, y), MAGENTA) {
+                        wrong += 1;
+                        first.get_or_insert(((x, y), at(x, y)));
+                    }
+                }
+            }
+            if wrong > 0 {
+                failures.push(format!(
+                    "{}: {wrong} px not the game, first {first:?}",
+                    case.label
+                ));
+            }
+            for &((x, y), want) in &case.ui {
+                if !near(at(x, y), want) {
+                    failures.push(format!(
+                        "{}: ({x}, {y}) {:?}, want {want:?}",
+                        case.label,
+                        at(x, y)
+                    ));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 
     /// The issue's tests on the desktop GPU window, one page: the game shows
