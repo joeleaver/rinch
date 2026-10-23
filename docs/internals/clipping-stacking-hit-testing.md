@@ -188,7 +188,8 @@ them clips. That question is `Node::scrolls_y()` / `scrolls_x()`.
 
 **Stacking contexts and the clip chain.** `Node::creates_stacking_context()`
 answers: a positioned box with an explicit `z-index`, `position: fixed` or
-`sticky` whatever the `z-index`, `opacity < 1`, a `transform` other than `none`
+`sticky` whatever the `z-index`, `opacity < 1`, a `mask-image` with a gradient
+layer (#1798), a `transform` other than `none`
 — an identity such as `translateX(0)` included (#415, `Node::has_transform`).
 **None of them on a `display: contents` element** (#1038): it generates no box,
 so it is neither a stacking context nor a positioned layer (`is_positioned_z_auto`),
@@ -222,7 +223,7 @@ picked a `contents; overflow: auto` wrapper wrote a `scroll_offset` onto a
 box-less node, so nothing on screen moved and `compute_absolute_position` did.
 
 That is **not** the whole CSS list, and the shortfall is not only about what
-`ComputedStyle` can hold. `clip-path`, `mask`, `isolation`, `mix-blend-mode`,
+`ComputedStyle` can hold. `clip-path`, `isolation`, `mix-blend-mode`,
 `contain: paint` and `will-change` are absent from `ComputedStyle` altogether
 and need new style plumbing per property — tracked separately from #542 (below),
 which closed the two creators that needed none.

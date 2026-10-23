@@ -66,12 +66,15 @@ fn centre_sampling(transform: Affine, brush: Affine) -> Affine {
 /// Dispatch a fill operation on a `PaintShape` to the appropriate Scene method.
 macro_rules! dispatch_fill {
     ($scene:expr, $fill:expr, $transform:expr, $brush:expr, $shape:expr) => {
+        dispatch_fill!($scene, $fill, $transform, $brush, None, $shape)
+    };
+    ($scene:expr, $fill:expr, $transform:expr, $brush:expr, $bt:expr, $shape:expr) => {
         match $shape {
-            PaintShape::Rect(r) => $scene.fill($fill, $transform, $brush, None, r),
-            PaintShape::RoundedRect(r) => $scene.fill($fill, $transform, $brush, None, r),
-            PaintShape::BezPath(p) => $scene.fill($fill, $transform, $brush, None, p),
-            PaintShape::Circle(c) => $scene.fill($fill, $transform, $brush, None, c),
-            PaintShape::Line(l) => $scene.fill($fill, $transform, $brush, None, l),
+            PaintShape::Rect(r) => $scene.fill($fill, $transform, $brush, $bt, r),
+            PaintShape::RoundedRect(r) => $scene.fill($fill, $transform, $brush, $bt, r),
+            PaintShape::BezPath(p) => $scene.fill($fill, $transform, $brush, $bt, p),
+            PaintShape::Circle(c) => $scene.fill($fill, $transform, $brush, $bt, c),
+            PaintShape::Line(l) => $scene.fill($fill, $transform, $brush, $bt, l),
         }
     };
 }
@@ -121,7 +124,13 @@ impl Painter for VelloPainter {
     }
 
     fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {
-        dispatch_fill!(self.scene, fill, transform, brush, shape);
+        // Vello's fine shader evaluates a gradient at each pixel's top-left
+        // corner, as it samples an image (#1027), where CSS and tiny-skia
+        // evaluate it at the centre: a 1px hard-stop line of a repeating
+        // gradient fell between two corners and was not drawn (#1798).
+        let bt = matches!(brush, Brush::Gradient(_))
+            .then(|| centre_sampling(transform, Affine::IDENTITY));
+        dispatch_fill!(self.scene, fill, transform, brush, bt, shape);
     }
 
     fn stroke(
@@ -260,6 +269,9 @@ impl Painter for VelloPainter {
             BlendMode::Normal => peniko::BlendMode::from(peniko::Mix::Normal),
             BlendMode::Saturation => peniko::BlendMode::from(peniko::Mix::Saturation),
             BlendMode::Plus => peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::Plus),
+            BlendMode::DestinationIn => {
+                peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::DestIn)
+            }
         };
         dispatch_push_layer!(self.scene, Fill::NonZero, mix, opacity, transform, bounds);
     }

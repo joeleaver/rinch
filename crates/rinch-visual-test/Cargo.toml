@@ -35,3 +35,5 @@ name = "gen_browser_screenshot"
 
 [dev-dependencies]
 tempfile = "3"
+# `css_export`'s gradient test serializes a real `ComputedStyle` (#1798).
+rinch-dom = { workspace = true }

@@ -208,6 +208,17 @@ fn hit_test_node(
 
     let point_in_bounds = x >= nx && x <= nx + nw && y >= ny && y <= ny + nh;
 
+    // A `mask-image` clips everything the box paints to its border box
+    // (`mask-clip`), and Chrome 155 hit-tests the same way: nothing of a
+    // masked box is hit outside it (the mask's own alpha is not consulted
+    // inside it). #1798.
+    if !point_in_bounds
+        && !node.computed_style.mask_image.is_empty()
+        && node.computed_style.display != rinch_dom::computed_style::DisplayValue::Contents
+    {
+        return None;
+    }
+
     // Nodes with overflow clipping must restrict child hit testing to within
     // the same box paint clips pixels to (#324) — the **padding** box, not
     // the border box (#536): `rinch_dom::paint::padding_box_insets` is the
@@ -1193,6 +1204,31 @@ mod tests {
             Some(child.0),
             "content area is unaffected — the child is still reachable there"
         );
+    }
+
+    /// #1798 review: a masked box's overflowing child is not hit outside the
+    /// box's border box, as in Chrome 155 (`elementFromPoint` answers the
+    /// page there), but is hit inside it even where the mask is transparent.
+    #[test]
+    fn a_masked_boxs_overflow_is_not_hit_outside_its_border_box() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let m = doc.create_element("div");
+        doc.set_attribute(
+            m,
+            "style",
+            "position: absolute; left: 20px; top: 20px; width: 100px; height: 50px; \
+             mask-image: linear-gradient(90deg, #000 50%, transparent 50%)",
+        );
+        doc.append_child(body, m);
+        let child = doc.create_element("div");
+        doc.set_attribute(child, "style", "width: 300px; height: 100px");
+        doc.append_child(m, child);
+        doc.resolve_layout(400.0, 400.0);
+        assert_eq!(hit_test(&doc.tree, 30.0, 30.0), Some(child.0));
+        assert_eq!(hit_test(&doc.tree, 100.0, 30.0), Some(child.0));
+        assert_ne!(hit_test(&doc.tree, 200.0, 30.0), Some(child.0));
+        assert_ne!(hit_test(&doc.tree, 30.0, 90.0), Some(child.0));
     }
 
     /// #535: `check_children`'s bounds test is per axis. A container holding

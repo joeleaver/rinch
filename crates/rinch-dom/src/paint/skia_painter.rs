@@ -2227,7 +2227,9 @@ impl Painter for TinySkiaPainter {
     ) {
         // A `Plus` layer at opacity 1 still adds rather than covers, so it
         // never takes the fast path below.
-        if !matches!(blend, BlendMode::Plus) && (opacity - 1.0).abs() < f32::EPSILON {
+        if !matches!(blend, BlendMode::Plus | BlendMode::DestinationIn)
+            && (opacity - 1.0).abs() < f32::EPSILON
+        {
             // Near-opaque: compositing a layer back at this alpha changes no
             // pixel, so no layer is allocated. The push still has to happen —
             // `pop_layer` is called unconditionally by the caller — and what it
@@ -2271,6 +2273,7 @@ impl Painter for TinySkiaPainter {
 
         let blend = match blend {
             BlendMode::Plus => tiny_skia::BlendMode::Plus,
+            BlendMode::DestinationIn => tiny_skia::BlendMode::DestinationIn,
             BlendMode::Normal | BlendMode::Saturation => tiny_skia::BlendMode::SourceOver,
         };
         self.open_layer(opacity, blend);
@@ -2313,6 +2316,16 @@ impl Painter for TinySkiaPainter {
                 // transparent, and `SourceOver` of transparent is the identity.
                 let drawn = if self.reference_mode {
                     self.surface_rect()
+                } else if blend == tiny_skia::BlendMode::DestinationIn {
+                    // `destination-in` of a transparent pixel clears what is
+                    // under it, so the layer acts wherever the parent holds
+                    // anything, drawn into or not: a mask that draws nothing
+                    // hides the content, as on Vello and in CSS (#1798).
+                    let mine = self.touched.unwrap_or(DeviceRect::EMPTY);
+                    match parent_touched {
+                        Some(p) => mine.union(p),
+                        None => self.surface_rect(),
+                    }
                 } else {
                     self.touched.unwrap_or(DeviceRect::EMPTY)
                 };

@@ -84,7 +84,6 @@ use peniko::kurbo::{Affine, Rect};
 #[cfg(feature = "software-renderer")]
 use super::painter::RepeatTile;
 use super::painter::{PaintShape, Painter};
-use super::svg::{build_linear_gradient_brush, build_radial_gradient_brush};
 use crate::computed_style::{
     BackgroundLayerGeometry, BackgroundOriginValue, BackgroundRepeatValue, BackgroundSizeValue,
     BackgroundValue, BorderStyleValue, ComputedStyle, LengthPercentageAutoValue,
@@ -326,16 +325,8 @@ fn draw_tile(
     target: &PaintShape,
 ) {
     match image {
-        BackgroundValue::LinearGradient {
-            angle_degrees,
-            stops,
-        } => {
-            let brush = build_linear_gradient_brush(*angle_degrees, stops, &tile);
-            painter.fill(fill, transform, &brush, target);
-        }
-        BackgroundValue::RadialGradient { stops } => {
-            let brush = build_radial_gradient_brush(stops, &tile);
-            painter.fill(fill, transform, &brush, target);
+        BackgroundValue::LinearGradient { .. } | BackgroundValue::RadialGradient { .. } => {
+            super::gradient::fill(painter, image, scale, fill, transform, tile, target);
         }
         BackgroundValue::Image { url } => {
             if let Some(decoded) = tree.image_cache.get(url) {
@@ -488,10 +479,24 @@ impl TileCache {
 /// What decides a rasterised tile's pixels, besides its size.
 fn image_key(tree: &NodeTree, image: &BackgroundValue) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
+    let lp_hash = |h: &mut std::collections::hash_map::DefaultHasher, v: LengthPercentageValue| {
+        let (tag, a, b) = match v {
+            LengthPercentageValue::Zero => (0u8, 0.0, 0.0),
+            LengthPercentageValue::Length(px) => (1, px, 0.0),
+            LengthPercentageValue::Percent(p) => (2, p, 0.0),
+            LengthPercentageValue::Calc { px, pct } => (3, px, pct),
+        };
+        tag.hash(h);
+        a.to_bits().hash(h);
+        b.to_bits().hash(h);
+    };
     let stops_hash = |h: &mut std::collections::hash_map::DefaultHasher,
                       stops: &[crate::computed_style::GradientStop]| {
         for s in stops {
-            s.offset.to_bits().hash(h);
+            match s.position {
+                Some(p) => lp_hash(h, p),
+                None => 9u8.hash(h),
+            }
             match s.color {
                 Some(c) => {
                     for v in c.components {
@@ -506,13 +511,40 @@ fn image_key(tree: &NodeTree, image: &BackgroundValue) -> u64 {
         BackgroundValue::LinearGradient {
             angle_degrees,
             stops,
+            repeating,
         } => {
             1u8.hash(&mut h);
             angle_degrees.to_bits().hash(&mut h);
+            repeating.hash(&mut h);
             stops_hash(&mut h, stops);
         }
-        BackgroundValue::RadialGradient { stops } => {
+        BackgroundValue::RadialGradient {
+            stops,
+            shape,
+            position_x,
+            position_y,
+            repeating,
+        } => {
             2u8.hash(&mut h);
+            repeating.hash(&mut h);
+            lp_hash(&mut h, *position_x);
+            lp_hash(&mut h, *position_y);
+            match *shape {
+                crate::computed_style::RadialShape::Circle(r) => {
+                    0u8.hash(&mut h);
+                    r.to_bits().hash(&mut h);
+                }
+                crate::computed_style::RadialShape::Ellipse(rx, ry) => {
+                    1u8.hash(&mut h);
+                    lp_hash(&mut h, rx);
+                    lp_hash(&mut h, ry);
+                }
+                crate::computed_style::RadialShape::Extent { circle, extent } => {
+                    2u8.hash(&mut h);
+                    circle.hash(&mut h);
+                    extent.hash(&mut h);
+                }
+            }
             stops_hash(&mut h, stops);
         }
         BackgroundValue::Image { url } => {
@@ -560,7 +592,17 @@ fn fill_as_pattern(
             return false;
         }
         let (w, h) = (w as u32, h as u32);
-        let key = (image_key(tree, image), w, h);
+        // The tile's own size is part of what decides its pixels: a
+        // gradient's length stops are absolute in it, so a 40px tile and a
+        // 20px one under `scale(2)` rasterise at one size and differ (#1798
+        // review).
+        let key = {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            image_key(tree, image).hash(&mut hasher);
+            tw.to_bits().hash(&mut hasher);
+            th.to_bits().hash(&mut hasher);
+            (hasher.finish(), w, h)
+        };
         let cached = tree.background_tiles.borrow_mut().get(&key);
         let pixels = match cached {
             Some(blob) => {

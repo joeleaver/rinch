@@ -122,6 +122,12 @@ pub enum BlendMode {
     /// blurred `text-shadow` is drawn as a Gaussian kernel of copies on both
     /// backends (#980).
     Plus,
+    /// Keep what is beneath the layer only where the layer is opaque, scaled
+    /// by its alpha (Porter-Duff `destination-in`): the layer is a mask over
+    /// what was drawn before it. `mask-image` (#1798) draws its mask into
+    /// such a layer inside the layer holding the element. Never elided at
+    /// opacity 1.
+    DestinationIn,
 }
 
 // ── Image data ──────────────────────────────────────────────────────────────
