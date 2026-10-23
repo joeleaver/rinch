@@ -483,14 +483,38 @@ fn a_nowrap_line_follows_the_box_when_it_resizes() {
     near(aligned_in(&d, c).0[0].1, 91.02, "100px box");
 }
 
-/// Not changed: parley takes the paragraph's direction from its text (rinch
-/// hands it no CSS `direction`), so Hebrew text is a right-to-left paragraph
-/// to it and `start` would put it at the right. Such a paragraph is left
-/// aligned within its own width, as before, which for `start` in a
-/// left-to-right block is Chrome's answer (0).
+/// parley takes the paragraph's direction from its text (rinch hands it no
+/// CSS `direction`), so Hebrew text is a right-to-left paragraph to it. Such
+/// a paragraph is aligned within the box too: centred, `שלום` sits half the
+/// box's free space in (Chrome 155: 10.38; Inter has no Hebrew, so the width
+/// is the host's fallback font's and the offset is checked against it; rinch
+/// put it at 0). `start` is not handed the box's width (it does not move a
+/// line in a left-to-right block), so it stays at 0, Chrome's answer, where
+/// parley's right-to-left `start` would be the right edge. (`text-align:
+/// right` is parley's `End`, the left edge of a right-to-left paragraph: 0
+/// before and after, Chrome 20.75 — the inferred direction, not this issue.)
 #[test]
-fn a_nowrap_right_to_left_text_keeps_its_start_position() {
+fn a_nowrap_right_to_left_paragraph_is_aligned_within_the_box() {
     let (lines, _) = aligned("width:50px;white-space:nowrap", "שלום", None);
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert_eq!(lines[0].1, 0.0, "{lines:?}");
+
+    let mut d = doc();
+    let body = d.body();
+    let c = d.create_element("div");
+    d.set_attribute(
+        c,
+        "style",
+        "width:50px;font:16px/25px ProbeFace;white-space:nowrap;text-align:center",
+    );
+    d.append_child(body, c);
+    d.set_inner_html(c, "שלום");
+    d.resolve_layout(800.0, 600.0);
+    let n = d.tree.get(c.0).unwrap();
+    let il = n.text_layout.as_ref().expect("the div is an IFC root");
+    assert!(il.layout.is_rtl());
+    let line = il.layout.get(0).unwrap();
+    let advance = line.metrics().advance;
+    assert!(advance > 10.0 && advance < 48.0, "fits the box: {advance}");
+    near(line.metrics().offset, (50.0 - advance) / 2.0, "centred");
 }

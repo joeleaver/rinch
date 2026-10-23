@@ -475,9 +475,11 @@ impl HangStats {
 /// does not hang (a `pre` space, an NBSP) at the end of the paragraph or
 /// before a forced break is broken once more to count that white space as
 /// content ([`align_unhung_trailing`]), as the paragraph broken at a width
-/// would be. Only a left-to-right paragraph, and only for an alignment that
-/// moves a line from its start (`count_trailing`): the caller passes `None`
-/// otherwise.
+/// would be (in a left-to-right paragraph only). The caller passes
+/// `align_width` only for an alignment that moves a line from its start in a
+/// left-to-right block (`count_trailing`); parley infers the paragraph's
+/// direction from its text, so a right-to-left one is then still lined up
+/// by parley's rules for it (centred correctly, `end` at the left).
 ///
 /// [`BreakReason::Regular`]: parley::layout::BreakReason::Regular
 /// [`BreakLines::revert_to`]: parley::layout::BreakLines::revert_to
@@ -493,9 +495,7 @@ pub(crate) fn break_lines_hanging_spaces(
     align_width: Option<f32>,
 ) -> HangStats {
     // #1237: a paragraph that does not wrap, aligned within the box.
-    if let Some(width) = align_width.filter(|w| max_width.is_none() && w.is_finite() && *w > 0.0)
-        && !layout.is_rtl()
-    {
+    if let Some(width) = align_width.filter(|w| max_width.is_none() && w.is_finite() && *w > 0.0) {
         return break_unwrapped_aligned(layout, text, width, preserves_spaces, unhung);
     }
     layout.break_all_lines(max_width);
@@ -1782,7 +1782,10 @@ fn break_unwrapped_aligned(
 ) -> HangStats {
     break_unwrapped(layout, width, None, None);
     let mut stats = HangStats::default();
-    let trailing = any_counted_trailing_line(layout, text, preserves_spaces);
+    // parley offsets a right-to-left line by its trailing white space, so a
+    // narrowed alignment width would move it the wrong way (as in
+    // `break_lines_hanging_spaces`): such a line is left as parley aligns it.
+    let trailing = !layout.is_rtl() && any_counted_trailing_line(layout, text, preserves_spaces);
     let keep = phantom_last_line(layout);
     if trailing || keep.is_some() {
         let units = trailing.then(|| logical_units(layout, text, unhung));
