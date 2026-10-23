@@ -172,11 +172,12 @@ stretch between them positionally, inserting new children before the unchanged s
 An edit typically changes one contiguous stretch of siblings, so that isolates it without a
 keyed/LIS pass. Matching the suffix is what keeps a split or join local: a purely
 positional diff re-pointed every later block at its neighbour's host and rewrote its
-text, so one Enter re-shaped every paragraph below the caret (issue #905). A node whose *kind* changed (tag or node type)
-is rebuilt and swapped rather than patched in place. A changed mark set is not a
-kind change: the textblock moves the run into the wrappers its new marks want
-(`ViewDesc::regroup_inline`), which runs only when its children's structure or
-marks changed, so a keystroke inside a run costs a text write and nothing else. The root's host element is created by the caller
+text, so one Enter re-shaped every paragraph below the caret (issue #905). A node whose *kind* changed (tag, node type, or
+mark set) is rebuilt rather than patched in place. A textblock's inline children are
+placed in their mark wrappers by `ViewDesc::regroup_inline`, which shares a wrapper
+between adjacent runs whose mark continues (#1833) and runs only when the children's
+structure changed (a child built, replaced, removed or moved), so a keystroke inside a
+run costs a text write and nothing else. The root's host element is created by the caller
 (the `Editor` component) and is never replaced — only its children reconcile.
 
 **Decorations diff independently of the document.** A transaction that changes only

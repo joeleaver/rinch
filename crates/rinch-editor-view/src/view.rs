@@ -808,13 +808,17 @@ impl ViewDesc {
     /// its own; a run's nesting therefore depends on the runs before it, and
     /// can differ from the copy-out HTML's, which nests each run alone.
     ///
-    /// A wrapper is reused, for the same mark, from the child's own previous
-    /// chain before one is made, so restructuring (a mark added or removed
-    /// in the middle of a run) moves nodes rather than rebuilding them; a
-    /// node already in place is not touched ([`place_children`]), and a
-    /// wrapper no child uses any more is discarded. Run only when the
-    /// children's structure changed ([`Self::diff_children`]): a text edit
-    /// inside a run costs nothing here.
+    /// A run whose mark set changed has been rebuilt by the diff
+    /// ([`Self::update`] refuses it), so its new node arrives detached. A
+    /// wrapper is reused, for the same mark, from the child's own previous
+    /// chain before one is made; a wrapper this pass makes is filled while
+    /// still detached and then attached; a node already in place is not
+    /// touched ([`place_children`]); the children the diff dropped are retired
+    /// once their successors are in place ([`Self::deferred`]); and a wrapper
+    /// no child uses any more is discarded. Run only when the children's
+    /// structure changed ([`Self::diff_children`]): a text edit inside a run
+    /// costs nothing here. The root runs it too when the schema's top node is
+    /// a textblock.
     fn regroup_inline(&mut self, cx: &mut Cx) {
         let doc = cx.doc;
         // (container, the nodes it holds); index 0 is the textblock itself.
@@ -1009,8 +1013,9 @@ impl ViewDesc {
 
     /// Patch this descriptor in place to project `new`. Returns `false` if the
     /// kinds are incompatible (text vs element, a different node type or element
-    /// tag) and the caller
-    /// must replace the whole subtree instead.
+    /// tag) or the mark set changed (the run wants other wrappers: it is
+    /// rebuilt, and its textblock's [`Self::regroup_inline`] places the new
+    /// node, #1833), and the caller must replace the whole subtree instead.
     ///
     /// `pos` is the position just before `new` in the new document. A node a
     /// view is mounted for ([`Self::slot`]) is patched in place only when it is
@@ -1151,7 +1156,8 @@ impl ViewDesc {
     ///
     /// A textblock's inline children are not placed in the host here: a new
     /// one is left unplaced and the answer says whether the structure changed
-    /// (a child built, replaced, removed, moved or given other marks), when the
+    /// (a child built, replaced — a changed mark set included — removed or
+    /// moved), when the
     /// caller owes [`Self::regroup_inline`] (#1833). A text edit inside a run
     /// changes none of that.
     fn diff_children(
@@ -1623,7 +1629,6 @@ impl RinchDomEditorView {
         if inline_root {
             root.regroup_inline(&mut cx);
         }
-        drop(cx);
         let flat = doc
             .upgrade()
             .and_then(|d| d.try_borrow().ok().map(|d| FlatWidths::of(&*d)))
