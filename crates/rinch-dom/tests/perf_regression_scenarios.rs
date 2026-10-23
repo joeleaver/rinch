@@ -1312,8 +1312,8 @@ fn a_paragraph_with_seams_pays_one_hang_pass_per_layout() {
         &[
             (StyleResolves, 6),
             (ElementsCascaded, 7),
-            (StyleNodesVisited, 47),
-            (FullStyleWalks, 6),
+            (StyleNodesVisited, 7),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 7),
             (TaffyStyleChanges, 6),
             (ShapeMeasureIfc, 1),
