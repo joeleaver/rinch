@@ -1390,7 +1390,7 @@ platform. `Mod` = Ctrl on Windows/Linux, Cmd on macOS.
 | Mod+Shift+B | Blockquote |
 | Mod+Shift+L / E / R / J | Align left / center / right / justify |
 | Mod+Z / Mod+Shift+Z / Mod+Y | Undo / redo |
-| Enter | Split block / new list item |
+| Enter | Split block / new list item (between two blocks: a new empty paragraph there) |
 | Shift+Enter | Insert a hard break (line break within the block) |
 | Tab / Shift+Tab | Move between table cells, else indent / outdent a list item |
 | Backspace / Delete | Delete backward / forward |
