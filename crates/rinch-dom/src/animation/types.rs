@@ -182,6 +182,14 @@ impl ActiveAnimation {
             .any(|k| k.values.iter().any(|(p, _)| p.changes_text_measure()))
     }
 
+    /// Whether any keyframe sets part of an inline element's edge boxes
+    /// (`TransitionProperty::changes_inline_edge`, #1426).
+    pub fn changes_inline_edge(&self) -> bool {
+        self.keyframe_stops
+            .iter()
+            .any(|k| k.values.iter().any(|(p, _)| p.changes_inline_edge()))
+    }
+
     /// Whether any keyframe of this animation sets `property`.
     pub fn animates(&self, property: TransitionProperty) -> bool {
         self.keyframe_stops
