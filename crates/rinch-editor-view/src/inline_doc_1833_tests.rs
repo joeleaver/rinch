@@ -24,10 +24,18 @@ fn shape(d: &dyn DomDocument, id: NodeId) -> String {
 fn a_textblock_root_places_its_runs_in_their_wrappers() {
     let s = Rc::new(
         Schema::builder()
-            .node("doc", rinch_editor_core::NodeSpec::builder("doc").content("text*").build())
+            .node(
+                "doc",
+                rinch_editor_core::NodeSpec::builder("doc")
+                    .content("text*")
+                    .build(),
+            )
             .node(
                 "text",
-                rinch_editor_core::NodeSpec::builder("text").group("inline").inline().build(),
+                rinch_editor_core::NodeSpec::builder("text")
+                    .group("inline")
+                    .inline()
+                    .build(),
             )
             .mark("link", rinch_editor_core::MarkSpec::simple("link"))
             .build(),

@@ -45,7 +45,11 @@ impl Rng {
         x
     }
     fn below(&mut self, n: usize) -> usize {
-        if n == 0 { 0 } else { (self.next() % n as u64) as usize }
+        if n == 0 {
+            0
+        } else {
+            (self.next() % n as u64) as usize
+        }
     }
     fn chance(&mut self, pct: u64) -> bool {
         self.next() % 100 < pct
@@ -109,7 +113,8 @@ fn rand_doc(r: &mut Rng, s: &Rc<Schema>, pool: &[Mark]) -> EditorState {
     let blocks: Vec<Node> = (0..1 + r.below(2))
         .map(|_| {
             let kids: Vec<Node> = (0..r.below(7)).map(|_| rand_inline(r, s, pool)).collect();
-            s.branch("paragraph", Fragment::from_children(kids)).unwrap()
+            s.branch("paragraph", Fragment::from_children(kids))
+                .unwrap()
         })
         .collect();
     let doc = s.branch("doc", Fragment::from_children(blocks)).unwrap();
@@ -133,7 +138,9 @@ fn rand_edit(r: &mut Rng, s: &Rc<Schema>, pool: &[Mark], st: &EditorState) -> Op
                 tr.set_stored_marks(Some(rand_marks(r, pool)));
             }
             let len = 1 + r.below(2);
-            let text: String = (0..len).map(|_| (b'A' + r.below(26) as u8) as char).collect();
+            let text: String = (0..len)
+                .map(|_| (b'A' + r.below(26) as u8) as char)
+                .collect();
             tr.insert_text(&text).is_ok()
         }
         5 => tr.delete(from, to).is_ok(),
@@ -150,7 +157,13 @@ fn rand_edit(r: &mut Rng, s: &Rc<Schema>, pool: &[Mark], st: &EditorState) -> Op
 }
 
 const ATTRS: &[&str] = &[
-    "href", "style", "class", "src", "data-pm-mark", "data-pm-deco", "data-pm-deco-run",
+    "href",
+    "style",
+    "class",
+    "src",
+    "data-pm-mark",
+    "data-pm-deco",
+    "data-pm-deco-run",
 ];
 
 fn shape(h: &H, id: NodeId) -> String {
@@ -240,7 +253,9 @@ fn run_seed(seed: u64, steps: usize, with_decos: bool) {
         };
         view.update_dom(&st, &next);
         if with_decos {
-            decos = if r.chance(50) { rand_decos(&mut r, &next) } else {
+            decos = if r.chance(50) {
+                rand_decos(&mut r, &next)
+            } else {
                 // keep old decos if still in range
                 let size = next.doc.content_size();
                 decos.into_iter().filter(|d| d.to <= size).collect()
@@ -251,7 +266,8 @@ fn run_seed(seed: u64, steps: usize, with_decos: bool) {
         let (want, want_count) = fresh(&next, if with_decos { &decos } else { &[] });
         let html = rinch_editor_core::serialize::node_to_html(&next.doc);
         assert_eq!(
-            got, want,
+            got,
+            want,
             "seed {seed} step {step}: incremental DOM != fresh render\nprev doc: {}\nnext doc: {html}",
             rinch_editor_core::serialize::node_to_html(&st.doc)
         );
@@ -260,7 +276,11 @@ fn run_seed(seed: u64, steps: usize, with_decos: bool) {
             want_count,
             "seed {seed} step {step}: live node count differs from a fresh render (orphans?)\n{html}"
         );
-        assert_eq!(empty_wrappers(&h, h.container_id), 0, "seed {seed} step {step}: empty wrapper\n{got}");
+        assert_eq!(
+            empty_wrappers(&h, h.container_id),
+            0,
+            "seed {seed} step {step}: empty wrapper\n{got}"
+        );
         history.push(next.clone());
         st = next;
     }
