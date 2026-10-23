@@ -294,3 +294,19 @@ fn an_inline_border_is_drawn() {
         "the border spans {lo}..={hi}"
     );
 }
+
+/// A restyle that gives an inline element its margin re-measures the line:
+/// the marker after it moves as in a fresh layout (`padding_moves_what_
+/// follows_the_span`'s 86.969), with no other change to the document.
+#[test]
+fn a_padding_restyle_moves_what_follows() {
+    let mut c = Case::new(r#"lead <span data-m="s">text</span><i M=a></i>tail"#);
+    c.at("a", 75.969, 23.0);
+    let s = one(&c.doc, "[data-m=s]");
+    c.doc
+        .set_attribute(rinch_core::dom::NodeId(s), "style", "margin: 0 5px 0 6px");
+    // Another viewport height, so the pass is not skipped while no width in
+    // the fixture moves.
+    c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1 + 40.0);
+    c.at("a", 86.969, 23.0);
+}

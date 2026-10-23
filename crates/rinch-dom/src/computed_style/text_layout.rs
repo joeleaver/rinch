@@ -251,8 +251,7 @@ impl ComputedStyle {
 
     /// What the edge boxes of a `display: inline` element are built from
     /// (`ifc::inline_edge_widths`, #1426): its horizontal margins, borders
-    /// and paddings, which take room on its first and last lines — so they
-    /// move a measured size too ([`Self::same_measured_text_inputs`]).
+    /// and paddings, which take room on its first and last lines.
     fn same_inline_edge_inputs(&self, other: &ComputedStyle) -> bool {
         crate::ifc::inline_edge_widths(self, true) == crate::ifc::inline_edge_widths(other, true)
             && self.border_left_width.to_px() == other.border_left_width.to_px()
@@ -287,10 +286,11 @@ impl ComputedStyle {
     /// is already caught by the Taffy style comparison that sets `layout_dirty`
     /// in the first place. The same is true of the paddings inside that group,
     /// and of the flex-or-grid bit of `display` (#1046), which only decides
-    /// whether the ellipsis rebuild runs. One part of that group is back, for a
-    /// `display: inline` element only: its horizontal margins, borders and
-    /// paddings are its edge boxes (#1426), which take room on its lines; it
-    /// has no Taffy box of its own, so nothing else would re-measure its IFC.
+    /// whether the ellipsis rebuild runs. The horizontal margins, borders and paddings
+    /// of a `display: inline` element (its edge boxes, #1426) do move a size,
+    /// and are absent too: they are in the larger predicate's background
+    /// group, whose change already drops the IFC's measures, and Taffy
+    /// properties besides.
     ///
     /// `color` is the one pinned by a fixture
     /// (`frozen_box_remeasure_tests::a_colour_only_restyle_still_skips_taffy`),
@@ -317,6 +317,5 @@ impl ComputedStyle {
             && self.text_transform == other.text_transform
             && self.white_space == other.white_space
             && self.overflow_wrap == other.overflow_wrap
-            && (!inline_level || self.same_inline_edge_inputs(other))
     }
 }
