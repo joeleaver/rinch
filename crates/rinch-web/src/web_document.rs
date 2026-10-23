@@ -1293,6 +1293,7 @@ impl Drop for WebDocument {
         for node in self.nodes.values() {
             crate::images::forget_node(node);
         }
+        crate::bounds::forget_document(self.doc_key);
     }
 }
 
@@ -3220,6 +3221,18 @@ impl DomDocument for WebDocument {
 
     fn resolve_layout(&mut self, _width: f32, _height: f32) {
         // No-op: browser handles layout natively.
+    }
+
+    /// Refresh `node`'s bounds signals from the browser from now on (issue
+    /// #1781, `crate::bounds`). A text node has no box and is not watched.
+    fn watch_bounds(&mut self, node: NodeId) {
+        if let Some(el) = self
+            .nodes
+            .get(&node.0)
+            .and_then(|n| n.dyn_ref::<web_sys::Element>())
+        {
+            crate::bounds::watch(self.doc_key, node.0 as u64, el.clone());
+        }
     }
 
     /// `getBoundingClientRect()` (issue #1779). A disconnected element answers

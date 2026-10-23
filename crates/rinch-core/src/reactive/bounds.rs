@@ -12,7 +12,7 @@
 
 use std::cell::RefCell;
 
-use super::Signal;
+use super::{Owner, Signal, current_owner};
 
 /// Bounding box of a registered element, in absolute viewport-relative
 /// logical pixels.
@@ -24,10 +24,10 @@ pub struct ElementBounds {
     pub height: f32,
 }
 
-/// All fields are `Copy` (`Signal` is an index + generation), so
+/// Cheap to clone (`Signal` is an index + generation, `Owner` a `Weak`), so
 /// [`update_bounds_signals`] can snapshot the entries it needs and release the
 /// registry borrow before running any user code.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct BoundsEntry {
     /// The owning document's [`doc_key`](crate::dom::DomDocument::doc_key).
     /// Node ids are per-document slab indices, so without this key two
@@ -36,6 +36,10 @@ struct BoundsEntry {
     doc_key: u64,
     node_id: u64,
     signal: Signal<ElementBounds>,
+    /// The live ambient owner the entry was registered under (`None`: app
+    /// lifetime). The signal is that owner's and is freed with it, so a later
+    /// call is handed this entry only from the same owner (issue #1781).
+    owner: Option<Owner>,
 }
 
 thread_local! {
@@ -52,18 +56,49 @@ thread_local! {
 /// The Signal's initial value is `ElementBounds::default()` (zero rect). The
 /// first real bounds arrive after the next layout pass.
 ///
+/// Calls for the same node from the same owner — the live ambient scope, or
+/// none (app lifetime) — return the **same** signal, so code that asks per
+/// event or per effect run does not grow the registry (issue #1781). Another
+/// owner gets a signal of its own: the signal belongs to the scope that made it
+/// and is freed with it.
+///
 /// Most users should prefer [`NodeHandle::bounds_signal`](crate::dom::NodeHandle::bounds_signal),
 /// which calls this internally with the node's document key and id.
 pub fn register_bounds_signal(doc_key: u64, node_id: u64) -> Signal<ElementBounds> {
+    register_bounds_signal_entry(doc_key, node_id).0
+}
+
+/// [`register_bounds_signal`], also answering whether the call registered a new
+/// entry (`false`: an entry of the same owner was handed back).
+pub(crate) fn register_bounds_signal_entry(
+    doc_key: u64,
+    node_id: u64,
+) -> (Signal<ElementBounds>, bool) {
+    let owner = current_owner();
+    let existing = BOUNDS_REGISTRY.with(|reg| {
+        reg.borrow()
+            .iter()
+            .find(|e| {
+                e.doc_key == doc_key
+                    && e.node_id == node_id
+                    && e.owner == owner
+                    && e.signal.is_alive()
+            })
+            .map(|e| e.signal)
+    });
+    if let Some(signal) = existing {
+        return (signal, false);
+    }
     let signal = Signal::new(ElementBounds::default());
     BOUNDS_REGISTRY.with(|reg| {
         reg.borrow_mut().push(BoundsEntry {
             doc_key,
             node_id,
             signal,
+            owner,
         });
     });
-    signal
+    (signal, true)
 }
 
 /// Refresh the registered bounds signals belonging to the document identified
@@ -106,7 +141,7 @@ where
         reg.borrow()
             .iter()
             .filter(|e| e.doc_key == doc_key)
-            .copied()
+            .cloned()
             .collect()
     });
 
@@ -151,7 +186,13 @@ pub fn registered_bounds_nodes(doc_key: u64) -> Vec<u64> {
             .iter()
             .filter(|e| e.doc_key == doc_key && e.signal.is_alive())
             .map(|e| e.node_id)
-            .collect()
+            .fold(Vec::new(), |mut ids, id| {
+                // Two owners watching one node are two entries and one rect.
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+                ids
+            })
     })
 }
 

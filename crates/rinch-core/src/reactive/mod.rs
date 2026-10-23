@@ -94,6 +94,7 @@ pub use scope::{OwnedCounts, Owner, OwnerGuard, Scope, current_owner, on_cleanup
 /// Ambient-owner hooks for the rest of the crate: `crate::events` attributes
 /// handlers to the scope currently rendering, and `crate::context` ties a
 /// store/context entry to the scope that created it (issue #141).
+pub(crate) use bounds::register_bounds_signal_entry;
 pub(crate) use scope::{on_cleanup_for_ambient_owner, record_handler};
 pub use scoped::{
     DocScopedSlotMap, clear_doc_scoped_slot, clear_scoped_slot, install_doc_scoped_slot,
