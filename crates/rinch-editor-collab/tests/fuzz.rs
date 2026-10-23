@@ -198,20 +198,16 @@ fn random_edit_unchecked(rng: &mut Rng, state: &EditorState, images: bool) -> Op
             }
             // A `hard_break` by default, and an `image` only when `images` is set — **not**
             // because an image is out of scope (it is not; the projection tests round-trip
-            // one with all three attrs) but because it breaks
-            // `replaying_a_trial_is_byte_identical` for a reason that has nothing to do
-            // with atoms (issue #841). A mark value carrying two or more attrs is an
-            // `Any::Map`, and yrs encodes one by iterating a `HashMap`, whose order is
-            // seeded per instance — so `{"@type":"image","src":…}` serializes in either
-            // order from one run to the next. An attr-less atom's value is a single-key
-            // map, which has only one order. The same latent non-determinism is reachable
-            // today through a `link` mark's `href`+`title`, which this fuzz also never
-            // generates; fixing it changes the wire encoding of every mark value.
+            // one with all three attrs). It used to break
+            // `replaying_a_trial_is_byte_identical` (issue #841): a mark value carrying two
+            // or more attrs is an `Any::Map`, and yrs encodes one by iterating a `HashMap`,
+            // whose order is seeded per instance, so `{"@type":"image","src":…}`
+            // serializes in either order from one run to the next. Since #1851 every
+            // atom's value has two keys or more (`@for`, its own char), a hard break's
+            // too, and the replay compares a canonical form instead ([`canonical`]).
             //
-            // Convergence does not depend on that order, so images are fuzzed anyway, in
-            // a trial that asserts convergence and not replay. Two `src` values, so that
-            // adjacent images are sometimes identical (one coalesced `@atom` range) and
-            // sometimes not.
+            // Images are fuzzed in their own trial, which asserts convergence. Two `src`
+            // values, so that adjacent images are sometimes identical and sometimes not.
             // In the image trial, most of these change an attr of an image already
             // in the document instead: every per-attribute write, against the peers'
             // splits, joins and deletions around it.
@@ -612,6 +608,12 @@ impl Swarm {
             schema_valid(&reference),
             "the converged document is not one the schema allows (seed={seed})"
         );
+        // No edit here types U+FFFC (`random_text`), so one in a text node is an inline
+        // atom that lost its `@atom` attribute (#1851).
+        assert!(
+            !holds_text_fffc(&reference),
+            "an inline atom read back as a literal U+FFFC (seed={seed}): {reference:?}"
+        );
         for q in 0..self.peers() {
             let projected = self.sessions[q].projected_doc(&self.schema).unwrap();
             assert!(
@@ -630,13 +632,19 @@ impl Swarm {
     }
 }
 
+/// Whether a text node anywhere in `node` holds U+FFFC.
+fn holds_text_fffc(node: &Node) -> bool {
+    node.text().is_some_and(|t| t.contains('\u{FFFC}'))
+        || (0..node.child_count()).any(|i| holds_text_fffc(node.child(i)))
+}
+
 /// Everything about a finished trial that a replay must reproduce: how many local edits
-/// it made, and the full CRDT state every peer converged on (yrs's own bytes, so this
-/// covers block ids and tie-breaks, not just the visible text).
+/// it made, and the full CRDT state every peer converged on (in a canonical form, so
+/// this covers clocks, tie-breaks and formatting, not just the visible text).
 #[derive(PartialEq, Eq, Debug)]
 struct Fingerprint {
     edits: usize,
-    snapshots: Vec<Vec<u8>>,
+    snapshots: Vec<String>,
 }
 
 impl Swarm {
@@ -644,10 +652,99 @@ impl Swarm {
         Fingerprint {
             edits: self.edits,
             snapshots: (0..self.peers())
-                .map(|p| self.sessions[p].snapshot())
+                .map(|p| canonical(&self.sessions[p].snapshot()))
                 .collect(),
         }
     }
+}
+
+/// A snapshot in a form two replays of one trial write identically: every client's
+/// clock, the delete set, and every shared type walked in order with each map's keys
+/// sorted. Not the bytes: an `@atom` value is a yrs map, which encodes its keys in
+/// `HashMap` order, random per run, and since #1851 every atom's value has two keys or
+/// more (its type and `@for`, its own char). The order of a map's keys carries nothing.
+fn canonical(bytes: &[u8]) -> String {
+    use yrs::types::text::YChange;
+    use yrs::updates::decoder::Decode;
+    use yrs::{Any, Array, ArrayRef, Map, Out, ReadTxn, Text, Transact, TransactionMut, Update};
+    fn any(a: &Any) -> String {
+        match a {
+            Any::Map(m) => {
+                let mut kv: Vec<String> =
+                    m.iter().map(|(k, v)| format!("{k}:{}", any(v))).collect();
+                kv.sort();
+                format!("{{{}}}", kv.join(","))
+            }
+            Any::Array(v) => format!("[{}]", v.iter().map(any).collect::<Vec<_>>().join(",")),
+            other => format!("{other:?}"),
+        }
+    }
+    fn out(txn: &TransactionMut, o: Out, s: &mut String) {
+        match o {
+            Out::Any(a) => s.push_str(&any(&a)),
+            Out::YText(t) => {
+                for d in t.diff(txn, YChange::identity) {
+                    let attrs = d.attributes.map(|a| {
+                        let mut kv: Vec<String> =
+                            a.iter().map(|(k, v)| format!("{k}={}", any(v))).collect();
+                        kv.sort();
+                        kv.join(";")
+                    });
+                    s.push_str(&format!("<{:?}|{:?}>", d.insert, attrs));
+                }
+            }
+            Out::YMap(m) => {
+                let mut keys: Vec<String> = m.keys(txn).map(str::to_string).collect();
+                keys.sort();
+                s.push('{');
+                for k in keys {
+                    s.push_str(&k);
+                    s.push(':');
+                    out(txn, m.get(txn, &k).unwrap(), s);
+                    s.push(',');
+                }
+                s.push('}');
+            }
+            Out::YArray(a) => array(txn, &a, s),
+            other => s.push_str(&format!("{other:?}")),
+        }
+    }
+    fn array(txn: &TransactionMut, a: &ArrayRef, s: &mut String) {
+        s.push('[');
+        for v in a.iter(txn) {
+            out(txn, v, s);
+            s.push(',');
+        }
+        s.push(']');
+    }
+    let doc = yrs::Doc::with_options(yrs::Options {
+        offset_kind: yrs::OffsetKind::Utf16,
+        ..Default::default()
+    });
+    let content = doc.get_or_insert_array("content");
+    let atoms = doc.get_or_insert_map("atoms");
+    let meta = doc.get_or_insert_map("meta");
+    let mut txn = doc.transact_mut();
+    txn.apply_update(Update::decode_v1(bytes).unwrap()).unwrap();
+    let mut clocks: Vec<String> = txn
+        .state_vector()
+        .iter()
+        .map(|(c, k)| format!("{c:?}={k}"))
+        .collect();
+    clocks.sort();
+    // The delete set, per client, so content deleted alike is still compared.
+    let mut deleted: Vec<String> = txn
+        .snapshot()
+        .delete_set
+        .iter()
+        .map(|(c, r)| format!("{c:?}={:?}", r.iter().collect::<Vec<_>>()))
+        .collect();
+    deleted.sort();
+    let mut s = format!("{clocks:?}{deleted:?}");
+    array(&txn, &content, &mut s);
+    out(&txn, Out::YMap(atoms), &mut s);
+    out(&txn, Out::YMap(meta), &mut s);
+    s
 }
 
 /// Run one fuzz trial: `peers` peers, `rounds` interleaved edit/deliver steps, then a
@@ -864,9 +961,10 @@ fn fuzz_deletion_to_empty_recovers_and_converges() {
 /// fuzz failure cannot be debugged — the report names a seed that does something else
 /// when you run it.
 ///
-/// The check is not "the text matches": it compares each peer's whole yrs state, so a
-/// differing tie-break or block id fails it even when the visible document happens to
-/// agree. It also compares the edit *count*, which is the symptom that made the old
+/// The check is not "the text matches": it compares each peer's whole yrs state (every
+/// client's clock, every shared type with its formatting; see [`canonical`] for why
+/// not the bytes), so a differing tie-break or block id fails it even when the visible
+/// document happens to agree. It also compares the edit *count*, which is the symptom that made the old
 /// non-determinism visible — random positions are drawn from the live document, so a
 /// different convergence changes which later edits are applicable at all.
 ///

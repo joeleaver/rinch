@@ -370,13 +370,20 @@ fn two_data_refs_written_at_once_converge_on_the_higher_client_ids() {
 /// Both peers press Enter before one image at once, so each writes a copy of the line's
 /// tail (yrs has no move): two images, both carrying the first one's identity. A
 /// change to one of them afterwards is its own: the other copy keeps its attrs.
+///
+/// The line is lengthened first: a split keeps its longer half in place and writes the
+/// shorter one anew (#1850), and in `ab<img>cd` the half holding the image is the
+/// longer one, so a split there moves no image.
 #[test]
 fn two_copies_from_concurrent_splits_are_edited_apart() {
     for ids in ID_ORDERS {
         let s = schema(true);
         let (mut a, mut b) = two_peers(&s, document(&s, false), ids);
-        a.enter_at(3);
-        b.enter_at(2);
+        a.type_at(1, "xyz");
+        sync(&mut a, &mut b);
+        // `xyzab<img>cd`: right before the image, and between `a` and `b`.
+        a.enter_at(6);
+        b.enter_at(5);
         sync(&mut a, &mut b);
         let imgs = converged(&a, &b, &s);
         assert_eq!(imgs.len(), 2, "{ids:?}: the copies {:?}", a.state.doc);
@@ -625,9 +632,11 @@ fn raw_atom_entries(bytes: &[u8]) -> Vec<(String, yrs::Any)> {
     out
 }
 
-/// A new image is written exactly as a build before this change writes it (one
-/// `@atom` value, its type and attrs, nothing else), so such a build reads every
-/// document whose images were only inserted. A change of one attr is one `atoms`
+/// A new image is one `@atom` value: its type and attrs, and `@for`, its own char, and
+/// nothing else (no `@id`, no `atoms` entry). The `@for` is new with #1851: it keeps two
+/// equal atoms from sharing formatting markers that a peer's concurrent delete removes,
+/// and it means a build from before #1503 no longer reads a document whose images were
+/// only inserted (it refuses the reserved key). A change of one attr is one `atoms`
 /// entry and leaves that value alone; it marks the char with `@entries`, so a build
 /// from before refuses the document loudly instead of silently missing the entry; a
 /// move carries `@id` (and `@for`, the char it is for) beside the value as written.
@@ -639,7 +648,7 @@ fn the_wire_a_new_image_a_changed_attr_and_a_moved_image() {
     let atom = chunks[1].1.clone().expect("the image's value");
     let mut keys: Vec<&str> = atom.keys().map(String::as_str).collect();
     keys.sort();
-    assert_eq!(keys, vec!["@type", "alt", "src"]);
+    assert_eq!(keys, vec!["@for", "@type", "alt", "src"]);
     assert!(raw_atom_entries(&a.session.snapshot()).is_empty());
     assert_eq!(raw_stamped(&a.session.snapshot(), 0), Vec::<String>::new());
 
@@ -662,8 +671,10 @@ fn the_wire_a_new_image_a_changed_attr_and_a_moved_image() {
     assert_eq!(raw_atoms(&a.session.snapshot(), 0)[1].1, Some(atom));
 
     // Enter right before the image moves it into a new block: its new char carries
-    // the identity the entry is under.
-    a.enter_at(3);
+    // the identity the entry is under. The line is lengthened first so the image is in
+    // the shorter half, the one a split writes anew (#1850).
+    a.type_at(1, "xyz");
+    a.enter_at(6);
     let moved = raw_atoms(&a.session.snapshot(), 1);
     let value = moved[0].1.clone().expect("the moved image's value");
     assert_eq!(
@@ -682,24 +693,30 @@ fn the_wire_a_new_image_a_changed_attr_and_a_moved_image() {
 }
 
 /// A `hard_break` has no attrs a peer could change, so a move carries nothing: its
-/// value stays the one key `@type`, whose encoding is the same on every run (#841).
+/// value is `@type` and `@for` (its own new char, #1851; no `@id`), whose encoding is
+/// the same on every run (#841). The break is after a longer head, so the split writes
+/// it anew (#1850: a split keeps its longer half in place).
 #[test]
 fn a_moved_hard_break_carries_no_identity() {
     let s = schema(true);
     let line = para(
         &s,
         vec![
-            s.text("ab").unwrap(),
+            s.text("abc").unwrap(),
             s.branch("hard_break", Fragment::empty()).unwrap(),
-            s.text("cd").unwrap(),
+            s.text("d").unwrap(),
         ],
     );
     let doc = s.branch("doc", Fragment::from_node(line)).unwrap();
     let (mut a, _) = two_peers(&s, doc, (11, 22));
-    a.enter_at(3);
+    let before = raw_atoms(&a.session.snapshot(), 0)[1].1.clone();
+    a.enter_at(4);
     let moved = raw_atoms(&a.session.snapshot(), 1);
     let value = moved[0].1.clone().expect("the moved break's value");
-    assert_eq!(value.keys().collect::<Vec<_>>(), vec!["@type"], "{moved:?}");
+    let mut keys: Vec<&String> = value.keys().collect();
+    keys.sort();
+    assert_eq!(keys, vec!["@for", "@type"], "{moved:?}");
+    assert_ne!(Some(value), before, "a new char, named for itself");
 }
 
 // --- review of #1503: identity follows the atom, never the text diff ---------------

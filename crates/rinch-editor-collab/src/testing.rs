@@ -85,6 +85,13 @@ pub fn text_scans() -> u64 {
     crate::atoms::text_scans()
 }
 
+/// How many block pairs the projection has scored on this thread so far to place the
+/// blocks a split or join inserts or deletes (`write_child_diff`, #1850). Each changed
+/// pair is scored at most twice per change.
+pub fn gap_scores() -> u64 {
+    crate::projection::gap_scores()
+}
+
 /// yrs client ids are **53-bit** (`ClientID::new` debug-asserts it, and a release build
 /// would silently fold the high bits into the mask instead), so two ids that differ only
 /// above bit 52 would collide — the corruption this module exists to warn about. Reject

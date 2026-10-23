@@ -377,20 +377,24 @@ fn a_sticky_index_ends_with_its_block() {
     assert_eq!(a.resolve(&in_keep), Some(2), "the others are unaffected");
 }
 
-/// Splitting a block moves the tail's characters into a new block's text (the
+/// Splitting a block moves the shorter half's characters into a new block's text (the
 /// projection has no "move"), so an index on them lands on the split point. Pinned
-/// because the module docs promise it.
+/// because the module docs promise it. Since #1850 a split keeps its longer half in
+/// place, so `hello wo` stays, an index on `rld`'s `l` lands on the split point, and one
+/// on a char of the longer half follows it.
 #[test]
 fn a_split_before_the_position_leaves_the_index_at_the_split_point() {
     let s = schema();
     let mut peer = Peer::host(&s, vec![para(&s, "hello world")]);
+    let l = peer.sticky(10).unwrap();
     let w = peer.sticky(7).unwrap();
     peer.local(|tr| {
-        tr.set_selection(Selection::cursor(Pos(6)));
-        tr.split(6, 1, None).unwrap();
+        tr.set_selection(Selection::cursor(Pos(9)));
+        tr.split(9, 1, None).unwrap();
     });
     assert_eq!(peer.state.doc.child_count(), 2);
-    assert_eq!(peer.resolve(&w), Some(6), "the end of \"hello\"");
+    assert_eq!(peer.resolve(&l), Some(9), "the end of \"hello wo\"");
+    assert_eq!(peer.resolve(&w), Some(7), "the kept half's `w`");
 }
 
 /// Joining a block into the one before it (Backspace at its start) writes its text
@@ -746,13 +750,14 @@ fn a_join_displaces_an_index_on_the_joined_text() {
 fn a_split_before_the_index_leaves_it_at_the_split_point_not_displaced() {
     let s = schema();
     let mut peer = Peer::host(&s, vec![para(&s, "hello world")]);
-    let w = peer.sticky_with(7, StickyAssoc::After);
+    let l = peer.sticky_with(10, StickyAssoc::After);
     peer.local(|tr| {
-        tr.set_selection(Selection::cursor(Pos(6)));
-        tr.split(6, 1, None).unwrap();
+        tr.set_selection(Selection::cursor(Pos(9)));
+        tr.split(9, 1, None).unwrap();
     });
-    // Its block lives (it is the first half), so the index is where its char was.
-    assert_eq!(peer.located(&w), (6, vec![0], false));
+    // Its block lives (it is the longer half, `hello wo`, which a split keeps in place
+    // since #1850), so the index is where its char was.
+    assert_eq!(peer.located(&l), (9, vec![0], false));
 }
 
 #[test]
@@ -1107,7 +1112,10 @@ fn r4_three_peers_agree_on_a_displaced_index() {
     assert_eq!(a.state.doc, b.state.doc);
     assert_eq!(a.state.doc, c.state.doc);
     let la = a.locate(&with);
-    assert_eq!(a.located(&with), (5, vec![0], true));
+    // C's split keeps the longer half `one` in the block A deletes and writes `g` anew
+    // (#1850), so `g` lives on as block 1 and the index is displaced to its end (it was
+    // the end of `keep` when the split kept `g` and wrote `one` anew).
+    assert_eq!(a.located(&with), (8, vec![1], true));
     assert_eq!(la, b.locate(&with));
     assert_eq!(la, c.locate(&with));
 }

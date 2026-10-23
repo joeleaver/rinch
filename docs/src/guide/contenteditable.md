@@ -2057,27 +2057,33 @@ What it survives and what it does not:
 - **Any edit elsewhere**, local or merged from a peer: it moves with its character.
 - **Its own character deleted:** it resolves to where that character was.
 - **Its block deleted:** `collab_resolve_sticky` answers `None` (an index from
-  `collab_sticky_index_with` is still located, displaced: see below). Joining a block into
-  the one before it counts (Backspace at a block's start): the projection writes the
-  joined text as a new insert, not a move. Likewise, splitting a block (Enter) before
-  the position moves the tail into a new block, and an index on the tail then resolves
-  to the split point.
-- **An edit next to its paragraph**, at the top level or inside a list, a quote or a
-  table cell. The projection finds the blocks an edit left alone by node *identity*,
-  and a split or a join rebuilds both nodes it touches, so the paragraph beside it is
-  rewritten even though its text did not change (tracked in #917). In practice, when
-  the paragraph has a sibling at its level:
-  - **Enter at the start of a paragraph** (inserting an empty paragraph above it):
-    every index into that paragraph now resolves into the **new empty paragraph**.
-    That is a wrong position, not `None`.
-  - **Backspace that deletes an empty line above a paragraph:** every index into that
-    paragraph resolves to `None`.
-  - **Toggling a bullet list on a paragraph** replaces the block with one of another
-    kind: `None`.
+  `collab_sticky_index_with` is still located, displaced: see below).
+- **A split or a join that moves its character.** The projection has no move: a split
+  (Enter) keeps the longer half of the block in place and writes the shorter half
+  into a new block, and a join (Backspace at a block's start, Delete at its end) keeps
+  the block holding more of the joined text and writes the other block's text into
+  it. An index on the characters that were written anew resolves to the split point,
+  or to `None` for a join. An index on the characters that stayed follows them.
+- **Enter at the start of a paragraph, or Backspace deleting the empty line above
+  it:** the empty paragraph is the block inserted or deleted, so the paragraph keeps
+  its text and every index into it (#1850).
+- **Toggling a bullet list on a paragraph** replaces the block with one of another
+  kind: `None`, at the top level or inside a list, a quote or a table cell.
 
-  A paragraph that is alone at its level (the document's only block, a list item's
-  only paragraph) fares better: an edit there keeps nothing of the level, which is
-  then compared by content, so Enter at its start keeps its indexes.
+Choosing which half moves trades one concurrent edit against another, since a
+peer's edit in the half that moved lands on the old copy:
+
+- A peer typing at the start of a line that another peer splits in the middle, head
+  shorter than tail, sees the typed character follow the tail.
+- **If A types into a line while B empties it and joins the next line into it** (B
+  selects from that line's start to the next line's start and deletes), B's join
+  keeps the next line's block and deletes the emptied one, so **A's character is
+  lost**. Before #1850 the emptied line's block was kept and the next line's text
+  written into it, so A's character survived (and the next line's text was the copy
+  a concurrent edit of it missed).
+- Two peers moving the same text at once (both pressing Enter at one place, both
+  joining the same two lines) each write their own copy, and the text appears twice
+  (#1857).
 
 `collab_sticky_index` answers `None` when not collaborating, for a position that is
 not inside a textblock (between two blocks), for the empty starter paragraph of a
