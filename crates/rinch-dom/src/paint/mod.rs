@@ -794,8 +794,13 @@ fn ink_rect(tree: &NodeTree, node: &Node, x: f64, y: f64, w: f64, h: f64, scale:
     if cs.box_shadow.is_empty()
         && cs.text_shadow.is_empty()
         && cs.outline_width <= 0.0
-        && (node.text_layout.is_none()
-            || (!tree.inline_text_shadows && contenteditable::read_only_selection(node).is_none()))
+        && node.text_layout.as_ref().is_none_or(|l| {
+            !tree.inline_text_shadows
+                && l.vertical_align_spans.is_empty()
+                && l.background_spans.is_empty()
+                && l.decoration_spans.is_empty()
+                && contenteditable::read_only_selection(node).is_none()
+        })
     {
         return r;
     }
@@ -840,10 +845,25 @@ pub(crate) fn ink_outsets_in<'a>(
     get: impl Fn(RawNodeId) -> Option<&'a Node> + 'a,
 ) -> [f32; 4] {
     let mut o = own_ink_outsets(&node.computed_style);
+    // What the root's inline content draws past its border box: shifted
+    // text, inline backgrounds and borders, wavy underlines (#1815, #1817).
+    let past = inline_ink_outsets(node, &get);
+    let mut shadow = text_shadow_outsets(&node.computed_style.text_shadow);
     for list in member_text_shadows(node, enabled, get) {
         let m = text_shadow_outsets(list);
         for (side, reach) in o.iter_mut().zip(m) {
             *side = side.max(reach);
+        }
+        for (side, reach) in shadow.iter_mut().zip(m) {
+            *side = side.max(reach);
+        }
+    }
+    if let Some(past) = past {
+        // Text drawn past the box casts its shadows from there.
+        for ((side, p), s) in o.iter_mut().zip(past).zip(shadow) {
+            if p > 0.0 {
+                *side = side.max(p + s);
+            }
         }
     }
     if node.text_layout.is_some() {
@@ -853,6 +873,34 @@ pub(crate) fn ink_outsets_in<'a>(
         }
     }
     o
+}
+
+/// How far IFC root `node`'s inline content draws past its border box, in
+/// CSS px `[left, top, right, bottom]` — [`text::inline_ink_past_lines`]
+/// (shifted text, inline backgrounds and borders, wavy underlines), the same
+/// geometry the clip proof reads — or `None` when it draws nothing past its
+/// line boxes. A root that clips its overflow draws none of it outside its
+/// padding box (the clip is elided only when nothing reaches past it).
+/// Text that overflows on its unshifted lines is not counted (see
+/// [`own_ink_outsets`]).
+fn inline_ink_outsets<'a>(
+    node: &Node,
+    get: impl Fn(RawNodeId) -> Option<&'a Node>,
+) -> Option<[f32; 4]> {
+    let inline = node.text_layout.as_ref()?;
+    if node.clips_overflow() {
+        return None;
+    }
+    let past = text::inline_ink_past_lines(get, inline, 1.0)?;
+    let (ox, oy) = ifc_root_content_origin(node);
+    let (w, h) = (node.layout.width as f64, node.layout.height as f64);
+    let (ox, oy) = (ox as f64, oy as f64);
+    Some([
+        (-(ox + past.x0)).max(0.0) as f32,
+        (-(oy + past.y0)).max(0.0) as f32,
+        (ox + past.x1 - w).max(0.0) as f32,
+        (oy + past.y1 - h).max(0.0) as f32,
+    ])
 }
 
 /// How far a `text-shadow` list carries text past its box, in CSS px:

@@ -9554,6 +9554,7 @@ impl RinchDocument {
             let shift = Self::vertical_align_shift_px(&owner.computed_style, parent_font_size);
             if shift != 0.0 {
                 vertical_align_spans.push(crate::node::InlineVerticalAlignSpan {
+                    owner: owner.id,
                     start,
                     end,
                     shift_px: shift,
