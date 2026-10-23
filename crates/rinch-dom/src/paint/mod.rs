@@ -16,6 +16,7 @@ pub mod painter;
 pub mod radii;
 pub mod scrollbar;
 mod select;
+pub mod slicing;
 mod svg;
 mod text;
 mod text_shadow;
@@ -1309,6 +1310,9 @@ impl Painter for ClipTrackingPainter<'_> {
         });
         self.inner.pop_layer();
     }
+    fn split_surface(&mut self, split: &painter::SurfaceSplit) -> painter::SplitVerdict {
+        self.inner.split_surface(split)
+    }
 }
 
 /// The render target, and the rect outside which paint emits nothing.
@@ -1405,6 +1409,28 @@ fn paint_surface_frame(
             .as_ref()
             .and_then(|m| m.get(&surface_id).cloned())
     });
+    // A GPU frame is offered to the split-layer path first (#1865): a painter
+    // that takes it draws nothing here, the compositor does.
+    if let Some(image) = &gpu
+        && let Some((image_transform, clip_to_content)) = image::fit_image(
+            image.width as f64,
+            image.height as f64,
+            content,
+            fit,
+            node_transform,
+        )
+        && painter.split_surface(&painter::SurfaceSplit {
+            surface_id,
+            content,
+            node_transform,
+            inner: rounded.then(|| inner.shape(content)),
+            clip_to_content,
+            image_transform,
+            extents: (image.width, image.height),
+        }) == painter::SplitVerdict::Split
+    {
+        return;
+    }
     if rounded {
         painter.push_clip(Fill::NonZero, node_transform, &inner.shape(content));
     }

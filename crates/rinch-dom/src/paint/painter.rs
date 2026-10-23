@@ -187,6 +187,53 @@ pub struct PaintGlyph {
     pub y: f32,
 }
 
+// ── Split surfaces (#1865) ──────────────────────────────────────────────────
+
+/// A GPU surface's frame at its place in paint order, offered to the painter
+/// to draw outside the scene (`docs/design/split-layer-gpu-surfaces.md`). All
+/// geometry is in device pixels, as paint draws it.
+#[derive(Clone, Debug)]
+pub struct SurfaceSplit {
+    /// The surface's id (`data-render-surface`).
+    pub surface_id: usize,
+    /// The element's content box, before `node_transform`.
+    pub content: Rect,
+    /// The element's transform.
+    pub node_transform: Affine,
+    /// The element's own inner-radius clip, when its corners are rounded.
+    pub inner: Option<PaintShape>,
+    /// Whether the frame is clipped to `content` (`object-fit` overflowing).
+    pub clip_to_content: bool,
+    /// The image-to-device transform the in-scene draw would use
+    /// (`fit_image`), and the image's size in texels.
+    pub image_transform: Affine,
+    pub extents: (u32, u32),
+}
+
+/// What a painter did with a [`SurfaceSplit`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SplitVerdict {
+    /// The painter took the frame out of its scene: the compositor draws it.
+    Split,
+    /// The caller draws the frame in the scene, as it would have anyway.
+    InScene(Refusal),
+}
+
+/// Why a surface stays in the scene (#1865, *Fallback to in-scene*).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// This painter, or this frame, does not split (software, embed, or a
+    /// frame the runtime did not open for slicing).
+    Unsupported,
+    /// A group effect is open around the surface: opacity below 1, a blend
+    /// other than normal, a mask or another isolated layer (D3a).
+    GroupEffect,
+    /// The element's or the image's transform rotates or skews (D4a).
+    Transform,
+    /// Its region overlaps an earlier split surface's (D7a).
+    Overlap,
+}
+
 // ── The Painter trait ───────────────────────────────────────────────────────
 
 /// Abstract 2D rendering backend.
@@ -369,6 +416,16 @@ pub trait Painter {
 
     /// Pop the most recent clip or opacity layer.
     fn pop_layer(&mut self);
+
+    /// Offer a GPU surface's frame for the split-layer path (#1865): on
+    /// [`SplitVerdict::Split`] the painter has taken the frame and routes
+    /// everything painted after it by its place against the surface's region;
+    /// the caller then draws nothing for the frame. The default refuses, and
+    /// the caller draws the frame in the scene.
+    fn split_surface(&mut self, split: &SurfaceSplit) -> SplitVerdict {
+        let _ = split;
+        SplitVerdict::InScene(Refusal::Unsupported)
+    }
 
     /// Append all drawing operations from another painter of the same type.
     ///

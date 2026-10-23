@@ -5,6 +5,8 @@ use peniko::{Blob, Brush, Fill, FontData, ImageAlphaType, ImageData, ImageFormat
 use vello::Scene;
 
 use super::painter::{BlendMode, PaintGlyph, PaintImage, PaintShape, Painter};
+use super::slicing::{Open, Slicing, SurfaceSlice, pre};
+use peniko::kurbo::Rect;
 
 /// GPU rendering backend that wraps a [`vello::Scene`].
 ///
@@ -12,6 +14,8 @@ use super::painter::{BlendMode, PaintGlyph, PaintImage, PaintShape, Painter};
 /// to the Vello rendering pipeline for GPU execution.
 pub struct VelloPainter {
     scene: Scene,
+    /// Open on a frame the runtime paints for the split-layer path (#1865).
+    slicing: Option<Slicing>,
 }
 
 impl VelloPainter {
@@ -19,6 +23,43 @@ impl VelloPainter {
     pub fn new() -> Self {
         Self {
             scene: Scene::new(),
+            slicing: None,
+        }
+    }
+
+    /// Open this frame for the split-layer path (#1865): GPU surfaces offered
+    /// through [`Painter::split_surface`] may leave the scene. `window` is the
+    /// render target in device pixels. Call after [`Painter::reset`], before
+    /// painting; collect with [`Self::take_slices`].
+    pub fn begin_slicing(&mut self, window: Rect) {
+        self.slicing = Some(Slicing::new(window));
+    }
+
+    /// The surfaces this frame took out of the scene, in paint order, and the
+    /// end of slicing for the frame. Empty when the frame was not opened.
+    pub fn take_slices(&mut self) -> Vec<SurfaceSlice> {
+        match self.slicing.take() {
+            Some(slicing) => slicing.finish(&mut self.scene),
+            None => Vec::new(),
+        }
+    }
+
+    /// Paint `op` where it belongs: straight into the scene when the frame
+    /// has no split surface, else routed by its device `bounds`.
+    fn draw(&mut self, bounds: impl FnOnce() -> Option<Rect>, op: &dyn Fn(&mut Scene, Affine)) {
+        match &mut self.slicing {
+            Some(slicing) if !slicing.slices.is_empty() => {
+                slicing.draw(&mut self.scene, bounds(), op)
+            }
+            _ => op(&mut self.scene, Affine::IDENTITY),
+        }
+    }
+
+    /// Record and push `entry` on a sliced frame (the callers push straight
+    /// into the scene otherwise, with no copy of the shape).
+    fn push(&mut self, entry: Open) {
+        if let Some(slicing) = &mut self.slicing {
+            slicing.push(&mut self.scene, entry);
         }
     }
 
@@ -55,7 +96,7 @@ impl Default for VelloPainter {
 /// appended under a scale would not, and none is.
 ///
 /// A degenerate `transform` (which draws nothing) keeps `brush`.
-fn centre_sampling(transform: Affine, brush: Affine) -> Affine {
+pub(crate) fn centre_sampling(transform: Affine, brush: Affine) -> Affine {
     let det = transform.determinant();
     if !det.is_finite() || det == 0.0 {
         return brush;
@@ -118,9 +159,39 @@ macro_rules! dispatch_push_layer {
     };
 }
 
+/// Push `shape` as a clip into `scene`.
+pub(crate) fn push_clip_into(scene: &mut Scene, fill: Fill, transform: Affine, shape: &PaintShape) {
+    dispatch_clip!(scene, fill, transform, shape);
+}
+
+/// Push a `blend` layer at `opacity` into `scene`.
+pub(crate) fn push_layer_into(
+    scene: &mut Scene,
+    blend: BlendMode,
+    opacity: f32,
+    transform: Affine,
+    bounds: &PaintShape,
+) {
+    let mix = match blend {
+        BlendMode::Normal => peniko::BlendMode::from(peniko::Mix::Normal),
+        BlendMode::Saturation => peniko::BlendMode::from(peniko::Mix::Saturation),
+        BlendMode::Plus => peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::Plus),
+        BlendMode::DestinationIn => {
+            peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::DestIn)
+        }
+    };
+    dispatch_push_layer!(scene, Fill::NonZero, mix, opacity, transform, bounds);
+}
+
+/// The device bounds of `shape` under `transform`.
+fn shape_bounds(transform: Affine, shape: &PaintShape) -> Option<Rect> {
+    Some(transform.transform_rect_bbox(shape.bounding_box()))
+}
+
 impl Painter for VelloPainter {
     fn reset(&mut self) {
         self.scene.reset();
+        self.slicing = None;
     }
 
     fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {
@@ -130,7 +201,9 @@ impl Painter for VelloPainter {
         // gradient fell between two corners and was not drawn (#1798).
         let bt = matches!(brush, Brush::Gradient(_))
             .then(|| centre_sampling(transform, Affine::IDENTITY));
-        dispatch_fill!(self.scene, fill, transform, brush, bt, shape);
+        self.draw(|| shape_bounds(transform, shape), &|scene, at| {
+            dispatch_fill!(scene, fill, pre(at, transform), brush, bt, shape)
+        });
     }
 
     fn stroke(
@@ -140,7 +213,13 @@ impl Painter for VelloPainter {
         brush: &Brush,
         shape: &PaintShape,
     ) {
-        dispatch_stroke!(self.scene, stroke, transform, brush, shape);
+        // Half the width each side, under the transform's largest stretch.
+        let [a, b, c, d, _, _] = transform.as_coeffs();
+        let grow = stroke.width * (a.abs() + b.abs() + c.abs() + d.abs()) + 1.0;
+        self.draw(
+            || shape_bounds(transform, shape).map(|r| r.inflate(grow, grow)),
+            &|scene, at| dispatch_stroke!(scene, stroke, pre(at, transform), brush, shape),
+        );
     }
 
     fn draw_glyphs(
@@ -154,22 +233,41 @@ impl Painter for VelloPainter {
         normalized_coords: &[i16],
         glyphs: &[PaintGlyph],
     ) {
-        self.scene
-            .draw_glyphs(font)
-            .font_size(font_size)
-            .transform(transform)
-            .glyph_transform(glyph_transform)
-            .brush(brush)
-            .hint(hint)
-            .normalized_coords(normalized_coords)
-            .draw(
-                Fill::NonZero,
-                glyphs.iter().map(|g| vello::Glyph {
-                    id: g.id,
-                    x: g.x,
-                    y: g.y,
-                }),
+        // The run's bounds: its origins, grown by two ems for the glyphs'
+        // extent under any glyph transform (synthetic skew), then mapped.
+        let bounds = || {
+            let mut it = glyphs.iter();
+            let first = it.next()?;
+            let mut r = Rect::new(
+                first.x as f64,
+                first.y as f64,
+                first.x as f64,
+                first.y as f64,
             );
+            for g in it {
+                r = r.union_pt((g.x as f64, g.y as f64));
+            }
+            let em = 2.0 * font_size as f64;
+            Some(transform.transform_rect_bbox(r.inflate(em, em)))
+        };
+        self.draw(bounds, &|scene, at| {
+            scene
+                .draw_glyphs(font)
+                .font_size(font_size)
+                .transform(pre(at, transform))
+                .glyph_transform(glyph_transform)
+                .brush(brush)
+                .hint(hint)
+                .normalized_coords(normalized_coords)
+                .draw(
+                    Fill::NonZero,
+                    glyphs.iter().map(|g| vello::Glyph {
+                        id: g.id,
+                        x: g.x,
+                        y: g.y,
+                    }),
+                );
+        });
     }
 
     fn draw_image(&mut self, image: &PaintImage<'_>, transform: Affine) {
@@ -185,12 +283,10 @@ impl Painter for VelloPainter {
         // brush transform moves the sample to the pixel's centre (#1027).
         let rect = peniko::kurbo::Rect::new(0.0, 0.0, image.width as f64, image.height as f64);
         let brush = peniko::ImageBrush::new(image_data);
-        self.scene.fill(
-            Fill::NonZero,
-            transform,
-            &brush,
-            Some(centre_sampling(transform, Affine::IDENTITY)),
-            &rect,
+        let bt = Some(centre_sampling(transform, Affine::IDENTITY));
+        self.draw(
+            || Some(transform.transform_rect_bbox(rect)),
+            &|scene, at| scene.fill(Fill::NonZero, pre(at, transform), &brush, bt, &rect),
         );
     }
 
@@ -199,12 +295,10 @@ impl Painter for VelloPainter {
         // centre (#1027). The pixels come from the registered texture.
         let rect = peniko::kurbo::Rect::new(0.0, 0.0, image.width as f64, image.height as f64);
         let brush = peniko::ImageBrush::new(image.clone());
-        self.scene.fill(
-            Fill::NonZero,
-            transform,
-            &brush,
-            Some(centre_sampling(transform, Affine::IDENTITY)),
-            &rect,
+        let bt = Some(centre_sampling(transform, Affine::IDENTITY));
+        self.draw(
+            || Some(transform.transform_rect_bbox(rect)),
+            &|scene, at| scene.fill(Fill::NonZero, pre(at, transform), &brush, bt, &rect),
         );
     }
 
@@ -261,19 +355,27 @@ impl Painter for VelloPainter {
             .with_quality(quality)
             .into();
         let brush_transform = Some(centre_sampling(transform, tile_transform));
-        match shape {
-            PaintShape::Rect(r) => self.scene.fill(fill, transform, &brush, brush_transform, r),
-            PaintShape::RoundedRect(r) => {
-                self.scene.fill(fill, transform, &brush, brush_transform, r)
-            }
-            PaintShape::BezPath(p) => self.scene.fill(fill, transform, &brush, brush_transform, p),
-            PaintShape::Circle(c) => self.scene.fill(fill, transform, &brush, brush_transform, c),
-            PaintShape::Line(l) => self.scene.fill(fill, transform, &brush, brush_transform, l),
-        }
+        self.draw(|| shape_bounds(transform, shape), &|scene, at| {
+            dispatch_fill!(
+                scene,
+                fill,
+                pre(at, transform),
+                &brush,
+                brush_transform,
+                shape
+            )
+        });
     }
 
     fn push_clip(&mut self, fill: Fill, transform: Affine, shape: &PaintShape) {
-        dispatch_clip!(self.scene, fill, transform, shape);
+        if self.slicing.is_none() {
+            return push_clip_into(&mut self.scene, fill, transform, shape);
+        }
+        self.push(Open::Clip {
+            fill,
+            transform,
+            shape: shape.clone(),
+        });
     }
 
     fn push_layer(
@@ -283,23 +385,57 @@ impl Painter for VelloPainter {
         transform: Affine,
         bounds: &PaintShape,
     ) {
-        let mix = match blend {
-            BlendMode::Normal => peniko::BlendMode::from(peniko::Mix::Normal),
-            BlendMode::Saturation => peniko::BlendMode::from(peniko::Mix::Saturation),
-            BlendMode::Plus => peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::Plus),
-            BlendMode::DestinationIn => {
-                peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::DestIn)
-            }
-        };
-        dispatch_push_layer!(self.scene, Fill::NonZero, mix, opacity, transform, bounds);
+        if self.slicing.is_none() {
+            return push_layer_into(&mut self.scene, blend, opacity, transform, bounds);
+        }
+        self.push(Open::Layer {
+            blend,
+            opacity,
+            transform,
+            bounds: bounds.clone(),
+        });
+    }
+
+    fn push_isolated_layer(&mut self, opacity: f32, transform: Affine, bounds: &PaintShape) {
+        if self.slicing.is_none() {
+            return push_layer_into(
+                &mut self.scene,
+                BlendMode::Normal,
+                opacity,
+                transform,
+                bounds,
+            );
+        }
+        self.push(Open::Isolated {
+            opacity,
+            transform,
+            bounds: bounds.clone(),
+        });
     }
 
     fn pop_layer(&mut self) {
-        self.scene.pop_layer();
+        match &mut self.slicing {
+            Some(slicing) => slicing.pop(&mut self.scene),
+            None => self.scene.pop_layer(),
+        }
+    }
+
+    fn split_surface(
+        &mut self,
+        split: &super::painter::SurfaceSplit,
+    ) -> super::painter::SplitVerdict {
+        match &mut self.slicing {
+            Some(slicing) => slicing.split(split),
+            None => super::painter::SplitVerdict::InScene(super::painter::Refusal::Unsupported),
+        }
     }
 
     fn append(&mut self, other: &Self) {
-        self.scene.append(&other.scene, None);
+        // Bounds unknown: routed as across every region.
+        let scene = &other.scene;
+        self.draw(|| None, &|s, at| {
+            s.append(scene, (at != Affine::IDENTITY).then_some(at))
+        });
     }
 }
 
