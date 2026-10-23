@@ -900,3 +900,98 @@ fn typing_into_a_line_a_peer_empties_and_joins_the_next_line_into_is_lost() {
     exchange(&mut a, &mut b);
     assert_eq!(doc_text(&a.state.doc), "ab|cd");
 }
+
+// --- #1856 / #1249: undo after remote changes ------------------------------------------
+
+/// Replay a shrunk history and return the converged document of peer 0, failing on a
+/// panic (an undo leaving `model ≢ project(model)`) or a defect.
+fn replay_converged(peers: usize, ops: &[Op]) -> Node {
+    let mut run = Run::new(peers);
+    for op in ops {
+        run.step(op);
+    }
+    run.finish();
+    assert_eq!(run.verdict(), None);
+    run.peers[0].state.doc.clone()
+}
+
+fn has_mark(n: &Node) -> bool {
+    !n.marks().is_empty() || (0..n.child_count()).any(|i| has_mark(n.child(i)))
+}
+
+/// #1856, seed 322 shrunk: B bolds `ぃ一` after A's first delete and before A's
+/// second, then undoes. The undo used to remove the bold at its old positions, one
+/// char to the right (`一い`), which unbolded `い` (never bold) into a text node of its
+/// own next to `一`: `model ≢ project(model)`. Mapped through A's delete, it unbolds
+/// exactly `ぃ一`.
+#[test]
+fn undo_of_a_bold_after_a_peers_delete_before_it_1856_seed_322() {
+    let doc = replay_converged(
+        2,
+        &[
+            Op::Type(1, 6, '一'),
+            Op::Delete(0, 2),
+            Op::Send(0),
+            Op::Deliver(1),
+            Op::Delete(0, 1),
+            Op::Send(0),
+            Op::Bold(1, 4, 6),
+            Op::Deliver(1),
+            Op::Undo(1),
+        ],
+    );
+    assert_eq!(doc_text(&doc), "|ぃ一い");
+    assert!(!has_mark(&doc), "the undo took the bold off: {doc:?}");
+}
+
+/// #1856, seed 934 shrunk: A deletes across a block boundary and bolds, B inserts a
+/// hard break before A's bold, A undoes the bold. It used to unbold at the old
+/// positions and leave `丅`, `ぃ` as two text nodes.
+#[test]
+fn undo_of_a_bold_after_a_peers_break_before_it_1856_seed_934() {
+    let doc = replay_converged(
+        2,
+        &[
+            Op::Type(1, 5, '丅'),
+            Op::Send(1),
+            Op::Image(0, 1),
+            Op::Type(0, 1, '丆'),
+            Op::Send(0),
+            Op::Deliver(1),
+            Op::Deliver(0),
+            Op::DeleteSel(0, 7, 2),
+            Op::Bold(0, 3, 5),
+            Op::Break(1, 7),
+            Op::Send(1),
+            Op::Deliver(0),
+            Op::Undo(0),
+        ],
+    );
+    assert!(!has_mark(&doc), "the undo took the bold off: {doc:?}");
+}
+
+/// #1856, seed 902 shrunk: the undo used to leave a bold char inside a code block.
+#[test]
+fn undo_after_a_peers_bold_and_retype_leaves_no_mark_in_a_code_block_1856_seed_902() {
+    replay_converged(
+        2,
+        &[
+            Op::Code(0, 2, true),
+            Op::Type(0, 1, '一'),
+            Op::Type(1, 2, '丂'),
+            Op::Type(0, 1, '七'),
+            Op::Send(0),
+            Op::Type(1, 3, '丄'),
+            Op::Deliver(1),
+            Op::Image(1, 10),
+            Op::Type(1, 9, '丅'),
+            Op::Code(1, 7, false),
+            Op::Send(1),
+            Op::Deliver(0),
+            Op::Bold(0, 13, 6),
+            Op::Send(0),
+            Op::Deliver(1),
+            Op::Undo(1),
+        ],
+    );
+}
