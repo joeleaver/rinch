@@ -580,11 +580,29 @@ fn remove_row_on(
 /// hand keeps the exact one-at-a-time result.
 const FALLBACK_SLOT_BUDGET: usize = 1 << 22;
 
+thread_local! {
+    /// A test's replacement for [`FALLBACK_SLOT_BUDGET`] on this thread.
+    static FALLBACK_SLOT_BUDGET_OVERRIDE: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Replace [`FALLBACK_SLOT_BUDGET`] on this thread (`None` restores it), so
+/// a test can force the one-pass removal onto small tables whose cells
+/// overlap — the path otherwise reached only on tables of millions of
+/// slots. Not for apps.
+#[doc(hidden)]
+pub fn set_fallback_slot_budget_for_tests(budget: Option<usize>) {
+    FALLBACK_SLOT_BUDGET_OVERRIDE.with(|b| b.set(budget));
+}
+
 /// Whether removing `lines` rows or columns one at a time, recomputing `map`
 /// after each, stays within [`FALLBACK_SLOT_BUDGET`].
 fn one_at_a_time_fits(map: &TableMap, lines: usize) -> bool {
+    let budget = FALLBACK_SLOT_BUDGET_OVERRIDE
+        .with(std::cell::Cell::get)
+        .unwrap_or(FALLBACK_SLOT_BUDGET);
     // The last line needs no recompute after it.
-    lines.saturating_sub(1).saturating_mul(map.map().len()) <= FALLBACK_SLOT_BUDGET
+    lines.saturating_sub(1).saturating_mul(map.map().len()) <= budget
 }
 
 /// Recompute the table rectangle (map + table node) from the transaction's current

@@ -190,7 +190,11 @@ mod reference {
         let table_cells: usize = (0..info.table.child_count())
             .map(|r| info.table.child(r).child_count())
             .sum();
-        let hole_cap = if holes <= table_cells.max(1000) { 1 } else { 1000 };
+        let hole_cap = if holes <= table_cells.max(1000) {
+            1
+        } else {
+            1000
+        };
         let mut spans: Vec<usize> = Vec::new();
         let mut col = 0;
         while col < width {
