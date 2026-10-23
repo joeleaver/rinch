@@ -387,27 +387,150 @@ fn install<T: 'static>(
 /// A synchronous `Err` is returned only when the request is rejected outright
 /// (a non-`ws`/`wss` URL, or a browser that refuses to construct the socket).
 ///
+/// To offer subprotocols (or, on native, send headers) build a [`WsRequest`]
+/// instead; `connect(url)` is `WsRequest::new(url).connect()`.
+///
 /// Must be called on the main (UI) thread; see the [module docs](crate).
 pub fn connect(url: impl Into<String>) -> Result<WsHandle, WsError> {
-    let url = url.into();
-    if !(url.starts_with("ws://") || url.starts_with("wss://")) {
-        return Err(WsError::InvalidUrl(format!(
-            "URL must be absolute and start with ws:// or wss:// (got {url:?})"
-        )));
-    }
+    WsRequest::new(url).connect()
+}
 
-    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    HANDLERS.with(|h| h.borrow_mut().insert(id, Handlers::default()));
+/// A WebSocket connection request: the URL, the subprotocols to offer and, on
+/// native, extra handshake headers (issue #1773).
+///
+/// ```ignore
+/// let mut feed = rinch_ws::WsRequest::new("wss://example.com/feed")
+///     .protocol("feed.v2")
+///     .protocol(format!("token.{token}"))
+///     .connect()?
+///     .into_stream();
+/// if let Some(WsEvent::Open) = feed.next().await {
+///     assert_eq!(feed.protocol(), "feed.v2");
+/// }
+/// ```
+///
+/// With callbacks, `on_open` reads it through the handle, held weakly so the
+/// callback does not keep the connection alive:
+///
+/// ```ignore
+/// let ws = Rc::new(WsRequest::new(url).protocol("feed.v2").connect()?);
+/// let weak = Rc::downgrade(&ws);
+/// ws.on_open(move || if let Some(ws) = weak.upgrade() { chosen.set(ws.protocol()) });
+/// ```
+///
+/// The subprotocols are sent in the `Sec-WebSocket-Protocol` header in the order
+/// given; the server picks at most one, which [`WsHandle::protocol`] reports
+/// once the connection is open.
+#[derive(Debug, Clone)]
+pub struct WsRequest {
+    url: String,
+    protocols: Vec<String>,
+    #[cfg(not(target_arch = "wasm32"))]
+    headers: Vec<(String, String)>,
+}
 
-    match backend::connect(&url, id) {
-        Ok(backend) => Ok(WsHandle { id, backend }),
-        Err(e) => {
-            HANDLERS.with(|h| {
-                h.borrow_mut().remove(&id);
-            });
-            Err(e)
+impl WsRequest {
+    /// A request for `url` (an absolute `ws://` or `wss://` URL), offering no
+    /// subprotocol.
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            protocols: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            headers: Vec::new(),
         }
     }
+
+    /// Offer one more subprotocol, after those already offered (the order is
+    /// the order of preference the server sees).
+    ///
+    /// Each must be a non-empty HTTP token (no spaces, commas or other
+    /// separators) and appear once; otherwise [`connect`](Self::connect) fails
+    /// with [`WsError::InvalidUrl`], on both targets, as a browser's `WebSocket`
+    /// constructor does.
+    pub fn protocol(mut self, protocol: impl Into<String>) -> Self {
+        self.protocols.push(protocol.into());
+        self
+    }
+
+    /// Offer several subprotocols, after those already offered.
+    pub fn protocols<I, S>(mut self, protocols: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.protocols.extend(protocols.into_iter().map(Into::into));
+        self
+    }
+
+    /// Add a header to the opening handshake. **Native only**: a browser's
+    /// `WebSocket` cannot send headers, so this method does not exist on
+    /// `wasm32` (authenticate with a subprotocol, a cookie or the URL there).
+    ///
+    /// An invalid header name or value makes [`connect`](Self::connect) fail
+    /// with [`WsError::InvalidUrl`]. A header the handshake itself sets
+    /// (`Sec-WebSocket-Key`, `Upgrade`, …) is replaced; use
+    /// [`protocol`](Self::protocol) rather than a `Sec-WebSocket-Protocol`
+    /// header.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.push((name.into(), value.into()));
+        self
+    }
+
+    /// Open the connection; see [`connect`](crate::connect) for how it is
+    /// reported. Fails synchronously for a URL that is not `ws://`/`wss://`, an
+    /// invalid or repeated subprotocol, an invalid header, or a browser that
+    /// refuses to construct the socket.
+    ///
+    /// Must be called on the main (UI) thread; see the [module docs](crate).
+    pub fn connect(self) -> Result<WsHandle, WsError> {
+        if !(self.url.starts_with("ws://") || self.url.starts_with("wss://")) {
+            return Err(WsError::InvalidUrl(format!(
+                "URL must be absolute and start with ws:// or wss:// (got {:?})",
+                self.url
+            )));
+        }
+        validate_protocols(&self.protocols)?;
+
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        HANDLERS.with(|h| h.borrow_mut().insert(id, Handlers::default()));
+
+        match backend::connect(&self, id) {
+            Ok(backend) => Ok(WsHandle { id, backend }),
+            Err(e) => {
+                HANDLERS.with(|h| {
+                    h.borrow_mut().remove(&id);
+                });
+                Err(e)
+            }
+        }
+    }
+}
+
+/// The browser's rule for the subprotocol list (the WHATWG `WebSocket`
+/// constructor's `SyntaxError`), applied on both targets so a request is
+/// refused the same way everywhere: each a non-empty RFC 7230 token, none
+/// repeated (compared exactly).
+fn validate_protocols(protocols: &[String]) -> Result<(), WsError> {
+    for (i, p) in protocols.iter().enumerate() {
+        if p.is_empty() || !p.bytes().all(is_tchar) {
+            return Err(WsError::InvalidUrl(format!(
+                "subprotocol {p:?} is not an HTTP token"
+            )));
+        }
+        if protocols[..i].contains(p) {
+            return Err(WsError::InvalidUrl(format!(
+                "subprotocol {p:?} is offered twice"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// An RFC 7230 `tchar`.
+fn is_tchar(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)
 }
 
 /// A handle to an open (or opening) WebSocket connection.
@@ -471,6 +594,15 @@ impl WsHandle {
     /// once the close completes. Dropping the handle does the same.
     pub fn close(&self) {
         self.backend.close();
+    }
+
+    /// The subprotocol the server chose from those the [`WsRequest`] offered,
+    /// or `""` when none was offered or chosen, or before the connection is
+    /// open — what a browser's `WebSocket.protocol` says. It is set before the
+    /// open is delivered, so `on_open` (and a stream's [`WsEvent::Open`]) can
+    /// read it.
+    pub fn protocol(&self) -> String {
+        self.backend.protocol()
     }
 }
 
@@ -589,6 +721,12 @@ impl WsStream {
     /// [`WsEvent::Close`] and ends.
     pub fn close(&self) {
         self.handle.close();
+    }
+
+    /// The subprotocol the server chose; see [`WsHandle::protocol`]. Set by the
+    /// time [`next`](Self::next) yields [`WsEvent::Open`].
+    pub fn protocol(&self) -> String {
+        self.handle.protocol()
     }
 }
 

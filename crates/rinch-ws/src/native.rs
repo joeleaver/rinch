@@ -21,14 +21,18 @@
 use std::io;
 use std::net::TcpStream;
 use std::sync::mpsc::{self, Sender, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use tungstenite::client::IntoClientRequest;
+use tungstenite::handshake::client::Request;
+use tungstenite::http::{HeaderName, HeaderValue};
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Error as TungError, Message, WebSocket};
 
 use rinch_core::run_on_main_thread;
 
-use crate::{WsClose, WsError, WsEvent, WsMessage};
+use crate::{WsClose, WsError, WsEvent, WsMessage, WsRequest};
 
 /// How long a read blocks before returning to drain the outgoing queue. Also the
 /// worst-case latency a queued `send` waits before being written.
@@ -63,6 +67,9 @@ enum Cmd {
 /// The main-thread half of a native connection: a sender into the worker thread.
 pub(crate) struct Backend {
     cmd_tx: Sender<Cmd>,
+    /// The subprotocol the server chose, written by the worker before it
+    /// emits the open (so `on_open` can read it); `""` until then.
+    protocol: Arc<Mutex<String>>,
 }
 
 impl Backend {
@@ -77,14 +84,50 @@ impl Backend {
     pub(crate) fn close(&self) {
         let _ = self.cmd_tx.send(Cmd::Close);
     }
+
+    pub(crate) fn protocol(&self) -> String {
+        self.protocol.lock().map(|p| p.clone()).unwrap_or_default()
+    }
 }
 
-pub(crate) fn connect(url: &str, id: u64) -> Result<Backend, WsError> {
+pub(crate) fn connect(request: &WsRequest, id: u64) -> Result<Backend, WsError> {
+    // Built here, on the calling thread, so an invalid header is refused
+    // synchronously, as an invalid subprotocol is.
+    let request = client_request(request)?;
     let (cmd_tx, cmd_rx) = mpsc::channel();
-    let url = url.to_string();
+    let protocol = Arc::new(Mutex::new(String::new()));
+    let chosen = protocol.clone();
     // The blocking connect + read loop must not run on the main thread.
-    std::thread::spawn(move || run(url, id, cmd_rx));
-    Ok(Backend { cmd_tx })
+    std::thread::spawn(move || run(request, id, cmd_rx, chosen));
+    Ok(Backend { cmd_tx, protocol })
+}
+
+/// The tungstenite handshake request for `request`: its URL, its headers, and
+/// the offered subprotocols in one `Sec-WebSocket-Protocol` header.
+fn client_request(request: &WsRequest) -> Result<Request, WsError> {
+    let mut req = request
+        .url
+        .as_str()
+        .into_client_request()
+        .map_err(|e| WsError::InvalidUrl(e.to_string()))?;
+    let headers = req.headers_mut();
+    for (name, value) in &request.headers {
+        let name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|e| WsError::InvalidUrl(format!("header name {name:?}: {e}")))?;
+        let value = HeaderValue::from_str(value)
+            .map_err(|e| WsError::InvalidUrl(format!("header {name} value {value:?}: {e}")))?;
+        headers.insert(name, value);
+    }
+    if !request.protocols.is_empty() {
+        // Joined with a bare ",": tungstenite reads the offered list back by
+        // splitting on "," without trimming, so ", " would make it refuse the
+        // server's (correct) answer for every protocol but the first.
+        let joined = request.protocols.join(",");
+        let value = HeaderValue::from_str(&joined)
+            .map_err(|e| WsError::InvalidUrl(format!("subprotocols {joined:?}: {e}")))?;
+        headers.insert("Sec-WebSocket-Protocol", value);
+    }
+    Ok(req)
 }
 
 /// Emit an event to the main-thread registry for connection `id`.
@@ -92,14 +135,24 @@ fn emit(id: u64, event: WsEvent) {
     run_on_main_thread(move || crate::dispatch(id, event));
 }
 
-fn run(url: String, id: u64, cmd_rx: mpsc::Receiver<Cmd>) {
-    let (mut socket, _resp) = match tungstenite::connect(&url) {
+fn run(request: Request, id: u64, cmd_rx: mpsc::Receiver<Cmd>, chosen: Arc<Mutex<String>>) {
+    // tungstenite has already refused a chosen subprotocol that was not offered
+    // — and, unlike a browser, offered subprotocols the server chose none of.
+    let (mut socket, resp) = match tungstenite::connect(request) {
         Ok(ok) => ok,
         Err(e) => {
             emit(id, WsEvent::Error(WsError::Connect(e.to_string())));
             return;
         }
     };
+    if let Some(p) = resp
+        .headers()
+        .get("Sec-WebSocket-Protocol")
+        .and_then(|v| v.to_str().ok())
+        && let Ok(mut slot) = chosen.lock()
+    {
+        *slot = p.to_string();
+    }
 
     // Bound how long `read()` blocks so the same thread can also service sends.
     set_read_timeout(&mut socket, Some(POLL_INTERVAL));

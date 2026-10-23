@@ -361,6 +361,19 @@ registered `unowned`: the future's holder decides the lifetime). Pins:
 `rinch-http/tests/fetch_async_1767.rs`, `rinch-ws/tests/stream_1767.rs`,
 `rinch-web/tests/spawn_local_1767.rs` (Chrome 155).
 
+`rinch_ws::WsRequest` (#1773) is what `connect(url)` builds: the subprotocols
+are validated by the browser's rule in `lib.rs` (`validate_protocols`) on both
+targets, then handed to `WebSocket::new_with_str_sequence` on the web and sent
+as one `Sec-WebSocket-Protocol` header joined with a bare `,` on native
+(tungstenite reads its own request back by splitting on `,` untrimmed, so `, `
+would make it refuse the server's answer). The native worker writes the chosen
+protocol into the `Backend`'s `Arc<Mutex<String>>` before it emits `Open`; the
+web backend reads `WebSocket.protocol`. Headers exist on native only (a
+`#[cfg]`'d method). tungstenite fails a handshake whose server chose none of
+the offered protocols, where a browser opens; pinned in
+`rinch-ws/tests/subprotocols_1773.rs`. Web pins: `web_subprotocols_1773.rs`,
+whose live half runs only when built with `RINCH_WS_TEST_URL` (CI sets none).
+
 ## Background workers (`rinch::worker`, #1772)
 
 Feature `worker` (off by default). `crates/rinch/src/worker/`: `mod.rs` is the

@@ -27,7 +27,8 @@ enum Choose {
     Nothing,
 }
 
-/// A server for one connection. It answers the upgrade per `choose`, then
+/// A server for one connection.
+#[allow(clippy::result_large_err)] // tungstenite's handshake callback type It answers the upgrade per `choose`, then
 /// sends one text frame `protocol=<offered header>;auth=<Authorization>` and
 /// echoes text frames after that.
 fn spawn_reporting_server(choose: Choose) -> String {
@@ -49,11 +50,11 @@ fn spawn_reporting_server(choose: Choose) -> String {
             };
             let offered = get("Sec-WebSocket-Protocol");
             *s.borrow_mut() = (offered.clone(), get("Authorization"));
-            if let (Choose::Last, Some(last)) = (choose, offered.split(',').next_back()) {
-                if !last.is_empty() {
-                    resp.headers_mut()
-                        .insert("Sec-WebSocket-Protocol", last.trim().parse().unwrap());
-                }
+            if let (Choose::Last, Some(last)) = (choose, offered.split(',').next_back())
+                && !last.is_empty()
+            {
+                resp.headers_mut()
+                    .insert("Sec-WebSocket-Protocol", last.trim().parse().unwrap());
             }
             Ok(resp)
         };
@@ -110,8 +111,7 @@ fn open_and_report(request: WsRequest) -> (String, String) {
     );
     // Still readable after the open.
     assert_eq!(Some(ws.protocol()), *at_open.borrow());
-    let out = (at_open.take().unwrap(), report.take().unwrap());
-    out
+    (at_open.take().unwrap(), report.take().unwrap())
 }
 
 #[test]

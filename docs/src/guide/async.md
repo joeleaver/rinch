@@ -45,9 +45,46 @@ fn projects() -> NodeHandle {
   `Error`) and `None` once the stream has ended — after the close, or after an
   error that came before the connection opened. `send_text`, `send_bytes` and
   `close` are on the stream too. The stream takes the handle's four callback
-  slots, and dropping it closes the connection.
+  slots, and dropping it closes the connection. To offer subprotocols, start
+  from `WsRequest` instead of `connect` (below).
 
 `spawn_local`, `sleep` and `TaskHandle` are in the prelude and in `rinch::task`.
+
+### WebSocket subprotocols and headers
+
+`connect(url)` offers no subprotocol. To offer some — a server that
+authenticates through `Sec-WebSocket-Protocol`, say — build a `WsRequest`:
+
+```rust
+use rinch_ws::{WsEvent, WsRequest};
+
+let mut feed = WsRequest::new("wss://example.com/feed")
+    .protocol("feed.v2")                // in order of preference
+    .protocol(format!("token.{token}"))
+    .connect()?
+    .into_stream();
+if let Some(WsEvent::Open) = feed.next().await {
+    // The one the server chose, or "" when it chose none.
+    status.set(feed.protocol());
+}
+```
+
+`WsHandle::protocol()` / `WsStream::protocol()` answer what a browser's
+`WebSocket.protocol` does: `""` before the open, then the server's choice; it
+is set before the open is delivered, so `on_open` can read it (hold the handle
+in an `Rc` and give the callback a `Weak`). Each subprotocol must be a non-empty
+HTTP token offered once, or `connect()` fails with `WsError::InvalidUrl` on both
+targets, as the browser's constructor does.
+
+`WsRequest::header(name, value)` adds a handshake header, **on native only**: a
+browser `WebSocket` cannot send headers, so the method does not exist on
+`wasm32` and code that uses it needs a `#[cfg(not(target_arch = "wasm32"))]`.
+Use a subprotocol, a cookie or the URL for what must work on the web.
+
+One difference remains: on native, offering subprotocols to a server that
+chooses none of them fails the connect (`on_error` with `WsError::Connect`,
+from tungstenite's handshake check), where a browser opens the connection with
+`protocol() == ""`.
 
 ## Lifetime
 
