@@ -7051,6 +7051,36 @@ mod layout_notification_tests {
         assert_eq!((b.width, b.height), (640.0, 480.0));
     }
 
+    /// #1781: asking for the same node's bounds signal again from one owner
+    /// hands back the same signal, which the layout still refreshes; another
+    /// owner's call gets its own.
+    #[test]
+    fn repeated_bounds_signal_calls_share_one_signal() {
+        use rinch_core::reactive::{ElementBounds, Scope, Signal};
+
+        type Three = (Signal<ElementBounds>, Signal<ElementBounds>, Signal<ElementBounds>);
+        let captured: Rc<Cell<Option<Three>>> = Rc::new(Cell::new(None));
+        let captured_in = captured.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", "width: 100%; height: 100%");
+            let a = root.bounds_signal();
+            let b = root.bounds_signal();
+            let other = Scope::new();
+            let c = other.run(|| root.bounds_signal());
+            std::mem::forget(other);
+            captured_in.set(Some((a, b, c)));
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        let (a, b, c) = captured.get().expect("captured at mount");
+        assert_eq!(a.identity(), b.identity(), "one owner, one signal");
+        assert_ne!(a.identity(), c.identity(), "another owner gets its own");
+        app.resize_layout(420, 310);
+        assert_eq!((a.get().width, a.get().height), (420.0, 310.0));
+        assert_eq!((c.get().width, c.get().height), (420.0, 310.0));
+    }
+
     /// #144: a layout-time scroll clamp must fire the container's
     /// `data-onscroll` handler — exactly once, with the clamped offset —
     /// through the deferred queue drained after layout.
