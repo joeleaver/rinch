@@ -412,6 +412,27 @@ rsx! {
 }
 ```
 
+### In SVG paint
+
+An SVG shape's `fill` and `stroke` take a variable too, as a presentation
+attribute or in its `style` (#1800):
+
+```rust
+rsx! {
+    svg { viewBox: "0 0 16 16", style: "width: 16px; height: 16px",
+        path { d: "M2 8h12", stroke: "var(--rinch-primary-color)" }
+        path { d: "M8 2v12", style: "stroke: var(--rinch-color-dimmed)" }
+    }
+}
+```
+
+A fallback works (`var(--brand, #228be6)`), a variable holding
+`currentColor` paints in the shape's own `color`, and a missing variable with
+no fallback leaves the shape the `<svg>`'s paint, as in a browser. On desktop
+a `fill`/`stroke` written in a **stylesheet** rule (`.logo path { stroke: … }`)
+is not read: rinch's style engine has no such property, so the shape's own
+attribute or `style` is the place for it.
+
 ## CSS Selector Support (desktop)
 
 Desktop styling runs through Stylo, the same cascade engine Servo uses, so
