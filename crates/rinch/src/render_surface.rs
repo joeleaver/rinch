@@ -117,6 +117,47 @@ pub struct TextureSource {
     pub height: u32,
 }
 
+/// One frame of a surface's [GPU render callback](RenderSurfaceHandle::set_gpu_render_callback)
+/// (#1768): the device to draw with and the target to draw this surface's frame into.
+///
+/// On desktop the target is a texture rinch allocates on its own compositor
+/// device at the surface's size and composites as a zero-copy layer under the
+/// UI; draw into it with `queue.submit` before the callback returns. Its colour
+/// values are composited as they are, as premultiplied alpha, so clear an
+/// opaque viewport to an opaque colour; they are sRGB-encoded bytes
+/// (`format` is a non-sRGB format): for linear-light blending create a view of
+/// `texture` with the matching `…Srgb` format, which the texture allows.
+#[cfg(feature = "gpu")]
+#[non_exhaustive]
+pub struct GpuSurfaceFrame<'a> {
+    /// The device the target lives on.
+    pub device: &'a wgpu::Device,
+    /// The device's queue.
+    pub queue: &'a wgpu::Queue,
+    /// The texture behind `target`.
+    pub texture: &'a wgpu::Texture,
+    /// The view to render this frame into.
+    pub target: &'a wgpu::TextureView,
+    /// `target`'s format. Build pipelines for this format.
+    pub format: wgpu::TextureFormat,
+    /// The target's size in physical pixels: `layout_size()`, scaled down
+    /// (aspect kept) when that is past the device's `max_texture_dimension_2d`;
+    /// the compositor scales the layer up into the surface's box.
+    pub size: (u32, u32),
+    /// Changes when the device is new: rebuild every pipeline, buffer and
+    /// texture made on the previous one. Constant on desktop, whose device is
+    /// never replaced (a lost device stays lost, #1788).
+    pub generation: u64,
+}
+
+/// The format of the texture a desktop GPU render callback draws into.
+#[cfg(feature = "gpu")]
+pub const DESKTOP_GPU_FRAME_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+/// A GPU render callback, as stored on the handle.
+#[cfg(feature = "gpu")]
+type GpuRenderCallback = Box<dyn FnMut(&GpuSurfaceFrame<'_>)>;
+
 // ── Surface ID counter ───────────────────────────────────────────────────────
 
 static NEXT_SURFACE_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
@@ -574,6 +615,19 @@ pub struct RenderSurfaceHandle {
     /// A frame asked for with [`request_frame`](RenderSurfaceHandle::request_frame)
     /// (or by a resize of an on-demand surface) and not yet drawn.
     pub(crate) frame_requested: std::rc::Rc<Cell<bool>>,
+    /// The GPU render callback (#1768), set by
+    /// [`set_gpu_render_callback`](RenderSurfaceHandle::set_gpu_render_callback).
+    #[cfg(feature = "gpu")]
+    pub(crate) gpu_render_callback: std::rc::Rc<RefCell<Option<GpuRenderCallback>>>,
+    /// The texture the GPU render callback draws into, the surface's own:
+    /// never the app's `texture_source`, so the two APIs cannot mix up their
+    /// textures (review of #1861).
+    #[cfg(feature = "gpu")]
+    pub(crate) gpu_target: std::rc::Rc<RefCell<Option<GpuTarget>>>,
+    /// The GPU render callback drew since the last
+    /// [`collect_gpu_surface_frames`].
+    #[cfg(feature = "gpu")]
+    pub(crate) gpu_frame_fresh: std::rc::Rc<Cell<bool>>,
     /// Web teardown state — the `ResizeObserver` and canvas event listeners, kept
     /// alive here (not leaked) so they can be disconnected/removed on unmount.
     #[cfg(target_arch = "wasm32")]
@@ -844,6 +898,40 @@ impl RenderSurfaceHandle {
         self.raf_running.get()
     }
 
+    /// Draw this surface with the GPU (#1768): `callback` is handed a
+    /// [`GpuSurfaceFrame`] — a device, its queue and a target at the surface's size —
+    /// each time the surface draws, paced like the
+    /// [render callback](Self::set_render_callback) (`set_continuous`,
+    /// `request_frame`).
+    ///
+    /// Desktop: the target is a texture on rinch's compositor device
+    /// ([`gpu_handle`](crate::shell::desktop::gpu_handle)), reallocated when the
+    /// surface's size changes, and the frame is drawn **in the scene** as the
+    /// surface element's content, like an `<img>`: ancestor backgrounds are
+    /// beneath it, later or higher content covers it, and every clip, rounded
+    /// corner, opacity, transform and scroll offset around it applies. A frame
+    /// is available only while a GPU renderer presents the window
+    /// ([`gpu_frames_available`](Self::gpu_frames_available)): under the
+    /// software renderer, and in an embedded context, the ordinary render
+    /// callback runs instead if one is set — set both to have a fallback.
+    ///
+    /// Replaces any GPU render callback set before.
+    #[cfg(feature = "gpu")]
+    pub fn set_gpu_render_callback(&self, callback: impl FnMut(&GpuSurfaceFrame<'_>) + 'static) {
+        *self.gpu_render_callback.borrow_mut() = Some(Box::new(callback));
+        self.frame_requested.set(true);
+        self.wake_for_frame();
+    }
+
+    /// Whether this surface's [GPU render callback](Self::set_gpu_render_callback)
+    /// can be run: a GPU renderer presents the window and its device is shared.
+    /// Known once the window exists; `false` before, under the software
+    /// renderer and in an embedded context.
+    #[cfg(feature = "gpu")]
+    pub fn gpu_frames_available(&self) -> bool {
+        gpu_frame_device().is_some()
+    }
+
     /// Get a frame scheduled: desktop asks the window for a paint (suppressed
     /// inside the callbacks, which ask afterwards), the web starts the loop.
     fn wake_for_frame(&self) {
@@ -1008,6 +1096,12 @@ fn new_surface_handle(id: usize, viewport_name: String, is_video: bool) -> Rende
         resize_callback: std::rc::Rc::new(RefCell::new(None)),
         continuous: std::rc::Rc::new(Cell::new(None)),
         frame_requested: std::rc::Rc::new(Cell::new(false)),
+        #[cfg(feature = "gpu")]
+        gpu_render_callback: std::rc::Rc::new(RefCell::new(None)),
+        #[cfg(feature = "gpu")]
+        gpu_target: std::rc::Rc::new(RefCell::new(None)),
+        #[cfg(feature = "gpu")]
+        gpu_frame_fresh: std::rc::Rc::new(Cell::new(false)),
         #[cfg(target_arch = "wasm32")]
         web_cleanup: std::rc::Rc::new(RefCell::new(None)),
         #[cfg(target_arch = "wasm32")]
@@ -1286,6 +1380,47 @@ fn is_inline_surface(surface: &RenderSurfaceHandle) -> bool {
     surface.viewport_name.starts_with("__render_surface_")
 }
 
+/// The device a GPU render callback draws with: rinch's compositor device,
+/// while a GPU renderer presents the window (#1768).
+#[cfg(feature = "gpu")]
+fn gpu_frame_device() -> Option<&'static crate::shell::desktop::GpuHandle> {
+    if has_gpu_compositor() {
+        crate::shell::desktop::gpu_handle()
+    } else {
+        None
+    }
+}
+
+/// How a surface's frame reaches the screen this paint (#1768). **The one
+/// decision point** for a `RenderSurface`'s drawing: everything that draws,
+/// sizes or collects a surface asks this, so another way of drawing — a
+/// split-layer fast path, the UI rendered below and above the surface with the
+/// compositor applying clip, radius, opacity and transform — slots in as one
+/// more variant behind the same callbacks, not as a second API.
+#[derive(Clone, Copy)]
+pub(crate) enum SurfaceRoute {
+    /// CPU pixels (the render callback, a `SurfaceWriter`), painted inline.
+    Pixels,
+    /// The GPU render callback's texture, drawn as an image in the scene.
+    #[cfg(feature = "gpu")]
+    GpuImage(&'static crate::shell::desktop::GpuHandle),
+}
+
+/// The route for `surface`. `gpu_images` says whether the host drawing this
+/// paint can draw a registered GPU image (the desktop GPU window can; an
+/// embedded context's host renders the scene with a renderer of its own, which
+/// would panic on one).
+fn surface_route(surface: &RenderSurfaceHandle, gpu_images: bool) -> SurfaceRoute {
+    #[cfg(feature = "gpu")]
+    if gpu_images && surface.gpu_render_callback.borrow().is_some() {
+        if let Some(device) = gpu_frame_device() {
+            return SurfaceRoute::GpuImage(device);
+        }
+    }
+    let _ = (surface, gpu_images);
+    SurfaceRoute::Pixels
+}
+
 /// Whether a GPU compositor presents the window: never on a desktop build
 /// without `gpu`, and on a `gpu` build whenever the GPU renderer started
 /// (`shell::renderer`), which is a run-time question since a `gpu` build can
@@ -1311,7 +1446,7 @@ fn has_gpu_compositor() -> bool {
 /// | | `RenderSurface` | video | `GameViewport` |
 /// |---|---|---|---|
 /// | software | inline | inline (#358) | inline (#361) |
-/// | GPU | inline | compositor + backdrop (#354) | compositor |
+/// | GPU | inline (a GPU frame in the scene, #1768) | inline (#1768) | compositor |
 ///
 /// Software has **no** compositor path any more. It used to blit compositor
 /// frames onto the *finished* pixel buffer, after the whole UI had been painted
@@ -1321,7 +1456,10 @@ fn has_gpu_compositor() -> bool {
 /// (#361). Painted inline, a frame sits at its node's own z-order and ordinary
 /// paint order does the occluding. GPU has no such problem: its layers are
 /// blitted first and the Vello UI alpha-blends on top, so an opaque drawer
-/// already covers the layer there.
+/// already covers the layer there. Video left the GPU compositor with #1768:
+/// drawn in the scene it is an element like any other — clipped, rounded,
+/// faded, transformed and scrolled with its ancestors — where a layer under
+/// the UI showed only through the backgrounds of clipping ancestors.
 ///
 /// A plain `const fn` of booleans rather than a `cfg`-gated branch, so both
 /// rows of the table stay reachable to tests whichever backend the crate was
@@ -1330,8 +1468,12 @@ fn has_gpu_compositor() -> bool {
 /// Gated like `is_inline_surface`: nothing on a wasm build has a compositor to
 /// route to.
 #[cfg(feature = "desktop")]
-pub(crate) const fn surface_takes_compositor_path(is_inline: bool, gpu: bool) -> bool {
-    !is_inline && gpu
+pub(crate) const fn surface_takes_compositor_path(
+    is_inline: bool,
+    is_video: bool,
+    gpu: bool,
+) -> bool {
+    !is_inline && !is_video && gpu
 }
 
 /// Collect frames from registered surfaces that use the compositor path
@@ -1350,6 +1492,7 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
             // both backends, plus every named viewport on software (#358, #361).
             if !surface_takes_compositor_path(
                 is_inline_surface(surface),
+                surface.is_video,
                 // "a GPU compositor presents", not "has the `gpu` feature": a
                 // `gpu` build presents with software when the GPU would not
                 // start, and software paints every viewport inline.
@@ -1462,7 +1605,9 @@ pub fn collect_viewport_frames_by_name() -> ViewportFrames {
         let mut out = ViewportFrames::default();
         for surface in reg.iter() {
             let is_inline = is_inline_surface(surface);
-            if is_inline || surface_takes_compositor_path(is_inline, has_gpu_compositor()) {
+            if is_inline
+                || surface_takes_compositor_path(is_inline, surface.is_video, has_gpu_compositor())
+            {
                 continue;
             }
             #[cfg(feature = "gpu")]
@@ -1795,22 +1940,25 @@ pub fn registered_viewport_names() -> Vec<String> {
 
 /// Invoke render callbacks on all registered surfaces that have one set.
 ///
-/// Called once per frame on desktop (before `collect_surface_frames`).
-/// On web, each surface with a callback drives its own `requestAnimationFrame` loop instead.
+/// Called once per frame by the desktop window (before it collects frames),
+/// which draws GPU frames in its scene. On web, each surface with a callback
+/// drives its own `requestAnimationFrame` loop instead.
 pub fn invoke_render_callbacks() {
-    invoke_render_callbacks_where(|_| true);
+    invoke_render_callbacks_where(|_| true, true);
 }
 
 /// [`invoke_render_callbacks`] for the surfaces `ids` only — one embedded
 /// context's own, so a context sharing the thread does not run another's
-/// callbacks from its `scene()` (issue #331).
+/// callbacks from its `scene()` (issue #331). An embedded context's host
+/// renders the scene with its own renderer, so no GPU frame is drawn there:
+/// the CPU render callback runs instead (#1768).
 pub fn invoke_render_callbacks_for(ids: &[usize]) {
     if !ids.is_empty() {
-        invoke_render_callbacks_where(|id| ids.contains(&id));
+        invoke_render_callbacks_where(|id| ids.contains(&id), false);
     }
 }
 
-fn invoke_render_callbacks_where(wanted: impl Fn(usize) -> bool) {
+fn invoke_render_callbacks_where(wanted: impl Fn(usize) -> bool, gpu_images: bool) {
     // Set guard so submit_frame() inside callbacks won't call request_repaint()
     // — we're already inside a paint cycle.
     #[cfg(feature = "desktop")]
@@ -1819,28 +1967,56 @@ fn invoke_render_callbacks_where(wanted: impl Fn(usize) -> bool) {
     let mut next_frame = false;
     SURFACE_REGISTRY.with(|reg| {
         let reg = reg.borrow();
+        // Every GPU frame of the paint shares Vello's image atlas: one scale
+        // for all of them keeps the total inside it (#1768).
+        #[cfg(feature = "gpu")]
+        let atlas_scale =
+            gpu_atlas_scale(reg.iter().filter(|s| wanted(s.id)).filter_map(
+                |s| match surface_route(s, gpu_images) {
+                    SurfaceRoute::GpuImage(gpu) => Some(gpu_target_size(
+                        *s.layout_size.lock().unwrap(),
+                        gpu.device.limits().max_texture_dimension_2d,
+                    )),
+                    SurfaceRoute::Pixels => None,
+                },
+            ));
         for surface in reg.iter() {
             if !wanted(surface.id) {
                 continue;
             }
-            let mut cb = surface.render_callback.borrow_mut();
-            if let Some(ref mut callback) = *cb {
-                let (w, h) = *surface.layout_size.lock().unwrap();
-                if w == 0 || h == 0 {
-                    continue; // not yet measured; a request waits for the size
-                }
-                let continuous = surface.continuous.get();
-                if !draws_this_frame(continuous, surface.frame_requested.replace(false)) {
-                    continue;
-                }
-                let writer = SurfaceWriter {
-                    buffer: surface.buffer.clone(),
-                    needs_redraw: surface.needs_redraw.clone(),
-                    surface_id: surface.id,
-                };
-                callback(&writer, w, h);
-                next_frame |= wants_next_frame(continuous, surface.frame_requested.get());
+            let route = surface_route(surface, gpu_images);
+            if matches!(route, SurfaceRoute::Pixels) && surface.render_callback.borrow().is_none() {
+                continue;
             }
+            let (w, h) = *surface.layout_size.lock().unwrap();
+            if w == 0 || h == 0 {
+                continue; // not yet measured; a request waits for the size
+            }
+            let continuous = surface.continuous.get();
+            if !draws_this_frame(continuous, surface.frame_requested.replace(false)) {
+                continue;
+            }
+            match route {
+                #[cfg(feature = "gpu")]
+                SurfaceRoute::GpuImage(gpu) => {
+                    let (tw, th) =
+                        gpu_target_size((w, h), gpu.device.limits().max_texture_dimension_2d);
+                    let scaled = |v: u32| ((v as f64 * atlas_scale).floor() as u32).max(1);
+                    draw_gpu_frame(surface, gpu, scaled(tw), scaled(th));
+                }
+                SurfaceRoute::Pixels => {
+                    let mut cb = surface.render_callback.borrow_mut();
+                    if let Some(ref mut callback) = *cb {
+                        let writer = SurfaceWriter {
+                            buffer: surface.buffer.clone(),
+                            needs_redraw: surface.needs_redraw.clone(),
+                            surface_id: surface.id,
+                        };
+                        callback(&writer, w, h);
+                    }
+                }
+            }
+            next_frame |= wants_next_frame(continuous, surface.frame_requested.get());
         }
     });
 
@@ -1854,6 +2030,160 @@ fn invoke_render_callbacks_where(wanted: impl Fn(usize) -> bool) {
     }
     #[cfg(not(feature = "desktop"))]
     let _ = next_frame;
+}
+
+/// The side of Vello's image atlas: one square texture that holds every image
+/// a scene draws (`vello_encoding`'s `MAX_ATLAS_SIZE`). An image it cannot
+/// place is silently not drawn.
+#[cfg(feature = "gpu")]
+pub const VELLO_ATLAS_SIDE: u32 = 8192;
+
+/// The share of the atlas the GPU frames of one paint may take together: half
+/// of it, leaving the rest for the page's own images and for packing slack.
+#[cfg(feature = "gpu")]
+const GPU_FRAME_ATLAS_BUDGET: f64 = (VELLO_ATLAS_SIDE as f64) * (VELLO_ATLAS_SIDE as f64) / 2.0;
+
+/// A surface's GPU target size before the atlas share: its layout size,
+/// scaled down (aspect kept) so neither side passes the device's
+/// `max_texture_dimension_2d` or the atlas side. The compositor of the scene
+/// scales a smaller frame up into the surface's box.
+#[cfg(feature = "gpu")]
+fn gpu_target_size((w, h): (u32, u32), device_max: u32) -> (u32, u32) {
+    let max = device_max.min(VELLO_ATLAS_SIDE);
+    if w <= max && h <= max {
+        return (w, h);
+    }
+    warn_once(
+        &GPU_FRAME_CLAMP_WARNED,
+        format_args!(
+            "a RenderSurface of {w}x{h} px is past the largest GPU frame ({max} px a side); \
+             it is drawn at a smaller size, scaled up"
+        ),
+    );
+    let k = (max as f64 / w as f64).min(max as f64 / h as f64);
+    let scaled = |v: u32| ((v as f64 * k).floor() as u32).clamp(1, max);
+    (scaled(w), scaled(h))
+}
+
+/// The one scale every GPU frame of a paint is drawn at so that together they
+/// fit [`GPU_FRAME_ATLAS_BUDGET`]: 1 while they fit, else the square root of
+/// budget over total (each frame keeps its aspect, all shrink alike).
+#[cfg(feature = "gpu")]
+fn gpu_atlas_scale(sizes: impl Iterator<Item = (u32, u32)>) -> f64 {
+    let total: f64 = sizes.map(|(w, h)| w as f64 * h as f64).sum();
+    if total <= GPU_FRAME_ATLAS_BUDGET {
+        return 1.0;
+    }
+    warn_once(
+        &GPU_FRAME_ATLAS_WARNED,
+        format_args!(
+            "RenderSurface GPU frames of {total:.0} px together are past the image atlas's \
+             share ({GPU_FRAME_ATLAS_BUDGET:.0} px); they are drawn smaller, scaled up"
+        ),
+    );
+    (GPU_FRAME_ATLAS_BUDGET / total).sqrt()
+}
+
+#[cfg(feature = "gpu")]
+static GPU_FRAME_CLAMP_WARNED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "gpu")]
+static GPU_FRAME_ATLAS_WARNED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "gpu")]
+fn warn_once(flag: &AtomicBool, message: std::fmt::Arguments<'_>) {
+    if !flag.swap(true, Ordering::Relaxed) {
+        tracing::warn!("{message}");
+    }
+}
+
+/// Run a surface's GPU render callback into its target, allocating the
+/// target on `gpu`'s device at `w`×`h` when it has none of that size. The
+/// target is the surface's own (`gpu_target`), never the app's
+/// `texture_source`.
+#[cfg(feature = "gpu")]
+fn draw_gpu_frame(
+    surface: &RenderSurfaceHandle,
+    gpu: &'static crate::shell::desktop::GpuHandle,
+    w: u32,
+    h: u32,
+) {
+    let fits = surface
+        .gpu_target
+        .borrow()
+        .as_ref()
+        .is_some_and(|t| (t.texture.width(), t.texture.height()) == (w, h));
+    if !fits {
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rinch render surface"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DESKTOP_GPU_FRAME_FORMAT,
+            // COPY_SRC: Vello copies the frame into its image atlas.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        *surface.gpu_target.borrow_mut() = Some(GpuTarget { texture, view });
+    }
+    // Clones of the texture and view (reference-counted handles), so the
+    // callback runs with no borrow of the target held.
+    let (texture, view) = {
+        let t = surface.gpu_target.borrow();
+        let t = t.as_ref().expect("allocated above");
+        (t.texture.clone(), t.view.clone())
+    };
+    let frame = GpuSurfaceFrame {
+        device: &gpu.device,
+        queue: &gpu.queue,
+        texture: &texture,
+        target: &view,
+        format: DESKTOP_GPU_FRAME_FORMAT,
+        size: (w, h),
+        generation: 1,
+    };
+    if let Some(callback) = surface.gpu_render_callback.borrow_mut().as_mut() {
+        callback(&frame);
+    }
+    surface.gpu_frame_fresh.set(true);
+}
+
+/// A surface's GPU target: the texture its GPU render callback draws into.
+#[cfg(feature = "gpu")]
+pub(crate) struct GpuTarget {
+    pub(crate) texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+/// The GPU frames to draw in this paint's scene (#1768): every registered
+/// surface whose route is a GPU image and that has drawn a frame, with its
+/// target texture, and whether it drew since the last collection (those are
+/// the paint's damage). Only the desktop GPU window draws them.
+#[cfg(feature = "gpu")]
+pub fn collect_gpu_surface_frames() -> Vec<(usize, wgpu::Texture, bool)> {
+    SURFACE_REGISTRY.with(|reg| {
+        reg.borrow()
+            .iter()
+            .filter(|s| matches!(surface_route(s, true), SurfaceRoute::GpuImage(_)))
+            .filter_map(|s| {
+                let target = s.gpu_target.borrow();
+                let target = target.as_ref()?;
+                Some((
+                    s.id,
+                    target.texture.clone(),
+                    s.gpu_frame_fresh.replace(false),
+                ))
+            })
+            .collect()
+    })
 }
 
 /// Dispatch a surface event to the handler of the surface with the given ID.
@@ -2720,33 +3050,752 @@ mod compositor_routing_tests {
         PRESENTING.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// #1768: under the software renderer (no GPU compositor) a surface's GPU
+    /// render callback is not run; its ordinary render callback runs instead,
+    /// it stays an inline surface, and its element carries no `data-viewport`.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn without_a_gpu_compositor_the_gpu_callback_falls_back_to_the_render_callback() {
+        let _p = presenting_lock();
+        crate::shell::renderer::set_gpu_presenting(false);
+        let surface = create_render_surface();
+        let (gpu_runs, cpu_runs): (std::rc::Rc<Cell<u32>>, std::rc::Rc<Cell<u32>>) =
+            Default::default();
+        {
+            let g = gpu_runs.clone();
+            surface.set_gpu_render_callback(move |_f| g.set(g.get() + 1));
+            let c = cpu_runs.clone();
+            surface.set_render_callback(move |_w, _x, _y| c.set(c.get() + 1));
+        }
+        assert!(!surface.gpu_frames_available());
+        mount_render_surface(&surface);
+        update_layout_rect_by_id(surface.id(), 0.0, 0.0, 16, 8);
+        invoke_render_callbacks_for(&[surface.id()]);
+        assert_eq!((gpu_runs.get(), cpu_runs.get()), (0, 1), "the fallback ran");
+        assert!(is_inline_surface(&surface), "still painted inline");
+        unregister_render_surface(surface.id());
+    }
+
+    /// The desktop GPU paint's surface steps, in `paint_gpu`'s order: size
+    /// the surfaces (component surfaces from their painted boxes, then named
+    /// viewports), run the callbacks.
+    #[cfg(feature = "gpu")]
+    fn paint_like_paint_gpu(app: &mut crate::app::RinchApp, s: f32) {
+        app.resolve_and_repaint(400.0, 300.0);
+        app.update_render_surface_layouts(s, true);
+        for name in registered_viewport_names() {
+            if let Some(v) = app.viewport_rect(&name) {
+                update_layout_size(&name, (v.2 * s) as u32, (v.3 * s) as u32);
+                update_layout_position(&name, v.0, v.1);
+            }
+        }
+        invoke_render_callbacks();
+    }
+
+    #[cfg(feature = "gpu")]
+    fn test_gpu() -> &'static crate::shell::desktop::GpuHandle {
+        crate::shell::desktop::gpu_handle_for_tests(|| {
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+            let adapter = pollster::block_on(
+                instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+            )
+            .expect("a GPU adapter");
+            let (device, queue) =
+                pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+                    .expect("a device");
+            crate::shell::desktop::GpuHandle {
+                device: Arc::new(device),
+                queue: Arc::new(queue),
+                adapter: Arc::new(adapter),
+            }
+        })
+    }
+
+    /// An app with one `RenderSurface` in a wrapper of `style`, 400×300.
+    #[cfg(feature = "gpu")]
+    fn surface_app(surface: &RenderSurfaceHandle, style: &'static str) -> crate::app::RinchApp {
+        let mounted = surface.clone();
+        let mut app = crate::app::RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let wrap = scope.create_element("div");
+            wrap.set_attribute("style", style);
+            let node = RenderSurface {
+                surface: Some(mounted.clone()),
+            }
+            .render(scope, &[]);
+            wrap.append_child(&node);
+            root.append_child(&wrap);
+            root
+        });
+        app.mount_component(400.0, 300.0);
+        app.resolve_and_repaint(400.0, 300.0);
+        app
+    }
+
+    #[cfg(feature = "gpu")]
+    type Sizes = std::rc::Rc<RefCell<Vec<(u32, u32)>>>;
+
+    /// Frame sizes and resize-callback sizes of `surface`.
+    #[cfg(feature = "gpu")]
+    fn record(surface: &RenderSurfaceHandle) -> (Sizes, Sizes) {
+        let (draws, resizes): (Sizes, Sizes) = Default::default();
+        let d = draws.clone();
+        surface.set_gpu_render_callback(move |f: &GpuSurfaceFrame<'_>| d.borrow_mut().push(f.size));
+        let r = resizes.clone();
+        surface.set_resize_callback(move |w, h| r.borrow_mut().push((w, h)));
+        (draws, resizes)
+    }
+
+    /// Clear `f`'s target to `rgba` (0–255, premultiplied).
+    #[cfg(feature = "gpu")]
+    fn clear_to(f: &GpuSurfaceFrame<'_>, [r, g, b, a]: [u8; 4]) {
+        let mut encoder = f.device.create_command_encoder(&Default::default());
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: f.target,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: r as f64 / 255.0,
+                        g: g as f64 / 255.0,
+                        b: b as f64 / 255.0,
+                        a: a as f64 / 255.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        f.queue.submit(Some(encoder.finish()));
+    }
+
+    /// Paint `app` (400×300 at scale 1) the way the desktop GPU window does —
+    /// the surface steps, the GPU frames registered with a Vello renderer and
+    /// handed to paint, the document's scene rendered by that renderer — and
+    /// read back the pixels at `at`.
+    #[cfg(feature = "gpu")]
+    fn render_pixels(
+        app: &mut crate::app::RinchApp,
+        vello: &mut vello::Renderer,
+        at: &[(u32, u32)],
+    ) -> Vec<[u8; 4]> {
+        let gpu = test_gpu();
+        paint_like_paint_gpu(app, 1.0);
+        let mut images = std::collections::HashMap::new();
+        let mut registered = Vec::new();
+        for (id, texture, _) in collect_gpu_surface_frames() {
+            let mut image = vello.register_texture(texture);
+            image.alpha_type = vello::peniko::ImageAlphaType::AlphaPremultiplied;
+            registered.push(image.clone());
+            images.insert(id, image);
+        }
+        rinch_dom::paint::set_surface_gpu_images(Some(images));
+        // Video frames, inline as the GPU window installs them (#1768).
+        app.install_gpu_viewport_frames(
+            collect_viewport_frames_by_name(),
+            Some(Default::default()),
+        );
+        app.request_repaint();
+        let scene = app.build_scene(1.0, (400, 300)).clone();
+        crate::app::RinchApp::clear_viewport_frames();
+        rinch_dom::paint::set_surface_gpu_images(None);
+        let target = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 400,
+                height: 300,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&Default::default());
+        vello
+            .render_to_texture(
+                &gpu.device,
+                &gpu.queue,
+                &scene,
+                &view,
+                &vello::RenderParams {
+                    base_color: vello::peniko::Color::WHITE,
+                    width: 400,
+                    height: 300,
+                    antialiasing_method: vello::AaConfig::Msaa16,
+                },
+            )
+            .expect("render");
+        for image in registered {
+            vello.unregister_texture(image);
+        }
+        let row = 1792u32; // 400 * 4 rounded up to 256
+        let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (row * 300) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            target.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(300),
+                },
+            },
+            wgpu::Extent3d {
+                width: 400,
+                height: 300,
+                depth_or_array_layers: 1,
+            },
+        );
+        gpu.queue.submit(Some(encoder.finish()));
+        buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        let data = buffer.slice(..).get_mapped_range();
+        at.iter()
+            .map(|&(x, y)| {
+                let i = (y * row + x * 4) as usize;
+                [data[i], data[i + 1], data[i + 2], data[i + 3]]
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "gpu")]
+    fn vello_renderer() -> vello::Renderer {
+        vello::Renderer::new(
+            &test_gpu().device,
+            vello::RendererOptions {
+                antialiasing_support: vello::AaSupport::all(),
+                use_cpu: false,
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
+        )
+        .expect("vello")
+    }
+
+    /// A page around a 100×60 red GPU surface at (50, 50), in `outer` (the
+    /// surface's grandparent's style) and with `sibling` (an extra element
+    /// after the surface's wrapper, if any).
+    #[cfg(feature = "gpu")]
+    fn element_page(
+        surface: &RenderSurfaceHandle,
+        outer: &'static str,
+        wrap: &'static str,
+        sibling: Option<&'static str>,
+    ) -> crate::app::RinchApp {
+        surface.set_gpu_render_callback(|f| clear_to(f, [255, 0, 0, 255]));
+        let mounted = surface.clone();
+        let mut app = crate::app::RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute("style", outer);
+            let w = scope.create_element("div");
+            w.set_attribute("style", wrap);
+            let node = RenderSurface {
+                surface: Some(mounted.clone()),
+            }
+            .render(scope, &[]);
+            w.append_child(&node);
+            root.append_child(&w);
+            if let Some(style) = sibling {
+                let s = scope.create_element("div");
+                s.set_attribute("style", style);
+                root.append_child(&s);
+            }
+            root
+        });
+        app.mount_component(400.0, 300.0);
+        app.resolve_and_repaint(400.0, 300.0);
+        app
+    }
+
+    /// #1768 on a real GPU: the GPU frame is drawn **in the scene** as the
+    /// `RenderSurface` element's content, so it behaves as any element does.
+    /// Each row is a page and the pixels that show it; together they are the
+    /// list of what the compositor-layer path got wrong or could not do
+    /// (the hole was cut only from clipping ancestors, the layer ignored
+    /// opacity and transforms). `#[ignore]`d: needs an adapter
+    /// (`cargo test -p rinch --features gpu --lib -- --ignored gpu_render_callback`).
+    #[cfg(feature = "gpu")]
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_render_callback_frames_are_drawn_as_elements() {
+        let _p = presenting_lock();
+        test_gpu();
+        crate::shell::renderer::set_gpu_presenting(true);
+        let mut vello = vello_renderer();
+        const RED: [u8; 4] = [255, 0, 0, 255];
+        const WHITE: [u8; 4] = [255, 255, 255, 255];
+        type Case = (
+            &'static str,
+            &'static str,
+            &'static str,
+            Option<&'static str>,
+            &'static [((u32, u32), [u8; 4])],
+        );
+        let cases: &[Case] = &[
+            (
+                "an opaque background on a non-clipping ancestor is beneath it",
+                "width: 400px; height: 300px; background: rgb(0, 128, 0);",
+                "position: absolute; left: 50px; top: 50px; width: 100px; height: 60px;",
+                None,
+                &[((100, 80), RED), ((20, 20), [0, 128, 0, 255])],
+            ),
+            (
+                "a rounded, clipping ancestor cuts its corner",
+                "width: 400px; height: 300px;",
+                "position: absolute; left: 50px; top: 50px; width: 100px; height: 60px; \
+                 overflow: hidden; border-radius: 30px;",
+                None,
+                &[((100, 80), RED), ((51, 51), WHITE)],
+            ),
+            (
+                "an ancestor's opacity applies",
+                "width: 400px; height: 300px; opacity: 0.5;",
+                "position: absolute; left: 50px; top: 50px; width: 100px; height: 60px;",
+                None,
+                &[((100, 80), [255, 128, 128, 255])],
+            ),
+            (
+                "a translucent element painted after it is above it",
+                "width: 400px; height: 300px;",
+                "position: absolute; left: 50px; top: 50px; width: 100px; height: 60px;",
+                Some(
+                    "position: absolute; left: 50px; top: 50px; width: 100px; height: 60px; \
+                     background: rgba(0, 0, 255, 0.5);",
+                ),
+                &[((100, 80), [128, 0, 127, 255])],
+            ),
+            (
+                "z-index orders it: a lower z-index element after it in the tree is beneath it",
+                "width: 400px; height: 300px; position: relative;",
+                "position: absolute; left: 50px; top: 50px; width: 100px; height: 60px; z-index: 1;",
+                Some(
+                    "position: absolute; left: 50px; top: 50px; width: 40px; height: 60px; \
+                     background: rgb(0, 0, 255); z-index: 0;",
+                ),
+                // The sibling comes after the surface but sits below it (z 0 < 1).
+                &[((60, 80), RED), ((130, 80), RED)],
+            ),
+            (
+                "a transform on an ancestor moves and scales it",
+                "width: 400px; height: 300px; transform: translate(100px, 100px) scale(0.5); \
+                 transform-origin: 0 0;",
+                "position: absolute; left: 50px; top: 50px; width: 100px; height: 60px;",
+                None,
+                // Drawn at (125, 125)–(175, 155); its untransformed box is white.
+                &[((150, 140), RED), ((60, 60), WHITE)],
+            ),
+            (
+                "an overflow-clipping ancestor clips it",
+                "width: 400px; height: 300px;",
+                "position: absolute; left: 50px; top: 50px; width: 100px; height: 30px; \
+                 overflow: hidden;",
+                None,
+                // The wrapper clips the 60px-tall surface... its box is 30 tall.
+                &[((100, 60), RED), ((100, 85), WHITE)],
+            ),
+        ];
+        let mut failures = Vec::new();
+        for (label, outer, wrap, sibling, expect) in cases {
+            let surface = create_render_surface();
+            let mut app = element_page(&surface, outer, wrap, *sibling);
+            let at: Vec<(u32, u32)> = expect.iter().map(|e| e.0).collect();
+            let got = render_pixels(&mut app, &mut vello, &at);
+            for ((xy, want), got) in expect.iter().zip(got) {
+                let near = want.iter().zip(got).all(|(a, b)| a.abs_diff(b) <= 2);
+                if !near {
+                    failures.push(format!("{label}: at {xy:?} want {want:?} got {got:?}"));
+                }
+            }
+            unregister_render_surface(surface.id());
+        }
+        crate::shell::renderer::set_gpu_presenting(false);
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Video on the GPU window is drawn in the scene too (#1768): its frame
+    /// shows over an opaque, non-clipping ancestor's background, under an
+    /// ancestor's opacity and under a translucent element painted after it.
+    /// As a compositor layer it showed through clipping ancestors' backgrounds
+    /// only and took no opacity, and this scene had no frame at all.
+    #[cfg(feature = "gpu")]
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_video_frames_are_drawn_as_elements() {
+        let _p = presenting_lock();
+        test_gpu();
+        crate::shell::renderer::set_gpu_presenting(true);
+        let mut vello = vello_renderer();
+        let video = create_video_surface("video-1768");
+        // A 100x60 frame, opaque red: no letterbox in a 100x60 box.
+        video
+            .writer()
+            .submit_frame(&[255u8, 0, 0, 255].repeat(100 * 60), 100, 60);
+        let mut app = crate::app::RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute(
+                "style",
+                "width: 400px; height: 300px; background: rgb(0, 128, 0); opacity: 0.5;",
+            );
+            let v = scope.create_element("div");
+            v.set_attribute("data-viewport", "video-1768");
+            v.set_attribute(
+                "style",
+                "position: absolute; left: 50px; top: 50px; width: 100px; height: 60px;",
+            );
+            root.append_child(&v);
+            let over = scope.create_element("div");
+            over.set_attribute(
+                "style",
+                "position: absolute; left: 100px; top: 50px; width: 50px; height: 60px; \
+                 background: rgb(0, 0, 255);",
+            );
+            root.append_child(&over);
+            root
+        });
+        app.mount_component(400.0, 300.0);
+        app.resolve_and_repaint(400.0, 300.0);
+        let px = render_pixels(&mut app, &mut vello, &[(75, 80), (125, 80), (20, 20)]);
+        crate::shell::renderer::set_gpu_presenting(false);
+        unregister_render_surface(video.id());
+        let near = |a: [u8; 4], b: [u8; 4]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 2);
+        assert!(
+            near(px[0], [255, 128, 128, 255]),
+            "the frame at half opacity: {:?}",
+            px[0]
+        );
+        assert!(
+            near(px[1], [128, 128, 255, 255]),
+            "the element after it covers it: {:?}",
+            px[1]
+        );
+        assert!(
+            near(px[2], [128, 192, 128, 255]),
+            "control: the background: {:?}",
+            px[2]
+        );
+    }
+
+    /// Scrolling moves it and clips it: a 100×60 surface at the top of a
+    /// 100×40 scroller's 160px of content, scrolled down 30px, shows its
+    /// bottom 30 rows at the scroller's top and nothing above.
+    #[cfg(feature = "gpu")]
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_render_callback_frames_scroll_with_their_scroller() {
+        let _p = presenting_lock();
+        test_gpu();
+        crate::shell::renderer::set_gpu_presenting(true);
+        let mut vello = vello_renderer();
+        let surface = create_render_surface();
+        surface.set_gpu_render_callback(|f| clear_to(f, [255, 0, 0, 255]));
+        let mounted = surface.clone();
+        let scroller: std::rc::Rc<RefCell<Option<NodeHandle>>> = Default::default();
+        let slot = scroller.clone();
+        let mut app = crate::app::RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            let sc = scope.create_element("div");
+            sc.set_attribute(
+                "style",
+                "position: absolute; left: 50px; top: 50px; width: 100px; height: 40px; \
+                 overflow: auto; --rinch-scrollbar-width: none;",
+            );
+            let content = scope.create_element("div");
+            content.set_attribute("style", "width: 100px; height: 160px;");
+            let w = scope.create_element("div");
+            w.set_attribute("style", "width: 100px; height: 60px;");
+            let node = RenderSurface {
+                surface: Some(mounted.clone()),
+            }
+            .render(scope, &[]);
+            w.append_child(&node);
+            content.append_child(&w);
+            sc.append_child(&content);
+            root.append_child(&sc);
+            *slot.borrow_mut() = Some(sc);
+            root
+        });
+        app.mount_component(400.0, 300.0);
+        app.resolve_and_repaint(400.0, 300.0);
+        let at = [(100, 55), (100, 85), (100, 45)];
+        let before = render_pixels(&mut app, &mut vello, &at);
+        scroller.borrow().as_ref().unwrap().set_scroll_top(30.0);
+        let after = render_pixels(&mut app, &mut vello, &at);
+        crate::shell::renderer::set_gpu_presenting(false);
+        unregister_render_surface(surface.id());
+        let (red, white) = ([255, 0, 0, 255], [255, 255, 255, 255]);
+        assert_eq!(
+            before,
+            vec![red, red, white],
+            "unscrolled: fills the scroller"
+        );
+        assert_eq!(after[0], red, "scrolled: its last 30 rows at the top");
+        assert_eq!(after[1], white, "below them, the empty content");
+        assert_eq!(after[2], white, "nothing above the scroller");
+    }
+
+    /// Review of #1861, D1: under a transform the surface took two sizes a
+    /// paint while it was a layer. In the scene it is sized once, from its
+    /// painted (transformed) box, as a CPU surface always was: one frame, one
+    /// resize.
+    #[cfg(feature = "gpu")]
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_render_callback_under_a_transform_has_one_size() {
+        let _p = presenting_lock();
+        test_gpu();
+        crate::shell::renderer::set_gpu_presenting(true);
+        let surface = create_render_surface();
+        surface.set_continuous(false);
+        let mut app = surface_app(
+            &surface,
+            "position: absolute; left: 10px; top: 10px; width: 40px; height: 20px; \
+             transform: scale(2); transform-origin: 0 0;",
+        );
+        let (draws, resizes) = record(&surface);
+        for _ in 0..4 {
+            paint_like_paint_gpu(&mut app, 1.0);
+        }
+        let (d, r) = (draws.borrow().clone(), resizes.borrow().clone());
+        crate::shell::renderer::set_gpu_presenting(false);
+        unregister_render_surface(surface.id());
+        assert_eq!(d, vec![(80, 40)], "one frame, at the painted size");
+        assert_eq!(r, vec![(80, 40)], "one resize");
+    }
+
+    /// Review of #1861, D2: a surface wider than the device's largest texture
+    /// (or Vello's 8192 px atlas) panicked in `create_texture`, or would be
+    /// silently dropped by the atlas. The target is clamped, aspect kept; the
+    /// scene scales it up into the surface's box.
+    #[cfg(feature = "gpu")]
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_render_callback_target_is_clamped_to_the_device_limit() {
+        let _p = presenting_lock();
+        let gpu = test_gpu();
+        let max = gpu
+            .device
+            .limits()
+            .max_texture_dimension_2d
+            .min(VELLO_ATLAS_SIDE);
+        crate::shell::renderer::set_gpu_presenting(true);
+        let surface = create_render_surface();
+        surface.set_continuous(false);
+        let mut app = surface_app(
+            &surface,
+            "position: absolute; left: 0px; top: 0px; width: 4200px; height: 100px;",
+        );
+        let (draws, _) = record(&surface);
+        paint_like_paint_gpu(&mut app, 2.0);
+        let d = draws.borrow().clone();
+        crate::shell::renderer::set_gpu_presenting(false);
+        unregister_render_surface(surface.id());
+        assert!(8400 > max, "control: past this device's limit ({max})");
+        assert_eq!(surface.layout_size(), (8400, 200), "the surface's own size");
+        let (w, h) = d[0];
+        assert_eq!(w, max, "clamped to the limit");
+        assert_eq!(
+            h,
+            (200.0 * max as f64 / 8400.0).floor() as u32,
+            "aspect kept"
+        );
+    }
+
+    /// Too many large GPU frames for Vello's image atlas (which would drop
+    /// what it cannot place, silently): all are drawn, smaller, together
+    /// within the atlas share, each keeping its aspect.
+    #[cfg(feature = "gpu")]
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_render_callback_frames_share_the_atlas() {
+        let _p = presenting_lock();
+        test_gpu();
+        crate::shell::renderer::set_gpu_presenting(true);
+        let surfaces: Vec<_> = (0..5).map(|_| create_render_surface()).collect();
+        let records: Vec<_> = surfaces.iter().map(record).collect();
+        let mounted = surfaces.clone();
+        let mut app = crate::app::RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            for s in &mounted {
+                let w = scope.create_element("div");
+                w.set_attribute("style", "width: 3840px; height: 2160px;");
+                let node = RenderSurface {
+                    surface: Some(s.clone()),
+                }
+                .render(scope, &[]);
+                w.append_child(&node);
+                root.append_child(&w);
+            }
+            root
+        });
+        app.mount_component(400.0, 300.0);
+        paint_like_paint_gpu(&mut app, 1.0);
+        let sizes: Vec<(u32, u32)> = records.iter().map(|(d, _)| d.borrow()[0]).collect();
+        crate::shell::renderer::set_gpu_presenting(false);
+        for s in &surfaces {
+            unregister_render_surface(s.id());
+        }
+        let total: f64 = sizes.iter().map(|&(w, h)| w as f64 * h as f64).sum();
+        const { assert!(5.0 * 3840.0 * 2160.0 > GPU_FRAME_ATLAS_BUDGET) }; // control: past the share
+        assert!(
+            total <= GPU_FRAME_ATLAS_BUDGET,
+            "together within the share: {sizes:?}"
+        );
+        assert!(sizes.iter().all(|&s| s == sizes[0]), "all alike: {sizes:?}");
+        let (w, h) = sizes[0];
+        assert!(
+            (w as f64 / h as f64 - 16.0 / 9.0).abs() < 0.01,
+            "aspect kept: {w}x{h}"
+        );
+        assert!(w < 3840, "smaller than asked");
+    }
+
+    /// Review of #1861, D3: an app texture registered with
+    /// `set_texture_source` after the GPU callback had drawn was taken for
+    /// rinch's own and drawn into. The GPU target is the surface's own now:
+    /// the frame's format is always its texture's.
+    #[cfg(feature = "gpu")]
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_render_callback_never_draws_into_an_app_texture() {
+        let _p = presenting_lock();
+        let gpu = test_gpu();
+        crate::shell::renderer::set_gpu_presenting(true);
+        let surface = create_render_surface();
+        surface.set_continuous(false);
+        let mut app = surface_app(
+            &surface,
+            "position: absolute; left: 0; top: 0; width: 30px; height: 20px;",
+        );
+        type Formats = std::rc::Rc<RefCell<Vec<(wgpu::TextureFormat, wgpu::TextureFormat)>>>;
+        let seen: Formats = Default::default();
+        let s = seen.clone();
+        surface.set_gpu_render_callback(move |f: &GpuSurfaceFrame<'_>| {
+            s.borrow_mut().push((f.format, f.texture.format()))
+        });
+        paint_like_paint_gpu(&mut app, 1.0);
+        let tex = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("app"),
+            size: wgpu::Extent3d {
+                width: 30,
+                height: 20,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&Default::default());
+        surface.set_texture_source(tex, view, 30, 20);
+        surface.request_frame();
+        paint_like_paint_gpu(&mut app, 1.0);
+        let seen = seen.borrow().clone();
+        crate::shell::renderer::set_gpu_presenting(false);
+        unregister_render_surface(surface.id());
+        assert_eq!(seen.len(), 2);
+        for (declared, actual) in seen {
+            assert_eq!(declared, actual, "the frame's format is its texture's");
+        }
+    }
+
+    /// The in-scene route end to end: a frame at the painted physical size,
+    /// collected as a GPU frame (fresh once), the element inline with no
+    /// `data-viewport`, on-demand pacing, a new target on resize, and the
+    /// CPU fallback once the renderer is software.
+    #[cfg(feature = "gpu")]
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_render_callback_frames_go_to_the_scene() {
+        let _p = presenting_lock();
+        test_gpu();
+        crate::shell::renderer::set_gpu_presenting(true);
+        let surface = create_render_surface();
+        surface.set_continuous(false);
+        let cpu_runs: std::rc::Rc<Cell<u32>> = Default::default();
+        let c = cpu_runs.clone();
+        surface.set_render_callback(move |_w, _x, _y| c.set(c.get() + 1));
+        let mut app = surface_app(
+            &surface,
+            "position: absolute; left: 13px; top: 7px; width: 30px; height: 20px;",
+        );
+        let (draws, _) = record(&surface);
+        paint_like_paint_gpu(&mut app, 2.0);
+        assert_eq!(
+            *draws.borrow(),
+            vec![(60, 40)],
+            "one frame at the physical size"
+        );
+        let frames = collect_gpu_surface_frames();
+        assert_eq!(frames.len(), 1);
+        assert_eq!((frames[0].0, frames[0].2), (surface.id(), true), "fresh");
+        assert_eq!((frames[0].1.width(), frames[0].1.height()), (60, 40));
+        assert!(!collect_gpu_surface_frames()[0].2, "fresh once");
+        assert!(is_inline_surface(&surface), "an inline element");
+        assert_eq!(
+            app.viewport_rect(surface.viewport_name()),
+            None,
+            "no data-viewport"
+        );
+        paint_like_paint_gpu(&mut app, 2.0);
+        assert_eq!(draws.borrow().len(), 1, "a quiet paint draws nothing");
+        paint_like_paint_gpu(&mut app, 3.0);
+        assert_eq!(draws.borrow().last(), Some(&(90, 60)), "a new size draws");
+        assert_eq!(cpu_runs.get(), 0, "the CPU callback did not run");
+        crate::shell::renderer::set_gpu_presenting(false);
+        surface.request_frame();
+        paint_like_paint_gpu(&mut app, 3.0);
+        assert_eq!(cpu_runs.get(), 1, "software: the CPU fallback runs");
+        assert!(
+            collect_gpu_surface_frames().is_empty(),
+            "and no GPU frame is drawn"
+        );
+        unregister_render_surface(surface.id());
+    }
+
     /// The whole table from `surface_takes_compositor_path`'s doc comment,
     /// pinned in both columns regardless of which backend this build is.
     ///
     /// The asymmetry is the point: on software the frame would otherwise be
     /// written over the finished pixel buffer, on top of any overlay above it;
     /// on GPU the layers go down *first* and the UI blends over them, so video
-    /// genuinely belongs on the compositor there.
+    /// genuinely belongs on the compositor there. Video does not since #1768:
+    /// in the scene it is an element.
     #[test]
     fn the_backend_routing_table() {
         const SOFTWARE: bool = false;
         const GPU: bool = true;
-        // Only whether the surface is a `RenderSurface` component decides it
-        // now: video and `GameViewport` route identically (#361).
-        const RENDER_SURFACE: bool = true;
-        const VIDEO: bool = false;
-        const GAME_VIEWPORT: bool = false;
+        // (is a `RenderSurface` component, is video)
+        const RENDER_SURFACE: (bool, bool) = (true, false);
+        const VIDEO: (bool, bool) = (false, true);
+        const GAME_VIEWPORT: (bool, bool) = (false, false);
 
-        for (label, inline, gpu, expected) in [
+        for (label, (inline, video), gpu, expected) in [
             ("RenderSurface / software", RENDER_SURFACE, SOFTWARE, false),
             ("RenderSurface / gpu", RENDER_SURFACE, GPU, false),
             ("video / software", VIDEO, SOFTWARE, false),
-            ("video / gpu", VIDEO, GPU, true),
+            ("video / gpu", VIDEO, GPU, false),
             ("GameViewport / software", GAME_VIEWPORT, SOFTWARE, false),
             ("GameViewport / gpu", GAME_VIEWPORT, GPU, true),
         ] {
             assert_eq!(
-                surface_takes_compositor_path(inline, gpu),
+                surface_takes_compositor_path(inline, video, gpu),
                 expected,
                 "{label} takes the compositor path? expected {expected}"
             );
@@ -2775,25 +3824,26 @@ mod compositor_routing_tests {
         assert_eq!(*frame.data, vec![10, 20, 30, 255]);
 
         let blitted = collect_surface_frames();
-        assert_eq!(
-            blitted.iter().any(|(name, ..)| name == "test-video"),
-            has_gpu_compositor(),
-            "video reaches the compositor path on GPU only — on software it \
-             paints inline instead (#358)"
+        assert!(
+            !blitted.iter().any(|(name, ..)| name == "test-video"),
+            "video never reaches the compositor path: inline on software (#358) \
+             and, since #1768, in the scene on GPU"
         );
 
-        // A `gpu` build decides at run time: the same surface is routed to the
-        // compositor once the GPU renderer is the one presenting.
+        // On a `gpu` build presenting on the GPU too: collected by name for
+        // the scene, not blitted (#1768; it was a compositor layer).
         #[cfg(feature = "gpu")]
         {
             crate::shell::renderer::set_gpu_presenting(true);
             video.writer().submit_frame(&[10, 20, 30, 255], 1, 1);
             let blitted = collect_surface_frames();
+            let by_name = collect_viewport_frames_by_name();
             crate::shell::renderer::set_gpu_presenting(false);
             assert!(
-                blitted.iter().any(|(name, ..)| name == "test-video"),
-                "a gpu build presenting on the GPU routes video to the compositor"
+                !blitted.iter().any(|(name, ..)| name == "test-video"),
+                "a gpu build presenting on the GPU draws video in the scene"
             );
+            assert!(by_name.frames.contains_key("test-video"));
         }
 
         unregister_render_surface(video.id());

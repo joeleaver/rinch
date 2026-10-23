@@ -338,7 +338,7 @@ pub mod prelude {
 
     // Desktop-only GPU types for render surfaces
     #[cfg(feature = "gpu")]
-    pub use crate::render_surface::{GpuTextureRegistrar, TextureSource};
+    pub use crate::render_surface::{GpuSurfaceFrame, GpuTextureRegistrar, TextureSource};
 
     // Shared GPU handle + device-sharing entry points for zero-copy compositing
     #[cfg(feature = "gpu")]

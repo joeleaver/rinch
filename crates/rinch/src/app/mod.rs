@@ -5707,6 +5707,30 @@ impl RinchApp {
     /// differs in (issue #349): `build_scene` hands back the cached scene
     /// unless something asked for a repaint, and that scene has last paint's
     /// holes cut into it.
+    /// The GPU window's half of [`Self::install_viewport_frames`] (#1768): the
+    /// frames of the viewports painted **inline** in the scene (video, whose
+    /// frames are CPU pixels), and the set of viewports that punch a hole for
+    /// a compositor layer (`GameViewport`; `None` is "every viewport punches").
+    /// Call [`Self::clear_viewport_frames`] after [`Self::build_scene`].
+    #[cfg(feature = "desktop")]
+    pub fn install_gpu_viewport_frames(
+        &mut self,
+        frames: crate::render_surface::ViewportFrames,
+        holes: Option<std::collections::HashSet<String>>,
+    ) {
+        let crate::render_surface::ViewportFrames { frames, fresh, .. } = frames;
+        self.note_viewport_paint_inputs(frames.keys(), holes.as_ref());
+        rinch_dom::paint::set_active_viewports(holes);
+        if !fresh.is_empty() {
+            self.request_repaint();
+            let names: Vec<&str> = fresh.iter().map(String::as_str).collect();
+            self.mark_viewport_nodes_paint_dirty(&names);
+        }
+        if !frames.is_empty() {
+            rinch_dom::paint::set_viewport_pixels(Some(frames));
+        }
+    }
+
     #[cfg(feature = "desktop")]
     pub fn install_viewport_holes(&mut self, holes: Option<std::collections::HashSet<String>>) {
         self.note_viewport_paint_inputs(std::iter::empty(), holes.as_ref());

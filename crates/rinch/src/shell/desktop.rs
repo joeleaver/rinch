@@ -52,6 +52,13 @@ pub fn gpu_handle() -> Option<&'static GpuHandle> {
     GPU_HANDLE.get()
 }
 
+/// Publish a device as the shared GPU handle, for a test that has no window
+/// (the first call wins, as at runtime). Returns the handle in place.
+#[cfg(test)]
+pub(crate) fn gpu_handle_for_tests(make: impl FnOnce() -> GpuHandle) -> &'static GpuHandle {
+    GPU_HANDLE.get_or_init(make)
+}
+
 // ── GPU device injection (issue #57) ──────────────────────────────────────────
 
 /// Extra GPU device requirements for rinch's desktop compositor.
@@ -235,6 +242,9 @@ pub struct WgpuRenderer {
     pub(crate) composite_layers: Vec<CompositeLayer>,
     /// Active GPU texture layers for zero-copy compositing.
     pub(crate) gpu_layers: Vec<GpuTextureLayer>,
+    /// `RenderSurface` GPU frames registered with `renderer`, by surface id:
+    /// the texture and the image it was registered as (#1768).
+    surface_images: std::collections::HashMap<usize, (Texture, vello::peniko::ImageData)>,
     /// Composited output texture (layers + UI) for screenshot capture.
     /// Created lazily, invalidated on resize.
     pub(crate) composited_texture: Option<Texture>,
@@ -482,6 +492,7 @@ impl WgpuRenderer {
             layer_compositor: None,
             layer_uploader: None,
             composite_layers: Vec::new(),
+            surface_images: std::collections::HashMap::new(),
             gpu_layers: Vec::new(),
             composited_texture: None,
             ui_base: None,
@@ -1067,6 +1078,40 @@ impl WgpuRenderer {
     /// the upload step — the compositor reads the TextureView directly.
     pub fn set_gpu_layers(&mut self, layers: Vec<GpuTextureLayer>) {
         self.gpu_layers = layers;
+    }
+
+    /// Register this paint's `RenderSurface` GPU frames with the Vello
+    /// renderer and hand back each one's image, by surface id (#1768). A
+    /// surface keeps its registration while its texture is the same one; a
+    /// new texture (a resize) is registered again and the old one dropped, as
+    /// is every surface missing from `frames`. The images are drawn premultiplied, as a
+    /// compositor layer's pixels were read.
+    pub fn sync_surface_images(
+        &mut self,
+        frames: impl Iterator<Item = (usize, Texture)>,
+    ) -> std::collections::HashMap<usize, vello::peniko::ImageData> {
+        let mut now = std::collections::HashMap::new();
+        for (id, texture) in frames {
+            let image = match self.surface_images.remove(&id) {
+                Some((kept, image)) if kept == texture => image,
+                old => {
+                    if let Some((_, image)) = old {
+                        self.renderer.unregister_texture(image);
+                    }
+                    let mut image = self.renderer.register_texture(texture.clone());
+                    image.alpha_type = vello::peniko::ImageAlphaType::AlphaPremultiplied;
+                    image
+                }
+            };
+            now.insert(id, (texture, image));
+        }
+        for (_, (_, image)) in std::mem::replace(&mut self.surface_images, now) {
+            self.renderer.unregister_texture(image);
+        }
+        self.surface_images
+            .iter()
+            .map(|(id, (_, image))| (*id, image.clone()))
+            .collect()
     }
 }
 

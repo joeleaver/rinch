@@ -72,6 +72,68 @@ writer.submit_frame(&pixels, width, height);
 
 Pixels are RGBA8, row-major. The surface redraws automatically after `submit_frame()`.
 
+### Drawing with the GPU (`set_gpu_render_callback`)
+
+The simplest GPU path: rinch hands your callback a device and a target at the surface's
+size, and draws what you render **as the surface element's content**, in the scene, the way
+an `<img>` is drawn.
+
+```rust
+use rinch::render_surface::GpuSurfaceFrame;
+use rinch::wgpu;
+
+let surface = create_render_surface();
+surface.set_continuous(true); // a game: every frame. `false` + request_frame() for an editor.
+surface.set_gpu_render_callback(move |f: &GpuSurfaceFrame| {
+    // f.device / f.queue: rinch's device. f.target: this frame's view,
+    // f.size: physical px, f.format: build your pipelines for it.
+    // Rebuild device resources when f.generation changes.
+    let mut encoder = f.device.create_command_encoder(&Default::default());
+    // ... a render pass into f.target ...
+    f.queue.submit(Some(encoder.finish()));
+});
+// Optional fallback when no GPU frame can be given (software renderer, embed):
+surface.set_render_callback(move |writer, w, h| { /* CPU pixels */ });
+
+rsx! { div { style: "flex: 1;", RenderSurface { surface: Some(surface) } } }
+```
+
+- **It is an element.** Ancestor backgrounds are beneath it; an element painted after it, or
+  with a higher `z-index`, covers it; `border-radius` and `overflow` clipping on an ancestor
+  clip it; an ancestor's `opacity` fades it; a transform moves, scales and rotates it; it
+  scrolls with its scroller. There is no hole and nothing to opt into.
+- The target is reallocated when the surface's size changes, and is paced like the
+  ordinary render callback (`set_continuous`, `request_frame`, see below). A frame drawn is
+  the next paint's damage; a quiet surface costs nothing.
+- Draw with `queue.submit` before the callback returns. The texture is drawn as
+  premultiplied alpha: clear an opaque viewport to an opaque colour. Its bytes are
+  sRGB-encoded (`f.format` is `Rgba8Unorm` on desktop); for linear-light blending, create a
+  view of `f.texture` with format `Rgba8UnormSrgb`, which it allows.
+- **Size and transforms.** The target is the surface's painted box at the window's scale,
+  as a CPU frame's is: under a `scale(2)` it is twice the layout size, so it stays sharp.
+- **Large and many surfaces.** A frame lives in Vello's image atlas for the paint: one
+  texture of at most 8192×8192 shared by every image in the scene. A surface past the
+  device's largest texture or 8192 px a side gets a target scaled down to fit (aspect kept;
+  `f.size` says how big; `layout_size()` stays the real size), and when the GPU frames of a
+  paint together pass half the atlas, all of them are drawn at one smaller scale. Either way
+  the frame is drawn — scaled up into the box, so softer — and rinch logs a warning once.
+- **Cost.** Each frame the surface draws costs a Vello render of (at least) its region.
+  Measured on an integrated GPU (Radeon 890M): a 640×360 surface 3–7 ms a frame, a
+  full-window 1080p one about 12 ms, a full-window 4K one about 15 ms.
+- A GPU frame needs a GPU renderer presenting the window (`gpu_frames_available()`). Under
+  the software renderer and in an embedded context the ordinary render callback runs
+  instead, if you set one.
+- The device is never replaced on desktop, so `f.generation` stays the same there; a lost
+  device stays lost (#1788).
+- **Mixing with `set_texture_source`.** The GPU render callback draws into a target of its
+  own; a texture registered with `set_texture_source` is not drawn into and, while the GPU
+  callback draws, not shown. Use one or the other per surface.
+- **Off screen still draws.** Pacing does not look at visibility: a continuous surface
+  scrolled out of view (or under `visibility: hidden`) keeps drawing every frame. Switch it to
+  `set_continuous(false)` while it is out of view if that matters.
+
+Example: `examples/gpu-surface` (a rotating triangle, Pause / One frame).
+
 ### GPU Texture Compositing
 
 For zero-copy compositing, use `GpuTextureRegistrar` to provide a `wgpu::TextureView` directly:
@@ -348,6 +410,8 @@ Notes:
 | `set_resize_callback(cb)` | `FnMut(w, h)` fired on backing-size change (physical px) — reconfigure a GPU surface |
 | `layout_size()` | Get current physical `(width, height)` (web: CSS px × devicePixelRatio) |
 | `canvas_element()` | **(web only)** the `<canvas>` after mount — create a WebGPU/WebGL context on it |
+| `set_gpu_render_callback(cb)` | **(gpu)** `FnMut(&GpuSurfaceFrame)`: draw the surface with rinch's device into a target drawn in the scene as the element's content; paced like `set_render_callback`, which runs instead when no GPU frame can be given (#1768) |
+| `gpu_frames_available()` | **(gpu)** whether a GPU frame can be given now (a GPU renderer presents the window) |
 | `set_texture_source(texture, view, w, h)` | **(desktop, gpu)** Set GPU texture directly (main thread only) |
 | `has_texture_source()` | Check if a GPU texture is registered |
 | `id()` | Surface ID |
@@ -684,17 +748,20 @@ if let Some(rect) = ctx.viewport_rect("main") {
 >
 > **Not ready also means no frame**, on both backends. A surface keeps the last
 > buffer it was given, so a video that errors mid-stream still has one; while
-> its node says `"false"` that frame is not drawn — the software backend paints
-> the node as an ordinary element, and the GPU backend hands the compositor no
-> layer for it — and the node's own `background` is what shows. Say `"true"`
+> its node says `"false"` that frame is not drawn — the node paints as an
+> ordinary element (on both backends since #1768; the GPU backend used to hand
+> the compositor no layer for it) — and the node's own `background` is what
+> shows. Say `"true"`
 > again and the frame the surface holds is back, with no new frame needed.
 >
 > Since [#358] software cuts no hole for a video at all (see below), so there
 > the gate decides only whether the frame or the node's `#000` placeholder is
 > drawn.
 
-> **A hole bigger than what fills it: black bars (GPU).** The complementary
-> case ([#354]). The GPU compositor **aspect-fits** a frame inside its viewport,
+> **A hole bigger than what fills it: black bars (GPU `GameViewport`).** The
+> complementary case ([#354]). Since #1768 this is the `GameViewport` CPU-frame
+> path only: video is drawn in the scene on the GPU too (below), with the same
+> black bars the software backend paints. The GPU compositor **aspect-fits** a frame inside its viewport,
 > so a source whose aspect ratio differs from the box leaves letterbox or
 > pillarbox bars — inside the punched hole, but covered by no layer. That was
 > see-through to the desktop for a video playing perfectly. The compositor now
@@ -718,7 +785,7 @@ if let Some(rect) = ctx.viewport_rect("main") {
 > | | `RenderSurface` | video | `GameViewport` |
 > |---|---|---|---|
 > | **software** | inline | **inline** | **inline** |
-> | **GPU** | inline | compositor + black backdrop | compositor |
+> | **GPU** | inline (a GPU frame is an image in the scene, #1768) | **inline** (#1768) | compositor |
 >
 > Software used to blit its compositor frames onto the **finished** pixel
 > buffer, after the whole UI had been painted, clipped only by the viewport's
@@ -726,7 +793,13 @@ if let Some(rect) = ctx.viewport_rect("main") {
 > overlay above a playing video or a game — the nav drawer, `Modal`,
 > `DropdownMenu`, `Select`'s popup, tooltips, a HUD, DevTools — was overwritten.
 > GPU has no such problem: its layers go down *first* and the Vello UI
-> alpha-blends on top, so an opaque drawer already covers the layer there.
+> alpha-blends on top, so an opaque drawer already covers the layer there. But a
+> layer under the UI shows only through the backgrounds of *clipping* ancestors
+> (where paint cuts its hole), and takes no ancestor's opacity or transform, so
+> since #1768 video is drawn in the scene on the GPU as on software: an element
+> like any other. Cost, measured on an integrated GPU (Radeon 890M): a 4K
+> full-window video is about 25 ms a frame in the scene against 6 ms as a layer;
+> a 640×360 one 3–6 ms against 1–3.
 >
 > So on software a frame goes through **paint** instead, on the same inline
 > path a `RenderSurface` component has always used: the `data-viewport` node
@@ -953,5 +1026,6 @@ runtime, call `ctx.set_theme(&props)`; the document restyles on its next
 ## Examples
 
 - `examples/game-embed/` — Spinning cube with rinch HUD overlay (embed API)
+- `examples/gpu-surface/` — A RenderSurface drawn with wgpu through `set_gpu_render_callback`, as an element in the page
 - `examples/render-surface-demo/` — Painting app with canvas and navigator (RenderSurface)
 - `examples/webgpu-surface-web/` — **(web)** WebGPU triangle in a rinch DOM UI — the app owns a wgpu `<canvas>` viewport (RenderSurface on `rinch-web`)

@@ -1076,6 +1076,12 @@ thread_local! {
     /// `paint_document()` and cleared after, like `SURFACE_PIXELS`.
     static VIEWPORT_PIXELS: RefCell<Option<HashMap<String, SurfacePixelData>>> = const { RefCell::new(None) };
 
+    /// GPU frames for inline painting, keyed by surface ID (#1768): a texture
+    /// registered with the renderer that will render this scene, drawn as an
+    /// image in place of the surface's CPU pixels. Set before
+    /// `paint_document()` and cleared after, like `SURFACE_PIXELS`.
+    static SURFACE_GPU_IMAGES: RefCell<Option<HashMap<usize, peniko::ImageData>>> = const { RefCell::new(None) };
+
     /// The render target for this paint cycle. Nothing outside it can be
     /// seen, so nothing outside it is drawn — see [`intersects_dirty_region`]
     /// for the cull and card K43 for what it is worth.
@@ -1238,6 +1244,9 @@ impl Painter for ClipTrackingPainter<'_> {
     fn draw_image(&mut self, image: &painter::PaintImage<'_>, transform: Affine) {
         self.inner.draw_image(image, transform);
     }
+    fn draw_gpu_image(&mut self, image: &peniko::ImageData, transform: Affine) {
+        self.inner.draw_gpu_image(image, transform);
+    }
     fn fill_repeating(
         &mut self,
         fill: Fill,
@@ -1344,6 +1353,14 @@ pub fn set_active_viewports(names: Option<HashSet<String>>) {
 /// Call with `Some(map)` before `paint_document()` and `None` after.
 /// When set, `paint_node()` will draw surface pixels inline at the
 /// element's position, like `<img>` elements.
+/// Hand this paint the `RenderSurface` GPU frames to draw in the scene, keyed
+/// by surface ID (#1768). Each image must be registered with the renderer that
+/// renders the scene (`vello::Renderer::register_texture`); only the Vello
+/// painter draws them. `None` clears.
+pub fn set_surface_gpu_images(images: Option<HashMap<usize, peniko::ImageData>>) {
+    SURFACE_GPU_IMAGES.with(|v| *v.borrow_mut() = images);
+}
+
 pub fn set_surface_pixels(pixels: Option<HashMap<usize, SurfacePixelData>>) {
     SURFACE_PIXELS.with(|v| *v.borrow_mut() = pixels);
 }
@@ -3812,6 +3829,42 @@ fn paint_node_unmasked(
                 .get("data-render-surface")
                 .and_then(|id_str| id_str.parse::<usize>().ok())
                 .map(|surface_id| {
+                    let gpu = SURFACE_GPU_IMAGES.with(|g| {
+                        g.borrow()
+                            .as_ref()
+                            .and_then(|m| m.get(&surface_id).cloned())
+                    });
+                    if let Some(image) = gpu {
+                        let rect = Rect::new(x, y, x + w, y + h);
+                        let opacity = node.computed_style.opacity;
+                        if opacity < 1.0 {
+                            let bounds = opacity_layer_shape(tree, node_id, scale, x, y);
+                            painter.push_layer(BlendMode::Normal, opacity, node_transform, &bounds);
+                        }
+                        if surface_visible {
+                            if let BackgroundValue::Color(bg_color) =
+                                &node.computed_style.background
+                            {
+                                painter.fill_color(
+                                    Fill::NonZero,
+                                    node_transform,
+                                    *bg_color,
+                                    &rect.into(),
+                                );
+                            }
+                            image::paint_gpu_image(
+                                painter,
+                                &image,
+                                rect,
+                                crate::computed_style::ObjectFitValue::Contain,
+                                node_transform,
+                            );
+                        }
+                        if opacity < 1.0 {
+                            painter.pop_layer();
+                        }
+                        return true;
+                    }
                     SURFACE_PIXELS.with(|sp| {
                         let guard = sp.borrow();
                         if let Some(map) = guard.as_ref() {
