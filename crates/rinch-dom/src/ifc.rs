@@ -484,6 +484,7 @@ impl HangStats {
 /// [`BreakReason::Regular`]: parley::layout::BreakReason::Regular
 /// [`BreakLines::revert_to`]: parley::layout::BreakLines::revert_to
 /// [`set_prior_line_width`]: parley::layout::BreakLines::set_prior_line_width
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn break_lines_hanging_spaces(
     layout: &mut parley::Layout<Brush>,
     text: &str,
