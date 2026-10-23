@@ -1055,7 +1055,11 @@ impl RinchDocument {
             .tree
             .active_transitions
             .iter()
-            .filter(|(_, props)| props.keys().any(|p| p.changes_text_measure()))
+            .filter(|(id, props)| {
+                props.keys().any(|p| p.changes_text_measure())
+                    || (self.tree.nodes[**id].display_mode == crate::node::DisplayMode::Inline
+                        && props.keys().any(|p| p.changes_inline_edge()))
+            })
             .map(|(id, _)| *id)
             .collect();
 
@@ -1273,10 +1277,13 @@ impl RinchDocument {
             .tree
             .active_animations
             .iter()
-            .filter(|(_, anims)| {
-                anims
-                    .iter()
-                    .any(|a| !a.is_paused() && !a.fill_settled && a.changes_text_measure())
+            .filter(|(id, anims)| {
+                let inline = self.tree.nodes[**id].display_mode == crate::node::DisplayMode::Inline;
+                anims.iter().any(|a| {
+                    !a.is_paused()
+                        && !a.fill_settled
+                        && (a.changes_text_measure() || (inline && a.changes_inline_edge()))
+                })
             })
             .map(|(id, _)| *id)
             .collect();

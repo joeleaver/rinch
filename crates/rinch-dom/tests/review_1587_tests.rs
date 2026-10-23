@@ -223,19 +223,27 @@ fn decorations_and_backgrounds_span_the_tab() {
 
 /// The probe cases rinch matches Chrome 155 on at the PR head, as a pin:
 /// every caret on Chrome's line within 0.05px. Excluded, with the reason in
-/// the review: `bidi` (mixed-direction line), `bg_span` (#1426, inline
-/// padding takes no room), `justify` (carets after a letter-spaced cluster in
+/// the review: `bidi` (mixed-direction line), `justify` (carets after a letter-spaced cluster in
 /// a justified line), `cascade2_300` (MAX_TAB_BUILDS cap, Refs #1593).
 #[test]
 fn matches_chrome_on_the_sampled_cases() {
     for (name, style, html, want) in chrome::CASES {
-        if ["bidi", "bg_span", "justify", "cascade2_300"].contains(name) {
+        if ["bidi", "justify", "cascade2_300"].contains(name) {
             continue;
         }
         let (d, c) = block(style, html);
         let got = carets_of(&d, c);
         assert_eq!(got.len(), want.len(), "{name}");
         for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+            // #1426 part 1: `|x` (inside the span) and `|\tz` (after it) each
+            // share a flat byte with the position across the padding (`a|`,
+            // `y|`), and a byte's caret is drawn before the edge box at it:
+            // `|x` outside the start padding, `|\tz` inside the end padding.
+            // Chrome draws each DOM position on its own side. The caret rule
+            // is part 2.
+            if *name == "bg_span" && (i == 2 || i == 6) {
+                continue;
+            }
             let gl = (g.1 / 24.0).floor();
             if (gl - w.1).abs() > 0.5 {
                 // Chrome draws the caret at a soft wrap at the upper line's end.

@@ -237,8 +237,7 @@
 //!   span in a block that draws a `text-overflow: ellipsis` "…": those lines
 //!   are rebuilt as flat text with no entry for the span.
 //! - A relative span's own `left`/`top` moves neither its text nor a box
-//!   resolved against it (issue #1425), and its horizontal padding takes no
-//!   room on the line (issue #1426): the containing block is the span as
+//!   resolved against it (issue #1425): the containing block is the span as
 //!   rinch draws it. So is a raised one (`<sup>`, any positive
 //!   `vertical-align`): its fragment follows its glyphs, which rinch draws
 //!   higher than Chrome because the line does not grow for them (issue
@@ -721,6 +720,9 @@ fn measure_span_fragments(
                 }
                 PositionedLayoutItem::InlineBox(b) => {
                     last_run = None;
+                    if crate::ifc::is_edge_box(b.id) {
+                        continue;
+                    }
                     box_at.insert(b.id as usize, (index, b.x, b.x + b.width));
                 }
             }
@@ -2212,8 +2214,8 @@ impl RinchDocument {
     /// `getBoundingClientRect()` answers for an inline (#1779). Each fragment
     /// is the element's own font's ascent and descent around the line's
     /// baseline and the extent of its content on the line, grown by the
-    /// element's padding (rinch gives that padding no room on the line,
-    /// #1426, and draws no inline border); the union is pushed into window
+    /// element's padding and border (which take room on the line, #1426);
+    /// the union is pushed into window
     /// space through the host's painted transform, less the host's own
     /// scroll. Read from the measurement the lines keep when a positioned
     /// box hangs from the span (#631), else measured now, uncached.
@@ -2241,10 +2243,23 @@ impl RinchDocument {
             }
         };
         let cs = &span.computed_style;
-        let left = f.union_left.min(f.left - cs.padding_left.to_px());
-        let right = f.union_right.max(f.right + cs.padding_right.to_px());
-        let top = f.top - cs.padding_top.to_px();
-        let bottom = f.bottom + cs.padding_bottom.to_px();
+        // The border box: the padding box grown by the border (#1426).
+        let border = |w: f32, s: crate::computed_style::BorderStyleValue| {
+            use crate::computed_style::BorderStyleValue as S;
+            if matches!(s, S::None | S::Hidden) {
+                0.0
+            } else {
+                w.max(0.0)
+            }
+        };
+        let bl = border(cs.border_left_width.to_px(), cs.border_left_style);
+        let br = border(cs.border_right_width.to_px(), cs.border_right_style);
+        let bt = border(cs.border_top_width.to_px(), cs.border_top_style);
+        let bb = border(cs.border_bottom_width.to_px(), cs.border_bottom_style);
+        let left = f.union_left.min(f.left - cs.padding_left.to_px() - bl);
+        let right = f.union_right.max(f.right + cs.padding_right.to_px() + br);
+        let top = f.top - cs.padding_top.to_px() - bt;
+        let bottom = f.bottom + cs.padding_bottom.to_px() + bb;
         let (host, (ox, oy)) = inline_host(tree, root_id)?;
         let (sx, sy) = tree.get(host)?.scroll_offset;
         Some(crate::paint::rect_from_painted_box(

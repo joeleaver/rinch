@@ -250,17 +250,20 @@ pub fn visual_line_edges(
     use parley::layout::PositionedLayoutItem;
     let line = layout.lines().nth(line_index_of(layout, at)?)?;
     let as_box = |item: PositionedLayoutItem<'_, Brush>| match item {
-        PositionedLayoutItem::InlineBox(b) => Some(b.id),
-        PositionedLayoutItem::GlyphRun(_) => None,
+        PositionedLayoutItem::InlineBox(b) if !crate::ifc::is_edge_box(b.id) => Some(b.id),
+        _ => None,
     };
+    // An edge box (#1426) is an inline element's padding, not an item
+    // a caret is placed against: the edge is the first or last other item.
+    let real = |item: &PositionedLayoutItem<'_, Brush>| !matches!(item, PositionedLayoutItem::InlineBox(b) if crate::ifc::is_edge_box(b.id));
     let ltr = line.items().all(|it| match it {
         PositionedLayoutItem::GlyphRun(g) => !g.run().is_rtl(),
         PositionedLayoutItem::InlineBox(_) => true,
     });
     Some(VisualLineEdges {
         range: line_edge_range(layout, &line),
-        first_box: line.items().next().and_then(as_box),
-        last_box: line.items().last().and_then(as_box),
+        first_box: line.items().find(real).and_then(as_box),
+        last_box: line.items().filter(real).last().and_then(as_box),
         ltr,
     })
 }
@@ -321,6 +324,9 @@ pub fn caret_on_line(
                 }
             }
             PositionedLayoutItem::InlineBox(b) => {
+                if crate::ifc::is_edge_box(b.id) {
+                    continue;
+                }
                 if inline_box.is_none() && (b.x..b.x + b.width).contains(&x) {
                     inline_box = Some((b.id, x >= b.x + b.width / 2.0));
                 }
@@ -614,6 +620,7 @@ pub fn inline_box_at_point(
         for item in line.items() {
             if let parley::layout::PositionedLayoutItem::InlineBox(b) = item
                 && (b.x..b.x + b.width).contains(&x)
+                && !crate::ifc::is_edge_box(b.id)
             {
                 return Some((b.id, x >= b.x + b.width / 2.0));
             }

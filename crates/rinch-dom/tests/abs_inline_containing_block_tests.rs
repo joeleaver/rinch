@@ -978,18 +978,17 @@ fn a_relative_spans_own_offset_moves_nothing() {
     assert_eq!(c.rect("abs"), [48.0, 7.0, 40.0, 30.0]);
 }
 
-/// rinch gives an inline element's horizontal padding no room on its line:
-/// it paints the background 6px left of and 5px right of the glyphs, over
-/// the neighbours. The containing block is that painted padding box, so it
-/// is as wide as Chrome's (61.375) and starts 6px further left than
-/// Chrome's `(47.641, 4)`.
+/// An inline element's horizontal padding takes room on its line (#1426):
+/// the text starts 6px after `lead `, so the padding box starts where
+/// Chrome's does, `(47.641, 4)`, `61.375` wide. Before #1426 the padding
+/// took no room and the box started 6px further left, at 42.
 #[test]
-fn horizontal_padding_takes_no_room_in_the_line() {
+fn horizontal_padding_takes_room_in_the_line() {
     let c = Case::new(&format!(
         r#"lead <span style="{REL}; padding: 3px 5px 4px 6px">text{}tail</span>"#,
         abs("inset: 0", "")
     ));
-    assert_eq!(c.rect("abs"), [42.0, 4.0, 61.0, 27.0]);
+    assert_rect(c.rect("abs"), [47.641, 4.0, 61.375, 27.0], "padding box");
 }
 
 /// A span that **ends** in a forced break has, in Chrome 153, an empty last

@@ -242,8 +242,7 @@ Not Chrome's, each pinned: a **split** inline (one holding a block-level child,
 #513) is not measured and keeps the block container (**#1424**), and neither is
 a span in a block that draws a `text-overflow: ellipsis` "…" (its lines are
 rebuilt as flat text); a relative span's own `left`/`top` moves neither its
-text nor the box (**#1425**); an inline's horizontal padding takes no room on
-its line, so the padding box starts that much further left (**#1426**); a
+text nor the box (**#1425**); a
 raised span's fragment (`<sup>`, any positive `vertical-align`) follows glyphs
 rinch draws higher than Chrome, whose line grows for them (#1357: a `<sup>` 5px
 higher, `vertical-align: 10px` 10px, and a raised span that wraps is shorter
