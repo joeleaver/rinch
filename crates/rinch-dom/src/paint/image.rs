@@ -124,6 +124,44 @@ fn paint_image_pixels(
         return;
     }
 
+    let Some((img_transform, needs_clip)) = fit_image(iw, ih, rect, object_fit, node_transform)
+    else {
+        return;
+    };
+
+    if needs_clip {
+        painter.push_clip(Fill::NonZero, node_transform, &rect.into());
+    }
+
+    let paint_image = PaintImage {
+        data,
+        width,
+        height,
+        decoded,
+        opaque,
+    };
+    painter.draw_image(&paint_image, img_transform);
+
+    if needs_clip {
+        painter.pop_layer();
+    }
+}
+
+/// The transform that places an `iw` x `ih` image into `rect` by
+/// `object_fit` (under `node_transform`), and whether the result must be
+/// clipped to `rect`. `None` for an empty rect.
+fn fit_image(
+    iw: f64,
+    ih: f64,
+    rect: Rect,
+    object_fit: ObjectFitValue,
+    node_transform: Affine,
+) -> Option<(Affine, bool)> {
+    let rw = rect.width();
+    let rh = rect.height();
+    if rw <= 0.0 || rh <= 0.0 {
+        return None;
+    }
     // Compute the transform to map image pixels into the layout rect.
     // Image pixels are in their own coordinate space (0,0)-(iw,ih).
     // We need to scale and position them into (rect.x0, rect.y0)-(rect.x1, rect.y1).
@@ -172,20 +210,34 @@ fn paint_image_pixels(
 
     let img_transform =
         node_transform * Affine::translate((tx, ty)) * Affine::scale_non_uniform(sx, sy);
+    Some((img_transform, needs_clip))
+}
 
+/// Paint a GPU texture registered with the renderer (a `RenderSurface` GPU
+/// frame, #1768) into `rect` by `object_fit`, as an image is.
+pub fn paint_gpu_image(
+    painter: &mut dyn Painter,
+    image: &peniko::ImageData,
+    rect: Rect,
+    object_fit: ObjectFitValue,
+    node_transform: Affine,
+) {
+    if image.width == 0 || image.height == 0 {
+        return;
+    }
+    let Some((img_transform, needs_clip)) = fit_image(
+        image.width as f64,
+        image.height as f64,
+        rect,
+        object_fit,
+        node_transform,
+    ) else {
+        return;
+    };
     if needs_clip {
         painter.push_clip(Fill::NonZero, node_transform, &rect.into());
     }
-
-    let paint_image = PaintImage {
-        data,
-        width,
-        height,
-        decoded,
-        opaque,
-    };
-    painter.draw_image(&paint_image, img_transform);
-
+    painter.draw_gpu_image(image, img_transform);
     if needs_clip {
         painter.pop_layer();
     }

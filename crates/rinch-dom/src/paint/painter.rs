@@ -247,6 +247,16 @@ pub trait Painter {
     /// Draw an RGBA8 image with the given transform.
     fn draw_image(&mut self, image: &PaintImage<'_>, transform: Affine);
 
+    /// Draw an image whose pixels live in a GPU texture registered with the
+    /// backend's renderer (a `RenderSurface` GPU frame, #1768), placed like
+    /// [`draw_image`](Self::draw_image): `transform` maps its `width` x `height`
+    /// pixel space into the scene. The default draws nothing — only a backend
+    /// that renders with the renderer the texture is registered with can draw
+    /// it, and no other is ever handed one.
+    fn draw_gpu_image(&mut self, image: &peniko::ImageData, transform: Affine) {
+        let _ = (image, transform);
+    }
+
     /// Fill `color` through a `width` x `height` coverage mask (one byte per
     /// pixel, 255 = fully covered), placed by `transform` like an image. A
     /// blurred `text-shadow` is drawn this way (#980).

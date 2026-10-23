@@ -1076,6 +1076,12 @@ thread_local! {
     /// `paint_document()` and cleared after, like `SURFACE_PIXELS`.
     static VIEWPORT_PIXELS: RefCell<Option<HashMap<String, SurfacePixelData>>> = const { RefCell::new(None) };
 
+    /// GPU frames for inline painting, keyed by surface ID (#1768): a texture
+    /// registered with the renderer that will render this scene, drawn as an
+    /// image in place of the surface's CPU pixels. Set before
+    /// `paint_document()` and cleared after, like `SURFACE_PIXELS`.
+    static SURFACE_GPU_IMAGES: RefCell<Option<HashMap<usize, peniko::ImageData>>> = const { RefCell::new(None) };
+
     /// The render target for this paint cycle. Nothing outside it can be
     /// seen, so nothing outside it is drawn — see [`intersects_dirty_region`]
     /// for the cull and card K43 for what it is worth.
@@ -1238,6 +1244,9 @@ impl Painter for ClipTrackingPainter<'_> {
     fn draw_image(&mut self, image: &painter::PaintImage<'_>, transform: Affine) {
         self.inner.draw_image(image, transform);
     }
+    fn draw_gpu_image(&mut self, image: &peniko::ImageData, transform: Affine) {
+        self.inner.draw_gpu_image(image, transform);
+    }
     fn fill_repeating(
         &mut self,
         fill: Fill,
@@ -1337,6 +1346,106 @@ const INK_MARGIN_CSS_PX: f64 = 64.0;
 /// Call with `None` to revert to the default (all viewports get holes).
 pub fn set_active_viewports(names: Option<HashSet<String>>) {
     ACTIVE_VIEWPORTS.with(|v| *v.borrow_mut() = names);
+}
+
+/// The insets of `node`'s content box from its border box — border plus
+/// padding on each side, `(left, top, right, bottom)` in unscaled CSS px. A
+/// percentage padding counts as zero here.
+pub fn content_box_insets(node: &Node) -> (f32, f32, f32, f32) {
+    let (bl, bt, br, bb) = padding_box_insets(node);
+    let cs = &node.computed_style;
+    (
+        bl + cs.padding_left.to_px().max(0.0),
+        bt + cs.padding_top.to_px().max(0.0),
+        br + cs.padding_right.to_px().max(0.0),
+        bb + cs.padding_bottom.to_px().max(0.0),
+    )
+}
+
+/// Draw a `RenderSurface` element's frame — its GPU image or its CPU pixels,
+/// whichever this paint was handed — into its content box, `contain`-fitted,
+/// clipped to the inner (content-edge) radius (#1768). The border box is
+/// `x, y, w, h` (scaled) with `radii`; the background, border and outline are
+/// the element's, painted around it by the caller as for any element.
+#[allow(clippy::too_many_arguments)]
+fn paint_surface_frame(
+    painter: &mut dyn Painter,
+    node: &Node,
+    scale: f64,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    radii: BorderRadii,
+    node_transform: Affine,
+) {
+    let Some(surface_id) = node
+        .attributes
+        .get("data-render-surface")
+        .and_then(|id| id.parse::<usize>().ok())
+    else {
+        return;
+    };
+    let (l, t, r, b) = content_box_insets(node);
+    let (l, t, r, b) = (
+        l as f64 * scale,
+        t as f64 * scale,
+        r as f64 * scale,
+        b as f64 * scale,
+    );
+    let content = Rect::new(x + l, y + t, (x + w - r).max(x + l), (y + h - b).max(y + t));
+    if content.width() <= 0.0 || content.height() <= 0.0 {
+        return;
+    }
+    let inner = radii.inner(t, r, b, l);
+    let rounded = !inner.is_square();
+    let fit = crate::computed_style::ObjectFitValue::Contain;
+    let gpu = SURFACE_GPU_IMAGES.with(|g| {
+        g.borrow()
+            .as_ref()
+            .and_then(|m| m.get(&surface_id).cloned())
+    });
+    if rounded {
+        painter.push_clip(Fill::NonZero, node_transform, &inner.shape(content));
+    }
+    if let Some(image) = gpu {
+        image::paint_gpu_image(painter, &image, content, fit, node_transform);
+    } else {
+        // Over the borrowed buffer: a live frame source must not be cloned
+        // into a `DecodedImage` first, a whole frame of memcpy per frame.
+        SURFACE_PIXELS.with(|sp| {
+            let guard = sp.borrow();
+            if let Some(pixels) = guard.as_ref().and_then(|m| m.get(&surface_id))
+                && pixels.width > 0
+                && pixels.height > 0
+                && !pixels.data.is_empty()
+            {
+                image::paint_frame_data(
+                    painter,
+                    &pixels.data,
+                    pixels.width,
+                    pixels.height,
+                    pixels.opaque,
+                    content,
+                    scale,
+                    fit,
+                    node_transform,
+                );
+            }
+        });
+    }
+    if rounded {
+        painter.pop_layer();
+    }
+}
+
+/// Hand this paint the `RenderSurface` GPU frames to draw in the scene, keyed
+/// by surface ID (#1768). Each image must be registered with the renderer that
+/// renders the scene (`vello::Renderer::register_texture`); only the Vello
+/// painter draws them. A surface with an image here draws it in place of its
+/// CPU pixels. `None` clears.
+pub fn set_surface_gpu_images(images: Option<HashMap<usize, peniko::ImageData>>) {
+    SURFACE_GPU_IMAGES.with(|v| *v.borrow_mut() = images);
 }
 
 /// Set surface pixel data for inline painting during the current paint cycle.
@@ -3800,110 +3909,6 @@ fn paint_node_unmasked(
         }
         // Inline painting for render surfaces — draws pixels at the element's
         // position like <img>, participating in normal stacking and clipping.
-        NodeKind::Element(_) if node.attributes.contains_key("data-render-surface") => {
-            // The frame is this box's own content, like an `<img>`'s, so a
-            // hidden surface draws neither it nor its background (#829).
-            let surface_visible = !matches!(
-                node.computed_style.visibility,
-                VisibilityValue::Hidden | VisibilityValue::Collapse
-            );
-            let surface_painted = node
-                .attributes
-                .get("data-render-surface")
-                .and_then(|id_str| id_str.parse::<usize>().ok())
-                .map(|surface_id| {
-                    SURFACE_PIXELS.with(|sp| {
-                        let guard = sp.borrow();
-                        if let Some(map) = guard.as_ref() {
-                            if let Some(pixels) = map.get(&surface_id) {
-                                if pixels.width > 0 && pixels.height > 0 && !pixels.data.is_empty()
-                                {
-                                    let rect = Rect::new(x, y, x + w, y + h);
-                                    let opacity = node.computed_style.opacity;
-                                    if opacity < 1.0 {
-                                        let bounds =
-                                            opacity_layer_shape(tree, node_id, scale, x, y);
-                                        painter.push_layer(
-                                            BlendMode::Normal,
-                                            opacity,
-                                            node_transform,
-                                            &bounds,
-                                        );
-                                    }
-
-                                    // Paint background behind the surface if any
-                                    if surface_visible
-                                        && let BackgroundValue::Color(bg_color) =
-                                            &node.computed_style.background
-                                    {
-                                        painter.fill_color(
-                                            Fill::NonZero,
-                                            node_transform,
-                                            *bg_color,
-                                            &rect.into(),
-                                        );
-                                    }
-
-                                    // Paint the surface pixels inline, like an
-                                    // image — over the borrowed buffer. A live
-                                    // frame source must not be cloned into a
-                                    // `DecodedImage` first: that is a whole
-                                    // frame of memcpy per frame, for nothing.
-                                    if surface_visible {
-                                        image::paint_frame_data(
-                                            painter,
-                                            &pixels.data,
-                                            pixels.width,
-                                            pixels.height,
-                                            pixels.opaque,
-                                            rect,
-                                            scale,
-                                            crate::computed_style::ObjectFitValue::Contain,
-                                            node_transform,
-                                        );
-                                    }
-
-                                    if opacity < 1.0 {
-                                        painter.pop_layer();
-                                    }
-                                    return true;
-                                }
-                            }
-                        }
-                        false
-                    })
-                })
-                .unwrap_or(false);
-
-            if !surface_painted {
-                // No pixel data yet — paint as a normal element (shows background)
-                // Fall through to generic element painting below
-            } else {
-                return; // Surface painted inline, done
-            }
-
-            // Fall through: paint as generic element if no surface data
-            let rect = Rect::new(x, y, x + w, y + h);
-            let visible = !matches!(
-                node.computed_style.visibility,
-                VisibilityValue::Hidden | VisibilityValue::Collapse
-            );
-            let opacity = node.computed_style.opacity;
-            if opacity < 1.0 {
-                let bounds = opacity_layer_shape(tree, node_id, scale, x, y);
-                painter.push_layer(BlendMode::Normal, opacity, node_transform, &bounds);
-            }
-            if visible {
-                if let BackgroundValue::Color(bg_color) = &node.computed_style.background {
-                    // Rounded as any element's background is (#977).
-                    let shape = border_radii(node, scale).shape(rect);
-                    painter.fill_color(Fill::NonZero, node_transform, *bg_color, &shape);
-                }
-            }
-            if opacity < 1.0 {
-                painter.pop_layer();
-            }
-        }
         NodeKind::Element(_) => {
             let rect = Rect::new(x, y, x + w, y + h);
             let visible = !matches!(
@@ -4161,6 +4166,13 @@ fn paint_node_unmasked(
 
                 // Render outline (drawn outside the box model)
                 paint_outline(painter, node, scale, x, y, w, h, radii, node_transform);
+
+                // A `RenderSurface`'s frame is its content, as an `<img>`'s
+                // picture is (#1768): in the content box, over the background
+                // and inside the border, rounded by the inner radius.
+                if node.attributes.contains_key("data-render-surface") {
+                    paint_surface_frame(painter, node, scale, x, y, w, h, radii, node_transform);
+                }
 
                 // Render input element value
                 if matches!(node.tag(), Some("input" | "textarea")) {

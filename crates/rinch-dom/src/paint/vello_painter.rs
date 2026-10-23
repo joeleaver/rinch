@@ -194,6 +194,20 @@ impl Painter for VelloPainter {
         );
     }
 
+    fn draw_gpu_image(&mut self, image: &ImageData, transform: Affine) {
+        // As `draw_image`: the brush transform moves the sample to the pixel's
+        // centre (#1027). The pixels come from the registered texture.
+        let rect = peniko::kurbo::Rect::new(0.0, 0.0, image.width as f64, image.height as f64);
+        let brush = peniko::ImageBrush::new(image.clone());
+        self.scene.fill(
+            Fill::NonZero,
+            transform,
+            &brush,
+            Some(centre_sampling(transform, Affine::IDENTITY)),
+            &rect,
+        );
+    }
+
     fn fill_repeating(
         &mut self,
         fill: Fill,
