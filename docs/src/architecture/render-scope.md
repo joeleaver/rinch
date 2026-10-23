@@ -416,9 +416,39 @@ describes the behaviour it builds.
 | `focus_into(policy: FocusIntoPolicy)` | Move focus into this subtree (`showModal()`'s focusing steps) |
 | `restore_focus(opener: Option<&NodeHandle>)` | This overlay has closed: hand the keyboard back, or release it |
 | `children() -> Vec<NodeHandle>` | Get child nodes as NodeHandles |
+| `query_selector(selector: &str) -> Option<NodeHandle>` | The first element **under** this node matching a CSS selector (`Element.querySelector`) |
+| `query_selector_all(selector: &str) -> Vec<NodeHandle>` | Every element under this node matching it, in document order |
 | `is_valid() -> bool` | Check if this handle still points to a valid node |
 | `node_id() -> NodeId` | Get the internal node ID |
 | `clone() -> NodeHandle` | Clone the handle (same underlying node) |
+
+### Querying a subtree
+
+`query_selector` and `query_selector_all` follow `Element.querySelector{,All}`
+on both backends (#1796): the candidates are the node's descendants in
+document order (the node itself never), the selector is matched against the
+whole tree, so `panel.query_selector(".app .body")` finds a `.body` under
+`panel` whose `.app` ancestor is above it, and `:scope` is the node
+(`:scope > li` = its own `li` children). Any CSS selector works —
+descendant/child/sibling combinators, compounds (`button.primary`), lists
+(`.a, .b`, answered in document order), `:not()`, attribute operators
+(`[data-kind^=x]`, `[x=Y i]`), and the pseudo-classes the backend matches.
+The web asks the browser; desktop runs Stylo's parser and matcher, the ones
+its cascade uses, read-only (no restyle, no layout). Two differences remain:
+`:has()` does not parse on desktop (Stylo's servo build, #680), and a
+pseudo-class desktop does not match (see the
+[theming guide](../guide/theming.md)) matches nothing there.
+
+An invalid selector answers `None` / an empty list on both backends, where a
+browser's own `querySelector` throws a `SyntaxError`, and logs one
+`tracing::warn!` per distinct string (the first 32). Generated `::before`,
+`::after` and list-marker boxes, which are nodes in desktop's tree, are never
+matched.
+
+Until #1796 both methods searched the **whole document** whatever node they
+were called on, and desktop took only one simple selector (`#id`, `.class`,
+`[attr]`, `[attr=value]`, a tag), answering nothing for anything else. The
+document-wide search is still `DomDocument::query_selector{,_all}`.
 
 ### Watching a subtree change
 

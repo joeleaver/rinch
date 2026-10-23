@@ -119,13 +119,20 @@ fn serialize_node(
     obj
 }
 
-/// Find nodes matching a simple selector.
+/// Find `<body>` and the elements under it matching `selector`, in document
+/// order. This is the MCP `query_selector` tool's matcher.
 ///
-/// Supported selectors:
-/// - `"div"` — match by tag name
-/// - `"[data-rid]"` — match by attribute existence
-/// - `"[data-rid=5]"` — match by attribute value
+/// Any CSS selector works (#1796; [`crate::query`]): `"div"`, `".a .b"`,
+/// `"button.primary"`, `"[data-rid]"`, `"[data-rid='5']"`, `":not(...)"`.
+/// A string that is not a valid CSS selector falls back to the single simple
+/// selector this function took before, so `"[data-rid=5]"` (an unquoted
+/// number, which CSS rejects) still finds the node: `"tag"`, `".class"`,
+/// `"[attr]"` or `"[attr=value]"`. Generated pseudo-element nodes are never
+/// answered by a CSS selector; the fallback still walks them.
 pub fn query_selector(tree: &NodeTree, selector: &str) -> Vec<RawNodeId> {
+    if let Some(list) = crate::query::parse(selector) {
+        return crate::query::select(tree, tree.body_id, &list, true, false);
+    }
     let mut results = Vec::new();
     let matcher = parse_selector(selector);
     query_walk(tree, tree.body_id, &matcher, &mut results);

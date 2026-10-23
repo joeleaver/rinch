@@ -412,6 +412,27 @@ rsx! {
 }
 ```
 
+### In SVG paint
+
+An SVG shape's `fill` and `stroke` take a variable too, as a presentation
+attribute or in its `style` (#1800):
+
+```rust
+rsx! {
+    svg { viewBox: "0 0 16 16", style: "width: 16px; height: 16px",
+        path { d: "M2 8h12", stroke: "var(--rinch-primary-color)" }
+        path { d: "M8 2v12", style: "stroke: var(--rinch-color-dimmed)" }
+    }
+}
+```
+
+A fallback works (`var(--brand, #228be6)`), a variable holding
+`currentColor` paints in the shape's own `color`, and a missing variable with
+no fallback leaves the shape the `<svg>`'s paint, as in a browser. On desktop
+a `fill`/`stroke` written in a **stylesheet** rule (`.logo path { stroke: … }`)
+is not read: rinch's style engine has no such property, so the shape's own
+attribute or `style` is the place for it.
+
 ## CSS Selector Support (desktop)
 
 Desktop styling runs through Stylo, the same cascade engine Servo uses, so
@@ -420,6 +441,8 @@ The **selector** surface is narrower than a browser's, and the gaps are silent:
 an unsupported selector parses fine and then matches nothing, with no warning.
 On `rinch-web` the browser does its own matching, so everything below works
 there — which is exactly what makes a gap easy to miss.
+`NodeHandle::query_selector` / `query_selector_all` use the same matcher on
+desktop (#1796), so this table is also what a query can find there.
 
 Measured on the desktop engine:
 
@@ -442,6 +465,7 @@ Measured on the desktop engine:
 | `:indeterminate`, `:valid`, `:invalid`, `:in-range`, `:out-of-range`, `:default`, `:target`, `:fullscreen`, `:modal`, `:popover-open`, `:autofill`, `:user-valid`, `:user-invalid` | **never match** | they parse, then fall through to a catch-all `false` — rinch has no constraint validation, no document/fragment concept, and no "default" tracking distinct from current state |
 | `::before`, `::after` | works | |
 | camelCase SVG type selectors (`linearGradient`, `clipPath`) | works (#683) | `is_html_element_in_html_document` answers `false` for SVG content tags (`attr_name::is_svg_content_tag`), so the selector keeps the author's exact spelling instead of being lowercased as if every element were HTML |
+| `width` / `height` attributes on an `<svg>` | works | presentation attributes: mapped to `width` / `height` as CSS lengths (a bare number is pixels), below every author rule; with CSS `auto` the attributes and the `viewBox` give the natural size and ratio, else 300x150 (#1797) |
 | `width` / `height` attributes on `<img>`, `<video>`, `<iframe>` | works | mapped to `width` / `height` below every author rule and above the UA sheet's normal rules, plus the pair's aspect ratio on an image or video (#684), as `aspect-ratio: auto w / h`, so an author `aspect-ratio` replaces it (#1286) |
 | Other presentational attributes (`<td bgcolor>`, `<img hspace>`, `<hr width>`, `<table width>`) | **no effect** | no hint is synthesized for them (#1419) |
 

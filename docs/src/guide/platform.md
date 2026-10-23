@@ -62,6 +62,27 @@ no ratio. The other legacy attributes (`hspace`, `vspace`, `border`, `align`,
 `<hr width>`, a table's `width`/`bgcolor`/…) still do nothing on desktop
 (#1419).
 
+### Inline SVG
+
+An `<svg>` is sized as a browser sizes it (#1797). Its `width` and `height`
+attributes are presentation attributes: each is a CSS length (a bare number
+is pixels, `"1em"` and `"50%"` work too) with less weight than any
+declaration in your own CSS, so an icon needs no `style` to show:
+
+```rust
+svg { width: "14", height: "14", viewBox: "0 0 16 16",
+    path { d: "M2 8h12", stroke: "currentColor" }
+}
+```
+
+With `width`/`height` left `auto` by CSS, the attributes are its natural
+size and their ratio (or, with one attribute or none, the `viewBox`'s)
+carries one dimension to the other: `width: "14"` with `viewBox="0 0 16 8"`
+is 14x7. With no size from anywhere an `<svg>` is 300x150, as in a browser;
+a block-level one with only a `viewBox` fills its container's width. An
+inline one with only a `viewBox` is 300 wide on desktop, where a browser
+fills the containing block's width: give it a size.
+
 ### Background layers
 
 A background image — a `url(...)` or a `linear-gradient`/`radial-gradient` —
