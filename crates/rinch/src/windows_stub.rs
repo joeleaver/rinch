@@ -11,6 +11,16 @@ pub fn current_window_position() -> Option<(f64, f64)> {
 pub fn current_window_size() -> Option<(f64, f64)> {
     None
 }
+/// The desktop's `WindowRestore`; nothing here has one to give.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WindowRestore {
+    pub position: Option<(f64, f64)>,
+    pub size: (f64, f64),
+    pub maximized: bool,
+}
+pub fn current_window_restore() -> Option<WindowRestore> {
+    None
+}
 pub fn set_current_window_position(_x: f64, _y: f64) {}
 pub fn set_current_window_size(_width: f64, _height: f64) {}
 pub fn close_current_window() {
