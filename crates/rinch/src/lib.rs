@@ -129,7 +129,9 @@ pub mod video {
     pub use rinch_video::*;
 }
 
-#[cfg(feature = "file-dialogs")]
+/// File and message dialogs: natively behind the `file-dialogs` feature
+/// (`rfd`); in the browser (wasm32) the message dialogs need no feature (#1821).
+#[cfg(any(feature = "file-dialogs", target_arch = "wasm32"))]
 pub mod dialogs;
 
 #[cfg(feature = "clipboard")]

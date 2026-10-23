@@ -374,7 +374,7 @@ fn importer() -> NodeHandle {
   script of its own that cancels the `drop` (`preventDefault`) before it gets
   there silences `ondropfiles`.
 
-`onfiledrop` (`Vec<PathBuf>`) and `rinch::dialogs` are unchanged and remain
+`onfiledrop` (`Vec<PathBuf>`) and the `rinch::dialogs` file pickers are unchanged and remain
 the desktop-only, path-based forms.
 
 **Testing a drop.** With the `debug` feature, the rinch MCP server's
@@ -389,7 +389,8 @@ web equivalent yet.
 
 ## File Dialogs
 
-Enable with: `features = ["file-dialogs"]`
+Enable with: `features = ["file-dialogs"]` (natively; a browser build has the
+message dialogs without it)
 
 Native file dialogs for opening, saving, and folder selection, and message
 dialogs (alert, confirm). In the browser only the message dialogs exist — see
@@ -484,7 +485,8 @@ if delete {
 
 **In the browser** (`wasm32`), `message(..)` with `show`, `confirm` and `ask` is
 the page's own `window.alert` / `window.confirm`: the same call, synchronous as
-natively, and `file-dialogs` links no crate there. The browser draws no title
+natively. In a browser build `rinch::dialogs` needs no feature: a web build
+without `file-dialogs` has it, and `file-dialogs` links no crate there. The browser draws no title
 (it becomes the message's first line) and no level icon, and `ask`'s buttons
 read OK / Cancel (OK is yes). `confirm` answers `false` when the browser
 suppresses the dialog. The file and folder pickers are native-only: a browser
