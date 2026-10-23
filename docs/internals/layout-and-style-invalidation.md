@@ -170,7 +170,25 @@ widest-option width (`note_select_content_changed`). (A childless block's
 one-line floor was a second, re-synced by `note_first_child`; both are gone
 since #296 — see **An empty `<div>` is 0 tall** under Common Issues.) `resolve_styles` walks the whole document
 only when a whole-document restyle asks (`NodeTree::full_style_walk`) — an
-empty `style_roots` means nothing to do, not "walk everything".
+empty `style_roots` means nothing to do, not "walk everything". **Nor does "no
+layout has completed yet" ask for one** (#1247): `resolve_styles` and the
+insertion fast path `resolve_inserted_subtree` used to read
+`!transitions_enabled` that way, so every insertion of an app's initial render
+walked the whole document — N rows visited about N²/2 nodes, and 36,000 took
+about 15.5 s to build in release (150 ms after). Only `full_style_walk` asks now
+(it is set at construction, so the very first resolve still walks everything
+once). **The behaviour change that follows**: before the first layout, an
+append no longer applies pending style changes elsewhere in the document on
+the spot; they wait for the next resolve or layout, exactly as after the first
+layout. (An append *under* an element with a pending change still resolves it
+first.) So a spinner hidden and shown again before the first layout, with only
+unrelated appends in between, keeps its animation clock — never having been
+cascaded hidden — which is what a browser does, since it styles nothing
+between the two writes. `style_invalidation_twin_tests.rs` checks the
+pre-layout targeted walk against a fresh document, a full re-cascade and a
+forced-full-walk twin (`random_pre_layout_*`, `named_pre_layout_shapes_*`).
+`crates/rinch-dom/tests/sibling_scaling_tests.rs` asserts that no counter grows
+faster than the row count between 1,000 and 4,000 rows.
 `crates/rinch-dom/tests/viewport_restyle_tests.rs` is the twin oracle.
 
 **Style invalidation: what a change restyles** (`style_resolution/invalidation.rs`,
