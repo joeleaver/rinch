@@ -148,7 +148,10 @@ fn assert_clean(name: &str, from: &str, steps: &[&str], scale: f64) -> Vec<Strin
     let mut failures = Vec::new();
     let (mut app, span) = paragraph(from);
     let before = full_frame(&mut app, scale);
-    let held: usize = bands(scale).iter().map(|&r| ink_in(&before, scale, r)).sum();
+    let held: usize = bands(scale)
+        .iter()
+        .map(|&r| ink_in(&before, scale, r))
+        .sum();
     if held == 0 {
         failures.push(format!(
             "{name} scale {scale}: positive control — nothing drawn past the box"
@@ -200,7 +203,11 @@ fn a_change_to_what_an_inline_draws_past_its_paragraph_is_cleared() {
             "vertical-align: -12px".into(),
             vec![String::new()],
         ),
-        ("sup pill comes down", sup_pill.clone(), vec![small_pill.clone()]),
+        (
+            "sup pill comes down",
+            sup_pill.clone(),
+            vec![small_pill.clone()],
+        ),
         (
             "sub border goes",
             "vertical-align: sub; border: 2px solid rgb(0, 0, 200)".into(),
@@ -255,7 +262,9 @@ fn damage_over_only_a_pill_s_padding_repaints_it() {
         // well clear of the paragraph's box and of the damage's margin.
         let probe = (s(l), s(t - 28.0), s(l + 40.0), s(t - 23.0));
         if ink_in(&before, scale, probe) == 0 {
-            failures.push(format!("scale {scale}: positive control — no pill under the box"));
+            failures.push(format!(
+                "scale {scale}: positive control — no pill under the box"
+            ));
         }
         after.set_attribute("style", &neighbour("rgb(200, 0, 200)"));
         resolve(&mut app);
@@ -313,7 +322,9 @@ fn a_pill_transitioned_out_and_back_leaves_nothing_behind() {
         let grown = full_frame(&mut app, scale);
         let held: usize = bands(scale).iter().map(|&r| ink_in(&grown, scale, r)).sum();
         if held == 0 {
-            failures.push(format!("scale {scale}: positive control — the pill never grew"));
+            failures.push(format!(
+                "scale {scale}: positive control — the pill never grew"
+            ));
         }
         span.set_attribute("style", &style(1));
         resolve(&mut app);

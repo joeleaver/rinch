@@ -122,7 +122,12 @@ fn outside(doc: &mut RinchDocument, cell: NodeId, scale: f64) -> (usize, usize, 
     let above = ink_in(&p, (s(LEFT - 10.0), s(LEFT + 130.0), s(TOP - 40.0), s(TOP)));
     let below = ink_in(
         &p,
-        (s(LEFT - 10.0), s(LEFT + 130.0), s(TOP + h), s(TOP + h + 40.0)),
+        (
+            s(LEFT - 10.0),
+            s(LEFT + 130.0),
+            s(TOP + h),
+            s(TOP + h + 40.0),
+        ),
     );
     let left = ink_in(&p, (s(LEFT - 10.0), s(LEFT), s(TOP), s(TOP + h)));
     (above, below, left)
@@ -197,8 +202,11 @@ fn a_shifted_element_s_background_moves_with_its_text() {
         let (mut doc, _) = doc_with_cell(18.0, "visible", PILL);
         let on_line = green_bbox(&paint(&mut doc, scale));
         for shift in [12.0_f64, -7.0] {
-            let (mut doc, _) =
-                doc_with_cell(18.0, "visible", &format!("vertical-align: {shift}px; {PILL}"));
+            let (mut doc, _) = doc_with_cell(
+                18.0,
+                "visible",
+                &format!("vertical-align: {shift}px; {PILL}"),
+            );
             let moved = green_bbox(&paint(&mut doc, scale));
             let dy = moved.1 as f64 - on_line.1 as f64;
             assert!(

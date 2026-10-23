@@ -185,6 +185,8 @@ mod hidpi_pointer_tests;
 pub(crate) mod hit_testing;
 #[cfg(test)]
 mod implicit_focus_tests;
+#[cfg(all(test, software_shell))]
+mod inline_ink_damage_1815_tests;
 #[cfg(all(test, software_shell, feature = "desktop", target_os = "linux"))]
 mod inline_menu_spacer_529_tests;
 #[cfg(test)]
@@ -255,8 +257,6 @@ mod perf_stats_tests;
 mod popover_dropdown_transform_hit_test_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod render_surface_pacing_1768_tests;
-#[cfg(all(test, software_shell))]
-mod inline_ink_damage_1815_tests;
 #[cfg(all(test, software_shell))]
 mod repaint_old_rect_tests;
 #[cfg(test)]

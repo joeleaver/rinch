@@ -204,53 +204,58 @@ fn paint_inline_backgrounds(
     use peniko::kurbo::RoundedRect;
 
     let transform = css_transform * Affine::translate((parent_x, parent_y));
-    inline_background_rects(|id| tree.get(id), inline_layout, scale, |frag| {
-        let bg_span = frag.span;
-        let rect = frag.rect;
-        if bg_span.color.components[3] > 0.0 {
-            let brush = Brush::Solid(bg_span.color);
-            if bg_span.border_radius > 0.0 {
-                let r = bg_span.border_radius as f64 * scale;
-                let rrect = RoundedRect::from_rect(rect, r);
-                painter.fill(Fill::NonZero, transform, &brush, &rrect.into());
-            } else {
-                painter.fill(Fill::NonZero, transform, &brush, &rect.into());
+    inline_background_rects(
+        |id| tree.get(id),
+        inline_layout,
+        scale,
+        |frag| {
+            let bg_span = frag.span;
+            let rect = frag.rect;
+            if bg_span.color.components[3] > 0.0 {
+                let brush = Brush::Solid(bg_span.color);
+                if bg_span.border_radius > 0.0 {
+                    let r = bg_span.border_radius as f64 * scale;
+                    let rrect = RoundedRect::from_rect(rect, r);
+                    painter.fill(Fill::NonZero, transform, &brush, &rrect.into());
+                } else {
+                    painter.fill(Fill::NonZero, transform, &brush, &rect.into());
+                }
             }
-        }
-        // The border: top and bottom on every fragment, the left and right
-        // on the fragments that close them.
-        let Some(cs) = tree.get(bg_span.owner).map(|o| &o.computed_style) else {
-            return;
-        };
-        let [bt, br, bb, bl] = inline_border_widths(cs).map(|w| w * scale);
-        let current = cs.color.unwrap_or(peniko::Color::BLACK);
-        let mut strip = |r: Rect, c: Option<peniko::Color>| {
-            if r.width() > 0.0 && r.height() > 0.0 {
-                let brush = Brush::Solid(c.unwrap_or(current));
-                painter.fill(Fill::NonZero, transform, &brush, &r.into());
+            // The border: top and bottom on every fragment, the left and right
+            // on the fragments that close them.
+            let Some(cs) = tree.get(bg_span.owner).map(|o| &o.computed_style) else {
+                return;
+            };
+            let [bt, br, bb, bl] = inline_border_widths(cs).map(|w| w * scale);
+            let current = cs.color.unwrap_or(peniko::Color::BLACK);
+            let mut strip = |r: Rect, c: Option<peniko::Color>| {
+                if r.width() > 0.0 && r.height() > 0.0 {
+                    let brush = Brush::Solid(c.unwrap_or(current));
+                    painter.fill(Fill::NonZero, transform, &brush, &r.into());
+                }
+            };
+            strip(
+                Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + bt),
+                cs.border_top_color,
+            );
+            strip(
+                Rect::new(rect.x0, rect.y1 - bb, rect.x1, rect.y1),
+                cs.border_bottom_color,
+            );
+            if frag.closes_left {
+                strip(
+                    Rect::new(rect.x0, rect.y0, rect.x0 + bl, rect.y1),
+                    cs.border_left_color,
+                );
             }
-        };
-        strip(
-            Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + bt),
-            cs.border_top_color,
-        );
-        strip(
-            Rect::new(rect.x0, rect.y1 - bb, rect.x1, rect.y1),
-            cs.border_bottom_color,
-        );
-        if frag.closes_left {
-            strip(
-                Rect::new(rect.x0, rect.y0, rect.x0 + bl, rect.y1),
-                cs.border_left_color,
-            );
-        }
-        if frag.closes_right {
-            strip(
-                Rect::new(rect.x1 - br, rect.y0, rect.x1, rect.y1),
-                cs.border_right_color,
-            );
-        }
-    });
+            if frag.closes_right {
+                strip(
+                    Rect::new(rect.x1 - br, rect.y0, rect.x1, rect.y1),
+                    cs.border_right_color,
+                );
+            }
+        },
+    );
 }
 
 /// An inline element's border widths, `[top, right, bottom, left]` in CSS
