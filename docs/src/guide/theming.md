@@ -222,7 +222,12 @@ the 13.3333px size — as it does in a browser under the same sheet. The colours
 #724): `ComputedStyle::vertical_align` plus its `ifc::vertical_align_shift_px`
 consumer shift the glyph post-layout, calibrated against Chrome 153 and the
 bundled Inter at a 16px parent font-size (exact only there — see that doc for
-the numbers). `top`/`text-top`/`middle`/`bottom`/`text-bottom` parse but still
+the numbers). The element's background and border move with its text (#1817),
+and an `overflow: hidden` box clips shifted text that reaches past it. A wavy
+underline is drawn on the line whoever declares it. That matches Chrome for a
+wave propagated from an ancestor, but a wave declared on the shifted element
+itself moves with its text in Chrome and stays on the line in rinch (older
+than #1817; the clip check and damage measure it where rinch draws it). `top`/`text-top`/`middle`/`bottom`/`text-bottom` parse but still
 lay out as `baseline`, and the shift does not grow the line box the way
 Chrome's does, both filed as #1357.
 

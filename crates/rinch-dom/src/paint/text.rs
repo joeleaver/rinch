@@ -204,53 +204,58 @@ fn paint_inline_backgrounds(
     use peniko::kurbo::RoundedRect;
 
     let transform = css_transform * Affine::translate((parent_x, parent_y));
-    inline_background_rects(tree, inline_layout, scale, |frag| {
-        let bg_span = frag.span;
-        let rect = frag.rect;
-        if bg_span.color.components[3] > 0.0 {
-            let brush = Brush::Solid(bg_span.color);
-            if bg_span.border_radius > 0.0 {
-                let r = bg_span.border_radius as f64 * scale;
-                let rrect = RoundedRect::from_rect(rect, r);
-                painter.fill(Fill::NonZero, transform, &brush, &rrect.into());
-            } else {
-                painter.fill(Fill::NonZero, transform, &brush, &rect.into());
+    inline_background_rects(
+        |id| tree.get(id),
+        inline_layout,
+        scale,
+        |frag| {
+            let bg_span = frag.span;
+            let rect = frag.rect;
+            if bg_span.color.components[3] > 0.0 {
+                let brush = Brush::Solid(bg_span.color);
+                if bg_span.border_radius > 0.0 {
+                    let r = bg_span.border_radius as f64 * scale;
+                    let rrect = RoundedRect::from_rect(rect, r);
+                    painter.fill(Fill::NonZero, transform, &brush, &rrect.into());
+                } else {
+                    painter.fill(Fill::NonZero, transform, &brush, &rect.into());
+                }
             }
-        }
-        // The border: top and bottom on every fragment, the left and right
-        // on the fragments that close them.
-        let Some(cs) = tree.get(bg_span.owner).map(|o| &o.computed_style) else {
-            return;
-        };
-        let [bt, br, bb, bl] = inline_border_widths(cs).map(|w| w * scale);
-        let current = cs.color.unwrap_or(peniko::Color::BLACK);
-        let mut strip = |r: Rect, c: Option<peniko::Color>| {
-            if r.width() > 0.0 && r.height() > 0.0 {
-                let brush = Brush::Solid(c.unwrap_or(current));
-                painter.fill(Fill::NonZero, transform, &brush, &r.into());
+            // The border: top and bottom on every fragment, the left and right
+            // on the fragments that close them.
+            let Some(cs) = tree.get(bg_span.owner).map(|o| &o.computed_style) else {
+                return;
+            };
+            let [bt, br, bb, bl] = inline_border_widths(cs).map(|w| w * scale);
+            let current = cs.color.unwrap_or(peniko::Color::BLACK);
+            let mut strip = |r: Rect, c: Option<peniko::Color>| {
+                if r.width() > 0.0 && r.height() > 0.0 {
+                    let brush = Brush::Solid(c.unwrap_or(current));
+                    painter.fill(Fill::NonZero, transform, &brush, &r.into());
+                }
+            };
+            strip(
+                Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + bt),
+                cs.border_top_color,
+            );
+            strip(
+                Rect::new(rect.x0, rect.y1 - bb, rect.x1, rect.y1),
+                cs.border_bottom_color,
+            );
+            if frag.closes_left {
+                strip(
+                    Rect::new(rect.x0, rect.y0, rect.x0 + bl, rect.y1),
+                    cs.border_left_color,
+                );
             }
-        };
-        strip(
-            Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + bt),
-            cs.border_top_color,
-        );
-        strip(
-            Rect::new(rect.x0, rect.y1 - bb, rect.x1, rect.y1),
-            cs.border_bottom_color,
-        );
-        if frag.closes_left {
-            strip(
-                Rect::new(rect.x0, rect.y0, rect.x0 + bl, rect.y1),
-                cs.border_left_color,
-            );
-        }
-        if frag.closes_right {
-            strip(
-                Rect::new(rect.x1 - br, rect.y0, rect.x1, rect.y1),
-                cs.border_right_color,
-            );
-        }
-    });
+            if frag.closes_right {
+                strip(
+                    Rect::new(rect.x1 - br, rect.y0, rect.x1, rect.y1),
+                    cs.border_right_color,
+                );
+            }
+        },
+    );
 }
 
 /// An inline element's border widths, `[top, right, bottom, left]` in CSS
@@ -293,12 +298,16 @@ pub(super) struct InlineBoxFragment<'a> {
 /// byte-to-position mapping, joined with its edge boxes on that line less
 /// their margins (#1426) — the start padding and border on its first line,
 /// the end ones on its last (CSS `box-decoration-break: slice`) — grown
-/// vertically by its padding and border.
+/// vertically by its padding and border, and moved by the `vertical-align`
+/// shift its text is drawn with ([`crate::node::InlineLayout::element_shift`],
+/// #1817): a `<sup>`'s background is around the raised text.
 ///
 /// The layout is built in CSS px, so everything here is multiplied by
 /// `scale`, as [`render_text`] scales the glyphs drawn over it (#1762).
-pub(super) fn inline_background_rects(
-    tree: &NodeTree,
+///
+/// `get` looks a node up (the tree's own, or a slab borrowed elsewhere).
+pub(super) fn inline_background_rects<'a>(
+    get: impl Fn(crate::node::RawNodeId) -> Option<&'a Node>,
     inline_layout: &crate::node::InlineLayout,
     scale: f64,
     mut f: impl FnMut(InlineBoxFragment<'_>),
@@ -306,12 +315,32 @@ pub(super) fn inline_background_rects(
     use parley::layout::{Cluster, PositionedLayoutItem};
 
     let layout = &inline_layout.layout;
+    if inline_layout.background_spans.is_empty() {
+        return;
+    }
+    // Each line's edge boxes (#1426), `(owner, is end, x, width)`, read in one
+    // pass over the lines: asking every line's items again for every span
+    // made a paragraph of many pills quadratic (500 pills in 1500 runs took
+    // a second a paint).
+    let ranges: Vec<std::ops::Range<usize>> = layout.lines().map(|l| l.text_range()).collect();
+    let edges: Vec<Vec<(crate::node::RawNodeId, bool, f64, f64)>> = layout
+        .lines()
+        .map(|line| {
+            line.items()
+                .filter_map(|item| match item {
+                    PositionedLayoutItem::InlineBox(b) => crate::ifc::edge_box_owner(b.id)
+                        .map(|(o, end)| (o, end, b.x as f64, b.width as f64)),
+                    _ => None,
+                })
+                .collect()
+        })
+        .collect();
 
     for bg_span in &inline_layout.background_spans {
         // The background is the inline element's own visual, so it follows
         // that element's visibility — not the visibility of the text inside
         // it, which a `visibility: visible` child can override (#829).
-        let owner = tree.get(bg_span.owner);
+        let owner = get(bg_span.owner);
         if owner.is_some_and(is_hidden) {
             continue;
         }
@@ -341,19 +370,19 @@ pub(super) fn inline_background_rects(
         let (margin_left, margin_right) =
             style.map_or((0.0, 0.0), |cs| (px(cs.margin_left), px(cs.margin_right)));
         let [bt, _, bb, _] = style.map_or([0.0; 4], inline_border_widths);
+        let shift = inline_layout.element_shift(bg_span.owner, &get) as f64;
 
-        for line in layout.lines() {
+        let on = lines_of_span(&ranges, bg_span.start, bg_span.end, true);
+        note_span_line_visits(on.len());
+        for (line, line_edges) in on.filter_map(|i| Some((layout.get(i)?, &edges[i]))) {
             let line_range = line.text_range();
 
             // The element's edge boxes on this line, as `(x, width)`.
             let (mut start_box, mut end_box) = (None, None);
-            for item in line.items() {
-                if let PositionedLayoutItem::InlineBox(b) = item
-                    && let Some((o, end)) = crate::ifc::edge_box_owner(b.id)
-                    && o == bg_span.owner
-                {
+            for &(o, end, x, w) in line_edges {
+                if o == bg_span.owner {
                     let slot = if end { &mut end_box } else { &mut start_box };
-                    *slot = Some((b.x as f64, b.width as f64));
+                    *slot = Some((x, w));
                 }
             }
 
@@ -413,9 +442,9 @@ pub(super) fn inline_background_rects(
             // border (those of the sides it closes are in its edge boxes).
             let rect = Rect::new(
                 left * scale,
-                (baseline - ascent - pt - bt) * scale,
+                (baseline - ascent - pt - bt + shift) * scale,
                 right.max(left) * scale,
-                (baseline + descent + pb + bb) * scale,
+                (baseline + descent + pb + bb + shift) * scale,
             );
             f(InlineBoxFragment {
                 span: bg_span,
@@ -466,10 +495,6 @@ fn paint_wavy_decorations(
     let sf = scale as f32;
     let layout = &inline_layout.layout;
     let transform = css_transform * Affine::translate((parent_x, parent_y));
-    // CSS px, scaled with everything else below.
-    const PERIOD: f64 = 5.0;
-    const AMPLITUDE: f64 = 1.0;
-    const THICKNESS: f64 = 1.0;
 
     for span in &inline_layout.decoration_spans {
         let brush = match brush {
@@ -494,21 +519,7 @@ fn paint_wavy_decorations(
             if segments.is_empty() {
                 continue;
             }
-            let metrics = line.metrics();
-            let baseline = (metrics.baseline * sf) as f64;
-            // Parley's `underline_offset` is measured **up** from the baseline
-            // (the sign `render_text` subtracts with), and is per-run, so take it
-            // from the line's first run and fall back to a fraction of the
-            // descent for a line that somehow has none.
-            let offset = line
-                .runs()
-                .next()
-                .map(|r| r.metrics().underline_offset)
-                .unwrap_or(-metrics.descent * 0.4);
-            // Sit the *top* of the wave where a straight underline would be, so a
-            // squiggle never rides up into the glyphs.
-            let mid = baseline - (offset * sf) as f64 + AMPLITUDE * scale;
-            let amp = AMPLITUDE * scale;
+            let (mid, amp) = wavy_wave(&line, scale);
             let half = (PERIOD * scale) / 2.0;
 
             let mut path = BezPath::new();
@@ -531,6 +542,155 @@ fn paint_wavy_decorations(
             );
         }
     }
+}
+
+// A wavy underline's geometry, in CSS px scaled with everything else.
+const PERIOD: f64 = 5.0;
+const AMPLITUDE: f64 = 1.0;
+const THICKNESS: f64 = 1.0;
+
+/// Where [`paint_wavy_decorations`] draws a line's wave: its centre line and
+/// its amplitude, in device px relative to the content origin. The stroke
+/// reaches `amp` and half a [`THICKNESS`] either side of the centre.
+fn wavy_wave(line: &parley::layout::Line<'_, Brush>, scale: f64) -> (f64, f64) {
+    let sf = scale as f32;
+    let metrics = line.metrics();
+    let baseline = (metrics.baseline * sf) as f64;
+    // Parley's `underline_offset` is measured **up** from the baseline (the
+    // sign `render_text` subtracts with), and is per-run, so take it from the
+    // line's first run and fall back to a fraction of the descent for a line
+    // that somehow has none.
+    let offset = line
+        .runs()
+        .next()
+        .map(|r| r.metrics().underline_offset)
+        .unwrap_or(-metrics.descent * 0.4);
+    // Sit the *top* of the wave where a straight underline would be, so a
+    // squiggle never rides up into the glyphs.
+    let mid = baseline - (offset * sf) as f64 + AMPLITUDE * scale;
+    (mid, AMPLITUDE * scale)
+}
+
+thread_local! {
+    /// (span, line) pairs the inline-ink walks looked at
+    /// ([`inline_background_rects`], [`inline_ink_past_lines`]), folded into
+    /// a tree's `inline_span_line_visits` counter by [`take_span_line_visits`].
+    static SPAN_LINE_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The (span, line) pairs the inline-ink walks looked at on this thread since
+/// the last call, which it resets.
+pub(crate) fn take_span_line_visits() -> u64 {
+    SPAN_LINE_VISITS.with(|v| v.replace(0))
+}
+
+fn note_span_line_visits(n: usize) {
+    if n > 0 {
+        SPAN_LINE_VISITS.with(|v| v.set(v.get() + n as u64));
+    }
+}
+
+/// The indices of the lines (whose text ranges are `ranges`, in order) that a
+/// span over bytes `start..end` is on: those whose range overlaps it, and
+/// with `edges`, also those that merely touch it at either end — where its
+/// edge boxes, which take no byte, can sit (#1426). A binary search, so a
+/// span costs the lines it is on and not every line of the paragraph (#1837
+/// review: one text edit in a paragraph of 500 pills took 500 ms).
+fn lines_of_span(
+    ranges: &[std::ops::Range<usize>],
+    start: usize,
+    end: usize,
+    edges: bool,
+) -> std::ops::Range<usize> {
+    let first = if edges {
+        ranges.partition_point(|r| r.end < start)
+    } else {
+        ranges.partition_point(|r| r.end <= start)
+    };
+    let past = first
+        + ranges[first..].partition_point(|r| if edges { r.start <= end } else { r.start < end });
+    first..past
+}
+
+/// What an IFC root draws past its **unshifted** line boxes, in device px
+/// relative to its content origin, or `None` when it draws nothing there:
+/// text moved off its line by `vertical-align` (#724), the inline
+/// elements' backgrounds and borders ([`inline_background_rects`], which
+/// reach past the line by their padding and border and move with their
+/// text), and wavy underlines ([`paint_wavy_decorations`]).
+///
+/// The clip proof (`layer_bounds`, #1762, #1817) unions this with the line
+/// boxes, and the damage ink of the root (`paint::ink_outsets_in`, #1815)
+/// grows its box by it, so both measure the geometry paint draws with. Like
+/// the line boxes, a shifted line is its whole line box moved by the shift
+/// (the glyphs' own ink is not measured). `get` looks a node up.
+pub(crate) fn inline_ink_past_lines<'a>(
+    get: impl Fn(crate::node::RawNodeId) -> Option<&'a Node>,
+    inline_layout: &crate::node::InlineLayout,
+    scale: f64,
+) -> Option<Rect> {
+    if inline_layout.vertical_align_spans.is_empty()
+        && inline_layout.background_spans.is_empty()
+        && inline_layout.decoration_spans.is_empty()
+    {
+        return None;
+    }
+    let layout = &inline_layout.layout;
+    let mut ink: Option<Rect> = None;
+    let mut add = |r: Rect| ink = Some(ink.map_or(r, |i| i.union(r)));
+    let ranges: Vec<std::ops::Range<usize>> = if inline_layout.vertical_align_spans.is_empty()
+        && inline_layout.decoration_spans.is_empty()
+    {
+        Vec::new()
+    } else {
+        layout.lines().map(|l| l.text_range()).collect()
+    };
+
+    for span in &inline_layout.vertical_align_spans {
+        let shift = span.shift_px as f64;
+        if shift == 0.0 {
+            continue;
+        }
+        let on = lines_of_span(&ranges, span.start, span.end, false);
+        note_span_line_visits(on.len());
+        for line in on.filter_map(|i| layout.get(i)) {
+            let m = line.metrics();
+            let top = (m.block_min_coord as f64).min((m.baseline - m.ascent) as f64);
+            let bottom = (m.block_max_coord as f64).max((m.baseline + m.descent) as f64);
+            let (x0, x1) = (m.inline_min_coord as f64, m.inline_max_coord as f64);
+            add(Rect::new(
+                x0 * scale,
+                (top + shift) * scale,
+                x1 * scale,
+                (bottom + shift) * scale,
+            ));
+        }
+    }
+
+    if !inline_layout.background_spans.is_empty() {
+        inline_background_rects(&get, inline_layout, scale, |frag| add(frag.rect));
+    }
+
+    for span in &inline_layout.decoration_spans {
+        let on = lines_of_span(&ranges, span.start, span.end, false);
+        note_span_line_visits(on.len());
+        for line in on.filter_map(|i| layout.get(i)) {
+            // The wave runs under the span's clusters, which are on the
+            // line: its extent is the line's, plus the stroke's half width.
+            let m = line.metrics();
+            let (x0, x1) = (m.inline_min_coord as f64, m.inline_max_coord as f64);
+            let (mid, amp) = wavy_wave(&line, scale);
+            let reach = amp + THICKNESS * scale / 2.0;
+            let half = THICKNESS * scale / 2.0;
+            add(Rect::new(
+                x0 * scale - half,
+                mid - reach,
+                x1 * scale + half,
+                mid + reach,
+            ));
+        }
+    }
+    ink
 }
 
 /// The colour [`paint_wavy_decorations`] draws in.
