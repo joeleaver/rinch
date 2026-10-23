@@ -208,7 +208,7 @@ fn a_code_block_retyped_while_a_peer_bolds_and_breaks_it_reads_valid() {
     for (a, _) in scenario(bold_b_and_break_after_c) {
         assert_eq!(
             html(&a.state.doc),
-            "<pre><code>abc\n</code></pre>",
+            "<pre>abc\n</pre>",
             "the bold is dropped and the hard break is a line break"
         );
     }
@@ -223,7 +223,7 @@ fn a_local_edit_after_the_repair_writes_the_block_back_clean() {
         let da = a.send();
         b.receive(&da);
         assert_eq!(a.state.doc, b.state.doc);
-        assert_eq!(html(&a.state.doc), "<pre><code>abc\nd</code></pre>");
+        assert_eq!(html(&a.state.doc), "<pre>abc\nd</pre>");
         // A send with nothing new must stay empty-handed: the read and the CRDT agree,
         // so nothing fights over the block.
         let again = a.send();
@@ -281,12 +281,12 @@ fn an_image_inserted_into_a_block_being_made_code_is_dropped() {
         b.run_at(Selection::text(Pos(1), Pos(2)), "toggleItalic");
     };
     for (mut a, mut b) in scenario(image) {
-        assert_eq!(html(&a.state.doc), "<pre><code>abc</code></pre>");
+        assert_eq!(html(&a.state.doc), "<pre>abc</pre>");
         // Typing after the dropped image lands where the model says, on both peers.
         a.type_at(4, "X");
         let da = a.send();
         b.receive(&da);
         assert_eq!(a.state.doc, b.state.doc);
-        assert_eq!(html(&a.state.doc), "<pre><code>abcX</code></pre>");
+        assert_eq!(html(&a.state.doc), "<pre>abcX</pre>");
     }
 }

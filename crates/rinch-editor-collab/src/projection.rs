@@ -2696,6 +2696,20 @@ fn build_node(schema: &Schema, nd: &NodeData) -> Result<Node> {
 ///
 /// A char that is an inline atom ([`is_atom_char`]) breaks every run and becomes a node
 /// of its own, carrying whatever real marks cover it.
+///
+/// **The read is normalised to the block's type** (#1227). A textblock is retyped in
+/// place ([`reconcile_node`] rewrites its `type` key and keeps its `Text`, so a peer's
+/// concurrent typing survives a paragraph → code block change), and a peer's concurrent
+/// formatting and inline atoms merge into that `Text` all the same: a paragraph made a
+/// code block while a peer bolds a char and inserts a hard break converges on a bold
+/// mark and a `hard_break` in a `code_block`, which allows neither. So a mark the type
+/// does not allow is not read ([`marks_at`]), and an inline atom it does not accept is
+/// read as ProseMirror's `setBlockType` (`clearIncompatible`) would leave it: a
+/// `hard_break` in a [`code`](rinch_editor_core::NodeSpec::code) block is the line break
+/// `"\n"`, any other is dropped ([`char_kind`]). Every replica reads the same CRDT, so
+/// this converges by construction; the CRDT keeps the stray formatting until a local
+/// edit of the block writes it back from the model ([`reconcile_text`] diffs the CRDT's
+/// own text and marks against the model's, so the first such edit clears them).
 fn build_block(schema: &Schema, b: &BlockData) -> Result<Node> {
     // Inbound scope guard (A22): a peer CRDT must not be able to materialize a
     // non-flat block here — `create_node` would happily build a `blockquote`/`list`,
@@ -2741,49 +2755,122 @@ fn build_block(schema: &Schema, b: &BlockData) -> Result<Node> {
         )));
     }
     let chars: Vec<char> = b.text.chars().collect();
+    // What each char reads as in a block of this type (#1227): an inline atom the
+    // block does not accept is a line break or nothing, never a node it cannot hold.
+    let kinds = chars
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| char_kind(schema, typ, &b.type_name, &b.marks, &chars, i, c))
+        .collect::<Result<Vec<CharKind>>>()?;
     let mut runs: Vec<Node> = Vec::new();
     let mut i = 0usize;
     while i < chars.len() {
-        // An inline atom: one placeholder char carrying the reserved attribute, built
-        // as its own node with whatever real marks cover that char. One node **per
-        // char**, never per span: `push_mark_span` coalesces two adjacent identical
-        // atoms (two hard breaks, the same image twice) into a single two-char span,
-        // and those are two nodes.
-        if is_atom_char(&b.marks, &chars, i) {
-            let span = atom_span_at(&b.marks, i).expect("is_atom_char found one");
-            if inline_ids_recording() {
-                note_inline_id(
-                    b.atom_idents
-                        .iter()
-                        .find(|(at, _)| *at == i)
-                        .and_then(|(_, id)| id.clone()),
-                );
+        match kinds[i] {
+            CharKind::Gone => {
+                i += 1;
+                continue;
             }
-            runs.push(build_inline_atom(
-                schema,
-                span,
-                marks_at(schema, &b.marks, i)?,
-            )?);
-            i += 1;
-            continue;
+            // An inline atom: one placeholder char carrying the reserved attribute,
+            // built as its own node with whatever real marks cover that char. One node
+            // **per char**, never per span: `push_mark_span` coalesces two adjacent
+            // identical atoms (two hard breaks, the same image twice) into a single
+            // two-char span, and those are two nodes.
+            CharKind::Atom => {
+                let span = atom_span_at(&b.marks, i).expect("is_atom_char found one");
+                if inline_ids_recording() {
+                    note_inline_id(
+                        b.atom_idents
+                            .iter()
+                            .find(|(at, _)| *at == i)
+                            .and_then(|(_, id)| id.clone()),
+                    );
+                }
+                runs.push(build_inline_atom(
+                    schema,
+                    span,
+                    marks_at(schema, &b.type_name, &b.marks, i)?,
+                )?);
+                i += 1;
+                continue;
+            }
+            CharKind::Text(_) => {}
         }
         // Otherwise a run of text: extend while the mark set holds and no atom starts.
-        let cur = marks_at(schema, &b.marks, i)?;
-        let run_start = i;
-        i += 1;
-        while i < chars.len()
-            && !is_atom_char(&b.marks, &chars, i)
-            && same_mark_set(&cur, &marks_at(schema, &b.marks, i)?)
-        {
-            i += 1;
+        // A dropped atom inside the run is stepped over, so the text around it is one
+        // node, as the model would hold it.
+        let cur = marks_at(schema, &b.type_name, &b.marks, i)?;
+        let mut s = String::new();
+        while i < chars.len() {
+            match kinds[i] {
+                CharKind::Gone => i += 1,
+                CharKind::Text(c)
+                    if same_mark_set(&cur, &marks_at(schema, &b.type_name, &b.marks, i)?) =>
+                {
+                    s.push(c);
+                    i += 1;
+                }
+                _ => break,
+            }
         }
-        let s: String = chars[run_start..i].iter().collect();
         runs.push(schema.text_with_marks(&s, cur).map_err(CollabError::from)?);
     }
     let attrs = b.attrs.clone();
     schema
         .create_node(&b.type_name, attrs, Fragment::from_children(runs))
         .map_err(CollabError::from)
+}
+
+/// What one char of a textblock's CRDT text reads as in the model (see [`build_block`]).
+#[derive(Clone, Copy)]
+enum CharKind {
+    /// A text char: the char itself, or `'\n'` for a line break in a code block.
+    Text(char),
+    /// An inline atom the block accepts, built as a node of its own.
+    Atom,
+    /// An inline atom the block does not accept and has no text for: not read.
+    Gone,
+}
+
+/// What char `i` (`c`) of a block of type `block_type` reads as (#1227). A char that is
+/// not an inline atom ([`is_atom_char`]) is text. An atom of a type the schema does not
+/// know, or that is not an inline atom, stays [`CharKind::Atom`] so that
+/// [`build_inline_atom`] fails loud on it as before; one the block's content expression
+/// accepts is an atom. One it does not accept is a `'\n'` when it is a `hard_break` and
+/// the block is a [`code`](rinch_editor_core::NodeSpec::code) block that takes text
+/// (ProseMirror's `linebreakReplacement`, and what its clipboard and its HTML parser do
+/// with a `<br>` in `<pre>`), and is dropped otherwise, as `clearIncompatible` drops it.
+/// The `'\n'` keeps the block's chars one for one with the CRDT's, so positions after it
+/// (a sticky index, a caret carried through a remote change) are unchanged; a dropped
+/// atom shifts every position after it in that block by one, which is the price of not
+/// inventing text for it.
+fn char_kind(
+    schema: &Schema,
+    typ: &NodeType,
+    block_type: &str,
+    spans: &[SpanMark],
+    chars: &[char],
+    i: usize,
+    c: char,
+) -> Result<CharKind> {
+    if !is_atom_char(spans, chars, i) {
+        return Ok(CharKind::Text(c));
+    }
+    let span = atom_span_at(spans, i).expect("is_atom_char found one");
+    let (type_name, _) = atom_span_type(span)?;
+    let Some(atom_type) = schema.node_type(&type_name) else {
+        return Ok(CharKind::Atom);
+    };
+    if !is_inline_atom(atom_type) || typ.content_match().accepts(&type_name) {
+        return Ok(CharKind::Atom);
+    }
+    let code = schema.node(block_type).is_some_and(|spec| spec.code);
+    Ok(
+        if type_name == "hard_break" && code && typ.content_match().accepts("text") {
+            CharKind::Text('\n')
+        } else {
+            CharKind::Gone
+        },
+    )
 }
 
 /// Whether char `i` is an inline atom: the [`ATOM_PLACEHOLDER`] **and** covered by an
@@ -2839,12 +2926,13 @@ fn build_inline_atom(schema: &Schema, span: &SpanMark, marks: Vec<Mark>) -> Resu
     })
 }
 
-/// The model marks active at char index `i`, resolved against the schema.
+/// The model marks active at char index `i` of a block of type `block`, resolved
+/// against the schema, leaving out every mark the block type does not allow.
 ///
 /// [`ATOM_MARK`] spans are skipped: the attribute names an inline atom, not a mark, and
 /// the schema has no mark type of that name to resolve it against — asking for one
 /// would fail loud on every atom in the document.
-fn marks_at(schema: &Schema, spans: &[SpanMark], i: usize) -> Result<Vec<Mark>> {
+fn marks_at(schema: &Schema, block: &str, spans: &[SpanMark], i: usize) -> Result<Vec<Mark>> {
     let mut out = Vec::new();
     for s in spans {
         if s.name == ATOM_MARK {
@@ -2855,7 +2943,13 @@ fn marks_at(schema: &Schema, spans: &[SpanMark], i: usize) -> Result<Vec<Mark>> 
                 CollabError::schema(format!("unknown mark type `{}` in CRDT", s.name))
             })?;
             let attrs = mt.compute_attrs(&s.attrs).map_err(CollabError::from)?;
-            out.push(Mark::new(mt.clone(), attrs));
+            // A mark the block type does not allow is not read (#1227): a peer's
+            // concurrent formatting of a block retyped into one that takes no marks
+            // (a code block) merges into its `Text` all the same. Checked after the
+            // type lookup, so a mark the schema does not know still fails loud.
+            if schema.allows_mark(block, &s.name) {
+                out.push(Mark::new(mt.clone(), attrs));
+            }
         }
     }
     // Canonical (mark-type-name) order, matching `Mark::add_to_set`. `spans` is sorted
