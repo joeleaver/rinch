@@ -3,7 +3,8 @@
 //! since #1164. A `TableMap` is as wide as its widest row; a 2-row table with
 //! one `colspan = 3,000,000` cell was 2^21 columns wide (#1176's slot budget),
 //! so `addRowAfter` built 2,097,152 cells: 15.6 s and 5 GB through a mounted
-//! view. A `rowspan` needs no cap: a map is never taller than its rows.
+//! view. A `rowspan` is capped at Chrome's 65534 too (#1244), so a load and a
+//! paste read spans alike.
 
 use rinch_core::dom::mock::MockDomDocument;
 use rinch_core::dom::{DomDocument, NodeHandle};
@@ -87,15 +88,16 @@ fn cells(doc: &Node) -> usize {
 }
 
 /// The issue's pin: the wide cell arrives through `new` and through
-/// `load_doc` capped at 1000, so `addRowAfter` adds 1000 cells and
-/// `splitCell` makes 999 more (not ~2^21). Spans at or under the cap, and every
-/// `rowspan`, are left alone.
+/// `load_doc` capped at 1000, and the tall one at 65534, so `splitCell` makes
+/// 999 more cells (not ~2^21). `addRowAfter` copies row 0 beside it (#1244):
+/// one 1000-wide cell, and the tall cell grows a row. Spans at or under the
+/// caps are left alone.
 #[test]
 fn a_colspan_past_1000_is_capped_where_a_document_is_loaded() {
     let s = Rc::new(Schema::starter_kit());
     let wide = doc(&s, &[vec![(3_000_000, 1), (7, 70_000)], vec![(1000, 2)]]);
     let want = vec![
-        vec![(Some(1000), Some(1)), (Some(7), Some(70_000))],
+        vec![(Some(1000), Some(1)), (Some(7), Some(65_534))],
         vec![(Some(1000), Some(2))],
     ];
     let by_new = mount(&s, wide.clone());
@@ -108,7 +110,7 @@ fn a_colspan_past_1000_is_capped_where_a_document_is_loaded() {
     let h = mount(&s, fine.clone());
     assert!(h.doc().same_ref(&fine), "nothing to cap, nothing rebuilt");
 
-    for (cmd, added) in [("addRowAfter", 1000), ("splitCell", 999)] {
+    for (cmd, added) in [("addRowAfter", 1), ("splitCell", 999)] {
         let h = mount(&s, wide.clone());
         h.set_selection(Selection::cursor(Pos(4)));
         let before = cells(&h.doc());

@@ -198,12 +198,8 @@ fn a_row_beside_wide_cells_has_one_cell_per_neighbouring_cell() {
 fn old_row(s: &Schema, width: usize) -> Node {
     let cells = (0..width)
         .map(|_| {
-            s.create_node(
-                "table_cell",
-                Attrs::new(),
-                Fragment::from_node(para(s, "")),
-            )
-            .unwrap()
+            s.create_node("table_cell", Attrs::new(), Fragment::from_node(para(s, "")))
+                .unwrap()
         })
         .collect();
     s.create_node("table_row", Attrs::new(), Fragment::from_children(cells))
@@ -227,14 +223,26 @@ fn canon(n: &Node) -> String {
 
 /// The old row and the new one for both commands with the caret in row `r`'s
 /// cell `i` of `t` (no merged cells).
-fn assert_same_rows_as_before(s: &Schema, t: &Node, r: usize, i: usize, what: &str) {
+fn assert_same_rows_as_before(s: &Schema, t: &Node, carets: &[(usize, usize)], what: &str) {
     let width = column_count(t);
-    for (cmd, at) in [("addRowBefore", r), ("addRowAfter", r + 1)] {
-        let nt = run_in(t, r, i, cmd);
-        let mut want: Vec<Node> = t.content().children().to_vec();
-        want.insert(at, old_row(s, width));
-        let want = t.copy_with_content(Fragment::from_children(want));
-        assert_eq!(canon(&nt), canon(&want), "{cmd} in row {r} cell {i} of {what}");
+    // One state per table, its caret moved: creating a state is most of the
+    // cost of a run.
+    let base = state_with(Schema::starter_kit(), t.clone());
+    for &(r, i) in carets {
+        for (cmd, at) in [("addRowBefore", r), ("addRowAfter", r + 1)] {
+            let mut st = base.clone();
+            st.selection = Selection::cursor(Pos(cell_pos(t, r, i) + 2));
+            let next = st.run(cmd).unwrap_or_else(|| panic!("{cmd} applies"));
+            let nt = next.doc.child(0);
+            let mut want: Vec<Node> = t.content().children().to_vec();
+            want.insert(at, old_row(s, width));
+            let want = t.copy_with_content(Fragment::from_children(want));
+            assert_eq!(
+                canon(nt),
+                canon(&want),
+                "{cmd} in row {r} cell {i} of {what}"
+            );
+        }
     }
 }
 
@@ -255,18 +263,17 @@ fn a_table_with_no_merged_cells_gets_the_same_row_as_before() {
             let spec: Vec<Vec<(i64, i64)>> = lens.iter().map(|&n| vec![(1, 1); n]).collect();
             let t = table(&s, &spec);
             tables += 1;
-            for (r, &len) in lens.iter().enumerate() {
-                for i in 0..len {
-                    assert_same_rows_as_before(&s, &t, r, i, &format!("{lens:?}"));
-                }
-            }
+            let carets: Vec<(usize, usize)> = lens
+                .iter()
+                .enumerate()
+                .flat_map(|(r, &len)| (0..len).map(move |i| (r, i)))
+                .collect();
+            assert_same_rows_as_before(&s, &t, &carets, &format!("{lens:?}"));
         }
     }
     assert_eq!(tables, 3 + 9 + 27);
     let t = table(&s, &vec![vec![(1, 1); 6]; 5]);
-    for (r, i) in [(0, 0), (2, 3), (4, 5)] {
-        assert_same_rows_as_before(&s, &t, r, i, "6x5");
-    }
+    assert_same_rows_as_before(&s, &t, &[(0, 0), (2, 3), (4, 5)], "6x5");
 }
 
 // ------------------------------------------------------------------
@@ -451,10 +458,13 @@ fn holes_get_a_cell_each_while_the_table_has_as_many_cells() {
         shape(&nt)[2],
         vec![td(1, 1), td(1000, 1), td(1000, 1), td(501, 1)]
     );
-    assert_well_formed(&nt.copy_with_content(Fragment::from_children(vec![
-        nt.child(0).clone(),
-        nt.child(2).clone(),
-    ])), "the new row fills the grid");
+    assert_well_formed(
+        &nt.copy_with_content(Fragment::from_children(vec![
+            nt.child(0).clone(),
+            nt.child(2).clone(),
+        ])),
+        "the new row fills the grid",
+    );
 }
 
 /// A load caps `colspan` at 1000 and `rowspan` at 65534, Chrome's limits,
@@ -465,14 +475,20 @@ fn a_load_caps_both_spans_at_chromes_limits() {
     let s = Schema::starter_kit();
     let t = table(
         &s,
-        &[vec![(3_000_000, 70_000), (1000, 65534), (7, 3)], vec![(1, 1)]],
+        &[
+            vec![(3_000_000, 70_000), (1000, 65534), (7, 3)],
+            vec![(1, 1)],
+        ],
     );
     let out = tables::cap_spans(&t);
     assert_eq!(
         shape(&out)[0],
         vec![td(1000, 65534), td(1000, 65534), td(7, 3)]
     );
-    assert!(out.child(1).same_ref(&t.child(1)), "an untouched row is shared");
+    assert!(
+        out.child(1).same_ref(t.child(1)),
+        "an untouched row is shared"
+    );
     let fine = table(&s, &[vec![(1000, 65534), (2, 3)]]);
     assert!(tables::cap_spans(&fine).same_ref(&fine));
 }
@@ -509,5 +525,8 @@ fn a_paste_and_a_load_give_the_same_table() {
     let loaded = tables::cap_spans(&table(&s, &spec));
     assert_eq!(canon(&pasted), canon(&loaded));
     assert_eq!(column_count(&loaded), 30_000);
-    assert_eq!(pasted.child(0).child(0).attrs().get_int("colspan"), Some(1000));
+    assert_eq!(
+        pasted.child(0).child(0).attrs().get_int("colspan"),
+        Some(1000)
+    );
 }

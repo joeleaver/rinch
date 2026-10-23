@@ -470,9 +470,8 @@ fn capped(node: &Node) -> Option<Node> {
             out.push(child.clone());
         }
     }
-    let over = |name: &str, max: i64| {
-        is_cell(node) && node.attrs().get_int(name).is_some_and(|v| v > max)
-    };
+    let over =
+        |name: &str, max: i64| is_cell(node) && node.attrs().get_int(name).is_some_and(|v| v > max);
     let (wide, tall) = (over("colspan", MAX_COLSPAN), over("rowspan", MAX_ROWSPAN));
     if out.is_none() && !wide && !tall {
         return None;

@@ -206,7 +206,9 @@ mod reference {
             let joins = col > 0
                 && !from_above(col - 1)
                 && like_slot(col) == like_slot(col - 1)
-                && spans.last().is_some_and(|&n| like_slot(col) != HOLE || n < hole_cap);
+                && spans
+                    .last()
+                    .is_some_and(|&n| like_slot(col) != HOLE || n < hole_cap);
             match spans.last_mut() {
                 Some(n) if joins => *n += 1,
                 _ => spans.push(1),
@@ -327,7 +329,13 @@ mod reference {
         (|| {
             let info = selected_rect(state)?;
             let mut tr = state.tr();
-            add_row(&mut tr, &info, info.rect.bottom, info.rect.bottom - 1, state.schema())?;
+            add_row(
+                &mut tr,
+                &info,
+                info.rect.bottom,
+                info.rect.bottom - 1,
+                state.schema(),
+            )?;
             tr.doc_changed().then_some(tr)
         })()
     }

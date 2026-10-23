@@ -275,7 +275,10 @@ fn add_row(info: &TableRect, row: usize, like: usize, schema: &Schema) -> Option
     // Two holes one above the other are no cell spanning the line.
     let from_above = |col: usize| {
         let index = row * width + col;
-        row > 0 && row < map.height() && slots[index] != HOLE && slots[index] == slots[index - width]
+        row > 0
+            && row < map.height()
+            && slots[index] != HOLE
+            && slots[index] == slots[index - width]
     };
     // Holes on the free columns: one cell each unless that outnumbers the
     // table's cells.

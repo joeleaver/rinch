@@ -322,27 +322,29 @@ dropped and not counted, where Chrome counts it. Any other `rowspan` is cut at t
 same place, the end of its row group, which is where Chrome 153 cuts it when it
 lays the table out (#1176).
 
-A pasted row's spans also reach at most 1000 grid columns
-(`tables::MAX_IMPORTED_ROW_WIDTH`), counting the columns that rowspans from the rows
-above carry into it: a `colspan` is cut to what is left, never below 1, and a cell
-that starts in a row already 1000 columns wide spans that row alone, so it carries
-nothing down (#1176). Each such cell adds one column, so a row is at most 1000 columns
-plus one per cell that found it full. That limit is rinch's, not Chrome's (Chrome lays
-out a row of 3001 columns); without it a row's width grew with every rowspan above it,
-and a 57 KB paste made a 1,000,000-column table.
+A pasted row is as wide as its spans add up to, as Chrome lays it out (#1244): a
+`colspan` is cut only at 1000 and a `rowspan` only at the end of its row group. (From
+#1176 until #1244 the import also cut a row at 1000 columns and gave a cell that found
+its row full a rowspan of 1; a load did not, so the same table read differently by
+paste and by load.) A very wide table is bounded where it is mapped instead: a
+`TableMap` holds at most `tables::grid_slot_budget` slots, so a 57 KB paste that asks
+for a 1,000,000-column grid gets a map of 2^22 slots, and the cells past its edge are
+in no slot (no command acts on them, and the view lays them out as bands across the
+grid).
 
-A loaded document keeps no `colspan` past 1000 either (#1214, Chrome's limit):
-`tables::cap_colspans` cuts every larger one to `tables::MAX_COLSPAN`, and
-`Schema::node_from_doc`, `EditorHandle::new` and `EditorHandle::load_doc` call it, as
-the HTML import (`load_html`, paste, `Editor`'s `content:`) already reads `colspan`.
-One `colspan = 3,000,000` cell made a two-row table 2^21 columns wide, and
-`addRowAfter` built a cell per column: 2,097,152 cells, 15.6 s and 5 GB through a
-mounted view, 3.8 ms after the cap. Edits are not capped — an app's own transaction,
-a peer's change (and the shared document a collaboration guest adopts on joining), or
-a command (`addColumnAfter` across a 1000-wide cell makes it 1001) — so `node_from_doc` is not a lossless inverse of `to_doc` for a cell that went
-past 1000 that way. `rowspan` is not capped: a grid is never taller than its rows. The
-row-width limit above is the HTML import's alone: a loaded row of 2,100
-`colspan = 1000` cells is still 2,100,000 columns wide.
+A loaded document is read the same way (#1214, #1244, Chrome's limits):
+`tables::cap_spans` cuts every `colspan` past `tables::MAX_COLSPAN` (1000) and every
+`rowspan` past `tables::MAX_ROWSPAN` (65534), and `Schema::node_from_doc`,
+`EditorHandle::new` and `EditorHandle::load_doc` call it. A paste and a load of the
+same table give the same spans, except that a paste also cuts a `rowspan` at the end
+of its row group, as above. Edits are not capped — an app's own transaction, a peer's
+change (and the shared document a collaboration guest adopts on joining), or a command
+(`addColumnAfter` across a 1000-wide cell makes it 1001) — so `node_from_doc` is not a
+lossless inverse of `to_doc` for a cell that went past a limit that way. Nothing caps
+a row's width: a row of 2,100 `colspan = 1000` cells is 2,100,000 columns wide, mapped
+at the slot budget's 2,097,152. `addRowBefore` / `addRowAfter` copy the spans of the
+row beside the new one (see the guide to using the editor), so a row added there is
+about 2,100 cells, not 2 million.
 
 Whatever route a table takes into the model — paste, `load_doc`, an app's own
 transaction, the table commands — the grid `TableMap` builds over it is bounded:
@@ -357,10 +359,11 @@ A slot no cell covers — the tail of a row shorter than the grid, or what the c
 is a hole, and the table commands treat it as no cell (#1184): `deleteRow` and
 `deleteColumn` pass over it, `addColumnBefore`/`addColumnAfter` give a row with a
 hole at that column a new cell at its end, a row added by `addRowBefore`/`addRowAfter`
-gets a cell in a hole's column, and `mergeCells` grows the top-left cell over the holes
+gets a cell in a hole's column (one per column, or up to 1000 columns wide once the
+holes outnumber the table's cells, #1244), and `mergeCells` grows the top-left cell over the holes
 in its rectangle. Every span a command writes is the cell's extent in the grid ± 1,
 never the attribute's own value ± 1: a `colspan` of `i64::MAX` in a two-row table
-(which an app's own transaction can still write; a load caps it at 1000),
+(which an app's own transaction can still write; a load or paste caps it at 1000),
 which the grid cuts to 2^21 columns, is 2^21 + 1 after `addColumnAfter` across it.
 
 The view lays a table out as that same grid (#1182): `<table>` is a CSS grid of
