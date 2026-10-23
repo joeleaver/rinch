@@ -132,6 +132,9 @@ pub enum DebugCommandKind {
         #[serde(default)]
         reset: bool,
     },
+    /// Drop files on the window at a point (#1806); see rinch-debug.
+    #[serde(rename = "drop_files")]
+    DropFiles { x: f32, y: f32, paths: Vec<String> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -247,5 +250,29 @@ impl DebugClient {
             serde_json::from_slice(&resp_data).map_err(|e| format!("Invalid response: {}", e))?;
 
         Ok(response.result)
+    }
+}
+
+#[cfg(test)]
+mod drop_files_1806_tests {
+    use super::*;
+
+    /// The mirror writes the shape rinch-debug's own test reads
+    /// (`protocol::drop_files_1806_tests::drop_files_deserializes_from_the_wire_shape`).
+    #[test]
+    fn drop_files_is_written_in_the_wire_shape() {
+        let req = Request {
+            id: 1,
+            command: DebugCommandKind::DropFiles {
+                x: 1.0,
+                y: 2.0,
+                paths: vec!["/x".into()],
+            },
+        };
+        let v: serde_json::Value = serde_json::to_value(&req).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"id":1,"method":"drop_files","params":{"x":1.0,"y":2.0,"paths":["/x"]}})
+        );
     }
 }

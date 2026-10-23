@@ -165,6 +165,14 @@ pub enum DebugCommandKind {
         #[serde(default)]
         reset: bool,
     },
+    /// Drop files on the window at `(x, y)` (logical px, as `click`), as the
+    /// OS delivers a file drop (#1806): a `FileHoverEnter` per path at the
+    /// point, then a `FileDropped` with every path. The paths are handed over
+    /// verbatim — not checked, not made absolute — so a missing file reaches
+    /// the app exactly as one deleted between an OS drop and its read would.
+    /// An empty list is an error and dispatches nothing.
+    #[serde(rename = "drop_files")]
+    DropFiles { x: f32, y: f32, paths: Vec<String> },
 }
 
 /// Result of a debug command.
@@ -469,5 +477,46 @@ mod key_down_up_485_tests {
         };
         assert_eq!(key, "w");
         assert!(ctrl && !alt);
+    }
+}
+
+#[cfg(test)]
+mod drop_files_1806_tests {
+    //! #1806: `drop_files` is a new wire command; a misspelt rename or a
+    //! field shape that does not round-trip would only show as a request that
+    //! fails to deserialize in a live session.
+
+    use super::*;
+
+    #[test]
+    fn drop_files_round_trips_with_its_paths_in_order() {
+        let original = Request {
+            id: 3,
+            command: DebugCommandKind::DropFiles {
+                x: 12.5,
+                y: 40.0,
+                paths: vec!["/tmp/b.glb".into(), "relative/a.png".into()],
+            },
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        assert!(json.contains("\"method\":\"drop_files\""), "{json}");
+        let back: Request = serde_json::from_str(&json).unwrap();
+        let DebugCommandKind::DropFiles { x, y, paths } = back.command else {
+            panic!("expected DropFiles");
+        };
+        assert_eq!((x, y), (12.5, 40.0));
+        assert_eq!(paths, vec!["/tmp/b.glb", "relative/a.png"]);
+    }
+
+    #[test]
+    fn drop_files_deserializes_from_the_wire_shape() {
+        let req: Request = serde_json::from_str(
+            r#"{"id":1,"method":"drop_files","params":{"x":1,"y":2,"paths":["/x"]}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            req.command,
+            DebugCommandKind::DropFiles { ref paths, .. } if paths == &["/x"]
+        ));
     }
 }

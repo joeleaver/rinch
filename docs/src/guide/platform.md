@@ -363,6 +363,14 @@ fn importer() -> NodeHandle {
 `onfiledrop` (`Vec<PathBuf>`) and `rinch::dialogs` are unchanged and remain
 the desktop-only, path-based forms.
 
+**Testing a drop.** With the `debug` feature, the rinch MCP server's
+`drop_files { x, y, paths }` drops files on a running desktop app at a point
+(logical px, as `click`) through the same path as an OS drop: the drag enters
+there, then the drop reaches an editor that takes pictures and the
+`onfiledrop` / `ondropfiles` handler under the point. The paths are passed
+through unchecked, so a missing file fails in the app's own read. There is no
+web equivalent yet.
+
 ---
 
 ## File Dialogs
