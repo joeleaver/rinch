@@ -361,7 +361,10 @@ fn importer() -> NodeHandle {
 - **Drops.** `ondropfiles: move |files: Vec<LocalFile>| …` on any element
   takes files dropped from the OS onto it or a descendant, on the desktop and
   on the web, and reads the drop point through `get_click_context()` as
-  `onfiledrop` does. The nearest element with a drop handler takes the drop;
+  `onfiledrop` does: `mouse_x`/`mouse_y` where the files were dropped (the
+  frame clicks use: logical window px on the desktop, client px in a browser),
+  `element_*` the box of the element carrying `ondropfiles`, the viewport size
+  and the modifiers held. The nearest element with a drop handler takes the drop;
   one carrying both `onfiledrop` (paths, desktop only) and `ondropfiles` gets
   both. Nested zones resolve the same way on both platforms: a drop on an
   inner `onfiledrop`-only zone inside an `ondropfiles` one goes to the inner

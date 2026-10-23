@@ -636,7 +636,8 @@ pub fn press_without_activation() -> Option<i32> {
 /// Register an `ondropfiles` handler (issue #1771) and return its id: called
 /// with the files dropped from the OS onto an element carrying
 /// `data-ondropfiles`, as [`LocalFile`](crate::file::LocalFile)s, on the
-/// desktop and on the web.
+/// desktop and on the web. While it runs, [`get_click_context`] holds the drop
+/// point and that element's box on both (#1822).
 #[doc(hidden)]
 pub fn register_files_drop_handler(
     callback: impl Fn(Vec<crate::file::LocalFile>) + 'static,
