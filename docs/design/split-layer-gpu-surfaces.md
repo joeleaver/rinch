@@ -1,6 +1,7 @@
 # Split-layer GPU surfaces
 
-**Status:** Design, awaiting decisions (issue #1865). No code yet.
+**Status:** Decided (issue #1865). Joe accepted D1–D9 as recommended, 2026-10-23.
+Implementation follows the PR sequence at the end.
 **Scope:** the desktop GPU window (`gpu` feature, Vello on wgpu). A
 `RenderSurface` GPU frame and a GPU-path video. Software, web and the embed
 API do not change, and `GameViewport` stays the base layer (#1866).
@@ -435,7 +436,9 @@ has no adapter. The CPU half runs in CI: the painter's routing (op counts per
 slice, balanced pushes per scene, each refusal reason) needs no GPU. D9 asks
 whether to give CI a software Vulkan for the GPU half.
 
-## Decisions for Joe
+## Decisions
+
+All nine were accepted as recommended (Joe, 2026-10-23).
 
 ### D1. Slice shape
 
