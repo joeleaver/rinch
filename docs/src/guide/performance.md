@@ -408,8 +408,11 @@ none, for a shadow of more than 153 glyphs, decided by that shadow alone.
 ## CI regression job
 
 Counters say *what* a frame did; they do not say how much it cost. The `Perf`
-workflow (`.github/workflows/perf.yml`) covers cost. On every pull request it
-counts the **instructions** each hot path executes. It counts them on the merge
+workflow (`.github/workflows/perf.yml`) covers cost. It runs on a **batch**
+pull request, one whose head branch starts with `batch/`: reviewed pull
+requests are merged into a batch branch and land on `main` together (see
+`docs/internals/ci.md`), and an ordinary pull request skips the job. On a batch
+it counts the **instructions** each hot path executes. It counts them on the merge
 commit GitHub builds for the PR, and on that commit's first parent, the tip of
 `main` it was merged onto. It fails when one count grew by more than a
 threshold. Every run re-bases on `main` as it is at that moment, so the Δ says
@@ -519,11 +522,12 @@ threshold with the repository variable `PERF_REGRESSION_THRESHOLD`, a number of
 percent.
 
 A PR that makes a path more expensive on purpose can carry the
-**`perf-regression-accepted`** label. With the label, the regression is still
+**`perf-regression-accepted`** label. The job runs on the batch PR, so that is
+where the label goes. With the label, the regression is still
 reported, as a warning, and the job passes. Adding or removing the label runs
 the job again. So does changing the PR's base branch to `main`: that run
 comes from `.github/workflows/base-changed.yml`, which calls `perf.yml`, and
-its check is named `perf / instruction-counts`. A docs-only PR, which the
+its check is named `perf / instruction-counts`. A docs-only batch PR, which the
 `Perf` workflow otherwise skips, gets one run there. Say in the PR which benchmark moved and why, in the pull request
 template's *Performance* section, the same way a counter-baseline update does
 (see [The baselines are the contract](#the-baselines-are-the-contract)). The
@@ -536,7 +540,7 @@ The comment is posted by a separate `comment` job, which is the only job with
 that carries the `<!-- rinch-perf-bench -->` marker **and** is authored by
 `github-actions[bot]`, so a human comment that quotes the marker is left alone.
 A pull request from a fork gets a read-only token and cannot comment. For those
-PRs the report is on the job's summary page only. A PR that changes only
+PRs the report is on the job's summary page only. A batch PR that changes only
 `docs/**` or Markdown files does not run the job.
 
 The cargo cache holds only dependency artifacts. A fresh checkout makes every

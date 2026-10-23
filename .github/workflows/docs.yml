@@ -22,12 +22,84 @@ permissions:
 # still supersedes older runs of the *same* branch (the useful behaviour) while
 # letting main and each PR build independently. Only `deploy` touches Pages, and it
 # runs on main pushes alone, so per-ref groups cannot produce concurrent deploys.
+#
+# A run in progress is cancelled on a pull request only: a `main` run (the one
+# that deploys) is never cancelled mid-way. A `main` run still WAITING behind
+# another one is replaced by a newer `main` push, as any concurrency group
+# does, and that newer run deploys the newer docs.
 concurrency:
   group: pages-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Batched merges (docs/internals/ci.md). The full `build` (rustdoc for the whole
+# workspace, the mdBook, the UI Zoo wasm build, the Pages artifact) runs on a
+# pull request whose head branch starts with `batch/` and on a push to `main`.
+# An ordinary component PR into `main` skips it and gets `book` instead: the
+# mdBook alone, and only when the PR changes `docs/` (or this file). Both are
+# job-level `if`s rather than trigger path filters, so a skipped check reports
+# as skipped and never sits pending (a path-filtered required check stays
+# pending for ever on a PR it filtered out). Rustdoc and the UI Zoo build follow
+# every Rust change, so they are batch-only rather than path-gated.
+#
+# `github.head_ref` is the caller's inside a call from `base-changed.yml`, so a
+# retargeted PR is classified the same way as its own runs.
 
 jobs:
+  # Which docs paths the component PR changes: the merge commit GitHub builds
+  # for the PR (what `actions/checkout` checks out on `pull_request`) against
+  # its first parent, the `main` tip it was merged onto, as `perf.yml` reads it.
+  changes:
+    if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'batch/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      book: ${{ steps.diff.outputs.book }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: List the changed paths
+        id: diff
+        run: |
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          printf '%s\n' "$changed"
+          # The book is `docs/src` (`docs/book.toml`); it includes nothing from
+          # outside `docs/`.
+          if printf '%s\n' "$changed" | grep -qE '^docs/|^\.github/workflows/docs\.yml$'; then
+            echo "book=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "book=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # The mdBook alone, for a component PR that changes it: a broken SUMMARY.md
+  # or a missing page fails here rather than in the next batch.
+  book:
+    needs: changes
+    if: needs.changes.outputs.book == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: ./.github/actions/rust-toolchain
+
+      # `--locked`: see the same step in `build`.
+      - name: Install mdbook
+        run: cargo install mdbook --locked --no-default-features
+
+      - name: Build mdbook
+        run: |
+          cd docs && mdbook build
+
   build:
+    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'batch/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

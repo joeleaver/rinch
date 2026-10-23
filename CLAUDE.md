@@ -41,6 +41,7 @@ Load-bearing dependency facts (detail and history in `docs/internals/dependencie
 | `reactive-rendering.md` | `remove` vs `discard`, scope ownership of nodes, cache scopes, execution order, styles and animations across detach/hide, transitions and animations, transform interpolation, easing |
 | `rsx-control-flow-and-props.md` | `if`/`for`/`match` in rsx, keyed reconciliation, `_fn` bindings and the echo guard, undo/caret keys in fields, `onsubmit`, rsx prop transformation rules, boolean attributes, merged `style:`/`class:`, root attributes on components |
 | `common-issues.md` | a rendering surprise: inline-level flex/grid, UA stylesheet defaults (headings, lists, `<hr>`, form controls, `<select>`), CSS tables, unsupported selectors, sizing keywords, empty blocks |
+| `ci.md` | GitHub Actions workflows, which checks a PR gets, batched merges and the batch procedure, a red batch, the `test` shards, retargets |
 
 User-facing guides are in `docs/src/guide/`, architecture write-ups in `docs/src/architecture/`, design records in `docs/design/`. The rsx usage rules every UI change needs are in `.claude/rules/rinch-best-practices.md` (loaded automatically).
 
@@ -540,15 +541,16 @@ not on the whole frame.
 
 **The baselines say which work a frame did; CI's `Perf` workflow says what it
 cost** (`.github/workflows/perf.yml`, benchmarks in `crates/rinch-bench`).
-It records Callgrind instruction counts (Gungraun) for every benchmark in the crate, on the
-PR's merge commit and on its first parent (the current `main` tip). The report
+It records Callgrind instruction counts (Gungraun) for every benchmark in the crate, on a
+**batch** PR's merge commit and on its first parent (the current `main` tip); a
+component PR skips it (see CI below). The report
 is a table in the job summary and one PR comment. The job fails past +3%
 (`vars.PERF_REGRESSION_THRESHOLD`), or when a base that has the benchmarks
 cannot run them. The base runs the head's benchmark sources, and its own when
 those do not build there — a new bench calling a new API (#1036) — so the rest
 are still compared and the new one shows as `new`; the report names what was
 not compared, and fails unlabelled if the head's copy also edits an existing
-scenario rather than only adding. The `perf-regression-accepted` label turns either failure into
+scenario rather than only adding. The `perf-regression-accepted` label (on the batch PR) turns either failure into
 a warning, and the PR then explains the cost the same way a baseline change
 does. Inside the measured operation the bench binary bump-allocates
 (`rinch_bench::alloc`): glibc's malloc cost depends on heap history and moved
@@ -556,41 +558,19 @@ one count 7% between identical runs, and with the bump allocator runs agree to
 about 0.03%. Counts are comparable only between runs on one machine.
 `docs/src/guide/performance.md#ci-regression-job`.
 
-## CI triggers: when a pull request is (not) checked
+## CI: batched merges
 
-`ci.yml`, `perf.yml` and `docs.yml` run on `pull_request` events whose base is
-`main`: a PR opened, pushed to (`synchronize`) or reopened. Three cases need
-knowing (#448):
-
-- **A base change to `main` runs them through `.github/workflows/base-changed.yml`.**
-  Retargeting a stacked PR fires only `edited`, which the three workflows do not
-  list, so it used to start nothing. `base-changed.yml` listens for `edited`
-  and calls the three as reusable workflows when `github.event.changes.base` is
-  present. Those checks are named `ci / test`, `perf / instruction-counts`,
-  `docs / build`, …; the same PR pushed to afterwards gets the plain names
-  (`test`, …) on its new commit. A title or body edit shows three skipped
-  checks named `ci`, `perf` and `docs` and runs nothing. Do not "simplify" this
-  into `edited` plus a job-level `if:` inside `ci.yml`: a body edit would then
-  start a run whose jobs are skipped under the real checks' names, and the
-  newest check of a name is the one `gh pr checks` and the merge box show, so a
-  red `test` would read as passed. A retarget made while the PR's own `Perf`
-  or `Documentation` run is in progress cancels that run (their concurrency
-  groups are per PR), and `gh pr checks` lists a cancelled check as `fail`
-  beside the new `perf / …` and `docs / …` ones.
-- **Retarget a stacked PR before its base branch is deleted.** Deleting the
-  parent's branch with `gh pr merge --delete-branch` or through the API
-  **closes** the child instead of retargeting it, and a PR whose base branch is
-  gone cannot be reopened (measured with gh 2.46, #448). Change the child's
-  base to `main` first (`gh api -X PATCH repos/OWNER/REPO/pulls/N -f base=main`),
-  which is the event `base-changed.yml` runs on.
-- **A PR that conflicts with its base gets no run of any workflow**, on a push
-  or a retarget: GitHub has no merge commit to run on. `gh pr checks` prints
-  `no checks reported`. Check `gh pr view N --json mergeable,mergeStateStatus`.
-- **Re-running a run does not move it to a newer `main`.** `gh run rerun`
-  re-runs the jobs on the merge commit the run was created with. Push to the
-  branch (an empty commit will do) to test against the current base.
-
-"No checks" is never a pass: confirm a run exists for the PR's head commit.
+An ordinary PR into `main` (a **component** PR) runs only the fast jobs: `fmt`,
+the `clippy` jobs and `check-android`. The `test (…)` shards, `test-wasm`, Perf
+and the full Documentation build run on a PR whose head branch starts with
+`batch/`, and on every push to `main`. To land reviewed PRs, the lead merges
+their heads (`git merge --no-ff`) into `batch/YYYY-MM-DD-N` cut from `main`,
+opens one `batch: …` PR listing them (`Refs #N`), and merges it with a **merge
+commit** once green, which marks each component PR merged. A red batch is the
+top priority: fix or drop the culprit. Procedure, the test shards, and the
+trigger traps (a retarget runs through `base-changed.yml`; retarget a stacked
+PR before deleting its base; a conflicting PR gets no run; a re-run does not
+re-base): `docs/internals/ci.md`. "No checks" is never a pass.
 
 ## Documentation Requirements
 

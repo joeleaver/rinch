@@ -25,7 +25,7 @@ name: Base changed
 # Here a title or body edit skips three jobs named `ci`, `perf` and `docs` in
 # THIS workflow, and those names belong to no real check. A base change runs
 # the three workflows as reusable workflows, and their checks are named
-# `ci / test`, `perf / instruction-counts`, `docs / build` and so on.
+# `ci / test (unit)`, `perf / instruction-counts`, `docs / build` and so on.
 #
 # `github.event.changes.base` is present only when the base changed. The event
 # carries the NEW base, so the `branches` filter below passes a retarget TO
@@ -35,12 +35,19 @@ name: Base changed
 # `pull_request`, the ref is `refs/pull/N/merge`, so each one checks out and
 # tests the merge with the new base exactly as it does on a push to the PR.
 # `paths-ignore` in `perf.yml` is a trigger filter and does not apply to a
-# call, so a docs-only PR gets one Perf run when it is retargeted.
+# call, so a docs-only batch PR gets one Perf run when it is retargeted.
+#
+# Batched merges (docs/internals/ci.md): the three called workflows decide
+# inside, by job-level `if`s on `github.head_ref` (which is this run's PR head
+# branch in a call too), whether the PR is a component PR (fast jobs only, no
+# Perf, the mdBook only if `docs/` changed) or a `batch/…` PR (everything).
+# Nothing here needs to know which.
 #
 # No workflow-level `concurrency:` here, on purpose: a run whose jobs are all
 # skipped (a body edit) would enter the group and cancel a retarget's run in
-# progress. `perf.yml`'s job-level group and `docs.yml`'s per-ref group still
-# apply inside the calls, and a skipped caller job never reaches them.
+# progress. `ci.yml`'s workflow-level group (one of its own for a retarget,
+# `ci-retarget-N`), `perf.yml`'s job-level group and `docs.yml`'s per-ref group
+# still apply inside the calls, and a skipped caller job never reaches them.
 #
 # Not covered, because no run can exist for them (#448's comments):
 #   * a PR that CONFLICTS with its new base has no merge commit, so GitHub

@@ -2,15 +2,16 @@ name: Perf
 
 # Instruction-count regression check (`crates/rinch-bench`).
 #
-# On a pull request this runs the Gungraun/Callgrind benchmarks on the merge
-# commit GitHub builds for the PR (`refs/pull/N/merge`) and on that merge's
-# FIRST PARENT, the tip of `main` it was merged onto. It compares Callgrind's
-# `Ir` (instructions executed by each measured operation) per benchmark. So
-# the Δ answers "what does merging this do to main as it is now". Every re-run,
-# label event included, re-bases on the main of that moment. Comparing against
-# `pull_request.base.sha` instead would be wrong: that is the base recorded at
-# the PR's last push, so once main moves, other PRs' changes count as this
-# one's (review of #903, D1).
+# On a BATCH pull request (head branch `batch/…`; an ordinary component PR
+# skips the job, see `instruction-counts` below) this runs the
+# Gungraun/Callgrind benchmarks on the merge commit GitHub builds for the PR
+# (`refs/pull/N/merge`) and on that merge's FIRST PARENT, the tip of `main` it
+# was merged onto. It compares Callgrind's `Ir` (instructions executed by each
+# measured operation) per benchmark. So the Δ answers "what does merging this
+# do to main as it is now". Every re-run, label event included, re-bases on
+# the main of that moment. Comparing against `pull_request.base.sha` instead
+# would be wrong: that is the base recorded at the PR's last push, so once main
+# moves, other PRs' changes count as this one's (review of #903, D1).
 #
 # Instruction counts, not wall time: a hosted runner's timings move with its
 # neighbours' load, and a count moves only when the code does. Two runs of one
@@ -61,7 +62,7 @@ name: Perf
 # artifacts and prunes the workspace crates' ones before saving, which keeps the
 # entry to one dependency tree rather than two full release target dirs. That
 # matters because this entry shares the repository's 10 GB Actions cache with
-# ci.yml's four. Only a push to `main` writes it (`seed-cache`), and only when
+# ci.yml's. Only a push to `main` writes it (`seed-cache`), and only when
 # the key misses. The key hashes every Cargo.lock/Cargo.toml, the toolchain
 # and the compiler env, so a main push that changes none of them finishes in
 # about a minute on an exact hit. PR runs only read it, which gives every PR the main-scoped entry and no
@@ -163,9 +164,19 @@ jobs:
         run: CARGO_TARGET_DIR="$CARGO_TARGET_DIR_HEAD" cargo bench -p rinch-bench --no-run
 
   instruction-counts:
+    # Batched merges (docs/internals/ci.md): only a pull request whose head
+    # branch starts with `batch/` is measured. A component PR into `main` skips
+    # this job (a job-level `if`, so it reports as skipped rather than pending),
+    # and its cost is measured once, with the rest of its batch, on the batch
+    # PR: that PR's merge commit against its first parent, the `main` tip, as
+    # above. Put the `perf-regression-accepted` label on the BATCH PR.
+    # `github.head_ref` is the caller's inside a call from `base-changed.yml`,
+    # so a retargeted batch PR is measured too.
+    #
     # A label event re-runs the check only for the label that changes its verdict.
     if: >-
       github.event_name == 'pull_request' &&
+      startsWith(github.head_ref, 'batch/') &&
       ((github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
        github.event.label.name == 'perf-regression-accepted')
     # Job-level, not workflow-level: a run whose job is skipped (an unrelated

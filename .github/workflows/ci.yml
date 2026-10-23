@@ -8,6 +8,36 @@ on:
   # Called by `base-changed.yml` when a PR's base branch becomes `main` (#448):
   # a base change fires only `edited`, which is not listed above on purpose.
   workflow_call:
+  # A full run (every job, the slow ones included) on any branch, by hand.
+  workflow_dispatch:
+
+# Batched merges (docs/internals/ci.md). An ordinary pull request into `main` (a
+# *component* PR) runs only the fast jobs: `fmt`, `clippy`, `clippy-wasm`,
+# `clippy-android` and `check-android`. The slow ones (the `test` shards and
+# `test-wasm`) run on a pull request whose head branch starts with `batch/`, on
+# every push to `main`, and on a manual dispatch. The lead merges several
+# reviewed component PRs into one `batch/YYYY-MM-DD-N` branch and opens one PR
+# for it, so the full suite runs once per batch rather than once per push to
+# every PR. The slow jobs are skipped by a JOB-LEVEL `if`, never by a path or
+# branch filter on the trigger: a skipped job reports as skipped, while a check
+# filtered out of a run never reports at all, and a required check waiting on
+# it stays pending for ever.
+#
+# The test is `github.head_ref`, which is the PR's head branch on a
+# `pull_request` event and also inside a call from `base-changed.yml` (a called
+# workflow sees its caller's `github` context), so a retargeted batch PR runs
+# everything and a retargeted component PR runs the fast jobs.
+
+# One run per pull request: a push supersedes the run of the push before it.
+# Never on `main` (or a dispatch): those are grouped by their own run id, so no
+# run there is cancelled or replaced. A retarget's call from `base-changed.yml`
+# (`action == 'edited'`) has a group of its own, so it does not cancel the PR's
+# own run in progress, and the PR's own runs (opened, synchronize, reopened)
+# share one. A skipped caller job in `base-changed.yml` (a body edit) never
+# starts this workflow, so it cannot cancel anything.
+concurrency:
+  group: ci-${{ github.event.action == 'edited' && 'retarget-' || '' }}${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -30,7 +60,7 @@ env:
   # `main` unseen; #513's known block-in-inline detachment is waived by shape
   # (15 lines on `fdc01d5`) and reported rather than failed.
   #
-  # Setting it at the workflow level covers the `test` job's `cargo test
+  # Setting it at the workflow level covers every `test (…)` shard's `cargo test
   # --workspace` and its feature-gated runs. Measured on `fdc01d5` with the
   # failing hook: 163 targets, 2604 tests, 0 failures. The `clippy`/`check` jobs
   # run no tests, so it is inert there.
@@ -41,14 +71,127 @@ env:
   RINCH_TREE_CHECK: "1"
 
 jobs:
+  # `cargo test`, in four shards that together run exactly what one `test` job
+  # ran before the batched-merge change (one `cargo test --workspace` step, then
+  # the feature-gated step): about 41 minutes in one job on a cold cache, where
+  # the four now run side by side.
+  #
+  # The first three shards each select `--workspace`, and only the TARGETS
+  # differ, so cargo resolves features exactly as `cargo test --workspace` does:
+  # a test alive only because an unrelated example turns its feature on (see
+  # the feature-gated shard's comment) is alive in its shard too. Splitting by
+  # PACKAGE (`-p`, `--exclude`) would change that unification and kill such
+  # tests silently, so do not.
+  #
+  #   unit:          lib and bin unit tests, doctests, and the examples built
+  #                  (`cargo test` builds every example to check it compiles).
+  #                  `--lib` is explicit here, so it also builds `rinch-bench`'s
+  #                  `test = false` library as a test (0 tests).
+  #   integration-*: the integration-test targets, split by the first letter of
+  #                  the target name. `[!a-m]*` is the exact complement of
+  #                  `[a-m]*` (cargo matches `--test` with `glob::Pattern`), so
+  #                  every target is in exactly one shard whatever it is named.
+  #   feature-gated: the explicit feature sets, unchanged.
+  #
+  # Cache: `Swatinem/rust-cache` keeps the dependency artifacts only (it prunes
+  # the workspace crates', which a fresh checkout rebuilds anyway), under ONE
+  # key shared by the four shards, written only by the `unit` shard on a push
+  # to `main`. Four `actions/cache` entries of a whole `target/` each would
+  # quadruple the job's share of the repository's 10 GB cache.
   test:
+    name: test (${{ matrix.shard }})
+    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'batch/')
     runs-on: ubuntu-latest
+    strategy:
+      # One shard failing says nothing about the others; let them all finish.
+      fail-fast: false
+      matrix:
+        include:
+          - shard: unit
+            run: |
+              cargo test --workspace --lib --bins
+              cargo test --workspace --doc
+              cargo build --workspace --examples
+          - shard: integration-a-m
+            run: cargo test --workspace --test '[a-m]*'
+          - shard: integration-n-z
+            run: cargo test --workspace --test '[!a-m]*'
+          # Feature-gated tests. A test file whose `cfg` is false is not "skipped" —
+          # it compiles to an EMPTY binary that still prints `Running tests/x.rs` and
+          # then `running 0 tests`. Only the COUNT reveals it; grepping for the
+          # `Running` line will report a dead file as alive.
+          #
+          # `cargo test --workspace` unifies features across members, so a gated test
+          # can be alive purely because some unrelated example turns its feature on:
+          #   * rinch/tests/multi_context.rs (cfg(any(gpu, embed)) — the #134/#136/#138
+          #     pins) and rinch/tests/input_routing.rs (same cfg — the #139 per-document
+          #     drag routing pins) run only because examples/game-embed and
+          #     examples/gpu-device-config enable `rinch/gpu`.
+          #   * event_dispatch.rs::paste_image_tests (cfg(all(test, desktop, clipboard)))
+          #     runs only because four examples enable `rinch/clipboard`.
+          # And one runs ONLY in this shard, never under `--workspace`:
+          #   * app/mod.rs::drag_ghost_dirty_region_tests (cfg(all(test, software_shell)) —
+          #     the #173 pin) needs `desktop` WITHOUT `gpu`, and `--workspace` unifies
+          #     `rinch/gpu` on. Adding `gpu` to the `-p rinch` line below would kill it.
+          # Retarget or drop those examples and the pins go dead silently, so name the
+          # combinations here rather than inheriting them by luck.
+          #
+          # One set was genuinely dead: rinch-editor-core/tests/serialize.rs is
+          # cfg(all(serde, markdown)) and NOTHING in the workspace enables `markdown`,
+          # so its 13 tests — the round-trip surface this step was added for in #123 —
+          # ran nowhere at all. `--features serde` alone was never enough.
+          #
+          # `--all-features` would cover the whole class, but it does not build: it
+          # pulls a transitive `ashpd` 0.11.1 that fails to compile. Hence explicit sets.
+          # When adding a feature-gated test, add its combination here.
+          #
+          # `debug` is listed for the same reason: app/debug_commands.rs is
+          # cfg(feature = "debug") and its #401 pins (MCP `scroll()` drives the real
+          # wheel path) run under `--workspace` only because examples/ui-zoo-desktop
+          # enables `rinch/debug`. It does not pull `gpu`, so the software_shell
+          # pins below stay alive.
+          #
+          # `desktop` is listed on the `-p rinch` line to name that gate explicitly
+          # rather than inherit it: menu/mod.rs is cfg(feature = "desktop") and
+          # `desktop` is a DEFAULT feature of `rinch`, so its #183 pins do run
+          # today — but they would die silently if that default ever flipped.
+          # Naming it in the existing set is free (the resolved features are
+          # unchanged); a separate `-p rinch --features desktop` line would be a
+          # whole extra build of `rinch` and its deps for identical coverage,
+          # because that line also picks up `desktop` from the defaults.
+          - shard: feature-gated
+            run: |
+              cargo test -p rinch-editor-core --features serde,markdown
+              cargo test -p rinch-editor-view --features collaboration
+              cargo test -p rinch --features desktop,embed,theme,clipboard,debug
+              # Bare on purpose: `desktop` (the default) WITHOUT `clipboard`. The
+              # text context menu's no-clipboard pin (#813,
+              # `without_the_clipboard_feature_a_selected_field_greys_cut_and_copy`)
+              # is cfg(not(feature = "clipboard")): the line above enables the
+              # feature, `--workspace` unifies it on, and the `components,theme`
+              # line below compiles no `app` module at all — so without this line
+              # it runs nowhere. Filtered to the menu's fixtures, which is all this
+              # configuration adds; it is still a second build of `rinch`.
+              cargo test -p rinch --lib text_context_menu
+              # The menu system without a desktop backend — the configuration
+              # `rinch-web` resolves `rinch` to. It is the **decoupling** check, not
+              # extra coverage: `menu::app_menu_bar`'s `portable_tests` and
+              # `menu::tests` both run in the `--workspace` job above (`desktop` is a
+              # default feature and `--workspace` unifies it on), and what this line
+              # alone would notice is a `use muda::…` or a `winit::keyboard::KeyCode`
+              # creeping above the `#[cfg(feature = "desktop")]` line and taking the
+              # whole web menu bar with it. The `cargo check` in the `check` job below
+              # is the compile-only half of the same question; this one also runs the
+              # tests in that configuration, which is where a *behavioural* regression
+              # in the cfg'd-down half would show.
+              cargo test -p rinch --no-default-features --features components,theme
     steps:
       - uses: actions/checkout@v4
 
       # Reclaim disk before building. The runner image ships several GB of
       # toolchains this workspace never uses, and the build needs the headroom
-      # (see the debug-info note in `env` above).
+      # (see the debug-info note in `env` above). Every shard builds the whole
+      # dependency graph, so every shard needs it.
       - name: Free disk space
         run: |
           df -h /
@@ -74,89 +217,14 @@ jobs:
         id: rust
         uses: ./.github/actions/rust-toolchain
 
-      - name: Cache cargo
-        uses: actions/cache@v4
+      - name: Cache cargo (dependencies)
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-test-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-test-${{ steps.rust.outputs.channel }}-
+          shared-key: test
+          save-if: ${{ github.event_name == 'push' && matrix.shard == 'unit' }}
 
       - name: Run tests
-        run: cargo test --workspace
-
-      # Feature-gated tests. A test file whose `cfg` is false is not "skipped" —
-      # it compiles to an EMPTY binary that still prints `Running tests/x.rs` and
-      # then `running 0 tests`. Only the COUNT reveals it; grepping for the
-      # `Running` line will report a dead file as alive.
-      #
-      # `cargo test --workspace` unifies features across members, so a gated test
-      # can be alive purely because some unrelated example turns its feature on:
-      #   * rinch/tests/multi_context.rs (cfg(any(gpu, embed)) — the #134/#136/#138
-      #     pins) and rinch/tests/input_routing.rs (same cfg — the #139 per-document
-      #     drag routing pins) run only because examples/game-embed and
-      #     examples/gpu-device-config enable `rinch/gpu`.
-      #   * event_dispatch.rs::paste_image_tests (cfg(all(test, desktop, clipboard)))
-      #     runs only because four examples enable `rinch/clipboard`.
-      # And one runs ONLY in the explicit step below, never in `--workspace`:
-      #   * app/mod.rs::drag_ghost_dirty_region_tests (cfg(all(test, software_shell)) —
-      #     the #173 pin) needs `desktop` WITHOUT `gpu`, and `--workspace` unifies
-      #     `rinch/gpu` on. Adding `gpu` to the `-p rinch` line below would kill it.
-      # Retarget or drop those examples and the pins go dead silently, so name the
-      # combinations here rather than inheriting them by luck.
-      #
-      # One set was genuinely dead: rinch-editor-core/tests/serialize.rs is
-      # cfg(all(serde, markdown)) and NOTHING in the workspace enables `markdown`,
-      # so its 13 tests — the round-trip surface this step was added for in #123 —
-      # ran nowhere at all. `--features serde` alone was never enough.
-      #
-      # `--all-features` would cover the whole class, but it does not build: it
-      # pulls a transitive `ashpd` 0.11.1 that fails to compile. Hence explicit sets.
-      # When adding a feature-gated test, add its combination here.
-      #
-      # `debug` is listed for the same reason: app/debug_commands.rs is
-      # cfg(feature = "debug") and its #401 pins (MCP `scroll()` drives the real
-      # wheel path) run under `--workspace` only because examples/ui-zoo-desktop
-      # enables `rinch/debug`. It does not pull `gpu`, so the software_shell
-      # pins below stay alive.
-      #
-      # `desktop` is listed on the `-p rinch` line to name that gate explicitly
-      # rather than inherit it: menu/mod.rs is cfg(feature = "desktop") and
-      # `desktop` is a DEFAULT feature of `rinch`, so its #183 pins do run
-      # today — but they would die silently if that default ever flipped.
-      # Naming it in the existing set is free (the resolved features are
-      # unchanged); a separate `-p rinch --features desktop` line would be a
-      # whole extra build of `rinch` and its deps for identical coverage,
-      # because that line also picks up `desktop` from the defaults.
-      - name: Run feature-gated tests
-        run: |
-          cargo test -p rinch-editor-core --features serde,markdown
-          cargo test -p rinch-editor-view --features collaboration
-          cargo test -p rinch --features desktop,embed,theme,clipboard,debug
-          # Bare on purpose: `desktop` (the default) WITHOUT `clipboard`. The
-          # text context menu's no-clipboard pin (#813,
-          # `without_the_clipboard_feature_a_selected_field_greys_cut_and_copy`)
-          # is cfg(not(feature = "clipboard")): the line above enables the
-          # feature, `--workspace` unifies it on, and the `components,theme`
-          # line below compiles no `app` module at all — so without this line
-          # it runs nowhere. Filtered to the menu's fixtures, which is all this
-          # configuration adds; it is still a second build of `rinch`.
-          cargo test -p rinch --lib text_context_menu
-          # The menu system without a desktop backend — the configuration
-          # `rinch-web` resolves `rinch` to. It is the **decoupling** check, not
-          # extra coverage: `menu::app_menu_bar`'s `portable_tests` and
-          # `menu::tests` both run in the `--workspace` job above (`desktop` is a
-          # default feature and `--workspace` unifies it on), and what this line
-          # alone would notice is a `use muda::…` or a `winit::keyboard::KeyCode`
-          # creeping above the `#[cfg(feature = "desktop")]` line and taking the
-          # whole web menu bar with it. The `cargo check` in the `check` job below
-          # is the compile-only half of the same question; this one also runs the
-          # tests in that configuration, which is where a *behavioural* regression
-          # in the cfg'd-down half would show.
-          cargo test -p rinch --no-default-features --features components,theme
+        run: ${{ matrix.run }}
 
   clippy:
     runs-on: ubuntu-latest
@@ -382,6 +450,8 @@ jobs:
   # Shipping it unverified is how the crate arrived: the first run of these tests
   # found IndexedDB accepting an empty key that the filesystem backend rejects.
   test-wasm:
+    # Slow: batches, `main` and dispatches only (see the note under `on:`).
+    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'batch/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
