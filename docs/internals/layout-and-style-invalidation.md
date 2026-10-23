@@ -344,9 +344,9 @@ input a shaped layout is built from:
   `nowrap`/`pre`. An
   inline element's `nowrap`/`pre` reaches parley as `TextWrapMode::NoWrap`
   (it used to wrap), and so does the root's own (#1212): a `nowrap`/`pre`
-  root is broken at the container's width whenever the nearest element of
-  some text in it wraps, or some element holding one of its atomic inlines
-  does (`ifc::wraps_anywhere`; the boxes since #1238), so a `normal` span
+  root is broken at the container's width whenever some element holding a
+  text run or an atomic inline in it wraps, however deep
+  (`ifc::wraps_anywhere`; the boxes and the depth since #1238), so a `normal` span
   inside a `pre` root wraps, a `normal` span of inline-blocks breaks between
   them, and only an IFC with no wrapping content at all is broken
   unconstrained. Such a paragraph is still **aligned within the content box**
@@ -378,18 +378,39 @@ input a shaped layout is built from:
   (`ifc::WrapSeams`). So `aa<span normal>[1][2][3]</span>cc` in a `nowrap`
   root breaks after each box but not between `aa` and `[1]`, a chip in
   `nowrap` text does not wrap after itself, and boxes in a `nowrap` span
-  inside a wrapping root stay together. A paragraph broken at a width that
+  inside a wrapping root stay together. **A run of spaces is decided by the
+  spaces' own `white-space`** (`ifc::wrap_allowed_after`, review of #1878):
+  `<span nowrap>abc def </span>[box]` has no break after its space, though
+  the span closes into a wrapping root. Spaces that do not wrap, in an
+  element a wrapping one closes into right before them, break *before* the
+  run and start the next line with it (`aa<span normal>hello</span> ccc` in a
+  `nowrap` or `pre` root: Chrome keeps the space at the start of line 2;
+  `ifc::Seam::closes_into_wrap`); one that opens there does not
+  (`<span normal>ccc<span nowrap> mm</span>`). A wrapping space followed by a
+  non-wrapping one breaks between them. An element's end padding right
+  after hanging spaces hangs with them (Chrome
+  fits `<span padding:0 3px>[B]q-r </span>` before a `<br>` in 71.5px, its
+  content less the space and the end padding). A paragraph broken at a width that
   holds atomic inlines and any element that does not wrap gets the seams
   (`UnhungSpaces::seams`), and the hang pass re-breaks a line of it where
   CSS ends it (`ifc::css_line`, the #1426 edge-box re-break generalised:
   `LineUnit::wrap_after`) when parley's break follows a leaf `white-space`
-  allows no wrap after (`wrap_allowed_before`), or the line overflows
+  allows no wrap after (`wrap_allowed_after`), when the line overflows
   (`line_overflows`: parley appends a box after text that does not wrap where
-  CSS breaks before it) — not an `overflow-wrap` line. A break parley found
-  inside a text run is kept, with its own UAX #14 analysis; a re-broken
-  line's opportunities inside text are `TextBreaks`', which has no
-  complex-script dictionaries. Pins:
-  `tests/atomic_inline_soft_wrap_1238_tests.rs` (Chrome 155). Only for `right`,
+  CSS breaks before it), or when parley took its emergency break after a box
+  too wide for the line that `white-space` glues to what follows (Chrome:
+  `[B]cc` stays together) — not an `overflow-wrap` line. A break parley found
+  inside a text run is kept. Inside text a re-broken line asks
+  `ifc::TextBreaks`, the segmenter parley uses (`LineSegmenter::new_dictionary`,
+  so Thai, Lao, Khmer and Burmese keep their word breaks), less a break
+  between a complex-context (`SA`) character and a letter or digit, which
+  ICU4X reports and UAX #14 (and Chrome) does not. ICU4X's dictionaries
+  still split some words Chrome's keep whole (`ខ្មែរ|ភាសា`, `ລາວ|ພາສາ`), so a
+  re-broken line can break inside them. Pins:
+  `tests/atomic_inline_soft_wrap_1238_tests.rs` (Chrome 155) and
+  `tests/atomic_inline_soft_wrap_1238_differential.rs`, a checked-in Chrome
+  155 corpus of 437 random trees (`tests/soft_wrap_1238/chrome155.tsv`, its
+  known differences pinned). Only for `right`,
   `center` and `end` in a left-to-right block, and only in the paint layout
   (`build_inline_layout`'s `align_width`; a measure takes only sizes from its layout).
   Parley takes a break's wrap mode from the cluster before it,
