@@ -285,7 +285,7 @@ press outside it is swallowed by the backdrop and does nothing. Pins:
 
 ### File Drop (OS → App)
 
-File drops from the OS use `data-onfiledragenter`, `data-onfiledragleave` attributes, and `register_file_drop_handler` for the actual drop. See the File Drop section of UI Zoo for an example. The drop handler reads the drop point and its element's painted box through `get_click_context()` (`dispatch_file_drop` sets it, #1650; logical window px, as a click's), and so do the files an editor hands back from a mixed drop. Desktop only: rinch-web dispatches no `data-onfiledrop` (a browser drop has no paths), so there is no web context to agree with.
+File drops from the OS use `data-onfiledragenter`, `data-onfiledragleave` attributes, and `register_file_drop_handler` for the actual drop. See the File Drop section of UI Zoo for an example. The drop handler reads the drop point and its element's painted box through `get_click_context()` (`dispatch_file_drop` sets it, #1650; logical window px, as a click's), and so do the files an editor hands back from a mixed drop. rinch-web dispatches no `data-onfiledrop` (a browser drop has no paths); its `ondropfiles` handler reads the same context (below).
 
 **`ondropfiles` (`data-ondropfiles`, #1771)** is the cross-platform form: the
 files as `rinch_core::file::LocalFile`s (`file.rs`: a name, a size, an optional
@@ -307,7 +307,15 @@ has `ondropfiles`, and skip an event already prevented (so a host page's own
 earlier document listener that prevents the drop silences them) — the editor's capture `on_drop` prevents every drop it
 is involved in and hands the files it did not take (non-images, everything on a
 read-only editor or a drop with no picture) to `dispatch_dropped_files` itself.
-Pins: `rinch/src/app/files_drop_1771_tests.rs`, `rinch-web/tests/files_1771.rs`.
+**The drop point** (#1822): both backends set the `ClickContext` before an
+`ondropfiles` handler runs — the drop point (desktop logical window px, web
+the `drop` event's client px, each the frame its clicks use), the box of the
+element carrying the handler (not the child the drop landed on), the viewport,
+the modifiers held and `MouseButton::Left` — on the editor-leftover path too
+(web `dispatch_dropped_files` calls `set_click_context_for` with the zone).
+Pins: `rinch/src/app/files_drop_1771_tests.rs`, `rinch-web/tests/files_1771.rs`;
+the context: `rinch/src/app/file_drop_click_context_1650_tests.rs`,
+`rinch-web/tests/drop_point_1822.rs`.
 
 **The picker** (`rinch::file::FilePicker`, web always, native with
 `file-dialogs`): `pick()` starts the picker when called (a browser needs the

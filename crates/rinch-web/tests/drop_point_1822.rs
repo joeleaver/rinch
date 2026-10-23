@@ -241,7 +241,11 @@ async fn the_files_an_editor_hands_back_carry_the_drop_point() {
     assert_eq!((ctx.mouse_x, ctx.mouse_y), (x as f32, y as f32));
     assert_box(&ctx, &zone);
     assert_eq!((ctx.viewport_width, ctx.viewport_height), viewport());
-    assert!(ctx.modifiers.ctrl && !ctx.modifiers.shift, "{:?}", ctx.modifiers);
+    assert!(
+        ctx.modifiers.ctrl && !ctx.modifiers.shift,
+        "{:?}",
+        ctx.modifiers
+    );
     root.unmount();
     host.remove();
 }
