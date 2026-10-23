@@ -11,6 +11,7 @@
 //! the supported way to observe viewport size changes without polling.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 
 use super::{Owner, Signal, current_owner};
 
@@ -24,17 +25,12 @@ pub struct ElementBounds {
     pub height: f32,
 }
 
+/// One registration of a node: its signal and the owner it was made under.
 /// Cheap to clone (`Signal` is an index + generation, `Owner` a `Weak`), so
 /// [`update_bounds_signals`] can snapshot the entries it needs and release the
 /// registry borrow before running any user code.
 #[derive(Clone)]
 struct BoundsEntry {
-    /// The owning document's [`doc_key`](crate::dom::DomDocument::doc_key).
-    /// Node ids are per-document slab indices, so without this key two
-    /// documents on one thread (two embedded `RinchContext`s, issue #134) would
-    /// stomp each other's same-id entries on every layout pass.
-    doc_key: u64,
-    node_id: u64,
     signal: Signal<ElementBounds>,
     /// The live ambient owner the entry was registered under (`None`: app
     /// lifetime). The signal is that owner's and is freed with it, so a later
@@ -42,8 +38,20 @@ struct BoundsEntry {
     owner: Option<Owner>,
 }
 
+/// Keyed by `(doc_key, node_id)`. The document key matters: node ids are
+/// per-document slab indices, so without it two documents on one thread (two
+/// embedded `RinchContext`s, issue #134) would stomp each other's same-id
+/// entries on every layout pass. Ordered, so one document's entries are a
+/// contiguous range and every lookup is logarithmic (issue #1781's review: a
+/// linear scan per registration and per measured node was quadratic).
+type Registry = BTreeMap<(u64, u64), Vec<BoundsEntry>>;
+
 thread_local! {
-    static BOUNDS_REGISTRY: RefCell<Vec<BoundsEntry>> = const { RefCell::new(Vec::new()) };
+    static BOUNDS_REGISTRY: RefCell<Registry> = const { RefCell::new(BTreeMap::new()) };
+}
+
+fn doc_range(doc_key: u64) -> std::ops::RangeInclusive<(u64, u64)> {
+    (doc_key, 0)..=(doc_key, u64::MAX)
 }
 
 /// Register a reactive `Signal<ElementBounds>` tracking the node's current rect,
@@ -75,30 +83,20 @@ pub(crate) fn register_bounds_signal_entry(
     node_id: u64,
 ) -> (Signal<ElementBounds>, bool) {
     let owner = current_owner();
-    let existing = BOUNDS_REGISTRY.with(|reg| {
-        reg.borrow()
-            .iter()
-            .find(|e| {
-                e.doc_key == doc_key
-                    && e.node_id == node_id
-                    && e.owner == owner
-                    && e.signal.is_alive()
-            })
-            .map(|e| e.signal)
-    });
-    if let Some(signal) = existing {
-        return (signal, false);
-    }
-    let signal = Signal::new(ElementBounds::default());
     BOUNDS_REGISTRY.with(|reg| {
-        reg.borrow_mut().push(BoundsEntry {
-            doc_key,
-            node_id,
-            signal,
-            owner,
-        });
-    });
-    (signal, true)
+        let mut reg = reg.borrow_mut();
+        let entries = reg.entry((doc_key, node_id)).or_default();
+        if let Some(e) = entries
+            .iter()
+            .find(|e| e.owner == owner && e.signal.is_alive())
+        {
+            return (e.signal, false);
+        }
+        // `Signal::new` runs no app code, so allocating under the borrow is safe.
+        let signal = Signal::new(ElementBounds::default());
+        entries.push(BoundsEntry { signal, owner });
+        (signal, true)
+    })
 }
 
 /// Refresh the registered bounds signals belonging to the document identified
@@ -135,27 +133,31 @@ pub fn update_bounds_signals<F>(doc_key: u64, mut absolute_bounds: F)
 where
     F: FnMut(u64) -> Option<(f32, f32, f32, f32)>,
 {
-    // Snapshot this document's entries (all fields are Copy) and drop the
-    // borrow before invoking the lookup or touching any signal.
-    let entries: Vec<BoundsEntry> = BOUNDS_REGISTRY.with(|reg| {
+    // Snapshot this document's entries and drop the borrow before invoking
+    // the lookup or touching any signal.
+    let entries: Vec<(u64, Vec<Signal<ElementBounds>>)> = BOUNDS_REGISTRY.with(|reg| {
         reg.borrow()
-            .iter()
-            .filter(|e| e.doc_key == doc_key)
-            .cloned()
+            .range(doc_range(doc_key))
+            .map(|(&(_, node_id), es)| (node_id, es.iter().map(|e| e.signal).collect()))
             .collect()
     });
 
-    for entry in entries {
-        if !entry.signal.is_alive() {
+    for (node_id, signals) in entries {
+        if !signals.iter().any(|s| s.is_alive()) {
             continue;
         }
-        if let Some((x, y, width, height)) = absolute_bounds(entry.node_id) {
-            entry.signal.set_if_changed(ElementBounds {
+        if let Some((x, y, width, height)) = absolute_bounds(node_id) {
+            let rect = ElementBounds {
                 x,
                 y,
                 width,
                 height,
-            });
+            };
+            for signal in signals {
+                if signal.is_alive() {
+                    signal.set_if_changed(rect);
+                }
+            }
         }
     }
 
@@ -164,11 +166,12 @@ where
     // updating document would strand the entries of a document that stops
     // running layout entirely — a dropped `RinchContext` (issue #134) is
     // exactly that, and stranding is the leak this is meant to fix.
-    //
-    // One unconditional pass: `retain` over an all-live registry moves nothing,
-    // and `is_alive` is an index + generation compare, so this is cheaper than
-    // scanning for deadness first and retaining only on a hit.
-    BOUNDS_REGISTRY.with(|reg| reg.borrow_mut().retain(|e| e.signal.is_alive()));
+    BOUNDS_REGISTRY.with(|reg| {
+        reg.borrow_mut().retain(|_, es| {
+            es.retain(|e| e.signal.is_alive());
+            !es.is_empty()
+        })
+    });
 }
 
 /// The node ids currently registered for `doc_key`, with live signals.
@@ -183,16 +186,10 @@ where
 pub fn registered_bounds_nodes(doc_key: u64) -> Vec<u64> {
     BOUNDS_REGISTRY.with(|reg| {
         reg.borrow()
-            .iter()
-            .filter(|e| e.doc_key == doc_key && e.signal.is_alive())
-            .map(|e| e.node_id)
-            .fold(Vec::new(), |mut ids, id| {
-                // Two owners watching one node are two entries and one rect.
-                if !ids.contains(&id) {
-                    ids.push(id);
-                }
-                ids
-            })
+            .range(doc_range(doc_key))
+            .filter(|(_, es)| es.iter().any(|e| e.signal.is_alive()))
+            .map(|(&(_, node_id), _)| node_id)
+            .collect()
     })
 }
 
@@ -200,7 +197,7 @@ pub fn registered_bounds_nodes(doc_key: u64) -> Vec<u64> {
 /// Test-only: the self-pruning contract is about entries *disappearing*.
 #[cfg(test)]
 pub(crate) fn registry_len_for_tests() -> usize {
-    BOUNDS_REGISTRY.with(|reg| reg.borrow().len())
+    BOUNDS_REGISTRY.with(|reg| reg.borrow().values().map(Vec::len).sum())
 }
 
 /// The `(doc_key, node_id)` pairs currently registered. Test-only: pruning
@@ -210,7 +207,7 @@ pub(crate) fn registry_entries_for_tests() -> Vec<(u64, u64)> {
     BOUNDS_REGISTRY.with(|reg| {
         reg.borrow()
             .iter()
-            .map(|e| (e.doc_key, e.node_id))
+            .flat_map(|(&key, es)| es.iter().map(move |_| key))
             .collect()
     })
 }
@@ -468,5 +465,36 @@ mod dedupe_tests_1781 {
         let b = register_bounds_signal(45, 1);
         assert!(b.is_alive());
         assert_ne!(a.identity(), b.identity());
+    }
+}
+
+/// Issue #1781's review: a first `bounds_signal()` made while the document is
+/// borrowed cannot reach `watch_bounds`; the next call must still start the
+/// watch, or the web never refreshes that signal.
+#[cfg(test)]
+mod watch_retry_tests_1781 {
+    use crate::dom::traits::DomDocument;
+    use crate::dom::{RenderScope, mock::MockDomDocument};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[test]
+    fn a_watch_refused_under_a_borrow_is_made_by_the_next_call() {
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let el = scope.create_element("div");
+
+        let first = {
+            let _held = doc.borrow();
+            el.bounds_signal()
+        };
+        assert!(
+            doc.borrow().__watched_bounds().is_empty(),
+            "under a borrow the watch cannot be made"
+        );
+        let second = el.bounds_signal();
+        assert_eq!(first.identity(), second.identity(), "one owner, one signal");
+        assert_eq!(doc.borrow().__watched_bounds(), &[el.node_id()]);
     }
 }
