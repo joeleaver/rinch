@@ -166,7 +166,7 @@ pub fn is_edge_box(id: u64) -> bool {
 
 /// The owner of an edge box and whether it is the inline-end one.
 pub(crate) fn edge_box_owner(id: u64) -> Option<(usize, bool)> {
-    is_edge_box(id).then(|| ((id & (EDGE_BOX_END - 1)) as usize, id & EDGE_BOX_END != 0))
+    is_edge_box(id).then_some(((id & (EDGE_BOX_END - 1)) as usize, id & EDGE_BOX_END != 0))
 }
 
 /// An edge box's id ([`EDGE_BOX`]).
