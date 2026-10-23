@@ -310,8 +310,8 @@ made in the window root's **layout** frame — `NodeHandle::get_layout_bounds`
 summed over root > layer > row and root > titlebar > spacer — because the
 result is written as a CSS width (#1375); the two `bounds_signal`s are painted
 boxes, scaled by any transform on the window or above it, and are read only to
-re-run the effect. `rinch-web` publishes no bounds signals and no shell builds
-the inline layout there, so this is a desktop path; a web one could not reuse
+re-run the effect. No shell builds the inline layout on `rinch-web`, so this is
+a desktop path; a web one could not reuse
 `get_layout_bounds`, which is `getBoundingClientRect`-based (painted) on that
 backend. Pins: `app/inline_menu_spacer_529_tests.rs`.
 
@@ -544,3 +544,44 @@ carries the same single file. This list used to name `device/resource.rs` and `p
 **neither is patched, in this fork or upstream**, so do not add them back.
 
 **Downstream projects** must copy the `[patch.crates-io]` section from the workspace `Cargo.toml` into their own `Cargo.toml` for transparent windows to work on Windows. This is required because Cargo patches are not transitive — they only apply to the workspace that declares them.
+
+### Bounds signals on the web (#1781)
+
+`NodeHandle::bounds_signal()` registers in `rinch_core::reactive::bounds`
+and, for a new entry, calls `DomDocument::watch_bounds` (default no-op: desktop
+refreshes every registered node after each layout, `RinchApp::refresh_bounds_signals`).
+`WebDocument::watch_bounds` hands the element to `rinch-web/src/bounds.rs`, which
+while anything is watched holds one `ResizeObserver` over the watched elements,
+a `MutationObserver` on the document (subtree, child list, attributes, text),
+a window `resize` listener, capturing document `scroll`, `load`,
+`transitionend` and `animationend` listeners and a `document.fonts`
+`loadingdone` listener. Each only schedules one `requestAnimationFrame`
+refresh, which measures the connected watched elements with
+`getBoundingClientRect()` under its own borrow and then publishes through
+`update_bounds_signals` with no borrow held. The refresh drops elements whose
+signals are all gone (`registered_bounds_nodes`) and, once none is left,
+disconnects the observers and removes the listeners, so a page with no bounds
+signal pays nothing; `WebDocument`'s `Drop` forgets its document's elements.
+A disconnected element is not measured and its signal keeps its value.
+`bounds_signal()` asks for the watch on **every** call (a repeat is one lookup):
+a first call made while the document is borrowed cannot reach the backend, and
+the next call starts it. Not seen: a `:hover` rule that moves a box without
+resizing it, the middle frames of a transition that moves one, and a DOM write
+or scroll inside a shadow root (an island mounted in one) — the
+`MutationObserver` and the `scroll` listener are on `document`; the element's
+own resize is still seen. A change reaches the signal one frame after it
+happens (the observers report after layout; the refresh is the next frame),
+where desktop's refresh lands in the frame that paints it. While anything is
+watched, every DOM write in the page makes a mutation record and asks for a
+refresh (at most one per frame). Pins:
+`rinch-web/tests/bounds_signal_1781.rs` (Chrome 155, Firefox 155).
+
+The registry is a `BTreeMap` keyed by `(doc_key, node_id)` (one document is
+a range); the web state and both refreshes look rects up in hash maps, so no
+step is quadratic in the number of watched nodes. Entries are shared per
+`(doc_key, node_id, owner)` (`current_owner()`, `None`
+for app lifetime): a repeated call from one owner returns the same signal and
+registers nothing; another owner gets its own, because the signal belongs to
+the scope that made it and is freed with it. `registered_bounds_nodes` lists
+each node once. Pins: `rinch-core` `reactive::bounds::dedupe_tests_1781`,
+`rinch` `app::layout_notification_tests::repeated_bounds_signal_calls_share_one_signal`.

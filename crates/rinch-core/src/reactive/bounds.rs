@@ -11,8 +11,9 @@
 //! the supported way to observe viewport size changes without polling.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 
-use super::Signal;
+use super::{Owner, Signal, current_owner};
 
 /// Bounding box of a registered element, in absolute viewport-relative
 /// logical pixels.
@@ -24,22 +25,33 @@ pub struct ElementBounds {
     pub height: f32,
 }
 
-/// All fields are `Copy` (`Signal` is an index + generation), so
+/// One registration of a node: its signal and the owner it was made under.
+/// Cheap to clone (`Signal` is an index + generation, `Owner` a `Weak`), so
 /// [`update_bounds_signals`] can snapshot the entries it needs and release the
 /// registry borrow before running any user code.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct BoundsEntry {
-    /// The owning document's [`doc_key`](crate::dom::DomDocument::doc_key).
-    /// Node ids are per-document slab indices, so without this key two
-    /// documents on one thread (two embedded `RinchContext`s, issue #134) would
-    /// stomp each other's same-id entries on every layout pass.
-    doc_key: u64,
-    node_id: u64,
     signal: Signal<ElementBounds>,
+    /// The live ambient owner the entry was registered under (`None`: app
+    /// lifetime). The signal is that owner's and is freed with it, so a later
+    /// call is handed this entry only from the same owner (issue #1781).
+    owner: Option<Owner>,
 }
 
+/// Keyed by `(doc_key, node_id)`. The document key matters: node ids are
+/// per-document slab indices, so without it two documents on one thread (two
+/// embedded `RinchContext`s, issue #134) would stomp each other's same-id
+/// entries on every layout pass. Ordered, so one document's entries are a
+/// contiguous range and every lookup is logarithmic (issue #1781's review: a
+/// linear scan per registration and per measured node was quadratic).
+type Registry = BTreeMap<(u64, u64), Vec<BoundsEntry>>;
+
 thread_local! {
-    static BOUNDS_REGISTRY: RefCell<Vec<BoundsEntry>> = const { RefCell::new(Vec::new()) };
+    static BOUNDS_REGISTRY: RefCell<Registry> = const { RefCell::new(BTreeMap::new()) };
+}
+
+fn doc_range(doc_key: u64) -> std::ops::RangeInclusive<(u64, u64)> {
+    (doc_key, 0)..=(doc_key, u64::MAX)
 }
 
 /// Register a reactive `Signal<ElementBounds>` tracking the node's current rect,
@@ -52,18 +64,30 @@ thread_local! {
 /// The Signal's initial value is `ElementBounds::default()` (zero rect). The
 /// first real bounds arrive after the next layout pass.
 ///
+/// Calls for the same node from the same owner — the live ambient scope, or
+/// none (app lifetime) — return the **same** signal, so code that asks per
+/// event or per effect run does not grow the registry (issue #1781). Another
+/// owner gets a signal of its own: the signal belongs to the scope that made it
+/// and is freed with it.
+///
 /// Most users should prefer [`NodeHandle::bounds_signal`](crate::dom::NodeHandle::bounds_signal),
 /// which calls this internally with the node's document key and id.
 pub fn register_bounds_signal(doc_key: u64, node_id: u64) -> Signal<ElementBounds> {
-    let signal = Signal::new(ElementBounds::default());
+    let owner = current_owner();
     BOUNDS_REGISTRY.with(|reg| {
-        reg.borrow_mut().push(BoundsEntry {
-            doc_key,
-            node_id,
-            signal,
-        });
-    });
-    signal
+        let mut reg = reg.borrow_mut();
+        let entries = reg.entry((doc_key, node_id)).or_default();
+        if let Some(e) = entries
+            .iter()
+            .find(|e| e.owner == owner && e.signal.is_alive())
+        {
+            return e.signal;
+        }
+        // `Signal::new` runs no app code, so allocating under the borrow is safe.
+        let signal = Signal::new(ElementBounds::default());
+        entries.push(BoundsEntry { signal, owner });
+        signal
+    })
 }
 
 /// Refresh the registered bounds signals belonging to the document identified
@@ -100,27 +124,31 @@ pub fn update_bounds_signals<F>(doc_key: u64, mut absolute_bounds: F)
 where
     F: FnMut(u64) -> Option<(f32, f32, f32, f32)>,
 {
-    // Snapshot this document's entries (all fields are Copy) and drop the
-    // borrow before invoking the lookup or touching any signal.
-    let entries: Vec<BoundsEntry> = BOUNDS_REGISTRY.with(|reg| {
+    // Snapshot this document's entries and drop the borrow before invoking
+    // the lookup or touching any signal.
+    let entries: Vec<(u64, Vec<Signal<ElementBounds>>)> = BOUNDS_REGISTRY.with(|reg| {
         reg.borrow()
-            .iter()
-            .filter(|e| e.doc_key == doc_key)
-            .copied()
+            .range(doc_range(doc_key))
+            .map(|(&(_, node_id), es)| (node_id, es.iter().map(|e| e.signal).collect()))
             .collect()
     });
 
-    for entry in entries {
-        if !entry.signal.is_alive() {
+    for (node_id, signals) in entries {
+        if !signals.iter().any(|s| s.is_alive()) {
             continue;
         }
-        if let Some((x, y, width, height)) = absolute_bounds(entry.node_id) {
-            entry.signal.set_if_changed(ElementBounds {
+        if let Some((x, y, width, height)) = absolute_bounds(node_id) {
+            let rect = ElementBounds {
                 x,
                 y,
                 width,
                 height,
-            });
+            };
+            for signal in signals {
+                if signal.is_alive() {
+                    signal.set_if_changed(rect);
+                }
+            }
         }
     }
 
@@ -129,11 +157,12 @@ where
     // updating document would strand the entries of a document that stops
     // running layout entirely — a dropped `RinchContext` (issue #134) is
     // exactly that, and stranding is the leak this is meant to fix.
-    //
-    // One unconditional pass: `retain` over an all-live registry moves nothing,
-    // and `is_alive` is an index + generation compare, so this is cheaper than
-    // scanning for deadness first and retaining only on a hit.
-    BOUNDS_REGISTRY.with(|reg| reg.borrow_mut().retain(|e| e.signal.is_alive()));
+    BOUNDS_REGISTRY.with(|reg| {
+        reg.borrow_mut().retain(|_, es| {
+            es.retain(|e| e.signal.is_alive());
+            !es.is_empty()
+        })
+    });
 }
 
 /// The node ids currently registered for `doc_key`, with live signals.
@@ -148,9 +177,9 @@ where
 pub fn registered_bounds_nodes(doc_key: u64) -> Vec<u64> {
     BOUNDS_REGISTRY.with(|reg| {
         reg.borrow()
-            .iter()
-            .filter(|e| e.doc_key == doc_key && e.signal.is_alive())
-            .map(|e| e.node_id)
+            .range(doc_range(doc_key))
+            .filter(|(_, es)| es.iter().any(|e| e.signal.is_alive()))
+            .map(|(&(_, node_id), _)| node_id)
             .collect()
     })
 }
@@ -159,7 +188,7 @@ pub fn registered_bounds_nodes(doc_key: u64) -> Vec<u64> {
 /// Test-only: the self-pruning contract is about entries *disappearing*.
 #[cfg(test)]
 pub(crate) fn registry_len_for_tests() -> usize {
-    BOUNDS_REGISTRY.with(|reg| reg.borrow().len())
+    BOUNDS_REGISTRY.with(|reg| reg.borrow().values().map(Vec::len).sum())
 }
 
 /// The `(doc_key, node_id)` pairs currently registered. Test-only: pruning
@@ -169,7 +198,7 @@ pub(crate) fn registry_entries_for_tests() -> Vec<(u64, u64)> {
     BOUNDS_REGISTRY.with(|reg| {
         reg.borrow()
             .iter()
-            .map(|e| (e.doc_key, e.node_id))
+            .flat_map(|(&key, es)| es.iter().map(move |_| key))
             .collect()
     })
 }
@@ -356,5 +385,107 @@ mod lifetime_tests {
 
         assert_eq!(widths.get(), 40.0);
         assert_eq!(registry_len_for_tests(), 2);
+    }
+}
+
+/// Issue #1781: a registration per call grew the registry for a caller that
+/// asks per event. Calls from one owner share one entry; another owner gets
+/// its own, freed with its own scope.
+#[cfg(test)]
+mod dedupe_tests_1781 {
+    use super::*;
+    use crate::reactive::Scope;
+
+    #[test]
+    fn repeated_calls_from_one_owner_share_one_signal() {
+        let scope = Scope::new();
+        let (a, b) = scope.run(|| (register_bounds_signal(41, 5), register_bounds_signal(41, 5)));
+        assert_eq!(
+            a.identity(),
+            b.identity(),
+            "one owner, one node: one signal"
+        );
+        let n = registry_entries_for_tests()
+            .iter()
+            .filter(|e| **e == (41, 5))
+            .count();
+        assert_eq!(n, 1, "the second call registered nothing");
+        // Off the fixed point: another node and another document still get
+        // entries of their own.
+        let other_node = scope.run(|| register_bounds_signal(41, 6));
+        let other_doc = scope.run(|| register_bounds_signal(42, 5));
+        assert_ne!(other_node.identity(), a.identity());
+        assert_ne!(other_doc.identity(), a.identity());
+        scope.dispose();
+    }
+
+    #[test]
+    fn app_lifetime_calls_share_one_signal() {
+        let a = register_bounds_signal(43, 7);
+        let b = register_bounds_signal(43, 7);
+        assert_eq!(a.identity(), b.identity());
+    }
+
+    #[test]
+    fn another_owner_gets_its_own_signal_and_outlives_the_first() {
+        let first = Scope::new();
+        let second = Scope::new();
+        let a = first.run(|| register_bounds_signal(44, 9));
+        let b = second.run(|| register_bounds_signal(44, 9));
+        assert_ne!(
+            a.identity(),
+            b.identity(),
+            "sharing would hand the second owner a signal the first one frees"
+        );
+        first.dispose();
+        assert!(!a.is_alive());
+        assert!(
+            b.is_alive(),
+            "the second owner's signal survives the first scope"
+        );
+        update_bounds_signals(44, |_| Some((1.0, 2.0, 3.0, 4.0)));
+        assert_eq!(b.get().width, 3.0);
+        second.dispose();
+    }
+
+    #[test]
+    fn a_freed_entry_is_not_handed_out_again() {
+        let scope = Scope::new();
+        let a = scope.run(|| register_bounds_signal(45, 1));
+        scope.dispose();
+        let b = register_bounds_signal(45, 1);
+        assert!(b.is_alive());
+        assert_ne!(a.identity(), b.identity());
+    }
+}
+
+/// Issue #1781's review: a first `bounds_signal()` made while the document is
+/// borrowed cannot reach `watch_bounds`; the next call must still start the
+/// watch, or the web never refreshes that signal.
+#[cfg(test)]
+mod watch_retry_tests_1781 {
+    use crate::dom::traits::DomDocument;
+    use crate::dom::{RenderScope, mock::MockDomDocument};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[test]
+    fn a_watch_refused_under_a_borrow_is_made_by_the_next_call() {
+        let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+        let body = doc.borrow().body();
+        let mut scope = RenderScope::new(doc.clone(), body);
+        let el = scope.create_element("div");
+
+        let first = {
+            let _held = doc.borrow();
+            el.bounds_signal()
+        };
+        assert!(
+            doc.borrow().__watched_bounds().is_empty(),
+            "under a borrow the watch cannot be made"
+        );
+        let second = el.bounds_signal();
+        assert_eq!(first.identity(), second.identity(), "one owner, one signal");
+        assert_eq!(doc.borrow().__watched_bounds(), &[el.node_id()]);
     }
 }
