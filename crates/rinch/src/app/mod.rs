@@ -157,6 +157,8 @@ mod editor_read_only_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_selection_seam_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_shared_mark_wrappers_1833_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_tab_caret_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_word_delete_tests;

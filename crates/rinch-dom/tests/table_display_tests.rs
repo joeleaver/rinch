@@ -55,7 +55,7 @@ fn ellipsis_for(display: &str) -> Option<bool> {
         .unwrap()
         .text_layout
         .as_ref()
-        .map(|l| l.text_content.ends_with('\u{2026}'))
+        .map(|l| l.painted_text().is_some_and(|t| t.ends_with('\u{2026}')))
 }
 
 /// Chrome 153: `lone` (a `table-cell`, 90px, nowrap, ellipsis) and `cap` (a

@@ -247,12 +247,13 @@ fn the_fragment_is_the_spans_font_box_whatever_its_children_are_set_in() {
     );
 }
 
-/// F4, a stated divergence. In a block that draws a `text-overflow:
-/// ellipsis` "…" the lines are rebuilt as flat text with no member entries,
-/// the span has no fragment in them, and the box keeps the block container
-/// (the answer it had before #631). Chrome 153: `[47.64, 7, 40, 30]`.
+/// F4. A block that draws a `text-overflow: ellipsis` "…" keeps its lines
+/// (#1100: the cut is made at paint), so a span in them has its fragment and
+/// the box hangs from it. Chrome 153: `[47.64, 7, 40, 30]`. (Until #1100 the
+/// lines were rebuilt as flat text with no member entries, and the box kept
+/// the block container, `[0, 0, 40, 30]`.)
 #[test]
-fn a_span_in_an_ellipsized_line_is_not_measured() {
+fn a_span_in_an_ellipsized_line_is_measured() {
     let doc = build(
         "width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
         &format!(
@@ -260,7 +261,7 @@ fn a_span_in_an_ellipsized_line_is_not_measured() {
             abs("width: 40px; height: 30px; top: 0; left: 0")
         ),
     );
-    assert_eq!(rect(&doc, "abs"), [0.0, 0.0, 40.0, 30.0]);
+    assert_rect(rect(&doc, "abs"), [47.64, 7.0, 40.0, 30.0], "ellipsis line");
 }
 
 /// F5. `vertical-align` shifts a span's glyphs at paint (#724), and its

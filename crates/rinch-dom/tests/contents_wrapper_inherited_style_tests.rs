@@ -741,17 +741,11 @@ fn the_editors_code_mark_stack_resolves_on_the_span_not_the_root() {
     );
 }
 
-/// `text-overflow: ellipsis` takes a cheap per-line rebuild only when
-/// `ellipsis_rebuild_is_faithful` — which reads `same_inline_text_style_but_wrap`
-/// — says every run shares the root's text style; that rebuild strips spans
-/// down to the root's own style (#1091's "every run in the root's text
-/// style"). A span with its own `font-family` is therefore not faithful and
-/// must take the safe "whole text, flat" rebuild instead of the fast one,
-/// which would otherwise silently redraw the span's text in the root's face.
-/// This does not assert which path was taken (that is `ellipsis_rebuild_is_faithful`'s
-/// own business) — only that painting does not panic and the container still
-/// paints *some* ink, i.e. the span is not simply dropped by whichever path
-/// ellipsis truncation takes with a per-span font-family in play.
+/// `text-overflow: ellipsis` with a span of its own `font-family`: the line
+/// is cut at paint over the lines as laid out (#1100; before, a flat rebuild
+/// in the root's style chose between paths by whether every run shared the
+/// root's text style). This asserts only that painting does not panic and the
+/// container still paints *some* ink, i.e. the span is not simply dropped.
 #[test]
 fn a_spans_font_family_does_not_break_ellipsis_truncation() {
     let (mut doc, _faces) = document_677();

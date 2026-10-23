@@ -268,7 +268,7 @@ fn text_extent(
     let mut r: Option<Rect> = None;
     let mut size = 0.0_f32;
     let mut add = |rect: Rect| r = Some(r.map_or(rect, |r| r.union(rect)));
-    for line in text.layout().lines() {
+    for (index, line) in text.layout().lines().enumerate() {
         // A shadow group's lines only (#1048): a span's mask covers its text.
         if mask.is_some_and(|m| !m.may_show(line.text_range())) {
             continue;
@@ -305,7 +305,8 @@ fn text_extent(
                 add(Rect::new(x as f64, top, (x + run.advance()) as f64, bottom));
                 shown = true;
             } else {
-                for cluster in run.visual_clusters() {
+                let limit = mask.and_then(|m| m.limit_for_line(index));
+                for cluster in super::text::shown_clusters(&run, limit) {
                     let byte = cluster.text_range().start;
                     let advance = cluster.advance();
                     if mask.is_none_or(|m| !m.hidden_at(byte)) {

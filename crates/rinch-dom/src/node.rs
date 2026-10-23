@@ -655,6 +655,53 @@ pub struct InlineLayout {
     /// its place, and the one its `Node::static_ifc_root` indexes. Empty for
     /// nearly every layout.
     pub(crate) out_of_flow: Vec<OutOfFlowMark>,
+    /// Where `text-overflow: ellipsis` cuts these lines (#1100), or `None`
+    /// for a layout with no line cut — nearly every one. The lines
+    /// themselves are not changed: paint hides what is past each cut and
+    /// draws a "…" there.
+    pub ellipsis: Option<Box<EllipsisCut>>,
+}
+
+/// Where `text-overflow: ellipsis` cuts an IFC root's lines (#1100): what
+/// paint hides on each line whose content overflows the box, and where it
+/// draws the "…".
+///
+/// The cut is made at paint time over the lines as they were laid out, as
+/// Chrome makes it: every grapheme (a ligature with every cluster its glyph
+/// covers) and atomic inline that passes the point where the "…" still fits
+/// at the line's end edge — the side the line leaves the box by — is hidden
+/// whole, decorations and shadows with it, and the "…" is drawn right after
+/// what is kept, in the block container's font and colour, undecorated.
+/// Inline backgrounds and borders are not cut: an inline element keeps its
+/// extent and the root's clip cuts it at the root's padding edge, as Chrome
+/// 155 draws a pill the cut falls in. Text offsets, hit testing and caret
+/// mapping read the lines, so they are unaffected by the cut.
+#[derive(Clone)]
+pub struct EllipsisCut {
+    /// The layout byte ranges hidden, sorted and disjoint.
+    pub hidden: Vec<std::ops::Range<usize>>,
+    /// The atomic inlines hidden, whose box does not fit before the "…".
+    pub hidden_boxes: Vec<RawNodeId>,
+    /// One per cut line, in line order.
+    pub marks: Vec<EllipsisMark>,
+    /// The "…" shaped in the root's style, at the layout's origin.
+    pub glyph: parley::layout::Layout<Brush>,
+}
+
+/// Where one cut line draws its "…": the top-left of
+/// [`EllipsisCut::glyph`], in the lines' own coordinates, placed so the
+/// "…"'s baseline is the line's.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EllipsisMark {
+    /// The line's index in the layout.
+    pub line: usize,
+    /// The left edge of the "…".
+    pub x: f32,
+    /// The top of the "…"'s layout.
+    pub y: f32,
+    /// When the "…" is at the line's right: the x past which everything on
+    /// the line is hidden, so paint need not walk what lies past it.
+    pub hidden_past: Option<f32>,
 }
 
 /// An out-of-flow box (`position: absolute` or `fixed`) met in an inline
@@ -688,6 +735,54 @@ pub(crate) struct OutOfFlowMark {
 }
 
 impl InlineLayout {
+    /// The width of what paint draws of the lines, for the clip proof: the
+    /// layout's width, or no wider than the box for lines cut by
+    /// `text-overflow: ellipsis` (#1100), whose glyphs past the box are not
+    /// drawn.
+    pub(crate) fn painted_width(&self) -> f32 {
+        let w = self.layout.width();
+        if self.ellipsis.is_some() {
+            w.min(self.max_width)
+        } else {
+            w
+        }
+    }
+
+    /// The text paint draws on each line — what the line holds (less a
+    /// forced break's newline) less what `text-overflow: ellipsis` hides,
+    /// with a "…" where it cuts; `None` when no line is cut. For tests.
+    #[doc(hidden)]
+    pub fn painted_lines(&self) -> Option<Vec<String>> {
+        let cut = self.ellipsis.as_ref()?;
+        let hidden = |b: usize| {
+            let i = cut.hidden.partition_point(|r| r.end <= b);
+            cut.hidden.get(i).is_some_and(|r| r.start <= b)
+        };
+        let mut lines = Vec::new();
+        for (index, line) in self.layout.lines().enumerate() {
+            let range = line.text_range();
+            let mut s: String = self
+                .text_content
+                .get(range.clone())
+                .unwrap_or("")
+                .char_indices()
+                .filter(|&(i, c)| c != '\n' && !hidden(range.start + i))
+                .map(|(_, c)| c)
+                .collect();
+            if cut.marks.iter().any(|m| m.line == index) {
+                s.push('\u{2026}');
+            }
+            lines.push(s);
+        }
+        Some(lines)
+    }
+
+    /// [`Self::painted_lines`] joined by `\n`. For tests.
+    #[doc(hidden)]
+    pub fn painted_text(&self) -> Option<String> {
+        Some(self.painted_lines()?.join("\n"))
+    }
+
     /// The `vertical-align` shift an inline element's own box is drawn at —
     /// its background, border and edge boxes: the shift of the nearest
     /// element from `owner` up whose `vertical-align` moved it (#1817). Its
