@@ -360,3 +360,38 @@ fn m_a_repeating_radial_period_closes_on_the_colour_before_its_start() {
         3,
     );
 }
+
+/// Review of #1811: a `destination-in` layer that draws nothing is an
+/// all-transparent mask, which hides what is under it (CSS, and Vello). The
+/// software painter composited only the part the layer drew into, so an
+/// empty mask left the content showing.
+#[test]
+fn n_an_empty_destination_in_layer_hides_the_content() {
+    use peniko::kurbo::{Affine, Rect};
+    use rinch_dom::paint::painter::{BlendMode, PaintShape, Painter};
+    let mut p = TinySkiaPainter::new(20, 20);
+    let area = PaintShape::Rect(Rect::new(0.0, 0.0, 20.0, 20.0));
+    p.push_isolated_layer(1.0, Affine::IDENTITY, &area);
+    p.fill_color(
+        peniko::Fill::NonZero,
+        Affine::IDENTITY,
+        peniko::Color::from_rgba8(255, 0, 0, 255),
+        &PaintShape::Rect(Rect::new(2.0, 2.0, 18.0, 18.0)),
+    );
+    p.push_layer(BlendMode::DestinationIn, 1.0, Affine::IDENTITY, &area);
+    p.pop_layer();
+    p.pop_layer();
+    let i = ((10 * p.width() + 10) * 4) as usize;
+    assert_eq!(&p.pixels()[i..i + 4], &[0, 0, 0, 0]);
+}
+
+/// An all-transparent `mask-image` hides the element (Chrome 155: the page
+/// shows through).
+#[test]
+fn o_a_transparent_mask_hides_the_element() {
+    let css = "html, body { margin: 0; background: #fff; }
+#t { position: absolute; left: 0; top: 0; width: 40px; height: 40px; background: red;
+  mask-image: linear-gradient(transparent, transparent); }";
+    let p = paint_case(css, &["t"], 60, 60);
+    expect(&p, &[((20, 20), [255, 255, 255])], 0);
+}

@@ -2316,6 +2316,16 @@ impl Painter for TinySkiaPainter {
                 // transparent, and `SourceOver` of transparent is the identity.
                 let drawn = if self.reference_mode {
                     self.surface_rect()
+                } else if blend == tiny_skia::BlendMode::DestinationIn {
+                    // `destination-in` of a transparent pixel clears what is
+                    // under it, so the layer acts wherever the parent holds
+                    // anything, drawn into or not: a mask that draws nothing
+                    // hides the content, as on Vello and in CSS (#1798).
+                    let mine = self.touched.unwrap_or(DeviceRect::EMPTY);
+                    match parent_touched {
+                        Some(p) => mine.union(p),
+                        None => self.surface_rect(),
+                    }
                 } else {
                     self.touched.unwrap_or(DeviceRect::EMPTY)
                 };
