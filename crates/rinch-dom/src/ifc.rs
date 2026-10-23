@@ -3396,7 +3396,7 @@ fn logical_units(
                     Some((_, true)) => EDGE_END,
                     None => 0,
                 },
-                wrap_after: seam.map_or(true, |s| s.wraps),
+                wrap_after: seam.is_none_or(|s| s.wraps),
                 own_wrap: true,
                 closes_into_wrap: seam.is_some_and(|s| s.closes_into_wrap),
                 byte: b.index,
