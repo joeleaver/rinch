@@ -245,15 +245,17 @@ fn no_seam_under_a_fractional_translate() {
 
 /// N1: a 10px dot grid (a design-canvas background) on an 800x600 box. At DPR
 /// 1.25 a tile is 12.5 device px and there are 4800 of them; round 2 drew
-/// nothing there. Measured at DPR 1
-/// and 2 as 19200 and 57600 dark px (0.04 of the box's device area), so DPR
-/// 1.25 must land near 0.04 * 1000 * 750 = 30000.
+/// nothing there. Chrome 155 draws 19200, 42059 and 115200 dark px at DPR 1,
+/// 1.25 and 2 (the dot's radius is 20% of the farthest-corner ellipse, 1.41
+/// tile px; rinch drew a 1px dot, 57600 at DPR 2, until #1798). At 1.25 the
+/// tile is rasterised at 13px and sampled down, so it is near Chrome's, not
+/// equal.
 #[test]
 fn a_dot_grid_at_dpr_1_25_is_drawn() {
     for (s, lo, hi) in [
         (1.0, 19200, 19200),
-        (1.25, 20000, 40000),
-        (2.0, 57600, 57600),
+        (1.25, 38000, 46000),
+        (2.0, 115200, 115200),
     ] {
         let (mut doc, _) = mount(
             "width:800px;height:600px;background-color:rgb(250,250,250);background-image:radial-gradient(rgb(0,0,0) 20%, transparent 20%);background-size:10px 10px",

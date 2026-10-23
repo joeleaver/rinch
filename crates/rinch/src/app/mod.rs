@@ -28,6 +28,8 @@ mod color_input_dismiss_465_tests;
 #[cfg(test)]
 mod context_menu_viewport_1761_tests;
 #[cfg(test)]
+mod dropdown_viewport_1764_tests;
+#[cfg(test)]
 mod review_1589_tests;
 #[cfg(test)]
 mod review_1601_tests;
@@ -1075,6 +1077,9 @@ pub struct RinchApp {
     pub(crate) window_logical_size: Option<(f64, f64)>,
 }
 
+/// How many extra layouts one frame gives bounds-signal subscribers' writes
+/// (`RinchApp::settle_bounds_writes`).
+const BOUNDS_SETTLE_PASSES: usize = 3;
 impl RinchApp {
     /// Create a new `RinchApp` from a component function.
     pub fn new(component: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static) -> Self {
@@ -1685,6 +1690,31 @@ impl RinchApp {
             d.resolve_layout(viewport_width, viewport_height);
         }
 
+        self.after_layout(doc, viewport_width, viewport_height);
+
+        // Refresh element-bounds signals against the freshly-computed layout,
+        // and lay out again what their subscribers wrote.
+        self.refresh_bounds_signals();
+        self.settle_bounds_writes(viewport_width, viewport_height);
+
+        self.scene_dirty = true;
+
+        true
+    }
+
+    /// What follows a layout in a frame, before the bounds are published:
+    /// owed scrolls, the editor's virtualization and overlay passes (which may
+    /// lay out again), and the scroll events for offsets the layout clamped.
+    /// Shared by the frame's layout and every [`Self::settle_bounds_writes`]
+    /// pass, so a layout a bounds subscriber caused leaves no caret, selection
+    /// or margin anchor measured against the one before it.
+    #[cfg_attr(not(feature = "desktop"), allow(unused_variables))]
+    fn after_layout(
+        &mut self,
+        doc: &Rc<RefCell<RinchDocument>>,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) {
         // Apply deferred scroll-into-view now that layout is fresh
         self.apply_scroll_into_view();
 
@@ -1738,13 +1768,42 @@ impl RinchApp {
         // Dispatch deferred scroll events for offsets the layout clamped, now
         // that the last resolve of the frame has run (#144).
         self.dispatch_scroll_clamp_events();
+    }
 
-        // Refresh element-bounds signals against the freshly-computed layout.
-        self.refresh_bounds_signals();
-
-        self.scene_dirty = true;
-
-        true
+    /// Lay out again what bounds-signal subscribers wrote, in the frame that
+    /// woke them (issue #1764), at most [`BOUNDS_SETTLE_PASSES`] times.
+    ///
+    /// A subscriber measures the layout that just finished and writes from
+    /// it — a dropdown placed back inside the viewport, a spacer sized to a
+    /// row (#529). Without this its write waited for the next frame, and the
+    /// frame being painted showed the old geometry: a dropdown past the
+    /// window's edge for one frame, a spacer at its estimate. Each pass
+    /// publishes the bounds again, so a subscriber reading its own write's
+    /// result settles here too; one that never settles is cut off by the cap
+    /// and continues next frame, as it did before.
+    fn settle_bounds_writes(&mut self, viewport_width: f32, viewport_height: f32) {
+        for _ in 0..BOUNDS_SETTLE_PASSES {
+            let Some(doc) = self.doc.clone() else { return };
+            {
+                let mut d = doc.borrow_mut();
+                if d.tree.dirty_nodes.is_empty() && !d.tree.styles_dirty && !d.layout_pending() {
+                    return;
+                }
+                let _ = d.take_dirty_nodes();
+                d.resolve_layout(viewport_width, viewport_height);
+            }
+            self.after_layout(&doc, viewport_width, viewport_height);
+            self.refresh_bounds_signals();
+        }
+        if let Some(doc) = &self.doc {
+            let d = doc.borrow();
+            if !d.tree.dirty_nodes.is_empty() || d.tree.styles_dirty || d.layout_pending() {
+                tracing::debug!(
+                    "bounds subscribers still writing after {BOUNDS_SETTLE_PASSES} settle \
+                     passes; the rest is laid out next frame"
+                );
+            }
+        }
     }
 
     /// Refresh element-bounds signals against the freshly-computed layout.
@@ -2019,6 +2078,7 @@ impl RinchApp {
         // `resolve_and_repaint`; without this a pure resize leaves bounds
         // signals reporting the pre-resize geometry (#145).
         self.refresh_bounds_signals();
+        self.settle_bounds_writes(width as f32, height as f32);
     }
 
     /// Build the Vello scene from the current document state.

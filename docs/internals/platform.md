@@ -41,7 +41,46 @@ the layers below it are `ComputedStyle::background_layers` (top to bottom, empty
 for one image, a `none` or conic layer left out). A transition or animation of
 `background-position` moves the **first** layer only; the others snap to their
 new values. Before #1142 every list was read at its first entry, so
-`ColorSwatch`'s four-layer checkerboard drew one layer. Not Chrome's: a
+`ColorSwatch`'s four-layer checkerboard drew one layer. **Gradients**
+(`paint/gradient.rs`, #1798): a stop's position is a `LengthPercentageValue`
+resolved against the gradient line at paint (a length was read as a hundredth
+of the line until #1798, so `31px` was `31%`), fixed up by css-images-3 §3.5.3
+(missing ends are 0%/100%, a position before an earlier one moves up to it,
+unpositioned stops are spaced between their neighbours); the peniko gradient
+spans the first stop to the last, `Extend::Repeat` for `repeating-*`. A radial
+gradient keeps its ending shape (`circle <length>`, two radii, the four extent
+keywords) and centre; an ellipse is a circle of radius `rx` drawn under a
+vertical scale of `ry / rx` (the shape to fill is mapped through the inverse),
+and its stops are laid out from radius 0 because tiny-skia has no start
+radius (a repeating gradient's period rotated to begin there). tiny-skia
+interpolates unpremultiplied, so `skia_painter::premultiplied_ramp` rewrites
+the stops into the premultiplied ramp CSS (and Vello) draws: a transparent stop
+takes its neighbour's colour, other alpha changes get 8 premultiplied samples.
+Not read: interpolation hints, `in <colorspace>`, and a corner direction's
+dependence on the box's aspect ratio (`to top right` is 45°). **`mask-image`**
+(#1798): `ComputedStyle::mask_image` holds its gradient layers (a `url()` layer
+is not read; the other `mask-*` longhands are gecko-only in Stylo and keep
+their initial values). `paint::paint_node` wraps a masked box: a clip to its
+border box, an isolated layer holding `paint_node_unmasked`, then a
+`BlendMode::DestinationIn` layer (tiny-skia `DestinationIn`, Vello
+`Compose::DestIn`) into which each mask layer is filled over the border box. A
+masked box is a stacking context, so its hoisted descendants paint inside the
+layer. The software painter composites a `DestinationIn` layer over everything
+its parent layer holds, not only what the mask drew, so an empty or
+all-transparent mask hides the content as Vello does. Hit testing clips a
+masked box's subtree to its border box (`hit_test_node`), as Chrome 155 does;
+the mask's alpha is not consulted inside it (nor by Chrome). The background
+tile cache is keyed by the tile's own size as well as its raster size: stop
+positions are lengths in the tile's space. Pins:
+`rinch-dom/tests/gradient_mask_1798_tests.rs` (Chrome 155 pixels),
+`hit_testing::tests::a_masked_boxs_overflow_is_not_hit_outside_its_border_box`,
+`rinch-visual-test`'s `css_export` gradient test. Not Chrome's: a mask on a
+non-atomic `display: inline` element (a `<span>`): its text is drawn by its
+inline formatting context's root and is not masked, and its own `0x0` box
+masks away everything it paints itself, positioned descendants included —
+Chrome masks the span's fragments and shows a positioned descendant that lies
+inside them.
+Not Chrome's: a
 gradient pixel whose centre lies exactly on a hard stop can take the colour
 after the stop where Chrome takes the one before (#1740). `space`/`round` paint as `repeat`. **No layer is ever dropped**
 (#1143's second review): a layer whose one tile covers the box is one fill (a

@@ -3280,6 +3280,15 @@ impl DomDocument for WebDocument {
         }
     }
 
+    /// `documentElement.clientWidth/clientHeight` (issue #1764): the layout
+    /// viewport less a classic scrollbar, which is the space a dropdown can be
+    /// placed in without being hidden under one.
+    fn viewport_size(&self) -> Option<(f32, f32)> {
+        let el = web_sys::window()?.document()?.document_element()?;
+        let (w, h) = (el.client_width(), el.client_height());
+        (w > 0 && h > 0).then_some((w as f32, h as f32))
+    }
+
     /// `getBoundingClientRect()` (issue #1779). A disconnected element answers
     /// `None`, as rinch-dom does; the browser gives a zero rect there.
     fn bounding_rect(&mut self, node: NodeId) -> Option<rinch_core::reactive::ElementBounds> {

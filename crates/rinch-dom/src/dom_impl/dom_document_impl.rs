@@ -1711,6 +1711,12 @@ impl DomDocument for RinchDocument {
         ))
     }
 
+    /// The viewport of the last layout (issue #1764); `None` before the first.
+    fn viewport_size(&self) -> Option<(f32, f32)> {
+        let vp = self.tree.viewport;
+        (vp.width > 0.0 && vp.height > 0.0).then_some((vp.width, vp.height))
+    }
+
     /// The painted border box, as `ClickContext` and the bounds signals report
     /// it (`paint::painted_border_box` at scale 1), from the last layout
     /// (issue #1779); for a flowed inline element, the union of its line

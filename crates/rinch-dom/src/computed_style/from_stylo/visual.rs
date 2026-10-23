@@ -293,21 +293,37 @@ fn background_image_from_stylo(
     text_color: &style::color::AbsoluteColor,
 ) -> Option<BackgroundValue> {
     use style::values::computed::image::Image;
-    use style::values::generics::image::GenericGradient;
+    use style::values::generics::image::{GenericGradient, GradientFlags};
     match image {
         Image::Gradient(boxed_gradient) => match &**boxed_gradient {
             GenericGradient::Linear {
-                direction, items, ..
+                direction,
+                items,
+                flags,
+                ..
             } => {
                 let stops = gradient_stops_from_stylo(items, text_color);
                 (!stops.is_empty()).then(|| BackgroundValue::LinearGradient {
                     angle_degrees: gradient_direction_to_angle(direction),
                     stops,
+                    repeating: flags.contains(GradientFlags::REPEATING),
                 })
             }
-            GenericGradient::Radial { items, .. } => {
+            GenericGradient::Radial {
+                shape,
+                position,
+                items,
+                flags,
+                ..
+            } => {
                 let stops = gradient_stops_from_stylo(items, text_color);
-                (!stops.is_empty()).then_some(BackgroundValue::RadialGradient { stops })
+                (!stops.is_empty()).then(|| BackgroundValue::RadialGradient {
+                    stops,
+                    shape: radial_shape_from_stylo(shape),
+                    position_x: super::box_model::lp_value_from_stylo(&position.horizontal),
+                    position_y: super::box_model::lp_value_from_stylo(&position.vertical),
+                    repeating: flags.contains(GradientFlags::REPEATING),
+                })
             }
             _ => None, // conic gradients not supported yet
         },
@@ -320,6 +336,24 @@ fn background_image_from_stylo(
         }
         _ => None,
     }
+}
+
+/// `mask-image`'s gradient layers (#1798); see `ComputedStyle::mask_image`.
+pub(super) fn mask_image_from_stylo(
+    images: &style::properties::longhands::mask_image::computed_value::T,
+    text_color: &style::color::AbsoluteColor,
+) -> Vec<BackgroundValue> {
+    images
+        .0
+        .iter()
+        .filter_map(|i| background_image_from_stylo(i, text_color))
+        .filter(|b| {
+            matches!(
+                b,
+                BackgroundValue::LinearGradient { .. } | BackgroundValue::RadialGradient { .. }
+            )
+        })
+        .collect()
 }
 
 /// The first background layer's image, else the `background-color`.
@@ -516,6 +550,35 @@ fn gradient_direction_to_angle(direction: &style::values::computed::image::LineD
     }
 }
 
+/// A radial gradient's ending shape (#1798). `contain`/`cover` are the
+/// legacy aliases of `closest-side`/`farthest-corner`.
+fn radial_shape_from_stylo(shape: &style::values::computed::image::EndingShape) -> RadialShape {
+    use style::values::generics::image::{
+        GenericCircle, GenericEllipse, GenericEndingShape, ShapeExtent,
+    };
+    let extent = |e: &ShapeExtent| match e {
+        ShapeExtent::ClosestSide | ShapeExtent::Contain => RadialExtent::ClosestSide,
+        ShapeExtent::FarthestSide => RadialExtent::FarthestSide,
+        ShapeExtent::ClosestCorner => RadialExtent::ClosestCorner,
+        ShapeExtent::FarthestCorner | ShapeExtent::Cover => RadialExtent::FarthestCorner,
+    };
+    match shape {
+        GenericEndingShape::Circle(GenericCircle::Radius(r)) => RadialShape::Circle(r.0.px()),
+        GenericEndingShape::Circle(GenericCircle::Extent(e)) => RadialShape::Extent {
+            circle: true,
+            extent: extent(e),
+        },
+        GenericEndingShape::Ellipse(GenericEllipse::Radii(rx, ry)) => RadialShape::Ellipse(
+            super::box_model::lp_value_from_stylo(&rx.0),
+            super::box_model::lp_value_from_stylo(&ry.0),
+        ),
+        GenericEndingShape::Ellipse(GenericEllipse::Extent(e)) => RadialShape::Extent {
+            circle: false,
+            extent: extent(e),
+        },
+    }
+}
+
 fn gradient_stops_from_stylo(
     items: &[style::values::generics::image::GenericGradientItem<
         style::values::computed::color::Color,
@@ -526,36 +589,18 @@ fn gradient_stops_from_stylo(
     use style::values::generics::image::GenericGradientItem;
 
     let mut stops = Vec::new();
-    let total = items.len();
-
-    for (i, item) in items.iter().enumerate() {
+    for item in items.iter() {
         match item {
-            GenericGradientItem::SimpleColorStop(color) => {
-                let c = color_from_computed(color, text_color);
-                // Auto-distribute position
-                let offset = if total <= 1 {
-                    0.0
-                } else {
-                    i as f32 / (total - 1) as f32
-                };
-                stops.push(GradientStop { offset, color: c });
-            }
-            GenericGradientItem::ComplexColorStop { color, position } => {
-                let c = color_from_computed(color, text_color);
-                let offset = if let Some(pct) = position.to_percentage() {
-                    pct.0
-                } else if let Some(len) = position.to_length() {
-                    // Length stops need container size to resolve -- approximate
-                    len.px() / 100.0
-                } else {
-                    // Mixed calc: same px/100 approximation as the plain-length
-                    // arm for the length part, plus the exact percentage part.
-                    // Used to fall through to the auto-distributed index.
-                    let (px, pct) = super::calc::split_length_percentage(position);
-                    pct + px / 100.0
-                };
-                stops.push(GradientStop { offset, color: c });
-            }
+            GenericGradientItem::SimpleColorStop(color) => stops.push(GradientStop {
+                position: None,
+                color: color_from_computed(color, text_color),
+            }),
+            GenericGradientItem::ComplexColorStop { color, position } => stops.push(GradientStop {
+                position: Some(super::box_model::lp_value_from_stylo(position)),
+                color: color_from_computed(color, text_color),
+            }),
+            // Interpolation hints are not drawn (the colour midpoint stays
+            // halfway between its stops).
             _ => {}
         }
     }

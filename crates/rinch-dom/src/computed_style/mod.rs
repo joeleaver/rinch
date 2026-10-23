@@ -147,6 +147,15 @@ pub struct ComputedStyle {
     /// single image (no allocation), and a layer with nothing to paint
     /// (`none`, a conic gradient) is left out.
     pub background_layers: Vec<BackgroundLayer>,
+    /// `mask-image` (#1798): its gradient layers, first listed first. Each
+    /// covers the border box (`mask-size`, `-position`, `-repeat`, `-origin`
+    /// and `-clip` are gecko-only in Stylo, so they keep their initial
+    /// values), and they are added together (`mask-composite: add`) into
+    /// an alpha mask over the element and its descendants, clipped to the
+    /// border box. A `url()` layer is not read, and neither is `mask-mode`
+    /// (gecko-only too; a gradient's `match-source` is `alpha`). Empty for
+    /// `none`, and for a list with no gradient.
+    pub mask_image: Vec<BackgroundValue>,
     #[serde(serialize_with = "values::color_serde::serialize")]
     pub color: Option<peniko::Color>,
 
@@ -354,6 +363,7 @@ impl Default for ComputedStyle {
             background_repeat_y: BackgroundRepeatValue::Repeat,
             background_origin: BackgroundOriginValue::PaddingBox,
             background_layers: Vec::new(),
+            mask_image: Vec::new(),
             color: None,
 
             opacity: 1.0,

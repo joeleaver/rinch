@@ -787,6 +787,14 @@ box relative to its parent, as laid out — and `bounds_signal()` is the reactiv
 one, refreshed after each desktop layout and, in a browser, in the frame after
 anything that can move the element.
 
+`NodeHandle::viewport_size()` answers the viewport's size in the same frame —
+the box a `position: fixed; inset: 0` element fills — for code that keeps
+something on screen (desktop: the last layout's; web:
+`documentElement.clientWidth/clientHeight`; `None` before a first layout).
+`NodeHandle::layout_pending()` says whether what `bounding_rect()` answers is
+already out of date: `true` on desktop after a write the next layout has not
+seen, always `false` in a browser.
+
 ## Fragments
 
 Use empty braces to group multiple elements without a wrapper:

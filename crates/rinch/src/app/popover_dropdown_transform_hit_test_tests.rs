@@ -9,8 +9,9 @@
 //! moves it"* — it deliberately returns the **pre-transform** Taffy layout
 //! position. `Popover`'s default (and every `top`/`bottom`, non-`-start`/
 //! `-end`) position variant centers the dropdown under its target with
-//! `transform: translateX(-50%) translateY(var(--rinch-popover-offset,
-//! 8px))` (`styles/popover.rs`), so the dropdown's real, *painted* box sits
+//! `transform: translateX(-50%)` (`styles/popover.rs`; the gap from the
+//! target was a `translateY` too until #1764, a margin since), so the
+//! dropdown's real, *painted* box sits
 //! up to half the dropdown's own width to the left of the box
 //! `compute_absolute_position` reports.
 //!

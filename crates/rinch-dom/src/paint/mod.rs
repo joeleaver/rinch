@@ -9,6 +9,7 @@ mod borders;
 pub mod clip;
 mod contenteditable;
 pub mod damage;
+mod gradient;
 pub mod image;
 mod layer_bounds;
 pub mod painter;
@@ -2962,8 +2963,166 @@ fn zero_box_paints_nothing_within(
     !((layout.width == 0.0) != (layout.height == 0.0) || zero_box_paints_children(node))
 }
 
+/// A `position: sticky` box's painted `y`: kept at least its `top` below
+/// the nearest scroll container's scrolled top. Any other box's `y`.
+fn sticky_y(tree: &NodeTree, node: &Node, y: f64, offset_y: f64, scale: f64) -> f64 {
+    if node.computed_style.position != PositionValue::Sticky {
+        return y;
+    }
+    // Find the nearest scroll ancestor's scroll offset
+    let mut scroll_y = 0.0_f64;
+    let mut ancestor_id = node.parent;
+    while let Some(aid) = ancestor_id {
+        if let Some(ancestor) = tree.get(aid) {
+            let ov = ancestor.computed_style.overflow_y;
+            // A `display: contents` ancestor is no scroll container (#1038).
+            if ancestor.computed_style.display != DisplayValue::Contents
+                && matches!(
+                    ov,
+                    OverflowValue::Auto | OverflowValue::Scroll | OverflowValue::Hidden
+                )
+            {
+                scroll_y = ancestor.scroll_offset.1 * scale;
+                break;
+            }
+            ancestor_id = ancestor.parent;
+        } else {
+            break;
+        }
+    }
+
+    // Apply sticky top constraint: element should not scroll above `top` offset from container
+    let sticky_top = node.computed_style.top.to_px() as f64 * scale;
+    y.max(offset_y + scroll_y + sticky_top)
+}
+
+/// Paint a node and its subtree, under its `mask-image` when it has one
+/// (#1798): the subtree is drawn into a layer, clipped to the border box
+/// (`mask-clip: border-box`), and a `destination-in` layer holding the mask's
+/// gradient layers (each laid on the border box, `mask-origin: border-box`,
+/// added together) keeps it only where the mask is opaque. A masked box is a
+/// stacking context, so everything it paints — hoisted descendants included —
+/// is inside the layer.
 #[allow(clippy::too_many_arguments)]
 fn paint_node(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    painter: &mut dyn Painter,
+    scale: f64,
+    offset_x: f64,
+    offset_y: f64,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<Brush>,
+    parent_transform: Affine,
+) {
+    let Some(node) = tree.get(node_id) else {
+        return;
+    };
+    let mask = &node.computed_style.mask_image;
+    if mask.is_empty() || node.computed_style.display == DisplayValue::Contents {
+        paint_node_unmasked(
+            tree,
+            node_id,
+            painter,
+            scale,
+            offset_x,
+            offset_y,
+            font_cx,
+            layout_cx,
+            parent_transform,
+        );
+        return;
+    }
+    let layout = &node.layout;
+    // A box with no area clips everything it would mask away.
+    if layout.width <= 0.0 || layout.height <= 0.0 {
+        tree.perf.bump(crate::perf::Counter::PaintNodesVisited);
+        return;
+    }
+    let x = offset_x + layout.x as f64 * scale;
+    let y = sticky_y(
+        tree,
+        node,
+        offset_y + layout.y as f64 * scale,
+        offset_y,
+        scale,
+    );
+    let (w, h) = (layout.width as f64 * scale, layout.height as f64 * scale);
+    let node_transform = compose_node_transform(node, x, y, scale, parent_transform);
+    let border_box = Rect::new(x, y, x + w, y + h);
+    // Nothing outside the border box shows, so a box off the damage, the
+    // window and the open clips paints nothing; under no transform the two
+    // layers are cut to the part that can show.
+    let device = node_transform.transform_rect_bbox(border_box);
+    if !intersects_dirty_region(device.x0, device.y0, device.width(), device.height()) {
+        tree.perf.bump(crate::perf::Counter::PaintNodesVisited);
+        return;
+    }
+    let area = if node_transform == Affine::IDENTITY {
+        visible_part(border_box).unwrap_or(border_box)
+    } else {
+        border_box
+    };
+    let shape = PaintShape::Rect(area);
+    painter.push_clip(Fill::NonZero, node_transform, &shape);
+    painter.push_isolated_layer(1.0, node_transform, &shape);
+    paint_node_unmasked(
+        tree,
+        node_id,
+        painter,
+        scale,
+        offset_x,
+        offset_y,
+        font_cx,
+        layout_cx,
+        parent_transform,
+    );
+    painter.push_layer(BlendMode::DestinationIn, 1.0, node_transform, &shape);
+    for layer in mask.iter().rev() {
+        gradient::fill(
+            painter,
+            layer,
+            scale,
+            Fill::NonZero,
+            node_transform,
+            border_box,
+            &shape,
+        );
+    }
+    painter.pop_layer();
+    painter.pop_layer();
+    painter.pop_layer();
+}
+
+/// The part of a device-space rect that can show this paint: inside the
+/// bounds of the damage, the open clips and the window's cull rect. `None`
+/// when that is everything (no damage region, no clip, no window).
+fn visible_part(r: Rect) -> Option<Rect> {
+    let mut v = r;
+    let mut cut = false;
+    DIRTY_REGION.with(|d| {
+        if let Some(rects) = d.borrow().as_ref()
+            && let Some(u) = rects.iter().copied().reduce(|a, b| a.union(b))
+        {
+            v = v.intersect(u);
+            cut = true;
+        }
+    });
+    if let Some(clip) = open_clip_cull() {
+        v = v.intersect(clip);
+        cut = true;
+    }
+    VIEWPORT.with(|vp| {
+        if let Some(vp) = vp.get() {
+            v = v.intersect(vp.cull);
+            cut = true;
+        }
+    });
+    cut.then_some(v)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_node_unmasked(
     tree: &NodeTree,
     node_id: RawNodeId,
     painter: &mut dyn Painter,
@@ -3254,36 +3413,7 @@ fn paint_node(
     let h = layout.height as f64 * scale;
 
     // Sticky position adjustment
-    let (x, y) = if node.computed_style.position == PositionValue::Sticky {
-        // Find the nearest scroll ancestor's scroll offset
-        let mut scroll_y = 0.0_f64;
-        let mut ancestor_id = node.parent;
-        while let Some(aid) = ancestor_id {
-            if let Some(ancestor) = tree.get(aid) {
-                let ov = ancestor.computed_style.overflow_y;
-                // A `display: contents` ancestor is no scroll container (#1038).
-                if ancestor.computed_style.display != DisplayValue::Contents
-                    && matches!(
-                        ov,
-                        OverflowValue::Auto | OverflowValue::Scroll | OverflowValue::Hidden
-                    )
-                {
-                    scroll_y = ancestor.scroll_offset.1 * scale;
-                    break;
-                }
-                ancestor_id = ancestor.parent;
-            } else {
-                break;
-            }
-        }
-
-        // Apply sticky top constraint: element should not scroll above `top` offset from container
-        let sticky_top = node.computed_style.top.to_px() as f64 * scale;
-        let adjusted_y = y.max(offset_y + scroll_y + sticky_top);
-        (x, adjusted_y)
-    } else {
-        (x, y)
-    };
+    let y = sticky_y(tree, node, y, offset_y, scale);
 
     // Compose this node's CSS transform (about its transform-origin) onto
     // the parent transform. Shared by every paint arm below and by the cull

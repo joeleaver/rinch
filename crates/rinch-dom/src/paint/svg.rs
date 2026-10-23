@@ -1,8 +1,8 @@
 //! SVG element painting.
 
+use peniko::Fill;
 use peniko::color::{AlphaColor, Srgb};
-use peniko::kurbo::{Affine, BezPath, Cap, Join, Point, Rect, Stroke};
-use peniko::{Brush, Fill, Gradient};
+use peniko::kurbo::{Affine, BezPath, Cap, Join, Rect, Stroke};
 
 use super::painter::Painter;
 use crate::layout::parse_color_with_current;
@@ -584,51 +584,6 @@ pub(super) fn parse_polyline_points(points_str: &str, close: bool) -> Option<Bez
         path.close_path();
     }
     Some(path)
-}
-
-/// Convert `GradientStop` list into peniko `ColorStop` tuples for `with_stops`.
-pub(super) fn gradient_color_stops(
-    stops: &[crate::computed_style::GradientStop],
-) -> Vec<(f32, AlphaColor<Srgb>)> {
-    stops
-        .iter()
-        .filter_map(|s| s.color.map(|c| (s.offset, c)))
-        .collect()
-}
-
-/// Build a `Brush` for a CSS linear-gradient.
-pub(super) fn build_linear_gradient_brush(
-    angle_degrees: f32,
-    stops: &[crate::computed_style::GradientStop],
-    rect: &Rect,
-) -> Brush {
-    let angle_rad = angle_degrees.to_radians();
-    let dx = (angle_rad.sin()) as f64;
-    let dy = -(angle_rad.cos()) as f64;
-    let half_w = (rect.x1 - rect.x0) / 2.0;
-    let half_h = (rect.y1 - rect.y0) / 2.0;
-    let len = half_w * dx.abs() + half_h * dy.abs();
-    let cx = rect.x0 + half_w;
-    let cy = rect.y0 + half_h;
-    let start = Point::new(cx - dx * len, cy - dy * len);
-    let end = Point::new(cx + dx * len, cy + dy * len);
-    let color_stops = gradient_color_stops(stops);
-    let gradient = Gradient::new_linear(start, end).with_stops(color_stops.as_slice());
-    Brush::Gradient(gradient)
-}
-
-/// Build a `Brush` for a CSS radial-gradient.
-pub(super) fn build_radial_gradient_brush(
-    stops: &[crate::computed_style::GradientStop],
-    rect: &Rect,
-) -> Brush {
-    let half_w = (rect.x1 - rect.x0) / 2.0;
-    let half_h = (rect.y1 - rect.y0) / 2.0;
-    let center = Point::new(rect.x0 + half_w, rect.y0 + half_h);
-    let radius = half_w.max(half_h) as f32;
-    let color_stops = gradient_color_stops(stops);
-    let gradient = Gradient::new_radial(center, radius).with_stops(color_stops.as_slice());
-    Brush::Gradient(gradient)
 }
 
 #[cfg(test)]

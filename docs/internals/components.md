@@ -1,6 +1,6 @@
 # Components: icons and container defaults
 
-Read this page when your task touches: icons, List/Stepper/RadioGroup defaults, child insertion/removal observers.
+Read this page when your task touches: icons, List/Stepper/RadioGroup defaults, child insertion/removal observers, DropdownMenu/Popover placement.
 
 Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New mechanism notes for this area go on this page, not in `CLAUDE.md`. A code comment that cites a `CLAUDE.md` section by name means a section now on one of these pages: `grep -rn '<name>' docs/internals/`.
 
@@ -298,3 +298,55 @@ The pieces that follow from it:
 `RadioGroup::size` and the `Stepper` props are the same shape.
 
 Paths are relative to `crates/rinch-components/src/`. `ActionIcon`'s `icon` prop is a convenience that renders the icon for you as Outline, sized from the component's own `size` prop. It is **mutually exclusive with children** — `loading` wins, then `icon`, and children render only if neither is set — so pass a rendered icon as a child (not via `icon:`) when you need a filled or custom-sized glyph.
+
+## Dropdown placement (#1764)
+
+`DropdownMenu` and `Popover` keep their dropdown inside the viewport through
+`rinch-components/src/floating.rs` (`floating::arm`, called from each
+component's `render` after the effect that shows the dropdown). The dropdown
+stays an `absolute` child of the component root — no portal, so nested menus,
+the `--opened` CSS hooks and scrolling with the page are unchanged.
+
+- **Decision:** `floating::decide` (pure, unit-tested): preferred side if the
+  dropdown fits inside the viewport there, else the opposite side if it fits,
+  else the side with more room keeping `EDGE_MARGIN` (8px) with a cap (top and
+  bottom sides only); on the cross axis, a dropdown that runs past an edge is
+  clamped to `[8, viewport - 8 - size]`, one that fits is not moved.
+- **Application:** inline insets on the dropdown element (the side at `100%`,
+  the cross axis in px) plus a pinned `width` and `box-sizing: border-box`
+  (an absolute box's shrink-to-fit width depends on its `left`), and
+  `max-height`/`overflow-y` for a cap. Each property written is recorded with
+  the inline value it replaced (`floating::write`); the next open, and an
+  uncapped re-place for the cap, take back only those (`floating::restore`):
+  the caller's value comes back, or the property goes, and one the caller
+  wrote since is left alone. So the dropdown is measured under the caller's
+  own `max-height`/`width`, and a cap is written only below it (review of
+  #1812). Writing the insets inline on every open,
+  not only when something moved, is what keeps a nested menu's panel immune
+  to the outer root's position class: the position rules are descendant
+  rules, so an outer menu flipped to `--top` would otherwise pull an inner
+  `--bottom` panel up as well. The root's class is swapped to the side used
+  (the caller's class or its flipped twin). Never a `transform` on the
+  `DropdownMenu` panel: in a browser a transformed panel contains a nested
+  menu's `position: fixed` backdrop. `Popover`'s offset moved from
+  `translateY`/`translateX` to a margin so a flip does not run its `transform`
+  transition.
+- **Timing:** on each rising edge of the open state the previous placement is
+  cleared and the dropdown measured with `bounding_rect()`. In a browser that
+  lays out on demand, so it is placed in the same task. On desktop
+  `layout_pending()` is true right after the open's class write; the dropdown
+  is then measured from its `bounds_signal()` after the next layout, and
+  `RinchApp::settle_bounds_writes` lays the placement out before the frame is
+  painted. Both signals (dropdown and root) are owned by that open's effect
+  run, so they are watched only while open; the root's re-places the dropdown
+  when the root moves, from the size measured at open.
+- **Not done:** clipping ancestors as a boundary; a window resize that does not
+  move the root; content changes while open (the width is pinned); a scaled
+  ancestor (the shift is written in CSS px); `DropdownMenu` `left`/`right`
+  positions (no rules); capping a `left`/`right` popover. A host with no
+  geometry (`viewport_size()` `None` and no layout pending, the mock document)
+  places nothing.
+
+Pins: `rinch/src/app/dropdown_viewport_1764_tests.rs` (desktop, the issue's
+measured cases, nested menus), `rinch-web/tests/dropdown_viewport_1764.rs`
+(Chrome 155, Firefox 155), `floating::tests`.
