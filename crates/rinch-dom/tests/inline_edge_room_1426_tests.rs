@@ -336,17 +336,30 @@ fn end_padding_stays_before_a_trailing_forced_break() {
 #[test]
 #[ignore]
 fn timing_every_word_in_a_padded_span() {
-    for padded in [false, true] {
-        let style = if padded { "padding: 0 3px" } else { "" };
+    for (name, html) in [
+        ("unpadded", r#"<span>w{i}</span> "#),
+        (
+            "padded, space outside",
+            r#"<span style="padding: 0 3px">w{i}</span> "#,
+        ),
+        (
+            "padded, space inside",
+            r#"<span style="padding: 0 3px">w{i} </span>"#,
+        ),
+    ] {
         let inner: String = (0..1600)
-            .map(|i| format!(r#"<span style="{style}">w{i}</span> "#))
+            .map(|i| html.replace("{i}", &i.to_string()))
             .collect();
+        let mut c = Case::new(&inner);
+        let cnt = rinch_core::dom::NodeId(c.c);
         let mut best = f64::MAX;
-        for _ in 0..5 {
+        for k in 0..6 {
+            c.doc
+                .set_attribute(cnt, "style", &format!("{C} width: {}px", 300 + k * 7));
             let t = std::time::Instant::now();
-            let _c = Case::new(&inner);
+            c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
             best = best.min(t.elapsed().as_secs_f64() * 1e3);
         }
-        eprintln!("padded={padded}: {best:.1} ms (best of 5, build + first layout)");
+        eprintln!("{name}: {best:.2} ms (best of 6 relayouts at a new width)");
     }
 }

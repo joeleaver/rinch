@@ -1251,14 +1251,11 @@ impl<'a> IfcText<'a> {
         self.edge_boxes = true;
         if end {
             // The last text op, past closing spans and end boxes only.
-            let at = self
-                .ops
-                .iter()
-                .rposition(|op| match op {
-                    IfcOp::Pop => false,
-                    IfcOp::InlineBox(b) => !(is_edge_box(b.id) && b.id & EDGE_BOX_END != 0),
-                    _ => true,
-                });
+            let at = self.ops.iter().rposition(|op| match op {
+                IfcOp::Pop => false,
+                IfcOp::InlineBox(b) => !(is_edge_box(b.id) && b.id & EDGE_BOX_END != 0),
+                _ => true,
+            });
             if let Some(at) = at
                 && let IfcOp::Text(text) = &self.ops[at]
                 && text.ends_with('\n')
@@ -1802,7 +1799,9 @@ fn hang_pass(
                 continue;
             };
             let emergency = data.reason == BreakReason::Emergency;
-            if !edge_break_allowed(&units, text, &unhung.nowrap, end, emergency) {
+            let mut breaks =
+                TextBreaks::new(text, units.get(cursor).map_or(text.len(), |u| u.byte));
+            if !edge_break_allowed(&units, &mut breaks, &unhung.nowrap, end, emergency) {
                 let Some((reason, advance)) = rebreak_at_edge(
                     &mut breaker,
                     &units,
@@ -2484,7 +2483,7 @@ struct LineUnit {
 /// boxes is checked.
 fn edge_break_allowed(
     units: &[LineUnit],
-    text: &str,
+    breaks: &mut TextBreaks<'_>,
     nowrap: &[std::ops::Range<usize>],
     e: usize,
     emergency: bool,
@@ -2526,31 +2525,60 @@ fn edge_break_allowed(
     if in_ranges(nowrap, p.byte) {
         return false;
     }
-    text_breaks_before(text, p.byte, n.byte)
+    breaks.at(n.byte)
 }
 
-/// Whether UAX #14 allows a line break at byte `at` of `text`, the character
-/// before it starting at `before` — what parley's own analysis marks there,
-/// asked of a window of the text around it.
-fn text_breaks_before(text: &str, before: usize, at: usize) -> bool {
-    const CONTEXT: usize = 32;
-    if at == 0 || at >= text.len() {
-        return at >= text.len();
-    }
-    let mut start = before.saturating_sub(CONTEXT);
-    while !text.is_char_boundary(start) {
-        start -= 1;
-    }
-    let mut end = (at + CONTEXT).min(text.len());
-    while !text.is_char_boundary(end) {
-        end += 1;
-    }
-    let segmenter = icu_segmenter::LineSegmenter::new_for_non_complex_scripts(
+/// The UAX #14 line segmenter [`TextBreaks`] reads: no complex-script
+/// dictionaries, which a break next to an inline element's padding does not
+/// need. A `const`, so it is built once, at compile time.
+const LINE_SEGMENTER: icu_segmenter::LineSegmenterBorrowed<'static> =
+    icu_segmenter::LineSegmenter::new_for_non_complex_scripts(
         icu_segmenter::options::LineBreakOptions::default(),
     );
-    segmenter
-        .segment_str(&text[start..end])
-        .any(|b| b + start == at)
+
+/// The UAX #14 break opportunities of a text from some byte on — what
+/// parley's own analysis marks — read once, in order: asked about bytes in
+/// increasing order, as a line is scanned, the text is segmented once
+/// (review of #1823: a 64-byte window segmented per unit asked about made
+/// the re-break of a paragraph of padded words several times its cost).
+struct TextBreaks<'t> {
+    iter: Box<dyn Iterator<Item = usize> + 't>,
+    next: Option<usize>,
+}
+
+impl<'t> TextBreaks<'t> {
+    /// Opportunities of `text` from `from` on, segmented from up to 32
+    /// bytes before it for context.
+    fn new(text: &'t str, from: usize) -> Self {
+        let mut start = from.saturating_sub(32).min(text.len());
+        while !text.is_char_boundary(start) {
+            start -= 1;
+        }
+        Self {
+            iter: Box::new(
+                LINE_SEGMENTER
+                    .segment_str(&text[start..])
+                    .map(move |b| b + start),
+            ),
+            next: None,
+        }
+    }
+
+    /// Whether there is an opportunity at `byte`. Asked of bytes in
+    /// non-decreasing order.
+    fn at(&mut self, byte: usize) -> bool {
+        loop {
+            if let Some(b) = self.next
+                && b >= byte
+            {
+                return b == byte;
+            }
+            match self.iter.next() {
+                Some(b) => self.next = Some(b),
+                None => return false,
+            }
+        }
+    }
 }
 
 /// Break again a line parley ended next to an edge box where CSS does not
@@ -2575,6 +2603,7 @@ fn rebreak_at_edge(
     // The table's cursor can sit on the zero-width newline that ended the
     // line before; a newline is never the first unit of a line.
     let first = cursor + units[cursor..].iter().take_while(|u| u.newline).count();
+    let mut breaks = TextBreaks::new(text, units.get(first).map_or(text.len(), |u| u.byte));
     let mut x = 0.0f32;
     // The run of hanging spaces the line would end in.
     let mut hanging = 0.0f32;
@@ -2588,7 +2617,7 @@ fn rebreak_at_edge(
         }
         x += u.advance;
         hanging = if u.hangs { hanging + u.advance } else { 0.0 };
-        if !edge_break_allowed(units, text, nowrap, e, false) {
+        if !edge_break_allowed(units, &mut breaks, nowrap, e, false) {
             continue;
         }
         if x - hanging <= max + 0.005 {
