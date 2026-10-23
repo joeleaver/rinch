@@ -162,6 +162,18 @@ impl Peer {
     }
 }
 
+/// A textblock's text, an inline atom as `[name]`.
+fn block_text(block: &Node) -> String {
+    (0..block.child_count())
+        .map(|i| {
+            let c = block.child(i);
+            c.text()
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("[{}]", c.type_name()))
+        })
+        .collect()
+}
+
 fn html(doc: &Node) -> String {
     rinch_editor_core::serialize::node_to_html(doc)
 }
@@ -289,4 +301,252 @@ fn an_image_inserted_into_a_block_being_made_code_is_dropped() {
         assert_eq!(a.state.doc, b.state.doc);
         assert_eq!(html(&a.state.doc), "<pre>abcX</pre>");
     }
+}
+
+// --- edits in a normalised block, made concurrently (review of #1846) -----------------
+//
+// The CRDT still holds `abc` + a hard-break atom where the model reads `abc\n`. The
+// write-back must diff the block as it reads, not as it is stored, or each peer's edit
+// rewrites the block from its edit point to the end and the merge holds both rewrites.
+
+/// From the converged scenario, A types `ta` at `pa` and B types `tb` at `pb`, each
+/// before receiving the other's; then both exchange. Returns the code block's text.
+fn type_concurrently(pa: usize, ta: &str, pb: usize, tb: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (mut a, mut b) in scenario(bold_b_and_break_after_c) {
+        a.type_at(pa, ta);
+        b.type_at(pb, tb);
+        let (da, db) = (a.send(), b.send());
+        a.receive(&db);
+        b.receive(&da);
+        assert_eq!(a.state.doc, b.state.doc, "the peers must converge");
+        assert_valid(&a.schema, &a.state.doc);
+        out.push(block_text(a.state.doc.child(0)));
+    }
+    out
+}
+
+#[test]
+fn concurrent_typing_at_the_start_and_middle_of_a_normalised_block_lands_once() {
+    for text in type_concurrently(1, "X", 3, "Y") {
+        assert_eq!(text, "XabYc\n");
+    }
+}
+
+#[test]
+fn concurrent_typing_at_one_place_in_a_normalised_block_keeps_the_block_once() {
+    for text in type_concurrently(1, "X", 1, "Z") {
+        assert!(
+            text == "XZabc\n" || text == "ZXabc\n",
+            "each typed char once and the block once: {text:?}"
+        );
+    }
+}
+
+#[test]
+fn concurrent_typing_at_the_end_of_a_normalised_block_keeps_one_line_break() {
+    for text in type_concurrently(5, "X", 5, "Y") {
+        assert!(
+            text == "abc\nXY" || text == "abc\nYX",
+            "one line break, each typed char once: {text:?}"
+        );
+    }
+}
+
+#[test]
+fn a_sticky_index_in_a_normalised_block_resolves_before_any_write_back() {
+    for (a, b) in scenario(bold_b_and_break_after_c) {
+        // Positions 1..=5 in `<pre>abc\n</pre>`: before `a` … after the line break.
+        for pos in 1..=5 {
+            let bytes = a
+                .session
+                .sticky_index(&a.state.doc, Pos(pos))
+                .unwrap_or_else(|| panic!("a sticky index at {pos}"));
+            assert_eq!(
+                b.session.resolve_sticky(&b.state.doc, &bytes),
+                Some(Pos(pos)),
+                "the index made at {pos} resolves there on the other peer"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_sticky_index_after_a_dropped_image_resolves_where_the_model_has_it() {
+    let image = |b: &mut Peer| {
+        let img = b
+            .schema
+            .create_node(
+                "image",
+                Attrs::new().with("src", AttrValue::from("a.png")),
+                Fragment::empty(),
+            )
+            .unwrap();
+        b.insert_node(2, img);
+    };
+    for (a, b) in scenario(image) {
+        assert_eq!(html(&a.state.doc), "<pre>abc</pre>");
+        for pos in 1..=4 {
+            let bytes = a
+                .session
+                .sticky_index(&a.state.doc, Pos(pos))
+                .unwrap_or_else(|| panic!("a sticky index at {pos}"));
+            assert_eq!(
+                b.session.resolve_sticky(&b.state.doc, &bytes),
+                Some(Pos(pos)),
+                "the index made at {pos} resolves there on the other peer"
+            );
+        }
+    }
+}
+
+// --- randomized: typed text survives exactly once -------------------------------------
+
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+}
+
+/// A random position whose parent is a textblock.
+fn text_pos(rng: &mut Rng, doc: &Node) -> Option<usize> {
+    let p = rng.below(doc.content_size() + 1);
+    doc.resolve(Pos(p))
+        .ok()
+        .filter(|r| r.parent().is_textblock())
+        .map(|_| p)
+}
+
+/// One random edit by `peer`: type a char no one else ever types, retype a block to
+/// code or back, bold a range, insert a hard break or an image. Never deletes text.
+fn random_edit(rng: &mut Rng, peer: &mut Peer, unique: &mut u32, typed: &mut Vec<char>) {
+    let st = &peer.state;
+    let Some(p) = text_pos(rng, &st.doc) else {
+        return;
+    };
+    let next = match rng.below(7) {
+        0..=2 => {
+            let c = char::from_u32(0x4E00 + *unique).unwrap();
+            *unique += 1;
+            let mut tr = st.tr();
+            tr.set_selection(Selection::cursor(Pos(p)));
+            if tr.insert_text(&c.to_string()).is_err() {
+                return;
+            }
+            typed.push(c);
+            Some(st.apply(tr))
+        }
+        3 => {
+            let cmd = ["setCodeBlock", "setParagraph"][rng.below(2)];
+            let mut tr = st.tr();
+            tr.set_selection(Selection::cursor(Pos(p)));
+            st.apply(tr).run(cmd)
+        }
+        4 => {
+            let Some(q) = text_pos(rng, &st.doc) else {
+                return;
+            };
+            let mut tr = st.tr();
+            tr.set_selection(Selection::text(Pos(p.min(q)), Pos(p.max(q))));
+            st.apply(tr).run("toggleBold")
+        }
+        5 => {
+            let mut tr = st.tr();
+            tr.set_selection(Selection::cursor(Pos(p)));
+            st.apply(tr).run("insertHardBreak")
+        }
+        _ => {
+            let img = st
+                .schema()
+                .create_node(
+                    "image",
+                    Attrs::new().with("src", AttrValue::from("a.png")),
+                    Fragment::empty(),
+                )
+                .unwrap();
+            let mut tr = st.tr();
+            let ok = tr
+                .replace(p, p, Slice::new(Fragment::from_node(img), 0, 0))
+                .is_ok();
+            ok.then(|| st.apply(tr))
+        }
+    };
+    if let Some(next) = next {
+        peer.commit(next);
+    }
+}
+
+/// Every char a peer typed is in the converged document exactly once — not merely
+/// converged: a write-back that rewrites a block from the edit point on converges on
+/// both rewrites, the block's text twice.
+#[test]
+fn randomized_typed_text_lands_exactly_once_around_retypes_and_formatting() {
+    let mut code_in_play = 0;
+    for seed in 1..=60u64 {
+        let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+        let s = schema();
+        let peers = 2 + (seed % 2) as usize;
+        let mut ps = vec![Peer::host(&s, vec![para(&s, "ab"), para(&s, "cd")], 1)];
+        for i in 1..peers {
+            let joined = ps[0].join(1 + i as u64);
+            ps.push(joined);
+        }
+        let _ = ps[0].send();
+        let (mut queue, mut seen) = (Vec::<Vec<u8>>::new(), vec![0usize; peers]);
+        let (mut unique, mut typed) = (0u32, Vec::new());
+        for _ in 0..80 {
+            if rng.below(10) < 6 {
+                let p = rng.below(peers);
+                random_edit(&mut rng, &mut ps[p], &mut unique, &mut typed);
+                let d = ps[p].send();
+                if !d.is_empty() {
+                    queue.push(d);
+                }
+            } else {
+                let q = rng.below(peers);
+                while seen[q] < queue.len() {
+                    ps[q].receive(&queue[seen[q]].clone());
+                    seen[q] += 1;
+                }
+            }
+            if ps.iter().any(|p| html(&p.state.doc).contains("<pre>")) {
+                code_in_play += 1;
+            }
+        }
+        for q in 0..peers {
+            while seen[q] < queue.len() {
+                ps[q].receive(&queue[seen[q]].clone());
+                seen[q] += 1;
+            }
+        }
+        for q in 1..peers {
+            assert_eq!(ps[q].state.doc, ps[0].state.doc, "seed {seed}: converged");
+        }
+        let doc = &ps[0].state.doc;
+        assert_valid(&s, doc);
+        let text: String = (0..doc.child_count())
+            .map(|i| block_text(doc.child(i)))
+            .collect();
+        for c in &typed {
+            assert_eq!(
+                text.matches(*c).count(),
+                1,
+                "seed {seed}: typed {c:?} must land exactly once in {text:?}"
+            );
+        }
+    }
+    assert!(
+        code_in_play > 100,
+        "the trials must put code blocks in play ({code_in_play})"
+    );
 }

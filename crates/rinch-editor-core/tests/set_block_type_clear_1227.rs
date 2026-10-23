@@ -76,3 +76,26 @@ fn a_retype_that_allows_everything_keeps_everything() {
         r#"<h2>a<strong>b</strong>c<br><img alt="x" src="a.png"></h2>"#
     );
 }
+
+#[test]
+fn two_dropped_atoms_in_one_block_are_both_dropped_and_the_text_kept() {
+    // The replacements are applied last to first, so an earlier one does not move a
+    // later one's positions; applied first to last, the second deletion lands one
+    // position off and takes a letter instead of the image.
+    assert_eq!(
+        run(
+            r#"<p>a<img src="a.png" alt="x">b<img src="b.png" alt="y">c</p>"#,
+            Selection::cursor(Pos(1)),
+            "setCodeBlock"
+        ),
+        "<pre>abc</pre>"
+    );
+    assert_eq!(
+        run(
+            r#"<p>a<img src="a.png" alt="x">b<br>c<img src="b.png" alt="y">d</p>"#,
+            Selection::cursor(Pos(1)),
+            "setCodeBlock"
+        ),
+        "<pre>ab\ncd</pre>"
+    );
+}
