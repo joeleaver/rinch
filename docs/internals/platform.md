@@ -65,7 +65,21 @@ border box, an isolated layer holding `paint_node_unmasked`, then a
 `BlendMode::DestinationIn` layer (tiny-skia `DestinationIn`, Vello
 `Compose::DestIn`) into which each mask layer is filled over the border box. A
 masked box is a stacking context, so its hoisted descendants paint inside the
-layer. Pins: `rinch-dom/tests/gradient_mask_1798_tests.rs` (Chrome 155 pixels).
+layer. The software painter composites a `DestinationIn` layer over everything
+its parent layer holds, not only what the mask drew, so an empty or
+all-transparent mask hides the content as Vello does. Hit testing clips a
+masked box's subtree to its border box (`hit_test_node`), as Chrome 155 does;
+the mask's alpha is not consulted inside it (nor by Chrome). The background
+tile cache is keyed by the tile's own size as well as its raster size: stop
+positions are lengths in the tile's space. Pins:
+`rinch-dom/tests/gradient_mask_1798_tests.rs` (Chrome 155 pixels),
+`hit_testing::tests::a_masked_boxs_overflow_is_not_hit_outside_its_border_box`,
+`rinch-visual-test`'s `css_export` gradient test. Not Chrome's: a mask on a
+non-atomic `display: inline` element (a `<span>`): its text is drawn by its
+inline formatting context's root and is not masked, and its own `0x0` box
+masks away everything it paints itself, positioned descendants included —
+Chrome masks the span's fragments and shows a positioned descendant that lies
+inside them.
 Not Chrome's: a
 gradient pixel whose centre lies exactly on a hard stop can take the colour
 after the stop where Chrome takes the one before (#1740). `space`/`round` paint as `repeat`. **No layer is ever dropped**
