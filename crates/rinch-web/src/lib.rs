@@ -83,6 +83,7 @@
 //! }
 //! ```
 
+mod bounds;
 mod editor_input;
 mod event_delegation;
 mod images;
@@ -98,6 +99,8 @@ use rinch_core::dom::{DomDocument, NodeHandle, RenderScope, clear_render_scope, 
 use rinch_core::element::ThemeProviderProps;
 use rinch_core::events;
 
+#[doc(hidden)]
+pub use bounds::{__bounds_watch_count, __bounds_watch_installed};
 pub use event_delegation::setup_event_delegation;
 #[doc(hidden)]
 pub use event_delegation::{

@@ -1009,6 +1009,15 @@ pub trait DomDocument {
         None
     }
 
+    /// [`NodeHandle::bounds_signal`] was called for `node` (issue #1781) —
+    /// on **every** call, so a backend must ignore a node it already watches.
+    /// A backend that does not refresh bounds after its own layout passes — the
+    /// web, where the browser lays out — starts watching the element here.
+    /// Called with the document mutably borrowed: it must not run app code.
+    /// Default: nothing (rinch-dom refreshes every registered node after each
+    /// layout).
+    fn watch_bounds(&mut self, _node: NodeId) {}
+
     /// The `(left, top)` inset from a node's box origin (the origin
     /// [`query_node_layout`](Self::query_node_layout) reports against) to the origin an
     /// absolutely-positioned child anchors to. On the web that is the node's border

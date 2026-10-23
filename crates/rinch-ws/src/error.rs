@@ -8,14 +8,17 @@ use std::fmt;
 /// asynchronous failures (a connect that never completes, a broken send, a
 /// protocol/transport fault), and returned synchronously from
 /// [`connect`](crate::connect) only for an immediately rejected request (a
-/// malformed URL, or a browser that refuses to construct the socket).
+/// malformed URL or subprotocol, or a browser that refuses to construct the
+/// socket).
 ///
 /// Every variant carries a human-readable message. The type is `Clone + Send`
 /// so it can cross the worker→main-thread boundary on native.
 #[derive(Debug, Clone)]
 pub enum WsError {
-    /// The URL was not a valid `ws://` / `wss://` endpoint, or the platform
-    /// refused to construct the socket from it.
+    /// The request was refused before any connection was attempted: the URL
+    /// was not a valid `ws://` / `wss://` endpoint, a subprotocol was not an
+    /// HTTP token or was offered twice, a header (native) was invalid, or the
+    /// platform refused to construct the socket from it.
     InvalidUrl(String),
     /// The connection could not be established (DNS, refused, TLS handshake,
     /// or a rejected upgrade).

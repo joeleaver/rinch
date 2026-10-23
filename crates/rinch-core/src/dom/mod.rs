@@ -1303,9 +1303,16 @@ impl NodeHandle {
     /// layout pass completes.
     ///
     /// Initial value is `ElementBounds::default()` (zero rect). The first real
-    /// bounds arrive after the next layout pass.
-    /// Each call registers a new signal; to ask where the element is once —
-    /// from an event handler, say — use [`Self::bounding_rect`].
+    /// bounds arrive after the next layout pass — on the web, the next frame:
+    /// rinch-web refreshes the signal from `getBoundingClientRect()` when the
+    /// element resizes, the DOM changes, something scrolls, the window resizes,
+    /// an image or font loads, or a transition or animation ends (issue #1781).
+    ///
+    /// Calls for this node from the same owner (the component rendering, the
+    /// effect running, or none) return the **same** signal, so asking per event
+    /// costs nothing after the first call; another owner gets its own, freed
+    /// with its own scope. To ask where the element is once — from an event
+    /// handler, say — use [`Self::bounding_rect`].
     ///
     /// Typical use: derive zoom / scroll / domain-coordinate math from a
     /// strip's measured pixel width without hand-rolling a polling thread.
@@ -1327,7 +1334,16 @@ impl NodeHandle {
         // across documents (issue #134). A handle whose document is already
         // gone registers under key 0 (matches no live document), yielding a
         // signal that simply keeps its zero rect.
-        crate::reactive::register_bounds_signal(self.doc_key(), self.node_id.0 as u64)
+        let signal = crate::reactive::register_bounds_signal(self.doc_key(), self.node_id.0 as u64);
+        // Asked on every call, not only for a new entry: a call made while the
+        // document is borrowed cannot reach the backend, and the next one must
+        // still start the watch (a backend ignores a node it already watches).
+        if let Some(doc) = self.doc.upgrade()
+            && let Ok(mut doc) = doc.try_borrow_mut()
+        {
+            doc.watch_bounds(self.node_id);
+        }
+        signal
     }
 
     /// Get the tag name of this node (if it's an element).

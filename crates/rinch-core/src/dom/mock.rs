@@ -53,6 +53,9 @@ pub struct MockDomDocument {
     /// **Test-only.** Calls counted by kind since the document was made
     /// (issue #748) — see [`MockOpCounts`].
     ops: std::cell::Cell<MockOpCounts>,
+    /// **Test-only.** Every [`DomDocument::watch_bounds`] call, in order
+    /// (issue #1781).
+    watched_bounds: Vec<NodeId>,
 }
 
 /// **Test-only.** How many of each kind of call a [`MockDomDocument`] has
@@ -223,6 +226,13 @@ impl MockDomDocument {
         }
     }
 
+    /// **Test-only.** The nodes [`DomDocument::watch_bounds`] was called for,
+    /// in call order (issue #1781).
+    #[doc(hidden)]
+    pub fn __watched_bounds(&self) -> &[NodeId] {
+        &self.watched_bounds
+    }
+
     /// **Test-only.** The `(node, start, end, direction)` of the last
     /// [`DomDocument::set_selection_range`]/[`DomDocument::select_text`] call,
     /// whichever node it named — a test reads this to assert on a selection
@@ -250,6 +260,7 @@ impl MockDomDocument {
             get_children_calls: std::cell::Cell::new(0),
             is_text_node_calls: std::cell::Cell::new(0),
             ops: std::cell::Cell::new(MockOpCounts::default()),
+            watched_bounds: Vec::new(),
         };
 
         // Create root and body
@@ -318,6 +329,10 @@ impl MockDomDocument {
 }
 
 impl DomDocument for MockDomDocument {
+    fn watch_bounds(&mut self, node: NodeId) {
+        self.watched_bounds.push(node);
+    }
+
     fn doc_key(&self) -> u64 {
         self.doc_key
     }

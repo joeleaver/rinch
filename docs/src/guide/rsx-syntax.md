@@ -784,7 +784,8 @@ lays out to answer. An element under `display: none` (or one that is
 `display: contents`) answers a zero rect; a text node, or an element not in the
 document, answers `None`. `get_layout_bounds()` is a different question — the
 box relative to its parent, as laid out — and `bounds_signal()` is the reactive
-one, refreshed after each desktop layout.
+one, refreshed after each desktop layout and, in a browser, in the frame after
+anything that can move the element.
 
 ## Fragments
 
