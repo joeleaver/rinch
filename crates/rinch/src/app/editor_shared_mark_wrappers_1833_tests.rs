@@ -201,3 +201,34 @@ fn the_caret_at_a_seam_in_a_shared_pill_is_where_z_lands() {
         );
     }
 }
+
+/// At a seam inside a shared pill, with stored marks that leave out the
+/// shared mark (`code` toggled off), a typed `Z` makes a run of its own outside
+/// the pill: `<code>ace</code>Z<code><strong>oo</strong>…`. The caret is drawn
+/// there, past the pill's end padding, not inside the pill at the seam (review
+/// of #1862). Both seams of the bold run, with stored marks `[]` and `[bold]`.
+#[test]
+fn the_caret_at_a_shared_seam_with_the_shared_mark_off_is_where_z_lands() {
+    for (pos, stored) in [(6, vec![]), (6, vec!["bold"]), (8, vec![])] {
+        let mut p = page();
+        let inner = mark(&p.handle, "bold", Attrs::default());
+        load(&p, inner);
+        idle(&mut p.app);
+        let marks: Vec<Mark> = stored
+            .iter()
+            .map(|n| mark(&p.handle, n, Attrs::default()))
+            .collect();
+        assert!(p.handle.update(|st| {
+            let mut tr = st.tr();
+            tr.set_selection(Selection::cursor(Pos(pos)));
+            tr.set_stored_marks(Some(marks.clone()));
+            Some(tr)
+        }));
+        idle(&mut p.app);
+        let (caret, typed) = p.caret_and_typed();
+        assert!(
+            (caret.0 - typed.0).abs() <= 1.0 && (caret.1 - typed.1).abs() <= 3.0,
+            "pos {pos} stored {stored:?}: the caret is drawn at {caret:?}, a typed Z lands at {typed:?}"
+        );
+    }
+}

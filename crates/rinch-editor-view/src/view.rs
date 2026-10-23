@@ -6856,3 +6856,11 @@ mod table_span_differential {
 #[cfg(test)]
 #[path = "shared_wraps_1833_tests.rs"]
 mod shared_wraps_1833_tests;
+
+#[cfg(test)]
+#[path = "incremental_fresh_1833_prop_tests.rs"]
+mod incremental_fresh_1833_prop_tests;
+
+#[cfg(test)]
+#[path = "inline_doc_1833_tests.rs"]
+mod inline_doc_1833_tests;
