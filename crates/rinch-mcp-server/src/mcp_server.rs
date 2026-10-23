@@ -117,6 +117,17 @@ pub struct ScrollParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DropFilesParams {
+    /// X coordinate of the drop point (logical px, as `click`)
+    pub x: f64,
+    /// Y coordinate of the drop point (logical px, as `click`)
+    pub y: f64,
+    /// File paths to drop, handed to the app verbatim (not checked to exist;
+    /// a relative path is relative to the app's working directory). At least one.
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct TypeTextParams {
     /// The text to type
     pub text: String,
@@ -502,6 +513,21 @@ impl RinchMcpServer {
             y: params.0.y as f32,
             delta_x: params.0.delta_x,
             delta_y: params.0.delta_y,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Drop files on the window at (x, y), as the OS delivers a file drop (desktop): a drag enter at the point (data-onfiledragenter, an editor's drop caret), then the drop — an editor that takes pictures claims image files, and data-onfiledrop (the paths) / data-ondropfiles (the files that exist) under the point get the rest, with the drop point in get_click_context(). Paths are passed through unchecked, so a missing file fails in the app's own read. Coordinates in logical px, as click."
+    )]
+    async fn drop_files(
+        &self,
+        params: Parameters<DropFilesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.forward_json_command(DebugCommandKind::DropFiles {
+            x: params.0.x as f32,
+            y: params.0.y as f32,
+            paths: params.0.paths,
         })
         .await
     }

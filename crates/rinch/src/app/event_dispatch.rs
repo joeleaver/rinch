@@ -3494,6 +3494,9 @@ impl RinchApp {
         };
         // A path that cannot be `stat`ed now (gone since the drop) is left
         // out of the `LocalFile`s; the paths handler still gets every path.
+        // On wasm32 (an embed build in a browser) there is no file system to
+        // read a path from, so the handler gets no files.
+        #[cfg(not(target_arch = "wasm32"))]
         let files: Vec<rinch_core::file::LocalFile> = if file_handler.is_some() {
             paths
                 .iter()
@@ -3502,6 +3505,8 @@ impl RinchApp {
         } else {
             Vec::new()
         };
+        #[cfg(target_arch = "wasm32")]
+        let files: Vec<rinch_core::file::LocalFile> = Vec::new();
         if let Some(id) = path_handler {
             events::set_click_context(context);
             events::dispatch_file_drop_event(events::EventHandlerId(id), paths);
