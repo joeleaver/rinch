@@ -304,8 +304,10 @@ positioned layer drawn over the titlebar, and an empty
 space open for the right section and the controls. The spacer is sized from the
 **row's measured box** (the row's right edge minus the spacer's left edge), not
 from a count of the labels (#529): the shell's
-`MenuBarContext::spacer_width` is only the first frame's estimate, made before
-any document exists, and costs one extra layout to replace. The subtraction is
+`MenuBarContext::spacer_width` is only the estimate the first layout uses, made
+before any document exists; the spacer's write from the row's measured box is
+laid out again before that frame is painted (`RinchApp::settle_bounds_writes`,
+#1764 — it took one more frame until then). The subtraction is
 made in the window root's **layout** frame — `NodeHandle::get_layout_bounds`
 summed over root > layer > row and root > titlebar > spacer — because the
 result is written as a CSS width (#1375); the two `bounds_signal`s are painted
@@ -575,6 +577,24 @@ where desktop's refresh lands in the frame that paints it. While anything is
 watched, every DOM write in the page makes a mutation record and asks for a
 refresh (at most one per frame). Pins:
 `rinch-web/tests/bounds_signal_1781.rs` (Chrome 155, Firefox 155).
+
+**On desktop a subscriber's write is laid out in the frame that woke it**
+(#1764). `RinchApp::resolve_and_repaint` and `resize_layout` follow
+`refresh_bounds_signals` with `settle_bounds_writes`: while the document has a
+change its layout does not show (`dirty_nodes`, `styles_dirty`,
+`DomDocument::layout_pending`), it lays out again and publishes the bounds
+again, at most `BOUNDS_SETTLE_PASSES` (3) times (a `debug!` line says when the
+cap is hit); a subscriber that never settles carries on next frame, as every
+one did before. Each pass runs the frame's own post-layout work
+(`RinchApp::after_layout`: owed scrolls, the editor's virtualization and
+caret/selection/margin overlay pass, clamped-scroll events), so a subscriber's
+write that re-wraps an editor leaves no overlay measured against the layout
+before it. So a placement written
+from a measurement (a dropdown kept inside the viewport, the #529 spacer) is
+never painted at its old geometry. The cost is a layout per pass, only in a
+frame where a subscriber wrote. Pins:
+`rinch/src/app/dropdown_viewport_1764_tests.rs`,
+`app/inline_menu_spacer_529_tests.rs`.
 
 The registry is a `BTreeMap` keyed by `(doc_key, node_id)` (one document is
 a range); the web state and both refreshes look rects up in hash maps, so no

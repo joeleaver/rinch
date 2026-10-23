@@ -1295,6 +1295,26 @@ impl NodeHandle {
         doc.borrow_mut().bounding_rect(self.node_id)
     }
 
+    /// The viewport's size in logical pixels, in the frame of
+    /// [`Self::bounding_rect`] (issue #1764). On desktop it is the size of the
+    /// last layout; on the web `documentElement.clientWidth/clientHeight`.
+    /// `None` when the document is gone, before its first layout, or for a
+    /// host with no geometry.
+    pub fn viewport_size(&self) -> Option<(f32, f32)> {
+        let doc = self.accessed_doc()?;
+        doc.borrow().viewport_size()
+    }
+
+    /// Whether this node's document has changes its geometry does not show
+    /// yet ([`DomDocument::layout_pending`]): when `true`, what
+    /// [`Self::bounding_rect`] answers is the box before those changes. The
+    /// browser lays out on demand and always answers `false`.
+    pub fn layout_pending(&self) -> bool {
+        self.accessed_doc()
+            .map(|doc| doc.borrow().layout_pending())
+            .unwrap_or(false)
+    }
+
     /// Reactive bounds signal for this element, refreshed by the runtime after
     /// each layout pass — including pure window resizes (#145).
     ///

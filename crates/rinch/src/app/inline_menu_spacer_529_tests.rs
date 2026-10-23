@@ -416,11 +416,14 @@ fn a_spacer_past_the_rows_end_is_zero_not_negative() {
     );
 }
 
-/// The first painted frame reserves the shell's estimate — the row has no
-/// box when that frame is laid out — and exactly one more frame replaces it.
-/// Sampled with an estimate (173) that is neither zero nor near the row.
+/// The first painted frame already reserves the row: the row has no box when
+/// that frame is first laid out, so the spacer starts at the shell's
+/// estimate, and the spacer's write from the row's measured box is laid out
+/// again in the same frame (`RinchApp::settle_bounds_writes`, #1764). It took
+/// one more frame, painted with the estimate, until then. Sampled with an
+/// estimate (173) that is neither zero nor near the row.
 #[test]
-fn the_first_frame_reserves_the_estimate_and_the_second_the_row() {
+fn the_first_frame_reserves_the_row_not_the_estimate() {
     let mut app = build(&["Файл", "Правка"], "Rinch Zoo", 173, 0);
     assert!(
         inline_style(&app, SPACER).contains("width: 173px"),
@@ -428,32 +431,23 @@ fn the_first_frame_reserves_the_estimate_and_the_second_the_row() {
         inline_style(&app, SPACER)
     );
     perf_expect::paint(&mut app);
-    assert_eq!(
-        painted(&app, SPACER).2,
-        173.0,
-        "the first frame is laid out with the estimate"
-    );
     let row = painted(&app, ROW).2;
     assert!(
         (row - 173.0).abs() > 20.0,
         "positive control: the estimate is not the row's width ({row})"
     );
-    assert!(
-        perf_expect::about_to_wait(&mut app),
-        "the measured row owes one more frame"
-    );
-    perf_expect::paint(&mut app);
     assert_spacer_reserves_the_row(&app);
     let (redraws, _) = perf_expect::idle_turns(&mut app, 5);
-    assert_eq!(redraws, 0, "one extra frame, then idle");
+    assert_eq!(redraws, 0, "no extra frame, then idle");
 }
 
-/// Where the estimate shows: a titlebar too narrow for what it holds
-/// overflows, so the spacer's width pushes the right section. Between the
-/// first frame and the settled one the right section moves by the estimate's
-/// error and no further, and the loop still settles and idles.
+/// Where the estimate would show: a titlebar too narrow for what it holds
+/// overflows, so the spacer's width pushes the right section. The first
+/// painted frame is the settled one, so the right section never moves by the
+/// estimate's error (#1764; it jumped by exactly that error before), and the
+/// loop idles.
 #[test]
-fn a_narrow_titlebar_jumps_by_the_estimate_error_and_no_more() {
+fn a_narrow_titlebar_does_not_jump_by_the_estimate_error() {
     let labels: &'static [&'static str] = &["Файл", "Правка", "Вид", "Справка"];
     let estimate = crate::app_builder::inline_spacer_width(labels);
     let mut app = build(labels, "", estimate, 40);
@@ -464,10 +458,9 @@ fn a_narrow_titlebar_jumps_by_the_estimate_error_and_no_more() {
     perf_expect::paint(&mut app);
     let first_spacer = painted(&app, SPACER);
     let first_right = painted(&app, "probe-right").0;
-    assert_eq!(first_spacer.2, estimate as f32);
 
     let frames = drive(&mut app);
-    assert!(frames <= 2, "settles in one extra frame, took {frames}");
+    assert!(frames <= 1, "settled in the first frame, took {frames}");
     let spacer = painted(&app, SPACER);
     let right = painted(&app, "probe-right").0;
     assert_spacer_reserves_the_row(&app);
@@ -480,16 +473,16 @@ fn a_narrow_titlebar_jumps_by_the_estimate_error_and_no_more() {
         right + 40.0,
         tx + tw
     );
-    let error = (first_spacer.2 - spacer.2).abs();
-    let jump = (first_right - right).abs();
+    let error = (estimate as f32 - spacer.2).abs();
     assert!(
         error > 4.0,
         "positive control: the estimate is off by a visible amount ({error})"
     );
-    assert!(
-        (jump - error).abs() < 0.01,
-        "the right section jumps by the estimate's error ({error}), not {jump}"
+    assert_eq!(
+        first_spacer.2, spacer.2,
+        "the first frame is the settled one"
     );
+    assert_eq!(first_right, right, "the right section does not jump");
 
     let (redraws, _) = perf_expect::idle_turns(&mut app, 5);
     assert_eq!(redraws, 0, "a settled narrow titlebar asks for no frames");

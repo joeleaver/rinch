@@ -283,6 +283,47 @@ impl Component for Popover {
             root.append_child(child);
         }
 
+        // Keep the dropdown inside the viewport on each open (#1764): flipped
+        // to the side it fits on, shifted along the other axis, capped and
+        // scrolling when a top or bottom one fits on neither side. After the
+        // children are in and the class effect above, so it finds and
+        // measures a shown dropdown. An unknown `position` has no rule to
+        // place against and is left alone.
+        let pos = if self.position.is_empty() {
+            Some(PopoverPosition::Bottom)
+        } else {
+            self.position.parse::<PopoverPosition>().ok()
+        };
+        if let Some(pos) = pos {
+            let (side, align) = floating_side(pos);
+            let opened: Rc<dyn Fn() -> bool> = match &self.opened_fn {
+                Some(f) => f.clone(),
+                None => {
+                    let opened = self.opened;
+                    Rc::new(move || opened)
+                }
+            };
+            crate::floating::arm(
+                crate::floating::Floating {
+                    root: root.clone(),
+                    root_class: "rinch-popover",
+                    dropdown_class: "rinch-popover__dropdown",
+                    side,
+                    align,
+                    offset: self.offset.unwrap_or(DEFAULT_OFFSET) as f32,
+                    class_for: Rc::new(move |s| {
+                        if s == side {
+                            pos.class_name()
+                        } else {
+                            flip(pos).class_name()
+                        }
+                    }),
+                    center_translates: true,
+                },
+                opened,
+            );
+        }
+
         // close_on_click_outside (#474): an invisible full-viewport backdrop
         // that fires `onclose` when clicked, one z-level under the dropdown so
         // a click *inside* the popover still reaches its own content. Copied
@@ -364,6 +405,49 @@ impl Component for Popover {
         );
 
         root
+    }
+}
+
+/// The dropdown's gap from its target when `offset` is not set: the fallback
+/// of `--rinch-popover-offset` in `styles/popover.rs`.
+const DEFAULT_OFFSET: i32 = 8;
+
+/// The side and alignment a position places the dropdown at.
+fn floating_side(pos: PopoverPosition) -> (crate::floating::Side, crate::floating::Align) {
+    use crate::floating::{Align, Side};
+    use PopoverPosition as P;
+    match pos {
+        P::Top => (Side::Top, Align::Center),
+        P::TopStart => (Side::Top, Align::Start),
+        P::TopEnd => (Side::Top, Align::End),
+        P::Bottom => (Side::Bottom, Align::Center),
+        P::BottomStart => (Side::Bottom, Align::Start),
+        P::BottomEnd => (Side::Bottom, Align::End),
+        P::Left => (Side::Left, Align::Center),
+        P::LeftStart => (Side::Left, Align::Start),
+        P::LeftEnd => (Side::Left, Align::End),
+        P::Right => (Side::Right, Align::Center),
+        P::RightStart => (Side::Right, Align::Start),
+        P::RightEnd => (Side::Right, Align::End),
+    }
+}
+
+/// The same alignment on the opposite side.
+fn flip(pos: PopoverPosition) -> PopoverPosition {
+    use PopoverPosition as P;
+    match pos {
+        P::Top => P::Bottom,
+        P::TopStart => P::BottomStart,
+        P::TopEnd => P::BottomEnd,
+        P::Bottom => P::Top,
+        P::BottomStart => P::TopStart,
+        P::BottomEnd => P::TopEnd,
+        P::Left => P::Right,
+        P::LeftStart => P::RightStart,
+        P::LeftEnd => P::RightEnd,
+        P::Right => P::Left,
+        P::RightStart => P::LeftStart,
+        P::RightEnd => P::LeftEnd,
     }
 }
 

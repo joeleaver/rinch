@@ -525,7 +525,9 @@ animation. Two things move a box without any of those and are not seen until
 the next one: a `:hover` rule that moves but does not resize it, and the middle
 frames of a transition that moves it. It starts at the zero rect on both
 backends; the first real rect arrives after the next layout (the next frame on
-the web).
+the web). On desktop, a style a subscriber writes from the rect it is handed is
+laid out again before that frame is painted (up to three rounds), so a layout
+built from a measurement never shows its old geometry for a frame.
 
 Calling `bounds_signal()` again for the same element from the same owner — the
 same component render, effect run or handler — returns the same signal, so
