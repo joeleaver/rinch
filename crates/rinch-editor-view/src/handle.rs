@@ -470,6 +470,15 @@ impl EditorCore {
     /// offset; which line a caret there belongs to is the model's to say, not
     /// the geometry's. Before the break is the end of its line (Chrome draws the
     /// DOM point there), after it the start of the next.
+    fn stored_marks_at(&self, pos: Pos) -> Option<&[Mark]> {
+        // The marks the next typed character takes at the caret: its stored
+        // marks, where the caret is (#1426: the caret is drawn where that
+        // character lands).
+        (self.state.selection.is_empty() && self.state.selection.head() == pos)
+            .then_some(self.state.stored_marks.as_deref())
+            .flatten()
+    }
+
     fn affinity_at(&self, pos: Pos) -> CaretAffinity {
         let before_hard_break = self
             .state
@@ -587,7 +596,12 @@ impl EditorCore {
             // for it (#1001). Owe it; the input paths that run it themselves
             // clear this in the same turn. A document change owes it too while
             // margin anchors listen (#1677): their lines may have moved.
-            if prev.selection != next.selection || margins_moved {
+            // Stored marks too: they decide which side of a padded mark the
+            // caret is drawn on (#1426).
+            if prev.selection != next.selection
+                || prev.stored_marks != next.stored_marks
+                || margins_moved
+            {
                 crate::registry::owe_overlay_pass(view.doc_key());
             }
         }
@@ -1988,10 +2002,12 @@ impl EditorHandle {
     pub fn caret_rect(&self, pos: Pos) -> Option<rinch_core::reactive::ElementBounds> {
         let core = self.core();
         let affinity = core.affinity_at(pos);
-        let (x, y, height) = core
-            .view
-            .as_ref()?
-            .caret_rect(&core.state.doc, pos, affinity)?;
+        let (x, y, height) = core.view.as_ref()?.caret_rect(
+            &core.state.doc,
+            pos,
+            affinity,
+            core.stored_marks_at(pos),
+        )?;
         Some(rinch_core::reactive::ElementBounds {
             x,
             y,
@@ -2010,10 +2026,12 @@ impl EditorHandle {
         affinity: CaretAffinity,
     ) -> Option<rinch_core::reactive::ElementBounds> {
         let core = self.core();
-        let (x, y, height) = core
-            .view
-            .as_ref()?
-            .caret_rect(&core.state.doc, pos, affinity)?;
+        let (x, y, height) = core.view.as_ref()?.caret_rect(
+            &core.state.doc,
+            pos,
+            affinity,
+            core.stored_marks_at(pos),
+        )?;
         Some(rinch_core::reactive::ElementBounds {
             x,
             y,

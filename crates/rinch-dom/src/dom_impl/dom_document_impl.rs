@@ -1336,17 +1336,18 @@ impl DomDocument for RinchDocument {
     }
 
     /// The element's edge box (`ifc::EDGE_BOX`, #1426), answered as an
-    /// atomic inline's box is: the caret past it is its trailing edge.
+    /// atomic inline's box is.
     fn query_inline_edge_caret(
         &self,
         node_id: u64,
         element: u64,
         end: bool,
+        after: bool,
     ) -> Option<(f32, f32, f32)> {
         self.query_inline_box_caret(
             node_id,
             crate::ifc::edge_box_id(element as usize, end),
-            true,
+            after,
         )
     }
 
@@ -1355,8 +1356,9 @@ impl DomDocument for RinchDocument {
         node_id: u64,
         element: u64,
         end: bool,
+        after: bool,
     ) -> Option<(f32, f32, f32)> {
-        let (x, y, h) = self.query_inline_edge_caret(node_id, element, end)?;
+        let (x, y, h) = self.query_inline_edge_caret(node_id, element, end, after)?;
         self.caret_to_window(node_id as usize, x, y, h)
     }
 

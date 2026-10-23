@@ -1179,13 +1179,14 @@ pub trait DomDocument {
         None
     }
 
-    /// The caret just past one edge of the inline element `element` (a
+    /// The caret on one side of one edge of the inline element `element` (a
     /// `<code>`, a `<mark>`) in the text-bearing element `node_id`, as
-    /// [`Self::query_inline_box_caret`] answers for an atomic inline: past its
-    /// inline-start margin, border and padding (`end == false`, the caret
-    /// inside the element at its start) or past its inline-end ones
-    /// (`end == true`, the caret outside it after its end), at the top of the
-    /// line and one line high.
+    /// [`Self::query_inline_box_caret`] answers for an atomic inline: its
+    /// inline-start margin, border and padding (`end == false`) or its
+    /// inline-end ones (`end == true`), on their trailing side with `after`
+    /// (inside the element at its start; outside it after its end) or their
+    /// leading side (outside before its start; inside at its end), at the top
+    /// of the line and one line high.
     ///
     /// Those take room on their lines (#1426) but hold no flat bytes, so the
     /// offsets on either side of an edge are one number, and a byte's caret
@@ -1200,6 +1201,7 @@ pub trait DomDocument {
         _node_id: u64,
         _element: u64,
         _end: bool,
+        _after: bool,
     ) -> Option<(f32, f32, f32)> {
         None
     }
@@ -1211,6 +1213,7 @@ pub trait DomDocument {
         _node_id: u64,
         _element: u64,
         _end: bool,
+        _after: bool,
     ) -> Option<(f32, f32, f32)> {
         None
     }

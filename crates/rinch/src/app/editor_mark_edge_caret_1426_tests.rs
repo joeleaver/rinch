@@ -3,15 +3,13 @@
 //! A mark wrapper's horizontal padding (`code`, `mark`, a padded link) takes
 //! room on its line but holds no flat bytes, so at a run boundary one byte
 //! names both sides of it, and the byte's caret is drawn before the padding.
-//! The view draws the caret on the side the caret's marks say
-//! (`RinchDomEditorView::mark_edges_beside`): inside a mark the caret
-//! carries, outside one it does not — `code` is inclusive (a caret after a
-//! code run carries it, so it is drawn inside the pill), a link is not (a
-//! caret after a link is drawn past its padding, where typed text goes).
+//! The view draws the caret where the next typed character lands
+//! (`RinchDomEditorView::mark_edges_beside`): it joins the run before or
+//! after whose marks it takes, or makes its own between them.
 //!
-//! The oracle is the paragraph's Parley layout read directly: where the
-//! glyph of the character after the caret starts. That is past every edge
-//! box at its byte — the caret's place when it is drawn past them.
+//! The oracle is the review of #1832's: the caret is drawn where the next
+//! typed character lands. Each fixture types a `Z` at the caret and reads
+//! where its glyph is drawn from the paragraph's Parley layout.
 
 use super::hit_testing::painted_element_box;
 use super::*;
@@ -75,98 +73,176 @@ impl Page {
         self.handle.set_selection(Selection::cursor(Pos(pos)));
         idle(&mut self.app);
     }
+}
 
-    /// The painted caret overlay's left edge.
-    fn caret_x(&self) -> f32 {
+impl Page {
+    /// The painted caret's `(x, y)`, then a `Z` typed there: where its glyph
+    /// is drawn, `(x, top of its line)`.
+    fn caret_and_typed(&mut self) -> ((f32, f32), (f32, f32)) {
+        let caret = {
+            let doc = self.app.doc.as_ref().unwrap().borrow();
+            let id = doc
+                .query_selector_all("[data-pm-caret]")
+                .into_iter()
+                .next()
+                .expect("a caret");
+            let b = painted_element_box(&doc.tree, id.0);
+            (b.0, b.1)
+        };
+        let head = self.handle.selection().head();
+        assert!(self.handle.insert_text("Z"));
+        idle(&mut self.app);
+        let block = self.handle.caret_address(head).unwrap().0;
         let doc = self.app.doc.as_ref().unwrap().borrow();
-        let id = doc
-            .query_selector_all("[data-pm-caret]")
-            .into_iter()
-            .next()
-            .expect("a caret");
-        painted_element_box(&doc.tree, id.0).0
+        let (bx, by, ..) = painted_element_box(&doc.tree, block);
+        let il = doc.tree.nodes[block].text_layout.as_ref().unwrap();
+        let byte = il.text_content.find('Z').expect("the typed Z");
+        let cluster = parley::layout::Cluster::from_byte_index(&il.layout, byte).unwrap();
+        let x = bx + cluster.visual_offset().unwrap();
+        let y = by + cluster.line().metrics().block_min_coord;
+        (caret, (x, y))
     }
 
-    /// Where, on screen, the glyph at flat byte `byte` of the paragraph
-    /// holding `pos` starts, and where the byte's own caret is drawn.
-    fn glyph_and_byte_caret_x(&self, pos: usize, byte: usize) -> (f32, f32) {
-        let block = self.handle.caret_address(Pos(pos)).unwrap().0;
-        let doc = self.app.doc.as_ref().unwrap().borrow();
-        let (bx, ..) = painted_element_box(&doc.tree, block);
-        let layout = &doc.tree.nodes[block].text_layout.as_ref().unwrap().layout;
-        let glyph = parley::layout::Cluster::from_byte_index(layout, byte)
-            .and_then(|c| c.visual_offset())
-            .expect("a glyph at the byte");
-        let (caret, _) = rinch_dom::text_query::caret_position_for_offset_layout_with_affinity(
-            layout,
-            byte,
-            rinch_core::dom::CaretAffinity::Downstream,
-        );
-        (bx + glyph, bx + caret)
-    }
-
+    /// The caret is drawn where the next typed character lands (#1426,
+    /// review of #1832): on its line, at its glyph's left edge.
     #[track_caller]
-    fn assert_caret(&self, what: &str, pos: usize, want: f32) {
-        let x = self.caret_x();
+    fn assert_typed_lands_at_the_caret(&mut self, what: &str) {
+        let (caret, typed) = self.caret_and_typed();
         assert!(
-            (x - want).abs() <= 1.0,
-            "{what}: the caret overlay is at {x}, want {want}"
-        );
-        let rect = self.handle.caret_rect(Pos(pos)).expect("a caret rect");
-        assert!(
-            (rect.x - want).abs() <= 0.01,
-            "{what}: caret_rect answers {}, want {want}",
-            rect.x
+            (caret.0 - typed.0).abs() <= 1.0 && (caret.1 - typed.1).abs() <= 3.0,
+            "{what}: the caret is drawn at {caret:?}, a typed Z lands at {typed:?}"
         );
     }
 }
 
-/// A paragraph that starts with a code run: the caret at its start carries
-/// `code`, so it is drawn inside the pill, past its 7px padding. (At a line's
-/// start parley draws the byte's caret there already: a control.)
+/// The caret at a paragraph's start, before a code run: it carries `code`,
+/// so it is drawn inside the pill, where `Z` joins the run.
 #[test]
-fn a_caret_at_the_start_of_a_code_run_is_inside_its_padding() {
+fn at_a_paragraph_start_before_a_code_run() {
     let mut p = page("<p><code>bc</code>d</p>");
     p.caret_at(1);
-    let (glyph, _) = p.glyph_and_byte_caret_x(1, 0);
-    let block = p.handle.caret_address(Pos(1)).unwrap().0;
-    let bx = {
+    p.assert_typed_lands_at_the_caret("paragraph start, code run");
+}
+
+/// At a paragraph's start before a link (not inclusive, dropped there): `Z`
+/// lands outside the link, before its padding.
+#[test]
+fn at_a_paragraph_start_before_a_link() {
+    let mut p = page(r#"<p><a href="x">ef</a>g</p>"#);
+    p.caret_at(1);
+    p.assert_typed_lands_at_the_caret("paragraph start, link");
+}
+
+/// After a hard break, before a code run: the caret carries the break's
+/// marks (none), so `Z` lands before the code's padding at the line start.
+#[test]
+fn after_a_hard_break_before_a_code_run() {
+    let mut p = page("<p>a<br><code>b</code></p>");
+    // `a` 1..2, the break 2..3, `b` 3..4.
+    p.caret_at(3);
+    p.assert_typed_lands_at_the_caret("after a hard break");
+}
+
+/// At a soft-wrapped line's start before a code run, reached with Home: `Z`
+/// joins the plain run before it, at the line start, before the padding.
+#[test]
+fn at_a_soft_wrapped_line_start_before_a_code_run() {
+    let mut p = page("<p>aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa <code>bbbbbbbb</code> c</p>");
+    // Put the caret inside the code run, then Home to its line's start.
+    let start = 1 + "aaaa ".len() * 8;
+    p.caret_at(start + 3);
+    {
+        let block = p.handle.caret_address(Pos(start)).unwrap().0;
         let doc = p.app.doc.as_ref().unwrap().borrow();
-        painted_element_box(&doc.tree, block).0
-    };
-    assert!((glyph - bx - 7.0).abs() < 0.01, "the padding: {glyph} {bx}");
-    p.assert_caret("start of a code run", 1, glyph);
-}
-
-/// After a link (not inclusive): the caret does not carry it, so it is
-/// drawn past the link's 5px end padding, where `g` starts.
-#[test]
-fn a_caret_after_a_link_is_past_its_padding() {
-    let mut p = page(r#"<p>d<a href="x">ef</a>g</p>"#);
-    // `d` 1..2, `ef` 2..4, `g` 4..5: the caret after `ef` is Pos(4), byte 3.
-    p.caret_at(4);
-    let (glyph, byte_caret) = p.glyph_and_byte_caret_x(4, 3);
-    assert!(
-        (glyph - byte_caret - 5.0).abs() < 0.01,
-        "{glyph} {byte_caret}"
+        let il = doc.tree.nodes[block].text_layout.as_ref().unwrap();
+        let line = parley::layout::Cluster::from_byte_index(&il.layout, start - 1)
+            .unwrap()
+            .line();
+        assert_eq!(
+            line.text_range().start,
+            start - 1,
+            "positive control: the code run starts a soft-wrapped line"
+        );
+    }
+    p.app.handle_event(
+        PlatformEvent::KeyDown {
+            key: KeyCode::Home,
+            logical_key: None,
+            text: None,
+            modifiers: Modifiers::default(),
+            repeat: KeyRepeat::Fresh,
+        },
+        VP,
+        1.0,
     );
-    p.assert_caret("after a link", 4, glyph);
+    idle(&mut p.app);
+    assert_eq!(p.handle.selection().head(), Pos(start), "Home");
+    p.assert_typed_lands_at_the_caret("soft-wrapped line start, after Home");
 }
 
-/// After a code run (inclusive): the caret carries `code`, so it stays inside
-/// the pill, before its end padding — the byte's own caret. And before a
-/// code run that follows plain text, the caret carries no code and stays
-/// outside, before the start padding — the byte's caret again.
+/// After a code run (inclusive): `Z` joins it, inside the pill.
 #[test]
-fn a_caret_after_a_code_run_stays_inside_and_before_one_outside() {
+fn after_a_code_run() {
     let mut p = page("<p>a<code>bc</code>d</p>");
-    // `a` 1..2, `bc` 2..4, `d` 4..5.
     p.caret_at(4);
-    let (glyph, byte_caret) = p.glyph_and_byte_caret_x(4, 3);
-    assert!((glyph - byte_caret - 7.0).abs() < 0.01);
-    p.assert_caret("after a code run", 4, byte_caret);
+    p.assert_typed_lands_at_the_caret("after a code run");
+}
+
+/// Before a code run after plain text: `Z` joins the plain run, before the
+/// padding.
+#[test]
+fn before_a_code_run_after_text() {
+    let mut p = page("<p>a<code>bc</code>d</p>");
     p.caret_at(2);
-    let (glyph, byte_caret) = p.glyph_and_byte_caret_x(2, 1);
-    assert!((glyph - byte_caret - 7.0).abs() < 0.01);
-    p.assert_caret("before a code run", 2, byte_caret);
+    p.assert_typed_lands_at_the_caret("before a code run");
+}
+
+/// After a link (not inclusive): `Z` lands past the link's padding.
+#[test]
+fn after_a_link() {
+    let mut p = page(r#"<p>d<a href="x">ef</a>g</p>"#);
+    p.caret_at(4);
+    p.assert_typed_lands_at_the_caret("after a link");
+}
+
+/// One link split into two runs (the second also bold): the caret at the
+/// seam carries the link and the first run's marks, so `Z` joins the first
+/// run, inside it, before its end padding (review of #1832: drawn past the
+/// second run's start padding).
+#[test]
+fn at_the_seam_of_a_link_split_into_two_runs() {
+    let mut p = page(r#"<p>d<a href="x">e</a><a href="x"><strong>f</strong></a>g</p>"#);
+    // `d` 1..2, `e` 2..3, `f` 3..4.
+    p.caret_at(3);
+    p.assert_typed_lands_at_the_caret("at the seam");
+}
+
+/// Typing `` `bc` ``: the input rule makes `bc` code and drops the stored
+/// mark, so the caret after the pill does not carry `code`, and `Z` lands
+/// past its padding (review of #1832: drawn inside the pill).
+#[test]
+fn after_a_code_input_rule() {
+    let mut p = page("<p>a </p>");
+    p.caret_at(3);
+    for ch in ["`", "b", "c", "`"] {
+        assert!(p.handle.insert_text(ch));
+        idle(&mut p.app);
+    }
+    assert!(
+        format!("{:?}", p.handle.doc()).contains("code"),
+        "positive control: the rule made code: {:?}",
+        p.handle.doc()
+    );
+    p.assert_typed_lands_at_the_caret("after the input rule");
+}
+
+/// Toggling `code` at a code run's start (after plain text) stores the mark,
+/// so `Z` joins the code run, inside its padding.
+#[test]
+fn toggling_code_at_a_code_runs_start() {
+    let mut p = page("<p>a<code>bc</code>d</p>");
+    p.caret_at(2);
+    assert!(p.handle.command("toggleCode"));
+    idle(&mut p.app);
+    p.assert_typed_lands_at_the_caret("toggled code at the run's start");
 }

@@ -1547,6 +1547,7 @@ impl EditorView for RinchDomEditorView {
                 block_id,
                 flat_byte,
                 self.caret_affinity,
+                next.stored_marks.as_deref(),
             )
             .map(|(x, y, height)| (x, self.keep_caret_in_block(&*d, block_id, x), y, height))
         };
@@ -1873,6 +1874,7 @@ impl RinchDomEditorView {
         doc: &Node,
         pos: Pos,
         affinity: CaretAffinity,
+        stored: Option<&[Mark]>,
     ) -> Option<(f32, f32, f32)> {
         let (block, byte) = self.caret_target(doc, pos)?;
         let host = self.doc.upgrade()?;
@@ -1889,8 +1891,10 @@ impl RinchDomEditorView {
                 return Some(rect);
             }
         }
-        for (element, end) in self.mark_edges_beside(doc, pos) {
-            if let Some(rect) = host.query_inline_edge_caret_rect(block_id, element as u64, end) {
+        for (element, end, after) in self.mark_edges_beside(doc, pos, stored) {
+            if let Some(rect) =
+                host.query_inline_edge_caret_rect(block_id, element as u64, end, after)
+            {
                 return Some(rect);
             }
         }
@@ -1974,26 +1978,37 @@ impl RinchDomEditorView {
         }
     }
 
-    /// The mark wrapper edges a caret at `pos` is drawn past, as `(the
-    /// wrapper's host element id, end)` in the order to try them (#1426).
+    /// The mark wrapper edges a caret at `pos` is drawn against, as `(the
+    /// wrapper's host element id, end, after)` in the order to try them
+    /// (#1426): the caret goes on the `after` (trailing) or leading side of
+    /// that wrapper's start or end edge. Empty when the byte's caret stands.
     ///
     /// A mark wrapper's horizontal padding, border and margin take room on
-    /// the line but hold no flat bytes, so at a run boundary the byte's caret
-    /// is drawn before all of them. The caret goes where its marks say: inside
-    /// a mark it carries, outside one it does not ([`ResolvedPos::marks`] —
-    /// an inclusive mark such as `code` continues past its end, a link does
-    /// not). So it is drawn past the end edge of each wrapper of the run
-    /// before `pos` whose mark it does not carry, and past the start edge of
-    /// each wrapper of the run after `pos` whose mark it does carry; the
-    /// last such edge in the line's logical order wins (the end edges come
-    /// first, innermost first; then the start edges, outermost first). The
-    /// list is that edge and the ones before it that qualify, last first: a
-    /// wrapper with no padding has no edge, and the host answers `None` for
-    /// it. Empty inside a run, outside a textblock, or when no edge
-    /// qualifies — then the byte's caret stands.
+    /// the line but hold no flat bytes, so at a run boundary one byte names
+    /// every side of them. The caret is drawn **where the next typed
+    /// character lands**, which is decided by the marks it takes — `stored`
+    /// when the caret has stored marks, else [`ResolvedPos::marks`]:
+    ///
+    /// - the same marks as the text run before `pos`: it joins that run, so
+    ///   the caret is inside its wrappers — before their end edges (the
+    ///   innermost first) — or, with none, before the run after's start
+    ///   edges;
+    /// - else the same marks as the text run after `pos`: it joins that one,
+    ///   so the caret is past the run after's start edges (the innermost
+    ///   last), or with none past the run before's end edges;
+    /// - else it makes a run of its own between them: past the run before's
+    ///   end edges, before the run after's start edges.
+    ///
+    /// A wrapper with no padding has no edge and the host answers `None` for
+    /// it, so each side lists every wrapper, the one to use first.
     ///
     /// [`ResolvedPos::marks`]: rinch_editor_core::ResolvedPos::marks
-    pub(crate) fn mark_edges_beside(&self, doc: &Node, pos: Pos) -> Vec<(usize, bool)> {
+    pub(crate) fn mark_edges_beside(
+        &self,
+        doc: &Node,
+        pos: Pos,
+        stored: Option<&[Mark]>,
+    ) -> Vec<(usize, bool, bool)> {
         let Ok(r) = doc.resolve(pos) else {
             return Vec::new();
         };
@@ -2026,9 +2041,9 @@ impl RinchDomEditorView {
         if next.is_none() && at != off {
             return Vec::new();
         }
-        // A run's wrappers with their marks, innermost first.
-        let wrappers = |i: usize| -> Vec<(usize, Mark)> {
-            let Some(child) = desc.children.get(i) else {
+        // A child's wrapper elements, innermost first.
+        let wrappers = |i: Option<usize>| -> Vec<usize> {
+            let Some(child) = i.and_then(|i| desc.children.get(i)) else {
                 return Vec::new();
             };
             let mut out = Vec::new();
@@ -2041,28 +2056,32 @@ impl RinchDomEditorView {
                     break;
                 };
                 cur = parent;
-                out.push((cur.node_id().0, mark.clone()));
+                out.push(cur.node_id().0);
             }
             out
         };
-        let carried = r.marks();
-        let mut edges: Vec<(usize, bool)> = Vec::new();
-        if let Some(i) = before {
-            for (el, mark) in wrappers(i) {
-                if !carried.contains(&mark) {
-                    edges.push((el, true));
-                }
-            }
+        let typed = stored.map_or_else(|| r.marks(), <[Mark]>::to_vec);
+        let joins = |i: Option<usize>| {
+            i.map(|i| block.child(i))
+                .is_some_and(|n| n.is_text() && n.marks() == typed.as_slice())
+        };
+        let ends = wrappers(before);
+        let starts = wrappers(next);
+        // Leading side of the run before's end edges, innermost first.
+        let inside_before = ends.iter().map(|&e| (e, true, false));
+        // Trailing side of its end edges, outermost first.
+        let past_before = ends.iter().rev().map(|&e| (e, true, true));
+        // Leading side of the run after's start edges, outermost first.
+        let before_after = starts.iter().rev().map(|&e| (e, false, false));
+        // Trailing side of its start edges, innermost first.
+        let inside_after = starts.iter().map(|&e| (e, false, true));
+        if joins(before) {
+            inside_before.chain(before_after).collect()
+        } else if joins(next) {
+            inside_after.chain(past_before).collect()
+        } else {
+            past_before.chain(before_after).collect()
         }
-        if let Some(i) = next {
-            for (el, mark) in wrappers(i).into_iter().rev() {
-                if carried.contains(&mark) {
-                    edges.push((el, false));
-                }
-            }
-        }
-        edges.reverse();
-        edges
     }
 
     /// The first of [`Self::inline_boxes_beside`]: the leaf a host that
@@ -2226,6 +2245,7 @@ impl RinchDomEditorView {
         block_id: usize,
         flat_byte: usize,
         affinity: CaretAffinity,
+        stored: Option<&[Mark]>,
     ) -> Option<(f32, f32, f32)> {
         for (leaf, after) in self
             .inline_boxes_beside(doc, pos, affinity)
@@ -2240,9 +2260,9 @@ impl RinchDomEditorView {
             }
         }
         // #1426: past a mark wrapper's padding, on the side its marks say.
-        for (element, end) in self.mark_edges_beside(doc, pos) {
+        for (element, end, after) in self.mark_edges_beside(doc, pos, stored) {
             if let Some((x, y, height)) =
-                d.query_inline_edge_caret(block_id as u64, element as u64, end)
+                d.query_inline_edge_caret(block_id as u64, element as u64, end, after)
             {
                 let (ox, oy) = self.block_offset_in_container(d, block_id);
                 return Some((ox + x, oy + y, height));
@@ -2332,6 +2352,7 @@ impl RinchDomEditorView {
                         block.node_id().0,
                         byte,
                         CaretAffinity::Downstream,
+                        None,
                     )
                 })();
                 // The start (always last) is required. The end of a range is
@@ -2507,7 +2528,7 @@ impl RinchDomEditorView {
                 let geometry = match line {
                     Some((top, h)) => Some((oy + top, h)),
                     None => self
-                        .caret_geometry(d, doc, at, block, byte, CaretAffinity::Downstream)
+                        .caret_geometry(d, doc, at, block, byte, CaretAffinity::Downstream, None)
                         .map(|(_, y, h)| {
                             let lh =
                                 *line_height.get_or_insert_with(|| d.line_box_height(block as u64));
@@ -2567,7 +2588,7 @@ impl RinchDomEditorView {
             let host = self.doc.upgrade()?;
             let d = host.try_borrow().ok()?;
             let (block, byte) = self.caret_target(doc, pos)?;
-            self.caret_geometry(&*d, doc, pos, block.node_id().0, byte, affinity)
+            self.caret_geometry(&*d, doc, pos, block.node_id().0, byte, affinity, None)
         });
         let Some((x, y, height)) = geometry else {
             if self.last_drop_caret.take().is_none() {
