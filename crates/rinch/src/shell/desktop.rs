@@ -926,7 +926,12 @@ impl WgpuRenderer {
             return Ok(());
         }
 
-        // Standard path (no layers). The render texture is always Rgba8Unorm
+        // Standard path (no layers). The composited texture is no longer
+        // presented from: let it go (a window-sized texture), so nothing reads
+        // the last frame that had layers as the window's (#1799).
+        self.composited_texture = None;
+
+        // The render texture is always Rgba8Unorm
         // (Vello's storage-texture requirement) and holds straight alpha; a
         // raw copy is only legal when the surface matches and wants straight
         // (or opaque) pixels. Otherwise one full-surface pass through the
@@ -1022,12 +1027,14 @@ impl PlatformRenderer for WgpuRenderer {
             let w = self.surface_config.width;
             let h = self.surface_config.height;
 
-            // When compositing is active, read from the composited texture
-            // (which has layers + UI blended). Otherwise read from render_texture.
-            let tex = self
-                .composited_texture
-                .as_ref()
-                .unwrap_or(&self.render_texture);
+            // The texture the window is presented from: the composited one
+            // (layers + UI blended) while there are layers, else the UI
+            // texture (#1799: the composited texture outlives its layers).
+            let tex = presented_texture(
+                self.composited_texture.as_ref(),
+                &self.render_texture,
+                self.has_composite_layers(),
+            );
 
             // Ask the texture, not the surface. `composited_texture` is created
             // in the surface format, but `render_texture` is ALWAYS Rgba8Unorm
@@ -1060,6 +1067,26 @@ impl WgpuRenderer {
     /// the upload step — the compositor reads the TextureView directly.
     pub fn set_gpu_layers(&mut self, layers: Vec<GpuTextureLayer>) {
         self.gpu_layers = layers;
+    }
+}
+
+/// The texture a window is presented from, which a debug screenshot reads:
+/// the composited texture (layers + UI) while there are layers, else the UI
+/// texture.
+///
+/// The composited texture is made when layers first arrive and outlived them:
+/// a screenshot taken after a `GameViewport`'s or named surface's subtree
+/// unmounted read it, and showed that subtree's last frame for good, while
+/// the window itself was presented from the UI texture and was right (#1799).
+#[cfg(any(feature = "debug", test))]
+pub(crate) fn presented_texture<'a, T: ?Sized>(
+    composited: Option<&'a T>,
+    ui: &'a T,
+    layers: bool,
+) -> &'a T {
+    match composited {
+        Some(c) if layers => c,
+        _ => ui,
     }
 }
 
@@ -1125,6 +1152,26 @@ pub(crate) fn present_step(
         (false, Some(true)) => PresentStep::Pass(P::Premultiply),
         (false, _) if rgba_surface => PresentStep::Copy,
         (false, _) => PresentStep::Pass(P::Straight),
+    }
+}
+
+#[cfg(test)]
+mod presented_texture_tests {
+    use super::presented_texture;
+
+    /// #1799: once the layers are gone the window is presented from the UI
+    /// texture, and a screenshot must read that, not the composited texture
+    /// the last frame with layers left behind.
+    #[test]
+    fn a_screenshot_reads_the_ui_texture_once_the_layers_are_gone() {
+        let (composited, ui) = ("composited", "ui");
+        assert_eq!(
+            *presented_texture(Some(&composited), &ui, true),
+            "composited"
+        );
+        assert_eq!(*presented_texture(Some(&composited), &ui, false), "ui");
+        assert_eq!(*presented_texture(None, &ui, false), "ui");
+        assert_eq!(*presented_texture(None, &ui, true), "ui");
     }
 }
 
