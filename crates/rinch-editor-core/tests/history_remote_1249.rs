@@ -12,7 +12,8 @@ use std::rc::Rc;
 
 use rinch_editor_core::serialize::{node_to_html, slice_from_html};
 use rinch_editor_core::{
-    Attrs, EditorState, Fragment, Mark, Node, Pos, RemoveMarkStep, Schema, Selection, Step, Transaction, default_plugins,
+    Attrs, EditorState, Fragment, Mark, Node, Pos, RemoveMarkStep, ReplaceAroundStep, Schema,
+    Selection, Slice, Step, Transaction, default_plugins,
 };
 
 fn state(html: &str) -> EditorState {
@@ -97,7 +98,11 @@ fn undo_after_a_peers_insert_before_my_edit_reverts_my_edit() {
     let st = insert_remote(&st, 1, "ZZZ");
     assert_eq!(html(&st), "<p>ZZZxa</p>");
     let st = st.run("undo").expect("undo applies");
-    assert_eq!(html(&st), "<p>ZZZx</p>", "my `a` is undone, the peer's text kept");
+    assert_eq!(
+        html(&st),
+        "<p>ZZZx</p>",
+        "my `a` is undone, the peer's text kept"
+    );
     let st = st.run("redo").expect("redo applies");
     assert_eq!(html(&st), "<p>ZZZxa</p>");
 }
@@ -225,4 +230,112 @@ fn remove_mark_step_joins_the_text_nodes_it_leaves_equal() {
     let doc = step.apply(&st.doc).unwrap();
     assert_eq!(node_to_html(&doc), "<p>aXbc</p>");
     assert_normalized(&doc);
+}
+
+/// A peer's edit that arrives as a replace of the whole paragraph (how
+/// `rinch-editor-collab` integrates one): the history maps through only the part
+/// that changed, so my edit in the same paragraph still undoes, before and after
+/// the peer's char.
+#[test]
+fn undo_after_a_whole_paragraph_replace_maps_through_only_what_changed() {
+    for (text, want) in [
+        ("PabXcd", "<p>Pabcd</p><p>ef</p>"),
+        ("abXcdP", "<p>abcdP</p><p>ef</p>"),
+    ] {
+        let st = state("<p>abcd</p><p>ef</p>");
+        let st = type_at(&st, 3, "X", 0); // abXcd
+        let s = st.schema();
+        let p = s
+            .branch("paragraph", Fragment::from_node(s.text(text).unwrap()))
+            .unwrap();
+        let st = remote(&st, |tr| {
+            tr.replace_with(0, 7, Fragment::from_node(p)).unwrap();
+        });
+        let st = st.run("undo").unwrap();
+        assert_eq!(html(&st), want, "the peer made {text}");
+    }
+}
+
+/// PM's `insertInto` checks that the node content goes into takes it: a
+/// `ReplaceAroundStep` wrapping bold text in a code block (which allows no marks)
+/// fails, as does one wrapping a paragraph in a paragraph.
+#[test]
+fn a_replace_around_step_does_not_put_content_where_it_is_not_allowed() {
+    let st = state("<p><strong>ab</strong></p>");
+    let s = st.schema();
+    let code = s.branch("code_block", Fragment::empty()).unwrap();
+    let wrap_text = ReplaceAroundStep::new(
+        0,
+        4,
+        1,
+        3,
+        Slice::new(Fragment::from_node(code.clone()), 0, 0),
+        1,
+        true,
+    );
+    assert!(
+        wrap_text.apply(&st.doc).is_err(),
+        "bold text into a code block"
+    );
+    let wrap_block = ReplaceAroundStep::new(
+        0,
+        4,
+        0,
+        4,
+        Slice::new(Fragment::from_node(code), 0, 0),
+        1,
+        true,
+    );
+    assert!(
+        wrap_block.apply(&st.doc).is_err(),
+        "a paragraph into a code block"
+    );
+    // The control: plain text goes into a code block.
+    let st = state("<p>ab</p>");
+    let code = st.schema().branch("code_block", Fragment::empty()).unwrap();
+    let ok = ReplaceAroundStep::new(
+        0,
+        4,
+        1,
+        3,
+        Slice::new(Fragment::from_node(code), 0, 0),
+        1,
+        true,
+    );
+    assert_eq!(node_to_html(&ok.apply(&st.doc).unwrap()), "<pre>ab</pre>");
+}
+
+/// One undo step whose later keystroke deleted text its earlier ones typed, with a
+/// peer's insert after it: undoing the delete re-inserts that text, and the earlier
+/// steps find their positions inside it again through the mirror of the delete
+/// (ProseMirror's `mirrorOffset`), so the whole group undoes.
+#[test]
+fn undo_of_a_group_that_deleted_its_own_typing_after_a_peers_insert() {
+    let st = state("<p>q</p>");
+    let st = type_at(&st, 2, "abc", 0); // qabc
+    let st = type_at(&st, 4, "X", 10); // qabXc
+    let st = local(&st, 20, |tr| {
+        tr.delete(3, 6).unwrap(); // bXc → qa
+    });
+    assert_eq!(html(&st), "<p>qa</p>");
+    let st = insert_remote(&st, 1, "PP");
+    assert_eq!(html(&st), "<p>PPqa</p>");
+    let st = st.run("undo").unwrap();
+    assert_eq!(html(&st), "<p>PPq</p>");
+    assert!(st.run("undo").is_none(), "one typing group");
+    let st = st.run("redo").unwrap();
+    assert_eq!(html(&st), "<p>PPqa</p>");
+}
+
+/// The selection an undo restores is the one before the edit, mapped through the
+/// peer's change: the caret goes back to before my `X`, two chars on.
+#[test]
+fn undo_restores_the_selection_mapped_through_a_peers_insert() {
+    let mut st = state("<p>abcd</p>");
+    st.selection = Selection::cursor(Pos(3));
+    let st = type_at(&st, 3, "X", 0); // abXcd
+    let st = insert_remote(&st, 1, "PP"); // PPabXcd
+    let st = st.run("undo").unwrap();
+    assert_eq!(html(&st), "<p>PPabcd</p>");
+    assert_eq!(st.selection, Selection::cursor(Pos(5)));
 }

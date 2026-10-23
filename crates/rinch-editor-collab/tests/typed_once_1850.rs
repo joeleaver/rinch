@@ -479,8 +479,9 @@ fn replay(peers: usize, ops: &[Op]) -> Result<Option<String>, String> {
     })
 }
 
-/// The ceilings at the default 300 seeds (see the trial), measured when #1850 landed.
-const DUP_300: usize = 16;
+/// The ceilings at the default 300 seeds (see the trial), measured when #1850 landed
+/// and re-measured with #1249's history fix (16 duplicates before it; see the trial).
+const DUP_300: usize = 21;
 const PANIC_300: usize = 0;
 
 /// How many seeds the trial runs (`TYPED_ONCE_SEEDS`, default 300).
@@ -518,16 +519,25 @@ fn tally(seeds: std::ops::RangeInclusive<u64>) -> Tally {
     t
 }
 
-/// No atom reads back as text, ever (#1851), and the peers always converge. A typed
-/// char lands twice only where two peers moved the same text at once (Enter at one
-/// place on both, both joining the same lines, a join while the other splits): the
-/// projection has no move, so each copy is a fresh write (#1850; #1857 is the design
-/// that removes them). Those, and an undo
-/// after remote changes that leaves a model the projection does not read back (an
-/// editor-core history bug, #1856), are held to the counts measured when this
-/// landed: the trial is deterministic (fixed client ids), so a count that grows is a
-/// regression. Measured over seeds 1..=1000: 0 literal U+FFFC (14 before #1851),
-/// 39 duplicates (104 before #1850's placement fix), 3 undo failures.
+/// No atom reads back as text, ever (#1851), the peers always converge, and every
+/// edit — an undo after remote changes included — leaves a model the projection reads
+/// back (no panic). A typed char lands twice only where two peers moved the same text
+/// at once (Enter at one place on both, both joining the same lines, a join while the
+/// other splits): the projection has no move, so each copy is a fresh write (#1850;
+/// #1857 is the design that removes them); or where one local edit changed a block at
+/// two places, which rewrites the text between them (#1885). Those are held to the
+/// counts measured: the trial is deterministic (fixed client ids), so a count that
+/// grows is a regression. Measured over seeds 1..=1000: 0 literal U+FFFC (14 before
+/// #1851), 47 duplicates (104 before #1850's placement fix), 0 panics.
+///
+/// The duplicate count moved with #1249's history fix (39 → 47 at 1000 seeds, 16 → 21
+/// at 300) without a new defect: an undo after remote changes now applies where it
+/// used to fail or land at stale positions, so a trial's later random ops (positions
+/// drawn from the document) differ, and it reaches other instances of the classes
+/// above. Of the 15 seeds new at 1000, 14 shrink to a history that duplicates the same
+/// way on main without the fix, and one (seed 305) to an undo whose transaction, run
+/// as a plain local edit on main, duplicates the same way (#1885); 7 seeds stopped
+/// duplicating. The 3 undo panics (#1856: seeds 322, 902, 934) are gone.
 #[test]
 fn randomized_typed_text_lands_once_and_atoms_stay_atoms() {
     let n = seeds();
@@ -538,7 +548,7 @@ fn randomized_typed_text_lands_once_and_atoms_stay_atoms() {
     // Ceilings at the default 300 seeds and at 1000.
     let (dup_max, panic_max) = match n {
         300 => (DUP_300, PANIC_300),
-        1000 => (39, 3),
+        1000 => (47, 0),
         _ => (usize::MAX, usize::MAX),
     };
     assert!(
@@ -994,4 +1004,40 @@ fn undo_after_a_peers_bold_and_retype_leaves_no_mark_in_a_code_block_1856_seed_9
             Op::Undo(1),
         ],
     );
+}
+
+/// #1615 through collaboration, in one line: B types before A's edit, in the same
+/// paragraph, and A undoes. The remote change replaces the whole paragraph; the
+/// history maps through the part of it that changed (`Y`), so the undo deletes A's
+/// `X` — not the `c` its old position now names — and a redo puts it back.
+#[test]
+fn undo_after_a_peer_types_before_my_edit_in_the_same_line_reverts_my_edit() {
+    let (mut a, mut b) = two_peers(|s| vec![para(s, "abcd"), para(s, "ef")]);
+    assert!(apply(&mut a, &Op::Type(0, 4, 'X')));
+    assert!(apply(&mut b, &Op::Type(1, 2, 'Y')));
+    exchange(&mut a, &mut b);
+    assert_eq!(doc_text(&a.state.doc), "aYbcXd|ef");
+    assert!(apply(&mut a, &Op::Undo(0)));
+    exchange(&mut a, &mut b);
+    assert_eq!(doc_text(&a.state.doc), "aYbcd|ef");
+    assert!(apply(&mut b, &Op::Type(1, 1, 'Z')));
+    exchange(&mut a, &mut b);
+    assert!(apply(&mut a, &Op::Redo(0)));
+    exchange(&mut a, &mut b);
+    assert_eq!(doc_text(&a.state.doc), "ZaYbcXd|ef");
+}
+
+/// The same with B typing after A's edit in the line: the undo still reverts A's edit,
+/// as it did (by luck: positions before B's char had not moved) before the history
+/// mapped anything.
+#[test]
+fn undo_after_a_peer_types_after_my_edit_in_the_same_line_reverts_my_edit() {
+    let (mut a, mut b) = two_peers(|s| vec![para(s, "abcd"), para(s, "ef")]);
+    assert!(apply(&mut a, &Op::Type(0, 2, 'X')));
+    assert!(apply(&mut b, &Op::Type(1, 4, 'Y')));
+    exchange(&mut a, &mut b);
+    assert_eq!(doc_text(&a.state.doc), "aXbcYd|ef");
+    assert!(apply(&mut a, &Op::Undo(0)));
+    exchange(&mut a, &mut b);
+    assert_eq!(doc_text(&a.state.doc), "abcYd|ef");
 }

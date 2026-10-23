@@ -35,6 +35,27 @@ impl Fragment {
         Fragment(Rc::new(FragmentInner { children, size }))
     }
 
+    /// Build a fragment from `children`, joining adjacent text nodes with equal
+    /// marks into one. Port of ProseMirror's `Fragment.fromArray`; a rebuilt run
+    /// of inline content (a mark step's re-marked copy) goes through this, or the
+    /// nodes it leaves equal stay apart (#1856).
+    pub(crate) fn from_array(children: Vec<Node>) -> Fragment {
+        let mut joined: Vec<Node> = Vec::with_capacity(children.len());
+        for node in children {
+            if let Some(last) = joined.last_mut()
+                && last.is_text()
+                && node.is_text()
+                && last.same_markup(&node)
+            {
+                let text = format!("{}{}", last.text().unwrap(), node.text().unwrap());
+                *last = last.with_text(text.into());
+            } else {
+                joined.push(node);
+            }
+        }
+        Fragment::from_children(joined)
+    }
+
     /// Build a single-child fragment.
     pub fn from_node(node: Node) -> Fragment {
         Fragment::from_children(vec![node])
@@ -190,6 +211,93 @@ impl Fragment {
         }
         content.extend(other.0.children[start..].iter().cloned());
         Fragment::from_parts(content, self.0.size + other.0.size)
+    }
+
+    /// The first position at which this fragment and `other` differ, counting
+    /// from `pos` (the position of the fragments' start), or `None` when they are
+    /// the same. Descends into children of the same markup and into text. Port of
+    /// ProseMirror's `Fragment.findDiffStart`.
+    pub fn find_diff_start(&self, other: &Fragment, pos: usize) -> Option<usize> {
+        let mut pos = pos;
+        for i in 0.. {
+            if i == self.child_count() || i == other.child_count() {
+                return (self.child_count() != other.child_count()).then_some(pos);
+            }
+            let (a, b) = (self.child(i), other.child(i));
+            if a.same_ref(b) {
+                pos += a.node_size();
+                continue;
+            }
+            if !a.same_markup(b) {
+                return Some(pos);
+            }
+            if let (Some(ta), Some(tb)) = (a.text(), b.text()) {
+                if ta != tb {
+                    let same = ta
+                        .chars()
+                        .zip(tb.chars())
+                        .take_while(|(x, y)| x == y)
+                        .count();
+                    return Some(pos + same);
+                }
+            } else if (a.content_size() > 0 || b.content_size() > 0)
+                && let Some(inner) = a.content().find_diff_start(b.content(), pos + 1)
+            {
+                return Some(inner);
+            }
+            pos += a.node_size();
+        }
+        unreachable!()
+    }
+
+    /// The last positions (in this fragment and in `other`) at which the two
+    /// differ, counting back from `pos_a` / `pos_b` (the positions of their ends),
+    /// or `None` when they are the same. Port of ProseMirror's
+    /// `Fragment.findDiffEnd`; the two ends can overlap the start
+    /// [`find_diff_start`](Self::find_diff_start) finds, when the change repeats
+    /// the content beside it.
+    pub fn find_diff_end(
+        &self,
+        other: &Fragment,
+        pos_a: usize,
+        pos_b: usize,
+    ) -> Option<(usize, usize)> {
+        let (mut pos_a, mut pos_b) = (pos_a, pos_b);
+        let (mut ia, mut ib) = (self.child_count(), other.child_count());
+        loop {
+            if ia == 0 || ib == 0 {
+                return (ia != ib).then_some((pos_a, pos_b));
+            }
+            ia -= 1;
+            ib -= 1;
+            let (a, b) = (self.child(ia), other.child(ib));
+            let size = a.node_size();
+            if a.same_ref(b) {
+                pos_a -= size;
+                pos_b -= size;
+                continue;
+            }
+            if !a.same_markup(b) {
+                return Some((pos_a, pos_b));
+            }
+            if let (Some(ta), Some(tb)) = (a.text(), b.text()) {
+                if ta != tb {
+                    let same = ta
+                        .chars()
+                        .rev()
+                        .zip(tb.chars().rev())
+                        .take_while(|(x, y)| x == y)
+                        .count();
+                    return Some((pos_a - same, pos_b - same));
+                }
+            } else if (a.content_size() > 0 || b.content_size() > 0)
+                && let Some(inner) = a.content().find_diff_end(b.content(), pos_a - 1, pos_b - 1)
+            {
+                return Some(inner);
+            }
+            pos_a -= size;
+            pos_b -= size;
+        }
     }
 
     /// Return a copy with the child at `index` replaced by `node` (the rest
