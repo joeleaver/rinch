@@ -95,6 +95,7 @@ fn assert_tracks(sig: Signal<ElementBounds>, el: &web_sys::Element, what: &str) 
 }
 
 type Target = Signal<Option<NodeHandle>>;
+type Captured = Rc<Cell<Option<(Target, Signal<bool>)>>>;
 
 #[component]
 fn scene(target: Target, filler: Signal<bool>) -> NodeHandle {
@@ -120,7 +121,7 @@ fn scene(target: Target, filler: Signal<bool>) -> NodeHandle {
 }
 
 fn mount_scene() -> (Fixture, NodeHandle, Signal<bool>) {
-    let cell: Rc<Cell<Option<(Target, Signal<bool>)>>> = Rc::new(Cell::new(None));
+    let cell: Captured = Rc::new(Cell::new(None));
     let cell_in = cell.clone();
     let f = Fixture::mount(move |scope| {
         let target = Signal::new(None);
