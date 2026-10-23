@@ -565,6 +565,15 @@ pub struct RenderSurfaceHandle {
     /// wgpu/WebGL surface on resize.
     #[allow(clippy::type_complexity)]
     pub(crate) resize_callback: std::rc::Rc<RefCell<Option<Box<dyn FnMut(u32, u32)>>>>,
+    /// How the render callback is paced (#1768): `None` until
+    /// [`set_continuous`](RenderSurfaceHandle::set_continuous) is called — each
+    /// backend's original pacing (desktop: whenever the window paints; web: every
+    /// animation frame) — then `Some(true)` for every frame on both, `Some(false)`
+    /// for on demand on both.
+    pub(crate) continuous: std::rc::Rc<Cell<Option<bool>>>,
+    /// A frame asked for with [`request_frame`](RenderSurfaceHandle::request_frame)
+    /// (or by a resize of an on-demand surface) and not yet drawn.
+    pub(crate) frame_requested: std::rc::Rc<Cell<bool>>,
     /// Web teardown state — the `ResizeObserver` and canvas event listeners, kept
     /// alive here (not leaked) so they can be disconnected/removed on unmount.
     #[cfg(target_arch = "wasm32")]
@@ -712,7 +721,18 @@ impl RenderSurfaceHandle {
     /// Returns `(x, y, width, height)` where `(x, y)` is the top-left corner
     /// in logical pixels relative to the window, and `(width, height)` is in
     /// physical pixels. Returns `(0.0, 0.0, 0, 0)` before the first paint.
+    ///
+    /// On the web `(x, y)` is the canvas's top-left in CSS pixels relative to the
+    /// viewport (`getBoundingClientRect`), read when this is called, so it
+    /// follows page scrolling. On desktop and in an embedded context it is the
+    /// surface's painted box as of the last paint (#1768: an inline
+    /// `RenderSurface` reported `(0, 0)` on every backend before).
     pub fn layout_rect(&self) -> (f32, f32, u32, u32) {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(canvas) = self.canvas.borrow().as_ref() {
+            let r = canvas.get_bounding_client_rect();
+            *self.layout_position.lock().unwrap() = (r.left() as f32, r.top() as f32);
+        }
         let (x, y) = *self.layout_position.lock().unwrap();
         let (w, h) = *self.layout_size.lock().unwrap();
         (x, y, w, h)
@@ -778,6 +798,88 @@ impl RenderSurfaceHandle {
     pub fn set_resize_callback(&self, callback: impl FnMut(u32, u32) + 'static) {
         *self.resize_callback.borrow_mut() = Some(Box::new(callback));
     }
+
+    /// Choose how often the [render callback](Self::set_render_callback) runs,
+    /// the same way on desktop and on the web (#1768).
+    ///
+    /// - `true` — **every frame**, for as long as the surface is mounted: on
+    ///   desktop each callback asks the window for the next paint, on the web the
+    ///   `requestAnimationFrame` loop keeps running. For a game in play, an
+    ///   animation, a video.
+    /// - `false` — **on demand**: the callback runs once when the surface first
+    ///   has a size, again whenever its size changes, and once for each
+    ///   [`request_frame`](Self::request_frame) (several requests before the next
+    ///   frame are one frame). Nothing else runs it — not an unrelated repaint on
+    ///   desktop, not a quiet animation frame on the web, whose loop stops.
+    ///
+    /// Until this is called the surface keeps each backend's original pacing:
+    /// on desktop the callback runs whenever the window paints for any reason,
+    /// on the web every animation frame.
+    pub fn set_continuous(&self, on: bool) {
+        self.continuous.set(Some(on));
+        if on {
+            self.wake_for_frame();
+        }
+    }
+
+    /// Ask for one more run of the [render callback](Self::set_render_callback),
+    /// at the next frame. Callable from inside the callback itself, which is how
+    /// an on-demand surface keeps going while it has something to animate.
+    ///
+    /// On desktop this asks the window for a paint (from inside a render
+    /// callback, once the callbacks of this paint have run); on the web it starts
+    /// the `requestAnimationFrame` loop if it has stopped. A request made while
+    /// the surface is not mounted, or before it has a size, is kept and drawn
+    /// once it is.
+    pub fn request_frame(&self) {
+        self.frame_requested.set(true);
+        self.wake_for_frame();
+    }
+
+    /// Whether a `requestAnimationFrame` loop is driving this surface (web
+    /// only). For tests of the loop's pacing.
+    #[cfg(target_arch = "wasm32")]
+    #[doc(hidden)]
+    pub fn __render_loop_running(&self) -> bool {
+        self.raf_running.get()
+    }
+
+    /// Get a frame scheduled: desktop asks the window for a paint (suppressed
+    /// inside the callbacks, which ask afterwards), the web starts the loop.
+    fn wake_for_frame(&self) {
+        #[cfg(feature = "desktop")]
+        request_repaint();
+        // Inside the render callback its cell is borrowed, and the loop that is
+        // running it reads the request when the callback returns.
+        #[cfg(target_arch = "wasm32")]
+        if self
+            .render_callback
+            .try_borrow()
+            .is_ok_and(|cb| cb.is_some())
+            && is_registered(self.id)
+        {
+            start_raf_loop(self.id, self.raf_running.clone());
+        }
+    }
+}
+
+/// Whether a surface's render callback runs this frame (#1768): always, unless
+/// the surface is on demand and has no frame requested.
+fn draws_this_frame(continuous: Option<bool>, requested: bool) -> bool {
+    continuous != Some(false) || requested
+}
+
+/// Whether a surface whose callback just ran wants the frame after: a
+/// continuous surface always, any surface when the callback asked for one.
+/// The original pacing (`None`) asks for none on desktop; the web's loop keeps
+/// running for it on its own.
+fn wants_next_frame(continuous: Option<bool>, requested_since: bool) -> bool {
+    continuous == Some(true) || requested_since
+}
+
+#[cfg(target_arch = "wasm32")]
+fn is_registered(id: usize) -> bool {
+    SURFACE_REGISTRY.with(|reg| reg.borrow().iter().any(|s| s.id == id))
 }
 
 // ── GpuTextureRegistrar (desktop only) ──────────────────────────────────────
@@ -904,6 +1006,8 @@ fn new_surface_handle(id: usize, viewport_name: String, is_video: bool) -> Rende
         canvas_ctx: std::rc::Rc::new(RefCell::new(None)),
         render_callback: std::rc::Rc::new(RefCell::new(None)),
         resize_callback: std::rc::Rc::new(RefCell::new(None)),
+        continuous: std::rc::Rc::new(Cell::new(None)),
+        frame_requested: std::rc::Rc::new(Cell::new(false)),
         #[cfg(target_arch = "wasm32")]
         web_cleanup: std::rc::Rc::new(RefCell::new(None)),
         #[cfg(target_arch = "wasm32")]
@@ -1407,6 +1511,18 @@ fn set_and_notify_size(surface: &RenderSurfaceHandle, width: u32, height: u32) {
         if let Some(cb) = surface.resize_callback.borrow_mut().as_mut() {
             cb(width, height);
         }
+        if width > 0 && height > 0 {
+            // An on-demand surface draws once at each new size (#1768).
+            if surface.continuous.get() == Some(false) {
+                surface.frame_requested.set(true);
+            }
+            // The web's loop stops while the surface has no size; a size
+            // starts it again (a no-op while it runs).
+            #[cfg(target_arch = "wasm32")]
+            if surface.render_callback.borrow().is_some() {
+                start_raf_loop(surface.id, surface.raf_running.clone());
+            }
+        }
     }
 }
 
@@ -1418,6 +1534,60 @@ pub fn update_layout_size_by_id(surface_id: usize, width: u32, height: u32) {
             set_and_notify_size(surface, width, height);
         }
     });
+}
+
+/// Update a surface's painted box by ID: its top-left in logical window pixels
+/// and its size in physical pixels, as [`RenderSurfaceHandle::layout_rect`]
+/// reports them. What the desktop paint and an embedded context's scene call
+/// for every `RenderSurface` (#1768).
+pub fn update_layout_rect_by_id(surface_id: usize, x: f32, y: f32, width: u32, height: u32) {
+    SURFACE_REGISTRY.with(|reg| {
+        let reg = reg.borrow();
+        if let Some(surface) = reg.iter().find(|s| s.id == surface_id) {
+            *surface.layout_position.lock().unwrap() = (x, y);
+            set_and_notify_size(surface, width, height);
+        }
+    });
+}
+
+/// Zero the layout size of every registered inline surface (a `RenderSurface`
+/// component) not in `present` — the ones in the document — without calling
+/// its resize callback (#1768). A surface whose component is still alive but
+/// whose node left the document (a captured handle hidden by an `if`) kept
+/// its last size, so its render callback went on running for nothing, and a
+/// continuous one asked for a paint every frame. Its size comes back, with a
+/// resize callback, when it is shown again.
+#[cfg(any(feature = "desktop", feature = "embed"))]
+pub fn forget_absent_inline_surface_sizes(present: &[usize]) {
+    SURFACE_REGISTRY.with(|reg| {
+        for surface in reg.borrow().iter() {
+            if is_inline_surface(surface) && !present.contains(&surface.id) {
+                *surface.layout_size.lock().unwrap() = (0, 0);
+            }
+        }
+    });
+}
+
+/// Whether one of the surfaces `ids` wants its render callback run at the next
+/// frame: a continuous surface, or one with a frame requested (#1768). An
+/// embedded context reports it through `needs_update` and `update`'s
+/// `RequestRedraw`.
+pub fn surfaces_want_frame(ids: &[usize]) -> bool {
+    if ids.is_empty() {
+        return false;
+    }
+    SURFACE_REGISTRY.with(|reg| {
+        reg.borrow().iter().any(|s| {
+            let (w, h) = *s.layout_size.lock().unwrap();
+            // A surface with no size (hidden, `display: none`) is not run, so it
+            // wants nothing yet; a request made meanwhile waits for its size.
+            ids.contains(&s.id)
+                && w > 0
+                && h > 0
+                && s.render_callback.borrow().is_some()
+                && (s.continuous.get() == Some(true) || s.frame_requested.get())
+        })
+    })
 }
 
 /// Return the IDs of all registered render surfaces.
@@ -1646,6 +1816,7 @@ fn invoke_render_callbacks_where(wanted: impl Fn(usize) -> bool) {
     #[cfg(feature = "desktop")]
     IN_RENDER_CALLBACK.with(|f| f.set(true));
 
+    let mut next_frame = false;
     SURFACE_REGISTRY.with(|reg| {
         let reg = reg.borrow();
         for surface in reg.iter() {
@@ -1656,7 +1827,11 @@ fn invoke_render_callbacks_where(wanted: impl Fn(usize) -> bool) {
             if let Some(ref mut callback) = *cb {
                 let (w, h) = *surface.layout_size.lock().unwrap();
                 if w == 0 || h == 0 {
-                    continue; // not yet measured
+                    continue; // not yet measured; a request waits for the size
+                }
+                let continuous = surface.continuous.get();
+                if !draws_this_frame(continuous, surface.frame_requested.replace(false)) {
+                    continue;
                 }
                 let writer = SurfaceWriter {
                     buffer: surface.buffer.clone(),
@@ -1664,12 +1839,21 @@ fn invoke_render_callbacks_where(wanted: impl Fn(usize) -> bool) {
                     surface_id: surface.id,
                 };
                 callback(&writer, w, h);
+                next_frame |= wants_next_frame(continuous, surface.frame_requested.get());
             }
         }
     });
 
     #[cfg(feature = "desktop")]
     IN_RENDER_CALLBACK.with(|f| f.set(false));
+    // Asked for after the guard is down: a continuous surface, or a callback
+    // that called `request_frame`, gets the window's next paint (#1768).
+    #[cfg(feature = "desktop")]
+    if next_frame {
+        request_repaint();
+    }
+    #[cfg(not(feature = "desktop"))]
+    let _ = next_frame;
 }
 
 /// Dispatch a surface event to the handler of the surface with the given ID.
@@ -2083,7 +2267,12 @@ fn start_raf_loop(surface_id: usize, running: std::rc::Rc<Cell<bool>>) {
                 let mut cb = surface.render_callback.borrow_mut();
                 if let Some(ref mut callback) = *cb {
                     let (w, h) = *surface.layout_size.lock().unwrap();
-                    if w > 0 && h > 0 {
+                    let continuous = surface.continuous.get();
+                    // A request waits for the size (it stays set below).
+                    if w > 0
+                        && h > 0
+                        && draws_this_frame(continuous, surface.frame_requested.replace(false))
+                    {
                         let writer = SurfaceWriter {
                             buffer: surface.buffer.clone(),
                             needs_redraw: surface.needs_redraw.clone(),
@@ -2091,7 +2280,12 @@ fn start_raf_loop(surface_id: usize, running: std::rc::Rc<Cell<bool>>) {
                         };
                         callback(&writer, w, h);
                     }
-                    true // callback exists, keep looping
+                    // The original pacing and a continuous surface loop for as
+                    // long as the callback exists; an on-demand one only while
+                    // a frame is requested (#1768). With no size yet nothing can
+                    // draw: the loop stops, and the ResizeObserver's first size
+                    // starts it again (`set_and_notify_size`).
+                    w > 0 && h > 0 && (continuous != Some(false) || surface.frame_requested.get())
                 } else {
                     false // callback removed, stop
                 }
@@ -2211,6 +2405,10 @@ fn schedule_canvas_init(surface: RenderSurfaceHandle) {
             // `raf_running` makes this a no-op on the first mount (the loop that
             // set_render_callback already started is still live).
             if surface.render_callback.borrow().is_some() {
+                // The canvas is new, so an on-demand surface draws it once.
+                if surface.continuous.get() == Some(false) {
+                    surface.frame_requested.set(true);
+                }
                 start_raf_loop(surface.id, surface.raf_running.clone());
             }
         }
@@ -2674,6 +2872,9 @@ mod compositor_routing_tests {
     fn unregistering_a_registered_surface_asks_for_a_redraw() {
         use std::sync::{Arc, Mutex};
         use std::thread::ThreadId;
+        let _redraw = REDRAW_CALLBACK_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let callers: Arc<Mutex<Vec<ThreadId>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = callers.clone();
         set_redraw_callback(Arc::new(move || {
@@ -2691,6 +2892,190 @@ mod compositor_routing_tests {
         assert_eq!(mine(), 1, "an id that is not registered asks for nothing");
 
         clear_redraw_callback();
+    }
+}
+
+/// Held by every test that installs the process-global redraw callback, so
+/// one test's `clear_redraw_callback` cannot land inside another's count.
+#[cfg(all(test, feature = "desktop"))]
+pub(crate) static REDRAW_CALLBACK_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+// ── #1768: how often the render callback runs ───────────────────────────────
+
+#[cfg(all(test, feature = "desktop"))]
+mod pacing_tests_1768 {
+    use super::*;
+    use std::rc::Rc;
+    use std::thread::ThreadId;
+
+    /// Every row of the rule, both functions, each pacing.
+    #[test]
+    fn the_pacing_rule() {
+        for (continuous, requested, draws) in [
+            (None, false, true),
+            (None, true, true),
+            (Some(true), false, true),
+            (Some(true), true, true),
+            (Some(false), false, false),
+            (Some(false), true, true),
+        ] {
+            assert_eq!(
+                draws_this_frame(continuous, requested),
+                draws,
+                "draws? continuous={continuous:?} requested={requested}"
+            );
+        }
+        for (continuous, requested_since, next) in [
+            (None, false, false),
+            (None, true, true),
+            (Some(true), false, true),
+            (Some(false), false, false),
+            (Some(false), true, true),
+        ] {
+            assert_eq!(
+                wants_next_frame(continuous, requested_since),
+                next,
+                "next frame? continuous={continuous:?} requested={requested_since}"
+            );
+        }
+    }
+
+    struct Probe {
+        surface: RenderSurfaceHandle,
+        calls: Rc<Cell<u32>>,
+    }
+
+    /// A mounted surface whose callback counts its runs; `ask_again` makes the
+    /// callback call `request_frame` on its first `n` runs.
+    fn probe(ask_again: u32) -> Probe {
+        let surface = create_render_surface();
+        let calls: Rc<Cell<u32>> = Rc::default();
+        let (c, me) = (calls.clone(), surface.clone());
+        surface.set_render_callback(move |_w, _x, _y| {
+            c.set(c.get() + 1);
+            if c.get() <= ask_again {
+                me.request_frame();
+            }
+        });
+        mount_render_surface(&surface);
+        Probe { surface, calls }
+    }
+
+    fn frame(p: &Probe) -> u32 {
+        let before = p.calls.get();
+        invoke_render_callbacks_for(&[p.surface.id()]);
+        p.calls.get() - before
+    }
+
+    /// Counts this thread's calls to the redraw callback.
+    fn redraws() -> (impl Fn() -> usize, std::sync::MutexGuard<'static, ()>) {
+        let guard = REDRAW_CALLBACK_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let callers: Arc<Mutex<Vec<ThreadId>>> = Arc::default();
+        let sink = callers.clone();
+        set_redraw_callback(Arc::new(move || {
+            sink.lock().unwrap().push(std::thread::current().id());
+        }));
+        let me = std::thread::current().id();
+        (
+            move || callers.lock().unwrap().iter().filter(|t| **t == me).count(),
+            guard,
+        )
+    }
+
+    #[test]
+    fn an_on_demand_surface_draws_at_each_new_size_and_each_request() {
+        let (asked, _g) = redraws();
+        let p = probe(0);
+        p.surface.set_continuous(false);
+        assert_eq!(frame(&p), 0, "not measured yet: nothing to draw");
+        update_layout_rect_by_id(p.surface.id(), 3.0, 5.0, 40, 30);
+        assert_eq!(frame(&p), 1, "the first size draws once");
+        assert_eq!(frame(&p), 0, "an unrelated paint draws nothing");
+        assert_eq!(frame(&p), 0);
+        update_layout_rect_by_id(p.surface.id(), 3.0, 5.0, 41, 30);
+        assert_eq!(frame(&p), 1, "a new size draws once");
+        update_layout_rect_by_id(p.surface.id(), 9.0, 7.0, 41, 30);
+        assert_eq!(frame(&p), 0, "a move at the same size draws nothing");
+
+        let before = asked();
+        p.surface.request_frame();
+        p.surface.request_frame();
+        assert_eq!(asked(), before + 2, "a request asks the window for a paint");
+        assert_eq!(frame(&p), 1, "two requests before a frame are one frame");
+        assert_eq!(frame(&p), 0);
+        assert_eq!(
+            asked(),
+            before + 2,
+            "a drawn request asks for no further paint"
+        );
+        unregister_render_surface(p.surface.id());
+        clear_redraw_callback();
+    }
+
+    #[test]
+    fn a_callback_that_requests_a_frame_gets_the_next_paint() {
+        let (asked, _g) = redraws();
+        let p = probe(2);
+        p.surface.set_continuous(false);
+        update_layout_rect_by_id(p.surface.id(), 0.0, 0.0, 8, 8);
+        let before = asked();
+        assert_eq!(frame(&p), 1);
+        assert_eq!(
+            asked(),
+            before + 1,
+            "asked inside the callback, asked once after it"
+        );
+        assert_eq!(frame(&p), 1, "the requested frame draws");
+        assert_eq!(frame(&p), 1, "and the one it requested");
+        assert_eq!(asked(), before + 2, "the third run asked for nothing");
+        assert_eq!(frame(&p), 0, "so the fourth paint draws nothing");
+        unregister_render_surface(p.surface.id());
+        clear_redraw_callback();
+    }
+
+    #[test]
+    fn a_continuous_surface_draws_every_paint_and_asks_for_the_next() {
+        let (asked, _g) = redraws();
+        let p = probe(0);
+        update_layout_rect_by_id(p.surface.id(), 0.0, 0.0, 8, 8);
+        let before = asked();
+        p.surface.set_continuous(true);
+        assert_eq!(asked(), before + 1, "turning it on asks for a paint");
+        for i in 0..3 {
+            assert_eq!(frame(&p), 1, "paint {i} draws");
+            assert_eq!(asked(), before + 2 + i, "and asks for the next");
+        }
+        p.surface.set_continuous(false);
+        assert_eq!(frame(&p), 0, "on demand again: nothing requested");
+        unregister_render_surface(p.surface.id());
+        clear_redraw_callback();
+    }
+
+    /// Positive control for the two above: the original pacing draws at every
+    /// paint and asks for none of its own.
+    #[test]
+    fn the_original_pacing_draws_every_paint_and_asks_for_none() {
+        let (asked, _g) = redraws();
+        let p = probe(0);
+        update_layout_rect_by_id(p.surface.id(), 0.0, 0.0, 8, 8);
+        let before = asked();
+        for _ in 0..3 {
+            assert_eq!(frame(&p), 1);
+        }
+        assert_eq!(asked(), before, "no paint asked for");
+        unregister_render_surface(p.surface.id());
+        clear_redraw_callback();
+    }
+
+    #[test]
+    fn layout_rect_reports_the_position_it_was_given() {
+        let p = probe(0);
+        assert_eq!(p.surface.layout_rect(), (0.0, 0.0, 0, 0));
+        update_layout_rect_by_id(p.surface.id(), 12.5, 7.0, 30, 20);
+        assert_eq!(p.surface.layout_rect(), (12.5, 7.0, 30, 20));
+        unregister_render_surface(p.surface.id());
     }
 }
 

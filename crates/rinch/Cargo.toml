@@ -142,6 +142,8 @@ web-sys = { version = "0.3", features = [
     "MouseEvent", "WheelEvent", "PointerEvent",
     "EventTarget", "AddEventListenerOptions",
     "ResizeObserver", "ResizeObserverEntry", "ResizeObserverSize", "DomRectReadOnly",
+    # `RenderSurfaceHandle::layout_rect` (#1768): the canvas's client rect.
+    "DomRect",
     # `init_logging`'s console output and panic hook (#1773).
     "console",
     # `rinch::window` (#1770): the page's resolution media query.
