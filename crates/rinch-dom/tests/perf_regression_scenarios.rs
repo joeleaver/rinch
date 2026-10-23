@@ -3626,3 +3626,58 @@ fn a_text_edit_in_a_paragraph_of_pills_walks_each_pill_s_lines_once() {
         );
     }
 }
+
+/// Every pill of a paragraph mid-way through a `background-color`
+/// transition: a tick writes each span's colour with no re-shape, so each
+/// span is dirty and the paragraph is not (#679). The paragraph's painted ink
+/// is refreshed once for all its spans, not once per span — once per span
+/// was quadratic (review of #1837: recolouring 500 pills, 704 ms of damage
+/// and consume). A span still costs the lines it is on in each walk.
+#[test]
+fn a_colour_tick_on_every_pill_refreshes_the_paragraph_once() {
+    for (pills, visits) in [(40, 255), (80, 525)] {
+        let (mut doc, texts) = pill_paragraph(pills);
+        let spans: Vec<NodeId> = texts
+            .iter()
+            .map(|t| NodeId(doc.tree.get(t.0).unwrap().parent.unwrap()))
+            .collect();
+        for s in &spans {
+            doc.set_attribute(
+                *s,
+                "style",
+                "transition: background-color 100000s linear",
+            );
+        }
+        let _ = cold_frame(&mut doc);
+        doc.tree.consume_paint_dirty();
+        for s in &spans {
+            doc.set_attribute(
+                *s,
+                "style",
+                "transition: background-color 100000s linear; background-color: rgb(0, 0, 200)",
+            );
+        }
+        doc.resolve_layout(VP.0, VP.1);
+        let _ = rinch_dom::paint::compute_damage(&doc.tree, 1.0, VP.0 as f64, VP.1 as f64);
+        paint(&mut doc);
+        doc.tree.consume_paint_dirty();
+        doc.tree.perf.reset();
+        assert!(doc.tick_transitions(), "precondition: the transitions run");
+        doc.resolve_layout(VP.0, VP.1);
+        let _ = rinch_dom::paint::compute_damage(&doc.tree, 1.0, VP.0 as f64, VP.1 as f64);
+        paint(&mut doc);
+        doc.tree.consume_paint_dirty();
+        let s = doc.tree.perf.end_frame();
+        expect(
+            &format!("a colour tick on {pills} pills"),
+            &s,
+            &[
+                (LayoutResolves, 1),
+                (LayoutSkippedPaintOnly, 1),
+                (InlineSpanLineVisits, visits),
+                (PaintNodesVisited, 2),
+                (StackingOrderBuilds, 1),
+            ],
+        );
+    }
+}
