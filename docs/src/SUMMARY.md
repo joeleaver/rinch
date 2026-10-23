@@ -9,6 +9,7 @@
 - [State Management](./guide/hooks.md)
   - [Reactivity](./guide/reactivity.md)
   - [Async Tasks](./guide/async.md)
+  - [Background Workers](./guide/workers.md)
   - [Signals](./guide/signals.md)
   - [Effects](./guide/effects.md)
   - [Memos](./guide/memos.md)

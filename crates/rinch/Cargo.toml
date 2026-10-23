@@ -150,6 +150,9 @@ web-sys = { version = "0.3", features = [
     # `FileReader` a picked or dropped file is read with.
     "HtmlElement", "HtmlInputElement", "Node", "Event",
     "Blob", "File", "FileList", "FileReader", "DomException",
+    # `rinch::worker` (#1772): a Web Worker running the app's own module.
+    "Worker", "WorkerOptions", "WorkerType", "MessageEvent", "ErrorEvent",
+    "DedicatedWorkerGlobalScope", "BlobPropertyBag", "Url",
 ] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
@@ -302,6 +305,20 @@ global-hotkeys = [
     "dep:zbus", "dep:futures-lite", "dep:x11rb",
     "dep:tokio", "tokio/rt", "tokio/sync", "tokio/time",
 ]
+
+# Background workers that reply on the UI thread (`rinch::worker`, issue
+# #1772): a thread on the desktop, a Web Worker running the app's own wasm
+# module on the web. Off by default. On the web it reads the glue's
+# `import.meta.url`, so the wasm-bindgen glue must be an ES module
+# (`--target web`, trunk's default), and the page's CSP must allow `blob:`
+# workers.
+worker = []
+
+# Run by CI's "feature-gated tests" step.
+[[test]]
+name = "worker_1772"
+path = "tests/worker_1772.rs"
+required-features = ["worker"]
 
 # Probe app for the ignored e2e test tests/debug_event_latency.rs (issue #153).
 [[example]]
