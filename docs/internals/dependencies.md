@@ -117,8 +117,9 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     layout (`ifc_hang_passes`; `perf_regression_scenarios::a_right_aligned_paragraph_ending_in_spaces_pays_one_pass`).
     Not done: a right-to-left line, by parley's inferred direction or CSS `direction: rtl`
     (parley offsets it by its trailing white space, so narrowing would move it the wrong way;
-    #1666), a flex or grid item's own text (a text leaf, `shape_text_leaf`), a `nowrap`/`pre`
-    root with no wrapping text (#1237).
+    #1666), a flex or grid item's own text (a text leaf, `shape_text_leaf`). A `nowrap`/`pre`
+    root with no wrapping text gets the same narrowing on its unconstrained lines since #1237
+    (`ifc::break_unwrapped_aligned`).
     `crates/rinch-dom/tests/text_align_trailing_spaces_1042_tests.rs` is the pin.
   - **parley counts a justified line's opportunities as it breaks it** (`num_spaces`, not
     public): every space or NBSP that fits, less one when the line ends in one. So two or more
