@@ -106,3 +106,5 @@ author. Do not merge a batch with a red check.
   to test against the current base.
 
 "No checks" is never a pass: confirm a run exists for the PR's head commit.
+
+**Feature-gated test files use `#![cfg(feature = "…")]`, never `[[test]] required-features`.** The integration shards select targets with `--test '<glob>'`, and cargo refuses a target named that way whose required features are off (batch #1793 failed on it). Name the feature combination in the `feature-gated` shard instead.

@@ -69,6 +69,7 @@ pub fn set_timer_backend(backend: TimerBackend) {
 /// rinch_core::reactive::unowned(|| set_timeout(500, move || flush_to_disk()));
 /// ```
 pub fn set_timeout(delay_ms: u32, cb: impl FnOnce() + 'static) -> TimeoutHandle {
+    crate::task::refuse_in_worker("set_timeout");
     let id = park_main_callback::<()>(move |()| cb());
     schedule(id.raw(), delay_ms);
     TimeoutHandle(id)
@@ -121,6 +122,7 @@ static NEXT_INTERVAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 /// clear_interval(tick);
 /// ```
 pub fn set_interval(period_ms: u32, cb: impl FnMut() + 'static) -> IntervalHandle {
+    crate::task::refuse_in_worker("set_interval");
     use web_time::{Duration, Instant};
 
     let period = Duration::from_millis(u64::from(period_ms.max(1)));

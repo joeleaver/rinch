@@ -144,6 +144,9 @@ pub mod notification;
 #[cfg(feature = "global-hotkeys")]
 pub mod hotkey;
 
+#[cfg(feature = "worker")]
+pub mod worker;
+
 /// Memory profiling utilities (enable with `memory-profile` feature).
 #[cfg(any(feature = "desktop", feature = "android"))]
 pub mod memory {

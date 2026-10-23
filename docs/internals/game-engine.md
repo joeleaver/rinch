@@ -16,7 +16,7 @@ Rinch owns the window. Your renderer submits frames into a `RenderSurface` compo
 
 | Type | Purpose |
 |------|---------|
-| `RenderSurfaceHandle` | Main handle — `writer()`, `gpu_registrar()`, `set_event_handler()`, `set_key_handler()`, `set_pointer_events()` |
+| `RenderSurfaceHandle` | Main handle — `writer()`, `gpu_registrar()`, `set_event_handler()`, `set_key_handler()`, `set_pointer_events()`, `set_render_callback()`, `set_continuous()`, `request_frame()`, `layout_rect()` |
 | `RenderSurface` | Component — `RenderSurface { surface: Some(handle) }` |
 | `SurfaceWriter` | Thread-safe CPU pixel submission (`Send + Sync + Clone`) |
 | `GpuTextureRegistrar` | Thread-safe GPU texture registration (`Send + Sync + Clone`) |
@@ -86,6 +86,38 @@ longer `preventDefault()`ed just because the surface is focused, matching how an
 Tab leaves the canvas for the next tab stop. A web game that steers with any of those must
 claim them through `set_key_handler`, or the page scrolls under it.
 
+**Render-callback pacing and position (#1768).** `RenderSurfaceHandle::continuous` is an
+`Option<bool>`: `None` (never set) keeps each backend's original pacing — desktop runs the
+callback in every paint, the web's rAF loop every frame — and `Some(true)` / `Some(false)` are
+"every frame" / "on demand" on both. The rule is two pure functions, `draws_this_frame` and
+`wants_next_frame`, used by both drivers: desktop's `invoke_render_callbacks_where` (and through
+it an embedded context's `scene()`) and the web's `start_raf_loop`. `frame_requested` is taken
+(`replace(false)`) just before the callback, so a `request_frame()` made inside it is seen
+afterwards: desktop then calls `request_repaint()` once the `IN_RENDER_CALLBACK` guard is down
+(inside it the call is suppressed), the web keeps its loop going. A request is not taken while
+the surface has no size. `set_and_notify_size` requests a frame for an on-demand surface on every
+size change, and `schedule_canvas_init` on every web mount (a new canvas is blank). An embedded
+context reports a wanted frame through `render_surface::surfaces_want_frame` in `needs_update`
+and as `update`'s `RequestRedraw` — only for a surface with a non-zero size, or a continuous
+surface under `display: none` made the host spin at 100% with no callback run (review of
+#1790). No size, no frame, everywhere: the web loop also stops at size 0 and
+`set_and_notify_size` restarts it at the next size. The desktop paint runs **every** registered
+surface's callback, and a surface whose node left the document while its component lived on (a
+captured handle hidden by an `if`) kept its last size, so `RinchApp::update_render_surface_layouts`
+(`forget_absent: true` on the desktop window only — the registry is per thread, and an embedded
+context sharing it would zero another context's surfaces; it runs only its own ids) zeroes the
+size of every registered inline surface not in the document, with no resize callback;
+`all_surface_layout_rects` also skips a surface node inside a detached subtree. On the web `wake_for_frame` uses `try_borrow` on the callback
+cell: inside the callback it is borrowed, and the running loop picks the request up. Position:
+an inline `RenderSurface` got only its size before (`update_layout_size_by_id`), so
+`layout_rect()` said `(0, 0)` on desktop, in embed and on the web alike; the desktop paints and
+`RinchContext::prepare_render_surfaces` now call `update_layout_rect_by_id` with the painted
+box, and on wasm `layout_rect()` reads the canvas's `getBoundingClientRect` when called. Pins:
+`render_surface::pacing_tests_1768`, `app/render_surface_pacing_1768_tests.rs`,
+`tests/embed_render_surface_pacing_1768.rs`,
+`rinch-web/tests/render_surface_pacing_1768.rs` (Chrome 155; also passes in Firefox via
+Playwright).
+
 **Sharing a high-capability GPU device (issue #57):** zero-copy compositing needs your texture on the *same* device rinch composites with (`gpu_handle()` → `device`/`queue`/**`adapter`**). `gpu_handle()` is `None` whenever the window presents with the software renderer (`RINCH_RENDERER=cpu`, or the `Renderer::Auto` fallback), so handle `None` unless you use one of the two entry points below — they always present on the GPU. By default that device is created with `Features::default()` / `Limits::default()`. To raise it:
 
 | Entry point | Ownership | Use when |
@@ -99,7 +131,7 @@ Construct `wgpu` types from **`rinch::wgpu`** (rinch pins a patched fork — a s
 
 - `handle.canvas_element() -> Option<web_sys::HtmlCanvasElement>` (wasm only) — returns the `<canvas>` after mount (populated in a post-mount microtask; `None` before). Call `wgpu::Instance::create_surface(SurfaceTarget::Canvas(canvas))` on it to render via WebGPU/WebGL. (The lazy 2D-blit CPU path — `SurfaceWriter::submit_frame` — still works and is portable with desktop; it self-disables once you claim a GPU context.)
 - **HiDPI out of the box:** `layout_size()` reports **physical** px (`CSS px × devicePixelRatio`, matching desktop), rinch sizes the canvas backing store to match, and `set_resize_callback(|w, h| …)` pushes the new physical size on every resize (ResizeObserver-driven) so you can reconfigure your wgpu surface.
-- **Input** (pointer/wheel/keyboard incl. **`KeyUp`**/focus) over the canvas is delivered to `set_event_handler` — rinch does not swallow it. `set_render_callback` drives a `requestAnimationFrame` loop.
+- **Input** (pointer/wheel/keyboard incl. **`KeyUp`**/focus) over the canvas is delivered to `set_event_handler` — rinch does not swallow it. `set_render_callback` drives a `requestAnimationFrame` loop (every frame unless `set_continuous(false)`, which stops it between requested frames).
 - **Teardown** is clean: the ResizeObserver and canvas listeners are removed when the component unmounts (no leaks).
 - Example: `examples/webgpu-surface-web` (rinch DOM chrome + a WebGPU triangle; `trunk serve` over localhost so `navigator.gpu` is available). Mirrors `examples/game-embed` on desktop.
 

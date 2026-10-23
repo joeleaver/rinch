@@ -404,20 +404,34 @@ where
     RootHandle { id }
 }
 
+/// The page's document, or `None` where there is none: a Web Worker, where
+/// `rinch::worker` runs a second instance of the app's module and so its start
+/// function (issue #1772).
+fn page_document() -> Option<web_sys::Document> {
+    web_sys::window()?.document()
+}
+
 /// Mount a single whole-page rinch app under `#rinch-body` (appended to
 /// `document.body`).
 ///
 /// `build` receives the active [`RenderScope`]; a `#[component]` function (which
 /// expands to `fn(&mut RenderScope) -> NodeHandle`) can be passed directly. The
 /// root lives for the lifetime of the page.
+///
+/// Where there is no `document` — inside a `rinch::worker` Web Worker, which
+/// runs the app's start function too — it returns without mounting.
 pub fn mount<F>(theme: ThemeProviderProps, build: F)
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle,
 {
+    // No page: a worker instance of this module (`rinch::worker`, #1772),
+    // which runs the app's start function too. Nothing to mount.
+    let Some(browser_doc) = page_document() else {
+        return;
+    };
     ensure_global_init();
     rinch::setup_theme_css(&theme);
 
-    let browser_doc = web_sys::window().unwrap().document().unwrap();
     let web_doc = Rc::new(RefCell::new(WebDocument::new(browser_doc)));
 
     // Whole-page app: keep it for the page lifetime (owned by MOUNTED_ROOTS).
@@ -479,14 +493,19 @@ where
 ///
 /// The menus are read during this call and nothing is kept borrowed afterwards,
 /// which is why the labels may be borrowed `&str`.
+///
+/// Like [`mount`], it returns without mounting where there is no `document`.
 pub fn mount_with_menu_bar<F>(theme: ThemeProviderProps, menus: Vec<(&str, Menu)>, build: F)
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle,
 {
+    // No page: a worker instance (see `mount`).
+    let Some(browser_doc) = page_document() else {
+        return;
+    };
     ensure_global_init();
     rinch::setup_theme_css(&theme);
 
-    let browser_doc = web_sys::window().unwrap().document().unwrap();
     let web_doc = Rc::new(RefCell::new(WebDocument::new(browser_doc)));
 
     let _ = mount_tree(web_doc, move |scope| {

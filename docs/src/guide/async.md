@@ -98,6 +98,10 @@ A task polls under the document and the context root it was spawned in, as a
 timer fires in them, so `use_store` inside a task spawned by an embedded
 context finds that context's stores.
 
+For work that would block the UI thread, on the web as well as the desktop,
+see [Background Workers](./workers.md): a worker's replies can be awaited in a
+task with `worker.next().await`.
+
 Not provided: tasks with a return value (send the result through a `Signal`),
 a `Stream` trait, and `Send` futures on a thread pool — run a tokio runtime on
 a background thread for that (see [Cross-Thread Dispatch](./signals.md#cross-thread-dispatch)) and hand results

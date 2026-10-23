@@ -251,6 +251,8 @@ mod perf_regression_tests;
 mod perf_stats_tests;
 #[cfg(test)]
 mod popover_dropdown_transform_hit_test_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod render_surface_pacing_1768_tests;
 #[cfg(all(test, software_shell))]
 mod repaint_old_rect_tests;
 #[cfg(test)]
@@ -5895,6 +5897,11 @@ impl RinchApp {
                 continue;
             }
             if let Some(id_str) = node.attributes.get("data-render-surface") {
+                // Only a surface in the document has a box: one inside a
+                // detached subtree keeps a parent but is shown nowhere (#1768).
+                if !connected(&d.tree, node_id) {
+                    continue;
+                }
                 let surface_id: usize = match id_str.parse() {
                     Ok(id) => id,
                     Err(_) => continue,
@@ -5907,6 +5914,39 @@ impl RinchApp {
             }
         }
         results
+    }
+
+    /// Tell every `RenderSurface` in the document its painted box (top-left in
+    /// logical px, size in physical px at `scale`), and returns their ids. What
+    /// the desktop paints and an embedded context's scene run before the render
+    /// callbacks (#1768).
+    ///
+    /// `forget_absent` also zeroes the size of every other registered inline
+    /// surface, so its render callback is not run and a continuous one stops
+    /// asking for frames while it is shown nowhere. Only for a host that runs
+    /// every registered surface's callback (the desktop window): the registry
+    /// is per thread, and an embedded context sharing the thread with another
+    /// would zero that one's surfaces; it runs its own ids instead.
+    pub fn update_render_surface_layouts(&self, scale: f32, forget_absent: bool) -> Vec<usize> {
+        use crate::render_surface as rs;
+        let mut ids = Vec::new();
+        for (surface_id, rect) in self.all_surface_layout_rects() {
+            rs::update_layout_rect_by_id(
+                surface_id,
+                rect.0,
+                rect.1,
+                (rect.2 * scale) as u32,
+                (rect.3 * scale) as u32,
+            );
+            ids.push(surface_id);
+        }
+        #[cfg(any(feature = "desktop", feature = "embed"))]
+        if forget_absent {
+            rs::forget_absent_inline_surface_sizes(&ids);
+        }
+        #[cfg(not(any(feature = "desktop", feature = "embed")))]
+        let _ = forget_absent;
+        ids
     }
 
     pub fn surface_layout_rect(&self, surface_id: usize) -> Option<ViewportRect> {
@@ -11690,4 +11730,16 @@ impl Drop for RinchApp {
             crate::focus_registry::note_claim(doc_key, None);
         }
     }
+}
+
+/// Whether `node_id` hangs from the document's root.
+fn connected(tree: &rinch_dom::node::NodeTree, node_id: usize) -> bool {
+    let mut current = Some(node_id);
+    while let Some(id) = current {
+        if id == tree.root_id {
+            return true;
+        }
+        current = tree.nodes.get(id).and_then(|n| n.parent);
+    }
+    false
 }
