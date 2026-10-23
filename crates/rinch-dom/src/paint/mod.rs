@@ -8,6 +8,7 @@ mod blur;
 mod borders;
 pub mod clip;
 mod contenteditable;
+mod gradient;
 pub mod damage;
 pub mod image;
 mod layer_bounds;

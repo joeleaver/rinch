@@ -92,15 +92,69 @@ fn brush_to_paint(brush: &Brush) -> Option<Paint<'static>> {
     }
 }
 
+/// Steps between stops of different alpha that [`premultiplied_ramp`]
+/// inserts: at 8 the largest error against an exact premultiplied ramp is
+/// under one 8-bit level for any pair of colours.
+const PREMUL_STEPS: usize = 8;
+
+/// Stops that tiny-skia, which interpolates **unpremultiplied**, turns into
+/// the ramp CSS asks for, which is interpolated premultiplied (css-images-4
+/// §3.7, peniko's default; #1798): `transparent` to orange fades the orange
+/// out rather than through grey. A stop of alpha 0 takes the colour of the
+/// stop it meets on each side (exact); between two stops of other differing
+/// alphas, [`PREMUL_STEPS`] premultiplied samples are inserted.
+fn premultiplied_ramp(stops: &[(f32, AlphaColor<Srgb>)]) -> Vec<(f32, AlphaColor<Srgb>)> {
+    if stops.len() < 2 || stops.windows(2).all(|w| w[0].1.components[3] == w[1].1.components[3]) {
+        return stops.to_vec();
+    }
+    let with_rgb = |c: AlphaColor<Srgb>, rgb: AlphaColor<Srgb>| {
+        AlphaColor::<Srgb>::new([
+            rgb.components[0],
+            rgb.components[1],
+            rgb.components[2],
+            c.components[3],
+        ])
+    };
+    let mut out = Vec::with_capacity(stops.len() * 2);
+    for w in stops.windows(2) {
+        let ((o0, c0), (o1, c1)) = (w[0], w[1]);
+        let (a0, a1) = (c0.components[3], c1.components[3]);
+        let c0 = if a0 == 0.0 { with_rgb(c0, c1) } else { c0 };
+        let c1 = if a1 == 0.0 { with_rgb(c1, c0) } else { c1 };
+        out.push((o0, c0));
+        if a0 != a1 && a0 > 0.0 && a1 > 0.0 && o1 > o0 {
+            let (p0, p1) = (c0.premultiply().components, c1.premultiply().components);
+            for k in 1..PREMUL_STEPS {
+                let t = k as f32 / PREMUL_STEPS as f32;
+                let m: [f32; 4] = std::array::from_fn(|i| p0[i] + (p1[i] - p0[i]) * t);
+                out.push((
+                    o0 + (o1 - o0) * t,
+                    AlphaColor::new([m[0] / m[3], m[1] / m[3], m[2] / m[3], m[3]]),
+                ));
+            }
+        }
+        out.push((o1, c1));
+    }
+    out
+}
+
 /// Convert a peniko `Gradient` to a tiny-skia `Paint`.
 fn gradient_to_paint(gradient: &Gradient) -> Option<Paint<'static>> {
-    let stops: Vec<GradientStop> = gradient
+    let colors: Vec<(f32, AlphaColor<Srgb>)> = gradient
         .stops
         .iter()
-        .map(|s| {
-            let color = s.color.to_alpha_color::<Srgb>();
-            GradientStop::new(s.offset, to_skia_color(color))
-        })
+        .map(|s| (s.offset, s.color.to_alpha_color::<Srgb>()))
+        .collect();
+    let colors = if gradient.interpolation_alpha_space
+        == peniko::InterpolationAlphaSpace::Premultiplied
+    {
+        premultiplied_ramp(&colors)
+    } else {
+        colors
+    };
+    let stops: Vec<GradientStop> = colors
+        .into_iter()
+        .map(|(offset, color)| GradientStop::new(offset, to_skia_color(color)))
         .collect();
 
     if stops.is_empty() {

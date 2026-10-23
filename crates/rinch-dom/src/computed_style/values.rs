@@ -1279,9 +1279,18 @@ pub enum BackgroundValue {
     LinearGradient {
         angle_degrees: f32,
         stops: Vec<GradientStop>,
+        /// `repeating-linear-gradient()` (#1798).
+        repeating: bool,
     },
     RadialGradient {
         stops: Vec<GradientStop>,
+        /// The ending shape and its size (#1798).
+        shape: RadialShape,
+        /// The centre, against the box's width and height (#1798).
+        position_x: LengthPercentageValue,
+        position_y: LengthPercentageValue,
+        /// `repeating-radial-gradient()` (#1798).
+        repeating: bool,
     },
     /// A background image loaded from a URL or file path.
     Image {
@@ -1359,7 +1368,34 @@ pub struct BackgroundLayer {
 /// A gradient color stop.
 #[derive(Debug, Clone, Serialize)]
 pub struct GradientStop {
-    pub offset: f32,
+    /// Where the stop is along the gradient line (a percentage of its
+    /// length, a length, or both). `None` for a stop written without a
+    /// position, which paint places between its neighbours
+    /// (css-images-3 §3.5.3). Resolved against the line's length at paint
+    /// (#1798: a length used to be read as a hundredth of the line, so
+    /// `31px` was `31%`).
+    pub position: Option<LengthPercentageValue>,
     #[serde(serialize_with = "color_serde::serialize")]
     pub color: Option<peniko::Color>,
+}
+
+/// A radial gradient's ending shape (#1798).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub enum RadialShape {
+    /// `circle <length>`.
+    Circle(f32),
+    /// An ellipse with explicit radii, each against the box's width and
+    /// height.
+    Ellipse(LengthPercentageValue, LengthPercentageValue),
+    /// A circle or ellipse sized to an extent keyword.
+    Extent { circle: bool, extent: RadialExtent },
+}
+
+/// A radial gradient's size keyword (#1798).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+pub enum RadialExtent {
+    ClosestSide,
+    FarthestSide,
+    ClosestCorner,
+    FarthestCorner,
 }
