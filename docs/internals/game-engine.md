@@ -214,9 +214,14 @@ with the canvas's current texture as the target. `SurfaceRoute::GpuImage` holds 
 **Split-layer fast path (#1865, in progress).** Design record:
 `docs/design/split-layer-gpu-surfaces.md`. PR 1 adds the compositor,
 `shell/split_compositor.rs` (`SplitCompositor`, not yet wired into the present
-path): below, the surface and its above slice in one pass with no blend state,
-every blend in the shader in f32, the surface sampled with Vello's own image
-arithmetic so a split matches in-scene bit for bit except in the D10 classes.
+path): below around the regions, then per surface `above_out ∘ mix(below,
+above_in ∘ (surface · own ∘ below), ancestors)` in one pass with no blend
+state, every blend in the shader in f32, the surface sampled with Vello's own
+image arithmetic, so a split matches in-scene bit for bit except in the D10
+classes. The ancestors' clip coverage is applied once, to the surface and
+what is painted over it inside those clips (`above_in`, rendered without
+them), as the scene does; applying it to each separately conflated on a
+rounded card's ring (#1887 review).
 The oracle is `shell/split_compositor_1865_tests.rs` (per-pixel allowances
 computed from each case's own renders; `0` everywhere no class names), the
 Vello facts it stands on are pinned in `shell/split_slices_1865_tests.rs`

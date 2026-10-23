@@ -11,8 +11,6 @@ pub mod devtools_panel;
 pub mod devtools_store;
 #[cfg(feature = "gpu")]
 pub(crate) mod frame_upload;
-// Wired into the desktop present path by #1865 PR 3; until then only its
-// tests use it.
 pub mod html_parser;
 #[cfg(feature = "desktop")]
 pub(crate) mod layer_shell;
@@ -26,6 +24,8 @@ pub mod rinch_runtime;
 pub mod screenshot;
 #[cfg(feature = "desktop")]
 pub mod softbuffer_renderer;
+// Wired into the desktop present path by #1865 PR 3; until then only its
+// tests use it.
 #[cfg(feature = "gpu")]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod split_compositor;
