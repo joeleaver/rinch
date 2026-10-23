@@ -418,7 +418,7 @@ Guide: `docs/src/guide/performance.md`.
 
 **Discovery mechanism:** Each debug-enabled app writes `~/.rinch/debug/{pid}.json` containing its port, app name, and PID. The MCP server scans this directory to find running apps and auto-connects when only one is running.
 
-**IPC protocol:** Length-prefixed JSON over TCP on localhost. 4-byte big-endian length prefix followed by JSON payload. Handshake exchanges protocol version on connect.
+**IPC protocol:** Length-prefixed JSON over TCP on localhost. 4-byte big-endian length prefix followed by JSON payload. Handshake exchanges protocol version on connect. **The app's debug server takes one client at a time**: while the MCP server (or any client) is connected, a second connection's handshake times out. A script driving the wire protocol directly must run with the MCP disconnected (`disconnect`), and the MCP reconnects with `connect` afterwards.
 
 **Key source files:**
 - `crates/rinch-debug/src/server.rs` - TCP listener (blocking I/O, no tokio dependency)
