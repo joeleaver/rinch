@@ -530,6 +530,9 @@ pub struct RinchRuntime {
     /// The main window's geometry as it was hidden (#1546), or as the app
     /// set it while hidden: what `show_window` re-creates it with.
     saved_geometry: SavedGeometry,
+    /// The monitors connected when the main window was last (re-)created:
+    /// a requested or saved position must be reachable on one of them.
+    monitors: Vec<window_geometry::MonitorRect>,
     /// The live main window's layer-shell state, while it is a Wayland
     /// layer surface (#1523).
     layer: Option<LayerState>,
@@ -671,6 +674,7 @@ impl RinchRuntime {
             click_through: false,
             shown_once: false,
             saved_geometry: SavedGeometry::default(),
+            monitors: Vec::new(),
             layer: None,
             output_override: None,
             layer_awaiting_output: false,
@@ -1067,14 +1071,14 @@ impl RinchRuntime {
         // The geometry the window had when it was hidden (#1546), or the
         // requested `WindowProps::x`/`y` on its first appearance — a first
         // creation, or the first show after a hidden start (#1520).
-        let requested = self
-            .app
-            .window_props
-            .as_ref()
-            .and_then(|p| Some((p.x?, p.y?)));
-        let window_attrs = self
-            .saved_geometry
-            .apply(window_attrs, requested, first_appearance);
+        let requested = self.requested_position();
+        let requested_maximized = self.app.window_props.as_ref().is_some_and(|p| p.maximized);
+        let window_attrs = self.saved_geometry.apply(
+            window_attrs,
+            requested,
+            requested_maximized,
+            first_appearance,
+        );
         // A Wayland layer surface (#1523) is placed by its margins: the
         // saved position, or the requested one on a first appearance.
         let layer = steps.wayland_layer.then(|| {
@@ -1346,9 +1350,25 @@ impl RinchRuntime {
         }
     }
 
+    /// `WindowProps::x`/`y`, when the window's top would be reachable on a
+    /// monitor connected now (`self.monitors`); otherwise the system places
+    /// the window, so a position saved on a monitor since unplugged never
+    /// opens it out of reach.
+    fn requested_position(&self) -> Option<(i32, i32)> {
+        let (x, y) = self
+            .app
+            .window_props
+            .as_ref()
+            .and_then(|p| Some((p.x?, p.y?)))?;
+        let position = Position::Logical(LogicalPosition::new(x as f64, y as f64));
+        let size = Size::Logical(LogicalSize::new(self.width as f64, self.height as f64));
+        window_geometry::reachable(position, Some(size), &self.monitors).then_some((x, y))
+    }
+
     fn create_window(&mut self, event_loop: &dyn ActiveEventLoop) {
         // A title set before the loop started (#1770).
         self.take_stored_title();
+        self.monitors = connected_monitors(event_loop);
         let hidden = starts_hidden(self.app.window_props.as_ref());
         let backend = Backend::of(event_loop);
         let steps = self.main_window_steps(backend, true);
@@ -1367,6 +1387,13 @@ impl RinchRuntime {
             overlay_window::after_create(&*window, steps, self.main_window_always_on_top());
             self.shown_once = true;
             self.note_surface_kind(&*window, true);
+            // What an un-maximize returns to, for a window that opens
+            // maximized and so has had no normal geometry to read yet.
+            window_geometry::publish_created(
+                self.requested_position().map(|(x, y)| (x as f64, y as f64)),
+                (self.width as f64, self.height as f64),
+                self.app.window_props.as_ref().is_some_and(|p| p.maximized),
+            );
             self.note_geometry(&*window);
         }
 
@@ -1485,21 +1512,11 @@ impl RinchRuntime {
         // does; a restore from the tray comes back where it was hidden
         // (#1546), with the size it had.
         let first_show = !std::mem::replace(&mut self.shown_once, true);
-        // A position on no monitor that is connected now (one unplugged
-        // while the window was hidden) is left to the system.
+        // A position out of reach on the monitors connected now (one
+        // unplugged while the window was hidden) is left to the system.
+        self.monitors = connected_monitors(event_loop);
         if let Some(position) = self.saved_geometry.position {
-            let monitors: Vec<window_geometry::MonitorRect> = event_loop
-                .available_monitors()
-                .filter_map(|m| {
-                    let size = m.current_video_mode()?.size();
-                    Some(window_geometry::MonitorRect {
-                        position: m.position()?,
-                        size,
-                        scale: m.scale_factor(),
-                    })
-                })
-                .collect();
-            if !window_geometry::on_some_monitor(position, self.saved_geometry.size, &monitors) {
+            if !window_geometry::reachable(position, self.saved_geometry.size, &self.monitors) {
                 self.saved_geometry.position = None;
             }
         }
@@ -5847,4 +5864,19 @@ mod layer_drag_tests {
         });
         assert!(runtime.gpu_surface_transparent());
     }
+}
+
+/// The monitors connected now, in desktop pixels.
+fn connected_monitors(event_loop: &dyn ActiveEventLoop) -> Vec<window_geometry::MonitorRect> {
+    event_loop
+        .available_monitors()
+        .filter_map(|m| {
+            let size = m.current_video_mode()?.size();
+            Some(window_geometry::MonitorRect {
+                position: m.position()?,
+                size,
+                scale: m.scale_factor(),
+            })
+        })
+        .collect()
 }

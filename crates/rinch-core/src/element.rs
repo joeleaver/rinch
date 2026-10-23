@@ -433,6 +433,11 @@ pub struct WindowProps {
     pub title: String,
     pub width: u32,
     pub height: u32,
+    /// The outer top-left on the desktop, logical pixels; the system places
+    /// the window when `None`. Taken only where the window's top strip (its
+    /// title bar, what moves it) would be on a connected monitor, so a
+    /// position saved on a monitor since unplugged never opens the window
+    /// out of reach. Ignored on Wayland, except by a layer-shell window.
     pub x: Option<i32>,
     pub y: Option<i32>,
     /// Whether the window is a `wlr-layer-shell` surface on native Wayland
@@ -468,6 +473,11 @@ pub struct WindowProps {
     /// [`WindowProps::level`] chooses a higher level; this never lowers one
     /// ([`WindowProps::effective_level`]).
     pub always_on_top: bool,
+    /// Whether the window first appears maximized (default `false`), at
+    /// `width` x `height` (and `x`/`y`) when it is restored. With
+    /// `rinch::windows::current_window_restore` read at exit, it brings a
+    /// window back as the person left it.
+    pub maximized: bool,
     /// Whether the window is on screen when the app starts (default `true`).
     ///
     /// `false` starts the app with no window shown — a tray-only app whose
@@ -610,6 +620,7 @@ impl Default for WindowProps {
             resizable: true,
             transparent: false,
             always_on_top: false,
+            maximized: false,
             visible: true,
             resize_inset: None,
             icon: None,
@@ -631,6 +642,7 @@ impl std::fmt::Debug for WindowProps {
             .field("title", &self.title)
             .field("width", &self.width)
             .field("height", &self.height)
+            .field("maximized", &self.maximized)
             .field("wayland_layer_shell", &self.wayland_layer_shell)
             .field("output", &self.output)
             .field("borderless", &self.borderless)

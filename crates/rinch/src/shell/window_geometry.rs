@@ -110,11 +110,13 @@ impl SavedGeometry {
     /// geometry where there is one, otherwise `requested` — the
     /// `WindowProps::x`/`y` position, which only a first appearance takes
     /// (`first`); a later show without a recorded position is placed by the
-    /// system, as before.
+    /// system, as before. A first appearance is maximized when
+    /// `WindowProps::maximized` asks (`requested_maximized`).
     pub(crate) fn apply(
         &self,
         mut attrs: WindowAttributes,
         requested: Option<(i32, i32)>,
+        requested_maximized: bool,
         first: bool,
     ) -> WindowAttributes {
         if let Some(size) = self.size {
@@ -126,7 +128,7 @@ impl SavedGeometry {
         if let Some(position) = self.position.or(requested) {
             attrs = attrs.with_position(position);
         }
-        if self.maximized {
+        if self.maximized || (first && requested_maximized) {
             attrs = attrs.with_maximized(true);
         }
         attrs
@@ -141,29 +143,35 @@ pub(crate) struct MonitorRect {
     pub scale: f64,
 }
 
-/// Whether a window at `position` (outer top-left) of `size` overlaps one of
-/// `monitors`. `true` when the monitors are unknown (an empty list), so a
-/// platform that lists none keeps the position. A logical position (macOS
-/// points) is compared in each monitor's own scale.
-pub(crate) fn on_some_monitor(
-    position: Position,
-    size: Option<Size>,
-    monitors: &[MonitorRect],
-) -> bool {
+/// How much of a window's top must be on a monitor for the person to reach
+/// it (to grab its title bar and move it): a strip this wide (or the whole
+/// width of a narrower window) and half this tall, logical pixels.
+const GRIP: (f64, f64) = (64.0, 24.0);
+
+/// Whether a window at `position` (outer top-left) of `size` can be reached
+/// on one of `monitors`: its top strip is on it ([`GRIP`]). A window that
+/// merely overlaps a monitor with its bottom edge, or a sliver of its side,
+/// cannot be moved back by hand. `true` when the monitors are unknown (an
+/// empty list), so a platform that lists none keeps the position. A logical
+/// position (macOS points) is compared in each monitor's own scale.
+pub(crate) fn reachable(position: Position, size: Option<Size>, monitors: &[MonitorRect]) -> bool {
     if monitors.is_empty() {
         return true;
     }
     monitors.iter().any(|m| {
         let p: PhysicalPosition<i32> = position.to_physical(m.scale);
-        let (w, h): (u32, u32) = size
-            .map(|s| s.to_physical::<u32>(m.scale).into())
-            .unwrap_or((1, 1));
+        let w = size
+            .map(|s| s.to_physical::<u32>(m.scale).width)
+            .unwrap_or(1)
+            .max(1) as i64;
+        let grip_w = ((GRIP.0 * m.scale) as i64).clamp(1, w);
+        let grip_h = ((GRIP.1 * m.scale) as i64).max(2);
         let (mx, my) = (m.position.x as i64, m.position.y as i64);
+        let (mw, mh) = (m.size.width as i64, m.size.height as i64);
         let (x, y) = (p.x as i64, p.y as i64);
-        x < mx + m.size.width as i64
-            && x + w.max(1) as i64 > mx
-            && y < my + m.size.height as i64
-            && y + h.max(1) as i64 > my
+        let across = (x + w).min(mx + mw) - x.max(mx);
+        let down = (y + grip_h).min(my + mh) - y.max(my);
+        across >= grip_w && down >= grip_h / 2
     })
 }
 
@@ -174,6 +182,12 @@ pub(crate) struct PublishedGeometry {
     pub position: Option<(f64, f64)>,
     /// Inner size.
     pub size: Option<(f64, f64)>,
+    /// Whether the window is maximized.
+    pub maximized: bool,
+    /// The position and size it had when it was last neither maximized nor
+    /// minimized: what an un-maximize returns to.
+    pub normal_position: Option<(f64, f64)>,
+    pub normal_size: Option<(f64, f64)>,
 }
 
 /// The last geometry the shell saw for the main window, kept while it is
@@ -182,7 +196,11 @@ static PUBLISHED: Mutex<Option<PublishedGeometry>> = Mutex::new(None);
 
 /// Publish the geometry of the live main window.
 pub(crate) fn publish_window(r: &WindowReading) {
-    let mut g = published().unwrap_or_default();
+    publish(read_into(published().unwrap_or_default(), r));
+}
+
+/// `g` after reading the live window.
+fn read_into(mut g: PublishedGeometry, r: &WindowReading) -> PublishedGeometry {
     // A minimized window keeps the position it had (Windows reports
     // (-32000, -32000) while minimized, which an app persisting it would
     // restore off screen); Wayland has none.
@@ -195,8 +213,39 @@ pub(crate) fn publish_window(r: &WindowReading) {
             let s = r.surface.to_logical::<f64>(r.scale);
             g.size = Some((s.width, s.height));
         }
+        g.maximized = r.maximized;
+        if r.is_normal() {
+            g.normal_position = g.position;
+            g.normal_size = g.size;
+        }
     }
-    publish(g);
+    g
+}
+
+/// Publish the geometry a window is created with, before anything is read
+/// off it: a window that first appears maximized has had no normal geometry
+/// yet, and this is the one an un-maximize returns to.
+pub(crate) fn publish_created(position: Option<(f64, f64)>, size: (f64, f64), maximized: bool) {
+    publish(created_into(
+        published().unwrap_or_default(),
+        position,
+        size,
+        maximized,
+    ));
+}
+
+fn created_into(
+    mut g: PublishedGeometry,
+    position: Option<(f64, f64)>,
+    size: (f64, f64),
+    maximized: bool,
+) -> PublishedGeometry {
+    if g.normal_size.is_none() {
+        g.normal_position = position;
+        g.normal_size = Some(size);
+    }
+    g.maximized = maximized;
+    g
 }
 
 /// Publish a position or size the app set while the window was hidden: what
@@ -205,9 +254,11 @@ pub(crate) fn publish_hidden(position: Option<(f64, f64)>, size: Option<(f64, f6
     let mut g = published().unwrap_or_default();
     if position.is_some() {
         g.position = position;
+        g.normal_position = position;
     }
     if size.is_some() {
         g.size = size;
+        g.normal_size = size;
     }
     publish(g);
 }
@@ -235,7 +286,7 @@ mod tests {
     #[test]
     fn with_nothing_saved_a_first_show_takes_the_requested_position_and_a_later_one_none() {
         let none = SavedGeometry::default();
-        let first = none.apply(attrs(), Some((40, 50)), true);
+        let first = none.apply(attrs(), Some((40, 50)), false, true);
         assert_eq!(
             first.position,
             Some(Position::Logical(LogicalPosition::new(40.0, 50.0)))
@@ -244,8 +295,11 @@ mod tests {
             first.surface_size,
             Some(Size::Logical(LogicalSize::new(560.0, 280.0)))
         );
-        assert_eq!(none.apply(attrs(), Some((40, 50)), false).position, None);
-        assert_eq!(none.apply(attrs(), None, true).position, None);
+        assert_eq!(
+            none.apply(attrs(), Some((40, 50)), false, false).position,
+            None
+        );
+        assert_eq!(none.apply(attrs(), None, false, true).position, None);
     }
 
     /// A recorded geometry wins over the configured size and the requested
@@ -258,7 +312,7 @@ mod tests {
             maximized: false,
         };
         for first in [true, false] {
-            let a = saved.apply(attrs(), Some((40, 50)), first);
+            let a = saved.apply(attrs(), Some((40, 50)), false, first);
             assert_eq!(a.position, saved.position);
             assert_eq!(a.surface_size, saved.size);
             assert!(!a.maximized);
@@ -273,7 +327,7 @@ mod tests {
             size: Some(Size::Logical(LogicalSize::new(700.0, 200.0))),
             maximized: false,
         };
-        let a = saved.apply(attrs(), Some((40, 50)), false);
+        let a = saved.apply(attrs(), Some((40, 50)), false, false);
         assert_eq!(a.position, None);
         assert_eq!(a.surface_size, saved.size);
     }
@@ -295,7 +349,7 @@ mod tests {
     fn the_size_survives_a_scale_change_in_logical_pixels() {
         let mut saved = SavedGeometry::default();
         saved.record(&reading(2.0, (300, 378), (700, 200)));
-        let a = saved.apply(attrs(), None, false);
+        let a = saved.apply(attrs(), None, false, false);
         let at_1: PhysicalSize<u32> = a.surface_size.unwrap().to_physical(1.0);
         assert_eq!(at_1, PhysicalSize::new(350, 100));
         let at_15: PhysicalSize<u32> = a.surface_size.unwrap().to_physical(1.5);
@@ -339,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    fn a_position_off_every_monitor_is_dropped() {
+    fn a_position_out_of_reach_is_dropped() {
         let monitors = [
             MonitorRect {
                 position: PhysicalPosition::new(0, 0),
@@ -354,14 +408,59 @@ mod tests {
         ];
         let size = Some(Size::Logical(LogicalSize::new(400.0, 300.0)));
         let at = |x, y| Position::Physical(PhysicalPosition::new(x, y));
-        assert!(on_some_monitor(at(300, 378), size, &monitors));
-        assert!(on_some_monitor(at(3000, 1000), size, &monitors));
+        assert!(reachable(at(300, 378), size, &monitors));
+        assert!(reachable(at(3000, 1000), size, &monitors));
         // Overlapping the left monitor from off its left edge.
-        assert!(on_some_monitor(at(-200, 100), size, &monitors));
+        assert!(reachable(at(-200, 100), size, &monitors));
         // A third monitor that is gone.
-        assert!(!on_some_monitor(at(5000, 100), size, &monitors));
-        assert!(!on_some_monitor(at(-32000, -32000), size, &monitors));
-        assert!(on_some_monitor(at(5000, 100), size, &[]), "unknown: kept");
+        assert!(!reachable(at(5000, 100), size, &monitors));
+        assert!(!reachable(at(-32000, -32000), size, &monitors));
+        assert!(reachable(at(5000, 100), size, &[]), "unknown: kept");
+        // Only its bottom on the screen: the title bar is above every monitor.
+        assert!(!reachable(at(300, -250), size, &monitors));
+        // Its top just below the bottom edge.
+        assert!(!reachable(at(300, 1075), size, &monitors));
+        // A sliver of its right side on the left monitor.
+        assert!(!reachable(at(-380, 100), size, &monitors));
+        // A frame a few pixels above the top (Windows' outer frame) is fine.
+        assert!(reachable(at(300, -8), size, &monitors));
+    }
+
+    /// `WindowProps::maximized` maximizes a first appearance only; a saved
+    /// geometry says for a later one.
+    #[test]
+    fn a_requested_maximize_is_for_the_first_appearance() {
+        let none = SavedGeometry::default();
+        assert!(none.apply(attrs(), None, true, true).maximized);
+        assert!(!none.apply(attrs(), None, true, false).maximized);
+        assert!(!none.apply(attrs(), None, false, true).maximized);
+    }
+
+    /// What an app reads to bring the window back: the normal geometry kept
+    /// through a maximize, and that it was maximized.
+    #[test]
+    fn the_published_normal_geometry_survives_a_maximize() {
+        let g = created_into(
+            PublishedGeometry::default(),
+            Some((10.0, 20.0)),
+            (800.0, 600.0),
+            true,
+        );
+        assert_eq!(
+            (g.normal_position, g.normal_size, g.maximized),
+            (Some((10.0, 20.0)), Some((800.0, 600.0)), true)
+        );
+        let g = read_into(g, &reading(1.0, (120, 140), (600, 300)));
+        let maxed = WindowReading {
+            maximized: true,
+            ..reading(1.0, (0, 0), (1280, 800))
+        };
+        let g = read_into(g, &maxed);
+        assert_eq!(g.size, Some((1280.0, 800.0)));
+        assert_eq!(
+            (g.normal_position, g.normal_size, g.maximized),
+            (Some((120.0, 140.0)), Some((600.0, 300.0)), true)
+        );
     }
 
     #[test]
@@ -370,6 +469,6 @@ mod tests {
             maximized: true,
             ..Default::default()
         };
-        assert!(saved.apply(attrs(), None, false).maximized);
+        assert!(saved.apply(attrs(), None, false, false).maximized);
     }
 }
