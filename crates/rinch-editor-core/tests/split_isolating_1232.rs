@@ -476,7 +476,6 @@ fn no_command_at_any_position_makes_a_ragged_table() {
     let mut runs = 0usize;
     let mut applied = 0usize;
     let mut undone = 0usize;
-    let mut known_1852 = 0usize;
     let mut failures = Vec::new();
     for seed in 1..=seeds {
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ seed.wrapping_mul(0x2545_F491_4F6C_DD1D));
@@ -535,13 +534,10 @@ fn no_command_at_any_position_makes_a_ragged_table() {
                     continue;
                 }
                 if !valid(&s, &next.doc) {
-                    // #1852: setCodeBlock keeps a picture the code block cannot
-                    // hold. Not a table defect; counted, not failed.
-                    if *name == "setCodeBlock" {
-                        known_1852 += 1;
-                    } else {
-                        fail("(invalid)", &next.doc);
-                    }
+                    // #1852 (setCodeBlock keeping a picture a code block cannot
+                    // hold) is fixed by #1846's `clear_incompatible`, so every
+                    // command must leave a valid document.
+                    fail("(invalid)", &next.doc);
                     continue;
                 }
                 if next.doc == doc {
@@ -568,9 +564,7 @@ fn no_command_at_any_position_makes_a_ragged_table() {
         undone > applied / 4,
         "only {undone} of {applied} edits undone"
     );
-    eprintln!(
-        "{runs} runs, {applied} applied, {undone} undone and redone, {known_1852} known #1852"
-    );
+    eprintln!("{runs} runs, {applied} applied, {undone} undone and redone");
     let mut by_command = std::collections::BTreeMap::<String, usize>::new();
     for (name, _) in &failures {
         *by_command.entry(name.clone()).or_default() += 1;
