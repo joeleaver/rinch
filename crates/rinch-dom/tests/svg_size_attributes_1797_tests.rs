@@ -127,6 +127,23 @@ fn an_author_size_wins_over_the_attributes() {
 }
 
 #[test]
+fn both_attributes_give_the_ratio_before_the_view_box() {
+    let auto_height = "width: 60px; height: auto";
+    check(
+        &[("width", "30"), ("height", "10")],
+        auto_height,
+        (60.0, 20.0),
+    );
+    check(
+        &[("width", "30"), ("height", "10"), ("viewBox", "0 0 16 16")],
+        auto_height,
+        (60.0, 20.0),
+    );
+    // One attribute is no ratio: the viewBox's answers.
+    check(&[("width", "30"), VB], auto_height, (60.0, 30.0));
+}
+
+#[test]
 fn one_attribute_takes_the_other_from_the_view_box() {
     check(&[("width", "14"), VB], "", (14.0, 7.0));
     check(&[("height", "14"), VB], "", (28.0, 14.0));
@@ -148,7 +165,6 @@ fn no_attribute_and_no_view_box_is_the_default_object_size() {
 
 #[test]
 fn a_view_box_alone_fills_the_containing_blocks_width() {
-    check(&[VB], "", (400.0, 200.0));
     check(&[VB], "display: block", (400.0, 200.0));
     check(&[VB], "width: 32px", (32.0, 16.0));
     check(&[VB], "height: 32px", (64.0, 32.0));
@@ -179,14 +195,19 @@ fn the_attribute_is_read_as_a_css_length() {
         "font-size: 20px",
         (20.0, 20.0),
     );
-    check(&[("width", "14.5"), ("height", " 14")], "", (14.5, 14.0));
+    // Chrome 155: 14.5x14. rinch rounds every layout to whole pixels, so
+    // 14.5 is 15 (the fraction is read: 14 would be a truncation).
+    check(&[("width", "14.5"), ("height", " 14")], "", (15.0, 14.0));
     check(&[("width", "1e1"), ("height", "+14")], "", (10.0, 14.0));
     check(&[("width", "30"), ("height", "14PX")], "", (30.0, 14.0));
     // 1in is 96px.
     check(&[("width", "30"), ("height", "1in")], "", (30.0, 96.0));
-    // A negative length is zero, on either axis.
+    // A negative length is no property, and a natural size of zero: alone
+    // it is a zero dimension, beside a ratio the ratio answers.
     check(&[("height", "-3")], "", (300.0, 0.0));
     check(&[("width", "-3")], "", (0.0, 150.0));
+    check(&[("width", "30"), ("height", "-3"), VB], "", (30.0, 15.0));
+    check(&[("width", "-3"), ("height", "10"), VB], "", (20.0, 10.0));
 }
 
 #[test]
@@ -290,4 +311,14 @@ fn an_icon_sized_by_its_attributes_paints() {
     for (x, y) in [(35, 15), (25, 25), (19, 15), (25, 9)] {
         assert_ne!(px(x, y)[1], 128, "({x}, {y}) is outside the icon");
     }
+}
+
+/// Not Chrome's: an **inline** `<svg>` with a ratio and no natural size is
+/// sized as an atomic inline, shrink-to-fit, whose max-content width is the
+/// default object size's, so it is 300 wide and as tall as its ratio says.
+/// Chrome 155 fills the containing block: 400x200. (A block-level one fills
+/// it, above.)
+#[test]
+fn known_difference_an_inline_view_box_alone_is_the_default_width() {
+    check(&[VB], "", (300.0, 150.0));
 }

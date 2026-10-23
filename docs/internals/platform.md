@@ -128,6 +128,24 @@ ratio of an image with no natural size (not loaded, or failed) —
 `<img width=100 height=50 style="width: 200px; height: auto">` is 200x100
 before the image arrives — and a loaded image's own ratio replaces it. A
 `<canvas>`'s two attributes stay its bitmap size, read as integers (#1173).
+**An `<svg>` is a replaced element too** (#1797, `replaced::svg_context`): its
+`width`/`height` are presentation attributes, mapped into the same hint block
+but read as a CSS `<length-percentage>` with a bare number in pixels
+(`replaced::svg_length`: `"14"`, `"14PX"`, `"2em"`, `"1e1"`, `"50%"`; not
+`"14 px"`); and it has a `NodeContext::Replaced` measure whose natural size
+is the attributes that are absolute lengths (`em` against its own font
+size; a negative one is 0) and whose natural ratio is theirs when both are,
+else the `viewBox`'s. A missing dimension comes through the ratio, else from
+300x150; with neither and a ratio it fills its parent's width
+(`replaced::SVG_FILL_WIDTH`). It is hollow (`ignores_inner_display`): its
+children are its drawing, detached from Taffy, never CSS content. A
+`viewBox` write restyles it. Before, an `<svg width="14" height="14">` with
+no CSS size was 0x0. Not Chrome's (pinned in
+`tests/svg_size_attributes_1797_tests.rs`): an **inline** `<svg>` with a
+ratio and no natural size is 300 wide where Chrome fills its containing
+block (a block-level one fills it); an invalid attribute (`"abc"`) counts as
+absent, where Chrome lays an `<svg>` with an invalid `width` out at its
+containing block's width.
 **CSS `aspect-ratio`** (#1286) is `ComputedStyle::aspect_ratio`
 (`AspectRatioValue { auto, ratio }`, a degenerate ratio is `auto`): a
 non-replaced box hands it to Taffy's `Style::aspect_ratio` (block, flex,

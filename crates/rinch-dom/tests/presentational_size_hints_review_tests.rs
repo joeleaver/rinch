@@ -193,8 +193,7 @@ fn uppercase_removal_removes_the_hint() {
 #[test]
 fn unmapped_elements_hold_no_hint_block() {
     for tag in [
-        "div", "span", "canvas", "input", "svg", "image", "rect", "table", "td", "hr", "object",
-        "embed",
+        "div", "span", "canvas", "input", "image", "rect", "table", "td", "hr", "object", "embed",
     ] {
         let (doc, _, e) = build_in("", BOX, tag, BOTH, "");
         assert!(
@@ -213,9 +212,10 @@ fn unmapped_elements_hold_no_hint_block() {
     assert!(doc.tree.get(e.0).unwrap().presentational_hints.is_none());
 }
 
-/// An svg's own `width`/`height` and an svg `<image>`'s are untouched.
+/// An svg `<image>`'s `width`/`height` map nothing. The outer `<svg>`'s are
+/// presentation attributes since #1797 (`svg_size_attributes_1797_tests`).
 #[test]
-fn svg_sizes_are_unchanged() {
+fn an_svg_images_size_maps_nothing() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let d = doc.create_element("div");
@@ -230,7 +230,7 @@ fn svg_sizes_are_unchanged() {
     doc.set_attribute(image, "height", "20");
     doc.append_child(svg, image);
     doc.resolve_layout(800.0, 600.0);
-    assert!(doc.tree.get(svg.0).unwrap().presentational_hints.is_none());
+    assert!(doc.tree.get(svg.0).unwrap().presentational_hints.is_some());
     assert!(
         doc.tree
             .get(image.0)
