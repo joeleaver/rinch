@@ -30,9 +30,26 @@ trap 'rm -rf "$tmp"; [ -n "${helper:-}" ] && kill "$helper" 2>/dev/null || true'
 cat > "$tmp/webdriver.json" <<JSON
 { "goog:chromeOptions": { "args": ["--remote-debugging-port=$port"] } }
 JSON
-node "$here/real_keys.mjs" "$port" &
+# The helper's log goes to a file, shown when a test fails or the helper dies
+# (#1839: it died silently between two test binaries, and the failing test said
+# only that its click was never sent).
+helper_log="$tmp/real_keys.log"
+node "$here/real_keys.mjs" "$port" >"$helper_log" 2>&1 &
 helper=$!
+show_helper_log() {
+  echo "---- real_keys.mjs log ($helper_log) ----"
+  cat "$helper_log" || true
+  echo "---- end of real_keys.mjs log ----"
+}
 cd "$tmp"
 for wasm in "${wasms[@]}"; do
-  CHROMEDRIVER="$CHROMEDRIVER" wasm-bindgen-test-runner "$wasm" --include-ignored "$@"
+  if ! kill -0 "$helper" 2>/dev/null; then
+    echo "real_keys.mjs is no longer running"
+    show_helper_log
+    exit 1
+  fi
+  if ! CHROMEDRIVER="$CHROMEDRIVER" wasm-bindgen-test-runner "$wasm" --include-ignored "$@"; then
+    show_helper_log
+    exit 1
+  fi
 done

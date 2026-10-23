@@ -26,6 +26,9 @@ use rinch_web::RootHandle;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
 
+#[path = "support/real_input.rs"]
+mod real_input;
+
 wasm_bindgen_test_configure!(run_in_browser);
 
 const HOST_MARKER: &str = "data-test-host-real-touch";
@@ -61,18 +64,15 @@ async fn real_touch(points: &[(f64, f64)]) {
         .map(|(x, y)| format!("{},{}", x.round(), y.round()))
         .collect::<Vec<_>>()
         .join(";");
-    document().set_title(&format!("RINCH-REAL-TOUCH:{n}:{path}"));
-    let sent = format!("RINCH-REAL-TOUCH-SENT:{n}");
-    for _ in 0..200 {
-        sleep(50).await;
-        if document().title() == sent {
-            // The compatibility mouse events and the click come after the
-            // touch has ended.
-            sleep(400).await;
-            return;
-        }
-    }
-    panic!("the helper never sent touch #{n} (is support/real_keys.mjs running?)");
+    real_input::ask_helper(
+        &format!("RINCH-REAL-TOUCH:{n}:{path}"),
+        &format!("RINCH-REAL-TOUCH-SENT:{n}"),
+        &format!("touch #{n}"),
+    )
+    .await;
+    // The compatibility mouse events and the click come after the touch has
+    // ended.
+    sleep(400).await;
 }
 
 /// Records the type of every pointer event, `mousedown` and `click` the window

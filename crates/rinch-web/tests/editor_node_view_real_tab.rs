@@ -21,6 +21,9 @@ use rinch_web::{RootHandle, create_editor};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
 
+#[path = "support/real_input.rs"]
+mod real_input;
+
 wasm_bindgen_test_configure!(run_in_browser);
 
 fn document() -> web_sys::Document {
@@ -45,17 +48,14 @@ async fn sleep(ms: i32) {
 
 /// Ask the helper for one trusted key press, and wait until it says it sent it.
 async fn real_key(n: u32, key: &str, shift: bool) {
-    document().set_title(&format!("RINCH-REAL-KEY:{n}:{key}:{}", u8::from(shift)));
-    let sent = format!("RINCH-REAL-KEY-SENT:{n}");
-    for _ in 0..200 {
-        sleep(50).await;
-        if document().title() == sent {
-            // The focus move runs in the task that handled the key.
-            sleep(50).await;
-            return;
-        }
-    }
-    panic!("the helper never sent {key} (is support/real_keys.mjs running?)");
+    real_input::ask_helper(
+        &format!("RINCH-REAL-KEY:{n}:{key}:{}", u8::from(shift)),
+        &format!("RINCH-REAL-KEY-SENT:{n}"),
+        key,
+    )
+    .await;
+    // The focus move runs in the task that handled the key.
+    sleep(50).await;
 }
 
 fn describe(el: Option<web_sys::Element>) -> String {
