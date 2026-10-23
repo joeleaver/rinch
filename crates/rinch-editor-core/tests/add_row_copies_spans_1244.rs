@@ -441,16 +441,43 @@ fn the_issues_loaded_table_adds_a_row_in_proportion_to_its_cells() {
     }
 }
 
-/// A ragged row whose holes are no more than the table's cells keeps one
-/// cell per hole column, as before; past that, a run of holes gets cells up
-/// to 1000 wide.
+/// A ragged row's holes get one cell per column, as before, while they are
+/// no more than the table's cells or 1000, whichever is more; past that, a
+/// run of holes gets cells up to 1000 wide. Without the 1000 floor a small
+/// table switched: a title row of `colspan = 10` over rows of 2 cells gave a
+/// new row of `[1, 1, colspan 8]` (from the review of #1876).
 #[test]
-fn holes_get_a_cell_each_while_the_table_has_as_many_cells() {
+fn holes_get_a_cell_each_unless_the_table_is_huge() {
     let s = Schema::starter_kit();
-    // 4 cells; the short row has 2 holes.
-    let t = table(&s, &[vec![(1, 1), (1, 1), (1, 1)], vec![(1, 1)]]);
+    // A title header 10 wide over three rows of 2 cells: 8 holes beside the
+    // last row, 7 cells. Ten single cells, as before.
+    let t = table_h(
+        &s,
+        &[
+            vec![(10, 1)],
+            vec![(1, 1), (1, 1)],
+            vec![(1, 1), (1, 1)],
+            vec![(1, 1), (1, 1)],
+        ],
+        1,
+    );
+    let nt = run_in(&t, 3, 1, "addRowAfter");
+    assert_eq!(shape(&nt)[4], vec![td(1, 1); 10], "the title example");
+    // One 4-wide cell over one cell: 3 holes, 2 cells. Four single cells.
+    let t = table(&s, &[vec![(4, 1)], vec![(1, 1)]]);
     let nt = run_in(&t, 1, 0, "addRowAfter");
-    assert_eq!(shape(&nt)[2], vec![td(1, 1); 3]);
+    assert_eq!(shape(&nt)[2], vec![td(1, 1); 4], "the 4-wide example");
+    // The floor's edge: 1000 holes are 1000 cells; 1001 are runs of 1000.
+    let t = table(&s, &[vec![(1001, 1)], vec![(1, 1)]]);
+    let nt = run_in(&t, 1, 0, "addRowAfter");
+    assert_eq!(shape(&nt)[2], vec![td(1, 1); 1001], "1000 holes");
+    let t = table(&s, &[vec![(1002, 1)], vec![(1, 1)]]);
+    let nt = run_in(&t, 1, 0, "addRowAfter");
+    assert_eq!(
+        shape(&nt)[2],
+        vec![td(1, 1), td(1000, 1), td(1, 1)],
+        "1001 holes"
+    );
     // 3 cells; the short row has 2501 holes: one cell, then 1000, 1000, 501.
     let t = table(&s, &[vec![(1000, 1), (1000, 1), (502, 1)], vec![(1, 1)]]);
     let nt = run_in(&t, 1, 0, "addRowAfter");
