@@ -1584,24 +1584,27 @@ impl RinchDomEditorView {
         let mut children = Vec::with_capacity(state.doc.child_count());
         let mut node_view_work = Vec::new();
         let mut slots = Vec::new();
-        {
-            let mut cx = Cx {
-                doc: &doc,
-                views: (!node_views.is_empty()).then_some(&*node_views),
-                kept: &[],
-                mapping: None,
-                work: &mut node_view_work,
-                slots: &mut slots,
-            };
-            for i in 0..state.doc.child_count() {
-                if let Some(child) = ViewDesc::build(state.doc.child(i), &mut cx) {
+        // A schema whose top node is itself a textblock (`doc: text*`): its
+        // runs are placed in their mark wrappers, as any textblock's (#1833).
+        let inline_root = state.doc.is_textblock();
+        let mut cx = Cx {
+            doc: &doc,
+            views: (!node_views.is_empty()).then_some(&*node_views),
+            kept: &[],
+            mapping: None,
+            work: &mut node_view_work,
+            slots: &mut slots,
+        };
+        for i in 0..state.doc.child_count() {
+            if let Some(child) = ViewDesc::build(state.doc.child(i), &mut cx) {
+                if !inline_root {
                     container.append_child(&child.dom);
-                    children.push(child);
                 }
+                children.push(child);
             }
         }
         let has_view = children.iter().any(|c| c.has_view);
-        let root = ViewDesc {
+        let mut root = ViewDesc {
             slot: None,
             has_view,
             node: state.doc.clone(),
@@ -1617,6 +1620,10 @@ impl RinchDomEditorView {
             trailing_break: None,
             grid_placement: None,
         };
+        if inline_root {
+            root.regroup_inline(&mut cx);
+        }
+        drop(cx);
         let flat = doc
             .upgrade()
             .and_then(|d| d.try_borrow().ok().map(|d| FlatWidths::of(&*d)))
@@ -1730,7 +1737,13 @@ impl EditorView for RinchDomEditorView {
                 work: &mut self.node_view_work,
                 slots: &mut self.slots,
             };
-            self.root.diff_children(&next.doc, &mut cx, 0, 0);
+            let regroup = self.root.diff_children(&next.doc, &mut cx, 0, 0);
+            self.root.node = next.doc.clone();
+            // A textblock root (`doc: text*`) places its runs as any
+            // textblock does (#1833).
+            if regroup && next.doc.is_textblock() {
+                self.root.regroup_inline(&mut cx);
+            }
         }
         self.root.has_view = self.root.children.iter().any(|c| c.has_view);
         self.root.node = next.doc.clone();
@@ -2159,14 +2172,17 @@ impl RinchDomEditorView {
                 return Some(rect);
             }
         }
+        let shift = self.shared_exit_width(&*host, doc, pos, block_id, stored);
+        let shifted = |(x, y, h): (f32, f32, f32)| (x + shift, y, h);
         for (element, end, after) in self.mark_edges_beside(doc, pos, stored, affinity) {
             if let Some(rect) =
                 host.query_inline_edge_caret_rect(block_id, element as u64, end, after)
             {
-                return Some(rect);
+                return Some(shifted(rect));
             }
         }
         host.query_caret_rect_with_affinity(block_id, byte, affinity)
+            .map(shifted)
     }
 
     /// The inline leaves whose box a caret at `pos` can be drawn against, in
@@ -2281,38 +2297,10 @@ impl RinchDomEditorView {
         stored: Option<&[Mark]>,
         affinity: CaretAffinity,
     ) -> Vec<(usize, bool, bool)> {
-        let Ok(r) = doc.resolve(pos) else {
+        let Some((desc, before, next, marks_here)) = self.seam(doc, pos) else {
             return Vec::new();
         };
-        if !r.parent().is_textblock() {
-            return Vec::new();
-        }
-        let mut desc = &self.root;
-        for d in 0..r.depth() {
-            match desc.children.get(r.index(d)) {
-                Some(c) => desc = c,
-                None => return Vec::new(),
-            }
-        }
-        let off = r.parent_offset();
         let block = &desc.node;
-        let mut at = 0usize;
-        let mut before: Option<usize> = None;
-        let mut next: Option<usize> = None;
-        for i in 0..block.child_count() {
-            if at == off {
-                next = Some(i);
-                break;
-            }
-            if at > off {
-                return Vec::new(); // inside a text run
-            }
-            at += block.child(i).node_size();
-            before = Some(i);
-        }
-        if next.is_none() && at != off {
-            return Vec::new();
-        }
         // A child's wrapper elements, innermost first — only the ones that
         // end (`before`) or start (`next`) at this seam: a wrapper the two
         // runs share (#1833) has its edges elsewhere, around both.
@@ -2337,7 +2325,7 @@ impl RinchDomEditorView {
         } else {
             wrappers(next, before)
         };
-        let typed = stored.map_or_else(|| r.marks(), <[Mark]>::to_vec);
+        let typed = stored.map_or(marks_here, <[Mark]>::to_vec);
         let joins = |i: Option<usize>| {
             i.map(|i| block.child(i))
                 .is_some_and(|n| n.is_text() && n.marks() == typed.as_slice())
@@ -2358,6 +2346,99 @@ impl RinchDomEditorView {
         } else {
             past_before.chain(before_after).collect()
         }
+    }
+
+    /// The textblock descriptor holding `pos`, the children before and after
+    /// it when `pos` is between two children (or at an end), and the marks a
+    /// caret there carries ([`ResolvedPos::marks`]). `None` inside a text run
+    /// or outside a textblock.
+    ///
+    /// [`ResolvedPos::marks`]: rinch_editor_core::ResolvedPos::marks
+    #[allow(clippy::type_complexity)]
+    fn seam(
+        &self,
+        doc: &Node,
+        pos: Pos,
+    ) -> Option<(&ViewDesc, Option<usize>, Option<usize>, Vec<Mark>)> {
+        let r = doc.resolve(pos).ok()?;
+        if !r.parent().is_textblock() {
+            return None;
+        }
+        let mut desc = &self.root;
+        for d in 0..r.depth() {
+            desc = desc.children.get(r.index(d))?;
+        }
+        let off = r.parent_offset();
+        let block = &desc.node;
+        let mut at = 0usize;
+        let mut before: Option<usize> = None;
+        let mut next: Option<usize> = None;
+        for i in 0..block.child_count() {
+            if at == off {
+                next = Some(i);
+                break;
+            }
+            if at > off {
+                return None; // inside a text run
+            }
+            at += block.child(i).node_size();
+            before = Some(i);
+        }
+        if next.is_none() && at != off {
+            return None;
+        }
+        Some((desc, before, next, r.marks()))
+    }
+
+    /// The wrappers the runs on both sides of `pos` share (#1833) whose mark a
+    /// character typed at `pos` would not carry (`stored`, else the marks
+    /// there): the typed character makes a run of its own outside them, past
+    /// their end edges, though at the seam no edge of theirs stands yet. The
+    /// caret is drawn that far further on (review of #1862), so it stays where
+    /// a typed character lands, as it did when each run had wrappers of its
+    /// own. Inside one run the same toggle is not handled (#1426's caret
+    /// stands at the byte there).
+    pub(crate) fn shared_wrappers_left(
+        &self,
+        doc: &Node,
+        pos: Pos,
+        stored: Option<&[Mark]>,
+    ) -> Vec<usize> {
+        let Some((desc, Some(before), Some(next), marks_here)) = self.seam(doc, pos) else {
+            return Vec::new();
+        };
+        let typed = stored.map_or(marks_here, <[Mark]>::to_vec);
+        let (Some(b), Some(n)) = (desc.children.get(before), desc.children.get(next)) else {
+            return Vec::new();
+        };
+        b.wraps
+            .iter()
+            .filter(|(m, w)| {
+                !typed.contains(m) && n.wraps.iter().any(|(_, x)| x.node_id() == w.node_id())
+            })
+            .map(|(_, w)| w.node_id().0)
+            .collect()
+    }
+
+    /// How far past the seam a caret at `pos` is drawn for
+    /// [`Self::shared_wrappers_left`]: the width of each such wrapper's end
+    /// edge (its padding, border and margin), as the host measures it.
+    fn shared_exit_width(
+        &self,
+        d: &dyn DomDocument,
+        doc: &Node,
+        pos: Pos,
+        block_id: u64,
+        stored: Option<&[Mark]>,
+    ) -> f32 {
+        self.shared_wrappers_left(doc, pos, stored)
+            .into_iter()
+            .filter_map(|w| {
+                let lead = d.query_inline_edge_caret(block_id, w as u64, true, false)?;
+                let trail = d.query_inline_edge_caret(block_id, w as u64, true, true)?;
+                Some(trail.0 - lead.0)
+            })
+            .sum()
     }
 
     /// The first of [`Self::inline_boxes_beside`]: the leaf a host that
@@ -2536,13 +2617,16 @@ impl RinchDomEditorView {
                 return Some((ox + x, oy + y, height));
             }
         }
+        // #1833: past the end edges of the shared wrappers a typed
+        // character would leave.
+        let shift = self.shared_exit_width(d, doc, pos, block_id as u64, stored);
         // #1426: past a mark wrapper's padding, on the side its marks say.
         for (element, end, after) in self.mark_edges_beside(doc, pos, stored, affinity) {
             if let Some((x, y, height)) =
                 d.query_inline_edge_caret(block_id as u64, element as u64, end, after)
             {
                 let (ox, oy) = self.block_offset_in_container(d, block_id);
-                return Some((ox + x, oy + y, height));
+                return Some((ox + x + shift, oy + y, height));
             }
         }
         let from_parley = d
@@ -2553,7 +2637,7 @@ impl RinchDomEditorView {
                     .map(|g| g.height)
                     .unwrap_or(18.0);
                 let (ox, oy) = self.block_offset_in_container(d, block_id);
-                (ox + local_x, oy + local_y, height)
+                (ox + local_x + shift, oy + local_y, height)
             });
         from_parley.or_else(|| self.empty_block_caret(d, doc, pos, block_id))
     }
