@@ -13,7 +13,7 @@
 //! A table with no merged cells gets exactly the row it got before: one
 //! plain cell per column.
 
-use rinch_editor_core::tables::{TableMap, column_count, is_cell};
+use rinch_editor_core::tables::{self, TableMap, column_count, is_cell};
 use rinch_editor_core::*;
 use std::rc::Rc;
 
@@ -396,4 +396,118 @@ fn a_header_neighbours_cells_are_not_copied_as_headers() {
         assert_eq!(sh[header], vec![("th", 2, 1), ("th", 1, 1)], "{cmd}");
         assert_well_formed(&nt, cmd);
     }
+}
+
+// ------------------------------------------------------------------
+// The issue's table, loaded; load and paste read spans alike.
+// ------------------------------------------------------------------
+
+/// The issue's shape: a row of 2,100 cells written `colspan = 5000` (a load
+/// cuts each to 1000, Chrome's limit, and nothing else), then a row of one
+/// cell. The grid is the slot budget's 2,097,152 columns, as before. A new
+/// row beside the wide row copies it: 2,098 cells, the last cut at the grid's
+/// edge, where the old code built 2,097,152. Beside the short row, whose
+/// 2,097,151 holes outnumber the table's 2,101 cells, the holes get cells
+/// 1000 wide: 1 + 2,098.
+#[test]
+fn the_issues_loaded_table_adds_a_row_in_proportion_to_its_cells() {
+    let s = Schema::starter_kit();
+    let t = tables::cap_spans(&table(&s, &[vec![(5000, 1); 2100], vec![(1, 1)]]));
+    assert!(
+        (0..2100).all(|i| t.child(0).child(i).attrs().get_int("colspan") == Some(1000)),
+        "each colspan cut to 1000"
+    );
+    let width = column_count(&t);
+    assert_eq!(width, 2_097_152, "the slot budget's width: 2^22 / 2 rows");
+    let mut wide_row = vec![td(1000, 1); 2097];
+    wide_row.push(td(152, 1));
+    for (r, cmd, at) in [(0, "addRowAfter", 1), (0, "addRowBefore", 0)] {
+        let nt = run_in(&t, r, 0, cmd);
+        assert_eq!(shape(&nt)[at], wide_row, "{cmd} in the wide row");
+    }
+    let mut short_row = vec![td(1, 1)];
+    short_row.extend(vec![td(1000, 1); 2097]);
+    short_row.push(td(151, 1));
+    for (cmd, at) in [("addRowAfter", 2), ("addRowBefore", 1)] {
+        let nt = run_in(&t, 1, 0, cmd);
+        assert_eq!(shape(&nt)[at], short_row, "{cmd} in the short row");
+    }
+}
+
+/// A ragged row whose holes are no more than the table's cells keeps one
+/// cell per hole column, as before; past that, a run of holes gets cells up
+/// to 1000 wide.
+#[test]
+fn holes_get_a_cell_each_while_the_table_has_as_many_cells() {
+    let s = Schema::starter_kit();
+    // 4 cells; the short row has 2 holes.
+    let t = table(&s, &[vec![(1, 1), (1, 1), (1, 1)], vec![(1, 1)]]);
+    let nt = run_in(&t, 1, 0, "addRowAfter");
+    assert_eq!(shape(&nt)[2], vec![td(1, 1); 3]);
+    // 3 cells; the short row has 2501 holes: one cell, then 1000, 1000, 501.
+    let t = table(&s, &[vec![(1000, 1), (1000, 1), (502, 1)], vec![(1, 1)]]);
+    let nt = run_in(&t, 1, 0, "addRowAfter");
+    assert_eq!(
+        shape(&nt)[2],
+        vec![td(1, 1), td(1000, 1), td(1000, 1), td(501, 1)]
+    );
+    assert_well_formed(&nt.copy_with_content(Fragment::from_children(vec![
+        nt.child(0).clone(),
+        nt.child(2).clone(),
+    ])), "the new row fills the grid");
+}
+
+/// A load caps `colspan` at 1000 and `rowspan` at 65534, Chrome's limits,
+/// and leaves every other span alone; a table it does not touch is the very
+/// node it was.
+#[test]
+fn a_load_caps_both_spans_at_chromes_limits() {
+    let s = Schema::starter_kit();
+    let t = table(
+        &s,
+        &[vec![(3_000_000, 70_000), (1000, 65534), (7, 3)], vec![(1, 1)]],
+    );
+    let out = tables::cap_spans(&t);
+    assert_eq!(
+        shape(&out)[0],
+        vec![td(1000, 65534), td(1000, 65534), td(7, 3)]
+    );
+    assert!(out.child(1).same_ref(&t.child(1)), "an untouched row is shared");
+    let fine = table(&s, &[vec![(1000, 65534), (2, 3)]]);
+    assert!(tables::cap_spans(&fine).same_ref(&fine));
+}
+
+/// A paste and a load read a table's spans alike (#1244): each `colspan` is
+/// cut at 1000 and nothing else. The first row here is 30,000 columns wide;
+/// the paste used to cut a row at 1000 columns and give a cell that found its
+/// row full one column and one row.
+#[test]
+fn a_paste_and_a_load_give_the_same_table() {
+    let s = Schema::starter_kit();
+    let mut row0 = vec![(5000, 2)];
+    row0.extend(vec![(1000, 1); 29]);
+    let spec = vec![row0, vec![(1000, 1); 29], vec![(1000, 1), (1, 3)]];
+    let mut html = String::from("<table>");
+    let mut n = 0;
+    for row in &spec {
+        html.push_str("<tr>");
+        for &(c, r) in row {
+            n += 1;
+            html.push_str(&format!(
+                r#"<td colspan="{c}" rowspan="{r}"><p>c{n}</p></td>"#
+            ));
+        }
+        html.push_str("</tr>");
+    }
+    html.push_str("</table>");
+    let pasted = serialize::slice_from_html(&s, &html).expect("imports");
+    let pasted = pasted.content.child(0).clone();
+    // The last row's `rowspan = 3` is cut at the end of the table by the
+    // paste, as Chrome cuts it; the loaded table states it as 1.
+    let mut spec = spec;
+    spec[2][1] = (1, 1);
+    let loaded = tables::cap_spans(&table(&s, &spec));
+    assert_eq!(canon(&pasted), canon(&loaded));
+    assert_eq!(column_count(&loaded), 30_000);
+    assert_eq!(pasted.child(0).child(0).attrs().get_int("colspan"), Some(1000));
 }

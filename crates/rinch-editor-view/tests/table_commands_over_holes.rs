@@ -123,6 +123,10 @@ fn every_table_command_over_a_hole_spanning_selection_through_the_handle() {
             Pos(cell_pos(&d, last_row, 0)),
         );
         for c in cmds {
+            // splitCell there makes a cell per grid slot (2^21); addRow copies
+            // the row beside it since #1244 and is pinned on a table that wide
+            // in rinch-editor-core's `add_row_copies_spans_1244.rs`, so both
+            // are skipped to keep a debug run short.
             if huge && (c.starts_with("addRow") || c == "splitCell") {
                 continue;
             }

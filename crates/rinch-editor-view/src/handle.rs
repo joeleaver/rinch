@@ -1223,7 +1223,8 @@ impl EditorHandle {
     /// [`Self::load_doc`] loads one: re-homed onto `schema` first (#440 — `doc`
     /// and `schema` are two separate caller-supplied arguments, so a `doc` built
     /// on a different `Rc<Schema>` is the same latent mismatch `load_doc` had),
-    /// then a `colspan` past 1000 is capped (#1214). A `doc` that cannot be
+    /// then a `colspan` past 1000 and a `rowspan` past 65534 are capped (#1214,
+    /// #1244). A `doc` that cannot be
     /// re-homed (an unknown node or mark type by name) is used as given rather
     /// than refused — this constructor has no failure return, and every current
     /// caller builds `doc` on `schema` already, so that path is a same-schema,
@@ -1236,8 +1237,8 @@ impl EditorHandle {
         plugins: Vec<Rc<dyn Plugin>>,
     ) -> EditorHandle {
         let doc = doc.rebind(&schema).unwrap_or(doc);
-        // A load: colspans past 1000 are capped (#1214).
-        let doc = rinch_editor_core::tables::cap_colspans(&doc);
+        // A load: spans past Chrome's limits are capped (#1214, #1244).
+        let doc = rinch_editor_core::tables::cap_spans(&doc);
         // Plugins' `init_state` and `decorations` run here; untracked, as under
         // the core (#943).
         let node_views: Rc<node_views::Registry> = Rc::default();
@@ -2754,11 +2755,10 @@ impl EditorHandle {
     /// single empty paragraph, so the editor is never left with no textblock to
     /// render or place a caret in.
     ///
-    /// A table cell's `colspan` past 1000 is capped at 1000, as the HTML import
-    /// and Chrome read it (#1214, `rinch_editor_core::tables::cap_colspans`):
-    /// one such cell made every row as wide as it, and a row insert built a
-    /// cell per column. The same cap applies to the document [`Self::new`] is
-    /// given. Edits (commands, [`Self::update`]) are not capped, and neither is
+    /// A table cell's `colspan` past 1000 is capped at 1000 and its `rowspan`
+    /// past 65534 at 65534, as the HTML import and Chrome read them (#1214,
+    /// #1244, `rinch_editor_core::tables::cap_spans`). The same cap applies to
+    /// the document [`Self::new`] is given. Edits (commands, [`Self::update`]) are not capped, and neither is
     /// the shared document a [collaboration guest](Self::start_collaboration_guest)
     /// adopts: that is its peers' edits.
     ///
@@ -2786,8 +2786,8 @@ impl EditorHandle {
     /// *remove*, duplicating the mark. A document naming a node or mark type
     /// this schema does not know by name refuses the load (returns `false`),
     /// same as a `load_html` parse failure. With `cap`, a table cell's
-    /// `colspan` past 1000 is capped, as the HTML import reads it (#1214,
-    /// `tables::cap_colspans`). A collaboration guest adopts the shared
+    /// `colspan` past 1000 and `rowspan` past 65534 are capped, as the HTML
+    /// import reads them (#1214, #1244, `tables::cap_spans`). A collaboration guest adopts the shared
     /// document with `cap: false`: what the CRDT holds is its peers' edits,
     /// which are not capped, and a capped model would differ from its own
     /// projection and write the cap back to the peers as an edit nobody made.
@@ -2802,7 +2802,7 @@ impl EditorHandle {
         let doc = if doc.child_count() == 0 {
             empty_paragraph_doc(&core.schema).unwrap_or(doc)
         } else if cap {
-            rinch_editor_core::tables::cap_colspans(&doc)
+            rinch_editor_core::tables::cap_spans(&doc)
         } else {
             doc
         };

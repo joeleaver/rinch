@@ -13,8 +13,9 @@
 //!   node or mark type is a hard [`EditorError::SchemaValidation`], never a silent
 //!   drop, and a missing required attribute is an error. The boundary either
 //!   round-trips a thing faithfully or rejects it — except a table cell's
-//!   `colspan` past [`MAX_COLSPAN`](crate::tables::MAX_COLSPAN), which an edit
-//!   can write and which loads capped at it (#1214).
+//!   `colspan` past [`MAX_COLSPAN`](crate::tables::MAX_COLSPAN) or `rowspan`
+//!   past [`MAX_ROWSPAN`](crate::tables::MAX_ROWSPAN), which an edit can write
+//!   and which load capped at them (#1214, #1244).
 //!
 //! The snake_case key conventions (`type`, `attrs`, `content`, `text`, `marks`)
 //! are kept for familiarity and wire stability.
@@ -155,7 +156,8 @@ impl Node {
     /// Faithful in both directions: nothing is added and nothing is dropped, so
     /// `to_doc` → [`Schema::node_from_doc`] returns an equal node — except a
     /// table cell's `colspan` past [`MAX_COLSPAN`](crate::tables::MAX_COLSPAN)
-    /// (reachable only by an edit), which loads capped at it (#1214). Returns
+    /// or `rowspan` past [`MAX_ROWSPAN`](crate::tables::MAX_ROWSPAN) (reachable
+    /// only by an edit), which load capped at them (#1214, #1244). Returns
     /// [`EditorError::SchemaValidation`] if any node is missing a required
     /// attribute (such a node was never a valid document and must not be silently
     /// persisted).
@@ -168,11 +170,13 @@ impl Schema {
     /// Deserialize a [`DocNode`] into a model [`Node`], validated against this
     /// schema. Unknown node/mark types and missing required attributes are hard
     /// errors — the structural fix for #59. A table cell's `colspan` past
-    /// [`MAX_COLSPAN`](crate::tables::MAX_COLSPAN) loads capped at it, as the
-    /// HTML import reads it (#1214, [`cap_colspans`](crate::tables::cap_colspans)),
-    /// so this is not a lossless inverse of `to_doc` for such a cell.
+    /// [`MAX_COLSPAN`](crate::tables::MAX_COLSPAN) and `rowspan` past
+    /// [`MAX_ROWSPAN`](crate::tables::MAX_ROWSPAN) load capped at them, as the
+    /// HTML import reads them (#1214, #1244,
+    /// [`cap_spans`](crate::tables::cap_spans)), so this is not a lossless
+    /// inverse of `to_doc` for such a cell.
     pub fn node_from_doc(&self, doc: &DocNode) -> Result<Node, EditorError> {
-        node_from_doc_node(self, doc).map(|node| crate::tables::cap_colspans(&node))
+        node_from_doc_node(self, doc).map(|node| crate::tables::cap_spans(&node))
     }
 }
 

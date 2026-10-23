@@ -155,33 +155,77 @@ mod reference {
     // ===================================================================
 
     /// Insert a row at grid index `row` (`0..=height`). A cell that spans across the
-    /// insertion line grows its rowspan; otherwise the new row gets an empty cell in
-    /// that column. Port of `addRow`. The single row insert is the only position-
+    /// insertion line grows its rowspan; otherwise the new row gets empty cells in
+    /// those columns. Port of `addRow`. The single row insert is the only position-
     /// shifting step and comes last, so the rowspan edits need no mapping.
-    fn add_row(tr: &mut Transaction, info: &TableRect, row: usize, schema: &Schema) -> Option<()> {
+    ///
+    /// Since #1244 the new cells follow the cell boundaries of the grid row
+    /// `like` (the row beside the insertion line), cut where a cell from above
+    /// takes the columns; holes in `like` get a cell each, or cells up to 1000
+    /// wide once they outnumber the table's cells. Stated here column by
+    /// column: a column starts a new cell unless the column before it is free
+    /// and belongs to the same cell of `like` (or the same hole run, under the
+    /// run's cap).
+    fn add_row(
+        tr: &mut Transaction,
+        info: &TableRect,
+        row: usize,
+        like: usize,
+        schema: &Schema,
+    ) -> Option<()> {
         let map = &info.map;
         let width = map.width();
         let row_pos = map.row_start(row)?;
-        let mut cells: Vec<Node> = Vec::new();
+        let like_slot = |col: usize| map.map()[like * width + col];
+        let from_above = |col: usize| {
+            let index = row * width + col;
+            row > 0
+                && row < map.height()
+                && map.map()[index] != HOLE
+                && map.map()[index] == map.map()[index - width]
+        };
+        let holes = (0..width)
+            .filter(|&c| like_slot(c) == HOLE && !from_above(c))
+            .count();
+        let table_cells: usize = (0..info.table.child_count())
+            .map(|r| info.table.child(r).child_count())
+            .sum();
+        let hole_cap = if holes <= table_cells { 1 } else { 1000 };
+        let mut spans: Vec<usize> = Vec::new();
         let mut col = 0;
         while col < width {
             let index = row * width + col;
-            // Two holes one above the other are no cell spanning the line.
-            let from_above = row > 0
-                && row < map.height()
-                && map.map()[index] != HOLE
-                && map.map()[index] == map.map()[index - width];
-            if from_above {
+            if from_above(col) {
                 let pos = map.map()[index];
                 let rect = map.cell_rect(index)?;
                 tr.set_node_attr(pos, "rowspan", span_value(rect.bottom - rect.top + 1))
                     .ok()?;
                 col = rect.right.max(col + 1);
-            } else {
-                cells.push(make_empty_cell(schema)?);
-                col += 1;
+                continue;
             }
+            let joins = col > 0
+                && !from_above(col - 1)
+                && like_slot(col) == like_slot(col - 1)
+                && spans.last().is_some_and(|&n| like_slot(col) != HOLE || n < hole_cap);
+            match spans.last_mut() {
+                Some(n) if joins => *n += 1,
+                _ => spans.push(1),
+            }
+            col += 1;
         }
+        let cells = spans
+            .into_iter()
+            .map(|n| {
+                let cell = make_empty_cell(schema)?;
+                if n == 1 {
+                    return Some(cell);
+                }
+                let attrs = Attrs::from_iter([("colspan", span_value(n))]);
+                schema
+                    .create_node("table_cell", attrs, cell.content().clone())
+                    .ok()
+            })
+            .collect::<Option<Vec<Node>>>()?;
         let new_row = schema
             .create_node("table_row", Attrs::new(), Fragment::from_children(cells))
             .ok()?;
@@ -273,7 +317,7 @@ mod reference {
         (|| {
             let info = selected_rect(state)?;
             let mut tr = state.tr();
-            add_row(&mut tr, &info, info.rect.top, state.schema())?;
+            add_row(&mut tr, &info, info.rect.top, info.rect.top, state.schema())?;
             tr.doc_changed().then_some(tr)
         })()
     }
@@ -283,7 +327,7 @@ mod reference {
         (|| {
             let info = selected_rect(state)?;
             let mut tr = state.tr();
-            add_row(&mut tr, &info, info.rect.bottom, state.schema())?;
+            add_row(&mut tr, &info, info.rect.bottom, info.rect.bottom - 1, state.schema())?;
             tr.doc_changed().then_some(tr)
         })()
     }

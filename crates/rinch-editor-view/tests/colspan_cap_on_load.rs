@@ -160,7 +160,7 @@ fn untouched_siblings_are_shared() {
             Fragment::from_children(vec![p1.clone(), fine.clone(), wide]),
         )
         .unwrap();
-    let out = tables::cap_colspans(&d);
+    let out = tables::cap_spans(&d);
     assert!(!out.same_ref(&d));
     assert!(out.child(0).same_ref(&p1));
     assert!(out.child(1).same_ref(&fine));

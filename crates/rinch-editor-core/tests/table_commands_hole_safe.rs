@@ -343,8 +343,11 @@ fn every_command_in_every_cell_of_the_issues_tables_is_safe() {
                     continue;
                 }
                 for c in CMDS {
-                    // #1185: addRow and splitCell make one cell per grid slot,
-                    // 2^21 of them under that span.
+                    // #1185: splitCell makes one cell per grid slot, 2^21 of
+                    // them under that span. addRow copies the row beside it
+                    // since #1244 (about 2,100 cells here); it is skipped to
+                    // keep the run short, and pinned on such a table in
+                    // `add_row_copies_spans_1244.rs`.
                     if huge && (c.starts_with("addRow") || *c == "splitCell") {
                         continue;
                     }
@@ -996,10 +999,13 @@ fn add_row_and_add_column_take_one_step_per_row() {
     let t = table_with_merged(&s, 300, 40);
     let mut st = state_with(t.clone());
     st.selection = caret_in(&t, 0, 1);
-    // Above the 300-wide cell: one row of 302 cells, one step.
+    // Above the 300-wide cell: one row shaped like row 0 (#1244: a 300-wide
+    // cell between two single ones), one step.
     let (steps, next) = steps_of(&st, commands::table_ops::add_row_before()).expect("adds");
     assert_eq!(steps, 1);
-    assert_eq!(next.doc.child(0).child(0).child_count(), 302);
+    let new_row = next.doc.child(0).child(0);
+    assert_eq!(new_row.child_count(), 3);
+    assert_eq!(span(new_row.child(1), "colspan"), 300);
     // Below row 1, through the tall cell: its rowspan grows, one row of 2 cells.
     let mut below = st.clone();
     below.selection = caret_in(&t, 1, 0);
