@@ -1,8 +1,8 @@
 //! SVG element painting.
 
+use peniko::Fill;
 use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{Affine, BezPath, Cap, Join, Rect, Stroke};
-use peniko::Fill;
 
 use super::painter::Painter;
 use crate::layout::parse_color_with_current;

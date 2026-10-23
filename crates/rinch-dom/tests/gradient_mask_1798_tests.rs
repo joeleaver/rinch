@@ -199,7 +199,12 @@ fn f_repeating_linear_gradient_at_an_angle() {
             }
         }
     }
-    assert!(bad.is_empty(), "{} off: {:?}", bad.len(), &bad[..bad.len().min(8)]);
+    assert!(
+        bad.is_empty(),
+        "{} off: {:?}",
+        bad.len(),
+        &bad[..bad.len().min(8)]
+    );
 }
 
 const ISSUE_CSS: &str = "html, body { margin: 0; background: #14161b; }

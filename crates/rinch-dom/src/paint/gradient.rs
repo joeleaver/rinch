@@ -28,11 +28,7 @@ use crate::computed_style::{
 /// earlier one moves up to it, and a run of unpositioned stops is spaced
 /// evenly between its neighbours. Stops whose colour did not resolve are
 /// dropped after placing.
-fn resolve_stops(
-    stops: &[GradientStop],
-    len: f64,
-    scale: f64,
-) -> Vec<(f64, AlphaColor<Srgb>)> {
+fn resolve_stops(stops: &[GradientStop], len: f64, scale: f64) -> Vec<(f64, AlphaColor<Srgb>)> {
     let n = stops.len();
     let mut pos: Vec<Option<f64>> = stops
         .iter()
@@ -156,7 +152,11 @@ fn gradient_brush(image: &BackgroundValue, tile: &Rect, scale: f64) -> Option<(B
                     let p1 = Point::new(start.x + dx * b, start.y + dy * b);
                     Brush::Gradient(
                         Gradient::new_linear(p0, p1)
-                            .with_extend(if *repeating { Extend::Repeat } else { Extend::Pad })
+                            .with_extend(if *repeating {
+                                Extend::Repeat
+                            } else {
+                                Extend::Pad
+                            })
                             .with_stops(stops.as_slice()),
                     )
                 }
@@ -204,7 +204,11 @@ fn gradient_brush(image: &BackgroundValue, tile: &Rect, scale: f64) -> Option<(B
                     let (radius, stops) = radial_stops(&resolved, *repeating)?;
                     Brush::Gradient(
                         Gradient::new_radial(Point::ORIGIN, radius as f32)
-                            .with_extend(if *repeating { Extend::Repeat } else { Extend::Pad })
+                            .with_extend(if *repeating {
+                                Extend::Repeat
+                            } else {
+                                Extend::Pad
+                            })
                             .with_stops(stops.as_slice()),
                     )
                 }
@@ -228,7 +232,11 @@ fn color_at(resolved: &[(f64, AlphaColor<Srgb>)], p: f64) -> AlphaColor<Srgb> {
     }
     let (p0, c0) = resolved[i - 1];
     let (p1, c1) = resolved[i];
-    let t = if p1 > p0 { ((p - p0) / (p1 - p0)) as f32 } else { 1.0 };
+    let t = if p1 > p0 {
+        ((p - p0) / (p1 - p0)) as f32
+    } else {
+        1.0
+    };
     let (a, b) = (c0.premultiply().components, c1.premultiply().components);
     let m: [f32; 4] = std::array::from_fn(|k| a[k] + (b[k] - a[k]) * t);
     if m[3] > 0.0 {

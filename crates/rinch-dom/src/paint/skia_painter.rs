@@ -104,7 +104,11 @@ const PREMUL_STEPS: usize = 8;
 /// stop it meets on each side (exact); between two stops of other differing
 /// alphas, [`PREMUL_STEPS`] premultiplied samples are inserted.
 fn premultiplied_ramp(stops: &[(f32, AlphaColor<Srgb>)]) -> Vec<(f32, AlphaColor<Srgb>)> {
-    if stops.len() < 2 || stops.windows(2).all(|w| w[0].1.components[3] == w[1].1.components[3]) {
+    if stops.len() < 2
+        || stops
+            .windows(2)
+            .all(|w| w[0].1.components[3] == w[1].1.components[3])
+    {
         return stops.to_vec();
     }
     let with_rgb = |c: AlphaColor<Srgb>, rgb: AlphaColor<Srgb>| {
@@ -145,13 +149,12 @@ fn gradient_to_paint(gradient: &Gradient) -> Option<Paint<'static>> {
         .iter()
         .map(|s| (s.offset, s.color.to_alpha_color::<Srgb>()))
         .collect();
-    let colors = if gradient.interpolation_alpha_space
-        == peniko::InterpolationAlphaSpace::Premultiplied
-    {
-        premultiplied_ramp(&colors)
-    } else {
-        colors
-    };
+    let colors =
+        if gradient.interpolation_alpha_space == peniko::InterpolationAlphaSpace::Premultiplied {
+            premultiplied_ramp(&colors)
+        } else {
+            colors
+        };
     let stops: Vec<GradientStop> = colors
         .into_iter()
         .map(|(offset, color)| GradientStop::new(offset, to_skia_color(color)))

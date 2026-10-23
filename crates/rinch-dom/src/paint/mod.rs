@@ -8,8 +8,8 @@ mod blur;
 mod borders;
 pub mod clip;
 mod contenteditable;
-mod gradient;
 pub mod damage;
+mod gradient;
 pub mod image;
 mod layer_bounds;
 pub mod painter;
@@ -2974,20 +2974,20 @@ fn sticky_y(tree: &NodeTree, node: &Node, y: f64, offset_y: f64, scale: f64) -> 
     let mut ancestor_id = node.parent;
     while let Some(aid) = ancestor_id {
         if let Some(ancestor) = tree.get(aid) {
-        let ov = ancestor.computed_style.overflow_y;
-        // A `display: contents` ancestor is no scroll container (#1038).
-        if ancestor.computed_style.display != DisplayValue::Contents
-            && matches!(
-            ov,
-            OverflowValue::Auto | OverflowValue::Scroll | OverflowValue::Hidden
-            )
-        {
-            scroll_y = ancestor.scroll_offset.1 * scale;
-            break;
-        }
-        ancestor_id = ancestor.parent;
+            let ov = ancestor.computed_style.overflow_y;
+            // A `display: contents` ancestor is no scroll container (#1038).
+            if ancestor.computed_style.display != DisplayValue::Contents
+                && matches!(
+                    ov,
+                    OverflowValue::Auto | OverflowValue::Scroll | OverflowValue::Hidden
+                )
+            {
+                scroll_y = ancestor.scroll_offset.1 * scale;
+                break;
+            }
+            ancestor_id = ancestor.parent;
         } else {
-        break;
+            break;
         }
     }
 

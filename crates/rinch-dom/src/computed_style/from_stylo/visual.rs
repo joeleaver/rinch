@@ -552,10 +552,10 @@ fn gradient_direction_to_angle(direction: &style::values::computed::image::LineD
 
 /// A radial gradient's ending shape (#1798). `contain`/`cover` are the
 /// legacy aliases of `closest-side`/`farthest-corner`.
-fn radial_shape_from_stylo(
-    shape: &style::values::computed::image::EndingShape,
-) -> RadialShape {
-    use style::values::generics::image::{GenericCircle, GenericEllipse, GenericEndingShape, ShapeExtent};
+fn radial_shape_from_stylo(shape: &style::values::computed::image::EndingShape) -> RadialShape {
+    use style::values::generics::image::{
+        GenericCircle, GenericEllipse, GenericEndingShape, ShapeExtent,
+    };
     let extent = |e: &ShapeExtent| match e {
         ShapeExtent::ClosestSide | ShapeExtent::Contain => RadialExtent::ClosestSide,
         ShapeExtent::FarthestSide => RadialExtent::FarthestSide,
@@ -595,12 +595,10 @@ fn gradient_stops_from_stylo(
                 position: None,
                 color: color_from_computed(color, text_color),
             }),
-            GenericGradientItem::ComplexColorStop { color, position } => {
-                stops.push(GradientStop {
-                    position: Some(super::box_model::lp_value_from_stylo(position)),
-                    color: color_from_computed(color, text_color),
-                })
-            }
+            GenericGradientItem::ComplexColorStop { color, position } => stops.push(GradientStop {
+                position: Some(super::box_model::lp_value_from_stylo(position)),
+                color: color_from_computed(color, text_color),
+            }),
             // Interpolation hints are not drawn (the colour midpoint stays
             // halfway between its stops).
             _ => {}
