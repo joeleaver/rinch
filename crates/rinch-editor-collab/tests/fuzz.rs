@@ -659,7 +659,7 @@ impl Swarm {
 }
 
 /// A snapshot in a form two replays of one trial write identically: every client's
-/// clock, and every shared type walked in order with each map's keys
+/// clock, the delete set, and every shared type walked in order with each map's keys
 /// sorted. Not the bytes: an `@atom` value is a yrs map, which encodes its keys in
 /// `HashMap` order, random per run, and since #1851 every atom's value has two keys or
 /// more (its type and `@for`, its own char). The order of a map's keys carries nothing.
@@ -732,7 +732,15 @@ fn canonical(bytes: &[u8]) -> String {
         .map(|(c, k)| format!("{c:?}={k}"))
         .collect();
     clocks.sort();
-    let mut s = format!("{clocks:?}");
+    // The delete set, per client, so content deleted alike is still compared.
+    let mut deleted: Vec<String> = txn
+        .snapshot()
+        .delete_set
+        .iter()
+        .map(|(c, r)| format!("{c:?}={:?}", r.iter().collect::<Vec<_>>()))
+        .collect();
+    deleted.sort();
+    let mut s = format!("{clocks:?}{deleted:?}");
     array(&txn, &content, &mut s);
     out(&txn, Out::YMap(atoms), &mut s);
     out(&txn, Out::YMap(meta), &mut s);

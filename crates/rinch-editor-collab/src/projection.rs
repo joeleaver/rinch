@@ -2144,6 +2144,7 @@ fn gap_of_least_moved_text(
         .map(|j| flat_text(after.child(prefix + j)))
         .collect();
     let score = |c: usize, t: usize| -> usize {
+        GAP_SCORES.with(|n| n.set(n.get() + 1));
         let (b, a) = (before.child(prefix + c), after.child(prefix + t));
         let same_kind = (b.is_textblock() && a.is_textblock()) || b.type_name() == a.type_name();
         if !same_kind {
@@ -2161,21 +2162,33 @@ fn gap_of_least_moved_text(
             .count();
         head + tail
     };
-    let total = |gap: usize| -> usize {
-        (0..common)
-            .map(|k| {
-                if k < gap {
-                    score(k, k)
-                } else {
-                    score(k + extra_cur, k + extra_tgt)
-                }
-            })
-            .sum()
-    };
+    // Each pair is scored once (#1859's review: scoring the whole run per gap made a
+    // whole-document replace quadratic): `front[g]` keeps the first `g` pairs by index,
+    // `back[g]` pairs the rest across the gap.
+    let mut front = vec![0usize; common + 1];
+    for k in 0..common {
+        front[k + 1] = front[k] + score(k, k);
+    }
+    let mut back = vec![0usize; common + 1];
+    for k in (0..common).rev() {
+        back[k] = back[k + 1] + score(k + extra_cur, k + extra_tgt);
+    }
     // The largest total; among equals, the largest gap (the old answer).
     (0..=common)
-        .max_by_key(|&g| (total(g), g))
+        .max_by_key(|&g| (front[g] + back[g], g))
         .unwrap_or(common)
+}
+
+thread_local! {
+    /// How many pairs [`gap_of_least_moved_text`] has scored on this thread.
+    static GAP_SCORES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many pairs [`gap_of_least_moved_text`] has scored on this thread so far
+/// (`testing::gap_scores`).
+#[cfg_attr(not(feature = "test-util"), allow(dead_code))]
+pub(crate) fn gap_scores() -> u64 {
+    GAP_SCORES.with(std::cell::Cell::get)
 }
 
 /// A node's text as one char run, an inline atom as U+FFFC, its blocks run together.

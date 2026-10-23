@@ -78,6 +78,13 @@ impl Peer {
         );
     }
 
+    fn local_replace(&mut self, at: usize, content: Fragment) {
+        let mut tr = self.state.tr();
+        tr.replace(at, at, Slice::new(content, 0, 0)).unwrap();
+        let next = self.state.apply(tr);
+        self.commit(next);
+    }
+
     fn send(&mut self) -> Vec<u8> {
         self.session.save_incremental().unwrap()
     }
@@ -764,4 +771,132 @@ fn enter_at_a_lines_start_and_deleting_the_empty_line_keep_its_sticky_indexes() 
     a.commit(next);
     assert_eq!(doc_text(&a.state.doc), "ab||hello");
     assert_eq!(resolve(&a, &l), Some(13));
+}
+
+/// Block `block`'s text as stored: each run of chars with its `@atom` value's keys and
+/// `@for`, read with yrs alone.
+fn raw_atom_runs(p: &Peer, block: u32) -> Vec<(String, Option<String>)> {
+    use yrs::types::text::YChange;
+    use yrs::updates::decoder::Decode;
+    use yrs::{Any, Array, Map, Out, Text, Transact, Update};
+    let doc = yrs::Doc::with_options(yrs::Options {
+        offset_kind: yrs::OffsetKind::Utf16,
+        ..Default::default()
+    });
+    let content = doc.get_or_insert_array("content");
+    doc.transact_mut()
+        .apply_update(Update::decode_v1(&p.session.snapshot()).unwrap())
+        .unwrap();
+    let txn = doc.transact();
+    let Some(Out::YMap(m)) = content.get(&txn, block) else {
+        panic!("no block {block}");
+    };
+    let Some(Out::YText(t)) = m.get(&txn, "text") else {
+        panic!("block {block} has no text");
+    };
+    t.diff(&txn, YChange::identity)
+        .into_iter()
+        .map(|d| {
+            let Out::Any(Any::String(s)) = d.insert else {
+                panic!("not a string")
+            };
+            let atom_for = d
+                .attributes
+                .as_ref()
+                .and_then(|a| a.get("@atom").cloned())
+                .map(|v| match v {
+                    Any::Map(m) => format!("{:?}", m.get("@for")),
+                    other => format!("{other:?}"),
+                });
+            (s.to_string(), atom_for)
+        })
+        .collect()
+}
+
+/// `<p>a<br>b</p><p>cd</p>`: the break is 2..3.
+fn a_break_b(s: &Schema) -> Vec<Node> {
+    let br = s
+        .create_node("hard_break", Attrs::new(), Fragment::empty())
+        .unwrap();
+    let p = s
+        .branch(
+            "paragraph",
+            Fragment::from_children(vec![s.text("a").unwrap(), br, s.text("b").unwrap()]),
+        )
+        .unwrap();
+    vec![p, para(s, "cd")]
+}
+
+fn breaks(s: &Schema, n: usize) -> Fragment {
+    Fragment::from_children(
+        (0..n)
+            .map(|_| {
+                s.create_node("hard_break", Attrs::new(), Fragment::empty())
+                    .unwrap()
+            })
+            .collect(),
+    )
+}
+
+/// #1851: three breaks inserted in one edit right after a break (a paste) each get a
+/// value of their own, so no two share formatting markers. Every inserted char
+/// inherits the break before it, and each is written named for itself: four runs, four
+/// different `@for`s.
+#[test]
+fn three_equal_atoms_inserted_after_an_equal_one_are_four_runs() {
+    let (mut a, _) = two_peers(a_break_b);
+    let s = a.schema.clone();
+    a.local_replace(3, breaks(&s, 3));
+    assert_eq!(
+        doc_text(&a.state.doc),
+        "a[hard_break][hard_break][hard_break][hard_break]b|cd"
+    );
+    let runs = raw_atom_runs(&a, 0);
+    let atoms: Vec<_> = runs.iter().filter(|r| r.1.is_some()).collect();
+    assert_eq!(atoms.len(), 4, "one run per break: {runs:?}");
+    for (s, f) in &atoms {
+        assert_eq!(s.chars().count(), 1, "{runs:?}");
+        assert!(
+            f.as_deref().is_some_and(|f| f.starts_with("Some")),
+            "{runs:?}"
+        );
+    }
+}
+
+/// #1859 review: the placement of a split's or join's new block scores each changed
+/// pair at most twice, so a whole-document replace is linear in its blocks (scoring
+/// every pair per candidate gap made 8000 paragraphs take 11.5 s).
+#[test]
+fn placing_the_blocks_of_a_whole_document_replace_scores_each_pair_twice() {
+    for n in [100usize, 400] {
+        let s = schema();
+        let before: Vec<Node> = (0..n).map(|i| para(&s, &format!("old {i}"))).collect();
+        let after: Vec<Node> = (0..=n).map(|i| para(&s, &format!("new {i}"))).collect();
+        let mut a = Peer::host(&s, before, 1);
+        let next = doc_of(&s, after);
+        let start = rinch_editor_collab::testing::gap_scores();
+        a.session
+            .record_local(&a.schema, &a.state.doc, &next)
+            .unwrap();
+        let scored = rinch_editor_collab::testing::gap_scores() - start;
+        assert_eq!(scored, 2 * n as u64, "{n} blocks replaced by {}", n + 1);
+    }
+}
+
+/// The cost of #1850's placement, pinned so a change to it is a decision: A types at
+/// the end of a line while B deletes that line's text and the boundary after it (a
+/// selection from the line's start to the next line's start), which joins what is left
+/// of it, nothing, into the next line. B's join keeps the next line's block and deletes
+/// the emptied one, so A's character goes with it. Before #1850 the emptied line's
+/// block was kept and the next line's text written into it, which kept A's character
+/// (`xcd`), and wrote `cd` anew, the copy a peer's concurrent edit of it missed. User
+/// guide: `contenteditable.md`.
+#[test]
+fn typing_into_a_line_a_peer_empties_and_joins_the_next_line_into_is_lost() {
+    let (mut a, mut b) = two_peers(|s| vec![para(s, "ab"), para(s, "q"), para(s, "cd")]);
+    // `<p>ab</p><p>q</p><p>cd</p>`: `q` is 5..6, `cd` starts at 8.
+    assert!(apply(&mut a, &Op::Type(0, 6, 'x')));
+    assert!(apply(&mut b, &Op::DeleteSel(1, 5, 8)));
+    exchange(&mut a, &mut b);
+    assert_eq!(doc_text(&a.state.doc), "ab|cd");
 }
