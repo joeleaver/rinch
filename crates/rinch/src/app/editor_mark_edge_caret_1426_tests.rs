@@ -122,18 +122,19 @@ impl Page {
 }
 
 /// A paragraph that starts with a code run: the caret at its start carries
-/// `code`, so it is drawn inside the pill, past its 7px padding.
+/// `code`, so it is drawn inside the pill, past its 7px padding. (At a line's
+/// start parley draws the byte's caret there already: a control.)
 #[test]
 fn a_caret_at_the_start_of_a_code_run_is_inside_its_padding() {
     let mut p = page("<p><code>bc</code>d</p>");
     p.caret_at(1);
-    let (glyph, byte_caret) = p.glyph_and_byte_caret_x(1, 0);
-    // Positive control: the padding is there, and the byte's caret is
-    // before it.
-    assert!(
-        (glyph - byte_caret - 7.0).abs() < 0.01,
-        "{glyph} {byte_caret}"
-    );
+    let (glyph, _) = p.glyph_and_byte_caret_x(1, 0);
+    let block = p.handle.caret_address(Pos(1)).unwrap().0;
+    let bx = {
+        let doc = p.app.doc.as_ref().unwrap().borrow();
+        painted_element_box(&doc.tree, block).0
+    };
+    assert!((glyph - bx - 7.0).abs() < 0.01, "the padding: {glyph} {bx}");
     p.assert_caret("start of a code run", 1, glyph);
 }
 
