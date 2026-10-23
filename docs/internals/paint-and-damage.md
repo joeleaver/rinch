@@ -248,11 +248,12 @@ workgroup can zero a row another has not read. Lavapipe (8-wide subgroups, run o
 another) does it every time: a rounded border's corner tile came out as a 1/8-coverage
 wash (`(223, 239, 223)` for green on white). A `workgroupBarrier()` at the end of that
 function, in a patched `vello_shaders`, cured it with the even-odd fills left in place.
-On RADV (one 64-wide wave per workgroup, so no race) the switch changed eight pixels of
-a page of nine ringed boxes, every one in a tile's first pixel column (`x % 16 == 0`), by
-up to a whole pixel's coverage; at the three checked against the geometry (a border's
-top row, a shadow's top row, the gap inside an outline) even-odd was wrong and non-zero
-right. Elsewhere the two were identical there. Non-zero with the hole
+On RADV (one 64-wide wave per workgroup, so no race) the switch moves a few pixels by
+one MSAA sample (at most 16/255): the #1891 review's 379-style sweep found 25 such pixels
+in 9 cases, not confined to tile edges, and against analytic coverage they lean neither
+way, so they are two MSAA routines disagreeing, not an even-odd error. tiny-skia is
+byte-identical. Under Area anti-aliasing (Android) the switch also removes a solid band
+main painted for a zero-size ring such as `box-shadow: 0 0 0 0`. Non-zero with the hole
 reversed is also what Vello's analytic area coverage needs (see
 `BorderRadii::path_with_holes`). Pinned backend-neutrally by
 `crates/rinch-dom/tests/ring_fill_rule_1865_tests.rs` (no compound path is even-odd; the

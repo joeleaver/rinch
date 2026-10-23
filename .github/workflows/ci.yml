@@ -13,8 +13,8 @@ on:
 
 # Batched merges (docs/internals/ci.md). An ordinary pull request into `main` (a
 # *component* PR) runs only the fast jobs: `fmt`, `clippy`, `clippy-wasm`,
-# `clippy-android` and `check-android`. The slow ones (the `test` shards and
-# `test-wasm`) run on a pull request whose head branch starts with `batch/`, on
+# `clippy-android` and `check-android`. The slow ones (the `test` shards,
+# `test-wasm` and `test-gpu`) run on a pull request whose head branch starts with `batch/`, on
 # every push to `main`, and on a manual dispatch. The lead merges several
 # reviewed component PRs into one `batch/YYYY-MM-DD-N` branch and opens one PR
 # for it, so the full suite runs once per batch rather than once per push to
