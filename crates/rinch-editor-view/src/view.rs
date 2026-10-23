@@ -1547,6 +1547,7 @@ impl EditorView for RinchDomEditorView {
                 block_id,
                 flat_byte,
                 self.caret_affinity,
+                next.stored_marks.as_deref(),
             )
             .map(|(x, y, height)| (x, self.keep_caret_in_block(&*d, block_id, x), y, height))
         };
@@ -1873,6 +1874,7 @@ impl RinchDomEditorView {
         doc: &Node,
         pos: Pos,
         affinity: CaretAffinity,
+        stored: Option<&[Mark]>,
     ) -> Option<(f32, f32, f32)> {
         let (block, byte) = self.caret_target(doc, pos)?;
         let host = self.doc.upgrade()?;
@@ -1886,6 +1888,13 @@ impl RinchDomEditorView {
             .flatten()
         {
             if let Some(rect) = host.query_inline_box_caret_rect(block_id, leaf as u64, after) {
+                return Some(rect);
+            }
+        }
+        for (element, end, after) in self.mark_edges_beside(doc, pos, stored, affinity) {
+            if let Some(rect) =
+                host.query_inline_edge_caret_rect(block_id, element as u64, end, after)
+            {
                 return Some(rect);
             }
         }
@@ -1966,6 +1975,123 @@ impl RinchDomEditorView {
         match after_leaf {
             Some(a) => [Some(a), before_leaf],
             None => [before_leaf, None],
+        }
+    }
+
+    /// The mark wrapper edges a caret at `pos` is drawn against, as `(the
+    /// wrapper's host element id, end, after)` in the order to try them
+    /// (#1426): the caret goes on the `after` (trailing) or leading side of
+    /// that wrapper's start or end edge. Empty when the byte's caret stands.
+    ///
+    /// A mark wrapper's horizontal padding, border and margin take room on
+    /// the line but hold no flat bytes, so at a run boundary one byte names
+    /// every side of them. The caret is drawn **where the next typed
+    /// character lands**, which is decided by the marks it takes — `stored`
+    /// when the caret has stored marks, else [`ResolvedPos::marks`]:
+    ///
+    /// - the same marks as the text run before `pos`: it joins that run, so
+    ///   the caret is inside its wrappers — before their end edges (the
+    ///   innermost first) — or, with none, before the run after's start
+    ///   edges;
+    /// - else the same marks as the text run after `pos`: it joins that one,
+    ///   so the caret is past the run after's start edges (the innermost
+    ///   last), or with none past the run before's end edges;
+    /// - else it makes a run of its own between them: past the run before's
+    ///   end edges, before the run after's start edges.
+    ///
+    /// A wrapper with no padding has no edge and the host answers `None` for
+    /// it, so each side lists every wrapper, the one to use first.
+    /// An `Upstream` caret (the upper line's end at a soft wrap) is never
+    /// placed against the run after's start edges, which are on the lower
+    /// line.
+    ///
+    /// [`ResolvedPos::marks`]: rinch_editor_core::ResolvedPos::marks
+    pub(crate) fn mark_edges_beside(
+        &self,
+        doc: &Node,
+        pos: Pos,
+        stored: Option<&[Mark]>,
+        affinity: CaretAffinity,
+    ) -> Vec<(usize, bool, bool)> {
+        let Ok(r) = doc.resolve(pos) else {
+            return Vec::new();
+        };
+        if !r.parent().is_textblock() {
+            return Vec::new();
+        }
+        let mut desc = &self.root;
+        for d in 0..r.depth() {
+            match desc.children.get(r.index(d)) {
+                Some(c) => desc = c,
+                None => return Vec::new(),
+            }
+        }
+        let off = r.parent_offset();
+        let block = &desc.node;
+        let mut at = 0usize;
+        let mut before: Option<usize> = None;
+        let mut next: Option<usize> = None;
+        for i in 0..block.child_count() {
+            if at == off {
+                next = Some(i);
+                break;
+            }
+            if at > off {
+                return Vec::new(); // inside a text run
+            }
+            at += block.child(i).node_size();
+            before = Some(i);
+        }
+        if next.is_none() && at != off {
+            return Vec::new();
+        }
+        // A child's wrapper elements, innermost first.
+        let wrappers = |i: Option<usize>| -> Vec<usize> {
+            let Some(child) = i.and_then(|i| desc.children.get(i)) else {
+                return Vec::new();
+            };
+            let mut out = Vec::new();
+            let mut cur = child.dom.clone();
+            for mark in child.node.marks() {
+                if mark_dom_tag(mark).is_none() {
+                    continue;
+                }
+                let Some(parent) = cur.parent_node() else {
+                    break;
+                };
+                cur = parent;
+                out.push(cur.node_id().0);
+            }
+            out
+        };
+        // An `Upstream` caret is the upper line's end at a soft wrap: the
+        // run after's start edges are on the lower line, so only the run
+        // before's end edges can place it.
+        let starts = if affinity == CaretAffinity::Upstream {
+            Vec::new()
+        } else {
+            wrappers(next)
+        };
+        let typed = stored.map_or_else(|| r.marks(), <[Mark]>::to_vec);
+        let joins = |i: Option<usize>| {
+            i.map(|i| block.child(i))
+                .is_some_and(|n| n.is_text() && n.marks() == typed.as_slice())
+        };
+        let ends = wrappers(before);
+        // Leading side of the run before's end edges, innermost first.
+        let inside_before = ends.iter().map(|&e| (e, true, false));
+        // Trailing side of its end edges, outermost first.
+        let past_before = ends.iter().rev().map(|&e| (e, true, true));
+        // Leading side of the run after's start edges, outermost first.
+        let before_after = starts.iter().rev().map(|&e| (e, false, false));
+        // Trailing side of its start edges, innermost first.
+        let inside_after = starts.iter().map(|&e| (e, false, true));
+        if joins(before) {
+            inside_before.chain(before_after).collect()
+        } else if joins(next) {
+            inside_after.chain(past_before).collect()
+        } else {
+            past_before.chain(before_after).collect()
         }
     }
 
@@ -2122,6 +2248,7 @@ impl RinchDomEditorView {
     /// origin. `None` when the block has no layout yet (desktop: edited since the
     /// last layout, or collapsed by virtualization). The caret overlay and the
     /// reveal probes ([`Self::position_reveal`]) are both placed from this.
+    #[allow(clippy::too_many_arguments)]
     fn caret_geometry(
         &self,
         d: &dyn DomDocument,
@@ -2130,6 +2257,7 @@ impl RinchDomEditorView {
         block_id: usize,
         flat_byte: usize,
         affinity: CaretAffinity,
+        stored: Option<&[Mark]>,
     ) -> Option<(f32, f32, f32)> {
         for (leaf, after) in self
             .inline_boxes_beside(doc, pos, affinity)
@@ -2138,6 +2266,15 @@ impl RinchDomEditorView {
         {
             if let Some((x, y, height)) =
                 d.query_inline_box_caret(block_id as u64, leaf as u64, after)
+            {
+                let (ox, oy) = self.block_offset_in_container(d, block_id);
+                return Some((ox + x, oy + y, height));
+            }
+        }
+        // #1426: past a mark wrapper's padding, on the side its marks say.
+        for (element, end, after) in self.mark_edges_beside(doc, pos, stored, affinity) {
+            if let Some((x, y, height)) =
+                d.query_inline_edge_caret(block_id as u64, element as u64, end, after)
             {
                 let (ox, oy) = self.block_offset_in_container(d, block_id);
                 return Some((ox + x, oy + y, height));
@@ -2227,6 +2364,7 @@ impl RinchDomEditorView {
                         block.node_id().0,
                         byte,
                         CaretAffinity::Downstream,
+                        None,
                     )
                 })();
                 // The start (always last) is required. The end of a range is
@@ -2402,7 +2540,7 @@ impl RinchDomEditorView {
                 let geometry = match line {
                     Some((top, h)) => Some((oy + top, h)),
                     None => self
-                        .caret_geometry(d, doc, at, block, byte, CaretAffinity::Downstream)
+                        .caret_geometry(d, doc, at, block, byte, CaretAffinity::Downstream, None)
                         .map(|(_, y, h)| {
                             let lh =
                                 *line_height.get_or_insert_with(|| d.line_box_height(block as u64));
@@ -2462,7 +2600,7 @@ impl RinchDomEditorView {
             let host = self.doc.upgrade()?;
             let d = host.try_borrow().ok()?;
             let (block, byte) = self.caret_target(doc, pos)?;
-            self.caret_geometry(&*d, doc, pos, block.node_id().0, byte, affinity)
+            self.caret_geometry(&*d, doc, pos, block.node_id().0, byte, affinity, None)
         });
         let Some((x, y, height)) = geometry else {
             if self.last_drop_caret.take().is_none() {

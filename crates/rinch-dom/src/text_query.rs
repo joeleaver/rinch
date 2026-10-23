@@ -866,6 +866,12 @@ fn bidi_line_pieces(
         let glyph_run = match item {
             parley::layout::PositionedLayoutItem::GlyphRun(g) => g,
             parley::layout::PositionedLayoutItem::InlineBox(bx) => {
+                // An inline element's padding (#1426) is neither selected nor
+                // a gap: a piece open across it runs on to the next selected
+                // cluster, and one that ends before it ends there.
+                if crate::ifc::is_edge_box(bx.id) {
+                    continue;
+                }
                 let index = layout
                     .inline_boxes()
                     .iter()

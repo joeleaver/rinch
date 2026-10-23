@@ -363,3 +363,20 @@ fn timing_every_word_in_a_padded_span() {
         eprintln!("{name}: {best:.2} ms (best of 6 relayouts at a new width)");
     }
 }
+
+/// A right-to-left selection across a padded span is one highlight: the
+/// padding inside the selected text is neither a gap nor a piece of its own
+/// (review of #1823: `bidi_line_pieces` closed the piece at it).
+#[test]
+fn a_right_to_left_selection_across_a_padded_span_is_one_piece() {
+    let c = Case::with(
+        "direction: rtl;",
+        "אבג <span style=\"padding: 0 6px\">דהו</span> זח",
+    );
+    let n = c.doc.tree.get(c.c).unwrap();
+    let il = n.text_layout.as_ref().unwrap();
+    let len = il.text_content.len();
+    // As the editor asks: naming the selected boxes (none).
+    let rects = rinch_dom::text_query::selection_rects_with_boxes(&il.layout, 0, len, &[]);
+    assert_eq!(rects.len(), 1, "one piece: {rects:?}");
+}
