@@ -394,6 +394,11 @@ pub(crate) struct ViewDesc {
     /// placed in, as the last [`Self::regroup_inline`] left them — so a wrapper
     /// no child uses any more is found and discarded.
     inline_wrappers: Vec<NodeHandle>,
+    /// For a textblock mid-diff: the inline children the diff dropped, retired
+    /// by [`Self::regroup_inline`] once their successors are in place, so the
+    /// block is never left empty in between (an `:empty` rule would restyle
+    /// it) and a wrapper they sat in is not discarded with them inside.
+    deferred: Vec<ViewDesc>,
     /// Child descriptors, positionally 1:1 with `node`'s children.
     children: Vec<ViewDesc>,
     /// Whether `node` is a model **text** node. For a decorated run [`Self::dom`]
@@ -768,6 +773,7 @@ impl ViewDesc {
             dom,
             wraps: Vec::new(),
             inline_wrappers: Vec::new(),
+            deferred: Vec::new(),
             children,
             is_text,
             // A freshly built run carries no decorations; the decoration pass that
@@ -780,7 +786,7 @@ impl ViewDesc {
         })
         .map(|mut desc| {
             if desc.node.is_textblock() {
-                desc.regroup_inline(cx.doc);
+                desc.regroup_inline(cx);
             }
             desc.sync_trailing_break(cx.doc);
             if rinch_editor_core::tables::is_table(&desc.node) {
@@ -809,13 +815,15 @@ impl ViewDesc {
     /// wrapper no child uses any more is discarded. Run only when the
     /// children's structure changed ([`Self::diff_children`]): a text edit
     /// inside a run costs nothing here.
-    fn regroup_inline(&mut self, doc: &DocRef) {
+    fn regroup_inline(&mut self, cx: &mut Cx) {
+        let doc = cx.doc;
         // (container, the nodes it holds); index 0 is the textblock itself.
         let mut containers: Vec<(NodeHandle, Vec<NodeHandle>)> =
             vec![(self.dom.clone(), Vec::with_capacity(self.children.len()))];
         // The open wrappers, outermost first: (mark, host, container index).
         let mut stack: Vec<(Mark, NodeHandle, usize)> = Vec::new();
         let mut used: HashSet<usize> = HashSet::new();
+        let mut reused_ids: HashSet<usize> = HashSet::new();
         for child in &mut self.children {
             let marks: Vec<&Mark> = child
                 .node
@@ -837,6 +845,9 @@ impl ViewDesc {
                     .iter()
                     .find(|(m, w)| m == mark && !used.contains(&w.node_id().0))
                     .map(|(_, w)| w.clone());
+                if let Some(w) = &reused {
+                    reused_ids.insert(w.node_id().0);
+                }
                 let Some(wrapper) = reused.or_else(|| {
                     let el = create_element(doc, &mark_dom_tag(mark)?)?;
                     apply_mark_attrs(&el, mark);
@@ -860,10 +871,27 @@ impl ViewDesc {
         if let Some(br) = &self.trailing_break {
             containers[0].1.push(br.clone());
         }
-        // Top-down: a container is in its final place before its own nodes
-        // go in, so no node is ever put inside one of its descendants.
-        for (host, want) in &containers {
-            place_children(host, want);
+        let reused = reused_ids;
+        // A wrapper made by this pass is filled first, innermost first, while
+        // it is detached: building it costs the host's layout nothing. Then the
+        // rest top-down: a container is in its final place before its own
+        // nodes go in, so no node is ever put inside one of its descendants
+        // (a made wrapper is empty but for what this pass put in it).
+        for (host, want) in containers.iter().skip(1).rev() {
+            if !reused.contains(&host.node_id().0) {
+                place_children(host, want);
+            }
+        }
+        for (i, (host, want)) in containers.iter().enumerate() {
+            if i == 0 || reused.contains(&host.node_id().0) {
+                place_children(host, want);
+            }
+        }
+        // The dropped children go now: their successors are in place, and
+        // the wrappers they sat in are still standing (a node view's host is
+        // detached by `retire` before its wrapper is discarded below).
+        for old in std::mem::take(&mut self.deferred) {
+            retire(old, cx, None);
         }
         let stale: Vec<NodeHandle> = std::mem::take(&mut self.inline_wrappers)
             .into_iter()
@@ -1025,9 +1053,14 @@ impl ViewDesc {
             self.node = new.clone();
             return true;
         }
-        // A changed mark set is the parent's to draw: its `regroup_inline`
-        // moves this node into the wrappers its new marks want (#1833).
-        // (Blocks are always unmarked.)
+        // A changed mark set wants other wrappers: rebuild, and the parent's
+        // `regroup_inline` places the new node in them (#1833). A rebuilt
+        // node is detached, so it goes into a new wrapper before that wrapper
+        // is attached — fewer host mutations than moving the old one. (Blocks
+        // are always unmarked.)
+        if self.node.marks() != new.marks() {
+            return false;
+        }
         if new.is_text() {
             if !self.is_text {
                 return false;
@@ -1075,7 +1108,7 @@ impl ViewDesc {
         let regroup = self.diff_children(new, cx, pos + 1, old_pos + 1);
         self.node = new.clone();
         if regroup && new.is_textblock() {
-            self.regroup_inline(cx.doc);
+            self.regroup_inline(cx);
         }
         self.has_view = self.slot.is_some() || self.children.iter().any(|c| c.has_view);
         if rinch_editor_core::tables::is_table(new)
@@ -1187,9 +1220,7 @@ impl ViewDesc {
             .skip(start)
         {
             let new_child = new.child(i);
-            let marks_moved = inline && self.children[i].node.marks() != new_child.marks();
             if self.children[i].update(new_child, cx, at, old_pos) {
-                regroup |= marks_moved;
                 continue;
             }
             regroup = true;
@@ -1203,7 +1234,13 @@ impl ViewDesc {
                 // browser backend pins it for the life of the page — this
                 // is a per-keystroke path.
                 let old = std::mem::replace(&mut self.children[i], replacement);
-                retire(old, cx, Some(&self.children[i].dom));
+                // A textblock's replacement is placed, and the old one retired,
+                // by `regroup_inline`.
+                if inline {
+                    self.deferred.push(old);
+                } else {
+                    retire(old, cx, Some(&self.children[i].dom));
+                }
             }
         }
         let at = start + common;
@@ -1237,7 +1274,11 @@ impl ViewDesc {
             regroup = true;
             let extras: Vec<ViewDesc> = self.children.drain(at..old_end).collect();
             for extra in extras {
-                retire(extra, cx, None);
+                if inline {
+                    self.deferred.push(extra);
+                } else {
+                    retire(extra, cx, None);
+                }
             }
         }
         regroup
@@ -1285,6 +1326,8 @@ impl ViewDesc {
                 })
             })
             .collect();
+        let inline = self.node.is_textblock();
+        let mut retired: Vec<ViewDesc> = Vec::new();
         let mut placed: Vec<ViewDesc> = Vec::with_capacity(new_end - start);
         for j in start..new_end {
             let child = new.child(j);
@@ -1316,7 +1359,7 @@ impl ViewDesc {
                     placed.push(desc);
                     continue;
                 }
-                retire(desc, cx, None);
+                retired.push(desc);
             }
             let free = reserved.get(j - start) == Some(&false);
             if let Some(mut desc) = old
@@ -1328,12 +1371,19 @@ impl ViewDesc {
                     placed.push(desc);
                     continue;
                 }
-                retire(desc, cx, None);
+                retired.push(desc);
             }
             placed.extend(ViewDesc::build(child, cx));
         }
         for desc in old.into_iter().flatten() {
-            retire(desc, cx, None);
+            retired.push(desc);
+        }
+        for desc in retired {
+            if inline {
+                self.deferred.push(desc);
+            } else {
+                retire(desc, cx, None);
+            }
         }
         // Place them in order before the unchanged suffix (or the trailing-break
         // placeholder, or at the end); a kept host is moved, not rebuilt.
@@ -1557,6 +1607,7 @@ impl RinchDomEditorView {
             node: state.doc.clone(),
             wraps: Vec::new(),
             inline_wrappers: Vec::new(),
+            deferred: Vec::new(),
             dom: container,
             children,
             is_text: false,
