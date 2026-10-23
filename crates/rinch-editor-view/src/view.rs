@@ -2248,6 +2248,7 @@ impl RinchDomEditorView {
     /// origin. `None` when the block has no layout yet (desktop: edited since the
     /// last layout, or collapsed by virtualization). The caret overlay and the
     /// reveal probes ([`Self::position_reveal`]) are both placed from this.
+    #[allow(clippy::too_many_arguments)]
     fn caret_geometry(
         &self,
         d: &dyn DomDocument,
