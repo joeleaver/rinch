@@ -139,7 +139,8 @@ fn mount_scene() -> (Fixture, NodeHandle, Signal<bool>) {
 async fn the_signal_follows_the_element() {
     let (f, handle, filler) = mount_scene();
     let el = f.el("target-1781");
-    let sig = handle.bounds_signal();
+    let scope = rinch_core::reactive::Scope::new();
+    let sig = scope.run(|| handle.bounds_signal());
     frames(2).await;
     assert_tracks(sig, &el, "first rect");
     assert_eq!(sig.get().width, 120.0);
@@ -160,6 +161,7 @@ async fn the_signal_follows_the_element() {
     frames(3).await;
     assert_tracks(sig, &el, "after a scroll");
     assert_eq!(sig.get().y, y - 11.0);
+    scope.dispose();
     f.teardown();
 }
 
@@ -174,7 +176,8 @@ async fn an_animated_size_reaches_the_signal() {
     document().head().unwrap().append_child(&style).unwrap();
     let (f, handle, _) = mount_scene();
     let el = f.el("target-1781");
-    let sig = handle.bounds_signal();
+    let scope = rinch_core::reactive::Scope::new();
+    let sig = scope.run(|| handle.bounds_signal());
     frames(2).await;
     el.style()
         .set_property("animation", "grow-1781 20s linear forwards")
@@ -188,6 +191,7 @@ async fn an_animated_size_reaches_the_signal() {
         "the width grew with the animation: {first} -> {later}"
     );
     style.remove();
+    scope.dispose();
     f.teardown();
 }
 
@@ -196,14 +200,18 @@ async fn an_animated_size_reaches_the_signal() {
 async fn an_effect_on_the_signal_reruns() {
     let (f, handle, _) = mount_scene();
     let el = f.el("target-1781");
-    let sig = handle.bounds_signal();
+    let scope = rinch_core::reactive::Scope::new();
+    let sig = scope.run(|| handle.bounds_signal());
     let widths = Rc::new(RefCell::new(Vec::new()));
     let w = widths.clone();
-    let _e = Effect::new(move || w.borrow_mut().push(sig.get().width));
+    scope.run(|| {
+        Effect::new(move || w.borrow_mut().push(sig.get().width));
+    });
     frames(2).await;
     el.style().set_property("width", "64px").unwrap();
     frames(2).await;
     assert_eq!(*widths.borrow(), vec![0.0, 120.0, 64.0]);
+    scope.dispose();
     f.teardown();
 }
 
