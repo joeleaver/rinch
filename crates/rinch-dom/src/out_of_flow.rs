@@ -233,9 +233,7 @@
 //!   placed by Taffy is of the layout parent's width.
 //! - A **split** inline span — one holding a block-level child (#513), whose
 //!   fragments lie in several anonymous boxes — is not measured: a box inside
-//!   it keeps Taffy's answer, the block container (issue #1424). Nor is a
-//!   span in a block that draws a `text-overflow: ellipsis` "…": those lines
-//!   are rebuilt as flat text with no entry for the span.
+//!   it keeps Taffy's answer, the block container (issue #1424).
 //! - A relative span's own `left`/`top` moves neither its text nor a box
 //!   resolved against it (issue #1425): the containing block is the span as
 //!   rinch draws it. So is a raised one (`<sup>`, any positive
@@ -661,9 +659,9 @@ enum Before {
 ///
 /// A span answers `None` when it has no entry in these lines: a **split**
 /// inline (one holding a block-level child, #513, whose fragments lie in
-/// several anonymous boxes), and any span in lines rebuilt as flat text to
-/// draw a `text-overflow: ellipsis` "…". A box inside such a span keeps
-/// Taffy's answer, the block holding its line.
+/// several anonymous boxes). A box inside such a span keeps Taffy's answer,
+/// the block holding its line. Lines a `text-overflow: ellipsis` cuts are the
+/// lines as laid out (#1100), so a span in them is measured.
 fn measure_span_fragments(
     tree: &NodeTree,
     root_id: RawNodeId,
@@ -2221,8 +2219,7 @@ impl RinchDocument {
     /// box hangs from the span (#631), else measured now, uncached.
     ///
     /// `None` when the element has no fragment in the lines it holds now: no
-    /// lines yet, a **split** inline (#513), or lines rebuilt as flat text to
-    /// draw a `text-overflow: ellipsis` "…".
+    /// lines yet, or a **split** inline (#513).
     pub(crate) fn inline_element_rect(
         &mut self,
         span_id: RawNodeId,

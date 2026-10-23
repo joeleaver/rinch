@@ -93,12 +93,14 @@ fn walk(doc: &RinchDocument, id: usize, depth: usize, out: &mut Vec<String>) {
     ));
     if let Some(tl) = &node.text_layout {
         out.push(format!(
-            "{:indent$}  ifc {:?} {}x{} lines={}",
+            "{:indent$}  ifc {:?} {}x{} lines={} painted={:?}",
             "",
             tl.text_content,
             r(tl.layout.width()),
             r(tl.layout.height()),
             tl.layout.len(),
+            // What a `text-overflow: ellipsis` cut draws (#1100).
+            tl.painted_text(),
             indent = depth * 2
         ));
         for bg in &tl.background_spans {

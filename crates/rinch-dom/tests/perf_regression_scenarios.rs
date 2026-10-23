@@ -20,8 +20,7 @@
 //! | `shape_paint` | `paint/contenteditable.rs` (`<input>` value) | [`an_input_value_is_shaped_by_paint`] |
 //! | `shape_paint` | `paint/mod.rs` (text with no cached layout) | [`a_text_leaf_with_no_cached_layout_is_shaped_by_paint`] — constructed: since #904 a text leaf keeps the layout its measure shaped, in either compute |
 //! | `ellipsis_builds` | `ifc.rs`, IFC root | [`an_ifc_root_ellipsis`] |
-//! | `ellipsis_shapes` | `ifc.rs`, the per-line cut (no search shapes) | [`a_pre_block_ellipsis_cuts_every_line_without_shaping`] |
-//! | `ellipsis_shapes` | `ifc.rs`, the whole-text prefix search | [`a_rich_nowrap_root_ellipsis_shapes_its_prefix_search`] |
+//! | `ellipsis_shapes` | `ifc.rs`, the "…" of the paint-time cut (#1100) | [`a_pre_block_ellipsis_cuts_every_line_without_shaping`], [`a_rich_nowrap_root_ellipsis_shapes_only_the_ellipsis`] |
 //! | `ellipsis_builds` | `ifc.rs`, text leaf — **deleted in #982** | none: [`a_text_leaf_ellipsis`] pins that a flex container's own text builds none, and [`a_contents_wrapped_flex_item_ellipsis`], the last route to the site until #998, now reaches the IFC-root one |
 //! | `shape_atomic_inline` | `ifc.rs`, `NodeContext::InlineRoot` | [`an_inline_block_holding_an_ifc`] |
 //! | `shape_atomic_inline` | `ifc.rs`, `NodeContext::Text` | [`an_inline_flex_holding_a_text_leaf`] |
@@ -441,8 +440,9 @@ fn an_input_value_is_shaped_by_paint() {
 
 // ── ellipsis_builds ────────────────────────────────────────────────────────
 
-/// `text-overflow: ellipsis` on a block that is an IFC root: the truncation is
-/// built by the IFC layout pass.
+/// `text-overflow: ellipsis` on a block that is an IFC root: the cut is found
+/// by the IFC layout pass, in the lines it shaped, and drawn at paint
+/// (#1100). `ellipsis_shapes` is the "…" alone.
 #[test]
 fn an_ifc_root_ellipsis() {
     let mut doc = doc_with(
@@ -467,7 +467,7 @@ fn an_ifc_root_ellipsis() {
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
             (EllipsisBuilds, 1),
-            (EllipsisShapes, 2),
+            (EllipsisShapes, 1),
             (IfcMeasureInvalidations, 2),
             (IfcSignatureChanges, 1),
             (LayoutResolves, 2),
@@ -485,10 +485,11 @@ fn an_ifc_root_ellipsis() {
 
 /// A `pre` block of 40 lines, **every** one overflowing, each cut with its
 /// own "…" (#1091): the cut is found by walking the clusters the paint layout
-/// already shaped, so `ellipsis_shapes` is the "…" and the rebuilt layout —
-/// 2, however many lines are cut. Shaping each candidate prefix per line, as
-/// #1103's first round did, was about 7 shapes a line (#1103's review: a
-/// 300-line block went 34 → 163 ms with `ellipsis_builds` unmoved).
+/// already shaped and drawn at paint (#1100), so `ellipsis_shapes` is the "…"
+/// alone — 1, however many lines are cut (it was 2 while the cut text was
+/// laid out again). Shaping each candidate prefix per line, as #1103's first
+/// round did, was about 7 shapes a line (#1103's review: a 300-line block
+/// went 34 → 163 ms with `ellipsis_builds` unmoved).
 #[test]
 fn a_pre_block_ellipsis_cuts_every_line_without_shaping() {
     let mut doc = doc_with(
@@ -514,7 +515,7 @@ fn a_pre_block_ellipsis_cuts_every_line_without_shaping() {
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
             (EllipsisBuilds, 1),
-            (EllipsisShapes, 2),
+            (EllipsisShapes, 1),
             (IfcMeasureInvalidations, 2),
             (IfcSignatureChanges, 1),
             (LayoutResolves, 2),
@@ -530,11 +531,12 @@ fn a_pre_block_ellipsis_cuts_every_line_without_shaping() {
     );
 }
 
-/// A `nowrap` root whose content the flat rebuild cannot represent (a
-/// coloured span) keeps the behaviour before #1091: the whole text cut to one
-/// prefix by a binary search that shapes each candidate — every one counted.
+/// A `nowrap` root with a coloured span is cut like any other line (#1100):
+/// the "…" is the one shape. Until #1100 such a root was rebuilt flat, its
+/// whole text cut to one prefix by a binary search that shaped each
+/// candidate (8 shapes here).
 #[test]
-fn a_rich_nowrap_root_ellipsis_shapes_its_prefix_search() {
+fn a_rich_nowrap_root_ellipsis_shapes_only_the_ellipsis() {
     let mut doc = doc_with(
         ".clip { width: 60px; overflow: hidden; white-space: nowrap;
                  text-overflow: ellipsis; }
@@ -560,7 +562,7 @@ fn a_rich_nowrap_root_ellipsis_shapes_its_prefix_search() {
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
             (EllipsisBuilds, 1),
-            (EllipsisShapes, 8),
+            (EllipsisShapes, 1),
             (IfcMeasureInvalidations, 4),
             (IfcSignatureChanges, 1),
             (LayoutResolves, 2),
@@ -654,13 +656,14 @@ fn a_contents_wrapped_flex_item_ellipsis() {
         .text_layout
         .as_ref()
         .expect("the span keeps an inline layout");
+    let painted = layout.painted_text();
     assert!(
-        layout.text_content.ends_with('\u{2026}'),
-        "the painted line ends in an ellipsis: {:?}",
-        layout.text_content
+        painted.as_ref().is_some_and(|t| t.ends_with('\u{2026}')),
+        "the painted line ends in an ellipsis: {painted:?}"
     );
-    let w = layout.layout.width();
-    assert!(w <= 60.0, "the painted line is truncated to the box: {w}");
+    let cut = layout.ellipsis.as_ref().unwrap();
+    let w = cut.marks[0].x + cut.glyph.width();
+    assert!(w <= 60.0, "the painted line is cut inside the box: {w}");
     expect(
         "ellipsis (blockified span behind display: contents)",
         &s,
@@ -674,7 +677,7 @@ fn a_contents_wrapped_flex_item_ellipsis() {
             (ShapeMeasureIfc, 1),
             (ShapeIfcBuild, 1),
             (EllipsisBuilds, 1),
-            (EllipsisShapes, 2),
+            (EllipsisShapes, 1),
             (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 4),
             (IfcSignatureChanges, 1),

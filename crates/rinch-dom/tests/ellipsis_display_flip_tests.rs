@@ -56,7 +56,7 @@ fn ellipsis(doc: &RinchDocument, x: NodeId) -> Option<bool> {
         .unwrap()
         .text_layout
         .as_ref()
-        .map(|l| l.text_content.ends_with('\u{2026}'))
+        .map(|l| l.painted_text().is_some_and(|t| t.ends_with('\u{2026}')))
 }
 
 #[test]

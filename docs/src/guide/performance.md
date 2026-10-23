@@ -106,8 +106,8 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | Text | `shape_measure_ifc` / `shape_measure_text` | Parley layouts built inside the Taffy measure function |
 | | `shape_ifc_build` | Parley layouts built by `build_ifc_layouts` (the layouts paint uses) |
 | | `shape_atomic_inline` | Parley layouts built while sizing an `inline-block`/`-flex`/`-grid` box |
-| | `ellipsis_builds` | `text-overflow: ellipsis` rebuilds, one per root with an overflowing line |
-| | `ellipsis_shapes` | layouts those rebuilds shaped: 2 for a per-line cut (the "…" and the result, however many lines; one more for a hard-break fallback or a step back from a kerning overshoot), plus one per prefix a whole-text cut's binary search tried |
+| | `ellipsis_builds` | `text-overflow: ellipsis` cuts found, one per laid-out root with an overflowing line (the cut is drawn at paint, #1100) |
+| | `ellipsis_shapes` | layouts those cuts shaped: the "…", 1 per cut however many lines it ends |
 | | `shape_paint` | Parley layouts built by paint itself: input values, `<select>` labels, the fallback for uncached text |
 | | `shape_form_control_metrics` | Parley layouts built to find an `<input>` / `<textarea>`'s primary font, whose average character width times `size` / `cols` is the control's intrinsic width (#1177): one per control when first sized and when its font family, weight or style changes |
 | | `shape_select_label` | Parley layouts built to size an auto-width `<select>` from its widest option label: one per label, only when its labels, font, `letter-spacing`, `word-spacing` or `text-transform` changed since it was last sized; and, uncached, one per label each time the desktop native popup opens (to size the panel to its widest row) |

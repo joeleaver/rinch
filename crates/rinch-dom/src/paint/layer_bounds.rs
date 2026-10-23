@@ -962,7 +962,7 @@ impl Walk<'_> {
             let mut text = Rect::new(
                 content_x,
                 content_y,
-                content_x + inline.layout.width() as f64 * self.scale,
+                content_x + inline.painted_width() as f64 * self.scale,
                 content_y + inline.layout.height() as f64 * self.scale,
             );
             // What it draws past those line boxes: text `vertical-align`

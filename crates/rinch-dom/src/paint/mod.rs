@@ -38,7 +38,7 @@ use layer_bounds::{
 use svg::*;
 pub(crate) use text::take_span_line_visits;
 use text::*;
-pub use text::{set_reference_text_walk, take_text_line_walks};
+pub use text::{set_reference_text_walk, take_text_glyphs_collected, take_text_line_walks};
 pub use text_shadow::{
     TAP_GLYPH_BUDGET, TAP_GLYPHS_PER_SHADOW, clear_text_shadow_cache, force_tapped_text_shadows,
     text_shadow_scratch_size,
@@ -3999,8 +3999,8 @@ fn paint_node_unmasked(
             // [`clip_cuts_nothing`], which is `layer_bounds`' own walk asked to
             // stop one intersection short. Every row title on that screen is
             // one: `overflow: hidden` with `text-overflow: ellipsis`, where the
-            // ellipsis has already shortened the string so that it fits, so
-            // the clip has nothing left to cut. Eighteen of those, plus the
+            // ellipsis cut draws nothing past the box (`painted_width`, #1100),
+            // so the clip has nothing left to cut. Eighteen of those, plus the
             // chips and the search field, were 2.8ms.
             //
             // It is that walk and not a local one because the local one was

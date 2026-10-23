@@ -1,15 +1,14 @@
 //! A `text-overflow: ellipsis` layout keeps its text ranges (#1065, #853).
 //!
-//! The "…" is drawn by rebuilding the IFC as flat text in the root's own
-//! style (`build_ellipsis_layout`). That rebuild used to record no
-//! `text_ranges`, and every per-element paint decision reads them: a span's
-//! own `text-shadow` list (#1048), its `visibility` (#829) and its live colour
-//! (#679). With none, every byte took the root's answer: a span's shadow was
-//! not drawn (#1065), a hidden span was drawn (#853), and a span's colour was
-//! the root's. The rebuilt text is a prefix of each kept line of the
-//! original, so each range is mapped through the cut onto the rebuilt bytes;
-//! the "…" and the line joins belong to no range and take the root's style,
-//! as Chrome 155 draws the "…" in the block's style.
+//! The "…" used to be drawn by rebuilding the IFC as flat text in the root's
+//! own style, and that rebuild first recorded no `text_ranges`, which every
+//! per-element paint decision reads: a span's own `text-shadow` list (#1048),
+//! its `visibility` (#829) and its live colour (#679). With none, every byte
+//! took the root's answer: a span's shadow was not drawn (#1065), a hidden
+//! span was drawn (#853), and a span's colour was the root's. Since #1100 the
+//! lines are kept and cut at paint, so the ranges are the layout's own; the
+//! "…" is drawn apart in the root's style, as Chrome 155 draws it in the
+//! block's style.
 //!
 //! Chrome 155 on the same markup (bundled Inter): the span's shadow is drawn
 //! under its visible text and not under the "…"; a hidden span's glyphs are
@@ -93,15 +92,11 @@ fn paint(d: &mut RinchDocument) -> Vec<u8> {
     painter.pixels().to_vec()
 }
 
-/// The laid-out text of IFC root `root`; asserts the "…" was drawn.
+/// What paint draws of IFC root `root`'s lines; asserts the "…" was drawn.
 fn cut_text(d: &RinchDocument, root: NodeId) -> String {
     let il = d.tree.get(root.0).unwrap().text_layout.as_ref().unwrap();
-    assert!(
-        il.text_content.contains('\u{2026}'),
-        "not on the ellipsis path: {:?}",
-        il.text_content
-    );
-    il.text_content.clone()
+    il.painted_text()
+        .unwrap_or_else(|| panic!("not on the ellipsis path: {:?}", il.text_content))
 }
 
 /// Pixels in rows `y0..y1` for which `f(r, g, b)` holds.

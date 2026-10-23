@@ -280,13 +280,13 @@ impl ComputedStyle {
     /// the producer that reads it consumes a width rather than producing one:
     /// `color`, `text_align` (it distributes a line inside a width it is given),
     /// `text_decoration` and `text_underline_offset` (ink, no advance),
-    /// `text_overflow` (the ellipsis rebuild truncates to a width already
-    /// decided) and the `same_inline_background_inputs` group. `overflow_x` is
+    /// `text_overflow` (the ellipsis cut is made in lines already broken at
+    /// a width already decided) and the `same_inline_background_inputs` group. `overflow_x` is
     /// absent for a different reason: it is a Taffy property, so a change in it
     /// is already caught by the Taffy style comparison that sets `layout_dirty`
     /// in the first place. The same is true of the paddings inside that group,
     /// and of the flex-or-grid bit of `display` (#1046), which only decides
-    /// whether the ellipsis rebuild runs. The horizontal margins, borders and paddings
+    /// whether the ellipsis cut is made. The horizontal margins, borders and paddings
     /// of a `display: inline` element (its edge boxes, #1426) do move a size,
     /// and are absent too: they are in the larger predicate's background
     /// group, whose change already drops the IFC's measures, and Taffy
