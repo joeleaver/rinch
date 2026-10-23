@@ -31,6 +31,7 @@
 //! | `text_shadow_masks_rasterised` | `paint/text_shadow.rs`, a blurred text-shadow's first paint | [`a_blurred_text_shadow_is_rasterised_once`] |
 //! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs` `build_ifc_layouts` (the paint layout) and `layout_engine.rs` (the root compute's measure) | [`a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass`] — 40 lines from each site |
 //! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, `NodeContext::InlineRoot` (an atomic inline's measure) | [`an_inline_block_hangs_its_spaces_in_one_pass`] |
+//! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, a paragraph with seams (atomic inlines and an element that does not wrap, #1238) | [`a_paragraph_with_seams_pays_one_hang_pass_per_layout`] |
 //! | `ifc_unglue_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure (an IFC root) | [`an_nbsp_glued_chain_is_rebroken_in_logarithmically_many_breaks`] |
 //! | `ifc_unglue_rebreaks` | `ifc.rs` `NodeContext::Text` and `layout_engine.rs`'s leaf measure (`shape_text_leaf`) | [`an_nbsp_glued_chain_in_a_flex_items_own_text_is_rebroken_the_same_way`] |
 //! | `ifc_phantom_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure, together | [`an_overflowing_last_chip_is_rebroken_without_parleys_empty_line`] — 1 from each |
@@ -1276,6 +1277,60 @@ fn a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass() {
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 1),
             (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// #1238: a paragraph that holds atomic inlines and an element that does
+/// not wrap is broken where CSS breaks next to its boxes, not where parley
+/// does (`ifc::WrapSeams`): every layout of it pays one hang pass, whether or
+/// not a line is re-broken. Here three chips in a `nowrap` span, each glued
+/// to its word, in a 120px `normal` paragraph: the paint layout and the root
+/// compute's measure each pay one, and each re-breaks one line
+/// (`ifc_hang_lines`): parley's break after a chip inside the span.
+#[test]
+fn a_paragraph_with_seams_pays_one_hang_pass_per_layout() {
+    let mut doc = doc_with(
+        ".p { width: 120px; } .nw { white-space: nowrap; } \
+         .chip { display: inline-block; width: 30px; height: 16px; }",
+    );
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    text(&mut doc, p, "lorem ipsum ");
+    let nw = el(&mut doc, p, "span", "nw");
+    for word in ["dolor", "sit", "amet"] {
+        text(&mut doc, nw, word);
+        el(&mut doc, nw, "span", "chip");
+    }
+    text(&mut doc, p, " consectetur");
+    let s = cold_frame(&mut doc);
+    expect(
+        "seams paragraph",
+        &s,
+        &[
+            (StyleResolves, 6),
+            (ElementsCascaded, 7),
+            (StyleNodesVisited, 47),
+            (FullStyleWalks, 6),
+            (TaffyStyleSyncs, 7),
+            (TaffyStyleChanges, 6),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 10),
+            (IfcSignatureChanges, 1),
+            (IfcHangPasses, 2),
+            (IfcHangLines, 2),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (InlineBlockComputes, 3),
+            (PaintNodesVisited, 5),
             (StackingOrderBuilds, 1),
         ],
     );
