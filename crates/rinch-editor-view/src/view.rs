@@ -1889,6 +1889,11 @@ impl RinchDomEditorView {
                 return Some(rect);
             }
         }
+        for (element, end) in self.mark_edges_beside(doc, pos) {
+            if let Some(rect) = host.query_inline_edge_caret_rect(block_id, element as u64, end) {
+                return Some(rect);
+            }
+        }
         host.query_caret_rect_with_affinity(block_id, byte, affinity)
     }
 
@@ -1967,6 +1972,97 @@ impl RinchDomEditorView {
             Some(a) => [Some(a), before_leaf],
             None => [before_leaf, None],
         }
+    }
+
+    /// The mark wrapper edges a caret at `pos` is drawn past, as `(the
+    /// wrapper's host element id, end)` in the order to try them (#1426).
+    ///
+    /// A mark wrapper's horizontal padding, border and margin take room on
+    /// the line but hold no flat bytes, so at a run boundary the byte's caret
+    /// is drawn before all of them. The caret goes where its marks say: inside
+    /// a mark it carries, outside one it does not ([`ResolvedPos::marks`] —
+    /// an inclusive mark such as `code` continues past its end, a link does
+    /// not). So it is drawn past the end edge of each wrapper of the run
+    /// before `pos` whose mark it does not carry, and past the start edge of
+    /// each wrapper of the run after `pos` whose mark it does carry; the
+    /// last such edge in the line's logical order wins (the end edges come
+    /// first, innermost first; then the start edges, outermost first). The
+    /// list is that edge and the ones before it that qualify, last first: a
+    /// wrapper with no padding has no edge, and the host answers `None` for
+    /// it. Empty inside a run, outside a textblock, or when no edge
+    /// qualifies — then the byte's caret stands.
+    ///
+    /// [`ResolvedPos::marks`]: rinch_editor_core::ResolvedPos::marks
+    pub(crate) fn mark_edges_beside(&self, doc: &Node, pos: Pos) -> Vec<(usize, bool)> {
+        let Ok(r) = doc.resolve(pos) else {
+            return Vec::new();
+        };
+        if !r.parent().is_textblock() {
+            return Vec::new();
+        }
+        let mut desc = &self.root;
+        for d in 0..r.depth() {
+            match desc.children.get(r.index(d)) {
+                Some(c) => desc = c,
+                None => return Vec::new(),
+            }
+        }
+        let off = r.parent_offset();
+        let block = &desc.node;
+        let mut at = 0usize;
+        let mut before: Option<usize> = None;
+        let mut next: Option<usize> = None;
+        for i in 0..block.child_count() {
+            if at == off {
+                next = Some(i);
+                break;
+            }
+            if at > off {
+                return Vec::new(); // inside a text run
+            }
+            at += block.child(i).node_size();
+            before = Some(i);
+        }
+        if next.is_none() && at != off {
+            return Vec::new();
+        }
+        // A run's wrappers with their marks, innermost first.
+        let wrappers = |i: usize| -> Vec<(usize, Mark)> {
+            let Some(child) = desc.children.get(i) else {
+                return Vec::new();
+            };
+            let mut out = Vec::new();
+            let mut cur = child.dom.clone();
+            for mark in child.node.marks() {
+                if mark_dom_tag(mark).is_none() {
+                    continue;
+                }
+                let Some(parent) = cur.parent_node() else {
+                    break;
+                };
+                cur = parent;
+                out.push((cur.node_id().0, mark.clone()));
+            }
+            out
+        };
+        let carried = r.marks();
+        let mut edges: Vec<(usize, bool)> = Vec::new();
+        if let Some(i) = before {
+            for (el, mark) in wrappers(i) {
+                if !carried.contains(&mark) {
+                    edges.push((el, true));
+                }
+            }
+        }
+        if let Some(i) = next {
+            for (el, mark) in wrappers(i).into_iter().rev() {
+                if carried.contains(&mark) {
+                    edges.push((el, false));
+                }
+            }
+        }
+        edges.reverse();
+        edges
     }
 
     /// The first of [`Self::inline_boxes_beside`]: the leaf a host that
@@ -2138,6 +2234,15 @@ impl RinchDomEditorView {
         {
             if let Some((x, y, height)) =
                 d.query_inline_box_caret(block_id as u64, leaf as u64, after)
+            {
+                let (ox, oy) = self.block_offset_in_container(d, block_id);
+                return Some((ox + x, oy + y, height));
+            }
+        }
+        // #1426: past a mark wrapper's padding, on the side its marks say.
+        for (element, end) in self.mark_edges_beside(doc, pos) {
+            if let Some((x, y, height)) =
+                d.query_inline_edge_caret(block_id as u64, element as u64, end)
             {
                 let (ox, oy) = self.block_offset_in_container(d, block_id);
                 return Some((ox + x, oy + y, height));
