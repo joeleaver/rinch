@@ -1599,24 +1599,31 @@ fn on_drag_over(event: &web_sys::DragEvent) {
 /// point, the editor takes the keyboard, and the image files are offered to
 /// the app (`EditorHandle::on_image_input`), in order. The browser's own
 /// handling of the drop (opening the file in place of the page) is prevented
-/// whatever the files are; the other files of a mixed drop are ignored. An
-/// editor with no callback is not involved at all. One that refuses edits
-/// (read-only) prevents the drop and does nothing else: no offer, no caret
-/// move, no focus. A viewer of a read-only note who drops a picture on it must
-/// not lose the app to the browser's navigation.
+/// whatever the files are. The files the editor does not take — the others of
+/// a mixed drop, every file when none is a picture or the editor refuses edits
+/// — go to the `ondropfiles` handler under the drop point, if there is one
+/// (issue #1771, desktop's rule). An editor with no callback is not involved
+/// at all. One that refuses edits (read-only) takes nothing: no offer, no
+/// caret move, no focus. A viewer of a read-only note who drops a picture on
+/// it must not lose the app to the browser's navigation.
 fn on_drop(event: &web_sys::DragEvent, doc: &web_sys::Document) {
     let Some((id, handle)) = file_drop_editor(event) else {
         return;
     };
     event.prevent_default();
-    if handle.refuses_edits() {
-        return;
-    }
     let files = event
         .data_transfer()
-        .map(|dt| image_files(&dt))
+        .map(|dt| crate::event_delegation::dropped_files(&dt))
         .unwrap_or_default();
-    if files.is_empty() {
+    if handle.refuses_edits() {
+        crate::event_delegation::dispatch_dropped_files(event, files);
+        return;
+    }
+    let (images, rest): (Vec<_>, Vec<_>) = files
+        .into_iter()
+        .partition(|file| file.type_().starts_with("image/"));
+    if images.is_empty() {
+        crate::event_delegation::dispatch_dropped_files(event, rest);
         return;
     }
     if let Some(pos) = resolve_editor_point(doc, event.client_x() as f32, event.client_y() as f32)
@@ -1627,7 +1634,10 @@ fn on_drop(event: &web_sys::DragEvent, doc: &web_sys::Document) {
     }
     handle.focus();
     refresh_caret();
-    offer_image_files(&handle, ImageInputSource::Drop, files);
+    offer_image_files(&handle, ImageInputSource::Drop, images);
+    if !rest.is_empty() {
+        crate::event_delegation::dispatch_dropped_files(event, rest);
+    }
 }
 
 // ── IME composition ────────────────────────────────────────────────────────────

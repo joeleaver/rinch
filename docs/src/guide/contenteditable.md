@@ -579,11 +579,15 @@ and image files dragged onto the editor from outside the page are offered at
 the drop point, the editor taking the drop (and the keyboard) so the browser
 does not open the file in place of the page. A file counts as a picture when
 the browser calls it `image/*` (so an SVG or an AVIF is offered, typed as the
-browser typed it), there is no size limit, and the other files of a mixed
-drop are ignored: the browser build does not dispatch `onfiledrop`.
+browser typed it), and there is no size limit. The browser build does not
+dispatch `onfiledrop` (a browser drop has no paths); the files of a drop the
+editor does not take — the others of a mixed drop, every file of a drop with
+no picture or on a read-only editor — go to an `ondropfiles` handler around
+it, as they do on the desktop.
 
 On a **read-only** editor with the callback, a drop is prevented and nothing
-else happens: nothing is offered, the caret and the focus stay. It has to be
+is offered: the caret and the focus stay, and the files go to an
+`ondropfiles` handler around the editor if there is one. It has to be
 prevented, or the browser would navigate the tab to the dropped file and the
 person would lose the app. With no callback a pasted image is a `data:` URL,
 as before, and a file drop is the browser's (which opens the file; that is

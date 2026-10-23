@@ -77,6 +77,8 @@ web-sys = { version = "0.3", features = [
     "ClipboardEventInit", "InputEventInit",
     "DataTransfer", "DataTransferItem", "DataTransferItemList",
     "Blob", "File", "FileReader",
+    # Every file of a drop, for `ondropfiles` (#1771).
+    "FileList",
     # Files dragged onto an editor from outside the page, offered to the app's
     # `EditorHandle::on_image_input` (`on_drop` in editor_input.rs).
     "DragEvent",

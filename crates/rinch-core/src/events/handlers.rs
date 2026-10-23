@@ -269,6 +269,8 @@ pub fn unregister_handler(id: EventHandlerId) {
     drop(input);
     let file_drop = FILE_DROP_REGISTRY.with(|r| r.borrow_mut().handlers.remove(&id));
     drop(file_drop);
+    let files_drop = FILES_DROP_REGISTRY.with(|r| r.borrow_mut().remove(&id));
+    drop(files_drop);
     let scroll = SCROLL_REGISTRY.with(|r| r.borrow_mut().handlers.remove(&id));
     drop(scroll);
     let key = KEY_REGISTRY.with(|r| r.borrow_mut().remove(&id));
@@ -301,6 +303,16 @@ pub fn has_file_drop_handler(id: EventHandlerId) -> bool {
     FILE_DROP_REGISTRY.with(|registry| registry.borrow().handlers.contains_key(&id))
 }
 
+/// Whether an `ondropfiles` handler (issue #1771) is still registered under
+/// this id. See [`has_click_handler`].
+pub fn has_files_drop_handler(id: EventHandlerId) -> bool {
+    FILES_DROP_REGISTRY.with(|registry| registry.borrow().contains_key(&id))
+}
+
+/// A handler for files dropped from the OS, handed as
+/// [`LocalFile`](crate::file::LocalFile)s (`ondropfiles`, issue #1771).
+type FilesDropCallback = Rc<dyn Fn(Vec<crate::file::LocalFile>)>;
+
 // Thread-local event handler registry.
 thread_local! {
     // None of the four registries below are const-evaluable: each `::new()`
@@ -310,6 +322,9 @@ thread_local! {
     static INPUT_REGISTRY: RefCell<InputRegistry> = RefCell::new(InputRegistry::new());
     static FILE_DROP_REGISTRY: RefCell<FileDropRegistry> = RefCell::new(FileDropRegistry::new());
     static SCROLL_REGISTRY: RefCell<ScrollRegistry> = RefCell::new(ScrollRegistry::new());
+    /// `ondropfiles` handlers (issue #1771).
+    static FILES_DROP_REGISTRY: RefCell<HashMap<EventHandlerId, FilesDropCallback>> =
+        RefCell::new(HashMap::new());
     /// `onkeydown` / `onkeyup` handlers (issue #1678).
     static KEY_REGISTRY: RefCell<HashMap<EventHandlerId, KeyCallback>> = RefCell::new(HashMap::new());
     // Not const-evaluable: goes through the non-const `Default` trait method.
@@ -595,6 +610,66 @@ pub fn dispatch_file_drop_event(id: EventHandlerId, paths: Vec<PathBuf>) -> bool
     }
 }
 
+thread_local! {
+    static PRESS_WITHOUT_ACTIVATION: std::cell::Cell<Option<i32>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Set by a backend for the length of a click it dispatches from a press
+/// that grants the page no user activation: on the web a touch or pen
+/// `pointerdown`, whose click runs on contact unless the element can scroll
+/// (#1582). `Some(pointer id)`; `None` after. Code that needs activation (the
+/// file picker, #1771) asks [`press_without_activation`] and waits for that
+/// pointer's release, which does grant it.
+#[doc(hidden)]
+pub fn set_press_without_activation(pointer: Option<i32>) {
+    PRESS_WITHOUT_ACTIVATION.with(|p| p.set(pointer));
+}
+
+/// The pointer whose press is being dispatched without user activation, if
+/// any. See [`set_press_without_activation`].
+#[doc(hidden)]
+pub fn press_without_activation() -> Option<i32> {
+    PRESS_WITHOUT_ACTIVATION.with(std::cell::Cell::get)
+}
+
+/// Register an `ondropfiles` handler (issue #1771) and return its id: called
+/// with the files dropped from the OS onto an element carrying
+/// `data-ondropfiles`, as [`LocalFile`](crate::file::LocalFile)s, on the
+/// desktop and on the web.
+#[doc(hidden)]
+pub fn register_files_drop_handler(
+    callback: impl Fn(Vec<crate::file::LocalFile>) + 'static,
+) -> EventHandlerId {
+    let id = next_handler_id();
+    // Re-enter the registration-time context root and owner on dispatch
+    // (issues #136, #141), as every other handler does.
+    let root = crate::context::current_context_root();
+    crate::reactive::record_handler(id);
+    let owner = crate::reactive::Owner::current();
+    let callback: FilesDropCallback = Rc::new(move |files| {
+        let _root = crate::context::push_context_root(root);
+        let _owner = owner.push();
+        crate::reactive::untracked_handler(|| callback(files));
+    });
+    FILES_DROP_REGISTRY.with(|registry| {
+        registry.borrow_mut().insert(id, callback);
+    });
+    id
+}
+
+/// Dispatch dropped files to the `ondropfiles` handler with the given id, in
+/// one batch. Returns `true` if a handler was found and called.
+pub fn dispatch_files_drop_event(id: EventHandlerId, files: Vec<crate::file::LocalFile>) -> bool {
+    let handler = FILES_DROP_REGISTRY.with(|registry| registry.borrow().get(&id).cloned());
+    if let Some(h) = handler {
+        crate::reactive::batch(|| h(files));
+        true
+    } else {
+        false
+    }
+}
+
 /// Register a scroll event handler and return its ID.
 ///
 /// The handler will be called when an element with the corresponding
@@ -714,6 +789,9 @@ pub fn clear_handlers() {
     });
     SCROLL_REGISTRY.with(|registry| {
         registry.borrow_mut().handlers.clear();
+    });
+    FILES_DROP_REGISTRY.with(|registry| {
+        registry.borrow_mut().clear();
     });
     KEY_REGISTRY.with(|registry| {
         registry.borrow_mut().clear();

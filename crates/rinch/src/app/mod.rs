@@ -161,6 +161,8 @@ mod element_key_1678_tests;
 mod event_dispatch;
 #[cfg(test)]
 mod file_drop_click_context_1650_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod files_drop_1771_tests;
 mod focus;
 #[cfg(test)]
 mod focus_lifecycle_tests;

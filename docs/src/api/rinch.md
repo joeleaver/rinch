@@ -256,6 +256,13 @@ Theme system types from `rinch-theme`.
 
 Component library from `rinch-components`.
 
+### `rinch::file`
+
+Files from the user on the desktop and the web: `LocalFile` (name, size,
+path where there is one, bytes read on demand) and `FilePicker` (web always;
+native with the file-dialogs feature). See
+[Files From the User](../guide/platform.md#files-from-the-user-web-and-desktop).
+
 ### `rinch::dialogs` (file-dialogs feature)
 
 File dialog wrappers via `rfd`.
