@@ -1403,7 +1403,11 @@ struct CellIndex {
 
 thread_local! {
     /// One [`CellIndex`] per document (`CollabDoc::uid`), for the table its last
-    /// keystroke in a table was in.
+    /// keystroke in a table was in. A `CollabDoc` used from another thread finds
+    /// nothing here and builds its own there; one dropped on another thread than the
+    /// one it indexed on leaves its entry on that one (`forget_cell_index` runs where
+    /// the drop does), never used again (its uid is unique) and holding one table
+    /// until that thread ends — as the atom cache does (`crate::atom_cache`).
     static CELL_INDEX: RefCell<HashMap<u64, CellIndex>> = RefCell::new(HashMap::new());
     /// How many times [`locate_cell`] read a whole table to build an index, and how
     /// many cell edits it located; see [`crate::testing::table_cell_edits`].

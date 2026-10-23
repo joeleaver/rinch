@@ -7,13 +7,20 @@
 //! map through an index kept between keystrokes and reconciles its blocks the way the
 //! whole-table reconcile does. This differential runs the same random history twice
 //! with pinned client ids — once with that path, once with it turned off
-//! (`testing::set_table_cell_path(false)`) — and asserts that every peer's CRDT is the
-//! same **bytes** in both after every operation: the same writes, not only the same
-//! document. The history mixes typing, splits, joins, breaks, pictures, bold, undo
-//! and redo in cells (a merged one, one holding two paragraphs, one with a link) of
-//! two tables, with row and column commands and edits outside the tables (which
-//! change the CRDT under the index, so it must be rebuilt) and deliveries between
-//! two peers.
+//! (`testing::set_table_cell_path(false)`) — and asserts after every operation that
+//! every peer's document, CRDT read and CRDT agree in both: item by item
+//! (`testing::same_crdt`), or where a link is in play, as many items written and
+//! deleted by each client (`testing::same_writes`; see [`linked`]). The history mixes
+//! typing, splits, joins, breaks, pictures, bold, links, alignment, a cell attribute,
+//! merges, markdown input rules and pastes in cells (a merged one, one holding two
+//! paragraphs, one with a link) of two tables, with row and column commands, undo and
+//! redo, edits outside the tables (which change the CRDT under the index, so it must
+//! be rebuilt), and deliveries between two peers, both ways and one way. The adversarial
+//! ops, the live-collaboration test and the link-elsewhere test came from the review of
+//! PR #1871.
+//!
+//! `TABLE_CELL_SEEDS=n` runs `n` seeds instead of the default 30 (300 passed in the
+//! review).
 
 use std::rc::Rc;
 
@@ -220,6 +227,19 @@ enum Op {
     History(usize, &'static str),
     /// Both peers send what they have not sent, and each integrates the other's.
     Exchange,
+    /// Only peer `.0` sends; the other integrates it.
+    Deliver(usize),
+    /// Merge the cells around two positions.
+    Merge(usize, usize, usize),
+    /// Run a named command with the caret at a position (align etc.).
+    Align(usize, usize, &'static str),
+    /// Add a link mark over a range.
+    Link(usize, usize, usize),
+    /// Type `prefix` at the start of the block around pos, then run the markdown
+    /// input rules for the trigger char.
+    Rule(usize, usize, &'static str, &'static str),
+    /// Paste two paragraphs (open slice) or a list at a position.
+    Paste(usize, usize, bool),
 }
 
 fn is_text_pos(doc: &Node, p: usize) -> bool {
@@ -239,8 +259,10 @@ fn in_table(doc: &Node, p: usize) -> bool {
 
 /// One random operation for the world's current document (peer 0's, or peer 1's).
 fn random_op(rng: &mut Rng, docs: [&Node; 2]) -> Option<Op> {
-    if rng.below(12) == 0 {
-        return Some(Op::Exchange);
+    match rng.below(10) {
+        0 => return Some(Op::Exchange),
+        1 => return Some(Op::Deliver(rng.below(2))),
+        _ => {}
     }
     let peer = rng.below(2);
     let doc = docs[peer];
@@ -277,6 +299,30 @@ fn random_op(rng: &mut Rng, docs: [&Node; 2]) -> Option<Op> {
         }
         15 => Op::History(peer, if rng.below(2) == 0 { "undo" } else { "redo" }),
         16 => Op::CellAttr(peer, pos(rng)?),
+        17..=19 => match rng.below(6) {
+            0 | 1 => {
+                let p = pos(rng)?;
+                Op::Merge(peer, p, pos(rng)?)
+            }
+            2 => {
+                let names = [
+                    "setTextAlignCenter",
+                    "setTextAlignRight",
+                    "setTextAlignLeft",
+                ];
+                Op::Align(peer, pos(rng)?, names[rng.below(3)])
+            }
+            3 => {
+                let p = pos(rng)?;
+                Op::Link(peer, p, (p + 1 + rng.below(4)).min(doc.content_size()))
+            }
+            4 => {
+                let rules = [("#", " "), ("-", " "), (">", " "), ("1.", " "), ("--", "-")];
+                let (a, b) = rules[rng.below(rules.len())];
+                Op::Rule(peer, pos(rng)?, a, b)
+            }
+            _ => Op::Paste(peer, pos(rng)?, rng.below(2) == 0),
+        },
         _ => Op::Type(peer, pos(rng)?),
     })
 }
@@ -292,7 +338,18 @@ fn apply(peers: &mut [Peer], op: &Op) -> bool {
         peers[1].receive(&deltas[0]);
         return true;
     }
+    if let Op::Deliver(from) = *op {
+        let delta = peers[from].session.save_incremental().unwrap();
+        peers[1 - from].receive(&delta);
+        return true;
+    }
     let peer = match *op {
+        Op::Merge(p, ..)
+        | Op::Align(p, ..)
+        | Op::Link(p, ..)
+        | Op::Rule(p, ..)
+        | Op::Paste(p, ..) => p,
+        Op::Deliver(_) => unreachable!(),
         Op::Type(p, _) | Op::Command(p, ..) | Op::Bold(p, ..) | Op::Image(p, _) => p,
         Op::CellAttr(p, _) => p,
         Op::History(p, _) => p,
@@ -365,6 +422,90 @@ fn apply(peers: &mut [Peer], op: &Op) -> bool {
                 .is_ok()
                 .then(|| st.apply(tr))
         }
+        Op::Deliver(_) => unreachable!(),
+        Op::Merge(_, p, q) => {
+            let cell_at = |p: usize| -> Option<usize> {
+                let r = st.doc.resolve(Pos(p)).ok()?;
+                (1..=r.depth())
+                    .rev()
+                    .find(|&d| r.node(d).type_name().ends_with("cell"))
+                    .and_then(|d| r.before(d))
+            };
+            let (Some(a), Some(b)) = (cell_at(p), cell_at(q)) else {
+                return false;
+            };
+            if a == b {
+                return false;
+            }
+            let mut tr = st.tr();
+            tr.set_selection(Selection::cell(Pos(a), Pos(b)));
+            st.apply(tr).run("mergeCells")
+        }
+        Op::Align(_, p, name) => {
+            if !ok(p) {
+                return false;
+            }
+            cursor(p).run(name)
+        }
+        Op::Link(_, p, q) => {
+            if !ok(p) || !ok(q) || p >= q {
+                return false;
+            }
+            let link = Mark::new(
+                st.schema().mark_type("link").unwrap().clone(),
+                Attrs::new().with(
+                    "href",
+                    AttrValue::from(format!("https://e.test/{p}").as_str()),
+                ),
+            );
+            let mut tr = st.tr();
+            tr.add_mark(p, q, link).is_ok().then(|| st.apply(tr))
+        }
+        Op::Rule(_, p, prefix, trigger) => {
+            if !ok(p) {
+                return false;
+            }
+            let r = st.doc.resolve(Pos(p)).unwrap();
+            let start = p - r.parent_offset();
+            let mut tr = st.tr();
+            tr.set_selection(Selection::cursor(Pos(start)));
+            if tr.insert_text(prefix).is_err() {
+                return false;
+            }
+            let mid = st.apply(tr);
+            let at = start + prefix.chars().count();
+            let rules = rinch_editor_core::input_rules::markdown_input_rules();
+            let mut c = mid.tr();
+            c.set_selection(Selection::cursor(Pos(at)));
+            let mid = mid.apply(c);
+            match rinch_editor_core::apply_input_rules(&mid, &rules, at, trigger) {
+                Some(tr) => Some(mid.apply(tr)),
+                None => Some(mid),
+            }
+        }
+        Op::Paste(_, p, list) => {
+            if !ok(p) {
+                return false;
+            }
+            let s = st.schema();
+            let slice = if list {
+                let item = |t: &str| branch(s, "list_item", vec![para(s, t)]);
+                Slice::new(
+                    Fragment::from_node(branch(s, "bullet_list", vec![item("pa"), item("pb")])),
+                    0,
+                    0,
+                )
+            } else {
+                Slice::new(
+                    Fragment::from_children(vec![para(s, "p1"), para(s, "p2")]),
+                    1,
+                    1,
+                )
+            };
+            let mut tr = st.tr();
+            tr.set_selection(Selection::cursor(Pos(p)));
+            tr.replace_selection(slice).is_ok().then(|| st.apply(tr))
+        }
         Op::Exchange => unreachable!(),
     };
     match next {
@@ -413,6 +554,11 @@ fn trial(seed: u64, ops: usize) -> u64 {
         let leaked = table_cell_edits().1 - before;
         set_table_cell_path(true);
         assert_eq!(leaked, 0, "the switch turns the cell path off");
+        if a {
+            let k = format!("{op:?}");
+            let k = k.split('(').next().unwrap().to_string();
+            COUNTS.with(|c| *c.borrow_mut().entry(k).or_insert(0) += 1);
+        }
         history.push(op);
         assert_eq!(
             a, b,
@@ -430,7 +576,8 @@ fn trial(seed: u64, ops: usize) -> u64 {
                 "seed {seed}, peer {p}: the CRDTs read differently after {history:?}"
             );
             let (x, y) = (with[p].session.snapshot(), without[p].session.snapshot());
-            let same = if linked(seed) {
+            let any_link = linked(seed) || history.iter().any(|o| matches!(o, Op::Link(..)));
+            let same = if any_link {
                 same_writes(&x, &y)
             } else {
                 same_crdt(&x, &y)
@@ -454,14 +601,29 @@ fn trial(seed: u64, ops: usize) -> u64 {
 #[test]
 fn a_cell_edit_writes_what_the_whole_table_reconcile_writes() {
     let mut cell_edits = 0;
-    for seed in 1..=40 {
+    let seeds: u64 = std::env::var("TABLE_CELL_SEEDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+    for seed in 1..=seeds {
         cell_edits += trial(seed, 120);
     }
-    // The positive control: most of the edits went through the cell path.
+    // The positive controls: most of the edits went through the cell path, and every
+    // kind of op applied somewhere.
     assert!(
-        cell_edits > 2000,
+        cell_edits > 1500,
         "only {cell_edits} cell edits took the cell path"
     );
+    let counts = COUNTS.with(|c| c.borrow().clone());
+    for kind in [
+        "Type", "Command", "Bold", "Image", "History", "CellAttr", "Exchange", "Deliver", "Merge",
+        "Align", "Link", "Rule", "Paste",
+    ] {
+        assert!(
+            counts.get(kind).is_some_and(|&n| n > 0),
+            "no `{kind}` op applied: {counts:?}"
+        );
+    }
 }
 
 /// A keystroke in a cell after the CRDT changed under the index (an edit elsewhere, a
@@ -562,4 +724,135 @@ fn tables_tile(node: &Node) -> bool {
         }
     }
     (0..node.child_count()).all(|i| tables_tile(node.child(i)))
+}
+
+thread_local! {
+    /// How many ops of each kind applied in the first world: the differential's
+    /// positive control that every kind ran.
+    static COUNTS: std::cell::RefCell<std::collections::BTreeMap<String, u64>> =
+        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+fn big_world(s: &Rc<Schema>, rows: usize, edit: bool) -> Vec<Peer> {
+    let table = branch(
+        s,
+        "table",
+        (0..rows)
+            .map(|r| {
+                branch(
+                    s,
+                    "table_row",
+                    (0..4)
+                        .map(|c| cell(s, vec![para(s, &format!("row {r} column {c}"))]))
+                        .collect(),
+                )
+            })
+            .collect(),
+    );
+    let doc = branch(s, "doc", vec![para(s, "before"), table, para(s, "after")]);
+    let state = EditorState::create(s.clone(), doc, plugins());
+    let host = session_with_client_id(&state, 11).unwrap();
+    let guest = session_from_bytes_with_client_id(&host.snapshot(), 12).unwrap();
+    let guest_doc = guest.projected_doc(s).unwrap();
+    vec![
+        Peer {
+            schema: s.clone(),
+            state,
+            session: host,
+            edit,
+        },
+        Peer {
+            schema: s.clone(),
+            state: EditorState::create(s.clone(), guest_doc, plugins()),
+            session: guest,
+            edit,
+        },
+    ]
+}
+
+fn type_at(peers: &mut [Peer], who: usize, needle: &str) -> (u64, u64) {
+    let at = pos_of(&peers[who].state.doc, needle);
+    let mut tr = peers[who].state.tr();
+    tr.set_selection(Selection::cursor(Pos(at)));
+    tr.insert_text("x").unwrap();
+    let next = peers[who].state.apply(tr);
+    let before = table_cell_edits();
+    peers[who].commit(next);
+    let after = table_cell_edits();
+    (after.0 - before.0, after.1 - before.1)
+}
+
+/// What the index buys in live collaboration, for both ways of recording a change
+/// (`record_local_edit`, what the editor view uses, and `record_local`): consecutive
+/// local keystrokes in a cell build it once, and a keystroke after integrating a
+/// peer's keystroke (elsewhere in the same table) builds it again, since any remote
+/// update changes the CRDT under it. (`(index builds, cell edits)` per keystroke.)
+#[test]
+fn live_collaboration_rebuilds_the_index_after_each_peer_change() {
+    let rows = 50;
+    let s = Rc::new(Schema::starter_kit());
+    for edit in [true, false] {
+        let mut peers = big_world(&s, rows, edit);
+        let needle = format!("row {} column 2", rows / 2);
+        let local: Vec<_> = (0..4).map(|_| type_at(&mut peers, 0, &needle)).collect();
+        assert_eq!(
+            local,
+            [(1, 1), (0, 1), (0, 1), (0, 1)],
+            "edit={edit}: consecutive"
+        );
+        for i in 0..3 {
+            type_at(&mut peers, 1, &format!("row {} column 1", i + 1));
+            let d = peers[1].session.save_incremental().unwrap();
+            peers[0].receive(&d);
+            assert_eq!(
+                type_at(&mut peers, 0, &needle),
+                (1, 1),
+                "edit={edit}: after peer change {i}"
+            );
+            let d = peers[0].session.save_incremental().unwrap();
+            peers[1].receive(&d);
+        }
+        assert_eq!(peers[0].state.doc, peers[1].state.doc);
+    }
+}
+
+/// A link in one cell, edits (typing, bold, unbold, align) in another: per_char
+/// differs between the paths (whole table vs the cell); the CRDTs must agree item by
+/// item, since no insert here goes through insert_with_attributes.
+#[test]
+fn a_link_in_another_cell_changes_nothing_the_cell_path_writes() {
+    let s = Rc::new(Schema::starter_kit());
+    let mut worlds = [world(&s, 3), world(&s, 3)]; // seed 3: linked
+    for (w, on) in worlds.iter_mut().zip([true, false]) {
+        set_table_cell_path(on);
+        let c0 = table_cell_edits().1;
+        let at = pos_of(&w[0].state.doc, "bottom 1") + 2;
+        let ops: Vec<Op> = vec![
+            Op::Type(0, at),
+            Op::Bold(0, at - 2, at + 3),
+            Op::Type(0, at + 1),
+            Op::Bold(0, at - 2, at + 3),
+            Op::Align(0, at, "setTextAlignCenter"),
+            Op::Type(0, at + 2),
+            Op::Exchange,
+            Op::Type(1, at + 3),
+            Op::Bold(1, at, at + 4),
+            Op::Exchange,
+            Op::Type(0, at + 1),
+        ];
+        for op in &ops {
+            assert!(apply(w, op), "{op:?}");
+        }
+        let edits = table_cell_edits().1 - c0;
+        assert_eq!(edits > 0, on, "cell path on={on}: {edits} cell edits");
+        set_table_cell_path(true);
+    }
+    let [a, b] = &worlds;
+    for p in 0..2 {
+        assert_eq!(a[p].state.doc, b[p].state.doc);
+        assert!(
+            same_crdt(&a[p].session.snapshot(), &b[p].session.snapshot()),
+            "peer {p}: the CRDTs differ item by item"
+        );
+    }
 }
