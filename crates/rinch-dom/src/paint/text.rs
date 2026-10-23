@@ -44,7 +44,15 @@ pub(super) fn paint_inline_layout(
 
     // Paint inline element backgrounds BEFORE text so text renders on top
     if !inline_layout.background_spans.is_empty() {
-        paint_inline_backgrounds(tree, painter, parent_x, parent_y, inline_layout, transform);
+        paint_inline_backgrounds(
+            tree,
+            painter,
+            scale,
+            parent_x,
+            parent_y,
+            inline_layout,
+            transform,
+        );
     }
 
     // Chrome paints each text fragment's shadows and then its text before
@@ -175,22 +183,55 @@ pub(super) fn paint_inline_layout(
 
 /// Paint background rectangles for inline elements (code, mark, etc.).
 ///
-/// Uses Parley's cluster-based byte-to-position mapping to determine the
-/// exact visual bounds of each inline background span. Handles multi-line
-/// spans by iterating lines and computing per-line background rectangles.
+/// The rectangles are [`inline_background_rects`]'s, which the clip proof
+/// (`layer_bounds`, #1762) reads too: they reach past the line box by the
+/// element's padding, so a box whose text fits can still have something to
+/// clip.
 fn paint_inline_backgrounds(
     tree: &NodeTree,
     painter: &mut dyn Painter,
+    scale: f64,
     parent_x: f64,
     parent_y: f64,
     inline_layout: &crate::node::InlineLayout,
     css_transform: Affine,
 ) {
+    use peniko::kurbo::RoundedRect;
+
+    let transform = css_transform * Affine::translate((parent_x, parent_y));
+    inline_background_rects(tree, inline_layout, scale, |bg_span, rect| {
+        let brush = Brush::Solid(bg_span.color);
+        if bg_span.border_radius > 0.0 {
+            let r = bg_span.border_radius as f64 * scale;
+            let rrect = RoundedRect::from_rect(rect, r);
+            painter.fill(Fill::NonZero, transform, &brush, &rrect.into());
+        } else {
+            painter.fill(Fill::NonZero, transform, &brush, &rect.into());
+        }
+    });
+}
+
+/// Every rectangle [`paint_inline_backgrounds`] fills, with the span it
+/// belongs to, in device px relative to the IFC root's content origin (before
+/// its CSS transform).
+///
+/// Uses Parley's cluster-based byte-to-position mapping to determine the
+/// exact visual bounds of each inline background span. Handles multi-line
+/// spans by iterating lines and computing per-line background rectangles.
+///
+/// The layout is built in CSS px, so everything here is multiplied by
+/// `scale`, as [`render_text`] scales the glyphs drawn over it (the rectangles
+/// used to be drawn unscaled: at scale 2 a pill was half its size and off its
+/// text, #1762).
+pub(super) fn inline_background_rects(
+    tree: &NodeTree,
+    inline_layout: &crate::node::InlineLayout,
+    scale: f64,
+    mut f: impl FnMut(&crate::node::InlineBackgroundSpan, Rect),
+) {
     use parley::layout::Cluster;
-    use peniko::kurbo::{Rect, RoundedRect};
 
     let layout = &inline_layout.layout;
-    let transform = css_transform * Affine::translate((parent_x, parent_y));
 
     for bg_span in &inline_layout.background_spans {
         // The background is the inline element's own visual, so it follows
@@ -216,7 +257,6 @@ fn paint_inline_backgrounds(
             }
             None => bg_span,
         };
-        let brush = Brush::Solid(bg_span.color);
 
         // Iterate lines to find those overlapping this background span
         for line in layout.lines() {
@@ -270,19 +310,12 @@ fn paint_inline_backgrounds(
             let pb = bg_span.padding_bottom as f64;
 
             let rect = Rect::new(
-                x_start as f64 - pl,
-                baseline - ascent - pt,
-                x_end as f64 + pr,
-                baseline + descent + pb,
+                (x_start as f64 - pl) * scale,
+                (baseline - ascent - pt) * scale,
+                (x_end as f64 + pr) * scale,
+                (baseline + descent + pb) * scale,
             );
-
-            if bg_span.border_radius > 0.0 {
-                let r = bg_span.border_radius as f64;
-                let rrect = RoundedRect::from_rect(rect, r);
-                painter.fill(Fill::NonZero, transform, &brush, &rrect.into());
-            } else {
-                painter.fill(Fill::NonZero, transform, &brush, &rect.into());
-            }
+            f(bg_span, rect);
         }
     }
 }
