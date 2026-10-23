@@ -104,7 +104,10 @@ fn block_parent_styled_rows_build_linearly() {
 
 #[test]
 fn flex_column_parent_styled_rows_build_linearly() {
-    assert_linear("display: flex; flex-direction: column", Shape::StyleThenAppend);
+    assert_linear(
+        "display: flex; flex-direction: column",
+        Shape::StyleThenAppend,
+    );
 }
 
 #[test]
