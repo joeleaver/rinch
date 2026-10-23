@@ -168,3 +168,43 @@ fn a_hidden_cell_clips_shifted_ink_at_every_height() {
         failures.join("\n")
     );
 }
+
+/// The bounding box of the opaque `rgb(0, 128, 0)` pixels, in device px.
+fn green_bbox(p: &TinySkiaPainter) -> (u32, u32, u32, u32) {
+    let d = p.pixels();
+    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+    for y in 0..p.height() {
+        for x in 0..p.width() {
+            let i = ((y * p.width() + x) * 4) as usize;
+            if d[i] == 0 && d[i + 1] == 128 && d[i + 2] == 0 && d[i + 3] == 255 {
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x + 1);
+                y1 = y1.max(y + 1);
+            }
+        }
+    }
+    (x0, y0, x1, y1)
+}
+
+#[test]
+fn a_shifted_element_s_background_moves_with_its_text() {
+    // An element's box, background included, is where its `vertical-align`
+    // puts its text (CSS 2.1 §10.8): a `<sup>` pill is around the raised
+    // text. It used to stay on the line while the text moved.
+    const PILL: &str = "background-color: rgb(0, 128, 0); padding: 1px 3px";
+    for scale in [1.0, 2.0] {
+        let (mut doc, _) = doc_with_cell(18.0, "visible", PILL);
+        let on_line = green_bbox(&paint(&mut doc, scale));
+        for shift in [12.0_f64, -7.0] {
+            let (mut doc, _) =
+                doc_with_cell(18.0, "visible", &format!("vertical-align: {shift}px; {PILL}"));
+            let moved = green_bbox(&paint(&mut doc, scale));
+            let dy = moved.1 as f64 - on_line.1 as f64;
+            assert!(
+                (dy + shift * scale).abs() <= 1.0 && moved.0 == on_line.0,
+                "shift {shift} scale {scale}: on the line {on_line:?}, shifted {moved:?}"
+            );
+        }
+    }
+}

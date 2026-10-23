@@ -32,13 +32,13 @@ fn size(scale: f64) -> (u32, u32) {
 fn full_frame(app: &mut RinchApp, scale: f64) -> Vec<u8> {
     app.scene_dirty = true;
     app.has_previous_frame = false;
-    let px = app.build_pixels(scale, size(scale), false).0.to_vec();
+    let px = app.build_pixels(scale, (W, H), false).0.to_vec();
     let _ = app.end_perf_frame();
     px
 }
 
 fn incremental_frame(app: &mut RinchApp, scale: f64) -> (Vec<u8>, FrameStats) {
-    let px = app.build_pixels(scale, size(scale), false).0.to_vec();
+    let px = app.build_pixels(scale, (W, H), false).0.to_vec();
     let stats = app.end_perf_frame().expect("mounted");
     (px, stats)
 }
@@ -84,10 +84,13 @@ fn ink_in(px: &[u8], scale: f64, rect: (i32, i32, i32, i32)) -> usize {
 }
 
 /// A paragraph at [`BOX`] (not clipping), holding `x ` and a span styled
-/// `span` around `Agy`. Returns the app and the span.
-fn paragraph(span: &str, scale: f64) -> (RinchApp, NodeHandle) {
+/// `span` around `Agy`, then a box styled `after` (if any) painted after it.
+/// Returns the app, the span and that box.
+fn paragraph_with(span: &str, after: Option<&str>) -> (RinchApp, NodeHandle, Option<NodeHandle>) {
     let span = span.to_string();
-    let slot: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let after = after.map(str::to_string);
+    type Slot = Option<(NodeHandle, Option<NodeHandle>)>;
+    let slot: Rc<RefCell<Slot>> = Rc::new(RefCell::new(None));
     let slot_in = slot.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let outer = scope.create_element("div");
@@ -113,14 +116,24 @@ fn paragraph(span: &str, scale: f64) -> (RinchApp, NodeHandle) {
         p.append_child(&s);
         let t = scope.create_text("Agy");
         s.append_child(&t);
-        *slot_in.borrow_mut() = Some(s);
+        let a = after.as_ref().map(|style| {
+            let a = scope.create_element("div");
+            a.set_attribute("style", style);
+            outer.append_child(&a);
+            a
+        });
+        *slot_in.borrow_mut() = Some((s, a));
         outer
     });
     app.register_app_font(AppFont::sans_serif(INTER));
     app.mount_component(W as f32, H as f32);
     app.resolve_and_repaint(W as f32, H as f32);
-    let _ = scale;
-    let s = slot.borrow().clone().unwrap();
+    let (s, a) = slot.borrow().clone().unwrap();
+    (app, s, a)
+}
+
+fn paragraph(span: &str) -> (RinchApp, NodeHandle) {
+    let (app, s, _) = paragraph_with(span, None);
     (app, s)
 }
 
@@ -133,7 +146,7 @@ fn resolve(app: &mut RinchApp) {
 /// match a from-scratch one in the bands, where `from` held ink.
 fn assert_clean(name: &str, from: &str, steps: &[&str], scale: f64) -> Vec<String> {
     let mut failures = Vec::new();
-    let (mut app, span) = paragraph(from, scale);
+    let (mut app, span) = paragraph(from);
     let before = full_frame(&mut app, scale);
     let held: usize = bands(scale).iter().map(|&r| ink_in(&before, scale, r)).sum();
     if held == 0 {
@@ -194,6 +207,11 @@ fn a_change_to_what_an_inline_draws_past_its_paragraph_is_cleared() {
             vec!["vertical-align: sub".into()],
         ),
         (
+            "a big wave goes",
+            "font-size: 26px; text-decoration: underline wavy rgb(200, 0, 0)".into(),
+            vec!["font-size: 26px".into()],
+        ),
+        (
             "wave goes",
             "text-decoration: underline wavy rgb(200, 0, 0); text-underline-offset: 0px".into(),
             vec![String::new()],
@@ -204,6 +222,50 @@ fn a_change_to_what_an_inline_draws_past_its_paragraph_is_cleared() {
         for (name, from, steps) in &cases {
             let steps: Vec<&str> = steps.iter().map(String::as_str).collect();
             failures.extend(assert_clean(name, from, &steps, scale));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Damage that reaches only what the paragraph draws past its box — a box
+/// above it changes — repaints that ink: the paint prune grows the
+/// paragraph's box by the same ink (#1815). It used to skip the paragraph,
+/// and the damage's clear left the pill's padding white there.
+#[test]
+fn damage_over_only_a_pill_s_padding_repaints_it() {
+    let (l, t, _, _) = BOX;
+    let neighbour = |c: &str| {
+        format!(
+            "position: absolute; left: {}px; top: {}px; width: 60px; height: 9px; \
+             border-top: 1px solid {c}",
+            l - 5.0,
+            t - 10.0
+        )
+    };
+    let mut failures = Vec::new();
+    for scale in [1.0, 2.0] {
+        let (mut app, _span, after) = paragraph_with(
+            &format!("{PILL}; padding: 11px 3px"),
+            Some(&neighbour("rgb(0, 0, 200)")),
+        );
+        let after = after.unwrap();
+        let before = full_frame(&mut app, scale);
+        let s = |v: f64| (v * scale).round() as i32;
+        // The pill's padding under the neighbour's box, below its border.
+        let probe = (s(l), s(t - 8.0), s(l + 40.0), s(t));
+        if ink_in(&before, scale, probe) == 0 {
+            failures.push(format!("scale {scale}: positive control — no pill under the box"));
+        }
+        after.set_attribute("style", &neighbour("rgb(200, 0, 200)"));
+        resolve(&mut app);
+        let (inc, stats) = incremental_frame(&mut app, scale);
+        if stats.get(Counter::RepaintPartial) != 1 {
+            failures.push(format!("scale {scale}: not incremental: {stats:?}"));
+        }
+        let full = full_frame(&mut app, scale);
+        let ghosts = diff_in(&inc, &full, scale, probe);
+        if ghosts != 0 {
+            failures.push(format!("scale {scale}: {ghosts} pill pixels lost"));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
