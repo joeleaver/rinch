@@ -3098,8 +3098,9 @@ pub struct NodeTree {
     /// **Transitions only** (issue #762). `@keyframes` animations do not read
     /// it: an animation has no before-change style to be wrong about, so it
     /// runs on the very first frame the element exists, as in a browser.
-    /// `resolve_styles` also reads this as a "has the first layout happened"
-    /// proxy, to choose the full tree walk over the targeted one.
+    /// Style resolution does **not** read it (#1247): it used to, as a "has
+    /// the first layout happened" proxy that chose the whole-document walk
+    /// for every resolve and insertion before the first layout.
     pub transitions_enabled: bool,
     /// Whether `recompute_all_styles_full` is re-cascading the document, so a
     /// running animation that survives the cascade by name takes its keyframes,

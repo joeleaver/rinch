@@ -101,7 +101,7 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `full_restyles`, `full_restyle_{viewport,theme,stylesheet,dpr,root_font_size}` | Requests for a whole-document restyle, in total and by reason. Two requests can share one walk (a theme change that also changes the root font-size counts twice). A resize counts under `viewport` only when it flips a media query's answer |
 | | `style_invalidations` | Elements whose attribute or state change Stylo's invalidator examined — one per changed element per resolve. What it restyled shows in `elements_cascaded` |
 | | `viewport_unit_restyles` | Elements a resize that flipped no media query restyled because their last cascade resolved a `vw`/`vh`/`vmin`/`vmax` (each with its subtree). A resize restyles nothing else |
-| | `full_style_walks` | `resolve_styles` walked from `<html>`, because a whole-document restyle asked it to or no layout has completed yet |
+| | `full_style_walks` | `resolve_styles` walked from `<html>`, because a whole-document restyle asked it to (a stylesheet, theme or media change, and the very first resolve) |
 | | `taffy_style_syncs` / `taffy_style_changes` | Nodes synced to Taffy, and how many of those actually changed their Taffy style |
 | Text | `shape_measure_ifc` / `shape_measure_text` | Parley layouts built inside the Taffy measure function |
 | | `shape_ifc_build` | Parley layouts built by `build_ifc_layouts` (the layouts paint uses) |
