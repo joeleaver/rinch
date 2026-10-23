@@ -152,6 +152,29 @@ fn a_var_in_a_fill_property_paints_the_variables_colour() {
     );
 }
 
+/// A `style` value that is no paint is dropped while parsing, so the
+/// attribute applies; `inherit` is a value and beats it.
+#[test]
+fn an_unusable_declaration_leaves_the_attribute() {
+    check(
+        &[
+            Case {
+                svg_attrs: &[("fill", "rgb(0, 0, 255)")],
+                shape: rect!("fill" => "rgb(0, 128, 0)", "style" => "fill: notacolor"),
+            },
+            Case {
+                svg_attrs: &[("fill", "rgb(0, 0, 255)")],
+                shape: rect!("style" => "fill: notacolor"),
+            },
+            Case {
+                svg_attrs: &[("fill", "rgb(0, 0, 255)")],
+                shape: rect!("fill" => "rgb(0, 128, 0)", "style" => "fill: inherit"),
+            },
+        ],
+        &[GREEN, BLUE, BLUE],
+    );
+}
+
 #[test]
 fn a_var_in_a_stroke_paints_the_variables_colour() {
     let line: &[(&str, &str)] = &[

@@ -54,12 +54,12 @@ pub(super) fn paint_svg(
     // `none`.
     let svg_current_color = resolve_current_color(tree, node);
     let svg_fill = InheritedPaint::new(
-        node.attributes.get("fill").map(|v| v.as_str()),
+        declared_paint(node, "fill").as_deref(),
         svg_current_color,
         Some(SVG_INITIAL_FILL),
     );
     let svg_stroke = InheritedPaint::new(
-        node.attributes.get("stroke").map(|v| v.as_str()),
+        declared_paint(node, "stroke").as_deref(),
         svg_current_color,
         None,
     );
@@ -101,16 +101,16 @@ pub(super) fn paint_svg(
         // Per-element fill/stroke. An absent *or unusable* value falls back to
         // the `<svg>` level, which is what SVG means by ignoring a bad
         // presentation attribute; `none` does not fall back, it wins.
-        let resolve = |attr: Option<&String>, inherited: &InheritedPaint| match parse_svg_paint(
-            attr.map(|v| v.as_str()),
+        let resolve = |name: &str, inherited: &InheritedPaint| match parse_svg_paint(
+            declared_paint(child, name).as_deref(),
             current_color,
         ) {
             SvgPaint::None => None,
             SvgPaint::Color(c) => Some(c),
             SvgPaint::Unset => inherited.for_child(current_color),
         };
-        let fill_color = resolve(child.attributes.get("fill"), &svg_fill);
-        let stroke_color = resolve(child.attributes.get("stroke"), &svg_stroke);
+        let fill_color = resolve("fill", &svg_fill);
+        let stroke_color = resolve("stroke", &svg_stroke);
         let stroke_w = child
             .attributes
             .get("stroke-width")
@@ -305,6 +305,132 @@ pub(super) fn resolve_current_color(tree: &NodeTree, node: &Node) -> AlphaColor<
     }
     // Default: black
     AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255)
+}
+
+/// The `fill` or `stroke` (`name`) an element declares, as the text to parse:
+/// its inline `style` declaration, which beats the presentation attribute,
+/// else the attribute; every `var()` in it substituted from the element's own
+/// computed custom properties (#1800). rinch's Stylo build has no `fill` or
+/// `stroke` property (both are Gecko-only there), so nothing else resolves
+/// either; a rule in a stylesheet is not read at all.
+///
+/// `None` for no declaration, and for one whose `var()` names a missing
+/// property with no fallback: that is invalid at computed-value time, which
+/// for an inherited property is `unset`, so the shape takes its `<svg>`'s
+/// paint (Chrome 155: `stroke="var(--missing)"` in an `<svg stroke="green">`
+/// is green). A literal `style` value that is no paint at all is dropped as
+/// a browser drops it while parsing, so the attribute applies.
+fn declared_paint<'a>(node: &'a Node, name: &str) -> Option<std::borrow::Cow<'a, str>> {
+    use std::borrow::Cow;
+    if let Some(style) = node.attributes.get("style")
+        && style.contains(name)
+        && let Some(value) = rinch_core::dom::split_declarations(style)
+            .into_iter()
+            .find_map(|(k, v)| (k == name).then_some(v))
+    {
+        let value = strip_important(&value);
+        if has_var(value) {
+            return substitute_vars(node, value, 0).map(Cow::Owned);
+        }
+        if !matches!(
+            parse_svg_paint(Some(value), AlphaColor::BLACK),
+            SvgPaint::Unset
+        ) || value.eq_ignore_ascii_case("inherit")
+            || value.eq_ignore_ascii_case("unset")
+        {
+            return Some(Cow::Owned(value.to_string()));
+        }
+    }
+    let attr = node.attributes.get(name)?;
+    if has_var(attr) {
+        substitute_vars(node, attr, 0).map(Cow::Owned)
+    } else {
+        Some(Cow::Borrowed(attr.as_str()))
+    }
+}
+
+/// A declaration's value without a trailing `!important`.
+fn strip_important(value: &str) -> &str {
+    let v = value.trim_end();
+    match v.rfind('!') {
+        Some(i) if v[i + 1..].trim().eq_ignore_ascii_case("important") => v[..i].trim_end(),
+        _ => v,
+    }
+}
+
+fn has_var(value: &str) -> bool {
+    find_var(value).is_some()
+}
+
+/// The byte offset of the first `var(` in `value`, any case.
+fn find_var(value: &str) -> Option<usize> {
+    value
+        .as_bytes()
+        .windows(4)
+        .position(|w| w.eq_ignore_ascii_case(b"var("))
+}
+
+/// How deep fallbacks may nest `var()`s: a bound on a crafted value, not a
+/// limit anyone meets (a custom property's own value arrives substituted).
+const MAX_VAR_DEPTH: u32 = 16;
+
+/// `value` with every `var(--name[, fallback])` replaced by `node`'s computed
+/// custom property `--name`, else the fallback (itself substituted). `None`
+/// when one has neither, or the text is malformed.
+fn substitute_vars(node: &Node, value: &str, depth: u32) -> Option<String> {
+    if depth > MAX_VAR_DEPTH {
+        return None;
+    }
+    let mut out = String::new();
+    let mut rest = value;
+    while let Some(at) = find_var(rest) {
+        out.push_str(&rest[..at]);
+        let args_start = at + 4;
+        // The `)` that closes this `var(`, past any nested parentheses.
+        let mut level = 0usize;
+        let mut close = None;
+        for (i, c) in rest[args_start..].char_indices() {
+            match c {
+                '(' => level += 1,
+                ')' if level == 0 => {
+                    close = Some(args_start + i);
+                    break;
+                }
+                ')' => level -= 1,
+                _ => {}
+            }
+        }
+        let close = close?;
+        let args = &rest[args_start..close];
+        let (var_name, fallback) = match args.find(',') {
+            Some(i) => (args[..i].trim(), Some(&args[i + 1..])),
+            None => (args.trim(), None),
+        };
+        let prop = var_name.strip_prefix("--")?;
+        match custom_property(node, prop) {
+            Some(v) => out.push_str(&v),
+            None => out.push_str(&substitute_vars(node, fallback?, depth + 1)?),
+        }
+        rest = &rest[close + 1..];
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
+/// `node`'s computed value of the custom property `--name` (`name` without
+/// the dashes), already substituted by Stylo; custom properties inherit, so
+/// one declared on `:root` or the `<svg>` reaches every shape.
+fn custom_property(node: &Node, name: &str) -> Option<String> {
+    let data = node.stylo_element_data.borrow();
+    let primary = data.as_ref().and_then(|d| d.styles.get_primary())?;
+    let atom = style::Atom::from(name);
+    primary
+        .custom_properties()
+        .get(
+            style::properties_and_values::registry::PropertyRegistrationData::unregistered(),
+            &atom,
+        )
+        .map(|v| v.to_variable_value().css.trim().to_string())
 }
 
 /// What an SVG `fill`/`stroke` attribute asked for.
