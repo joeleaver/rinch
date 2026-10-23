@@ -209,7 +209,10 @@ const ISSUE_CSS: &str = "html, body { margin: 0; background: #14161b; }
   mask-image: linear-gradient(180deg, #000, transparent 62%); }
 #g { position: absolute; left: 20px; top: 20px; width: 100px; height: 50px; background: blue;
   mask-image: linear-gradient(#000, #000); }
-#g > div { width: 300px; height: 100px; background: red; }";
+#g > div { width: 300px; height: 100px; background: red; }
+#k { position: absolute; left: 20px; top: 200px; width: 100px; height: 50px; background: blue;
+  mask-image: linear-gradient(90deg, #000, transparent); }
+#k > div { position: absolute; left: 50px; top: 20px; width: 200px; height: 100px; background: red; }";
 
 fn issue() -> TinySkiaPainter {
     let mut doc = RinchDocument::new();
@@ -223,6 +226,11 @@ fn issue() -> TinySkiaPainter {
     doc.append_child(body, g);
     let child = doc.create_element("div");
     doc.append_child(g, child);
+    let k = doc.create_element("div");
+    doc.set_attribute(k, "id", "k");
+    doc.append_child(body, k);
+    let abs = doc.create_element("div");
+    doc.append_child(k, abs);
     doc.resolve_layout(1440.0, 900.0);
     let mut painter = TinySkiaPainter::new(1440, 900);
     let mut layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
@@ -278,5 +286,24 @@ fn h_a_mask_hides_overflow_outside_the_border_box() {
             ((110, 80), [21, 22, 26]),
         ],
         2,
+    );
+}
+
+/// A positioned descendant, which paints in the masked box's own stacking
+/// sequence, is masked and clipped with it: Chrome 155's pixels.
+#[test]
+fn k_a_positioned_descendant_is_masked_too() {
+    let p = issue();
+    expect(
+        &p,
+        &[
+            ((30, 210), [2, 2, 230]),
+            ((80, 240), [113, 13, 16]),
+            ((110, 240), [42, 19, 24]),
+            ((100, 260), [20, 22, 27]),
+            ((200, 240), [20, 22, 27]),
+            ((150, 280), [20, 22, 27]),
+        ],
+        3,
     );
 }
