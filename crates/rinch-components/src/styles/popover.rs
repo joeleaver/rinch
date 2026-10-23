@@ -112,77 +112,96 @@ pub fn styles() -> String {
     display: none;
 }
 
-/* Positions */
+/* Positions.
+
+   The gap from the target is a margin on the side facing it, not a
+   `translate` (#1764): the dropdown is flipped to the opposite side by
+   swapping this class when it does not fit (`floating.rs`), and a transform
+   that changed with the side would run the dropdown's `transform` transition
+   on every flip — a 16px slide as it opens. Only the centring `translate`
+   (-50%) is a transform, and a flip never changes it. */
 .rinch-popover--bottom .rinch-popover__dropdown {
     top: 100%;
     left: 50%;
-    transform: translateX(-50%) translateY(var(--rinch-popover-offset, 8px));
+    transform: translateX(-50%);
+    margin-top: var(--rinch-popover-offset, 8px);
 }
 
 .rinch-popover--bottom-start .rinch-popover__dropdown {
     top: 100%;
     left: 0;
-    transform: translateY(var(--rinch-popover-offset, 8px));
+    transform: none;
+    margin-top: var(--rinch-popover-offset, 8px);
 }
 
 .rinch-popover--bottom-end .rinch-popover__dropdown {
     top: 100%;
     right: 0;
-    transform: translateY(var(--rinch-popover-offset, 8px));
+    transform: none;
+    margin-top: var(--rinch-popover-offset, 8px);
 }
 
 .rinch-popover--top .rinch-popover__dropdown {
     bottom: 100%;
     left: 50%;
-    transform: translateX(-50%) translateY(calc(-1 * var(--rinch-popover-offset, 8px)));
+    transform: translateX(-50%);
+    margin-bottom: var(--rinch-popover-offset, 8px);
 }
 
 .rinch-popover--top-start .rinch-popover__dropdown {
     bottom: 100%;
     left: 0;
-    transform: translateY(calc(-1 * var(--rinch-popover-offset, 8px)));
+    transform: none;
+    margin-bottom: var(--rinch-popover-offset, 8px);
 }
 
 .rinch-popover--top-end .rinch-popover__dropdown {
     bottom: 100%;
     right: 0;
-    transform: translateY(calc(-1 * var(--rinch-popover-offset, 8px)));
+    transform: none;
+    margin-bottom: var(--rinch-popover-offset, 8px);
 }
 
 .rinch-popover--left .rinch-popover__dropdown {
     right: 100%;
     top: 50%;
-    transform: translateY(-50%) translateX(calc(-1 * var(--rinch-popover-offset, 8px)));
+    transform: translateY(-50%);
+    margin-right: var(--rinch-popover-offset, 8px);
 }
 
 .rinch-popover--left-start .rinch-popover__dropdown {
     right: 100%;
     top: 0;
-    transform: translateX(calc(-1 * var(--rinch-popover-offset, 8px)));
+    transform: none;
+    margin-right: var(--rinch-popover-offset, 8px);
 }
 
 .rinch-popover--left-end .rinch-popover__dropdown {
     right: 100%;
     bottom: 0;
-    transform: translateX(calc(-1 * var(--rinch-popover-offset, 8px)));
+    transform: none;
+    margin-right: var(--rinch-popover-offset, 8px);
 }
 
 .rinch-popover--right .rinch-popover__dropdown {
     left: 100%;
     top: 50%;
-    transform: translateY(-50%) translateX(var(--rinch-popover-offset, 8px));
+    transform: translateY(-50%);
+    margin-left: var(--rinch-popover-offset, 8px);
 }
 
 .rinch-popover--right-start .rinch-popover__dropdown {
     left: 100%;
     top: 0;
-    transform: translateX(var(--rinch-popover-offset, 8px));
+    transform: none;
+    margin-left: var(--rinch-popover-offset, 8px);
 }
 
 .rinch-popover--right-end .rinch-popover__dropdown {
     left: 100%;
     bottom: 0;
-    transform: translateX(var(--rinch-popover-offset, 8px));
+    transform: none;
+    margin-left: var(--rinch-popover-offset, 8px);
 }
 
 /* Arrow */

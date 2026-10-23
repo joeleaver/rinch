@@ -735,6 +735,26 @@ clear any window chrome rinch draws (the Linux in-app menu bar, the
 invisible click-catching backdrops behind `DropdownMenu` and `Select` deliberately
 do not — they must catch clicks on the chrome too.
 
+**`DropdownMenu` and `Popover` stay on screen.** Each open measures the dropdown
+and, like Floating UI's `flip`/`shift`/`size`: opens it on the side you asked
+for when it fits there, else on the opposite side when it fits there (the
+root's position class is swapped, so `rinch-popover--top` is on a popover that
+opened above, and its arrow points down); moves it back inside the viewport, 8px
+from the edge, when it runs past the left or right edge (top or bottom, for a
+`left`/`right` popover); and when it fits on neither side, puts it on the side
+with more room with a `max-height` and `overflow-y: auto`. A dropdown that fits
+is left exactly where its position puts it. The placement is written inline on
+the dropdown element (`top`/`bottom`/`left`/`right`, a pinned `width`, and the
+cap), so a `left`, `top` or `width` you set inline on `DropdownMenuDropdown` /
+`PopoverDropdown` is replaced while it is open; style a child for layout. It
+follows the trigger while open (a scroll, an outer menu placing itself), but a
+window resize or a change of the dropdown's own content keeps the placement
+until the next open. Only the viewport is a boundary, not a clipping ancestor.
+`DropdownMenu`'s `left`/`right` positions have no stylesheet rules and are not
+placed. A popover's offset is now a margin on the side facing its target rather
+than a `translate`, so its `transform` is only the centring `translateX(-50%)`
+(or none).
+
 If you hand-roll a `position: fixed` overlay, offset it the same way
 (`top: var(--rinch-window-top-inset, 0px)`); fixed resolves against the real
 viewport, so a bare `top: 0` renders underneath the chrome. See

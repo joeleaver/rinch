@@ -150,8 +150,20 @@ fn a_menu_at_the_bottom_right_corner_flips_up_and_shifts_left() {
     let (b, opacity) = painted(&app, Kind::Menu);
     // 222x322: ten 200px rows + the panel's padding and border. Its bottom
     // sits the 4px offset above the trigger's top.
-    assert_close(b, (800.0 - 8.0 - 222.0, 430.0 - 4.0 - 322.0, 222.0, 322.0), "menu");
+    assert_close(
+        b,
+        (800.0 - 8.0 - 222.0, 430.0 - 4.0 - 322.0, 222.0, 322.0),
+        "menu",
+    );
     assert_eq!(opacity, 1.0, "revealed in the same frame it was placed");
+    // It fits above, so it is flipped, not capped: no scroll container.
+    let id = find(&app, "rinch-dropdown-menu__dropdown");
+    let doc = app.doc.as_ref().unwrap();
+    let style = doc.borrow().tree.nodes[id].attributes.get("style").cloned();
+    assert!(
+        !style.as_deref().unwrap_or("").contains("max-height"),
+        "flipped, not capped: {style:?}"
+    );
 }
 
 /// The issue's Popover (default `bottom`, centred): flipped up by its 8px
@@ -161,8 +173,20 @@ fn a_popover_at_the_bottom_right_corner_flips_up_and_shifts_left() {
     let open = Signal::new(true);
     let app = mount(Kind::Popover, 700.0, 430.0, 10, open, "");
     let (b, opacity) = painted(&app, Kind::Popover);
-    assert_close(b, (800.0 - 8.0 - 226.0, 430.0 - 8.0 - 326.0, 226.0, 326.0), "popover");
-    assert_eq!(opacity, 1.0);
+    assert_close(
+        b,
+        (800.0 - 8.0 - 226.0, 430.0 - 8.0 - 326.0, 226.0, 326.0),
+        "popover",
+    );
+    // Its own 150ms fade has started (the measuring `opacity: 0` is gone).
+    let _ = opacity;
+    let id = find(&app, "rinch-popover__dropdown");
+    let doc = app.doc.as_ref().unwrap();
+    let style = doc.borrow().tree.nodes[id].attributes.get("style").cloned();
+    assert!(
+        !style.as_deref().unwrap_or("").contains("opacity"),
+        "revealed in the frame it was placed: {style:?}"
+    );
 }
 
 /// Opened by a write after mount (the real open path): placed in the frame
@@ -207,7 +231,11 @@ fn a_top_popover_without_room_above_flips_down() {
     let open = Signal::new(true);
     let app = mount(Kind::Popover, 300.0, 30.0, 3, open, "top");
     let (b, _) = painted(&app, Kind::Popover);
-    assert_close(b, (300.0 + 20.0 - 113.0, 30.0 + 20.0 + 8.0, 226.0, 116.0), "flipped down");
+    assert_close(
+        b,
+        (300.0 + 20.0 - 113.0, 30.0 + 20.0 + 8.0, 226.0, 116.0),
+        "flipped down",
+    );
 }
 
 /// Taller than the room on either side: on the side with more room, capped

@@ -6,7 +6,6 @@ use rinch_core::Callback;
 use rinch_core::Component;
 use rinch_core::Signal;
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::events::get_click_context;
 use rinch_core::reactive::Effect;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use std::rc::Rc;
@@ -406,44 +405,43 @@ impl Component for DropdownMenu {
                     root_vis.remove_class(OPENED_CLASS);
                 }
             });
+        }
 
-            // Auto-flip: when the menu opens within ~220px of the viewport's
-            // bottom edge (and has room above), swap a Bottom*/Top* position
-            // class so the dropdown opens upward instead of clipping. Decided
-            // at open time using ClickContext — the click that triggered the
-            // open populated the trigger's bounds and viewport size, which is
-            // the best info available before layout has measured the dropdown.
-            const DROPDOWN_RESERVE_PX: f32 = 220.0;
-            let user_pos = self.resolved_position();
-            let root_for_flip = root.clone();
-            let opened_fn_flip = opened_fn.clone();
-            let was_open = std::cell::Cell::new(false);
-            let flipped = std::cell::Cell::new(false);
-            Effect::new(move || {
-                let is_open = opened_fn_flip();
-                if is_open && !was_open.get() {
-                    let ctx = get_click_context();
-                    let space_below = ctx.viewport_height - ctx.element_y - ctx.element_height;
-                    let space_above = ctx.element_y;
-                    let want_flip = space_below < DROPDOWN_RESERVE_PX && space_above > space_below;
-                    if want_flip != flipped.get() {
-                        let old_class = if flipped.get() {
-                            flip_position(user_pos)
-                        } else {
-                            user_pos
-                        };
-                        let new_class = if want_flip {
-                            flip_position(user_pos)
-                        } else {
-                            user_pos
-                        };
-                        root_for_flip.remove_class(old_class.class_name());
-                        root_for_flip.add_class(new_class.class_name());
-                        flipped.set(want_flip);
-                    }
+        // Keep the panel inside the viewport on each open (#1764): flipped to
+        // the side it fits on, shifted back from the left and right edges,
+        // capped and scrolling when it fits on neither side. It replaced a
+        // flip decided from the opening click before the panel was measured (a
+        // 220px guess), which never shifted. Only the top and bottom positions
+        // have rules to place against; the left and right ones are left alone.
+        // After the class effect above, so it measures a shown panel.
+        let user_pos = self.resolved_position();
+        if let Some((side, align)) = floating_side(user_pos) {
+            let opened: Rc<dyn Fn() -> bool> = match &self.opened_fn {
+                Some(f) => f.clone(),
+                None => {
+                    let opened = self.opened;
+                    Rc::new(move || opened)
                 }
-                was_open.set(is_open);
-            });
+            };
+            crate::floating::arm(
+                crate::floating::Floating {
+                    root: root.clone(),
+                    root_class: "rinch-dropdown-menu",
+                    dropdown_class: "rinch-dropdown-menu__dropdown",
+                    side,
+                    align,
+                    offset: self.offset.unwrap_or(DEFAULT_OFFSET) as f32,
+                    class_for: Rc::new(move |s| {
+                        if s == side {
+                            user_pos.class_name()
+                        } else {
+                            flip_position(user_pos).class_name()
+                        }
+                    }),
+                    center_translates: false,
+                },
+                opened,
+            );
         }
 
         // close_on_item_click: items publish close requests by setting
@@ -510,6 +508,26 @@ impl Component for DropdownMenu {
 
         root
     }
+}
+
+/// The panel's gap from its trigger when `offset` is not set: the fallback of
+/// `--rinch-dropdown-menu-offset` in `styles/dropdown_menu.rs`.
+const DEFAULT_OFFSET: i32 = 4;
+
+/// The side and alignment a position places the panel at, for the ones the
+/// stylesheet has rules for. `Bottom` and `Top` are start-aligned there.
+fn floating_side(
+    pos: DropdownMenuPosition,
+) -> Option<(crate::floating::Side, crate::floating::Align)> {
+    use crate::floating::{Align, Side};
+    use DropdownMenuPosition as P;
+    Some(match pos {
+        P::Bottom | P::BottomStart => (Side::Bottom, Align::Start),
+        P::BottomEnd => (Side::Bottom, Align::End),
+        P::Top | P::TopStart => (Side::Top, Align::Start),
+        P::TopEnd => (Side::Top, Align::End),
+        _ => return None,
+    })
 }
 
 /// Flip a position from Bottom* ↔ Top* (other positions return unchanged).

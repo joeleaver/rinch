@@ -362,13 +362,20 @@ fn opening_a_dropdown_menu_toggles_the_opened_class_and_reveals_panel_and_backdr
         DisplayValue::Block,
         "and the same class reveals the backdrop, which used to need an effect of its own"
     );
+    // Since #1764 the panel carries its placement inline (insets and a
+    // pinned width, `floating.rs`), but never its `display`.
     for (node, what) in [(panel, "panel"), (backdrop, "backdrop")] {
-        assert_eq!(
-            attr(&app, node, "style"),
-            None,
-            "the {what}'s reveal is the cascade's, not an inline `style` rewrite"
+        let style = attr(&app, node, "style").unwrap_or_default();
+        assert!(
+            !style.contains("display") && !style.contains("visibility"),
+            "the {what}'s reveal is the cascade's, not an inline `style` rewrite: {style:?}"
         );
     }
+    assert_eq!(
+        attr(&app, backdrop, "style"),
+        None,
+        "the backdrop is not placed"
+    );
 
     opened.set(false);
     settle(&mut app, 2.0);

@@ -1051,6 +1051,16 @@ pub trait DomDocument {
         None
     }
 
+    /// The viewport's size in logical pixels — the box a `position: fixed;
+    /// inset: 0` element fills, and the frame [`Self::bounding_rect`] answers
+    /// in (issue #1764). rinch-dom answers the size of its last layout
+    /// (`None` before the first); the browser backend answers
+    /// `documentElement.clientWidth/clientHeight` (the viewport less any
+    /// classic scrollbar). Default `None`: a host with no geometry.
+    fn viewport_size(&self) -> Option<(f32, f32)> {
+        None
+    }
+
     /// [`NodeHandle::bounds_signal`] was called for `node` (issue #1781) —
     /// on **every** call, so a backend must ignore a node it already watches.
     /// A backend that does not refresh bounds after its own layout passes — the

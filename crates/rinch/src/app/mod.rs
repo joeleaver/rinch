@@ -10,8 +10,6 @@
 mod animation_theme_change_tests;
 #[cfg(test)]
 mod backdrop_any_button_1093_tests;
-#[cfg(test)]
-mod dropdown_viewport_1764_tests;
 #[cfg(all(test, software_shell))]
 mod background_animation_component_tests;
 #[cfg(all(test, software_shell))]
@@ -29,6 +27,8 @@ mod click_handling;
 mod color_input_dismiss_465_tests;
 #[cfg(test)]
 mod context_menu_viewport_1761_tests;
+#[cfg(test)]
+mod dropdown_viewport_1764_tests;
 #[cfg(test)]
 mod review_1589_tests;
 #[cfg(test)]
@@ -1077,6 +1077,9 @@ pub struct RinchApp {
     pub(crate) window_logical_size: Option<(f64, f64)>,
 }
 
+/// How many extra layouts one frame gives bounds-signal subscribers' writes
+/// (`RinchApp::settle_bounds_writes`).
+const BOUNDS_SETTLE_PASSES: usize = 3;
 impl RinchApp {
     /// Create a new `RinchApp` from a component function.
     pub fn new(component: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static) -> Self {
@@ -1741,12 +1744,41 @@ impl RinchApp {
         // that the last resolve of the frame has run (#144).
         self.dispatch_scroll_clamp_events();
 
-        // Refresh element-bounds signals against the freshly-computed layout.
+        // Refresh element-bounds signals against the freshly-computed layout,
+        // and lay out again what their subscribers wrote.
         self.refresh_bounds_signals();
+        self.settle_bounds_writes(viewport_width, viewport_height);
 
         self.scene_dirty = true;
 
         true
+    }
+
+    /// Lay out again what bounds-signal subscribers wrote, in the frame that
+    /// woke them (issue #1764), at most [`BOUNDS_SETTLE_PASSES`] times.
+    ///
+    /// A subscriber measures the layout that just finished and writes from
+    /// it — a dropdown placed back inside the viewport, a spacer sized to a
+    /// row (#529). Without this its write waited for the next frame, and the
+    /// frame being painted showed the old geometry: a dropdown past the
+    /// window's edge for one frame, a spacer at its estimate. Each pass
+    /// publishes the bounds again, so a subscriber reading its own write's
+    /// result settles here too; one that never settles is cut off by the cap
+    /// and continues next frame, as it did before.
+    fn settle_bounds_writes(&mut self, viewport_width: f32, viewport_height: f32) {
+        for _ in 0..BOUNDS_SETTLE_PASSES {
+            let Some(doc) = self.doc.clone() else { return };
+            {
+                let mut d = doc.borrow_mut();
+                if d.tree.dirty_nodes.is_empty() && !d.tree.styles_dirty && !d.layout_pending() {
+                    return;
+                }
+                let _ = d.take_dirty_nodes();
+                d.resolve_layout(viewport_width, viewport_height);
+            }
+            self.dispatch_scroll_clamp_events();
+            self.refresh_bounds_signals();
+        }
     }
 
     /// Refresh element-bounds signals against the freshly-computed layout.
@@ -2021,6 +2053,7 @@ impl RinchApp {
         // `resolve_and_repaint`; without this a pure resize leaves bounds
         // signals reporting the pre-resize geometry (#145).
         self.refresh_bounds_signals();
+        self.settle_bounds_writes(width as f32, height as f32);
     }
 
     /// Build the Vello scene from the current document state.
