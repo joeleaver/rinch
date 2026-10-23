@@ -220,6 +220,26 @@ with the canvas's current texture as the target. `SurfaceRoute::GpuImage` holds 
 
 Construct `wgpu` types from **`rinch::wgpu`** (rinch pins a patched fork — a separate `wgpu` dep won't type-match). Both are `#[cfg(feature = "gpu")]`, re-exported in the prelude. Example: `examples/gpu-device-config` (`RINCH_GPU_MODE=external` toggles the two modes).
 
+**`GameViewport` is the base layer (#1866).** A `GameViewport`'s (and a
+`GpuTextureRegistrar` texture's) frame is a layer *under* the UI — the desktop GPU compositor's,
+or the embed host's under `RinchOverlayRenderer`'s texture — so the UI must be transparent over
+it. Paint erases the viewport's box (its own radius, its clip chain, its transform) when it
+reaches the node in paint order, so nothing painted before it shows there — ancestor
+backgrounds whether or not they clip, earlier siblings, the window base — and what paints after
+it (its border, later siblings, popups, a HUD) covers the game as usual. It replaced the hole
+cut into *clipping* ancestors' backgrounds (#974), under which a non-clipping ancestor with a
+background covered the game and the documented fix was `overflow: hidden` on it. A debug
+build warns once per viewport where the rule cannot hold: an ancestor (or the viewport) with
+`opacity < 1`, `mask-image` or a `filter`, whose group is composited over what is beneath it
+after the erase, and a rotate/scale/skew transform, whose erase is not the axis-aligned rect the
+layer is blitted at. The software window draws the frame in the scene right after the erase,
+under the same transform, so only the group warning applies there. The game fills the viewport's **border box** (its border and children paint over it, its
+padding shows it; `viewport_rect` reports that box), where a `RenderSurface` frame sits in its
+content box. On Vello the erase has to close and reopen the clips around it, which a clip
+renders as a layer in its edge tiles. Mechanism and pins:
+`paint-and-damage.md`, "Viewport holes". `RenderSurface` frames are drawn in the scene and erase
+nothing.
+
 **Web (canvas viewport, issue #91):** the **same** `RenderSurface` + `create_render_surface()` API works on `rinch-web`, but the model is inverted — the **browser** composites, so rinch only creates and manages a `<canvas>` "viewport hole"; the **app owns the GPU context**. rinch links **no wgpu** on web.
 
 - `handle.canvas_element() -> Option<web_sys::HtmlCanvasElement>` (wasm only) — returns the `<canvas>` after mount (populated in a post-mount microtask; `None` before). Call `wgpu::Instance::create_surface(SurfaceTarget::Canvas(canvas))` on it to render via WebGPU/WebGL. (The lazy 2D-blit CPU path — `SurfaceWriter::submit_frame` — still works and is portable with desktop; it self-disables once you claim a GPU context.)

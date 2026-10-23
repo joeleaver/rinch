@@ -763,7 +763,11 @@ impl App {
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    // `RinchOverlayRenderer` writes straight (not premultiplied)
+                    // alpha, so the overlay is blended `src * a + dst * (1 - a)`.
+                    // Premultiplied blending added the full colour of every
+                    // translucent UI pixel, washing out anti-aliased edges.
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),

@@ -21,7 +21,6 @@ use std::cell::RefCell;
 const SIZE: (u32, u32) = (800, 600);
 const MAGENTA: [u8; 3] = [255, 0, 255];
 const BLACK: [u8; 3] = [0, 0, 0];
-const WHITE: [u8; 3] = [255, 255, 255];
 /// The viewport node's own background: the placeholder.
 const GREEN: [u8; 3] = [0, 128, 0];
 /// The holder around it.
@@ -197,7 +196,11 @@ fn a_game_viewport_that_goes_not_ready_shows_neither_hole_nor_frame() {
     submit_square(&game);
     paint(&mut app);
     assert!(is(pixel_at(&app, FRAME), MAGENTA), "control: the frame");
-    assert!(is(pixel_at(&app, BAR), WHITE), "control: the hole");
+    assert_eq!(
+        pixel_at(&app, BAR)[3],
+        0,
+        "control: the hole (cleared, #1866)"
+    );
 
     vp.set_attribute("data-viewport-ready", "false");
     settle(&mut app);

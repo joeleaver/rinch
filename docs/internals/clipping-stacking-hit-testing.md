@@ -294,6 +294,18 @@ Chrome holds it for the run; and an animation with no fill that finishes keeps
 its last sample, and so stays a context (#783). The `HitStyleKey` keys
 `is_none`, not identity.
 
+**A `GameViewport` erases at its place in paint order** (#1866). Its box is cleared to
+transparent when paint reaches it, so stacking decides what covers the game the way it decides
+everything else: what paints before the viewport (ancestor backgrounds, an earlier or
+lower-`z-index` sibling) is erased, what paints after it (a later sibling, a higher `z-index`,
+a hoisted popup) covers it, and the erase is clipped by the viewport's own clip chain and moved
+by its transform. A group the viewport sits in breaks the rule — `opacity < 1`, `mask-image`
+or `filter` on an ancestor (or the viewport), whose layer is composited over what is beneath it
+after the erase — and a debug build says so once per viewport. The compositor hole mask
+(`viewport_rect_with_radius`, above) still rounds the *layer* by a clipping ancestor's radius;
+the viewport's own radius is the erase's, and the UI covers the game's corners outside it.
+Detail: `paint-and-damage.md`, "Viewport holes".
+
 **An identity transform costs what any stacking context costs**, the same as
 `opacity: 0.99`: it is hoisted, and until #1719 neither the off-screen paint
 cull nor hit testing's flow-extent prune skipped one — 300 rows in a 400px

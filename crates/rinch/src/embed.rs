@@ -839,6 +839,13 @@ impl RinchContext {
 /// scene directly. This struct manages a [`vello::Renderer`] and an
 /// intermediate render texture sized to the window.
 ///
+/// **The texture holds straight (non-premultiplied) alpha**, which is what
+/// Vello writes: composite it over your game with straight-alpha blending
+/// (`wgpu::BlendState::ALPHA_BLENDING`, `src * a + dst * (1 - a)`), or
+/// premultiply in your shader first. `PREMULTIPLIED_ALPHA_BLENDING` on the
+/// raw texture adds the full colour of every translucent pixel. Where a
+/// [`GameViewport`] is, the texture is transparent (#1866).
+///
 /// # Usage
 ///
 /// ```ignore
@@ -891,7 +898,8 @@ impl RinchOverlayRenderer {
     ///
     /// Returns a [`TextureView`] that the game can sample/composite.
     /// The texture has a transparent background so it can be alpha-blended
-    /// over the game scene.
+    /// over the game scene; its alpha is straight, not premultiplied (see the
+    /// type's docs).
     pub fn render(&mut self, device: &Device, queue: &Queue, scene: &Scene) -> TextureView {
         let view = self
             .render_texture
@@ -969,6 +977,14 @@ impl RinchOverlayRenderer {
 /// Place this component in your rinch UI layout wherever you want the game
 /// scene to show through. Use [`RinchContext::viewport_rect`] to query
 /// the computed layout rect and render your game into that region.
+///
+/// The viewport is the **base layer** (#1866): paint clears its box (its own
+/// `border-radius`, clipped and transformed as the element is) to transparent
+/// when it reaches it, so nothing painted beneath it — ancestor backgrounds,
+/// earlier siblings — covers the game, and anything painted after it — its
+/// children, later siblings, popups — draws over it. A debug build warns once
+/// where that cannot hold: the viewport inside an `opacity < 1`, `mask-image`
+/// or `filter` group, or under a rotation, scale or skew.
 ///
 /// The component renders as a transparent, **hittable** `div`. Hittability is
 /// what routes input: [`RinchContext::wants_mouse`] hit-tests the DOM and walks

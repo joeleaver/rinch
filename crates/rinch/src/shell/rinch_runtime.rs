@@ -1946,7 +1946,7 @@ impl RinchRuntime {
         //
         // Installed unconditionally, empty set included. Skipping the call when
         // nothing has a layer left `ACTIVE_VIEWPORTS` at `None`, which
-        // `find_viewport_rects` reads as "no filter — punch everything": the
+        // `viewport_punches` reads as "no filter — punch everything": the
         // gate was inoperative in exactly the case it exists for, a viewport
         // with no frame behind it (issue #186).
         //
