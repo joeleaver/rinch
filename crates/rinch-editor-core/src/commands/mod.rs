@@ -812,6 +812,13 @@ fn lift_blocks_to_top(tr: &mut Transaction) {
 
 /// Split the current textblock at the cursor (Enter). Deletes a non-empty
 /// selection first; at the end of a heading, the new block becomes a paragraph.
+///
+/// Refuses (`None`) when the cursor, after that delete, is not in a textblock:
+/// a caret at a gap between blocks (between a rule and a paragraph in a table
+/// cell, #1232; inside a table row) would otherwise split the node around the
+/// gap — the cell, leaving a ragged row. Enter puts a paragraph at such a gap
+/// instead ([`create_paragraph_near`]). A split never cuts an isolating node in
+/// any case ([`Transform::split`](crate::transform::Transform::split)).
 pub fn split_block() -> Command {
     command_tr(|state| {
         let mut tr = state.tr();
@@ -820,7 +827,7 @@ pub fn split_block() -> Command {
         }
         let pos = tr.selection().from().0;
         let r = tr.doc().resolve(Pos(pos)).ok()?;
-        if r.depth() < 1 {
+        if r.depth() < 1 || !r.parent().is_textblock() {
             return None;
         }
         let parent = r.parent();
@@ -895,10 +902,12 @@ pub fn lift_empty_block() -> Command {
             return None;
         }
         let r = state.doc.resolve(state.selection.from()).ok()?;
-        if r.parent().content().size() != 0 {
+        if !r.parent().is_textblock() || r.parent().content().size() != 0 {
             return None;
         }
         // Not the last child of its grandparent → split the grandparent before it.
+        // A table cell is never split (`Transform::split` refuses an isolating
+        // cut, #1232): the empty block is then split as any other, below.
         if r.depth() >= 2
             && r.after(r.depth()) != Some(r.end(r.depth() - 1))
             && let Some(before) = r.before(r.depth())
@@ -913,13 +922,42 @@ pub fn lift_empty_block() -> Command {
     })
 }
 
+/// Put an empty paragraph at a caret that is not in a textblock — a gap between
+/// two blocks, such as between a horizontal rule and a paragraph in a table cell —
+/// and move the caret into it. Port of ProseMirror's `createParagraphNear` for a
+/// collapsed text selection (a node selection is left to the rest of the Enter
+/// chain, which replaces the node). `None` when the caret is in a textblock, or
+/// when a paragraph is not valid content at the gap (inside a table row).
+pub fn create_paragraph_near() -> Command {
+    command_tr(|state| {
+        if !state.selection.is_text_cursor() {
+            return None;
+        }
+        let pos = state.selection.from().0;
+        let r = state.doc.resolve(Pos(pos)).ok()?;
+        if r.parent().is_textblock() {
+            return None;
+        }
+        let para = state
+            .schema()
+            .create_node("paragraph", Attrs::new(), Fragment::empty())
+            .ok()?;
+        let mut tr = state.tr();
+        tr.replace_with(pos, pos, Fragment::from_node(para)).ok()?;
+        tr.set_selection(crate::selection::Selection::cursor(Pos(pos + 1)));
+        Some(tr)
+    })
+}
+
 /// The Enter handler (`splitBlock` is the toolbar/programmatic name; Enter binds
-/// here): split a list item into a new item, else lift an empty block out of its
-/// wrapper, else split the current block.
+/// here): split a list item into a new item, else put a paragraph at a caret
+/// between blocks, else lift an empty block out of its wrapper, else split the
+/// current block. ProseMirror's base Enter chain, `newlineInCode` aside.
 pub fn split_block_or_list_item() -> Command {
     chain(vec![
         split_list_item("list_item"),
         split_list_item("task_item"),
+        create_paragraph_near(),
         lift_empty_block(),
         split_block(),
     ])
@@ -1072,6 +1110,97 @@ fn find_cut_after(r: &ResolvedPos) -> Option<usize> {
     None
 }
 
+/// Whether a join across `cut` must not touch the node before it: an isolating
+/// node (a table cell), a table or a table row. ProseMirror's `deleteBarrier`
+/// neither joins nor wraps across an `isolating` node, and prosemirror-tables
+/// makes the table isolating; rinch's table is not (that would change paste and
+/// lift), so the table parts are named here. Joining two tables, or wrapping the
+/// block after a table into a new row of it, left a row with another cell count
+/// than the table's (#1232).
+///
+/// Only the node *before* the cut is asked. The node after it is the caret's
+/// own block for Backspace; for Delete a table after a block other than a table
+/// cannot be joined (its rows are not that block's content, so the step fails)
+/// and the lift that follows stops at the cell (`build_lift_after`'s floor).
+fn table_barrier(doc: &Node, cut: usize) -> bool {
+    let Ok(r) = doc.resolve(Pos(cut)) else {
+        return true;
+    };
+    r.node_before().is_some_and(|n| {
+        n.node_type().is_isolating() || crate::tables::is_table(&n) || crate::tables::is_row(&n)
+    })
+}
+
+/// Whether `node`'s last descendant down its last children is a textblock (PM
+/// `textblockAt(node, "end")`).
+fn ends_in_textblock(node: &Node) -> bool {
+    let mut n = node.clone();
+    loop {
+        if n.is_textblock() {
+            return true;
+        }
+        if n.is_leaf() || n.child_count() == 0 {
+            return false;
+        }
+        n = n.child(n.child_count() - 1).clone();
+    }
+}
+
+/// Backspace at the start of a block right after a table (`cut` from
+/// [`find_cut_before`]), ProseMirror's base keymap there (`joinBackward`'s
+/// empty-block branch, then `selectNodeBackward`): an empty block is deleted
+/// (with each ancestor it is the only child of, while that is not valid) and
+/// the caret goes to the end of the table's last textblock (the table is
+/// node-selected when it ends in no textblock); any other block leaves the
+/// document as it is and **selects the table**, so a second Backspace deletes it
+/// — the select-first rule rinch keeps next to an atom ([`select_atom_across`]).
+/// Nothing is joined into, wrapped into or lifted out past the table (#1232).
+/// `None` when the node before the cut is a row or a cell.
+fn backspace_after_table(state: &EditorState, r: &ResolvedPos, cut: usize) -> Option<Transaction> {
+    use crate::selection::{NodeSelection, Selection};
+    let table = state.doc.resolve(Pos(cut)).ok()?.node_before()?;
+    if !crate::tables::is_table(&table) {
+        return None;
+    }
+    let table_pos = cut - table.node_size();
+    let table_sel = || {
+        Selection::Node(NodeSelection {
+            anchor: Pos(table_pos),
+            head: Pos(cut),
+        })
+    };
+    if r.parent().is_textblock() && r.parent().content().size() == 0 {
+        let mut d = r.depth();
+        while d >= 1 {
+            let (Some(from), Some(to)) = (r.before(d), r.after(d)) else {
+                break;
+            };
+            let mut tr = state.tr();
+            if tr
+                .step(Box::new(ReplaceStep::new(from, to, crate::Slice::empty())))
+                .is_ok()
+                && tr.doc_changed()
+            {
+                // The deletion is after the table: `cut` and `table_pos` hold.
+                let sel = if ends_in_textblock(&table) {
+                    Selection::near(tr.doc(), Pos(cut), -1)
+                } else {
+                    table_sel()
+                };
+                tr.set_selection(sel);
+                return Some(tr);
+            }
+            if d == 1 || r.node(d - 1).child_count() > 1 {
+                break;
+            }
+            d -= 1;
+        }
+    }
+    let mut tr = state.tr();
+    tr.set_selection(table_sel());
+    Some(tr)
+}
+
 /// Lift the block that begins just after `cut` out of its wrapper (PM
 /// `deleteBarrier`'s lift path, used when a forward-Delete can't directly join
 /// across the barrier). Returns `None` if there is no liftable block there.
@@ -1083,7 +1212,13 @@ fn build_lift_after(state: &EditorState, cut: usize) -> Option<Transaction> {
     if range.depth == 0 {
         return None;
     }
-    for target in (0..range.depth).rev() {
+    // The isolating floor of [`build_lift`]: a block lifted out of a table cell
+    // split the table around it (#1232).
+    let floor = (1..=range.depth)
+        .filter(|&d| r_from.node(d).node_type().is_isolating())
+        .max()
+        .unwrap_or(0);
+    for target in (floor..range.depth).rev() {
         let mut tr = state.tr();
         if tr.lift(&range, target).is_ok() && tr.doc_changed() {
             return Some(tr);
@@ -1246,7 +1381,8 @@ fn select_atom_across(
 ///
 /// An atom before the cut (a horizontal rule, an image, an `embed`) is
 /// **selected** instead ([`select_atom_across`]), so a second Backspace removes
-/// it; an empty block right after it goes in the same step.
+/// it; an empty block right after it goes in the same step. After a table,
+/// [`backspace_after_table`]: nothing is joined, wrapped or lifted.
 ///
 /// Not ported (a rare `deleteBarrier` tail): the content-move `ReplaceAround`
 /// (merge into the before-container's last textblock).
@@ -1282,22 +1418,30 @@ pub fn delete_char_backward() -> Command {
             if let Some(tr) = select_atom_across(state, &r, cut, true) {
                 return Some(tr);
             }
-            let mut tr = state.tr();
-            if tr
-                .step(Box::new(ReplaceStep::structural(
-                    cut - 1,
-                    cut + 1,
-                    crate::Slice::empty(),
-                )))
-                .is_ok()
-                && tr.doc_changed()
-            {
-                return Some(tr);
+            // After a table (or at a row or cell boundary) nothing is joined,
+            // wrapped or lifted: see [`backspace_after_table`].
+            if table_barrier(&state.doc, cut) {
+                return backspace_after_table(state, &r, cut);
             }
-            // Could not join directly across the cut — try moving this block into
-            // the container before it (a paragraph after a list → a new list item).
-            if let Some(tr) = wrap_into_before(state, cut) {
-                return Some(tr);
+            {
+                let mut tr = state.tr();
+                if tr
+                    .step(Box::new(ReplaceStep::structural(
+                        cut - 1,
+                        cut + 1,
+                        crate::Slice::empty(),
+                    )))
+                    .is_ok()
+                    && tr.doc_changed()
+                {
+                    return Some(tr);
+                }
+                // Could not join directly across the cut — try moving this block
+                // into the container before it (a paragraph after a list → a new
+                // list item).
+                if let Some(tr) = wrap_into_before(state, cut) {
+                    return Some(tr);
+                }
             }
         }
         build_lift(state)
@@ -1334,17 +1478,19 @@ pub fn delete_char_forward() -> Command {
         if let Some(tr) = select_atom_across(state, &r, cut, false) {
             return Some(tr);
         }
-        let mut tr = state.tr();
-        if tr
-            .step(Box::new(ReplaceStep::structural(
-                cut - 1,
-                cut + 1,
-                crate::Slice::empty(),
-            )))
-            .is_ok()
-            && tr.doc_changed()
-        {
-            return Some(tr);
+        if !table_barrier(&state.doc, cut) {
+            let mut tr = state.tr();
+            if tr
+                .step(Box::new(ReplaceStep::structural(
+                    cut - 1,
+                    cut + 1,
+                    crate::Slice::empty(),
+                )))
+                .is_ok()
+                && tr.doc_changed()
+            {
+                return Some(tr);
+            }
         }
         build_lift_after(state, cut)
     })

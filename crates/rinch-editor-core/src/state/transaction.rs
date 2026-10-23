@@ -405,8 +405,10 @@ impl Transaction {
             .doc
             .resolve(Pos(from))
             .map_err(|e| StepError::new(e.to_string()))?;
-        let gap = if r.depth() < 1 {
-            // Already a doc-level gap (no enclosing textblock).
+        let gap = if r.depth() < 1 || !r.parent().is_textblock() {
+            // Already a gap between blocks (no enclosing textblock): at the doc
+            // level, or inside a container — never split the container (a table
+            // cell split there left a ragged row, #1232).
             from
         } else if r.parent_offset() == 0 {
             // Start of the textblock — insert directly before it (no split).

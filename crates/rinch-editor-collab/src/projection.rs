@@ -1264,6 +1264,55 @@ fn reconcile_text(
 
     let o: Vec<char> = old.chars().collect();
     let n: Vec<char> = b.text.chars().collect();
+    // A block whose stored text the model reads differently from how it is stored
+    // (#1227) is diffed as it reads: see `reconcile_read_text`. Only an inline atom
+    // can read as anything but itself, so a block with none the model reads
+    // otherwise (every plain keystroke) skips the per-char pass below.
+    if let Some((before, after)) = model.filter(|(before, after)| {
+        old_marks.iter().any(|m| m.name == ATOM_MARK)
+            && before.is_textblock()
+            && after.is_textblock()
+            && after.type_name() == b.type_name
+            && reads_otherwise(before.node_type(), after.node_type(), &old_marks, &o)
+    }) {
+        let (old_typ, new_typ) = (before.node_type(), after.node_type());
+        let new_kinds: Vec<CharKind> = (0..o.len())
+            .map(|i| kind_in(new_typ, &old_marks, &o, i, o[i]))
+            .collect();
+        let old_kinds: Vec<CharKind> = if old_typ.name() == new_typ.name() {
+            new_kinds.clone()
+        } else {
+            (0..o.len())
+                .map(|i| kind_in(old_typ, &old_marks, &o, i, o[i]))
+                .collect()
+        };
+        // The text as the model before this change read it, where that hid an atom;
+        // as the new type reads it everywhere else.
+        let diff_kinds: Vec<CharKind> = (0..o.len())
+            .map(|i| {
+                if old_kinds[i] == CharKind::Atom
+                    || matches!(old_kinds[i], CharKind::Text(c) if c == o[i])
+                {
+                    new_kinds[i]
+                } else {
+                    old_kinds[i]
+                }
+            })
+            .collect();
+        let view = TextView::from_kinds(&o, &diff_kinds);
+        if view.normalised {
+            return reconcile_read_text(
+                txn,
+                text,
+                (&o, &old_marks),
+                (&view, &diff_kinds, &new_kinds),
+                (&n, &target_marks),
+                per_char,
+                model,
+                new_typ,
+            );
+        }
+    }
     let bounds = text_splice_bounds(&o, &old_marks, &n, &target_marks, model);
     let (prefix, suffix) = bounds;
     let spliced = prefix + suffix < o.len() || prefix + suffix < n.len();
@@ -1299,6 +1348,167 @@ fn reconcile_text(
             &current,
             &current_marks,
             &target_marks,
+            per_char,
+            inserted,
+        );
+    }
+    Ok(())
+}
+
+/// Whether some inline atom of a textblock's stored text (`o`, its spans `spans`) reads
+/// as anything but an atom in [`reconcile_text`]'s read of it (#1227): as `old_typ`
+/// where that hides it, else as `new_typ`. The cheap test that gates that read's
+/// per-char pass: it visits only the chars an [`ATOM_MARK`] span covers, and
+/// [`kind_in`] reads every other char as itself, so `false` here is exactly
+/// [`TextView::normalised`] being `false` there.
+fn reads_otherwise(old_typ: &NodeType, new_typ: &NodeType, spans: &[SpanMark], o: &[char]) -> bool {
+    spans
+        .iter()
+        .filter(|m| m.name == ATOM_MARK)
+        .flat_map(|m| m.start..m.end.min(o.len()))
+        .any(|i| {
+            let new_kind = kind_in(new_typ, spans, o, i, o[i]);
+            let old_kind = if old_typ.name() == new_typ.name() {
+                new_kind
+            } else {
+                kind_in(old_typ, spans, o, i, o[i])
+            };
+            let read = if old_kind == CharKind::Atom
+                || matches!(old_kind, CharKind::Text(c) if c == o[i])
+            {
+                new_kind
+            } else {
+                old_kind
+            };
+            !matches!(read, CharKind::Atom) && read != CharKind::Text(o[i])
+        })
+}
+
+/// [`reconcile_text`] for a block whose stored text the model reads differently from
+/// how it is stored ([`TextView`], #1227): a hard-break atom read as `'\n'` in a code
+/// block, an atom read as nothing. The diff runs over the text **as read** (`view`, by
+/// the type the model held before this change wherever that hid an atom), so a
+/// converted break compares equal to the model's `'\n'` and a dropped atom is skipped,
+/// and its bounds are taken back to stored indices. A hidden atom is left where it is,
+/// `@atom` value and all: rewriting a converted break into a `'\n'` char on every peer
+/// that edits the block would leave one line break per peer, and the stored text a
+/// peer diffed against would no longer share a suffix with anyone's. Stray marks on
+/// hidden chars are cleared like any other mark the model does not hold (idempotent).
+///
+/// Only a retype that makes a hidden atom readable again (a code block made a
+/// paragraph: its stored hard break would read as one, where the model holds `'\n'`)
+/// rewrites it, one char at a time, outside the diffed range: two peers doing that
+/// concurrently leave two line breaks there.
+///
+/// The per-char non-inclusive insert ([`splice_min_with_marks`]) is not used here: a
+/// plain splice, then the mark resync.
+#[allow(clippy::too_many_arguments)]
+fn reconcile_read_text(
+    txn: &mut TransactionMut,
+    text: &TextRef,
+    (o, old_marks): (&[char], &[SpanMark]),
+    (view, diff_kinds, new_kinds): (&TextView, &[CharKind], &[CharKind]),
+    (n, target_marks): (&[char], &[SpanMark]),
+    per_char: &BTreeSet<String>,
+    model: Model<'_>,
+    typ: &NodeType,
+) -> Result<()> {
+    let read_marks = view.spans_read(old_marks);
+    let (prefix, suffix) = text_splice_bounds(&view.chars, &read_marks, n, target_marks, model);
+    let spliced = prefix + suffix < view.chars.len() || prefix + suffix < n.len();
+    // Stored range of the read middle `prefix .. len - suffix`, shrunk off any dropped
+    // atoms at its edges so they stay where they are.
+    let (mut from, mut to) = (o.len(), o.len());
+    let mut ins = String::new();
+    if spliced {
+        from = if prefix == 0 {
+            0
+        } else {
+            view.stored[prefix - 1] + 1
+        };
+        to = view.stored_at(view.chars.len() - suffix);
+        while from < to && view.before[from] == view.before[from + 1] {
+            from += 1;
+        }
+        while to > from && view.before[to - 1] == view.before[to] {
+            to -= 1;
+        }
+        ins = n[prefix..n.len() - suffix].iter().collect();
+    }
+    let ins_len = ins.chars().count();
+    // Hidden chars outside the splice that the new type reads otherwise than the model
+    // does: (stored index after the splice, what it must become — `None` to go).
+    let mut fixups: Vec<(usize, Option<char>)> = Vec::new();
+    for i in (0..o.len()).filter(|i| !(from..to).contains(i)) {
+        if diff_kinds[i] == new_kinds[i] {
+            continue;
+        }
+        let at = if i < from {
+            i
+        } else {
+            i - (to - from) + ins_len
+        };
+        match diff_kinds[i] {
+            CharKind::Text(c) => fixups.push((at, Some(c))),
+            CharKind::Gone => fixups.push((at, None)),
+            CharKind::Atom => {}
+        }
+    }
+    if spliced {
+        let at: u32 = o[..from].iter().map(|c| c.len_utf16() as u32).sum();
+        let del: u32 = o[from..to].iter().map(|c| c.len_utf16() as u32).sum();
+        if del > 0 {
+            text.remove_range(txn, at, del);
+        }
+        if !ins.is_empty() {
+            text.insert(txn, at, &ins);
+        }
+    }
+    let inserted = if spliced { from..from + ins_len } else { 0..0 };
+    if !fixups.is_empty() {
+        let (stored, _) = read_text_data(txn, text)?;
+        let stored: Vec<char> = stored.chars().collect();
+        for (at, with) in fixups.into_iter().rev() {
+            let pos: u32 = stored[..at].iter().map(|c| c.len_utf16() as u32).sum();
+            text.remove_range(txn, pos, stored[at].len_utf16() as u32);
+            if let Some(c) = with {
+                text.insert(txn, pos, &c.to_string());
+            }
+        }
+    }
+
+    // The marks the model holds, taken to stored indices of the text as it now is; a
+    // hidden atom keeps its `@atom` value.
+    let (current, current_marks) = read_text_data(txn, text)?;
+    let cur: Vec<char> = current.chars().collect();
+    let now = TextView::of(typ, &cur, &current_marks);
+    if now.chars.as_slice() != n {
+        // Not reachable by the writes above; the marks are left as they are rather
+        // than written at offsets that do not line up.
+        return Ok(());
+    }
+    let mut target: Vec<SpanMark> = Vec::new();
+    for m in target_marks {
+        if m.start < m.end {
+            let (start, end) = (now.stored[m.start], now.stored[m.end - 1] + 1);
+            push_mark_span(&mut target, &m.name, m.attrs.clone(), start, end);
+        }
+    }
+    for m in current_marks.iter().filter(|m| m.name == ATOM_MARK) {
+        for i in m.start..m.end {
+            if now.hidden_atom[i] {
+                push_mark_span(&mut target, ATOM_MARK, m.attrs.clone(), i, i + 1);
+            }
+        }
+    }
+    target.sort_by(|a, b| (a.start, a.end, &a.name).cmp(&(b.start, b.end, &b.name)));
+    if current_marks != target {
+        resync_marks(
+            txn,
+            text,
+            &current,
+            &current_marks,
+            &target,
             per_char,
             inserted,
         );
@@ -2696,6 +2906,20 @@ fn build_node(schema: &Schema, nd: &NodeData) -> Result<Node> {
 ///
 /// A char that is an inline atom ([`is_atom_char`]) breaks every run and becomes a node
 /// of its own, carrying whatever real marks cover it.
+///
+/// **The read is normalised to the block's type** (#1227). A textblock is retyped in
+/// place ([`reconcile_node`] rewrites its `type` key and keeps its `Text`, so a peer's
+/// concurrent typing survives a paragraph → code block change), and a peer's concurrent
+/// formatting and inline atoms merge into that `Text` all the same: a paragraph made a
+/// code block while a peer bolds a char and inserts a hard break converges on a bold
+/// mark and a `hard_break` in a `code_block`, which allows neither. So a mark the type
+/// does not allow is not read ([`marks_at`]), and an inline atom it does not accept is
+/// read as ProseMirror's `setBlockType` (`clearIncompatible`) would leave it: a
+/// `hard_break` in a [`code`](rinch_editor_core::NodeSpec::code) block is the line break
+/// `"\n"`, any other is dropped ([`char_kind`]). Every replica reads the same CRDT, so
+/// this converges by construction. The stored text keeps the hidden atoms; a local edit
+/// of the block is diffed as the block reads ([`TextView`], `reconcile_read_text`) and
+/// clears the stray marks.
 fn build_block(schema: &Schema, b: &BlockData) -> Result<Node> {
     // Inbound scope guard (A22): a peer CRDT must not be able to materialize a
     // non-flat block here — `create_node` would happily build a `blockquote`/`list`,
@@ -2741,49 +2965,246 @@ fn build_block(schema: &Schema, b: &BlockData) -> Result<Node> {
         )));
     }
     let chars: Vec<char> = b.text.chars().collect();
+    // What each char reads as in a block of this type (#1227): an inline atom the
+    // block does not accept is a line break or nothing, never a node it cannot hold.
+    let kinds = chars
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| char_kind(schema, typ, &b.marks, &chars, i, c))
+        .collect::<Result<Vec<CharKind>>>()?;
     let mut runs: Vec<Node> = Vec::new();
     let mut i = 0usize;
     while i < chars.len() {
-        // An inline atom: one placeholder char carrying the reserved attribute, built
-        // as its own node with whatever real marks cover that char. One node **per
-        // char**, never per span: `push_mark_span` coalesces two adjacent identical
-        // atoms (two hard breaks, the same image twice) into a single two-char span,
-        // and those are two nodes.
-        if is_atom_char(&b.marks, &chars, i) {
-            let span = atom_span_at(&b.marks, i).expect("is_atom_char found one");
-            if inline_ids_recording() {
-                note_inline_id(
-                    b.atom_idents
-                        .iter()
-                        .find(|(at, _)| *at == i)
-                        .and_then(|(_, id)| id.clone()),
-                );
+        match kinds[i] {
+            CharKind::Gone => {
+                i += 1;
+                continue;
             }
-            runs.push(build_inline_atom(
-                schema,
-                span,
-                marks_at(schema, &b.marks, i)?,
-            )?);
-            i += 1;
-            continue;
+            // An inline atom: one placeholder char carrying the reserved attribute,
+            // built as its own node with whatever real marks cover that char. One node
+            // **per char**, never per span: `push_mark_span` coalesces two adjacent
+            // identical atoms (two hard breaks, the same image twice) into a single
+            // two-char span, and those are two nodes.
+            CharKind::Atom => {
+                let span = atom_span_at(&b.marks, i).expect("is_atom_char found one");
+                if inline_ids_recording() {
+                    note_inline_id(
+                        b.atom_idents
+                            .iter()
+                            .find(|(at, _)| *at == i)
+                            .and_then(|(_, id)| id.clone()),
+                    );
+                }
+                runs.push(build_inline_atom(
+                    schema,
+                    span,
+                    marks_at(schema, &b.type_name, &b.marks, i)?,
+                )?);
+                i += 1;
+                continue;
+            }
+            CharKind::Text(_) => {}
         }
         // Otherwise a run of text: extend while the mark set holds and no atom starts.
-        let cur = marks_at(schema, &b.marks, i)?;
-        let run_start = i;
-        i += 1;
-        while i < chars.len()
-            && !is_atom_char(&b.marks, &chars, i)
-            && same_mark_set(&cur, &marks_at(schema, &b.marks, i)?)
-        {
-            i += 1;
+        // A dropped atom inside the run is stepped over, so the text around it is one
+        // node, as the model would hold it.
+        let cur = marks_at(schema, &b.type_name, &b.marks, i)?;
+        let mut s = String::new();
+        while i < chars.len() {
+            match kinds[i] {
+                CharKind::Gone => i += 1,
+                CharKind::Text(c)
+                    if same_mark_set(&cur, &marks_at(schema, &b.type_name, &b.marks, i)?) =>
+                {
+                    s.push(c);
+                    i += 1;
+                }
+                _ => break,
+            }
         }
-        let s: String = chars[run_start..i].iter().collect();
         runs.push(schema.text_with_marks(&s, cur).map_err(CollabError::from)?);
     }
     let attrs = b.attrs.clone();
     schema
         .create_node(&b.type_name, attrs, Fragment::from_children(runs))
         .map_err(CollabError::from)
+}
+
+/// What one char of a textblock's CRDT text reads as in the model (see [`build_block`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CharKind {
+    /// A text char: the char itself, or `'\n'` for a line break in a code block.
+    Text(char),
+    /// An inline atom the block accepts, built as a node of its own.
+    Atom,
+    /// An inline atom the block does not accept and has no text for: not read.
+    Gone,
+}
+
+/// What char `i` (`c`) of a block of type `typ` reads as (#1227), in [`build_block`]: an
+/// atom of a type the schema does not know, or that is not an inline atom, stays
+/// [`CharKind::Atom`] so that [`build_inline_atom`] fails loud on it as before; anything
+/// else is [`kind_in`]'s answer.
+fn char_kind(
+    schema: &Schema,
+    typ: &NodeType,
+    spans: &[SpanMark],
+    chars: &[char],
+    i: usize,
+    c: char,
+) -> Result<CharKind> {
+    if !is_atom_char(spans, chars, i) {
+        return Ok(CharKind::Text(c));
+    }
+    let span = atom_span_at(spans, i).expect("is_atom_char found one");
+    let (type_name, _) = atom_span_type(span)?;
+    match schema.node_type(&type_name) {
+        Some(atom_type) if is_inline_atom(atom_type) => Ok(kind_in(typ, spans, chars, i, c)),
+        _ => Ok(CharKind::Atom),
+    }
+}
+
+/// What char `i` (`c`) of a textblock's stored text reads as in a block of type `typ`
+/// (#1227), with no schema in hand. A char that is not an inline atom
+/// ([`is_atom_char`]) is text; an atom the block's content expression accepts is an
+/// atom. One it does not accept is a `'\n'` when it is a `hard_break` and the block is
+/// a [`code`](rinch_editor_core::NodeSpec::code) block that takes text (ProseMirror's
+/// `linebreakReplacement`, and what its clipboard and its HTML parser do with a `<br>`
+/// in `<pre>`), and is dropped otherwise, as `clearIncompatible` drops it.
+///
+/// The read ([`build_block`]), the write-back ([`reconcile_text`]) and sticky indexes
+/// (`crate::sticky`) all see a block through this one function ([`TextView`]), so a
+/// converted break compares equal to the model's `'\n'` and a dropped atom is skipped
+/// rather than diffed.
+fn kind_in(typ: &NodeType, spans: &[SpanMark], chars: &[char], i: usize, c: char) -> CharKind {
+    if !is_atom_char(spans, chars, i) {
+        return CharKind::Text(c);
+    }
+    let Some(type_name) = atom_span_at(spans, i)
+        .and_then(|span| atom_span_type(span).ok())
+        .map(|(name, _)| name)
+    else {
+        return CharKind::Atom;
+    };
+    let content = typ.content_match();
+    if content.accepts(&type_name) {
+        CharKind::Atom
+    } else if type_name == "hard_break" && typ.spec().code && content.accepts("text") {
+        CharKind::Text('\n')
+    } else {
+        CharKind::Gone
+    }
+}
+
+/// A textblock's stored text (its CRDT `Text`) as a block of some type reads it
+/// ([`kind_in`]): what the model holds, and where each char of it is stored.
+pub(crate) struct TextView {
+    /// The text as read: a converted break is `'\n'`, a dropped atom is absent, an
+    /// atom is its placeholder.
+    pub chars: Vec<char>,
+    /// For each read char, its index in the stored text.
+    pub stored: Vec<usize>,
+    /// For each stored index `0..=len`, how many read chars come before it.
+    pub before: Vec<usize>,
+    /// Whether some stored char reads as anything but itself.
+    pub normalised: bool,
+    /// For each stored char, whether it is an atom the read does not show as one (a
+    /// converted break or a dropped atom): its `@atom` value is left alone by a
+    /// write-back.
+    pub hidden_atom: Vec<bool>,
+}
+
+/// A textblock's stored text and the [`TextView`] of it the model block `model` reads,
+/// when that read is `model`'s text — the one test a sticky index makes before it maps
+/// a model position to a stored one or back (#1227: a block whose stored text holds a
+/// converted break or a dropped atom reads differently from how it is stored).
+pub(crate) fn model_view<T: ReadTxn>(
+    txn: &T,
+    text: &TextRef,
+    model: &Node,
+) -> Option<(String, TextView)> {
+    if !model.is_textblock() {
+        return None;
+    }
+    let (stored, spans) = read_text_data(txn, text).ok()?;
+    let chars: Vec<char> = stored.chars().collect();
+    let view = TextView::of(model.node_type(), &chars, &spans);
+    read_block(model)
+        .ok()?
+        .text
+        .chars()
+        .eq(view.chars.iter().copied())
+        .then_some((stored, view))
+}
+
+impl TextView {
+    pub(crate) fn of(typ: &NodeType, stored: &[char], spans: &[SpanMark]) -> TextView {
+        let kinds: Vec<CharKind> = (0..stored.len())
+            .map(|i| kind_in(typ, spans, stored, i, stored[i]))
+            .collect();
+        TextView::from_kinds(stored, &kinds)
+    }
+
+    fn from_kinds(stored: &[char], kinds: &[CharKind]) -> TextView {
+        let mut view = TextView {
+            chars: Vec::with_capacity(stored.len()),
+            stored: Vec::with_capacity(stored.len()),
+            before: Vec::with_capacity(stored.len() + 1),
+            normalised: false,
+            hidden_atom: vec![false; stored.len()],
+        };
+        for (i, (&c, &kind)) in stored.iter().zip(kinds).enumerate() {
+            view.before.push(view.chars.len());
+            match kind {
+                CharKind::Text(r) => {
+                    if r != c {
+                        view.normalised = true;
+                        view.hidden_atom[i] = true;
+                    }
+                    view.chars.push(r);
+                    view.stored.push(i);
+                }
+                CharKind::Atom => {
+                    view.chars.push(c);
+                    view.stored.push(i);
+                }
+                CharKind::Gone => {
+                    view.normalised = true;
+                    view.hidden_atom[i] = true;
+                }
+            }
+        }
+        view.before.push(view.chars.len());
+        view
+    }
+
+    /// The stored index a position `k` (`0..=chars.len()`) of the read text names:
+    /// right before the `k`-th read char (after any dropped atoms before it), or the
+    /// stored text's end.
+    pub(crate) fn stored_at(&self, k: usize) -> usize {
+        self.stored
+            .get(k)
+            .copied()
+            .unwrap_or_else(|| self.before.len() - 1)
+    }
+
+    /// `spans`, given over the stored text, over the read text instead; a span that
+    /// covers only dropped atoms is gone, and so is the atom value of a hidden atom
+    /// (the read shows none there).
+    fn spans_read(&self, spans: &[SpanMark]) -> Vec<SpanMark> {
+        spans
+            .iter()
+            .filter(|m| !(m.name == ATOM_MARK && self.hidden_atom.get(m.start) == Some(&true)))
+            .filter_map(|m| {
+                let (start, end) = (self.before[m.start], self.before[m.end]);
+                (start < end).then(|| SpanMark {
+                    start,
+                    end,
+                    ..m.clone()
+                })
+            })
+            .collect()
+    }
 }
 
 /// Whether char `i` is an inline atom: the [`ATOM_PLACEHOLDER`] **and** covered by an
@@ -2839,12 +3260,13 @@ fn build_inline_atom(schema: &Schema, span: &SpanMark, marks: Vec<Mark>) -> Resu
     })
 }
 
-/// The model marks active at char index `i`, resolved against the schema.
+/// The model marks active at char index `i` of a block of type `block`, resolved
+/// against the schema, leaving out every mark the block type does not allow.
 ///
 /// [`ATOM_MARK`] spans are skipped: the attribute names an inline atom, not a mark, and
 /// the schema has no mark type of that name to resolve it against — asking for one
 /// would fail loud on every atom in the document.
-fn marks_at(schema: &Schema, spans: &[SpanMark], i: usize) -> Result<Vec<Mark>> {
+fn marks_at(schema: &Schema, block: &str, spans: &[SpanMark], i: usize) -> Result<Vec<Mark>> {
     let mut out = Vec::new();
     for s in spans {
         if s.name == ATOM_MARK {
@@ -2855,7 +3277,13 @@ fn marks_at(schema: &Schema, spans: &[SpanMark], i: usize) -> Result<Vec<Mark>> 
                 CollabError::schema(format!("unknown mark type `{}` in CRDT", s.name))
             })?;
             let attrs = mt.compute_attrs(&s.attrs).map_err(CollabError::from)?;
-            out.push(Mark::new(mt.clone(), attrs));
+            // A mark the block type does not allow is not read (#1227): a peer's
+            // concurrent formatting of a block retyped into one that takes no marks
+            // (a code block) merges into its `Text` all the same. Checked after the
+            // type lookup, so a mark the schema does not know still fails loud.
+            if schema.allows_mark(block, &s.name) {
+                out.push(Mark::new(mt.clone(), attrs));
+            }
         }
     }
     // Canonical (mark-type-name) order, matching `Mark::add_to_set`. `spans` is sorted

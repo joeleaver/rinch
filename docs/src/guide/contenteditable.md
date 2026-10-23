@@ -109,6 +109,8 @@ Command names are case-sensitive. The full catalogue:
 | **Deleting** | `deleteSelection`, `deleteCharBackward`, `deleteCharForward`, `deleteWordBackward`, `deleteWordForward` |
 | **History** | `undo`, `redo` |
 
+A block-type command clears what the new type cannot hold, as ProseMirror's `setBlockType` does: `setCodeBlock` removes the marks (a code block takes none), turns a hard break into a line break (`\n`) and deletes an image.
+
 > Links need a destination, so applying a link is a builder rather than a bare named
 > command. Use `handle.toggle_link(href)` to add (or, over an existing link, remove)
 > a link, `handle.command("removeLink")` to clear one unconditionally, and
@@ -1388,7 +1390,7 @@ platform. `Mod` = Ctrl on Windows/Linux, Cmd on macOS.
 | Mod+Shift+B | Blockquote |
 | Mod+Shift+L / E / R / J | Align left / center / right / justify |
 | Mod+Z / Mod+Shift+Z / Mod+Y | Undo / redo |
-| Enter | Split block / new list item |
+| Enter | Split block / new list item (between two blocks: a new empty paragraph there) |
 | Shift+Enter | Insert a hard break (line break within the block) |
 | Tab / Shift+Tab | Move between table cells, else indent / outdent a list item |
 | Backspace / Delete | Delete backward / forward |
