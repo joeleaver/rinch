@@ -141,7 +141,7 @@ mod gpu {
     const H: u32 = 64;
 
     fn render(scene: &vello::Scene) -> Vec<[u8; 4]> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::default(),
             compatible_surface: None,

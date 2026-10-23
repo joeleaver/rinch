@@ -596,6 +596,11 @@ every adapter in the above slice.
      (pixels left of R lost their after-content, about 24 levels off), while
      the same clip as a backwards-wound **non-zero** path is right on both.
      The inverse-R clip is therefore non-zero.
+     The cause is Vello's, not lavapipe's (found for D9): its MSAA even-odd
+     fill clears workgroup memory with no barrier after the previous fill's
+     reads, which lavapipe's 8-wide subgroups lose every time; a barrier in
+     a patched `vello_shaders` cures it. rinch's own rings are non-zero since
+     (`docs/internals/paint-and-damage.md`, "Rings are filled non-zero").
 3. **Sampling equality for scaled frames.** Video letterboxed into a
    different size is resampled by Vello in-scene and by the compositor's
    sampler in a split. These must agree to ±1, which means the same filter

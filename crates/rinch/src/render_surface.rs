@@ -3137,7 +3137,7 @@ mod compositor_routing_tests {
     #[cfg(feature = "gpu")]
     fn test_gpu() -> &'static crate::shell::desktop::GpuHandle {
         crate::shell::desktop::gpu_handle_for_tests(|| {
-            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
             let adapter = pollster::block_on(
                 instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
             )
