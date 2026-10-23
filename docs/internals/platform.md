@@ -884,7 +884,10 @@ would break CSS semantics and make desktop diverge from rinch-web.
   `native` (rfd, every dialog) and `web` (wasm32: `message` /
   `MessageDialogBuilder` / `MessageLevel` over `window.alert` /
   `window.confirm`). `rfd` is a `cfg(not(target_arch = "wasm32"))` dependency,
-  so `file-dialogs` on wasm links no crate. Pin:
+  so `file-dialogs` on wasm links no crate, and the module is compiled on
+  wasm32 with or without that feature (`lib.rs`:
+  `cfg(any(feature = "file-dialogs", target_arch = "wasm32"))`, #1821). Pin
+  (built without `file-dialogs`, rinch-web's dev-dependency):
   `rinch-web/tests/confirm_dialog_1773.rs` (stubs `window.confirm`/`alert`; a
   real one would block headless Chrome).
 - **`rinch::init_logging()`** (`crates/rinch/src/logging.rs`): desktop (and

@@ -126,7 +126,8 @@ zbus = { version = "5", default-features = false, features = ["async-io"], optio
 futures-lite = { version = "2", optional = true }
 
 # Native file and message dialogs. The browser's message dialogs need no crate
-# (`dialogs::web`), and a browser file picker gives no path (#1773).
+# and no feature (`dialogs::web`, #1821), and a browser file picker gives no
+# path (#1773).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rfd = { workspace = true, optional = true }
 

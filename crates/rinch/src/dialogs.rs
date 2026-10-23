@@ -1,7 +1,8 @@
 //! File dialogs (open, save, folder) and message dialogs (alert, confirm).
 //!
-//! Natively both use the `rfd` crate. **In the browser** (wasm32) only the
-//! message dialogs exist (#1773): [`message`] with [`MessageDialogBuilder::show`],
+//! Natively both use the `rfd` crate and need the `file-dialogs` feature.
+//! **In the browser** (wasm32) only the message dialogs exist (#1773), with or
+//! without that feature (#1821): [`message`] with [`MessageDialogBuilder::show`],
 //! [`confirm`](MessageDialogBuilder::confirm) and [`ask`](MessageDialogBuilder::ask)
 //! are the page's own `window.alert` / `window.confirm`, synchronous as they are
 //! natively, so the same call compiles and behaves alike on both targets. The

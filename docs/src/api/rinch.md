@@ -263,9 +263,9 @@ path where there is one, bytes read on demand) and `FilePicker` (web always;
 native with the file-dialogs feature). See
 [Files From the User](../guide/platform.md#files-from-the-user-web-and-desktop).
 
-### `rinch::dialogs` (file-dialogs feature)
+### `rinch::dialogs` (file-dialogs feature; message dialogs always on wasm32)
 
-File dialog wrappers via `rfd`.
+File dialog wrappers via `rfd` on native, behind the `file-dialogs` feature. On wasm32 the module is always present and holds only the message dialogs (`message(..).show()`, `.confirm()`, `.ask()`, through `window.alert` / `window.confirm`), with no `rfd` (#1821).
 
 ### `rinch::clipboard` (clipboard feature)
 
