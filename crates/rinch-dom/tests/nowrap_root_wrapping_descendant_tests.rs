@@ -518,3 +518,79 @@ fn a_nowrap_right_to_left_paragraph_is_aligned_within_the_box() {
     assert!(advance > 10.0 && advance < 48.0, "fits the box: {advance}");
     near(line.metrics().offset, (50.0 - advance) / 2.0, "centred");
 }
+
+/// A shrink-to-fit root is as wide as its widest line, but rinch floors that
+/// width to a whole pixel (`ifc_paint_max_width` adds the pixel back for
+/// breaking). Its lines are aligned within the widest line itself, as in
+/// Chrome 155 (and on main), not within the floored box: the widest line is
+/// flush at 0 and `a` sits at the widest line's width less its own. Review
+/// of #1868: aligned within the floored box, `a\nbbb` put `a` at 20.02 and
+/// `a\nbbbbbb` put `bbbbbb` at 0.22. One per kind of shrink-to-fit box.
+#[test]
+fn a_shrink_to_fit_root_is_aligned_within_its_widest_line() {
+    let w300 = Some("width:300px");
+    for (style, text, wrapper, want) in [
+        (
+            "display:inline-block;white-space:pre;text-align:right",
+            "a\nbbb",
+            w300,
+            20.41,
+        ),
+        (
+            "display:inline-block;white-space:pre;text-align:right",
+            "a\nbbbbbb",
+            w300,
+            49.80,
+        ),
+        (
+            "position:absolute;white-space:nowrap;text-align:center",
+            "a<br>bbb",
+            Some("position:relative;width:300px;height:60px"),
+            10.20,
+        ),
+        (
+            "width:max-content;white-space:pre;text-align:center",
+            "a\nbbb",
+            w300,
+            10.20,
+        ),
+        (
+            "width:fit-content;white-space:nowrap;text-align:right",
+            "a<br>bbbbbb",
+            w300,
+            49.80,
+        ),
+    ] {
+        let (lines, _) = aligned(style, text, wrapper);
+        assert_eq!(lines.len(), 2, "{style} {text:?}: {lines:?}");
+        near(lines[0].1, want, &format!("{style} {text:?}: a"));
+        assert!(lines[1].1.abs() < 0.02, "{style} {text:?}: {lines:?}");
+    }
+}
+
+/// The paint layout is rebuilt when what alignment reads changes. An
+/// auto-width root in a 50px block and a `width: 51px` one are both broken
+/// at 51px (the auto one with its pixel of slack), but aligned within 50 and
+/// 51: Chrome 155 puts `a` at 41.02 and 42.02. Review of #1868: the rebuild
+/// was keyed on the break width only, so switching kept the old line.
+#[test]
+fn switching_between_auto_and_the_slack_width_realigns_the_line() {
+    let mut d = doc();
+    let body = d.body();
+    let outer = d.create_element("div");
+    d.set_attribute(outer, "style", "width:50px");
+    d.append_child(body, outer);
+    let c = d.create_element("div");
+    let base = "font:16px/25px ProbeFace;white-space:nowrap;text-align:right";
+    d.set_attribute(c, "style", base);
+    d.append_child(outer, c);
+    d.set_inner_html(c, "a");
+    d.resolve_layout(800.0, 600.0);
+    near(aligned_in(&d, c).0[0].1, 41.02, "auto");
+    d.set_attribute(c, "style", &format!("{base};width:51px"));
+    d.resolve_layout(800.0, 600.0);
+    near(aligned_in(&d, c).0[0].1, 42.02, "51px");
+    d.set_attribute(c, "style", base);
+    d.resolve_layout(800.0, 600.0);
+    near(aligned_in(&d, c).0[0].1, 41.02, "auto again");
+}
