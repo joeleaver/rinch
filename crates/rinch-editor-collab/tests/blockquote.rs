@@ -789,7 +789,9 @@ fn editing_next_to_a_void_quote_projects_around_it() {
     b.type_at(1, "?");
     exchange(&mut a, &mut b);
     assert_eq!(a.state.doc, b.state.doc);
-    assert_eq!(html(&a.state.doc), "<p>?be</p><p>fore</p><p>after!</p>");
+    // A's Enter keeps the longer half `fore` in place and writes `be` anew (#1850), so
+    // B's `?`, typed at the start of the old line, stays with `fore`.
+    assert_eq!(html(&a.state.doc), "<p>be</p><p>?fore</p><p>after!</p>");
     // A block inserted between the two, and the second deleted outright.
     let end = pos_of(&b.state.doc, "fore") + 4;
     b.run(end, "enter");
@@ -799,7 +801,7 @@ fn editing_next_to_a_void_quote_projects_around_it() {
     a.delete(start, start + "after!".len() + 2);
     exchange(&mut a, &mut b);
     assert_eq!(a.state.doc, b.state.doc);
-    assert_eq!(html(&a.state.doc), "<p>?be</p><p>fore</p><p>new</p>");
+    assert_eq!(html(&a.state.doc), "<p>be</p><p>?fore</p><p>new</p>");
     assert_valid(&a.state.doc);
 }
 
