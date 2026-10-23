@@ -24,6 +24,8 @@ pub mod rinch_runtime;
 pub mod screenshot;
 #[cfg(feature = "desktop")]
 pub mod softbuffer_renderer;
+#[cfg(all(test, feature = "gpu"))]
+mod split_slices_1865_tests;
 pub mod types;
 #[cfg(feature = "desktop")]
 pub mod window;
