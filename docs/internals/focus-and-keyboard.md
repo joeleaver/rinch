@@ -21,7 +21,9 @@ after it hears the press. Offered to the arbiter's `FocusTarget::Input` /
 at the first that consumes (`dispatch_key_handler_chain`; ids read before any
 runs). Order, both backends: menu chords → the editor's / a node view's
 `on_key` → **element handlers** → `set_keyboard_interceptor` → key entries →
-dismiss stack → the element's own handling (`RinchApp::offer_element_key`,
+dismiss stack → (desktop) a focused registered widget's `FocusEntry::on_key`
+→ a focused render surface's claim → **app key listeners**
+(#1784) → the element's own handling (`RinchApp::offer_element_key`,
 `event_delegation::offer_element_key`). Focus requests a handler made are
 applied before the key's default, so an unconsumed key lands in the field a
 handler focused, as in Chrome. A raw `<input>`/`<textarea>` with only a key
@@ -37,6 +39,33 @@ Enter). `onkeyup`'s consumption stops only its ancestors: the
 interceptor hears every release. `KeyEventData` and `KeyEventKind` are in the
 prelude. Pins: `app/element_key_1678_tests.rs`,
 `rinch-web/tests/element_key_1678.rs`.
+
+**App-wide key listeners** (#1784, `rinch_core::events::app_key`):
+`on_app_key(Fn(&KeyEventData) -> bool) -> AppKeyListener`, a list separate from
+`set_keyboard_interceptor` (whose one slot per document, second call replaces,
+stays as it was). Offered every key press the stages above left, in
+registration order, the first `true` consuming it (no later listener, no
+default; web `preventDefault` + `stopPropagation`); every release goes to every
+listener, answer ignored — except a release whose press a focused render
+surface claimed (`withhold_app_key_release`, cleared by that release or the
+next delivered press of the code). Entries are keyed by
+`current_dispatching_doc` at registration (`doc_matches`), carry their owner
+(dead owner skipped and pruned, `on_cleanup` removes at disposal), run
+untracked inside it; the handle's drop releases nothing (`remove()` does).
+Desktop: `RinchApp::offer_app_key`, called in `event_dispatch.rs`'s KeyDown arm
+for `FocusTarget::Input/None/Node` after `offer_registered_node_key` (the
+#147 registry's first refusal, moved out of `handle_unclaimed_key_fallback`)
+and before the fallback, in
+the `Surface` arm for an unclaimed key, and after the interceptor on every
+KeyUp; not for `Editor` or `Select`, nor while the text context menu is open or
+the focused field shows a `data-preedit`. Web: the document bubble keydown
+delegate (a key with nothing focused targets `<body>` and bubbles there) after
+the surface block and before the Tab trap, skipping `isComposing`/`Process`
+and a key whose target is an editor's (`key_target_is_editor`); the keyup
+delegate after the interceptor. rinch-web marks no document, so a web listener
+hears every island's keys and page inputs' outside any root; a desktop one
+registered from `main` hears the DevTools window's. Pins: `app/app_key_1784_tests.rs`,
+`rinch-web/tests/app_key_1784.rs`, `rinch-core` `events::app_key::tests`.
 
 **`NodeHandle::selection_range()` / `caret_rect()` / `caret_rect_at(offset)`**
 (#1678), the read half of the paragraph below: `(start, end,

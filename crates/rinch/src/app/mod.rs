@@ -91,6 +91,8 @@ mod text_keymap;
 mod text_keymap_951_tests;
 pub(crate) use text_keymap::{TextKeyAction, TextKeymap, TextMotion, text_key_action};
 #[cfg(test)]
+mod app_key_1784_tests;
+#[cfg(test)]
 mod device_pixel_ratio_tests;
 #[cfg(test)]
 mod disabled_input_tests;
