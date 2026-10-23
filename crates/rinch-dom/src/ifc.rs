@@ -1234,15 +1234,71 @@ impl<'a> IfcText<'a> {
     /// and removes a space at a line's start whatever padding precedes it —
     /// so the held space, the line start and the last atomic inline are left
     /// as they were.
+    ///
+    /// An end box after a forced break that ends the element's content (a
+    /// `<br>`, a preserved newline, with only closing spans after it) goes
+    /// before that break: the element's last fragment is the line the break
+    /// ends, and what follows starts the next line at its edge, as in Chrome
+    /// 155 (review of #1823).
     pub(crate) fn push_edge_box(&mut self, owner: usize, end: bool, width: f32) {
-        self.ops.push(IfcOp::InlineBox(parley::InlineBox {
+        let edge = IfcOp::InlineBox(parley::InlineBox {
             id: edge_box_id(owner, end),
             index: 0,
             width,
             height: 0.0,
             kind: parley::InlineBoxKind::InFlow,
-        }));
+        });
         self.edge_boxes = true;
+        if end {
+            // The last text op, past closing spans and end boxes only.
+            let at = self
+                .ops
+                .iter()
+                .rposition(|op| match op {
+                    IfcOp::Pop => false,
+                    IfcOp::InlineBox(b) => !(is_edge_box(b.id) && b.id & EDGE_BOX_END != 0),
+                    _ => true,
+                });
+            if let Some(at) = at
+                && let IfcOp::Text(text) = &self.ops[at]
+                && text.ends_with('\n')
+            {
+                if text.len() > 1 {
+                    // Split the newline off; tabs recorded in this op are
+                    // before it and keep their op and byte.
+                    let IfcOp::Text(text) = &mut self.ops[at] else {
+                        unreachable!()
+                    };
+                    let mut prefix = std::mem::take(text).into_owned();
+                    prefix.pop();
+                    *text = prefix.into();
+                    self.ops.insert(at + 1, IfcOp::Text("\n".into()));
+                    self.shift_ops_after(at + 1);
+                    self.ops.insert(at + 1, edge);
+                    self.shift_ops_after(at + 1);
+                } else {
+                    self.ops.insert(at, edge);
+                    self.shift_ops_after(at);
+                }
+                return;
+            }
+        }
+        self.ops.push(edge);
+    }
+
+    /// An op was inserted at `at`: the recorded op indices from there on
+    /// move up one.
+    fn shift_ops_after(&mut self, at: usize) {
+        for tab in &mut self.tabs {
+            if tab.0 >= at {
+                tab.0 += 1;
+            }
+        }
+        if let Some(p) = &mut self.pending
+            && p.0 >= at
+        {
+            p.0 += 1;
+        }
     }
 
     /// Whether any edge box ([`Self::push_edge_box`]) was pushed.

@@ -310,3 +310,43 @@ fn a_padding_restyle_moves_what_follows() {
     c.doc.resolve_layout(VIEWPORT.0, VIEWPORT.1 + 40.0);
     c.at("a", 86.969, 23.0);
 }
+
+/// A span whose content ends in a forced break keeps its end padding on the
+/// line the break ends: what follows the span starts the next line at the
+/// content edge, 11 (review of #1823: it started 4px in). A `<br>`, a
+/// preserved newline, and a `<br>` inside an element inside the span.
+#[test]
+fn end_padding_stays_before_a_trailing_forced_break() {
+    for (white_space, inner) in [
+        ("", "a<br>"),
+        ("white-space: pre;", "a\n"),
+        ("", "<b>a<br></b>"),
+    ] {
+        let c = Case::with(
+            white_space,
+            &format!(r#"x <span style="padding: 0 4px">{inner}</span><i M=a></i>t"#),
+        );
+        c.at("a", 11.0, 43.0);
+    }
+}
+
+/// Timing probe (review of #1823): a paragraph of 1600 words, each in a
+/// padded span, laid out at a wrapping width, against the same words
+/// unpadded. `cargo test --release -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn timing_every_word_in_a_padded_span() {
+    for padded in [false, true] {
+        let style = if padded { "padding: 0 3px" } else { "" };
+        let inner: String = (0..1600)
+            .map(|i| format!(r#"<span style="{style}">w{i}</span> "#))
+            .collect();
+        let mut best = f64::MAX;
+        for _ in 0..5 {
+            let t = std::time::Instant::now();
+            let _c = Case::new(&inner);
+            best = best.min(t.elapsed().as_secs_f64() * 1e3);
+        }
+        eprintln!("padded={padded}: {best:.1} ms (best of 5, build + first layout)");
+    }
+}
