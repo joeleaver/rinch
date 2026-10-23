@@ -2012,6 +2012,10 @@ impl Node {
         if self.computed_style.opacity < 1.0 {
             return true;
         }
+        // css-masking-1 §7.1: a `mask-image` other than `none` (#1798).
+        if !self.computed_style.mask_image.is_empty() {
+            return true;
+        }
         if self.has_non_identity_filter() {
             return true;
         }

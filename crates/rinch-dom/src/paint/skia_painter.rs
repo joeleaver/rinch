@@ -2281,7 +2281,9 @@ impl Painter for TinySkiaPainter {
     ) {
         // A `Plus` layer at opacity 1 still adds rather than covers, so it
         // never takes the fast path below.
-        if !matches!(blend, BlendMode::Plus) && (opacity - 1.0).abs() < f32::EPSILON {
+        if !matches!(blend, BlendMode::Plus | BlendMode::DestinationIn)
+            && (opacity - 1.0).abs() < f32::EPSILON
+        {
             // Near-opaque: compositing a layer back at this alpha changes no
             // pixel, so no layer is allocated. The push still has to happen —
             // `pop_layer` is called unconditionally by the caller — and what it
@@ -2325,6 +2327,7 @@ impl Painter for TinySkiaPainter {
 
         let blend = match blend {
             BlendMode::Plus => tiny_skia::BlendMode::Plus,
+            BlendMode::DestinationIn => tiny_skia::BlendMode::DestinationIn,
             BlendMode::Normal | BlendMode::Saturation => tiny_skia::BlendMode::SourceOver,
         };
         self.open_layer(opacity, blend);

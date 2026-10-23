@@ -260,6 +260,9 @@ impl Painter for VelloPainter {
             BlendMode::Normal => peniko::BlendMode::from(peniko::Mix::Normal),
             BlendMode::Saturation => peniko::BlendMode::from(peniko::Mix::Saturation),
             BlendMode::Plus => peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::Plus),
+            BlendMode::DestinationIn => {
+                peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::DestIn)
+            }
         };
         dispatch_push_layer!(self.scene, Fill::NonZero, mix, opacity, transform, bounds);
     }

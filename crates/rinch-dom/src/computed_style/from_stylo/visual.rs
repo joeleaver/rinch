@@ -338,6 +338,24 @@ fn background_image_from_stylo(
     }
 }
 
+/// `mask-image`'s gradient layers (#1798); see `ComputedStyle::mask_image`.
+pub(super) fn mask_image_from_stylo(
+    images: &style::properties::longhands::mask_image::computed_value::T,
+    text_color: &style::color::AbsoluteColor,
+) -> Vec<BackgroundValue> {
+    images
+        .0
+        .iter()
+        .filter_map(|i| background_image_from_stylo(i, text_color))
+        .filter(|b| {
+            matches!(
+                b,
+                BackgroundValue::LinearGradient { .. } | BackgroundValue::RadialGradient { .. }
+            )
+        })
+        .collect()
+}
+
 /// The first background layer's image, else the `background-color`.
 pub(super) fn background_from_stylo(
     bg: &style::properties::style_structs::Background,
