@@ -364,22 +364,30 @@ impl<'a> Element for RinchNode<'a> {
     ) -> bool {
         match *pseudo_class {
             NonTSPseudoClass::Hover => {
-                self.node().hover_sensitive.set(true);
+                if !crate::query::querying() {
+                    self.node().hover_sensitive.set(true);
+                }
                 self.node().is_hovered
             }
             NonTSPseudoClass::Active => {
-                self.node().active_sensitive.set(true);
+                if !crate::query::querying() {
+                    self.node().active_sensitive.set(true);
+                }
                 self.node().is_active
             }
             NonTSPseudoClass::Focus => {
-                self.node().focus_sensitive.set(true);
+                if !crate::query::querying() {
+                    self.node().focus_sensitive.set(true);
+                }
                 self.node().is_focused
             }
             NonTSPseudoClass::FocusVisible => {
                 // Shares `focus_sensitive`: the flag only ever changes on the
                 // (gaining/losing) focused node, so focus-change invalidation
                 // covers :focus-visible rules too.
-                self.node().focus_sensitive.set(true);
+                if !crate::query::querying() {
+                    self.node().focus_sensitive.set(true);
+                }
                 self.node().is_focus_visible
             }
             // `:enabled` / `:disabled` (issue #429). These answered a

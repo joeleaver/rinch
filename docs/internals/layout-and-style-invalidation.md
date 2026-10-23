@@ -247,6 +247,18 @@ went stale on class toggles, insertions and removals. Now:
   above.
 - **Per-element cost**: a bloom filter of the ancestors (pushed and popped by
   the walk) rejects descendant combinators early.
+- **`query_selector` uses the cascade's matcher, without its flags** (#1796,
+  `crate::query`). `NodeHandle::query_selector{,_all}` and
+  `DomDocument::query_selector{,_all}` parse with Stylo's `SelectorParser`
+  (author origin) and match with `matches_selector_list` over `RinchNode`, so a
+  query sees every selector the cascade does. It matches with
+  `NeedsSelectorFlags::No` and no bloom filter: a query must not record
+  selector flags, which are invalidation state (a flag set by a query would make
+  later insertions restyle siblings no stylesheet asks for). It reads the tree
+  and nothing else — no cascade, no layout, no counter. Generated pseudo-element
+  nodes are skipped with their subtrees. The MCP tool's matcher,
+  `testing::query_selector`, is the same matcher from `<body>` (included), with
+  the old one-simple-selector matcher as the fallback for a string CSS rejects.
 
 `crates/rinch-dom/tests/style_invalidation_twin_tests.rs` is the oracle (named
 scenarios plus a seeded random differential, `RINCH_TWIN_SEEDS=n` for more).

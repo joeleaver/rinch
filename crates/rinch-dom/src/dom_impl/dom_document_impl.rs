@@ -1011,16 +1011,22 @@ impl DomDocument for RinchDocument {
     }
 
     fn query_selector(&self, selector: &str) -> Option<NodeId> {
-        // Simple selector matching: supports #id, .class, tag
-        self.query_recursive(self.tree.root_id, selector)
-            .map(NodeId)
+        crate::query::query_first(&self.tree, self.tree.root_id, selector).map(NodeId)
     }
 
     fn query_selector_all(&self, selector: &str) -> Vec<NodeId> {
-        // Query all matching nodes
-        let mut results = Vec::new();
-        self.query_all_recursive(self.tree.root_id, selector, &mut results);
-        results.into_iter().map(NodeId).collect()
+        RinchDocument::query_selector_all(self, selector)
+    }
+
+    fn query_selector_in(&self, scope: NodeId, selector: &str) -> Option<NodeId> {
+        crate::query::query_first(&self.tree, scope.0, selector).map(NodeId)
+    }
+
+    fn query_selector_all_in(&self, scope: NodeId, selector: &str) -> Vec<NodeId> {
+        crate::query::query_all(&self.tree, scope.0, selector)
+            .into_iter()
+            .map(NodeId)
+            .collect()
     }
 
     fn is_text_node(&self, node: NodeId) -> bool {

@@ -1629,96 +1629,13 @@ impl RinchDocument {
 }
 
 impl RinchDocument {
-    /// Simple recursive query selector.
-    fn query_recursive(&self, node_id: usize, selector: &str) -> Option<usize> {
-        let node = self.tree.nodes.get(node_id)?;
-
-        // Match by #id
-        if let Some(id) = selector.strip_prefix('#') {
-            if node.attributes.get("id").map(|v| v.as_str()) == Some(id) {
-                return Some(node_id);
-            }
-        }
-        // Match by .class
-        else if let Some(class) = selector.strip_prefix('.') {
-            if let Some(classes) = node.attributes.get("class")
-                && classes.split_whitespace().any(|c| c == class)
-            {
-                return Some(node_id);
-            }
-        }
-        // Match by attribute selector [attr] or [attr=value]
-        else if let Some(attr_sel) = selector.strip_prefix('[').and_then(|s| s.strip_suffix(']'))
-        {
-            if let Some((attr_name, attr_value)) = attr_sel.split_once('=') {
-                // [attr=value]
-                let value = attr_value.trim_matches('"').trim_matches('\'');
-                if node.attributes.get(attr_name).map(|v| v.as_str()) == Some(value) {
-                    return Some(node_id);
-                }
-            } else {
-                // [attr]
-                if node.attributes.contains_key(attr_sel) {
-                    return Some(node_id);
-                }
-            }
-        }
-        // Match by tag name
-        else if node.tag() == Some(selector) {
-            return Some(node_id);
-        }
-
-        // Search children
-        let children: Vec<_> = node.children.clone();
-        for child in children {
-            if let Some(found) = self.query_recursive(child, selector) {
-                return Some(found);
-            }
-        }
-        None
-    }
-
-    /// Query all nodes matching a selector.
-    fn query_all_recursive(&self, node_id: usize, selector: &str, results: &mut Vec<usize>) {
-        let Some(node) = self.tree.nodes.get(node_id) else {
-            return;
-        };
-
-        let matches = if let Some(id) = selector.strip_prefix('#') {
-            node.attributes.get("id").map(|v| v.as_str()) == Some(id)
-        } else if let Some(class) = selector.strip_prefix('.') {
-            node.attributes
-                .get("class")
-                .map(|classes| classes.split_whitespace().any(|c| c == class))
-                .unwrap_or(false)
-        } else if let Some(attr_sel) = selector.strip_prefix('[').and_then(|s| s.strip_suffix(']'))
-        {
-            if let Some((attr_name, attr_value)) = attr_sel.split_once('=') {
-                let value = attr_value.trim_matches('"').trim_matches('\'');
-                node.attributes.get(attr_name).map(|v| v.as_str()) == Some(value)
-            } else {
-                node.attributes.contains_key(attr_sel)
-            }
-        } else {
-            node.tag() == Some(selector)
-        };
-
-        if matches {
-            results.push(node_id);
-        }
-
-        // Search all children
-        let children: Vec<_> = node.children.clone();
-        for child in children {
-            self.query_all_recursive(child, selector, results);
-        }
-    }
-
-    /// Query all nodes matching a selector, returning a vector of NodeIds.
+    /// Every element of the document matching the CSS `selector`, in
+    /// document order (`document.querySelectorAll`; [`crate::query`]).
     pub fn query_selector_all(&self, selector: &str) -> Vec<rinch_core::dom::NodeId> {
-        let mut results = Vec::new();
-        self.query_all_recursive(self.tree.root_id, selector, &mut results);
-        results.into_iter().map(rinch_core::dom::NodeId).collect()
+        crate::query::query_all(&self.tree, self.tree.root_id, selector)
+            .into_iter()
+            .map(rinch_core::dom::NodeId)
+            .collect()
     }
 
     /// Recursively collect text content from a node and its descendants.

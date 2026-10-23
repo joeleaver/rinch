@@ -322,7 +322,7 @@ Build first with `cargo build -p rinch-mcp-server`. Using `cargo run` instead wo
 | `connect` | Connect to a specific app by name or PID |
 | `screenshot` | Capture a PNG screenshot (returns as inline MCP image, directly viewable). On the GPU renderer it reads the texture the window is presented from (`desktop::presented_texture`): the composited one while compositor layers are up, else the UI texture. It used to read the composited texture whenever one had ever been made, so after a `GameViewport` or named surface unmounted every screenshot showed its last frame while the window itself was right (#1799) |
 | `dom_tree` | Get the DOM tree as JSON with layout bounds (depth 3 by default — `max_depth` goes deeper, `root_id` scopes to a subtree, `verbose: true` adds each node's computed styles) |
-| `query_selector` | Query nodes by tag, `.class`, `[attr]`, or `[attr=value]` |
+| `query_selector` | Query `<body>` and the nodes under it by any CSS selector (`rinch_dom::testing::query_selector`, Stylo-matched since #1796); a string that is not valid CSS (`[data-rid=5]`) is read as one tag, `.class`, `[attr]` or `[attr=value]` |
 | `get_node` | Get detailed info for a specific node by ID (includes computed styles, display mode) |
 | `get_computed_styles` | Get computed CSS styles for a specific DOM node |
 | `get_text_content` | Get text content within a node subtree |

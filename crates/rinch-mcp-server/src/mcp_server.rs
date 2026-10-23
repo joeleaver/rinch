@@ -26,7 +26,7 @@ pub struct ConnectParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SelectorParams {
-    /// CSS-like selector: tag name, [attr], or [attr=value]
+    /// A CSS selector (any: `.a .b`, `button.primary`, `[attr=value]`, ...); a string that is not valid CSS is read as one tag, `.class`, `[attr]` or `[attr=value]`
     pub selector: String,
 }
 
@@ -375,7 +375,7 @@ impl RinchMcpServer {
     }
 
     #[tool(
-        description = "Query DOM nodes by selector. Each result has `layout` (parent-relative box) and `absolute` (on-screen box) — pass `absolute.x`/`absolute.y` to click()/mouse_*, not `layout`."
+        description = "Query DOM nodes (`<body>` and below) by CSS selector: any selector, e.g. `.panel .body`, `button.primary`, `[data-rid]`. Each result has `layout` (parent-relative box) and `absolute` (on-screen box) — pass `absolute.x`/`absolute.y` to click()/mouse_*, not `layout`."
     )]
     async fn query_selector(
         &self,

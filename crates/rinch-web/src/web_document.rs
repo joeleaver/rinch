@@ -832,6 +832,31 @@ fn is_active_element(el: &web_sys::Element) -> bool {
 // writer `rsx!` generates. A second hand-rolled copy here is how the writer and
 // this reader come to disagree about `checked=""` (issue #551).
 
+/// The rinch ids of a `querySelectorAll` answer, in its order; elements
+/// rinch never registered are skipped.
+fn node_list_ids(list: Option<web_sys::NodeList>) -> Vec<NodeId> {
+    let Some(list) = list else {
+        return Vec::new();
+    };
+    (0..list.length())
+        .filter_map(|i| list.item(i))
+        .filter_map(|n| get_nid(&n))
+        .collect()
+}
+
+/// A `querySelector` answer with the browser's `SyntaxError` turned into
+/// `None` and [`rinch_core::dom::warn_invalid_selector`]'s warning, as
+/// desktop does (#1796).
+fn warn_invalid_selector<T>(selector: &str, r: Result<T, wasm_bindgen::JsValue>) -> Option<T> {
+    match r {
+        Ok(v) => Some(v),
+        Err(_) => {
+            rinch_core::dom::warn_invalid_selector(selector);
+            None
+        }
+    }
+}
+
 /// Get the `__nid` JS property from a browser node.
 pub(crate) fn get_nid(node: &web_sys::Node) -> Option<NodeId> {
     js_sys::Reflect::get(node, &"__nid".into())
@@ -2071,23 +2096,43 @@ impl DomDocument for WebDocument {
     }
 
     fn query_selector(&self, selector: &str) -> Option<NodeId> {
-        let el = self.browser_doc.query_selector(selector).ok()??;
+        let el = warn_invalid_selector(selector, self.browser_doc.query_selector(selector))??;
         let node: web_sys::Node = el.into();
         get_nid(&node)
     }
 
     fn query_selector_all(&self, selector: &str) -> Vec<NodeId> {
-        let mut result = Vec::new();
-        if let Ok(node_list) = self.browser_doc.query_selector_all(selector) {
-            for i in 0..node_list.length() {
-                if let Some(node) = node_list.item(i)
-                    && let Some(nid) = get_nid(&node)
-                {
-                    result.push(nid);
-                }
-            }
-        }
-        result
+        node_list_ids(warn_invalid_selector(
+            selector,
+            self.browser_doc.query_selector_all(selector),
+        ))
+    }
+
+    /// `Element.querySelector` on the scope (#1796); a document scope asks
+    /// it, and any other node (a text node) has no descendants.
+    fn query_selector_in(&self, scope: NodeId, selector: &str) -> Option<NodeId> {
+        let n = self.nodes.get(&scope.0)?;
+        let found = if let Some(el) = n.dyn_ref::<web_sys::Element>() {
+            el.query_selector(selector)
+        } else {
+            n.dyn_ref::<web_sys::Document>()?.query_selector(selector)
+        };
+        let node: web_sys::Node = warn_invalid_selector(selector, found)??.into();
+        get_nid(&node)
+    }
+
+    fn query_selector_all_in(&self, scope: NodeId, selector: &str) -> Vec<NodeId> {
+        let Some(n) = self.nodes.get(&scope.0) else {
+            return Vec::new();
+        };
+        let found = if let Some(el) = n.dyn_ref::<web_sys::Element>() {
+            el.query_selector_all(selector)
+        } else if let Some(d) = n.dyn_ref::<web_sys::Document>() {
+            d.query_selector_all(selector)
+        } else {
+            return Vec::new();
+        };
+        node_list_ids(warn_invalid_selector(selector, found))
     }
 
     fn is_text_node(&self, node: NodeId) -> bool {
