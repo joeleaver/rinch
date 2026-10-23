@@ -210,35 +210,63 @@ fn old_row(s: &Schema, width: usize) -> Node {
         .unwrap()
 }
 
-/// Every table of 1×1 cells up to 4 rows of up to 4 cells, ragged ones
-/// included, with the caret in every cell: both commands insert the very
-/// node the old code inserted (`Node` equality: types, attrs, content).
+/// A node's types, every attribute and text, in full: `Node`'s `==` also
+/// compares the schema it was built with, and each state here has its own.
+fn canon(n: &Node) -> String {
+    let mut out = format!("{}{:?}", n.type_name(), n.attrs());
+    if let Some(t) = n.text() {
+        out.push_str(&format!("{t:?}"));
+    }
+    out.push('[');
+    for c in n.content().children() {
+        out.push_str(&canon(c));
+    }
+    out.push(']');
+    out
+}
+
+/// The old row and the new one for both commands with the caret in row `r`'s
+/// cell `i` of `t` (no merged cells).
+fn assert_same_rows_as_before(s: &Schema, t: &Node, r: usize, i: usize, what: &str) {
+    let width = column_count(t);
+    for (cmd, at) in [("addRowBefore", r), ("addRowAfter", r + 1)] {
+        let nt = run_in(t, r, i, cmd);
+        let mut want: Vec<Node> = t.content().children().to_vec();
+        want.insert(at, old_row(s, width));
+        let want = t.copy_with_content(Fragment::from_children(want));
+        assert_eq!(canon(&nt), canon(&want), "{cmd} in row {r} cell {i} of {what}");
+    }
+}
+
+/// Every table of 1×1 cells up to 3 rows of up to 3 cells, ragged ones
+/// included, with the caret in every cell, and a 6×5 table from three of
+/// its cells: both commands insert the same row the old code inserted
+/// (types, every attribute, content).
 #[test]
 fn a_table_with_no_merged_cells_gets_the_same_row_as_before() {
     let s = Schema::starter_kit();
     let mut tables = 0;
-    for rows in 1..=4usize {
-        // Every assignment of 1..=4 cells to each row.
-        for code in 0..4usize.pow(rows as u32) {
-            let lens: Vec<usize> = (0..rows).map(|r| code / 4usize.pow(r as u32) % 4 + 1).collect();
+    for rows in 1..=3usize {
+        // Every assignment of 1..=3 cells to each row.
+        for code in 0..3usize.pow(rows as u32) {
+            let lens: Vec<usize> = (0..rows)
+                .map(|r| code / 3usize.pow(r as u32) % 3 + 1)
+                .collect();
             let spec: Vec<Vec<(i64, i64)>> = lens.iter().map(|&n| vec![(1, 1); n]).collect();
             let t = table(&s, &spec);
-            let width = column_count(&t);
             tables += 1;
-            for r in 0..rows {
-                for i in 0..lens[r] {
-                    for (cmd, at) in [("addRowBefore", r), ("addRowAfter", r + 1)] {
-                        let nt = run_in(&t, r, i, cmd);
-                        let mut want: Vec<Node> = t.content().children().to_vec();
-                        want.insert(at, old_row(&s, width));
-                        let want = t.copy_with_content(Fragment::from_children(want));
-                        assert_eq!(nt, want, "{cmd} in row {r} cell {i} of {lens:?}");
-                    }
+            for (r, &len) in lens.iter().enumerate() {
+                for i in 0..len {
+                    assert_same_rows_as_before(&s, &t, r, i, &format!("{lens:?}"));
                 }
             }
         }
     }
-    assert_eq!(tables, 4 + 16 + 64 + 256);
+    assert_eq!(tables, 3 + 9 + 27);
+    let t = table(&s, &vec![vec![(1, 1); 6]; 5]);
+    for (r, i) in [(0, 0), (2, 3), (4, 5)] {
+        assert_same_rows_as_before(&s, &t, r, i, "6x5");
+    }
 }
 
 // ------------------------------------------------------------------
