@@ -219,7 +219,15 @@ fn a_focused_field_offers_its_keys_and_a_consumed_one_is_not_typed() {
     assert!(matches!(f.app.focus_target, FocusTarget::Input(_)));
     let log: Log = Default::default();
     listen("app", &log, &["x"]);
+    // The guide's "leave fields alone" check.
+    let tag = Rc::new(RefCell::new(None));
+    let (t, r) = (tag.clone(), input.clone());
+    on_app_key(move |_| {
+        *t.borrow_mut() = r.active_element().and_then(|e| e.tag_name());
+        false
+    });
     f.press(KeyCode::KeyA, Some("a"));
+    assert_eq!(tag.borrow().as_deref(), Some("input"));
     f.press(KeyCode::KeyX, Some("x"));
     f.press(KeyCode::KeyB, Some("b"));
     assert_eq!(f.value(&input), "ab", "x was consumed");

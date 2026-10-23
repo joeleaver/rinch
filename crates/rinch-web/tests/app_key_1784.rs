@@ -44,6 +44,7 @@ struct Fixture {
     surface: RenderSurfaceHandle,
     show: Signal<bool>,
     branch_log: Log,
+    node: NodeHandle,
 }
 
 fn listening_branch(__scope: &mut RenderScope, log: Log) -> NodeHandle {
@@ -73,6 +74,8 @@ impl Fixture {
         let surface = create_render_surface();
         let show = Signal::new(true);
         let (bl, sf) = (branch_log.clone(), surface.clone());
+        let out: Rc<RefCell<Option<NodeHandle>>> = Default::default();
+        let out_in = out.clone();
         let root = rinch_web::mount_into(
             &host,
             ThemeProviderProps::default(),
@@ -97,15 +100,18 @@ impl Fixture {
                 }
                 .render(__scope, &[]);
                 node.append_child(&canvas);
+                *out_in.borrow_mut() = Some(node.clone());
                 node
             },
         );
+        let node = out.borrow_mut().take().unwrap();
         Self {
             root,
             host,
             surface,
             show,
             branch_log,
+            node,
         }
     }
 
@@ -256,9 +262,22 @@ fn a_focused_field_offers_its_keys() {
     focus("ak-in");
     let log: Log = Default::default();
     let app = listen("app", &log, &["x"]);
+    // The guide's "leave fields alone" check answers on the web too.
+    let (r, l) = (f.node.clone(), log.clone());
+    let probe = on_app_key(move |_| {
+        l.borrow_mut().push(format!(
+            "focused:{:?}",
+            r.active_element().and_then(|e| e.tag_name())
+        ));
+        false
+    });
     assert!(!key("keydown", "a", "KeyA"));
     assert!(key("keydown", "x", "KeyX"));
-    assert_eq!(take(&log), ["app:Down:a", "app:Down:x"]);
+    assert_eq!(
+        take(&log),
+        ["app:Down:a", "focused:Some(\"input\")", "app:Down:x"]
+    );
+    probe.remove();
     app.remove();
     f.teardown();
 }
