@@ -1238,6 +1238,13 @@ names everywhere, which is Windows' rule: non-empty, none of
 `/ \ : * ? " < > |` or a control character, not ending in `.` or a space, and
 not `.`, `..` or a device name (`CON`, `NUL`, `COM1`, … with any extension) —
 checked on every target, so a name that works on one works on all.
+On Linux and macOS an `FsStore`'s files are readable by the user alone (mode
+`0600`, the directories it creates `0700`, whatever the umask), so a store can
+keep a session token; `open_app_store` also makes its store directory `0700` if
+it already exists, and an `FsStore` opened on an existing directory leaves that
+directory's mode as it is. A file written before is made `0600` by its next
+`put`. On Windows the files take the permissions of the directory they are in,
+and the user's data directory is the user's own.
 The native future never waits, so
 any executor (or a one-poll `block_on`) runs it.
 

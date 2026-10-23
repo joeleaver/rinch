@@ -22,6 +22,19 @@
 //! `rename` alone buys atomicity only. A store whose whole purpose is surviving
 //! restarts has to pay for the `fsync`s too.
 //!
+//! Files are **owner-only** on Unix (#1819): a store holds the user's data —
+//! often a session token — so every file is created `0600` and every directory
+//! the store creates `0700`, whatever the process umask. The mode is given when
+//! the file is created (`OpenOptionsExt::mode` with `create_new`), never set
+//! afterwards, so the bytes are never readable by anyone else, not even for an
+//! instant; that includes the temp file of the write-then-rename. A file that
+//! was written with another mode (before this rule, or by hand) is replaced by
+//! a `0600` one on its next `put`, since a `put` always renames a new file into
+//! place. A base directory that already exists is the caller's and keeps its
+//! mode ([`open_app_store`](crate::open_app_store) tightens its own to `0700`).
+//! On Windows the files and directories take the ACL their parent directory
+//! hands down; the user's data directory (`%APPDATA%`) is the user's own.
+//!
 //! The filesystem is blocking, so each op does its work when the returned future
 //! is first polled and resolves immediately. That is fine for the small, infrequent
 //! blobs this serves; offloading to a worker thread is a possible future
@@ -59,9 +72,13 @@ impl FsStore {
     /// The directory is created eagerly so later writes don't race on it. Two
     /// `FsStore`s pointing at the same `base` see the same data — that is the
     /// durability path the tests exercise (write, drop, reopen, read back).
+    ///
+    /// On Unix every directory this creates (`base` and any missing parent) is
+    /// `0700`, and every file the store writes `0600` (#1819; see the module
+    /// docs). A `base` that already exists keeps its mode.
     pub fn open(base: impl Into<PathBuf>) -> StorageResult<Self> {
         let base = base.into();
-        std::fs::create_dir_all(&base)
+        create_dir_owner_only(&base)
             .map_err(|e| StorageError::Io(format!("create_dir_all {}: {e}", base.display())))?;
         Ok(Self {
             base: Arc::new(base),
@@ -183,15 +200,42 @@ impl Store for FsStore {
 ///
 /// `std::fs::write` only hands the bytes to the page cache; `sync_all` is what
 /// makes them survive a crash.
+///
+/// `path` is a fresh temp name, so the file is created new (`create_new`): on
+/// Unix with mode `0600`, given at creation so it is never readable by another
+/// user (#1819). A file that existed would keep its own mode.
 fn write_and_sync(path: &std::path::Path, value: &[u8]) -> StorageResult<()> {
     use std::io::Write;
-    let mut f = std::fs::File::create(path)
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut f = options
+        .open(path)
         .map_err(|e| StorageError::Io(format!("create {}: {e}", path.display())))?;
     f.write_all(value)
         .map_err(|e| StorageError::Io(format!("write {}: {e}", path.display())))?;
     f.sync_all()
         .map_err(|e| StorageError::Io(format!("sync {}: {e}", path.display())))?;
     Ok(())
+}
+
+/// `create_dir_all`, with every directory it creates `0700` on Unix (#1819).
+fn create_dir_owner_only(dir: &std::path::Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir)
+}
+
+/// Make an existing directory owner-only (`0700`) on Unix; nothing elsewhere.
+/// For a directory rinch names and owns ([`open_app_store`](crate::open_app_store)'s).
+#[cfg(all(unix, not(target_os = "android")))]
+pub(crate) fn restrict_dir(dir: &std::path::Path) -> StorageResult<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| StorageError::Io(format!("chmod 0700 {}: {e}", dir.display())))
 }
 
 /// Flush a directory's entries so a `rename` into it is durable.

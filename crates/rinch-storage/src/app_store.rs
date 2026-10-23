@@ -24,6 +24,10 @@ pub type PlatformStore = crate::IdbStore;
 /// - **Native:** the directory `<data dir>/<app_id>/<store_name>`, where the
 ///   data directory is the user's (`$XDG_DATA_HOME` or `~/.local/share` on
 ///   Linux, `~/Library/Application Support` on macOS, `%APPDATA%` on Windows).
+///   On Unix the store's directory is `0700` (an existing one is made so) and
+///   its files `0600`, so another local user cannot read them (#1819); a
+///   missing `<app_id>` directory is created `0700`, an existing one is left as
+///   it is.
 ///   [`StorageError::Unavailable`] where the platform names none, and always
 ///   on Android, which has no user data directory an app can write: open an
 ///   [`FsStore`](crate::FsStore) under the app's files directory there.
@@ -63,7 +67,14 @@ pub async fn open_app_store(app_id: &str, store_name: &str) -> StorageResult<Pla
         let data = dirs::data_dir().ok_or_else(|| {
             StorageError::Unavailable("the platform names no user data directory".to_string())
         })?;
-        crate::FsStore::open(app_store_dir(&data, app_id, store_name))
+        let dir = app_store_dir(&data, app_id, store_name);
+        let store = crate::FsStore::open(&dir)?;
+        // The store's directory is rinch's: one left from before #1819 (or
+        // made by hand) is made owner-only too, so the files in it that have
+        // not been written since cannot be read by another user either.
+        #[cfg(unix)]
+        crate::native::restrict_dir(&dir)?;
+        Ok(store)
     }
 
     #[cfg(target_arch = "wasm32")]

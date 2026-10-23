@@ -35,7 +35,10 @@ fn modes_in(dir: &Path) -> Vec<(String, u32)> {
         .unwrap()
         .map(|e| {
             let e = e.unwrap();
-            (e.file_name().to_string_lossy().into_owned(), mode(&e.path()))
+            (
+                e.file_name().to_string_lossy().into_owned(),
+                mode(&e.path()),
+            )
         })
         .collect();
     v.sort();
@@ -90,4 +93,38 @@ fn a_store_writes_owner_only_files_and_directories_under_a_permissive_umask() {
     assert_eq!(mode(&shared), 0o777, "an existing directory keeps its mode");
     block_on(s2.put("k", b"v")).unwrap();
     assert_eq!(mode(&shared.join("k")), 0o600);
+
+    // `open_app_store`'s directory is rinch's own: a fresh one is 0700 and so
+    // is a missing app directory, and one left world-readable from before is
+    // made 0700, so its old files are out of other users' reach too. Linux
+    // only: `dirs` reads `$XDG_DATA_HOME` there.
+    #[cfg(target_os = "linux")]
+    {
+        let data = tmp.path().join("data");
+        std::fs::create_dir(&data).unwrap();
+        // SAFETY: this binary runs one test, on this thread, and nothing else
+        // reads the environment while it is written.
+        unsafe { std::env::set_var("XDG_DATA_HOME", &data) };
+        let fresh = block_on(rinch_storage::open_app_store("com.example.a", "s")).unwrap();
+        block_on(fresh.put("t", b"x")).unwrap();
+        assert_eq!(mode(&data.join("com.example.a")), 0o700);
+        assert_eq!(mode(&data.join("com.example.a").join("s")), 0o700);
+        assert_eq!(mode(&data.join("com.example.a").join("s").join("t")), 0o600);
+
+        let old = data.join("com.example.b").join("s");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("t"), b"x").unwrap();
+        assert_eq!(mode(&old), 0o777);
+        let _store = block_on(rinch_storage::open_app_store("com.example.b", "s")).unwrap();
+        assert_eq!(
+            mode(&old),
+            0o700,
+            "an existing store directory is tightened"
+        );
+        assert_eq!(
+            mode(&data.join("com.example.b")),
+            0o777,
+            "the app's own directory is left as it is"
+        );
+    }
 }
