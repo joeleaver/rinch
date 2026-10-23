@@ -369,7 +369,10 @@ as one `Sec-WebSocket-Protocol` header joined with a bare `,` on native
 would make it refuse the server's answer). The native worker writes the chosen
 protocol into the `Backend`'s `Arc<Mutex<String>>` before it emits `Open`; the
 web backend reads `WebSocket.protocol`. Headers exist on native only (a
-`#[cfg]`'d method). tungstenite fails a handshake whose server chose none of
+`#[cfg]`'d method), appended (a repeated name is sent twice), the handshake's
+own refused; the worker connects with `connect_with_config(.., 0)` because
+tungstenite's `connect` follows up to 3 redirects and copies every header to
+the `Location` target (`wss` to `ws` included), which a browser never does. tungstenite fails a handshake whose server chose none of
 the offered protocols, where a browser opens; pinned in
 `rinch-ws/tests/subprotocols_1773.rs`. Web pins: `web_subprotocols_1773.rs`,
 whose live half runs only when built with `RINCH_WS_TEST_URL` (CI sets none).

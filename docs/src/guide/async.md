@@ -79,7 +79,12 @@ targets, as the browser's constructor does.
 `WsRequest::header(name, value)` adds a handshake header, **on native only**: a
 browser `WebSocket` cannot send headers, so the method does not exist on
 `wasm32` and code that uses it needs a `#[cfg(not(target_arch = "wasm32"))]`.
-Use a subprotocol, a cookie or the URL for what must work on the web.
+Use a subprotocol, a cookie or the URL for what must work on the web. A name
+given twice is sent twice; the handshake's own headers (`Host`, `Upgrade`,
+`Connection`, `Sec-WebSocket-*`) are refused. A redirect answer is not
+followed, as in a browser: the connect fails rather than carry the headers to
+another host. On native a URL the `http` crate cannot parse (`ws://` with no
+host) is refused by `connect()` itself.
 
 One difference remains: on native, offering subprotocols to a server that
 chooses none of them fails the connect (`on_error` with `WsError::Connect`,

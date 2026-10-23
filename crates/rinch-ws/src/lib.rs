@@ -385,7 +385,8 @@ fn install<T: 'static>(
 /// so no event can be missed between `connect` and callback registration.
 ///
 /// A synchronous `Err` is returned only when the request is rejected outright
-/// (a non-`ws`/`wss` URL, or a browser that refuses to construct the socket).
+/// (a non-`ws`/`wss` URL, or one the platform cannot parse: the browser's
+/// constructor, or on native the `http` crate — `ws://` with no host).
 ///
 /// To offer subprotocols (or, on native, send headers) build a [`WsRequest`]
 /// instead; `connect(url)` is `WsRequest::new(url).connect()`.
@@ -467,11 +468,16 @@ impl WsRequest {
     /// `WebSocket` cannot send headers, so this method does not exist on
     /// `wasm32` (authenticate with a subprotocol, a cookie or the URL there).
     ///
-    /// An invalid header name or value makes [`connect`](Self::connect) fail
-    /// with [`WsError::InvalidUrl`]. A header the handshake itself sets
-    /// (`Sec-WebSocket-Key`, `Upgrade`, …) is replaced; use
-    /// [`protocol`](Self::protocol) rather than a `Sec-WebSocket-Protocol`
-    /// header.
+    /// A name given twice is sent twice, in order. An invalid header name or
+    /// value makes [`connect`](Self::connect) fail with
+    /// [`WsError::InvalidUrl`], and so does a header the handshake writes
+    /// itself (`Host`, `Upgrade`, `Connection`, `Sec-WebSocket-Key`,
+    /// `Sec-WebSocket-Version`, `Sec-WebSocket-Protocol`, in any case): offer
+    /// subprotocols with [`protocol`](Self::protocol).
+    ///
+    /// Headers go to the URL's host only: a redirect answer is not followed (a
+    /// browser does not follow one for a WebSocket either); it fails the
+    /// connect.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.push((name.into(), value.into()));
@@ -480,8 +486,10 @@ impl WsRequest {
 
     /// Open the connection; see [`connect`](crate::connect) for how it is
     /// reported. Fails synchronously for a URL that is not `ws://`/`wss://`, an
-    /// invalid or repeated subprotocol, an invalid header, or a browser that
-    /// refuses to construct the socket.
+    /// invalid or repeated subprotocol, an invalid or reserved header, or a URL
+    /// the platform cannot parse — the browser's `WebSocket` constructor, or on
+    /// native the `http` crate's URI parser (`ws://` with no host, say), which
+    /// before #1773 was reported later through `on_error`.
     ///
     /// Must be called on the main (UI) thread; see the [module docs](crate).
     pub fn connect(self) -> Result<WsHandle, WsError> {

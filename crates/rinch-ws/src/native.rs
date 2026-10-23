@@ -102,6 +102,17 @@ pub(crate) fn connect(request: &WsRequest, id: u64) -> Result<Backend, WsError> 
     Ok(Backend { cmd_tx, protocol })
 }
 
+/// Headers the opening handshake writes itself; [`WsRequest::header`] refuses
+/// them rather than replace or duplicate them.
+const HANDSHAKE_HEADERS: &[&str] = &[
+    "host",
+    "upgrade",
+    "connection",
+    "sec-websocket-key",
+    "sec-websocket-version",
+    "sec-websocket-protocol",
+];
+
 /// The tungstenite handshake request for `request`: its URL, its headers, and
 /// the offered subprotocols in one `Sec-WebSocket-Protocol` header.
 fn client_request(request: &WsRequest) -> Result<Request, WsError> {
@@ -114,9 +125,20 @@ fn client_request(request: &WsRequest) -> Result<Request, WsError> {
     for (name, value) in &request.headers {
         let name = HeaderName::from_bytes(name.as_bytes())
             .map_err(|e| WsError::InvalidUrl(format!("header name {name:?}: {e}")))?;
+        // `HeaderName` is lowercase, so this compares case-insensitively.
+        if HANDSHAKE_HEADERS.contains(&name.as_str()) {
+            return Err(WsError::InvalidUrl(format!(
+                "header {name} is set by the WebSocket handshake{}",
+                if name.as_str() == "sec-websocket-protocol" {
+                    "; offer subprotocols with WsRequest::protocol"
+                } else {
+                    ""
+                }
+            )));
+        }
         let value = HeaderValue::from_str(value)
             .map_err(|e| WsError::InvalidUrl(format!("header {name} value {value:?}: {e}")))?;
-        headers.insert(name, value);
+        headers.append(name, value);
     }
     if !request.protocols.is_empty() {
         // Joined with a bare ",": tungstenite reads the offered list back by
@@ -138,7 +160,10 @@ fn emit(id: u64, event: WsEvent) {
 fn run(request: Request, id: u64, cmd_rx: mpsc::Receiver<Cmd>, chosen: Arc<Mutex<String>>) {
     // tungstenite has already refused a chosen subprotocol that was not offered
     // — and, unlike a browser, offered subprotocols the server chose none of.
-    let (mut socket, resp) = match tungstenite::connect(request) {
+    // No redirects (`max_redirects` 0): a browser never follows one for a
+    // WebSocket, and tungstenite would copy every header — an
+    // `Authorization` included — to the `Location` target, `wss` to `ws`.
+    let (mut socket, resp) = match tungstenite::client::connect_with_config(request, None, 0) {
         Ok(ok) => ok,
         Err(e) => {
             emit(id, WsEvent::Error(WsError::Connect(e.to_string())));

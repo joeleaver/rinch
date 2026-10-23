@@ -69,7 +69,9 @@ fn spawn_reporting_server(choose: Choose) -> String {
         };
         let (offered, auth, tag) = seen.borrow().clone();
         if ws
-            .send(Message::Text(format!("protocol={offered};auth={auth};tag={tag}")))
+            .send(Message::Text(format!(
+                "protocol={offered};auth={auth};tag={tag}"
+            )))
             .is_err()
         {
             return;
