@@ -399,16 +399,18 @@ fn same(a: &Node, b: &Node) -> bool {
     a == b
 }
 
-/// Whether every container's children satisfy its schema content expression: a
-/// converged document must be one a model can hold, not merely the same on every peer.
-/// (Two peers each deleting one of a container's two children used to converge on an
-/// empty list, which none can.)
-///
-/// Block structure only: a textblock's inline content is not checked, because a code
-/// block retyped while a peer formats it still converges on marks and a hard break
-/// inside `<pre>` (#1227).
+/// Whether every node's children satisfy its schema content expression, and every
+/// child carries only marks its parent allows: a converged document must be one a model
+/// can hold, not merely the same on every peer. (Two peers each deleting one of a
+/// container's two children used to converge on an empty list, which none can; a code
+/// block retyped while a peer formats it used to converge on marks and a hard break
+/// inside `<pre>`, #1227.)
 fn schema_valid(node: &Node) -> bool {
-    if node.is_text() || node.is_textblock() {
+    schema_valid_in(&Schema::starter_kit(), node)
+}
+
+fn schema_valid_in(schema: &Schema, node: &Node) -> bool {
+    if node.is_text() {
         return true;
     }
     let names: Vec<&str> = (0..node.child_count())
@@ -416,7 +418,14 @@ fn schema_valid(node: &Node) -> bool {
         .collect();
     node.node_type().content_match().matches(&names)
         && (node.type_name() != "table" || tables_tile(node))
-        && (0..node.child_count()).all(|i| schema_valid(node.child(i)))
+        && (0..node.child_count()).all(|i| {
+            let child = node.child(i);
+            child
+                .marks()
+                .iter()
+                .all(|m| schema.allows_mark(node.type_name(), m.type_name()))
+                && schema_valid_in(schema, child)
+        })
 }
 
 /// N peers sharing one CRDT lineage, plus the global delta queue and each peer's

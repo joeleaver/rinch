@@ -109,6 +109,8 @@ Command names are case-sensitive. The full catalogue:
 | **Deleting** | `deleteSelection`, `deleteCharBackward`, `deleteCharForward`, `deleteWordBackward`, `deleteWordForward` |
 | **History** | `undo`, `redo` |
 
+A block-type command clears what the new type cannot hold, as ProseMirror's `setBlockType` does: `setCodeBlock` removes the marks (a code block takes none), turns a hard break into a line break (`\n`) and deletes an image.
+
 > Links need a destination, so applying a link is a builder rather than a bare named
 > command. Use `handle.toggle_link(href)` to add (or, over an existing link, remove)
 > a link, `handle.command("removeLink")` to clear one unconditionally, and
