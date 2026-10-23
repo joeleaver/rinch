@@ -88,7 +88,7 @@ fn ellipses(d: &Doc) -> [bool; 2] {
                 .unwrap()
                 .text_layout
                 .as_ref()
-                .is_some_and(|l| l.text_content.ends_with('\u{2026}')),
+                .is_some_and(|l| l.painted_text().is_some_and(|t| t.ends_with('\u{2026}'))),
             None => false,
         }
     })

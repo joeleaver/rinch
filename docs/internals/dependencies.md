@@ -204,9 +204,10 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     space away; an overflowing tab hangs. `tab-size` is Gecko-only in Stylo and
     not read (#1584). Since the tab is one byte, `tab_flat_bytes` is 1 on
     rinch-dom as in a browser. Not done: a text leaf's and a form control's tab
-    (#1585), and the `text-overflow: ellipsis` rebuild, which refuses the
-    per-line cut for a paragraph with a tab and draws it one space wide in the
-    whole cut (#1586). `tests/tab_stop_1122_tests.rs` is the pin.
+    (#1585). A `text-overflow: ellipsis` cut keeps every tab at its stop:
+    the cut is made at paint over the lines as laid out (#1100; until then a
+    flat rebuild drew a tab one space wide, #1586).
+    `tests/tab_stop_1122_tests.rs` is the pin.
   - **parley has no per-span padding; rinch pushes edge boxes** (#1426). A
     `display: inline` element's inline-start margin + border + padding is a
     zero-height in-flow `InlineBox` before its content and its inline-end ones

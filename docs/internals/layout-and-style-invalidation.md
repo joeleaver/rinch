@@ -100,8 +100,7 @@ box:
   carries each run's colour as a brush, so paint asks every text range for its
   colour again (#679): `ifc::text_color` — the `color` of the text node's DOM
   parent — recorded at the build as `IfcTextRange::color` (the root's own as
-  `InlineLayout::root_color`, which is what a `text-overflow: ellipsis`
-  rebuild's text follows), and `paint::text::LiveColours` draws the ranges that
+  `InlineLayout::root_color`), and `paint::text::LiveColours` draws the ranges that
   answer differently in the new colour, glyph by glyph where two ranges share a
   Parley run. An underline or line-through follows only where it was
   `currentcolor` (no `text-decoration-color` from the range's element up to the
@@ -124,10 +123,10 @@ box:
   text in its start colour until the run ended (`rv_m5_damage_split_inline`).
   Pins: `crates/rinch-dom/tests/animated_text_brush_679_tests.rs`; a span on a
   line cut by `text-overflow: ellipsis` follows too, since the cut keeps its
-  text ranges (#1451, `rv_b1_span_on_ellipsis_line_mid_run`). Not covered: an ellipsis
+  lines and text ranges (#1451, #1100, `rv_b1_span_on_ellipsis_line_mid_run`). Not covered: the text of an ellipsis
   line laid out by an anonymous block box keeps a stale colour, after a plain
   class change too (#1450, older than #679; the four `rv_a*` fixtures are
-  `#[ignore]`d on it); a `padding` frame on an inline element still runs a
+  `#[ignore]`d on it; its "…" takes the container's colour since #1100); a `padding` frame on an inline element still runs a
   Taffy compute and a shape (#1437); and a `color` transition still stops at
   its own node (text in a child that inherits takes the end colour at once).
 - **A `display: contents` wrapper's Taffy style is `sync_display_contents`'s,
@@ -374,35 +373,46 @@ input a shaped layout is built from:
   not Chrome's yet, tracked in #1243: parley still hangs the one `pre`
   space that overflows right after `pre-wrap` spaces (and on a
   right-to-left line a mixed run is still narrowed by its final `pre` part
-  only). The "…" is drawn by rebuilding the paragraph as flat
-  text in the root's style, which would strip every line of it, so the
-  per-line cut is taken only where that draws the same glyphs
-  (`ellipsis_rebuild_is_faithful`: no inline box, no background or
-  decoration span, every run in the root's text style, and no `text-align:
-  justify`, which lines ended by the hard breaks the rebuild joins them with
-  do not get). The rebuild **keeps its text ranges**, mapped through the cut
-  onto the kept prefix of each line (`ifc::map_ranges_through_cut`, #1065;
-  the "…" and the line joins are in no range and take the root's style), so
-  everything paint reads per range still holds on a cut line: a span's
-  `visibility` (#853), its own `text-shadow` (#1065) and its live colour
-  (#679, #1451) — which is why those two properties are not in the faithful
-  test. Every mapped range records the root's colour, the brush the rebuild
-  shapes in, so a span of another colour is recoloured at paint. Caret and
-  selection mapping never read the ranges and still go through the flat
-  text. Anything else keeps the old behaviour: a `nowrap`/`pre` root
-  with no wrapping text is cut whole to one flat prefix (its ranges kept,
-  so hidden spans, span shadows and span colours still hold) — losing its
-  spans' fonts, backgrounds and decorations and its chips (dropped, left
-  where they were) — and any other root (one holding a wrapping span
-  included) is clipped with no "…" and
-  keeps its styling. Chrome keeps both; that needs the cut made at paint time
-  (#1100). The cut walks the clusters already shaped, in **logical** order
-  (`ellipsis_cut_ends`; parley's `Line::runs` is visual, and summed that way
-  a mixed-direction line is not cut), so `ellipsis_shapes` is 2 per rebuild
-  however many lines are cut — one more when a cut line re-wraps and falls
-  back to hard breaks, and one more per step back when a cut line shaped
-  again overshoots the box by its broken kerning. The whole-text cut still
-  shapes each prefix of its binary search.
+  only). **The "…" is cut at paint time, over the lines as laid out**
+  (#1100; `ifc::ellipsis_cut`, `node::EllipsisCut`, `InlineLayout::ellipsis`):
+  on each overflowing line everything whose visual extent passes the point
+  where the "…" still fits before the line's end edge is hidden — each
+  grapheme whole, a ligature with every cluster its glyph covers (paint
+  draws a glyph with its first cluster, so a cut inside one drew the whole
+  glyph under the "…"), through every `TextMask` an IFC paint draws with
+  (text, decorations, shadows, wavy underlines: `TextMask::cut`), and each
+  atomic inline whole — and the "…" is drawn right after what is kept, in the
+  block container's font and current colour, undecorated, casting its
+  `text-shadow` (an anonymous block box's container's, #1071). Inline
+  backgrounds and borders are not cut: a pill keeps its extent and the
+  root's clip cuts it at the padding edge, where Chrome 155 draws it, with
+  the "…" over it. The end edge is the side the line leaves the box by: the
+  right, or the left for an overflowing right-to-left line (parley infers
+  the direction from the text; `direction` is not read, #1666), which parley
+  aligns left of the box; an unconstrained (`nowrap`/`pre`) right-to-left
+  line is not aligned against the box (it starts at the box's left edge)
+  and leaves by the right, so its "…" goes there and what shows is its
+  visual left, where Chrome under `direction: rtl` shows its logical start.
+  Nothing but the "…" is shaped, so `ellipsis_shapes` is 1 per layout
+  however many lines are cut. A paint walks a line cut at its right only up
+  to the cut (`EllipsisMark::hidden_past`, `paint::text::shown_clusters`:
+  the glyph collection, the hidden-glyph cursor and the shadow extent stop
+  there; the limits are by line index, since parley's text ranges wrap past
+  65,535 bytes, #1267), so the glyphs collected do not grow with the hidden
+  text (`paint::take_text_glyphs_collected`); parley's own `Line::items`
+  still walks each run's glyphs once per collection, and a line cut at its
+  left is walked whole. Text offsets, carets, hit testing and span
+  fragments read the lines, so they are those of the uncut text: a press
+  past the cut maps to the hidden text under it, and a hidden atomic
+  inline keeps its box, which hit testing is not told is hidden (#1864). The clip proof
+  measures an ellipsised root's text no wider than its box
+  (`InlineLayout::painted_width`), so a plain ellipsised title still elides
+  its clip (`clip_elision_tests`). Until #1100 the "…" was drawn by
+  rebuilding the paragraph as flat text in the root's style, which lost
+  every span's font, background and decoration and every chip, so a
+  paragraph whose rebuild would not have been the same picture was clipped
+  with no "…". Pins: `tests/ellipsis_paint_cut_1100_tests.rs` (Chrome 155
+  pixels), `ellipsis_overflowing_line_tests.rs`.
 - **An atomic inline is two roots' business.** An `inline-block` / `-flex` /
   `-grid` holding text is a member of the IFC around it *and* the root of its
   own, so `invalidate_ifc_for_node` drops both: reaching only the outer one

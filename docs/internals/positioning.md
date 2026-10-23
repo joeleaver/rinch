@@ -162,8 +162,8 @@ run — or before its first member, with no block between: an inline-level box
 there starts the first line, which `text-align` moves — joins no run, #406, so
 it is noted from `Node::run_out_of_flow`, recorded where the runs are
 grouped); `ifc::resolve_out_of_flow_marks` turns each note
-into both positions once the lines are broken (`InlineLayout::out_of_flow`; an
-ellipsis rebuild carries them over); `Node::static_ifc_root` names the root and
+into both positions once the lines are broken (`InlineLayout::out_of_flow`; a
+`text-overflow: ellipsis` cut keeps the lines, #1100); `Node::static_ifc_root` names the root and
 the note's index on the box, so `out_of_flow::static_location` costs one flag
 read for a box outside inline content and one indexed look for one inside
 (`abs_static_lookup_steps`: N looks for N boxes in one paragraph, pinned at two
@@ -239,9 +239,9 @@ compares each bake with the fragment the new lines give — a rewrite sends
 from a fragment whose size changed costs one more compute in that layout (the
 first one, a text edit inside the span) and a position-only one costs none.
 Not Chrome's, each pinned: a **split** inline (one holding a block-level child,
-#513) is not measured and keeps the block container (**#1424**), and neither is
-a span in a block that draws a `text-overflow: ellipsis` "…" (its lines are
-rebuilt as flat text); a relative span's own `left`/`top` moves neither its
+#513) is not measured and keeps the block container (**#1424**) (a span in a
+block that draws a `text-overflow: ellipsis` "…" is measured since #1100, which
+keeps the lines and cuts them at paint); a relative span's own `left`/`top` moves neither its
 text nor the box (**#1425**); a
 raised span's fragment (`<sup>`, any positive `vertical-align`) follows glyphs
 rinch draws higher than Chrome, whose line grows for them (#1357: a `<sup>` 5px

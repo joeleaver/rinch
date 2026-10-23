@@ -78,6 +78,10 @@ fn lines(d: &RinchDocument, text: NodeId) -> Vec<String> {
         .text_layout
         .as_ref()
         .expect("root is laid out");
+    // What paint draws of each line: the cut ones end in "…" (#1100).
+    if let Some(painted) = il.painted_lines() {
+        return painted.iter().map(|l| l.trim_end().to_string()).collect();
+    }
     il.layout
         .lines()
         .map(|l| il.text_content[l.text_range()].trim_end().to_string())
@@ -266,15 +270,13 @@ fn text_align_still_lines_up_against_the_box_after_the_cut() {
     );
 }
 
-// ── #1103's review: content the flat rebuild cannot represent ──────────────
+// ── #1103's review: inline content around the cut ───────────────────────────
 //
-// A paragraph whose one overflowing word would otherwise be rebuilt as flat
-// text in the root's style keeps its layout as on main (clipped, no "…"): a
-// kept line's colour, an inline-block chip and a smaller span must all
-// survive. Chrome 153 keeps all three *and* draws the "…"; that needs the cut
-// made at paint time (#1100). A `visibility: hidden` span and a span's own
-// `text-shadow` are read per text range, which the cut keeps (#1065), so those
-// paragraphs are cut.
+// A paragraph with one overflowing word keeps every line as laid out — a kept
+// line's colour, an inline-block chip, a smaller span — and draws the "…" on
+// the overflowing one, as Chrome 153 does. Until #1100 the "…" was drawn by
+// rebuilding the text flat in the root's style, so these paragraphs were left
+// clipped with no "…" rather than lose their styling.
 
 /// `<div class=c>{build(div)}</div>` with a 120px box; returns the div.
 fn rich(build: impl FnOnce(&mut RinchDocument, NodeId)) -> (RinchDocument, NodeId) {
@@ -307,9 +309,10 @@ fn add_text(d: &mut RinchDocument, parent: NodeId, text: &str) {
     d.append_child(parent, t);
 }
 
-/// The root's layout kept whole: text ranges present, no "…" anywhere.
+/// The root's lines kept, its text ranges present, and a line cut (#1100).
 fn assert_kept(d: &RinchDocument, div: NodeId, what: &str) -> usize {
     let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
+    assert!(il.ellipsis.is_some(), "{what}: no line is cut");
     assert!(
         !il.text_content.contains('\u{2026}'),
         "{what}: rebuilt flat"
@@ -364,6 +367,7 @@ fn an_inline_block_chip_on_a_kept_line_stays_in_place() {
     });
     let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
     assert!(!il.text_content.contains('\u{2026}'), "rebuilt flat");
+    assert!(il.ellipsis.is_some(), "the word's line is cut");
     assert_eq!(
         il.layout.inline_boxes().len(),
         1,
@@ -376,12 +380,12 @@ fn an_inline_block_chip_on_a_kept_line_stays_in_place() {
     );
 }
 
-/// The paragraph cut with its text ranges kept, mapped onto the cut text
-/// (#1065, #853): the "…" is drawn and every per-span paint decision still has
-/// its span. Returns the range count.
+/// The paragraph cut with its text ranges kept (#1065, #853, #1100): the
+/// "…" is drawn and every per-span paint decision still has its span.
+/// Returns the range count.
 fn assert_cut_with_ranges(d: &RinchDocument, div: NodeId, what: &str) -> usize {
     let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
-    assert!(il.text_content.contains('\u{2026}'), "{what}: not cut");
+    assert!(il.ellipsis.is_some(), "{what}: not cut");
     assert!(!il.text_ranges.is_empty(), "{what}: text ranges lost");
     for r in &il.text_ranges {
         assert!(
@@ -430,9 +434,10 @@ fn a_smaller_span_on_a_kept_line_keeps_its_size() {
 }
 
 #[test]
-fn a_rich_nowrap_root_is_cut_whole_as_before() {
-    // `nowrap` on the root with a coloured span: the rebuild cannot keep the
-    // colour, and the root's single line is cut as it always was (flat, "…").
+fn a_rich_nowrap_root_keeps_its_span_and_is_cut() {
+    // `nowrap` on the root with a coloured span: its single line is cut and
+    // the span keeps its colour (#1100; it used to be rebuilt flat in the
+    // root's colour).
     let (d, div) = rich(|d, div| {
         d.set_attribute(div, "class", "c w nw");
         span(d, div, "red", "ab cd");
@@ -440,15 +445,16 @@ fn a_rich_nowrap_root_is_cut_whole_as_before() {
     });
     let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
     assert_eq!(il.layout.len(), 1);
+    let painted = il.painted_lines().expect("the line is cut");
     assert!(
-        il.text_content.starts_with("ab cd "),
-        "{:?}",
-        il.text_content
+        painted[0].starts_with("ab cd ") && painted[0].ends_with('\u{2026}'),
+        "{painted:?}"
     );
+    let brushes: std::collections::HashSet<String> =
+        runs(&d, div).into_iter().map(|r| r.0).collect();
     assert!(
-        il.text_content.ends_with('\u{2026}'),
-        "{:?}",
-        il.text_content
+        brushes.len() >= 2,
+        "the red run kept its brush: {brushes:?}"
     );
 }
 
@@ -466,13 +472,33 @@ fn a_span_with_its_own_text_shadow_on_a_kept_line_keeps_it() {
 
 // ── #1103's second review ───────────────────────────────────────────────────
 
-/// The widest line of the root laid out for `text`, less trailing white space.
-fn widest(d: &RinchDocument, div: NodeId) -> f32 {
+/// The x extent of what paint draws of the root's lines: every cluster the
+/// ellipsis cut keeps, and each "…" (#1100).
+fn painted_extent(d: &RinchDocument, div: NodeId) -> (f32, f32) {
     let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
-    il.layout
-        .lines()
-        .map(|l| l.metrics().advance - l.metrics().trailing_whitespace)
-        .fold(0.0, f32::max)
+    let cut = il.ellipsis.as_ref().expect("a line is cut");
+    let hidden = |b: usize| cut.hidden.iter().any(|r| r.contains(&b));
+    let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+    for line in il.layout.lines() {
+        for run in line.runs() {
+            let Some(mut x) = run.visual_clusters().next().and_then(|c| c.visual_offset()) else {
+                continue;
+            };
+            for c in run.visual_clusters() {
+                let x1 = x + c.advance();
+                if !hidden(c.text_range().start) && !c.is_space_or_nbsp() {
+                    lo = lo.min(x);
+                    hi = hi.max(x1);
+                }
+                x = x1;
+            }
+        }
+    }
+    for m in &cut.marks {
+        lo = lo.min(m.x);
+        hi = hi.max(m.x + cut.glyph.width());
+    }
+    (lo, hi)
 }
 
 #[test]
@@ -488,24 +514,18 @@ fn a_mixed_direction_line_is_cut_inside_the_box() {
             d.set_attribute(div, "class", "c w pre");
             add_text(d, div, text);
         });
-        let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
+        let (lo, hi) = painted_extent(&d, div);
         assert!(
-            il.text_content.contains('\u{2026}'),
-            "{:?}",
-            il.text_content
-        );
-        let w = widest(&d, div);
-        assert!(
-            w <= 120.01,
-            "{text:?}: the cut line is {w}px in a 120px box"
+            lo >= -0.01 && hi <= 120.01,
+            "{text:?}: the cut line is drawn over {lo}..{hi} in a 120px box"
         );
     }
 }
 
 #[test]
 fn a_justified_paragraph_keeps_its_justification() {
-    // Kept lines are rejoined by hard breaks, which parley does not justify,
-    // so a justified root is left clipped and justified, as on main.
+    // The lines are kept as laid out (#1100), so a justified root stays
+    // justified and its overflowing line is cut, as in Chrome.
     let (d, div) = rich(|d, div| {
         d.set_attribute(div, "style", "text-align: justify");
         add_text(
@@ -515,7 +535,7 @@ fn a_justified_paragraph_keeps_its_justification() {
         );
     });
     let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
-    assert!(!il.text_content.contains('\u{2026}'));
+    assert!(il.ellipsis.is_some(), "the word's line is cut");
     let first = il.layout.lines().next().unwrap();
     let sum: f32 = first
         .runs()
@@ -564,23 +584,23 @@ fn a_line_of_hanging_spaces_is_not_cut() {
         add_text(d, div, &format!("ab{} {WORD}", " ".repeat(60)));
     });
     let il = d.tree.get(div.0).unwrap().text_layout.as_ref().unwrap();
-    let first = &il.text_content[il.layout.lines().next().unwrap().text_range()];
+    let painted = il.painted_lines().expect("the word's line is cut");
     assert!(
-        !first.contains('\u{2026}'),
-        "the hanging-space line fits: {first:?}"
+        !painted[0].contains('\u{2026}'),
+        "the hanging-space line fits: {painted:?}"
     );
     assert!(
-        il.text_content.contains('\u{2026}'),
-        "the word's line is cut"
+        painted.iter().any(|l| l.ends_with('\u{2026}')),
+        "the word's line is cut: {painted:?}"
     );
 }
 
 #[test]
-fn a_cut_line_shaped_again_stays_inside_the_box() {
-    // Kerning pairs (AV, Ty, WA) broken by the cut make the rebuilt line up
-    // to 1.26px wider than the sum it was cut by; the cut steps back a cluster
-    // when that happens. Swept over 400 widths (without the step back, 23 of
-    // 1480 overflowed in the review's sweep).
+fn a_cut_line_stays_inside_the_box() {
+    // Kerning pairs (AV, Ty, WA): the cut is made on the advances the line
+    // was laid out with, so what is kept and the "…" after it stay inside the
+    // box (the flat rebuild before #1100 shaped the cut text again and could
+    // come out up to 1.26px wider). Swept over 400 widths.
     let text = "AVATAR office Type Ty fi fl affluent WAVY Toyota. WAVE ffi LT.AV";
     let mut bad = Vec::new();
     let mut w = 30.0f32;
@@ -598,7 +618,7 @@ fn a_cut_line_shaped_again_stays_inside_the_box() {
         // Against the box as laid out (Taffy rounds it to whole pixels), not
         // the declared width.
         let bx = d.tree.get(div.0).unwrap().layout.width;
-        let over = widest(&d, div) - bx;
+        let over = painted_extent(&d, div).1 - bx;
         if over > 0.01 {
             bad.push((w, over));
         }

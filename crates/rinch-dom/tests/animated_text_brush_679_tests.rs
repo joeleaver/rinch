@@ -1063,9 +1063,10 @@ const SPAN_ELLIPSIS: Case = Case {
     to: "t b",
 };
 
-/// #1451: the "…" is drawn from a flat rebuild of the paragraph (#1091),
-/// which keeps its text ranges mapped onto the cut text (#1065), so paint
-/// follows the span's colour mid-run as it does on an uncut line.
+/// #1451: a line `text-overflow: ellipsis` cuts keeps its text ranges (it
+/// was a flat rebuild of the paragraph mapping them onto the cut text, #1065;
+/// since #1100 the lines are kept and cut at paint), so paint follows the
+/// span's colour mid-run as it does on an uncut line.
 #[test]
 fn rv_b1_span_on_ellipsis_line_mid_run() {
     let (mut doc, s) = SPAN_ELLIPSIS.started();

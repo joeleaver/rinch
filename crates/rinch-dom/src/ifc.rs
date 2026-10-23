@@ -24,18 +24,8 @@ pub struct TreeCheckVerdict {
     pub fatal: Vec<String>,
 }
 
-/// What `build_ellipsis_layout` rebuilds from (#1091).
-pub(crate) enum EllipsisSource<'a> {
-    /// The original layout, whose lines are kept and cut one by one.
-    Lines(&'a InlineLayout),
-    /// The original layout's whole text, cut to one prefix (a `nowrap`/`pre`
-    /// root whose inline content the flat rebuild cannot represent — the
-    /// behaviour before #1091).
-    Whole(&'a InlineLayout),
-}
-
-/// The IFC root's own text style, as the flat ellipsis rebuild applies it to
-/// every character.
+/// The IFC root's own text style, which the `text-overflow: ellipsis` "…"
+/// is shaped in (#1100).
 pub(crate) struct EllipsisStyle {
     font_size: f32,
     font_family: std::borrow::Cow<'static, str>,
@@ -48,64 +38,12 @@ pub(crate) struct EllipsisStyle {
     underline: bool,
     strikethrough: bool,
     decoration_color: Option<peniko::Color>,
-    alignment: parley::layout::Alignment,
 }
 
 /// The colour an IFC root's own style gives its text: the default brush of
 /// its layout, and of the flat `text-overflow: ellipsis` rebuild.
 pub(crate) fn root_text_color(cs: &crate::computed_style::ComputedStyle) -> peniko::Color {
     cs.color.unwrap_or(peniko::Color::BLACK)
-}
-
-/// The text ranges of a layout cut for `text-overflow: ellipsis`, mapped
-/// onto the rebuilt text (#1065, #853).
-///
-/// Each `(start, len, new_start)` of `segments` says that the original bytes
-/// `start..start + len` are the rebuilt bytes `new_start..new_start + len`: the
-/// rebuild keeps a prefix of each line and adds a "…" or a line join, neither
-/// of which belongs to a range (so both take the root's style). A range is
-/// split where it crosses a segment's end, each piece with the DOM offsets of
-/// the bytes it keeps. `color` is what every glyph of the rebuild is shaped
-/// in — the root's colour, whatever each range's element computes — so paint
-/// recolours a span whose colour is not the root's (its live colours, #679).
-fn map_ranges_through_cut(
-    ranges: &[crate::node::IfcTextRange],
-    segments: &[(usize, usize, usize)],
-    color: peniko::Color,
-) -> Vec<crate::node::IfcTextRange> {
-    let mut out = Vec::new();
-    for r in ranges {
-        // Segments are in text order: the first that ends past the range's
-        // start, then every one that starts before its end.
-        let first = segments.partition_point(|&(s, len, _)| s + len <= r.flat_start);
-        for &(s, len, new) in &segments[first..] {
-            if s >= r.flat_end {
-                break;
-            }
-            let a = r.flat_start.max(s) - r.flat_start;
-            let b = r.flat_end.min(s + len) - r.flat_start;
-            if a >= b {
-                continue;
-            }
-            let (dom_a, dom_b) = (r.dom_for_flat(a), r.dom_for_flat(b));
-            out.push(crate::node::IfcTextRange {
-                flat_start: new + (r.flat_start + a - s),
-                flat_end: new + (r.flat_start + b - s),
-                node_id: r.node_id,
-                node_offset: r.node_offset + dom_a,
-                is_br: r.is_br,
-                dom_text_len: dom_b - dom_a,
-                offset_map: r
-                    .offset_map
-                    .iter()
-                    .filter(|&&(f, _)| f > a && f < b)
-                    .map(|&(f, d)| (f - a, d.saturating_sub(dom_a)))
-                    .collect(),
-                color,
-            });
-        }
-    }
-    out
 }
 
 /// The colour a text node's glyphs are drawn in: its element's `color`.
@@ -275,7 +213,6 @@ impl EllipsisStyle {
             underline: cs.text_decoration.underline && !cs.text_decoration.is_wavy_underline(),
             strikethrough: cs.text_decoration.strikethrough,
             decoration_color: cs.text_decoration.color,
-            alignment: cs.text_align.to_parley(),
         }
     }
 
@@ -3474,13 +3411,14 @@ impl RinchDocument {
         inline_layout.hang.record(&self.tree.perf);
 
         // text-overflow: ellipsis — every line whose content overflows the
-        // container is cut and ends in "…" (#1091). CSS Overflow 3 §3.2 asks
+        // container is cut and ends in "…" (#1091), at paint time over these
+        // very lines (#1100). CSS Overflow 3 §3.2 asks
         // the question per line box, after wrapping, and so does Chrome 153:
         // an unbreakable word under `white-space: normal`, a `nowrap` span
         // inside a wrapping root and each long line of `pre` text all
         // overflow a line.
         {
-            use crate::computed_style::{OverflowValue, TextOverflowValue, WhiteSpaceValue};
+            use crate::computed_style::{OverflowValue, TextOverflowValue};
             let cs = &self.tree.nodes[Self::ellipsis_style_owner(&self.tree.nodes, root_id)]
                 .computed_style;
             let container_width = max_width.unwrap_or(f32::INFINITY);
@@ -3497,53 +3435,19 @@ impl RinchDocument {
                 // Cheap: the widest line, which parley already knows.
                 && inline_layout.layout.width() > container_width
             {
-                let root_is_nowrap = matches!(
-                    cs.white_space,
-                    WhiteSpaceValue::NoWrap | WhiteSpaceValue::Pre
-                );
-                // The "…" is drawn by rebuilding the text flat in the root's
-                // own style (#1100 is keeping the original layout instead).
-                // Per line, that is taken only where the flat text is the
-                // same picture: otherwise one long word would strip the
-                // colours, chips and hidden spans from every other line of
-                // the paragraph, which main left clipped and styled.
-                let source = if Self::ellipsis_rebuild_is_faithful(
+                if let Some(cut) = Self::ellipsis_cut(
                     &self.tree.nodes,
                     root_id,
                     &inline_layout,
+                    container_width,
+                    &mut self.font_cx,
+                    paint_layout_cx,
                 ) {
-                    Some(EllipsisSource::Lines(&inline_layout))
-                } else if root_is_nowrap
-                    && !Self::wraps_anywhere(&self.tree.nodes, root_id, &inline_layout.text_ranges)
-                {
-                    // As before #1091: the whole text, cut to one prefix.
-                    // Not when a descendant wraps (#1212): that paragraph has
-                    // lines of its own, and one cut prefix would drop them.
-                    Some(EllipsisSource::Whole(&inline_layout))
-                } else {
-                    None
-                };
-                if let Some(source) = source {
-                    let built = Self::build_ellipsis_layout(
-                        &self.tree.nodes,
-                        root_id,
-                        source,
-                        container_width,
-                        1.0,
-                        &mut self.font_cx,
-                        paint_layout_cx,
-                    );
-                    if let Some((mut layout, shapes)) = built {
-                        self.tree.perf.bump(crate::perf::Counter::EllipsisBuilds);
-                        self.tree
-                            .perf
-                            .add(crate::perf::Counter::EllipsisShapes, shapes);
-                        // The flat rebuild cuts lines, it does not move
-                        // them: a static position found in the lines it
-                        // replaces still stands (#632).
-                        layout.out_of_flow = std::mem::take(&mut inline_layout.out_of_flow);
-                        inline_layout = layout;
-                    }
+                    self.tree.perf.bump(crate::perf::Counter::EllipsisBuilds);
+                    // The "…", shaped once; the cut itself is found in the
+                    // lines already shaped.
+                    self.tree.perf.add(crate::perf::Counter::EllipsisShapes, 1);
+                    inline_layout.ellipsis = Some(Box::new(cut));
                 }
             }
         }
@@ -8969,6 +8873,7 @@ impl RinchDocument {
                 hang,
                 span_fragments: Default::default(),
                 out_of_flow,
+                ellipsis: None,
             },
             font_family_resolves.get(),
         )
@@ -8997,313 +8902,194 @@ impl RinchDocument {
             })
     }
 
-    /// Whether rebuilding `il` as flat text in the root's own style draws
-    /// the same thing as `il` (#1091): no inline box (a chip would be dropped
-    /// and left at its old position), no inline background or decoration
-    /// span, and every text run's nearest element carries the root's text
-    /// style. Inherited properties are what an element passes to its text,
-    /// so the nearest element answers for each run; the non-inherited ones
-    /// that reach text arrive as `background_spans` / `decoration_spans`.
-    /// `text-shadow` and `visibility` are not compared: paint reads them per
-    /// text range, and the rebuild keeps its ranges (#1065, #853).
-    /// `white-space` is not compared: it decides only where lines break, and
-    /// the rebuild keeps the lines it was given.
-    fn ellipsis_rebuild_is_faithful(
+    /// Where `text-overflow: ellipsis` cuts `il`'s lines (#1100), or `None`
+    /// when no line overflows `container_width`.
+    ///
+    /// A line overflows when its content (its advance less its trailing white
+    /// space, as parley's own `Layout::width` measures it) is wider than the
+    /// box (#1091: the question is asked per line, after wrapping). On such a
+    /// line everything whose **visual** extent passes the point where the "…"
+    /// still fits before the line's end edge is hidden — each cluster, and
+    /// each atomic inline whole — and the "…" is placed right after what is
+    /// kept: the box's right edge less the "…" when the line leaves the box by
+    /// its right, its left edge plus the "…" when it leaves by its left (an
+    /// overflowing right-to-left line, which parley aligns to the left of the
+    /// box). That is Chrome 155's cut
+    /// (`ellipsis_paint_cut_1100_tests.rs`): it is made by position, so a
+    /// right-to-left run in a left-to-right line is cut where it is drawn,
+    /// not at its logical end. Edge boxes (#1426) draw nothing and are never
+    /// hidden; one that fits moves the "…" past it.
+    ///
+    /// Nothing but the "…" is shaped: the lines are the ones laid out, and
+    /// paint draws the cut ([`crate::node::EllipsisCut`]).
+    fn ellipsis_cut(
         nodes: &slab::Slab<Node>,
         root_id: usize,
         il: &InlineLayout,
-    ) -> bool {
-        if !il.layout.inline_boxes().is_empty()
-            || !il.background_spans.is_empty()
-            || !il.decoration_spans.is_empty()
-        {
-            return false;
-        }
-        let root = &nodes[root_id].computed_style;
-        // A preserved tab is a space widened to its stop by the layout's own
-        // replay (#1122); the flat rebuild would draw it one space wide.
-        let has_preserved_tab = il.text_ranges.iter().filter(|r| !r.is_br).any(|r| {
-            nodes.get(r.node_id).is_some_and(|t| {
-                matches!(&t.kind, crate::node::NodeKind::Text(td) if td.content.contains('\t'))
-                    && t.parent.and_then(|el| nodes.get(el)).is_some_and(|el| {
-                        SpaceCollapse::of(el.computed_style.white_space) == SpaceCollapse::Preserve
-                    })
-            })
-        });
-        if has_preserved_tab {
-            return false;
-        }
-        // The kept lines are joined by hard breaks, and a line ended by one is
-        // not justified: `text-align: justify` would be lost on every one.
-        if matches!(
-            root.text_align,
-            crate::computed_style::TextAlignValue::Justify
-        ) {
-            return false;
-        }
-        il.text_ranges.iter().filter(|r| !r.is_br).all(|r| {
-            let Some(el) = nodes.get(r.node_id).and_then(|t| t.parent) else {
-                return false;
-            };
-            Self::same_inline_text_style_but_wrap(&nodes[el].computed_style, root)
-        })
-    }
-
-    /// The byte offsets in `text` where each prefix of `line` that fits
-    /// `target` ends, shortest first — the line's start (the empty prefix)
-    /// and then one per cluster. Its clusters' advances are summed in
-    /// **logical** order, so the cut is found in the layout already shaped,
-    /// without shaping anything. `Line::runs` yields runs in *visual* order:
-    /// summed that way, a line mixing directions reaches its logical end
-    /// first and is not cut at all (#1103's second review).
-    fn ellipsis_cut_ends(line: &parley::layout::Line<'_, Brush>, target: f32) -> Vec<usize> {
-        let mut clusters: Vec<(std::ops::Range<usize>, f32)> = line
-            .runs()
-            .flat_map(|run| {
-                run.clusters()
-                    .map(|c| (c.text_range(), c.advance()))
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        clusters.sort_by_key(|(r, _)| r.start);
-        let mut ends = vec![line.text_range().start];
-        let mut x = 0.0;
-        for (range, advance) in clusters {
-            x += advance;
-            if x > target {
-                break;
-            }
-            ends.push(range.end);
-        }
-        ends
-    }
-
-    /// Build an IFC layout with ellipsis truncation (#1091), and the number
-    /// of parley layouts shaped to do it; `None` when there is no text.
-    ///
-    /// From [`EllipsisSource::Lines`], every line of the original layout whose
-    /// content (its advance less its trailing white space, as parley's own
-    /// `Layout::width` measures it) overflows `container_width` is cut at the
-    /// last cluster that fits together with a "…" ([`Self::ellipsis_cut_ends`] —
-    /// nothing is shaped for the search), every other line is kept, and the
-    /// lines are joined by hard breaks and laid out again: the same lines,
-    /// with a "…" on exactly the ones that overflowed, where Chrome 153 draws
-    /// them. Only taken where [`Self::ellipsis_rebuild_is_faithful`].
-    ///
-    /// From [`EllipsisSource::Whole`], the whole text is cut to the longest
-    /// prefix that fits (a binary search, shaping each candidate) and laid out
-    /// unconstrained — what a `nowrap`/`pre` root always got. That rebuild is
-    /// flat text in the root's own style: inline fonts, backgrounds,
-    /// decorations and inline boxes are lost (#1100).
-    ///
-    /// Either way the text ranges are kept, mapped onto the rebuilt text
-    /// ([`map_ranges_through_cut`]), so paint still reads a span's
-    /// visibility, `text-shadow` and live colour (#853, #1065, #1451).
-    #[allow(clippy::too_many_arguments)]
-    fn build_ellipsis_layout(
-        nodes: &slab::Slab<Node>,
-        root_id: usize,
-        source: EllipsisSource<'_>,
         container_width: f32,
-        scale: f32,
         font_cx: &mut parley::FontContext,
         layout_cx: &mut parley::LayoutContext<Brush>,
-    ) -> Option<(InlineLayout, u64)> {
-        let style = EllipsisStyle::of(&nodes[root_id].computed_style, scale);
-        let ellipsis = "\u{2026}";
-        let mut shapes = 1u64;
-        let ellipsis_width = {
-            let mut l = style.shape(layout_cx, font_cx, ellipsis, scale, false);
-            l.break_all_lines(None);
-            l.width()
+    ) -> Option<crate::node::EllipsisCut> {
+        use parley::layout::PositionedLayoutItem;
+        // A tolerance for the float sums: a cluster ending this close past
+        // the limit still fits.
+        const EPS: f32 = 0.01;
+        let overflowing = |line: &parley::layout::Line<'_, Brush>| {
+            let m = line.metrics();
+            m.advance - m.trailing_whitespace > container_width
         };
-        let target_width = container_width - ellipsis_width;
-        let cut = |prefix: &str| prefix.trim_end().to_string() + ellipsis;
-
-        // Per cut line: its start and its candidate prefix ends (see
-        // [`Self::ellipsis_cut_ends`]), so an overshoot can step back.
-        let mut cuts: Vec<Option<(usize, Vec<usize>)>> = Vec::new();
-        let mut lines: Vec<String> = Vec::new();
-        // Where each rebuilt line starts in the original text: every line is
-        // a prefix of the original from there (#1065).
-        let mut starts: Vec<usize> = Vec::new();
-        let source_ranges: &[crate::node::IfcTextRange] = match &source {
-            EllipsisSource::Lines(il) | EllipsisSource::Whole(il) => &il.text_ranges,
-        };
-        let source_text = match &source {
-            EllipsisSource::Lines(il) | EllipsisSource::Whole(il) => il.text_content.as_str(),
-        };
-        let (mut lines, whole) = match source {
-            EllipsisSource::Lines(il) => {
-                let text = &il.text_content;
-                for line in il.layout.lines() {
-                    let m = line.metrics();
-                    let range = line.text_range();
-                    starts.push(range.start);
-                    if m.advance - m.trailing_whitespace > container_width {
-                        let ends = if target_width > 0.0 {
-                            Self::ellipsis_cut_ends(&line, target_width)
-                        } else {
-                            vec![range.start]
-                        };
-                        let end = *ends.last().unwrap_or(&range.start);
-                        lines.push(cut(text.get(range.start..end).unwrap_or("")));
-                        cuts.push(Some((range.start, ends)));
-                    } else {
-                        lines.push(text.get(range).unwrap_or("").trim_end().to_string());
-                        cuts.push(None);
-                    }
-                }
-                (lines, false)
-            }
-            EllipsisSource::Whole(il) => {
-                let full_text = il.text_content.as_str();
-                starts.push(0);
-                cuts.push(Some((0, Vec::new())));
-                if full_text.is_empty() {
-                    return None;
-                }
-                let chars: Vec<char> = full_text.chars().collect();
-                let mut best_len = 0;
-                if target_width > 0.0 {
-                    let (mut lo, mut hi) = (1usize, chars.len());
-                    while lo <= hi {
-                        let mid = (lo + hi) / 2;
-                        let prefix: String = chars[..mid].iter().collect();
-                        let mut l = style.shape(layout_cx, font_cx, &prefix, scale, false);
-                        shapes += 1;
-                        l.break_all_lines(None);
-                        if l.width() <= target_width {
-                            best_len = mid;
-                            lo = mid + 1;
-                        } else {
-                            hi = mid - 1;
-                        }
-                    }
-                }
-                (
-                    vec![cut(&chars[..best_len].iter().collect::<String>())],
-                    true,
-                )
-            }
-        };
-        if lines.iter().all(|l| l.is_empty()) {
+        if !il.layout.lines().any(|l| overflowing(&l)) {
             return None;
         }
-        let (mut layout, mut text, built) = if whole {
-            let text = lines.concat();
-            let mut layout = style.shape(layout_cx, font_cx, &text, scale, true);
-            layout.break_all_lines(None);
-            layout.align(style.alignment, parley::layout::AlignmentOptions::default());
-            (layout, text, 1)
-        } else {
-            Self::layout_ellipsis_lines(&style, &lines, container_width, scale, font_cx, layout_cx)
-        };
-        shapes += built;
+        // The "…" is the root's text, undecorated: Chrome 155 draws it in the
+        // block's font and colour, and draws no underline under it even where
+        // the block itself is underlined.
+        let mut style = EllipsisStyle::of(&nodes[root_id].computed_style, 1.0);
+        style.underline = false;
+        style.strikethrough = false;
+        let mut glyph = style.shape(layout_cx, font_cx, "\u{2026}", 1.0, true);
+        glyph.break_all_lines(None);
+        let ellipsis_width = glyph.width();
+        let glyph_baseline = glyph.lines().next().map_or(0.0, |l| l.metrics().baseline);
+        let rtl = il.layout.is_rtl();
 
-        // A cluster's advance carries its kerning against the character that
-        // followed it, which the "…" replaces, so a cut line shaped again can
-        // come out a little wider than the box (up to 1.26px measured, #1103's
-        // second review). Step such a line back one cluster and lay out again;
-        // it takes a shape only when a line actually overshoots.
-        for _ in 0..3 {
-            if whole || layout.len() != lines.len() {
-                break;
+        let mut hidden: Vec<std::ops::Range<usize>> = Vec::new();
+        let mut hidden_boxes = Vec::new();
+        let mut marks = Vec::new();
+        // One line's items: `(x0, x1, what)`. A cluster item is a unit that
+        // is kept or hidden whole: a grapheme, and a ligature with every
+        // cluster its glyph covers. Paint draws a glyph with the first
+        // cluster it belongs to, so hiding part of either drew the whole
+        // glyph under the "…" (review of #1860).
+        enum Item {
+            Cluster(Vec<std::ops::Range<usize>>, bool),
+            Edge,
+            Atomic(usize),
+        }
+        let mut items: Vec<(f32, f32, Item)> = Vec::new();
+        // `(range, x0, x1, space, starts a unit)` per cluster of a line.
+        let mut clusters: Vec<(std::ops::Range<usize>, f32, f32, bool, bool)> = Vec::new();
+        let text = il.text_content.as_str();
+        for (index, line) in il.layout.lines().enumerate() {
+            if !overflowing(&line) {
+                continue;
             }
-            let mut changed = false;
-            for (i, line) in layout.lines().enumerate() {
-                let m = line.metrics();
-                if m.advance - m.trailing_whitespace <= container_width + 0.01 {
+            let m = line.metrics();
+            items.clear();
+            clusters.clear();
+            for run in line.runs() {
+                let Some(mut x) = run.visual_clusters().next().and_then(|c| c.visual_offset())
+                else {
                     continue;
+                };
+                for cluster in run.visual_clusters() {
+                    let x1 = x + cluster.advance();
+                    let r = cluster.text_range();
+                    let starts = !cluster.is_ligature_continuation()
+                        && rinch_words::is_grapheme_boundary(text, r.start);
+                    clusters.push((r, x, x1, cluster.is_space_or_nbsp(), starts));
+                    x = x1;
                 }
-                if let Some(Some((start, ends))) = cuts.get_mut(i) {
-                    if ends.len() > 1 {
-                        ends.pop();
-                        let end = *ends.last().unwrap();
-                        lines[i] = cut(source_text.get(*start..end).unwrap_or(""));
-                        changed = true;
+            }
+            // Group the clusters into units in text order.
+            clusters.sort_by_key(|c| c.0.start);
+            for (r, x0, x1, space, starts) in clusters.drain(..) {
+                match items.last_mut() {
+                    Some((ux0, ux1, Item::Cluster(ranges, uspace))) if !starts => {
+                        *ux0 = ux0.min(x0);
+                        *ux1 = ux1.max(x1);
+                        *uspace &= space;
+                        ranges.push(r);
                     }
+                    _ => items.push((x0, x1, Item::Cluster(vec![r], space))),
                 }
             }
-            if !changed {
-                break;
+            for item in line.items() {
+                if let PositionedLayoutItem::InlineBox(b) = item {
+                    let what = if is_edge_box(b.id) {
+                        Item::Edge
+                    } else {
+                        Item::Atomic(b.id as usize)
+                    };
+                    items.push((b.x, b.x + b.width, what));
+                }
             }
-            let (l, t, built) = Self::layout_ellipsis_lines(
-                &style,
-                &lines,
-                container_width,
-                scale,
-                font_cx,
-                layout_cx,
-            );
-            layout = l;
-            text = t;
-            shapes += built;
-        }
-
-        // Each line's kept prefix of the original, and where it now starts:
-        // the lines are joined by one hard break (the whole cut is one line).
-        let mut segments = Vec::with_capacity(lines.len());
-        let mut at = 0;
-        for (i, line) in lines.iter().enumerate() {
-            let kept = if matches!(cuts.get(i), Some(Some(_))) {
-                line.len().saturating_sub(ellipsis.len())
+            // The side the line's content leaves the box by is its end
+            // edge: the right for a left-to-right paragraph, the left for a
+            // right-to-left one, whose overflowing lines parley moves left
+            // of the box when it aligns them against it. An unconstrained
+            // (`nowrap`/`pre`) right-to-left line is not so moved and leaves
+            // by the right, where the "…" then goes, inside the box.
+            let (lo, hi) = items
+                .iter()
+                .filter(|(_, _, w)| !matches!(w, Item::Cluster(_, true) | Item::Edge))
+                .fold(
+                    (f32::INFINITY, f32::NEG_INFINITY),
+                    |(lo, hi), &(a, b, _)| (lo.min(a), hi.max(b)),
+                );
+            let (over_left, over_right) = (lo < -EPS, hi > container_width + EPS);
+            let at_left = if over_left != over_right {
+                over_left
             } else {
-                line.len()
+                rtl
             };
-            segments.push((starts[i], kept, at));
-            at += line.len() + 1;
+            // Whether an extent `x0..x1` is past the point the "…" fits at.
+            let past = |x0: f32, x1: f32| {
+                if at_left {
+                    x0 < ellipsis_width - EPS
+                } else {
+                    x1 > container_width - ellipsis_width + EPS
+                }
+            };
+            // The kept content's extent at the end edge.
+            let mut kept: Option<f32> = None;
+            for (x0, x1, what) in items.drain(..) {
+                if past(x0, x1) {
+                    match what {
+                        Item::Cluster(ranges, _) => {
+                            hidden.extend(ranges.into_iter().filter(|r| !r.is_empty()))
+                        }
+                        Item::Atomic(id) => hidden_boxes.push(id),
+                        _ => {}
+                    }
+                } else {
+                    let edge = if at_left { x0 } else { x1 };
+                    kept = Some(match kept {
+                        None => edge,
+                        Some(k) if at_left => k.min(edge),
+                        Some(k) => k.max(edge),
+                    });
+                }
+            }
+            let x = match (kept, at_left) {
+                (Some(edge), false) => edge,
+                (Some(edge), true) => edge - ellipsis_width,
+                (None, false) => m.offset.max(0.0),
+                (None, true) => (m.offset + m.advance).min(container_width) - ellipsis_width,
+            };
+            marks.push(crate::node::EllipsisMark {
+                line: index,
+                x,
+                y: m.baseline - glyph_baseline,
+                // Past this x, in the line's visual order, everything is
+                // hidden: paint stops walking the line there.
+                hidden_past: (!at_left).then_some(container_width - ellipsis_width + EPS),
+            });
         }
-        let text_ranges = map_ranges_through_cut(source_ranges, &segments, style.color);
-
-        Some((
-            InlineLayout {
-                layout,
-                text_content: text,
-                child_positions: Vec::new(),
-                text_ranges,
-                root_color: style.color,
-                background_spans: Vec::new(),
-                decoration_spans: Vec::new(),
-                vertical_align_spans: Vec::new(),
-                max_width: container_width,
-                // Every line fits: nothing hangs.
-                preserves_spaces: false,
-                break_spaces: Vec::new(),
-                hang: HangStats::default(),
-                span_fragments: Default::default(),
-                // The caller carries the marks of the layout this replaces.
-                out_of_flow: Vec::new(),
-            },
-            shapes,
-        ))
-    }
-
-    /// Lay `lines` out one per line, joined by hard breaks, and the number of
-    /// layouts shaped. Broken at `container_width` so `text-align` lines each
-    /// line up against the box, as the layout it replaces did. Every line fits
-    /// by construction, but a cut line is shaped whole here where its prefix
-    /// and "…" were measured apart; if that wraps anything, the text is broken
-    /// only at the hard breaks instead, so a line is never split in two.
-    pub(crate) fn layout_ellipsis_lines(
-        style: &EllipsisStyle,
-        lines: &[String],
-        container_width: f32,
-        scale: f32,
-        font_cx: &mut parley::FontContext,
-        layout_cx: &mut parley::LayoutContext<Brush>,
-    ) -> (parley::layout::Layout<Brush>, String, u64) {
-        let text = lines.join("\n");
-        let mut layout = style.shape(layout_cx, font_cx, &text, scale, true);
-        layout.break_all_lines(Some(container_width));
-        let mut shapes = 1;
-        if layout.len() != lines.len() {
-            layout = style.shape(layout_cx, font_cx, &text, scale, true);
-            layout.break_all_lines(None);
-            shapes += 1;
+        hidden.sort_by_key(|r| r.start);
+        let mut merged: Vec<std::ops::Range<usize>> = Vec::with_capacity(hidden.len());
+        for r in hidden {
+            match merged.last_mut() {
+                Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+                _ => merged.push(r),
+            }
         }
-        layout.align(style.alignment, parley::layout::AlignmentOptions::default());
-        (layout, text, shapes)
+        Some(crate::node::EllipsisCut {
+            hidden: merged,
+            hidden_boxes,
+            marks,
+            glyph,
+        })
     }
 
     /// Whether two computed styles agree on every property
@@ -10524,110 +10310,6 @@ impl RinchDocument {
 #[path = "hang_differential_tests.rs"]
 mod hang_differential_tests;
 
-#[cfg(test)]
-mod atomic_leaf_layout_tests {
-    use crate::RinchDocument;
-    use rinch_core::dom::DomDocument;
-
-    /// The keying rule of `NodeTree::atomic_leaf_layouts` (#904): each layout
-    /// the atomic compute's text measure builds is filed under the width it
-    /// was wrapped at, as the root compute files its own. Nothing behavioural
-    /// pins it — `copy_cached_text_layouts` falls back to the `u32::MAX` entry,
-    /// and the last measure Taffy makes is usually the final one — so filing
-    /// every layout under `u32::MAX` left every other fixture green (#904's
-    /// review, M6). Here the final width is a min-content grid column, 45.3px
-    /// and not a whole pixel, which the box's unrounded width must name.
-    #[test]
-    fn a_leaf_layout_is_filed_under_the_width_it_was_wrapped_at() {
-        let mut doc = RinchDocument::new();
-        doc.load_css(
-            "body { font-family: sans-serif; font-size: 16px; line-height: 20px; }
-             .c { display: inline-grid; grid-template-columns: min-content; }",
-        );
-        let body = doc.body();
-        let c = doc.create_element("span");
-        doc.set_attribute(c, "class", "c");
-        let t = doc.create_text("a long chip label text that wraps");
-        doc.append_child(c, t);
-        doc.append_child(body, c);
-        doc.resolve_layout(800.0, 600.0);
-        doc.resolve_layout(800.0, 600.0);
-
-        let leaf_taffy = doc.tree.nodes[t.0]
-            .taffy_id
-            .expect("the leaf has a Taffy node");
-        let final_width = doc.tree.taffy.unrounded_layout(leaf_taffy).size.width;
-        assert!(
-            final_width.fract() != 0.0,
-            "counter-oracle: the column is not a whole pixel ({final_width})"
-        );
-
-        // Measure the atomic inline again, and read what it filed before a
-        // layout pass hands it on.
-        let _ = doc.tree.taffy.mark_dirty(leaf_taffy);
-        doc.compute_inline_block_layouts();
-        let keys: Vec<u32> = doc
-            .tree
-            .atomic_leaf_layouts
-            .keys()
-            .filter(|(id, _)| *id == t.0)
-            .map(|&(_, bits)| bits)
-            .collect();
-        assert!(
-            keys.contains(&final_width.to_bits()),
-            "a layout filed under the final width {final_width}; keys were {:?}",
-            keys.iter().map(|&b| f32::from_bits(b)).collect::<Vec<_>>()
-        );
-        let n = doc.tree.nodes[t.0].layout.height;
-        let cached = doc.tree.nodes[t.0].cached_text_parley.as_ref().unwrap();
-        assert_eq!(
-            cached.height(),
-            n,
-            "the painted layout is the one laid out for the box, not the unwrapped line"
-        );
-    }
-}
-
-#[cfg(test)]
-mod ellipsis_layout_tests {
-    use crate::RinchDocument;
-
-    /// The hard-break fallback of `layout_ellipsis_lines` (#1091, #1103's
-    /// review Mx2): handed a line wider than the box, the break at the box's
-    /// width would split it in two, and the fallback keeps it one line. The
-    /// faithful per-line path cannot hand it one by construction, so the line
-    /// is handed in directly.
-    #[test]
-    fn a_line_wider_than_the_box_is_never_split_by_the_rebuild() {
-        let mut doc = RinchDocument::new();
-        let cs = crate::computed_style::ComputedStyle::default();
-        let style = super::EllipsisStyle::of(&cs, 1.0);
-        let lines = vec!["ab cd ef gh ij kl mn op".to_string(), "x".to_string()];
-        let mut cx = parley::LayoutContext::new();
-        let (layout, text, shapes) = RinchDocument::layout_ellipsis_lines(
-            &style,
-            &lines,
-            20.0,
-            1.0,
-            &mut doc.font_cx,
-            &mut cx,
-        );
-        assert_eq!(text, "ab cd ef gh ij kl mn op\nx");
-        assert_eq!(layout.len(), 2, "one layout line per given line");
-        assert_eq!(shapes, 2, "the break at the box width was tried first");
-        // Positive control: the same lines at a width they fit take one shape.
-        let (layout, _, shapes) = RinchDocument::layout_ellipsis_lines(
-            &style,
-            &lines,
-            1000.0,
-            1.0,
-            &mut doc.font_cx,
-            &mut cx,
-        );
-        assert_eq!((layout.len(), shapes), (2, 1));
-    }
-}
-
 /// `tab-size`'s initial value. Stylo parses `tab-size` for Gecko only, so
 /// no other value reaches rinch-dom (#1122).
 pub(crate) const TAB_SIZE: f32 = 8.0;
@@ -10745,5 +10427,69 @@ impl TabStops {
             }
         }
         deltas
+    }
+}
+
+#[cfg(test)]
+mod atomic_leaf_layout_tests {
+    use crate::RinchDocument;
+    use rinch_core::dom::DomDocument;
+
+    /// The keying rule of `NodeTree::atomic_leaf_layouts` (#904): each layout
+    /// the atomic compute's text measure builds is filed under the width it
+    /// was wrapped at, as the root compute files its own. Nothing behavioural
+    /// pins it — `copy_cached_text_layouts` falls back to the `u32::MAX` entry,
+    /// and the last measure Taffy makes is usually the final one — so filing
+    /// every layout under `u32::MAX` left every other fixture green (#904's
+    /// review, M6). Here the final width is a min-content grid column, 45.3px
+    /// and not a whole pixel, which the box's unrounded width must name.
+    #[test]
+    fn a_leaf_layout_is_filed_under_the_width_it_was_wrapped_at() {
+        let mut doc = RinchDocument::new();
+        doc.load_css(
+            "body { font-family: sans-serif; font-size: 16px; line-height: 20px; }
+             .c { display: inline-grid; grid-template-columns: min-content; }",
+        );
+        let body = doc.body();
+        let c = doc.create_element("span");
+        doc.set_attribute(c, "class", "c");
+        let t = doc.create_text("a long chip label text that wraps");
+        doc.append_child(c, t);
+        doc.append_child(body, c);
+        doc.resolve_layout(800.0, 600.0);
+        doc.resolve_layout(800.0, 600.0);
+
+        let leaf_taffy = doc.tree.nodes[t.0]
+            .taffy_id
+            .expect("the leaf has a Taffy node");
+        let final_width = doc.tree.taffy.unrounded_layout(leaf_taffy).size.width;
+        assert!(
+            final_width.fract() != 0.0,
+            "counter-oracle: the column is not a whole pixel ({final_width})"
+        );
+
+        // Measure the atomic inline again, and read what it filed before a
+        // layout pass hands it on.
+        let _ = doc.tree.taffy.mark_dirty(leaf_taffy);
+        doc.compute_inline_block_layouts();
+        let keys: Vec<u32> = doc
+            .tree
+            .atomic_leaf_layouts
+            .keys()
+            .filter(|(id, _)| *id == t.0)
+            .map(|&(_, bits)| bits)
+            .collect();
+        assert!(
+            keys.contains(&final_width.to_bits()),
+            "a layout filed under the final width {final_width}; keys were {:?}",
+            keys.iter().map(|&b| f32::from_bits(b)).collect::<Vec<_>>()
+        );
+        let n = doc.tree.nodes[t.0].layout.height;
+        let cached = doc.tree.nodes[t.0].cached_text_parley.as_ref().unwrap();
+        assert_eq!(
+            cached.height(),
+            n,
+            "the painted layout is the one laid out for the box, not the unwrapped line"
+        );
     }
 }

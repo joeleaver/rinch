@@ -123,9 +123,9 @@ fn an_all_nowrap_root_is_still_one_line() {
 }
 
 /// A `nowrap` root clipped with `text-overflow: ellipsis` whose span wraps is
-/// a wrapping paragraph, not one line to cut whole: when the flat rebuild is
-/// not faithful (a coloured span) it keeps its three lines (#1091's "clipped,
-/// no …" route) rather than collapsing them to one cut prefix.
+/// a wrapping paragraph, not one line to cut whole: it keeps its three lines
+/// rather than collapsing them to one cut prefix (the cut is made per line at
+/// paint, #1100).
 #[test]
 fn an_unfaithful_ellipsis_root_with_a_wrapping_span_keeps_its_lines() {
     let (lines, h) = lay_out(
