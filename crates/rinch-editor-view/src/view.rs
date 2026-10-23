@@ -549,20 +549,18 @@ fn retire(desc: ViewDesc, cx: &mut Cx, replacement: Option<&NodeHandle>) {
     cx.work.push(Work::Discard(desc.outer));
 }
 
-/// Where a table cell sits in its table's CSS grid: the [`TableMap`] rectangle,
-/// or [`Self::Outside`] for a cell the bounded grid has no slot for.
+/// Where a table cell sits in its table's CSS grid, as the view writes it: its
+/// [`TableMap`] rectangle in each axis, or [`Self::Outside`] for a cell the
+/// bounded grid has no slot for. Two placements are equal exactly when they
+/// write the same `grid-column` / `grid-row`, so a cell whose placement did not
+/// change is not written (#1226).
 ///
 /// [`TableMap`]: rinch_editor_core::tables::TableMap
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GridPlacement {
-    /// The rectangle, on its grid lines in each axis whose lines fit
-    /// ([`GridLines`]) and as a span of tracks in the other (#1209). CSS
-    /// auto-placement does not know which row a cell belongs to — it packs
-    /// each cell into the first free area after the previous one — so a row a
-    /// rowspan from above leaves short had its cells lifted into the row
-    /// before it, beside the rowspan's top, where the map puts them below it.
-    /// Definite lines are the map's grid, overlaps and holes included.
-    At(rinch_editor_core::tables::Rect, GridLines),
+    /// The rectangle: `(columns, rows)`, each on definite grid lines or as a
+    /// span of tracks auto-placement puts where the map does.
+    At(GridAxis, GridAxis),
     /// A cell no grid slot holds (past the capped width, or in a row the
     /// rowspans from above fill). No table command treats it as a cell; it is
     /// laid out as a band across the whole grid (`grid-column: 1 / -1`) on a
@@ -570,6 +568,32 @@ enum GridPlacement {
     /// Among cells placed by lines it is the first row the grid leaves empty —
     /// normally one after its last.
     Outside,
+}
+
+/// One axis of a [`GridPlacement::At`]: `Lines(start, end)` is `start + 1 /
+/// end + 1`, `Span(n)` is `span n` (`auto` for one track).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GridAxis {
+    Lines(usize, usize),
+    Span(usize),
+}
+
+impl GridAxis {
+    fn of(definite: bool, start: usize, end: usize) -> GridAxis {
+        if definite {
+            GridAxis::Lines(start, end)
+        } else {
+            GridAxis::Span(end - start)
+        }
+    }
+
+    fn css(self) -> String {
+        match self {
+            GridAxis::Lines(start, end) => format!("{} / {}", start + 1, end + 1),
+            GridAxis::Span(n) if n > 1 => format!("span {n}"),
+            GridAxis::Span(_) => "auto".to_string(),
+        }
+    }
 }
 
 /// The most tracks a table's grid may have in an axis for its cells to be
@@ -584,7 +608,9 @@ const MAX_DEFINITE_GRID_TRACKS: usize = 9999;
 /// columns when there are at most [`MAX_DEFINITE_GRID_TRACKS`] of them, so a
 /// table past 9999 rows keeps its cells in their columns; rows when both axes
 /// are within it, because row lines over auto-placed columns can grow the
-/// grid past Taffy's lines (see [`ViewDesc::sync_table_spans`]).
+/// grid past Taffy's lines (see [`ViewDesc::sync_table_spans`]), and only when
+/// auto-placement would put some cell in another row than the map does
+/// ([`auto_rows_match_map`], #1226).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct GridLines {
     rows: bool,
@@ -594,30 +620,80 @@ struct GridLines {
 impl GridPlacement {
     /// The `grid-column` / `grid-row` values that place a cell so.
     fn css(self) -> (String, String) {
-        let span = |n: usize| {
-            if n > 1 {
-                format!("span {n}")
-            } else {
-                "auto".to_string()
-            }
-        };
         match self {
-            GridPlacement::At(r, lines) => {
-                let axis = |definite: bool, start: usize, end: usize| {
-                    if definite {
-                        format!("{} / {}", start + 1, end + 1)
-                    } else {
-                        span(end - start)
-                    }
-                };
-                (
-                    axis(lines.columns, r.left, r.right),
-                    axis(lines.rows, r.top, r.bottom),
-                )
-            }
+            GridPlacement::At(columns, rows) => (columns.css(), rows.css()),
             GridPlacement::Outside => ("1 / -1".to_string(), "auto".to_string()),
         }
     }
+}
+
+/// True when every cell of a table, placed on its map columns' definite lines
+/// with its rows left to CSS grid auto-placement (`grid-row: span n`, in
+/// document order, `grid-auto-flow: row`), lands in the rows the map gives it
+/// (#1226). Row lines are then not needed, and they are worth leaving out: a
+/// line names a row index, so a row inserted or deleted at the top of the table
+/// would rewrite (and restyle) every cell below it; a span does not move.
+///
+/// `rects` is [`rinch_editor_core::tables::cell_rects`]. False for a table
+/// with a cell outside the grid. This is css-grid-1 §8.5 step 4 for items
+/// with a definite column position, which is every item here: the cursor's
+/// column becomes the item's start line, its row moves down one when that is
+/// before the previous item's, then down to the first row where the item
+/// overlaps no item placed before it. It diverges from the map where a row a
+/// rowspan from above leaves short holds a hole the cell would rise into, or a
+/// ragged row lets the next row's cells move up.
+///
+/// Linear in the map's slots plus the rows each cell's search passes over.
+fn auto_rows_match_map(rects: &[Vec<Option<rinch_editor_core::tables::Rect>>]) -> bool {
+    let mut cells = Vec::new();
+    for rect in rects.iter().flatten() {
+        match rect {
+            Some(r) => cells.push(*r),
+            None => return false,
+        }
+    }
+    let width = cells.iter().map(|r| r.right).max().unwrap_or(0);
+    let height = cells.iter().map(|r| r.bottom).max().unwrap_or(0);
+    // The first cell (in document order) covering each slot; a later cell
+    // covering it too is placed elsewhere by auto-placement, which the walk
+    // below finds.
+    let mut owner = vec![usize::MAX; width * height];
+    for (k, r) in cells.iter().enumerate() {
+        for y in r.top..r.bottom {
+            for x in r.left..r.right {
+                let slot = &mut owner[y * width + x];
+                if *slot == usize::MAX {
+                    *slot = k;
+                }
+            }
+        }
+    }
+    // Whether cell `k`'s columns are free of every cell before it over the
+    // rows `top..top + h`.
+    let free = |k: usize, r: &rinch_editor_core::tables::Rect, top: usize| {
+        (top..top + (r.bottom - r.top))
+            .all(|y| y >= height || (r.left..r.right).all(|x| owner[y * width + x] >= k))
+    };
+    let (mut row, mut column) = (0usize, 0usize);
+    for (k, r) in cells.iter().enumerate() {
+        if r.left < column {
+            row += 1;
+        }
+        column = r.left;
+        if row > r.top {
+            return false;
+        }
+        while row < r.top {
+            if free(k, r, row) {
+                return false;
+            }
+            row += 1;
+        }
+        if !free(k, r, row) {
+            return false;
+        }
+    }
+    true
 }
 
 /// True when `a` and `b` give every cell the same [`GridPlacement`] because they
@@ -721,14 +797,20 @@ impl ViewDesc {
             // grows the implicit grid past the 32767 lines Taffy 0.12 numbered
             // it with, and layout panicked; Taffy 0.14 (#1236) clamps the axis
             // at 10000 tracks and overlaps the cells past it instead.
-            // Auto-placed, those cells wrap.
-            rows: columns && self.node.child_count() <= MAX_DEFINITE_GRID_TRACKS,
+            // Auto-placed, those cells wrap. And only where auto-placement
+            // would not put every cell in its own row (#1226).
+            rows: columns
+                && self.node.child_count() <= MAX_DEFINITE_GRID_TRACKS
+                && !auto_rows_match_map(&rects),
             columns,
         };
         for (row, row_rects) in self.children.iter_mut().zip(&rects) {
             for (cell, rect) in row.children.iter_mut().zip(row_rects) {
                 let placement = match rect {
-                    Some(r) => GridPlacement::At(*r, lines),
+                    Some(r) => GridPlacement::At(
+                        GridAxis::of(lines.columns, r.left, r.right),
+                        GridAxis::of(lines.rows, r.top, r.bottom),
+                    ),
                     None => GridPlacement::Outside,
                 };
                 if cell.grid_placement == Some(placement) {
@@ -5981,11 +6063,12 @@ mod table_span_tests {
         (c.to_string(), r.to_string())
     }
 
-    /// An ordinary table's cells are written at their map rectangles' grid
-    /// lines (#1209), which for a well-formed table are where its spans put
-    /// them.
+    /// An ordinary table's cells are written at their map rectangles' column
+    /// lines (#1209) and as row spans (#1226): auto-placement puts each in its
+    /// map row, so a row line would only make the cell's style depend on its
+    /// row index.
     #[test]
-    fn an_ordinary_tables_cells_are_written_at_their_grid_lines() {
+    fn an_ordinary_tables_cells_are_written_at_their_column_lines_and_row_spans() {
         let r = rig();
         let s = Rc::new(Schema::starter_kit());
         let st = state_with(&s, table(&s, &[vec![(2, 1), (1, 2)], vec![(1, 1), (1, 1)]]));
@@ -5994,10 +6077,10 @@ mod table_span_tests {
         assert_eq!(
             got,
             vec![
-                p("1 / 3", "1 / 2"),
-                p("3 / 4", "1 / 3"),
-                p("1 / 2", "2 / 3"),
-                p("2 / 3", "2 / 3"),
+                p("1 / 3", "auto"),
+                p("3 / 4", "span 2"),
+                p("1 / 2", "auto"),
+                p("2 / 3", "auto"),
             ]
         );
     }
@@ -6015,11 +6098,7 @@ mod table_span_tests {
         let got: Vec<_> = cells(&r).into_iter().map(|c| placement(&r, c)).collect();
         assert_eq!(
             got,
-            vec![
-                p("1 / 3", "1 / 3"),
-                p("3 / 4", "1 / 2"),
-                p("3 / 4", "2 / 3")
-            ]
+            vec![p("1 / 3", "span 2"), p("3 / 4", "auto"), p("3 / 4", "auto")]
         );
     }
 
@@ -6080,8 +6159,8 @@ mod table_span_tests {
         let st = state_with(&s, t.clone());
         let mut view = RinchDomEditorView::new(r.container.clone(), Rc::downgrade(&r.doc), &st);
         let c = cells(&r);
-        assert_eq!(placement(&r, c[0]), p("1 / 2", "1 / 4"), "control");
-        assert_eq!(placement(&r, c[1]), p("2 / 3", "1 / 2"), "control");
+        assert_eq!(placement(&r, c[0]), p("1 / 2", "span 3"), "control");
+        assert_eq!(placement(&r, c[1]), p("2 / 3", "auto"), "control");
         // Remove the last row: it ends one before the table's inner end.
         let last = t.child(2).node_size();
         let end = 1 + t.content_size();
@@ -6091,7 +6170,7 @@ mod table_span_tests {
         view.update_dom(&st, &st2);
         let c2 = cells(&r);
         assert_eq!(&c2[..3], &c[..3], "control: no cell host rebuilt");
-        assert_eq!(placement(&r, c[0]), p("1 / 2", "1 / 3"));
+        assert_eq!(placement(&r, c[0]), p("1 / 2", "span 2"));
         // The second cell of the first row: after the row open and cell one.
         let second = 2 + t.child(0).child(0).node_size();
         let mut tr = st2.tr();
@@ -6100,8 +6179,10 @@ mod table_span_tests {
         let st3 = st2.apply(tr);
         view.update_dom(&st2, &st3);
         assert_eq!(cells(&r), c2, "control: no cell host rebuilt");
-        assert_eq!(placement(&r, c[1]), p("2 / 4", "1 / 2"));
-        // And its rowspan: the second row's one cell then sits beside the two.
+        assert_eq!(placement(&r, c[1]), p("2 / 4", "auto"));
+        // And its rowspan: the second row's one cell then sits beside the two,
+        // in row 1 with a hole above it that auto-placement would lift it into,
+        // so the table is placed by row lines from here on (#1226).
         let mut tr = st3.tr();
         tr.set_node_attr(second, "rowspan", AttrValue::Int(2))
             .unwrap();
@@ -6109,6 +6190,7 @@ mod table_span_tests {
         view.update_dom(&st3, &st4);
         assert_eq!(cells(&r), c2, "control: no cell host rebuilt");
         assert_eq!(placement(&r, c[1]), p("2 / 4", "1 / 3"));
+        assert_eq!(placement(&r, c[0]), p("1 / 2", "1 / 3"));
     }
 
     /// Typing in a cell computes no map and places no cell: only a change to
@@ -6171,7 +6253,7 @@ mod table_span_tests {
         let st = state_with(&s, t.clone());
         let mut view = RinchDomEditorView::new(r.container.clone(), Rc::downgrade(&r.doc), &st);
         let before = cells(&r)[0];
-        assert_eq!(placement(&r, before), p("1 / 3", "1 / 2"), "control");
+        assert_eq!(placement(&r, before), p("1 / 3", "auto"), "control");
         // The first cell spans positions 2 .. 2 + its size.
         let first = t.child(0).child(0).clone();
         let th = cell_of(&s, "table_header_cell", 2, 1, "c0");
@@ -6182,7 +6264,7 @@ mod table_span_tests {
         view.update_dom(&st, &next);
         let after = cells(&r)[0];
         assert_ne!(after, before, "control: the host was rebuilt");
-        assert_eq!(placement(&r, after), p("1 / 3", "1 / 2"));
+        assert_eq!(placement(&r, after), p("1 / 3", "auto"));
     }
 
     /// #1209: a row a rowspan leaves short keeps its cells — `[[A rowspan=2],
@@ -6195,6 +6277,39 @@ mod table_span_tests {
         let _view = RinchDomEditorView::new(r.container.clone(), Rc::downgrade(&r.doc), &st);
         let got: Vec<_> = cells(&r).into_iter().map(|c| placement(&r, c)).collect();
         assert_eq!(got, vec![p("1 / 2", "1 / 3"), p("2 / 3", "2 / 3")]);
+    }
+
+    /// #1226: which tables auto-placement lays out in their map rows, so that
+    /// their cells are written with row spans. Each `false` is a shape
+    /// auto-placement lifts a cell out of its row in.
+    #[test]
+    fn row_spans_are_used_exactly_where_auto_placement_keeps_the_rows() {
+        let s = Rc::new(Schema::starter_kit());
+        let matches = |rows: &[Vec<(i64, i64)>]| {
+            auto_rows_match_map(&rinch_editor_core::tables::cell_rects(&table(&s, rows)))
+        };
+        // Plain, merged and rowspanned rectangular tables.
+        assert!(matches(&[vec![(1, 1), (1, 1)], vec![(1, 1), (1, 1)]]));
+        assert!(matches(&[vec![(2, 1), (1, 2)], vec![(1, 1), (1, 1)]]));
+        assert!(matches(&[vec![(1, 2), (1, 1)], vec![(1, 1)]]));
+        assert!(matches(&[vec![(1, 1), (1, 2)], vec![(1, 1)]]));
+        assert!(matches(&[
+            vec![(1, 3), (1, 3)],
+            vec![],
+            vec![],
+            vec![(1, 1), (1, 1)]
+        ]));
+        // A ragged row only short at its end.
+        assert!(matches(&[vec![(2, 1)], vec![(1, 1)]]));
+        // #1209's shape: auto-placed in both axes, B rose into the slot beside
+        // X; locked to its column (line 2), it can only go below X.
+        assert!(matches(&[vec![(1, 2), (1, 1)], vec![(1, 1), (1, 1)]]));
+        // A short row whose hole the next row's cell rises into.
+        assert!(!matches(&[vec![(1, 2)], vec![(1, 1)]]));
+        // A cell placed past a hole in the row above it.
+        assert!(!matches(&[vec![(1, 2), (2, 2)], vec![(1, 1)]]));
+        // A cell outside the grid.
+        assert!(!matches(&[vec![(1, i64::MAX)], vec![(1, 1)]]));
     }
 
     /// Definite lines stop where Stylo's grid lines do: a grid of
@@ -6218,7 +6333,7 @@ mod table_span_tests {
         let w = MAX_DEFINITE_GRID_TRACKS as i64;
         assert_eq!(
             placed(&[vec![(w, 1)], vec![(1, 1)]]),
-            vec![p("1 / 10000", "1 / 2"), p("1 / 2", "2 / 3")]
+            vec![p("1 / 10000", "auto"), p("1 / 2", "auto")]
         );
         assert_eq!(
             placed(&[vec![(w + 1, 1)], vec![(1, 1)]]),

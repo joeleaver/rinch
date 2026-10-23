@@ -249,3 +249,79 @@ fn a_wide_row_of_wide_cells_does_not_panic() {
     let r: Vec<_> = cells.iter().map(|&c| rect(&app, c)).collect();
     assert!(r.iter().all(|c| c.2 > 0.0), "{r:?}");
 }
+
+/// #1226: a table whose cells auto-placement puts in their map rows is written
+/// with row spans (`grid-row: span n`) rather than row lines, so a row added or
+/// removed at the top writes no cell below it. The oracle: random tables of
+/// spans and ragged rows, laid out as written, then with every cell's
+/// `grid-row` rewritten to its map rectangle's lines (what #1209 wrote) and
+/// laid out again. Every cell's box must be the same in both.
+#[test]
+fn row_spans_lay_out_as_the_row_lines_they_replace() {
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = |n: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed % n
+    };
+    let (mut auto_tables, mut auto_with_rowspans) = (0, 0);
+    for case in 0..80 {
+        let rows: Vec<Vec<(i64, i64)>> = (0..1 + next(5))
+            .map(|_| {
+                (0..1 + next(4))
+                    .map(|_| {
+                        let span = |r: u64| if r < 6 { 1 } else { 2 + (r % 2) as i64 };
+                        (span(next(10)), span(next(10)))
+                    })
+                    .collect()
+            })
+            .collect();
+        let (mut app, cells, table) = mounted(&rows);
+        let doc = app.doc.as_ref().unwrap().clone();
+        let style = |id: usize| {
+            doc.borrow()
+                .get_attribute(NodeId(id), "style")
+                .unwrap_or_default()
+        };
+        // Written with row spans: no cell's `grid-row` names a line.
+        let auto = cells.iter().all(|&c| {
+            let s = style(c);
+            let row = s.split("grid-row:").nth(1).expect("every cell is placed");
+            !row.split(';').next().unwrap().contains('/')
+        });
+        let before: Vec<_> = cells.iter().map(|&c| rect(&app, c)).collect();
+        let (_, _, tw, th) = rect(&app, table);
+        // The map, cell by cell in document order.
+        let model = table_doc(&crate::editor::create_editor(), &rows);
+        let rects: Vec<_> = rinch_editor_core::tables::cell_rects(model.child(0))
+            .into_iter()
+            .flatten()
+            .collect();
+        assert_eq!(rects.len(), cells.len(), "case {case}: control");
+        for (&c, r) in cells.iter().zip(&rects) {
+            if let Some(r) = r {
+                doc.borrow_mut().set_style(
+                    NodeId(c),
+                    "grid-row",
+                    &format!("{} / {}", r.top + 1, r.bottom + 1),
+                );
+            }
+        }
+        app.resolve_and_repaint(800.0, 600.0);
+        let after: Vec<_> = cells.iter().map(|&c| rect(&app, c)).collect();
+        assert_eq!(before, after, "case {case}: {rows:?}");
+        assert_eq!((tw, th), (rect(&app, table).2, rect(&app, table).3));
+        if auto {
+            auto_tables += 1;
+            if rows.iter().flatten().any(|&(_, h)| h > 1) {
+                auto_with_rowspans += 1;
+            }
+        }
+    }
+    assert!(
+        auto_tables > 20 && auto_with_rowspans > 10,
+        "control: {auto_tables} tables written with row spans, \
+         {auto_with_rowspans} of them with a rowspan"
+    );
+}

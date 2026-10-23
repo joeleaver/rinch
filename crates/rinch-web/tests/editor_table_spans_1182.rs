@@ -169,7 +169,8 @@ fn s4(a: &str, b: &str, c: &str, d: &str) -> [String; 4] {
 
 /// Control: an ordinary merged table is placed as its attributes say, a
 /// `colspan = 2` cell over two cells side by side, and a `rowspan = 2` cell
-/// beside them — on the grid lines of its map rectangles (#1209).
+/// beside them — on the column lines of its map rectangles (#1209), with row
+/// spans where auto-placement keeps the map's rows (#1226).
 #[wasm_bindgen_test]
 fn an_ordinary_merged_table_is_placed_by_its_attributes() {
     let m = mount(&[vec![(2, 1), (1, 2)], vec![(1, 1), (1, 1)]]);
@@ -179,10 +180,10 @@ fn an_ordinary_merged_table_is_placed_by_its_attributes() {
     assert_eq!(
         got,
         vec![
-            s4("1", "3", "1", "2"),
-            s4("3", "4", "1", "3"),
-            s4("1", "2", "2", "3"),
-            s4("2", "3", "2", "3"),
+            s4("1", "3", "auto", "auto"),
+            s4("3", "4", "span 2", "auto"),
+            s4("1", "2", "auto", "auto"),
+            s4("2", "3", "auto", "auto"),
         ]
     );
     let t = table(&m);
@@ -199,9 +200,9 @@ fn an_overlong_rowspan_is_placed_cut_at_the_last_row() {
     assert_eq!(
         got,
         vec![
-            s4("1", "3", "1", "3"),
-            s4("3", "4", "1", "2"),
-            s4("3", "4", "2", "3"),
+            s4("1", "3", "span 2", "auto"),
+            s4("3", "4", "auto", "auto"),
+            s4("3", "4", "auto", "auto"),
         ]
     );
 }
@@ -301,4 +302,62 @@ fn a_table_of_unbounded_spans_is_placed_as_its_table_map() {
         (th - y).abs() <= 2.5,
         "table {th} tall, cells end at {y}: {r:?}"
     );
+}
+
+/// #1226: a table written with row spans (`grid-row: span n`) lays out as the
+/// row lines #1209 wrote. Tables of rowspans, colspans and ragged rows, each
+/// laid out as written and then with every cell's `grid-row` rewritten to its
+/// map rectangle's lines: every cell's box is the same in both. The native twin
+/// is `rinch`'s `row_spans_lay_out_as_the_row_lines_they_replace`.
+#[wasm_bindgen_test]
+fn row_spans_lay_out_as_the_row_lines_they_replace() {
+    let shapes: Vec<Vec<Vec<(i64, i64)>>> = vec![
+        vec![vec![(1, 2), (1, 1)], vec![(1, 1), (1, 1)]],
+        vec![vec![(1, 3), (1, 1)], vec![(1, 1), (1, 1)], vec![(1, 1)]],
+        vec![vec![(2, 1), (1, 2)], vec![(1, 1), (1, 1)], vec![(3, 1)]],
+        vec![vec![(1, 1), (1, 2), (1, 1)], vec![(1, 1), (1, 1)]],
+        vec![vec![(1, 3), (1, 3)], vec![], vec![], vec![(1, 1), (1, 1)]],
+        vec![vec![(1, 1)], vec![(1, 1), (1, 1)], vec![(2, 2)]],
+        vec![vec![(2, 2), (1, 1)], vec![(1, 1)], vec![(1, 1), (2, 1)]],
+    ];
+    let mut spans = 0;
+    for rows in &shapes {
+        let m = mount(rows);
+        let c = cells(&m);
+        let t = table(&m);
+        let before: Vec<_> = c.iter().map(|e| rect(e, &t)).collect();
+        let model = table_doc(&create_editor(), rows);
+        let rects: Vec<_> = rinch_editor_core::tables::cell_rects(model.child(0))
+            .into_iter()
+            .flatten()
+            .collect();
+        assert_eq!(rects.len(), c.len(), "control: {rows:?}");
+        if c.iter()
+            .all(|e| !placement(e)[2].chars().all(|ch| ch.is_ascii_digit()))
+        {
+            spans += 1;
+        }
+        for (e, r) in c.iter().zip(&rects) {
+            let r = r.expect("every cell has a slot");
+            let style = e.dyn_ref::<web_sys::HtmlElement>().unwrap().style();
+            style
+                .set_property("grid-row", &format!("{} / {}", r.top + 1, r.bottom + 1))
+                .unwrap();
+        }
+        let after: Vec<_> = c.iter().map(|e| rect(e, &t)).collect();
+        assert_eq!(before, after, "{rows:?}");
+    }
+    assert_eq!(
+        spans,
+        shapes.len(),
+        "control: every shape was written with row spans"
+    );
+    // Control that the comparison sees a row: C written one row down moves.
+    let m = mount(&[vec![(1, 2), (1, 1)], vec![(1, 1), (1, 1)]]);
+    let c = cells(&m);
+    let t = table(&m);
+    let before = rect(&c[3], &t);
+    let style = c[3].dyn_ref::<web_sys::HtmlElement>().unwrap().style();
+    style.set_property("grid-row", "3 / 4").unwrap();
+    assert_ne!(rect(&c[3], &t), before, "control: a row move is seen");
 }

@@ -467,3 +467,137 @@ fn a_toolbar_bold_over_a_word() {
         ],
     );
 }
+
+const TABLE_ROWS: usize = 200;
+const TABLE_COLUMNS: usize = 4;
+
+/// An editor holding one table of 200 rows of 4 one-word cells, no spans, with
+/// the caret in its first cell.
+fn table_page() -> Page {
+    let slot: Rc<RefCell<Option<crate::editor::EditorHandle>>> = Rc::new(RefCell::new(None));
+    let slot_in = slot.clone();
+    let mut app = new_app(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let (container, handle) = crate::editor::mount_editor(scope);
+        let mut html = String::from("<table>");
+        for r in 0..TABLE_ROWS {
+            html.push_str("<tr>");
+            for c in 0..TABLE_COLUMNS {
+                html.push_str(&format!("<td>r{r}c{c}</td>"));
+            }
+            html.push_str("</tr>");
+        }
+        html.push_str("</table>");
+        handle.load_html(&html);
+        container.set_attribute(
+            "style",
+            "width: 600px; height: 500px; overflow-y: auto; font-size: 16px; \
+             line-height: 24px; font-family: sans-serif",
+        );
+        root.append_child(&container);
+        *slot_in.borrow_mut() = Some(handle);
+        root
+    });
+    app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+    settle(&mut app);
+    let handle = slot.borrow_mut().take().expect("captured at mount");
+    let mut page = Page { app, handle };
+    // table > row > cell > paragraph: the first cell's text starts at 4.
+    caret_at(&mut page, 4);
+    page
+}
+
+fn table_rows(page: &Page) -> usize {
+    page.handle.doc().child(0).child_count()
+}
+
+/// `addRowBefore` in the first row of a 200x4 table with no spans (#1226).
+///
+/// Every cell below the new row moves down one grid row. Placed by explicit
+/// row lines (#1209) each of their 796 hosts got a new `grid-row` and was
+/// cascaded again (813 elements in all); a table whose rows auto-placement
+/// lays out as the map does is placed by its column lines and row spans, which
+/// a row index does not reach, so only the new row's hosts are written.
+#[test]
+fn add_row_before_the_first_row_of_a_table() {
+    let mut page = table_page();
+    let h = page.handle.clone();
+    let s = interaction(&mut page.app, |_| {
+        assert!(h.command("addRowBefore"));
+    });
+    assert_eq!(table_rows(&page), TABLE_ROWS + 1, "positive control");
+    expect_frame(
+        "editor: addRowBefore the first table row",
+        &s,
+        &[
+            (StyleResolves, 10),
+            // What the new row brings (13, as before #1209); 813 when every
+            // cell below it took a new `grid-row` line (#1226).
+            (ElementsCascaded, 13),
+            (StyleNodesVisited, 17),
+            (PseudoElementPasses, 13),
+            (StyleInvalidations, 4),
+            (TaffyStyleSyncs, 13),
+            (TaffyStyleChanges, 13),
+            (IfcMeasureCacheHits, 28),
+            (IfcMeasureInvalidations, 9),
+            (LayoutResolves, 1),
+            (IfcSetupPasses, 1),
+            (IfcScopedPasses, 1),
+            (IfcScopeContainers, 9),
+            (IfcScopeNodes, 1010),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 44),
+            (PaintFrames, 1),
+            (RepaintFull, 1),
+            (RepaintFullRegionTooLarge, 1),
+            (RepaintedPx, 480000),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 99),
+            (StackingOrderBuilds, 2),
+            (GlyphCacheHits, 144),
+            (ClipMasks, 1),
+            (ClipMaskPx, 301101),
+        ],
+    );
+}
+
+/// `deleteRow` on the first row of a 200x4 table with no spans (#1226): no
+/// surviving cell is written or cascaded (796 were, #1209).
+#[test]
+fn delete_the_first_row_of_a_table() {
+    let mut page = table_page();
+    let h = page.handle.clone();
+    let s = interaction(&mut page.app, |_| {
+        assert!(h.command("deleteRow"));
+    });
+    assert_eq!(table_rows(&page), TABLE_ROWS - 1, "positive control");
+    expect_frame(
+        "editor: deleteRow on the first table row",
+        &s,
+        &[
+            // No cascade at all: `ElementsCascaded` was 796, every surviving
+            // cell re-placed one row line up (#1226).
+            (IfcMeasureCacheHits, 28),
+            (IfcMeasureInvalidations, 1),
+            (LayoutResolves, 1),
+            (IfcSetupPasses, 1),
+            (IfcScopedPasses, 1),
+            (IfcScopeContainers, 1),
+            (IfcScopeNodes, 996),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 28),
+            (PaintFrames, 1),
+            (RepaintFull, 1),
+            (RepaintFullRegionTooLarge, 1),
+            (RepaintedPx, 480000),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 99),
+            (RemovalDamageSteps, 84),
+            (StackingOrderBuilds, 2),
+            (GlyphCacheHits, 164),
+            (ClipMasks, 1),
+            (ClipMaskPx, 301101),
+        ],
+    );
+}
