@@ -73,12 +73,15 @@
 
 //! ## What a build from before reads
 //!
-//! An atom only ever inserted (and typed around, deleted, marked) is written exactly as
-//! before: one `@atom` value, no `@id`, nothing in [`ATOMS`]. A per-attribute change
-//! also marks the atom's char with the reserved formatting attribute [`ATOM_STAMP`],
-//! and a move writes `@id`: a build from before refuses either (`unknown mark type
-//! @entries`, `unknown reserved key @id`), which poisons its session until it rejoins
-//! on an upgraded build (#196). So it never shows attrs it would get wrong. Once
+//! Every atom's value names its char ([`ATOM_FOR`], issue #1851), so a build from
+//! before per-attribute merging (#1503) refuses (`unknown reserved key @for`) any
+//! document holding an atom a build with #1851 inserted, which poisons its session
+//! until it rejoins on an upgraded build (#196). Every peer on a document must run a
+//! build with #1503 before any of them runs one with #1851. Before #1851 an atom only
+//! ever inserted was written in the old shape (its type and attrs alone), which such a
+//! build read. A per-attribute change also marks the atom's char with the reserved
+//! formatting attribute [`ATOM_STAMP`], and a move writes `@id`: a build from before
+//! refuses those too (`unknown mark type @entries`, `unknown reserved key @id`). Once
 //! refused, a document stays refused for such a build (an `@entries` mark can extend
 //! over text beside the picture and is not cleared).
 
@@ -494,6 +497,33 @@ fn write_value(
     );
 }
 
+/// Write `value` as the `@atom` of a new atom's char, named for that char
+/// ([`ATOM_FOR`], no [`ATOM_ID`]: it carries no identity), so that no two atoms ever
+/// share formatting markers (issue #1851).
+///
+/// yrs coalesces equal formatting: two equal atoms side by side (two hard breaks, a
+/// picture inserted twice) share one start and one end marker, and a char inserted
+/// right after an equal atom gets no marker of its own at all. yrs's `remove` and its
+/// transaction cleanup delete markers they find redundant, and a concurrent edit of the
+/// other peer that relied on them loses its atom: a break inserted after a break whose
+/// line a peer deletes, or the second of two pictures when a peer deletes the text
+/// between them while another types there, read back as a literal U+FFFC. Named for
+/// its own char, every atom's value differs from every other's, so each has markers
+/// of its own. Every build that reads [`ATOM_FOR`] (#1503 on) reads the value as the
+/// atom; a build from before refuses it (see *What a build from before reads*).
+pub(crate) fn write_own_value(txn: &mut TransactionMut, text: &TextRef, u16: u32, value: &Attrs) {
+    let value = match char_id(txn, text, u16) {
+        Some(own) => value.with(ATOM_FOR, AttrValue::from(own)),
+        None => value.clone(),
+    };
+    text.format(
+        txn,
+        u16,
+        1,
+        YAttrs::from([(Arc::from(ATOM_MARK), encode_mark_value(&value))]),
+    );
+}
+
 /// Bring the atom at char `atom.index` from `have` (its merged value) to `want`, both
 /// carrying [`ATOM_TYPE`]: an **attr change** of an atom the text diff kept in place
 /// (`projection::reconcile_text`): one [`ATOMS`] entry per attr that changed, under
@@ -693,8 +723,8 @@ pub(crate) struct ModelAtom {
 /// change removed, and that is the only one of `after` `same_ref` to it, is carried
 /// (an atom copied within the editor and pasted keeps its `Rc` twice: the copy that is
 /// new gets an identity of its own). An atom with no attrs of its own (a `hard_break`)
-/// has nothing a peer could change, so it carries nothing: its value stays the one-key
-/// `{"@type": …}`, whose encoding is the same on every run (#841).
+/// has nothing a peer could change, so it carries nothing: its value is its type and
+/// [`ATOM_FOR`], its own new char ([`write_own_value`], #1851), with no [`ATOM_ID`].
 ///
 /// The new char's value is the moved atom's value **as written** under its identity
 /// (and [`ATOM_FOR`] the new char): the entries of that identity lay its changes over

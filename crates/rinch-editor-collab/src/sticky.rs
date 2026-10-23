@@ -52,29 +52,21 @@
 //!   says where they were, but its entry stays in a live parent array as a
 //!   tombstone), and [`CollabDoc::locate_sticky`] resolves it to the place the block
 //!   stood, marked displaced.
-//!   The projection has no "move": joining two blocks deletes the second block's
-//!   `Text` and re-inserts its characters into the first, and splitting a block deletes
-//!   the tail from one `Text` and inserts it into a new one (see
-//!   [`crate::project`]). A sticky index on the moved characters then points into a
-//!   deleted `Text` (joined) or at a tombstone at the split point (split, which
-//!   resolves to the end of the first half).
-//! * **An edit next to its block** can end it or move it even though the block's own
-//!   text did not change, at the top level and inside a list, a quote or a cell alike.
-//!   The projection finds the unchanged blocks of a level by node *identity* (#1240),
-//!   and a split or a join rebuilds both nodes it touches, so the untouched paragraph
-//!   is rewritten through its neighbour's `Text` (tracked in #917). The exception is a
-//!   level the edit kept **nothing** of — the block was its level's only child, so
-//!   both of its new nodes are new: such a level is matched by value, and an Enter at
-//!   the start of that block keeps its indexes. Concretely, where the level keeps a
-//!   sibling:
-//!   - **Enter at the start of a paragraph** (a new empty paragraph above it): every
-//!     index into that paragraph resolves into the **new empty paragraph**, a wrong
-//!     position and not `None`.
-//!   - **Backspace that deletes an empty line above a paragraph**: every index into
-//!     that paragraph resolves to `None`.
-//!   - **Toggling a bullet list on a paragraph, or wrapping it in a quote** (the
-//!     node's kind changes, so the block is replaced whole): `None`. Lifting it out of
-//!     a quote or a list is the same replace.
+//!   The projection has no "move": joining two blocks deletes one block's `Text` and
+//!   re-inserts its characters into the other (the one holding more of the joined
+//!   text keeps its own), and splitting a block deletes its shorter half from the
+//!   `Text` and inserts it into a new one (the tail, on a tie; see
+//!   `write_child_diff`, #1850). A sticky index on the moved
+//!   characters then points into a deleted `Text` (joined) or at a tombstone at the
+//!   split point (split, which resolves to the edge of the kept half).
+//! * **An edit next to its block** can end it even though the block's own text did
+//!   not change, at the top level and inside a list, a quote or a cell alike: toggling
+//!   a bullet list on a paragraph, or wrapping it in a quote (the node's kind changes,
+//!   so the block is replaced whole), gives `None`; lifting it out of a quote or a list
+//!   is the same replace. Enter at the start of a paragraph (a new empty paragraph
+//!   above it) and Backspace deleting an empty line above it keep its indexes: the
+//!   projection inserts or deletes the empty block and leaves the paragraph's `Text`
+//!   in place (#1850, #917).
 
 //!
 //! ## Why the model document is a parameter
@@ -187,13 +179,10 @@ impl CollabDoc {
     ///
     /// It follows its character through any edit elsewhere; a deleted character
     /// resolves to where it was; it ends with its block. The projection has no
-    /// "move", so a block **joined** into the one before it ends it too, and a
-    /// **split** before it leaves it at the split point. At the top level, Enter at
-    /// the start of its paragraph moves it into the new empty paragraph above, and
-    /// deleting an empty line above its paragraph or toggling a list on it ends it
-    /// (tracked in #917): the projection finds unchanged top-level blocks by node
-    /// identity, and a split or join rebuilds both nodes it touches. Inside a list or
-    /// a quote the comparison is structural and the same Enter keeps the index.
+    /// "move", so a block whose text a **join** writes into the other ends it too,
+    /// and a **split** that writes its half anew leaves it at the split point. Enter at the start of its
+    /// paragraph and deleting an empty line above it keep it (#1850); toggling a list
+    /// on its paragraph ends it.
     ///
     /// An index that must outlive its block is made by [`Self::sticky_index_with`],
     /// which also takes the association.

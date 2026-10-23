@@ -102,14 +102,15 @@
 //! still lost that way, and so is an atom's attr change when the model cannot say which
 //! atom moved where (in a table, or in a load or a re-base, which share no node).
 //!
-//! **Compatibility.** An atom only ever inserted (typed around, marked, deleted) is
-//! written exactly as before (no `@id`, nothing in `atoms`), and a document written
-//! before reads unchanged: an atom with no `@id` is identified by its char, so its attrs
-//! merge per attribute from its first change on. A change also marks the atom's char
-//! with the reserved formatting attribute `@entries`, and a move writes `@id`: a build
-//! from before refuses either (`unknown mark type`, `unknown reserved key`), which
-//! poisons its session (#196), rather than read the attrs the char was written with and
-//! miss the entries. The inline atoms' **coordinated upgrade** again.
+//! **Compatibility.** A document written before reads unchanged: an atom with no `@id`
+//! is identified by its char, so its attrs merge per attribute from its first change
+//! on. Since #1851 every atom a build writes names its own char (`@for`, no `@id`, no
+//! entry in `atoms`; see `atoms::write_own_value`), so equal atoms never share
+//! formatting markers. A change also marks the atom's char with the reserved formatting
+//! attribute `@entries`, and a move writes `@id`. A build from before #1503 refuses all
+//! three (`unknown mark type`, `unknown reserved key`), which poisons its session
+//! (#196): every peer must be on a #1503 build before any runs #1851. The inline atoms'
+//! **coordinated upgrade** again.
 //!
 //! Wire-compatibly this is **additive**: [`FORMAT_TAG`] does not move, which also means
 //! it needs a **coordinated upgrade**, as the leaf block atoms above do. An older reader
@@ -248,7 +249,7 @@ use rinch_editor_core::{AttrValue, Attrs, Fragment, Mark, Node, NodeType, Schema
 
 use crate::atoms::{
     ATOMS, AtomChar, ModelAtom, OverlayCache, invalidate, merged_atoms, overlay_scope, scan_text,
-    write_atom_change,
+    write_atom_change, write_own_value,
 };
 use crate::error::{CollabError, Result};
 use crate::table::{
@@ -1119,7 +1120,16 @@ fn write_node(txn: &mut TransactionMut, node: &MapRef, nd: &NodeData) -> Result<
             // wire version reads it back without knowing atoms exist.
             let text = node.insert(txn, TEXT, TextPrelim::new(b.text.as_str()));
             for m in &b.marks {
-                apply_mark(txn, &text, &b.text, m);
+                // An atom per char, named for its own char (#1851): equal atoms side
+                // by side never share formatting markers.
+                if m.name == ATOM_MARK {
+                    for i in m.start..m.end {
+                        let (at, _) = u16_span(&b.text, i, i + 1);
+                        write_own_value(txn, &text, at, &m.attrs);
+                    }
+                } else {
+                    apply_mark(txn, &text, &b.text, m);
+                }
             }
         }
         NodeData::Container { children, .. } => {
@@ -1341,7 +1351,9 @@ fn reconcile_text(
     } else {
         (old, old_marks)
     };
-    if current_marks != target_marks {
+    // An atom the splice inserted is written even when the marks already agree: it
+    // may have inherited an equal neighbour's value (#1851, `resync_atoms`).
+    if current_marks != target_marks || inserts_an_atom(&target_marks, &inserted) {
         resync_marks(
             txn,
             text,
@@ -1382,6 +1394,14 @@ fn reads_otherwise(old_typ: &NodeType, new_typ: &NodeType, spans: &[SpanMark], o
             };
             !matches!(read, CharKind::Atom) && read != CharKind::Text(o[i])
         })
+}
+
+/// Whether a char in `inserted` is an inline atom in `target`.
+fn inserts_an_atom(target: &[SpanMark], inserted: &std::ops::Range<usize>) -> bool {
+    !inserted.is_empty()
+        && target
+            .iter()
+            .any(|m| m.name == ATOM_MARK && m.start < inserted.end && inserted.start < m.end)
 }
 
 /// [`reconcile_text`] for a block whose stored text the model reads differently from
@@ -1502,7 +1522,7 @@ fn reconcile_read_text(
         }
     }
     target.sort_by(|a, b| (a.start, a.end, &a.name).cmp(&(b.start, b.end, &b.name)));
-    if current_marks != target {
+    if current_marks != target || inserts_an_atom(&target, &inserted) {
         resync_marks(
             txn,
             text,
@@ -2042,26 +2062,35 @@ pub(crate) fn write_child_diff(
     let (prefix, cur_mid) = (mid.start, mid.len());
     let tgt_mid = targets.len();
     let common = cur_mid.min(tgt_mid);
-    // Reconcile the overlapping changed children in place (keeps identity). A replace
+    // Where the extra children go (or the gone ones were): after the first `gap`
+    // changed children, the rest paired up behind them (`gap_of_least_moved_text`).
+    let gap = gap_of_least_moved_text(model, prefix, cur_mid, tgt_mid);
+    let (extra_cur, extra_tgt) = (cur_mid - common, tgt_mid - common);
+    // Reconcile the paired changed children in place (keeps identity). A replace
     // inside `reconcile_node` removes and re-inserts at the same raw index, so no raw
     // index moves.
-    for (k, target) in targets.iter().take(common).enumerate() {
+    for k in 0..common {
+        let (c, t) = if k < gap {
+            (k, k)
+        } else {
+            (k + extra_cur, k + extra_tgt)
+        };
         let at = raw
-            .get(prefix + k)
+            .get(prefix + c)
             .ok_or_else(|| CollabError::schema("write_child_diff: missing child"))?;
-        let pair = model_child(model, prefix + k, prefix + k);
-        reconcile_node(txn, content, at, target, pair, per_char)?;
+        let pair = model_child(model, prefix + c, prefix + t);
+        reconcile_node(txn, content, at, &targets[t], pair, per_char)?;
     }
     // Insert the extra targets, consecutively, before the visible child that comes
     // after them.
-    if tgt_mid > common {
-        let at = raw.get(prefix + common).unwrap_or_else(|| content.len(txn));
-        for (n, target) in targets.iter().skip(common).enumerate() {
+    if extra_tgt > 0 {
+        let at = raw.get(prefix + gap).unwrap_or_else(|| content.len(txn));
+        for (n, target) in targets[gap..gap + extra_tgt].iter().enumerate() {
             insert_node(txn, content, at + n as u32, target)?;
         }
     }
     // Delete the extra current children (from the end so earlier indices stay valid).
-    for idx in (prefix + common..prefix + cur_mid).rev() {
+    for idx in (prefix + gap..prefix + gap + extra_cur).rev() {
         let at = raw
             .get(idx)
             .ok_or_else(|| CollabError::schema("write_child_diff: missing child"))?;
@@ -2069,6 +2098,115 @@ pub(crate) fn write_child_diff(
         content.remove(txn, at);
     }
     Ok(())
+}
+
+/// Where a child-list diff whose changed run grows or shrinks puts the children it
+/// inserts or deletes (issue #1850): after the first `gap` changed children, the
+/// others paired up behind them, so the pairs keep as much of their text as they can.
+///
+/// The projection has no move: a pair reconciled in place keeps its characters'
+/// CRDT identity, and text that lands in a block on the other side of the gap is
+/// deleted and written again. A peer editing that text concurrently edits the old
+/// copy, so its edit is lost or the text arrives twice. Enter at the start of a line
+/// used to pair the line with the new empty block before it and copy all of the
+/// line's text into a new block — two peers doing it at once left the line twice.
+/// Here the gap is the one whose pairs keep the most text in place: Enter at the start
+/// of a line inserts the empty block before it and the line keeps its text, Backspace
+/// at the start of a line after an empty one deletes the empty one, a split keeps the
+/// longer half in place and writes the shorter one anew, and a join keeps the block
+/// holding more of the joined text. Ties keep the old answer: the extra children at the
+/// end of the run (a split's tail written anew, a join keeping the first block).
+///
+/// What moves is still moved: a peer's concurrent edit of the shorter half of a split
+/// lands on the old copy. A peer typing at the start of a line split in its middle,
+/// head shorter than tail, now follows the tail.
+///
+/// Without the model (a list matched by value with no model to describe it) the
+/// answer is the old one.
+fn gap_of_least_moved_text(
+    model: Model<'_>,
+    prefix: usize,
+    cur_mid: usize,
+    tgt_mid: usize,
+) -> usize {
+    let common = cur_mid.min(tgt_mid);
+    let Some((before, after)) = model else {
+        return common;
+    };
+    if cur_mid == tgt_mid || common == 0 {
+        return common;
+    }
+    let (extra_cur, extra_tgt) = (cur_mid - common, tgt_mid - common);
+    let cur: Vec<Vec<char>> = (0..cur_mid)
+        .map(|i| flat_text(before.child(prefix + i)))
+        .collect();
+    let tgt: Vec<Vec<char>> = (0..tgt_mid)
+        .map(|j| flat_text(after.child(prefix + j)))
+        .collect();
+    let score = |c: usize, t: usize| -> usize {
+        GAP_SCORES.with(|n| n.set(n.get() + 1));
+        let (b, a) = (before.child(prefix + c), after.child(prefix + t));
+        let same_kind = (b.is_textblock() && a.is_textblock()) || b.type_name() == a.type_name();
+        if !same_kind {
+            return 0;
+        }
+        let (x, y) = (&cur[c], &tgt[t]);
+        let head = x.iter().zip(y).take_while(|(p, q)| p == q).count();
+        let room = x.len().min(y.len()) - head;
+        let tail = x
+            .iter()
+            .rev()
+            .zip(y.iter().rev())
+            .take(room)
+            .take_while(|(p, q)| p == q)
+            .count();
+        head + tail
+    };
+    // Each pair is scored once (#1859's review: scoring the whole run per gap made a
+    // whole-document replace quadratic): `front[g]` keeps the first `g` pairs by index,
+    // `back[g]` pairs the rest across the gap.
+    let mut front = vec![0usize; common + 1];
+    for k in 0..common {
+        front[k + 1] = front[k] + score(k, k);
+    }
+    let mut back = vec![0usize; common + 1];
+    for k in (0..common).rev() {
+        back[k] = back[k + 1] + score(k + extra_cur, k + extra_tgt);
+    }
+    // The largest total; among equals, the largest gap (the old answer).
+    (0..=common)
+        .max_by_key(|&g| (front[g] + back[g], g))
+        .unwrap_or(common)
+}
+
+thread_local! {
+    /// How many pairs [`gap_of_least_moved_text`] has scored on this thread.
+    static GAP_SCORES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many pairs [`gap_of_least_moved_text`] has scored on this thread so far
+/// (`testing::gap_scores`).
+#[cfg_attr(not(feature = "test-util"), allow(dead_code))]
+pub(crate) fn gap_scores() -> u64 {
+    GAP_SCORES.with(std::cell::Cell::get)
+}
+
+/// A node's text as one char run, an inline atom as U+FFFC, its blocks run together.
+fn flat_text(node: &Node) -> Vec<char> {
+    fn walk(n: &Node, out: &mut Vec<char>) {
+        if let Some(t) = n.text() {
+            out.extend(t.chars());
+        } else if n.is_inline() {
+            out.push('\u{FFFC}');
+        } else {
+            for i in 0..n.child_count() {
+                walk(n.child(i), out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(node, &mut out);
+    out
 }
 
 /// The **visible** children of a content array — every child except a void container
@@ -2403,9 +2541,10 @@ fn resync_per_char(
 /// * A char that carries `@atom` and should carry none is cleared, as any per-char
 ///   attribute is (a char typed right after an image inherits the image's value).
 /// * A char the splice inserted (`inserted`, in `current`'s offsets) that should be an
-///   atom is written with its whole value and nothing else (no `@id`, no `atoms`
-///   entry), whatever it inherited: the shape a build from before per-attribute
-///   merging writes and reads. Its char is its identity from then on.
+///   atom is written with its whole value, named for its own char (`@for`, no `@id`,
+///   no `atoms` entry), whatever it inherited ([`write_own_value`], #1851). Its char
+///   is its identity from then on. A build from before per-attribute merging (#1503)
+///   refuses the reserved key.
 /// * A char that should be an atom and carries no `@atom` is written the same way.
 /// * A char the diff kept as the same atom ([`text_splice_bounds`]) with other attrs
 ///   gets one `atoms` entry per attr that changed, so a peer's concurrent change of
@@ -2459,30 +2598,21 @@ fn resync_atoms(
         let Some(want) = tgt[i].as_ref() else {
             continue;
         };
-        let whole = || SpanMark {
-            name: ATOM_MARK.into(),
-            attrs: want.clone(),
-            start: i,
-            end: i + 1,
-        };
         match cur[i].as_ref() {
-            // A char this change inserted is written whole, whatever it inherited from
-            // the atom before it (yrs extends a range over an insert at its end): a new
-            // atom is written exactly as before per-attribute merging, so a build from
-            // before it reads it (review of #1503, F3).
-            _ if inserted.contains(&i) => apply_mark(txn, text, current, &whole()),
+            // A char this change inserted is written with its whole value, whatever it
+            // inherited from the atom before it (yrs extends a range over an insert at
+            // its end), and so is a char that should be an atom and carries none. The
+            // value names its own char ([`write_own_value`], #1851): no two atoms ever
+            // share formatting markers, which a peer's concurrent delete would remove.
+            None => {
+                let (at, _) = u16_span(current, i, i + 1);
+                write_own_value(txn, text, at, want);
+            }
+            Some(_) if inserted.contains(&i) => {
+                let (at, _) = u16_span(current, i, i + 1);
+                write_own_value(txn, text, at, want);
+            }
             Some(have) if have == want => {}
-            None => apply_mark(
-                txn,
-                text,
-                current,
-                &SpanMark {
-                    name: ATOM_MARK.into(),
-                    attrs: want.clone(),
-                    start: i,
-                    end: i + 1,
-                },
-            ),
             Some(have) => {
                 if written.is_none() {
                     // A read of what this transaction already wrote cannot fail where
