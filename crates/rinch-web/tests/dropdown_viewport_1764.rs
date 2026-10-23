@@ -76,6 +76,16 @@ enum Kind {
 /// `kind` with ten 200x30 rows, its 40x20 trigger in a fixed box at
 /// `wrapper_style`, opened by `open`.
 fn build(kind: Kind, wrapper_style: &'static str, open: Signal<bool>) {
+    build_styled(kind, wrapper_style, open, None)
+}
+
+/// [`build`], with `dd_style` as the dropdown's own inline style.
+fn build_styled(
+    kind: Kind,
+    wrapper_style: &'static str,
+    open: Signal<bool>,
+    dd_style: Option<&'static str>,
+) {
     mount(move |scope| {
         let trigger = scope.create_element("div");
         trigger.set_attribute("style", "width: 40px; height: 20px;");
@@ -91,6 +101,9 @@ fn build(kind: Kind, wrapper_style: &'static str, open: Signal<bool>) {
             Kind::Menu => {
                 let t = DropdownMenuTarget.render(scope, &[trigger]);
                 let d = DropdownMenuDropdown.render(scope, &rows);
+                if let Some(st) = dd_style {
+                    d.set_attribute("style", st);
+                }
                 DropdownMenu {
                     opened_fn: Some(opened_fn),
                     ..Default::default()
@@ -100,6 +113,9 @@ fn build(kind: Kind, wrapper_style: &'static str, open: Signal<bool>) {
             Kind::Popover => {
                 let t = PopoverTarget.render(scope, &[trigger]);
                 let d = PopoverDropdown.render(scope, &rows);
+                if let Some(st) = dd_style {
+                    d.set_attribute("style", st);
+                }
                 Popover {
                     opened_fn: Some(opened_fn),
                     ..Default::default()
@@ -195,4 +211,32 @@ fn a_menu_that_fits_is_not_moved() {
             .is_none_or(|s| !s.contains("max-height")),
         "not capped"
     );
+}
+
+/// Review of #1812, F1: the caller's own `max-height` on the panel survives
+/// opening (it fits, so nothing is capped), and so does it after a reopen.
+#[wasm_bindgen_test]
+fn a_callers_max_height_survives_opening() {
+    let open = Signal::new(false);
+    build_styled(
+        Kind::Menu,
+        "position: fixed; left: 30px; top: 20px; line-height: 0;",
+        open,
+        Some("max-height: 100px; overflow-y: auto"),
+    );
+    for round in 0..2 {
+        open.set(true);
+        let p = panel(Kind::Menu).get_bounding_client_rect();
+        assert!(
+            (p.height() - 100.0).abs() < 0.6,
+            "open {round}: the caller's 100px cap holds, got {}",
+            p.height()
+        );
+        let style = panel(Kind::Menu).get_attribute("style").unwrap_or_default();
+        assert!(
+            style.contains("max-height: 100px"),
+            "open {round}: {style:?}"
+        );
+        open.set(false);
+    }
 }

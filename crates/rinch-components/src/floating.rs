@@ -191,17 +191,20 @@ pub(crate) struct Floating {
     pub center_translates: bool,
 }
 
-/// The inline properties a placement writes, cleared at the next open.
-const PLACED: &[&str] = &[
-    "top",
-    "bottom",
-    "left",
-    "right",
-    "width",
-    "box-sizing",
-    "max-height",
-    "overflow-y",
-];
+/// One inline property a placement wrote over the dropdown's own.
+struct Written {
+    prop: &'static str,
+    /// The inline value the dropdown had before (the caller's), if any.
+    caller: Option<String>,
+    /// What the placement wrote.
+    ours: String,
+}
+
+/// The properties placements wrote, so that only those are taken back and
+/// the caller's own inline values come back with them (review of #1812: a
+/// `max-height` or `width` the caller set inline on the dropdown was wiped
+/// by the first open).
+type Record = RefCell<Vec<Written>>;
 
 /// What one open of a dropdown knows.
 #[derive(Default)]
@@ -224,6 +227,7 @@ pub(crate) fn arm(f: Floating, opened: Rc<dyn Fn() -> bool>) {
     let f = Rc::new(f);
     let current = Rc::new(Cell::new(f.side));
     let state: Rc<RefCell<Open>> = Rc::new(RefCell::new(Open::default()));
+    let written: Rc<Record> = Rc::new(RefCell::new(Vec::new()));
     let was_open = Cell::new(false);
     Effect::new(move || {
         let open = opened();
@@ -241,8 +245,9 @@ pub(crate) fn arm(f: Floating, opened: Rc<dyn Fn() -> bool>) {
             return;
         }
         *state.borrow_mut() = Open::default();
-        remove_styles(&dd, PLACED);
-        let placed = !pending && measure_and_place(&f, &dd, &current, &state);
+        // Measured as the caller styled it, not as the last open left it.
+        restore(&dd, &written, None);
+        let placed = !pending && measure_and_place(&f, &dd, &current, &state, &written);
         if !placed {
             // Measured after the next layout, which lays out the placement
             // again before that frame is painted (desktop:
@@ -257,6 +262,7 @@ pub(crate) fn arm(f: Floating, opened: Rc<dyn Fn() -> bool>) {
         let f = f.clone();
         let current = current.clone();
         let state = state.clone();
+        let written = written.clone();
         Effect::new(move || {
             let d = dd_bounds.get();
             let _ = root_bounds.get();
@@ -268,7 +274,7 @@ pub(crate) fn arm(f: Floating, opened: Rc<dyn Fn() -> bool>) {
                 // would leave the dropdown waiting for a change of bounds
                 // that never comes.
                 if (d.width <= 0.0 && d.height <= 0.0)
-                    || !measure_and_place(&f, &dd, &current, &state)
+                    || !measure_and_place(&f, &dd, &current, &state, &written)
                 {
                     return;
                 }
@@ -293,7 +299,7 @@ pub(crate) fn arm(f: Floating, opened: Rc<dyn Fn() -> bool>) {
             {
                 return;
             }
-            place(&f, &dd, &current, &state, size, now);
+            place(&f, &dd, &current, &state, &written, size, now);
         });
     });
 }
@@ -315,6 +321,7 @@ fn measure_and_place(
     dd: &NodeHandle,
     current: &Cell<Side>,
     state: &RefCell<Open>,
+    written: &Record,
 ) -> bool {
     let Some(anchor) = root_rect(&f.root) else {
         return false;
@@ -326,7 +333,7 @@ fn measure_and_place(
         return false;
     }
     state.borrow_mut().size = Some((d.width, d.height));
-    place(f, dd, current, state, (d.width, d.height), anchor)
+    place(f, dd, current, state, written, (d.width, d.height), anchor)
 }
 
 /// Place a `size` dropdown against `anchor`.
@@ -335,6 +342,7 @@ fn place(
     dd: &NodeHandle,
     current: &Cell<Side>,
     state: &RefCell<Open>,
+    written: &Record,
     size: (f32, f32),
     anchor: Rect,
 ) -> bool {
@@ -368,14 +376,18 @@ fn place(
         } else {
             ("auto", "100%")
         };
-        dd.set_styles(&[
-            ("top", top),
-            ("bottom", bottom),
-            ("left", &left),
-            ("right", "auto"),
-            ("width", &width),
-            ("box-sizing", "border-box"),
-        ]);
+        write(
+            dd,
+            written,
+            &[
+                ("top", top),
+                ("bottom", bottom),
+                ("left", &left),
+                ("right", "auto"),
+                ("width", &width),
+                ("box-sizing", "border-box"),
+            ],
+        );
     } else {
         let shift = if centred { h / 2.0 } else { 0.0 };
         let top = px(dec.cross - anchor.y + shift);
@@ -384,18 +396,28 @@ fn place(
         } else {
             ("auto", "100%")
         };
-        dd.set_styles(&[
-            ("left", left),
-            ("right", right),
-            ("top", &top),
-            ("bottom", "auto"),
-            ("width", &width),
-            ("box-sizing", "border-box"),
-        ]);
+        write(
+            dd,
+            written,
+            &[
+                ("left", left),
+                ("right", right),
+                ("top", &top),
+                ("bottom", "auto"),
+                ("width", &width),
+                ("box-sizing", "border-box"),
+            ],
+        );
     }
+    // The size was measured under the caller's own `max-height`, so a cap
+    // is only written below it: min(the caller's, the room).
     match dec.cap {
-        Some(cap) => dd.set_styles(&[("max-height", &px(cap)), ("overflow-y", "auto")]),
-        None => remove_styles(dd, &["max-height", "overflow-y"]),
+        Some(cap) => write(
+            dd,
+            written,
+            &[("max-height", &px(cap)), ("overflow-y", "auto")],
+        ),
+        None => restore(dd, written, Some(&["max-height", "overflow-y"])),
     }
     true
 }
@@ -428,6 +450,60 @@ pub(crate) fn find_dropdown(
         }
     }
     None
+}
+
+/// `node`'s inline value for `prop`.
+fn inline_value(node: &NodeHandle, prop: &str) -> Option<String> {
+    let style = node.get_attribute("style")?;
+    rinch_core::dom::split_declarations(&style)
+        .into_iter()
+        .find(|(k, _)| k == prop)
+        .map(|(_, v)| v)
+}
+
+/// Write `props` inline on `dd`, recording what each one replaced.
+fn write(dd: &NodeHandle, written: &Record, props: &[(&'static str, &str)]) {
+    {
+        let mut w = written.borrow_mut();
+        for &(prop, value) in props {
+            match w.iter_mut().find(|e| e.prop == prop) {
+                Some(e) => e.ours = value.to_string(),
+                None => w.push(Written {
+                    prop,
+                    caller: inline_value(dd, prop),
+                    ours: value.to_string(),
+                }),
+            }
+        }
+    }
+    dd.set_styles(props);
+}
+
+/// Take back what placements wrote (`only` those properties, or all): each
+/// property still holding the placement's value gets the caller's value
+/// back, or goes. One the caller has written since is left as it is.
+fn restore(dd: &NodeHandle, written: &Record, only: Option<&[&str]>) {
+    let taken: Vec<Written> = {
+        let mut w = written.borrow_mut();
+        let (take, keep): (Vec<_>, Vec<_>) = w
+            .drain(..)
+            .partition(|e| only.is_none_or(|o| o.contains(&e.prop)));
+        *w = keep;
+        take
+    };
+    let mut gone = Vec::new();
+    for e in taken {
+        if inline_value(dd, e.prop).as_deref() != Some(e.ours.as_str()) {
+            continue;
+        }
+        match e.caller {
+            Some(v) => dd.set_style(e.prop, &v),
+            None => gone.push(e.prop),
+        }
+    }
+    if !gone.is_empty() {
+        remove_styles(dd, &gone);
+    }
 }
 
 /// Remove `props` from `node`'s inline style, leaving the rest as written.

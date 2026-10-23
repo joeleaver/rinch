@@ -1690,6 +1690,30 @@ impl RinchApp {
             d.resolve_layout(viewport_width, viewport_height);
         }
 
+        self.after_layout(doc, viewport_width, viewport_height);
+
+        // Refresh element-bounds signals against the freshly-computed layout,
+        // and lay out again what their subscribers wrote.
+        self.refresh_bounds_signals();
+        self.settle_bounds_writes(viewport_width, viewport_height);
+
+        self.scene_dirty = true;
+
+        true
+    }
+
+    /// What follows a layout in a frame, before the bounds are published:
+    /// owed scrolls, the editor's virtualization and overlay passes (which may
+    /// lay out again), and the scroll events for offsets the layout clamped.
+    /// Shared by the frame's layout and every [`Self::settle_bounds_writes`]
+    /// pass, so a layout a bounds subscriber caused leaves no caret, selection
+    /// or margin anchor measured against the one before it.
+    fn after_layout(
+        &mut self,
+        doc: &Rc<RefCell<RinchDocument>>,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) {
         // Apply deferred scroll-into-view now that layout is fresh
         self.apply_scroll_into_view();
 
@@ -1743,15 +1767,6 @@ impl RinchApp {
         // Dispatch deferred scroll events for offsets the layout clamped, now
         // that the last resolve of the frame has run (#144).
         self.dispatch_scroll_clamp_events();
-
-        // Refresh element-bounds signals against the freshly-computed layout,
-        // and lay out again what their subscribers wrote.
-        self.refresh_bounds_signals();
-        self.settle_bounds_writes(viewport_width, viewport_height);
-
-        self.scene_dirty = true;
-
-        true
     }
 
     /// Lay out again what bounds-signal subscribers wrote, in the frame that
@@ -1776,8 +1791,17 @@ impl RinchApp {
                 let _ = d.take_dirty_nodes();
                 d.resolve_layout(viewport_width, viewport_height);
             }
-            self.dispatch_scroll_clamp_events();
+            self.after_layout(&doc, viewport_width, viewport_height);
             self.refresh_bounds_signals();
+        }
+        if let Some(doc) = &self.doc {
+            let d = doc.borrow();
+            if !d.tree.dirty_nodes.is_empty() || d.tree.styles_dirty || d.layout_pending() {
+                tracing::debug!(
+                    "bounds subscribers still writing after {BOUNDS_SETTLE_PASSES} settle \
+                     passes; the rest is laid out next frame"
+                );
+            }
         }
     }
 

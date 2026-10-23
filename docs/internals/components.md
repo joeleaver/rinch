@@ -315,7 +315,13 @@ the `--opened` CSS hooks and scrolling with the page are unchanged.
 - **Application:** inline insets on the dropdown element (the side at `100%`,
   the cross axis in px) plus a pinned `width` and `box-sizing: border-box`
   (an absolute box's shrink-to-fit width depends on its `left`), and
-  `max-height`/`overflow-y` for a cap. Writing the insets inline on every open,
+  `max-height`/`overflow-y` for a cap. Each property written is recorded with
+  the inline value it replaced (`floating::write`); the next open, and an
+  uncapped re-place for the cap, take back only those (`floating::restore`):
+  the caller's value comes back, or the property goes, and one the caller
+  wrote since is left alone. So the dropdown is measured under the caller's
+  own `max-height`/`width`, and a cap is written only below it (review of
+  #1812). Writing the insets inline on every open,
   not only when something moved, is what keeps a nested menu's panel immune
   to the outer root's position class: the position rules are descendant
   rules, so an outer menu flipped to `--top` would otherwise pull an inner

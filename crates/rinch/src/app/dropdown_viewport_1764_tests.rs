@@ -36,6 +36,20 @@ enum Kind {
 /// A trigger box at `(x, y)` (40x20) holding a `kind` whose dropdown holds
 /// `rows` 200x30 rows, opened by `open`.
 fn mount(kind: Kind, x: f32, y: f32, rows: usize, open: Signal<bool>, position: &str) -> RinchApp {
+    mount_styled(kind, x, y, rows, open, position, None)
+}
+
+/// [`mount`], with `dd_style` as the dropdown's own inline style (what a
+/// caller's `style:` on `DropdownMenuDropdown` / `PopoverDropdown` writes).
+fn mount_styled(
+    kind: Kind,
+    x: f32,
+    y: f32,
+    rows: usize,
+    open: Signal<bool>,
+    position: &str,
+    dd_style: Option<&'static str>,
+) -> RinchApp {
     let position = position.to_string();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let trigger = scope.create_element("div");
@@ -51,6 +65,9 @@ fn mount(kind: Kind, x: f32, y: f32, rows: usize, open: Signal<bool>, position: 
             Kind::Menu => {
                 let target = DropdownMenuTarget.render(scope, &[trigger]);
                 let dropdown = DropdownMenuDropdown.render(scope, &items);
+                if let Some(st) = dd_style {
+                    dropdown.set_attribute("style", st);
+                }
                 DropdownMenu {
                     opened_fn: Some(opened_fn),
                     position: position.clone(),
@@ -61,6 +78,9 @@ fn mount(kind: Kind, x: f32, y: f32, rows: usize, open: Signal<bool>, position: 
             Kind::Popover => {
                 let target = PopoverTarget.render(scope, &[trigger]);
                 let dropdown = PopoverDropdown.render(scope, &items);
+                if let Some(st) = dd_style {
+                    dropdown.set_attribute("style", st);
+                }
                 Popover {
                     opened_fn: Some(opened_fn),
                     position: position.clone(),
@@ -346,4 +366,99 @@ fn a_nested_menu_opens_below_its_own_trigger_when_the_outer_flipped() {
             && (inner_panel.y - (inner_root_box.y + inner_root_box.height + 4.0)).abs() < 0.6,
         "inner below its own trigger: panel {inner_panel:?}, trigger {inner_root_box:?}"
     );
+}
+
+fn inline_style(app: &RinchApp, kind: Kind) -> String {
+    let id = find(app, dropdown_class(kind));
+    let doc = app.doc.as_ref().unwrap();
+    let d = doc.borrow();
+    d.tree.nodes[id]
+        .attributes
+        .get("style")
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Review of #1812, F1: a caller's own `max-height` on the dropdown survives
+/// the open — it fits, so nothing is capped and the caller's 100px holds.
+#[test]
+fn a_callers_max_height_survives_an_open_where_it_fits() {
+    let open = Signal::new(false);
+    let mut app = mount_styled(
+        Kind::Menu,
+        120.0,
+        40.0,
+        10,
+        open,
+        "",
+        Some("max-height: 100px; overflow-y: auto"),
+    );
+    open.set(true);
+    app.resolve_and_repaint(VW, VH);
+    let (b, _) = painted(&app, Kind::Menu);
+    assert_close(b, (120.0, 64.0, 222.0, 100.0), "capped by the caller");
+    let style = inline_style(&app, Kind::Menu);
+    assert!(
+        style.contains("max-height: 100px") && style.contains("overflow-y: auto"),
+        "the caller's declarations are still there: {style:?}"
+    );
+}
+
+/// A cap below the caller's own is the smaller of the two: room 248 under a
+/// caller's 400px, and the caller's 400px comes back on the next open.
+#[test]
+fn a_cap_is_the_smaller_of_the_callers_and_the_room() {
+    let open = Signal::new(true);
+    let mut app = mount_styled(
+        Kind::Menu,
+        100.0,
+        200.0,
+        20,
+        open,
+        "",
+        Some("max-height: 400px; overflow-y: auto"),
+    );
+    let (b, _) = painted(&app, Kind::Menu);
+    // 400 fits neither above (184) nor below (248): capped to the room below.
+    assert_close(b, (100.0, 224.0, 222.0, 248.0), "the room wins");
+    open.set(false);
+    app.resolve_and_repaint(VW, VH);
+    let style = inline_style(&app, Kind::Menu);
+    assert!(
+        style.contains("max-height: 248px"),
+        "still placed while closed: {style:?}"
+    );
+    open.set(true);
+    app.resolve_and_repaint(VW + 1.0, VH);
+    let style = inline_style(&app, Kind::Menu);
+    assert!(
+        style.contains("overflow-y: auto") && !style.contains("max-height: 400px"),
+        "capped again on reopen: {style:?}"
+    );
+}
+
+/// A caller's `width` on a popover's dropdown survives the second open (the
+/// first open's pinned width used to be wiped, and the caller's with it).
+#[test]
+fn a_callers_width_survives_reopening() {
+    let open = Signal::new(false);
+    let mut app = mount_styled(
+        Kind::Popover,
+        300.0,
+        40.0,
+        3,
+        open,
+        "",
+        Some("width: 300px"),
+    );
+    for frame in 0..3 {
+        open.set(true);
+        app.resolve_and_repaint(VW + frame as f32, VH);
+        let (b, _) = painted(&app, Kind::Popover);
+        assert!((b.width - 300.0).abs() < 0.6, "open {frame}: {b:?}");
+        open.set(false);
+        app.resolve_and_repaint(VW + frame as f32 + 0.5, VH);
+    }
+    let style = inline_style(&app, Kind::Popover);
+    assert!(style.contains("width: 300px"), "{style:?}");
 }

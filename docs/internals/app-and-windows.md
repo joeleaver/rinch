@@ -583,8 +583,13 @@ refresh (at most one per frame). Pins:
 `refresh_bounds_signals` with `settle_bounds_writes`: while the document has a
 change its layout does not show (`dirty_nodes`, `styles_dirty`,
 `DomDocument::layout_pending`), it lays out again and publishes the bounds
-again, at most `BOUNDS_SETTLE_PASSES` (3) times; a subscriber that never
-settles carries on next frame, as every one did before. So a placement written
+again, at most `BOUNDS_SETTLE_PASSES` (3) times (a `debug!` line says when the
+cap is hit); a subscriber that never settles carries on next frame, as every
+one did before. Each pass runs the frame's own post-layout work
+(`RinchApp::after_layout`: owed scrolls, the editor's virtualization and
+caret/selection/margin overlay pass, clamped-scroll events), so a subscriber's
+write that re-wraps an editor leaves no overlay measured against the layout
+before it. So a placement written
 from a measurement (a dropdown kept inside the viewport, the #529 spacer) is
 never painted at its old geometry. The cost is a layout per pass, only in a
 frame where a subscriber wrote. Pins:

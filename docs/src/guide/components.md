@@ -745,8 +745,11 @@ from the edge, when it runs past the left or right edge (top or bottom, for a
 with more room with a `max-height` and `overflow-y: auto`. A dropdown that fits
 is left exactly where its position puts it. The placement is written inline on
 the dropdown element (`top`/`bottom`/`left`/`right`, a pinned `width`, and the
-cap), so a `left`, `top` or `width` you set inline on `DropdownMenuDropdown` /
-`PopoverDropdown` is replaced while it is open; style a child for layout. It
+cap). Only what it writes is taken back at the next open, with your own
+inline values (a `width`, `left`, `max-height` you set on `DropdownMenuDropdown`
+/ `PopoverDropdown`) restored: the dropdown is measured as you styled it, a
+`max-height` of yours still caps it (the cap written for a lack of room is never
+above yours), and a `width` of yours is what gets pinned. It
 follows the trigger while open (a scroll, an outer menu placing itself), but a
 window resize or a change of the dropdown's own content keeps the placement
 until the next open. Only the viewport is a boundary, not a clipping ancestor.
