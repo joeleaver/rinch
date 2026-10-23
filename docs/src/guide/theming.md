@@ -224,7 +224,10 @@ consumer shift the glyph post-layout, calibrated against Chrome 153 and the
 bundled Inter at a 16px parent font-size (exact only there — see that doc for
 the numbers). The element's background and border move with its text (#1817),
 and an `overflow: hidden` box clips shifted text that reaches past it. A wavy
-underline under shifted text stays on the line. `top`/`text-top`/`middle`/`bottom`/`text-bottom` parse but still
+underline is drawn on the line whoever declares it. That matches Chrome for a
+wave propagated from an ancestor, but a wave declared on the shifted element
+itself moves with its text in Chrome and stays on the line in rinch (older
+than #1817; the clip check and damage measure it where rinch draws it). `top`/`text-top`/`middle`/`bottom`/`text-bottom` parse but still
 lay out as `baseline`, and the shift does not grow the line box the way
 Chrome's does, both filed as #1357.
 

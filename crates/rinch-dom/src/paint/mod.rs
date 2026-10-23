@@ -36,9 +36,9 @@ use layer_bounds::{
     clip_cuts_nothing, opacity_layer_shape, subtree_is_entirely_outside, subtree_paint_extent,
 };
 use svg::*;
+pub(crate) use text::take_span_line_visits;
 use text::*;
 pub use text::{set_reference_text_walk, take_text_line_walks};
-pub(crate) use text::take_span_line_visits;
 pub use text_shadow::{
     TAP_GLYPH_BUDGET, TAP_GLYPHS_PER_SHADOW, clear_text_shadow_cache, force_tapped_text_shadows,
     text_shadow_scratch_size,

@@ -3642,11 +3642,7 @@ fn a_colour_tick_on_every_pill_refreshes_the_paragraph_once() {
             .map(|t| NodeId(doc.tree.get(t.0).unwrap().parent.unwrap()))
             .collect();
         for s in &spans {
-            doc.set_attribute(
-                *s,
-                "style",
-                "transition: background-color 100000s linear",
-            );
+            doc.set_attribute(*s, "style", "transition: background-color 100000s linear");
         }
         let _ = cold_frame(&mut doc);
         doc.tree.consume_paint_dirty();
