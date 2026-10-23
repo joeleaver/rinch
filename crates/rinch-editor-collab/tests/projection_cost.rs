@@ -424,8 +424,9 @@ fn a_local_keystroke_after_a_remote_change_walks_no_block_without_an_embed() {
 
 /// A `rows × 4` table whose cells read `row {r} column {c}`.
 fn table(s: &Schema, rows: usize) -> Node {
-    let branch =
-        |name: &str, children: Vec<Node>| s.branch(name, Fragment::from_children(children)).unwrap();
+    let branch = |name: &str, children: Vec<Node>| {
+        s.branch(name, Fragment::from_children(children)).unwrap()
+    };
     branch(
         "table",
         (0..rows)
@@ -433,7 +434,9 @@ fn table(s: &Schema, rows: usize) -> Node {
                 branch(
                     "table_row",
                     (0..4)
-                        .map(|c| branch("table_cell", vec![para(s, &format!("row {r} column {c}"))]))
+                        .map(|c| {
+                            branch("table_cell", vec![para(s, &format!("row {r} column {c}"))])
+                        })
                         .collect(),
                 )
             })

@@ -21,7 +21,9 @@
 //! concurrent deletions reads as absent, so it is skipped by the diff and by the count
 //! gate alike. The top level finds its void containers only when a remote merge has
 //! left one (`CollabDoc::top_void`), so a keystroke in a document without one reads the
-//! block it changed and nothing else (`tests/projection_cost.rs`). Any node outside the supported scope (a task list, a ragged table) anywhere in
+//! block it changed and nothing else (`tests/projection_cost.rs`). A keystroke in a
+//! cell of a top-level table reads and writes that cell's blocks, not the table
+//! (`CollabDoc::project_cell_edit`, #1241). Any node outside the supported scope (a task list, a ragged table) anywhere in
 //! `before` or `after` fails loud ([`CollabError::Unsupported`], design A22).
 //!
 //! The diff trusts `before` to describe what the CRDT holds — which is the invariant —
@@ -43,8 +45,9 @@ use rinch_editor_core::{Node, Transaction};
 use crate::atoms::{carry_over, find_atoms, overlay_scope};
 use crate::error::{CollabError, Result};
 use crate::projection::{
-    CollabDoc, RawIndex, common_runs, identity_runs, insert_node, model_atom_scope, model_atoms,
-    read_node, read_node_data, visible_indices, write_child_diff,
+    CollabDoc, RawIndex, child_map, common_runs, identity_runs, insert_node, model_atom_scope,
+    model_atoms, node_content, read_node, read_node_data, reconcile_child_list, visible_indices,
+    write_child_diff,
 };
 
 impl CollabDoc {
@@ -160,6 +163,24 @@ impl CollabDoc {
         let pre_mid = bn - prefix - suffix; // changed pre blocks
         let post_mid = an - prefix - suffix; // changed post blocks
         let common = pre_mid.min(post_mid);
+
+        // One cell of one table changed (a keystroke in a cell): only that cell's
+        // blocks are read, validated and written (#1241).
+        if pre_mid == 1
+            && post_mid == 1
+            && crate::table::cell_path_enabled()
+            && let Some(cell) =
+                crate::table::one_changed_cell(before.child(prefix), after.child(prefix))
+            && let Some(at) = raw.get(prefix)
+            && self.project_cell_edit(
+                at,
+                (before.child(prefix), after.child(prefix)),
+                &cell,
+                shares_a_block || edit,
+            )?
+        {
+            return Ok(());
+        }
 
         // Pre-pass gate 2, model side (design A22 fail-loud must be all-or-nothing):
         // read and validate EVERY model block this change will touch — the `after`
@@ -288,6 +309,80 @@ impl CollabDoc {
             }
         }
         Ok(())
+    }
+
+    /// Project an edit of one cell of the table at raw index `at` of the top level
+    /// (`table`, before and after; [`crate::table::one_changed_cell`]): what the
+    /// whole-table reconcile writes for it, read and written in that cell alone, so a
+    /// keystroke in a cell costs what one in a paragraph costs whatever the table's size
+    /// (#1241). `false`, having written nothing, when the edit is not one this path
+    /// takes; the whole-table reconcile then runs, and answers what it always did.
+    ///
+    /// The whole-table reconcile, for such an edit, pairs every row and column with
+    /// itself, leaves every other cell alone, and reconciles the cell's blocks as a
+    /// child list with the cell's model before and after ([`reconcile_child_list`]),
+    /// which is the call made here, on the cell map [`crate::table::locate_cell`]
+    /// finds. The rest is what `project_change` hands that call: the cell's blocks as
+    /// targets (read and validated before anything is written, as gate 2 reads the
+    /// table's), the non-inclusive marks of the cell before and after (the table's
+    /// other cells' marks are on blocks this write does not touch), and an atom scope
+    /// with no atom in it, since `model_atoms` does not descend into a table. Its
+    /// `related` is the change's: `related` here is the part of it known without
+    /// walking the table (a block or the editor's proof), and otherwise the cell
+    /// itself sharing an inline node — which the table then shares too; a cell that
+    /// shares none leaves the answer to the whole-table path. The CRDT side of gate 3
+    /// is `reconcile_child_list`'s own first read: every block of the cell, before any
+    /// write.
+    fn project_cell_edit(
+        &mut self,
+        at: u32,
+        (before, after): (&Node, &Node),
+        cell: &crate::table::CellEdit<'_>,
+        related: bool,
+    ) -> Result<bool> {
+        if !(related || shares_an_inline_node(cell.before, cell.after)) {
+            return Ok(false);
+        }
+        // Gate 2 for the cell. An error is left to the whole-table path, which meets
+        // it in its own read and reports it as it always has.
+        let Ok(targets) = (0..cell.after.child_count())
+            .map(|i| read_node(cell.after.child(i)))
+            .collect::<Result<Vec<_>>>()
+        else {
+            return Ok(false);
+        };
+        let epoch = self.epoch.load(std::sync::atomic::Ordering::Relaxed);
+        let content = {
+            let txn = self.doc.transact();
+            let Some(node) = child_map(&txn, &self.content, at) else {
+                return Ok(false);
+            };
+            let Some(map) = crate::table::locate_cell(&txn, self.uid, epoch, &node, before, cell)
+            else {
+                return Ok(false);
+            };
+            match node_content(&txn, &map) {
+                Some(content) => content,
+                None => return Ok(false),
+            }
+        };
+        let mut per_char = BTreeSet::new();
+        non_inclusive_marks(cell.before, &mut per_char);
+        non_inclusive_marks(cell.after, &mut per_char);
+        let _atoms = model_atom_scope(&[], &[], true);
+        {
+            let mut txn = self.doc.transact_mut();
+            reconcile_child_list(
+                &mut txn,
+                &content,
+                &targets,
+                Some((cell.before, cell.after)),
+                &per_char,
+            )?;
+        }
+        let epoch = self.epoch.load(std::sync::atomic::Ordering::Relaxed);
+        crate::table::rekey_cell_index(self.uid, before, after, epoch);
+        Ok(true)
     }
 
     /// Insert every block of `doc` into a CRDT that holds **no** blocks — the recovery

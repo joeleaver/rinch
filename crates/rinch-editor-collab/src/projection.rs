@@ -235,6 +235,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use yrs::types::Attrs as YAttrs;
@@ -256,6 +257,18 @@ use crate::table::{
     OversizedTable, TABLE, TableData, is_table_map, lock_oversized, placeholder_reads,
     read_model_table, read_table_data, reconcile_table, table_map_is_void, write_table,
 };
+
+/// What [`CollabDoc::blank`] builds: the document, its outbox and the observer filling
+/// it, the `atoms` map's read cache and the observer dropping it, and the count of
+/// transactions that changed the document ([`CollabDoc::epoch`]).
+type Blank = (
+    Doc,
+    Outbox,
+    Subscription,
+    OverlayCache,
+    Subscription,
+    Arc<AtomicU64>,
+);
 
 /// yrs key/root names used by the projection.
 pub(crate) const CONTENT: &str = "content";
@@ -553,6 +566,18 @@ pub struct CollabDoc {
     pub(crate) overlay: OverlayCache,
     /// Keeps that observer alive.
     _atoms_changed: Subscription,
+    /// How many transactions have changed the CRDT, local or remote: the update
+    /// observer counts every one. The table cell index (`table::locate_cell`) is valid
+    /// at one value of it, so no write it did not make itself can leave it stale.
+    pub(crate) epoch: Arc<AtomicU64>,
+    /// This document's key in the table cell index, unique in the process.
+    pub(crate) uid: u64,
+}
+
+impl Drop for CollabDoc {
+    fn drop(&mut self) {
+        crate::table::forget_cell_index(self.uid);
+    }
 }
 
 // `Subscription` is not `Debug`, and neither is the observer closure behind it, so the
@@ -588,9 +613,7 @@ impl CollabDoc {
     /// produce colliding block ids and corrupt the shared document. Only the test-only
     /// [`crate::testing`] seam passes `Some`, and only so a fuzz trial replays
     /// bit-for-bit (issue #214).
-    fn blank(
-        client_id: Option<ClientID>,
-    ) -> (Doc, Outbox, Subscription, OverlayCache, Subscription) {
+    fn blank(client_id: Option<ClientID>) -> Blank {
         let mut options = Options {
             offset_kind: OffsetKind::Utf16,
             ..Default::default()
@@ -602,11 +625,15 @@ impl CollabDoc {
         let outbox: Outbox = Arc::new(Mutex::new(Vec::new()));
         let sink = outbox.clone();
         let remote = Origin::from(ENGINE_APPLY_ORIGIN);
+        let epoch = Arc::new(AtomicU64::new(0));
+        let count = epoch.clone();
         // yrs does not fire this for a transaction that changed nothing, so the outbox
         // never collects an empty update and "outbox is empty" really does mean "nothing
-        // to send".
+        // to send". It fires for every other one, local or remote, which is what makes
+        // it the place to count them ([`CollabDoc::epoch`]).
         let updates = doc
             .observe_update_v1(move |txn, e| {
+                count.fetch_add(1, Ordering::Relaxed);
                 if txn.origin() != Some(&remote) {
                     lock_outbox(&sink).push(e.update.clone());
                 }
@@ -619,7 +646,7 @@ impl CollabDoc {
         let atoms_changed = yrs::Observable::observe(&doc.get_or_insert_map(ATOMS), move |_, _| {
             invalidate(&stale)
         });
-        (doc, outbox, updates, overlay, atoms_changed)
+        (doc, outbox, updates, overlay, atoms_changed, epoch)
     }
 
     /// Build a fresh projection from a model document. Fails loud
@@ -641,7 +668,7 @@ impl CollabDoc {
             nodes.push(read_node(doc.child(i))?);
         }
 
-        let (ydoc, outbox, updates, overlay, atoms_changed) = CollabDoc::blank(client_id);
+        let (ydoc, outbox, updates, overlay, atoms_changed, epoch) = CollabDoc::blank(client_id);
         // Both roots are resolved before the write transaction opens: resolving one takes
         // exclusive store access and panics if a transaction is already live.
         let content = ydoc.get_or_insert_array(CONTENT);
@@ -671,6 +698,8 @@ impl CollabDoc {
             _updates: updates,
             overlay,
             _atoms_changed: atoms_changed,
+            epoch,
+            uid: crate::atom_cache::next_uid(),
         })
     }
 
@@ -712,7 +741,7 @@ impl CollabDoc {
         client_id: Option<ClientID>,
     ) -> Result<CollabDoc> {
         let update = Update::decode_v1(bytes)?;
-        let (ydoc, outbox, updates, overlay, atoms_changed) = CollabDoc::blank(client_id);
+        let (ydoc, outbox, updates, overlay, atoms_changed, epoch) = CollabDoc::blank(client_id);
         {
             let mut txn = ydoc.transact_mut_with(Origin::from(ENGINE_APPLY_ORIGIN));
             txn.apply_update(update)?;
@@ -749,6 +778,8 @@ impl CollabDoc {
             _updates: updates,
             overlay,
             _atoms_changed: atoms_changed,
+            epoch,
+            uid: crate::atom_cache::next_uid(),
         })
     }
 
@@ -4094,7 +4125,7 @@ mod tests {
 
     /// Encode a whole foreign document as an update, for the `load` guard cases.
     fn foreign_update(build: impl FnOnce(&Doc)) -> Vec<u8> {
-        let (doc, _outbox, _sub, _overlay, _atoms) = CollabDoc::blank(None);
+        let (doc, _outbox, _sub, _overlay, _atoms, _epoch) = CollabDoc::blank(None);
         build(&doc);
         doc.transact()
             .encode_state_as_update_v1(&StateVector::default())

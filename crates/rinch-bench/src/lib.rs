@@ -1296,7 +1296,10 @@ fn collab_table_state(
             })
             .collect(),
     );
-    let doc = branch("doc", vec![para("before the table"), table, para("after it")]);
+    let doc = branch(
+        "doc",
+        vec![para("before the table"), table, para("after it")],
+    );
     let mut plugins: Vec<Rc<dyn Plugin>> = default_plugins();
     plugins.push(Rc::new(rinch_editor_collab::CollabPlugin));
     EditorState::create(schema.clone(), doc, plugins)
