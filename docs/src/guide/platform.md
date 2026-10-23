@@ -369,7 +369,8 @@ the desktop-only, path-based forms.
 there, then the drop reaches an editor that takes pictures and the
 `onfiledrop` / `ondropfiles` handler under the point. The paths are passed
 through unchecked, so a missing file fails in the app's own read. There is no
-web equivalent yet.
+web equivalent yet. The app's debug server takes one client at a time: a script that talks to it
+directly needs the MCP server disconnected first.
 
 ---
 
