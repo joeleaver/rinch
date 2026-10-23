@@ -679,7 +679,7 @@ fn test_background_radial_gradient() {
         "background should be RadialGradient variant"
     );
 
-    if let BackgroundValue::RadialGradient { stops } = &node.computed_style.background {
+    if let BackgroundValue::RadialGradient { stops, .. } = &node.computed_style.background {
         assert!(
             stops.len() >= 2,
             "radial gradient should have at least 2 stops"

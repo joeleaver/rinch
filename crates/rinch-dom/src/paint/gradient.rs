@@ -18,6 +18,9 @@ use peniko::kurbo::{Affine, BezPath, Point, Rect, Shape};
 use peniko::{Brush, Extend, Fill, Gradient};
 
 use super::painter::{PaintShape, Painter};
+/// Peniko colour stops: an offset along the gradient and its colour.
+type Stops = Vec<(f32, AlphaColor<Srgb>)>;
+
 use crate::computed_style::{
     BackgroundValue, GradientStop, LengthPercentageValue, RadialExtent, RadialShape,
 };
@@ -88,7 +91,7 @@ fn resolve_stops(stops: &[GradientStop], len: f64, scale: f64) -> Vec<(f64, Alph
 fn span(
     resolved: &[(f64, AlphaColor<Srgb>)],
     repeating: bool,
-) -> Option<Result<(f64, f64, Vec<(f32, AlphaColor<Srgb>)>), AlphaColor<Srgb>>> {
+) -> Option<Result<(f64, f64, Stops), AlphaColor<Srgb>>> {
     let first = resolved.first()?.0;
     let last = resolved.last()?.0;
     let period = last - first;
@@ -182,9 +185,7 @@ fn gradient_brush(image: &BackgroundValue, tile: &Rect, scale: f64) -> Option<(B
             let (rx, ry) = radial_radii(*shape, cx, cy, w, h, scale, &lp);
             let center = Point::new(tile.x0 + cx, tile.y0 + cy);
             let resolved = resolve_stops(stops, rx, scale);
-            let Some(laid) = span(&resolved, *repeating) else {
-                return None;
-            };
+            let laid = span(&resolved, *repeating)?;
             if !(rx > 0.0 && ry > 0.0) {
                 // A degenerate ending shape (css-images-3 §3.2.1, roughly):
                 // every point is past the last stop.
@@ -250,10 +251,7 @@ fn color_at(resolved: &[(f64, AlphaColor<Srgb>)], p: f64) -> AlphaColor<Srgb> {
 /// peniko circle and its stops. A repeating gradient's stops span one
 /// period starting at radius 0 (rotated by where the period falls); a plain
 /// one's span `0..last`, cut at 0 when the first stop is before it.
-fn radial_stops(
-    resolved: &[(f64, AlphaColor<Srgb>)],
-    repeating: bool,
-) -> Option<(f64, Vec<(f32, AlphaColor<Srgb>)>)> {
+fn radial_stops(resolved: &[(f64, AlphaColor<Srgb>)], repeating: bool) -> Option<(f64, Stops)> {
     let first = resolved.first()?.0;
     let last = resolved.last()?.0;
     if repeating {
