@@ -345,8 +345,10 @@ input a shaped layout is built from:
   inline element's `nowrap`/`pre` reaches parley as `TextWrapMode::NoWrap`
   (it used to wrap), and so does the root's own (#1212): a `nowrap`/`pre`
   root is broken at the container's width whenever the nearest element of
-  some text in it wraps (`ifc::wraps_anywhere`), so a `normal` span inside a
-  `pre` root wraps, and only an IFC with no wrapping text at all is broken
+  some text in it wraps, or some element holding one of its atomic inlines
+  does (`ifc::wraps_anywhere`; the boxes since #1238), so a `normal` span
+  inside a `pre` root wraps, a `normal` span of inline-blocks breaks between
+  them, and only an IFC with no wrapping content at all is broken
   unconstrained. Such a paragraph is still **aligned within the content box**
   (#1237): with no width parley aligns each line within the paragraph's own
   widest line (a right-aligned `a` in a 50px `nowrap` box sat at 0, Chrome
@@ -365,9 +367,29 @@ input a shaped layout is built from:
   (`InlineLayout::align_width`; an auto-width root and a declared one a pixel
   wider break at the same width). It is not broken *at* that width:
   parley marks a break opportunity after every inline box whatever the wrap
-  mode, so a `nowrap` paragraph with a chip would wrap after it (#1238 is the
-  other side of that: a wrapping span of only inline boxes inside such a root
-  never wraps, because `wraps_anywhere` counts only text). Only for `right`,
+  mode, so a `nowrap` paragraph with a chip would wrap after it. **Soft wraps
+  next to atomic inlines follow `white-space`** (#1238): parley 0.11.1 allows
+  a break after every inline box, and before one whenever the character
+  before it wraps. Chrome 155 asks the `white-space` of the element the box
+  (or text) is in — not the inline-block's own, which styles its contents —
+  and, at an element's end, of the element it closes into: the opportunity
+  after a leaf (a text run or a box) is allowed when any element from its
+  parent up to the nearest one that also holds the next leaf wraps
+  (`ifc::WrapSeams`). So `aa<span normal>[1][2][3]</span>cc` in a `nowrap`
+  root breaks after each box but not between `aa` and `[1]`, a chip in
+  `nowrap` text does not wrap after itself, and boxes in a `nowrap` span
+  inside a wrapping root stay together. A paragraph broken at a width that
+  holds atomic inlines and any element that does not wrap gets the seams
+  (`UnhungSpaces::seams`), and the hang pass re-breaks a line of it where
+  CSS ends it (`ifc::css_line`, the #1426 edge-box re-break generalised:
+  `LineUnit::wrap_after`) when parley's break follows a leaf `white-space`
+  allows no wrap after (`wrap_allowed_before`), or the line overflows
+  (`line_overflows`: parley appends a box after text that does not wrap where
+  CSS breaks before it) — not an `overflow-wrap` line. A break parley found
+  inside a text run is kept, with its own UAX #14 analysis; a re-broken
+  line's opportunities inside text are `TextBreaks`', which has no
+  complex-script dictionaries. Pins:
+  `tests/atomic_inline_soft_wrap_1238_tests.rs` (Chrome 155). Only for `right`,
   `center` and `end` in a left-to-right block, and only in the paint layout
   (`build_inline_layout`'s `align_width`; a measure takes only sizes from its layout).
   Parley takes a break's wrap mode from the cluster before it,
