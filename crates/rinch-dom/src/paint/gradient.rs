@@ -224,7 +224,13 @@ fn gradient_brush(image: &BackgroundValue, tile: &Rect, scale: f64) -> Option<(B
 /// The colour at `p` along the line, interpolated premultiplied between the
 /// stops around it (the end colours past the ends).
 fn color_at(resolved: &[(f64, AlphaColor<Srgb>)], p: f64) -> AlphaColor<Srgb> {
-    let i = resolved.partition_point(|(q, _)| *q <= p);
+    color_near(resolved, p, false)
+}
+
+/// The colour at `p`, approached from below (`before`) or above: at a hard
+/// stop the two differ. [`color_at`] is the colour from above.
+fn color_near(resolved: &[(f64, AlphaColor<Srgb>)], p: f64, before: bool) -> AlphaColor<Srgb> {
+    let i = resolved.partition_point(|(q, _)| if before { *q < p } else { *q <= p });
     if i == 0 {
         return resolved[0].1;
     }
@@ -272,7 +278,15 @@ fn radial_stops(resolved: &[(f64, AlphaColor<Srgb>)], repeating: bool) -> Option
                 out.push((((shifted - start) / period) as f32, c));
             }
         }
-        out.push((1.0, color_at(resolved, start)));
+        // The period ends where it began, approached from below: at a hard
+        // stop on `start` that is the colour before it (#1798 review).
+        // (`start` on `first` is the period's end, `last`, from below.)
+        let close = if start <= first {
+            color_near(resolved, last, true)
+        } else {
+            color_near(resolved, start, true)
+        };
+        out.push((1.0, close));
         out.sort_by(|a, b| a.0.total_cmp(&b.0));
         return Some((period, out));
     }

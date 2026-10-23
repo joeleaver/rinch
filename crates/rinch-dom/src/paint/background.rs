@@ -592,7 +592,17 @@ fn fill_as_pattern(
             return false;
         }
         let (w, h) = (w as u32, h as u32);
-        let key = (image_key(tree, image), w, h);
+        // The tile's own size is part of what decides its pixels: a
+        // gradient's length stops are absolute in it, so a 40px tile and a
+        // 20px one under `scale(2)` rasterise at one size and differ (#1798
+        // review).
+        let key = {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            image_key(tree, image).hash(&mut hasher);
+            tw.to_bits().hash(&mut hasher);
+            th.to_bits().hash(&mut hasher);
+            (hasher.finish(), w, h)
+        };
         let cached = tree.background_tiles.borrow_mut().get(&key);
         let pixels = match cached {
             Some(blob) => {

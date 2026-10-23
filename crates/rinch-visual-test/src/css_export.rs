@@ -720,9 +720,7 @@ mod tests {
             }
         }));
         assert!(
-            css.contains(
-                "background-image: linear-gradient(90deg, #000000 0px, #ffffff 100%)"
-            ),
+            css.contains("background-image: linear-gradient(90deg, #000000 0px, #ffffff 100%)"),
             "{css}"
         );
 
@@ -763,9 +761,7 @@ mod tests {
             ),
             "{css}"
         );
-        let css = css_of(
-            "background: radial-gradient(120% 60% at 50% -8%, red, transparent 55%)",
-        );
+        let css = css_of("background: radial-gradient(120% 60% at 50% -8%, red, transparent 55%)");
         assert!(
             css.contains("radial-gradient(ellipse 120% 60% at 50% -8%, #ff0000, #00000000 55%)"),
             "{css}"
