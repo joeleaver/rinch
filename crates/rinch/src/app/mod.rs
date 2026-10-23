@@ -143,8 +143,6 @@ mod editor_margin_anchors_1677_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_mark_edge_caret_1426_tests;
 #[cfg(all(test, feature = "desktop"))]
-mod editor_shared_mark_wrappers_1833_tests;
-#[cfg(all(test, feature = "desktop"))]
 mod editor_node_view_image_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_node_view_tests;
@@ -158,6 +156,8 @@ mod editor_programmatic_selection_tests;
 mod editor_read_only_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_selection_seam_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod editor_shared_mark_wrappers_1833_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_tab_caret_tests;
 #[cfg(all(test, feature = "desktop"))]
