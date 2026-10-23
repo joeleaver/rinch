@@ -19,22 +19,25 @@
 //! first [`watch`] and removed by the refresh that finds no registered signal
 //! left, so a page with no bounds signal pays nothing.
 //!
-//! Not seen: a box moved by a `:hover` rule without resizing, and the frames in
-//! the middle of a transition or animation that moves (not resizes) a box —
-//! the rect is refreshed when it ends.
+//! Not seen, or seen late:
+//! - a box moved by a `:hover` rule without resizing, and the frames in the
+//!   middle of a transition or animation that moves (not resizes) a box — the
+//!   rect is refreshed when it ends;
+//! - a DOM write or a scroll inside a **shadow root** (an island mounted in
+//!   one): the `MutationObserver` and the `scroll` listener are on `document`,
+//!   which neither reaches. The element's own resize still is seen;
+//! - a change reaches the signal in the frame **after** it happens (the
+//!   observers report after layout, the refresh is the next frame), not in the
+//!   frame that paints it, as desktop's post-layout refresh does.
+//!
+//! Cost while anything is watched: every DOM write anywhere in the page makes a
+//! mutation record and asks for a refresh (one per frame however many).
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
-
-/// One watched element: the document and node id its signals are registered
-/// under, and the element itself.
-struct Watched {
-    doc_key: u64,
-    node_id: u64,
-    el: web_sys::Element,
-}
 
 /// The observers and listeners, alive while anything is watched.
 struct Installed {
@@ -48,7 +51,9 @@ struct Installed {
 
 #[derive(Default)]
 struct State {
-    watched: Vec<Watched>,
+    /// The watched elements by `(doc_key, node_id)` — the key their signals
+    /// are registered under.
+    watched: HashMap<(u64, u64), web_sys::Element>,
     installed: Option<Installed>,
     frame_pending: bool,
 }
@@ -60,28 +65,27 @@ thread_local! {
 /// Start refreshing the bounds signals registered for `node_id` of the
 /// document `doc_key` (called by `WebDocument::watch_bounds`, under the
 /// document borrow: nothing here runs app code).
-pub(crate) fn watch(doc_key: u64, node_id: u64, el: web_sys::Element) {
-    STATE.with(|s| {
+///
+/// Called on every `bounds_signal()` call; a node already watched costs one
+/// lookup and schedules nothing.
+pub(crate) fn watch(doc_key: u64, node_id: u64, el: &web_sys::Element) {
+    let new = STATE.with(|s| {
         let mut s = s.borrow_mut();
+        if s.watched.contains_key(&(doc_key, node_id)) {
+            return false;
+        }
         if s.installed.is_none() {
             s.installed = install();
         }
-        let known = s
-            .watched
-            .iter()
-            .any(|w| w.doc_key == doc_key && w.node_id == node_id);
-        if !known {
-            if let Some(i) = &s.installed {
-                i.resize.observe(&el);
-            }
-            s.watched.push(Watched {
-                doc_key,
-                node_id,
-                el,
-            });
+        if let Some(i) = &s.installed {
+            i.resize.observe(el);
         }
+        s.watched.insert((doc_key, node_id), el.clone());
+        true
     });
-    schedule();
+    if new {
+        schedule();
+    }
 }
 
 /// Forget everything `doc_key` watched (its document is being dropped).
@@ -91,10 +95,10 @@ pub(crate) fn forget_document(doc_key: u64) {
             let State {
                 watched, installed, ..
             } = &mut *s;
-            watched.retain(|w| {
-                let keep = w.doc_key != doc_key;
+            watched.retain(|&(k, _), el| {
+                let keep = k != doc_key;
                 if !keep && let Some(i) = installed {
-                    i.resize.unobserve(&w.el);
+                    i.resize.unobserve(el);
                 }
                 keep
             });
@@ -184,57 +188,51 @@ type Rect = (f32, f32, f32, f32);
 /// Measure every watched element and publish, with no borrow held while the
 /// signal writes run app code.
 fn refresh() {
-    let measured: Vec<(u64, Vec<(u64, Rect)>)> = STATE.with(|s| {
+    let measured: HashMap<u64, HashMap<u64, Rect>> = STATE.with(|s| {
         let mut s = s.borrow_mut();
         s.frame_pending = false;
         let State {
             watched, installed, ..
         } = &mut *s;
         // Drop the elements whose signals are all gone.
-        let mut live: Vec<(u64, Vec<u64>)> = Vec::new();
-        watched.retain(|w| {
-            let ids = match live.iter().position(|(k, _)| *k == w.doc_key) {
-                Some(i) => &live[i].1,
-                None => {
-                    live.push((
-                        w.doc_key,
-                        rinch_core::reactive::registered_bounds_nodes(w.doc_key),
-                    ));
-                    &live.last().unwrap().1
-                }
-            };
-            let keep = ids.contains(&w.node_id);
+        let mut live: HashMap<u64, std::collections::HashSet<u64>> = HashMap::new();
+        watched.retain(|&(doc_key, node_id), el| {
+            let keep = live
+                .entry(doc_key)
+                .or_insert_with(|| {
+                    rinch_core::reactive::registered_bounds_nodes(doc_key)
+                        .into_iter()
+                        .collect()
+                })
+                .contains(&node_id);
             if !keep && let Some(i) = installed {
-                i.resize.unobserve(&w.el);
+                i.resize.unobserve(el);
             }
             keep
         });
         if watched.is_empty() {
             uninstall(installed.take());
-            return Vec::new();
+            return HashMap::new();
         }
-        let mut out: Vec<(u64, Vec<(u64, Rect)>)> = Vec::new();
-        for w in watched.iter() {
-            if !w.el.is_connected() {
+        let mut out: HashMap<u64, HashMap<u64, Rect>> = HashMap::new();
+        for (&(doc_key, node_id), el) in watched.iter() {
+            if !el.is_connected() {
                 continue;
             }
-            let r = w.el.get_bounding_client_rect();
+            let r = el.get_bounding_client_rect();
             let rect = (
                 r.x() as f32,
                 r.y() as f32,
                 r.width() as f32,
                 r.height() as f32,
             );
-            match out.iter_mut().find(|(k, _)| *k == w.doc_key) {
-                Some((_, v)) => v.push((w.node_id, rect)),
-                None => out.push((w.doc_key, vec![(w.node_id, rect)])),
-            }
+            out.entry(doc_key).or_default().insert(node_id, rect);
         }
         out
     });
     for (doc_key, rects) in measured {
         rinch_core::reactive::update_bounds_signals(doc_key, |node_id| {
-            rects.iter().find(|(id, _)| *id == node_id).map(|(_, r)| *r)
+            rects.get(&node_id).copied()
         });
     }
 }

@@ -73,15 +73,6 @@ fn doc_range(doc_key: u64) -> std::ops::RangeInclusive<(u64, u64)> {
 /// Most users should prefer [`NodeHandle::bounds_signal`](crate::dom::NodeHandle::bounds_signal),
 /// which calls this internally with the node's document key and id.
 pub fn register_bounds_signal(doc_key: u64, node_id: u64) -> Signal<ElementBounds> {
-    register_bounds_signal_entry(doc_key, node_id).0
-}
-
-/// [`register_bounds_signal`], also answering whether the call registered a new
-/// entry (`false`: an entry of the same owner was handed back).
-pub(crate) fn register_bounds_signal_entry(
-    doc_key: u64,
-    node_id: u64,
-) -> (Signal<ElementBounds>, bool) {
     let owner = current_owner();
     BOUNDS_REGISTRY.with(|reg| {
         let mut reg = reg.borrow_mut();
@@ -90,12 +81,12 @@ pub(crate) fn register_bounds_signal_entry(
             .iter()
             .find(|e| e.owner == owner && e.signal.is_alive())
         {
-            return (e.signal, false);
+            return e.signal;
         }
         // `Signal::new` runs no app code, so allocating under the borrow is safe.
         let signal = Signal::new(ElementBounds::default());
         entries.push(BoundsEntry { signal, owner });
-        (signal, true)
+        signal
     })
 }
 

@@ -1768,7 +1768,7 @@ impl RinchApp {
         let (doc_key, measured) = {
             let d = doc.borrow();
             let doc_key = d.doc_key();
-            let measured: Vec<(u64, (f32, f32, f32, f32))> =
+            let measured: std::collections::HashMap<u64, (f32, f32, f32, f32)> =
                 rinch_core::reactive::registered_bounds_nodes(doc_key)
                     .into_iter()
                     .filter_map(|node_id| {
@@ -1786,10 +1786,7 @@ impl RinchApp {
         // Phase 2: publish with no document borrow held, so a woken effect is
         // free to mutate the DOM.
         rinch_core::reactive::update_bounds_signals(doc_key, |node_id| {
-            measured
-                .iter()
-                .find(|(id, _)| *id == node_id)
-                .map(|(_, rect)| *rect)
+            measured.get(&node_id).copied()
         });
     }
 

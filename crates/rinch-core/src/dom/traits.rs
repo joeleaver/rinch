@@ -1009,7 +1009,8 @@ pub trait DomDocument {
         None
     }
 
-    /// A [`NodeHandle::bounds_signal`] was registered for `node` (issue #1781).
+    /// [`NodeHandle::bounds_signal`] was called for `node` (issue #1781) —
+    /// on **every** call, so a backend must ignore a node it already watches.
     /// A backend that does not refresh bounds after its own layout passes — the
     /// web, where the browser lays out — starts watching the element here.
     /// Called with the document mutably borrowed: it must not run app code.

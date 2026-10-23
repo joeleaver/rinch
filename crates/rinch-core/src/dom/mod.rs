@@ -1334,10 +1334,11 @@ impl NodeHandle {
         // across documents (issue #134). A handle whose document is already
         // gone registers under key 0 (matches no live document), yielding a
         // signal that simply keeps its zero rect.
-        let (signal, new) =
-            crate::reactive::register_bounds_signal_entry(self.doc_key(), self.node_id.0 as u64);
-        if new
-            && let Some(doc) = self.doc.upgrade()
+        let signal = crate::reactive::register_bounds_signal(self.doc_key(), self.node_id.0 as u64);
+        // Asked on every call, not only for a new entry: a call made while the
+        // document is borrowed cannot reach the backend, and the next one must
+        // still start the watch (a backend ignores a node it already watches).
+        if let Some(doc) = self.doc.upgrade()
             && let Ok(mut doc) = doc.try_borrow_mut()
         {
             doc.watch_bounds(self.node_id);

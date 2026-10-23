@@ -85,7 +85,6 @@ mod signal;
 /// Ambient-owner hooks for the rest of the crate: `crate::events` attributes
 /// handlers to the scope currently rendering, and `crate::context` ties a
 /// store/context entry to the scope that created it (issue #141).
-pub(crate) use bounds::register_bounds_signal_entry;
 pub use bounds::{
     ElementBounds, register_bounds_signal, registered_bounds_nodes, update_bounds_signals,
 };

@@ -562,12 +562,24 @@ refresh, which measures the connected watched elements with
 signals are all gone (`registered_bounds_nodes`) and, once none is left,
 disconnects the observers and removes the listeners, so a page with no bounds
 signal pays nothing; `WebDocument`'s `Drop` forgets its document's elements.
-A disconnected element is not measured and its signal keeps its value. Not
-seen: a `:hover` rule that moves a box without resizing it, and the middle
-frames of a transition that moves one. Pins:
+A disconnected element is not measured and its signal keeps its value.
+`bounds_signal()` asks for the watch on **every** call (a repeat is one lookup):
+a first call made while the document is borrowed cannot reach the backend, and
+the next call starts it. Not seen: a `:hover` rule that moves a box without
+resizing it, the middle frames of a transition that moves one, and a DOM write
+or scroll inside a shadow root (an island mounted in one) — the
+`MutationObserver` and the `scroll` listener are on `document`; the element's
+own resize is still seen. A change reaches the signal one frame after it
+happens (the observers report after layout; the refresh is the next frame),
+where desktop's refresh lands in the frame that paints it. While anything is
+watched, every DOM write in the page makes a mutation record and asks for a
+refresh (at most one per frame). Pins:
 `rinch-web/tests/bounds_signal_1781.rs` (Chrome 155, Firefox 155).
 
-Entries are shared per `(doc_key, node_id, owner)` (`current_owner()`, `None`
+The registry is a `BTreeMap` keyed by `(doc_key, node_id)` (one document is
+a range); the web state and both refreshes look rects up in hash maps, so no
+step is quadratic in the number of watched nodes. Entries are shared per
+`(doc_key, node_id, owner)` (`current_owner()`, `None`
 for app lifetime): a repeated call from one owner returns the same signal and
 registers nothing; another owner gets its own, because the signal belongs to
 the scope that made it and is freed with it. `registered_bounds_nodes` lists
