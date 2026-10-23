@@ -236,23 +236,24 @@ fn damage_over_only_a_pill_s_padding_repaints_it() {
     let (l, t, _, _) = BOX;
     let neighbour = |c: &str| {
         format!(
-            "position: absolute; left: {}px; top: {}px; width: 60px; height: 9px; \
+            "position: absolute; left: {}px; top: {}px; width: 60px; height: 8px; \
              border-top: 1px solid {c}",
             l - 5.0,
-            t - 10.0
+            t - 30.0
         )
     };
     let mut failures = Vec::new();
     for scale in [1.0, 2.0] {
         let (mut app, _span, after) = paragraph_with(
-            &format!("{PILL}; padding: 11px 3px"),
+            &format!("{PILL}; padding: 30px 3px"),
             Some(&neighbour("rgb(0, 0, 200)")),
         );
         let after = after.unwrap();
         let before = full_frame(&mut app, scale);
         let s = |v: f64| (v * scale).round() as i32;
-        // The pill's padding under the neighbour's box, below its border.
-        let probe = (s(l), s(t - 8.0), s(l + 40.0), s(t));
+        // The pill's padding under the neighbour's box, below its border:
+        // well clear of the paragraph's box and of the damage's margin.
+        let probe = (s(l), s(t - 28.0), s(l + 40.0), s(t - 23.0));
         if ink_in(&before, scale, probe) == 0 {
             failures.push(format!("scale {scale}: positive control — no pill under the box"));
         }
