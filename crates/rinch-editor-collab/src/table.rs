@@ -142,6 +142,16 @@
 //! by identity too, so a peer's typing in another paragraph of the cell merges), new
 //! ones inserted, and cells that are no longer anchors (merged away) deleted.
 //!
+//! ## One cell edited ([`one_changed_cell`], #1241)
+//!
+//! For an edit that changes one cell and nothing else of the grid — a keystroke — all
+//! of the above pairs every row and column with itself, leaves every other cell alone
+//! and reconciles that cell's blocks. `CollabDoc::project_cell_edit` makes that one call
+//! directly, on the cell map [`locate_cell`] finds through an index kept between
+//! keystrokes, so the keystroke reads and writes the cell and not the table. It declines
+//! wherever the whole-table reconcile would write more than the cell (a filler, a cell
+//! left clipped by concurrent merges), and the table is reconciled whole.
+//!
 //! ## What concurrency can still lose
 //!
 //! Convergence holds for every interleaving; these are the edits that lose to another:
@@ -169,8 +179,8 @@ use rinch_editor_core::tables::GRID_SLOT_FLOOR;
 
 use crate::error::{CollabError, Result};
 use crate::projection::{
-    ATTRS, BlockData, CONTENT, CollabDoc, Model, NodeData, TYPE, common_runs, insert_node,
-    node_attrs, node_content, node_type, read_children, read_node, reconcile_attrs,
+    ATTRS, BlockData, CONTENT, CollabDoc, Model, NodeData, TYPE, common_runs, identity_runs,
+    insert_node, node_attrs, node_content, node_type, read_children, read_node, reconcile_attrs,
     reconcile_child_list, write_attrs,
 };
 
@@ -1317,6 +1327,221 @@ fn reconcile_cell(
     reconcile_child_list(txn, &content, &target.children, model, per_char)?;
     set_ends(txn, map, ends);
     Ok(())
+}
+
+// --- one cell edited: the keystroke's path (#1241) ------------------------------------
+
+/// The one cell an edit of a table changed, when it changed nothing else: the table's
+/// attrs, every row but one and every cell of that row but one are the same `Rc`s
+/// before and after, and that cell keeps its type and attrs (its spans included) and
+/// holds a block. The grid is then the same before and after, so the cell is the same
+/// cell of the CRDT, and the edit is a change of its blocks alone.
+pub(crate) struct CellEdit<'a> {
+    /// The row and the cell's index in it, in model order.
+    pub row: usize,
+    pub cell: usize,
+    /// The cell before and after the edit.
+    pub before: &'a Node,
+    pub after: &'a Node,
+}
+
+/// The [`CellEdit`] that takes the table `b` to `a`, if the edit is one. Compares
+/// `Rc`s down one row and across one row, never a cell's content.
+pub(crate) fn one_changed_cell<'a>(b: &'a Node, a: &'a Node) -> Option<CellEdit<'a>> {
+    if b.type_name() != TABLE
+        || a.type_name() != TABLE
+        || is_placeholder(b)
+        || is_placeholder(a)
+        || b.child_count() != a.child_count()
+        || b.attrs() != a.attrs()
+    {
+        return None;
+    }
+    // Exactly one changed row, exactly one changed cell in it.
+    let one = |b: &Node, a: &Node| {
+        let (prefix, suffix) = identity_runs(b, a);
+        (prefix + suffix + 1 == b.child_count()).then_some(prefix)
+    };
+    let row = one(b, a)?;
+    let (rb, ra) = (b.child(row), a.child(row));
+    if rb.type_name() != ra.type_name()
+        || rb.attrs() != ra.attrs()
+        || rb.child_count() != ra.child_count()
+    {
+        return None;
+    }
+    let cell = one(rb, ra)?;
+    let (before, after) = (rb.child(cell), ra.child(cell));
+    if before.type_name() != after.type_name()
+        || before.attrs() != after.attrs()
+        || after.child_count() == 0
+    {
+        return None;
+    }
+    Some(CellEdit {
+        row,
+        cell,
+        before,
+        after,
+    })
+}
+
+/// Where the cells of one table are in the CRDT: what [`locate_cell`] keeps between
+/// keystrokes so that the next one in the table finds its cell without reading the
+/// table.
+struct CellIndex {
+    /// The document's [`CollabDoc::epoch`] when the index was last true.
+    epoch: u64,
+    /// The model table the index describes ([`Node::same_ref`]). A `Node` is `!Send`,
+    /// so the index lives in a thread-local rather than on the `Send` `CollabDoc`.
+    table: Node,
+    /// The table's node map.
+    map: MapRef,
+    /// Per row, per cell in model order, its cell map (`None` for a filler).
+    cells: Vec<Vec<Option<MapRef>>>,
+}
+
+thread_local! {
+    /// One [`CellIndex`] per document (`CollabDoc::uid`), for the table its last
+    /// keystroke in a table was in. A `CollabDoc` used from another thread finds
+    /// nothing here and builds its own there; one dropped on another thread than the
+    /// one it indexed on leaves its entry on that one (`forget_cell_index` runs where
+    /// the drop does), never used again (its uid is unique) and holding one table
+    /// until that thread ends — as the atom cache does (`crate::atom_cache`).
+    static CELL_INDEX: RefCell<HashMap<u64, CellIndex>> = RefCell::new(HashMap::new());
+    /// How many times [`locate_cell`] read a whole table to build an index, and how
+    /// many cell edits it located; see [`crate::testing::table_cell_edits`].
+    static CELL_INDEX_COUNTS: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+    /// Whether the cell path is taken at all ([`crate::testing::set_table_cell_path`]).
+    static CELL_PATH: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Whether [`one_changed_cell`]'s path is on (always, but in a test comparing it with
+/// the whole-table reconcile).
+pub(crate) fn cell_path_enabled() -> bool {
+    CELL_PATH.with(|c| c.get())
+}
+
+/// Turn [`one_changed_cell`]'s path off (`false`) or back on, on this thread.
+#[cfg_attr(not(feature = "test-util"), allow(dead_code))]
+pub(crate) fn set_cell_path(on: bool) {
+    CELL_PATH.with(|c| c.set(on));
+}
+
+/// The counts behind [`crate::testing::table_cell_edits`]: index builds, cells located.
+#[cfg_attr(not(feature = "test-util"), allow(dead_code))]
+pub(crate) fn cell_index_counts() -> (u64, u64) {
+    CELL_INDEX_COUNTS.with(|c| c.get())
+}
+
+/// Forget document `uid`'s index (it is dropped).
+pub(crate) fn forget_cell_index(uid: u64) {
+    let _ = CELL_INDEX.try_with(|c| c.borrow_mut().remove(&uid));
+}
+
+/// The CRDT cell map of [`CellEdit`] `e` in the table node map `node`, whose model
+/// before the edit is `table`: `None` when the cell is a filler (it has no map yet) or
+/// the CRDT's table does not read as `table`, both of which the whole-table reconcile
+/// handles.
+///
+/// The index of document `uid` answers when it was made at `epoch` (no transaction
+/// has changed the CRDT since) for this very model table and node map. Otherwise the
+/// table is read once ([`read_table`]) and checked against the model's read of `table`
+/// before it is indexed: the cell found is then the cell the whole-table reconcile
+/// would write, which pairs the cells of a grid that did not change by their place.
+/// The epoch is compared **first**: a map an index holds may have been deleted by a
+/// later transaction, and only an unchanged epoch says none was.
+pub(crate) fn locate_cell<T: ReadTxn>(
+    txn: &T,
+    uid: u64,
+    epoch: u64,
+    node: &MapRef,
+    table: &Node,
+    e: &CellEdit<'_>,
+) -> Option<MapRef> {
+    let cached = CELL_INDEX
+        .try_with(|c| {
+            c.borrow()
+                .get(&uid)
+                .filter(|x| x.epoch == epoch && x.table.same_ref(table) && same_map(&x.map, node))
+                .map(|x| x.cells.get(e.row)?.get(e.cell)?.clone())
+        })
+        .ok()
+        .flatten();
+    let found = match cached {
+        Some(found) => found,
+        None => {
+            CELL_INDEX_COUNTS.with(|c| c.set((c.get().0 + 1, c.get().1)));
+            let read = read_table(txn, node).ok()?;
+            if read.data != read_model_table(table).ok()? || !stored_as_read(txn, &read) {
+                return None;
+            }
+            let cells: Vec<Vec<Option<MapRef>>> = read
+                .cells
+                .into_iter()
+                .map(|row| row.into_iter().map(|c| c.map).collect())
+                .collect();
+            let found = cells.get(e.row)?.get(e.cell)?.clone();
+            let _ = CELL_INDEX.try_with(|c| {
+                c.borrow_mut().insert(
+                    uid,
+                    CellIndex {
+                        epoch,
+                        table: table.clone(),
+                        map: node.clone(),
+                        cells,
+                    },
+                )
+            });
+            found
+        }
+    };
+    CELL_INDEX_COUNTS.with(|c| c.set((c.get().0, c.get().1 + 1)));
+    found
+}
+
+/// Whether every cell the read placed stores the extent it was read with: its attrs as
+/// read (the read writes a clipped extent into the span attrs, rule 1) and the
+/// `col_end`/`row_end` of that extent. A cell two concurrent merges left clipped
+/// stores more than it reads as, and the whole-table reconcile writes the clip into
+/// the CRDT on the table's next edit, whatever that edit is ([`reconcile_table`]'s
+/// `unchanged`). Such a table is left to it: the cell path writes the edited cell
+/// alone, so it is taken only where that is all the whole-table reconcile writes too.
+fn stored_as_read<T: ReadTxn>(txn: &T, read: &TableRead) -> bool {
+    let col_ids: Vec<String> = read.cols.iter().map(|c| c.id.clone()).collect();
+    let row_ids: Vec<String> = read.rows.iter().map(|r| r.id.clone()).collect();
+    read.cells.iter().enumerate().all(|(i, row)| {
+        row.iter().zip(&read.data.rows[i].cells).all(|(c, data)| {
+            let Some(map) = &c.map else {
+                return true;
+            };
+            let placed = Placed {
+                col: c.col,
+                cs: c.cs,
+                rs: c.rs,
+            };
+            node_attrs(txn, map) == data.attrs
+                && stored_ends(txn, map) == ends_of(placed, i, &col_ids, &row_ids)
+        })
+    })
+}
+
+/// After [`locate_cell`]'s cell was written: the index describes the table after the
+/// edit (its grid and cells' maps are the ones it had), at the document's new `epoch`.
+pub(crate) fn rekey_cell_index(uid: u64, from: &Node, to: &Node, epoch: u64) {
+    let _ = CELL_INDEX.try_with(|c| {
+        if let Some(x) = c.borrow_mut().get_mut(&uid)
+            && x.table.same_ref(from)
+        {
+            x.table = to.clone();
+            x.epoch = epoch;
+        }
+    });
+}
+
+/// Whether two maps are one (the same yrs branch).
+fn same_map(a: &MapRef, b: &MapRef) -> bool {
+    AsRef::<yrs::branch::Branch>::as_ref(a).id() == AsRef::<yrs::branch::Branch>::as_ref(b).id()
 }
 
 // --- tables too large to read: the freeze and its cure -------------------------------

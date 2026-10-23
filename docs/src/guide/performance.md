@@ -450,6 +450,7 @@ The benchmarks live in `crates/rinch-bench`:
 | `shell::memo_flush.selection_40` | Move the selection among 40 rows, each with a `Memo<bool>` and an effect: the signal write and its effect flush |
 | `shell::branch_hide.rows_1000` | Hide an `if` branch holding a keyed `for` of 1,000 rows and a nested captured handle (issue #732: one walk detaches the handle and drops the ownership records, then the discard), then the frame |
 | `editor::collab_keystroke.paragraphs_2000` | One keystroke in the middle of a collaborating 2,000-paragraph document, projected onto the CRDT (`CollabSession::record_local`): reads back the paragraph it changed and no other (#1229's first round read back all 2,000) |
+| `editor::collab_table_keystroke.rows_100` / `rows_1000` | The same keystroke in a cell in the middle of a table of 100 or 1,000 rows of four cells. It is projected through that cell (#1241), so the two differ only by the scan for the changed row, a pointer compare per row; they used to read back and compare the whole table (9.2M and 93.4M instructions) |
 
 Each benchmark builds its fixture in a setup that Callgrind does not count. The
 setup also runs the operation once where that warms a cache, so what is counted

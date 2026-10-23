@@ -4551,6 +4551,53 @@ mod tests {
         el.0
     }
 
+    /// #1237 (review of #1868): a `nowrap` line aligned within its box is
+    /// given the box's width as its alignment width, and a line wider than
+    /// the box overflows it. What the paragraph draws past its lines — a
+    /// span raised by `vertical-align`, a wavy underline — reaches as far as
+    /// the line's content, so the root's damage ink covers it (it was 0 and
+    /// 0.5px to the right, against ~69px of overflow).
+    #[test]
+    fn an_overflowing_aligned_lines_ink_reaches_its_content() {
+        use parley::fontique::{Blob, FontInfoOverride};
+        const FACE: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
+        for span in ["vertical-align:20px", "text-decoration:underline wavy"] {
+            let mut doc = RinchDocument::new();
+            doc.font_cx.collection.register_fonts(
+                Blob::new(std::sync::Arc::new(FACE)),
+                Some(FontInfoOverride {
+                    family_name: Some("ProbeFace"),
+                    ..Default::default()
+                }),
+            );
+            let body = doc.body();
+            let c = child_of(
+                &mut doc,
+                body,
+                "width:50px;white-space:nowrap;text-align:right;font:16px/16px ProbeFace",
+            );
+            let c = rinch_core::dom::NodeId(c);
+            doc.set_inner_html(c, &format!("aaaaaaaaaa<span style=\"{span}\">bbb</span>"));
+            doc.resolve_layout(800.0, 600.0);
+            let node = doc.tree.get(c.0).unwrap();
+            let il = node.text_layout.as_ref().unwrap();
+            let line = il.layout.get(0).unwrap();
+            let m = line.metrics();
+            let content_right = m.inline_min_coord + m.offset + m.advance;
+            assert!(
+                content_right > 100.0,
+                "{span}: precondition, the line overflows"
+            );
+            let ink = super::ink_outsets_in(node, true, |id| doc.tree.get(id));
+            assert!(
+                ink[2] >= content_right - 50.0 - 0.01,
+                "{span}: right ink {} short of the content's {}",
+                ink[2],
+                content_right - 50.0
+            );
+        }
+    }
+
     /// The plain parent-chain sum: layout offsets minus ancestor scroll, with
     /// no transform and no IFC content-box offset. This is what every walk in
     /// the codebase used to do, and it is the box the assertions below must

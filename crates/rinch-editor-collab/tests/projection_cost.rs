@@ -419,3 +419,72 @@ fn a_local_keystroke_after_a_remote_change_walks_no_block_without_an_embed() {
         assert_eq!(a.state.doc, b.state.doc);
     }
 }
+
+// --- a keystroke in one cell of a table (#1241) ---
+
+/// A `rows × 4` table whose cells read `row {r} column {c}`.
+fn table(s: &Schema, rows: usize) -> Node {
+    let branch = |name: &str, children: Vec<Node>| {
+        s.branch(name, Fragment::from_children(children)).unwrap()
+    };
+    branch(
+        "table",
+        (0..rows)
+            .map(|r| {
+                branch(
+                    "table_row",
+                    (0..4)
+                        .map(|c| {
+                            branch("table_cell", vec![para(s, &format!("row {r} column {c}"))])
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// The model position of the first char of `needle`, searching every text node.
+fn pos_of(doc: &Node, needle: &str) -> usize {
+    fn walk(node: &Node, content_start: usize, needle: &str) -> Option<usize> {
+        let mut at = content_start;
+        for i in 0..node.child_count() {
+            let child = node.child(i);
+            if let Some(text) = child.text() {
+                if let Some(byte) = text.find(needle) {
+                    return Some(at + text[..byte].chars().count());
+                }
+            } else if let Some(found) = walk(child, at + 1, needle) {
+                return Some(found);
+            }
+            at += child.node_size();
+        }
+        None
+    }
+    walk(doc, 0, needle).unwrap_or_else(|| panic!("`{needle}` is not in the document"))
+}
+
+/// CRDT nodes read by each of three keystrokes in one cell of a `rows`-row table,
+/// after a first keystroke in that cell.
+fn table_keystroke_reads(rows: usize) -> Vec<u64> {
+    let s = Rc::new(Schema::starter_kit());
+    let blocks = vec![para(&s, "before"), table(&s, rows), para(&s, "after")];
+    let mut a = Peer::host(&s, blocks, 1);
+    let at = pos_of(&a.state.doc, &format!("row {} column 2", rows / 2)) + 3;
+    a.type_at(at, "x");
+    let reads = (1..=3).map(|n| a.type_at(at + n, "x")).collect();
+    a.assert_model_is_projection();
+    reads
+}
+
+/// A keystroke in a table cell reads that cell's block, whatever the table's size: it
+/// used to read back (and compare) every cell of the table, twice — 26 ms per
+/// keystroke at 1000 × 4 (#1241). The first keystroke in a table after any other
+/// change still reads the table once, to find its cells in the CRDT.
+#[test]
+fn a_keystroke_in_a_table_cell_reads_only_its_block() {
+    let small = table_keystroke_reads(10);
+    let big = table_keystroke_reads(200);
+    assert_eq!(small, vec![1, 1, 1], "a keystroke in a 10-row table");
+    assert_eq!(big, small, "a keystroke in a 200-row table");
+}

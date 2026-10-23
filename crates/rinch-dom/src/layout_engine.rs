@@ -918,6 +918,7 @@ impl RinchDocument {
                                         nodes,
                                         root_id,
                                         max_width,
+                                        None,
                                         1.0,
                                         font_cx,
                                         layout_cx,

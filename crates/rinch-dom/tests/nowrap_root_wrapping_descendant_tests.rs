@@ -259,3 +259,338 @@ fn trailing_pre_spaces_across_adjacent_text_nodes_all_count() {
     assert_eq!(lines[1].0, "cca");
     assert!((lines[1].1 - 9.08).abs() < 0.01, "{lines:?}");
 }
+
+// ---- #1237: a paragraph that does not wrap aligns within the box ----
+//
+// A `nowrap`/`pre` root with no wrapping text is broken unconstrained, and
+// parley then aligns each line within the paragraph's own widest line. CSS
+// aligns it within the line box, the container's content width: an
+// overflowing line starts at the start edge (CSS Text 3 §7.1), and every
+// other line is right-aligned or centred against the box. Every expectation
+// is Chrome 155's on the same markup (bundled Inter as `ProbeFace`,
+// 16px/25px), the x of the line's first character in the div.
+
+fn near(got: f32, want: f32, what: &str) {
+    assert!(
+        (got - want).abs() < 0.02,
+        "{what}: got {got}, Chrome {want}"
+    );
+}
+
+/// `(line text, offset)` of each line, and the x of each inline-block child,
+/// for `inner` in a div styled `style`; `wrapper` wraps the div in a block of
+/// that style (an auto-width div then takes the wrapper's width).
+fn aligned(style: &str, inner: &str, wrapper: Option<&str>) -> (Vec<(String, f32)>, Vec<f32>) {
+    let mut d = doc();
+    let body = d.body();
+    let c = d.create_element("div");
+    d.set_attribute(c, "style", &format!("font:16px/25px ProbeFace;{style}"));
+    match wrapper {
+        Some(w) => {
+            let outer = d.create_element("div");
+            d.set_attribute(outer, "style", w);
+            d.append_child(body, outer);
+            d.append_child(outer, c);
+        }
+        None => d.append_child(body, c),
+    }
+    d.set_inner_html(c, inner);
+    d.resolve_layout(800.0, 600.0);
+    aligned_in(&d, c)
+}
+
+fn aligned_in(d: &RinchDocument, c: NodeId) -> (Vec<(String, f32)>, Vec<f32>) {
+    let n = d.tree.get(c.0).unwrap();
+    let il = n.text_layout.as_ref().expect("the div is an IFC root");
+    let lines = il
+        .layout
+        .lines()
+        .map(|l| {
+            (
+                il.text_content[l.text_range()].trim().to_string(),
+                l.metrics().offset,
+            )
+        })
+        .collect();
+    let boxes = n
+        .children
+        .iter()
+        .filter_map(|&k| d.tree.get(k))
+        .filter(|k| {
+            k.computed_style.display == rinch_dom::computed_style::DisplayValue::InlineBlock
+        })
+        .map(|k| k.layout.x)
+        .collect();
+    (lines, boxes)
+}
+
+/// The issue's first row, and its `center` and `end` twins: one short line
+/// in a 50px box. rinch put each at 0, the start of its own width.
+#[test]
+fn a_nowrap_line_is_aligned_within_the_box() {
+    for (style, text, want) in [
+        ("white-space:nowrap;text-align:right", "a", 41.02),
+        ("white-space:nowrap;text-align:end", "a", 41.02),
+        ("white-space:nowrap;text-align:center", "ab", 15.61),
+    ] {
+        let (lines, _) = aligned(&format!("width:50px;{style}"), text, None);
+        assert_eq!(lines.len(), 1, "{style}: {lines:?}");
+        near(lines[0].1, want, style);
+    }
+}
+
+/// The issue's second row: the long `pre` line overflows the box and starts
+/// at its start edge; the short one is right-aligned against the box, not
+/// against the long line (rinch: 99.59).
+#[test]
+fn a_pre_roots_short_line_is_aligned_within_the_box_not_its_longest_line() {
+    let (lines, _) = aligned(
+        "width:50px;white-space:pre;text-align:right",
+        "aa\nbbbbbbbbbbbb",
+        None,
+    );
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    near(lines[0].1, 32.03, "aa");
+    assert_eq!(lines[1].1, 0.0, "the overflowing line: {lines:?}");
+}
+
+/// Lines ended by forced breaks — a `<br>` in `nowrap` text, a newline in
+/// `pre` — each aligned on its own, centred too. Chrome 155: `a` 41.02 and
+/// `bb` 30.41; `a` 20.50 and `bb` 15.20.
+#[test]
+fn every_line_of_a_paragraph_that_does_not_wrap_is_aligned_within_the_box() {
+    let (lines, _) = aligned(
+        "width:50px;white-space:nowrap;text-align:right",
+        "a<br>bb",
+        None,
+    );
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    near(lines[0].1, 41.02, "a");
+    near(lines[1].1, 30.41, "bb");
+    let (lines, _) = aligned(
+        "width:50px;white-space:pre;text-align:center",
+        "a\nbb",
+        None,
+    );
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    near(lines[0].1, 20.50, "a");
+    near(lines[1].1, 15.20, "bb");
+}
+
+/// A `pre` root's spaces do not hang, so the spaces before a newline are
+/// aligned as content: `a` and three spaces end 50px in, `a` at 27.52, and
+/// centred with two spaces at 16.00 (rinch: 0.81 and 5.30, within `b`'s or
+/// `bb`'s width). The issue's third row is
+/// `a_pre_roots_trailing_spaces_do_not_hang` above.
+#[test]
+fn a_pre_roots_spaces_before_a_newline_are_content_within_the_box() {
+    let (lines, _) = aligned(
+        "width:50px;white-space:pre;text-align:right",
+        "a   \nb",
+        None,
+    );
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    near(lines[0].1, 27.52, "a + 3 spaces");
+    near(lines[1].1, 40.20, "b");
+    let (lines, _) = aligned(
+        "width:50px;white-space:pre;text-align:center",
+        "a  \nbb",
+        None,
+    );
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    near(lines[0].1, 16.00, "a + 2 spaces");
+    near(lines[1].1, 15.20, "bb");
+}
+
+/// A no-break space never hangs: `a&nbsp;` ends at the box's edge (36.52).
+#[test]
+fn a_nowrap_roots_trailing_nbsp_is_content_within_the_box() {
+    let (lines, _) = aligned(
+        "width:50px;white-space:nowrap;text-align:right",
+        "a&nbsp;",
+        None,
+    );
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    near(lines[0].1, 36.52, "a&nbsp;");
+}
+
+/// A final newline is a forced break with no line after it (#1172): the
+/// paragraph keeps its one line, aligned within the box (31.22).
+#[test]
+fn a_pre_roots_final_newline_keeps_one_line_aligned_within_the_box() {
+    let (lines, _) = aligned("width:50px;white-space:pre;text-align:right", "ab\n", None);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    near(lines[0].1, 31.22, "ab");
+}
+
+/// Inline boxes move with their line: a 10px chip and `a` right-aligned put
+/// the chip at 31.02. A 30px chip and `aaaa` overflow: one line, still — the
+/// paragraph is not broken at the box's width (parley would wrap after the
+/// chip, #1238) — starting at the start edge.
+#[test]
+fn a_nowrap_roots_inline_boxes_are_aligned_within_the_box() {
+    let chip = |w: u32| format!("<b style=\"display:inline-block;width:{w}px;height:10px\"></b>");
+    let (lines, boxes) = aligned(
+        "width:50px;white-space:nowrap;text-align:right",
+        &format!("{}a", chip(10)),
+        None,
+    );
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    near(lines[0].1, 31.02, "line");
+    near(boxes[0], 31.02, "chip");
+    let (lines, boxes) = aligned(
+        "width:50px;white-space:nowrap;text-align:right",
+        &format!("{}aaaa", chip(30)),
+        None,
+    );
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0].1, 0.0, "{lines:?}");
+    assert_eq!(boxes[0], 0.0);
+}
+
+/// An auto-width root is aligned within its own content width, not the
+/// pixel of slack its paint layout is broken with
+/// (`ifc_paint_max_width`): `a` at 41.02 in a 50px block, as in Chrome.
+#[test]
+fn an_auto_width_nowrap_root_is_aligned_within_its_content_width() {
+    let (lines, _) = aligned(
+        "white-space:nowrap;text-align:right",
+        "a",
+        Some("width:50px"),
+    );
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    near(lines[0].1, 41.02, "a");
+}
+
+/// When the box's width changes the line follows it: `a` right-aligned in a
+/// 25%-wide box, at two viewport widths.
+#[test]
+fn a_nowrap_line_follows_the_box_when_it_resizes() {
+    let mut d = doc();
+    let body = d.body();
+    d.set_attribute(body, "style", "margin:0");
+    let c = d.create_element("div");
+    d.set_attribute(
+        c,
+        "style",
+        "width:25%;font:16px/25px ProbeFace;white-space:nowrap;text-align:right",
+    );
+    d.append_child(body, c);
+    d.set_inner_html(c, "a");
+    d.resolve_layout(200.0, 600.0);
+    near(aligned_in(&d, c).0[0].1, 41.02, "50px box");
+    d.resolve_layout(400.0, 600.0);
+    near(aligned_in(&d, c).0[0].1, 91.02, "100px box");
+}
+
+/// parley takes the paragraph's direction from its text (rinch hands it no
+/// CSS `direction`), so Hebrew text is a right-to-left paragraph to it. Such
+/// a paragraph is aligned within the box too: centred, `שלום` sits half the
+/// box's free space in (Chrome 155: 10.38; Inter has no Hebrew, so the width
+/// is the host's fallback font's and the offset is checked against it; rinch
+/// put it at 0). `start` is not handed the box's width (it does not move a
+/// line in a left-to-right block), so it stays at 0, Chrome's answer, where
+/// parley's right-to-left `start` would be the right edge. (`text-align:
+/// right` is parley's `End`, the left edge of a right-to-left paragraph: 0
+/// before and after, Chrome 20.75 — the inferred direction, not this issue.)
+#[test]
+fn a_nowrap_right_to_left_paragraph_is_aligned_within_the_box() {
+    let (lines, _) = aligned("width:50px;white-space:nowrap", "שלום", None);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0].1, 0.0, "{lines:?}");
+
+    let mut d = doc();
+    let body = d.body();
+    let c = d.create_element("div");
+    d.set_attribute(
+        c,
+        "style",
+        "width:50px;font:16px/25px ProbeFace;white-space:nowrap;text-align:center",
+    );
+    d.append_child(body, c);
+    d.set_inner_html(c, "שלום");
+    d.resolve_layout(800.0, 600.0);
+    let n = d.tree.get(c.0).unwrap();
+    let il = n.text_layout.as_ref().expect("the div is an IFC root");
+    assert!(il.layout.is_rtl());
+    let line = il.layout.get(0).unwrap();
+    let advance = line.metrics().advance;
+    assert!(advance > 10.0 && advance < 48.0, "fits the box: {advance}");
+    near(line.metrics().offset, (50.0 - advance) / 2.0, "centred");
+}
+
+/// A shrink-to-fit root is as wide as its widest line, but rinch floors that
+/// width to a whole pixel (`ifc_paint_max_width` adds the pixel back for
+/// breaking). Its lines are aligned within the widest line itself, as in
+/// Chrome 155 (and on main), not within the floored box: the widest line is
+/// flush at 0 and `a` sits at the widest line's width less its own. Review
+/// of #1868: aligned within the floored box, `a\nbbb` put `a` at 20.02 and
+/// `a\nbbbbbb` put `bbbbbb` at 0.22. One per kind of shrink-to-fit box.
+#[test]
+fn a_shrink_to_fit_root_is_aligned_within_its_widest_line() {
+    let w300 = Some("width:300px");
+    for (style, text, wrapper, want) in [
+        (
+            "display:inline-block;white-space:pre;text-align:right",
+            "a\nbbb",
+            w300,
+            20.41,
+        ),
+        (
+            "display:inline-block;white-space:pre;text-align:right",
+            "a\nbbbbbb",
+            w300,
+            49.80,
+        ),
+        (
+            "position:absolute;white-space:nowrap;text-align:center",
+            "a<br>bbb",
+            Some("position:relative;width:300px;height:60px"),
+            10.20,
+        ),
+        (
+            "width:max-content;white-space:pre;text-align:center",
+            "a\nbbb",
+            w300,
+            10.20,
+        ),
+        (
+            "width:fit-content;white-space:nowrap;text-align:right",
+            "a<br>bbbbbb",
+            w300,
+            49.80,
+        ),
+    ] {
+        let (lines, _) = aligned(style, text, wrapper);
+        assert_eq!(lines.len(), 2, "{style} {text:?}: {lines:?}");
+        near(lines[0].1, want, &format!("{style} {text:?}: a"));
+        assert!(lines[1].1.abs() < 0.02, "{style} {text:?}: {lines:?}");
+    }
+}
+
+/// The paint layout is rebuilt when what alignment reads changes. An
+/// auto-width root in a 50px block and a `width: 51px` one are both broken
+/// at 51px (the auto one with its pixel of slack), but aligned within 50 and
+/// 51: Chrome 155 puts `a` at 41.02 and 42.02. Review of #1868: the rebuild
+/// was keyed on the break width only, so switching kept the old line.
+#[test]
+fn switching_between_auto_and_the_slack_width_realigns_the_line() {
+    let mut d = doc();
+    let body = d.body();
+    let outer = d.create_element("div");
+    d.set_attribute(outer, "style", "width:50px");
+    d.append_child(body, outer);
+    let c = d.create_element("div");
+    let base = "font:16px/25px ProbeFace;white-space:nowrap;text-align:right";
+    d.set_attribute(c, "style", base);
+    d.append_child(outer, c);
+    d.set_inner_html(c, "a");
+    d.resolve_layout(800.0, 600.0);
+    near(aligned_in(&d, c).0[0].1, 41.02, "auto");
+    d.set_attribute(c, "style", &format!("{base};width:51px"));
+    d.resolve_layout(800.0, 600.0);
+    near(aligned_in(&d, c).0[0].1, 42.02, "51px");
+    d.set_attribute(c, "style", base);
+    d.resolve_layout(800.0, 600.0);
+    near(aligned_in(&d, c).0[0].1, 41.02, "auto again");
+}

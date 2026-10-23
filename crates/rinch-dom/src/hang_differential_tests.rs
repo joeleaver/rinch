@@ -223,6 +223,7 @@ fn the_linear_pass_commits_the_lines_the_restarting_loop_did() {
             &super::UnhungSpaces::default(),
             false,
             false,
+            None,
         );
         fixed += stats.passes;
         lines_fixed += stats.lines;
@@ -291,6 +292,7 @@ fn with_inline_boxes_every_line_is_in_step_and_none_is_left_unhung() {
             &super::UnhungSpaces::default(),
             false,
             false,
+            None,
         );
         fixed_lines += stats.lines;
         // Review of #1077: parley's trailing line after an overflowing last box

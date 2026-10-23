@@ -1261,3 +1261,89 @@ pub fn op_collab_keystroke(mut f: CollabFixture) -> CollabFixture {
         .expect("projects");
     f
 }
+
+// ── rinch-editor-collab: a keystroke in one cell of a large table (#1241) ──
+
+/// Columns of the table [`setup_collab_table_keystroke`] types into.
+pub const COLLAB_TABLE_COLS: usize = 4;
+
+fn collab_table_state(
+    schema: &Rc<rinch_editor_core::Schema>,
+    rows: usize,
+) -> rinch_editor_core::EditorState {
+    use rinch_editor_core::{EditorState, Fragment, Plugin, default_plugins};
+    let para = |text: &str| {
+        let text = schema.text(text).expect("text");
+        schema
+            .branch("paragraph", Fragment::from_node(text))
+            .expect("paragraph")
+    };
+    let branch = |name: &str, children: Vec<rinch_editor_core::Node>| {
+        schema
+            .branch(name, Fragment::from_children(children))
+            .expect(name)
+    };
+    let table = branch(
+        "table",
+        (0..rows)
+            .map(|r| {
+                branch(
+                    "table_row",
+                    (0..COLLAB_TABLE_COLS)
+                        .map(|c| branch("table_cell", vec![para(&format!("row {r} column {c}"))]))
+                        .collect(),
+                )
+            })
+            .collect(),
+    );
+    let doc = branch(
+        "doc",
+        vec![para("before the table"), table, para("after it")],
+    );
+    let mut plugins: Vec<Rc<dyn Plugin>> = default_plugins();
+    plugins.push(Rc::new(rinch_editor_collab::CollabPlugin));
+    EditorState::create(schema.clone(), doc, plugins)
+}
+
+/// Type one character into the third cell of the middle row of the table (block 1).
+fn collab_table_type(state: &rinch_editor_core::EditorState) -> rinch_editor_core::EditorState {
+    use rinch_editor_core::{Pos, Selection};
+    let doc = &state.doc;
+    let table = doc.child(1);
+    let row = table.child_count() / 2;
+    // Into the table, the row, the cell and its paragraph: one opening token each.
+    let mut at = doc.child(0).node_size() + 1;
+    at += (0..row).map(|r| table.child(r).node_size()).sum::<usize>() + 1;
+    let cells = table.child(row);
+    at += (0..2).map(|k| cells.child(k).node_size()).sum::<usize>() + 1;
+    at += 1 + 3;
+    let mut tr = state.tr();
+    tr.set_selection(Selection::cursor(Pos(at)));
+    tr.insert_text("x").expect("insert");
+    state.apply(tr)
+}
+
+/// A table of `rows` × [`COLLAB_TABLE_COLS`] cells between two paragraphs, under a live
+/// session, one keystroke in a middle cell already projected (so the measured one is the
+/// second, in the same cell), and the next keystroke's document ready.
+///
+/// What the keystroke costs should not depend on `rows`: it changes one cell. #1241
+/// measured it re-reading and re-comparing the whole table (26 ms at 1000 rows).
+pub fn setup_collab_table_keystroke(rows: usize) -> CollabFixture {
+    alloc::reserve();
+    let schema = Rc::new(rinch_editor_core::Schema::starter_kit());
+    let state = collab_table_state(&schema, rows);
+    let mut session = rinch_editor_collab::CollabSession::new(&state).expect("session");
+    let warm = collab_table_type(&state);
+    session
+        .record_local(&schema, &state.doc, &warm.doc)
+        .expect("projects");
+    session.save_incremental().expect("drain");
+    let next = collab_table_type(&warm);
+    CollabFixture {
+        schema,
+        before: warm.doc.clone(),
+        after: next.doc.clone(),
+        session,
+    }
+}

@@ -92,6 +92,65 @@ pub fn gap_scores() -> u64 {
     crate::projection::gap_scores()
 }
 
+/// What the edits of one table cell have cost on this **thread** so far (#1241): how
+/// many times a whole table was read to find the cells of a table, and how many cell
+/// edits were projected through that cell alone. Take the difference across an
+/// operation; the second count is the positive control that a test exercised the
+/// cell path.
+pub fn table_cell_edits() -> (u64, u64) {
+    crate::table::cell_index_counts()
+}
+
+/// Project a one-cell edit of a table by reconciling the whole table (`false`), as
+/// before #1241, or through the cell alone (`true`, the default), on this **thread**:
+/// the switch a test comparing the two turns.
+pub fn set_table_cell_path(on: bool) {
+    crate::table::set_cell_path(on)
+}
+
+/// Whether two snapshots ([`CollabSession::snapshot`]) hold the same CRDT: the same
+/// items, with the same ids, origins and content, and the same deletions. Comparing
+/// the bytes is not that: a map value (an inline atom's `@atom`) encodes its keys in
+/// a `HashMap`'s order, which differs between two writes of one value.
+pub fn same_crdt(a: &[u8], b: &[u8]) -> bool {
+    use yrs::Update;
+    use yrs::updates::decoder::Decode;
+    match (Update::decode_v1(a), Update::decode_v1(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// [`same_crdt`], or where that cannot hold, the same **writes**: as many items
+/// written by each client (the state vectors agree) and as many of them deleted.
+///
+/// Two sessions making the same calls do not always build the same CRDT: text
+/// inserted with its formatting (`insert_with_attributes`, which the projection
+/// uses for a char typed right after a link) writes one format item per attribute,
+/// in the order of a `HashMap` that is seeded at random, so which item id ends up as
+/// which marker — and which of two redundant markers yrs later deletes — differs
+/// from run to run.
+pub fn same_writes(a: &[u8], b: &[u8]) -> bool {
+    use std::collections::BTreeMap;
+    use yrs::Update;
+    use yrs::updates::decoder::Decode;
+    let (Ok(a), Ok(b)) = (Update::decode_v1(a), Update::decode_v1(b)) else {
+        return false;
+    };
+    let deleted = |u: &Update| -> BTreeMap<u64, u32> {
+        u.delete_set()
+            .iter()
+            .map(|(client, ranges)| {
+                (
+                    client.get(),
+                    ranges.iter().map(|r| r.end - r.start).sum::<u32>(),
+                )
+            })
+            .collect()
+    };
+    a == b || (a.state_vector() == b.state_vector() && deleted(&a) == deleted(&b))
+}
+
 /// yrs client ids are **53-bit** (`ClientID::new` debug-asserts it, and a release build
 /// would silently fold the high bits into the mask instead), so two ids that differ only
 /// above bit 52 would collide — the corruption this module exists to warn about. Reject
