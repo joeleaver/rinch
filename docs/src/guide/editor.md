@@ -548,8 +548,14 @@ each node on the way to an edit once and keeps one document in the transaction
 rather than one per edit. Every table command is one `BatchStep`
 (#1200): as a step per row, a column into 16,000 rows rebuilt and kept the row list
 16,000 times (6.4 s, 2.1 GB; 29 ms as one step). The one exception is `deleteRow` /
-`deleteColumn` on a table whose cells overlap, which still removes one row or
-column per step on a recomputed map. Collaboration adds no step kinds.
+`deleteColumn` on a table whose cells overlap (or, past the slot budget, a table with
+cells in no slot), which still removes one row or column per step on a recomputed
+map — but only while the maps that takes come to at most 2^22 slots in all (#1874).
+Past that it removes them in one pass over the one map, as on any other table, and
+its result can differ from the one-at-a-time removal where cells overlap. Without
+that bound, deleting a 1000-column cell of a 2,097,152-column table rebuilt a
+2^22-slot map 999 times (10 s), and deleting a whole row of it took hours; it takes
+under 0.2 s now. Collaboration adds no step kinds.
 
 A few gesture → step mappings:
 

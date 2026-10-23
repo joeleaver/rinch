@@ -93,7 +93,12 @@ fn assert_schema_valid(schema: &Schema, node: &Node) {
     if node.is_text() {
         return;
     }
-    let types: Vec<&str> = node.content().children().iter().map(|c| c.type_name()).collect();
+    let types: Vec<&str> = node
+        .content()
+        .children()
+        .iter()
+        .map(|c| c.type_name())
+        .collect();
     validate_content(schema, node.type_name(), &types).unwrap();
     for c in node.content().children() {
         assert_schema_valid(schema, c);
@@ -138,7 +143,11 @@ fn delete_column_on_overlapping_cells_stays_within_the_budget() {
     let (steps, next) = run(&st, commands::table_ops::delete_column());
     assert_eq!(steps, 1, "one pass past the budget");
     assert_schema_valid(next.schema(), &next.doc);
-    assert_eq!(next.doc.child(0).child(0).child_count(), 2, "the cell is gone");
+    assert_eq!(
+        next.doc.child(0).child(0).child_count(),
+        2,
+        "the cell is gone"
+    );
 
     // A small overlapping table keeps the exact one-at-a-time removal.
     let t = table(&s, &[vec![(1, 1), (1, 2), (3, 1)], vec![(5, 1)]]);
