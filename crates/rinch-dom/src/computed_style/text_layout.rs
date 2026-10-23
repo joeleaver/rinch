@@ -297,10 +297,7 @@ impl ComputedStyle {
     /// because it is the cheap path's whole reason for existing; the others are
     /// documented rather than pinned.
     pub fn same_measured_text_inputs(&self, other: &ComputedStyle) -> bool {
-        use super::values::DisplayValue;
         use super::values::LineHeightValue;
-        let inline_level =
-            self.display == DisplayValue::Inline || other.display == DisplayValue::Inline;
         let same_line_height = match (self.line_height, other.line_height) {
             (LineHeightValue::Normal, LineHeightValue::Normal) => true,
             (LineHeightValue::Absolute(x), LineHeightValue::Absolute(y)) => x == y,
