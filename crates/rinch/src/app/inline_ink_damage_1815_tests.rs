@@ -270,3 +270,70 @@ fn damage_over_only_a_pill_s_padding_repaints_it() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// A transition writes an inline element's padding with no re-shape of its
+/// paragraph (#679), so only the element is pushed: the paragraph's painted
+/// ink is brought up to the pill each frame draws, or the frame that shrinks
+/// it again names none of the padding the grown pill painted.
+#[test]
+fn a_pill_transitioned_out_and_back_leaves_nothing_behind() {
+    use rinch_dom::transition::TransitionProperty;
+    let style = |pad: u32| {
+        format!(
+            "{PILL}; padding: {pad}px 3px; \
+             transition: padding-top 1000ms linear, padding-bottom 1000ms linear"
+        )
+    };
+    let tick_to = |app: &mut RinchApp, ms: f64| {
+        {
+            let doc = app.doc.as_ref().unwrap().clone();
+            let mut d = doc.borrow_mut();
+            rinch_dom::transition::tick_transitions(&mut d.tree, ms);
+        }
+        app.scene_dirty = true;
+        resolve(app);
+    };
+    let start = |app: &RinchApp, span: &NodeHandle| {
+        let doc = app.doc.as_ref().unwrap();
+        let d = doc.borrow();
+        d.tree.active_transitions[&span.node_id().0][&TransitionProperty::PaddingTop].start_time_ms
+    };
+    let mut failures = Vec::new();
+    for scale in [1.0, 2.0] {
+        let (mut app, span) = paragraph(&style(1));
+        let _ = full_frame(&mut app, scale);
+        span.set_attribute("style", &style(11));
+        resolve(&mut app);
+        let t0 = start(&app, &span);
+        for k in 1..=4 {
+            tick_to(&mut app, t0 + 250.0 * k as f64);
+            let _ = incremental_frame(&mut app, scale);
+        }
+        let grown = full_frame(&mut app, scale);
+        let held: usize = bands(scale).iter().map(|&r| ink_in(&grown, scale, r)).sum();
+        if held == 0 {
+            failures.push(format!("scale {scale}: positive control — the pill never grew"));
+        }
+        span.set_attribute("style", &style(1));
+        resolve(&mut app);
+        let t1 = start(&app, &span);
+        let mut last = None;
+        for k in 1..=4 {
+            tick_to(&mut app, t1 + 250.0 * k as f64);
+            last = Some(incremental_frame(&mut app, scale));
+        }
+        let (inc, stats) = last.unwrap();
+        if stats.get(Counter::RepaintPartial) != 1 {
+            failures.push(format!("scale {scale}: not incremental: {stats:?}"));
+        }
+        let full = full_frame(&mut app, scale);
+        let ghosts: usize = bands(scale)
+            .iter()
+            .map(|&r| diff_in(&inc, &full, scale, r))
+            .sum();
+        if ghosts != 0 {
+            failures.push(format!("scale {scale}: {ghosts} stale pixels"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
