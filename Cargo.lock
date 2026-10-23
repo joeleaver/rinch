@@ -2396,6 +2396,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpu-surface"
+version = "0.1.0"
+dependencies = [
+ "rinch",
+]
+
+[[package]]
 name = "gtk"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -208,18 +208,21 @@ fn remove_columns(
         while row < map.height() {
             let index = row * width + col;
             let pos = map.map()[index];
+            // A cell met in an earlier column: its rectangle is known. Asking
+            // `cell_rect` again walks back to the cell's left edge, so a row
+            // of 1000-wide cells cost 1000 steps a column (#1874).
+            if let Some(e) = found.get_mut(&pos) {
+                e.1 += 1;
+                row = e.0.bottom.max(row + 1);
+                continue;
+            }
             // A hole: this row has nothing in the column.
             let Some(rect) = map.cell_rect(index) else {
                 row += 1;
                 continue;
             };
-            found
-                .entry(pos)
-                .and_modify(|e| e.1 += 1)
-                .or_insert_with(|| {
-                    order.push(pos);
-                    (rect, 1)
-                });
+            order.push(pos);
+            found.insert(pos, (rect, 1));
             row = rect.bottom.max(row + 1);
         }
     }
@@ -244,42 +247,108 @@ fn remove_columns(
 // Row operations
 // ===================================================================
 
-/// Insert a row at grid index `row` (`0..=height`). A cell that spans across the
-/// insertion line grows its rowspan; otherwise the new row gets an empty cell in
-/// that column. Port of `addRow`.
-fn add_row(info: &TableRect, row: usize, schema: &Schema) -> Option<Vec<BatchEdit>> {
+/// Insert a row at grid index `row` (`0..=height`), shaped like the grid row
+/// `like` beside it (`row - 1` for `addRowAfter`, `row` for `addRowBefore`).
+///
+/// A cell that spans across the insertion line grows its rowspan, as in
+/// ProseMirror's `addRow`. The columns it leaves free get empty cells with
+/// `like`'s cell boundaries, cut where a free run starts or ends, so a cell of
+/// `like` that is 3 columns wide gives a 3-wide cell (#1244). ProseMirror
+/// makes one cell per column instead; on a table with no merged cells the two
+/// are the same row. A row of 2,100 cells of `colspan = 1000` was a
+/// 2,097,152-column grid and `addRowAfter` built a cell per column there: 2 M
+/// cells, 32 s and 5 GB. A new row now has at most as many cells as `like`
+/// covers, plus its holes.
+///
+/// A hole in `like` (a ragged row's tail) has no boundary to copy. The holes
+/// get one cell per column as before while they are no more than the
+/// table's cells or [`HOLE_CELLS_FLOOR`], whichever is more; past that (a
+/// short row beside rows of hundreds of thousands of columns) each run of
+/// holes gets cells [`tables::MAX_COLSPAN`] columns wide, so the cost stays
+/// in proportion to the document. The floor keeps every table of ordinary
+/// size on the old rule: without it a title cell of `colspan = 10` over rows
+/// of 2 cells made a new row of `[1, 1, colspan 8]`.
+///
+/// The new cells are plain `table_cell`s, as before, whatever `like` holds.
+/// Walks the grid row once: the map it reads is already that size.
+fn add_row(info: &TableRect, row: usize, like: usize, schema: &Schema) -> Option<Vec<BatchEdit>> {
     let map = &info.map;
     let width = map.width();
+    let slots = map.map();
     let row_pos = map.row_start(row)?;
+    let like = like.min(map.height().saturating_sub(1));
+    let like_slot = |col: usize| slots[like * width + col];
+    // Two holes one above the other are no cell spanning the line.
+    let from_above = |col: usize| {
+        let index = row * width + col;
+        row > 0
+            && row < map.height()
+            && slots[index] != HOLE
+            && slots[index] == slots[index - width]
+    };
+    // Holes on the free columns: one cell each unless that outnumbers both
+    // the table's cells and the floor.
+    let holes = (0..width)
+        .filter(|&col| like_slot(col) == HOLE && !from_above(col))
+        .count();
+    let table_cells: usize = (0..info.table.child_count())
+        .map(|r| info.table.child(r).child_count())
+        .sum();
+    let hole_run_cap = if holes <= table_cells.max(HOLE_CELLS_FLOOR) {
+        1
+    } else {
+        usize::try_from(tables::MAX_COLSPAN).unwrap_or(1)
+    };
     let mut edits = Vec::new();
     let mut cells: Vec<Node> = Vec::new();
     let mut col = 0;
     while col < width {
-        let index = row * width + col;
-        // Two holes one above the other are no cell spanning the line.
-        let from_above = row > 0
-            && row < map.height()
-            && map.map()[index] != HOLE
-            && map.map()[index] == map.map()[index - width];
-        if from_above {
-            let pos = map.map()[index];
-            let rect = map.cell_rect(index)?;
+        if from_above(col) {
+            let pos = slots[row * width + col];
+            let rect = map.cell_rect(row * width + col)?;
             edits.push(BatchEdit::set_attr(
                 pos,
                 "rowspan",
                 span_value(rect.bottom - rect.top + 1),
             ));
             col = rect.right.max(col + 1);
-        } else {
-            cells.push(make_empty_cell(schema)?);
-            col += 1;
+            continue;
         }
+        // The free run's piece under one cell of `like` (or one run of
+        // holes, cut at `hole_run_cap`).
+        let owner = like_slot(col);
+        let cap = if owner == HOLE { hole_run_cap } else { width };
+        let mut end = col + 1;
+        while end < width && end - col < cap && like_slot(end) == owner && !from_above(end) {
+            end += 1;
+        }
+        cells.push(make_empty_cell_spanning(schema, end - col)?);
+        col = end;
     }
     let new_row = schema
         .create_node("table_row", Attrs::new(), Fragment::from_children(cells))
         .ok()?;
     edits.push(BatchEdit::insert(row_pos, Fragment::from_node(new_row)));
     Some(edits)
+}
+
+/// The most holes [`add_row`] always fills with one cell per column, however
+/// few cells the table has (see there).
+const HOLE_CELLS_FLOOR: usize = 1000;
+
+/// An empty cell `cols` columns wide: [`make_empty_cell`] for one column (the
+/// very cell `addRow` always made), else the same built with that `colspan`.
+fn make_empty_cell_spanning(schema: &Schema, cols: usize) -> Option<Node> {
+    if cols <= 1 {
+        return make_empty_cell(schema);
+    }
+    let para = schema
+        .create_node("paragraph", Attrs::new(), Fragment::empty())
+        .ok()?;
+    let attrs = Attrs::from_iter([("colspan", span_value(cols))]);
+    schema
+        .create_node("table_cell", attrs, Fragment::from_node(para))
+        .ok()
 }
 
 /// Remove the grid rows `top..bottom` (not all of them). A cell spanning into
@@ -314,15 +383,20 @@ fn remove_rows(
         while col < width {
             let index = row * width + col;
             let pos = map.map()[index];
+            // A cell met in a row below: its rectangle is known. Asking
+            // `cell_rect` again walks up to the cell's top, once per row it
+            // covers (#1874).
+            if let Some(rect) = found.get(&pos) {
+                col = rect.right.max(col + 1);
+                continue;
+            }
             // A hole: this row has nothing in the column.
             let Some(rect) = map.cell_rect(index) else {
                 col += 1;
                 continue;
             };
-            found.entry(pos).or_insert_with(|| {
-                order.push(pos);
-                rect
-            });
+            order.push(pos);
+            found.insert(pos, rect);
             col = rect.right.max(col + 1);
         }
     }
@@ -490,6 +564,47 @@ fn remove_row_on(
     Some(edits)
 }
 
+/// The most grid slots the one-line-at-a-time fallbacks of [`delete_row`] and
+/// [`delete_column`] may map in all: they recompute the whole map after each
+/// row or column, so their work is the lines removed times the map's slots.
+/// Past this the command removes the lines in one pass over the map it
+/// already has (#1874), as it does on a [`plain_grid`].
+///
+/// The fallback exists for grids whose cells overlap (and cells in no slot,
+/// past #1176's slot budget), where ProseMirror's one-at-a-time removal can
+/// re-resolve the cells differently between lines. On a table past the slot
+/// budget the map is 2^22 slots and a recompute about 10 ms in a release
+/// build: a 1000-column cell took 10 s to delete, and a whole row of a
+/// 2,097,152-column table hours. 2^22 slots in all is one such map, or a few
+/// milliseconds; every table small enough for the difference to be seen by
+/// hand keeps the exact one-at-a-time result.
+const FALLBACK_SLOT_BUDGET: usize = 1 << 22;
+
+thread_local! {
+    /// A test's replacement for [`FALLBACK_SLOT_BUDGET`] on this thread.
+    static FALLBACK_SLOT_BUDGET_OVERRIDE: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Replace [`FALLBACK_SLOT_BUDGET`] on this thread (`None` restores it), so
+/// a test can force the one-pass removal onto small tables whose cells
+/// overlap — the path otherwise reached only on tables of millions of
+/// slots. Not for apps.
+#[doc(hidden)]
+pub fn set_fallback_slot_budget_for_tests(budget: Option<usize>) {
+    FALLBACK_SLOT_BUDGET_OVERRIDE.with(|b| b.set(budget));
+}
+
+/// Whether removing `lines` rows or columns one at a time, recomputing `map`
+/// after each, stays within [`FALLBACK_SLOT_BUDGET`].
+fn one_at_a_time_fits(map: &TableMap, lines: usize) -> bool {
+    let budget = FALLBACK_SLOT_BUDGET_OVERRIDE
+        .with(std::cell::Cell::get)
+        .unwrap_or(FALLBACK_SLOT_BUDGET);
+    // The last line needs no recompute after it.
+    lines.saturating_sub(1).saturating_mul(map.map().len()) <= budget
+}
+
 /// Recompute the table rectangle (map + table node) from the transaction's current
 /// doc — used between successive row/column removals (which invalidate the map).
 fn recompute(tr: &Transaction, table_start: usize, rect: Rect) -> Option<TableRect> {
@@ -521,7 +636,8 @@ fn batch_tr(state: &EditorState, edits: Vec<BatchEdit>) -> Option<Transaction> {
 pub fn add_row_before() -> Command {
     command_tr(|state| {
         let info = selected_rect(state)?;
-        batch_tr(state, add_row(&info, info.rect.top, state.schema())?)
+        let top = info.rect.top;
+        batch_tr(state, add_row(&info, top, top, state.schema())?)
     })
 }
 
@@ -529,7 +645,8 @@ pub fn add_row_before() -> Command {
 pub fn add_row_after() -> Command {
     command_tr(|state| {
         let info = selected_rect(state)?;
-        batch_tr(state, add_row(&info, info.rect.bottom, state.schema())?)
+        let bottom = info.rect.bottom;
+        batch_tr(state, add_row(&info, bottom, bottom - 1, state.schema())?)
     })
 }
 
@@ -558,14 +675,17 @@ pub fn delete_row() -> Command {
             return delete_table_tr(state, info.table_start);
         }
         let cells = Cells::new(&info);
-        if plain_grid(&info, &cells) && !has_hole(&info.map, info.rect.bottom) {
+        let lines = info.rect.bottom - info.rect.top;
+        let exact = plain_grid(&info, &cells) && !has_hole(&info.map, info.rect.bottom);
+        if exact || !one_at_a_time_fits(&info.map, lines) {
             let (top, bottom) = (info.rect.top, info.rect.bottom);
             return batch_tr(
                 state,
                 remove_rows(&info, &cells, top, bottom, state.schema())?,
             );
         }
-        // Overlapping cells: a row at a time from the bottom, one step each.
+        // Overlapping cells (or a hole under the rows): a row at a time from
+        // the bottom, one step each.
         let mut tr = state.tr();
         let (table_start, rect) = (info.table_start, info.rect);
         let mut cur = info;
@@ -594,7 +714,8 @@ pub fn delete_column() -> Command {
             return delete_table_tr(state, info.table_start);
         }
         let cells = Cells::new(&info);
-        if plain_grid(&info, &cells) {
+        let lines = info.rect.right - info.rect.left;
+        if plain_grid(&info, &cells) || !one_at_a_time_fits(&info.map, lines) {
             let (left, right) = (info.rect.left, info.rect.right);
             return batch_tr(state, remove_columns(&info, &cells, left, right)?);
         }

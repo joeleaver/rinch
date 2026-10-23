@@ -535,6 +535,72 @@ fn a_merged_cell_and_its_split_reach_the_peer_as_a_grid() {
     );
 }
 
+/// #1244: a new row copies the spans of the row beside it, so it can carry a
+/// merged cell; the peer gets the same row.
+#[test]
+fn a_row_added_beside_a_merged_cell_reaches_the_peer_merged() {
+    let s = schema();
+    let t = branch(
+        &s,
+        "table",
+        vec![
+            branch(
+                &s,
+                "table_row",
+                vec![spanning(&s, "w", 2, 1), cell(&s, "r0c2")],
+            ),
+            branch(
+                &s,
+                "table_row",
+                (0..3).map(|c| cell(&s, &format!("r1c{c}"))).collect(),
+            ),
+        ],
+    );
+    let (mut a, mut b) = pair(&s, vec![t, para(&s, "tail")], (1, 2));
+    a.in_cell(0, 0, "addRowAfter");
+    exchange(&mut a, &mut b);
+    assert_eq!(b.state.doc, a.state.doc);
+    assert_eq!(
+        grid_text(&b.state.doc),
+        "w | · | r0c2\n_ | · | _\nr1c0 | r1c1 | r1c2"
+    );
+    assert_tiles(&first_table(&b.state.doc).unwrap().0);
+    b.assert_model_is_projection("after the merged row");
+}
+
+/// The merged new row, and a column added through the merged cell at once:
+/// both 2-wide cells (the old one and its copy in the new row) take the new
+/// column, and the grid stays full.
+#[test]
+fn a_merged_new_row_and_a_column_through_its_neighbour_at_once() {
+    let blocks = |s: &Schema| {
+        let t = branch(
+            s,
+            "table",
+            vec![
+                branch(
+                    s,
+                    "table_row",
+                    vec![spanning(s, "w", 2, 1), cell(s, "r0c2")],
+                ),
+                branch(
+                    s,
+                    "table_row",
+                    (0..3).map(|c| cell(s, &format!("r1c{c}"))).collect(),
+                ),
+            ],
+        );
+        vec![t, para(s, "tail")]
+    };
+    for g in concurrently(
+        blocks,
+        |a| a.in_cell(0, 0, "addRowAfter"),
+        |b| b.in_cell(1, 0, "addColumnAfter"),
+    ) {
+        assert_eq!(g, "w | · | · | r0c2\n_ | · | · | _\nr1c0 | _ | r1c1 | r1c2");
+    }
+}
+
 // --- concurrency: the grid ----------------------------------------------------------
 
 #[test]

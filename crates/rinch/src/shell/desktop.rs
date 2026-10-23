@@ -34,6 +34,40 @@ pub struct GpuHandle {
 
 static GPU_HANDLE: OnceLock<GpuHandle> = OnceLock::new();
 
+/// The instance rinch created its own device from, published with
+/// [`GPU_HANDLE`]: a later window (hide/show re-creates it, #1520/#1546; a
+/// DevTools window) makes its surface from it and presents with the same
+/// adapter, device and queue, so the device never changes under the
+/// surfaces drawing with it (#1768 review).
+static RINCH_INSTANCE: OnceLock<Instance> = OnceLock::new();
+
+/// An instance and the adapter, device and queue made from it.
+type GpuStack = (Instance, Arc<Adapter>, Arc<Device>, Arc<Queue>);
+
+/// The GPU stack a new window must present with, when one is already shared:
+/// the embedder's ([`App::external_gpu`](crate::App::external_gpu)), or the
+/// one rinch created for its first window. `None` before the first window.
+fn shared_gpu_stack(gpu_init: Option<&GpuInit>) -> Option<GpuStack> {
+    match gpu_init {
+        Some(GpuInit::External(g)) => Some((
+            g.instance.clone(),
+            g.adapter.clone(),
+            g.device.clone(),
+            g.queue.clone(),
+        )),
+        _ => {
+            let instance = RINCH_INSTANCE.get()?;
+            let handle = GPU_HANDLE.get()?;
+            Some((
+                instance.clone(),
+                handle.adapter.clone(),
+                handle.device.clone(),
+                handle.queue.clone(),
+            ))
+        }
+    }
+}
+
 /// Get the shared GPU handle, if the renderer has been initialized.
 ///
 /// Returns `None` until the window's GPU renderer has started. After that,
@@ -50,6 +84,26 @@ static GPU_HANDLE: OnceLock<GpuHandle> = OnceLock::new();
 /// start, so once its window is up the handle is there.
 pub fn gpu_handle() -> Option<&'static GpuHandle> {
     GPU_HANDLE.get()
+}
+
+/// Publish the instance rinch's own device came from, for a test that has
+/// no window (the first call wins).
+#[cfg(test)]
+pub(crate) fn publish_instance_for_tests(instance: Instance) {
+    let _ = RINCH_INSTANCE.set(instance);
+}
+
+/// [`shared_gpu_stack`] as a window made with rinch's own device sees it.
+#[cfg(test)]
+pub(crate) fn shared_gpu_stack_for_tests() -> Option<GpuStack> {
+    shared_gpu_stack(None)
+}
+
+/// Publish a device as the shared GPU handle, for a test that has no window
+/// (the first call wins, as at runtime). Returns the handle in place.
+#[cfg(test)]
+pub(crate) fn gpu_handle_for_tests(make: impl FnOnce() -> GpuHandle) -> &'static GpuHandle {
+    GPU_HANDLE.get_or_init(make)
 }
 
 // ── GPU device injection (issue #57) ──────────────────────────────────────────
@@ -235,6 +289,9 @@ pub struct WgpuRenderer {
     pub(crate) composite_layers: Vec<CompositeLayer>,
     /// Active GPU texture layers for zero-copy compositing.
     pub(crate) gpu_layers: Vec<GpuTextureLayer>,
+    /// `RenderSurface` GPU frames registered with `renderer`, by surface id:
+    /// the texture and the image it was registered as (#1768).
+    surface_images: SurfaceImages,
     /// Composited output texture (layers + UI) for screenshot capture.
     /// Created lazily, invalidated on resize.
     pub(crate) composited_texture: Option<Texture>,
@@ -294,6 +351,13 @@ impl WgpuRenderer {
         let height = height.max(1);
 
         let gpu_init = GPU_INIT.get();
+        // Every window presents with one device: the embedder's, or the one
+        // rinch made for its first window. A window re-created by hide/show
+        // used to request a second device while `gpu_handle()` kept the
+        // first, so a `RenderSurface` GPU frame was drawn on one device and
+        // registered with a renderer on the other.
+        let shared = shared_gpu_stack(gpu_init);
+        let external = matches!(gpu_init, Some(GpuInit::External(_)));
 
         // Instance: reuse the embedder's when an external device is supplied
         // (the surface must come from the instance the adapter/device belong to);
@@ -302,9 +366,9 @@ impl WgpuRenderer {
         // Default to GPU-only backends (Vulkan/Metal/DX12). Skip GL/GLES probing
         // which loads Mesa gallium + LLVM (~70MB RSS) but can't run Vello anyway
         // (Vello requires compute shaders). WGPU_BACKEND env var still overrides.
-        let instance = match gpu_init {
-            Some(GpuInit::External(g)) => g.instance.clone(),
-            _ => {
+        let instance = match &shared {
+            Some((instance, ..)) => instance.clone(),
+            None => {
                 let backends = Backends::from_env()
                     .unwrap_or(Backends::VULKAN | Backends::METAL | Backends::DX12);
                 Instance::new(&InstanceDescriptor {
@@ -336,18 +400,27 @@ impl WgpuRenderer {
         };
 
         // Adapter: adopt the embedder's, or pick a surface-compatible one.
-        let adapter: Arc<Adapter> = match gpu_init {
-            Some(GpuInit::External(g)) => {
+        let adapter: Arc<Adapter> = match &shared {
+            Some((_, adapter, ..)) if external => {
                 assert!(
-                    g.adapter.is_surface_supported(&surface),
+                    adapter.is_surface_supported(&surface),
                     "App::external_gpu: the supplied adapter cannot present to \
                      rinch's window surface. The adapter/device must be created from an \
                      adapter that supports the target window (create the adapter with a \
                      compatible surface, or use App::gpu_config to let rinch own the device)."
                 );
-                g.adapter.clone()
+                adapter.clone()
             }
-            _ => Arc::new(
+            Some((_, adapter, ..)) => {
+                if !adapter.is_surface_supported(&surface) {
+                    return Err(format!(
+                        "the shared GPU adapter {:?} cannot present to this window",
+                        adapter.get_info().name
+                    ));
+                }
+                adapter.clone()
+            }
+            None => Arc::new(
                 pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                     power_preference: wgpu::PowerPreference::HighPerformance,
                     compatible_surface: Some(&surface),
@@ -375,9 +448,9 @@ impl WgpuRenderer {
 
         // Device/Queue: adopt the embedder's, or create one — optionally with
         // the embedder's extra features/limits (issue #57).
-        let (device, queue) = match gpu_init {
-            Some(GpuInit::External(g)) => (g.device.clone(), g.queue.clone()),
-            other => {
+        let (device, queue) = match (&shared, gpu_init) {
+            (Some((_, _, device, queue)), _) => (device.clone(), queue.clone()),
+            (None, other) => {
                 let (mut features, limits) = match other {
                     Some(GpuInit::Config(cfg)) => {
                         (cfg.required_features, cfg.required_limits.clone())
@@ -460,11 +533,17 @@ impl WgpuRenderer {
 
         // Publish the shared GPU handle for external renderers, now that the
         // device is known to work.
-        let _ = GPU_HANDLE.set(GpuHandle {
-            device: device.clone(),
-            queue: queue.clone(),
-            adapter: adapter.clone(),
-        });
+        if GPU_HANDLE
+            .set(GpuHandle {
+                device: device.clone(),
+                queue: queue.clone(),
+                adapter: adapter.clone(),
+            })
+            .is_ok()
+            && !external
+        {
+            let _ = RINCH_INSTANCE.set(instance.clone());
+        }
 
         tracing::info!(
             "rinch-dom runtime: backend={:?}, format={:?}",
@@ -482,6 +561,7 @@ impl WgpuRenderer {
             layer_compositor: None,
             layer_uploader: None,
             composite_layers: Vec::new(),
+            surface_images: SurfaceImages::default(),
             gpu_layers: Vec::new(),
             composited_texture: None,
             ui_base: None,
@@ -1068,6 +1148,16 @@ impl WgpuRenderer {
     pub fn set_gpu_layers(&mut self, layers: Vec<GpuTextureLayer>) {
         self.gpu_layers = layers;
     }
+
+    /// Register this paint's `RenderSurface` GPU frames with the Vello
+    /// renderer and hand back each one's image, by surface id (#1768); see
+    /// [`SurfaceImages::sync`].
+    pub fn sync_surface_images(
+        &mut self,
+        frames: impl Iterator<Item = (usize, Texture)>,
+    ) -> std::collections::HashMap<usize, vello::peniko::ImageData> {
+        self.surface_images.sync(&mut self.renderer, frames)
+    }
 }
 
 /// The texture a window is presented from, which a debug screenshot reads:
@@ -1103,6 +1193,49 @@ pub(crate) fn ui_base_color(window_base: Color, cpu_layers: bool, gpu_layers: bo
         Color::TRANSPARENT
     } else {
         window_base
+    }
+}
+
+/// The `RenderSurface` GPU frames registered with one Vello renderer, by
+/// surface id: the texture and the image it was registered as (#1768).
+#[derive(Default)]
+pub(crate) struct SurfaceImages {
+    by_surface: std::collections::HashMap<usize, (Texture, vello::peniko::ImageData)>,
+}
+
+impl SurfaceImages {
+    /// Register `frames` with `renderer` and hand back each one's image, by
+    /// surface id. A surface keeps its registration while its texture is the
+    /// same one; a new texture (a resize) is registered again and the old
+    /// one dropped, as is every surface missing from `frames`. The images are
+    /// drawn premultiplied, as a compositor layer's pixels were read.
+    pub(crate) fn sync(
+        &mut self,
+        renderer: &mut VelloRenderer,
+        frames: impl Iterator<Item = (usize, Texture)>,
+    ) -> std::collections::HashMap<usize, vello::peniko::ImageData> {
+        let mut now = std::collections::HashMap::new();
+        for (id, texture) in frames {
+            let image = match self.by_surface.remove(&id) {
+                Some((kept, image)) if kept == texture => image,
+                old => {
+                    if let Some((_, image)) = old {
+                        renderer.unregister_texture(image);
+                    }
+                    let mut image = renderer.register_texture(texture.clone());
+                    image.alpha_type = vello::peniko::ImageAlphaType::AlphaPremultiplied;
+                    image
+                }
+            };
+            now.insert(id, (texture, image));
+        }
+        for (_, (_, image)) in std::mem::replace(&mut self.by_surface, now) {
+            renderer.unregister_texture(image);
+        }
+        self.by_surface
+            .iter()
+            .map(|(id, (_, image))| (*id, image.clone()))
+            .collect()
     }
 }
 

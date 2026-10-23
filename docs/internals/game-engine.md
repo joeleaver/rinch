@@ -128,6 +128,89 @@ a transparent window's base is transparent anyway, so it worked there. Pin:
 `shell::compositor::gpu_alpha_tests::gpu_alpha_a_gpu_layer_shows_in_an_opaque_window_1774`
 (`#[ignore]`d, needs a GPU: `cargo test -p rinch --features gpu --lib -- --ignored gpu_alpha`).
 
+**The GPU render callback (#1768 part 3, desktop): frames drawn in the scene.**
+`set_gpu_render_callback` stores a `FnMut(&GpuSurfaceFrame)`. How a surface is drawn is decided in
+**one place**, `render_surface::surface_route` → `SurfaceRoute` (`Pixels` | `GpuImage(device)`):
+the GPU route needs a GPU callback, a device (`gpu_frame_device`: `renderer::gpu_presenting` and
+`gpu_handle()`), and a host that can draw a registered image (`invoke_render_callbacks` from the
+desktop window passes `true`; an embedded context's `invoke_render_callbacks_for` passes
+`false`, since its host renders the scene with a renderer of its own, and an image registered
+with another renderer panics in Vello). A future split-layer fast path (the UI rendered below
+and above the surface, the compositor applying clip, radius, opacity and transform) is meant to
+be another variant there, behind the same callbacks. `draw_gpu_frame` draws into the surface's
+own `gpu_target` (`Rgba8Unorm`, `RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC | COPY_DST`,
+`Rgba8UnormSrgb` view), never the app's `texture_source` (review of #1861, D3), reallocating
+it when the size moves, and sets `gpu_frame_fresh`. `paint_gpu` then takes
+`collect_gpu_surface_frames()`, has `WgpuRenderer::sync_surface_images` register each target
+with the window's Vello renderer (`register_texture`, kept while the texture is the same one,
+dropped otherwise; declared `AlphaPremultiplied`), marks the fresh surfaces' nodes paint-dirty
+(their boxes are the frame's damage, so a GPU partial frame #1718 re-renders them), and hands
+the images to paint (`rinch_dom::paint::set_surface_gpu_images`). Paint draws them where a CPU
+frame is drawn — the `data-render-surface` node's content, `object-fit: contain`, through
+`Painter::draw_gpu_image` (a no-op by default; `VelloPainter` fills with the image brush and the
+half-pixel brush transform of #1027; `ClipTrackingPainter` forwards it — a wrapper that does not
+draws nothing) — so every clip, layer, opacity group and transform around the node applies.
+Nothing is a hole or a `data-viewport` any more; the surface is sized like a CPU surface (its
+layout box times the transform's axis scales, see review 2 below), which also ended the two-sizes-a-paint under a transform of the layer version
+(review D1). **Atlas:** Vello packs every image of a scene into one atlas of at most 8192²
+(`VELLO_ATLAS_SIDE`), re-created each frame, and silently drops an image it cannot place.
+`gpu_target_size` clamps a target to `min(max_texture_dimension_2d, 8192)` a side and
+`gpu_atlas_scale` shrinks all GPU frames of a paint alike when together they pass half the
+atlas (`GPU_FRAME_ATLAS_BUDGET`); each warns once. **Video** left the GPU compositor in the same
+change: `surface_takes_compositor_path(is_inline, is_video, gpu)` is false for video, so on the
+GPU window `collect_viewport_frames_by_name` hands its CPU frames to paint
+(`RinchApp::install_gpu_viewport_frames`, with the `GameViewport` hole set) and they are drawn
+inline, as on software — black bars and all. The retention of the last layers while a video
+was loaded went with it. `GameViewport` and `GpuTextureRegistrar` textures stay compositor
+layers. Cost (spike, integrated Radeon 890M, wall time): a 640×360 surface 3–7 ms a frame in
+the scene against 1–3 as a layer, full-window 1080p 12 against 2, 4K 15 against 3; 4K video
+25 against 6. Pins (`#[ignore]`d, real GPU: `--ignored gpu_`): `gpu_render_callback_frames_are_drawn_as_elements`
+(non-clipping ancestor background beneath, rounded clip, ancestor opacity, a later translucent
+element above, z-index order, ancestor transform, overflow clip),
+`…_frames_scroll_with_their_scroller`, `…_frames_go_to_the_scene`, `…_under_a_transform_has_one_size`,
+`…_target_is_clamped_to_the_device_limit`, `…_frames_share_the_atlas`,
+`…_never_draws_into_an_app_texture`, `…_frames_are_rounded_by_their_own_radius`,
+`…_atlas_share_holds_for_idle_surfaces`, `…_unset_pacing_is_on_demand`,
+`a_later_window_presents_with_the_shared_device`, `gpu_video_frames_are_drawn_as_elements`; and
+`without_a_gpu_compositor_the_gpu_callback_falls_back_to_the_render_callback` everywhere.
+**Review 2 of #1861.** *One device:* `WgpuRenderer::try_new_transparent` used to request a
+new instance, adapter and device for every window, and a window re-created by hide/show (a tray
+app, a layer-shell output loss) got a second device while `gpu_handle()` kept the first — GPU
+frames were drawn on one and registered with a renderer on the other. Now the first window's
+instance is kept beside `GPU_HANDLE` (`RINCH_INSTANCE`) and `shared_gpu_stack` hands every later
+window that stack (as `App::external_gpu` always did); a shared adapter that cannot present to
+the new window is an `Err`, i.e. the software fallback under `Renderer::Auto`. Checked live: a
+hide/show in a nested KWin makes two renderers and one instance, and the surface draws after.
+*Atlas:* a target whose size differs from the one it has (a new layout size, or the share
+moving) is drawn again, idle or not, so the share holds for every surface and a shrunk one
+recovers. *Size:* `all_surface_layout_rects` reports the layout size times the transform's axis
+scales (not the painted bounding box, which letterboxed a rotated frame). *Radius:* the surface
+arm in paint clips its frame to its own `border-radius`, GPU and CPU. *Pacing:* an unset GPU
+surface is on demand (`invoke_render_callbacks_where`). The registration is
+`desktop::SurfaceImages`, which the GPU tests drive too.
+
+**Review 3 of #1861: the frame is the element's content.** The `data-render-surface` arm that
+painted a frame over the whole border box (background square, border never painted) is gone:
+the generic element arm paints the surface's background, shadow, border and outline as for any
+element, and then `paint_surface_frame` draws the frame — GPU image or CPU pixels — into the
+**content box** (`paint::content_box_insets`: border plus padding; a percentage padding counts
+as zero there), `contain`-fitted, clipped to the inner radius (`BorderRadii::inner` by those
+insets). The target size follows (`all_surface_layout_rects`: content box × the transform's axis
+scales), so `layout_size()`, `layout_rect()`'s size and the resize callback report the content
+box now, where they reported the border box. Pins: `gpu_render_callback_frames_sit_in_the_content_box`
+(rounded background, square and rounded border, padding; GPU and CPU),
+`gpu_render_callback_target_is_the_content_box`.
+
+**No device-lost handling.** Nothing in rinch's desktop shell handles a lost GPU device, and with
+one shared device for every window a lost device is never replaced: surfaces, Vello and every
+window stop presenting until the app restarts (#1788).
+
+**Part 4 notes:** the API is under `cfg(feature = "gpu")`, and `gpu` implies `desktop`, so the web
+half needs a feature of its own: widen to `cfg(any(feature = "gpu", all(target_arch = "wasm32",
+feature = "web-gpu")))` — an off-by-default `rinch` feature adding `dep:wgpu` (WebGPU only) —
+with the canvas's current texture as the target. `SurfaceRoute::GpuImage` holds the desktop
+`GpuHandle`; the web arm needs its own variant (or a device abstraction) rather than that type.
+
 **Sharing a high-capability GPU device (issue #57):** zero-copy compositing needs your texture on the *same* device rinch composites with (`gpu_handle()` → `device`/`queue`/**`adapter`**). `gpu_handle()` is `None` whenever the window presents with the software renderer (`RINCH_RENDERER=cpu`, or the `Renderer::Auto` fallback), so handle `None` unless you use one of the two entry points below — they always present on the GPU. By default that device is created with `Features::default()` / `Limits::default()`. To raise it:
 
 | Entry point | Ownership | Use when |

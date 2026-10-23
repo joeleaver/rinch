@@ -109,6 +109,19 @@ Command names are case-sensitive. The full catalogue:
 | **Deleting** | `deleteSelection`, `deleteCharBackward`, `deleteCharForward`, `deleteWordBackward`, `deleteWordForward` |
 | **History** | `undo`, `redo` |
 
+`addRowBefore` and `addRowAfter` shape the new row like the row beside it (the row
+below for `addRowBefore`, the row above for `addRowAfter`): under a cell two columns
+wide the new row has a cell two columns wide, and a cell that spans across the new
+row's line (a `rowspan` reaching past it) grows by one row and keeps those columns.
+The new cells are empty, plain `table_cell`s, even beside a header row. In a table
+with no merged cells that is one cell per column, the row these commands have always
+added. Before #1244 a new row was always one cell per grid column, so a row added
+under a row of 2,100 cells each `colspan = 1000` wide built 2 million cells; it now
+builds about 2,100. Where the row beside it has no cell (a short row in a ragged
+table), the new row gets a cell per empty column, unless there are more than 1000 such
+columns and more of them than the whole table has cells; then it gets cells up to 1000
+columns wide.
+
 A block-type command clears what the new type cannot hold, as ProseMirror's `setBlockType` does: `setCodeBlock` removes the marks (a code block takes none), turns a hard break into a line break (`\n`) and deletes an image.
 
 > Links need a destination, so applying a link is a builder rather than a bare named

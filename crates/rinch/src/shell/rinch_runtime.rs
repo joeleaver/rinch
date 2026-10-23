@@ -1782,7 +1782,28 @@ impl RinchRuntime {
             rinch_dom::paint::set_surface_pixels(Some(surface_pixels));
         }
 
-        // Video surfaces still use the compositor/hole-punch path.
+        // `RenderSurface` GPU frames (#1768): each surface's target texture,
+        // registered with this window's Vello renderer and drawn in the scene
+        // as the surface element's content. A surface that drew this paint is
+        // the damage. Always synced, so a surface that stopped drawing (or
+        // left) has its texture unregistered.
+        let gpu_frames = crate::render_surface::collect_gpu_surface_frames();
+        let fresh: Vec<usize> = gpu_frames
+            .iter()
+            .filter(|(_, _, fresh)| *fresh)
+            .map(|(id, ..)| *id)
+            .collect();
+        let gpu_images = renderer
+            .sync_surface_images(gpu_frames.into_iter().map(|(id, texture, _)| (id, texture)));
+        if !fresh.is_empty() {
+            self.app.request_repaint();
+            self.app.mark_surface_nodes_paint_dirty(&fresh);
+        }
+        if !gpu_images.is_empty() {
+            rinch_dom::paint::set_surface_gpu_images(Some(gpu_images));
+        }
+
+        // `GameViewport` surfaces still use the compositor/hole-punch path.
         // Track which viewport names have compositor layers so we can set
         // ACTIVE_VIEWPORTS to prevent hole-punching for inline-painted surfaces.
         let mut all_layers: Vec<rinch_platform::CompositeLayer> = Vec::new();
@@ -1908,35 +1929,20 @@ impl RinchRuntime {
             }
         }
 
-        // Set or clear composite layers on the renderer (GPU texture + video only)
-        //
-        // `retaining_layers` records the third case: nothing was collected this
-        // cycle, but a video is still loaded, so the renderer keeps compositing
-        // last cycle's layers. Those layers still need their holes.
-        let mut retaining_layers = false;
-        //
-        // A layer withheld for a not-ready viewport is not that case: the
-        // layers are replaced, by nothing if need be, so last cycle's frame of
-        // it is not what stays composited.
+        // Set or clear composite layers on the renderer (`GameViewport` CPU
+        // frames and GPU textures only). Video is drawn in the scene since
+        // #1768, so the retention a loaded video needed between its frames
+        // (the last cycle's layers kept, with their holes) is gone with it.
         if !all_layers.is_empty() || !gpu_layers.is_empty() || skipped_unready {
             renderer.set_composite_layers(all_layers);
             renderer.set_gpu_layers(gpu_layers);
         } else if renderer.has_composite_layers() {
-            #[cfg(feature = "video")]
-            let video_loaded = rinch_video::is_video_loaded();
-            #[cfg(not(feature = "video"))]
-            let video_loaded = false;
-
-            if !video_loaded {
-                renderer.set_composite_layers(vec![]);
-                renderer.set_gpu_layers(vec![]);
-            } else {
-                retaining_layers = true;
-            }
+            renderer.set_composite_layers(vec![]);
+            renderer.set_gpu_layers(vec![]);
         }
 
         // Set active viewports so hole-punching only applies to compositor
-        // surfaces (GPU textures + video), not inline-painted CPU surfaces.
+        // surfaces (`GameViewport`), not inline-painted ones.
         //
         // Installed unconditionally, empty set included. Skipping the call when
         // nothing has a layer left `ACTIVE_VIEWPORTS` at `None`, which
@@ -1944,24 +1950,18 @@ impl RinchRuntime {
         // gate was inoperative in exactly the case it exists for, a viewport
         // with no frame behind it (issue #186).
         //
-        // The one exception is the retention branch above: the renderer WILL
-        // composite last cycle's layers under the UI, but `collect_*` returned
-        // nothing this cycle so their names are no longer in the set. Filtering
-        // on the empty set there would leave those layers hidden behind an
-        // unpunched background — the video blinking out for a frame. Fall back
-        // to the unfiltered behaviour for exactly that case.
-        //
         // Through the app rather than straight into paint: the set is an input
         // to the scene, so a set that differs from the last paint's has to
         // repaint the viewports it differs in (issue #349). `build_scene`
         // otherwise returns the cached scene, with last paint's holes in it —
         // a hole left behind by a surface that unregistered, or none yet for
         // one that has just delivered its first frame.
-        self.app.install_viewport_holes(if retaining_layers {
-            None
-        } else {
-            Some(compositor_viewport_names)
-        });
+        //
+        // Video frames go in with them: painted inline, in the scene (#1768).
+        self.app.install_gpu_viewport_frames(
+            crate::render_surface::collect_viewport_frames_by_name(),
+            Some(compositor_viewport_names),
+        );
 
         // Build the frame from the document — CPU surfaces paint inline via
         // draw_image(). Only what its damage reaches is encoded and rendered
@@ -1970,8 +1970,9 @@ impl RinchRuntime {
             .app
             .build_gpu_frame(scale, size, renderer.ui_invalid_reason(transparent));
 
-        rinch_dom::paint::set_active_viewports(None);
+        RinchApp::clear_viewport_frames();
         rinch_dom::paint::set_surface_pixels(None);
+        rinch_dom::paint::set_surface_gpu_images(None);
 
         // Render to screen
         let present_start = std::time::Instant::now();

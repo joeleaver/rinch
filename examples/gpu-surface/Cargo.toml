@@ -1,0 +1,11 @@
+[package]
+name = "gpu-surface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "A RenderSurface drawn with wgpu through set_gpu_render_callback (#1768)"
+
+[dependencies]
+# `gpu` gives the surface rinch's compositor device; `debug` exposes the MCP bridge.
+rinch = { workspace = true, features = ["desktop", "gpu", "debug", "components", "theme"] }

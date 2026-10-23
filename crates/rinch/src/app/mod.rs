@@ -5697,6 +5697,30 @@ impl RinchApp {
         rinch_dom::paint::set_viewport_pixels(Some(frames));
     }
 
+    /// The GPU window's half of [`Self::install_viewport_frames`] (#1768): the
+    /// frames of the viewports painted **inline** in the scene (video, whose
+    /// frames are CPU pixels), and the set of viewports that punch a hole for
+    /// a compositor layer (`GameViewport`; `None` is "every viewport punches").
+    /// Call [`Self::clear_viewport_frames`] after [`Self::build_scene`].
+    #[cfg(feature = "desktop")]
+    pub fn install_gpu_viewport_frames(
+        &mut self,
+        frames: crate::render_surface::ViewportFrames,
+        holes: Option<std::collections::HashSet<String>>,
+    ) {
+        let crate::render_surface::ViewportFrames { frames, fresh, .. } = frames;
+        self.note_viewport_paint_inputs(frames.keys(), holes.as_ref());
+        rinch_dom::paint::set_active_viewports(holes);
+        if !fresh.is_empty() {
+            self.request_repaint();
+            let names: Vec<&str> = fresh.iter().map(String::as_str).collect();
+            self.mark_viewport_nodes_paint_dirty(&names);
+        }
+        if !frames.is_empty() {
+            rinch_dom::paint::set_viewport_pixels(Some(frames));
+        }
+    }
+
     /// Hand this paint the set of viewports that punch a hole — the GPU
     /// compositor's half of [`Self::install_viewport_frames`], whose frames are
     /// layers under the scene rather than part of it. `None` is "every viewport
@@ -5942,14 +5966,18 @@ impl RinchApp {
         None
     }
 
-    /// Find a render surface's layout rect by surface ID.
-    ///
-    /// Searches for a DOM element with `data-render-surface={id}` and returns
-    /// its absolute position and size in logical pixels.
     /// Find all DOM nodes with `data-render-surface` and return their surface
-    /// IDs and layout rects. This is independent of the surface registry —
-    /// surfaces that are still in the DOM get layout updates even if the
-    /// registry was temporarily cleared by a reactive scope rebuild.
+    /// IDs and frame boxes: the painted box's top-left in logical window px,
+    /// and the size a frame needs to fill its content box sharply — the
+    /// content box (inside border and padding, where paint draws the frame)
+    /// times the composed transform's scale along each axis (#1768). Not the
+    /// painted bounding box: under `rotate(90deg)` that is the box turned on
+    /// its side, and a frame of that shape drawn into the (untransformed) box
+    /// was letterboxed. Under `scale(2)` both are twice the layout size.
+    ///
+    /// Independent of the surface registry — surfaces that are still in the
+    /// DOM get layout updates even if the registry was temporarily cleared by
+    /// a reactive scope rebuild.
     pub fn all_surface_layout_rects(&self) -> Vec<(usize, ViewportRect)> {
         let doc = match self.doc.as_ref() {
             Some(d) => d,
@@ -5971,10 +5999,18 @@ impl RinchApp {
                     Ok(id) => id,
                     Err(_) => continue,
                 };
-                // The painted box: the app sizes its buffer from this rect and
-                // `surface_local_coords` maps the pointer into it, so the two
-                // have to be the same box (#203).
-                let (abs_x, abs_y, w, h) = painted_element_box(&d.tree, node_id);
+                // The painted box's origin (#203), and the layout size scaled
+                // by the transform along each axis.
+                let (abs_x, abs_y, _, _) = painted_element_box(&d.tree, node_id);
+                let (_, _, t) = rinch_dom::paint::compute_absolute_position_and_transform(
+                    &d.tree, node_id, 1.0,
+                );
+                let [a, b, c, dd, _, _] = t.as_coeffs();
+                let (l, t, r, bottom) = rinch_dom::paint::content_box_insets(node);
+                let (w, h) = (
+                    (node.layout.width - l - r).max(0.0) * a.hypot(b) as f32,
+                    (node.layout.height - t - bottom).max(0.0) * c.hypot(dd) as f32,
+                );
                 results.push((surface_id, (abs_x, abs_y, w, h)));
             }
         }
