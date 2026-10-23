@@ -21,7 +21,7 @@ const W: u32 = 64;
 const H: u32 = 48;
 
 /// The device, and the validation errors it raised since it was made.
-fn device() -> (Device, Queue, Arc<Mutex<Vec<String>>>) {
+pub(super) fn device() -> (Device, Queue, Arc<Mutex<Vec<String>>>) {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::default(),
@@ -40,7 +40,7 @@ fn device() -> (Device, Queue, Arc<Mutex<Vec<String>>>) {
     (device, queue, errors)
 }
 
-fn renderer(device: &Device) -> Renderer {
+pub(super) fn renderer(device: &Device) -> Renderer {
     Renderer::new(
         device,
         RendererOptions {
@@ -203,7 +203,7 @@ fn gpu_split_a_registered_texture_no_scene_draws_is_not_read() {
 /// even-odd clip nested in another clip drops coverage it has (pixels left
 /// of R lost their after-content), where the reversed winding is right on
 /// both lavapipe and RADV.
-fn inverse(outer: Rect, hole: Rect) -> BezPath {
+pub(super) fn inverse(outer: Rect, hole: Rect) -> BezPath {
     let mut path = outer.to_path(0.1);
     path.move_to((hole.x0, hole.y0));
     path.line_to((hole.x0, hole.y1));
