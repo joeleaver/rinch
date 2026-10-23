@@ -12,14 +12,15 @@
 //! Enter chain) then puts an empty paragraph at the gap.
 //!
 //! The seeded half runs every built-in command at every position (a caret at
-//! each position, a node selection of each node, random ranges) of random
+//! each position, a node selection of each leaf atom, random ranges inside one
+//! cell) of random
 //! documents holding tables, and asserts no result is a ragged table or an
 //! invalid document. `RINCH_SPLIT_FUZZ_SEEDS` raises the seed count.
 
 use std::rc::Rc;
 
 use rinch_editor_core::schema::validation::validate_content;
-use rinch_editor_core::tables::{is_table, row_holes};
+use rinch_editor_core::tables::{self, is_table, row_holes};
 use rinch_editor_core::*;
 
 fn para(s: &Schema, text: &str) -> Node {
@@ -32,7 +33,8 @@ fn para(s: &Schema, text: &str) -> Node {
 }
 
 fn leaf(s: &Schema, name: &str) -> Node {
-    s.create_node(name, Attrs::new(), Fragment::empty()).unwrap()
+    s.create_node(name, Attrs::new(), Fragment::empty())
+        .unwrap()
 }
 
 fn branch(s: &Schema, name: &str, children: Vec<Node>) -> Node {
@@ -62,7 +64,12 @@ fn valid(s: &Schema, n: &Node) -> bool {
     if n.is_text() {
         return true;
     }
-    let names: Vec<&str> = n.content().children().iter().map(|c| c.type_name()).collect();
+    let names: Vec<&str> = n
+        .content()
+        .children()
+        .iter()
+        .map(|c| c.type_name())
+        .collect();
     validate_content(s, n.type_name(), &names).is_ok()
         && n.content().children().iter().all(|c| valid(s, c))
 }
@@ -70,7 +77,11 @@ fn valid(s: &Schema, n: &Node) -> bool {
 /// `doc(table(row(cell(hr, p()), cell(p("b")))), p("zw"))`: the cell opens at 2,
 /// the rule is 3..4, the gap the issue names is 4, the empty paragraph 4..6.
 fn issue_doc(s: &Schema) -> Node {
-    let c1 = branch(s, "table_cell", vec![leaf(s, "horizontal_rule"), para(s, "")]);
+    let c1 = branch(
+        s,
+        "table_cell",
+        vec![leaf(s, "horizontal_rule"), para(s, "")],
+    );
     let c2 = branch(s, "table_cell", vec![para(s, "b")]);
     let row = branch(s, "table_row", vec![c1, c2]);
     let table = branch(s, "table", vec![row]);
@@ -82,7 +93,10 @@ fn split_block_at_a_gap_inside_a_cell_does_not_split_the_cell() {
     let s = Rc::new(Schema::starter_kit());
     let st = state(&s, issue_doc(&s), Selection::cursor(Pos(4)));
     // ProseMirror's `splitBlock` refuses: the split's parent is the cell.
-    assert!(st.run("splitBlock").is_none(), "splitBlock must refuse at a cell gap");
+    assert!(
+        st.run("splitBlock").is_none(),
+        "splitBlock must refuse at a cell gap"
+    );
     assert!(!st.can_run("splitBlock"));
 }
 
@@ -109,7 +123,11 @@ fn enter_in_an_empty_paragraph_before_another_block_of_its_cell_keeps_the_cell()
     let s = Rc::new(Schema::starter_kit());
     // Not its cell's first block either: a split of the cell at offset 0 is
     // refused by the content check (an empty cell), which hid the bug.
-    let c1 = branch(&s, "table_cell", vec![para(&s, "x"), para(&s, ""), para(&s, "y")]);
+    let c1 = branch(
+        &s,
+        "table_cell",
+        vec![para(&s, "x"), para(&s, ""), para(&s, "y")],
+    );
     let c2 = branch(&s, "table_cell", vec![para(&s, "b")]);
     let table = branch(&s, "table", vec![branch(&s, "table_row", vec![c1, c2])]);
     let doc = branch(&s, "doc", vec![table, para(&s, "zw")]);
@@ -153,6 +171,24 @@ fn enter_in_a_paragraph_inside_a_cell_still_splits_the_paragraph() {
             "<table><tr><td><p>a</p><p>b</p></td></tr></table>",
             "{cmd}"
         );
+    }
+}
+
+#[test]
+fn backspace_at_the_start_of_a_paragraph_after_a_table_adds_no_row() {
+    // Found by the seeded check below: the join's find-wrapping branch wrapped
+    // the paragraph in a new one-cell row of the table before it.
+    let s = Rc::new(Schema::starter_kit());
+    let c1 = branch(&s, "table_cell", vec![para(&s, "a")]);
+    let c2 = branch(&s, "table_cell", vec![para(&s, "b")]);
+    let table = branch(&s, "table", vec![branch(&s, "table_row", vec![c1, c2])]);
+    let doc = branch(&s, "doc", vec![table, para(&s, "zw")]);
+    // table 0..14, "zw" starts at 15.
+    let st = state(&s, doc, Selection::cursor(Pos(15)));
+    for cmd in ["deleteCharBackward", "deleteWordBackward"] {
+        if let Some(next) = st.run(cmd) {
+            assert_eq!(ragged_tables(&next.doc), Vec::<String>::new(), "{cmd}");
+        }
     }
 }
 
@@ -262,23 +298,38 @@ fn no_command_at_any_position_makes_a_ragged_table() {
     for seed in 1..=seeds {
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ seed.wrapping_mul(0x2545_F491_4F6C_DD1D));
         let doc = random_doc(&s, &mut rng);
-        assert!(valid(&s, &doc), "seed {seed}: generator made an invalid doc");
-        assert!(ragged_tables(&doc).is_empty(), "seed {seed}: generator made a ragged table");
+        assert!(
+            valid(&s, &doc),
+            "seed {seed}: generator made an invalid doc"
+        );
+        assert!(
+            ragged_tables(&doc).is_empty(),
+            "seed {seed}: generator made a ragged table"
+        );
         let size = doc.content().size();
-        let mut selections: Vec<Selection> = (0..=size).map(|p| Selection::cursor(Pos(p))).collect();
-        doc.nodes_between(0, size, &mut |n, pos, _| {
-            if !n.is_text() {
-                selections.push(Selection::Node(NodeSelection {
-                    anchor: Pos(pos),
-                    head: Pos(pos + n.node_size()),
-                }));
+        // What a person can make: a caret anywhere, a node selection of a leaf
+        // atom, and a range inside one cell (a drag across cells is a cell
+        // selection). A range across cells and a node selection of a cell or row
+        // are not here: #1847.
+        let mut selections: Vec<Selection> =
+            (0..=size).map(|p| Selection::cursor(Pos(p))).collect();
+        selections.extend((0..=size).filter_map(|p| Selection::node_at(&doc, Pos(p))));
+        // A range's ends are in textblocks of one innermost cell.
+        let cell_of = |p: usize| {
+            let r = doc.resolve(Pos(p)).ok()?;
+            if !r.parent().is_textblock() {
+                return None;
             }
-            true
-        });
-        for _ in 0..8 {
+            tables::cell_around(&r)
+        };
+        let mut ranges = 0;
+        while ranges < 40 {
             let a = rng.below(size + 1);
             let b = rng.below(size + 1);
-            selections.push(Selection::text(Pos(a), Pos(b)));
+            if a != b && cell_of(a).is_some() && cell_of(a) == cell_of(b) {
+                selections.push(Selection::text(Pos(a), Pos(b)));
+            }
+            ranges += 1;
         }
         for sel in selections {
             let st = state(&s, doc.clone(), sel.clone());
@@ -288,10 +339,13 @@ fn no_command_at_any_position_makes_a_ragged_table() {
                 applied += 1;
                 let bad = ragged_tables(&next.doc);
                 if !bad.is_empty() || !valid(&s, &next.doc) {
-                    failures.push(format!(
-                        "seed {seed} {sel:?} {name}: {} -> {}",
-                        serialize::node_to_html(&doc),
-                        serialize::node_to_html(&next.doc)
+                    failures.push((
+                        name.to_string(),
+                        format!(
+                            "seed {seed} {sel:?} {name}: {} -> {}",
+                            serialize::node_to_html(&doc),
+                            serialize::node_to_html(&next.doc)
+                        ),
                     ));
                 }
             }
@@ -299,10 +353,22 @@ fn no_command_at_any_position_makes_a_ragged_table() {
     }
     // Positive control: the commands did run and change things.
     assert!(applied > runs / 20, "only {applied} of {runs} runs applied");
+    let mut by_command = std::collections::BTreeMap::<String, usize>::new();
+    for (name, _) in &failures {
+        *by_command.entry(name.clone()).or_default() += 1;
+    }
+    failures.sort_by_key(|(_, f)| f.len());
     assert!(
         failures.is_empty(),
-        "{} of {runs} runs left a ragged table or an invalid doc; first:\n{}",
+        "{} of {runs} runs left a ragged table or an invalid doc ({by_command:?}); shortest:\n{}",
         failures.len(),
-        failures.iter().take(8).cloned().collect::<Vec<_>>().join("\n")
+        by_command
+            .keys()
+            .filter_map(|c| failures
+                .iter()
+                .find(|(n, _)| n == c)
+                .map(|(_, f)| f.clone()))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }

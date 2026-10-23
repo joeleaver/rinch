@@ -33,6 +33,24 @@ pub struct Transform<'a> {
     mapping: Mapping,
 }
 
+/// Whether a [`Transform::split`] of `depth` levels at `pos` in `doc` would
+/// cut no [isolating](crate::schema::NodeSpec::isolating) node: the
+/// isolating half of ProseMirror's `canSplit`. The nodes a split cuts are the
+/// `depth` innermost ancestors of `pos` (the parent first); a table cell is
+/// isolating, so a split stops at it. Whether the halves are valid content is
+/// the step's own check. `false` for a position outside `doc` or a depth of 0
+/// or past the position's depth.
+pub fn can_split(doc: &Node, pos: usize, depth: usize) -> bool {
+    match doc.resolve(Pos(pos)) {
+        Ok(r) => depth >= 1 && depth <= r.depth() && !cuts_isolating(&r, depth),
+        Err(_) => false,
+    }
+}
+
+fn cuts_isolating(r: &crate::pos::ResolvedPos, depth: usize) -> bool {
+    (r.depth() + 1 - depth.min(r.depth())..=r.depth()).any(|d| r.node(d).node_type().is_isolating())
+}
+
 impl<'a> Transform<'a> {
     /// Start a transform from `doc` (which must belong to `schema`).
     pub fn new(schema: &'a Schema, doc: Node) -> Transform<'a> {
@@ -267,6 +285,12 @@ impl<'a> Transform<'a> {
     /// Split the node(s) at `pos`, `depth` levels deep. `types_after` optionally
     /// gives the type+attrs of the block(s) created after the split (e.g. Enter at
     /// the end of a heading making a paragraph). Port of `Transform.split`.
+    ///
+    /// Errors, adding nothing, when the split would cut an
+    /// [isolating](crate::schema::NodeSpec::isolating) node — see [`can_split`].
+    /// ProseMirror leaves that check to the caller (`canSplit`); rinch makes it
+    /// here too, so no command can split a table cell (#1232: a split cell is a
+    /// row with one cell more than its table has columns).
     pub fn split(
         &mut self,
         pos: usize,
@@ -284,6 +308,9 @@ impl<'a> Transform<'a> {
             return Err(StepError::new(
                 "split depth exceeds the depth of the split position",
             ));
+        }
+        if cuts_isolating(&r, depth) {
+            return Err(StepError::new("a split may not cut an isolating node"));
         }
         let mut before = Fragment::empty();
         let mut after = Fragment::empty();

@@ -751,6 +751,20 @@ just-typed character can complete a shortcut and rewrite the text instead of bei
 inserted verbatim (ProseMirror's `inputRules` plugin). They only fire at a collapsed
 cursor; paste and IME preedit don't reach this path (an IME *commit* does).
 
+**Structural commands keep tables rectangular** (#1232). A table cell is an
+*isolating* node, and no command cuts one: `Transform::split` refuses a split that
+would (`rinch_editor_core::transform::can_split` asks first, the isolating half of
+ProseMirror's `canSplit`), a lift stops at the cell, and a join neither merges two
+tables nor wraps the block after a table into a new row of it (ProseMirror's
+`deleteBarrier` treats both as isolated; rinch's `table` is not marked isolating, so
+the join names the table parts). `splitBlock` splits only a textblock: at a caret that
+sits between two blocks (between a rule and a paragraph in a cell) it refuses, and
+Enter there puts an empty paragraph at the gap instead (`create_paragraph_near`,
+ProseMirror's `createParagraphNear`, in Enter's chain after the list-item split);
+`insertHorizontalRule` and the other block inserts go in at such a gap without
+splitting the cell around it. A selection that crosses cells as a text range, or a
+node selection of a cell or a row, is not covered (#1847).
+
 ## History
 
 There is **one** history, implemented as a plugin. It stores **inverted steps** (not

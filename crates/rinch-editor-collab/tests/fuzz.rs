@@ -129,8 +129,8 @@ fn random_text(rng: &mut Rng) -> String {
 /// An edit that leaves a table that does not tile its grid (a ragged row) is dropped:
 /// the projection refuses one, as it should, and the edits that make one here are not
 /// ones the editor's UI makes. A raw `tr.delete` across rows is one (`deleteSelection`
-/// refuses that selection); `splitBlock` with the caret at a gap inside a cell is the
-/// other, and that one is an editor bug (#1232: it splits the cell).
+/// refuses that selection). `splitBlock` with the caret at a gap inside a cell was the
+/// other until #1232, when it split the cell; it refuses there now.
 fn random_edit(rng: &mut Rng, state: &EditorState, images: bool) -> Option<EditorState> {
     let next = random_edit_unchecked(rng, state, images)?;
     tables_tile(&next.doc).then_some(next)

@@ -812,6 +812,13 @@ fn lift_blocks_to_top(tr: &mut Transaction) {
 
 /// Split the current textblock at the cursor (Enter). Deletes a non-empty
 /// selection first; at the end of a heading, the new block becomes a paragraph.
+///
+/// Refuses (`None`) when the cursor, after that delete, is not in a textblock:
+/// a caret at a gap between blocks (between a rule and a paragraph in a table
+/// cell, #1232; inside a table row) would otherwise split the node around the
+/// gap — the cell, leaving a ragged row. Enter puts a paragraph at such a gap
+/// instead ([`create_paragraph_near`]). A split never cuts an isolating node in
+/// any case ([`Transform::split`](crate::transform::Transform::split)).
 pub fn split_block() -> Command {
     command_tr(|state| {
         let mut tr = state.tr();
@@ -820,7 +827,7 @@ pub fn split_block() -> Command {
         }
         let pos = tr.selection().from().0;
         let r = tr.doc().resolve(Pos(pos)).ok()?;
-        if r.depth() < 1 {
+        if r.depth() < 1 || !r.parent().is_textblock() {
             return None;
         }
         let parent = r.parent();
@@ -895,10 +902,12 @@ pub fn lift_empty_block() -> Command {
             return None;
         }
         let r = state.doc.resolve(state.selection.from()).ok()?;
-        if r.parent().content().size() != 0 {
+        if !r.parent().is_textblock() || r.parent().content().size() != 0 {
             return None;
         }
         // Not the last child of its grandparent → split the grandparent before it.
+        // A table cell is never split (`Transform::split` refuses an isolating
+        // cut, #1232): the empty block is then split as any other, below.
         if r.depth() >= 2
             && r.after(r.depth()) != Some(r.end(r.depth() - 1))
             && let Some(before) = r.before(r.depth())
@@ -913,13 +922,42 @@ pub fn lift_empty_block() -> Command {
     })
 }
 
+/// Put an empty paragraph at a caret that is not in a textblock — a gap between
+/// two blocks, such as between a horizontal rule and a paragraph in a table cell —
+/// and move the caret into it. Port of ProseMirror's `createParagraphNear` for a
+/// collapsed text selection (a node selection is left to the rest of the Enter
+/// chain, which replaces the node). `None` when the caret is in a textblock, or
+/// when a paragraph is not valid content at the gap (inside a table row).
+pub fn create_paragraph_near() -> Command {
+    command_tr(|state| {
+        if !state.selection.is_text_cursor() {
+            return None;
+        }
+        let pos = state.selection.from().0;
+        let r = state.doc.resolve(Pos(pos)).ok()?;
+        if r.parent().is_textblock() {
+            return None;
+        }
+        let para = state
+            .schema()
+            .create_node("paragraph", Attrs::new(), Fragment::empty())
+            .ok()?;
+        let mut tr = state.tr();
+        tr.replace_with(pos, pos, Fragment::from_node(para)).ok()?;
+        tr.set_selection(crate::selection::Selection::cursor(Pos(pos + 1)));
+        Some(tr)
+    })
+}
+
 /// The Enter handler (`splitBlock` is the toolbar/programmatic name; Enter binds
-/// here): split a list item into a new item, else lift an empty block out of its
-/// wrapper, else split the current block.
+/// here): split a list item into a new item, else put a paragraph at a caret
+/// between blocks, else lift an empty block out of its wrapper, else split the
+/// current block. ProseMirror's base Enter chain, `newlineInCode` aside.
 pub fn split_block_or_list_item() -> Command {
     chain(vec![
         split_list_item("list_item"),
         split_list_item("task_item"),
+        create_paragraph_near(),
         lift_empty_block(),
         split_block(),
     ])
@@ -1072,6 +1110,23 @@ fn find_cut_after(r: &ResolvedPos) -> Option<usize> {
     None
 }
 
+/// Whether a join across `cut` must not touch the nodes on either side of it: an
+/// isolating node (a table cell), a table or a table row. ProseMirror's
+/// `deleteBarrier` neither joins nor wraps across an `isolating` node, and
+/// prosemirror-tables makes the table isolating; rinch's table is not (that
+/// would change paste and lift), so the table parts are named here. Joining
+/// two tables, or wrapping the block after a table into a new row of it,
+/// left a row with another cell count than the table's (#1232).
+fn table_barrier(doc: &Node, cut: usize) -> bool {
+    let Ok(r) = doc.resolve(Pos(cut)) else {
+        return true;
+    };
+    let barrier = |n: &Node| {
+        n.node_type().is_isolating() || crate::tables::is_table(n) || crate::tables::is_row(n)
+    };
+    r.node_before().is_some_and(|n| barrier(&n)) || r.node_after().is_some_and(|n| barrier(&n))
+}
+
 /// Lift the block that begins just after `cut` out of its wrapper (PM
 /// `deleteBarrier`'s lift path, used when a forward-Delete can't directly join
 /// across the barrier). Returns `None` if there is no liftable block there.
@@ -1083,7 +1138,13 @@ fn build_lift_after(state: &EditorState, cut: usize) -> Option<Transaction> {
     if range.depth == 0 {
         return None;
     }
-    for target in (0..range.depth).rev() {
+    // The isolating floor of [`build_lift`]: a block lifted out of a table cell
+    // split the table around it (#1232).
+    let floor = (1..=range.depth)
+        .filter(|&d| r_from.node(d).node_type().is_isolating())
+        .max()
+        .unwrap_or(0);
+    for target in (floor..range.depth).rev() {
         let mut tr = state.tr();
         if tr.lift(&range, target).is_ok() && tr.doc_changed() {
             return Some(tr);
@@ -1282,22 +1343,25 @@ pub fn delete_char_backward() -> Command {
             if let Some(tr) = select_atom_across(state, &r, cut, true) {
                 return Some(tr);
             }
-            let mut tr = state.tr();
-            if tr
-                .step(Box::new(ReplaceStep::structural(
-                    cut - 1,
-                    cut + 1,
-                    crate::Slice::empty(),
-                )))
-                .is_ok()
-                && tr.doc_changed()
-            {
-                return Some(tr);
-            }
-            // Could not join directly across the cut — try moving this block into
-            // the container before it (a paragraph after a list → a new list item).
-            if let Some(tr) = wrap_into_before(state, cut) {
-                return Some(tr);
+            if !table_barrier(&state.doc, cut) {
+                let mut tr = state.tr();
+                if tr
+                    .step(Box::new(ReplaceStep::structural(
+                        cut - 1,
+                        cut + 1,
+                        crate::Slice::empty(),
+                    )))
+                    .is_ok()
+                    && tr.doc_changed()
+                {
+                    return Some(tr);
+                }
+                // Could not join directly across the cut — try moving this block
+                // into the container before it (a paragraph after a list → a new
+                // list item).
+                if let Some(tr) = wrap_into_before(state, cut) {
+                    return Some(tr);
+                }
             }
         }
         build_lift(state)
@@ -1334,17 +1398,19 @@ pub fn delete_char_forward() -> Command {
         if let Some(tr) = select_atom_across(state, &r, cut, false) {
             return Some(tr);
         }
-        let mut tr = state.tr();
-        if tr
-            .step(Box::new(ReplaceStep::structural(
-                cut - 1,
-                cut + 1,
-                crate::Slice::empty(),
-            )))
-            .is_ok()
-            && tr.doc_changed()
-        {
-            return Some(tr);
+        if !table_barrier(&state.doc, cut) {
+            let mut tr = state.tr();
+            if tr
+                .step(Box::new(ReplaceStep::structural(
+                    cut - 1,
+                    cut + 1,
+                    crate::Slice::empty(),
+                )))
+                .is_ok()
+                && tr.doc_changed()
+            {
+                return Some(tr);
+            }
         }
         build_lift_after(state, cut)
     })
