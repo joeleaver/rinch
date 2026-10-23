@@ -84,6 +84,20 @@ others take their new value at once (#1742). Per layer:
   the border box.
 - `background-color` is painted under the image.
 
+Gradients follow CSS Images (#1798): stop positions may be lengths or
+percentages, and a stop may carry two positions (`transparent 0 31px`);
+`repeating-linear-gradient` and `repeating-radial-gradient` repeat their
+stops; a radial gradient takes its shape, size (`circle 40px`, `120% 60%`,
+`closest-side`, `farthest-corner`, …) and `at` position; colours fade through
+transparency as in a browser (premultiplied). Not supported: conic gradients,
+interpolation hints and `in <colorspace>`; `to top right` is always 45°.
+
+`mask-image` takes gradients (#1798): each layer covers the element's border
+box, layers are added together, and the element and everything it paints are
+kept where the mask is opaque and clipped to the border box. `mask-image:
+url(...)` and the other `mask-*` properties are not read on desktop (the
+browser reads them on the web).
+
 `background-position` is animatable, by `transition` and `@keyframes` alike;
 it moves paint only, never layout. This is what makes the striped `Progress`
 bar's stripes move and the `Skeleton` pulse.
