@@ -1708,6 +1708,7 @@ impl RinchApp {
     /// Shared by the frame's layout and every [`Self::settle_bounds_writes`]
     /// pass, so a layout a bounds subscriber caused leaves no caret, selection
     /// or margin anchor measured against the one before it.
+    #[cfg_attr(not(feature = "desktop"), allow(unused_variables))]
     fn after_layout(
         &mut self,
         doc: &Rc<RefCell<RinchDocument>>,
