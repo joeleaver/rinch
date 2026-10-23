@@ -234,6 +234,34 @@ frame on software and the placeholder on GPU. The flip is the attribute write's 
 damage, the node's box. Pins: `crates/rinch/src/app/viewport_ready_348_tests.rs`
 (software pixels and `viewport_ready`); the two `paint_gpu` call sites have no fixture.
 
+**Rings are filled non-zero, not even-odd (#1865 D9).** Every shape rinch cuts a hole
+out of where the hole lies inside the outline — a rounded solid border, an elliptical
+solid outline, an outer shadow's layers when the border box fits inside them and the
+clip round the border box when it does not, an unblurred inset shadow — is one path
+filled `Fill::NonZero`, the hole's contours appended wound against the outline
+(`punched` in `paint/borders.rs`). They used to be `Fill::EvenOdd` with both contours
+wound the same way. Vello 0.7's MSAA even-odd fill (`fill_path_ms_evenodd`,
+`vello_shaders/shader/fine.wgsl`, unchanged on upstream `main` as of 2026-10-23) clears
+its workgroup winding words before its first barrier, and nothing orders that after the
+previous fill's last reads of them, so a subgroup narrower than the 64-invocation
+workgroup can zero a row another has not read. Lavapipe (8-wide subgroups, run one after
+another) does it every time: a rounded border's corner tile came out as a 1/8-coverage
+wash (`(223, 239, 223)` for green on white). A `workgroupBarrier()` at the end of that
+function, in a patched `vello_shaders`, cured it with the even-odd fills left in place.
+On RADV (one 64-wide wave per workgroup, so no race) the switch changed eight pixels of
+a page of nine ringed boxes, every one in a tile's first pixel column (`x % 16 == 0`), by
+up to a whole pixel's coverage; at the three checked against the geometry (a border's
+top row, a shadow's top row, the gap inside an outline) even-odd was wrong and non-zero
+right. Elsewhere the two were identical there. Non-zero with the hole
+reversed is also what Vello's analytic area coverage needs (see
+`BorderRadii::path_with_holes`). Pinned backend-neutrally by
+`crates/rinch-dom/tests/ring_fill_rule_1865_tests.rs` (no compound path is even-odd; the
+hole's centre winds to 0) and on a real adapter by
+`gpu_render_callback_frames_sit_in_the_content_box`, which CI's `test-gpu (lavapipe)` job
+runs. **Still even-odd:** the backgrounds and inset-shadow clips with viewport holes
+(`path_with_holes`, whose holes need not be disjoint) and an SVG `fill-rule="evenodd"`,
+both drawn by the same Vello code on the GPU painter.
+
 **Which viewports have a frame, and which punch, is a paint input, so a change in it is
 damage** (#349). No DOM write carries it: a surface that unregisters while its
 `data-viewport` node stays in the document, or one that delivers its first frame, changes
