@@ -240,10 +240,7 @@ fn matches_chrome_on_the_sampled_cases() {
             // `y|`), and a byte's caret is drawn before the edge box at it:
             // `|x` outside the start padding, `|\tz` inside the end padding.
             // Chrome draws each DOM position on its own side. The caret rule
-            // is part 2.|` and `|\tz`
-            // share a flat byte with the content inside the span, and are drawn
-            // inside its padding; Chrome draws the DOM positions outside the
-            // span outside it. The editor's caret rule is part 2.
+            // is part 2.
             if *name == "bg_span" && (i == 2 || i == 6) {
                 continue;
             }
