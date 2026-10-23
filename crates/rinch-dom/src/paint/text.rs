@@ -315,6 +315,25 @@ pub(super) fn inline_background_rects<'a>(
     use parley::layout::{Cluster, PositionedLayoutItem};
 
     let layout = &inline_layout.layout;
+    if inline_layout.background_spans.is_empty() {
+        return;
+    }
+    // Each line's edge boxes (#1426), `(owner, is end, x, width)`, read in one
+    // pass over the lines: asking every line's items again for every span
+    // made a paragraph of many pills quadratic (500 pills in 1500 runs took
+    // a second a paint).
+    let edges: Vec<Vec<(crate::node::RawNodeId, bool, f64, f64)>> = layout
+        .lines()
+        .map(|line| {
+            line.items()
+                .filter_map(|item| match item {
+                    PositionedLayoutItem::InlineBox(b) => crate::ifc::edge_box_owner(b.id)
+                        .map(|(o, end)| (o, end, b.x as f64, b.width as f64)),
+                    _ => None,
+                })
+                .collect()
+        })
+        .collect();
 
     for bg_span in &inline_layout.background_spans {
         // The background is the inline element's own visual, so it follows
@@ -352,18 +371,15 @@ pub(super) fn inline_background_rects<'a>(
         let [bt, _, bb, _] = style.map_or([0.0; 4], inline_border_widths);
         let shift = inline_layout.element_shift(bg_span.owner, &get) as f64;
 
-        for line in layout.lines() {
+        for (line, line_edges) in layout.lines().zip(&edges) {
             let line_range = line.text_range();
 
             // The element's edge boxes on this line, as `(x, width)`.
             let (mut start_box, mut end_box) = (None, None);
-            for item in line.items() {
-                if let PositionedLayoutItem::InlineBox(b) = item
-                    && let Some((o, end)) = crate::ifc::edge_box_owner(b.id)
-                    && o == bg_span.owner
-                {
+            for &(o, end, x, w) in line_edges {
+                if o == bg_span.owner {
                     let slot = if end { &mut end_box } else { &mut start_box };
-                    *slot = Some((b.x as f64, b.width as f64));
+                    *slot = Some((x, w));
                 }
             }
 
