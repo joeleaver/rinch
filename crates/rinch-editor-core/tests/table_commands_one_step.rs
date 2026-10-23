@@ -162,7 +162,7 @@ mod reference {
     /// Since #1244 the new cells follow the cell boundaries of the grid row
     /// `like` (the row beside the insertion line), cut where a cell from above
     /// takes the columns; holes in `like` get a cell each, or cells up to 1000
-    /// wide once they outnumber the table's cells. Stated here column by
+    /// wide once they outnumber both the table's cells and 1000. Stated here column by
     /// column: a column starts a new cell unless the column before it is free
     /// and belongs to the same cell of `like` (or the same hole run, under the
     /// run's cap).
@@ -190,7 +190,7 @@ mod reference {
         let table_cells: usize = (0..info.table.child_count())
             .map(|r| info.table.child(r).child_count())
             .sum();
-        let hole_cap = if holes <= table_cells { 1 } else { 1000 };
+        let hole_cap = if holes <= table_cells.max(1000) { 1 } else { 1000 };
         let mut spans: Vec<usize> = Vec::new();
         let mut col = 0;
         while col < width {

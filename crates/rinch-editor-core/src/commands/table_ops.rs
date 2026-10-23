@@ -261,10 +261,13 @@ fn remove_columns(
 /// covers, plus its holes.
 ///
 /// A hole in `like` (a ragged row's tail) has no boundary to copy. The holes
-/// get one cell per column as before while that is no more cells than the
-/// table has; past that (a short row beside rows thousands of columns wide)
-/// each run of holes gets cells [`tables::MAX_COLSPAN`] columns wide, so the
-/// cost stays in proportion to the document.
+/// get one cell per column as before while they are no more than the
+/// table's cells or [`HOLE_CELLS_FLOOR`], whichever is more; past that (a
+/// short row beside rows of hundreds of thousands of columns) each run of
+/// holes gets cells [`tables::MAX_COLSPAN`] columns wide, so the cost stays
+/// in proportion to the document. The floor keeps every table of ordinary
+/// size on the old rule: without it a title cell of `colspan = 10` over rows
+/// of 2 cells made a new row of `[1, 1, colspan 8]`.
 ///
 /// The new cells are plain `table_cell`s, as before, whatever `like` holds.
 /// Walks the grid row once: the map it reads is already that size.
@@ -283,15 +286,15 @@ fn add_row(info: &TableRect, row: usize, like: usize, schema: &Schema) -> Option
             && slots[index] != HOLE
             && slots[index] == slots[index - width]
     };
-    // Holes on the free columns: one cell each unless that outnumbers the
-    // table's cells.
+    // Holes on the free columns: one cell each unless that outnumbers both
+    // the table's cells and the floor.
     let holes = (0..width)
         .filter(|&col| like_slot(col) == HOLE && !from_above(col))
         .count();
     let table_cells: usize = (0..info.table.child_count())
         .map(|r| info.table.child(r).child_count())
         .sum();
-    let hole_run_cap = if holes <= table_cells {
+    let hole_run_cap = if holes <= table_cells.max(HOLE_CELLS_FLOOR) {
         1
     } else {
         usize::try_from(tables::MAX_COLSPAN).unwrap_or(1)
@@ -328,6 +331,10 @@ fn add_row(info: &TableRect, row: usize, like: usize, schema: &Schema) -> Option
     edits.push(BatchEdit::insert(row_pos, Fragment::from_node(new_row)));
     Some(edits)
 }
+
+/// The most holes [`add_row`] always fills with one cell per column, however
+/// few cells the table has (see there).
+const HOLE_CELLS_FLOOR: usize = 1000;
 
 /// An empty cell `cols` columns wide: [`make_empty_cell`] for one column (the
 /// very cell `addRow` always made), else the same built with that `colspan`.

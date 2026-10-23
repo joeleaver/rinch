@@ -118,8 +118,9 @@ with no merged cells that is one cell per column, the row these commands have al
 added. Before #1244 a new row was always one cell per grid column, so a row added
 under a row of 2,100 cells each `colspan = 1000` wide built 2 million cells; it now
 builds about 2,100. Where the row beside it has no cell (a short row in a ragged
-table), the new row gets a cell per empty column, unless that would be more cells than
-the whole table has; then it gets cells up to 1000 columns wide.
+table), the new row gets a cell per empty column, unless there are more than 1000 such
+columns and more of them than the whole table has cells; then it gets cells up to 1000
+columns wide.
 
 A block-type command clears what the new type cannot hold, as ProseMirror's `setBlockType` does: `setCodeBlock` removes the marks (a code block takes none), turns a hard break into a line break (`\n`) and deletes an image.
 

@@ -360,7 +360,7 @@ is a hole, and the table commands treat it as no cell (#1184): `deleteRow` and
 `deleteColumn` pass over it, `addColumnBefore`/`addColumnAfter` give a row with a
 hole at that column a new cell at its end, a row added by `addRowBefore`/`addRowAfter`
 gets a cell in a hole's column (one per column, or up to 1000 columns wide once the
-holes outnumber the table's cells, #1244), and `mergeCells` grows the top-left cell over the holes
+holes outnumber both 1000 and the table's cells, #1244), and `mergeCells` grows the top-left cell over the holes
 in its rectangle. Every span a command writes is the cell's extent in the grid ± 1,
 never the attribute's own value ± 1: a `colspan` of `i64::MAX` in a two-row table
 (which an app's own transaction can still write; a load or paste caps it at 1000),
