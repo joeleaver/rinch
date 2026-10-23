@@ -256,6 +256,8 @@ mod popover_dropdown_transform_hit_test_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod render_surface_pacing_1768_tests;
 #[cfg(all(test, software_shell))]
+mod inline_ink_damage_1815_tests;
+#[cfg(all(test, software_shell))]
 mod repaint_old_rect_tests;
 #[cfg(test)]
 mod review2_1514_tests;
