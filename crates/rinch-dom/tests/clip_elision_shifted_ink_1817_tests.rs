@@ -216,3 +216,71 @@ fn a_shifted_element_s_background_moves_with_its_text() {
         }
     }
 }
+
+/// `x <outer>a<inner>b</inner>c</outer>`, the inner one carrying the green
+/// pill, in a visible 18px cell.
+fn nested_doc(outer: &str, inner: &str) -> RinchDocument {
+    let (mut doc, cell) = doc_with_cell(18.0, "visible", outer);
+    // Replace the span's text with `a`, the pill, `c`.
+    let span = doc.tree.get(cell.0).unwrap().children[1];
+    let span = NodeId(span);
+    doc.set_text_content(span, "");
+    let a = doc.create_text("a");
+    doc.append_child(span, a);
+    let pill = doc.create_element("span");
+    doc.set_attribute(
+        pill,
+        "style",
+        &format!("{inner}; background-color: rgb(0, 128, 0); padding: 0 2px"),
+    );
+    doc.append_child(span, pill);
+    let b = doc.create_text("b");
+    doc.append_child(pill, b);
+    let c = doc.create_text("c");
+    doc.append_child(span, c);
+    doc.resolve_layout(VW, VH + 1.0);
+    doc
+}
+
+/// The dark (glyph) pixels between the pill's left and right edges: their
+/// vertical extent, in device px.
+fn glyph_rows_in_pill(p: &TinySkiaPainter, pill: (u32, u32, u32, u32)) -> (u32, u32) {
+    let d = p.pixels();
+    let (mut y0, mut y1) = (u32::MAX, 0);
+    for y in 0..p.height() {
+        for x in pill.0..pill.2 {
+            let i = ((y * p.width() + x) * 4) as usize;
+            if d[i + 3] > 200 && d[i] < 60 && d[i + 1] < 60 && d[i + 2] < 60 {
+                y0 = y0.min(y);
+                y1 = y1.max(y + 1);
+            }
+        }
+    }
+    (y0, y1)
+}
+
+#[test]
+fn a_nested_shifted_element_s_background_is_where_its_text_is() {
+    // `vertical-align` is not chained (#724: the text takes the innermost
+    // shift). The background takes the same element's shift — the nearest
+    // from its own element up — so the pill is around its glyph. Both
+    // nestings, and a pill on an element of its own inside a shifted one.
+    for (outer, inner) in [
+        ("vertical-align: super", "vertical-align: sub"),
+        ("vertical-align: sub", "vertical-align: 9px"),
+        ("vertical-align: -10px", "font-style: normal"),
+    ] {
+        for scale in [1.0, 2.0] {
+            let mut doc = nested_doc(outer, inner);
+            let p = paint(&mut doc, scale);
+            let pill = green_bbox(&p);
+            assert!(pill.0 < pill.2, "{outer} / {inner}: no pill painted");
+            let glyph = glyph_rows_in_pill(&p, pill);
+            assert!(glyph.0 < glyph.1, "{outer} / {inner}: no glyph in the pill");
+            assert!(
+                glyph.0 + 1 >= pill.1 && glyph.1 <= pill.3 + 1,
+                "{outer} / {inner} scale {scale}: glyph rows {glyph:?} outside pill {pill:?}"
+            );
+        }
+    }
+}
