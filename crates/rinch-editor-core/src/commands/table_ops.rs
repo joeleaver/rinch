@@ -549,6 +549,29 @@ fn remove_row_on(
     Some(edits)
 }
 
+/// The most grid slots the one-line-at-a-time fallbacks of [`delete_row`] and
+/// [`delete_column`] may map in all: they recompute the whole map after each
+/// row or column, so their work is the lines removed times the map's slots.
+/// Past this the command removes the lines in one pass over the map it
+/// already has (#1874), as it does on a [`plain_grid`].
+///
+/// The fallback exists for grids whose cells overlap (and cells in no slot,
+/// past #1176's slot budget), where ProseMirror's one-at-a-time removal can
+/// re-resolve the cells differently between lines. On a table past the slot
+/// budget the map is 2^22 slots and a recompute about 10 ms in a release
+/// build: a 1000-column cell took 10 s to delete, and a whole row of a
+/// 2,097,152-column table hours. 2^22 slots in all is one such map, or a few
+/// milliseconds; every table small enough for the difference to be seen by
+/// hand keeps the exact one-at-a-time result.
+const FALLBACK_SLOT_BUDGET: usize = 1 << 22;
+
+/// Whether removing `lines` rows or columns one at a time, recomputing `map`
+/// after each, stays within [`FALLBACK_SLOT_BUDGET`].
+fn one_at_a_time_fits(map: &TableMap, lines: usize) -> bool {
+    // The last line needs no recompute after it.
+    lines.saturating_sub(1).saturating_mul(map.map().len()) <= FALLBACK_SLOT_BUDGET
+}
+
 /// Recompute the table rectangle (map + table node) from the transaction's current
 /// doc — used between successive row/column removals (which invalidate the map).
 fn recompute(tr: &Transaction, table_start: usize, rect: Rect) -> Option<TableRect> {
@@ -619,14 +642,17 @@ pub fn delete_row() -> Command {
             return delete_table_tr(state, info.table_start);
         }
         let cells = Cells::new(&info);
-        if plain_grid(&info, &cells) && !has_hole(&info.map, info.rect.bottom) {
+        let lines = info.rect.bottom - info.rect.top;
+        let exact = plain_grid(&info, &cells) && !has_hole(&info.map, info.rect.bottom);
+        if exact || !one_at_a_time_fits(&info.map, lines) {
             let (top, bottom) = (info.rect.top, info.rect.bottom);
             return batch_tr(
                 state,
                 remove_rows(&info, &cells, top, bottom, state.schema())?,
             );
         }
-        // Overlapping cells: a row at a time from the bottom, one step each.
+        // Overlapping cells (or a hole under the rows): a row at a time from
+        // the bottom, one step each.
         let mut tr = state.tr();
         let (table_start, rect) = (info.table_start, info.rect);
         let mut cur = info;
@@ -655,7 +681,8 @@ pub fn delete_column() -> Command {
             return delete_table_tr(state, info.table_start);
         }
         let cells = Cells::new(&info);
-        if plain_grid(&info, &cells) {
+        let lines = info.rect.right - info.rect.left;
+        if plain_grid(&info, &cells) || !one_at_a_time_fits(&info.map, lines) {
             let (left, right) = (info.rect.left, info.rect.right);
             return batch_tr(state, remove_columns(&info, &cells, left, right)?);
         }

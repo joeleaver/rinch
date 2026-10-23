@@ -334,15 +334,18 @@ impl TableMap {
     /// `TableMap.cellsInRect`.
     pub fn cells_in_rect(&self, rect: Rect) -> Vec<usize> {
         let mut result = Vec::new();
-        let mut seen = Vec::new();
+        // A set, not a list (#1874): a rectangle of n cells looked each slot
+        // up in every cell seen before it, n² over a selected table.
+        let mut seen = std::collections::HashSet::new();
         for row in rect.top..rect.bottom.min(self.height) {
             for col in rect.left..rect.right.min(self.width) {
                 let index = row * self.width + col;
                 let pos = self.map[index];
-                if pos == UNSET || seen.contains(&pos) {
+                // The slot left of this one is the same cell: seen already.
+                let same_as_left = col > rect.left && self.map[index - 1] == pos;
+                if pos == UNSET || same_as_left || !seen.insert(pos) {
                     continue;
                 }
-                seen.push(pos);
                 // Skip a cell that bleeds in from the left or top edge (it belongs
                 // to a column/row outside the rectangle).
                 let bleeds_left = col == rect.left && col > 0 && self.map[index - 1] == pos;
