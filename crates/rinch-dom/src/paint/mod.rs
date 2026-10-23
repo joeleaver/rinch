@@ -38,6 +38,7 @@ use layer_bounds::{
 use svg::*;
 use text::*;
 pub use text::{set_reference_text_walk, take_text_line_walks};
+pub(crate) use text::take_span_line_visits;
 pub use text_shadow::{
     TAP_GLYPH_BUDGET, TAP_GLYPHS_PER_SHADOW, clear_text_shadow_cache, force_tapped_text_shadows,
     text_shadow_scratch_size,
@@ -2217,6 +2218,17 @@ pub fn paint_subtree(
             Affine::IDENTITY,
         )
     });
+    fold_span_line_visits(tree);
+}
+
+/// Add the inline-ink walks' (span, line) visits made on this thread since
+/// the last fold — by this paint, and by the damage computed for it — to
+/// `tree`'s `inline_span_line_visits` counter.
+pub(crate) fn fold_span_line_visits(tree: &NodeTree) {
+    tree.perf.add(
+        crate::perf::Counter::InlineSpanLineVisits,
+        text::take_span_line_visits(),
+    );
 }
 
 /// Paint the entire document using a Painter.
@@ -2286,6 +2298,7 @@ pub fn paint_document(
     // would have it culling against a rect that has nothing to do with what it
     // is drawing into.
     VIEWPORT.with(|v| v.set(None));
+    fold_span_line_visits(tree);
 }
 
 thread_local! {

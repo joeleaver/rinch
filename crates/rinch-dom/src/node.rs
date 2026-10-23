@@ -3768,25 +3768,45 @@ impl NodeTree {
             }
         }
         let mut dirty = std::mem::take(&mut self.paint_dirty_nodes);
+        // Once per node, however many times it was pushed.
+        dirty.sort_unstable();
+        dirty.dedup();
+        // A box-less inline's own `text-shadow`, background, border,
+        // `vertical-align` shift and wavy underline are ink of the IFC root
+        // that draws them, and the paint that consumes it redrew that root
+        // with them as they are now (#1048, #1815). A root whose painted ink
+        // stayed behind would name a pill's old padding nowhere once the pill
+        // shrinks again. Each root once, after its members, and not at all
+        // when it was itself dirty (refreshed above): a root's ink walks its
+        // spans' lines, and once per member was quadratic in the pills of a
+        // paragraph (review of #1837: one text edit among 500 pills, 500 ms).
+        let mut roots: Vec<RawNodeId> = Vec::new();
         for &id in &dirty {
             refresh(nodes, id, true);
-            // A box-less inline's own `text-shadow`, background, border,
-            // `vertical-align` shift and wavy underline are ink of the IFC
-            // root that draws them, and the paint that consumes it redrew
-            // that root with them as they are now (#1048, #1815). A root
-            // whose painted ink stayed behind would name a pill's old
-            // padding nowhere once the pill shrinks again.
             if let Some(root) = nodes.get(id).and_then(|n| n.ifc_root)
                 && root != id
-                && nodes.get(root).is_some_and(|r| r.painted.is_some())
             {
-                let Some(r) = nodes.get(root) else { continue };
-                let ink = crate::paint::ink_outsets_in(r, members, |i| nodes.get(i));
-                if let Some(state) = nodes[root].painted.as_mut() {
-                    state.ink = ink;
-                }
+                roots.push(root);
             }
         }
+        roots.sort_unstable();
+        roots.dedup();
+        for root in roots {
+            if dirty.binary_search(&root).is_ok() {
+                continue;
+            }
+            let Some(r) = nodes.get(root).filter(|r| r.painted.is_some()) else {
+                continue;
+            };
+            let ink = crate::paint::ink_outsets_in(r, members, |i| nodes.get(i));
+            if let Some(state) = nodes[root].painted.as_mut() {
+                state.ink = ink;
+            }
+        }
+        self.perf.add(
+            crate::perf::Counter::InlineSpanLineVisits,
+            crate::paint::take_span_line_visits(),
+        );
         dirty.clear();
         self.paint_dirty_nodes = dirty;
         self.paint_dirty_removed_rects.clear();

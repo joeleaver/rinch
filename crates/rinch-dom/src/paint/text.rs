@@ -322,6 +322,7 @@ pub(super) fn inline_background_rects<'a>(
     // pass over the lines: asking every line's items again for every span
     // made a paragraph of many pills quadratic (500 pills in 1500 runs took
     // a second a paint).
+    let ranges: Vec<std::ops::Range<usize>> = layout.lines().map(|l| l.text_range()).collect();
     let edges: Vec<Vec<(crate::node::RawNodeId, bool, f64, f64)>> = layout
         .lines()
         .map(|line| {
@@ -371,7 +372,9 @@ pub(super) fn inline_background_rects<'a>(
         let [bt, _, bb, _] = style.map_or([0.0; 4], inline_border_widths);
         let shift = inline_layout.element_shift(bg_span.owner, &get) as f64;
 
-        for (line, line_edges) in layout.lines().zip(&edges) {
+        let on = lines_of_span(&ranges, bg_span.start, bg_span.end, true);
+        note_span_line_visits(on.len());
+        for (line, line_edges) in on.filter_map(|i| Some((layout.get(i)?, &edges[i]))) {
             let line_range = line.text_range();
 
             // The element's edge boxes on this line, as `(x, width)`.
@@ -568,6 +571,47 @@ fn wavy_wave(line: &parley::layout::Line<'_, Brush>, scale: f64) -> (f64, f64) {
     (mid, AMPLITUDE * scale)
 }
 
+thread_local! {
+    /// (span, line) pairs the inline-ink walks looked at
+    /// ([`inline_background_rects`], [`inline_ink_past_lines`]), folded into
+    /// a tree's `inline_span_line_visits` counter by [`take_span_line_visits`].
+    static SPAN_LINE_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The (span, line) pairs the inline-ink walks looked at on this thread since
+/// the last call, which it resets.
+pub(crate) fn take_span_line_visits() -> u64 {
+    SPAN_LINE_VISITS.with(|v| v.replace(0))
+}
+
+fn note_span_line_visits(n: usize) {
+    if n > 0 {
+        SPAN_LINE_VISITS.with(|v| v.set(v.get() + n as u64));
+    }
+}
+
+/// The indices of the lines (whose text ranges are `ranges`, in order) that a
+/// span over bytes `start..end` is on: those whose range overlaps it, and
+/// with `edges`, also those that merely touch it at either end — where its
+/// edge boxes, which take no byte, can sit (#1426). A binary search, so a
+/// span costs the lines it is on and not every line of the paragraph (#1837
+/// review: one text edit in a paragraph of 500 pills took 500 ms).
+fn lines_of_span(
+    ranges: &[std::ops::Range<usize>],
+    start: usize,
+    end: usize,
+    edges: bool,
+) -> std::ops::Range<usize> {
+    let first = if edges {
+        ranges.partition_point(|r| r.end < start)
+    } else {
+        ranges.partition_point(|r| r.end <= start)
+    };
+    let past = first
+        + ranges[first..].partition_point(|r| if edges { r.start <= end } else { r.start < end });
+    first..past
+}
+
 /// What an IFC root draws past its **unshifted** line boxes, in device px
 /// relative to its content origin, or `None` when it draws nothing there:
 /// text moved off its line by `vertical-align` (#724), the inline
@@ -594,17 +638,22 @@ pub(crate) fn inline_ink_past_lines<'a>(
     let layout = &inline_layout.layout;
     let mut ink: Option<Rect> = None;
     let mut add = |r: Rect| ink = Some(ink.map_or(r, |i| i.union(r)));
+    let ranges: Vec<std::ops::Range<usize>> = if inline_layout.vertical_align_spans.is_empty()
+        && inline_layout.decoration_spans.is_empty()
+    {
+        Vec::new()
+    } else {
+        layout.lines().map(|l| l.text_range()).collect()
+    };
 
     for span in &inline_layout.vertical_align_spans {
         let shift = span.shift_px as f64;
         if shift == 0.0 {
             continue;
         }
-        for line in layout.lines() {
-            let range = line.text_range();
-            if range.end <= span.start || range.start >= span.end {
-                continue;
-            }
+        let on = lines_of_span(&ranges, span.start, span.end, false);
+        note_span_line_visits(on.len());
+        for line in on.filter_map(|i| layout.get(i)) {
             let m = line.metrics();
             let top = (m.block_min_coord as f64).min((m.baseline - m.ascent) as f64);
             let bottom = (m.block_max_coord as f64).max((m.baseline + m.descent) as f64);
@@ -623,11 +672,9 @@ pub(crate) fn inline_ink_past_lines<'a>(
     }
 
     for span in &inline_layout.decoration_spans {
-        for line in layout.lines() {
-            let range = line.text_range();
-            if range.end <= span.start || range.start >= span.end {
-                continue;
-            }
+        let on = lines_of_span(&ranges, span.start, span.end, false);
+        note_span_line_visits(on.len());
+        for line in on.filter_map(|i| layout.get(i)) {
             // The wave runs under the span's clusters, which are on the
             // line: its extent is the line's, plus the stroke's half width.
             let m = line.metrics();
