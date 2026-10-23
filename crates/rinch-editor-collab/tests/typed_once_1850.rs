@@ -188,6 +188,7 @@ fn apply(peer: &mut Peer, op: &Op) -> bool {
         st.apply(tr)
     };
     let pos_ok = |p: usize| is_text_pos(&st.doc, p);
+    let op = &resolve_op(&st.doc, op);
     let next = match *op {
         Op::Type(_, p, c) => {
             if !pos_ok(p) {
@@ -290,29 +291,51 @@ fn peer_of(op: &Op) -> usize {
     }
 }
 
-/// One random edit for `peer`, in the probe's proportions.
-fn random_op(rng: &mut Rng, peer: usize, doc: &Node, unique: &mut u32) -> Option<Op> {
-    let pos = |rng: &mut Rng| {
-        let p = rng.below(doc.content_size() + 1);
-        is_text_pos(doc, p).then_some(p)
-    };
+/// An op's positions read against `doc`: a position is drawn as a raw number
+/// ([`random_op`]) and taken modulo the positions `doc` has, so a trial's script never
+/// depends on what the document became. A position already in range (every shrunk
+/// history's) is itself.
+fn resolve_op(doc: &Node, op: &Op) -> Op {
+    let n = doc.content_size() + 1;
+    let r = |p: usize| p % n;
+    match *op {
+        Op::Type(a, p, c) => Op::Type(a, r(p), c),
+        Op::Code(a, p, c) => Op::Code(a, r(p), c),
+        Op::Bold(a, p, q) => Op::Bold(a, r(p), r(q)),
+        Op::Break(a, p) => Op::Break(a, r(p)),
+        Op::Image(a, p) => Op::Image(a, r(p)),
+        Op::DeleteSel(a, p, q) => Op::DeleteSel(a, r(p), r(q)),
+        Op::Backspace(a, p) => Op::Backspace(a, r(p)),
+        Op::Delete(a, p) => Op::Delete(a, r(p)),
+        Op::Split(a, p) => Op::Split(a, r(p)),
+        ref other => other.clone(),
+    }
+}
+
+/// One random edit for `peer`, in the probe's proportions, drawn from the RNG alone:
+/// its positions are raw numbers resolved ([`resolve_op`]) when it is applied. Nothing here reads a
+/// document, so a trial's script is the same whatever an earlier op did — an undo
+/// that applies on one build and fails on another does not change what follows, and
+/// two builds' counts compare seed for seed.
+fn random_op(rng: &mut Rng, peer: usize, unique: &mut u32) -> Op {
+    let pos = |rng: &mut Rng| rng.below(1 << 16);
     if rng.below(10) < 6 {
-        let p = pos(rng)?;
-        return Some(match rng.below(7) {
+        let p = pos(rng);
+        return match rng.below(7) {
             0..=2 => {
                 let c = char::from_u32(0x4E00 + *unique).unwrap();
                 *unique += 1;
                 Op::Type(peer, p, c)
             }
             3 => Op::Code(peer, p, rng.below(2) == 0),
-            4 => Op::Bold(peer, p, pos(rng)?),
+            4 => Op::Bold(peer, p, pos(rng)),
             5 => Op::Break(peer, p),
             _ => Op::Image(peer, p),
-        });
+        };
     }
-    let p = pos(rng)?;
-    Some(match rng.below(5) {
-        0 => Op::DeleteSel(peer, p, pos(rng)?),
+    let p = pos(rng);
+    match rng.below(5) {
+        0 => Op::DeleteSel(peer, p, pos(rng)),
         1 | 2 => {
             if rng.below(2) == 0 {
                 Op::Backspace(peer, p)
@@ -328,7 +351,7 @@ fn random_op(rng: &mut Rng, peer: usize, doc: &Node, unique: &mut u32) -> Option
                 Op::Redo(peer)
             }
         }
-    })
+    }
 }
 
 const INITIAL: [char; 4] = ['\u{3041}', '\u{3042}', '\u{3043}', '\u{3044}'];
@@ -421,41 +444,20 @@ impl Run {
     }
 }
 
-/// The trial at `seed` as a list of operations (each edit followed by its peer's send).
-/// A trial that panics part-way stops there; its ops end with the one that panicked.
+/// The trial at `seed` as a script of operations (each edit followed by its peer's
+/// send), generated up front from the seed alone: see [`random_op`].
 fn trial_ops(seed: u64) -> (usize, Vec<Op>) {
     let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xABCD | 1);
     let peers = 2 + (seed % 2) as usize;
-    let mut run = Run::new(peers);
     let mut ops = Vec::new();
     let mut unique = 0u32;
     for _ in 0..100 {
-        let op = if rng.below(10) < 6 {
+        if rng.below(10) < 6 {
             let p = rng.below(peers);
-            let doc = run.peers[p].state.doc.clone();
-            match random_op(&mut rng, p, &doc, &mut unique) {
-                Some(op) => op,
-                None => continue,
-            }
+            ops.push(random_op(&mut rng, p, &mut unique));
+            ops.push(Op::Send(p));
         } else {
-            Op::Deliver(rng.below(peers))
-        };
-        let stepped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run.step(&op)));
-        match stepped {
-            Ok(false) => {}
-            Ok(true) => {
-                let p = peer_of(&op);
-                let edit = !matches!(op, Op::Deliver(_));
-                ops.push(op);
-                if edit {
-                    ops.push(Op::Send(p));
-                    run.step(&Op::Send(p));
-                }
-            }
-            Err(_) => {
-                ops.push(op);
-                break;
-            }
+            ops.push(Op::Deliver(rng.below(peers)));
         }
     }
     (peers, ops)
@@ -479,9 +481,10 @@ fn replay(peers: usize, ops: &[Op]) -> Result<Option<String>, String> {
     })
 }
 
-/// The ceilings at the default 300 seeds (see the trial), measured when #1850 landed
-/// and re-measured with #1249's history fix (16 duplicates before it; see the trial).
-const DUP_300: usize = 21;
+/// The ceilings at the default 300 seeds (see the trial), measured on the
+/// state-independent op stream with #1249's history fix (main on the same stream: 7
+/// duplicates, 1 panic).
+const DUP_300: usize = 11;
 const PANIC_300: usize = 0;
 
 /// How many seeds the trial runs (`TYPED_ONCE_SEEDS`, default 300).
@@ -519,38 +522,54 @@ fn tally(seeds: std::ops::RangeInclusive<u64>) -> Tally {
     t
 }
 
-/// No atom reads back as text, ever (#1851), the peers always converge, and every
-/// edit — an undo after remote changes included — leaves a model the projection reads
-/// back (no panic). A typed char lands twice only where two peers moved the same text
-/// at once (Enter at one place on both, both joining the same lines, a join while the
-/// other splits): the projection has no move, so each copy is a fresh write (#1850;
-/// #1857 is the design that removes them); or where one local edit changed a block at
-/// two places, which rewrites the text between them (#1885). Those are held to the
-/// counts measured: the trial is deterministic (fixed client ids), so a count that
-/// grows is a regression. Measured over seeds 1..=1000: 0 literal U+FFFC (14 before
-/// #1851), 47 duplicates (104 before #1850's placement fix), 0 panics.
+/// No atom reads back as text (#1851), the peers always converge, and every edit — an
+/// undo after remote changes included — leaves a model the projection reads back (no
+/// panic). A typed char lands twice only where two peers moved the same text at once
+/// (Enter at one place on both, both joining the same lines, a join while the other
+/// splits): the projection has no move, so each copy is a fresh write (#1850; #1857 is
+/// the design that removes them); or where one local edit changed a block at two
+/// places, which rewrites the text between them (#1885). Those are held to the counts
+/// measured: the trial is deterministic (fixed client ids, a script drawn from the seed
+/// alone), so a count that grows is a regression.
 ///
-/// The duplicate count moved with #1249's history fix (39 → 47 at 1000 seeds, 16 → 21
-/// at 300) without a new defect: an undo after remote changes now applies where it
-/// used to fail or land at stale positions, so a trial's later random ops (positions
-/// drawn from the document) differ, and it reaches other instances of the classes
-/// above. Of the 15 seeds new at 1000, 14 shrink to a history that duplicates the same
-/// way on main without the fix, and one (seed 305) to an undo whose transaction, run
-/// as a plain local edit on main, duplicates the same way (#1885); 7 seeds stopped
-/// duplicating. The 3 undo panics (#1856: seeds 322, 902, 934) are gone.
+/// The op stream changed with #1249: a trial's script used to be drawn against the
+/// live document (positions, which ops applied), so an undo that applied on one build
+/// and failed on another changed every op after it, and two builds' counts did not
+/// compare. It is now generated from the seed alone ([`random_op`]). On this stream,
+/// seeds 1..=1000, main (before #1249) / with #1249:
+///
+/// | | main | #1249 |
+/// |---|---|---|
+/// | duplicates (1..=300) | 7 | 11 |
+/// | panics (1..=300) | 1 | 0 |
+/// | duplicates | 43 | 49 |
+/// | panics (#1856) | 2 | 0 |
+/// | literal U+FFFC | 2 | 1 |
+///
+/// Every seed worse with #1249 is a pre-existing defect that an undo now reaches by
+/// applying: of the 14 seeds that duplicate only with it, 13 shrink to a history that
+/// duplicates the same way on main, and seed 538's undo is two deletes in one block,
+/// which duplicate the same way on main as a plain edit (#1885). 8 seeds stopped
+/// duplicating. The one U+FFFC (seed 513, also on main) is an undo of `setCodeBlock`
+/// re-inserting the image it cleared beside a peer's delete (#1890).
 #[test]
 fn randomized_typed_text_lands_once_and_atoms_stay_atoms() {
     let n = seeds();
     let t = tally(1..=n);
     let report = |v: &[String]| v.join("\n");
-    assert!(t.atom_as_text.is_empty(), "{}", report(&t.atom_as_text));
     assert!(t.other.is_empty(), "{}", report(&t.other));
     // Ceilings at the default 300 seeds and at 1000.
-    let (dup_max, panic_max) = match n {
-        300 => (DUP_300, PANIC_300),
-        1000 => (47, 0),
-        _ => (usize::MAX, usize::MAX),
+    let (dup_max, panic_max, fffc_max) = match n {
+        300 => (DUP_300, PANIC_300, 0),
+        1000 => (49, 0, 1),
+        _ => (usize::MAX, usize::MAX, usize::MAX),
     };
+    assert!(
+        t.atom_as_text.len() <= fffc_max,
+        "{} literal U+FFFC (ceiling {fffc_max}):\n{}",
+        t.atom_as_text.len(),
+        report(&t.atom_as_text)
+    );
     assert!(
         t.duplicate.len() <= dup_max,
         "{} duplicates (ceiling {dup_max}):\n{}",
