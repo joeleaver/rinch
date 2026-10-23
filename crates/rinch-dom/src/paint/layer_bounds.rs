@@ -970,8 +970,8 @@ impl Walk<'_> {
             // (which reach past the line by their padding and border, #1762)
             // and wavy underlines (#1817) — measured by the one function the
             // damage ink reads too, from the geometry paint draws with.
-            // Before #1762 a clip was elided whenever the unshifted lines
-            // fitted, and the pill, the raised text or the wave painted
+            // Before #1762 and #1817 a clip was elided whenever the unshifted
+            // lines fitted, and the pill, the raised text or the wave painted
             // outside the box.
             if let Some(past) =
                 super::text::inline_ink_past_lines(|id| self.tree.get(id), inline, self.scale)

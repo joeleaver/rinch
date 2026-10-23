@@ -40,8 +40,15 @@ an inline element's background (`paint::text::inline_background_rects`, one
 function for both), which reach past the line by the element's padding (#1762).
 Before that, a clip was elided whenever the text alone fitted, so in a column of
 identical `overflow: hidden` cells a padded pill was clipped only in the cells
-whose height rounded below the line. Text shifted by `vertical-align` and wavy underlines are still measured from
-the unshifted line boxes, so a skipped clip lets them escape (#1817). Those rectangles are scaled by the device
+whose height rounded below the line. It also counts what the root draws past
+its unshifted line boxes otherwise (#1817): text `vertical-align` moves off its
+line (#724; a shifted line is measured as its whole line box moved by the
+shift), and a wavy underline's wave. All of it comes from one function,
+`paint::text::inline_ink_past_lines`, which the damage ink reads too
+(paint-and-damage.md, #1815). A shifted element's background and border move
+with its text since #1817 (`InlineLayout::element_shift`: the shift of the
+nearest element from the owner up whose `vertical-align` moved it, read from
+`InlineVerticalAlignSpan::owner`); they stayed on the line before. Those rectangles are scaled by the device
 scale like the glyphs since #1762 (they were drawn in CSS px). Glyph ink past
 the line box (an italic's overhang) is still not measured.
 
