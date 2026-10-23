@@ -166,7 +166,17 @@ fn run(request: Request, id: u64, cmd_rx: mpsc::Receiver<Cmd>, chosen: Arc<Mutex
     let (mut socket, resp) = match tungstenite::client::connect_with_config(request, None, 0) {
         Ok(ok) => ok,
         Err(e) => {
+            // Error, then an abnormal close, as a browser reports a failed
+            // connect (`error`, then `close` 1006): an app that reconnects from
+            // `on_close` must hear about a refused attempt too.
             emit(id, WsEvent::Error(WsError::Connect(e.to_string())));
+            emit(
+                id,
+                WsEvent::Close(WsClose {
+                    code: CLOSE_ABNORMAL,
+                    reason: String::new(),
+                }),
+            );
             return;
         }
     };
