@@ -5050,6 +5050,7 @@ dependencies = [
  "image",
  "parley",
  "peniko",
+ "pollster",
  "precomputed-hash",
  "rinch-core",
  "rinch-words",

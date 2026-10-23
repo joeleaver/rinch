@@ -366,10 +366,19 @@ which the grid cuts to 2^21 columns, is 2^21 + 1 after `addColumnAfter` across i
 The view lays a table out as that same grid (#1182): `<table>` is a CSS grid of
 `tables::column_count` columns and each cell is placed by its rectangle in the map
 (`tables::cell_rects`), not by its raw attributes — so a `rowspan` of `i64::MAX` in a
-two-row table spans two grid rows. The rectangle is written as definite grid lines,
-`grid-column: <left + 1> / <right + 1>` and `grid-row: <top + 1> / <bottom + 1>`
-(#1209): CSS auto-placement knows no rows and packed a cell of a row that a rowspan
-leaves short into the row before it, where the map has it below. A cell the map has
+two-row table spans two grid rows. The columns are written as definite grid lines,
+`grid-column: <left + 1> / <right + 1>` (#1209). The rows are written as
+`grid-row: span <bottom - top>` (`auto` for one row) when CSS auto-placement, with
+every cell locked to its columns, puts each cell in the row the map gives it — which
+it does for every table without a hole a later cell could rise into (#1226,
+`auto_rows_match_map`). A span names no row index, so a row added or deleted at the
+top of a 200-row table writes and restyles only that row's cells, not the 796 below
+it. Otherwise (a row a rowspan leaves short with a cell after the hole, a ragged row
+the next row's cells would move up into, a cell outside the grid) every cell is
+written at its row lines too, `grid-row: <top + 1> / <bottom + 1>`, because
+auto-placement knows no rows and would pack such a cell into the row before it,
+where the map has it below; a table that switches between the two forms rewrites
+every cell once. A cell the map has
 no slot for is laid out as a band across the whole grid (`grid-column: 1 / -1`) on a
 row of its own (the first the grid leaves empty, normally after its last),
 so its text stays visible and adds no column.
