@@ -183,21 +183,30 @@ fn apply_mark_attrs(dom: &NodeHandle, mark: &Mark) {
     }
 }
 
-/// Wrap `inner` in `marks`' host elements, innermost-first (`marks[0]` closest to
-/// the text, matching copy-out HTML), and return the outermost node (or `inner`
-/// itself when there are no marks / no mark renders to a tag).
-fn wrap_marks(inner: &NodeHandle, marks: &[Mark], doc: &DocRef) -> NodeHandle {
-    let mut current = inner.clone();
-    for mark in marks {
-        if let Some(tag) = mark_dom_tag(mark)
-            && let Some(wrapper) = create_element(doc, &tag)
+/// Put `want` in `host`, in that order, moving each node only when it is not
+/// already where it goes. Nodes of `host` that `want` does not name (one
+/// another container takes; a wrapper about to be discarded; a box the host
+/// generated itself) are stepped over, not touched.
+fn place_children(host: &NodeHandle, want: &[NodeHandle]) {
+    let actual = host.children();
+    let wanted: HashSet<usize> = want.iter().map(|n| n.node_id().0).collect();
+    let mut placed: HashSet<usize> = HashSet::with_capacity(want.len());
+    let mut i = 0usize;
+    for node in want {
+        while actual
+            .get(i)
+            .is_some_and(|a| !wanted.contains(&a.node_id().0) || placed.contains(&a.node_id().0))
         {
-            apply_mark_attrs(&wrapper, mark);
-            wrapper.append_child(&current);
-            current = wrapper;
+            i += 1;
+        }
+        let id = node.node_id().0;
+        placed.insert(id);
+        match actual.get(i) {
+            Some(a) if a.node_id().0 == id => i += 1,
+            Some(a) => host.insert_before(node, a),
+            None => host.append_child(node),
         }
     }
-    current
 }
 
 /// One [`Decoration::Inline`] flattened for the view: an absolute model range in
@@ -376,9 +385,15 @@ pub(crate) struct ViewDesc {
     /// The inner host node projecting `node` itself — a host text node for a text
     /// run, or the element for a block/leaf. Caret and the A15 map address this.
     dom: NodeHandle,
-    /// The host node placed in the parent: the outermost inline mark wrapper, or
-    /// (when `node` is unmarked) the same node as [`Self::dom`].
-    outer: NodeHandle,
+    /// The mark wrappers this inline node sits in, outermost first, each with
+    /// the mark it draws (#1833). Shared with the neighbours a mark continues
+    /// into, so adjacent runs' wrappers can be the same elements. Written only
+    /// by the parent's [`Self::regroup_inline`]; empty for a block.
+    wraps: Vec<(Mark, NodeHandle)>,
+    /// For a textblock: every mark wrapper element its inline children are
+    /// placed in, as the last [`Self::regroup_inline`] left them — so a wrapper
+    /// no child uses any more is found and discarded.
+    inline_wrappers: Vec<NodeHandle>,
     /// Child descriptors, positionally 1:1 with `node`'s children.
     children: Vec<ViewDesc>,
     /// Whether `node` is a model **text** node. For a decorated run [`Self::dom`]
@@ -525,10 +540,10 @@ fn twice_keys(old: &[ViewDesc], new: &Node) -> HashSet<usize> {
 /// cleanups run with no editor borrow held and still see their own nodes.
 fn retire(desc: ViewDesc, cx: &mut Cx, replacement: Option<&NodeHandle>) {
     if let Some(r) = replacement {
-        desc.outer.replace_with(r);
+        desc.dom.replace_with(r);
     }
     if !desc.has_view {
-        desc.outer.discard();
+        desc.dom.discard();
         return;
     }
     fn mark(desc: &ViewDesc, work: &mut Vec<Work>) {
@@ -544,9 +559,9 @@ fn retire(desc: ViewDesc, cx: &mut Cx, replacement: Option<&NodeHandle>) {
     }
     mark(&desc, cx.work);
     if replacement.is_none() {
-        desc.outer.remove();
+        desc.dom.remove();
     }
-    cx.work.push(Work::Discard(desc.outer));
+    cx.work.push(Work::Discard(desc.dom));
 }
 
 /// Where a table cell sits in its table's CSS grid, as the view writes it: its
@@ -726,18 +741,20 @@ impl ViewDesc {
         } else {
             let el = create_element(doc, &node_dom_tag(node))?;
             apply_element_attrs(&el, node, None);
+            let inline = node.is_textblock();
             let mut children = Vec::with_capacity(node.child_count());
             for i in 0..node.child_count() {
                 if let Some(child) = ViewDesc::build(node.child(i), cx) {
-                    el.append_child(&child.outer);
+                    // A textblock's inline children are placed with their
+                    // mark wrappers by `regroup_inline`, below.
+                    if !inline {
+                        el.append_child(&child.dom);
+                    }
                     children.push(child);
                 }
             }
             (el, children, false)
         };
-        // Inline marks (on a text run or inline leaf) wrap the node's own host
-        // node; blocks are unmarked, so `outer == dom` there.
-        let outer = wrap_marks(&dom, node.marks(), doc);
         let slot = if is_text {
             None
         } else {
@@ -749,7 +766,8 @@ impl ViewDesc {
             has_view,
             node: node.clone(),
             dom,
-            outer,
+            wraps: Vec::new(),
+            inline_wrappers: Vec::new(),
             children,
             is_text,
             // A freshly built run carries no decorations; the decoration pass that
@@ -761,12 +779,105 @@ impl ViewDesc {
             grid_placement: None,
         })
         .map(|mut desc| {
+            if desc.node.is_textblock() {
+                desc.regroup_inline(cx.doc);
+            }
             desc.sync_trailing_break(cx.doc);
             if rinch_editor_core::tables::is_table(&desc.node) {
                 desc.sync_table_spans();
             }
             desc
         })
+    }
+
+    /// Place this textblock's inline children in their mark wrappers (#1833).
+    ///
+    /// Walking the children left to right with a stack of open wrappers
+    /// (outermost first), a child keeps every open wrapper, from the outside
+    /// in, whose mark it also carries, closes the rest, and opens its other
+    /// marks inside them, the last in canonical (type-name) order outermost
+    /// — the nesting a run alone always had. So a mark that continues from
+    /// one run into the next is one element (inline code split by bold is
+    /// one `<code>`, one pill), where each run used to have a wrapper chain of
+    /// its own; a run's nesting therefore depends on the runs before it, and
+    /// can differ from the copy-out HTML's, which nests each run alone.
+    ///
+    /// A wrapper is reused, for the same mark, from the child's own previous
+    /// chain before one is made, so restructuring (a mark added or removed
+    /// in the middle of a run) moves nodes rather than rebuilding them; a
+    /// node already in place is not touched ([`place_children`]), and a
+    /// wrapper no child uses any more is discarded. Run only when the
+    /// children's structure changed ([`Self::diff_children`]): a text edit
+    /// inside a run costs nothing here.
+    fn regroup_inline(&mut self, doc: &DocRef) {
+        // (container, the nodes it holds); index 0 is the textblock itself.
+        let mut containers: Vec<(NodeHandle, Vec<NodeHandle>)> =
+            vec![(self.dom.clone(), Vec::with_capacity(self.children.len()))];
+        // The open wrappers, outermost first: (mark, host, container index).
+        let mut stack: Vec<(Mark, NodeHandle, usize)> = Vec::new();
+        let mut used: HashSet<usize> = HashSet::new();
+        for child in &mut self.children {
+            let marks: Vec<&Mark> = child
+                .node
+                .marks()
+                .iter()
+                .filter(|m| mark_dom_tag(m).is_some())
+                .collect();
+            let keep = stack
+                .iter()
+                .take_while(|(m, _, _)| marks.contains(&m))
+                .count();
+            stack.truncate(keep);
+            for &mark in marks.iter().rev() {
+                if stack.iter().any(|(m, _, _)| m == mark) {
+                    continue;
+                }
+                let reused = child
+                    .wraps
+                    .iter()
+                    .find(|(m, w)| m == mark && !used.contains(&w.node_id().0))
+                    .map(|(_, w)| w.clone());
+                let Some(wrapper) = reused.or_else(|| {
+                    let el = create_element(doc, &mark_dom_tag(mark)?)?;
+                    apply_mark_attrs(&el, mark);
+                    Some(el)
+                }) else {
+                    continue;
+                };
+                used.insert(wrapper.node_id().0);
+                let parent = stack.last().map_or(0, |(_, _, c)| *c);
+                containers[parent].1.push(wrapper.clone());
+                containers.push((wrapper.clone(), Vec::new()));
+                stack.push((mark.clone(), wrapper, containers.len() - 1));
+            }
+            let parent = stack.last().map_or(0, |(_, _, c)| *c);
+            containers[parent].1.push(child.dom.clone());
+            child.wraps = stack
+                .iter()
+                .map(|(m, w, _)| (m.clone(), w.clone()))
+                .collect();
+        }
+        if let Some(br) = &self.trailing_break {
+            containers[0].1.push(br.clone());
+        }
+        // Top-down: a container is in its final place before its own nodes
+        // go in, so no node is ever put inside one of its descendants.
+        for (host, want) in &containers {
+            place_children(host, want);
+        }
+        let stale: Vec<NodeHandle> = std::mem::take(&mut self.inline_wrappers)
+            .into_iter()
+            .filter(|w| !used.contains(&w.node_id().0))
+            .collect();
+        // Detach them all first: one may be inside another, and each is
+        // discarded on its own (issue #719 — gone for good).
+        for w in &stale {
+            w.remove();
+        }
+        for w in stale {
+            w.discard();
+        }
+        self.inline_wrappers = containers.into_iter().skip(1).map(|(w, _)| w).collect();
     }
 
     /// Place every cell of this `table` descriptor in the table's CSS grid by its
@@ -914,11 +1025,9 @@ impl ViewDesc {
             self.node = new.clone();
             return true;
         }
-        // A changed mark set alters the wrapper chain (`outer`), which can't be
-        // patched in place — force a rebuild. (Blocks are always unmarked.)
-        if self.node.marks() != new.marks() {
-            return false;
-        }
+        // A changed mark set is the parent's to draw: its `regroup_inline`
+        // moves this node into the wrappers its new marks want (#1833).
+        // (Blocks are always unmarked.)
         if new.is_text() {
             if !self.is_text {
                 return false;
@@ -963,9 +1072,12 @@ impl ViewDesc {
         // built by this diff has no placement yet.
         let replace_spans =
             rinch_editor_core::tables::is_table(new) && !same_table_spans(&self.node, new);
-        self.diff_children(new, cx, pos + 1, old_pos + 1);
-        self.has_view = self.slot.is_some() || self.children.iter().any(|c| c.has_view);
+        let regroup = self.diff_children(new, cx, pos + 1, old_pos + 1);
         self.node = new.clone();
+        if regroup && new.is_textblock() {
+            self.regroup_inline(cx.doc);
+        }
+        self.has_view = self.slot.is_some() || self.children.iter().any(|c| c.has_view);
         if rinch_editor_core::tables::is_table(new)
             && (replace_spans
                 || self
@@ -1003,13 +1115,20 @@ impl ViewDesc {
     /// within the stretch (a block inserted before it and another removed after
     /// it in one transaction) keeps its mount rather than being matched by
     /// position against another node and remounted.
+    ///
+    /// A textblock's inline children are not placed in the host here: a new
+    /// one is left unplaced and the answer says whether the structure changed
+    /// (a child built, replaced, removed, moved or given other marks), when the
+    /// caller owes [`Self::regroup_inline`] (#1833). A text edit inside a run
+    /// changes none of that.
     fn diff_children(
         &mut self,
         new: &Node,
         cx: &mut Cx,
         content_start: usize,
         old_content_start: usize,
-    ) {
+    ) -> bool {
+        let inline = self.node.is_textblock();
         let new_count = new.child_count();
         let old_count = self.children.len();
         // Where each old child stood in the old document, for `Cx::same_place`.
@@ -1056,8 +1175,9 @@ impl ViewDesc {
         // The changed stretch: `old[start..old_end]` becomes `new[start..new_end]`.
         if self.children[start..old_end].iter().any(|c| c.has_view) {
             self.diff_stretch_keyed(new, cx, start, old_end, new_end, &old_at, &new_at, &twice);
-            return;
+            return true;
         }
+        let mut regroup = false;
         let common = (old_end - start).min(new_end - start);
         for (i, (&at, &old_pos)) in new_at
             .iter()
@@ -1067,9 +1187,12 @@ impl ViewDesc {
             .skip(start)
         {
             let new_child = new.child(i);
+            let marks_moved = inline && self.children[i].node.marks() != new_child.marks();
             if self.children[i].update(new_child, cx, at, old_pos) {
+                regroup |= marks_moved;
                 continue;
             }
+            regroup = true;
             // Kind changed — build a replacement and swap it into the host
             // (by the placed `outer` node, which differs from `dom` for a
             // mark-wrapped run).
@@ -1080,25 +1203,30 @@ impl ViewDesc {
                 // browser backend pins it for the life of the page — this
                 // is a per-keystroke path.
                 let old = std::mem::replace(&mut self.children[i], replacement);
-                retire(old, cx, Some(&self.children[i].outer));
+                retire(old, cx, Some(&self.children[i].dom));
             }
         }
         let at = start + common;
         if new_end - start > common {
             // New children go in before the unchanged suffix (or at the end).
+            regroup = true;
             let mut built = Vec::with_capacity(new_end - at);
             for i in at..new_end {
                 if let Some(new_desc) = ViewDesc::build(new.child(i), cx) {
+                    if inline {
+                        built.push(new_desc);
+                        continue;
+                    }
                     // At the end, still before the trailing-break placeholder,
                     // which stays last until `sync_trailing_break` drops it.
                     match self
                         .children
                         .get(old_end)
-                        .map(|c| &c.outer)
+                        .map(|c| &c.dom)
                         .or(self.trailing_break.as_ref())
                     {
-                        Some(next) => self.dom.insert_before(&new_desc.outer, next),
-                        None => self.dom.append_child(&new_desc.outer),
+                        Some(next) => self.dom.insert_before(&new_desc.dom, next),
+                        None => self.dom.append_child(&new_desc.dom),
                     }
                     built.push(new_desc);
                 }
@@ -1106,11 +1234,13 @@ impl ViewDesc {
             self.children.splice(at..at, built);
         } else if old_end > at {
             // Dropped for good — `discard`, not `remove` (issue #719).
+            regroup = true;
             let extras: Vec<ViewDesc> = self.children.drain(at..old_end).collect();
             for extra in extras {
                 retire(extra, cx, None);
             }
         }
+        regroup
     }
 
     /// [`Self::diff_children`]'s changed stretch `old[start..old_end]` →
@@ -1210,12 +1340,19 @@ impl ViewDesc {
         let anchor = self
             .children
             .get(start)
-            .map(|c| c.outer.clone())
+            .map(|c| c.dom.clone())
             .or(self.trailing_break.clone());
-        for desc in &placed {
+        // A textblock places its inline children by `regroup_inline`, which
+        // the caller runs.
+        let placed_here = if self.node.is_textblock() {
+            &placed[..0]
+        } else {
+            &placed[..]
+        };
+        for desc in placed_here {
             match &anchor {
-                Some(next) => self.dom.insert_before(&desc.outer, next),
-                None => self.dom.append_child(&desc.outer),
+                Some(next) => self.dom.insert_before(&desc.dom, next),
+                None => self.dom.append_child(&desc.dom),
             }
         }
         self.children.splice(start..start, placed);
@@ -1224,7 +1361,7 @@ impl ViewDesc {
     /// The placed host node of the first block child, if any (the placeholder is
     /// inserted before it so it overlays the empty editor).
     fn first_child_dom(&self) -> Option<&NodeHandle> {
-        self.children.first().map(|c| &c.outer)
+        self.children.first().map(|c| &c.dom)
     }
 }
 
@@ -1408,7 +1545,7 @@ impl RinchDomEditorView {
             };
             for i in 0..state.doc.child_count() {
                 if let Some(child) = ViewDesc::build(state.doc.child(i), &mut cx) {
-                    container.append_child(&child.outer);
+                    container.append_child(&child.dom);
                     children.push(child);
                 }
             }
@@ -1418,7 +1555,8 @@ impl RinchDomEditorView {
             slot: None,
             has_view,
             node: state.doc.clone(),
-            outer: container.clone(),
+            wraps: Vec::new(),
+            inline_wrappers: Vec::new(),
             dom: container,
             children,
             is_text: false,
@@ -1797,11 +1935,8 @@ impl RinchDomEditorView {
             apply_element_attrs(&el, &desc.node, None);
         }
         let old = desc.dom.clone();
-        let unmarked = desc.outer.node_id() == old.node_id();
+        // In place: its mark wrappers (`<a>`) stay around it.
         old.replace_with(&el);
-        if unmarked {
-            desc.outer = el.clone();
-        }
         desc.dom = el.clone();
         old.discard();
         slot.set_host(el, view_host);
@@ -2127,24 +2262,21 @@ impl RinchDomEditorView {
         if next.is_none() && at != off {
             return Vec::new();
         }
-        // A child's wrapper elements, innermost first.
-        let wrappers = |i: Option<usize>| -> Vec<usize> {
-            let Some(child) = i.and_then(|i| desc.children.get(i)) else {
-                return Vec::new();
-            };
-            let mut out = Vec::new();
-            let mut cur = child.dom.clone();
-            for mark in child.node.marks() {
-                if mark_dom_tag(mark).is_none() {
-                    continue;
-                }
-                let Some(parent) = cur.parent_node() else {
-                    break;
-                };
-                cur = parent;
-                out.push(cur.node_id().0);
-            }
-            out
+        // A child's wrapper elements, innermost first — only the ones that
+        // end (`before`) or start (`next`) at this seam: a wrapper the two
+        // runs share (#1833) has its edges elsewhere, around both.
+        let wraps_of = |i: Option<usize>| -> &[(Mark, NodeHandle)] {
+            i.and_then(|i| desc.children.get(i))
+                .map_or(&[], |c| c.wraps.as_slice())
+        };
+        let wrappers = |i: Option<usize>, other: Option<usize>| -> Vec<usize> {
+            let shared = wraps_of(other);
+            wraps_of(i)
+                .iter()
+                .rev()
+                .map(|(_, w)| w.node_id().0)
+                .filter(|id| !shared.iter().any(|(_, s)| s.node_id().0 == *id))
+                .collect()
         };
         // An `Upstream` caret is the upper line's end at a soft wrap: the
         // run after's start edges are on the lower line, so only the run
@@ -2152,14 +2284,14 @@ impl RinchDomEditorView {
         let starts = if affinity == CaretAffinity::Upstream {
             Vec::new()
         } else {
-            wrappers(next)
+            wrappers(next, before)
         };
         let typed = stored.map_or_else(|| r.marks(), <[Mark]>::to_vec);
         let joins = |i: Option<usize>| {
             i.map(|i| block.child(i))
                 .is_some_and(|n| n.is_text() && n.marks() == typed.as_slice())
         };
-        let ends = wrappers(before);
+        let ends = wrappers(before, next);
         // Leading side of the run before's end edges, innermost first.
         let inside_before = ends.iter().map(|&e| (e, true, false));
         // Trailing side of its end edges, outermost first.
@@ -2422,7 +2554,7 @@ impl RinchDomEditorView {
                 .children
                 .last()
                 .and_then(|last| {
-                    let id = last.outer.node_id().0;
+                    let id = last.dom.node_id().0;
                     let (_, _, _, h) = d.query_node_layout(id as u64)?;
                     let (_, y) = self.block_offset_in_container(&*d, id);
                     Some(y + h)
@@ -2543,7 +2675,7 @@ impl RinchDomEditorView {
         ids.sort_unstable();
         ids.dedup();
         if let Some(first) = self.root.children.first() {
-            ids.push(first.outer.node_id().0);
+            ids.push(first.dom.node_id().0);
         }
         let mut h = std::collections::hash_map::DefaultHasher::new();
         for id in ids {
@@ -2655,7 +2787,7 @@ impl RinchDomEditorView {
             start = end;
         }
         let right = self.root.children.iter().find_map(|c| {
-            let id = c.outer.node_id().0;
+            let id = c.dom.node_id().0;
             let (_, _, w, h) = d.query_node_layout(id as u64)?;
             if w == 0.0 && h == 0.0 {
                 return None;
@@ -3470,7 +3602,7 @@ fn find_node_by_host(
         // segments, so a hit that lands on a segment (or on any of its own mark
         // wrappers) has to resolve to the run just as a hit on the text node does.
         if child.dom.node_id().0 == target
-            || child.outer.node_id().0 == target
+            || child.wraps.iter().any(|(_, w)| w.node_id().0 == target)
             || child.segments.iter().any(|s| s.node_id().0 == target)
         {
             return Some((pos, &child.node));
@@ -3532,17 +3664,12 @@ fn apply_run_decos(desc: &mut ViewDesc, next: Vec<RunDeco>, doc: &DocRef) {
     let Some((inner, segments)) = build_run_host(desc.node.text().unwrap_or(""), &next, doc) else {
         return;
     };
-    // An unmarked run is placed in the parent by its own inner node (`outer ==
-    // dom`); a marked one is placed by its outermost mark wrapper, which keeps its
-    // identity while its content is swapped underneath.
-    let was_outer = desc.outer.node_id() == desc.dom.node_id();
+    // In place, inside the run's mark wrappers, which keep their identity
+    // while its content is swapped underneath.
     desc.dom.replace_with(&inner);
     // `replace_with` detaches the node it displaces and nothing can show it again
     // (issue #719) — and this is a per-keystroke path on a decorated run.
     desc.dom.discard();
-    if was_outer {
-        desc.outer = inner.clone();
-    }
     desc.dom = inner;
     desc.segments = segments;
     desc.decos = next;
@@ -6674,3 +6801,7 @@ mod table_span_differential {
         assert!(a > 1000 && t > 500);
     }
 }
+
+#[cfg(test)]
+#[path = "shared_wraps_1833_tests.rs"]
+mod shared_wraps_1833_tests;
