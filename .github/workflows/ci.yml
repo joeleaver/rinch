@@ -188,6 +188,10 @@ jobs:
               # `rinch::worker` (#1772) on the desktop: off by default, and nothing
               # in the workspace turns it on for a host build.
               cargo test -p rinch --no-default-features --features worker --test worker_1772
+              # rinch-dom without the software painter (the `embed` build): its
+              # background pattern path (#468, #1158) is cfg'd on that, and
+              # `--workspace` unifies `software-renderer` on.
+              cargo test -p rinch-dom --no-default-features --test background_tiling_embed_tests
     steps:
       - uses: actions/checkout@v4
 

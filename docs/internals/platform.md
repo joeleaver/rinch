@@ -104,8 +104,18 @@ released; an idle window paints no frame and keeps what it holds until it paints
 The tile is
 filled as a tiny-skia `Pattern` or a Vello `Extend::Repeat` image brush from the
 same pixels (the brush's parameters are pinned; no test renders it on a GPU), and clipped to the one-tile strip on an axis that does not repeat.
-Only a build without the software painter (`embed`), a `no-repeat` tile, or a
-tile over 4M device px goes tile by tile, over the **visible** tiles only
+A build without the software painter (`embed`) has no rasteriser, and a `url()`
+layer needs none (#1158): `background::pattern_source` hands the decoded image
+itself to `fill_repeating` (`RepeatTile::premultiplied: false`, straight alpha
+as `draw_image` hands Vello an `<img>`; its transform scales the image to the
+tile), one `Extend::Repeat` brush however many tiles (80,100 image draws for a
+3x2 image over 800x600 before). It is not cached (no raster to cache); the
+pixels are copied into a `Blob` per paint, as `draw_image`'s are. On a GPU it
+draws what the tile-by-tile path drew, pixel for pixel, natural size, scaled and
+fractionally placed (the `#[ignore]`d `gpu::*` probes of
+`background_tiling_embed_tests.rs`, `-- --ignored`, run with
+`--no-default-features`). Only a repeating gradient in such a build, a
+`no-repeat` tile, or a tile over 4M device px goes tile by tile, over the **visible** tiles only
 (`visible_paint_rect`), uncapped. Tiles are laid out from the border box
 **rounded to a whole pixel of its own (pre-transform, scaled) space**, as Chrome
 snaps the box, so a box at `left: 10.5px` draws crisp tiles from pixel 11; only

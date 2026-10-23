@@ -156,9 +156,13 @@ pub struct PaintImage<'a> {
 /// [`Painter::fill_repeating`] (#468).
 #[derive(Clone, Copy, Debug)]
 pub struct RepeatTile<'a> {
-    /// `width * height * 4` bytes, premultiplied RGBA8, rows top to bottom.
-    /// A `Blob` so a painter that keeps images (Vello) shares it, not copies.
+    /// `width * height * 4` bytes of RGBA8, rows top to bottom, premultiplied
+    /// or straight as [`Self::premultiplied`] says. A `Blob` so a painter that
+    /// keeps images (Vello) shares it, not copies.
     pub pixels: &'a peniko::Blob<u8>,
+    /// Whether [`Self::pixels`] are premultiplied (a rasterised tile) or
+    /// straight (a decoded image handed over as it is, #1158).
+    pub premultiplied: bool,
     pub width: u32,
     pub height: u32,
     /// Maps the tile's pixel grid (tile `(0, 0)` covering `0..width`,
@@ -294,9 +298,15 @@ pub trait Painter {
         if w <= 0.0 || h <= 0.0 || tile.transform.determinant().abs() < 1e-12 {
             return;
         }
-        let straight = crate::image_cache::unpremultiply_rgba(tile.pixels.data());
+        let unpremultiplied;
+        let straight = if tile.premultiplied {
+            unpremultiplied = crate::image_cache::unpremultiply_rgba(tile.pixels.data());
+            &unpremultiplied[..]
+        } else {
+            tile.pixels.data()
+        };
         let image = PaintImage {
-            data: &straight,
+            data: straight,
             width: tile.width,
             height: tile.height,
             decoded: None,
