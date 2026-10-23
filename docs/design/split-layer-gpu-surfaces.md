@@ -1,6 +1,7 @@
 # Split-layer GPU surfaces
 
-**Status:** Decided (issue #1865). Joe accepted D1–D9 as recommended, 2026-10-23.
+**Status:** Decided (issue #1865). Joe accepted D1–D9 as recommended and chose
+D10 (the oracle's tolerance), 2026-10-23.
 Implementation follows the PR sequence at the end.
 **Scope:** the desktop GPU window (`gpu` feature, Vello on wgpu). A
 `RenderSurface` GPU frame and a GPU-path video. Software, web and the embed
@@ -176,7 +177,12 @@ When the split happens:
    recorded: the clips replayed, the image rect filled white, all translated
    by −R.origin. See D2.
 4. **Start routing.**
-   - **Below:** push an even-odd clip of (window rect, R), the inverse of R.
+   - **Below:** push the inverse of R: the window rect with R cut out, filled
+     **non-zero** with R wound the other way. Not even-odd: on lavapipe an
+     even-odd clip nested inside another clip drops coverage it has (pixels
+     left of R lost their after-content, about 24 levels off), where the
+     backwards-wound non-zero path is right on lavapipe and RADV alike
+     (*Risks* 2).
    - **Above:** a new scene for this surface, translated by −R.origin. The
      open clips are replayed into it, then R is pushed as a clip.
 
@@ -202,10 +208,15 @@ does three things in below:
 
 In the above scene, the same pop closes the replayed copy.
 
-Because R lies on whole pixels, the coverage of inverse-R is exactly 0 or 1.
-Cutting it into consecutive segments therefore changes no pixel (the oracle
-pins this; see *Risks* 2). The ancestors' own clip layers are never split in
-below, so below is exact.
+Because R lies on whole pixels, the coverage of inverse-R is exactly 0 or 1
+(measured, *Risks* 2), and the ancestors' own clip layers are never split in
+below. Below is the in-scene render outside R and the before-content inside
+it, **bit for bit except one 8-bit level** on translucent or antialiased
+after-content within one Vello tile (16 px) of R's edge: where a clip edge
+runs through a tile, Vello sends that tile's content through its 8-bit blend
+stack, one rounding more than in-scene. Snapping R to the tile grid does not
+avoid it (an edge on a tile boundary still puts segments in the next tile).
+D10 accepts that level.
 
 ### Anything after `paint_document`
 
@@ -215,8 +226,8 @@ so a tooltip over a video lands in its above slice.
 
 ### Several surfaces
 
-Each surface gets its own R and above scene. Below's inverse clip is the even
-odd of the window rect and every R. A later surface whose R overlaps an
+Each surface gets its own R and above scene. Below's inverse clip is the
+window rect with every R cut out, each wound backwards, filled non-zero. A later surface whose R overlaps an
 earlier split surface's R is refused, `InScene(Overlap)`: it is then simply
 an image inside the earlier surface's above slice. See D7.
 
@@ -388,10 +399,16 @@ Not on this list, because they split exactly:
 runtime path, with the placement forced to `InScene` and then to `Split`.
 Read back the presented texture and compare.
 
+D10 sets the rule. Each tolerance applies only to the pixels it names, which
+the test computes from the case's geometry; **every other pixel must be
+bit-equal**, so a regression cannot hide inside a blanket tolerance.
+
 | Pixel class | Allowed difference |
 |---|---|
-| Opaque window, pixel outside every fractional-coverage edge | **bit-equal** |
-| Fractional coverage of the surface's own clip chain (mask) | ≤ 1/255 per channel (one extra 8-bit rounding) |
+| Every pixel not in a row below | **bit-equal** |
+| Translucent or antialiased after-content over the surface (inside R) | ≤ 1/255 per channel (the above slice is stored in 8 bits, then blended) |
+| Translucent or antialiased after-content outside R, within one 16-px tile of R's edge | ≤ 1/255 (Vello's blend stack in tiles the inverse clip's edge crosses) |
+| Fractional coverage of the surface's own clip chain (mask) | ≤ 1/255 (one extra 8-bit rounding) |
 | Transparent window, pixel with alpha < 255 | ≤ 1/255 (below is stored straight, then premultiplied) |
 | AA ring of an **ancestor** clip that crosses R | bounded by D8 |
 
@@ -541,19 +558,44 @@ rounded clipping parent have the same artifact.
   The upside is that a split regression cannot land silently.
   *(recommended)*
 
+### D10. The oracle's tolerance (decided after PR 1's measurements)
+
+PR 1's measurements (*Risks* 2) showed that "pixel for pixel" cannot hold
+for translucent or antialiased content painted after the surface near or over
+it: slicing adds one 8-bit rounding there, on RADV in the below slice and on
+every adapter in the above slice.
+
+- **A.** Bit-equal everywhere except up to 1/255 per channel on translucent
+  or antialiased after-content over the surface or within one Vello tile of
+  R's edge; the mask edges keep their one level, and D8 its bound.
+  **(chosen, Joe, 2026-10-23)**
+- **B.** Split only when nothing painted after the surface reaches R or its
+  tile neighbourhood, and stay bit-exact. A video with visible controls, a
+  tooltip or a caption over it would lose the speed-up.
+
 ## Risks
 
-1. **Registered but undrawn images.** The design registers every GPU
-   surface's texture each frame, so a refusal at the split can draw
-   in-scene on the spot. If Vello copies registered images into its atlas
-   even when the scene does not reference them, this costs what in-scene
-   costs. PR 1 measures it. The fallback plan is to register lazily after
-   paint, for the surfaces the painter drew in-scene, since paint only needs
-   the image handle, which `SURFACE_GPU_IMAGES` already holds.
-2. **Binary coverage at whole-pixel edges.** D1b's exactness assumes Vello
-   gives a clip on integer device coordinates a coverage of exactly 0 or 1
-   (MSAA16 and area). PR 1 pins it with a test, before anything is built on
-   it.
+1. **Registered but undrawn images. Resolved: free.** Vello 0.7 builds its
+   atlas only from the images a scene draws (`Patch::Image` entries in
+   `vello_encoding`'s resolver); the override table is consulted only for
+   those. Pinned in `shell/split_slices_1865_tests.rs`: a registered texture
+   that is then destroyed raises no error through renders whose scene does
+   not draw it, and the control, a scene that does, raises one. RADV and
+   lavapipe agree.
+2. **Binary coverage at whole-pixel edges. Resolved, with D10.** Measured on
+   the Radeon 890M (RADV) and on lavapipe, Msaa16 (the desktop's AA):
+   - A clip on whole device pixels (direct, inverse, under an integer
+     translation) leaves every pixel exactly in or out, on both. The control,
+     half a pixel off the grid, leaves partial pixels.
+   - Below against in-scene, over six placements of R (on and off the tile
+     grid, across a rounded fractional ancestor clip): RADV rounds 46 pixels
+     by exactly one level, all on translucent or antialiased after-content
+     within one tile of R's edge, outside R; lavapipe rounds none. The
+     control, R half a pixel off the grid, is off by more than 8 levels.
+   - On lavapipe an **even-odd** clip nested in another clip renders wrongly
+     (pixels left of R lost their after-content, about 24 levels off), while
+     the same clip as a backwards-wound **non-zero** path is right on both.
+     The inverse-R clip is therefore non-zero.
 3. **Sampling equality for scaled frames.** Video letterboxed into a
    different size is resampled by Vello in-scene and by the compositor's
    sampler in a split. These must agree to ±1, which means the same filter
