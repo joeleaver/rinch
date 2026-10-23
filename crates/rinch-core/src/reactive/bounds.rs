@@ -358,3 +358,72 @@ mod lifetime_tests {
         assert_eq!(registry_len_for_tests(), 2);
     }
 }
+
+/// Issue #1781: a registration per call grew the registry for a caller that
+/// asks per event. Calls from one owner share one entry; another owner gets
+/// its own, freed with its own scope.
+#[cfg(test)]
+mod dedupe_tests_1781 {
+    use super::*;
+    use crate::reactive::Scope;
+
+    #[test]
+    fn repeated_calls_from_one_owner_share_one_signal() {
+        let scope = Scope::new();
+        let (a, b) = scope.run(|| {
+            (
+                register_bounds_signal(41, 5),
+                register_bounds_signal(41, 5),
+            )
+        });
+        assert_eq!(a.identity(), b.identity(), "one owner, one node: one signal");
+        let n = registry_entries_for_tests()
+            .iter()
+            .filter(|e| **e == (41, 5))
+            .count();
+        assert_eq!(n, 1, "the second call registered nothing");
+        // Off the fixed point: another node and another document still get
+        // entries of their own.
+        let other_node = scope.run(|| register_bounds_signal(41, 6));
+        let other_doc = scope.run(|| register_bounds_signal(42, 5));
+        assert_ne!(other_node.identity(), a.identity());
+        assert_ne!(other_doc.identity(), a.identity());
+        scope.dispose();
+    }
+
+    #[test]
+    fn app_lifetime_calls_share_one_signal() {
+        let a = register_bounds_signal(43, 7);
+        let b = register_bounds_signal(43, 7);
+        assert_eq!(a.identity(), b.identity());
+    }
+
+    #[test]
+    fn another_owner_gets_its_own_signal_and_outlives_the_first() {
+        let first = Scope::new();
+        let second = Scope::new();
+        let a = first.run(|| register_bounds_signal(44, 9));
+        let b = second.run(|| register_bounds_signal(44, 9));
+        assert_ne!(
+            a.identity(),
+            b.identity(),
+            "sharing would hand the second owner a signal the first one frees"
+        );
+        first.dispose();
+        assert!(!a.is_alive());
+        assert!(b.is_alive(), "the second owner's signal survives the first scope");
+        update_bounds_signals(44, |_| Some((1.0, 2.0, 3.0, 4.0)));
+        assert_eq!(b.get().width, 3.0);
+        second.dispose();
+    }
+
+    #[test]
+    fn a_freed_entry_is_not_handed_out_again() {
+        let scope = Scope::new();
+        let a = scope.run(|| register_bounds_signal(45, 1));
+        scope.dispose();
+        let b = register_bounds_signal(45, 1);
+        assert!(b.is_alive());
+        assert_ne!(a.identity(), b.identity());
+    }
+}
