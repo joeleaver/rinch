@@ -172,8 +172,9 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
    The <table> is a grid; the view sets `grid-template-columns: repeat(N, …)`
    inline (N = column count). <tr> is `display: contents`, so its cells become
    the grid's direct items, and each cell carries an inline
-   `grid-column`/`grid-row` — its rectangle in the table's TableMap as grid
-   lines, which is how colspan/rowspan render (#1182, #1209). */
+   `grid-column`/`grid-row` — its rectangle in the table's TableMap, as column
+   lines and (where auto-placement would not keep the map's rows) row lines,
+   else row spans; that is how colspan/rowspan render (#1182, #1209, #1226). */
 [data-pm-editor] table {
   display: grid; margin: 0.85em 0;
   grid-template-columns: minmax(0, 1fr);
