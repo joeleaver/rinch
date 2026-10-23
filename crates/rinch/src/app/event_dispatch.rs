@@ -56,6 +56,36 @@ impl RinchApp {
         };
         !ids.is_empty() && events::dispatch_key_handler_chain(ids, data)
     }
+
+    /// Offer a key to the app-wide listeners (`rinch_core::on_app_key`, issue
+    /// #1784) — after the interceptor, the key entries, the dismiss stack and a
+    /// focused render surface's claim, before the focused element's default.
+    /// The callers leave out the rich-text editor's keys and an open native
+    /// `<select>` list's; this leaves out a key while the built-in text context
+    /// menu is open or the focused field shows an IME composition, as
+    /// [`Self::offer_element_key`] does. A focus move a listener made is
+    /// applied before the key's default, as an element handler's is.
+    pub(super) fn offer_app_key(&mut self, data: &events::KeyEventData) -> bool {
+        if data.is_down() {
+            if self.open_text_menu.is_some() {
+                return false;
+            }
+            if let FocusTarget::Input(id) = self.focus_target
+                && self.doc.as_ref().is_some_and(|doc| {
+                    doc.borrow()
+                        .tree
+                        .get(id)
+                        .and_then(|n| n.attributes.get("data-preedit"))
+                        .is_some_and(|p| !p.is_empty())
+                })
+            {
+                return false;
+            }
+        }
+        let consumed = events::dispatch_app_key(data);
+        self.drain_focus_requests(false);
+        consumed
+    }
 }
 
 impl RinchApp {
@@ -1769,7 +1799,19 @@ impl RinchApp {
                             surface_id,
                             &surface_key_data,
                         ) {
+                            // A claimed key is the surface's, release and all
+                            // (issue #1784).
+                            events::withhold_app_key_release(&surface_key_data.code);
                             actions.push(AppAction::RequestRedraw);
+                        } else if let Some(ref ks) = key_str
+                            && self.offer_app_key(
+                                &events::KeyEventData::new(ks.clone(), format!("{:?}", key))
+                                    .with_modifiers(ctrl, shift, alt, modifiers.meta),
+                            )
+                        {
+                            self.resolve_and_repaint(vp_w, vp_h);
+                            actions.push(AppAction::RequestRedraw);
+                            return actions;
                         } else if self.handle_unclaimed_key_fallback(
                             key,
                             key_str.as_ref(),
@@ -1803,6 +1845,20 @@ impl RinchApp {
                     // inspect / Tab navigation / read-only text-selection caret
                     // motion.
                     FocusTarget::Input(_) | FocusTarget::None | FocusTarget::Node(_) => {
+                        // The app-wide key listeners (issue #1784), ahead of
+                        // the field's editing, Tab, activation and `onsubmit`
+                        // — as a browser's `window` listener runs before its
+                        // default action — and with nothing focused too.
+                        if let Some(ref ks) = key_str
+                            && self.offer_app_key(
+                                &events::KeyEventData::new(ks.clone(), format!("{:?}", key))
+                                    .with_modifiers(ctrl, shift, alt, modifiers.meta),
+                            )
+                        {
+                            self.resolve_and_repaint(vp_w, vp_h);
+                            actions.push(AppAction::RequestRedraw);
+                            return actions;
+                        }
                         if self.handle_unclaimed_key_fallback(
                             key,
                             key_str.as_ref(),
@@ -1878,6 +1934,9 @@ impl RinchApp {
                     // prevent and a held-key tracker must see every one.
                     self.offer_element_key(&key_data);
                     events::dispatch_keyboard_event(&key_data);
+                    // Every release reaches the app-wide listeners too, but
+                    // one whose press a focused surface claimed (#1784).
+                    self.offer_app_key(&key_data);
                     actions.push(AppAction::RequestRedraw);
                 }
 
