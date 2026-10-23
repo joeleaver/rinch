@@ -109,15 +109,15 @@ use yrs::branch::{Branch, BranchID, BranchPtr};
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{
-    Array, ArrayRef, Assoc, GetString, ID, IndexedSequence, MapRef, Out, ReadTxn, StickyIndex,
-    TextRef, Transact,
+    Array, ArrayRef, Assoc, ID, IndexedSequence, MapRef, Out, ReadTxn, StickyIndex, TextRef,
+    Transact,
 };
 
 use rinch_editor_core::{Node, Pos, Schema};
 
 use crate::error::Result;
 use crate::projection::{
-    CollabDoc, block_text, map_is_void, node_content, node_type, read_block, u16_offset,
+    CollabDoc, block_text, map_is_void, model_view, node_content, node_type, u16_offset,
 };
 
 /// Which character a sticky index holds on to, at the position it was made for.
@@ -260,7 +260,6 @@ impl CollabDoc {
         if !block.is_textblock() {
             return None;
         }
-        let model_text = read_block(block).ok()?.text;
 
         let txn = self.doc.transact();
         // Walk the child indices from the root to the textblock, which name the same
@@ -312,12 +311,10 @@ impl CollabDoc {
             };
         }
         let text = text?;
-        let crdt_text = text.get_string(&txn);
-        if crdt_text != model_text {
-            return None;
-        }
-
-        let at = u16_offset(&crdt_text, rp.parent_offset());
+        // The block as the model reads it: a converted break or a dropped atom (#1227)
+        // makes a model offset name another stored offset.
+        let (crdt_text, view) = model_view(&txn, &text, block)?;
+        let at = u16_offset(&crdt_text, view.stored_at(rp.parent_offset()));
         let sticky = match assoc {
             // yrs refuses `After` at the end of a text (there is no character there to
             // stick to), including the only offset of an empty one; `Before` then
@@ -491,17 +488,14 @@ fn locate_one<T: ReadTxn>(
             if !entries.is_empty() && entry_id(0) != Some(found.owner) {
                 return None;
             }
-            let crdt_text = found.text.get_string(txn);
             let Some(ArrayInfo::Live { path, .. }) = index.arrays.get(&found.parent) else {
                 return None;
             };
             let (parent, start) = model_node_at(doc, path)?;
             let (node, start) = model_node_at(parent, std::slice::from_ref(&found.step))
                 .map(|(n, s)| (n, start + s))?;
-            if !node.is_textblock() || read_block(node).ok()?.text != crdt_text {
-                return None;
-            }
-            let pos = Pos(start + char_offset(&crdt_text, offset.index));
+            let (crdt_text, view) = model_view(txn, &found.text, node)?;
+            let pos = Pos(start + view.before[char_offset(&crdt_text, offset.index)]);
             return Some(location(doc, pos, false));
         }
     }
@@ -845,12 +839,9 @@ fn resolve_text_index<T: ReadTxn>(
     let offset = sticky.get_offset(txn)?;
     let mut path: Vec<(usize, String)> = Vec::new();
     let (text, owner) = find_text(txn, content, offset.branch, &mut path)?;
-    let crdt_text = text.get_string(txn);
-    let chars = char_offset(&crdt_text, offset.index);
     let (node, start) = model_node_at(doc, &path)?;
-    if !node.is_textblock() || read_block(node).ok()?.text != crdt_text {
-        return None;
-    }
+    let (crdt_text, view) = model_view(txn, &text, node)?;
+    let chars = view.before[char_offset(&crdt_text, offset.index)];
     Some((Pos(start + chars), owner))
 }
 
