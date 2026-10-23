@@ -806,8 +806,12 @@ so `performance.now()` in a browser) unless its builder called `set_time` itself
 does must read the same clock, `history_now_ms()`: a time on another clock (epoch
 milliseconds) stops the next keystroke from merging. On undo it pops a group, applies
 its inverted steps as a transaction that doesn't re-enter history, and restores the
-recorded selection. The steps are not mapped over a change the history did not record
-(a collaboration peer's), so an undo after one can revert the wrong text (#1615). `undo` / `redo` are the only history entry points.
+recorded selection. A change the history does not record (a collaboration peer's, any
+transaction with `add_to_history(false)`) is kept as its step maps, and an undo maps each
+inverted step through everything after it before applying it (ProseMirror's
+`Branch.addMaps` / `popEvent`, #1249): it lands on the text where it now is. A step that no
+longer maps (its text was deleted) or no longer applies is skipped, and the undo is still
+used up. `undo` / `redo` are the only history entry points.
 
 ## Plugins
 
