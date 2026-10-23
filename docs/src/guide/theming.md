@@ -420,6 +420,8 @@ The **selector** surface is narrower than a browser's, and the gaps are silent:
 an unsupported selector parses fine and then matches nothing, with no warning.
 On `rinch-web` the browser does its own matching, so everything below works
 there — which is exactly what makes a gap easy to miss.
+`NodeHandle::query_selector` / `query_selector_all` use the same matcher on
+desktop (#1796), so this table is also what a query can find there.
 
 Measured on the desktop engine:
 

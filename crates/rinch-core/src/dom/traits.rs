@@ -437,11 +437,53 @@ pub trait DomDocument {
     /// Get the body element of the document.
     fn body(&self) -> NodeId;
 
-    /// Query selector to find a node.
+    /// The first element of the whole document matching the CSS `selector`,
+    /// in document order (`document.querySelector`). `None` for an invalid
+    /// selector, which a browser throws a `SyntaxError` for.
     fn query_selector(&self, selector: &str) -> Option<NodeId>;
 
-    /// Query selector to find all matching nodes.
+    /// Every element of the whole document matching the CSS `selector`, in
+    /// document order (`document.querySelectorAll`). Empty for an invalid
+    /// selector.
     fn query_selector_all(&self, selector: &str) -> Vec<NodeId>;
+
+    /// The first element **under** `scope` matching the CSS `selector`, in
+    /// document order: `Element.querySelector` (issue #1796). `scope` itself is
+    /// never a candidate, the selector is matched against the whole tree (an
+    /// ancestor outside `scope` can satisfy a combinator), and `:scope` is
+    /// `scope`. `None` for an invalid selector.
+    ///
+    /// Defaulted to [`query_selector_all_in`](Self::query_selector_all_in)'s
+    /// first answer.
+    fn query_selector_in(&self, scope: NodeId, selector: &str) -> Option<NodeId> {
+        self.query_selector_all_in(scope, selector)
+            .into_iter()
+            .next()
+    }
+
+    /// Every element under `scope` matching the CSS `selector`, in document
+    /// order: `Element.querySelectorAll`, by the rules of
+    /// [`query_selector_in`](Self::query_selector_in). Empty for an invalid
+    /// selector.
+    ///
+    /// Defaulted to the document-wide answer kept to `scope`'s descendants (a
+    /// [`parent_node`](Self::parent_node) walk each), which cannot see
+    /// `:scope` and misses a detached `scope`; both backends override it.
+    fn query_selector_all_in(&self, scope: NodeId, selector: &str) -> Vec<NodeId> {
+        self.query_selector_all(selector)
+            .into_iter()
+            .filter(|&n| {
+                let mut cur = self.parent_node(n);
+                while let Some(id) = cur {
+                    if id == scope {
+                        return true;
+                    }
+                    cur = self.parent_node(id);
+                }
+                false
+            })
+            .collect()
+    }
 
     /// Get the children of a node.
     fn get_children(&self, node: NodeId) -> Vec<NodeId>;

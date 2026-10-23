@@ -1204,18 +1204,28 @@ impl NodeHandle {
         }
     }
 
-    /// Query a single child node matching the selector.
+    /// The first element under this node matching the CSS `selector`, as
+    /// `Element.querySelector`: descendants only, in document order, the
+    /// selector matched against the whole tree, `:scope` this node (#1796).
+    /// Any selector the backend parses works — combinators, compounds, lists,
+    /// `:not()`, attribute operators, the pseudo-classes it matches. An invalid
+    /// selector answers `None` (a browser throws a `SyntaxError`) and logs one
+    /// `tracing::warn!` per distinct string.
+    ///
+    /// Until #1796 this searched the whole document whatever the node.
     pub fn query_selector(&self, selector: &str) -> Option<NodeHandle> {
         let doc = self.accessed_doc()?;
-        let node_id = doc.borrow().query_selector(selector)?;
+        let node_id = doc.borrow().query_selector_in(self.node_id, selector)?;
         Some(NodeHandle::new(node_id, self.doc.clone()))
     }
 
-    /// Query all child nodes matching the selector.
+    /// Every element under this node matching the CSS `selector`, in
+    /// document order, as `Element.querySelectorAll`; see
+    /// [`query_selector`](Self::query_selector). Empty for an invalid selector.
     pub fn query_selector_all(&self, selector: &str) -> Vec<NodeHandle> {
         if let Some(doc) = self.accessed_doc() {
             doc.borrow()
-                .query_selector_all(selector)
+                .query_selector_all_in(self.node_id, selector)
                 .into_iter()
                 .map(|id| NodeHandle::new(id, self.doc.clone()))
                 .collect()
@@ -1691,6 +1701,29 @@ where
 // ============================================================================
 // Tests
 // ============================================================================
+
+/// How many distinct invalid selectors [`warn_invalid_selector`] reports
+/// before it stops.
+pub const MAX_WARNED_SELECTORS: usize = 32;
+
+/// Report that `selector` is not a valid CSS selector (#1796): a backend's
+/// `query_selector` answers nothing for it where a browser throws a
+/// `SyntaxError`. One `tracing::warn!` per distinct string, for the first
+/// [`MAX_WARNED_SELECTORS`] strings in the process; the backends call it.
+#[doc(hidden)]
+pub fn warn_invalid_selector(selector: &str) {
+    use std::collections::HashSet;
+    use std::sync::{LazyLock, Mutex};
+    static WARNED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::default);
+    let mut warned = WARNED.lock().unwrap_or_else(|e| e.into_inner());
+    if warned.len() < MAX_WARNED_SELECTORS && warned.insert(selector.to_owned()) {
+        tracing::warn!(
+            selector,
+            "query_selector: not a valid CSS selector, so it matches nothing \
+             (a browser throws a SyntaxError)"
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {
