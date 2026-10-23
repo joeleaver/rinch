@@ -118,6 +118,16 @@ box, and on wasm `layout_rect()` reads the canvas's `getBoundingClientRect` when
 `rinch-web/tests/render_surface_pacing_1768.rs` (Chrome 155; also passes in Firefox via
 Playwright).
 
+**A GPU texture layer composites in an opaque window too (#1774).** With composite layers
+present, `WgpuRenderer` renders the Vello UI over a transparent base (`desktop::ui_base_color`)
+and the compositor clears the window base under the layers, blits them, then blends the UI on
+top. That base used to go transparent only for CPU-pixel layers (`composite_layers`), so a
+window whose only layer was a zero-copy GPU texture (`gpu_layers`, a `GpuTextureRegistrar`
+surface named by `data-viewport`) rendered its UI over opaque white, which covered the layer;
+a transparent window's base is transparent anyway, so it worked there. Pin:
+`shell::compositor::gpu_alpha_tests::gpu_alpha_a_gpu_layer_shows_in_an_opaque_window_1774`
+(`#[ignore]`d, needs a GPU: `cargo test -p rinch --features gpu --lib -- --ignored gpu_alpha`).
+
 **Sharing a high-capability GPU device (issue #57):** zero-copy compositing needs your texture on the *same* device rinch composites with (`gpu_handle()` → `device`/`queue`/**`adapter`**). `gpu_handle()` is `None` whenever the window presents with the software renderer (`RINCH_RENDERER=cpu`, or the `Renderer::Auto` fallback), so handle `None` unless you use one of the two entry points below — they always present on the GPU. By default that device is created with `Features::default()` / `Limits::default()`. To raise it:
 
 | Entry point | Ownership | Use when |
