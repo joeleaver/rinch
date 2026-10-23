@@ -3,7 +3,10 @@
 //! and a line wider than the box overflows it. What the paragraph draws past
 //! its box — text moved by `vertical-align`, a wavy underline — reaches as
 //! far as the line's content, not the alignment width, or recolouring it
-//! repaints only part of it.
+//! repaints only part of it. The wavy underline's ink is pinned by
+//! `paint::tests::an_overflowing_aligned_lines_ink_reaches_its_content`
+//! instead of here: a recoloured wave is not repainted by a damage-only paint
+//! even in a box it fits (#1872), so a pixel comparison cannot isolate it.
 
 #![cfg(feature = "software-renderer")]
 

@@ -353,8 +353,17 @@ input a shaped layout is built from:
   41.02), so its paint layout is broken line by line with the content width
   set as each line's alignment width (`ifc::break_unwrapped`, through
   `set_prior_line_width`; the content box itself, not the pixel of auto-width
-  slack `ifc_paint_max_width` breaks with), and an overflowing line keeps
-  parley's start alignment, as CSS does. It is not broken *at* that width:
+  slack `ifc_paint_max_width` breaks with — except that an auto-width root
+  whose paragraph is within a pixel of its content width, a shrink-to-fit
+  box rounded from that paragraph, is aligned within the paragraph's own
+  width, `ifc::AlignWidth`), and an overflowing line keeps parley's start
+  alignment, as CSS does. Since a line's `inline_max_coord` is then the
+  box's width, an overflowing line's content passes it: what reads a line's
+  horizontal extent for ink takes its placed content too
+  (`paint::text::line_reach`), and the paint layout is rebuilt when the
+  alignment width changes as well as the break width
+  (`InlineLayout::align_width`; an auto-width root and a declared one a pixel
+  wider break at the same width). It is not broken *at* that width:
   parley marks a break opportunity after every inline box whatever the wrap
   mode, so a `nowrap` paragraph with a chip would wrap after it (#1238 is the
   other side of that: a wrapping span of only inline boxes inside such a root
