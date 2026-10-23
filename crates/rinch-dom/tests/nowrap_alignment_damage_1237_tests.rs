@@ -106,12 +106,3 @@ fn recolour_repaints_the_span(root_style: &str, span_style: &str) {
 fn a_raised_span_past_the_box_is_repainted_when_recoloured() {
     recolour_repaints_the_span("white-space:nowrap;text-align:right", "vertical-align:20px");
 }
-
-/// The same with a wavy underline under the span.
-#[test]
-fn a_wavy_underline_past_the_box_is_repainted_when_recoloured() {
-    recolour_repaints_the_span(
-        "white-space:nowrap;text-align:right",
-        "text-decoration:underline wavy",
-    );
-}

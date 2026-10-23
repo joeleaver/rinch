@@ -269,6 +269,25 @@ fn push_spacing(b: &mut parley::RangedBuilder<'_, Brush>, letter_spacing: f32, w
     b.push_default(parley::style::StyleProperty::WordSpacing(word_spacing));
 }
 
+/// The width a paragraph that does not wrap is aligned within (#1237): the
+/// root's content width, or, for an auto-width root (`up_to`, the width its
+/// lines are broken at, is the content width plus `ifc_paint_max_width`'s
+/// pixel of slack) whose paragraph is within a pixel of that width, the
+/// paragraph's own width. A root sized from its text (shrink-to-fit:
+/// `inline-block`, an absolute box, `max-content`, `fit-content`) is as wide
+/// as its widest line rounded to a whole pixel, and its lines are aligned
+/// within the widest line itself, as in Chrome 155 (review of #1868). Not
+/// Chrome's: an auto-width block that stretches to a width its text happens
+/// to be within a pixel of is aligned within the text's width too (off by
+/// that fraction). For a declared width `up_to` is `width`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct AlignWidth {
+    /// The content-box width.
+    pub width: f32,
+    /// The width the paint layout is broken at.
+    pub up_to: f32,
+}
+
 /// What [`break_lines_hanging_spaces`] had to do to one layout, for the
 /// `ifc_hang_*` perf counters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -401,7 +420,7 @@ impl HangStats {
 /// opportunities only ([`justify_line`], #1056).
 ///
 /// And with `align_width`, a paragraph broken unconstrained (`max_width` is
-/// `None`: none of its text may wrap) is aligned within that width rather
+/// `None`: none of its text may wrap) is aligned within that width ([`AlignWidth`]) rather
 /// than within its own widest line, which is what parley does with no width
 /// (#1237): it is the line box CSS aligns a line in. Its lines are those of
 /// the unconstrained break — nothing wraps, not even after an inline box,
@@ -430,11 +449,13 @@ pub(crate) fn break_lines_hanging_spaces(
     unhung: &UnhungSpaces,
     count_trailing: bool,
     justify: bool,
-    align_width: Option<f32>,
+    align_width: Option<AlignWidth>,
 ) -> HangStats {
     // #1237: a paragraph that does not wrap, aligned within the box.
-    if let Some(width) = align_width.filter(|w| max_width.is_none() && w.is_finite() && *w > 0.0) {
-        return break_unwrapped_aligned(layout, text, width, preserves_spaces, unhung);
+    if let Some(align) =
+        align_width.filter(|a| max_width.is_none() && a.width.is_finite() && a.width > 0.0)
+    {
+        return break_unwrapped_aligned(layout, text, align, preserves_spaces, unhung);
     }
     layout.break_all_lines(max_width);
     let max = max_width.filter(|max| max.is_finite());
@@ -1705,30 +1726,48 @@ fn break_lines_up_to(layout: &mut parley::Layout<Brush>, max_width: Option<f32>,
 }
 
 /// [`break_lines_hanging_spaces`] for a paragraph none of whose text may
-/// wrap, aligned within `width` (#1237): broken unconstrained, each line
-/// given `width` as its alignment width ([`break_unwrapped`]). When a line
-/// ends in white space [`align_unhung_trailing`] counts as content
-/// ([`any_counted_trailing_line`]), or parley left an empty line after a
-/// final forced break ([`phantom_last_line`]), the paragraph is broken once
-/// more, for both at once.
+/// wrap, aligned within `align` (#1237): broken unconstrained, each line
+/// given the content width as its alignment width ([`break_unwrapped`]).
+/// When the paragraph's own width (its widest line, as a measure counts it:
+/// [`crate::node::measured_width_of`]) turns out to lie between that and
+/// `align.up_to` — a shrink-to-fit box floored from it — the lines are
+/// aligned within that width instead; when a line ends in white space
+/// [`align_unhung_trailing`] counts as content
+/// ([`any_counted_trailing_line`]); and when parley left an empty line after
+/// a final forced break ([`phantom_last_line`]): for any of those the
+/// paragraph is broken once more, for all of them at once.
 fn break_unwrapped_aligned(
     layout: &mut parley::Layout<Brush>,
     text: &str,
-    width: f32,
+    align: AlignWidth,
     preserves_spaces: bool,
     unhung: &UnhungSpaces,
 ) -> HangStats {
-    break_unwrapped(layout, width, None, None);
+    break_unwrapped(layout, align.width, None, None);
     let mut stats = HangStats::default();
+    let own = crate::node::measured_width_of(
+        layout,
+        text,
+        preserves_spaces,
+        f32::INFINITY,
+        &unhung.breaking,
+    );
+    // A box sized from the paragraph's own width is that width rounded to
+    // a whole pixel, either way (`a\nbbb`, 29.39 wide, is a 29px
+    // inline-block; `a\nbbbbbb`, 58.78, a 59px one). Only an auto-width box
+    // has the slack (`up_to > width`); a declared width is aligned within.
+    let widened =
+        align.up_to > align.width && own != align.width && (own - align.width).abs() < 1.0;
+    let width = if widened { own } else { align.width };
     // parley offsets a right-to-left line by its trailing white space, so a
     // narrowed alignment width would move it the wrong way (as in
     // `break_lines_hanging_spaces`): such a line is left as parley aligns it.
     let trailing = !layout.is_rtl() && any_counted_trailing_line(layout, text, preserves_spaces);
     let keep = phantom_last_line(layout);
-    if trailing || keep.is_some() {
+    if widened || trailing || keep.is_some() {
         let units = trailing.then(|| logical_units(layout, text, unhung));
         break_unwrapped(layout, width, units.as_deref(), keep);
-        stats.passes = u32::from(trailing);
+        stats.passes = u32::from(widened || trailing);
         stats.phantom_rebreaks = u32::from(keep.is_some());
     }
     stats
@@ -3297,17 +3336,23 @@ impl RinchDocument {
             let node = &self.tree.nodes[root_id];
 
             // Skip Parley rebuild if text hasn't changed and the layout already
-            // exists with the same max_width. The existing text_layout is still valid.
+            // exists with the same max_width and alignment width (#1237: an
+            // auto-width root and one declared a pixel wider break at the
+            // same width and align within different ones). The existing
+            // text_layout is still valid.
             if !self.tree.dirty_ifc_text_roots.contains(&root_id) {
                 if let Some(existing) = &node.text_layout {
-                    let old_max_width = existing.max_width;
-                    let new_max_width = max_width.unwrap_or(f32::INFINITY);
                     // `==` first: an unconstrained root stores `INFINITY`, and
                     // `INFINITY - INFINITY` is NaN, which no tolerance admits, so
                     // without it every such root was reshaped on every layout
                     // pass that changed no text (ifc_unconstrained_width_skip_tests).
-                    if old_max_width == new_max_width
-                        || (old_max_width - new_max_width).abs() < 0.01
+                    let same = |old: f32, new: f32| old == new || (old - new).abs() < 0.01;
+                    let new_align = match max_width {
+                        Some(_) => self.ifc_content_width(root_id).unwrap_or(f32::INFINITY),
+                        None => f32::INFINITY,
+                    };
+                    if same(existing.max_width, max_width.unwrap_or(f32::INFINITY))
+                        && same(existing.align_width, new_align)
                     {
                         continue; // Skip — text_layout is still valid
                     }
@@ -3393,7 +3438,10 @@ impl RinchDocument {
         self.tree.perf.bump(crate::perf::Counter::ShapeIfcBuild);
         // A paragraph that does not wrap is aligned within the content box
         // itself, without the auto-width slack `max_width` carries (#1237).
-        let align_width = max_width.and(self.ifc_content_width(root_id));
+        let align_width = self
+            .ifc_content_width(root_id)
+            .zip(max_width)
+            .map(|(width, up_to)| AlignWidth { width, up_to });
         let (mut inline_layout, font_family_resolves) = Self::build_inline_layout(
             &self.tree.nodes,
             root_id,
@@ -8535,7 +8583,7 @@ impl RinchDocument {
     /// see the doc on [`Counter::InlineFontFamilyResolves`](crate::perf::Counter::InlineFontFamilyResolves).
     ///
     /// `align_width` is the width a paragraph none of whose text may wrap is
-    /// aligned in — the root's content width, for the paint layout — or
+    /// aligned in ([`AlignWidth`]) — from the root's content width, for the paint layout — or
     /// `None` for a measure, which reads no line's position (#1237; see
     /// [`break_lines_hanging_spaces`]).
     #[allow(clippy::too_many_arguments)]
@@ -8543,7 +8591,7 @@ impl RinchDocument {
         nodes: &slab::Slab<Node>,
         root_id: usize,
         max_width: Option<f32>,
-        align_width: Option<f32>,
+        align_width: Option<AlignWidth>,
         scale: f32,
         font_cx: &mut parley::FontContext,
         layout_cx: &mut parley::LayoutContext<Brush>,
@@ -8868,6 +8916,7 @@ impl RinchDocument {
                 decoration_spans,
                 vertical_align_spans,
                 max_width: max_width.unwrap_or(f32::INFINITY),
+                align_width: align_width.map_or(f32::INFINITY, |a| a.width),
                 preserves_spaces,
                 break_spaces: unhung.breaking,
                 hang,

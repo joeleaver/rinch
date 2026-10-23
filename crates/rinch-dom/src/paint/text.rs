@@ -695,6 +695,21 @@ fn lines_of_span(
     first..past
 }
 
+/// A line's horizontal reach, in CSS px from the content origin: its line box
+/// (`inline_min_coord..inline_max_coord`) and its content where that is
+/// placed (from `offset`, `advance` wide). The two differ for a line wider
+/// than its box — the alignment width a paragraph that does not wrap is
+/// given is the box's (#1237, review of #1868), and an unbreakable word
+/// overflows a wrapping one — and for a right-to-left line offset left by
+/// its trailing white space.
+fn line_reach(m: &parley::layout::LineMetrics) -> (f64, f64) {
+    let start = (m.inline_min_coord + m.offset) as f64;
+    (
+        (m.inline_min_coord as f64).min(start),
+        (m.inline_max_coord as f64).max(start + m.advance as f64),
+    )
+}
+
 /// What an IFC root draws past its **unshifted** line boxes, in device px
 /// relative to its content origin, or `None` when it draws nothing there:
 /// text moved off its line by `vertical-align` (#724), the inline
@@ -740,7 +755,7 @@ pub(crate) fn inline_ink_past_lines<'a>(
             let m = line.metrics();
             let top = (m.block_min_coord as f64).min((m.baseline - m.ascent) as f64);
             let bottom = (m.block_max_coord as f64).max((m.baseline + m.descent) as f64);
-            let (x0, x1) = (m.inline_min_coord as f64, m.inline_max_coord as f64);
+            let (x0, x1) = line_reach(m);
             add(Rect::new(
                 x0 * scale,
                 (top + shift) * scale,
@@ -761,7 +776,7 @@ pub(crate) fn inline_ink_past_lines<'a>(
             // The wave runs under the span's clusters, which are on the
             // line: its extent is the line's, plus the stroke's half width.
             let m = line.metrics();
-            let (x0, x1) = (m.inline_min_coord as f64, m.inline_max_coord as f64);
+            let (x0, x1) = line_reach(m);
             let (mid, amp) = wavy_wave(&line, scale);
             let reach = amp + THICKNESS * scale / 2.0;
             let half = THICKNESS * scale / 2.0;

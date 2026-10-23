@@ -628,6 +628,11 @@ pub struct InlineLayout {
     pub vertical_align_spans: Vec<InlineVerticalAlignSpan>,
     /// The max_width used to build this layout (for cache invalidation).
     pub max_width: f32,
+    /// The content width a paragraph that does not wrap was aligned within
+    /// (#1237), `f32::INFINITY` when none was given: with `max_width`, what
+    /// decides whether the paint layout must be built again. The two differ
+    /// by an auto-width root's pixel of breaking slack.
+    pub align_width: f32,
     /// Whether spaces at the end of a line can be content, not collapsed
     /// away: the IFC holds text under `pre`, `pre-wrap` or `break-spaces` (any element's,
     /// #1192), or is a contenteditable root. Not `pre-line`'s, which collapses
