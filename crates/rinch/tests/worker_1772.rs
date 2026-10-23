@@ -5,6 +5,10 @@
 //! registry is thread-local, so a second test thread draining the queue would
 //! run this thread's deliveries against its own (empty) registry.
 
+// Gated by `cfg`, not `required-features`: CI's integration shards select test
+// targets with `--test '<glob>'`, and cargo refuses a named target whose
+// required features are off. Without `worker` this compiles to an empty
+// binary; CI's feature-gated shard runs it with the feature on.
 #![cfg(feature = "worker")]
 
 use std::cell::{Cell, RefCell};

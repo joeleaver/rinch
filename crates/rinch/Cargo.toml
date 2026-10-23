@@ -316,11 +316,6 @@ global-hotkeys = [
 # workers.
 worker = []
 
-# Run by CI's "feature-gated tests" step.
-[[test]]
-name = "worker_1772"
-path = "tests/worker_1772.rs"
-required-features = ["worker"]
 
 # Probe app for the ignored e2e test tests/debug_event_latency.rs (issue #153).
 [[example]]
