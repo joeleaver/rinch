@@ -36,7 +36,6 @@ use crate::EditorError;
 use crate::model::{AttrValue, Attrs, Fragment, Mark, MarkType, Node, NodeType, Slice};
 use crate::pos::Pos;
 use crate::schema::{IMAGE_MAX_WIDTH, Schema, app_data_attrs, kept_data_attrs};
-use crate::tables;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -1721,14 +1720,12 @@ impl<'a> HtmlParser<'a> {
     ///   is exactly that (the model has no "to the end" span; every span is
     ///   at least 1). Chrome cuts a span at the end of its row group, so a
     ///   `rowspan="3"` in a one-row `<tbody>` spans one row there too.
-    /// - A row's spans reach at most [`tables::MAX_IMPORTED_ROW_WIDTH`]
-    ///   columns, counting the columns carried into it by rowspans from the
-    ///   rows above: a `colspan` is cut to what is left, never below 1, and a
-    ///   cell that starts in a row already that wide spans that row alone, so
-    ///   it carries nothing down. Each such cell adds one column, so a row is
-    ///   at most 1000 columns plus one per cell that found it full. That limit
-    ///   is rinch's, not Chrome's: a row's width used to grow with every
-    ///   rowspan above it, and a 57 KB paste made a 1,000,000-column table.
+    /// - A row is as wide as its spans add up to, as in Chrome (#1244): a
+    ///   `colspan` is cut only at Chrome's 1000, where it was read. A load
+    ///   reads spans the same way ([`crate::tables::cap_spans`]), so a paste and a
+    ///   load give the same table. A very wide grid is bounded where it is
+    ///   mapped ([`crate::tables::grid_slot_budget`]), and adding a row beside it
+    ///   copies its neighbour's spans rather than making a cell per column.
     fn build_row_group(
         &self,
         types: &TableTypes<'a>,
@@ -1736,43 +1733,22 @@ impl<'a> HtmlParser<'a> {
     ) -> Result<Vec<Node>, EditorError> {
         let len = group.len();
         let mut rows = Vec::with_capacity(len);
-        // `ends[r]`: the columns that stop being carried down at row `r`.
-        let mut ends = vec![0usize; len + 1];
-        let mut carried = 0usize;
         for (r, cells) in group.into_iter().enumerate() {
-            carried -= ends[r];
             let rows_left = len - r;
-            let mut row_width = carried;
-            let mut starts = 0usize;
             let cells = cells
                 .into_iter()
                 .map(|cell| {
-                    // A cell that finds its row full spans that row alone,
-                    // so it carries nothing down: otherwise every cell past
-                    // the 1000th column would widen every row below it.
-                    let full = row_width >= tables::MAX_IMPORTED_ROW_WIDTH;
                     let rowspan = match cell.rowspan as usize {
-                        _ if full => 1,
                         0 => rows_left,
                         n => n.min(rows_left),
                     };
-                    let room = tables::MAX_IMPORTED_ROW_WIDTH
-                        .saturating_sub(row_width)
-                        .max(1);
-                    let colspan = (cell.colspan as usize).min(room);
-                    row_width += colspan;
-                    if rowspan > 1 {
-                        starts += colspan;
-                        ends[r + rowspan] += colspan;
-                    }
                     let attrs = Attrs::from_iter([
-                        ("colspan", AttrValue::Int(colspan as i64)),
+                        ("colspan", AttrValue::Int(i64::from(cell.colspan))),
                         ("rowspan", AttrValue::Int(rowspan as i64)),
                     ]);
                     self.make_node(cell.node_type, attrs, cell.content)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            carried += starts;
             rows.push(self.make_node(types.row, Attrs::new(), Fragment::from_children(cells))?);
         }
         Ok(rows)
@@ -3424,33 +3400,25 @@ mod tests {
             .collect()
     }
 
-    /// The spans of a pasted row reach at most 1000 columns, counting the
-    /// columns that rowspans from the rows above carry into it: a colspan is
-    /// cut to what is left, never below 1, and a cell that starts in a row
-    /// already 1000 wide spans that row alone, so it carries nothing down
-    /// (#1176). Each further cell adds one column. 1000 is Chrome's largest
-    /// colspan; Chrome has no limit on a row's width (it lays out 3001
-    /// columns), so this one is rinch's.
+    /// A pasted row is as wide as its spans add up to, as Chrome lays it out
+    /// (it draws a row of 3001 columns): a colspan is cut only at Chrome's
+    /// 1000, and a rowspan only at the end of its row group (#1244). The
+    /// paste used to cut a row at 1000 columns, counting the columns carried
+    /// into it from above, which a load did not.
     #[test]
-    fn a_pasted_rows_spans_reach_at_most_1000_columns() {
+    fn a_pasted_rows_spans_are_kept_past_1000_columns() {
         let html = "<table><tr><td colspan=\"600\"><p>a</p></td>\
                     <td colspan=\"600\"><p>b</p></td><td colspan=\"7\"><p>c</p></td></tr></table>";
-        assert_eq!(imported_colspans(html), vec![vec![600, 400, 1]]);
-        // Columns carried down by a rowspan count against the row below.
+        assert_eq!(imported_colspans(html), vec![vec![600, 600, 7]]);
+        // Columns carried down by a rowspan do not shorten the row below.
         let html = "<table><tr><td colspan=\"700\" rowspan=\"2\"><p>a</p></td></tr>\
                     <tr><td colspan=\"500\"><p>b</p></td></tr>\
                     <tr><td colspan=\"500\"><p>c</p></td></tr></table>";
         assert_eq!(
             imported_colspans(html),
-            vec![vec![700], vec![300], vec![500]]
+            vec![vec![700], vec![500], vec![500]]
         );
-        // ...but not across a row group, which the rowspan does not reach.
-        let html = "<table><tbody><tr><td colspan=\"700\" rowspan=\"2\"><p>a</p></td></tr></tbody>\
-                    <tbody><tr><td colspan=\"500\"><p>b</p></td></tr></tbody></table>";
-        assert_eq!(imported_colspans(html), vec![vec![700], vec![500]]);
-        // A cell that finds its row full spans one row, whatever it asked:
-        // row 1 is full with row 0's 1000 carried columns, and in row 0 the
-        // second cell starts after the first has filled it.
+        // A cell beside 1000 carried columns keeps its spans.
         let html = "<table>\
                     <tr><td colspan=\"1000\" rowspan=\"3\"><p>a</p></td>\
                     <td rowspan=\"3\"><p>b</p></td></tr>\
@@ -3458,9 +3426,9 @@ mod tests {
                     <tr><td><p>d</p></td></tr></table>";
         assert_eq!(
             imported_colspans(html),
-            vec![vec![1000, 1], vec![1], vec![1]]
+            vec![vec![1000, 1], vec![4], vec![1]]
         );
-        assert_eq!(imported_rowspans(html), vec![vec![3, 1], vec![1], vec![1]]);
+        assert_eq!(imported_rowspans(html), vec![vec![3, 3], vec![2], vec![1]]);
     }
 
     /// Every cell's `rowspan`, row by row, of the first table in `html`.

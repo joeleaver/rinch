@@ -334,15 +334,18 @@ impl TableMap {
     /// `TableMap.cellsInRect`.
     pub fn cells_in_rect(&self, rect: Rect) -> Vec<usize> {
         let mut result = Vec::new();
-        let mut seen = Vec::new();
+        // A set, not a list (#1874): a rectangle of n cells looked each slot
+        // up in every cell seen before it, n² over a selected table.
+        let mut seen = std::collections::HashSet::new();
         for row in rect.top..rect.bottom.min(self.height) {
             for col in rect.left..rect.right.min(self.width) {
                 let index = row * self.width + col;
                 let pos = self.map[index];
-                if pos == UNSET || seen.contains(&pos) {
+                // The slot left of this one is the same cell: seen already.
+                let same_as_left = col > rect.left && self.map[index - 1] == pos;
+                if pos == UNSET || same_as_left || !seen.insert(pos) {
                     continue;
                 }
-                seen.push(pos);
                 // Skip a cell that bleeds in from the left or top edge (it belongs
                 // to a column/row outside the rectangle).
                 let bleeds_left = col == rect.left && col > 0 && self.map[index - 1] == pos;
@@ -421,36 +424,42 @@ pub fn grid_slot_budget(table: &Node) -> usize {
 /// (1.5 M slots for 2500 cells) is mapped whole, as Chrome draws it.
 pub const GRID_SLOT_FLOOR: usize = 1 << 22;
 
-/// How far a pasted row's spans may reach, in grid columns, counting the
-/// columns that rowspans from the rows above carry into it: the HTML import
-/// cuts a colspan to what is left, never below 1, and gives a cell that finds
-/// its row full a rowspan of 1 (#1176). A row is therefore at most this wide
-/// plus one column per cell that found it full. 1000 is Chrome's largest
-/// `colspan`; Chrome itself has no limit on a row's width.
-pub const MAX_IMPORTED_ROW_WIDTH: usize = 1000;
-
-/// The largest `colspan` a loaded document keeps: Chrome's (`td.colSpan`
-/// clamps to 1000), and what the HTML import reads (#1164).
+/// The largest `colspan` a loaded or pasted document keeps: Chrome's
+/// (`td.colSpan` clamps to 1000), and what the HTML import reads (#1164).
 pub const MAX_COLSPAN: i64 = 1000;
 
-/// `doc` with every table cell's `colspan` past [`MAX_COLSPAN`] cut to it —
-/// the cap a document gets where it is *loaded* (#1214): the HTML import
-/// reads `colspan` that way, and `Schema::node_from_doc` and the editor's own
-/// loads (`EditorHandle::new`, `load_doc`) call this. A `TableMap` is as wide
-/// as its widest row, so one `colspan = 3,000,000` cell in a 2-row table was a
-/// 2^21-column grid ([`grid_slot_budget`]), and `addRowAfter` built a cell per
-/// column: 2,097,152 cells, 15.6 s and 5 GB through a mounted view. Edits are
-/// not capped: a command may still widen a cell past 1000, one column at a
-/// time. `rowspan` is not capped either: a map is never taller than its rows,
-/// so a tall span costs nothing until the rows exist.
+/// The largest `rowspan` a loaded or pasted document keeps: Chrome's
+/// (`td.rowSpan` clamps to 65534), and what the HTML import reads (#1164).
+pub const MAX_ROWSPAN: i64 = 65534;
+
+/// `doc` with every table cell's `colspan` past [`MAX_COLSPAN`] and `rowspan`
+/// past [`MAX_ROWSPAN`] cut to them — Chrome's limits, applied where a
+/// document is *loaded* (#1214, #1244): `Schema::node_from_doc` and the
+/// editor's own loads (`EditorHandle::new`, `load_doc`) call this, and the
+/// HTML import reads both attributes the same way, so a load and a paste read
+/// a table's spans alike. Nothing else is cut: like Chrome, a row is as wide
+/// as its cells' spans add up to, and the [`TableMap`] over a very wide table
+/// is bounded by [`grid_slot_budget`] instead. Edits are not capped: a command
+/// may still widen a cell past 1000, one column at a time.
+///
+/// Before #1214 one `colspan = 3,000,000` cell made a 2-row table 2^21 columns
+/// wide (the slot budget), and `addRowAfter` built a cell per column. A row of
+/// 2,100 cells of 1000 is as wide; `addRowAfter` now copies the spans of the
+/// row beside it (#1244), so it builds about 2,100 cells there.
 ///
 /// Nothing is rebuilt that holds no such cell: with none, the result is
 /// `doc` itself ([`Node::same_ref`]).
-pub fn cap_colspans(doc: &Node) -> Node {
+pub fn cap_spans(doc: &Node) -> Node {
     capped(doc).unwrap_or_else(|| doc.clone())
 }
 
-/// `node` with its colspans capped, or `None` when none needed it.
+/// [`cap_spans`], under its name from before it capped `rowspan` too.
+#[deprecated(note = "renamed to `cap_spans`, which also caps `rowspan` (#1244)")]
+pub fn cap_colspans(doc: &Node) -> Node {
+    cap_spans(doc)
+}
+
+/// `node` with its spans capped, or `None` when none needed it.
 fn capped(node: &Node) -> Option<Node> {
     if node.is_text() || node.is_textblock() || node.is_leaf() {
         return None;
@@ -464,23 +473,27 @@ fn capped(node: &Node) -> Option<Node> {
             out.push(child.clone());
         }
     }
-    let wide = is_cell(node)
-        && node
-            .attrs()
-            .get_int("colspan")
-            .is_some_and(|c| c > MAX_COLSPAN);
-    if out.is_none() && !wide {
+    let over =
+        |name: &str, max: i64| is_cell(node) && node.attrs().get_int(name).is_some_and(|v| v > max);
+    let (wide, tall) = (over("colspan", MAX_COLSPAN), over("rowspan", MAX_ROWSPAN));
+    if out.is_none() && !wide && !tall {
         return None;
     }
     let node = match out {
         Some(children) => node.copy_with_content(Fragment::from_children(children)),
         None => node.clone(),
     };
-    if wide {
-        let attrs = node.attrs().with("colspan", AttrValue::Int(MAX_COLSPAN));
-        return Some(node.with_attrs(attrs));
+    if !wide && !tall {
+        return Some(node);
     }
-    Some(node)
+    let mut attrs = node.attrs().clone();
+    if wide {
+        attrs = attrs.with("colspan", AttrValue::Int(MAX_COLSPAN));
+    }
+    if tall {
+        attrs = attrs.with("rowspan", AttrValue::Int(MAX_ROWSPAN));
+    }
+    Some(node.with_attrs(attrs))
 }
 
 /// Read a span attribute (`colspan`/`rowspan`), clamped to a minimum of 1.
