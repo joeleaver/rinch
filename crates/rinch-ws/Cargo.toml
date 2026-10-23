@@ -46,3 +46,11 @@ rinch-core = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+
+# Browser-driven tests (issue #1773). Run with a matching chromedriver:
+#     CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
+#     cargo test -p rinch-ws --target wasm32-unknown-unknown
+# Set RINCH_WS_TEST_URL at build time to a server like the one in
+# tests/web_subprotocols_1773.rs's doc to run the live half too.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"

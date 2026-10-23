@@ -13,7 +13,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{BinaryType, CloseEvent, MessageEvent, WebSocket};
 
-use crate::{WsClose, WsError, WsEvent, WsMessage};
+use crate::{WsClose, WsError, WsEvent, WsMessage, WsRequest};
 
 /// The web half of a connection: the socket plus its live event closures.
 pub(crate) struct Backend {
@@ -25,8 +25,18 @@ pub(crate) struct Backend {
     _on_error: Closure<dyn FnMut(JsValue)>,
 }
 
-pub(crate) fn connect(url: &str, id: u64) -> Result<Backend, WsError> {
-    let ws = WebSocket::new(url).map_err(|e| WsError::InvalidUrl(js_err(&e)))?;
+pub(crate) fn connect(request: &WsRequest, id: u64) -> Result<Backend, WsError> {
+    let ws = if request.protocols.is_empty() {
+        WebSocket::new(&request.url)
+    } else {
+        let protocols: js_sys::Array = request
+            .protocols
+            .iter()
+            .map(|p| JsValue::from_str(p))
+            .collect();
+        WebSocket::new_with_str_sequence(&request.url, &protocols)
+    }
+    .map_err(|e| WsError::InvalidUrl(js_err(&e)))?;
     ws.set_binary_type(BinaryType::Arraybuffer);
 
     let on_open = Closure::wrap(Box::new(move |_e: JsValue| {
@@ -84,6 +94,10 @@ impl Backend {
 
     pub(crate) fn send_bytes(&self, bytes: Vec<u8>) {
         let _ = self.ws.send_with_u8_array(&bytes);
+    }
+
+    pub(crate) fn protocol(&self) -> String {
+        self.ws.protocol()
     }
 
     pub(crate) fn close(&self) {
