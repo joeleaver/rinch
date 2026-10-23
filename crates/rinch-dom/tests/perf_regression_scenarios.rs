@@ -1374,6 +1374,127 @@ fn a_right_aligned_paragraph_ending_in_spaces_pays_one_pass() {
     );
 }
 
+/// A right-aligned `nowrap` paragraph (#1237): no text wraps, so it is
+/// broken unconstrained, and its paint layout line by line with the box's
+/// width as each line's alignment width — the same one break `break_remaining`
+/// makes, so no hang pass. The root compute's measure is aligned nowhere.
+#[test]
+fn a_right_aligned_nowrap_paragraph_is_aligned_without_a_pass() {
+    let mut doc = doc_with(".p { width: 200px; white-space: nowrap; text-align: right; }");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    text(&mut doc, p, "abc def");
+    let s = cold_frame(&mut doc);
+    expect(
+        "right-aligned nowrap paragraph",
+        &s,
+        &[
+            (StyleResolves, 2),
+            (ElementsCascaded, 3),
+            (StyleNodesVisited, 7),
+            (FullStyleWalks, 2),
+            (TaffyStyleSyncs, 3),
+            (TaffyStyleChanges, 2),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 2),
+            (IfcSignatureChanges, 1),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// A centred `pre` paragraph whose first line ends in preserved spaces before
+/// its newline (#1237): they are content, so the paint layout is broken once
+/// more to count them (`align_unhung_trailing`) — one pass, the paint
+/// layout's only.
+#[test]
+fn a_centred_pre_paragraph_with_spaces_before_a_newline_pays_one_pass() {
+    let mut doc = doc_with(".p { width: 200px; white-space: pre; text-align: center; }");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    text(&mut doc, p, "abc   \ndef");
+    let s = cold_frame(&mut doc);
+    expect(
+        "centred pre paragraph with spaces before a newline",
+        &s,
+        &[
+            (StyleResolves, 2),
+            (ElementsCascaded, 3),
+            (StyleNodesVisited, 7),
+            (FullStyleWalks, 2),
+            (TaffyStyleSyncs, 3),
+            (TaffyStyleChanges, 2),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 2),
+            (IfcSignatureChanges, 1),
+            (IfcHangPasses, 1),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// A right-aligned `pre` inline-block sized from its text (#1237, review of
+/// #1868): its box is its widest line rounded to a whole pixel, and its lines
+/// are aligned within the widest line itself, which the paint layout learns
+/// only once broken — one more break of the paragraph, one pass.
+#[test]
+fn a_right_aligned_shrink_to_fit_pre_box_pays_one_pass() {
+    let mut doc = doc_with(".p { display: inline-block; white-space: pre; text-align: right; }");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    text(&mut doc, p, "a\nbbb");
+    let s = cold_frame(&mut doc);
+    expect(
+        "right-aligned shrink-to-fit pre box",
+        &s,
+        &[
+            (StyleResolves, 2),
+            (ElementsCascaded, 3),
+            (StyleNodesVisited, 7),
+            (FullStyleWalks, 2),
+            (TaffyStyleSyncs, 3),
+            (TaffyStyleChanges, 2),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 2),
+            (ShapeAtomicInline, 1),
+            (IfcMeasureInvalidations, 2),
+            (IfcSignatureChanges, 2),
+            (IfcHangPasses, 1),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (InlineBlockComputes, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
 /// A justified `pre-wrap` paragraph whose lines end in three spaces (#1056):
 /// parley would count two of them as justification opportunities, so the
 /// paragraph takes the hang pass, and each such line is committed once more by

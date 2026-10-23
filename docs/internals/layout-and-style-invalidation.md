@@ -347,7 +347,30 @@ input a shaped layout is built from:
   root is broken at the container's width whenever the nearest element of
   some text in it wraps (`ifc::wraps_anywhere`), so a `normal` span inside a
   `pre` root wraps, and only an IFC with no wrapping text at all is broken
-  unconstrained. Parley takes a break's wrap mode from the cluster before it,
+  unconstrained. Such a paragraph is still **aligned within the content box**
+  (#1237): with no width parley aligns each line within the paragraph's own
+  widest line (a right-aligned `a` in a 50px `nowrap` box sat at 0, Chrome
+  41.02), so its paint layout is broken line by line with the content width
+  set as each line's alignment width (`ifc::break_unwrapped`, through
+  `set_prior_line_width`; the content box itself, not the pixel of auto-width
+  slack `ifc_paint_max_width` breaks with — except that an auto-width root
+  whose paragraph is within a pixel of its content width, a shrink-to-fit
+  box rounded from that paragraph, is aligned within the paragraph's own
+  width, `ifc::AlignWidth`), and an overflowing line keeps parley's start
+  alignment, as CSS does. Since a line's `inline_max_coord` is then the
+  box's width, an overflowing line's content passes it: what reads a line's
+  horizontal extent for ink takes its placed content too
+  (`paint::text::line_reach`), and the paint layout is rebuilt when the
+  alignment width changes as well as the break width
+  (`InlineLayout::align_width`; an auto-width root and a declared one a pixel
+  wider break at the same width). It is not broken *at* that width:
+  parley marks a break opportunity after every inline box whatever the wrap
+  mode, so a `nowrap` paragraph with a chip would wrap after it (#1238 is the
+  other side of that: a wrapping span of only inline boxes inside such a root
+  never wraps, because `wraps_anywhere` counts only text). Only for `right`,
+  `center` and `end` in a left-to-right block, and only in the paint layout
+  (`build_inline_layout`'s `align_width`; a measure takes only sizes from its layout).
+  Parley takes a break's wrap mode from the cluster before it,
   so `pre` text then a `normal` span has no break at their seam, as in
   Chrome 153. A `pre` element's preserved spaces are not taken into a
   soft-wrap hang by rinch's hang pass, and a line ending in them is aligned
