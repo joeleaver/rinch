@@ -455,3 +455,166 @@ fn gpu_split_r_off_the_pixel_grid_breaks_the_below_slice() {
         .unwrap_or(0);
     assert!(worst > 8, "R at y0 = 5.5: worst error {worst}");
 }
+
+/// Render `scene` into a new `(w, h)` target over transparent, read it back.
+fn render_sized(
+    device: &Device,
+    queue: &Queue,
+    renderer: &mut Renderer,
+    scene: &Scene,
+    (w, h): (u32, u32),
+) -> Vec<[u8; 4]> {
+    let out = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("tile phase"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: TextureFormat::Rgba8Unorm,
+        usage: TextureUsages::STORAGE_BINDING | TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    renderer
+        .render_to_texture(
+            device,
+            queue,
+            scene,
+            &out.create_view(&Default::default()),
+            &RenderParams {
+                base_color: Color::TRANSPARENT,
+                width: w,
+                height: h,
+                antialiasing_method: AaConfig::Msaa16,
+            },
+        )
+        .expect("render");
+    let row = (w * 4).div_ceil(256) * 256;
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: (row * h) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    encoder.copy_texture_to_buffer(
+        out.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(h),
+            },
+        },
+        out.size(),
+    );
+    queue.submit(Some(encoder.finish()));
+    buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    let data = buffer.slice(..).get_mapped_range();
+    (0..h)
+        .flat_map(|y| {
+            let data = &data;
+            (0..w).map(move |x| {
+                let i = (y * row + x * 4) as usize;
+                [data[i], data[i + 1], data[i + 2], data[i + 3]]
+            })
+        })
+        .collect()
+}
+
+/// A measurement, not a test (#1894 review, item 4): does a slice's scene,
+/// encoded where the window draws it, render the same moved toward the
+/// origin by whole Vello tiles (16 px), so the window could render it into a
+/// target covering R's tiles rather than one reaching R's far corner?
+/// Measured 2026-10-25 on RADV and lavapipe alike: below 1024 px exact both
+/// by whole tiles and by 31 px; at a 4K window's far side (3200, 1920) and
+/// (3776, 2112) one and two pixels differ, up to 24 levels, by whole tiles
+/// and by 31 px alike: f32 magnitude, not tile phase. So the crop is not
+/// exact and the window renders slices in place.
+/// `cargo test -p rinch --features gpu --lib split_slice_shift_probe -- --ignored --nocapture`
+#[test]
+#[ignore = "a measurement; needs a GPU adapter"]
+fn split_slice_shift_probe() {
+    let (device, queue, errors) = device();
+    let mut renderer = renderer(&device);
+    // A slice's content near `at`: curves at fractional coordinates, a
+    // fractional rect, a translucent fill, a stroke.
+    let content = |at: (f64, f64)| {
+        let mut s = Scene::new();
+        let t = Affine::translate(at);
+        s.fill(
+            Fill::NonZero,
+            t,
+            TEAL,
+            None,
+            &RoundedRect::new(3.3, 2.6, 58.7, 44.2, 9.7),
+        );
+        s.fill(
+            Fill::NonZero,
+            t,
+            GOLD,
+            None,
+            &vello::kurbo::Circle::new((31.37, 22.81), 13.29),
+        );
+        s.fill(
+            Fill::NonZero,
+            t,
+            RED,
+            None,
+            &Rect::new(10.25, 30.6, 50.75, 41.1),
+        );
+        s.stroke(
+            &vello::kurbo::Stroke::new(1.3),
+            t,
+            NAVY,
+            None,
+            &vello::kurbo::Circle::new((20.6, 15.4), 7.71),
+        );
+        s
+    };
+    let (w, h) = (64u32, 48u32);
+    for at in [
+        (3200.0, 1920.0),
+        (3776.0, 2112.0),
+        (48.0, 16.0),
+        (1024.0, 512.0),
+    ] {
+        // The window's render: the content where it is, a target reaching it.
+        let far = (at.0 as u32 + w, at.1 as u32 + h);
+        let full = render_sized(&device, &queue, &mut renderer, &content(at), far);
+        let window: Vec<[u8; 4]> = (0..h)
+            .flat_map(|y| {
+                let full = &full;
+                (0..w).map(move |x| full[((at.1 as u32 + y) * far.0 + at.0 as u32 + x) as usize])
+            })
+            .collect();
+        for (shift, whole_tiles) in [(at, true), ((at.0 - 31.0, at.1 - 31.0), false)] {
+            // The slice moved by `shift` as `Scene::append` moves it (the
+            // window's encoding appended under a translation).
+            let mut moved = Scene::new();
+            moved.append(&content(at), Some(Affine::translate((-shift.0, -shift.1))));
+            let (ox, oy) = ((at.0 - shift.0) as u32, (at.1 - shift.1) as u32);
+            let small = render_sized(&device, &queue, &mut renderer, &moved, (ox + w, oy + h));
+            let got: Vec<[u8; 4]> = (0..h)
+                .flat_map(|y| {
+                    let small = &small;
+                    (0..w).map(move |x| small[((oy + y) * (ox + w) + ox + x) as usize])
+                })
+                .collect();
+            let differ = got.iter().zip(&window).filter(|(a, b)| a != b).count();
+            let worst = got
+                .iter()
+                .zip(&window)
+                .map(|(a, b)| (0..4).map(|c| (a[c] as i32 - b[c] as i32).abs()).max().unwrap())
+                .max()
+                .unwrap();
+            eprintln!("PHASE at {at:?} shift {shift:?} whole_tiles={whole_tiles}: {differ} differ, worst {worst}");
+        }
+    }
+    assert_eq!(*errors.lock().unwrap(), Vec::<String>::new());
+}
