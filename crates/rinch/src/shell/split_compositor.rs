@@ -20,9 +20,13 @@
 //!    **once**, to the surface and what is over it together, is what the
 //!    in-scene render does (they share the ancestors' clip layer); applying it
 //!    to each separately would conflate on an antialiased ring (the #1887
-//!    review). What is left is D8's halo, `c(1 − c)` times the difference
-//!    between what the clip holds and what is behind it, scaled by how much
-//!    of below the surface and `above_in` leave showing.
+//!    review). What is left is D8's halo, `c(1 − c)(1 − k)·|I − O|`: `I`
+//!    everything painted inside the ancestors' clips beneath the surface,
+//!    over `O`, what lies behind the clips; `k` how much of what is beneath
+//!    the surface shows through it and `above_in`. It is zero when nothing is
+//!    painted inside the clips beneath the surface: a card's own background
+//!    lies behind its clip (rinch-dom paints it before it opens the clip), so
+//!    the common card is exact.
 //!
 //! Every blend is done **in the shader, in f32, from texel loads**, with no
 //! blend state, and each pixel of the target is written once. The surface's
@@ -503,6 +507,34 @@ mod subtract_tests {
 
     fn area(rects: &[(u32, u32, u32, u32)]) -> u32 {
         rects.iter().map(|r| r.2 * r.3).sum()
+    }
+
+    /// Every pixel of `window` outside `holes` covered once, none inside.
+    fn assert_once(window: (u32, u32, u32, u32), holes: &[(u32, u32, u32, u32)]) {
+        let rects = subtract(window, holes);
+        for y in 0..window.3 {
+            for x in 0..window.2 {
+                let n = rects
+                    .iter()
+                    .filter(|r| x >= r.0 && x < r.0 + r.2 && y >= r.1 && y < r.1 + r.3)
+                    .count();
+                let hole = holes
+                    .iter()
+                    .any(|h| x >= h.0 && x < h.0 + h.2 && y >= h.1 && y < h.1 + h.3);
+                assert_eq!(n, usize::from(!hole), "({x}, {y}) with holes {holes:?}");
+            }
+        }
+    }
+
+    /// Regions side by side, and a second region spanning several of the
+    /// pieces the first left: each piece's left and right spans are clamped
+    /// to its own rows, or the rows above and below are written twice.
+    #[test]
+    fn regions_spanning_the_pieces_of_others_leave_each_pixel_once() {
+        let window = (0, 0, 96, 64);
+        assert_once(window, &[(10, 10, 20, 20), (40, 10, 20, 20)]);
+        assert_once(window, &[(10, 10, 20, 20), (40, 0, 20, 40)]);
+        assert_once(window, &[(30, 20, 20, 10), (10, 5, 70, 50)]);
     }
 
     #[test]

@@ -16,11 +16,16 @@
 //! - outside R, within one Vello tile (16 px) of it, where the content
 //!   painted after the surface is fractional, or (amendment) an ancestor
 //!   clip's edge is: one level;
-//! - a transparent window, where the in-scene pixel's alpha is below 255:
-//!   one level;
-//! - inside R, on an ancestor clip's antialiased edge: D8's bound,
-//!   c(1 − c) × the largest channel difference between what the clip holds
-//!   and what is behind it, plus one level.
+//! - a transparent window, inside R or within a tile of it, where the
+//!   in-scene pixel's alpha is below 255: one level (inside R below is read
+//!   back from 8 bits of straight alpha and blended again; near R the
+//!   inverse clip's blend stack holds below's translucent backdrop in 8 bits;
+//!   elsewhere the compositor writes below as the present pass does, exact);
+//! - inside R, on an ancestor clip's antialiased edge: D8's bound as restated
+//!   on 2026-10-25, c(1 − c)(1 − k) × |I − O| in premultiplied RGBA, plus one
+//!   level: `I` everything painted inside the ancestors' clips beneath the
+//!   surface, over `O`, what lies behind them; `k` how much of what is
+//!   beneath the surface shows through it and `above_in`.
 //!
 //! The classes are computed from renders of the case's own parts, not from a
 //! blanket tolerance, so a regression anywhere else fails the test.
@@ -197,6 +202,11 @@ struct Case {
     above_out: bool,
     /// The window renders over transparent, not white.
     transparent: bool,
+    /// Painted before the first ancestor clip opens (an ancestor's own
+    /// background: rinch-dom paints it before it pushes its overflow clip).
+    under: Paint,
+    /// Painted inside the first ancestor clip, before the others open.
+    between: Paint,
 }
 
 fn texture(device: &Device, (w, h): (u32, u32), usage: TextureUsages) -> Texture {
@@ -313,9 +323,15 @@ struct Split {
     surface_alone: Vec<[u8; 4]>,
     own_alone: Vec<[u8; 4]>,
     ancestors_alone: Vec<[u8; 4]>,
-    /// The before-content, unclipped, over the base: what an ancestor clip
-    /// holds, against the base behind it (D8).
-    before_unclipped: Vec<[u8; 4]>,
+    /// The surface under its own clips only (no ancestors'): its alpha
+    /// times its own coverage, `s` of D8.
+    surface_own: Vec<[u8; 4]>,
+    /// D8's `I` and `O`, premultiplied: everything painted inside the
+    /// ancestors' clips beneath the surface (between them and before it),
+    /// unclipped, over `O`; and `O`, what lies behind the clips (painted
+    /// before the first opens: an ancestor's own background) over the base.
+    inside: Vec<[u8; 4]>,
+    behind: Vec<[u8; 4]>,
 }
 
 /// How far a split may move window pixel `(x, y)` from in-scene (D10 and its
@@ -326,9 +342,17 @@ fn allowance(case: &Case, split: &Split, want: [u8; 4], x: u32, y: u32) -> i32 {
     let p = (x as f64 + 0.5, y as f64 + 0.5);
     let fractional = |a: u8| a != 0 && a != 255;
     let i = (y * W + x) as usize;
+    // Each class is one more 8-bit rounding than in-scene's, so where several
+    // reach a pixel their levels add: the allowance is the count of classes
+    // reaching it (plus D8's halo), not the largest.
     let mut allow = 0;
-    if case.transparent && want[3] < 255 {
-        allow = 1;
+    // A transparent window, where the window is not opaque: inside R below is
+    // read back from 8 bits of straight alpha and blended again, where
+    // in-scene blends it in float; within a tile of R, the inverse clip's
+    // blend stack holds below's translucent backdrop in 8 bits. Elsewhere the
+    // compositor writes below as the present pass would: exact.
+    if case.transparent && want[3] < 255 && r.inflate(TILE, TILE).contains(p) {
+        allow += 1;
     }
     if r.contains(p) {
         let local = ((y - ry) * rw + (x - rx)) as usize;
@@ -336,27 +360,35 @@ fn allowance(case: &Case, split: &Split, want: [u8; 4], x: u32, y: u32) -> i32 {
         let resampled = case.image.as_coeffs()[..4] != [1.0, 0.0, 0.0, 1.0]
             || case.image.as_coeffs()[4..].iter().any(|v| v.fract() != 0.0);
         let above = |a: &Option<Vec<[u8; 4]>>| a.as_ref().is_some_and(|a| fractional(a[local][3]));
-        if above(&split.above_in) || above(&split.above_out) || fractional(split.own_alone[i][3]) {
-            allow = allow.max(1);
-        }
+        // Each above slice is stored in 8 bits, then blended.
+        allow += i32::from(above(&split.above_in)) + i32::from(above(&split.above_out));
+        // The own mask is stored in 8 bits.
+        allow += i32::from(fractional(split.own_alone[i][3]));
+        // The amendment: a translucent or resampled surface pixel.
         if D10_AMENDMENT && (fractional(surface) || (resampled && surface != 0)) {
-            allow = allow.max(1);
+            allow += 1;
         }
+        // D8 (restated 2026-10-25): on an ancestor's ring, c(1 − c)(1 − k)
+        // times |I − O| in premultiplied RGBA, k how much of what is beneath
+        // the surface shows through it and above_in; plus the mask's level.
         let c = split.ancestors_alone[i][3];
         if fractional(c) {
             let c = c as f64 / 255.0;
-            let base = if case.transparent { [0u8; 4] } else { [255; 4] };
-            let delta = (0..3)
-                .map(|k| (split.before_unclipped[i][k] as i32 - base[k] as i32).abs())
+            let s = split.surface_own[i][3] as f64 / 255.0;
+            let a = split
+                .above_in
+                .as_ref()
+                .map_or(0.0, |px| px[local][3] as f64 / 255.0);
+            let k = (1.0 - s) * (1.0 - a);
+            let delta = (0..4)
+                .map(|ch| (split.inside[i][ch] as i32 - split.behind[i][ch] as i32).abs())
                 .max()
                 .unwrap() as f64;
-            allow = allow.max((c * (1.0 - c) * delta).ceil() as i32 + 1);
+            allow += (c * (1.0 - c) * (1.0 - k) * delta).ceil() as i32 + 1;
         }
-    } else if r.inflate(TILE, TILE).contains(p)
-        && (fractional(split.after_alone[i][3])
-            || (D10_AMENDMENT && fractional(split.ancestors_alone[i][3])))
-    {
-        allow = allow.max(1);
+    } else if r.inflate(TILE, TILE).contains(p) {
+        allow += i32::from(fractional(split.after_alone[i][3]));
+        allow += i32::from(D10_AMENDMENT && fractional(split.ancestors_alone[i][3]));
     }
     allow
 }
@@ -494,8 +526,12 @@ fn run(case: &Case, fault: Fault) -> (Vec<[u8; 4]>, Split) {
         }
     };
     let mut in_scene = Scene::new();
-    for c in &case.ancestors {
+    (case.under)(&mut in_scene, id);
+    for (n, c) in case.ancestors.iter().enumerate() {
         c.push(&mut in_scene, id);
+        if n == 0 {
+            (case.between)(&mut in_scene, id);
+        }
     }
     (case.before)(&mut in_scene, id);
     surface_draw(&mut in_scene);
@@ -504,19 +540,26 @@ fn run(case: &Case, fault: Fault) -> (Vec<[u8; 4]>, Split) {
         in_scene.pop_layer();
     }
     (case.after_out)(&mut in_scene, id);
-    let want_straight = read(
+    // In-scene as a window presents it to a premultiplied surface: Vello's
+    // straight output through the present pass's premultiply (the
+    // composited target is premultiplied). For an opaque window the two
+    // are the same pixels.
+    let in_scene_ui = render(&device, &queue, &mut vello2, &in_scene, (W, H), base);
+    let presented = texture(
         &device,
-        &queue,
-        &render(&device, &queue, &mut vello2, &in_scene, (W, H), base),
+        (W, H),
+        TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
     );
-    // The composited target is premultiplied; Vello's output is straight.
-    let want: Vec<[u8; 4]> = want_straight
-        .iter()
-        .map(|p| {
-            let m = |c: u8| ((c as u32 * p[3] as u32 + 127) / 255) as u8;
-            [m(p[0]), m(p[1]), m(p[2]), p[3]]
-        })
-        .collect();
+    let mut encoder = device.create_command_encoder(&Default::default());
+    super::compositor::LayerCompositor::new(&device, TextureFormat::Rgba8Unorm).present(
+        &device,
+        &mut encoder,
+        &in_scene_ui,
+        &presented.create_view(&Default::default()),
+        super::compositor::PresentAlpha::Premultiply,
+    );
+    queue.submit(Some(encoder.finish()));
+    let want = read(&device, &queue, &presented);
 
     // The class renders: the surface alone under all its clips, its own
     // coverage, the ancestors' coverage, the before-content unclipped.
@@ -536,6 +579,20 @@ fn run(case: &Case, fault: Fault) -> (Vec<[u8; 4]>, Split) {
             &queue,
             &mut vello2,
             &alone,
+            (W, H),
+            Color::TRANSPARENT,
+        ),
+    );
+    let mut own_only = Scene::new();
+    surface_draw(&mut own_only);
+    let surface_own = read(
+        &device,
+        &queue,
+        &render(
+            &device,
+            &queue,
+            &mut vello2,
+            &own_only,
             (W, H),
             Color::TRANSPARENT,
         ),
@@ -583,9 +640,22 @@ fn run(case: &Case, fault: Fault) -> (Vec<[u8; 4]>, Split) {
         &ancestors_scene(id),
         Color::TRANSPARENT,
     );
-    let mut unclipped = Scene::new();
-    (case.before)(&mut unclipped, id);
-    let before_unclipped = render_read(&device, &queue, &mut vello, &unclipped, base);
+    let premultiplied = |px: Vec<[u8; 4]>| -> Vec<[u8; 4]> {
+        px.iter()
+            .map(|p| {
+                let m = |c: u8| ((c as u32 * p[3] as u32 + 127) / 255) as u8;
+                [m(p[0]), m(p[1]), m(p[2]), p[3]]
+            })
+            .collect()
+    };
+    let mut behind = Scene::new();
+    (case.under)(&mut behind, id);
+    let behind = premultiplied(render_read(&device, &queue, &mut vello, &behind, base));
+    let mut inside = Scene::new();
+    (case.under)(&mut inside, id);
+    (case.between)(&mut inside, id);
+    (case.before)(&mut inside, id);
+    let inside = premultiplied(render_read(&device, &queue, &mut vello, &inside, base));
     let mut after = Scene::new();
     for c in &case.ancestors {
         c.push(&mut after, id);
@@ -602,8 +672,12 @@ fn run(case: &Case, fault: Fault) -> (Vec<[u8; 4]>, Split) {
     let not_r = inverse(window, r);
     let inverse_on = fault != Fault::NoInverse;
     let mut below = Scene::new();
-    for c in &case.ancestors {
+    (case.under)(&mut below, id);
+    for (n, c) in case.ancestors.iter().enumerate() {
         c.push(&mut below, id);
+        if n == 0 {
+            (case.between)(&mut below, id);
+        }
     }
     (case.before)(&mut below, id);
     if inverse_on {
@@ -752,7 +826,9 @@ fn run(case: &Case, fault: Fault) -> (Vec<[u8; 4]>, Split) {
             surface_alone,
             own_alone,
             ancestors_alone,
-            before_unclipped,
+            surface_own,
+            inside,
+            behind,
         },
     )
 }
@@ -818,6 +894,8 @@ fn plain() -> Case {
         above_in: false,
         above_out: false,
         transparent: false,
+        under: nothing,
+        between: nothing,
     }
 }
 
@@ -1225,4 +1303,112 @@ fn split_composite_cost_probe() {
             );
         }
     }
+}
+
+// ── The #1887 re-review's cases ────────────────────────────────────────────
+
+/// A card's own background, painted before its clip opens.
+fn card_background(s: &mut Scene, t: Affine) {
+    s.fill(
+        Fill::NonZero,
+        t,
+        SLATE,
+        None,
+        &RoundedRect::new(14.3, 6.6, 52.7, 44.2, 10.0),
+    );
+}
+
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_rx_rounded_cards_and_transparent_windows() {
+    for case in [
+        Case {
+            name: "RX1 transparent window, card, translucent frame, controls",
+            ancestors: card(),
+            before: nothing,
+            texel: texel_straight,
+            straight: true,
+            after_in: controls,
+            above_in: true,
+            transparent: true,
+            ..plain()
+        },
+        Case {
+            name: "RX2 transparent window, card, slate in its clip",
+            ancestors: card(),
+            before: slate,
+            transparent: true,
+            ..plain()
+        },
+        Case {
+            name: "RX3 transparent window, card, a wash in its clip",
+            ancestors: card(),
+            before: wash,
+            transparent: true,
+            ..plain()
+        },
+        Case {
+            // The common card: its background behind its clip, nothing in
+            // it beneath the surface. D8's halo is zero.
+            name: "RX4 card with its own background, controls",
+            ancestors: card(),
+            before: nothing,
+            under: card_background,
+            after_in: controls,
+            above_in: true,
+            ..plain()
+        },
+        Case {
+            name: "RX7 transparent window, card, translucent frame, a wash in its clip",
+            ancestors: card(),
+            before: wash,
+            texel: texel_straight,
+            straight: true,
+            transparent: true,
+            ..plain()
+        },
+    ] {
+        assert_d10(&case);
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_rx_content_between_nested_clips() {
+    for case in [
+        Case {
+            name: "RX5 rounded card, slate between, a whole-pixel scroller inside",
+            ancestors: vec![card()[0], Clip::Rect(Rect::new(8.0, 4.0, 70.0, 60.0))],
+            before: nothing,
+            between: slate,
+            ..plain()
+        },
+        Case {
+            name: "RX6 two rounded clips, slate between, the page inside",
+            ancestors: vec![
+                card()[0],
+                Clip::Rounded(RoundedRect::new(14.8, 7.1, 52.2, 43.7, 9.5)),
+            ],
+            before: page,
+            between: slate,
+            ..plain()
+        },
+    ] {
+        assert_d10(&case);
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_rx_region_past_the_window() {
+    // R reaches past the window's right and bottom edges: the compositor
+    // clamps it to the target.
+    assert_d10(&Case {
+        name: "RX8 R past the right and bottom",
+        r: (60, 40, 40, 26),
+        image: Affine::translate((60.0, 40.0)),
+        // The sidebar after it is over it now.
+        above_out: true,
+        ..plain()
+    });
 }

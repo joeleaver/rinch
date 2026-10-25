@@ -324,8 +324,8 @@ jobs:
             fi
           }
           # The render-surface, compositor and partial-frame fixtures, and
-          # the split oracles (`gpu_split_*`, #1865: 22 compositor, 3 runtime).
-          run 44 -p rinch --features gpu,video --lib -- \
+          # the split oracles (`gpu_split_*`, #1865: 25 compositor, 3 runtime).
+          run 47 -p rinch --features gpu,video --lib -- \
             --ignored gpu_ --skip gpu_hover_probe --test-threads=1
           # #1798's gradients and masks against Chrome's pixels.
           run 1 -p rinch --features gpu,video --test gpu_gradient_mask_1798 -- \

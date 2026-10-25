@@ -289,11 +289,8 @@ written once (below is drawn in scissored strips around the regions).
      clip layer. Applying it to each separately (the first version of PR 1)
      conflates on an antialiased ring: with a control bar over a video in a
      rounded card, pixels on the ring inside R were up to 66 levels off
-     (#1887 review). Applied once, the only error left on the ring is
-     `c(1 − c) · (I − O) · (1 − (1 − s.a)(1 − a.a))`, where `I` is what the
-     clip holds beneath the surface, `O` what is behind the clip, `s` the
-     surface and `a` `above_in`: within D8's bound as decided, and zero
-     where the clipping ancestor paints no background.
+     (#1887 review). Applied once, the only error left on the ring is D8's
+     bound as restated: `c(1 − c)(1 − k) · |I − O|`.
    - **Opacity:** none. A surface inside an opacity group is refused (D3a).
    - **Transform:** any affine in the shader; the painter refuses anything
      but translate and axis-aligned scale (D4a).
@@ -500,8 +497,8 @@ bit-equal**, so a regression cannot hide inside a blanket tolerance.
 | Translucent surface pixels (texel alpha × coverage strictly between 0 and 1) | ≤ 1/255 (D10 amendment: the surface blended over below in a different float order from Vello's) |
 | Every pixel a **resampled** surface covers (scaled, or at a fractional offset) | ≤ 1/255 (D10 amendment: rounding ties broken by float order) |
 | An ancestor clip's antialiased edge outside R, within one tile of it | ≤ 1/255 (D10 amendment: the ancestor's layer through the 8-bit blend stack) |
-| Transparent window, pixel with alpha < 255 | ≤ 1/255 (below is stored straight, then premultiplied) |
-| AA ring of an **ancestor** clip that crosses R | D8's bound, c(1 − c) × the difference between what the clip holds and what is behind it, plus one level |
+| Transparent window, inside R or within one tile of it, pixel with alpha < 255 | ≤ 1/255 (inside R below is read back from 8 bits of straight alpha and blended again; near R the inverse clip's blend stack holds below's translucent backdrop in 8 bits; elsewhere the compositor's premultiplication is the present pass's, exact) |
+| AA ring of an **ancestor** clip that crosses R | D8's bound as restated, c(1 − c)(1 − k)·\|I − O\| in premultiplied RGBA, plus one level |
 
 ### Cases
 
@@ -649,6 +646,29 @@ rounded clipping parent have the same artifact.
 
 - **a.** Accept it. The oracle pins the bound on ring pixels, and bit
   equality where the ancestor has no background. *(recommended)*
+
+**Restated 2026-10-25 (a wording correction, not a new decision; same form,
+same size).** The #1887 re-review derived the error independently and found
+the "zero" condition above backwards: rinch-dom paints an element's
+background *before* it opens its overflow clip, so a card's own background
+lies **behind** the clip, with the page. The bound, in premultiplied RGBA:
+
+```text
+c(1 − c) · (1 − k) · |I − O|
+```
+
+- `I`: everything painted inside the ancestors' clips beneath the surface
+  (between nested clips included), composited over `O`;
+- `O`: what lies behind the clips (a card's own background among it);
+- `k = (1 − s)(1 − a)`: how much of what is beneath the surface shows
+  through the surface (`s`, its alpha times its own coverage) and `above_in`
+  (`a`).
+
+It is zero when nothing is painted inside the clips beneath the surface, so
+the common card, background and all, is exact (the re-review measured 0
+pixels); a card holding the page inside its clip, with no background of its
+own, is the nonzero case. The compositor applies the ancestors' coverage
+once, which is what makes the error this and no larger.
 - **b.** Fall back whenever such a ring crosses R. Exact, but it sends
   "video in a rounded card" to in-scene, one of the most common layouts.
 
