@@ -50,7 +50,7 @@ jobs:
   # its first parent, the `main` tip it was merged onto, as `perf.yml` reads it.
   changes:
     if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'batch/')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     outputs:
@@ -79,7 +79,7 @@ jobs:
   book:
     needs: changes
     if: needs.changes.outputs.book == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -100,7 +100,7 @@ jobs:
 
   build:
     if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'batch/')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -111,7 +111,7 @@ jobs:
         with:
           packages: >-
             libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev
-            libpango1.0-dev libgdk-pixbuf2.0-dev libasound2-dev libxdo-dev
+            libpango1.0-dev libgdk-pixbuf-2.0-dev libasound2-dev libxdo-dev
             libmpv-dev
 
       - name: Install Rust toolchain
@@ -188,7 +188,7 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
     steps:
       - name: Deploy to GitHub Pages

@@ -101,7 +101,7 @@ jobs:
   test:
     name: test (${{ matrix.shard }})
     if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'batch/')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       # One shard failing says nothing about the others; let them all finish.
       fail-fast: false
@@ -213,7 +213,7 @@ jobs:
         with:
           packages: >-
             libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev
-            libpango1.0-dev libgdk-pixbuf2.0-dev libxdo-dev libmpv-dev
+            libpango1.0-dev libgdk-pixbuf-2.0-dev libxdo-dev libmpv-dev
 
       - name: Install Rust toolchain
         id: rust
@@ -264,7 +264,7 @@ jobs:
   test-gpu:
     name: test-gpu (lavapipe)
     if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'batch/')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       WGPU_BACKEND: vulkan
@@ -285,7 +285,7 @@ jobs:
         with:
           packages: >-
             libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev
-            libpango1.0-dev libgdk-pixbuf2.0-dev libxdo-dev libmpv-dev
+            libpango1.0-dev libgdk-pixbuf-2.0-dev libxdo-dev libmpv-dev
             mesa-vulkan-drivers vulkan-tools
 
       - name: Check the Vulkan device is lavapipe
@@ -323,8 +323,9 @@ jobs:
               exit 1
             fi
           }
-          # The render-surface, compositor and partial-frame fixtures.
-          run 19 -p rinch --features gpu,video --lib -- \
+          # The render-surface, compositor and partial-frame fixtures, and
+          # the split compositor's oracle (`gpu_split_*`, #1865: 25).
+          run 44 -p rinch --features gpu,video --lib -- \
             --ignored gpu_ --skip gpu_hover_probe --test-threads=1
           # #1798's gradients and masks against Chrome's pixels.
           run 1 -p rinch --features gpu,video --test gpu_gradient_mask_1798 -- \
@@ -335,7 +336,7 @@ jobs:
             --ignored gpu_ --test-threads=1
 
   clippy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -346,7 +347,7 @@ jobs:
         with:
           packages: >-
             libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev
-            libpango1.0-dev libgdk-pixbuf2.0-dev libxdo-dev libmpv-dev
+            libpango1.0-dev libgdk-pixbuf-2.0-dev libxdo-dev libmpv-dev
 
       - name: Install Rust toolchain
         id: rust
@@ -444,7 +445,7 @@ jobs:
   # automerge -> uuid -> getrandom refused to build for wasm32 unless a *consuming app*
   # turned on a randomness feature. yrs needs no such shim.
   clippy-wasm:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -548,7 +549,7 @@ jobs:
   # equivalent, so they're now gated `cfg(not(target_os = "android"))` too,
   # matching `disarm_log` itself — and this job runs `--all-targets` for real.
   clippy-android:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -591,7 +592,7 @@ jobs:
   test-wasm:
     # Slow: batches, `main` and dispatches only (see the note under `on:`).
     if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'batch/')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -736,7 +737,7 @@ jobs:
   # Library targets only: `--all-targets` does not compile rinch's lib-test for
   # Android yet (#793).
   check-android:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -771,7 +772,7 @@ jobs:
           done
 
   fmt:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
