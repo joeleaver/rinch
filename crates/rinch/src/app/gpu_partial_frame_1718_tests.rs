@@ -226,7 +226,7 @@ fn build_scene_after_a_partial_frame_encodes_the_whole_document() {
 #[test]
 #[ignore]
 fn gpu_hover_probe() {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
             .expect("adapter");
@@ -552,7 +552,7 @@ fn readback(
 #[ignore]
 fn gpu_partial_frames_match_a_full_render() {
     use crate::shell::desktop::{PartialFrame, render_partial};
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
             .unwrap();

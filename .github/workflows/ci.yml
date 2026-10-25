@@ -13,8 +13,8 @@ on:
 
 # Batched merges (docs/internals/ci.md). An ordinary pull request into `main` (a
 # *component* PR) runs only the fast jobs: `fmt`, `clippy`, `clippy-wasm`,
-# `clippy-android` and `check-android`. The slow ones (the `test` shards and
-# `test-wasm`) run on a pull request whose head branch starts with `batch/`, on
+# `clippy-android` and `check-android`. The slow ones (the `test` shards,
+# `test-wasm` and `test-gpu`) run on a pull request whose head branch starts with `batch/`, on
 # every push to `main`, and on a manual dispatch. The lead merges several
 # reviewed component PRs into one `batch/YYYY-MM-DD-N` branch and opens one PR
 # for it, so the full suite runs once per batch rather than once per push to
@@ -227,6 +227,112 @@ jobs:
 
       - name: Run tests
         run: ${{ matrix.run }}
+
+  # The `#[ignore]`d GPU pixel tests (#1865 D9), on lavapipe: Mesa's software
+  # Vulkan driver, so a runner with no GPU still has a Vulkan adapter. They
+  # render real Vello scenes and compositor passes through wgpu and read the
+  # pixels back; every other job skips them (`#[ignore]`, "needs a GPU
+  # adapter"), so until this job they ran only on a developer's machine.
+  #
+  # A batch / `main` job like the `test` shards (same job-level `if`).
+  #
+  # The adapter is pinned, not hoped for. `VK_ICD_FILENAMES` (set by the
+  # check step to the ICD file the package installed, `lvp_icd.json` or
+  # `lvp_icd.x86_64.json` by Mesa version) makes the Vulkan loader see
+  # lavapipe alone, and `WGPU_BACKEND=vulkan` makes wgpu
+  # enumerate Vulkan alone — the fixtures build their instance with
+  # `InstanceDescriptor::from_env_or_default()` so that they read it. With no
+  # lavapipe there is then no adapter at all, and every fixture fails on its
+  # `.expect("a GPU adapter")`, instead of wgpu falling back to Mesa's GL
+  # (llvmpipe) and testing something else. The first step checks the device
+  # before anything is built.
+  #
+  # The counts are exact. A filtered `cargo test` that matches nothing prints
+  # `0 passed` and exits 0, and a fixture whose `cfg` went false compiles to
+  # nothing; either would turn this job into a green no-op. So each run states
+  # how many tests it passes, and a GPU fixture added or removed changes the
+  # number here in the same PR.
+  #
+  # `a_later_window_presents_with_the_shared_device` (`render_surface`) is
+  # `#[ignore]`d for an adapter too but also opens a window, which a runner
+  # has no display for; `gpu_` does not match it. `gpu_hover_probe` is a
+  # timing printout, not a test.
+  #
+  # Its own cache key: `-p rinch --features gpu,video` and `-p rinch-dom
+  # --no-default-features` resolve features differently from the `test`
+  # shards' `--workspace`, so their dependency artifacts would not match.
+  test-gpu:
+    name: test-gpu (lavapipe)
+    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'batch/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      WGPU_BACKEND: vulkan
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - name: Install system dependencies
+        # The desktop stack's packages, plus lavapipe (mesa-vulkan-drivers)
+        # and vulkaninfo (vulkan-tools).
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev
+            libpango1.0-dev libgdk-pixbuf2.0-dev libxdo-dev libmpv-dev
+            mesa-vulkan-drivers vulkan-tools
+
+      - name: Check the Vulkan device is lavapipe
+        run: |
+          icd=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json 2>/dev/null | head -n 1)
+          [ -n "$icd" ] || { echo "::error::no lavapipe ICD in /usr/share/vulkan/icd.d"; exit 1; }
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+          VK_ICD_FILENAMES=$icd vulkaninfo --summary | tee vulkan-summary.txt
+          grep -Eq 'driverName += llvmpipe' vulkan-summary.txt \
+            || { echo "::error::the Vulkan loader shows no lavapipe (llvmpipe) device"; exit 1; }
+
+      - name: Install Rust toolchain
+        id: rust
+        uses: ./.github/actions/rust-toolchain
+
+      - name: Cache cargo (dependencies)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-gpu
+          save-if: ${{ github.event_name == 'push' }}
+
+      - name: Run the GPU tests
+        run: |
+          set -euo pipefail
+          # run <expected passed> <cargo test args...>: the run must pass and
+          # pass exactly that many tests (summed over its `test result:` lines).
+          run() {
+            local want=$1; shift
+            cargo test "$@" 2>&1 | tee gpu-test.log
+            local got
+            got=$(sed -nE 's/^test result: .* ([0-9]+) passed;.*/\1/p' gpu-test.log \
+                  | awk '{ s += $1 } END { print s + 0 }')
+            if [ "$got" -ne "$want" ]; then
+              echo "::error::cargo test $* passed $got tests; this job expects $want (update the count in ci.yml if a GPU fixture was added or removed)"
+              exit 1
+            fi
+          }
+          # The render-surface, compositor and partial-frame fixtures.
+          run 19 -p rinch --features gpu,video --lib -- \
+            --ignored gpu_ --skip gpu_hover_probe --test-threads=1
+          # #1798's gradients and masks against Chrome's pixels.
+          run 1 -p rinch --features gpu,video --test gpu_gradient_mask_1798 -- \
+            --ignored --test-threads=1
+          # The image-brush background path, which is cfg'd on the software
+          # painter being off (the `embed` build).
+          run 2 -p rinch-dom --no-default-features --test background_tiling_embed_tests -- \
+            --ignored gpu_ --test-threads=1
 
   clippy:
     runs-on: ubuntu-latest
