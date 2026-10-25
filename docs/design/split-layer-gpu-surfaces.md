@@ -1,7 +1,7 @@
 # Split-layer GPU surfaces
 
 **Status:** Decided (issue #1865). Joe accepted D1–D9 as recommended and chose
-D10 (the oracle's tolerance), 2026-10-23.
+D10 (the oracle's tolerance) and its amendment, 2026-10-23.
 Implementation follows the PR sequence at the end.
 **Scope:** the desktop GPU window (`gpu` feature, Vello on wgpu). A
 `RenderSurface` GPU frame and a GPU-path video. Software, web and the embed
@@ -183,8 +183,14 @@ When the split happens:
      left of R lost their after-content, about 24 levels off), where the
      backwards-wound non-zero path is right on lavapipe and RADV alike
      (*Risks* 2).
-   - **Above:** a new scene for this surface, translated by −R.origin. The
-     open clips are replayed into it, then R is pushed as a clip.
+   - **Above:** two scenes for this surface, translated by −R.origin.
+     `above_in` holds what is painted while the clips open at the split
+     are still open, **without** those clips (the compositor applies their
+     coverage once, to the surface and `above_in` together, as the in-scene
+     render does; see *Compositor*); `above_out` holds what is painted
+     after they close. Content painted while only some of them have closed,
+     with an antialiased ring still open over R, would need a third level:
+     the painter taints the slice instead (D5's repaint), which is rare.
 
 ### Routing after the split
 
@@ -244,43 +250,73 @@ frame is painted again with the surface in-scene. See D5.
 
 ## Compositor
 
-The new compositor work, in `shell/compositor.rs`, is three passes plus
-present. GameViewport base layers (#1866) still come first, unchanged.
+`shell/split_compositor.rs` (`SplitCompositor`, PR 1). GameViewport base
+layers (#1866) still come first, unchanged.
 
-1. **Below:** `overlay_ui` as today, which premultiplies Vello's straight
-   alpha and blends over. It uses `Clear` when there is no base layer.
-2. **Surface:** a new `blit_surface` pass for each split surface, in paint
-   order.
-   - It blends source-over onto below. `blit_layer_view` *replaces* today,
-     because the layer was the bottom of the stack. A split surface is
-     drawn over the element's own background, so a transparent texel must
-     show that background, exactly as in-scene.
-   - The image rect is the fitted rect (`object-fit: contain`, from
-     `fit_image`), sampled bilinearly at pixel centres. This is the same
-     convention `draw_gpu_image` uses with `centre_sampling` (#1861).
-   - The texture's alpha is premultiplied in the shader when its
-     `alpha_type` says straight.
-   - **Clip chain:** a scissor rect when the chain is pixel-aligned
-     rectangles. Otherwise a multiply by the mask texture, which Vello
-     renders from the mask scene. The mask is re-rendered only when the
-     mask scene's inputs change (a hash of the replayed clips), which
-     happens on scroll, resize or a radius transition. Those are frames
-     that re-render below anyway.
-   - **Opacity:** none. A surface inside an opacity group is refused (D3),
-     so the blit never applies one. Opacity is in the issue's compositor
-     list. With D3a it moves to the fallback list, and only D3b or D3c
-     bring it back.
-   - **Transform:** an axis-aligned scale and translate is applied when
-     mapping the image rect into R. Anything else is refused (D4).
-3. **Above:** premultiplied over, limited to R (a viewport-limited
-   `overlay_ui`). It is skipped when the slice is empty.
-4. **Present:** `present_step` as today. `presented_texture` (#1799) must
+One render pass over the composited target, with **no blend state**: every
+blend is done in the shader, in f32, from texel loads, and each pixel is
+written once (below is drawn in scissored strips around the regions).
+
+1. **`fs_below`**, the target outside every R: below, premultiplied.
+2. **`fs_surface`**, scissored to R, once per split surface (they overlap
+   nothing, D7). For each pixel, with `∘` premultiplied source-over:
+   ```text
+   X   = above_in ∘ (surface · own ∘ below)
+   Y   = mix(below, X, ancestors)
+   out = above_out ∘ Y
+   ```
+   - **Source-over onto below**, so a transparent texel shows the element's
+     own background, exactly as in-scene.
+   - **The sample is Vello's.** The shader repeats `fine.wgsl`'s image arm
+     (medium quality): the image-to-device transform as Vello encodes it
+     (the fill's transform times `centre_sampling`'s brush transform, cast
+     to f32), its inverse as `transform_inverse` computes it, the pixel's
+     top-left corner mapped, the clamp, the bilinear quad and `mix` in the
+     same order, then `rgba · (1 − fg.a) + fg`. At 1:1 on whole pixels this
+     is bit-exact; resampled, it can land on the other side of a rounding
+     tie (D10 amendment).
+   - **Straight alpha** textures are premultiplied per texel, as Vello's
+     `maybe_premul_alpha` does.
+   - **Two coverages.** `own` is the surface's own: its image rect under its
+     inner radius and `object-fit` clip. `ancestors` is the clips open
+     around it. Each is a `Coverage::Rect` (every edge a whole-pixel rect
+     edge; 1 inside, 0 outside) or a `Coverage::Mask`, an R-sized texture
+     Vello renders (the clips replayed, a rect filled white). A mask is
+     re-rendered only when its inputs change: scroll, resize, a radius
+     transition, frames that re-render below anyway.
+   - **The ancestors' coverage is applied once**, to the surface and
+     `above_in` together, because in the scene they share the ancestors'
+     clip layer. Applying it to each separately (the first version of PR 1)
+     conflates on an antialiased ring: with a control bar over a video in a
+     rounded card, pixels on the ring inside R were up to 66 levels off
+     (#1887 review). Applied once, the only error left on the ring is
+     `c(1 − c) · (I − O) · (1 − (1 − s.a)(1 − a.a))`, where `I` is what the
+     clip holds beneath the surface, `O` what is behind the clip, `s` the
+     surface and `a` `above_in`: within D8's bound as decided, and zero
+     where the clipping ancestor paints no background.
+   - **Opacity:** none. A surface inside an opacity group is refused (D3a).
+   - **Transform:** any affine in the shader; the painter refuses anything
+     but translate and axis-aligned scale (D4a).
+3. **Present:** `present_step` as today. `presented_texture` (#1799) must
    treat a split frame as layered, so a screenshot reads the composited
    texture.
 
-The composited target is in the surface's format, which may be Bgra8, while
-Vello's textures are Rgba8Unorm. That is why steps 1 and 3 are passes, not
-copies, as `overlay_ui` is already.
+Why in the shader rather than with blend states: the hardware blend unit
+need not compute in f32, and a chain of blends rounds between steps; one
+shader expression rounds once, as Vello does.
+
+Measured (`split_composite_cost_probe`, release, Radeon 890M, wall time,
+median / p90 of 120, the UI unchanged so no Vello), against the old layer
+path (`blit_layer_view` + `overlay_ui` + the present copy):
+
+| ms | 1080p, 640×360 | 1080p, full | 4K, 640×360 | 4K, full |
+|---|--:|--:|--:|--:|
+| old layer path | 0.46 / 0.55 | 0.54 / 0.76 | 1.36 / 1.63 | 1.67 / 1.90 |
+| split, above empty | 0.47 / 0.73 | 0.58 / 0.80 | 1.32 / 1.49 | 1.76 / 2.06 |
+| split, above cached | 0.52 / 0.77 | 0.65 / 0.89 | 1.39 / 1.61 | 1.80 / 2.07 |
+
+(Before below skipped the regions, full-window 4K was 2.00 / 2.21 ms: the
+region was written twice.)
 
 ### Border, padding and background
 
@@ -406,11 +442,14 @@ bit-equal**, so a regression cannot hide inside a blanket tolerance.
 | Pixel class | Allowed difference |
 |---|---|
 | Every pixel not in a row below | **bit-equal** |
-| Translucent or antialiased after-content over the surface (inside R) | ≤ 1/255 per channel (the above slice is stored in 8 bits, then blended) |
+| Translucent or antialiased after-content over the surface (inside R), in either above slice | ≤ 1/255 per channel (the above slices are stored in 8 bits, then blended) |
 | Translucent or antialiased after-content outside R, within one 16-px tile of R's edge | ≤ 1/255 (Vello's blend stack in tiles the inverse clip's edge crosses) |
 | Fractional coverage of the surface's own clip chain (mask) | ≤ 1/255 (one extra 8-bit rounding) |
+| Translucent surface pixels (texel alpha × coverage strictly between 0 and 1) | ≤ 1/255 (D10 amendment: the surface blended over below in a different float order from Vello's) |
+| Every pixel a **resampled** surface covers (scaled, or at a fractional offset) | ≤ 1/255 (D10 amendment: rounding ties broken by float order) |
+| An ancestor clip's antialiased edge outside R, within one tile of it | ≤ 1/255 (D10 amendment: the ancestor's layer through the 8-bit blend stack) |
 | Transparent window, pixel with alpha < 255 | ≤ 1/255 (below is stored straight, then premultiplied) |
-| AA ring of an **ancestor** clip that crosses R | bounded by D8 |
+| AA ring of an **ancestor** clip that crosses R | D8's bound, c(1 − c) × the difference between what the clip holds and what is behind it, plus one level |
 
 ### Cases
 
@@ -444,7 +483,19 @@ never fails proves nothing:
 - a split composite with the above pass skipped must fail the overlay case;
 - a split that blits with `Replace` instead of over must fail the alpha
   case;
-- a below slice without the inverse-R clip must fail the straddling case.
+- a below slice without the inverse-R clip must fail the straddling case;
+- a coverage rect one pixel short, and an alpha type swapped;
+- the ancestors' coverage applied to the surface and `above_in` separately
+  must fail the rounded-card controls case.
+
+All in `gpu_split_controls_the_oracle_sees_each_fault`. PR 1 was also run
+against mutants of the compositor's shader (the #1887 review's 35, and eight
+on the reworked shader); every one is killed except four that are
+equivalent or within D10: `m05` (fraction taken from the clamped uv: equal
+wherever the image is not sampled past its edge, which the clamp makes
+equal), `m27` (`mix` operand order), `m29` (the matrix transposed: equal for
+the axis-aligned transforms D4a admits) and `m35` (the sample rounded to 8
+bits: within the resampling class).
 
 ### Where the oracle runs
 
@@ -573,6 +624,32 @@ every adapter in the above slice.
   tile neighbourhood, and stay bit-exact. A video with visible controls, a
   tooltip or a caption over it would lose the speed-up.
 
+**Amendment (decided, Joe, 2026-10-23).** Building the compositor showed
+three more places where slicing adds one rounding, each at most one level,
+each now a class of its own in the oracle (`D10_AMENDMENT` in
+`shell/split_compositor_1865_tests.rs`, which also lists the cases that need
+it):
+
+1. **Translucent surface pixels** (texel alpha × clip coverage strictly
+   between 0 and 1), whatever is beneath them. Where the content beneath is
+   itself translucent or antialiased, in-scene keeps it in float and below
+   stores it in 8 bits; over opaque content too, the blend lands on rounding
+   ties that the two shaders break differently (the #1887 review measured
+   96 one-level pixels over opaque slate). *Wording corrected 2026-10-23:
+   it first read as conditional on translucent content beneath; the class
+   the oracle allows was always the unconditional one.*
+2. **Resampled surfaces** (scaled, or at a fractional offset), every pixel
+   they cover: the compositor repeats Vello's arithmetic, but results on a
+   rounding tie (x.5) are broken by float order, which Vello's compute shader
+   and the compositor's fragment shader do not share. Half-even, half-up and
+   an explicit lerp were tried; none is exact. 1:1 at whole pixels is.
+3. **An ancestor clip's antialiased edge** within one tile outside R: the
+   inverse clip, inside the ancestor's clip layer, sends that layer's content
+   through Vello's 8-bit blend stack in those tiles.
+
+The alternative, falling back to in-scene for translucent and resampled
+surfaces, would have sent every letterboxed video in-scene.
+
 ## Risks
 
 1. **Registered but undrawn images. Resolved: free.** Vello 0.7 builds its
@@ -621,6 +698,21 @@ every adapter in the above slice.
    by reason) are unlisted, hence `0`, in documents without surfaces. Shell
    scenarios with a surface move, and the PR says why for each, per the
    baseline contract.
+
+9. **For PR 3, from the #1887 review.**
+   - **Transform precision when a scene is appended under a transform.**
+     Vello multiplies `append`'s transform into each encoded transform in
+     f32; an in-scene image appended that way is placed by an f32 product,
+     the split's by kurbo's f64 one cast once. The runtime appends the drag
+     ghost under a translation only; anything appended under a scale must
+     be routed with its product computed as Vello does, or refused.
+   - **A non-sRGB view.** `RenderSurface` textures carry an
+     `Rgba8UnormSrgb` view format; the compositor must be handed the plain
+     `Rgba8Unorm` view, or every texel is decoded from sRGB on load.
+   - **R clipped to the window.** `region` is `u32`: a surface partly above
+     or left of the window must have R clipped before the cast (the
+     compositor clamps to the target, which does not help a negative
+     origin).
 
 ## PR sequence
 
