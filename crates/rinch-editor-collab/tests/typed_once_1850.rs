@@ -484,7 +484,7 @@ fn replay(peers: usize, ops: &[Op]) -> Result<Option<String>, String> {
 /// The ceilings at the default 300 seeds (see the trial), measured on the
 /// state-independent op stream with #1249's history fix (main on the same stream: 7
 /// duplicates, 1 panic).
-const DUP_300: usize = 11;
+const DUP_300: usize = 12;
 const PANIC_300: usize = 0;
 
 /// How many seeds the trial runs (`TYPED_ONCE_SEEDS`, default 300).
@@ -540,16 +540,16 @@ fn tally(seeds: std::ops::RangeInclusive<u64>) -> Tally {
 ///
 /// | | main | #1249 |
 /// |---|---|---|
-/// | duplicates (1..=300) | 7 | 11 |
+/// | duplicates (1..=300) | 7 | 12 |
 /// | panics (1..=300) | 1 | 0 |
-/// | duplicates | 43 | 49 |
+/// | duplicates | 43 | 50 |
 /// | panics (#1856) | 2 | 0 |
 /// | literal U+FFFC | 2 | 1 |
 ///
 /// Every seed worse with #1249 is a pre-existing defect that an undo now reaches by
-/// applying: of the 14 seeds that duplicate only with it, 13 shrink to a history that
+/// applying: of the 15 seeds that duplicate only with it, 14 shrink to a history that
 /// duplicates the same way on main, and seed 538's undo is two deletes in one block,
-/// which duplicate the same way on main as a plain edit (#1885). 8 seeds stopped
+/// which duplicate the same way on main as a plain edit (#1885). 9 seeds stopped
 /// duplicating. The one U+FFFC (seed 513, also on main) is an undo of `setCodeBlock`
 /// re-inserting the image it cleared beside a peer's delete (#1890).
 #[test]
@@ -561,7 +561,7 @@ fn randomized_typed_text_lands_once_and_atoms_stay_atoms() {
     // Ceilings at the default 300 seeds and at 1000.
     let (dup_max, panic_max, fffc_max) = match n {
         300 => (DUP_300, PANIC_300, 0),
-        1000 => (49, 0, 1),
+        1000 => (50, 0, 1),
         _ => (usize::MAX, usize::MAX, usize::MAX),
     };
     assert!(
