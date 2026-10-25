@@ -74,10 +74,41 @@
 //!
 //! Such a peer lives until [`Peer::close`] or until its last clone drops.
 //!
-//! On native, peers still open when the process exits normally are closed
-//! by an `atexit` handler (up to 500 ms), so the far end sees them go; a
-//! process killed outright closes nothing, and the far end finds out when
-//! its ICE checks time out. A
+//! # Process exit
+//!
+//! On native, peers still open when the process exits are closed on the
+//! way out (and those whose close was already under way are let finish), so
+//! the far end sees them go at once rather than when its ICE checks time
+//! out. That runs from an `atexit` handler, waiting at most about half a
+//! second:
+//!
+//! - **Linux, macOS, Android:** returning from `main` and
+//!   `std::process::exit` both run it.
+//! - **Windows:** returning from `main` runs it; `std::process::exit` may not
+//!   (it ends the process through `ExitProcess`). Call [`shutdown`] first.
+//! - A process killed outright (SIGKILL, a crash) closes nothing.
+//!
+//! [`shutdown`] does the same on demand, on every platform.
+//!
+//! # Without `App::run` (headless)
+//!
+//! Events reach the main thread through rinch-core's main-callback queue. A
+//! rinch app's event loop drains it; a program that never runs one (a CLI
+//! tool, a test) must drive it itself, on the thread that made the peers:
+//!
+//! ```ignore
+//! rinch_core::register_main_thread();
+//! let peer = Peer::new(config)?;
+//! loop {
+//!     rinch_core::drain_main_callbacks(); // runs callbacks, resolves replies
+//!     // ...poll your futures, sleep a little...
+//! }
+//! ```
+//!
+//! Until something drains it the queue only grows, payloads included, and
+//! the signalling futures do not resolve. (Or install a dispatcher of your
+//! own with `rinch_core::set_cross_thread_dispatcher`, as the crate's tests
+//! do.) A
 //! callback that captures a clone of its own peer keeps it alive; capture a
 //! [`WeakPeer`] (from [`Peer::downgrade`]) instead.
 
@@ -481,7 +512,7 @@ impl Peer {
             let advertised = advertised_max_message_size(&description.sdp);
             // Held candidates go out when this succeeds (registry::dispatch,
             // on its reply), whether or not the caller awaits the future.
-            with_peer(id, |e| e.remote_pending = Some((req, advertised)));
+            with_peer(id, |e| e.remote_pending.push((req, advertised)));
             backend::set_remote(id, req, description);
             req
         });
@@ -600,6 +631,18 @@ impl Peer {
         registry::install(self.id(), |e| Some(&mut e.cbs.error), Box::new(cb));
         self
     }
+}
+
+/// Close every peer now and wait (at most about half a second) until the
+/// far ends have been told, closes already under way included. Done
+/// automatically at normal process exit on native (see the [crate
+/// docs](crate#process-exit)); call it before `std::process::exit` on
+/// Windows, or whenever the program is about to stop without returning
+/// from `main`. It is for the end of the program: a peer used after it
+/// does nothing (its calls are not answered).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn shutdown() {
+    backend::shutdown();
 }
 
 fn expect_description(r: Result<Option<Description>, RtcError>) -> Result<Description, RtcError> {

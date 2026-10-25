@@ -282,3 +282,35 @@ fn the_remote_sdp_sets_max_message_size_the_same_way_on_both_backends() {
         remove_peer(id);
     }
 }
+
+#[test]
+fn overlapping_remote_descriptions_are_applied_each_on_its_own_reply() {
+    // Two set_remote_description calls in flight; the first succeeds, the
+    // second fails. The first must still mark the remote as set.
+    let id = next_id();
+    insert_peer(id);
+    let (r1, r2) = (registry::new_request(id), registry::new_request(id));
+    with_peer(id, |e| {
+        e.remote_pending.push((r1, Some(262_144)));
+        e.remote_pending.push((r2, None));
+    });
+    dispatch(
+        id,
+        Event::Reply {
+            req: r1,
+            result: Ok(None),
+        },
+    );
+    dispatch(
+        id,
+        Event::Reply {
+            req: r2,
+            result: Err(RtcError::Sdp("bad".into())),
+        },
+    );
+    assert_eq!(
+        with_peer(id, |e| (e.has_remote, e.remote_max_message_size)),
+        Some((true, Some(262_144)))
+    );
+    remove_peer(id);
+}

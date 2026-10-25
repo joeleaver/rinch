@@ -43,8 +43,14 @@ fn exit_child() {
     let _ = pump_until(|| false, Duration::from_millis(300));
     println!("OPEN");
     std::io::stdout().flush().unwrap();
-    // Exit with `peer` still open: no close(), no drop.
-    std::mem::forget(peer);
+    // How the child leaves (review of #1909): with the peer still open,
+    // right after close(), or right after dropping it. The last two used
+    // to die before the in-flight close was sent.
+    match std::env::var(CHILD).as_deref() {
+        Ok("close") => peer.close(),
+        Ok("drop") => drop(peer),
+        _ => std::mem::forget(peer),
+    }
     std::process::exit(0);
 }
 
@@ -53,10 +59,16 @@ fn the_far_end_sees_a_peer_close_when_its_process_exits() {
     if std::env::var(CHILD).is_ok() {
         return;
     }
+    for how in ["open", "close", "drop"] {
+        far_end_sees_the_close(how);
+    }
+}
+
+fn far_end_sees_the_close(how: &str) {
     let lite = LitePeer::spawn();
     let mut child = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "exit_child", "--nocapture", "--test-threads=1"])
-        .env(CHILD, "1")
+        .env(CHILD, how)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -92,7 +104,8 @@ fn the_far_end_sees_a_peer_close_when_its_process_exits() {
     }
     assert!(
         !lite.stats().closed.is_empty(),
-        "the lite peer saw no close within 1.5 s of the client's exit: {:?}",
+        "exit with the peer {how}: the lite peer saw no close within 1.5 s of \
+         the client's exit: {:?}",
         lite.stats()
     );
 }

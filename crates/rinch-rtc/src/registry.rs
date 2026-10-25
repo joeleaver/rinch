@@ -164,9 +164,10 @@ pub(crate) struct PeerEntry {
     /// description is set or when it has none (RFC 8841: 64 KiB then),
     /// `Some(0)` for "no limit".
     pub(crate) remote_max_message_size: Option<usize>,
-    /// The `set_remote_description` in flight: its request id and the
-    /// max-message-size its SDP advertises. Applied on its successful reply.
-    pub(crate) remote_pending: Option<(u64, Option<usize>)>,
+    /// The `set_remote_description` calls in flight, each with the
+    /// max-message-size its SDP advertises; each is applied on its own
+    /// successful reply (overlapping calls do not overwrite each other).
+    pub(crate) remote_pending: Vec<(u64, Option<usize>)>,
     pub(crate) early: Vec<Option<IceCandidate>>,
     /// `restart_ice()` was called; the next offer restarts ICE.
     pub(crate) restart: bool,
@@ -185,7 +186,7 @@ impl PeerEntry {
             state: PeerState::New,
             has_remote: false,
             remote_max_message_size: None,
-            remote_pending: None,
+            remote_pending: Vec::new(),
             early: Vec::new(),
             restart: false,
             closing: false,
@@ -269,18 +270,20 @@ pub(crate) fn dispatch(id: u64, event: Event) {
             // A set_remote_description that succeeded: from now on remote
             // candidates go straight to the stack, and the held ones follow it.
             let applied = result.is_ok();
-            let early = with_peer(id, |e| match e.remote_pending {
-                Some((r, advertised)) if r == req => {
-                    e.remote_pending = None;
-                    if applied {
-                        e.has_remote = true;
-                        e.remote_max_message_size = advertised;
-                        std::mem::take(&mut e.early)
-                    } else {
-                        Vec::new()
+            let early = with_peer(id, |e| {
+                match e.remote_pending.iter().position(|(r, _)| *r == req) {
+                    Some(at) => {
+                        let (_, advertised) = e.remote_pending.remove(at);
+                        if applied {
+                            e.has_remote = true;
+                            e.remote_max_message_size = advertised;
+                            std::mem::take(&mut e.early)
+                        } else {
+                            Vec::new()
+                        }
                     }
+                    None => Vec::new(),
                 }
-                _ => Vec::new(),
             })
             .unwrap_or_default();
             for c in early {

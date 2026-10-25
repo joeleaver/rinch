@@ -160,10 +160,17 @@ const EXIT_GRACE: Duration = Duration::from_millis(500);
 /// its ICE consent checks time out. A process killed outright (SIGKILL, a
 /// crash) still closes nothing.
 extern "C" fn shut_down_at_exit() {
+    shutdown();
+}
+
+/// Close every peer, including closes already on their way, and wait for
+/// the worker to have sent them (at most [`EXIT_GRACE`] plus a little). A
+/// no-op when no peer was ever made.
+pub(crate) fn shutdown() {
     if let Some(tx) = WORKER.get() {
         let (ack, done) = std::sync::mpsc::channel();
         if tx.send(Cmd::Shutdown { ack }).is_ok() {
-            let _ = done.recv_timeout(EXIT_GRACE);
+            let _ = done.recv_timeout(EXIT_GRACE + Duration::from_millis(100));
         }
     }
 }
@@ -302,6 +309,10 @@ fn run(mut rx: mpsc::UnboundedReceiver<Cmd>) {
     };
     rt.block_on(async move {
         let mut peers: HashMap<u64, mpsc::UnboundedSender<PeerCmd>> = HashMap::new();
+        // Closes already on their way (close(), a drop, an unmount): a
+        // Shutdown must wait for these too, or a `close(); exit()` dies
+        // before the close is sent.
+        let mut closing: Vec<tokio::sync::oneshot::Receiver<()>> = Vec::new();
         while let Some(cmd) = rx.recv().await {
             match cmd {
                 Cmd::New { id, config } => {
@@ -324,7 +335,7 @@ fn run(mut rx: mpsc::UnboundedReceiver<Cmd>) {
                     peers.insert(id, tx);
                 }
                 Cmd::Shutdown { ack } => {
-                    let mut waits = Vec::new();
+                    let mut waits = std::mem::take(&mut closing);
                     for (_, tx) in peers.drain() {
                         let (done, wait) = tokio::sync::oneshot::channel();
                         if tx
@@ -346,6 +357,23 @@ fn run(mut rx: mpsc::UnboundedReceiver<Cmd>) {
                     let _ = ack.send(());
                 }
                 Cmd::Peer { id, cmd } => {
+                    let cmd = match cmd {
+                        PeerCmd::Close { notify, done: None } => {
+                            let (done, wait) = tokio::sync::oneshot::channel();
+                            closing.retain_mut(|w| {
+                                matches!(
+                                    w.try_recv(),
+                                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                                )
+                            });
+                            closing.push(wait);
+                            PeerCmd::Close {
+                                notify,
+                                done: Some(done),
+                            }
+                        }
+                        other => other,
+                    };
                     let last = matches!(cmd, PeerCmd::Close { .. });
                     if let Some(tx) = peers.get(&id) {
                         let _ = tx.send(cmd);
