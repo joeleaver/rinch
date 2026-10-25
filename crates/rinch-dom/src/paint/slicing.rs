@@ -227,9 +227,14 @@ impl Slicing {
         }
     }
 
-    /// The window with every non-empty R cut out, holes wound backwards.
+    /// The window with every non-empty R cut out, holes wound backwards. The
+    /// outer edge lies well outside the window: where a clip's edge runs
+    /// through a Vello tile the tile's content goes through the 8-bit blend
+    /// stack, and an outer edge on the window's own edge did that to every
+    /// tile along it (#1899 review's random sequences: a sidebar's shadow at
+    /// the window's bottom, one level off, far from any region).
     fn inverse_path(&self) -> BezPath {
-        let mut path = self.window.to_path(0.1);
+        let mut path = self.window.inflate(64.0, 64.0).to_path(0.1);
         for s in &self.slices {
             let r = s.r;
             if r.is_zero_area() {
