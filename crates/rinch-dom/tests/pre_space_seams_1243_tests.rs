@@ -368,3 +368,28 @@ fn a_pre_run_before_an_inline_box_is_not_broken() {
     let il = d.tree.get(c.0).unwrap().text_layout.as_ref().unwrap();
     assert_eq!(il.layout.len(), 1, "one line, as in Chrome 155");
 }
+
+/// A `pre` element ending in `!`, glued to the word after it (review of
+/// #1897). Chrome 155 has no break between `!` and a letter, and keeps
+/// `cccc!dddd` together (overflowing); the first two heads of #1897 broke
+/// it as `cccc!` / `dddd`, the seams' break opportunity coming from UAX #14
+/// (ICU4X), which has one there.
+#[test]
+fn a_pre_word_ending_in_an_exclamation_mark_stays_glued() {
+    for white_space in ["normal", "pre-wrap"] {
+        let l = lines(
+            &format!("width:60px;text-align:left;white-space:{white_space}"),
+            "aaaa bbbb <span style=\"white-space:pre\">cccc!</span>dddd eeee \
+             <span style=\"white-space:pre\"> ff</span> gg",
+        );
+        let texts: Vec<&str> = l.iter().map(|(t, _)| t.trim()).collect();
+        assert!(texts.contains(&"cccc!dddd"), "{white_space}: {texts:?}");
+    }
+    let l = lines(
+        "width:76px;text-align:left;white-space:normal",
+        "Say <code style=\"white-space:pre\">hello!</code>world, then \
+         <code style=\"white-space:pre\"> x</code> ok",
+    );
+    let texts: Vec<&str> = l.iter().map(|(t, _)| t.trim()).collect();
+    assert!(texts.contains(&"hello!world,"), "{texts:?}");
+}

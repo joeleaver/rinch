@@ -472,10 +472,23 @@ input a shaped layout is built from:
   `css_line`'s scan; a paragraph with no `pre` spaces is laid out as before
   #1243. A line whose trailing run of spaces has `pre` spaces before the
   part that hangs is aligned with them as content
-  (`any_unhung_trailing_line`). Pins: `tests/pre_space_seams_1243_tests.rs`
-  (Chrome 155). Not Chrome's yet (#1898): in the review's family corpus,
+  (`any_unhung_trailing_line`). A text node whose spaces collapsed away
+  between the wrapping run and the `pre` spaces counts as the run going on
+  into another text node (`UnhungSpaces::collapsed`). The seams' break
+  opportunities (`ifc::TextBreaks`, ICU4X's segmenter, the one parley uses)
+  are Chrome's where they differ for ASCII: no break between `!`, `/`, `|`
+  or `}` and a letter or digit after it (`ifc::chrome_glues_ascii`;
+  `<span pre>cccc!</span>dddd` stays whole), on the #1238 box seams and the
+  #1426 edge-box path too (the review's no-`pre` corpora: 128 of 4,500
+  cases now match Chrome that did not, none stopped matching). parley's own breaks elsewhere still split there
+  (#1910). Pins: `tests/pre_space_seams_1243_tests.rs` and
+  `tests/pre_space_seams_1243_differential.rs`, a checked-in Chrome 155
+  corpus (`tests/pre_space_seams_1243/chrome155.tsv`, its known differences
+  pinned). Not Chrome's yet (#1898): in the review's family corpus,
   8 of 78 `pre-wrap` and 11 of 42 `break-spaces` base cases, a word of a
-  `pre` element before the run, and on a right-to-left line a
+  `pre` element before the run, six random cases with an inline-block whose
+  breaks differ and three whose line after an inline box starts at the
+  box line's far end, and on a right-to-left line a
   mixed run is still narrowed by its final `pre` part only. **The "…" is cut at paint time, over the lines as laid out**
   (#1100; `ifc::ellipsis_cut`, `node::EllipsisCut`, `InlineLayout::ellipsis`):
   on each overflowing line everything whose visual extent passes the point

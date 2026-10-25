@@ -2507,6 +2507,10 @@ pub(crate) struct UnhungSpaces {
     /// `pre-line`), filled only with [`Self::pre_seams`]
     /// ([`LineUnit::collapsible`]).
     pub collapsible: Vec<std::ops::Range<usize>>,
+    /// Where a text node whose spaces collapsed away entirely stands, as a
+    /// sorted flat byte, filled only with [`Self::pre_candidate`]
+    /// ([`pre_seam`]).
+    pub collapsed: Vec<usize>,
 }
 
 /// Whether `white-space` allows a soft wrap after each text node and each
@@ -2867,6 +2871,9 @@ struct LineUnit {
     /// A cluster of text whose element collapses its spaces, known only
     /// with [`UnhungSpaces::pre_seams`] ([`pre_seam`]).
     collapsible: bool,
+    /// A text node whose spaces collapsed away stands right before this
+    /// cluster ([`UnhungSpaces::collapsed`], [`pre_seam`]).
+    after_collapsed: bool,
     /// The byte a cluster starts at, or a box stands at.
     byte: usize,
 }
@@ -2992,8 +2999,10 @@ fn edge_break_allowed(
 ///   word unwrapped, and rinch now matches Chrome on 95, main on 60; a
 ///   preserved run, in a `pre-wrap` root, is the text node of its own
 ///   above);
-/// - the run starts in the word's text node and goes on into another: an
-///   ordinary break.
+/// - the run starts in the word's text node and goes on into another (a
+///   text node whose spaces all collapsed away counts): an ordinary break.
+///   `<span><span pre-line>…</span>lvWa.   </span> <span pre>  bee…` in a
+///   `pre-line` root breaks before the `pre` spaces (review of #1897).
 ///
 /// A run after an inline box, or at the start of the paragraph, is an
 /// ordinary break, as #1238 has it. Edge boxes at the break are looked
@@ -3036,11 +3045,16 @@ fn pre_seam(units: &[LineUnit], e: usize) -> Option<PreSeam> {
     if w.is_none() || p.closes_into_nowrap {
         return Some(PreSeam::Ordinary);
     }
-    Some(if units[r0..i0 - 1].iter().any(|u| u.text_end) {
-        PreSeam::Ordinary
-    } else {
-        PreSeam::RewindOnly
-    })
+    // A run that goes on into a text node whose spaces collapsed away
+    // (`<span>…lvWa.   </span> <span pre>…`: the root's space between) goes
+    // on into another text node, as Chrome's items have it.
+    Some(
+        if n.after_collapsed || units[r0..i0 - 1].iter().any(|u| u.text_end) {
+            PreSeam::Ordinary
+        } else {
+            PreSeam::RewindOnly
+        },
+    )
 }
 
 /// [`pre_seam`]'s answer.
@@ -3113,6 +3127,9 @@ impl<'t> TextBreaks<'t> {
 
     /// Whether there is an opportunity at `byte`.
     fn at(&self, byte: usize) -> bool {
+        if chrome_glues_ascii(self.text, byte) {
+            return false;
+        }
         self.positions
             .get_or_init(|| {
                 let mut options = icu_segmenter::options::LineBreakOptions::default();
@@ -3125,6 +3142,24 @@ impl<'t> TextBreaks<'t> {
             .binary_search(&byte)
             .is_ok()
     }
+}
+
+/// Whether `byte` of `text` lies between `!`, `/`, `|` or `}` and an ASCII
+/// letter or digit, where UAX #14 (and ICU4X, parley's segmenter) has a
+/// break and Chrome 155 does not: `cccc!dddd`, `cccc/dddd`, `cccc}1234` stay
+/// whole in a box too narrow for them (review of #1897, measured over every
+/// ASCII punctuation mark before and after a letter and a digit). Only the
+/// lines [`css_line`] breaks (#1426, #1238, #1243) ask it: elsewhere
+/// parley's own breaks still split there (a separate difference, #1910).
+/// `?` and the other marks agree with ICU4X.
+fn chrome_glues_ascii(text: &str, byte: usize) -> bool {
+    let (Some(before), Some(after)) = (
+        text.get(..byte).and_then(|t| t.chars().next_back()),
+        text.get(byte..).and_then(|t| t.chars().next()),
+    ) else {
+        return false;
+    };
+    matches!(before, '!' | '/' | '|' | '}') && after.is_ascii_alphanumeric()
 }
 
 /// Whether `byte` of `text` lies between a complex-context (`SA`) character
@@ -3703,6 +3738,7 @@ fn logical_units(
                         text_end: seam.is_some(),
                         closes: seam.is_some_and(|s| s.closes),
                         collapsible: in_ranges(&unhung.collapsible, range.start),
+                        after_collapsed: unhung.collapsed.binary_search(&range.start).is_ok(),
                         byte: range.start,
                     },
                 ));
@@ -3739,6 +3775,7 @@ fn logical_units(
                 text_end: false,
                 closes: false,
                 collapsible: false,
+                after_collapsed: false,
                 byte: b.index,
             },
         ));
@@ -9502,6 +9539,18 @@ impl RinchDocument {
             && Self::any_nowrap_element(nodes, root_id, &text_ranges, &boxes);
         unhung.box_seams = needs_seams;
         if pre_candidate {
+            unhung.collapsed = text_ranges
+                .iter()
+                .filter(|r| !r.is_br && r.flat_end == r.flat_start)
+                .filter(|r| {
+                    nodes
+                        .get(r.node_id)
+                        .and_then(|n| n.text_content())
+                        .is_some_and(|t| !t.is_empty())
+                })
+                .map(|r| r.flat_start)
+                .collect();
+            unhung.collapsed.sort_unstable();
             use crate::computed_style::WhiteSpaceValue;
             for r in text_ranges
                 .iter()
