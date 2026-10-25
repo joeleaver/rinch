@@ -311,7 +311,7 @@ before drawing it; the default refuses (`Refusal::Unsupported`) and the frame
 is drawn in the scene as before. `VelloPainter` takes it only on a frame
 opened with `begin_slicing(window)` (after `reset`, which closes it), and the
 surfaces it took come back from `take_slices()` as `paint::slicing::SurfaceSlice`:
-region R; `above_in` and `above_out` (scenes in R's coordinates, or `None`);
+region R; `above_in` and `above_out` (scenes in window coordinates, rendered where the window draws them and R kept, or `None`);
 `own` and `ancestors` coverage (each a whole-pixel rect or a mask scene); the
 in-scene image transform; `tainted`.
 
