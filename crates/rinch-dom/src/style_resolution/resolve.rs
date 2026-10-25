@@ -137,19 +137,28 @@ impl RinchDocument {
 
         let roots = std::mem::take(&mut self.tree.style_roots);
 
-        // Full tree walk when:
-        // - a whole-document restyle asked for one (`full_style_walk`: a
-        //   stylesheet, theme, device pixel ratio or media-query change, and
-        //   the very first resolve);
-        // - the first layout hasn't completed yet (DOM still being constructed,
-        //   parent classes may not be resolved when children are appended).
+        // Full tree walk when a whole-document restyle asked for one
+        // (`full_style_walk`: a stylesheet, theme, device pixel ratio or
+        // media-query change, and the very first resolve).
+        //
+        // **Not** merely because the first layout has not happened yet
+        // (#1247). It used to be: `!transitions_enabled` was read as "the DOM
+        // is still being built" and forced this walk, so every insertion
+        // before the first layout — the whole initial render of an app —
+        // visited every node already in the document. Building N rows visited
+        // about N²/2 nodes; 36,000 rows took about 15.5 s to build in release
+        // (150 ms after). The targeted
+        // walk below needs nothing the first layout provides: every route
+        // that connects a node pushes it as a root, and attribute and state
+        // changes on styled elements are snapshotted whether or not
+        // transitions are armed (`invalidation.rs`).
         //
         // An empty `style_roots` alone is **not** a reason to walk: it means
         // nothing was invalidated. It used to be one, and a synchronous
         // insertion restyle — which consumes its own root — left the list
         // empty with `styles_dirty` still set, so the next frame's resolve
         // visited every node in the document and cascaded none of them.
-        if self.tree.full_style_walk || !self.tree.transitions_enabled {
+        if self.tree.full_style_walk {
             self.tree.full_style_walk = false;
             self.tree.perf.bump(crate::perf::Counter::FullStyleWalks);
             let html_id = self.tree.html_id;
@@ -262,7 +271,10 @@ impl RinchDocument {
     /// `resolve_styles`. Answers `false`, doing nothing, when that would be
     /// wrong and the caller should run a full `resolve_styles` instead:
     ///
-    /// - no layout has completed yet, or a whole-document walk is pending;
+    /// - a whole-document walk is pending (the first resolve, a stylesheet or
+    ///   theme change). **Not** "no layout has completed yet": that declined
+    ///   every insertion of an app's initial render into a whole-document
+    ///   walk, quadratic in the number of nodes (#1247);
     /// - the node is not connected (a detached node is not styled at all —
     ///   `resolve_styles` drops such a root, #651);
     /// - some ancestor is itself waiting for a restyle (no style, a restyle
@@ -274,7 +286,7 @@ impl RinchDocument {
         use crate::stylo_impl::RinchNode;
         use style::shared_lock::StylesheetGuards;
 
-        if self.tree.full_style_walk || !self.tree.transitions_enabled {
+        if self.tree.full_style_walk {
             return false;
         }
         if self.depth_if_connected(node_id).is_none() {

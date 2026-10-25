@@ -672,12 +672,14 @@ fn a_spinner_hidden_and_shown_before_the_first_layout_restarts_from_zero() {
     );
     let old_start = backdate(&mut doc, spinner, 400.0);
 
-    // Hide it, and let the tree be cascaded before any layout: any append
-    // re-resolves on the spot, which is how a mounting component reaches this.
+    // Hide it, and let the tree be cascaded before any layout: an append
+    // under an element waiting for a restyle re-resolves on the spot, which is
+    // how a mounting component reaches this. (An append whose ancestors are
+    // all clean cascades only its own subtree, before the first layout as
+    // after it — #1247 — so the append goes into the panel itself.)
     doc.set_style(panel, "display", "none");
-    let body = doc.body();
-    let unrelated = doc.create_element("div");
-    doc.append_child(body, unrelated);
+    let child = doc.create_element("div");
+    doc.append_child(panel, child);
     assert_eq!(
         running(&doc, spinner),
         0,

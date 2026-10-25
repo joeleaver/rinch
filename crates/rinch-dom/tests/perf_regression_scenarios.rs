@@ -31,6 +31,7 @@
 //! | `text_shadow_masks_rasterised` | `paint/text_shadow.rs`, a blurred text-shadow's first paint | [`a_blurred_text_shadow_is_rasterised_once`] |
 //! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs` `build_ifc_layouts` (the paint layout) and `layout_engine.rs` (the root compute's measure) | [`a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass`] — 40 lines from each site |
 //! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, `NodeContext::InlineRoot` (an atomic inline's measure) | [`an_inline_block_hangs_its_spaces_in_one_pass`] |
+//! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, a paragraph with seams (atomic inlines and an element that does not wrap, #1238) | [`a_paragraph_with_seams_pays_one_hang_pass_per_layout`] |
 //! | `ifc_unglue_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure (an IFC root) | [`an_nbsp_glued_chain_is_rebroken_in_logarithmically_many_breaks`] |
 //! | `ifc_unglue_rebreaks` | `ifc.rs` `NodeContext::Text` and `layout_engine.rs`'s leaf measure (`shape_text_leaf`) | [`an_nbsp_glued_chain_in_a_flex_items_own_text_is_rebroken_the_same_way`] |
 //! | `ifc_phantom_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure, together | [`an_overflowing_last_chip_is_rebroken_without_parleys_empty_line`] — 1 from each |
@@ -460,8 +461,8 @@ fn an_ifc_root_ellipsis() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 3),
-            (StyleNodesVisited, 7),
-            (FullStyleWalks, 2),
+            (StyleNodesVisited, 3),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 3),
             (TaffyStyleChanges, 2),
             (ShapeMeasureIfc, 1),
@@ -508,8 +509,8 @@ fn a_pre_block_ellipsis_cuts_every_line_without_shaping() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 3),
-            (StyleNodesVisited, 7),
-            (FullStyleWalks, 2),
+            (StyleNodesVisited, 3),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 3),
             (TaffyStyleChanges, 2),
             (ShapeMeasureIfc, 1),
@@ -555,8 +556,8 @@ fn a_rich_nowrap_root_ellipsis_shapes_only_the_ellipsis() {
         &[
             (StyleResolves, 3),
             (ElementsCascaded, 4),
-            (StyleNodesVisited, 13),
-            (FullStyleWalks, 3),
+            (StyleNodesVisited, 4),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 4),
             (TaffyStyleChanges, 3),
             (ShapeMeasureIfc, 1),
@@ -602,8 +603,8 @@ fn a_text_leaf_ellipsis() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 3),
-            (StyleNodesVisited, 7),
-            (FullStyleWalks, 2),
+            (StyleNodesVisited, 3),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 3),
             (TaffyStyleChanges, 2),
             (ShapeMeasureText, 4),
@@ -670,8 +671,8 @@ fn a_contents_wrapped_flex_item_ellipsis() {
         &[
             (StyleResolves, 4),
             (ElementsCascaded, 5),
-            (StyleNodesVisited, 18),
-            (FullStyleWalks, 4),
+            (StyleNodesVisited, 5),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 5),
             (TaffyStyleChanges, 4),
             (ShapeMeasureIfc, 1),
@@ -714,8 +715,8 @@ fn an_inline_block_holding_an_ifc() {
         &[
             (StyleResolves, 3),
             (ElementsCascaded, 4),
-            (StyleNodesVisited, 14),
-            (FullStyleWalks, 3),
+            (StyleNodesVisited, 4),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 4),
             (TaffyStyleChanges, 3),
             (ShapeMeasureIfc, 1),
@@ -757,8 +758,8 @@ fn an_inline_flex_holding_a_text_leaf() {
         &[
             (StyleResolves, 3),
             (ElementsCascaded, 4),
-            (StyleNodesVisited, 14),
-            (FullStyleWalks, 3),
+            (StyleNodesVisited, 4),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 4),
             (TaffyStyleChanges, 3),
             (ShapeMeasureIfc, 1),
@@ -1043,9 +1044,9 @@ fn only_before_rules() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 3),
-            (StyleNodesVisited, 9),
+            (StyleNodesVisited, 4),
             (PseudoElementPasses, 3),
-            (FullStyleWalks, 2),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 4),
             (TaffyStyleChanges, 3),
             (ShapeMeasureIfc, 1),
@@ -1080,9 +1081,9 @@ fn only_after_rules() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 3),
-            (StyleNodesVisited, 9),
+            (StyleNodesVisited, 4),
             (PseudoElementPasses, 3),
-            (FullStyleWalks, 2),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 4),
             (TaffyStyleChanges, 3),
             (ShapeMeasureIfc, 1),
@@ -1202,8 +1203,8 @@ fn a_blurred_text_shadow_is_rasterised_once() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 3),
-            (StyleNodesVisited, 7),
-            (FullStyleWalks, 2),
+            (StyleNodesVisited, 3),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 3),
             (TaffyStyleChanges, 2),
             (ShapeMeasureIfc, 1),
@@ -1258,8 +1259,8 @@ fn a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 3),
-            (StyleNodesVisited, 7),
-            (FullStyleWalks, 2),
+            (StyleNodesVisited, 3),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 3),
             (TaffyStyleChanges, 2),
             (ShapeMeasureIfc, 1),
@@ -1276,6 +1277,60 @@ fn a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass() {
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 1),
             (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// #1238: a paragraph that holds atomic inlines and an element that does
+/// not wrap is broken where CSS breaks next to its boxes, not where parley
+/// does (`ifc::WrapSeams`): every layout of it pays one hang pass, whether or
+/// not a line is re-broken. Here three chips in a `nowrap` span, each glued
+/// to its word, in a 120px `normal` paragraph: the paint layout and the root
+/// compute's measure each pay one, and each re-breaks one line
+/// (`ifc_hang_lines`): parley's break after a chip inside the span.
+#[test]
+fn a_paragraph_with_seams_pays_one_hang_pass_per_layout() {
+    let mut doc = doc_with(
+        ".p { width: 120px; } .nw { white-space: nowrap; } \
+         .chip { display: inline-block; width: 30px; height: 16px; }",
+    );
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    text(&mut doc, p, "lorem ipsum ");
+    let nw = el(&mut doc, p, "span", "nw");
+    for word in ["dolor", "sit", "amet"] {
+        text(&mut doc, nw, word);
+        el(&mut doc, nw, "span", "chip");
+    }
+    text(&mut doc, p, " consectetur");
+    let s = cold_frame(&mut doc);
+    expect(
+        "seams paragraph",
+        &s,
+        &[
+            (StyleResolves, 6),
+            (ElementsCascaded, 7),
+            (StyleNodesVisited, 7),
+            (FullStyleWalks, 1),
+            (TaffyStyleSyncs, 7),
+            (TaffyStyleChanges, 6),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 10),
+            (IfcSignatureChanges, 1),
+            (IfcHangPasses, 2),
+            (IfcHangLines, 2),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (InlineBlockComputes, 3),
+            (PaintNodesVisited, 5),
             (StackingOrderBuilds, 1),
         ],
     );
@@ -1309,8 +1364,8 @@ fn a_chip_followed_by_a_space_in_a_flex_item_pays_one_hang_pass_at_min_content()
         &[
             (StyleResolves, 61),
             (ElementsCascaded, 62),
-            (StyleNodesVisited, 3212),
-            (FullStyleWalks, 61),
+            (StyleNodesVisited, 62),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 62),
             (TaffyStyleChanges, 61),
             (ShapeMeasureIfc, 60),
@@ -1352,8 +1407,8 @@ fn a_right_aligned_paragraph_ending_in_spaces_pays_one_pass() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 3),
-            (StyleNodesVisited, 7),
-            (FullStyleWalks, 2),
+            (StyleNodesVisited, 3),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 3),
             (TaffyStyleChanges, 2),
             (ShapeMeasureIfc, 1),
@@ -1392,8 +1447,8 @@ fn a_right_aligned_nowrap_paragraph_is_aligned_without_a_pass() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 3),
-            (StyleNodesVisited, 7),
-            (FullStyleWalks, 2),
+            (StyleNodesVisited, 3),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 3),
             (TaffyStyleChanges, 2),
             (ShapeMeasureIfc, 1),
@@ -1431,8 +1486,8 @@ fn a_centred_pre_paragraph_with_spaces_before_a_newline_pays_one_pass() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 3),
-            (StyleNodesVisited, 7),
-            (FullStyleWalks, 2),
+            (StyleNodesVisited, 3),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 3),
             (TaffyStyleChanges, 2),
             (ShapeMeasureIfc, 1),
@@ -1471,8 +1526,8 @@ fn a_right_aligned_shrink_to_fit_pre_box_pays_one_pass() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 3),
-            (StyleNodesVisited, 7),
-            (FullStyleWalks, 2),
+            (StyleNodesVisited, 3),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 3),
             (TaffyStyleChanges, 2),
             (ShapeMeasureIfc, 1),
@@ -1517,8 +1572,8 @@ fn a_justified_paragraph_with_lines_ending_in_spaces_pays_one_pass() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 3),
-            (StyleNodesVisited, 7),
-            (FullStyleWalks, 2),
+            (StyleNodesVisited, 3),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 3),
             (TaffyStyleChanges, 2),
             (ShapeMeasureIfc, 1),
@@ -1561,8 +1616,8 @@ fn a_justified_paragraph_whose_word_ends_at_the_edge_pays_one_pass() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 3),
-            (StyleNodesVisited, 7),
-            (FullStyleWalks, 2),
+            (StyleNodesVisited, 3),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 3),
             (TaffyStyleChanges, 2),
             (ShapeMeasureIfc, 1),
@@ -1600,8 +1655,8 @@ fn a_justified_paragraph_with_single_spaces_pays_no_pass() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 3),
-            (StyleNodesVisited, 7),
-            (FullStyleWalks, 2),
+            (StyleNodesVisited, 3),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 3),
             (TaffyStyleChanges, 2),
             (ShapeMeasureIfc, 1),
@@ -1637,8 +1692,8 @@ fn a_start_aligned_paragraph_ending_in_spaces_pays_no_pass() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 3),
-            (StyleNodesVisited, 7),
-            (FullStyleWalks, 2),
+            (StyleNodesVisited, 3),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 3),
             (TaffyStyleChanges, 2),
             (ShapeMeasureIfc, 1),
@@ -1678,8 +1733,8 @@ fn a_pre_paragraph_of_tabs_is_set_in_one_rebuild() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 3),
-            (StyleNodesVisited, 7),
-            (FullStyleWalks, 2),
+            (StyleNodesVisited, 3),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 3),
             (TaffyStyleChanges, 2),
             (ShapeMeasureIfc, 1),
@@ -1719,8 +1774,8 @@ fn a_wrapping_paragraph_of_tabs_is_set_in_two_rebuilds() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 3),
-            (StyleNodesVisited, 7),
-            (FullStyleWalks, 2),
+            (StyleNodesVisited, 3),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 3),
             (TaffyStyleChanges, 2),
             (ShapeMeasureIfc, 1),
@@ -1760,8 +1815,8 @@ fn an_nbsp_glued_chain_is_rebroken_in_logarithmically_many_breaks() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 3),
-            (StyleNodesVisited, 7),
-            (FullStyleWalks, 2),
+            (StyleNodesVisited, 3),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 3),
             (TaffyStyleChanges, 2),
             (ShapeMeasureIfc, 1),
@@ -1801,8 +1856,8 @@ fn an_nbsp_glued_chain_in_a_flex_items_own_text_is_rebroken_the_same_way() {
         &[
             (StyleResolves, 2),
             (ElementsCascaded, 3),
-            (StyleNodesVisited, 7),
-            (FullStyleWalks, 2),
+            (StyleNodesVisited, 3),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 3),
             (TaffyStyleChanges, 2),
             (ShapeMeasureText, 4),
@@ -1842,8 +1897,8 @@ fn an_inline_block_hangs_its_spaces_in_one_pass() {
         &[
             (StyleResolves, 3),
             (ElementsCascaded, 4),
-            (StyleNodesVisited, 12),
-            (FullStyleWalks, 3),
+            (StyleNodesVisited, 4),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 4),
             (TaffyStyleChanges, 3),
             (ShapeMeasureIfc, 1),
@@ -1887,8 +1942,8 @@ fn an_overflowing_last_chip_is_rebroken_without_parleys_empty_line() {
         &[
             (StyleResolves, 3),
             (ElementsCascaded, 4),
-            (StyleNodesVisited, 13),
-            (FullStyleWalks, 3),
+            (StyleNodesVisited, 4),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 4),
             (TaffyStyleChanges, 3),
             (ShapeMeasureIfc, 1),
@@ -1932,8 +1987,8 @@ fn a_flex_items_paragraph_ending_in_a_chip_pays_one_rebreak_per_min_content_meas
         &[
             (StyleResolves, 4),
             (ElementsCascaded, 5),
-            (StyleNodesVisited, 19),
-            (FullStyleWalks, 4),
+            (StyleNodesVisited, 5),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 5),
             (TaffyStyleChanges, 4),
             (ShapeMeasureIfc, 3),
@@ -2412,8 +2467,8 @@ fn a_spans_unchanged_font_family_resolves_nothing() {
         &[
             (StyleResolves, 3),
             (ElementsCascaded, 4),
-            (StyleNodesVisited, 12),
-            (FullStyleWalks, 3),
+            (StyleNodesVisited, 4),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 4),
             (TaffyStyleChanges, 3),
             (ShapeMeasureIfc, 1),
@@ -2454,9 +2509,9 @@ fn a_spans_changed_font_family_resolves_once_per_rebuild() {
         &[
             (StyleResolves, 3),
             (ElementsCascaded, 5),
-            (StyleNodesVisited, 12),
+            (StyleNodesVisited, 5),
             (StyleInvalidations, 1),
-            (FullStyleWalks, 3),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 5),
             (TaffyStyleChanges, 3),
             (InlineFontFamilyResolves, 2),
@@ -2517,8 +2572,8 @@ fn an_absolute_box_under_a_non_parent_containing_block_pays_one_compute_per_resi
         &[
             (StyleResolves, 5),
             (ElementsCascaded, 6),
-            (StyleNodesVisited, 24),
-            (FullStyleWalks, 5),
+            (StyleNodesVisited, 6),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 7),
             (TaffyStyleChanges, 6),
             (IfcMeasureInvalidations, 4),
@@ -2588,8 +2643,8 @@ fn a_position_only_absolute_box_under_a_grandparent_pays_no_compute() {
         &[
             (StyleResolves, 5),
             (ElementsCascaded, 6),
-            (StyleNodesVisited, 24),
-            (FullStyleWalks, 5),
+            (StyleNodesVisited, 6),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 7),
             (TaffyStyleChanges, 5),
             (IfcMeasureInvalidations, 4),
@@ -3169,8 +3224,8 @@ fn chips_in_flex_items_first_layout() {
         &[
             (StyleResolves, 62),
             (ElementsCascaded, 63),
-            (StyleNodesVisited, 2966),
-            (FullStyleWalks, 62),
+            (StyleNodesVisited, 63),
+            (FullStyleWalks, 1),
             (TaffyStyleSyncs, 63),
             (TaffyStyleChanges, 62),
             (ShapeMeasureIfc, 150),
