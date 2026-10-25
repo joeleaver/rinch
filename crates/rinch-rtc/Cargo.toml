@@ -1,0 +1,44 @@
+[package]
+name = "rinch-rtc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cross-platform WebRTC data channels for rinch, with rinch-ws's callback shape (web RTCPeerConnection / native webrtc-rs)"
+
+# Design record: docs/design/webrtc-data-channels.md (issue #1896).
+#
+# No `native`/`web` cargo features: the backend is picked by target, as in
+# rinch-ws. tokio and webrtc-rs reach only an app that depends on this crate
+# AND builds for a desktop target, which is an app that asked for native
+# data channels; nothing else in the workspace depends on rinch-rtc.
+
+[dependencies]
+rinch-core = { workspace = true }
+tracing = { workspace = true }
+# `Description` / `IceCandidate` derive Serialize/Deserialize, so an app can
+# put them on its own signalling channel without a mirror type.
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# webrtc-rs 0.21: an async driver over its sans-IO `rtc` core, with STUN and
+# TURN (UDP) gathering. Pinned exactly: pre-1.0, a minor bump may break, and
+# only `native.rs` names it. `crypto-ring`: no aws-lc C build, and the
+# provider is chosen per connection (no process-global rustls install).
+webrtc = { version = "=0.21.1", default-features = false, features = ["runtime-tokio", "crypto-ring"] }
+# The one worker thread's current-thread runtime. tokio is already in every
+# `gpu`, `notifications` and `global-hotkeys` build.
+tokio = { version = "1.52", default-features = false, features = ["rt", "sync", "time", "net"] }
+bytes = "1"
+async-trait = "0.1"
+
+[dev-dependencies]
+rinch-core = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# The interop target: a str0m ICE-lite peer shaped like Playweft's hosted
+# server, in tests/common. Dev-only: no app links str0m through rinch-rtc.
+str0m = { version = "=0.24.1", default-features = false, features = ["rust-crypto"] }
