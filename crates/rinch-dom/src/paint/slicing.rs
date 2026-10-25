@@ -18,7 +18,8 @@
 //!   draws and closed before any push or pop, so it never wraps anything else
 //!   and never splits a layer.
 //!
-//! Each surface has two above scenes, both in R's coordinates:
+//! Each surface has two above scenes, both in window coordinates (encoded
+//! where the window's scene draws them; the renderer keeps R of each):
 //! - **`above_in`**, what is painted while every clip and layer open at the
 //!   split is still open, **without** those (the compositor applies their
 //!   coverage once, to the surface and `above_in` together, as the scene
@@ -45,8 +46,9 @@ pub struct SurfaceSlice {
     /// Empty when the surface is wholly off-screen.
     pub region: (u32, u32, u32, u32),
     /// What was painted over the surface while the clips and layers open
-    /// around it were still open, without them, in R's coordinates (R's
-    /// origin at `(0, 0)`). `None` when nothing was: the common case.
+    /// around it were still open, without them, in window coordinates (to
+    /// be rendered where the window draws it, and R kept). `None` when
+    /// nothing was: the common case.
     pub above_in: Option<Scene>,
     /// What was painted over it after they closed, likewise.
     pub above_out: Option<Scene>,
@@ -70,8 +72,8 @@ pub enum SliceCoverage {
     /// All of each pixel inside `[x0, y0, x1, y1]` (device pixels), none
     /// outside: the image rect and every clip on it are whole-pixel rects.
     Rect([u32; 4]),
-    /// Vello's coverage: a scene in R's coordinates, the clips replayed and a
-    /// rect filled white.
+    /// Vello's coverage: a scene in window coordinates, the clips replayed and
+    /// a rect filled white.
     Mask(Box<Scene>),
 }
 
@@ -100,7 +102,7 @@ pub(crate) struct Slice {
     pub(crate) out: SurfaceSlice,
     /// R as a rect (empty when off-screen).
     pub(crate) r: Rect,
-    /// Device → R's coordinates.
+    /// The transform slices are encoded under: the identity (see `split`).
     pub(crate) to_r: Affine,
     pub(crate) above_in: Scene,
     pub(crate) above_in_draws: usize,
@@ -402,7 +404,12 @@ impl Slicing {
         {
             return SplitVerdict::InScene(Refusal::Overlap);
         }
-        let to_r = Affine::translate((-r.x0, -r.y0));
+        // Slices are encoded where the window's scene draws them, not moved to
+        // R's origin: Vello's output for a pixel depends on where the target
+        // puts it (an MSAA sample on a curve's edge flips under a translation,
+        // 16 levels; #1718's note on partial frames). The renderer draws each
+        // into a target reaching R's far corner and keeps R.
+        let to_r = Affine::IDENTITY;
         let image_rect = Rect::new(0.0, 0.0, split.extents.0 as f64, split.extents.1 as f64);
 
         // The surface's own coverage: its image rect under its own clips.
@@ -469,13 +476,7 @@ impl Slicing {
                 for c in &clips {
                     push_open(&mut mask, c, to_r);
                 }
-                mask.fill(
-                    Fill::NonZero,
-                    Affine::IDENTITY,
-                    Color::WHITE,
-                    None,
-                    &Rect::new(0.0, 0.0, r.width(), r.height()),
-                );
+                mask.fill(Fill::NonZero, Affine::IDENTITY, Color::WHITE, None, &r);
                 for _ in 0..clips.len() {
                     mask.pop_layer();
                 }
