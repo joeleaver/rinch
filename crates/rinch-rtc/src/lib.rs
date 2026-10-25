@@ -72,7 +72,12 @@
 //! let peer = rinch_core::reactive::unowned(|| Peer::new(config))?;
 //! ```
 //!
-//! Such a peer lives until [`Peer::close`] or until its last clone drops. A
+//! Such a peer lives until [`Peer::close`] or until its last clone drops.
+//!
+//! On native, peers still open when the process exits normally are closed
+//! by an `atexit` handler (up to 500 ms), so the far end sees them go; a
+//! process killed outright closes nothing, and the far end finds out when
+//! its ICE checks time out. A
 //! callback that captures a clone of its own peer keeps it alive; capture a
 //! [`WeakPeer`] (from [`Peer::downgrade`]) instead.
 
@@ -100,6 +105,16 @@ use registry::{ChannelEntry, with_peer};
 
 /// RFC 8841's default when the remote SDP has no `a=max-message-size`.
 pub const DEFAULT_MAX_MESSAGE_SIZE: usize = 65_536;
+
+/// The largest message the native backend accepts, and so advertises:
+/// 256 KiB, what Chrome advertises.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const NATIVE_MAX_MESSAGE_SIZE: usize = 262_144;
+
+/// The largest [`ChannelOptions::send_buffer_limit`]: 16 MiB (Chromium's
+/// send-queue cap). A larger limit is clamped to it. On native it is also
+/// webrtc-rs's own per-channel backstop.
+pub const MAX_SEND_BUFFER_LIMIT: usize = 16 << 20;
 
 /// [`ChannelOptions::send_buffer_limit`]'s default: 1 MiB.
 pub const DEFAULT_SEND_BUFFER_LIMIT: usize = 1 << 20;
@@ -279,9 +294,16 @@ pub struct ChannelOptions {
     /// `Some(id)`: pre-negotiated, declared with the same id and options on
     /// both sides; no in-band announcement and no `on_data_channel`. Declare
     /// negotiated channels before any in-band one, and keep their ids low.
+    ///
+    /// An id already used by an open channel of the same peer is refused
+    /// with [`RtcError::InvalidState`]: another negotiated channel, or an
+    /// in-band one whose id the stack has reported (the web reports it once
+    /// the channel opens; webrtc-rs 0.21 never does, so on native only
+    /// negotiated ids are checked).
     pub negotiated: Option<u16>,
     /// Bytes [`Channel::send`] may have buffered before it refuses with
-    /// [`SendError::QueueFull`]. Default [`DEFAULT_SEND_BUFFER_LIMIT`].
+    /// [`SendError::QueueFull`]. Default [`DEFAULT_SEND_BUFFER_LIMIT`], at
+    /// most [`MAX_SEND_BUFFER_LIMIT`].
     pub send_buffer_limit: usize,
 }
 
@@ -446,8 +468,9 @@ impl Peer {
         }
     }
 
-    /// Set the other side's offer or answer. Remote candidates held so far
-    /// are added right after it, in the order they arrived.
+    /// Set the other side's offer or answer. Once it has been applied,
+    /// the remote candidates held so far are added, in the order they
+    /// arrived; if it fails, they stay held for the next one.
     pub fn set_remote_description(
         &self,
         description: Description,
@@ -455,15 +478,11 @@ impl Peer {
         let id = self.id();
         let queued = self.live().map(|()| {
             let req = registry::new_request(id);
+            let advertised = advertised_max_message_size(&description.sdp);
+            // Held candidates go out when this succeeds (registry::dispatch,
+            // on its reply), whether or not the caller awaits the future.
+            with_peer(id, |e| e.remote_pending = Some((req, advertised)));
             backend::set_remote(id, req, description);
-            let early = with_peer(id, |e| {
-                e.has_remote = true;
-                std::mem::take(&mut e.early)
-            })
-            .unwrap_or_default();
-            for c in early {
-                backend::add_candidate(id, c);
-            }
             req
         });
         async move {
@@ -511,6 +530,18 @@ impl Peer {
     ) -> Result<Channel, RtcError> {
         self.live()?;
         let id = self.id();
+        if let Some(sid) = options.negotiated {
+            let taken = with_peer(id, |e| {
+                e.channels
+                    .values()
+                    .any(|c| c.id == Some(sid) && c.state != ChannelState::Closed)
+            });
+            if taken == Some(true) {
+                return Err(RtcError::InvalidState(format!(
+                    "stream id {sid} is already used by another open channel on this peer"
+                )));
+            }
+        }
         let key = next_id();
         with_peer(id, |e| {
             e.channels.insert(
@@ -518,7 +549,7 @@ impl Peer {
                 ChannelEntry::new(
                     label.to_string(),
                     options.negotiated,
-                    options.send_buffer_limit,
+                    options.send_buffer_limit.min(MAX_SEND_BUFFER_LIMIT),
                 ),
             )
         });
@@ -573,6 +604,13 @@ impl Peer {
 
 fn expect_description(r: Result<Option<Description>, RtcError>) -> Result<Description, RtcError> {
     r?.ok_or_else(|| RtcError::Internal("the backend answered no description".into()))
+}
+
+/// The `a=max-message-size:` value in an SDP, if it has one.
+fn advertised_max_message_size(sdp: &str) -> Option<usize> {
+    sdp.lines()
+        .find_map(|l| l.trim().strip_prefix("a=max-message-size:"))
+        .and_then(|v| v.trim().parse().ok())
 }
 
 fn validate(config: &RtcConfig) -> Result<(), RtcError> {
@@ -634,8 +672,9 @@ impl Channel {
     }
 
     /// The SCTP stream id. A pre-negotiated channel's is its `negotiated`
-    /// id. An in-band channel's is not reported on native (webrtc-rs 0.21
-    /// does not expose it): `None` there.
+    /// id. An in-band channel's is reported on the web once it opens, and
+    /// not at all on native (webrtc-rs 0.21 does not expose it): `None`
+    /// there.
     pub fn id(&self) -> Option<u16> {
         self.with(|c| c.id).flatten()
     }
@@ -645,8 +684,10 @@ impl Channel {
         self.with(|c| c.state).unwrap_or(ChannelState::Closed)
     }
 
-    /// The peer's advertised max-message-size: [`DEFAULT_MAX_MESSAGE_SIZE`]
-    /// until the channel opens, and when the remote SDP does not say.
+    /// The largest message the other side accepts: its SDP's
+    /// `a=max-message-size` (RFC 8841), capped by what the local stack
+    /// supports. [`DEFAULT_MAX_MESSAGE_SIZE`] until the channel opens, and
+    /// when the remote SDP does not say, on both backends.
     pub fn max_message_size(&self) -> usize {
         self.with(|c| c.max_message_size)
             .unwrap_or(DEFAULT_MAX_MESSAGE_SIZE)

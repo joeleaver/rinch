@@ -73,7 +73,10 @@ fn an_empty_queue_admits_a_message_larger_than_the_limit() {
 }
 
 #[test]
-fn low_water_fires_only_at_or_below_the_threshold() {
+fn the_stacks_low_water_edge_fires_even_with_a_send_pending() {
+    // The stack crossed its threshold; the app has since queued more (still
+    // pending in the mirror). Gating on the mirror would swallow the edge,
+    // and an app that sends only from on_low would stall for good.
     let (id, ch) = fake_channel(1 << 20, 1 << 16);
     let lows = Rc::new(Cell::new(0));
     let l = lows.clone();
@@ -81,22 +84,16 @@ fn low_water_fires_only_at_or_below_the_threshold() {
     with_peer(id, |e| {
         e.channels.get_mut(&ch.key).unwrap().low_threshold = 100
     });
+    ch.send(vec![0; 5_000]).unwrap();
+    assert_eq!(ch.buffered_amount(), 5_000);
     dispatch(
         id,
         Event::Low {
             key: ch.key,
-            amount: 150,
+            amount: 0,
         },
     );
-    assert_eq!(lows.get(), 0, "150 is above the threshold");
-    dispatch(
-        id,
-        Event::Low {
-            key: ch.key,
-            amount: 100,
-        },
-    );
-    assert_eq!(lows.get(), 1);
+    assert_eq!(lows.get(), 1, "the falling edge reaches on_low");
     remove_peer(id);
 }
 
@@ -253,4 +250,35 @@ fn config_validation() {
         }])
         .is_err()
     );
+}
+
+#[test]
+fn the_remote_sdp_sets_max_message_size_the_same_way_on_both_backends() {
+    assert_eq!(
+        advertised_max_message_size("v=0\r\na=max-message-size:262144\r\n"),
+        Some(262_144)
+    );
+    assert_eq!(advertised_max_message_size("v=0\r\n"), None);
+    for (advertised, stack, expect) in [
+        (None, 262_144, 65_536),
+        (Some(262_144), 262_144, 262_144),
+        (Some(1_000_000), 262_144, 262_144),
+        (Some(0), 262_144, 262_144),
+    ] {
+        let (id, ch) = fake_channel(1 << 20, 0);
+        with_peer(id, |e| {
+            e.remote_max_message_size = advertised;
+            e.channels.get_mut(&ch.key).unwrap().state = ChannelState::Connecting;
+        });
+        dispatch(
+            id,
+            Event::Open {
+                key: ch.key,
+                id: None,
+                max_message_size: stack,
+            },
+        );
+        assert_eq!(ch.max_message_size(), expect, "advertised {advertised:?}");
+        remove_peer(id);
+    }
 }

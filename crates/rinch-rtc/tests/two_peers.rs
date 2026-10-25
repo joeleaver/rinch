@@ -52,6 +52,12 @@ fn two_peers_in_one_app() {
     let tick_opts = ChannelOptions::negotiated(5, Reliability::Unreliable { max_retransmits: 0 });
     let tick_a = a.create_data_channel("tick", tick_opts).unwrap();
     let tick_b = b.create_data_channel("tick", tick_opts).unwrap();
+    // A second channel on stream 5: webrtc-rs would take it and leave
+    // "tick" open but deaf. Refused instead.
+    assert!(matches!(
+        a.create_data_channel("dup", tick_opts),
+        Err(rinch_rtc::RtcError::InvalidState(_))
+    ));
 
     let heard: Rc<RefCell<Option<Channel>>> = Rc::default();
     let h = heard.clone();
@@ -64,9 +70,26 @@ fn two_peers_in_one_app() {
     // before the remote description are held by rinch-rtc, so they are
     // forwarded as they come.
     let offer = drive(a.create_offer(), T).unwrap();
+    // A remote description that fails leaves b holding candidates: they go
+    // out only once one is applied, so none reaches the stack early (where
+    // it would be refused, and reported through on_error).
+    assert!(
+        drive(
+            b.set_remote_description(rinch_rtc::Description::offer("v=0\r\ngarbage\r\n")),
+            T
+        )
+        .is_err()
+    );
+    assert!(pump_until(|| a_ends.get() == 1, T), "a gathered everything");
     for c in a_out.borrow_mut().drain(..) {
         b.add_ice_candidate(c);
     }
+    let _ = pump_until(|| false, std::time::Duration::from_millis(300));
+    assert!(
+        errors.borrow().is_empty(),
+        "held, not refused: {:?}",
+        errors.borrow()
+    );
     drive(b.set_remote_description(offer), T).unwrap();
     let answer = drive(b.create_answer(), T).unwrap();
     drive(a.set_remote_description(answer), T).unwrap();

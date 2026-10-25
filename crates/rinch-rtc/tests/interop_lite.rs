@@ -27,6 +27,7 @@ struct Client {
     states: Rc<RefCell<Vec<PeerState>>>,
     candidates: Rc<Cell<usize>>,
     ends: Rc<Cell<usize>>,
+    offer: String,
 }
 
 fn record(ch: &Channel, log: &Log) {
@@ -68,7 +69,7 @@ fn connect(lite: &LitePeer, gathering: Gathering) -> Client {
     });
 
     let offer = drive(peer.create_offer(), T).expect("offer");
-    let answer = lite.answer(&offer.sdp);
+    let answer = munge(lite.answer(&offer.sdp));
     drive(peer.set_remote_description(Description::answer(answer)), T).expect("answer");
     assert!(
         pump_until(
@@ -86,7 +87,40 @@ fn connect(lite: &LitePeer, gathering: Gathering) -> Client {
         states,
         candidates,
         ends,
+        offer: offer.sdp,
     }
+}
+
+thread_local! {
+    /// Replace the answer's a=max-message-size with this, when set.
+    static ADVERTISE: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+fn munge(answer: String) -> String {
+    match ADVERTISE.with(Cell::get) {
+        None => answer,
+        Some(n) => answer
+            .split_inclusive("\r\n")
+            .map(|l| {
+                if l.starts_with("a=max-message-size:") {
+                    format!("a=max-message-size:{n}\r\n")
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect(),
+    }
+}
+
+fn ufrag(sdp: &str) -> String {
+    sdp.lines()
+        .find(|l| l.starts_with("a=ice-ufrag:"))
+        .unwrap_or("")
+        .to_string()
+}
+
+fn settle() {
+    let _ = pump_until(|| false, Duration::from_millis(500));
 }
 
 fn echoed(log: &Log, label: &str) -> usize {
@@ -107,6 +141,7 @@ fn interop_with_a_str0m_ice_lite_peer() {
     the_server_closing_a_channel_closes_it();
     close_closes_every_channel_then_the_peer();
     ice_restart_keeps_the_channels();
+    the_remote_max_message_size_is_what_send_allows();
     many_peers_on_one_worker();
     // Last: it shortens ICE timers for every peer made after it.
     a_silent_server_goes_disconnected_then_failed();
@@ -118,11 +153,12 @@ fn negotiated_channels_echo_and_the_server_counts_them() {
     assert_eq!(c.peer.state(), PeerState::Connected);
     assert_eq!(c.control.id(), Some(0));
     assert_eq!(c.tick.id(), Some(1));
-    // str0m's answer has no a=max-message-size: RFC 8841's 64 KiB.
-    assert_eq!(c.control.max_message_size(), 65_536);
+    // str0m's answer advertises a=max-message-size:262144, and rinch-rtc's
+    // native side accepts as much (it would be webrtc-rs's 64 KiB otherwise).
+    assert_eq!(c.control.max_message_size(), 262_144);
 
     c.control.send(b"hello".to_vec()).unwrap();
-    c.control.send(vec![7u8; 60_000]).unwrap();
+    c.control.send(vec![7u8; 200_000]).unwrap();
     for i in 0..3u8 {
         c.tick.send(vec![i; 10]).unwrap();
     }
@@ -131,18 +167,38 @@ fn negotiated_channels_echo_and_the_server_counts_them() {
         pump_until(
             || {
                 let s = lite.stats();
-                s.received.get("control") == Some(&60_005) && s.messages.contains_key("tick")
+                s.received.get("control") == Some(&200_005) && s.messages.contains_key("tick")
             },
             T
         ),
         "server stats {:?}",
         lite.stats()
     );
-    assert!(pump_until(|| echoed(&c.log, "control") == 60_005, T));
+    assert!(pump_until(|| echoed(&c.log, "control") == 200_005, T));
     // Unreliable: on loopback all three arrive, in some order.
     assert!(pump_until(|| echoed(&c.log, "tick") == 30, T));
     // Trickle: candidates were offered, and end-of-candidates came once.
     assert!(pump_until(|| c.ends.get() == 1, T));
+    settle();
+    assert_eq!(c.ends.get(), 1, "end-of-candidates exactly once per round");
+    // The reliability each channel was created with, as the stack holds it.
+    use rinch_rtc::testing::{ChannelSettings, channel_settings};
+    assert_eq!(
+        channel_settings(&c.control),
+        Some(ChannelSettings {
+            ordered: true,
+            max_retransmits: None,
+            negotiated: true
+        })
+    );
+    assert_eq!(
+        channel_settings(&c.tick),
+        Some(ChannelSettings {
+            ordered: false,
+            max_retransmits: Some(0),
+            negotiated: true
+        })
+    );
     assert!(c.candidates.get() >= 1);
     assert_eq!(c.states.borrow().last(), Some(&PeerState::Connected));
 }
@@ -190,6 +246,24 @@ fn in_band_channels_both_ways() {
         T
     ));
     chat.send(b"hi".to_vec()).unwrap();
+    // An in-band unreliable channel: its settings reach the server over DCEP.
+    let lossy = c
+        .peer
+        .create_data_channel(
+            "lossy",
+            ChannelOptions::new(Reliability::Unreliable { max_retransmits: 3 }),
+        )
+        .unwrap();
+    assert!(pump_until(|| lite.stats().configs.contains_key("lossy"), T));
+    assert_eq!(
+        lite.stats().configs["lossy"],
+        (false, "MaxRetransmits { retransmits: 3 }".to_string())
+    );
+    assert_eq!(lite.stats().configs["chat"], (true, "Reliable".to_string()));
+    assert_eq!(
+        rinch_rtc::testing::channel_settings(&lossy).map(|s| (s.ordered, s.max_retransmits)),
+        Some((false, Some(3)))
+    );
     assert!(pump_until(|| echoed(&c.log, "chat") == 2, T));
     assert_eq!(
         chat.id(),
@@ -235,10 +309,10 @@ fn send_refusals_and_the_low_water_mark() {
     ch.on_buffered_amount_low(move || l.set(l.get() + 1));
 
     assert_eq!(
-        ch.send(vec![0u8; 65_537]),
+        ch.send(vec![0u8; 262_145]),
         Err(SendError::TooLarge {
-            len: 65_537,
-            max: 65_536
+            len: 262_145,
+            max: 262_144
         })
     );
     // An empty queue admits one; the next would pass the 100 000 limit and
@@ -327,8 +401,14 @@ fn close_closes_every_channel_then_the_peer() {
 fn ice_restart_keeps_the_channels() {
     let lite = LitePeer::spawn();
     let c = connect(&lite, Gathering::Trickle);
+    assert!(pump_until(|| c.ends.get() == 1, T));
     c.peer.restart_ice();
     let offer = drive(c.peer.create_offer(), T).unwrap();
+    assert_ne!(
+        ufrag(&offer.sdp),
+        ufrag(&c.offer),
+        "a restart offer has new ICE credentials"
+    );
     let answer = lite.answer(&offer.sdp);
     assert_eq!(lite.stats().offers, 2);
     drive(
@@ -339,6 +419,37 @@ fn ice_restart_keeps_the_channels() {
     c.control.send(b"after-restart".to_vec()).unwrap();
     assert!(pump_until(|| echoed(&c.log, "control") == 13, T));
     assert_eq!(c.control.state(), ChannelState::Open);
+    // The restart's round of gathering ends once too.
+    assert!(pump_until(|| c.ends.get() == 2, T));
+    settle();
+    assert_eq!(c.ends.get(), 2, "end-of-candidates exactly once per round");
+    // Positive control for the ufrag check: an offer without restart_ice()
+    // keeps the credentials.
+    let again = drive(c.peer.create_offer(), T).unwrap();
+    assert_eq!(ufrag(&again.sdp), ufrag(&offer.sdp));
+}
+
+fn the_remote_max_message_size_is_what_send_allows() {
+    // str0m advertises 256 KiB, more than webrtc-rs's own 64 KiB default:
+    // a 200 kB message goes, round trip (negotiated_channels_... above).
+    // Here the answer is rewritten to advertise less.
+    ADVERTISE.with(|a| a.set(Some(16_384)));
+    let lite = LitePeer::spawn();
+    let c = connect(&lite, Gathering::Trickle);
+    ADVERTISE.with(|a| a.set(None));
+    assert_eq!(c.control.max_message_size(), 16_384);
+    assert_eq!(
+        c.control.send(vec![0u8; 16_385]),
+        Err(SendError::TooLarge {
+            len: 16_385,
+            max: 16_384
+        })
+    );
+    c.control.send(vec![0u8; 16_384]).unwrap();
+    assert!(pump_until(
+        || lite.stats().received.get("control") == Some(&16_384),
+        T
+    ));
 }
 
 fn many_peers_on_one_worker() {

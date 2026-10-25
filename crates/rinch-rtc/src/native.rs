@@ -9,7 +9,7 @@
 //! events.
 //!
 //! Everything reaches the main thread as a [`registry::Event`] through
-//! `rinch_core::run_on_main_thread`; only ids and `Send` payloads cross. The
+//! `rinch_core::dispatch_main_callback`; only ids and `Send` payloads cross. The
 //! design (and the spike it rests on) is in
 //! `docs/design/webrtc-data-channels.md`, section 3.3.
 
@@ -36,8 +36,20 @@ use crate::{
 
 /// Commands from the main thread.
 enum Cmd {
-    New { id: u64, config: RtcConfig },
-    Peer { id: u64, cmd: PeerCmd },
+    New {
+        id: u64,
+        config: RtcConfig,
+    },
+    Peer {
+        id: u64,
+        cmd: PeerCmd,
+    },
+    /// The process is exiting (an `atexit` handler): close every peer, so
+    /// the far ends see the association end rather than waiting for ICE to
+    /// time out, and TURN allocations are released. `ack` once done.
+    Shutdown {
+        ack: std::sync::mpsc::Sender<()>,
+    },
 }
 
 /// One peer's commands, handled in order by its task.
@@ -77,7 +89,21 @@ enum PeerCmd {
     },
     Close {
         notify: bool,
+        done: Option<tokio::sync::oneshot::Sender<()>>,
     },
+    /// Test hook: the channel's settings as webrtc-rs holds them.
+    Inspect {
+        key: u64,
+        reply: std::sync::mpsc::Sender<Option<ChannelSettings>>,
+    },
+}
+
+/// A channel's settings as the stack holds them (test hook).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChannelSettings {
+    pub ordered: bool,
+    pub max_retransmits: Option<u16>,
+    pub negotiated: bool,
 }
 
 static WORKER: OnceLock<mpsc::UnboundedSender<Cmd>> = OnceLock::new();
@@ -92,7 +118,14 @@ fn worker() -> Result<&'static mpsc::UnboundedSender<Cmd>, RtcError> {
         .spawn(move || run(rx));
     match spawned {
         // Another thread cannot race this: peers are made on the main thread.
-        Ok(_) => Ok(WORKER.get_or_init(|| tx)),
+        Ok(_) => {
+            let tx = WORKER.get_or_init(|| tx);
+            // SAFETY: registering a plain `extern "C" fn` with no captures.
+            unsafe {
+                libc::atexit(shut_down_at_exit);
+            }
+            Ok(tx)
+        }
         Err(e) => Err(RtcError::Internal(format!(
             "could not start the rinch-rtc worker: {e}"
         ))),
@@ -119,9 +152,29 @@ fn post(id: u64, cmd: PeerCmd) {
     }
 }
 
-/// Report `event` for peer `id` on the main thread.
+/// How long process exit waits for the worker to close every peer.
+const EXIT_GRACE: Duration = Duration::from_millis(500);
+
+/// `atexit`: close every peer before the process goes (design record 1.5).
+/// Without it the far end of a peer still open at exit hears nothing until
+/// its ICE consent checks time out. A process killed outright (SIGKILL, a
+/// crash) still closes nothing.
+extern "C" fn shut_down_at_exit() {
+    if let Some(tx) = WORKER.get() {
+        let (ack, done) = std::sync::mpsc::channel();
+        if tx.send(Cmd::Shutdown { ack }).is_ok() {
+            let _ = done.recv_timeout(EXIT_GRACE);
+        }
+    }
+}
+
+/// Report `event` for peer `id` on the main thread. Through
+/// `dispatch_main_callback`, not `run_on_main_thread`: a peer made before
+/// the host has installed its dispatcher (before `App::run`) has its events
+/// queued until the host drains them, where `run_on_main_thread` would panic
+/// the worker.
 fn emit(id: u64, event: Event) {
-    rinch_core::run_on_main_thread(move || registry::dispatch(id, event));
+    rinch_core::dispatch_main_callback(Box::new(move || registry::dispatch(id, event)));
 }
 
 // ------------------------------------------------- the main-thread surface
@@ -181,7 +234,7 @@ pub(crate) fn close(id: u64, notify: bool) {
     if let Some(tx) = WORKER.get() {
         let _ = tx.send(Cmd::Peer {
             id,
-            cmd: PeerCmd::Close { notify },
+            cmd: PeerCmd::Close { notify, done: None },
         });
     }
 }
@@ -215,6 +268,22 @@ pub mod testing {
     /// takes seconds.
     pub fn set_ice_timeouts(disconnected: Duration, failed: Duration, keepalive: Duration) {
         super::OVERRIDES.lock().unwrap().ice_timeouts = Some((disconnected, failed, keepalive));
+    }
+
+    pub use super::ChannelSettings;
+
+    /// The channel's settings as webrtc-rs holds them, asked of the worker
+    /// directly (blocks up to 5 s; no main-thread pumping needed).
+    pub fn channel_settings(channel: &crate::Channel) -> Option<ChannelSettings> {
+        let (reply, rx) = std::sync::mpsc::channel();
+        super::post(
+            channel.peer,
+            super::PeerCmd::Inspect {
+                key: channel.key,
+                reply,
+            },
+        );
+        rx.recv_timeout(Duration::from_secs(5)).ok().flatten()
     }
 }
 
@@ -254,6 +323,28 @@ fn run(mut rx: mpsc::UnboundedReceiver<Cmd>) {
                     });
                     peers.insert(id, tx);
                 }
+                Cmd::Shutdown { ack } => {
+                    let mut waits = Vec::new();
+                    for (_, tx) in peers.drain() {
+                        let (done, wait) = tokio::sync::oneshot::channel();
+                        if tx
+                            .send(PeerCmd::Close {
+                                notify: false,
+                                done: Some(done),
+                            })
+                            .is_ok()
+                        {
+                            waits.push(wait);
+                        }
+                    }
+                    let all = async {
+                        for w in waits {
+                            let _ = w.await;
+                        }
+                    };
+                    let _ = tokio::time::timeout(EXIT_GRACE, all).await;
+                    let _ = ack.send(());
+                }
                 Cmd::Peer { id, cmd } => {
                     let last = matches!(cmd, PeerCmd::Close { .. });
                     if let Some(tx) = peers.get(&id) {
@@ -271,6 +362,12 @@ fn run(mut rx: mpsc::UnboundedReceiver<Cmd>) {
 struct Handler {
     id: u64,
     trickle: bool,
+    /// End-of-candidates was reported for the current gathering round:
+    /// webrtc-rs can report `Complete` more than once per round (host and
+    /// relay gathering each finish), and `on_ice_candidate(None)` is once.
+    /// A round starts at `Gathering`, or at an ICE restart's offer (webrtc-rs
+    /// does not always report `Gathering` for it).
+    ended: Arc<std::sync::atomic::AtomicBool>,
     gathered: Arc<watch::Sender<bool>>,
     me: mpsc::UnboundedSender<PeerCmd>,
 }
@@ -298,11 +395,14 @@ impl PeerConnectionEventHandler for Handler {
         match s {
             RTCIceGatheringState::Complete => {
                 let _ = self.gathered.send(true);
-                if self.trickle {
+                let first = !self.ended.swap(true, std::sync::atomic::Ordering::Relaxed);
+                if self.trickle && first {
                     emit(self.id, Event::Candidate(None));
                 }
             }
             RTCIceGatheringState::Gathering => {
+                self.ended
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
                 let _ = self.gathered.send(false);
             }
             _ => {}
@@ -374,7 +474,14 @@ async fn build(
             IceTransportPolicy::Relay => RTCIceTransportPolicy::Relay,
         })
         .build();
-    let mut setting = SettingEngineBuilder::new();
+    // Accept (and so advertise, and send up to) 256 KiB messages, Chrome's
+    // limit, instead of webrtc-rs's 64 KiB default: the same app then gets the
+    // same max_message_size() on both backends.
+    let mut setting = SettingEngineBuilder::new().with_sctp_max_message_size(
+        rtc::peer_connection::configuration::setting_engine::SctpMaxMessageSize::Bounded(
+            crate::NATIVE_MAX_MESSAGE_SIZE as u32,
+        ),
+    );
     if let Some((d, f, k)) = overrides.ice_timeouts {
         setting = setting.with_ice_timeouts(Some(d), Some(f), Some(k));
     }
@@ -387,6 +494,10 @@ async fn build(
         .with_runtime(Arc::new(TokioRuntime))
         .with_handler(Arc::new(handler))
         .with_udp_addrs(bind)
+        // The backstop behind rinch's own per-channel limit (design record
+        // 5): should the main thread's mirror ever undercount, sends wait on
+        // the worker instead of growing without bound.
+        .with_data_channel_send_buffer_limit(crate::MAX_SEND_BUFFER_LIMIT)
         .build()
         .await
         .map_err(|e| RtcError::Internal(format!("peer {id}: {e}")))?;
@@ -400,10 +511,12 @@ async fn peer_task(
     me: mpsc::UnboundedSender<PeerCmd>,
 ) {
     let gathered = Arc::new(watch::Sender::new(false));
+    let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let trickle = config.gathering == Gathering::Trickle;
     let handler = Handler {
         id,
         trickle,
+        ended: ended.clone(),
         gathered: gathered.clone(),
         me,
     };
@@ -423,11 +536,17 @@ async fn peer_task(
                             result: Err(e.clone()),
                         },
                     ),
-                    PeerCmd::Close { notify } => {
+                    PeerCmd::Close { notify, done } => {
                         if notify {
                             emit(id, Event::Closed);
                         }
+                        if let Some(d) = done {
+                            let _ = d.send(());
+                        }
                         return;
+                    }
+                    PeerCmd::Inspect { reply, .. } => {
+                        let _ = reply.send(None);
                     }
                     _ => {}
                 }
@@ -472,6 +591,9 @@ async fn peer_task(
                 }
             }
             PeerCmd::Offer { req, restart } => {
+                if restart {
+                    ended.store(false, std::sync::atomic::Ordering::Relaxed);
+                }
                 if restart && let Err(e) = pc.restart_ice().await {
                     emit(
                         id,
@@ -564,12 +686,35 @@ async fn peer_task(
                 channels.insert(key, dc.clone());
                 tokio::spawn(pump(id, key, dc, pc.clone()));
             }
-            PeerCmd::Close { notify } => {
+            PeerCmd::Close { notify, done } => {
                 let _ = pc.close().await;
                 if notify {
                     emit(id, Event::Closed);
                 }
+                if let Some(d) = done {
+                    let _ = d.send(());
+                }
                 return;
+            }
+            PeerCmd::Inspect { key, reply } => {
+                let settings = match channels.get(&key) {
+                    Some(dc) => match (
+                        dc.ordered().await,
+                        dc.max_retransmits().await,
+                        dc.negotiated().await,
+                    ) {
+                        (Ok(ordered), Ok(max_retransmits), Ok(negotiated)) => {
+                            Some(ChannelSettings {
+                                ordered,
+                                max_retransmits,
+                                negotiated,
+                            })
+                        }
+                        _ => None,
+                    },
+                    None => None,
+                };
+                let _ = reply.send(settings);
             }
         }
     }
@@ -628,6 +773,7 @@ async fn pump(id: u64, key: u64, dc: Arc<dyn DataChannel>, pc: Arc<dyn PeerConne
                     id,
                     Event::Open {
                         key,
+                        id: None,
                         max_message_size: max,
                     },
                 );

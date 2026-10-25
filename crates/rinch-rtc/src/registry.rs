@@ -43,6 +43,8 @@ pub(crate) enum Event {
     },
     Open {
         key: u64,
+        /// The SCTP stream id, when the stack reports it (the web does).
+        id: Option<u16>,
         max_message_size: usize,
     },
     Message {
@@ -155,10 +157,16 @@ struct Reply {
 /// A peer as the main thread knows it.
 pub(crate) struct PeerEntry {
     pub(crate) state: PeerState,
-    /// `set_remote_description` has been called. Until then remote
-    /// candidates wait in `early`; after it they are forwarded at once, and
-    /// the backend's in-order queue puts them behind it.
+    /// A remote description has been applied. Until then remote candidates
+    /// wait in `early`.
     pub(crate) has_remote: bool,
+    /// The remote SDP's `a=max-message-size`: `None` until a remote
+    /// description is set or when it has none (RFC 8841: 64 KiB then),
+    /// `Some(0)` for "no limit".
+    pub(crate) remote_max_message_size: Option<usize>,
+    /// The `set_remote_description` in flight: its request id and the
+    /// max-message-size its SDP advertises. Applied on its successful reply.
+    pub(crate) remote_pending: Option<(u64, Option<usize>)>,
     pub(crate) early: Vec<Option<IceCandidate>>,
     /// `restart_ice()` was called; the next offer restarts ICE.
     pub(crate) restart: bool,
@@ -176,6 +184,8 @@ impl PeerEntry {
         Self {
             state: PeerState::New,
             has_remote: false,
+            remote_max_message_size: None,
+            remote_pending: None,
             early: Vec::new(),
             restart: false,
             closing: false,
@@ -256,6 +266,26 @@ pub(crate) async fn reply(id: u64, req: u64) -> Result<Option<Description>, RtcE
 pub(crate) fn dispatch(id: u64, event: Event) {
     match event {
         Event::Reply { req, result } => {
+            // A set_remote_description that succeeded: from now on remote
+            // candidates go straight to the stack, and the held ones follow it.
+            let applied = result.is_ok();
+            let early = with_peer(id, |e| match e.remote_pending {
+                Some((r, advertised)) if r == req => {
+                    e.remote_pending = None;
+                    if applied {
+                        e.has_remote = true;
+                        e.remote_max_message_size = advertised;
+                        std::mem::take(&mut e.early)
+                    } else {
+                        Vec::new()
+                    }
+                }
+                _ => Vec::new(),
+            })
+            .unwrap_or_default();
+            for c in early {
+                crate::backend::add_candidate(id, c);
+            }
             let waker = with_peer(id, |e| {
                 e.replies.get_mut(&req).and_then(|r| {
                     r.result = Some(result);
@@ -304,11 +334,23 @@ pub(crate) fn dispatch(id: u64, event: Event) {
         }
         Event::Open {
             key,
+            id: sid,
             max_message_size,
         } => {
             let opened = with_peer(id, |e| {
+                // What the remote SDP says, applied the same way on both
+                // backends (RFC 8841: absent means 64 KiB, 0 means no limit).
+                // Chrome reports 256 KiB to a peer whose SDP says nothing.
+                let advertised = match e.remote_max_message_size {
+                    Some(0) => usize::MAX,
+                    Some(n) => n,
+                    None => crate::DEFAULT_MAX_MESSAGE_SIZE,
+                };
                 e.channels.get_mut(&key).is_some_and(|c| {
-                    c.max_message_size = max_message_size;
+                    c.max_message_size = max_message_size.min(advertised);
+                    if sid.is_some() {
+                        c.id = sid;
+                    }
                     if c.state == ChannelState::Connecting {
                         c.state = ChannelState::Open;
                         true
@@ -339,10 +381,13 @@ pub(crate) fn dispatch(id: u64, event: Event) {
             });
         }
         Event::Low { key, amount } => {
+            // The stack's own falling edge, passed on as a browser does: not
+            // gated on the mirror, whose pending bytes (a send made since)
+            // would swallow it and stall an app that sends from on_low.
             let low = with_peer(id, |e| {
                 e.channels.get_mut(&key).is_some_and(|c| {
                     c.reported = amount;
-                    c.state == ChannelState::Open && c.buffered() <= c.low_threshold
+                    c.state == ChannelState::Open
                 })
             });
             if low == Some(true) {
