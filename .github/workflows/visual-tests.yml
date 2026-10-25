@@ -39,7 +39,7 @@ jobs:
         with:
           packages: >-
             libgtk-3-dev libglib2.0-dev libatk1.0-dev libcairo2-dev
-            libpango1.0-dev libgdk-pixbuf-2.0-dev libxdo-dev libmpv-dev
+            libpango1.0-dev libgdk-pixbuf-2.0-dev libclang-dev libxdo-dev libmpv-dev
             xvfb x11-utils libxkbcommon-dev libwayland-dev libasound2-dev
 
       - name: Setup Node.js
