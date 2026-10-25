@@ -15,7 +15,9 @@ use crate::transform::step_map::{Mapping, StepMap};
 use std::any::Any;
 
 /// Map every inline node in `fragment` through `f`, recursing into block content.
-/// Port of `mapFragment` (the `i` index argument is unused here and dropped).
+/// Port of `mapFragment` (the `i` index argument is unused here and dropped). Like
+/// it, the result joins the text nodes the mapping leaves with equal marks
+/// (`Fragment.fromArray`): removing a mark from `<b>a</b>b` is one text node `ab`.
 fn map_inline<F: Fn(&Node, &Node) -> Node>(fragment: &Fragment, parent: &Node, f: &F) -> Fragment {
     let mut mapped = Vec::with_capacity(fragment.child_count());
     for child in fragment.children() {
@@ -29,7 +31,7 @@ fn map_inline<F: Fn(&Node, &Node) -> Node>(fragment: &Fragment, parent: &Node, f
         }
         mapped.push(child);
     }
-    Fragment::from_children(mapped)
+    Fragment::from_array(mapped)
 }
 
 /// True for inline nodes that can carry marks (text and inline leaves/atoms) —

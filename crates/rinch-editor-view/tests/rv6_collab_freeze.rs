@@ -1,7 +1,7 @@
 //! Review round 6 of #1233: the selection and preedit across a cure, the freeze and
 //! the read-only consumers, a read-only editor's cure, a load while frozen, honest
-//! peers freezing each other — and, ignored, undo across a remote change or a cure,
-//! which replays at stale positions on main too (#1249).
+//! peers freezing each other — and undo across a remote change or a cure, which used
+//! to replay at stale positions (#1249).
 #![cfg(feature = "collaboration")]
 
 use rinch_editor_core::*;
@@ -114,11 +114,10 @@ fn end_of(h: &EditorHandle, t: &str) -> Pos {
     panic!("no {t} in {}", html(h))
 }
 
-/// Undo of a local edit after a remote insertion before it: the history is not mapped
-/// through non-history transactions, so the inverse step lands in the peer's text.
-/// Pre-existing on main; the cure is one more such transaction.
+/// Undo of a local edit after a remote insertion before it: the history used not to be
+/// mapped through non-history transactions, so the inverse step landed in the peer's
+/// text (#1249). The cure is one more such transaction.
 #[test]
-#[ignore = "#1249: undo replays at stale positions after a remote change"]
 fn rv6_undo_after_a_remote_insert_above_undoes_my_edit_not_a_peers_text() {
     let (host, guest, to_host, to_guest) = setup(false);
     guest.set_selection(Selection::cursor(end_of(&guest, "tail")));
@@ -147,13 +146,14 @@ fn rv6_undo_after_a_remote_insert_above_undoes_my_edit_not_a_peers_text() {
         "{}",
         html(&guest)
     );
-    assert!(!html(&guest).contains("XYZ") || !undone, "{}", html(&guest));
+    assert!(undone, "the undo applies");
+    assert!(!html(&guest).contains("XYZ"), "{}", html(&guest));
     assert_eq!(html(&guest), html(&host));
 }
 
-/// Undo across a freeze and its cure: the same #1249 replay, through the cure.
+/// Undo across a freeze and its cure: the same #1249 replay, through the cure. The
+/// undo reverts my `XYZ` and nothing of the peer's.
 #[test]
-#[ignore = "#1249: undo replays at stale positions after a remote change"]
 fn rv6_undo_after_a_cure_undoes_my_edit_not_a_peers_text() {
     let (host, guest, to_host, _to_guest) = setup(true);
     guest.set_selection(Selection::cursor(end_of(&guest, "tail")));
@@ -175,6 +175,8 @@ fn rv6_undo_after_a_cure_undoes_my_edit_not_a_peers_text() {
         html(&guest)
     );
     assert!(html(&guest).contains("tail"), "{}", html(&guest));
+    assert!(undone, "the undo applies");
+    assert!(!html(&guest).contains("XYZ"), "{}", html(&guest));
     assert_eq!(html(&guest), html(&host));
 }
 

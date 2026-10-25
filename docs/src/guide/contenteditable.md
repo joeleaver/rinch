@@ -1854,6 +1854,17 @@ that fans each delta it receives out to the other peers, forwarding the raw byte
 unchanged. A chain — A wired to B, B wired to C, with nothing joining A and C —
 silently partitions: C never sees A's edits, and nothing errors.
 
+**Undo reverts your own edits.** A peer's edit never enters your undo history, and
+your undo steps follow the text through peers' changes: Ctrl+Z after a peer typed
+before, after or inside your edit, bolded or retyped your paragraph, wrapped it in a
+quote or moved a block past it, reverts your edit where it now is (#1249). A step
+whose text a peer deleted is skipped, and so is one that no longer fits (re-making a
+code block of a paragraph a peer has since made bold); the rest of that undo still
+applies, and the undo is used up. One limit: the editor tells your text from a peer's
+by comparing the document before and after their change, so where the two hold
+identical copies (the same word pasted beside yours, two empty paragraphs made at
+once, line breaks side by side) an undo can land on the peer's copy (#1895).
+
 If a peer might have missed deltas — offline, reconnecting, or polling over HTTP with
 no persistent connection at all — reconcile with a **state vector + diff** exchange
 instead of relying on delta delivery being perfect:
