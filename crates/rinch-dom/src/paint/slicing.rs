@@ -18,8 +18,18 @@
 //!   draws and closed before any push or pop, so it never wraps anything else
 //!   and never splits a layer.
 //!
-//! Clips and layers are mirrored into every above scene (the ones open at the
-//! split replayed at its start), so pops balance everywhere.
+//! Each surface has two above scenes, both in R's coordinates:
+//! - **`above_in`**, what is painted while every clip and layer open at the
+//!   split is still open, **without** those (the compositor applies their
+//!   coverage once, to the surface and `above_in` together, as the scene
+//!   does; applying it to each separately conflates on an antialiased ring);
+//! - **`above_out`**, what is painted after the first of them closes, with
+//!   the ones still open replayed when it starts. If one still open is not a
+//!   whole-pixel rect clip and a draw lands over R, the slice is tainted
+//!   (D5a's repaint): its antialiased ring would need a level of its own.
+//!
+//! Pushes and pops after the split are mirrored into whichever scene is
+//! current, so pops balance everywhere.
 use peniko::kurbo::{Affine, BezPath, Rect, Shape};
 use peniko::{Color, Fill};
 use vello::Scene;
@@ -34,11 +44,17 @@ pub struct SurfaceSlice {
     /// R: `(x, y, width, height)` in device pixels, inside the window.
     /// Empty when the surface is wholly off-screen.
     pub region: (u32, u32, u32, u32),
-    /// The content painted over the surface, in R's coordinates (R's origin
-    /// at `(0, 0)`). `None` when nothing was: the common case.
-    pub above: Option<Scene>,
-    /// How much of each pixel the surface covers.
-    pub coverage: SliceCoverage,
+    /// What was painted over the surface while the clips and layers open
+    /// around it were still open, without them, in R's coordinates (R's
+    /// origin at `(0, 0)`). `None` when nothing was: the common case.
+    pub above_in: Option<Scene>,
+    /// What was painted over it after they closed, likewise.
+    pub above_out: Option<Scene>,
+    /// The surface's own coverage: its image rect under its inner radius and
+    /// `object-fit` clip.
+    pub own: SliceCoverage,
+    /// The coverage of the clips open around it.
+    pub ancestors: SliceCoverage,
     /// The image-to-device transform the in-scene fill encodes (the fill's
     /// transform times its centre-sampling brush transform).
     pub device_from_image: [f64; 6],
@@ -54,8 +70,8 @@ pub enum SliceCoverage {
     /// All of each pixel inside `[x0, y0, x1, y1]` (device pixels), none
     /// outside: the image rect and every clip on it are whole-pixel rects.
     Rect([u32; 4]),
-    /// Vello's coverage of the image rect under the clip chain: a scene in
-    /// R's coordinates, the clips replayed and the rect filled white.
+    /// Vello's coverage: a scene in R's coordinates, the clips replayed and a
+    /// rect filled white.
     Mask(Box<Scene>),
 }
 
@@ -86,10 +102,25 @@ pub(crate) struct Slice {
     pub(crate) r: Rect,
     /// Device → R's coordinates.
     pub(crate) to_r: Affine,
-    pub(crate) above: Scene,
-    pub(crate) above_draws: usize,
-    /// How many entries were open at the split (replayed into `above`).
+    pub(crate) above_in: Scene,
+    pub(crate) above_in_draws: usize,
+    /// Started when the first entry open at the split closes.
+    pub(crate) above_out: Option<Scene>,
+    pub(crate) above_out_draws: usize,
+    /// How many entries were open at the split.
     pub(crate) depth: usize,
+    /// How many of those are still open (`depth` until the first closes).
+    pub(crate) remaining: usize,
+}
+
+impl Slice {
+    /// The scene a draw or a push lands in now.
+    fn current(&mut self) -> &mut Scene {
+        match &mut self.above_out {
+            Some(out) => out,
+            None => &mut self.above_in,
+        }
+    }
 }
 
 pub(crate) struct Slicing {
@@ -113,6 +144,36 @@ fn contains(outer: Rect, inner: Rect) -> bool {
 fn axis_aligned(t: Affine) -> bool {
     let [a, b, c, d, e, f] = t.as_coeffs();
     b == 0.0 && c == 0.0 && a > 0.0 && d > 0.0 && e.is_finite() && f.is_finite()
+}
+
+fn rect_u32(r: Rect) -> [u32; 4] {
+    if r.width() > 0.0 && r.height() > 0.0 {
+        [r.x0 as u32, r.y0 as u32, r.x1 as u32, r.y1 as u32]
+    } else {
+        [0; 4]
+    }
+}
+
+/// A clip that is a rect on whole pixels: its device rect.
+fn whole_pixel_clip_rect(o: &Open) -> Option<Rect> {
+    match o {
+        Open::Clip {
+            transform,
+            shape: PaintShape::Rect(rect),
+            ..
+        } => whole_pixel_rect(*transform, *rect),
+        _ => None,
+    }
+}
+
+/// An open entry whose coverage is 0 or 1 everywhere: a whole-pixel rect
+/// clip, or a layer that is not a clip at all (a normal layer at opacity 1,
+/// the only kind a split allows open).
+fn whole_pixel_clip(o: &Open) -> bool {
+    match o {
+        Open::Clip { .. } => whole_pixel_clip_rect(o).is_some(),
+        _ => true,
+    }
 }
 
 fn whole(v: f64) -> bool {
@@ -220,8 +281,21 @@ impl Slicing {
             if !meets {
                 continue;
             }
-            op(&mut s.above, s.to_r);
-            s.above_draws += 1;
+            if s.above_out.is_some() {
+                if self.open[..s.remaining]
+                    .iter()
+                    .any(|o| !whole_pixel_clip(o))
+                {
+                    // A ring still open over R: its coverage would be applied
+                    // to this draw separately from the surface's.
+                    s.out.tainted = true;
+                }
+                s.above_out_draws += 1;
+            } else {
+                s.above_in_draws += 1;
+            }
+            let to_r = s.to_r;
+            op(s.current(), to_r);
             match bounds {
                 Some(b) if contains(s.r, b) => to_below = false,
                 _ => across = true,
@@ -264,7 +338,8 @@ impl Slicing {
             }
         }
         for s in &mut self.slices {
-            push_open(&mut s.above, &entry, s.to_r);
+            let to_r = s.to_r;
+            push_open(s.current(), &entry, to_r);
         }
         self.open.push(entry);
     }
@@ -272,8 +347,27 @@ impl Slicing {
     pub(crate) fn pop(&mut self, below: &mut Scene) {
         self.close_inverse(below);
         below.pop_layer();
+        let index = self.open.len().saturating_sub(1);
         for s in &mut self.slices {
-            s.above.pop_layer();
+            if index >= s.remaining {
+                // Pushed after the split (or after the last close): mirrored.
+                s.current().pop_layer();
+            } else {
+                // An entry open at the split closes: `above_out` starts with
+                // the ones still open replayed.
+                s.remaining = index;
+                match &mut s.above_out {
+                    None => {
+                        let mut out = Scene::new();
+                        for o in &self.open[..index] {
+                            push_open(&mut out, o, s.to_r);
+                        }
+                        s.above_out = Some(out);
+                    }
+                    // A later one: the top of what was replayed.
+                    Some(out) => out.pop_layer(),
+                }
+            }
         }
         self.open.pop();
     }
@@ -311,49 +405,21 @@ impl Slicing {
         let to_r = Affine::translate((-r.x0, -r.y0));
         let image_rect = Rect::new(0.0, 0.0, split.extents.0 as f64, split.extents.1 as f64);
 
-        // Coverage: whole-pixel rects all the way, or a mask scene.
-        let clips: Vec<&Open> = self
-            .open
-            .iter()
-            .filter(|o| matches!(o, Open::Clip { .. }))
-            .collect();
-        let mut cover = whole_pixel_rect(split.image_transform, image_rect);
+        // The surface's own coverage: its image rect under its own clips.
+        let mut own_rect = whole_pixel_rect(split.image_transform, image_rect);
         if split.inner.is_some() {
-            cover = None;
+            own_rect = None;
         }
         if split.clip_to_content {
-            cover = cover.and_then(|c| {
+            own_rect = own_rect.and_then(|c| {
                 whole_pixel_rect(split.node_transform, split.content).map(|k| c.intersect(k))
             });
         }
-        for c in &clips {
-            let Open::Clip {
-                fill: _,
-                transform,
-                shape: PaintShape::Rect(rect),
-            } = c
-            else {
-                cover = None;
-                break;
-            };
-            cover = cover.and_then(|k| whole_pixel_rect(*transform, *rect).map(|w| k.intersect(w)));
-        }
-        let coverage = match cover {
-            Some(c) => {
-                let c = c.intersect(r);
-                let c = if c.width() > 0.0 && c.height() > 0.0 {
-                    c
-                } else {
-                    Rect::ZERO
-                };
-                SliceCoverage::Rect([c.x0 as u32, c.y0 as u32, c.x1 as u32, c.y1 as u32])
-            }
+        let own = match own_rect {
+            Some(c) => SliceCoverage::Rect(rect_u32(c.intersect(r))),
             None => {
                 let mut mask = Scene::new();
-                for c in &clips {
-                    push_open(&mut mask, c, to_r);
-                }
-                let mut extra = 0;
+                let mut clips = 0;
                 if let Some(inner) = &split.inner {
                     super::vello_painter::push_clip_into(
                         &mut mask,
@@ -361,7 +427,7 @@ impl Slicing {
                         pre(to_r, split.node_transform),
                         inner,
                     );
-                    extra += 1;
+                    clips += 1;
                 }
                 if split.clip_to_content {
                     mask.push_clip_layer(
@@ -369,7 +435,7 @@ impl Slicing {
                         pre(to_r, split.node_transform),
                         &split.content,
                     );
-                    extra += 1;
+                    clips += 1;
                 }
                 mask.fill(
                     Fill::NonZero,
@@ -378,17 +444,45 @@ impl Slicing {
                     None,
                     &image_rect,
                 );
-                for _ in 0..clips.len() + extra {
+                for _ in 0..clips {
                     mask.pop_layer();
                 }
                 SliceCoverage::Mask(Box::new(mask))
             }
         };
 
-        let mut above = Scene::new();
-        for o in &self.open {
-            push_open(&mut above, o, to_r);
+        // The ancestors' coverage: the clips open around it.
+        let clips: Vec<&Open> = self
+            .open
+            .iter()
+            .filter(|o| matches!(o, Open::Clip { .. }))
+            .collect();
+        let mut ancestors_rect = Some(r);
+        for c in &clips {
+            ancestors_rect =
+                ancestors_rect.and_then(|k| whole_pixel_clip_rect(c).map(|w| k.intersect(w)));
         }
+        let ancestors = match ancestors_rect {
+            Some(c) => SliceCoverage::Rect(rect_u32(c)),
+            None => {
+                let mut mask = Scene::new();
+                for c in &clips {
+                    push_open(&mut mask, c, to_r);
+                }
+                mask.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    Color::WHITE,
+                    None,
+                    &Rect::new(0.0, 0.0, r.width(), r.height()),
+                );
+                for _ in 0..clips.len() {
+                    mask.pop_layer();
+                }
+                SliceCoverage::Mask(Box::new(mask))
+            }
+        };
+
         let t = split.image_transform;
         self.slices.push(Slice {
             out: SurfaceSlice {
@@ -399,17 +493,22 @@ impl Slicing {
                     r.width() as u32,
                     r.height() as u32,
                 ),
-                above: None,
-                coverage,
+                above_in: None,
+                above_out: None,
+                own,
+                ancestors,
                 device_from_image: (t * centre_sampling(t, Affine::IDENTITY)).as_coeffs(),
                 extents: split.extents,
                 tainted: false,
             },
             r,
             to_r,
-            above,
-            above_draws: 0,
+            above_in: Scene::new(),
+            above_in_draws: 0,
+            above_out: None,
+            above_out_draws: 0,
             depth: self.open.len(),
+            remaining: self.open.len(),
         });
         SplitVerdict::Split
     }
@@ -421,7 +520,8 @@ impl Slicing {
             .into_iter()
             .map(|s| {
                 let mut out = s.out;
-                out.above = (s.above_draws > 0).then_some(s.above);
+                out.above_in = (s.above_in_draws > 0).then_some(s.above_in);
+                out.above_out = s.above_out.filter(|_| s.above_out_draws > 0);
                 out
             })
             .collect()

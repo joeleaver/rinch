@@ -281,9 +281,10 @@ Design record: `docs/design/split-layer-gpu-surfaces.md`, *Painter split*.
 before drawing it; the default refuses (`Refusal::Unsupported`) and the frame
 is drawn in the scene as before. `VelloPainter` takes it only on a frame
 opened with `begin_slicing(window)` (after `reset`, which closes it), and the
-surfaces it took come back from `take_slices()` as `paint::slicing::SurfaceSlice`
-(region R, the above scene in R's coordinates or `None`, coverage as a
-whole-pixel rect or a mask scene, the in-scene image transform, `tainted`).
+surfaces it took come back from `take_slices()` as `paint::slicing::SurfaceSlice`:
+region R; `above_in` and `above_out` (scenes in R's coordinates, or `None`);
+`own` and `ancestors` coverage (each a whole-pixel rect or a mask scene); the
+in-scene image transform; `tainted`.
 
 - **Refusals**, the frame then drawn in-scene: a group effect open around it
   (a layer with opacity below 1 or a non-normal blend, or any isolated
@@ -297,8 +298,14 @@ whole-pixel rect or a mask scene, the in-scene image transform, `tainted`).
   **non-zero**; even-odd nested in a clip drops coverage on lavapipe). The
   inverse clip is opened only around such draws and closed before any push or
   pop, so it never wraps a layer boundary.
-- **Clips and layers** are mirrored into every above scene; those open at the
-  split are replayed at its start. Without `begin_slicing` nothing is mirrored
+- **Two above scenes.** `above_in` takes what is painted while every entry
+  open at the split is still open, **without** those entries: the compositor
+  applies the ancestors' coverage once, to the surface and `above_in`
+  together, as the scene does (applying it to each separately conflated on a
+  rounded card's ring, #1887 review). `above_out` starts when the first of
+  them closes, with those still open replayed; a draw over R while one of
+  those is not a whole-pixel rect clip taints the slice. Pushes and pops
+  after the split go to whichever is current. Without `begin_slicing` nothing is mirrored
   and no shape is copied; a sliced frame with nothing split encodes the
   window's scene byte for byte as an unsliced one
   (`tests/split_surface_painter_1865_tests.rs`).

@@ -202,8 +202,13 @@ fn a_plain_surface_leaves_the_scene() {
     let s = &on.slices[0];
     assert_eq!(s.surface_id, 1);
     assert_eq!(s.region, (20, 12, 40, 26));
-    assert!(matches!(s.coverage, SliceCoverage::Rect([20, 12, 60, 38])));
-    assert!(s.above.is_none(), "the sidebar is nowhere near the surface");
+    assert!(matches!(s.own, SliceCoverage::Rect([20, 12, 60, 38])));
+    assert!(matches!(s.ancestors, SliceCoverage::Rect([20, 12, 60, 38])));
+    assert!(
+        s.above_in.is_none(),
+        "the sidebar is nowhere near the surface"
+    );
+    assert!(s.above_out.is_none());
     assert!(!s.tainted);
     assert_eq!(s.extents, (40, 26));
     assert_eq!(tags(&off.below, IMAGE), 1);
@@ -231,7 +236,8 @@ fn a_bar_across_the_surface_goes_above_and_below() {
     let off = paint(&mut doc, false);
     let on = paint(&mut doc, true);
     let s = &on.slices[0];
-    let above = s.above.as_ref().expect("the bar is over the surface");
+    assert!(s.above_out.is_none());
+    let above = s.above_in.as_ref().expect("the bar is over the surface");
     assert_eq!(draws(above), 1);
     assert!(balanced(above));
     assert_eq!(
@@ -259,7 +265,7 @@ fn a_badge_inside_the_region_goes_above_only() {
     );
     let off = paint(&mut doc, false);
     let on = paint(&mut doc, true);
-    let above = on.slices[0].above.as_ref().expect("the badge");
+    let above = on.slices[0].above_in.as_ref().expect("the badge");
     assert_eq!(draws(above), 1);
     assert_eq!(
         draws(&on.below),
@@ -276,7 +282,8 @@ fn rounded_corners_make_a_mask() {
     let mut doc = document("border-radius: 8px", "", &[]);
     let off = paint(&mut doc, false);
     let on = paint(&mut doc, true);
-    let SliceCoverage::Mask(mask) = &on.slices[0].coverage else {
+    assert!(matches!(on.slices[0].ancestors, SliceCoverage::Rect(_)));
+    let SliceCoverage::Mask(mask) = &on.slices[0].own else {
         panic!("rounded corners on a coverage rect");
     };
     assert_eq!(tags(mask, BEGIN_CLIP), 1, "the inner-radius clip");
@@ -287,9 +294,8 @@ fn rounded_corners_make_a_mask() {
     );
 }
 
-/// A whole-pixel scroller around the surface: still a coverage rect, cut to
-/// the scroller; the scroller's clip is replayed at the top of the above
-/// slice and its pop there balances.
+/// A whole-pixel scroller around the surface: rect coverages, the
+/// ancestors' cut to the scroller.
 #[test]
 fn a_whole_pixel_scroller_cuts_the_coverage_rect() {
     let mut doc = document(
@@ -301,9 +307,136 @@ fn a_whole_pixel_scroller_cuts_the_coverage_rect() {
     let s = &on.slices[0];
     // The surface is positioned against the scroller now: (20, 32).
     assert_eq!(s.region, (20, 32, 40, 26));
-    match &s.coverage {
-        SliceCoverage::Rect(r) => assert_eq!(*r, [20, 32, 60, 58]),
-        SliceCoverage::Mask(_) => panic!("whole-pixel clips made a mask"),
+    assert!(matches!(s.own, SliceCoverage::Rect([20, 32, 60, 58])));
+    assert!(matches!(s.ancestors, SliceCoverage::Rect([20, 32, 60, 58])));
+
+    // Scrolled so the scroller cuts R's bottom: the ancestors' rect is cut,
+    // the surface's own is not.
+    let mut doc = document(
+        "",
+        "position: absolute; left: 0; top: 20px; width: 100px; height: 30px; overflow: hidden",
+        &[],
+    );
+    let s = &paint(&mut doc, true).slices[0];
+    assert!(matches!(s.own, SliceCoverage::Rect([20, 32, 60, 58])));
+    assert!(matches!(s.ancestors, SliceCoverage::Rect([20, 32, 60, 50])));
+}
+
+/// The card's case (#1887 review): a rounded `overflow: hidden` card, the
+/// surface in it, a control bar after it inside the card and a tooltip after
+/// the card. The card's coverage is a mask; the bar is in `above_in`
+/// without the card's clip; the tooltip in `above_out`; nothing is tainted.
+#[test]
+fn a_rounded_card_puts_its_content_in_above_in_and_after_it_in_above_out() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    doc.set_attribute(body, "style", "margin: 0");
+    let card = doc.create_element("div");
+    doc.set_attribute(
+        card,
+        "style",
+        "position: absolute; left: 10px; top: 6px; width: 60px; height: 40px; \
+         overflow: hidden; border-radius: 10px; background: rgb(240, 240, 240)",
+    );
+    doc.append_child(body, card);
+    let surface = doc.create_element("div");
+    doc.set_attribute(surface, "data-render-surface", "1");
+    doc.set_attribute(
+        surface,
+        "style",
+        "position: absolute; left: 10px; top: 6px; width: 40px; height: 26px",
+    );
+    doc.append_child(card, surface);
+    let bar = doc.create_element("div");
+    doc.set_attribute(
+        bar,
+        "style",
+        "position: absolute; left: 0; top: 24px; width: 60px; height: 10px; \
+         background: rgba(0, 0, 0, 0.5)",
+    );
+    doc.append_child(card, bar);
+    let tip = doc.create_element("div");
+    doc.set_attribute(
+        tip,
+        "style",
+        "position: absolute; left: 40px; top: 8px; width: 40px; height: 10px; \
+         background: rgb(255, 255, 220)",
+    );
+    doc.append_child(body, tip);
+    doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    let on = paint(&mut doc, true);
+    let s = &on.slices[0];
+    assert_eq!(s.region, (20, 12, 40, 26));
+    assert!(matches!(s.own, SliceCoverage::Rect([20, 12, 60, 38])));
+    let SliceCoverage::Mask(card_mask) = &s.ancestors else {
+        panic!("a rounded card's coverage as a rect");
+    };
+    assert!(tags(card_mask, BEGIN_CLIP) >= 1);
+    assert!(balanced(card_mask));
+    let above_in = s.above_in.as_ref().expect("the bar is over the surface");
+    assert_eq!(draws(above_in), 1);
+    assert_eq!(
+        tags(above_in, BEGIN_CLIP),
+        0,
+        "the card's clip is not replayed"
+    );
+    let above_out = s
+        .above_out
+        .as_ref()
+        .expect("the tooltip is over the surface");
+    assert_eq!(draws(above_out), 1);
+    assert!(balanced(above_in) && balanced(above_out));
+    assert!(!s.tainted);
+}
+
+/// Content painted after an inner whole-pixel wrapper closes but still
+/// inside an outer rounded card, over the surface: the card's ring would be
+/// applied to it separately — tainted. The control, an outer card with
+/// square corners, is not.
+#[test]
+fn content_between_two_closes_over_a_ring_taints() {
+    for (radius, tainted) in [("10px", true), ("0", false)] {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        doc.set_attribute(body, "style", "margin: 0");
+        let card = doc.create_element("div");
+        doc.set_attribute(
+            card,
+            "style",
+            &format!(
+                "position: absolute; left: 10px; top: 6px; width: 60px; height: 40px; \
+                 overflow: hidden; border-radius: {radius}"
+            ),
+        );
+        doc.append_child(body, card);
+        let wrap = doc.create_element("div");
+        doc.set_attribute(
+            wrap,
+            "style",
+            "position: absolute; left: 0; top: 0; width: 60px; height: 40px; overflow: hidden",
+        );
+        doc.append_child(card, wrap);
+        let surface = doc.create_element("div");
+        doc.set_attribute(surface, "data-render-surface", "1");
+        doc.set_attribute(
+            surface,
+            "style",
+            "position: absolute; left: 10px; top: 6px; width: 40px; height: 26px",
+        );
+        doc.append_child(wrap, surface);
+        let bar = doc.create_element("div");
+        doc.set_attribute(
+            bar,
+            "style",
+            "position: absolute; left: 0; top: 24px; width: 60px; height: 10px; \
+             background: rgba(0, 0, 0, 0.5)",
+        );
+        doc.append_child(card, bar);
+        doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+        let on = paint(&mut doc, true);
+        assert_eq!(on.slices.len(), 1);
+        assert_eq!(on.slices[0].tainted, tainted, "radius {radius}");
+        assert!(on.slices[0].above_out.is_some(), "radius {radius}");
     }
 }
 
@@ -348,7 +481,7 @@ fn rotation_and_overlap_stay_in_the_scene() {
     assert_eq!(slices.len(), 1);
     assert_eq!(slices[0].surface_id, 1);
     let above = slices[0]
-        .above
+        .above_in
         .as_ref()
         .expect("the second surface is over the first");
     assert_eq!(tags(above, IMAGE), 1, "drawn in-scene, in the above slice");
@@ -372,7 +505,7 @@ fn grayscale_over_the_surface_taints_it() {
     let mut doc = document("", "", &[bright]);
     let on = paint(&mut doc, true);
     assert!(!on.slices[0].tainted);
-    assert!(on.slices[0].above.is_some());
+    assert!(on.slices[0].above_in.is_some());
 }
 
 /// The image transform is the in-scene fill's, centre sampling included.
