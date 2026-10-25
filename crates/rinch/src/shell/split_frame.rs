@@ -53,6 +53,21 @@ struct Kept {
     above_out: Option<Texture>,
 }
 
+impl Kept {
+    fn cost(&self) -> SliceCost {
+        let mask = |c: &KeptCoverage| u32::from(matches!(c, KeptCoverage::Mask(_)));
+        SliceCost {
+            surface_id: self.surface_id,
+            region: self.region,
+            textures: mask(&self.own)
+                + mask(&self.ancestors)
+                + u32::from(self.above_in.is_some())
+                + u32::from(self.above_out.is_some()),
+            upload: 0,
+        }
+    }
+}
+
 /// A window's split surfaces, their slices rendered.
 #[derive(Default)]
 pub struct SplitFrame {
@@ -68,6 +83,101 @@ pub struct SplitFrame {
 /// the partial-frame target does (`desktop::PARTIAL_TARGET_STEP`).
 const SCRATCH_STEP: u32 = 128;
 
+/// The window's split memory may be this many times its own texture bytes
+/// (`width * height * 4`) (#1865 D6). Counted: the scratch target, every
+/// kept slice's rendered textures (above slices and coverage masks) and the
+/// CPU frames uploaded for split video. Not counted: the window's own
+/// textures, and a `RenderSurface`'s texture, which is the app's.
+pub const SPLIT_MEMORY_CAP_WINDOWS: u64 = 4;
+
+/// What one split surface holds in GPU memory, as [`split_bytes`] counts it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SliceCost {
+    pub surface_id: usize,
+    /// R, `(x, y, width, height)`.
+    pub region: (u32, u32, u32, u32),
+    /// The R-sized textures rendered and kept for it: each coverage mask
+    /// and each above slice.
+    pub textures: u32,
+    /// The bytes of its uploaded CPU frame (video), or 0.
+    pub upload: u64,
+}
+
+impl SliceCost {
+    pub fn of(s: &SurfaceSlice) -> Self {
+        let mask = |c: &SliceCoverage| u32::from(matches!(c, SliceCoverage::Mask(_)));
+        Self {
+            surface_id: s.surface_id,
+            region: s.region,
+            textures: mask(&s.own)
+                + mask(&s.ancestors)
+                + u32::from(s.above_in.is_some())
+                + u32::from(s.above_out.is_some()),
+            // A CPU frame is uploaded at its own size (`upload_split_frames`);
+            // a registered GPU frame is the app's texture.
+            upload: if s.straight_alpha {
+                u64::from(s.extents.0) * u64::from(s.extents.1) * 4
+            } else {
+                0
+            },
+        }
+    }
+
+    fn rendered(&self) -> bool {
+        self.textures > 0 && self.region.2 > 0 && self.region.3 > 0
+    }
+}
+
+fn scratch_step(v: u32) -> u32 {
+    v.div_ceil(SCRATCH_STEP).max(1) * SCRATCH_STEP
+}
+
+/// The scratch target `costs` need, `(width, height)`: reaching the far
+/// corner of every R rendered into it, in [`SCRATCH_STEP`]s; `(0, 0)` when
+/// nothing is rendered.
+fn scratch_size<'a>(costs: impl IntoIterator<Item = &'a SliceCost>) -> (u32, u32) {
+    costs
+        .into_iter()
+        .filter(|c| c.rendered())
+        .fold((0, 0), |(w, h), c| {
+            let (x, y, cw, ch) = c.region;
+            (w.max(scratch_step(x + cw)), h.max(scratch_step(y + ch)))
+        })
+}
+
+/// The GPU memory `costs` hold together (#1865 D6): each slice's textures
+/// and upload, and the one scratch target they share.
+pub fn split_bytes<'a>(costs: impl IntoIterator<Item = &'a SliceCost> + Clone) -> u64 {
+    let (sw, sh) = scratch_size(costs.clone());
+    let slices: u64 = costs
+        .into_iter()
+        .map(|c| {
+            u64::from(c.region.2) * u64::from(c.region.3) * 4 * u64::from(c.textures) + c.upload
+        })
+        .sum();
+    slices + u64::from(sw) * u64::from(sh) * 4
+}
+
+/// The cap for a window of `size` device pixels.
+pub fn split_memory_cap(size: (u32, u32)) -> u64 {
+    SPLIT_MEMORY_CAP_WINDOWS * u64::from(size.0) * u64::from(size.1) * 4
+}
+
+/// Which of `new` (this frame's slices, in paint order) do not fit the cap
+/// beside `kept` (the slices kept from earlier frames that this frame did not
+/// replace): the first that would pass it, and every one after it (D6: split
+/// in paint order until the next one does not fit).
+pub fn over_cap(kept: &[SliceCost], new: &[SliceCost], cap: u64) -> Vec<usize> {
+    let mut held: Vec<SliceCost> = kept.to_vec();
+    for (i, c) in new.iter().enumerate() {
+        held.push(*c);
+        if split_bytes(&held) > cap {
+            return new[i..].iter().map(|c| c.surface_id).collect();
+        }
+    }
+    Vec::new()
+}
+
 /// Render `scene` (encoded in window coordinates) where the window draws it,
 /// into `scratch` (grown to reach `region`'s far corner), over transparent,
 /// with Msaa16 as the window's scene is, and keep `region` of it as a new
@@ -82,8 +192,7 @@ fn render_slice(
     scene: &Scene,
     (x, y, w, h): (u32, u32, u32, u32),
 ) -> Result<Texture, String> {
-    let step = |v: u32| v.div_ceil(SCRATCH_STEP).max(1) * SCRATCH_STEP;
-    let (want_w, want_h) = (step(x + w), step(y + h));
+    let (want_w, want_h) = (scratch_step(x + w), scratch_step(y + h));
     let (have_w, have_h) = scratch.as_ref().map_or((0, 0), |t| (t.width(), t.height()));
     if have_w < want_w || have_h < want_h {
         *scratch = Some(device.create_texture(&wgpu::TextureDescriptor {
@@ -265,6 +374,35 @@ impl SplitFrame {
         uploads
     }
 
+    /// The GPU memory this window's split surfaces hold now (#1865 D6): the
+    /// kept slices' textures, the uploaded frames and the scratch target, as
+    /// allocated.
+    #[cfg(test)]
+    pub(crate) fn resident_bytes(&self) -> u64 {
+        fn mask(c: &KeptCoverage) -> Option<&Texture> {
+            match c {
+                KeptCoverage::Mask(t) => Some(t),
+                KeptCoverage::Rect(_) => None,
+            }
+        }
+        let bytes = |t: &Texture| u64::from(t.width()) * u64::from(t.height()) * 4;
+        let kept: u64 = self
+            .kept
+            .iter()
+            .flat_map(|k| {
+                [
+                    mask(&k.own),
+                    mask(&k.ancestors),
+                    k.above_in.as_ref(),
+                    k.above_out.as_ref(),
+                ]
+            })
+            .flatten()
+            .map(bytes)
+            .sum();
+        kept + self.pixels.values().map(bytes).sum::<u64>() + self.scratch.as_ref().map_or(0, bytes)
+    }
+
     /// How many uploaded video frames this window holds.
     #[cfg(test)]
     pub(crate) fn pixel_textures(&self) -> usize {
@@ -352,8 +490,15 @@ impl SplitFrame {
                 above_out,
             });
         }
-        if self.kept.is_empty() {
-            // Nothing split: the scratch target (up to the window's size) goes.
+        // The scratch target is kept only at the size the kept slices need
+        // (D6 counts that size): nothing split, or a larger target left by a
+        // slice that has gone, and it goes.
+        let (need_w, need_h) = scratch_size(&self.kept.iter().map(Kept::cost).collect::<Vec<_>>());
+        if self
+            .scratch
+            .as_ref()
+            .is_some_and(|t| t.width() > need_w || t.height() > need_h)
+        {
             self.scratch = None;
         }
         Ok(())
@@ -481,4 +626,70 @@ pub fn prepare_split_viewports(
             .is_some_and(|px| (px.width, px.height) != kept.extents)
     });
     pending
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cost(id: usize, region: (u32, u32, u32, u32), textures: u32, upload: u64) -> SliceCost {
+        SliceCost {
+            surface_id: id,
+            region,
+            textures,
+            upload,
+        }
+    }
+
+    /// The record's worked case (D6): a full-window video with controls over
+    /// it holds the scratch target (rounded up to 128 px), `above_in` and its
+    /// uploaded frame, about 3.06 windows; the cap is 4.
+    #[test]
+    fn full_window_video_under_controls_fits_the_cap() {
+        for (w, h) in [(1920u32, 1080u32), (3840, 2160)] {
+            let frame = u64::from(w) * u64::from(h) * 4;
+            let c = cost(1, (0, 0, w, h), 1, frame);
+            let scratch = u64::from(scratch_step(w)) * u64::from(scratch_step(h)) * 4;
+            assert_eq!(split_bytes(&[c]), frame * 2 + scratch);
+            assert!(split_bytes(&[c]) <= split_memory_cap((w, h)));
+        }
+        assert_eq!(
+            split_bytes(&[cost(1, (0, 0, 1920, 1080), 1, 8_294_400)]),
+            25_436_160
+        );
+    }
+
+    /// The scratch target is counted once, reaching the far corner of every
+    /// rendered region; a slice with no rendered texture needs none.
+    #[test]
+    fn scratch_counted_once_to_the_far_corner() {
+        let a = cost(1, (0, 0, 10, 10), 1, 0);
+        let b = cost(2, (200, 0, 10, 300), 2, 0);
+        let rect_only = cost(3, (900, 900, 10, 10), 0, 0);
+        assert_eq!(split_bytes(&[a]), 400 + 128 * 128 * 4);
+        assert_eq!(
+            split_bytes(&[a, b, rect_only]),
+            400 + 2 * 12_000 + 256 * 384 * 4
+        );
+        assert_eq!(split_bytes(&[rect_only]), 0);
+        assert_eq!(split_bytes(&[cost(4, (0, 0, 0, 0), 0, 77)]), 77);
+    }
+
+    /// In paint order until one does not fit: it and every one after it,
+    /// even one that would fit alone.
+    #[test]
+    fn over_cap_refuses_the_first_that_does_not_fit_and_the_rest() {
+        let up = |id, bytes| cost(id, (0, 0, 0, 0), 0, bytes);
+        assert_eq!(
+            over_cap(&[], &[up(1, 40), up(2, 61), up(3, 1)], 100),
+            vec![2, 3]
+        );
+        assert_eq!(
+            over_cap(&[], &[up(1, 40), up(2, 60)], 100),
+            Vec::<usize>::new()
+        );
+        // What stays split from earlier frames comes first.
+        assert_eq!(over_cap(&[up(9, 70)], &[up(1, 40)], 100), vec![1]);
+        assert_eq!(over_cap(&[], &[up(1, 101)], 100), vec![1]);
+    }
 }

@@ -471,8 +471,19 @@ struct FrameDamage {
 struct SplitPaint {
     enabled: bool,
     kept: Vec<(usize, peniko::kurbo::Rect)>,
+    /// What each kept surface holds, for the memory cap (D6), in the order
+    /// the surfaces were split.
+    costs: Vec<crate::shell::split_frame::SliceCost>,
     change: Option<crate::shell::split_frame::SplitChange>,
     suspended: u32,
+    /// The surfaces refused for the memory cap (D6), the window size they
+    /// were refused at, and how many frames until they are tried again.
+    capped: Vec<usize>,
+    capped_at: (u32, u32),
+    capped_frames: u32,
+    /// Frames painted again for the cap, for the tests.
+    #[cfg(test)]
+    cap_repaints: u32,
 }
 
 /// Frames splitting stays off after a slice is tainted (D5a): the frame is
@@ -480,6 +491,13 @@ struct SplitPaint {
 /// many frames later.
 #[cfg(all(feature = "gpu", software_shell))]
 const SPLIT_TAINT_FRAMES: u32 = 120;
+
+/// Frames a surface refused for the memory cap (D6) stays in the scene
+/// before it is tried again, unless the window's size or its other split
+/// surfaces change first. A retry that still does not fit paints its frame
+/// twice, once every this many frames.
+#[cfg(all(feature = "gpu", software_shell))]
+const SPLIT_CAP_RETRY_FRAMES: u32 = 120;
 
 /// What [`RinchApp::build_gpu_frame`] painted, before it borrows the scene.
 #[cfg(all(feature = "gpu", software_shell))]
@@ -2222,6 +2240,7 @@ impl RinchApp {
         self.painter.reset();
         if let Some(window) = slicing {
             self.painter.begin_slicing(window);
+            self.painter.refuse_split(&self.split.capped);
         }
         if let Some(rects) = rects {
             rinch_dom::paint::set_dirty_rects(Some(rects));
@@ -2251,6 +2270,12 @@ impl RinchApp {
         }
         Self::paint_title_tooltip(self.title_tooltip.shown.as_ref(), &mut self.painter, scale);
         self.painter.take_slices()
+    }
+
+    /// How many frames were painted again for the split memory cap (D6).
+    #[cfg(all(test, feature = "gpu", software_shell))]
+    pub(crate) fn split_cap_repaints(&self) -> u32 {
+        self.split.cap_repaints
     }
 
     /// Whether this frame may split GPU surfaces out of the scene (#1865):
@@ -2389,19 +2414,88 @@ impl RinchApp {
             && rinch_dom::paint::has_surface_gpu_images())
         .then_some(split_window);
         self.split.suspended = self.split.suspended.saturating_sub(1);
+        // The memory cap's refusals (D6) are retried when the cap moves, or
+        // after a while.
+        self.split.capped_frames = self.split.capped_frames.saturating_sub(1);
+        if self.split.capped_at != (w, h) || self.split.capped_frames == 0 {
+            self.split.capped.clear();
+        }
+        let cap = crate::shell::split_frame::split_memory_cap((w, h));
 
         let mut partial = full.is_none() && !damage.is_empty();
         if full.is_some() || partial {
             let mut slices;
             loop {
                 let rects = partial.then(|| damage.rects().to_vec());
-                slices = self.paint_frame_scene(scale, size, rects.as_deref(), ghost_now, slicing);
-                if slices.iter().any(|s| s.tainted) {
-                    // Something over a surface reads its backdrop (D5a): this
-                    // frame is painted again with every surface in the scene.
-                    self.split.suspended = SPLIT_TAINT_FRAMES;
-                    slices = self.paint_frame_scene(scale, size, rects.as_deref(), ghost_now, None);
-                }
+                slices = loop {
+                    let slices =
+                        self.paint_frame_scene(scale, size, rects.as_deref(), ghost_now, slicing);
+                    if slices.iter().any(|s| s.tainted) {
+                        // Something over a surface reads its backdrop (D5a):
+                        // this frame is painted again with every surface in
+                        // the scene.
+                        self.split.suspended = SPLIT_TAINT_FRAMES;
+                        break self.paint_frame_scene(
+                            scale,
+                            size,
+                            rects.as_deref(),
+                            ghost_now,
+                            None,
+                        );
+                    }
+                    // The memory cap (D6): what stays split from earlier
+                    // frames, then this frame's slices in paint order until
+                    // one does not fit. It and the rest are painted again in
+                    // the scene, and stay there until the cap is retried.
+                    let new: Vec<_> = slices
+                        .iter()
+                        .map(crate::shell::split_frame::SliceCost::of)
+                        .collect();
+                    let kept: Vec<_> = if full.is_some() {
+                        Vec::new()
+                    } else {
+                        self.split
+                            .costs
+                            .iter()
+                            .filter(|c| {
+                                !split_hit.contains(&c.surface_id)
+                                    && !new.iter().any(|n| n.surface_id == c.surface_id)
+                            })
+                            .copied()
+                            .collect()
+                    };
+                    let over = crate::shell::split_frame::over_cap(&kept, &new, cap);
+                    if over.is_empty() {
+                        break slices;
+                    }
+                    if over.iter().all(|id| self.split.capped.contains(id)) {
+                        // The painter split what it was told to refuse: every
+                        // surface goes to the scene rather than paint forever.
+                        break self.paint_frame_scene(
+                            scale,
+                            size,
+                            rects.as_deref(),
+                            ghost_now,
+                            None,
+                        );
+                    }
+                    #[cfg(debug_assertions)]
+                    for id in &over {
+                        tracing::debug!(
+                            "rinch: render surface {id} drawn in-scene: split memory cap \
+                             ({cap} bytes, #1865 D6)"
+                        );
+                    }
+                    if self.split.capped.is_empty() {
+                        self.split.capped_frames = SPLIT_CAP_RETRY_FRAMES;
+                        self.split.capped_at = (w, h);
+                    }
+                    self.split.capped.extend(over);
+                    #[cfg(test)]
+                    {
+                        self.split.cap_repaints += 1;
+                    }
+                };
                 // A slice is whole only if the frame painted all of its region:
                 // a partial frame culls what is over R outside its damage
                 // (the surface itself is painted, and split, by its ink rect:
@@ -2440,14 +2534,23 @@ impl RinchApp {
             }
             if self.split.enabled || !self.split.kept.is_empty() {
                 let all = full.is_some();
+                let before: Vec<usize> = self.split.kept.iter().map(|(id, _)| *id).collect();
                 if all {
                     self.split.kept.clear();
+                    self.split.costs.clear();
                 } else {
                     self.split.kept.retain(|(id, _)| !split_hit.contains(id));
+                    self.split
+                        .costs
+                        .retain(|c| !split_hit.contains(&c.surface_id));
                 }
                 for s in &slices {
                     let (x, y, sw, sh) = s.region;
                     self.split.kept.retain(|(id, _)| *id != s.surface_id);
+                    self.split.costs.retain(|c| c.surface_id != s.surface_id);
+                    self.split
+                        .costs
+                        .push(crate::shell::split_frame::SliceCost::of(s));
                     self.split.kept.push((
                         s.surface_id,
                         peniko::kurbo::Rect::new(
@@ -2457,6 +2560,14 @@ impl RinchApp {
                             (y + sh) as f64,
                         ),
                     ));
+                }
+                // A split surface gone frees memory: the refused are tried
+                // again (D6). Not one the cap itself just sent to the scene,
+                // which would retry, and refuse, on every frame.
+                if before.iter().any(|id| {
+                    !self.split.kept.iter().any(|(k, _)| k == id) && !self.split.capped.contains(id)
+                }) {
+                    self.split.capped.clear();
                 }
                 self.split.change = Some(crate::shell::split_frame::SplitChange {
                     drop: split_hit,

@@ -813,6 +813,17 @@ if let Some(rect) = ctx.viewport_rect("main") {
 > full-window video is about 25 ms a frame in the scene against 6 ms as a layer;
 > a 640×360 one 3–6 ms against 1–3.
 >
+> Since #1865 the desktop GPU window gets the layer's cost back without its
+> limits: a video or a GPU `RenderSurface` is composited outside the scene
+> with the UI above it cut out around it, so a new frame under a still UI is
+> an upload and a composite, about what a layer cost. Its pixels are the
+> scene's except on the edge classes the design record's D10 bounds
+> (`docs/design/split-layer-gpu-surfaces.md`). A surface inside an opacity group, a blend or a mask, under a
+> rotating or skewing transform, or overlapping another split surface is
+> drawn in the scene instead. So is one past the window's split memory cap,
+> four times the window's own texture bytes (33 MB at 1080p, 133 MB at 4K),
+> counted in paint order.
+>
 > So on software a frame goes through **paint** instead, on the same inline
 > path a `RenderSurface` component has always used: the `data-viewport` node
 > draws the frame `object-fit: contain` inside its box, at its own z-order.

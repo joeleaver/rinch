@@ -318,7 +318,9 @@ in-scene image transform; `tainted`.
 - **Refusals**, the frame then drawn in-scene: a group effect open around it
   (a layer with opacity below 1 or a non-normal blend, or any isolated
   layer: masks, text-shadow groups), a transform that rotates or skews, or a
-  region overlapping an earlier split surface's.
+  region overlapping an earlier split surface's, or a surface the runtime
+  named with `refuse_split(ids)` after `begin_slicing` (`Refusal::MemoryCap`,
+  its memory cap, D6).
 - **Routing** (`paint/slicing.rs`): every draw after the split goes by its
   device bounds. Disjoint from every R: the window's scene, unclipped. Inside
   one R: that surface's above scene only. Across an edge, or bounds unknown

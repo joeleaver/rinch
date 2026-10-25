@@ -247,6 +247,10 @@ pub enum Refusal {
     Transform,
     /// Its region overlaps an earlier split surface's (D7a).
     Overlap,
+    /// The window's split memory would pass its cap with this surface (D6):
+    /// the runtime names the surfaces that do not fit
+    /// ([`super::vello_painter::VelloPainter::refuse_split`]).
+    MemoryCap,
 }
 
 // ── The Painter trait ───────────────────────────────────────────────────────

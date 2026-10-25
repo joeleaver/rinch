@@ -1294,7 +1294,7 @@ fn split_composite_cost_probe() {
                 finish(e);
             }));
             // A video on the split path (#1865 PR 4): its new CPU frame
-            // uploaded (`SplitFrame::sync_pixel_frames`), then composited.
+            // uploaded (`SplitFrame::upload_split_frames`), then composited.
             let pixels = vec![200u8; (s.0 * s.1 * 4) as usize];
             let video = time(Box::new(|| {
                 queue.write_texture(

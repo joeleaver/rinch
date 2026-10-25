@@ -616,6 +616,28 @@ fn check(
     kinds: &[&str],
     fault: Fault,
 ) -> Vec<String> {
+    let want = |n: usize, surfaces: &[usize]| {
+        if split[n.min(split.len() - 1)] {
+            surfaces.to_vec()
+        } else {
+            Vec::new()
+        }
+    };
+    check_split(name, parts, tol, &want, steps, kinds, fault)
+}
+
+/// [`check`], with the surfaces that must be split after frame `n` named by
+/// `want(n, surfaces)` (`surfaces` in paint order). Every frame also holds
+/// the window's split memory to its cap (D6), as allocated.
+fn check_split(
+    name: &str,
+    parts: Vec<Part>,
+    tol: Tol,
+    want_split: &dyn Fn(usize, &[usize]) -> Vec<usize>,
+    steps: &[&dyn Fn(&Page)],
+    kinds: &[&str],
+    fault: Fault,
+) -> Vec<String> {
     let mut failures = Vec::new();
     let mut split_page = page(&parts);
     let mut scene_page = page(&parts);
@@ -632,7 +654,8 @@ fn check(
         step(&scene_page);
         let got = win.frame(&mut split_page.app, n == 0, fault);
         let want = reference.frame(&mut scene_page.app, true, Fault::None);
-        let split = split[n.min(split.len() - 1)];
+        let mut want_ids = want_split(n, &surfaces);
+        want_ids.sort_unstable();
         if let Some(kind) = kinds.get(n).filter(|k| !k.is_empty())
             && got.kind != *kind
         {
@@ -641,14 +664,19 @@ fn check(
                 got.kind
             ));
         }
-        if split && got.split_ids.len() != surfaces.len() {
+        let mut got_ids = got.split_ids.clone();
+        got_ids.sort_unstable();
+        if got_ids != want_ids {
             failures.push(format!(
-                "{name}, frame {n}: split {:?}, want all of {surfaces:?}",
-                got.split_ids
+                "{name}, frame {n}: split {got_ids:?}, want {want_ids:?} (of {surfaces:?})"
             ));
         }
-        if !split && !got.split_ids.is_empty() {
-            failures.push(format!("{name}, frame {n}: split {:?}", got.split_ids));
+        let cap = crate::shell::split_frame::split_memory_cap(win.dev);
+        let held = win.split.resident_bytes();
+        if held > cap {
+            failures.push(format!(
+                "{name}, frame {n}: split memory {held} bytes, past the cap of {cap}"
+            ));
         }
         let wrong = compare(&got.pixels, &want.pixels, &win.allowances(tol), win.dev.0);
         if !wrong.is_empty() {
@@ -2170,4 +2198,148 @@ fn gpu_split_runtime_review_video_taint() {
     let bad = rv_print("video taint", f);
     crate::shell::renderer::set_gpu_presenting(false);
     assert_eq!(bad, 0);
+}
+
+/// The memory cap (D6): a 400x300 window may hold 4 x 480,000 bytes split.
+/// Each 500x400 frame is 800,000 bytes uploaded, so two fit and a third does
+/// not; a 700x700 frame (1,960,000) does not fit alone. Surfaces are split in
+/// paint order until one does not fit, and it and the rest stay in the scene,
+/// pixel for pixel what in-scene draws. `check_split` also holds every
+/// frame's allocation to the cap.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_memory_cap() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    assert_eq!(
+        crate::shell::split_frame::split_memory_cap((W, H)),
+        1_920_000
+    );
+    let v = |st: &'static str| -> Part { (st, Some(red())) };
+    const A: &str =
+        "video:500x400|position: absolute; left: 10px; top: 40px; width: 100px; height: 80px";
+    const B: &str =
+        "video:500x400|position: absolute; left: 140px; top: 40px; width: 100px; height: 80px";
+    const C: &str =
+        "video:500x400|position: absolute; left: 270px; top: 40px; width: 100px; height: 80px";
+    const BIG: &str =
+        "video:700x700|position: absolute; left: 10px; top: 140px; width: 100px; height: 100px";
+    const SMALL: &str =
+        "video:100x80|position: absolute; left: 140px; top: 140px; width: 100px; height: 80px";
+    let redraw = |p: &Page| {
+        for v in &p.videos {
+            v.redraw();
+        }
+    };
+    let hide_first = |p: &Page| {
+        p.boxes.borrow()[0].set_style("display", "none");
+    };
+    // The visible ones: a hidden viewport's new frame has no box to damage.
+    let redraw_shown = |p: &Page| {
+        for v in &p.videos[1..] {
+            v.redraw();
+        }
+    };
+    run(vec![
+        check_split(
+            "three frames, the third past the cap",
+            vec![v(A), v(B), v(C)],
+            RESAMPLED,
+            &|_, s| s[..2].to_vec(),
+            // The refused one's new frame is damage; the split ones' are not.
+            &[&redraw],
+            &["full", "partial"],
+            Fault::None,
+        ),
+        check_split(
+            "a frame past the cap alone, then one that fits: neither splits",
+            vec![v(BIG), v(SMALL)],
+            RESAMPLED,
+            &|_, _| Vec::new(),
+            &[],
+            &["full"],
+            Fault::None,
+        ),
+        check_split(
+            "one that fits, then a frame past the cap",
+            vec![v(SMALL), v(BIG)],
+            RESAMPLED,
+            &|_, s| s[..1].to_vec(),
+            &[],
+            &["full"],
+            Fault::None,
+        ),
+        check_split(
+            "a split surface gone frees its memory: the refused one splits at its next frame",
+            vec![v(A), v(B), v(C)],
+            RESAMPLED,
+            &|n, s| match n {
+                0 => s[..2].to_vec(),
+                1 => s[1..2].to_vec(),
+                _ => s[1..].to_vec(),
+            },
+            &[&hide_first, &redraw_shown],
+            &["full", "partial", "partial"],
+            Fault::None,
+        ),
+    ]);
+}
+
+/// A split video whose frame grows past the cap goes to the scene once, and
+/// stays there: its leaving the split set is not memory freed for a retry
+/// (which would paint every frame twice, refusing it again each time).
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_memory_cap_is_not_retried_every_frame() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let parts: Vec<Part> = vec![
+        (
+            "video:500x400|position: absolute; left: 10px; top: 40px; width: 100px; height: 80px",
+            Some(red()),
+        ),
+        (
+            "video:500x400|position: absolute; left: 140px; top: 40px; width: 100px; height: 80px",
+            Some(red()),
+        ),
+    ];
+    let mut p = page(&parts);
+    let ids: Vec<usize> = p.surfaces.iter().map(|s| s.id()).collect();
+    let mut win = Window::with(true, 1.0, None, false);
+    let sorted = |mut v: Vec<usize>| {
+        v.sort_unstable();
+        v
+    };
+    let got = win.frame(&mut p.app, true, Fault::None);
+    assert_eq!(sorted(got.split_ids), ids);
+    assert_eq!(p.app.split_cap_repaints(), 0);
+    let grow = |p: &Page| {
+        let v = &p.videos[1];
+        v.surface
+            .writer()
+            .submit_frame(&video_frame(v.color.get(), (700, 700)), 700, 700);
+    };
+    grow(&p);
+    let got = win.frame(&mut p.app, false, Fault::None);
+    assert_eq!(
+        got.split_ids,
+        vec![ids[0]],
+        "the grown frame goes to the scene"
+    );
+    assert_eq!(p.app.split_cap_repaints(), 1);
+    for n in 0..4 {
+        p.videos[0].redraw();
+        grow(&p);
+        let got = win.frame(&mut p.app, false, Fault::None);
+        assert_eq!(got.split_ids, vec![ids[0]], "frame {n}");
+        assert_eq!(p.app.split_cap_repaints(), 1, "frame {n}: painted again");
+        let cap = crate::shell::split_frame::split_memory_cap(win.dev);
+        assert!(win.split.resident_bytes() <= cap);
+    }
+    for s in &p.surfaces {
+        unregister_render_surface(s.id());
+    }
+    crate::shell::renderer::set_gpu_presenting(false);
 }

@@ -402,7 +402,24 @@ inside a region for a later PR:
 - **While a `GameViewport` layer is under the UI the window does not split**
   (and the surfaces it had split are repainted into the scene). See *Video,
   and later GameViewport*.
-- The memory cap (D6) is PR 5.
+- **The memory cap (D6) as built (PR 5).** Counted: the scratch target at
+  the size the kept slices need (it is dropped when larger), each kept
+  slice's coverage masks and above slices (R-sized each), and the CPU frames
+  uploaded for split video. Not counted: the window's own textures, and a
+  `RenderSurface`'s texture (the app's). With all of that counted, D6b's
+  twice-the-window refused a full-window video under its controls at any
+  size (scratch rounded up to 128 px, `above_in` and the frame: 25.4 MB at
+  1080p against 16.6, 99.8 MB at 4K against 66, about 3.06 windows), so the
+  cap is **4 windows** (`SPLIT_MEMORY_CAP_WINDOWS`; 33 MB at 1080p, 133 MB at
+  4K). It is applied after paint, from the slices as built, not before
+  paint in `surface_route`: whether a slice has above slices or masks is
+  known only once the frame is painted. The frame's slices are added in paint
+  order to what stays split from earlier frames; the first that passes the
+  cap and every one after it are named to the painter
+  (`VelloPainter::refuse_split`, `Refusal::MemoryCap`) and the frame is
+  painted again, as for taint. They stay refused until the window's size
+  changes, a split surface the cap did not refuse goes, or 120 painted frames
+  pass.
 
 ## The decision point
 
@@ -672,6 +689,26 @@ cap PR counts it.*
   Over the cap, surfaces are split in paint order until the next one does
   not fit. The rest fall back with `MemoryCap`, then use the atlas with its
   own never-silent budget (#1861).
+
+**Amendment (decided, Joe, 2026-10-25).** The cap counts all four: the
+scratch target, the above slices, the coverage masks and the uploaded video
+frames. It is **4×** the window's texture bytes (`SPLIT_MEMORY_CAP_WINDOWS`),
+not D6b's 2×. Building the cap (PR 5) showed that with everything counted, 2×
+refused the commonest case, a full-window video under its controls:
+
+| Held while split | 1080p | 4K |
+|---|---|---|
+| scratch target, rounded up to 128 px | 8.85 MB | 33.4 MB |
+| `above_in`, the size of R | 8.29 MB | 33.2 MB |
+| the uploaded frame, at window resolution | 8.29 MB | 33.2 MB |
+| **total** (about 3.06 windows) | **25.4 MB** | **99.8 MB** |
+| D6b's cap (2 windows) | 16.6 MB | 66.4 MB |
+| the cap (4 windows) | 33.2 MB | 132.7 MB |
+
+Even without the upload it was 2.07 windows, over 2× because of the scratch
+target's rounding. The upload is not extra memory against in-scene, where
+the same frame sits in Vello's image atlas, but it is counted all the same.
+A 640×360 video in a page holds about 3.4 MB.
 
 ### D7. Two split surfaces whose regions overlap
 

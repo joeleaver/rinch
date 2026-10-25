@@ -130,6 +130,9 @@ pub(crate) struct Slicing {
     pub(crate) slices: Vec<Slice>,
     /// Below is inside the inverse clip.
     pub(crate) inverse_open: bool,
+    /// The surfaces the runtime refuses this frame: they did not fit the
+    /// window's split memory cap (D6).
+    pub(crate) refused: Vec<usize>,
 }
 
 /// Whether two rects share any area.
@@ -226,6 +229,7 @@ impl Slicing {
             open: Vec::new(),
             slices: Vec::new(),
             inverse_open: false,
+            refused: Vec::new(),
         }
     }
 
@@ -380,6 +384,9 @@ impl Slicing {
     /// across the second region landed in below inside it).
     pub(crate) fn split(&mut self, below: &mut Scene, split: &SurfaceSplit) -> SplitVerdict {
         self.close_inverse(below);
+        if self.refused.contains(&split.surface_id) {
+            return SplitVerdict::InScene(Refusal::MemoryCap);
+        }
         if self.open.iter().any(|o| match o {
             Open::Clip { .. } => false,
             Open::Layer { blend, opacity, .. } => {
