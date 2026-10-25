@@ -1966,16 +1966,11 @@ impl RinchRuntime {
         // yet (a base layer under split slices is the design's next step).
         let has_layers = renderer.has_composite_layers() || skipped_unready;
         let mut viewport_frames = crate::render_surface::collect_viewport_frames_by_name();
-        {
-            let renderer = &mut *renderer;
-            super::split_frame::prepare_split_viewports(
-                &mut viewport_frames,
-                &mut renderer.split,
-                &renderer.device,
-                &renderer.queue,
-                !has_layers,
-            );
-        }
+        let split_uploads = super::split_frame::prepare_split_viewports(
+            &mut viewport_frames,
+            &mut renderer.split,
+            !has_layers,
+        );
         self.app
             .install_gpu_viewport_frames(viewport_frames, Some(compositor_viewport_names));
 
@@ -2001,6 +1996,15 @@ impl RinchRuntime {
         if has_layers {
             renderer.split.clear();
         }
+        // After the change: only the videos this frame keeps split upload
+        // their frame (#1906 review: a hidden or refused one uploaded too).
+        let uploads = {
+            let renderer = &mut *renderer;
+            renderer
+                .split
+                .upload_split_frames(&renderer.device, &renderer.queue, split_uploads)
+        };
+
         #[cfg(debug_assertions)]
         {
             let after = renderer.split_surface_ids();
@@ -2014,6 +2018,8 @@ impl RinchRuntime {
         #[cfg(not(debug_assertions))]
         let _ = before;
         renderer.paint_frame(frame, transparent)?;
+        self.app
+            .perf_add(rinch_dom::perf::Counter::SplitFrameUploads, uploads);
         self.app.perf_add(
             rinch_dom::perf::Counter::TimePresentNs,
             present_start.elapsed().as_nanos() as u64,

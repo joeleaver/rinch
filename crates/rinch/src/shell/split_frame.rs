@@ -198,20 +198,25 @@ impl SplitFrame {
             .collect()
     }
 
-    /// Drop every kept slice (the window stopped splitting).
-    /// Upload the CPU frames of the viewports the painter may split
-    /// (`frames`: id, pixels, whether new since the last paint), keeping one
-    /// texture per id; a viewport missing from `frames` loses its texture.
-    /// A frame is uploaded when it is new or its texture is missing or of
-    /// another size: the old layer path's upload, once per frame.
-    pub fn sync_pixel_frames<'a>(
+    /// Upload the CPU frames of the videos this window keeps split, after
+    /// the frame's change is applied (`pending`, from
+    /// [`prepare_split_viewports`]), one texture per id, and say how many
+    /// were uploaded. A video not split (hidden, culled, refused) uploads
+    /// nothing and loses its texture. A frame is uploaded when it is new or
+    /// its texture is missing or of another size: the old layer path's
+    /// upload, once per frame.
+    pub fn upload_split_frames(
         &mut self,
         device: &Device,
         queue: &Queue,
-        frames: impl Iterator<Item = (usize, &'a rinch_dom::paint::SurfacePixelData, bool)>,
-    ) {
+        pending: Vec<PendingFrame>,
+    ) -> u64 {
+        let mut uploads = 0;
         let mut now = HashMap::new();
-        for (id, px, fresh) in frames {
+        for (id, px, fresh) in pending {
+            if !self.kept.iter().any(|k| k.surface_id == id) {
+                continue;
+            }
             let expected = (px.width as usize) * (px.height as usize) * 4;
             if px.width == 0 || px.height == 0 || px.data.len() < expected {
                 continue;
@@ -238,6 +243,7 @@ impl SplitFrame {
                 })
             });
             if upload {
+                uploads += 1;
                 queue.write_texture(
                     texture.as_image_copy(),
                     &px.data[..expected],
@@ -256,25 +262,35 @@ impl SplitFrame {
             now.insert(id, texture);
         }
         self.pixels = now;
+        uploads
     }
 
+    /// How many uploaded video frames this window holds.
+    #[cfg(test)]
+    pub(crate) fn pixel_textures(&self) -> usize {
+        self.pixels.len()
+    }
+
+    /// Drop every kept slice, uploaded frame and the scratch target (the
+    /// window stopped splitting).
     pub fn clear(&mut self) {
         self.kept.clear();
         self.pixels.clear();
         self.scratch = None;
     }
 
-    /// The kept surfaces whose texture is no longer the size the slice was
-    /// made for (the image atlas's share moved, #1768): their `extents` and
-    /// image transform are stale, so the runtime marks them damaged and the
-    /// frame splits them again (#1899 review).
+    /// The kept `RenderSurface`s whose texture is no longer the size the
+    /// slice was made for (the image atlas's share moved, #1768): their
+    /// `extents` and image transform are stale, so the runtime marks them
+    /// damaged and the frame splits them again (#1899 review). A video's
+    /// new frame of another size is caught where it arrives, in
+    /// [`prepare_split_viewports`] (#1906 review).
     pub fn stale_ids(&self, textures: &HashMap<usize, Texture>) -> Vec<usize> {
         self.kept
             .iter()
             .filter(|k| {
                 textures
                     .get(&k.surface_id)
-                    .or_else(|| self.pixels.get(&k.surface_id))
                     .is_some_and(|t| (t.width(), t.height()) != k.extents)
             })
             .map(|k| k.surface_id)
@@ -418,37 +434,51 @@ impl SplitFrame {
     }
 }
 
+/// A split-able video's frame this paint, uploaded after paint if the
+/// window splits it ([`SplitFrame::upload_split_frames`]): its surface id,
+/// its pixels (shared, not copied), and whether they are new since the last
+/// paint.
+pub type PendingFrame = (usize, rinch_dom::paint::SurfacePixelData, bool);
+
 /// The video half of a frame on the split path (#1865 PR 4), shared by the
-/// desktop runtime and its oracle: with splitting `enabled`, the painter may
-/// split each video viewport out of the scene (`set_viewport_split_ids`),
-/// its frame is uploaded for the compositor, and a new frame of one the
-/// window composites split is not damage (taken out of `frames.fresh`).
-/// Without it, no viewport splits and the uploads are dropped.
+/// desktop runtime and its oracle, before paint. With splitting `enabled`,
+/// the painter may split each video viewport out of the scene
+/// (`set_viewport_split_ids`), and a new frame of one the window composites
+/// split is not damage (taken out of `frames.fresh`) unless its size is not
+/// the slice's: then its image transform is stale, and the frame splits it
+/// again (#1906 review: adaptive streaming changes the size mid-stream).
+/// Returns the frames to upload after paint, for the videos the frame keeps
+/// split. Without `enabled`, no viewport splits and the uploads are dropped.
 pub fn prepare_split_viewports(
     frames: &mut crate::render_surface::ViewportFrames,
     split: &mut SplitFrame,
-    device: &Device,
-    queue: &Queue,
     enabled: bool,
-) {
+) -> Vec<PendingFrame> {
     if !enabled {
         rinch_dom::paint::set_viewport_split_ids(None);
         split.pixels.clear();
-        return;
+        return Vec::new();
     }
     rinch_dom::paint::set_viewport_split_ids(Some(frames.ids.clone()));
-    split.sync_pixel_frames(
-        device,
-        queue,
-        frames.ids.iter().filter_map(|(name, id)| {
-            Some((*id, frames.frames.get(name)?, frames.fresh.contains(name)))
-        }),
-    );
-    let split_ids: Vec<usize> = split.surface_ids().collect();
+    let pending: Vec<PendingFrame> = frames
+        .ids
+        .iter()
+        .filter_map(|(name, id)| {
+            let px = frames.frames.get(name)?;
+            Some((*id, px.clone(), frames.fresh.contains(name)))
+        })
+        .collect();
     frames.fresh.retain(|name| {
-        !frames
-            .ids
+        let Some(id) = frames.ids.get(name) else {
+            return true;
+        };
+        let Some(kept) = split.kept.iter().find(|k| k.surface_id == *id) else {
+            return true;
+        };
+        frames
+            .frames
             .get(name)
-            .is_some_and(|id| split_ids.contains(id))
+            .is_some_and(|px| (px.width, px.height) != kept.extents)
     });
+    pending
 }

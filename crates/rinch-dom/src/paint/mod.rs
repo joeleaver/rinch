@@ -1035,7 +1035,9 @@ impl Outsets {
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
-/// Pixel data for a render surface, keyed by surface ID.
+/// Pixel data for a render surface, keyed by surface ID. `Clone` shares the
+/// pixels (an `Arc`); it does not copy them.
+#[derive(Clone)]
 pub struct SurfacePixelData {
     /// RGBA8 pixel data. Shared with the surface's own buffer, so handing a
     /// frame to paint copies nothing — a paint with no new frame used to clone
@@ -1470,11 +1472,6 @@ fn paint_surface_frame(
     }
 }
 
-/// Hand this paint the `RenderSurface` GPU frames to draw in the scene, keyed
-/// by surface ID (#1768). Each image must be registered with the renderer that
-/// renders the scene (`vello::Renderer::register_texture`); only the Vello
-/// painter draws them. A surface with an image here draws it in place of its
-/// CPU pixels. `None` clears.
 /// The viewports whose frames the next paints may split out of the scene
 /// (#1865): `data-viewport` name to the id their slice is keyed by. `None`
 /// (the default, and every host but the desktop GPU window) splits none.
@@ -1490,6 +1487,11 @@ pub fn has_surface_gpu_images() -> bool {
         || VIEWPORT_SPLIT_IDS.with(|v| v.borrow().as_ref().is_some_and(|m| !m.is_empty()))
 }
 
+/// Hand this paint the `RenderSurface` GPU frames to draw in the scene, keyed
+/// by surface ID (#1768). Each image must be registered with the renderer that
+/// renders the scene (`vello::Renderer::register_texture`); only the Vello
+/// painter draws them. A surface with an image here draws it in place of its
+/// CPU pixels. `None` clears.
 pub fn set_surface_gpu_images(images: Option<HashMap<usize, peniko::ImageData>>) {
     SURFACE_GPU_IMAGES.with(|v| *v.borrow_mut() = images);
 }

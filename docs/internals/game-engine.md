@@ -245,10 +245,14 @@ added, so the region's slices are replaced whole. A tainted slice repaints the
 frame in-scene and suspends splitting for 120 frames. Debug builds log each
 surface's placement change (`tracing::debug!`). **Video (PR 4):**
 `split_frame::prepare_split_viewports` names the video viewports paint may
-split (`set_viewport_split_ids`), uploads their CPU frames
-(`SplitFrame::sync_pixel_frames`, one texture per surface id, straight
-alpha) and drops a split video's new frame from the viewport damage; paint's
-video arm offers the frame to `split_surface` after its black backdrop. Oracle:
+split (`set_viewport_split_ids`) and drops a split video's new frame from the
+viewport damage, unless its size is not the slice's (a size change is caught
+there, where the frame arrives; `stale_ids` covers `RenderSurface` textures).
+Paint's video arm offers the frame to `split_surface` after its black
+backdrop. After the frame's change is applied,
+`SplitFrame::upload_split_frames` uploads the frames of the videos the window
+keeps split, and only those (one texture per surface id, straight alpha;
+counter `split_frame_uploads`). Oracle:
 `crates/rinch/src/split_runtime_1865_tests.rs` (`gpu_split_runtime_*`, a child of `render_surface`),
 the runtime's own steps against an in-scene window.
 

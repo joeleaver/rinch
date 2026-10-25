@@ -481,12 +481,20 @@ Not on this list, because they split exactly:
   surface id); the video arm of paint offers the frame to `split_surface`
   after its black letterbox backdrop, which stays in the scene beneath it
   (`straight_alpha`, as `draw_image` draws a CPU frame; the viewport's
-  `border-radius` as the own clip; `object-fit: contain` as `fit_image` fits
-  it). `SplitFrame::sync_pixel_frames` uploads each new frame into a texture
-  per id, and a new frame of a video the window composites split is not
-  damage (`prepare_split_viewports`, shared by the runtime and the oracle):
+  `border-radius` as the own clip; fitted `contain`, which both paths
+  hard-code whatever the element's `object-fit` says, #1908).
+  `SplitFrame::upload_split_frames` uploads each new frame into a texture per
+  id, after paint and only for the videos the frame keeps split (the #1906
+  review: uploading before paint uploaded a hidden, culled, refused or
+  overlapped video's frames too, 0.9 ms a frame at 1080p, and a hidden one
+  held its texture; `split_frame_uploads` counts them). A new frame of a
+  video the window composites split is not damage unless its size is not the
+  slice's (`prepare_split_viewports`, shared by the runtime and the oracle;
+  the #1906 review: a size change mid-stream, as adaptive streaming makes,
+  was composited with the old slice's transform on every later frame):
   a playing video under a static UI is an upload and a composite, with no
-  Vello. An opacity on the viewport is a group effect: in the scene (D3a).
+  Vello. Measured (release, RADV, median): 4K full-window, 4.85 to 6.52 ms
+  between runs; 1080p 1.64 ms. An opacity on the viewport is a group effect: in the scene (D3a).
 - **`GpuTextureRegistrar`** is unchanged.
 
 **How `GameViewport` fits on the split path (after PR 3; #1866 is parked

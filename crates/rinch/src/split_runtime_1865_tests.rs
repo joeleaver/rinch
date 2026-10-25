@@ -127,12 +127,14 @@ struct Window {
     transparent: bool,
 }
 
-/// A frame: what it presented, which surfaces it composited split, and the
-/// frame's kind (`"full"`, `"partial"`, `"unchanged"`).
+/// A frame: what it presented, which surfaces it composited split, the
+/// frame's kind (`"full"`, `"partial"`, `"unchanged"`), and how many video
+/// frames it uploaded for the compositor.
 struct Shown {
     pixels: Vec<[u8; 4]>,
     split_ids: Vec<usize>,
     kind: &'static str,
+    uploads: u64,
 }
 
 impl Window {
@@ -201,11 +203,9 @@ impl Window {
         app.mark_fresh_surfaces(&fresh, &split_ids, &stale);
         rinch_dom::paint::set_surface_gpu_images(Some(images));
         let mut viewports = collect_viewport_frames_by_name();
-        crate::shell::split_frame::prepare_split_viewports(
+        let uploads = crate::shell::split_frame::prepare_split_viewports(
             &mut viewports,
             &mut self.split,
-            &gpu.device,
-            &gpu.queue,
             self.splits,
         );
         app.install_gpu_viewport_frames(viewports, Some(Default::default()));
@@ -268,6 +268,9 @@ impl Window {
                 .apply(&gpu.device, &gpu.queue, &mut self.vello, change)
                 .expect("apply");
         }
+        let uploads = self
+            .split
+            .upload_split_frames(&gpu.device, &gpu.queue, uploads);
         let split_ids: Vec<usize> = self.split.surface_ids().collect();
         let layered = !(self.split.is_empty() || fault == Fault::NoComposite);
         if layered {
@@ -339,14 +342,15 @@ impl Window {
             pixels,
             split_ids,
             kind,
+            uploads,
         }
     }
 
-    /// The allowance at each pixel (D10, from this window's own slices).
-    /// The allowance at each pixel. The ring class (one level within a tile
-    /// of a region, outside it) stays on a pixel once granted: a below pixel
-    /// painted while a region was near keeps its rounding until something
-    /// repaints it, after the region has moved on.
+    /// The allowance at each pixel (D10, from this window's own slices). The
+    /// ring class (one level within a tile of a region, outside it) stays on
+    /// a pixel once granted: a below pixel painted while a region was near
+    /// keeps its rounding until something repaints it, after the region has
+    /// moved on.
     fn allowances(&mut self, tol: Tol) -> Vec<i32> {
         let edges = tol.edges;
         let (w, h) = self.dev;
@@ -593,8 +597,6 @@ const BADGE: &str = "position: absolute; left: 60px; top: 48px; width: 20px; hei
 const SIDEBAR: &str = "position: absolute; left: 320px; top: 0; width: 80px; height: 300px; \
                        background: rgb(0, 0, 128)";
 
-/// One page, split against in-scene, over the frames `steps` makes. `split`
-/// says whether the surfaces must end up split (or must not).
 /// The window `check` builds: scale, surface (format, alpha mode),
 /// transparent. Scale 1, no surface, opaque unless a test sets it.
 type WindowConfig = (f64, Option<(TextureFormat, wgpu::CompositeAlphaMode)>, bool);
@@ -603,6 +605,8 @@ thread_local! {
     static WINDOW: Cell<WindowConfig> = const { Cell::new((1.0, None, false)) };
 }
 
+/// One page, split against in-scene, over the frames `steps` makes. `split`
+/// says whether the surfaces must end up split (or must not).
 fn check(
     name: &str,
     parts: Vec<Part>,
@@ -1633,6 +1637,15 @@ fn gpu_split_runtime_video_matches_in_scene() {
     let recolor = |p: &Page| {
         p.boxes.borrow()[1].set_style("background", "rgb(240, 200, 0)");
     };
+    let noop = |_: &Page| {};
+    let resize = |w: u32, h: u32| {
+        move |p: &Page| {
+            let v = &p.videos[0];
+            v.surface
+                .writer()
+                .submit_frame(&video_frame([10, 120, 200, 255], (w, h)), w, h);
+        }
+    };
     run(vec![
         check(
             "a video, frame the size of its box",
@@ -1686,6 +1699,34 @@ fn gpu_split_runtime_video_matches_in_scene() {
             &["full", "unchanged", "partial"],
             Fault::None,
         ),
+        // A new frame of another size (adaptive streaming), then no more
+        // (paused): the slice is made again for it, at once (#1906 review).
+        check(
+            "a new frame of another aspect, then paused",
+            vec![v(
+                "video:120x80|position: absolute; left: 50px; top: 40px; width: 120px; height: 80px",
+            )],
+            RESAMPLED,
+            &[true],
+            &[&resize(100, 40), &noop, &noop],
+            &["full", "partial", "unchanged", "unchanged"],
+            Fault::None,
+        ),
+        check(
+            "a new frame of the same aspect at another size, then paused",
+            vec![
+                (
+                    "video:120x80|position: absolute; left: 50px; top: 40px; width: 120px; height: 80px",
+                    Some(red()),
+                ),
+                (OPAQUE_BAR, None),
+            ],
+            RESAMPLED,
+            &[true],
+            &[&resize(60, 40), &noop, &resize(240, 160), &noop],
+            &["full", "partial", "unchanged", "partial", "unchanged"],
+            Fault::None,
+        ),
         check(
             "a video at half opacity: in the scene",
             vec![v(
@@ -1698,4 +1739,435 @@ fn gpu_split_runtime_video_matches_in_scene() {
             Fault::None,
         ),
     ]);
+}
+
+/// Only a video the window composites split uploads its frame, after paint
+/// (#1906 review: a hidden, culled, refused or overlapped one uploaded every
+/// new frame too, about 0.9 ms a frame at 1080p and 3.3 at 4K, and a hidden
+/// one held its texture). `split_frame_uploads` counts them.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_video_uploads() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    const BOX: &str = "position: absolute; top: 40px; width: 100px; height: 80px";
+    let parts: Vec<Part> = vec![
+        // Split.
+        (
+            Box::leak(format!("video:100x80|{BOX}; left: 10px").into_boxed_str()),
+            Some(red()),
+        ),
+        // Hidden.
+        (
+            Box::leak(format!("video:100x80|{BOX}; left: 130px; display: none").into_boxed_str()),
+            Some(red()),
+        ),
+        // In an opacity group: in the scene.
+        (
+            Box::leak(format!("video:100x80|{BOX}; left: 250px; opacity: 0.5").into_boxed_str()),
+            Some(red()),
+        ),
+        // Overlapping the first: in the scene (D7a).
+        (
+            Box::leak(format!("video:100x80|{BOX}; left: 60px; top: 60px").into_boxed_str()),
+            Some(red()),
+        ),
+        // Off-screen: culled.
+        (
+            Box::leak(format!("video:100x80|{BOX}; left: 600px").into_boxed_str()),
+            Some(red()),
+        ),
+    ];
+    let mut p = page(&parts);
+    let first = p.surfaces[0].id();
+    let mut win = Window::new(true);
+    let redraw = |p: &Page| {
+        for v in &p.videos {
+            v.redraw();
+        }
+    };
+    let got = win.frame(&mut p.app, true, Fault::None);
+    assert_eq!(got.split_ids, vec![first]);
+    assert_eq!(got.uploads, 1, "the first frame: the split one's texture");
+    for n in 0..3 {
+        redraw(&p);
+        let got = win.frame(&mut p.app, false, Fault::None);
+        assert_eq!(got.split_ids, vec![first], "frame {n}");
+        assert_eq!(got.uploads, 1, "frame {n}: one new frame of the split one");
+    }
+    let got = win.frame(&mut p.app, false, Fault::None);
+    assert_eq!((got.kind, got.uploads), ("unchanged", 0), "no new frame");
+    assert_eq!(
+        win.split.pixel_textures(),
+        1,
+        "only the split one holds one"
+    );
+    for s in &p.surfaces {
+        unregister_render_surface(s.id());
+    }
+    crate::shell::renderer::set_gpu_presenting(false);
+}
+
+// The #1906 review's probes, adopted: frame size changes, straight alpha on
+// opaque and transparent windows, fractional scales, hide/show/move/unmount,
+// several videos, and taint over 125 frames. They count pixel failures (a
+// case's split expectation is not checked: some of them are in the scene).
+
+fn rv_frame(rgba: [u8; 4], (w, h): (u32, u32)) -> Vec<u8> {
+    (0..h)
+        .flat_map(|y| {
+            (0..w).flat_map(move |x| {
+                [
+                    rgba[0].wrapping_add((x * 7 + y * 3) as u8),
+                    rgba[1].wrapping_add((x * 2 + y * 5) as u8),
+                    rgba[2].wrapping_add((x + y * 11) as u8),
+                    rgba[3],
+                ]
+            })
+        })
+        .collect()
+}
+
+fn rv_submit(p: &Page, i: usize, rgba: [u8; 4], size: (u32, u32)) {
+    p.videos[i]
+        .surface
+        .writer()
+        .submit_frame(&rv_frame(rgba, size), size.0, size.1);
+}
+
+const RV_BOX: &str = "position: absolute; left: 50px; top: 40px; width: 120px; height: 80px";
+
+fn rv_print(name: &str, f: Vec<String>) -> usize {
+    for l in &f {
+        eprintln!("[rv] {name}: {l}");
+    }
+    if f.is_empty() {
+        eprintln!("[rv] {name}: clean");
+    }
+    f.iter().filter(|l| l.contains("allowance")).count()
+}
+
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_review_video_probes() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let v = |st: &'static str| -> Part { (st, Some(red())) };
+    let noop = |_: &Page| {};
+    let mut bad = 0;
+    let only = std::env::var("RV_ONLY").ok();
+    let want = |n: &str| only.as_deref().is_none_or(|o| n.contains(o));
+
+    // 1. frame size changes mid-stream
+    for (name, size) in [
+        (
+            "size change: aspect change 120x80 -> 100x40",
+            (100u32, 40u32),
+        ),
+        ("size change: same aspect 120x80 -> 60x40", (60, 40)),
+        ("size change: 120x80 -> 240x160", (240, 160)),
+        ("size change: odd 120x80 -> 97x61", (97, 61)),
+    ] {
+        if !want(name) {
+            continue;
+        }
+        let step = move |p: &Page| rv_submit(p, 0, [10, 120, 200, 255], size);
+        let redraw_same = move |p: &Page| rv_submit(p, 0, [90, 20, 200, 255], size);
+        bad += rv_print(
+            name,
+            check(
+                name,
+                vec![v(&*Box::leak(
+                    format!("video:120x80|{RV_BOX}").into_boxed_str(),
+                ))],
+                RESAMPLED,
+                &[true],
+                &[&step, &noop, &noop, &redraw_same, &noop],
+                &[],
+                Fault::None,
+            ),
+        );
+    }
+
+    // 2. straight alpha, opaque and transparent windows
+    for transparent in [false, true] {
+        let name = format!("alpha frame, transparent window {transparent}");
+        if !want(&name) {
+            continue;
+        }
+        WINDOW.with(|w| w.set((1.0, None, transparent)));
+        let a = |p: &Page| rv_submit(p, 0, [200, 100, 40, 128], (120, 80));
+        let a2 = |p: &Page| rv_submit(p, 0, [20, 200, 140, 7], (120, 80));
+        let a3 = |p: &Page| rv_submit(p, 0, [250, 250, 250, 0], (120, 80));
+        bad += rv_print(
+            &name,
+            check(
+                &name,
+                vec![
+                    v(Box::leak(format!("video:120x80|{RV_BOX}").into_boxed_str())),
+                    (OPAQUE_BAR, None),
+                ],
+                EXACT,
+                &[true],
+                &[&a, &a2, &a3],
+                &[],
+                Fault::None,
+            ),
+        );
+        // letterboxed (resampled) alpha
+        let name = format!("alpha frame letterboxed, transparent window {transparent}");
+        let a = |p: &Page| rv_submit(p, 0, [200, 100, 40, 128], (100, 60));
+        bad += rv_print(
+            &name,
+            check(
+                &name,
+                vec![v(Box::leak(
+                    format!("video:100x60|{RV_BOX}").into_boxed_str(),
+                ))],
+                RESAMPLED,
+                &[true],
+                &[&a],
+                &[],
+                Fault::None,
+            ),
+        );
+    }
+    WINDOW.with(|w| w.set((1.0, None, false)));
+
+    // 3. fractional DPR, odd frame and fractional box
+    for scale in [1.25f64, 1.5] {
+        for (frame, style) in [
+            (
+                "97x61",
+                "position: absolute; left: 50.5px; top: 40.25px; width: 121px; height: 79px",
+            ),
+            ("120x80", RV_BOX),
+            (
+                "61x97",
+                "position: absolute; left: 33.3px; top: 21.7px; width: 151.3px; height: 77.1px",
+            ),
+            (
+                "120x80",
+                "position: absolute; left: 50px; top: 40px; width: 120px; height: 80px; border-radius: 11px",
+            ),
+        ] {
+            let name = format!("scale {scale}, frame {frame}, {style}");
+            if !want(&name) {
+                continue;
+            }
+            WINDOW.with(|w| w.set((scale, None, false)));
+            let (fw, fh) = frame.split_once('x').unwrap();
+            let size: (u32, u32) = (fw.parse().unwrap(), fh.parse().unwrap());
+            let redraw = move |p: &Page| rv_submit(p, 0, [5, 220, 30, 255], size);
+            bad += rv_print(
+                &name,
+                check(
+                    &name,
+                    vec![
+                        v(Box::leak(format!("video:{frame}|{style}").into_boxed_str())),
+                        (OPAQUE_BAR, None),
+                    ],
+                    RESAMPLED,
+                    &[true],
+                    &[&redraw],
+                    &[],
+                    Fault::None,
+                ),
+            );
+        }
+    }
+    WINDOW.with(|w| w.set((1.0, None, false)));
+
+    // 4. hidden / shown / moved / unmounted
+    let hide = |p: &Page| {
+        p.boxes.borrow()[0].set_style("display", "none");
+        rv_submit(p, 0, [10, 120, 200, 255], (120, 80));
+    };
+    let show = |p: &Page| {
+        p.boxes.borrow()[0].set_style("display", "block");
+    };
+    let vis_hidden = |p: &Page| {
+        p.boxes.borrow()[0].set_style("visibility", "hidden");
+        rv_submit(p, 0, [10, 120, 200, 255], (120, 80));
+    };
+    let vis_visible = |p: &Page| {
+        p.boxes.borrow()[0].set_style("visibility", "visible");
+    };
+    let redraw = |p: &Page| rv_submit(p, 0, [77, 33, 150, 255], (120, 80));
+    let move_and_frame = |p: &Page| {
+        p.boxes.borrow()[0].set_style("left", "90px");
+        rv_submit(p, 0, [100, 10, 10, 255], (120, 80));
+    };
+    let bar_and_frame = |p: &Page| {
+        p.boxes.borrow()[1].set_style("background", "rgb(240, 200, 0)");
+        rv_submit(p, 0, [100, 100, 10, 255], (120, 80));
+    };
+    let bar_move_and_frame = |p: &Page| {
+        p.boxes.borrow()[1].set_style("top", "60px");
+        rv_submit(p, 0, [30, 100, 210, 255], (120, 80));
+    };
+    let remove = |p: &Page| {
+        p.boxes.borrow()[0].remove();
+        rv_submit(p, 0, [10, 120, 200, 255], (120, 80));
+    };
+    let unregister = |p: &Page| {
+        unregister_render_surface(p.videos[0].surface.id());
+    };
+    let opacity_and_frame = |p: &Page| {
+        p.boxes.borrow()[0].set_style("opacity", "0.5");
+        rv_submit(p, 0, [30, 100, 210, 255], (120, 80));
+    };
+    let opaque_again = |p: &Page| {
+        p.boxes.borrow()[0].set_style("opacity", "1");
+        rv_submit(p, 0, [130, 10, 210, 255], (120, 80));
+    };
+    type Steps<'a> = Vec<&'a dyn Fn(&Page)>;
+    let cases: Vec<(&str, Steps<'_>)> = vec![
+        (
+            "display none / redraw / block",
+            vec![&hide, &redraw, &show, &redraw],
+        ),
+        (
+            "visibility hidden / redraw / visible",
+            vec![&vis_hidden, &redraw, &vis_visible, &redraw],
+        ),
+        (
+            "move + new frame same frame",
+            vec![&move_and_frame, &redraw],
+        ),
+        (
+            "controls recolour + new frame same frame",
+            vec![&bar_and_frame, &redraw],
+        ),
+        (
+            "controls move + new frame same frame",
+            vec![&bar_move_and_frame, &redraw],
+        ),
+        ("node removed + new frame", vec![&remove, &redraw, &noop]),
+        (
+            "surface unregistered, node stays",
+            vec![&unregister, &noop, &redraw],
+        ),
+        (
+            "opacity 0.5 + frame, then 1 + frame",
+            vec![&opacity_and_frame, &redraw, &opaque_again, &redraw],
+        ),
+    ];
+    for (name, steps) in cases {
+        if !want(name) {
+            continue;
+        }
+        bad += rv_print(
+            name,
+            check(
+                name,
+                vec![
+                    v(Box::leak(format!("video:120x80|{RV_BOX}").into_boxed_str())),
+                    (OPAQUE_BAR, None),
+                ],
+                EXACT,
+                &[true],
+                &steps,
+                &[],
+                Fault::None,
+            ),
+        );
+    }
+
+    // 5. several videos
+    let all4 = |p: &Page| {
+        for i in 0..p.videos.len() {
+            let s = p.videos[i].size;
+            rv_submit(p, i, [(i * 50) as u8, 90, 200, 255], s);
+        }
+    };
+    for (name, specs) in [
+        (
+            "four videos side by side",
+            vec![
+                "video:120x80|position: absolute; left: 10px; top: 10px; width: 120px; height: 80px",
+                "video:100x60|position: absolute; left: 140px; top: 10px; width: 120px; height: 80px",
+                "video:120x80|position: absolute; left: 10px; top: 150px; width: 120px; height: 80px",
+                "video:64x48|position: absolute; left: 140px; top: 150px; width: 120px; height: 80px",
+            ],
+        ),
+        (
+            "two videos overlapping",
+            vec![
+                "video:120x80|position: absolute; left: 10px; top: 10px; width: 120px; height: 80px",
+                "video:120x80|position: absolute; left: 70px; top: 50px; width: 120px; height: 80px",
+            ],
+        ),
+    ] {
+        if !want(name) {
+            continue;
+        }
+        let parts: Vec<Part> = specs.into_iter().map(v).collect();
+        bad += rv_print(
+            name,
+            check(
+                name,
+                parts,
+                RESAMPLED,
+                &[true],
+                &[&all4, &all4, &noop],
+                &[],
+                Fault::None,
+            ),
+        );
+    }
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert_eq!(bad, 0, "pixel failures (see [rv] lines)");
+}
+
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_review_video_taint() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let gray = |p: &Page| {
+        p.boxes.borrow()[1].set_style("filter", "grayscale(1)");
+        p.boxes.borrow()[1].set_style("background", "rgb(250, 100, 100)");
+        rv_submit(p, 0, [1, 2, 3, 255], (120, 80));
+    };
+    let n = Rc::new(Cell::new(0u32));
+    let n2 = n.clone();
+    let frame = move |p: &Page| {
+        let k = n2.get();
+        n2.set(k + 1);
+        rv_submit(p, 0, [(k / 2) as u8, 90, 30, 255], (120, 80));
+    };
+    let ungray = |p: &Page| {
+        p.boxes.borrow()[1].set_style("filter", "none");
+        rv_submit(p, 0, [9, 9, 9, 255], (120, 80));
+    };
+    let mut steps: Vec<&dyn Fn(&Page)> = vec![&gray];
+    for _ in 0..125 {
+        steps.push(&frame);
+    }
+    steps.push(&ungray);
+    for _ in 0..3 {
+        steps.push(&frame);
+    }
+    let f = check(
+        "video taint",
+        vec![
+            (
+                Box::leak(format!("video:120x80|{RV_BOX}").into_boxed_str()),
+                Some(red()),
+            ),
+            (BADGE, None),
+        ],
+        EXACT,
+        &[true],
+        &steps,
+        &[],
+        Fault::None,
+    );
+    let bad = rv_print("video taint", f);
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert_eq!(bad, 0);
 }
