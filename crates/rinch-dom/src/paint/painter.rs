@@ -42,6 +42,17 @@ impl PaintShape {
             PaintShape::Line(l) => l.bounding_box(),
         }
     }
+
+    /// A rect containing the shape, cheaply: a path's control box (its
+    /// points, control points included) rather than its tight bounds, which
+    /// solve each curve's extrema (#1894 review: 6M instructions a paint
+    /// routing ~70 boxes over a split surface). Still conservative.
+    pub fn control_bounds(&self) -> Rect {
+        match self {
+            PaintShape::BezPath(p) => p.control_box(),
+            _ => self.bounding_box(),
+        }
+    }
 }
 
 impl From<Rect> for PaintShape {

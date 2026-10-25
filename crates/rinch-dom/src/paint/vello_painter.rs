@@ -5,7 +5,7 @@ use peniko::{Blob, Brush, Fill, FontData, ImageAlphaType, ImageData, ImageFormat
 use vello::Scene;
 
 use super::painter::{BlendMode, PaintGlyph, PaintImage, PaintShape, Painter};
-use super::slicing::{Open, Slicing, SurfaceSlice, pre};
+use super::slicing::{Open, Slicing, SurfaceSlice};
 use peniko::kurbo::Rect;
 
 /// GPU rendering backend that wraps a [`vello::Scene`].
@@ -16,6 +16,9 @@ pub struct VelloPainter {
     scene: Scene,
     /// Open on a frame the runtime paints for the split-layer path (#1865).
     slicing: Option<Slicing>,
+    /// This scene holds a layer that blends with its backdrop (grayscale's
+    /// saturation): appended over a split surface, it taints it (D5a).
+    reads_backdrop: bool,
 }
 
 impl VelloPainter {
@@ -24,6 +27,7 @@ impl VelloPainter {
         Self {
             scene: Scene::new(),
             slicing: None,
+            reads_backdrop: false,
         }
     }
 
@@ -53,12 +57,17 @@ impl VelloPainter {
 
     /// Paint `op` where it belongs: straight into the scene when the frame
     /// has no split surface, else routed by its device `bounds`.
-    fn draw(&mut self, bounds: impl FnOnce() -> Option<Rect>, op: &dyn Fn(&mut Scene, Affine)) {
+    ///
+    /// Generic over `op`, so the no-surface path is the draw itself, inlined:
+    /// routing (and the `dyn` call it takes) is reached only once a surface
+    /// was split (#1894 review: +0.93% per paint with no surface before).
+    #[inline(always)]
+    fn draw<F: Fn(&mut Scene)>(&mut self, bounds: impl FnOnce() -> Option<Rect>, op: F) {
         match &mut self.slicing {
             Some(slicing) if !slicing.slices.is_empty() => {
-                slicing.draw(&mut self.scene, bounds(), op)
+                slicing.draw(&mut self.scene, bounds(), &op)
             }
-            _ => op(&mut self.scene, Affine::IDENTITY),
+            _ => op(&mut self.scene),
         }
     }
 
@@ -192,13 +201,14 @@ pub(crate) fn push_layer_into(
 
 /// The device bounds of `shape` under `transform`.
 fn shape_bounds(transform: Affine, shape: &PaintShape) -> Option<Rect> {
-    Some(transform.transform_rect_bbox(shape.bounding_box()))
+    Some(transform.transform_rect_bbox(shape.control_bounds()))
 }
 
 impl Painter for VelloPainter {
     fn reset(&mut self) {
         self.scene.reset();
         self.slicing = None;
+        self.reads_backdrop = false;
     }
 
     fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {
@@ -208,9 +218,10 @@ impl Painter for VelloPainter {
         // gradient fell between two corners and was not drawn (#1798).
         let bt = matches!(brush, Brush::Gradient(_))
             .then(|| centre_sampling(transform, Affine::IDENTITY));
-        self.draw(|| shape_bounds(transform, shape), &|scene, at| {
-            dispatch_fill!(scene, fill, pre(at, transform), brush, bt, shape)
-        });
+        self.draw(
+            || shape_bounds(transform, shape),
+            |scene| dispatch_fill!(scene, fill, transform, brush, bt, shape),
+        );
     }
 
     fn stroke(
@@ -225,7 +236,7 @@ impl Painter for VelloPainter {
         let grow = stroke.width * (a.abs() + b.abs() + c.abs() + d.abs()) + 1.0;
         self.draw(
             || shape_bounds(transform, shape).map(|r| r.inflate(grow, grow)),
-            &|scene, at| dispatch_stroke!(scene, stroke, pre(at, transform), brush, shape),
+            |scene| dispatch_stroke!(scene, stroke, transform, brush, shape),
         );
     }
 
@@ -257,11 +268,11 @@ impl Painter for VelloPainter {
             let em = 2.0 * font_size as f64;
             Some(transform.transform_rect_bbox(r.inflate(em, em)))
         };
-        self.draw(bounds, &|scene, at| {
+        self.draw(bounds, |scene| {
             scene
                 .draw_glyphs(font)
                 .font_size(font_size)
-                .transform(pre(at, transform))
+                .transform(transform)
                 .glyph_transform(glyph_transform)
                 .brush(brush)
                 .hint(hint)
@@ -293,7 +304,7 @@ impl Painter for VelloPainter {
         let bt = Some(centre_sampling(transform, Affine::IDENTITY));
         self.draw(
             || Some(transform.transform_rect_bbox(rect)),
-            &|scene, at| scene.fill(Fill::NonZero, pre(at, transform), &brush, bt, &rect),
+            |scene| scene.fill(Fill::NonZero, transform, &brush, bt, &rect),
         );
     }
 
@@ -305,7 +316,7 @@ impl Painter for VelloPainter {
         let bt = Some(centre_sampling(transform, Affine::IDENTITY));
         self.draw(
             || Some(transform.transform_rect_bbox(rect)),
-            &|scene, at| scene.fill(Fill::NonZero, pre(at, transform), &brush, bt, &rect),
+            |scene| scene.fill(Fill::NonZero, transform, &brush, bt, &rect),
         );
     }
 
@@ -362,16 +373,10 @@ impl Painter for VelloPainter {
             .with_quality(quality)
             .into();
         let brush_transform = Some(centre_sampling(transform, tile_transform));
-        self.draw(|| shape_bounds(transform, shape), &|scene, at| {
-            dispatch_fill!(
-                scene,
-                fill,
-                pre(at, transform),
-                &brush,
-                brush_transform,
-                shape
-            )
-        });
+        self.draw(
+            || shape_bounds(transform, shape),
+            |scene| dispatch_fill!(scene, fill, transform, &brush, brush_transform, shape),
+        );
     }
 
     fn push_clip(&mut self, fill: Fill, transform: Affine, shape: &PaintShape) {
@@ -392,6 +397,9 @@ impl Painter for VelloPainter {
         transform: Affine,
         bounds: &PaintShape,
     ) {
+        if matches!(blend, BlendMode::Saturation) {
+            self.reads_backdrop = true;
+        }
         if self.slicing.is_none() {
             return push_layer_into(&mut self.scene, blend, opacity, transform, bounds);
         }
@@ -432,17 +440,21 @@ impl Painter for VelloPainter {
         split: &super::painter::SurfaceSplit,
     ) -> super::painter::SplitVerdict {
         match &mut self.slicing {
-            Some(slicing) => slicing.split(split),
+            Some(slicing) => slicing.split(&mut self.scene, split),
             None => super::painter::SplitVerdict::InScene(super::painter::Refusal::Unsupported),
         }
     }
 
     fn append(&mut self, other: &Self) {
-        // Bounds unknown: routed as across every region.
+        // Bounds unknown: routed as across every region. A scene that blends
+        // with its backdrop taints every split surface (D5a).
+        if other.reads_backdrop
+            && let Some(slicing) = &mut self.slicing
+        {
+            slicing.taint_all();
+        }
         let scene = &other.scene;
-        self.draw(|| None, &|s, at| {
-            s.append(scene, (at != Affine::IDENTITY).then_some(at))
-        });
+        self.draw(|| None, |s| s.append(scene, None));
     }
 }
 
