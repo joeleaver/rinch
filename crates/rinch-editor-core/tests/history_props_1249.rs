@@ -614,7 +614,7 @@ fn remote_multi_edit_updates_known_wrong_seeds() {
 }
 
 /// #1895's seeds of [`remote_multi_edit_updates_known_wrong_seeds`].
-const KNOWN_WRONG_MULTI: [u64; 8] = [28, 39, 77, 118, 136, 187, 255, 262];
+const KNOWN_WRONG_MULTI: [u64; 7] = [28, 39, 77, 118, 136, 187, 255];
 
 fn st_html(html: &str) -> EditorState {
     state_d(html, 100)

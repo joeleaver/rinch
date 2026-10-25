@@ -20,12 +20,13 @@
 //!
 //! **Cost.** A branch is a persistent list (newest item first), so the state
 //! copy every transaction makes is a pointer copy, and recording a step or a
-//! peer's change is O(1). A run of a peer's changes with no recorded step between
-//! them is folded into one item ([`StepMap::compose`]), so the list holds about as
-//! many items as the retained events have steps, however long the peers type.
+//! peer's change is O(1). A peer's change folds into the peer item before it when
+//! that is exact ([`StepMap::compose_exact`]; a run of one-char deletions is kept
+//! as a count), so a peer typing or backspacing for an hour is one item; a change
+//! that does not fold (an insertion beside a deletion) is one small item more.
 //! Events past the depth cap are hidden at once and dropped from the list in a
-//! batch. [`__history_work`] counts the items each operation touches; the pins in
-//! `tests/history_remote_1249.rs` hold it flat.
+//! batch, with the items before them. [`__history_work`] counts the items each
+//! operation touches; the pins in `tests/history_remote_1249.rs` hold it flat.
 //!
 //! Grouping: consecutive **typing** transactions within a time window merge into a
 //! single undo step (so a word is one undo, not one-per-keystroke); any non-typing
@@ -115,6 +116,11 @@ struct Item {
     mirror_offset: Option<usize>,
     /// A change the history did not record: the next one folds into it.
     peer: bool,
+    /// `Some((at, n))`: this peer item is `n` one-char deletions at `at` (a run of
+    /// a peer's Backspace or Delete). Mapped as those `n` maps in turn, which is
+    /// exact; stored as two numbers, so a long run costs one item. `map` is then
+    /// the run as one range, for nothing but display.
+    unit_run: Option<(usize, usize)>,
 }
 
 impl Item {
@@ -125,6 +131,7 @@ impl Item {
             event: None,
             mirror_offset,
             peer: false,
+            unit_run: None,
         }
     }
 }
@@ -225,6 +232,7 @@ impl Branch {
                 event: info,
                 mirror_offset: None,
                 peer: false,
+                unit_run: None,
             });
         }
         self.items = items;
@@ -240,19 +248,17 @@ impl Branch {
         }
         for map in maps {
             let folded = match self.items.head() {
-                Some(head) if head.peer => head.map.compose(map),
+                Some(head) if head.peer => fold(head, map),
                 _ => None,
             };
-            self.items = match folded {
-                Some(map) => self.items.tail().push(Item {
-                    peer: true,
-                    ..Item::map_only(map, None)
-                }),
-                None => self.items.push(Item {
-                    peer: true,
-                    ..Item::map_only(map.clone(), None)
-                }),
+            let item = match folded {
+                Some(item) => {
+                    self.items = self.items.tail();
+                    item
+                }
+                None => peer_item(map.clone()),
             };
+            self.items = self.items.push(item);
         }
     }
 
@@ -311,73 +317,48 @@ impl Branch {
         seg.reverse();
         let len = seg.len();
         let mut tr = state.tr();
-        let mut remap: Option<Mapping> = None;
-        let mut map_from = 0usize;
+        let mut remap: Option<(Mapping, Vec<usize>)> = None;
         let mut add_before: Vec<Item> = Vec::new();
         let mut add_after: Vec<Item> = Vec::new();
         for i in (0..len).rev() {
             let item = seg[i];
             let Some(step) = &item.step else {
                 if remap.is_none() {
-                    let m = remapping(&seg, 0, i + 1);
-                    map_from = m.len();
-                    remap = Some(m);
+                    remap = Some(remapping(&seg, i + 1));
                 }
-                map_from -= 1;
                 add_before.push(item.clone());
                 continue;
             };
-            if let Some(remap) = remap.as_mut() {
+            if let Some((remap, starts)) = remap.as_mut() {
                 add_before.push(Item::map_only(item.map.clone(), None));
-                let after = remap.slice(map_from, remap.len());
-                if let Some(pieces) = split_delete(step.as_ref(), &after, tr.doc()) {
+                // Everything after this step: the maps of the items after it, and
+                // of what this undo has applied so far.
+                let after = remap.slice(starts[i + 1], remap.len());
+                let pieces = split_delete(step.as_ref(), &after, tr.doc());
+                let mapped = if pieces.is_none() {
+                    step.map(&after)
+                } else {
+                    None
+                };
+                drop(after);
+                if let Some(pieces) = pieces {
                     // A delete of text a peer has since typed inside: delete my
                     // pieces around theirs, back to front.
-                    let mut maps = Vec::new();
                     for &(from, to) in pieces.iter().rev() {
                         let piece = ReplaceStep::new(from, to, Slice::empty());
                         if tr.step(Box::new(piece)).is_ok() {
-                            let map = tr
-                                .mapping()
-                                .maps()
-                                .last()
-                                .cloned()
-                                .unwrap_or_else(StepMap::empty);
+                            let map = last_map(&tr);
                             add_after.push(Item::map_only(map.clone(), None));
-                            maps.push(map);
+                            remap.append_map(map);
                         }
                     }
-                    drop(after);
-                    map_from -= 1;
-                    for map in maps {
-                        remap.append_map(map);
-                    }
-                    if let Some(info) = &item.event {
-                        let selection = info
-                            .selection
-                            .map(tr.doc(), &remap.slice(map_from, remap.len()));
-                        return Some(self.finish(tr, selection, rest, add_before, add_after, info));
-                    }
-                    continue;
-                }
-                drop(after);
-                let mut applied = None;
-                if let Some(mapped) = step.map(&remap.slice(map_from, remap.len()))
+                } else if let Some(mapped) = mapped
                     && tr.step(mapped).is_ok()
                 {
-                    let map = tr
-                        .mapping()
-                        .maps()
-                        .last()
-                        .cloned()
-                        .unwrap_or_else(StepMap::empty);
+                    let map = last_map(&tr);
                     let offset = add_after.len() + add_before.len();
                     add_after.push(Item::map_only(map.clone(), Some(offset)));
-                    applied = Some(map);
-                }
-                map_from -= 1;
-                if let Some(map) = applied {
-                    remap.append_map_mirrored(map, map_from);
+                    remap.append_map_mirrored(map, starts[i]);
                 }
             } else {
                 // Nothing recorded after this step: it applies where it was made.
@@ -386,7 +367,7 @@ impl Branch {
             }
             if let Some(info) = &item.event {
                 let selection = match &remap {
-                    Some(r) => info.selection.map(tr.doc(), &r.slice(map_from, r.len())),
+                    Some((r, starts)) => info.selection.map(tr.doc(), &r.slice(starts[i], r.len())),
                     None => info.selection.clone(),
                 };
                 return Some(self.finish(tr, selection, rest, add_before, add_after, info));
@@ -421,6 +402,15 @@ impl Branch {
         };
         (tr, selection, remaining, info.clone())
     }
+}
+
+/// The map of the step `tr` applied last.
+fn last_map(tr: &Transaction) -> StepMap {
+    tr.mapping()
+        .maps()
+        .last()
+        .cloned()
+        .unwrap_or_else(StepMap::empty)
 }
 
 /// An inverse step that deletes text (the undo of my typing), split around the
@@ -458,21 +448,77 @@ fn split_delete(step: &dyn Step, mapping: &Mapping, doc: &Node) -> Option<Vec<(u
     (ra.parent().is_textblock() && ra.parent().same_ref(rb.parent())).then_some(pieces)
 }
 
-/// The maps of `seg[from..to]` (oldest first), with their mirror relations (PM's
-/// `remapping`).
-fn remapping(seg: &[&Item], from: usize, to: usize) -> Mapping {
+/// A peer item for `map`: a one-char deletion starts a run of them.
+fn peer_item(map: StepMap) -> Item {
+    let unit_run = unit_deletion(&map).map(|at| (at, 1));
+    Item {
+        peer: true,
+        unit_run,
+        ..Item::map_only(map, None)
+    }
+}
+
+/// `Some(at)` when `map` deletes exactly one position at `at` and inserts nothing.
+fn unit_deletion(map: &StepMap) -> Option<usize> {
+    let r = map.ranges();
+    (r.len() == 3 && r[1] == 1 && r[2] == 0).then_some(r[0])
+}
+
+/// `head` (a peer item) followed by `next` as one item, when that maps every
+/// position as the two in turn do — `None` otherwise, and `next` gets an item of
+/// its own. A one-char deletion beside a run of them (Backspace before it, Delete
+/// after it) extends the run; anything else folds only where
+/// [`StepMap::compose_exact`] finds the result exact, which a run of typing is and
+/// an insertion beside a deletion is not (review of #1889: folding those lost the
+/// position between them, so an undo deleted a peer's char or dropped my restore).
+fn fold(head: &Item, next: &StepMap) -> Option<Item> {
+    if let Some((at, n)) = head.unit_run {
+        // After the run, its `n` chars are gone and position `at` stands where they
+        // were: a deletion of the char before (`at - 1`) or after (`at`) makes it
+        // `n + 1` one-char deletions in a row, which map exactly as the same
+        // number of deletions at the run's new start.
+        let start = match unit_deletion(next)? {
+            d if d == at => at,
+            d if d + 1 == at => d,
+            _ => return None,
+        };
+        return Some(Item {
+            unit_run: Some((start, n + 1)),
+            ..peer_item(StepMap::new(vec![start, n + 1, 0]))
+        });
+    }
+    let map = head.map.compose_exact(next)?;
+    Some(Item {
+        unit_run: None,
+        ..peer_item(map)
+    })
+}
+
+/// The maps of `seg[..to]` (oldest first), with their mirror relations (PM's
+/// `remapping`), and where each item's maps start in it (`starts[i]`, with
+/// `starts[to]` the end): a unit run is several maps.
+fn remapping(seg: &[&Item], to: usize) -> (Mapping, Vec<usize>) {
     let mut maps = Mapping::new();
-    for (i, item) in seg.iter().enumerate().take(to).skip(from) {
+    let mut starts = Vec::with_capacity(to + 1);
+    for (i, item) in seg.iter().enumerate().take(to) {
+        starts.push(maps.len());
+        if let Some((at, n)) = item.unit_run {
+            for _ in 0..n {
+                maps.append_map(StepMap::new(vec![at, 1, 0]));
+            }
+            continue;
+        }
         let mirror = item
             .mirror_offset
-            .filter(|&off| i >= from + off)
-            .map(|off| maps.len() - off);
+            .filter(|&off| i >= off)
+            .map(|off| starts[i - off]);
         match mirror {
             Some(m) => maps.append_map_mirrored(item.map.clone(), m),
             None => maps.append_map(item.map.clone()),
         }
     }
-    maps
+    starts.push(maps.len());
+    (maps, starts)
 }
 
 /// The history plugin's folded state.
@@ -492,6 +538,22 @@ impl HistoryState {
     /// Number of available redo steps.
     pub fn redo_depth(&self) -> usize {
         self.undone.event_count
+    }
+
+    /// How many items both branches hold — steps, peer changes and hidden events
+    /// not yet dropped. A cost pin reads it (#1249); not part of the API.
+    #[doc(hidden)]
+    pub fn __stored_items(&self) -> usize {
+        let count = |b: &Branch| {
+            let mut n = 0;
+            let mut cur = b.items.0.as_deref();
+            while let Some(c) = cur {
+                n += 1;
+                cur = c.next.0.as_deref();
+            }
+            n
+        };
+        count(&self.done) + count(&self.undone)
     }
 }
 
@@ -1171,5 +1233,49 @@ mod tests {
             "abZcd",
             "the typed Z survives the undo"
         );
+    }
+
+    /// A run of a peer's Backspace and Delete keystrokes folds into one item that
+    /// maps every position, with every flag a step reads, as the keystrokes' own
+    /// maps in turn (review of #1889).
+    #[test]
+    fn a_unit_deletion_run_maps_as_its_keystrokes() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut rnd = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        for _ in 0..2000 {
+            let at0 = 2 + rnd(10);
+            let mut maps = vec![StepMap::new(vec![at0, 1, 0])];
+            let mut item = peer_item(maps[0].clone());
+            let mut at = at0;
+            for _ in 0..rnd(8) {
+                // Backspace (the char before the hole) or Delete (the one after).
+                let d = if at > 0 && rnd(2) == 0 { at - 1 } else { at };
+                let m = StepMap::new(vec![d, 1, 0]);
+                item = fold(&item, &m).expect("a keystroke beside the run folds");
+                maps.push(m);
+                at = d;
+            }
+            let (folded, _) = remapping(&[&item], 1);
+            let mut seq = Mapping::new();
+            for m in maps {
+                seq.append_map(m);
+            }
+            for pos in 0..30 {
+                for assoc in [-1, 1] {
+                    let (a, b) = (seq.map_result(pos, assoc), folded.map_result(pos, assoc));
+                    assert_eq!(
+                        (a.pos, a.deleted(), a.deleted_after(), a.deleted_across()),
+                        (b.pos, b.deleted(), b.deleted_after(), b.deleted_across()),
+                        "pos {pos} assoc {assoc} run {:?}",
+                        item.unit_run
+                    );
+                }
+            }
+        }
     }
 }

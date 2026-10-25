@@ -726,3 +726,73 @@ fn s19_wrong_block_in_container() {
         "<blockquote><p>a</p><p></p></blockquote><p>z</p>",
     );
 }
+
+/// Second review of #1889: a peer's changes right beside mine, one keystroke per
+/// update, which the history folds into one map; folding them used to lose the
+/// position between them.
+///
+/// A peer fixes my typo: backspaces over my `e` and types `Q`, each keystroke its
+/// own update. My undo of `e` has nothing left to do.
+#[test]
+fn z1_peer_replaces_my_char_keystroke_by_keystroke() {
+    let (mut a, mut b) = world("<p>xy</p>", 31);
+    a.type_at(2, "e", 1000);
+    sync(&mut a, &mut b);
+    b.delete(2, 3, 2000);
+    sync(&mut a, &mut b);
+    b.type_at(2, "Q", 3000);
+    sync(&mut a, &mut b);
+    assert_eq!(a.html(), "<p>xQy</p>");
+    assert!(a.undo());
+    sync(&mut a, &mut b);
+    assert_eq!(a.html(), "<p>xQy</p>");
+}
+
+/// The peer types `Q` before my `e`, then deletes my `e` (Delete key).
+#[test]
+fn z2_peer_types_before_my_char_then_deletes_it() {
+    let (mut a, mut b) = world("<p>xy</p>", 32);
+    a.type_at(2, "e", 1000);
+    sync(&mut a, &mut b);
+    b.type_at(2, "Q", 2000);
+    sync(&mut a, &mut b);
+    b.delete(3, 4, 3000);
+    sync(&mut a, &mut b);
+    assert_eq!(a.html(), "<p>xQy</p>");
+    assert!(a.undo());
+    sync(&mut a, &mut b);
+    assert_eq!(a.html(), "<p>xQy</p>");
+}
+
+/// I delete `m`; the peer then deletes the chars on both sides of where it was, one
+/// keystroke per update. My undo re-inserts `m`.
+#[test]
+fn z3_peer_deletes_both_neighbours_of_my_deletion() {
+    let (mut a, mut b) = world("<p>abcmde</p>", 33);
+    a.delete(4, 5, 1000);
+    sync(&mut a, &mut b);
+    b.delete(4, 5, 2000);
+    sync(&mut a, &mut b);
+    b.delete(3, 4, 3000);
+    sync(&mut a, &mut b);
+    assert_eq!(a.html(), "<p>abe</p>");
+    assert!(a.undo());
+    sync(&mut a, &mut b);
+    assert_eq!(a.html(), "<p>abme</p>");
+}
+
+/// A word of mine; the peer types inside it and then deletes my char right after
+/// their insertion, one keystroke per update; I undo my word.
+#[test]
+fn z4_peer_types_in_my_word_then_deletes_my_next_char() {
+    let (mut a, mut b) = world("<p>z</p>", 34);
+    a.type_at(1, "abcdef", 1000); // abcdefz
+    sync(&mut a, &mut b);
+    b.type_at(4, "Q", 2000); // abcQdefz
+    sync(&mut a, &mut b);
+    b.delete(5, 6, 3000); // abcQefz
+    sync(&mut a, &mut b);
+    assert!(a.undo());
+    sync(&mut a, &mut b);
+    assert_eq!(a.html(), "<p>Qz</p>");
+}

@@ -343,34 +343,34 @@ fn undo_restores_the_selection_mapped_through_a_peers_insert() {
 // --- cost: a peer's change and my keystroke cost the history a flat amount ------------
 
 /// A document of 30 paragraphs with my `X` typed into the first, then `n` peer
-/// keystrokes in paragraph 15, each applied the way the collab integration applies
-/// one (a replace of the whole paragraph, not recorded).
+/// keystrokes at the end of paragraph 15, each applied the way the collab
+/// integration applies one (a replace of the whole paragraph, not recorded).
 fn after_peer_keystrokes(n: usize) -> EditorState {
     let paras: String = (0..30).map(|i| format!("<p>paragraph {i}</p>")).collect();
     let st = state(&paras);
     let mut st = type_at(&st, 3, "X", 0);
-    let s = st.schema().clone();
     for k in 0..n {
-        let start: usize = (0..15).map(|i| st.doc.child(i).node_size()).sum();
-        let old = st.doc.child(15).clone();
-        let mut text = String::new();
-        for i in 0..old.child_count() {
-            text.push_str(old.child(i).text().unwrap_or(""));
-        }
-        // Keep the paragraph short, so only the history could grow.
-        if text.len() > 40 {
-            text = "p".into();
-        }
-        text.push((b'A' + (k % 26) as u8) as char);
-        let p = s
-            .branch("paragraph", Fragment::from_node(s.text(&text).unwrap()))
-            .unwrap();
-        st = remote(&st, |tr| {
-            tr.replace_with(start, start + old.node_size(), Fragment::from_node(p))
-                .unwrap();
-        });
+        st = peer_types_in_15(&st, (b'A' + (k % 26) as u8) as char);
     }
     st
+}
+
+fn peer_types_in_15(st: &EditorState, c: char) -> EditorState {
+    let s = st.schema().clone();
+    let start: usize = (0..15).map(|i| st.doc.child(i).node_size()).sum();
+    let old = st.doc.child(15).clone();
+    let mut text = String::new();
+    for i in 0..old.child_count() {
+        text.push_str(old.child(i).text().unwrap_or(""));
+    }
+    text.push(c);
+    let p = s
+        .branch("paragraph", Fragment::from_node(s.text(&text).unwrap()))
+        .unwrap();
+    remote(st, |tr| {
+        tr.replace_with(start, start + old.node_size(), Fragment::from_node(p))
+            .unwrap();
+    })
 }
 
 fn work_of<T>(f: impl FnOnce() -> T) -> (u64, u64, T) {
@@ -388,43 +388,31 @@ fn work_of<T>(f: impl FnOnce() -> T) -> (u64, u64, T) {
 
 /// Review of #1889: the history used to copy its whole item list on every
 /// transaction and keep every peer change's map, so a peer's keystroke after 64k of
-/// them cost 117 µs (2 µs on main) and a local one 456 µs. The list is persistent
-/// and a run of peer changes folds into one item, so each costs the same however
-/// many came before; an undo copies the maps of its own event, not every map since.
+/// them cost 117 µs (2 µs on main) and a local one 456 µs. The list is persistent,
+/// so a peer's change and my keystroke cost the same however many came before, and
+/// a run of a peer's typing folds into one item, so an undo copies the maps of its
+/// own event and that one item, not every map since.
 #[test]
 fn a_peers_change_my_keystroke_and_my_undo_cost_the_same_after_100_or_3000_peer_changes() {
     let cost = |n: usize| {
         let st = after_peer_keystrokes(n);
-        let peer = work_of(|| after_one_more(&st)).0;
-        let key = work_of(|| type_at(&st, 4, "Y", 10_000)).0;
+        let (peer, peer_clones, _) = work_of(|| peer_types_in_15(&st, 'Z'));
+        let (key, key_clones, _) = work_of(|| type_at(&st, 4, "Y", 10_000));
         let (undo_work, undo_clones, undone) = work_of(|| st.run("undo").unwrap());
         assert_eq!(
             node_to_html(&Node::clone(undone.doc.child(0))),
             "<p>paragraph 0</p>",
             "the undo reverted my X"
         );
-        (peer, key, undo_work, undo_clones)
+        (peer, peer_clones, key, key_clones, undo_work, undo_clones)
     };
     let small = cost(100);
     let large = cost(3000);
     assert_eq!(
         small, large,
-        "(peer, keystroke, undo, undo map clones) work"
+        "(peer, its map clones, keystroke, its map clones, undo, its map clones)"
     );
-    assert!(small.2 <= 8 && small.3 <= 8, "{small:?}");
-}
-
-fn after_one_more(st: &EditorState) -> EditorState {
-    let s = st.schema().clone();
-    let start: usize = (0..15).map(|i| st.doc.child(i).node_size()).sum();
-    let old = st.doc.child(15).clone();
-    let p = s
-        .branch("paragraph", Fragment::from_node(s.text("pZ").unwrap()))
-        .unwrap();
-    remote(st, |tr| {
-        tr.replace_with(start, start + old.node_size(), Fragment::from_node(p))
-            .unwrap();
-    })
+    assert!(small.4 <= 8 && small.5 <= 8, "{small:?}");
 }
 
 /// Past the depth cap the oldest events go, and so do the maps before them: the
@@ -479,4 +467,95 @@ fn an_undo_maps_each_step_without_copying_the_mapping() {
     let (_, clones, undone) = work_of(|| st.run("undo").unwrap());
     assert_eq!(html(&undone), "<p>Pabc</p>");
     assert!(clones <= 5 * 50, "{clones} step maps copied");
+}
+
+/// A peer holding Backspace in a paragraph (one char per update, applied as a
+/// replace of the whole paragraph): the run is one history item, mapped as its
+/// keystrokes in turn only when an undo needs them (second review of #1889: two
+/// deletions side by side do not fold into one range — the position between them
+/// would be lost — so the run is kept as a count).
+fn after_peer_backspaces(n: usize) -> EditorState {
+    let long: String = "q".repeat(4000);
+    let st = state(&format!("<p>mine</p><p>{long}</p><p>end</p>"));
+    let mut st = type_at(&st, 3, "X", 0);
+    for _ in 0..n {
+        st = peer_backspaces(&st);
+    }
+    st
+}
+
+fn peer_backspaces(st: &EditorState) -> EditorState {
+    let s = st.schema().clone();
+    let start = st.doc.child(0).node_size();
+    let old = st.doc.child(1).clone();
+    let len = old.content_size();
+    let p = s
+        .branch(
+            "paragraph",
+            Fragment::from_node(s.text(&"q".repeat(len - 1)).unwrap()),
+        )
+        .unwrap();
+    remote(st, |tr| {
+        tr.replace_with(start, start + old.node_size(), Fragment::from_node(p))
+            .unwrap();
+    })
+}
+
+fn stored_items(st: &EditorState) -> usize {
+    st.plugin_state::<rinch_editor_core::plugins::HistoryState>(
+        rinch_editor_core::plugins::HISTORY_KEY,
+    )
+    .unwrap()
+    .__stored_items()
+}
+
+#[test]
+fn a_peers_backspace_run_costs_one_item() {
+    let cost = |n: usize| {
+        let st = after_peer_backspaces(n);
+        let stored = stored_items(&st);
+        let (peer, peer_clones, _) = work_of(|| peer_backspaces(&st));
+        let (undo, _, undone) = work_of(|| st.run("undo").unwrap());
+        assert!(
+            html(&undone).starts_with("<p>mine</p>"),
+            "{}",
+            &html(&undone)[..20]
+        );
+        (stored, peer, peer_clones, undo)
+    };
+    let small = cost(50);
+    assert_eq!(
+        small,
+        cost(1500),
+        "(stored items, peer step, its clones, undo)"
+    );
+    assert_eq!(small.0, 2, "my event and the folded run");
+}
+
+/// A long session past the depth cap, my keystrokes and a peer's between them: the
+/// history holds a bounded number of items, the cap's events and at most a batch of
+/// hidden ones (second review of #1889: nothing pinned the drop).
+#[test]
+fn a_long_session_past_the_depth_cap_stores_a_bounded_number_of_items() {
+    let schema = Rc::new(Schema::starter_kit());
+    let slice = slice_from_html(&schema, "<p>abc</p><p>peer</p>").unwrap();
+    let doc = schema.branch("doc", slice.content.clone()).unwrap();
+    let mut st = EditorState::create(
+        schema,
+        doc,
+        vec![
+            Rc::new(rinch_editor_core::BaseCommandsPlugin) as Rc<dyn rinch_editor_core::Plugin>,
+            Rc::new(rinch_editor_core::HistoryPlugin::with(500, 5)),
+        ],
+    );
+    let mut most = 0;
+    for i in 0..1000u64 {
+        st = type_at(&st, 2, "x", i * 1000);
+        let end = st.doc.content_size() - 1;
+        st = insert_remote(&st, end, "P");
+        most = most.max(stored_items(&st));
+    }
+    // Each event is my keystroke and the peer's change after it: 5 kept and up to
+    // 21 hidden before a batch drop.
+    assert!(most <= 2 * (5 + 21), "{most} items stored");
 }

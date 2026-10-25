@@ -101,13 +101,23 @@ impl StepMap {
         self.ranges.is_empty()
     }
 
-    /// `self` followed by `next`, as one map, when neither is inverted. Ranges of
-    /// the two that overlap or touch (in the coordinates between them) become one
-    /// range: a position inside it maps as replaced. Every other position maps
-    /// exactly as through the two in turn. The history folds a run of changes it
-    /// does not record (a peer's keystrokes) into one map this way (#1249), so the
-    /// run costs one item however long it is.
-    pub fn compose(&self, next: &StepMap) -> Option<StepMap> {
+    /// The flat `[start, old_size, new_size]` triples.
+    pub fn ranges(&self) -> &[usize] {
+        &self.ranges
+    }
+
+    /// `self` followed by `next`, as one map, when that maps every position as
+    /// the two in turn do, and neither is inverted; `None` otherwise. Ranges of the
+    /// two that overlap or touch (in the coordinates between them) become one
+    /// range, and each such range is checked position by position against the two
+    /// maps: the mapped position and every flag a step reads (`deleted`,
+    /// `deleted_after`, `deleted_across`) must agree. A run of insertions folds; an
+    /// insertion beside a deletion, or two deletions side by side, do not (the
+    /// position between them would become a deleted range's inside). The history
+    /// folds a run of a peer's typing into one map this way (#1249). A range over
+    /// 64 positions is not checked, and not folded.
+    pub fn compose_exact(&self, next: &StepMap) -> Option<StepMap> {
+        const MAX_CHECKED: usize = 64;
         if self.inverted || next.inverted {
             return None;
         }
@@ -125,18 +135,23 @@ impl StepMap {
         }
         ivs.sort_by_key(|iv| (iv.0, iv.1));
         let mut out = Vec::new();
+        // Old-coordinate ranges of the groups both maps contribute to.
+        let mut mixed: Vec<(usize, usize)> = Vec::new();
         // `self`'s growth over the ranges wholly before the current group.
         let mut before: isize = 0;
         let mut i = 0;
         while i < ivs.len() {
             let (a, mut b) = (ivs[i].0, ivs[i].1);
             let (mut self_growth, mut next_growth) = (0isize, 0isize);
+            let (mut has_self, mut has_next) = (false, false);
             while i < ivs.len() && ivs[i].0 <= b {
                 b = b.max(ivs[i].1);
                 if ivs[i].3 {
                     self_growth += ivs[i].2;
+                    has_self = true;
                 } else {
                     next_growth += ivs[i].2;
+                    has_next = true;
                 }
                 i += 1;
             }
@@ -144,9 +159,37 @@ impl StepMap {
             let in_b = b as isize - before - self_growth;
             let new_size = (b - a) as isize + next_growth;
             out.extend([in_a as usize, (in_b - in_a) as usize, new_size as usize]);
+            if has_self && has_next {
+                if (in_b - in_a) as usize > MAX_CHECKED {
+                    return None;
+                }
+                mixed.push((in_a as usize, in_b as usize));
+            }
             before += self_growth;
         }
-        Some(StepMap::new(out))
+        let composed = StepMap::new(out);
+        for (lo, hi) in mixed {
+            for pos in lo..=hi {
+                for assoc in [-1, 1] {
+                    let first = self.map_full(pos, assoc);
+                    let second = next.map_full(first.pos, assoc);
+                    let seq = MapResult {
+                        pos: second.pos,
+                        del_info: first.del_info | second.del_info,
+                        recover: None,
+                    };
+                    let one = composed.map_full(pos, assoc);
+                    if one.pos != seq.pos
+                        || one.deleted() != seq.deleted()
+                        || one.deleted_after() != seq.deleted_after()
+                        || one.deleted_across() != seq.deleted_across()
+                    {
+                        return None;
+                    }
+                }
+            }
+        }
+        Some(composed)
     }
 
     /// Build a step map from a flat list of `[start, old_size, new_size]` triples.

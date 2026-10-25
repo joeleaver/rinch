@@ -1863,7 +1863,7 @@ code block of a paragraph a peer has since made bold); the rest of that undo sti
 applies, and the undo is used up. One limit: the editor tells your text from a peer's
 by comparing the document before and after their change, so where the two hold
 identical copies (the same word pasted beside yours, two empty paragraphs made at
-once) an undo can land on the peer's copy (#1895).
+once, line breaks side by side) an undo can land on the peer's copy (#1895).
 
 If a peer might have missed deltas — offline, reconnecting, or polling over HTTP with
 no persistent connection at all — reconcile with a **state vector + diff** exchange

@@ -549,7 +549,7 @@ fn tally(seeds: std::ops::RangeInclusive<u64>) -> Tally {
 /// Every seed worse with #1249 is a pre-existing defect that an undo now reaches by
 /// applying: of the 15 seeds that duplicate only with it, 14 shrink to a history that
 /// duplicates the same way on main, and seed 538's undo is two deletes in one block,
-/// which duplicate the same way on main as a plain edit (#1885). 9 seeds stopped
+/// which duplicate the same way on main as a plain edit (#1885). 8 seeds stopped
 /// duplicating. The one U+FFFC (seed 513, also on main) is an undo of `setCodeBlock`
 /// re-inserting the image it cleared beside a peer's delete (#1890).
 #[test]
