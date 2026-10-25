@@ -227,10 +227,11 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     box, so a paragraph with a soft wrap next to one takes the hang pass
     (`any_line_split_at_edge`), and a line parley ended where CSS does not
     break (`edge_break_allowed`: after the run's end boxes and before its
-    start boxes, at a UAX #14 opportunity of the text around them, not after
-    `nowrap` text) is committed again by length at the last allowed break
-    that fits, else the first (`rebreak_at_edge`) — one extra break of such
-    a paragraph per layout. A percentage margin or padding counts 0 and a
+    start boxes, at a UAX #14 opportunity of the text around them, where
+    `white-space` allows one: `ifc::wrap_allowed_after`) is committed again by
+    length at the last allowed break that fits, else the first (`css_line`,
+    `commit_css_line`; generalised to atomic inlines by #1238) — one extra
+    break of such a paragraph per layout. A percentage margin or padding counts 0 and a
     negative total is clamped to 0 (Chrome lets a negative margin pull the
     content back). A split inline (#513) gets no edge boxes.
     `tests/inline_edge_room_1426_tests.rs` is the pin.
