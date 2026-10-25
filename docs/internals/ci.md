@@ -27,6 +27,15 @@ pending for ever. `github.head_ref` is the caller's inside a call from
 Every PR workflow cancels its own superseded run (a push replaces the run of
 the push before it). A run on `main` is never cancelled in progress.
 
+## The runner image
+
+Every workflow runs on **`ubuntu-24.04`**, pinned rather than `ubuntu-latest` (#1901). On 2026-10-25
+`ubuntu-latest` moved to Ubuntu 26.04 with no change on our side, and main went red: the
+transitional `libgdk-pixbuf2.0-dev` was gone, and `libspa` 0.8's bindgen output lost
+`spa_pod_builder`'s fields. Moving to a new image is its own PR with a green batch
+(#1902 tracks 26.04). The apt cache key carries `ImageOS`, so a new image starts with a
+cold `.deb` cache.
+
 ## The `test` shards
 
 The four `test (…)` shards together run exactly what the single `test` job ran
