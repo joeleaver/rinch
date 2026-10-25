@@ -412,13 +412,14 @@ input a shaped layout is built from:
   holds atomic inlines and any element that does not wrap gets the seams
   (`UnhungSpaces::seams`), and the hang pass re-breaks a line of it where
   CSS ends it (`ifc::css_line`, the #1426 edge-box re-break generalised:
-  `LineUnit::wrap_after`) when parley's break follows a leaf `white-space`
-  allows no wrap after (`wrap_allowed_after`), when the line overflows
-  (`line_overflows`: parley appends a box after text that does not wrap where
-  CSS breaks before it), or when parley took its emergency break after a box
-  too wide for the line that `white-space` glues to what follows (Chrome:
-  `[B]cc` stays together) — not an `overflow-wrap` line. A break parley found
-  inside a text run is kept. Inside text a re-broken line asks
+  `LineUnit::wrap_after`) wherever it ends a soft-wrapped line elsewhere
+  than parley did (#1243; it used to ask only when parley's break followed a
+  leaf `white-space` allows no wrap after, `wrap_allowed_after`, or the line
+  overflowed), when the line overflows (`line_overflows`: parley appends a
+  box after text that does not wrap where CSS breaks before it), or when
+  parley took its emergency break after a box too wide for the line that
+  `white-space` glues to what follows (Chrome: `[B]cc` stays together) — not
+  an `overflow-wrap` line. Inside text a re-broken line asks
   `ifc::TextBreaks`, the segmenter parley uses (`LineSegmenter::new_dictionary`,
   so Thai, Lao, Khmer and Burmese keep their word breaks), less a break
   between a complex-context (`SA`) character and a letter or digit, which
@@ -439,11 +440,32 @@ input a shaped layout is built from:
   width by the `pre` spaces at its very end), so an overflowing right-aligned
   line starts at 0 as in Chrome. On a left-to-right line aligned `right`,
   `center` or `end`, every space before the hanging run at the line's end
-  counts too, whatever its `white-space` (#1042, below). One mixed seam is
-  not Chrome's yet, tracked in #1243: parley still hangs the one `pre`
-  space that overflows right after `pre-wrap` spaces (and on a
-  right-to-left line a mixed run is still narrowed by its final `pre` part
-  only). **The "…" is cut at paint time, over the lines as laid out**
+  counts too, whatever its `white-space` (#1042, below). A paragraph
+  broken at a width that holds a `pre` element's spaces or tabs takes the
+  seams path above as well (#1243; `RinchDocument::any_pre_space`): parley
+  has no break between a wrapping run of spaces and a `pre` one (UAX #14
+  has none between two spaces) and hung the one `pre` space that overflowed,
+  breaking the `pre` run after it. Chrome 155 breaks between the two runs —
+  the first hangs, the `pre` spaces start the next line — but how depends on
+  the text nodes the wrapping run lies in (`ifc::pre_seam`): an ordinary
+  break when the wrapping spaces' element closes there into one that does
+  not wrap, or when the run starts in the word's text node and goes on into
+  another; only when what is before it fits when the run ends the word's
+  text node (`aaaa  <span pre>  </span>bbbb` breaks in 50px,
+  `hhhhhhh  <span pre>  </span>bbbb` does not); and only when the line
+  overflows before the `pre` spaces when the run is a text node of its own
+  (`aaaa<span pre-wrap>  </span><span pre>  dd</span>` does not break,
+  `hhhhhhh<span pre-wrap>  </span>…` does). A wrapping space then a
+  `break-spaces` one break between them too, in `css_line`'s scan. With
+  seams, `css_line` is asked about every soft wrap, not only one `white-space`
+  forbids or whose line overflows: parley misses the seams' opportunities,
+  so it stops at an earlier one that fits (` eee    ` then `pre` spaces in
+  a `nowrap` root broke after the first space). Pins:
+  `tests/pre_space_seams_1243_tests.rs` (Chrome 155). Not Chrome's yet: a
+  wrapping run of *collapsible* spaces closing into such a seam
+  (`<span pre-wrap>aaaa</span>  <span pre>  dd</span>` in a `normal` root
+  breaks in Chrome), and on a right-to-left line a mixed run is still
+  narrowed by its final `pre` part only. **The "…" is cut at paint time, over the lines as laid out**
   (#1100; `ifc::ellipsis_cut`, `node::EllipsisCut`, `InlineLayout::ellipsis`):
   on each overflowing line everything whose visual extent passes the point
   where the "…" still fits before the line's end edge is hidden — each
