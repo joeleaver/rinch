@@ -288,7 +288,10 @@ impl Branch {
     /// inverse re-inserted is recovered). A step that no longer maps or applies
     /// is skipped. Returns the transaction (selection not set yet), the
     /// selection to restore, the branch without the event, and the event.
-    fn pop_event(&self, state: &EditorState) -> Option<(Transaction, Selection, Branch, EventInfo)> {
+    fn pop_event(
+        &self,
+        state: &EditorState,
+    ) -> Option<(Transaction, Selection, Branch, EventInfo)> {
         if self.event_count == 0 {
             return None;
         }
@@ -334,7 +337,12 @@ impl Branch {
                     for &(from, to) in pieces.iter().rev() {
                         let piece = ReplaceStep::new(from, to, Slice::empty());
                         if tr.step(Box::new(piece)).is_ok() {
-                            let map = tr.mapping().maps().last().cloned().unwrap_or_else(StepMap::empty);
+                            let map = tr
+                                .mapping()
+                                .maps()
+                                .last()
+                                .cloned()
+                                .unwrap_or_else(StepMap::empty);
                             add_after.push(Item::map_only(map.clone(), None));
                             maps.push(map);
                         }
@@ -345,7 +353,9 @@ impl Branch {
                         remap.append_map(map);
                     }
                     if let Some(info) = &item.event {
-                        let selection = info.selection.map(tr.doc(), &remap.slice(map_from, remap.len()));
+                        let selection = info
+                            .selection
+                            .map(tr.doc(), &remap.slice(map_from, remap.len()));
                         return Some(self.finish(tr, selection, rest, add_before, add_after, info));
                     }
                     continue;
@@ -355,7 +365,12 @@ impl Branch {
                 if let Some(mapped) = step.map(&remap.slice(map_from, remap.len()))
                     && tr.step(mapped).is_ok()
                 {
-                    let map = tr.mapping().maps().last().cloned().unwrap_or_else(StepMap::empty);
+                    let map = tr
+                        .mapping()
+                        .maps()
+                        .last()
+                        .cloned()
+                        .unwrap_or_else(StepMap::empty);
                     let offset = add_after.len() + add_before.len();
                     add_after.push(Item::map_only(map.clone(), Some(offset)));
                     applied = Some(map);
@@ -436,7 +451,10 @@ fn split_delete(step: &dyn Step, mapping: &Mapping, doc: &Node) -> Option<Vec<(u
         return None;
     }
     let (first, last) = (pieces[0].0, pieces[pieces.len() - 1].1);
-    let (ra, rb) = (doc.resolve(crate::pos::Pos(first)).ok()?, doc.resolve(crate::pos::Pos(last)).ok()?);
+    let (ra, rb) = (
+        doc.resolve(crate::pos::Pos(first)).ok()?,
+        doc.resolve(crate::pos::Pos(last)).ok()?,
+    );
     (ra.parent().is_textblock() && ra.parent().same_ref(rb.parent())).then_some(pieces)
 }
 
@@ -582,7 +600,8 @@ fn unrecorded_maps(tr: &Transaction) -> Vec<StepMap> {
             hi = hi.max(back(i, r.to, 1));
         }
         let (new_lo, new_hi) = (tr.mapping().map(lo, -1), tr.mapping().map(hi, 1));
-        if let Some(found) = narrowed(&docs[0], tr.doc(), lo, hi, new_lo.min(new_hi), new_hi, true) {
+        if let Some(found) = narrowed(&docs[0], tr.doc(), lo, hi, new_lo.min(new_hi), new_hi, true)
+        {
             return found.into_iter().collect();
         }
     }
