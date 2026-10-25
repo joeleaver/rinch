@@ -149,17 +149,14 @@ impl Window {
         let split_ids: Vec<usize> = self.split.surface_ids().collect();
         let fresh: Vec<usize> = frames
             .iter()
-            .filter(|(id, _, fresh)| *fresh && !split_ids.contains(id))
+            .filter(|(_, _, fresh)| *fresh)
             .map(|(id, ..)| *id)
             .collect();
         let images = self.registry.sync(
             &mut self.vello,
             frames.into_iter().map(|(id, texture, _)| (id, texture)),
         );
-        if !fresh.is_empty() {
-            app.request_repaint();
-            app.mark_surface_nodes_paint_dirty(&fresh);
-        }
+        app.mark_fresh_surfaces(&fresh, &split_ids);
         rinch_dom::paint::set_surface_gpu_images(Some(images));
         app.install_gpu_viewport_frames(
             collect_viewport_frames_by_name(),
@@ -376,6 +373,8 @@ const OPAQUE_BAR: &str = "position: absolute; left: 30px; top: 100px; width: 200
                           background: rgb(20, 20, 20)";
 const TRANSLUCENT_BAR: &str = "position: absolute; left: 30px; top: 100px; width: 200px; \
                                height: 14px; background: rgba(0, 0, 0, 0.55)";
+const BADGE: &str = "position: absolute; left: 60px; top: 48px; width: 20px; height: 12px; \
+                     background: rgb(250, 250, 250)";
 const SIDEBAR: &str = "position: absolute; left: 320px; top: 0; width: 80px; height: 300px; \
                        background: rgb(0, 0, 128)";
 
@@ -385,8 +384,9 @@ fn check(
     name: &str,
     parts: Vec<Part>,
     edges: bool,
-    split: bool,
+    split: &[bool],
     steps: &[&dyn Fn(&Page)],
+    kinds: &[&str],
     fault: Fault,
 ) -> Vec<String> {
     let mut failures = Vec::new();
@@ -404,6 +404,15 @@ fn check(
         step(&scene_page);
         let got = win.frame(&mut split_page.app, n == 0, fault);
         let want = reference.frame(&mut scene_page.app, true, Fault::None);
+        let split = split[n.min(split.len() - 1)];
+        if let Some(kind) = kinds.get(n).filter(|k| !k.is_empty())
+            && got.kind != *kind
+        {
+            failures.push(format!(
+                "{name}, frame {n}: a {} frame, want {kind}",
+                got.kind
+            ));
+        }
         if split && got.split_ids.len() != surfaces.len() {
             failures.push(format!(
                 "{name}, frame {n}: split {:?}, want all of {surfaces:?}",
@@ -452,8 +461,9 @@ fn gpu_split_runtime_matches_in_scene() {
             "plain, a sidebar after it",
             vec![s(SURFACE), (SIDEBAR, None)],
             false,
-            true,
+            &[true],
             &[],
+            &["full"],
             Fault::None,
         ),
         check(
@@ -464,8 +474,9 @@ fn gpu_split_runtime_matches_in_scene() {
                     border-radius: 20px; background: rgb(0, 0, 255)",
             )],
             false,
-            true,
+            &[true],
             &[],
+            &["full"],
             Fault::None,
         ),
         check(
@@ -477,24 +488,27 @@ fn gpu_split_runtime_matches_in_scene() {
                 Some(red()),
             )],
             false,
-            true,
+            &[true],
             &[],
+            &["full"],
             Fault::None,
         ),
         check(
             "an opaque bar across it",
             vec![s(SURFACE), (OPAQUE_BAR, None)],
             false,
-            true,
+            &[true],
             &[],
+            &["full"],
             Fault::None,
         ),
         check(
             "a translucent bar across it",
             vec![s(SURFACE), (TRANSLUCENT_BAR, None)],
             true,
-            true,
+            &[true],
             &[],
+            &["full"],
             Fault::None,
         ),
         check(
@@ -506,8 +520,9 @@ fn gpu_split_runtime_matches_in_scene() {
                 Some(red()),
             )],
             false,
-            true,
+            &[true],
             &[],
+            &["full"],
             Fault::None,
         ),
         check(
@@ -517,8 +532,9 @@ fn gpu_split_runtime_matches_in_scene() {
                 s("position: absolute; left: 200px; top: 150px; width: 90px; height: 60px"),
             ],
             false,
-            true,
+            &[true],
             &[],
+            &["full"],
             Fault::None,
         ),
         check(
@@ -528,8 +544,9 @@ fn gpu_split_runtime_matches_in_scene() {
                     transform: rotate(7deg)",
             )],
             false,
-            false,
+            &[false],
             &[],
+            &["full"],
             Fault::None,
         ),
         check(
@@ -540,8 +557,9 @@ fn gpu_split_runtime_matches_in_scene() {
                 Some(red()),
             )],
             false,
-            false,
+            &[false],
             &[],
+            &["full"],
             Fault::None,
         ),
     ]);
@@ -580,18 +598,25 @@ fn gpu_split_runtime_frames_after_the_first() {
                 (SURFACE, Some(color.clone())),
                 (OPAQUE_BAR, None),
                 (SIDEBAR, None),
+                // A badge over the surface the bar's damage does not reach:
+                // the repainted region must still hold it.
+                (BADGE, None),
             ],
             false,
-            true,
+            &[true],
             &[&recolor, &redraw, &elsewhere],
+            // The bar over it: its region repainted; only the surface: no
+            // repaint at all; the sidebar: a partial frame away from it.
+            &["full", "partial", "unchanged", "partial"],
             Fault::None,
         ),
         check(
             "the surface hidden",
             vec![(SURFACE, Some(red())), (OPAQUE_BAR, None), (SIDEBAR, None)],
             false,
-            false,
+            &[true, false],
             &[&hide],
+            &["full", "partial"],
             Fault::None,
         ),
     ]);
@@ -616,8 +641,9 @@ fn gpu_split_runtime_controls() {
             what,
             vec![(SURFACE, Some(red())), (OPAQUE_BAR, None)],
             false,
-            true,
+            &[true],
             &[&recolor],
+            &[],
             fault,
         );
         assert!(

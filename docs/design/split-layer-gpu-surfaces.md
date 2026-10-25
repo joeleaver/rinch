@@ -355,6 +355,36 @@ and in split alike, so it needs no special case.
   textures grow in `PARTIAL_TARGET_STEP` steps, so a 1-pixel resize does not
   reallocate.
 
+### As built (PR 3)
+
+PR 3 implements the coarser half of the above, and leaves per-slice damage
+inside a region for a later PR:
+
+- **A surface-only frame** is as designed: the runtime does not mark a
+  surface it composites split as damage, `build_gpu_frame` paints nothing,
+  and the window composites from the kept slices.
+- **Damage that meets a kept region** has the whole region added to it
+  (`RinchApp::build_gpu_frame_split`). Every node over the region is painted
+  again, the surface is split again, and its slices are replaced whole; below
+  is re-rendered over the damage as any partial frame (S3, not S4). Damage
+  elsewhere leaves the kept slices alone: nothing painted outside a region
+  reaches its pixels, and the inverse clip only wraps draws that cross one.
+- **A full frame** replaces every kept slice.
+- **Slices are rendered where the window draws them.** The painter encodes
+  above slices and masks in window coordinates; the window renders each into
+  a scratch target reaching R's far corner and keeps R (`split_frame.rs`). A
+  slice rendered moved to R's origin flipped an MSAA sample on an own-radius
+  corner (16 levels), the runtime oracle's first finding, as #1718 found for
+  partial frames.
+- **Taint (D5a)** repaints the frame with every surface in the scene, and
+  splitting stays off for 120 frames before it is tried again. The record's
+  "until the style or structure generation changes" has nothing to key on:
+  rinch has no such generation.
+- **While a `GameViewport` layer is under the UI the window does not split**
+  (and the surfaces it had split are repainted into the scene). See *Video,
+  and later GameViewport*.
+- The memory cap (D6) is PR 5.
+
 ## The decision point
 
 `surface_route` (`render_surface.rs`) stays the only place that routes a
@@ -428,6 +458,28 @@ Not on this list, because they split exactly:
   be re-checked against #1866's PR when it lands. There was no PR when this
   record was written.
 - **`GpuTextureRegistrar`** is unchanged.
+
+**How `GameViewport` fits on the split path (after PR 3; #1866 is parked
+behind #1865).** #1866's second review found that clearing the UI around a
+viewport by closing, erasing and reopening Vello's clips leaves a halo of up
+to 64/255 along every closed clip, and breaks partial-equals-full. On the
+split path the viewport is a surface like the others with one difference:
+it is a **base** layer: inside its coverage the game *replaces* what was
+painted before it (the UI behind it is cleared through), instead of going
+over it. The painter's split, at the viewport's place in paint order,
+records its region and its coverage (own and ancestors') exactly as for a
+surface, and the compositor's formula changes in one term:
+
+```text
+X   = above_in ∘ (game · own + below · (1 − own))      (a surface: game · own ∘ below)
+Y   = mix(below, X, ancestors)
+out = above_out ∘ Y
+```
+
+Nothing in below's encoding changes (no clip is closed or reopened), and the
+oracle is the same one, with the in-scene reference painting the viewport's
+box transparent. It is a `SurfaceDraw` with a `base: bool`; PR 3's
+`SplitFrame` and `SplitCompositor` are where it goes; until then a window with a `GameViewport` layer does not split.
 
 ## Oracle
 

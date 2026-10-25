@@ -465,8 +465,6 @@ struct FrameDamage {
     tooltip_now: Option<peniko::kurbo::Rect>,
 }
 
-/// What [`RinchApp::build_gpu_frame`] hands the desktop GPU renderer (#1718).
-#[cfg(all(feature = "gpu", software_shell))]
 /// The split-layer paint state of a window (#1865); see [`RinchApp`]'s `split`.
 #[cfg(all(feature = "gpu", software_shell))]
 #[derive(Default)]
@@ -494,6 +492,8 @@ enum GpuFrameKind {
     },
 }
 
+/// What [`RinchApp::build_gpu_frame`] hands the desktop GPU renderer (#1718).
+#[cfg(all(feature = "gpu", software_shell))]
 pub enum GpuFrame<'a> {
     /// Nothing on screen changed: the UI texture already holds this frame.
     Unchanged,
@@ -5993,6 +5993,22 @@ impl RinchApp {
     /// other node dirties a small region (a blinking caret, a ticking clock)
     /// the surface's subtree is pruned and its last frame freezes on screen.
     /// Marking at collect time, before the flags are cleared, is what fixes it.
+    /// The damage of `fresh` surfaces (those that drew a new GPU frame since
+    /// the last paint): every one the window does **not** composite split
+    /// (`split`, #1865) is marked paint-dirty and a repaint requested; a split
+    /// one is composited from the kept slices with no repaint.
+    pub fn mark_fresh_surfaces(&mut self, fresh: &[usize], split: &[usize]) {
+        let damaged: Vec<usize> = fresh
+            .iter()
+            .copied()
+            .filter(|id| !split.contains(id))
+            .collect();
+        if !damaged.is_empty() {
+            self.request_repaint();
+            self.mark_surface_nodes_paint_dirty(&damaged);
+        }
+    }
+
     pub fn mark_surface_nodes_paint_dirty(&mut self, ids: &[usize]) {
         if ids.is_empty() {
             return;

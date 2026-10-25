@@ -1797,15 +1797,8 @@ impl RinchRuntime {
             .sync_surface_images(gpu_frames.into_iter().map(|(id, texture, _)| (id, texture)));
         // A surface the window composites split (#1865) is not damage: its new
         // frame is composited from the kept slices, with no repaint.
-        let split_ids = renderer.split_surface_ids();
-        let fresh: Vec<usize> = fresh
-            .into_iter()
-            .filter(|id| !split_ids.contains(id))
-            .collect();
-        if !fresh.is_empty() {
-            self.app.request_repaint();
-            self.app.mark_surface_nodes_paint_dirty(&fresh);
-        }
+        self.app
+            .mark_fresh_surfaces(&fresh, &renderer.split_surface_ids());
         if !gpu_images.is_empty() {
             rinch_dom::paint::set_surface_gpu_images(Some(gpu_images));
         }

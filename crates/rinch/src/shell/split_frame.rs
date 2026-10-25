@@ -56,22 +56,67 @@ struct Kept {
 #[derive(Default)]
 pub struct SplitFrame {
     kept: Vec<Kept>,
+    /// Where slices are rendered before their region is kept.
+    scratch: Option<Texture>,
 }
 
-/// Render `scene` into a new `size` texture over transparent, as the scene's
-/// own pixels would be rendered (Msaa16, the desktop's).
+/// The scratch target slices are rendered into grows in steps of this, as
+/// the partial-frame target does (`desktop::PARTIAL_TARGET_STEP`).
+const SCRATCH_STEP: u32 = 128;
+
+/// Render `scene` (encoded in window coordinates) where the window draws it,
+/// into `scratch` (grown to reach `region`'s far corner), over transparent,
+/// with Msaa16 as the window's scene is, and keep `region` of it as a new
+/// region-sized texture. Rendering it moved to R's origin instead would not
+/// give the same pixels: an MSAA sample on a curve's edge flips under a
+/// translation.
 fn render_slice(
     device: &Device,
     queue: &Queue,
     renderer: &mut Renderer,
+    scratch: &mut Option<Texture>,
     scene: &Scene,
-    (w, h): (u32, u32),
+    (x, y, w, h): (u32, u32, u32, u32),
 ) -> Result<Texture, String> {
+    let step = |v: u32| v.div_ceil(SCRATCH_STEP).max(1) * SCRATCH_STEP;
+    let (want_w, want_h) = (step(x + w), step(y + h));
+    let (have_w, have_h) = scratch.as_ref().map_or((0, 0), |t| (t.width(), t.height()));
+    if have_w < want_w || have_h < want_h {
+        *scratch = Some(device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("split slice scratch"),
+            size: wgpu::Extent3d {
+                width: want_w.max(have_w),
+                height: want_h.max(have_h),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsages::STORAGE_BINDING | TextureUsages::COPY_SRC,
+            view_formats: &[],
+        }));
+    }
+    let target = scratch.as_ref().expect("created above");
+    renderer
+        .render_to_texture(
+            device,
+            queue,
+            scene,
+            &target.create_view(&TextureViewDescriptor::default()),
+            &RenderParams {
+                base_color: Color::TRANSPARENT,
+                width: want_w,
+                height: want_h,
+                antialiasing_method: AaConfig::Msaa16,
+            },
+        )
+        .map_err(|e| format!("split slice render: {e:?}"))?;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("split slice"),
         size: wgpu::Extent3d {
-            width: w.max(1),
-            height: h.max(1),
+            width: w,
+            height: h,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -79,25 +124,27 @@ fn render_slice(
         dimension: wgpu::TextureDimension::D2,
         format: TextureFormat::Rgba8Unorm,
         // COPY_SRC: the runtime oracle reads the slices back for its classes.
-        usage: TextureUsages::STORAGE_BINDING
-            | TextureUsages::TEXTURE_BINDING
-            | TextureUsages::COPY_SRC,
+        usage: TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_SRC,
         view_formats: &[],
     });
-    renderer
-        .render_to_texture(
-            device,
-            queue,
-            scene,
-            &texture.create_view(&TextureViewDescriptor::default()),
-            &RenderParams {
-                base_color: Color::TRANSPARENT,
-                width: w.max(1),
-                height: h.max(1),
-                antialiasing_method: AaConfig::Msaa16,
-            },
-        )
-        .map_err(|e| format!("split slice render: {e:?}"))?;
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("split slice copy"),
+    });
+    encoder.copy_texture_to_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: target,
+            mip_level: 0,
+            origin: wgpu::Origin3d { x, y, z: 0 },
+            aspect: wgpu::TextureAspect::All,
+        },
+        texture.as_image_copy(),
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit(Some(encoder.finish()));
     Ok(texture)
 }
 
@@ -173,16 +220,23 @@ impl SplitFrame {
             let mut coverage = |c: SliceCoverage| -> Result<KeptCoverage, String> {
                 Ok(match c {
                     SliceCoverage::Rect(r) => KeptCoverage::Rect(r),
-                    SliceCoverage::Mask(scene) => {
-                        KeptCoverage::Mask(render_slice(device, queue, renderer, &scene, size)?)
-                    }
+                    SliceCoverage::Mask(scene) => KeptCoverage::Mask(render_slice(
+                        device,
+                        queue,
+                        renderer,
+                        &mut self.scratch,
+                        &scene,
+                        s.region,
+                    )?),
                 })
             };
             let own = coverage(s.own)?;
             let ancestors = coverage(s.ancestors)?;
             let mut above = |scene: Option<Scene>| {
                 scene
-                    .map(|scene| render_slice(device, queue, renderer, &scene, size))
+                    .map(|scene| {
+                        render_slice(device, queue, renderer, &mut self.scratch, &scene, s.region)
+                    })
                     .transpose()
             };
             let above_in = above(s.above_in)?;
