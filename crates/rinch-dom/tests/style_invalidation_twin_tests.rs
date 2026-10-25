@@ -1371,3 +1371,311 @@ fn a_change_undone_on_a_grandchild_of_a_moved_element_restyles() {
         ],
     );
 }
+
+// ── Before the first layout (#1247) ────────────────────────────────────────
+//
+// Until #1247 every resolve before a document's first layout was a
+// whole-document walk, so nothing above reached the targeted walk on a
+// document that had never been laid out: `live` and `fresh` both build their
+// tree before the first layout and every mutation comes after it. These build
+// and mutate **before** the first layout, then lay out once, and compare three
+// ways: against `fresh`; against a document re-cascaded from nothing
+// (`recompute_all_styles_full` drops every element's style); and against a
+// twin driven through the same ops with the whole-document walk forced on
+// every resolve, the pre-#1247 behaviour.
+
+/// Extra rules for the pre-layout differential: a custom property consumed
+/// below where it is set, `display: contents`, an `::after` (the main sheet has
+/// only `::before`), and a structural selector feeding an inherited property.
+const PRE_LAYOUT_EXTRA: &str = r#"
+    .h { --v: 7px; }
+    .d { margin-left: var(--v, 1px); }
+    .k { display: contents; }
+    .c::after { content: "z"; }
+    :last-child > .b { font-size: 11px; }
+    .b:first-child .d { letter-spacing: 2px; }
+    .e + .d { --r41: 1; }
+"#;
+
+const PRE_LAYOUT_CLASSES: &[&str] = &["a", "b", "c", "d", "e", "h", "k", "i", "j"];
+
+fn live_unlaid(spec: &Spec, forced: bool) -> Live {
+    let mut doc = RinchDocument::new();
+    doc.load_css(&css());
+    let mut map = BTreeMap::new();
+    let mut texts = BTreeMap::new();
+    let mut order = vec![];
+    spec.subtree(0, &mut order);
+    for &id in &order {
+        if forced {
+            doc.tree.full_style_walk = true;
+        }
+        create(&mut doc, spec, id, &mut map, &mut texts);
+    }
+    fn attach(
+        doc: &mut RinchDocument,
+        spec: &Spec,
+        id: usize,
+        map: &BTreeMap<usize, NodeId>,
+        forced: bool,
+    ) {
+        for &c in &spec.els[&id].children {
+            if forced {
+                doc.tree.full_style_walk = true;
+            }
+            doc.append_child(map[&id], map[&c]);
+            attach(doc, spec, c, map, forced);
+        }
+    }
+    let body_n = doc.body();
+    if forced {
+        doc.tree.full_style_walk = true;
+    }
+    doc.append_child(body_n, map[&0]);
+    attach(&mut doc, spec, 0, &map, forced);
+    assert!(!doc.tree.transitions_enabled, "laid out too early");
+    Live { doc, map, texts }
+}
+
+fn random_pre_layout_op(rng: &mut Rng, s: &Spec) -> Op {
+    let ids: Vec<usize> = s.els.keys().copied().filter(|&i| i != 0).collect();
+    if ids.len() >= 2 {
+        match rng.below(8) {
+            0 => return Op::ToggleClass(rng.pick(&ids), rng.pick(PRE_LAYOUT_CLASSES)),
+            1 => {
+                return Op::SetAttr(
+                    rng.pick(&ids),
+                    "style",
+                    rng.pick(&[
+                        "font-size: 30px",
+                        "--v: 3px",
+                        "display: contents",
+                        "padding-top: 4px",
+                        "color: rgb(9, 9, 9)",
+                        "",
+                    ]),
+                );
+            }
+            2 => {
+                // A class on the container itself (an ancestor of everything).
+                return Op::ToggleClass(0, rng.pick(PRE_LAYOUT_CLASSES));
+            }
+            _ => {}
+        }
+    }
+    random_op(rng, s)
+}
+
+/// Rebuild of `spec` re-cascaded from nothing.
+fn from_scratch(spec: &Spec) -> RinchDocument {
+    let mut f = fresh(spec);
+    f.recompute_all_styles_full();
+    f.resolve_layout(801.0, 600.0);
+    f.resolve_layout(800.0, 600.0);
+    f
+}
+
+fn run_pre_layout_seed(seed: u64, transitions: bool) -> usize {
+    let mut rng = Rng(0xC0FF_EE00 ^ seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    let mut spec = random_spec(&mut rng);
+    let mut spec_forced = spec.clone();
+    let mut l = live_unlaid(&spec, false);
+    let mut lf = live_unlaid(&spec, true);
+    let mut ops = vec![];
+    BATCH.with(|b| b.set(true));
+    for _ in 0..12 {
+        let op = random_pre_layout_op(&mut rng, &spec);
+        apply(&mut spec, &mut l, &op);
+        lf.doc.tree.full_style_walk = true;
+        apply(&mut spec_forced, &mut lf, &op);
+        let resolve_now = rng.below(3) == 0;
+        if resolve_now {
+            l.doc.resolve_styles();
+            lf.doc.tree.full_style_walk = true;
+            lf.doc.resolve_styles();
+        }
+        ops.push((op, resolve_now));
+    }
+    BATCH.with(|b| b.set(false));
+    assert!(!l.doc.tree.transitions_enabled);
+    lf.doc.tree.full_style_walk = true;
+    l.doc.resolve_layout(800.0, 600.0);
+    lf.doc.resolve_layout(800.0, 600.0);
+    let label = format!("seed {seed} (transitions {transitions}): {ops:?}");
+    if transitions {
+        assert!(
+            l.doc.tree.active_transitions.is_empty(),
+            "{label}: a transition started for a change made before the first layout: {:?}",
+            l.doc.tree.active_transitions.keys().collect::<Vec<_>>()
+        );
+    }
+    // Boxes too against the forced twin: both took the same mutations and the
+    // same one layout, so only the walk differs.
+    assert_twin_opts(
+        &l.doc,
+        &lf.doc,
+        &format!("{label}\n(vs forced full walks)"),
+        true,
+    );
+    assert_twin_opts(
+        &l.doc,
+        &fresh(&spec),
+        &format!("{label}\n(vs fresh)"),
+        false,
+    );
+    assert_twin_opts(
+        &l.doc,
+        &from_scratch(&spec),
+        &format!("{label}\n(vs from scratch)"),
+        false,
+    );
+    // Positive control for the transition half: the same kind of change
+    // after the first layout does start transitions (counted by the caller).
+    let mut started = 0;
+    if transitions {
+        for _ in 0..4 {
+            let op = random_pre_layout_op(&mut rng, &spec);
+            apply(&mut spec, &mut l, &op);
+            started += l.doc.tree.active_transitions.len();
+        }
+    }
+    started
+}
+
+/// The seeds the two pre-layout differentials run: 1..=20 by default, like the
+/// differentials above, widened with `RINCH_TWIN_SEEDS` (the last seed) and
+/// `RINCH_TWIN_FIRST_SEED`.
+fn pre_layout_seed_range() -> (u64, u64) {
+    let env = |name: &str, default: u64| {
+        std::env::var(name)
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(default)
+    };
+    (env("RINCH_TWIN_FIRST_SEED", 1), env("RINCH_TWIN_SEEDS", 20))
+}
+
+#[test]
+fn random_pre_layout_sequences_match_a_full_restyle() {
+    let (first, seeds) = pre_layout_seed_range();
+    let sheet = format!("{CSS}\n{PRE_LAYOUT_EXTRA}");
+    CSS_CUR.with(|c| *c.borrow_mut() = sheet);
+    for seed in first..=seeds {
+        run_pre_layout_seed(seed, false);
+    }
+    CSS_CUR.with(|c| *c.borrow_mut() = CSS.to_string());
+}
+
+#[test]
+fn random_pre_layout_sequences_start_no_transition() {
+    let (first, seeds) = pre_layout_seed_range();
+    let sheet = format!(
+        "{CSS}\n{PRE_LAYOUT_EXTRA}\n* {{ transition: color 10s linear, font-size 10s linear, \
+         padding-top 10s linear, margin-left 10s linear, letter-spacing 10s linear, \
+         background-color 10s linear, width 10s linear; }}"
+    );
+    CSS_CUR.with(|c| *c.borrow_mut() = sheet);
+    let mut started = 0;
+    for seed in first..=seeds {
+        started += run_pre_layout_seed(seed, true);
+    }
+    CSS_CUR.with(|c| *c.borrow_mut() = CSS.to_string());
+    assert!(
+        started > 0,
+        "positive control: no change after the first layout transitioned"
+    );
+}
+
+/// Named pre-layout shapes: each op resolves styles (as an insertion does)
+/// and nothing is laid out until the end; then boxes and styles must equal a
+/// from-scratch document and the forced-full-walk twin.
+#[track_caller]
+fn pre_layout_scenario(name: &str, spec: Spec, ops: &[Op]) {
+    let sheet = format!("{CSS}\n{PRE_LAYOUT_EXTRA}");
+    CSS_CUR.with(|c| *c.borrow_mut() = sheet);
+    let mut spec_f = spec.clone();
+    let mut spec = spec;
+    let mut l = live_unlaid(&spec, false);
+    let mut lf = live_unlaid(&spec_f, true);
+    BATCH.with(|b| b.set(true));
+    for op in ops {
+        apply(&mut spec, &mut l, op);
+        l.doc.resolve_styles();
+        lf.doc.tree.full_style_walk = true;
+        apply(&mut spec_f, &mut lf, op);
+        lf.doc.tree.full_style_walk = true;
+        lf.doc.resolve_styles();
+    }
+    BATCH.with(|b| b.set(false));
+    assert!(!l.doc.tree.transitions_enabled);
+    l.doc.resolve_layout(800.0, 600.0);
+    lf.doc.resolve_layout(800.0, 600.0);
+    assert_twin(&l.doc, &lf.doc, &format!("{name}: vs forced"));
+    assert_twin(
+        &l.doc,
+        &from_scratch(&spec),
+        &format!("{name}: vs from scratch"),
+    );
+    CSS_CUR.with(|c| *c.borrow_mut() = CSS.to_string());
+}
+
+#[test]
+fn named_pre_layout_shapes_match_a_full_restyle() {
+    let ins = |parent, index, tag, classes: &[&'static str]| Op::Insert {
+        parent,
+        index,
+        tag,
+        classes: classes.to_vec(),
+    };
+    // Sibling selectors on existing siblings when one is appended / prepended.
+    let s = row(&[&["a"], &["b"], &["c"]]);
+    pre_layout_scenario(
+        "siblings",
+        s,
+        &[
+            ins(0, 3, "div", &["b"]),
+            ins(0, 0, "div", &["d"]),
+            ins(0, 9, "div", &["c"]),
+            ins(0, 1, "li", &["e"]),
+        ],
+    );
+    // `:empty` on the parent, and `:only-child`.
+    let mut s = Spec::new();
+    let p = s.add(0, 0, "div", &["d"]);
+    pre_layout_scenario(
+        "empty",
+        s,
+        &[ins(p, 0, "span", &["b"]), ins(p, 1, "span", &[])],
+    );
+    // Inherited properties and custom properties set on an ancestor later.
+    let mut s = Spec::new();
+    let w = s.add(0, 0, "div", &[]);
+    s.add(w, 0, "div", &["d"]);
+    s.add(w, 1, "p", &["b"]);
+    pre_layout_scenario(
+        "inherit+var",
+        s,
+        &[
+            Op::SetAttr(w, "style", "font-size: 30px; --v: 9px"),
+            ins(w, 2, "div", &["d"]),
+            Op::ToggleClass(0, "h"),
+            Op::ToggleClass(w, "c"),
+            ins(w, 0, "span", &["a"]),
+        ],
+    );
+    // `display: contents` on a wrapper, ::after on it, after children exist.
+    let mut s = Spec::new();
+    let w = s.add(0, 0, "div", &[]);
+    s.add(w, 0, "div", &["b"]);
+    s.add(w, 1, "div", &["d"]);
+    pre_layout_scenario(
+        "contents+after",
+        s,
+        &[
+            Op::ToggleClass(w, "k"),
+            Op::ToggleClass(w, "c"),
+            ins(w, 0, "div", &["b"]),
+            Op::ToggleClass(w, "k"),
+        ],
+    );
+}
