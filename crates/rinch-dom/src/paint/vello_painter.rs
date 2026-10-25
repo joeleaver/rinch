@@ -44,6 +44,13 @@ impl VelloPainter {
         }
     }
 
+    /// Append `scene` under `transform`, routed like any draw on a sliced
+    /// frame (bounds unknown: every region it may meet). The runtime's drag
+    /// ghost (#1865).
+    pub fn append_scene(&mut self, scene: &Scene, transform: Affine) {
+        self.draw(|| None, &|s, at| s.append(scene, Some(pre(at, transform))));
+    }
+
     /// Paint `op` where it belongs: straight into the scene when the frame
     /// has no split surface, else routed by its device `bounds`.
     fn draw(&mut self, bounds: impl FnOnce() -> Option<Rect>, op: &dyn Fn(&mut Scene, Affine)) {

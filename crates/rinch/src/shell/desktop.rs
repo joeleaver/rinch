@@ -292,6 +292,10 @@ pub struct WgpuRenderer {
     /// `RenderSurface` GPU frames registered with `renderer`, by surface id:
     /// the texture and the image it was registered as (#1768).
     surface_images: SurfaceImages,
+    /// The split surfaces this window composites (#1865), their slices
+    /// rendered; empty while nothing is split.
+    pub(crate) split: super::split_frame::SplitFrame,
+    pub(crate) split_compositor: Option<super::split_compositor::SplitCompositor>,
     /// Composited output texture (layers + UI) for screenshot capture.
     /// Created lazily, invalidated on resize.
     pub(crate) composited_texture: Option<Texture>,
@@ -562,6 +566,8 @@ impl WgpuRenderer {
             layer_uploader: None,
             composite_layers: Vec::new(),
             surface_images: SurfaceImages::default(),
+            split: Default::default(),
+            split_compositor: None,
             gpu_layers: Vec::new(),
             composited_texture: None,
             ui_base: None,
@@ -1006,6 +1012,84 @@ impl WgpuRenderer {
             return Ok(());
         }
 
+        if !self.split.is_empty() {
+            // Split surfaces (#1865): below (the UI texture), each surface and
+            // its above slices, composited into the composited texture, which
+            // is presented as the layered path presents it.
+            let sw = self.surface_config.width;
+            let sh = self.surface_config.height;
+            let format = self.surface_config.format;
+            let composited = self.composited_texture.get_or_insert_with(|| {
+                self.device.create_texture(&TextureDescriptor {
+                    label: Some("composited texture"),
+                    size: Extent3d {
+                        width: sw,
+                        height: sh,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: TextureDimension::D2,
+                    format,
+                    usage: TextureUsages::RENDER_ATTACHMENT
+                        | TextureUsages::COPY_SRC
+                        | TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+            });
+            let compositor = self.split_compositor.get_or_insert_with(|| {
+                super::split_compositor::SplitCompositor::new(&self.device, format)
+            });
+            let below = self
+                .render_texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            self.split.composite(
+                compositor,
+                &self.device,
+                &mut encoder,
+                &below,
+                &composited.create_view(&wgpu::TextureViewDescriptor::default()),
+                (sw, sh),
+                &self.surface_images.textures(),
+            );
+            match present_step(self.surface_config.alpha_mode, true, true) {
+                PresentStep::Copy => encoder.copy_texture_to_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: composited,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &surface_texture.texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    Extent3d {
+                        width: sw,
+                        height: sh,
+                        depth_or_array_layers: 1,
+                    },
+                ),
+                PresentStep::Pass(alpha) => {
+                    let present = self.layer_compositor.get_or_insert_with(|| {
+                        super::compositor::LayerCompositor::new(&self.device, format)
+                    });
+                    let surface_view = surface_texture
+                        .texture
+                        .create_view(&wgpu::TextureViewDescriptor::default());
+                    present.present(&self.device, &mut encoder, composited, &surface_view, alpha);
+                }
+            }
+            self.queue.submit(Some(encoder.finish()));
+            surface_texture.present();
+            self.device
+                .poll(wgpu::PollType::Poll)
+                .map_err(|e| RenderError::Internal(format!("GPU poll failed: {:?}", e)))?;
+            return Ok(());
+        }
+
         // Standard path (no layers). The composited texture is no longer
         // presented from: let it go (a window-sized texture), so nothing reads
         // the last frame that had layers as the window's (#1799).
@@ -1113,7 +1197,7 @@ impl PlatformRenderer for WgpuRenderer {
             let tex = presented_texture(
                 self.composited_texture.as_ref(),
                 &self.render_texture,
-                self.has_composite_layers(),
+                self.has_composite_layers() || !self.split.is_empty(),
             );
 
             // Ask the texture, not the surface. `composited_texture` is created
@@ -1152,6 +1236,17 @@ impl WgpuRenderer {
     /// Register this paint's `RenderSurface` GPU frames with the Vello
     /// renderer and hand back each one's image, by surface id (#1768); see
     /// [`SurfaceImages::sync`].
+    /// Apply a painted frame's split change (#1865): render the new slices.
+    pub fn apply_split(&mut self, change: super::split_frame::SplitChange) -> Result<(), String> {
+        self.split
+            .apply(&self.device, &self.queue, &mut self.renderer, change)
+    }
+
+    /// The surfaces this window composites split, by id.
+    pub fn split_surface_ids(&self) -> Vec<usize> {
+        self.split.surface_ids().collect()
+    }
+
     pub fn sync_surface_images(
         &mut self,
         frames: impl Iterator<Item = (usize, Texture)>,
@@ -1204,6 +1299,14 @@ pub(crate) struct SurfaceImages {
 }
 
 impl SurfaceImages {
+    /// Each registered surface's texture, by id.
+    pub(crate) fn textures(&self) -> std::collections::HashMap<usize, Texture> {
+        self.by_surface
+            .iter()
+            .map(|(id, (texture, _))| (*id, texture.clone()))
+            .collect()
+    }
+
     /// Register `frames` with `renderer` and hand back each one's image, by
     /// surface id. A surface keeps its registration while its texture is the
     /// same one; a new texture (a resize) is registered again and the old
