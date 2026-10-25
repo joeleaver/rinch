@@ -515,7 +515,11 @@ impl Peer {
         with_peer(id, |e| {
             e.channels.insert(
                 key,
-                ChannelEntry::new(label.to_string(), options.negotiated, options.send_buffer_limit),
+                ChannelEntry::new(
+                    label.to_string(),
+                    options.negotiated,
+                    options.send_buffer_limit,
+                ),
             )
         });
         backend::create_channel(id, key, label.to_string(), options);
@@ -542,7 +546,11 @@ impl Peer {
 
     /// The connection state changed.
     pub fn on_connection_state(&self, cb: impl FnMut(PeerState) + 'static) -> &Self {
-        registry::install(self.id(), |e| Some(&mut e.cbs.connection_state), Box::new(cb));
+        registry::install(
+            self.id(),
+            |e| Some(&mut e.cbs.connection_state),
+            Box::new(cb),
+        );
         self
     }
 
@@ -563,9 +571,7 @@ impl Peer {
     }
 }
 
-fn expect_description(
-    r: Result<Option<Description>, RtcError>,
-) -> Result<Description, RtcError> {
+fn expect_description(r: Result<Option<Description>, RtcError>) -> Result<Description, RtcError> {
     r?.ok_or_else(|| RtcError::Internal("the backend answered no description".into()))
 }
 
@@ -581,7 +587,8 @@ fn validate(config: &RtcConfig) -> Result<(), RtcError> {
                     "ICE server URL {url:?} is not stun:, stuns:, turn: or turns:"
                 )));
             }
-            if scheme.starts_with("turn") && (server.username.is_none() || server.credential.is_none())
+            if scheme.starts_with("turn")
+                && (server.username.is_none() || server.credential.is_none())
             {
                 return Err(RtcError::InvalidState(format!(
                     "TURN server {url:?} needs a username and a credential"

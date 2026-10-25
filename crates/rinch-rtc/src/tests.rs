@@ -52,7 +52,9 @@ fn send_refuses_not_open_too_large_and_queue_full_without_queueing() {
         },
     );
     assert_eq!(ch.buffered_amount(), 50, "10 reported + 40 still pending");
-    with_peer(id, |e| e.channels.get_mut(&ch.key).unwrap().state = ChannelState::Closing);
+    with_peer(id, |e| {
+        e.channels.get_mut(&ch.key).unwrap().state = ChannelState::Closing
+    });
     assert_eq!(ch.send(vec![1]), Err(SendError::NotOpen));
     remove_peer(id);
     assert_eq!(ch.send(vec![1]), Err(SendError::NotOpen));
@@ -63,7 +65,10 @@ fn send_refuses_not_open_too_large_and_queue_full_without_queueing() {
 fn an_empty_queue_admits_a_message_larger_than_the_limit() {
     let (id, ch) = fake_channel(10, 1000);
     ch.send(vec![0; 500]).unwrap();
-    assert!(matches!(ch.send(vec![0; 1]), Err(SendError::QueueFull { .. })));
+    assert!(matches!(
+        ch.send(vec![0; 1]),
+        Err(SendError::QueueFull { .. })
+    ));
     remove_peer(id);
 }
 
@@ -73,10 +78,24 @@ fn low_water_fires_only_at_or_below_the_threshold() {
     let lows = Rc::new(Cell::new(0));
     let l = lows.clone();
     ch.on_buffered_amount_low(move || l.set(l.get() + 1));
-    with_peer(id, |e| e.channels.get_mut(&ch.key).unwrap().low_threshold = 100);
-    dispatch(id, Event::Low { key: ch.key, amount: 150 });
+    with_peer(id, |e| {
+        e.channels.get_mut(&ch.key).unwrap().low_threshold = 100
+    });
+    dispatch(
+        id,
+        Event::Low {
+            key: ch.key,
+            amount: 150,
+        },
+    );
     assert_eq!(lows.get(), 0, "150 is above the threshold");
-    dispatch(id, Event::Low { key: ch.key, amount: 100 });
+    dispatch(
+        id,
+        Event::Low {
+            key: ch.key,
+            amount: 100,
+        },
+    );
     assert_eq!(lows.get(), 1);
     remove_peer(id);
 }
@@ -92,16 +111,32 @@ fn a_callback_registered_in_a_scope_is_pruned_after_it_disposes_and_sweeps_its_s
         let r = ran.clone();
         ch.on_close(move || r.set(r.get() + 100));
     });
-    dispatch(id, Event::Message { key: ch.key, data: vec![1] });
+    dispatch(
+        id,
+        Event::Message {
+            key: ch.key,
+            data: vec![1],
+        },
+    );
     assert_eq!(ran.get(), 1, "live: it runs");
     scope.dispose();
-    dispatch(id, Event::Message { key: ch.key, data: vec![2] });
+    dispatch(
+        id,
+        Event::Message {
+            key: ch.key,
+            data: vec![2],
+        },
+    );
     assert_eq!(ran.get(), 1, "dead: it does not");
     let armed = with_peer(id, |e| {
         let c = &e.channels[&ch.key].cbs;
         (c.message.is_some(), c.close.is_some())
     });
-    assert_eq!(armed, Some((false, false)), "pruned, and its dead sibling swept");
+    assert_eq!(
+        armed,
+        Some((false, false)),
+        "pruned, and its dead sibling swept"
+    );
     dispatch(id, Event::ChannelClosed { key: ch.key });
     assert_eq!(ran.get(), 1);
     remove_peer(id);
@@ -113,8 +148,20 @@ fn an_ownerless_callback_keeps_app_lifetime() {
     let got = Rc::new(RefCell::new(Vec::new()));
     let g = got.clone();
     ch.on_message(move |m| g.borrow_mut().push(m));
-    dispatch(id, Event::Message { key: ch.key, data: vec![1] });
-    dispatch(id, Event::Message { key: ch.key, data: vec![2] });
+    dispatch(
+        id,
+        Event::Message {
+            key: ch.key,
+            data: vec![1],
+        },
+    );
+    dispatch(
+        id,
+        Event::Message {
+            key: ch.key,
+            data: vec![2],
+        },
+    );
     assert_eq!(*got.borrow(), vec![vec![1], vec![2]]);
     remove_peer(id);
 }
@@ -123,7 +170,13 @@ fn an_ownerless_callback_keeps_app_lifetime() {
 fn a_callback_may_drop_its_peer_entry_while_it_runs() {
     let (id, ch) = fake_channel(1 << 20, 1 << 16);
     ch.on_message(move |_| remove_peer(id));
-    dispatch(id, Event::Message { key: ch.key, data: vec![1] });
+    dispatch(
+        id,
+        Event::Message {
+            key: ch.key,
+            data: vec![1],
+        },
+    );
     assert!(with_peer(id, |_| ()).is_none());
 }
 
@@ -189,7 +242,10 @@ fn config_validation() {
     assert!(bad(vec![IceServer::stun("stun:stun.example.org:3478")]).is_ok());
     assert!(bad(vec![IceServer::turn("turn:t.example.org:3478", "u", "p")]).is_ok());
     assert!(bad(vec![IceServer::stun("http://x")]).is_err());
-    assert!(bad(vec![IceServer::stun("turn:t.example.org")]).is_err(), "TURN needs credentials");
+    assert!(
+        bad(vec![IceServer::stun("turn:t.example.org")]).is_err(),
+        "TURN needs credentials"
+    );
     assert!(
         bad(vec![IceServer {
             urls: vec![],

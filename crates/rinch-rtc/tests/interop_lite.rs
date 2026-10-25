@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use common::{LitePeer, T, drive, init, pump_until};
 use rinch_rtc::{
-    Channel, ChannelOptions, ChannelState, Description, Gathering, PeerState, Peer, Reliability,
+    Channel, ChannelOptions, ChannelState, Description, Gathering, Peer, PeerState, Reliability,
     RtcConfig, SendError,
 };
 
@@ -43,7 +43,10 @@ fn connect(lite: &LitePeer, gathering: Gathering) -> Client {
     })
     .unwrap();
     let control = peer
-        .create_data_channel("control", ChannelOptions::negotiated(0, Reliability::Reliable))
+        .create_data_channel(
+            "control",
+            ChannelOptions::negotiated(0, Reliability::Reliable),
+        )
         .unwrap();
     let tick = peer
         .create_data_channel(
@@ -128,7 +131,7 @@ fn negotiated_channels_echo_and_the_server_counts_them() {
         pump_until(
             || {
                 let s = lite.stats();
-                s.received.get("control") == Some(&60_005) && s.messages.get("tick").is_some()
+                s.received.get("control") == Some(&60_005) && s.messages.contains_key("tick")
             },
             T
         ),
@@ -152,7 +155,10 @@ fn complete_gathering_puts_the_candidates_in_the_sdp() {
     })
     .unwrap();
     let control = peer
-        .create_data_channel("control", ChannelOptions::negotiated(0, Reliability::Reliable))
+        .create_data_channel(
+            "control",
+            ChannelOptions::negotiated(0, Reliability::Reliable),
+        )
         .unwrap();
     let trickled = Rc::new(Cell::new(0));
     let t = trickled.clone();
@@ -179,10 +185,17 @@ fn in_band_channels_both_ways() {
         .unwrap();
     record(&chat, &c.log);
     assert!(pump_until(|| chat.state() == ChannelState::Open, T));
-    assert!(pump_until(|| lite.stats().opened.contains(&"chat".to_string()), T));
+    assert!(pump_until(
+        || lite.stats().opened.contains(&"chat".to_string()),
+        T
+    ));
     chat.send(b"hi".to_vec()).unwrap();
     assert!(pump_until(|| echoed(&c.log, "chat") == 2, T));
-    assert_eq!(chat.id(), None, "native does not report an in-band stream id");
+    assert_eq!(
+        chat.id(),
+        None,
+        "native does not report an in-band stream id"
+    );
 
     // Server-opened, in-band: on_data_channel.
     let heard: Rc<RefCell<Option<Channel>>> = Rc::default();
@@ -236,7 +249,10 @@ fn send_refusals_and_the_low_water_mark() {
         Err(SendError::QueueFull { limit: 100_000, .. }) => {}
         other => panic!("expected QueueFull, got {other:?}"),
     }
-    assert!(pump_until(|| lows.get() >= 1 && ch.buffered_amount() == 0, T));
+    assert!(pump_until(
+        || lows.get() >= 1 && ch.buffered_amount() == 0,
+        T
+    ));
     // The channel is still open, and the queue takes the next one.
     assert_eq!(ch.state(), ChannelState::Open);
     ch.send(vec![3u8; 60_000]).unwrap();
@@ -284,12 +300,20 @@ fn close_closes_every_channel_then_the_peer() {
         ch.on_close(move || o.borrow_mut().push(label.clone()));
     }
     let o = order.clone();
-    c.peer.on_connection_state(move |s| o.borrow_mut().push(format!("{s:?}")));
+    c.peer
+        .on_connection_state(move |s| o.borrow_mut().push(format!("{s:?}")));
     c.peer.close();
     assert_eq!(c.peer.state(), PeerState::Closed, "Closed at once");
-    assert!(pump_until(|| order.borrow().contains(&"Closed".to_string()), T));
+    assert!(pump_until(
+        || order.borrow().contains(&"Closed".to_string()),
+        T
+    ));
     let order = order.borrow().clone();
-    assert_eq!(order.len(), 3, "each channel once, then the peer: {order:?}");
+    assert_eq!(
+        order.len(),
+        3,
+        "each channel once, then the peer: {order:?}"
+    );
     assert_eq!(order.last().unwrap(), "Closed");
     assert!(c.control.send(b"x".to_vec()).is_err());
     // The server sees the association end.
@@ -307,7 +331,11 @@ fn ice_restart_keeps_the_channels() {
     let offer = drive(c.peer.create_offer(), T).unwrap();
     let answer = lite.answer(&offer.sdp);
     assert_eq!(lite.stats().offers, 2);
-    drive(c.peer.set_remote_description(Description::answer(answer)), T).unwrap();
+    drive(
+        c.peer.set_remote_description(Description::answer(answer)),
+        T,
+    )
+    .unwrap();
     c.control.send(b"after-restart".to_vec()).unwrap();
     assert!(pump_until(|| echoed(&c.log, "control") == 13, T));
     assert_eq!(c.control.state(), ChannelState::Open);

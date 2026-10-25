@@ -110,7 +110,9 @@ fn post(id: u64, cmd: PeerCmd) {
         rinch_core::dispatch_main_callback(Box::new(move || {
             registry::dispatch(
                 id,
-                Event::Error(RtcError::Internal("the rinch-rtc worker has stopped".into())),
+                Event::Error(RtcError::Internal(
+                    "the rinch-rtc worker has stopped".into(),
+                )),
             );
             registry::dispatch(id, Event::Closed);
         }));
@@ -134,7 +136,14 @@ pub(crate) fn new_peer(id: u64, config: &RtcConfig) -> Result<(), RtcError> {
 }
 
 pub(crate) fn create_channel(id: u64, key: u64, label: String, options: ChannelOptions) {
-    post(id, PeerCmd::Channel { key, label, options });
+    post(
+        id,
+        PeerCmd::Channel {
+            key,
+            label,
+            options,
+        },
+    );
 }
 
 pub(crate) fn create_offer(id: u64, req: u64, restart: bool) {
@@ -474,11 +483,23 @@ async fn peer_task(
                     continue;
                 }
                 let result = describe(&*pc, &gathered, trickle, SdpKind::Offer).await;
-                emit(id, Event::Reply { req, result: result.map(Some) });
+                emit(
+                    id,
+                    Event::Reply {
+                        req,
+                        result: result.map(Some),
+                    },
+                );
             }
             PeerCmd::Answer { req } => {
                 let result = describe(&*pc, &gathered, trickle, SdpKind::Answer).await;
-                emit(id, Event::Reply { req, result: result.map(Some) });
+                emit(
+                    id,
+                    Event::Reply {
+                        req,
+                        result: result.map(Some),
+                    },
+                );
             }
             PeerCmd::Remote { req, description } => {
                 let parsed = match description.kind {
@@ -592,12 +613,7 @@ async fn describe(
 }
 
 /// Forward one channel's events to the main thread until it closes.
-async fn pump(
-    id: u64,
-    key: u64,
-    dc: Arc<dyn DataChannel>,
-    pc: Arc<dyn PeerConnection>,
-) {
+async fn pump(id: u64, key: u64, dc: Arc<dyn DataChannel>, pc: Arc<dyn PeerConnection>) {
     while let Some(event) = dc.poll().await {
         match event {
             DataChannelEvent::OnOpen => {

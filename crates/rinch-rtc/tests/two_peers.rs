@@ -16,6 +16,7 @@ use rinch_rtc::{
 };
 
 type Inbox = Rc<RefCell<Vec<Option<IceCandidate>>>>;
+type Got = Rc<RefCell<Vec<(String, Vec<u8>)>>>;
 
 fn trickle_into(peer: &Peer) -> (Inbox, Rc<Cell<usize>>) {
     let inbox: Inbox = Rc::default();
@@ -55,7 +56,7 @@ fn two_peers_in_one_app() {
     let heard: Rc<RefCell<Option<Channel>>> = Rc::default();
     let h = heard.clone();
     b.on_data_channel(move |ch| *h.borrow_mut() = Some(ch));
-    let got: Rc<RefCell<Vec<(String, Vec<u8>)>>> = Rc::default();
+    let got: Got = Rc::default();
     let g = got.clone();
     tick_b.on_message(move |m| g.borrow_mut().push(("tick".into(), m)));
 
@@ -87,7 +88,11 @@ fn two_peers_in_one_app() {
         b.state()
     );
     assert!(pump_until(|| a_ends.get() == 1 && b_ends.get() == 1, T));
-    assert!(errors.borrow().is_empty(), "no candidate was refused: {:?}", errors.borrow());
+    assert!(
+        errors.borrow().is_empty(),
+        "no candidate was refused: {:?}",
+        errors.borrow()
+    );
 
     // The in-band channel reaches b.
     assert!(pump_until(|| heard.borrow().is_some(), T));

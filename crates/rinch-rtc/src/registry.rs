@@ -287,11 +287,15 @@ pub(crate) fn dispatch(id: u64, event: Event) {
             }
         }
         Event::Error(err) => invoke(id, err, |e| Some(&mut e.cbs.error)),
-        Event::Incoming { key, label, id: sid } => {
+        Event::Incoming {
+            key,
+            label,
+            id: sid,
+        } => {
             let known = with_peer(id, |e| {
-                e.channels
-                    .entry(key)
-                    .or_insert_with(|| ChannelEntry::new(label, sid, crate::DEFAULT_SEND_BUFFER_LIMIT));
+                e.channels.entry(key).or_insert_with(|| {
+                    ChannelEntry::new(label, sid, crate::DEFAULT_SEND_BUFFER_LIMIT)
+                });
             });
             if known.is_some() {
                 let ch = Channel::from_parts(id, key);
@@ -343,7 +347,9 @@ pub(crate) fn dispatch(id: u64, event: Event) {
             });
             if low == Some(true) {
                 invoke(id, (), move |e| {
-                    e.channels.get_mut(&key).map(|c| &mut c.cbs.buffered_amount_low)
+                    e.channels
+                        .get_mut(&key)
+                        .map(|c| &mut c.cbs.buffered_amount_low)
                 });
             }
         }
@@ -399,7 +405,12 @@ fn invoke<T: 'static>(
     select: impl Fn(&mut PeerEntry) -> Option<&mut Option<Slot<T>>>,
 ) {
     let taken = with_peer(id, |e| select(e).and_then(Option::take)).flatten();
-    let Some(Slot { owner, frame, mut cb }) = taken else {
+    let Some(Slot {
+        owner,
+        frame,
+        mut cb,
+    }) = taken
+    else {
         return;
     };
     if owner.as_ref().is_some_and(|o| !o.is_alive()) {

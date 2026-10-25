@@ -18,7 +18,10 @@ use rinch_rtc::{
 
 fn channels(peer: &Peer) -> (Channel, Channel) {
     let control = peer
-        .create_data_channel("control", ChannelOptions::negotiated(0, Reliability::Reliable))
+        .create_data_channel(
+            "control",
+            ChannelOptions::negotiated(0, Reliability::Reliable),
+        )
         .unwrap();
     let tick = peer
         .create_data_channel(
@@ -53,22 +56,24 @@ fn a_peer_closes_with_its_component_unless_unowned() {
 
     let component = Scope::new();
     let fired_after_unmount = Rc::new(Cell::new(0));
-    let (owned, kept, pruned) = component.run(|| {
+    let (owned, kept) = component.run(|| {
         let owned = Peer::new(RtcConfig::default()).unwrap();
         let kept = unowned(|| Peer::new(RtcConfig::default())).unwrap();
         // Registered by the component on the peer that outlives it: pruned
         // at unmount, as in rinch-ws (#183).
         let f = fired_after_unmount.clone();
         kept.on_connection_state(move |_| f.set(f.get() + 1));
-        (owned, kept, ())
+        (owned, kept)
     });
-    let _ = pruned;
     let (owned_control, _owned_tick) = channels(&owned);
     let (kept_control, _kept_tick) = channels(&kept);
     connect(&owned, &owned_lite, &owned_control);
     connect(&kept, &kept_lite, &kept_control);
     let before = fired_after_unmount.get();
-    assert!(before >= 1, "the component's callback ran while it was mounted");
+    assert!(
+        before >= 1,
+        "the component's callback ran while it was mounted"
+    );
 
     component.dispose();
 
@@ -93,7 +98,10 @@ fn a_peer_closes_with_its_component_unless_unowned() {
 
     // ...and the unmounted component's callback on it no longer runs.
     kept.close();
-    assert!(pump_until(|| kept_control.state() == ChannelState::Closed, T));
+    assert!(pump_until(
+        || kept_control.state() == ChannelState::Closed,
+        T
+    ));
     let _ = pump_until(|| false, Duration::from_millis(200));
     assert_eq!(fired_after_unmount.get(), before);
     assert_eq!(kept.state(), PeerState::Closed);

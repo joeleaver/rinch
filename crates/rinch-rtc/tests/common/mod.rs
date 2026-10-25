@@ -42,7 +42,13 @@ pub fn init() {
 
 pub fn drain_pump() {
     loop {
-        let jobs: Vec<_> = PUMP.get().expect("pump").lock().unwrap().drain(..).collect();
+        let jobs: Vec<_> = PUMP
+            .get()
+            .expect("pump")
+            .lock()
+            .unwrap()
+            .drain(..)
+            .collect();
         if jobs.is_empty() {
             return;
         }
@@ -77,7 +83,10 @@ pub fn drive<T>(fut: impl Future<Output = T>, timeout: Duration) -> T {
         if let Poll::Ready(v) = fut.as_mut().poll(&mut cx) {
             return v;
         }
-        assert!(start.elapsed() < timeout, "future did not resolve in {timeout:?}");
+        assert!(
+            start.elapsed() < timeout,
+            "future did not resolve in {timeout:?}"
+        );
         thread::sleep(Duration::from_millis(2));
     }
 }
@@ -146,8 +155,12 @@ impl LitePeer {
     /// Answer an offer (the first, or an ICE restart's).
     pub fn answer(&self, offer: &str) -> String {
         let (tx, rx) = mpsc::channel();
-        self.cmds.send(LiteCmd::Offer(offer.to_string(), tx)).unwrap();
-        rx.recv_timeout(T).unwrap().expect("the lite peer accepts the offer")
+        self.cmds
+            .send(LiteCmd::Offer(offer.to_string(), tx))
+            .unwrap();
+        rx.recv_timeout(T)
+            .unwrap()
+            .expect("the lite peer accepts the offer")
     }
 
     pub fn open_in_band(&self, label: &str) {

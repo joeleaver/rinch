@@ -80,7 +80,10 @@ impl fmt::Display for SendError {
         match self {
             SendError::NotOpen => write!(f, "the channel is not open"),
             SendError::TooLarge { len, max } => {
-                write!(f, "a {len}-byte message exceeds the peer's {max}-byte limit")
+                write!(
+                    f,
+                    "a {len}-byte message exceeds the peer's {max}-byte limit"
+                )
             }
             SendError::QueueFull { buffered, limit } => {
                 write!(f, "send queue full ({buffered} of {limit} bytes buffered)")
