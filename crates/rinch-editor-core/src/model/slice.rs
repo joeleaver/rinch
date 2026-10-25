@@ -70,7 +70,7 @@ impl Slice {
     /// Used by `ReplaceAroundStep` to drop the preserved gap content into the
     /// wrapping slice. Port of `Slice.insertAt`.
     pub fn insert_at(&self, pos: usize, fragment: &Fragment) -> Option<Slice> {
-        let content = insert_into(&self.content, pos + self.open_start, fragment)?;
+        let content = insert_into(&self.content, pos + self.open_start, fragment, None)?;
         Some(Slice::new(content, self.open_start, self.open_end))
     }
 
@@ -87,25 +87,49 @@ impl Slice {
     }
 }
 
-/// Recursive helper for [`Slice::insert_at`]. Port of `insertInto` (the `parent`
-/// argument is always absent in this call chain, so the `canReplace` check PM
-/// guards with it is a no-op and omitted; schema validity is enforced later by the
-/// replace's `close`).
-fn insert_into(content: &Fragment, dist: usize, insert: &Fragment) -> Option<Fragment> {
+/// Recursive helper for [`Slice::insert_at`]. Port of `insertInto`, with its
+/// `parent.canReplace` check: content inserted into a node of the slice must be
+/// content that node takes (its content expression, and marks it allows), or
+/// there is no result. The replace's `close` checks only the nodes it rebuilds
+/// around the slice, not the nodes inside it, so without this a mapped undo of
+/// `setParagraph` wrapped a paragraph a peer had made bold back into a code block
+/// with the bold inside (#1856), or a paragraph in a paragraph (#1249).
+fn insert_into(
+    content: &Fragment,
+    dist: usize,
+    insert: &Fragment,
+    parent: Option<&Node>,
+) -> Option<Fragment> {
     let (index, offset) = content.find_index(dist);
     let child = content.maybe_child(index);
     if offset == dist || child.is_some_and(Node::is_text) {
-        Some(
-            content
-                .cut(0, dist)
-                .append(insert)
-                .append(&content.cut(dist, content.size())),
-        )
+        let merged = content
+            .cut(0, dist)
+            .append(insert)
+            .append(&content.cut(dist, content.size()));
+        if let Some(parent) = parent
+            && !holds(parent, &merged)
+        {
+            return None;
+        }
+        Some(merged)
     } else {
         let child = child?;
-        let inner = insert_into(child.content(), dist - offset - 1, insert)?;
+        let inner = insert_into(child.content(), dist - offset - 1, insert, Some(child))?;
         Some(content.replace_child(index, child.copy_with_content(inner)))
     }
+}
+
+/// Whether `node` may hold `content`: its content expression matches the
+/// children, and it allows each child's marks.
+fn holds(node: &Node, content: &Fragment) -> bool {
+    let names: Vec<&str> = content.children().iter().map(Node::type_name).collect();
+    let marks = &node.node_type().spec().marks;
+    node.node_type().content_match().matches(&names)
+        && content
+            .children()
+            .iter()
+            .all(|c| c.marks().iter().all(|m| marks.allows(m.type_name())))
 }
 
 /// Recursive helper for [`Slice::remove_between`]. Port of `removeRange`.

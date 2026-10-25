@@ -440,7 +440,15 @@ struct Swarm {
     edits: usize,
     /// Whether [`random_edit`] may insert images (see its inline-atom arm).
     images: bool,
+    /// Percent of local edits that are an undo or a redo instead (#1249): `0` in every
+    /// trial but [`fuzz_undo_and_redo_among_remote_changes`], so the others' random
+    /// streams are what they were.
+    undo_percent: u64,
 }
+
+/// Undos and redos that applied and changed the document — the positive control for
+/// [`fuzz_undo_and_redo_among_remote_changes`].
+static HISTORY_EDITS: AtomicUsize = AtomicUsize::new(0);
 
 /// Images inserted by [`random_edit`] across the whole test binary — the positive
 /// control that the image trial generated any.
@@ -511,6 +519,7 @@ impl Swarm {
             seen: vec![0usize; peers],
             edits: 0,
             images: false,
+            undo_percent: 0,
         }
     }
 
@@ -589,7 +598,17 @@ impl Swarm {
             // 60% make a local edit, 40% deliver a pending delta.
             if rng.chance(60) {
                 let p = rng.below(self.peers());
-                let Some(next) = random_edit(rng, &self.states[p], self.images) else {
+                let next = if self.undo_percent > 0 && rng.chance(self.undo_percent) {
+                    let cmd = if rng.chance(50) { "undo" } else { "redo" };
+                    let next = self.states[p].run(cmd);
+                    if next.as_ref().is_some_and(|n| n.doc != self.states[p].doc) {
+                        HISTORY_EDITS.fetch_add(1, Ordering::Relaxed);
+                    }
+                    next
+                } else {
+                    random_edit(rng, &self.states[p], self.images)
+                };
+                let Some(next) = next else {
                     continue;
                 };
                 self.record_local(seed, p, next);
@@ -893,6 +912,36 @@ fn fuzz_edits_tables_among_everything_else() {
     assert!(
         applied >= 20,
         "the trials must actually edit tables to test them (applied {applied})"
+    );
+}
+
+/// #1249: undo and redo among remote changes. The history maps an event through every
+/// change it did not record (a peer's) before it reverts it; it used to replay the
+/// steps at their old positions, which broke `model ≡ project(model)` (#1856), nested
+/// a paragraph in a paragraph or reverted a peer's text. 15% of local edits here are an
+/// undo or a redo (seed 275 with two peers was #1249's first repro).
+#[test]
+fn fuzz_undo_and_redo_among_remote_changes() {
+    let before = HISTORY_EDITS.load(Ordering::Relaxed);
+    for seed in (1000..=1023u64).chain([275]) {
+        let peers = 2 + (seed % 2) as usize;
+        let schema = schema();
+        let mut rng = Rng::new(seed);
+        let mut swarm = Swarm::new(
+            seed,
+            schema.clone(),
+            initial_state(&schema).doc.clone(),
+            peers,
+        );
+        swarm.undo_percent = 15;
+        swarm.run_rounds(seed, 400, &mut rng);
+        swarm.flush(seed);
+        swarm.assert_converged(seed);
+    }
+    let applied = HISTORY_EDITS.load(Ordering::Relaxed) - before;
+    assert!(
+        applied >= 200,
+        "the trials must actually undo and redo to test them (applied {applied})"
     );
 }
 
