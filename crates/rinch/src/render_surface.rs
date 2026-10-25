@@ -1592,6 +1592,9 @@ pub struct ViewportFrames {
     /// others are in `frames` only so a region that crosses them for another
     /// reason (a hover, a tick) can redraw the frame already on screen.
     pub fresh: std::collections::HashSet<String>,
+    /// Each video among [`Self::frames`], by name: its surface id, which a
+    /// split slice of it is keyed by (#1865).
+    pub ids: std::collections::HashMap<String, usize>,
 }
 
 /// Collect the named viewports' frames that are painted **inline**, in the
@@ -1647,7 +1650,9 @@ pub fn collect_viewport_frames_by_name() -> ViewportFrames {
                         opaque: buf.opaque,
                     },
                 );
-                if !surface.is_video {
+                if surface.is_video {
+                    out.ids.insert(surface.viewport_name.clone(), surface.id);
+                } else {
                     out.holes.insert(surface.viewport_name.clone());
                 }
             }

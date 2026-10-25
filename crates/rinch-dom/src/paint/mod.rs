@@ -1076,6 +1076,10 @@ thread_local! {
     /// the two registries cannot share a key space. Set before
     /// `paint_document()` and cleared after, like `SURFACE_PIXELS`.
     static VIEWPORT_PIXELS: RefCell<Option<HashMap<String, SurfacePixelData>>> = const { RefCell::new(None) };
+    /// The viewports whose frames this paint may split out of the scene
+    /// (#1865, video on the GPU window), by `data-viewport` name: the id the
+    /// split slice is keyed by.
+    static VIEWPORT_SPLIT_IDS: RefCell<Option<HashMap<String, usize>>> = const { RefCell::new(None) };
 
     /// GPU frames for inline painting, keyed by surface ID (#1768): a texture
     /// registered with the renderer that will render this scene, drawn as an
@@ -1427,6 +1431,7 @@ fn paint_surface_frame(
             clip_to_content,
             image_transform,
             extents: (image.width, image.height),
+            straight_alpha: false,
         }) == painter::SplitVerdict::Split
     {
         return;
@@ -1470,11 +1475,19 @@ fn paint_surface_frame(
 /// renders the scene (`vello::Renderer::register_texture`); only the Vello
 /// painter draws them. A surface with an image here draws it in place of its
 /// CPU pixels. `None` clears.
-/// Whether this paint has any GPU surface frame to draw: a frame with none
-/// has nothing to split, and the runtime does not open it for slicing
+/// The viewports whose frames the next paints may split out of the scene
+/// (#1865): `data-viewport` name to the id their slice is keyed by. `None`
+/// (the default, and every host but the desktop GPU window) splits none.
+pub fn set_viewport_split_ids(ids: Option<HashMap<String, usize>>) {
+    VIEWPORT_SPLIT_IDS.with(|v| *v.borrow_mut() = ids);
+}
+
+/// Whether this paint has anything to split: a GPU surface frame, or a video
+/// viewport it may split. A frame with neither is not opened for slicing
 /// (#1899 review: a frame opened for slicing copies every clip's shape).
 pub fn has_surface_gpu_images() -> bool {
     SURFACE_GPU_IMAGES.with(|g| g.borrow().as_ref().is_some_and(|m| !m.is_empty()))
+        || VIEWPORT_SPLIT_IDS.with(|v| v.borrow().as_ref().is_some_and(|m| !m.is_empty()))
 }
 
 pub fn set_surface_gpu_images(images: Option<HashMap<usize, peniko::ImageData>>) {
@@ -3903,35 +3916,70 @@ fn paint_node_unmasked(
                     );
                 }
 
-                if has_radius {
-                    painter.push_clip(Fill::NonZero, node_transform, &backdrop);
-                }
-                VIEWPORT_PIXELS.with(|vp| {
-                    let guard = vp.borrow();
-                    // The guard above already proved this entry exists and is
-                    // drawable; `viewport_frame_bytes` re-derives the exact
-                    // slice length the painter needs, because a buffer longer
-                    // than `w * h * 4` would be rejected outright.
-                    let Some((pixels, bytes)) = guard
+                // On the GPU window a video frame is offered to the split-layer
+                // path first (#1865): taken, it is composited, not drawn here;
+                // its black backdrop above stays in the scene beneath it.
+                let split_id = viewport_name.and_then(|name| {
+                    VIEWPORT_SPLIT_IDS.with(|ids| ids.borrow().as_ref()?.get(name).copied())
+                });
+                let frame_size = VIEWPORT_PIXELS.with(|vp| {
+                    vp.borrow()
                         .as_ref()
-                        .and_then(|map| map.get(node.attributes.get("data-viewport")?))
-                        .and_then(|pixels| Some((pixels, viewport_frame_bytes(pixels)?)))
-                    else {
-                        return;
-                    };
-                    image::paint_frame_data(
-                        painter,
-                        &pixels.data[..bytes],
-                        pixels.width,
-                        pixels.height,
-                        pixels.opaque,
+                        .and_then(|map| map.get(viewport_name?))
+                        .map(|p| (p.width, p.height))
+                });
+                let split = split_id.zip(frame_size).and_then(|(id, (fw, fh))| {
+                    let (image_transform, clip_to_content) = image::fit_image(
+                        fw as f64,
+                        fh as f64,
                         rect,
-                        scale,
                         crate::computed_style::ObjectFitValue::Contain,
                         node_transform,
-                    );
+                    )?;
+                    Some(painter.split_surface(&painter::SurfaceSplit {
+                        surface_id: id,
+                        content: rect,
+                        node_transform,
+                        inner: has_radius.then(|| backdrop.clone()),
+                        clip_to_content,
+                        image_transform,
+                        extents: (fw, fh),
+                        // `draw_image` draws a CPU frame as straight alpha.
+                        straight_alpha: true,
+                    }))
                 });
-                if has_radius {
+                let taken = split == Some(painter::SplitVerdict::Split);
+                if has_radius && !taken {
+                    painter.push_clip(Fill::NonZero, node_transform, &backdrop);
+                }
+                if !taken {
+                    VIEWPORT_PIXELS.with(|vp| {
+                        let guard = vp.borrow();
+                        // The guard above already proved this entry exists and is
+                        // drawable; `viewport_frame_bytes` re-derives the exact
+                        // slice length the painter needs, because a buffer longer
+                        // than `w * h * 4` would be rejected outright.
+                        let Some((pixels, bytes)) = guard
+                            .as_ref()
+                            .and_then(|map| map.get(node.attributes.get("data-viewport")?))
+                            .and_then(|pixels| Some((pixels, viewport_frame_bytes(pixels)?)))
+                        else {
+                            return;
+                        };
+                        image::paint_frame_data(
+                            painter,
+                            &pixels.data[..bytes],
+                            pixels.width,
+                            pixels.height,
+                            pixels.opaque,
+                            rect,
+                            scale,
+                            crate::computed_style::ObjectFitValue::Contain,
+                            node_transform,
+                        );
+                    });
+                }
+                if has_radius && !taken {
                     painter.pop_layer();
                 }
             }

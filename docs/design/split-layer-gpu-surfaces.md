@@ -476,6 +476,17 @@ Not on this list, because they split exactly:
   below's overlay second, and split surfaces after that. That ordering must
   be re-checked against #1866's PR when it lands. There was no PR when this
   record was written.
+- **Video as built (PR 4).** The runtime hands paint the split-able video
+  viewports by name (`rinch_dom::paint::set_viewport_split_ids`, name to
+  surface id); the video arm of paint offers the frame to `split_surface`
+  after its black letterbox backdrop, which stays in the scene beneath it
+  (`straight_alpha`, as `draw_image` draws a CPU frame; the viewport's
+  `border-radius` as the own clip; `object-fit: contain` as `fit_image` fits
+  it). `SplitFrame::sync_pixel_frames` uploads each new frame into a texture
+  per id, and a new frame of a video the window composites split is not
+  damage (`prepare_split_viewports`, shared by the runtime and the oracle):
+  a playing video under a static UI is an upload and a composite, with no
+  Vello. An opacity on the viewport is a group effect: in the scene (D3a).
 - **`GpuTextureRegistrar`** is unchanged.
 
 **How `GameViewport` fits on the split path (after PR 3; #1866 is parked

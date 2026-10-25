@@ -200,10 +200,15 @@ impl Window {
         let stale = self.split.stale_ids(&self.registry.textures());
         app.mark_fresh_surfaces(&fresh, &split_ids, &stale);
         rinch_dom::paint::set_surface_gpu_images(Some(images));
-        app.install_gpu_viewport_frames(
-            collect_viewport_frames_by_name(),
-            Some(Default::default()),
+        let mut viewports = collect_viewport_frames_by_name();
+        crate::shell::split_frame::prepare_split_viewports(
+            &mut viewports,
+            &mut self.split,
+            &gpu.device,
+            &gpu.queue,
+            self.splits,
         );
+        app.install_gpu_viewport_frames(viewports, Some(Default::default()));
         app.set_split_enabled(self.splits);
         let target = full.then_some(rinch_dom::perf::FullRepaintReason::FirstFrame);
         let (frame, change) = app.build_gpu_frame_split(self.scale, (W, H), target);
@@ -252,6 +257,7 @@ impl Window {
         };
         RinchApp::clear_viewport_frames();
         rinch_dom::paint::set_surface_gpu_images(None);
+        rinch_dom::paint::set_viewport_split_ids(None);
         if let Some(c) = &change {
             self.slice_renders += c.add.len();
         }
@@ -341,7 +347,8 @@ impl Window {
     /// of a region, outside it) stays on a pixel once granted: a below pixel
     /// painted while a region was near keeps its rounding until something
     /// repaints it, after the region has moved on.
-    fn allowances(&mut self, edges: bool) -> Vec<i32> {
+    fn allowances(&mut self, tol: Tol) -> Vec<i32> {
+        let edges = tol.edges;
         let (w, h) = self.dev;
         let mut allow = vec![0; (w * h) as usize];
         if self.ring.len() != allow.len() {
@@ -356,7 +363,8 @@ impl Window {
                     let inside = x >= rx && x < rx + rw && y >= ry && y < ry + rh;
                     if inside {
                         let local = ((y - ry) * rw + (x - rx)) as usize;
-                        if read.iter().flatten().any(|px| fractional(px[local][3])) {
+                        if tol.resampled || read.iter().flatten().any(|px| fractional(px[local][3]))
+                        {
                             allow[i] = allow[i].max(1);
                         }
                     } else if edges
@@ -376,6 +384,29 @@ impl Window {
         allow
     }
 }
+
+/// Which of D10's classes a case reaches beyond the ones its slices show:
+/// something translucent across a region's edge (one level within a tile
+/// outside it), a resampled frame (one level inside the region, the
+/// amendment).
+#[derive(Clone, Copy)]
+struct Tol {
+    edges: bool,
+    resampled: bool,
+}
+
+const EXACT: Tol = Tol {
+    edges: false,
+    resampled: false,
+};
+const EDGES: Tol = Tol {
+    edges: true,
+    resampled: false,
+};
+const RESAMPLED: Tol = Tol {
+    edges: false,
+    resampled: true,
+};
 
 /// A pixel past its allowance: `(x, y, split, in-scene, allowance)`.
 type Violation = (u32, u32, [u8; 4], [u8; 4], i32);
@@ -403,6 +434,7 @@ struct Page {
     app: RinchApp,
     boxes: Rc<RefCell<Vec<NodeHandle>>>,
     surfaces: Vec<RenderSurfaceHandle>,
+    videos: Vec<Video>,
 }
 
 /// A part of a page: its style, and the colour a surface draws (`None`: a
@@ -410,11 +442,34 @@ struct Page {
 type Part = (&'static str, Option<Rc<Cell<[u8; 4]>>>);
 
 fn page(spec: &[Part]) -> Page {
-    let parts: Vec<(&'static str, Option<RenderSurfaceHandle>)> = spec
+    // A `video:WxH|style` part is a video viewport: a video surface of its
+    // own name, fed a `W`x`H` frame of the part's colour.
+    let mut videos = Vec::new();
+    let parts: Vec<(&'static str, Option<RenderSurfaceHandle>, Option<String>)> = spec
         .iter()
-        .map(|(style, color)| (*style, color.clone().map(surface)))
+        .map(|(style, color)| match style.strip_prefix("video:") {
+            Some(rest) => {
+                let (size, style) = rest.split_once('|').unwrap();
+                let (w, h) = size.split_once('x').unwrap();
+                let size = (w.parse().unwrap(), h.parse().unwrap());
+                let name = format!("split-video-{}", NEXT_VIDEO.fetch_add(1, Ordering::Relaxed));
+                let video = create_video_surface(&name);
+                let color = color.clone().unwrap();
+                video
+                    .writer()
+                    .submit_frame(&video_frame(color.get(), size), size.0, size.1);
+                videos.push(Video {
+                    surface: video.clone(),
+                    size,
+                    color,
+                });
+                (style, Some(video), Some(name))
+            }
+            None => (*style, color.clone().map(surface), None),
+        })
         .collect();
-    let surfaces: Vec<RenderSurfaceHandle> = parts.iter().filter_map(|(_, s)| s.clone()).collect();
+    let surfaces: Vec<RenderSurfaceHandle> =
+        parts.iter().filter_map(|(_, s, _)| s.clone()).collect();
     let boxes: Rc<RefCell<Vec<NodeHandle>>> = Default::default();
     let kept = boxes.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -424,7 +479,7 @@ fn page(spec: &[Part]) -> Page {
             "position: absolute; left: 0; top: 0; width: 400px; height: 300px; \
              background: rgb(60, 70, 90)",
         );
-        for (style, surface) in &parts {
+        for (style, surface, video) in &parts {
             let (wrap, style) = match style.strip_prefix("wrap:") {
                 Some(rest) => {
                     let (w, s) = rest.split_once('|').unwrap();
@@ -432,8 +487,14 @@ fn page(spec: &[Part]) -> Page {
                 }
                 None => (None, *style),
             };
-            let node = match surface {
-                Some(s) => {
+            let node = match (surface, video) {
+                (_, Some(name)) => {
+                    let n = scope.create_element("div");
+                    n.set_attribute("data-viewport", name);
+                    n.set_attribute("style", style);
+                    n
+                }
+                (Some(s), None) => {
                     let n = RenderSurface {
                         surface: Some(s.clone()),
                     }
@@ -445,7 +506,7 @@ fn page(spec: &[Part]) -> Page {
                     }
                     n
                 }
-                None => {
+                (None, None) => {
                     let n = scope.create_element("div");
                     n.set_attribute("style", style);
                     n
@@ -470,7 +531,46 @@ fn page(spec: &[Part]) -> Page {
         app,
         boxes,
         surfaces,
+        videos,
     }
+}
+
+static NEXT_VIDEO: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+use std::sync::atomic::Ordering;
+
+/// A video viewport on a page: its surface, frame size and colour.
+struct Video {
+    surface: RenderSurfaceHandle,
+    size: (u32, u32),
+    color: Rc<Cell<[u8; 4]>>,
+}
+
+impl Video {
+    /// Submit a new frame in the colour's current value.
+    fn redraw(&self) {
+        self.surface.writer().submit_frame(
+            &video_frame(self.color.get(), self.size),
+            self.size.0,
+            self.size.1,
+        );
+    }
+}
+
+/// A `w`x`h` opaque frame around `color`, every texel different, so a
+/// misplaced or misscaled sample shows.
+fn video_frame([r, g, b, _]: [u8; 4], (w, h): (u32, u32)) -> Vec<u8> {
+    (0..h)
+        .flat_map(|y| {
+            (0..w).flat_map(move |x| {
+                [
+                    r.wrapping_add((x * 7 + y * 3) as u8),
+                    g.wrapping_add((x * 2 + y * 5) as u8),
+                    b.wrapping_add((x + y * 11) as u8),
+                    255,
+                ]
+            })
+        })
+        .collect()
 }
 
 /// A surface drawing a pattern of `color` (a frame where every texel
@@ -506,7 +606,7 @@ thread_local! {
 fn check(
     name: &str,
     parts: Vec<Part>,
-    edges: bool,
+    tol: Tol,
     split: &[bool],
     steps: &[&dyn Fn(&Page)],
     kinds: &[&str],
@@ -546,7 +646,7 @@ fn check(
         if !split && !got.split_ids.is_empty() {
             failures.push(format!("{name}, frame {n}: split {:?}", got.split_ids));
         }
-        let wrong = compare(&got.pixels, &want.pixels, &win.allowances(edges), win.dev.0);
+        let wrong = compare(&got.pixels, &want.pixels, &win.allowances(tol), win.dev.0);
         if !wrong.is_empty() {
             failures.push(format!(
                 "{name}, frame {n} ({}): {} pixels past their allowance (x, y, split, in-scene, allowance): {:?}",
@@ -584,7 +684,7 @@ fn gpu_split_runtime_matches_in_scene() {
         check(
             "plain, a sidebar after it",
             vec![s(SURFACE), (SIDEBAR, None)],
-            false,
+            EXACT,
             &[true],
             &[],
             &["full"],
@@ -597,7 +697,7 @@ fn gpu_split_runtime_matches_in_scene() {
                     box-sizing: border-box; border: 5px solid rgb(0, 128, 0); padding: 10px; \
                     border-radius: 20px; background: rgb(0, 0, 255)",
             )],
-            false,
+            EXACT,
             &[true],
             &[],
             &["full"],
@@ -611,7 +711,7 @@ fn gpu_split_runtime_matches_in_scene() {
                  height: 80px",
                 Some(red()),
             )],
-            false,
+            EXACT,
             &[true],
             &[],
             &["full"],
@@ -620,7 +720,7 @@ fn gpu_split_runtime_matches_in_scene() {
         check(
             "an opaque bar across it",
             vec![s(SURFACE), (OPAQUE_BAR, None)],
-            false,
+            EXACT,
             &[true],
             &[],
             &["full"],
@@ -629,7 +729,7 @@ fn gpu_split_runtime_matches_in_scene() {
         check(
             "a translucent bar across it",
             vec![s(SURFACE), (TRANSLUCENT_BAR, None)],
-            true,
+            EDGES,
             &[true],
             &[],
             &["full"],
@@ -643,7 +743,7 @@ fn gpu_split_runtime_matches_in_scene() {
                  top: 10px; width: 120px; height: 80px",
                 Some(red()),
             )],
-            false,
+            EXACT,
             &[true],
             &[],
             &["full"],
@@ -655,7 +755,7 @@ fn gpu_split_runtime_matches_in_scene() {
                 s(SURFACE),
                 s("position: absolute; left: 200px; top: 150px; width: 90px; height: 60px"),
             ],
-            false,
+            EXACT,
             &[true],
             &[],
             &["full"],
@@ -667,7 +767,7 @@ fn gpu_split_runtime_matches_in_scene() {
                 "position: absolute; left: 50px; top: 40px; width: 120px; height: 80px; \
                     transform: rotate(7deg)",
             )],
-            false,
+            EXACT,
             &[false],
             &[],
             &["full"],
@@ -680,7 +780,7 @@ fn gpu_split_runtime_matches_in_scene() {
                  left: 50px; top: 40px; width: 120px; height: 80px",
                 Some(red()),
             )],
-            false,
+            EXACT,
             &[false],
             &[],
             &["full"],
@@ -726,7 +826,7 @@ fn gpu_split_runtime_frames_after_the_first() {
                 // the repainted region must still hold it.
                 (BADGE, None),
             ],
-            false,
+            EXACT,
             &[true],
             &[&recolor, &redraw, &elsewhere],
             // The bar over it: its region repainted; only the surface: no
@@ -737,7 +837,7 @@ fn gpu_split_runtime_frames_after_the_first() {
         check(
             "the surface hidden",
             vec![(SURFACE, Some(red())), (OPAQUE_BAR, None), (SIDEBAR, None)],
-            false,
+            EXACT,
             &[true, false],
             &[&hide],
             &["full", "partial"],
@@ -764,7 +864,7 @@ fn gpu_split_runtime_controls() {
         let failures = check(
             what,
             vec![(SURFACE, Some(red())), (OPAQUE_BAR, None)],
-            false,
+            EXACT,
             &[true],
             &[&recolor],
             &[],
@@ -809,7 +909,12 @@ fn probe(
         win.splits = toggles.get(n).copied().unwrap_or(true);
         let got = win.frame(&mut split_page.app, n == 0, Fault::None);
         let want = reference.frame(&mut scene_page.app, true, Fault::None);
-        let wrong = compare(&got.pixels, &want.pixels, &win.allowances(edges), win.dev.0);
+        let wrong = compare(
+            &got.pixels,
+            &want.pixels,
+            &win.allowances(if edges { EDGES } else { EXACT }),
+            win.dev.0,
+        );
         eprintln!(
             "[probe] {name}, frame {n}: {} frame, split {:?}, {} wrong, slices so far {}",
             got.kind,
@@ -1267,6 +1372,7 @@ fn split_runtime_scratch_cost_probe() {
                     ancestors: SliceCoverage::Rect([r.0, r.1, r.0 + r.2, r.1 + r.3]),
                     device_from_image: [1.0, 0.0, 0.0, 1.0, r.0 as f64, r.1 as f64],
                     extents: (r.2, r.3),
+                    straight_alpha: false,
                     tainted: false,
                 }],
             };
@@ -1473,7 +1579,7 @@ fn gpu_split_runtime_presented_to_a_surface() {
             check(
                 "a surface, a sidebar",
                 vec![(SURFACE, Some(red())), (SIDEBAR, None)],
-                false,
+                EXACT,
                 &[true],
                 &[],
                 &["full"],
@@ -1489,7 +1595,7 @@ fn gpu_split_runtime_presented_to_a_surface() {
                     ),
                     (OPAQUE_BAR, None),
                 ],
-                false,
+                EXACT,
                 &[true],
                 &[],
                 &["full"],
@@ -1504,4 +1610,92 @@ fn gpu_split_runtime_presented_to_a_surface() {
     }
     WINDOW.with(|w| w.set((1.0, None, false)));
     run(vec![failures]);
+}
+
+/// Video on the split path (#1865 PR 4): the frame a CPU-decoded video
+/// delivers, uploaded and composited, against the same frame drawn in the
+/// scene; its letterbox black stays in the scene beneath it.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_video_matches_in_scene() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let v = |st: &'static str| -> Part { (st, Some(red())) };
+    let color = red();
+    let c2 = color.clone();
+    let redraw = move |p: &Page| {
+        c2.set([30, 160, 90, 255]);
+        for v in &p.videos {
+            v.redraw();
+        }
+    };
+    let recolor = |p: &Page| {
+        p.boxes.borrow()[1].set_style("background", "rgb(240, 200, 0)");
+    };
+    run(vec![
+        check(
+            "a video, frame the size of its box",
+            vec![
+                v(
+                    "video:120x80|position: absolute; left: 50px; top: 40px; width: 120px; height: 80px",
+                ),
+                (SIDEBAR, None),
+            ],
+            EXACT,
+            &[true],
+            &[],
+            &["full"],
+            Fault::None,
+        ),
+        check(
+            "a video letterboxed (scaled)",
+            vec![v(
+                "video:100x60|position: absolute; left: 50px; top: 40px; width: 120px; height: 80px",
+            )],
+            RESAMPLED,
+            &[true],
+            &[],
+            &["full"],
+            Fault::None,
+        ),
+        check(
+            "a video with rounded corners",
+            vec![v(
+                "video:120x80|position: absolute; left: 50px; top: 40px; width: 120px; height: 80px; border-radius: 12px",
+            )],
+            EXACT,
+            &[true],
+            &[],
+            &["full"],
+            Fault::None,
+        ),
+        check(
+            "a video under its controls, a new frame, the controls recoloured",
+            vec![
+                (
+                    "video:120x80|position: absolute; left: 50px; top: 40px; width: 120px; height: 80px",
+                    Some(color.clone()),
+                ),
+                (OPAQUE_BAR, None),
+            ],
+            EXACT,
+            &[true],
+            &[&redraw, &recolor],
+            // A new video frame alone: no repaint.
+            &["full", "unchanged", "partial"],
+            Fault::None,
+        ),
+        check(
+            "a video at half opacity: in the scene",
+            vec![v(
+                "video:120x80|position: absolute; left: 50px; top: 40px; width: 120px; height: 80px; opacity: 0.5",
+            )],
+            EXACT,
+            &[false],
+            &[],
+            &["full"],
+            Fault::None,
+        ),
+    ]);
 }

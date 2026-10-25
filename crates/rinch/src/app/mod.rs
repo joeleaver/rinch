@@ -5906,6 +5906,7 @@ impl RinchApp {
             frames,
             holes,
             fresh,
+            ..
         } = frames;
         self.note_viewport_paint_inputs(frames.keys(), Some(&holes));
         rinch_dom::paint::set_active_viewports(Some(holes));

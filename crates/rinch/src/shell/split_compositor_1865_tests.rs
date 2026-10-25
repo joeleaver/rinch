@@ -1293,6 +1293,35 @@ fn split_composite_cost_probe() {
                 );
                 finish(e);
             }));
+            // A video on the split path (#1865 PR 4): its new CPU frame
+            // uploaded (`SplitFrame::sync_pixel_frames`), then composited.
+            let pixels = vec![200u8; (s.0 * s.1 * 4) as usize];
+            let video = time(Box::new(|| {
+                queue.write_texture(
+                    surface.as_image_copy(),
+                    &pixels,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(s.0 * 4),
+                        rows_per_image: Some(s.1),
+                    },
+                    wgpu::Extent3d {
+                        width: s.0,
+                        height: s.1,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                let mut e = device.create_command_encoder(&Default::default());
+                split.composite(
+                    &device,
+                    &mut e,
+                    &uv,
+                    &tv,
+                    win,
+                    &[draw(&sv, s, (x, y), None)],
+                );
+                finish(e);
+            }));
             let ms = |(m, p): (f64, f64)| format!("{m:5.2} / {p:5.2} ms");
             eprintln!("{}x{} {label}:", win.0, win.1);
             eprintln!("  old layer path (blit + overlay + copy)  {}", ms(old));
@@ -1301,6 +1330,7 @@ fn split_composite_cost_probe() {
                 "  split, above cached                     {}",
                 ms(with_above)
             );
+            eprintln!("  split video (upload + composite)        {}", ms(video));
         }
     }
 }

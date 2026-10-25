@@ -62,6 +62,8 @@ pub struct SurfaceSlice {
     /// transform times its centre-sampling brush transform).
     pub device_from_image: [f64; 6],
     pub extents: (u32, u32),
+    /// Whether the frame's texels are straight alpha.
+    pub straight_alpha: bool,
     /// Something painted over the surface reads the backdrop it lands on
     /// (`filter: grayscale`'s saturation layer): the frame must be painted
     /// again with this surface in the scene (D5a).
@@ -500,6 +502,7 @@ impl Slicing {
                 ancestors,
                 device_from_image: (t * centre_sampling(t, Affine::IDENTITY)).as_coeffs(),
                 extents: split.extents,
+                straight_alpha: split.straight_alpha,
                 tainted: false,
             },
             r,
@@ -551,6 +554,7 @@ mod tests {
                 clip_to_content: false,
                 image_transform: Affine::translate((content.x0, content.y0)),
                 extents: (content.width() as u32, content.height() as u32),
+                straight_alpha: false,
             },
         );
         assert_eq!(verdict, SplitVerdict::Split);

@@ -1961,18 +1961,27 @@ impl RinchRuntime {
         // one that has just delivered its first frame.
         //
         // Video frames go in with them: painted inline, in the scene (#1768).
-        self.app.install_gpu_viewport_frames(
-            crate::render_surface::collect_viewport_frames_by_name(),
-            Some(compositor_viewport_names),
-        );
+        // Split GPU surfaces and video (#1865) while no `GameViewport` layer is
+        // under the UI: the base-layer path and the split path do not compose
+        // yet (a base layer under split slices is the design's next step).
+        let has_layers = renderer.has_composite_layers() || skipped_unready;
+        let mut viewport_frames = crate::render_surface::collect_viewport_frames_by_name();
+        {
+            let renderer = &mut *renderer;
+            super::split_frame::prepare_split_viewports(
+                &mut viewport_frames,
+                &mut renderer.split,
+                &renderer.device,
+                &renderer.queue,
+                !has_layers,
+            );
+        }
+        self.app
+            .install_gpu_viewport_frames(viewport_frames, Some(compositor_viewport_names));
 
         // Build the frame from the document — CPU surfaces paint inline via
         // draw_image(). Only what its damage reaches is encoded and rendered
         // while the renderer's UI texture holds the last frame (#1718).
-        // Split GPU surfaces (#1865) while no `GameViewport` layer is under the
-        // UI: the base-layer path and the split path do not compose yet (a
-        // base layer under split slices is the design's next step).
-        let has_layers = renderer.has_composite_layers() || skipped_unready;
         self.app.set_split_enabled(!has_layers);
         let (frame, split_change) =
             self.app
@@ -1981,6 +1990,7 @@ impl RinchRuntime {
         RinchApp::clear_viewport_frames();
         rinch_dom::paint::set_surface_pixels(None);
         rinch_dom::paint::set_surface_gpu_images(None);
+        rinch_dom::paint::set_viewport_split_ids(None);
 
         // Render to screen
         let present_start = std::time::Instant::now();

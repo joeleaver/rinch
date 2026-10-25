@@ -219,6 +219,10 @@ pub struct SurfaceSplit {
     /// (`fit_image`), and the image's size in texels.
     pub image_transform: Affine,
     pub extents: (u32, u32),
+    /// Whether the frame's texels are straight alpha (a CPU frame, drawn as
+    /// `draw_image` draws one) rather than premultiplied (a registered GPU
+    /// texture, #1768).
+    pub straight_alpha: bool,
 }
 
 /// What a painter did with a [`SurfaceSplit`].
