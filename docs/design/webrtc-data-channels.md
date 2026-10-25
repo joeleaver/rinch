@@ -1,8 +1,9 @@
 # WebRTC data channels (`rinch-rtc`)
 
-**Status:** Proposed (issue #1896). Nothing is implemented. The decisions
-for Joe are numbered at the end (D1–D11), each with options and a
-recommendation.
+**Status:** Decided (issue #1896). Joe accepted D1–D11 as recommended,
+2026-10-25. Playweft confirmed D11 suits them: they keep a WebSocket route
+for UDP-blocked players, advertise `a=max-message-size`, and chunk large
+snapshots themselves. Implementation follows the PR sequence in section 8.
 **Scope:** a cross-platform WebRTC **data channel** client in a new crate,
 `rinch-rtc`, with the shape of `rinch-ws`: callbacks on the UI thread, bytes
 in and out, and one API on web and desktop. Signalling transport, media
@@ -696,7 +697,9 @@ webrtc-rs row has all three.
    back-pressure, reconnection), and an internals page `docs/internals/rtc.md`
    with its row in `CLAUDE.md`'s index (the one CLAUDE.md edit allowed).
 
-## Decisions for Joe
+## Decisions
+
+**Decided by Joe, 2026-10-25: D1–D11 as recommended (option (a) in each).**
 
 **D1. What becomes of `rinch-webrtc`.**
 (a) New `rinch-rtc` crate; `rinch-webrtc` and `rinch-signaling` stay as they
