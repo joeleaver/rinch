@@ -174,8 +174,9 @@ When the split happens:
 3. **Build the clip chain.** It is the open clips plus the element's own
    inner-radius clip. If every one of them is a rectangle on whole device
    pixels, the chain is a scissor rect. Otherwise a small **mask scene** is
-   recorded: the clips replayed, the image rect filled white, all translated
-   by −R.origin. See D2.
+   recorded: the clips replayed and the image rect filled white, encoded
+   where the window draws them (not moved to R's origin: see *As built*).
+   See D2.
 4. **Start routing.**
    - **Below:** push the inverse of R: the window rect with R cut out, filled
      **non-zero** with R wound the other way. Not even-odd: on lavapipe an
@@ -183,7 +184,8 @@ When the split happens:
      left of R lost their after-content, about 24 levels off), where the
      backwards-wound non-zero path is right on lavapipe and RADV alike
      (*Risks* 2).
-   - **Above:** two scenes for this surface, translated by −R.origin.
+   - **Above:** two scenes for this surface, encoded where the window draws
+     them.
      `above_in` holds what is painted while the clips open at the split
      are still open, **without** those clips (the compositor applies their
      coverage once, to the surface and `above_in` together, as the in-scene
@@ -341,7 +343,8 @@ and in split alike, so it needs no special case.
     instance) damages every slice it intersects. That is conservative.
 - **Re-rendering a slice** works like `render_partial` (#1718). Below uses
   the existing path. Above renders its scene into the shared partial target
-  and copies the damaged rects, translated by −R.origin, into its texture.
+  and copies the damaged rects into its texture. (As built, PR 3 replaces a
+  touched region's slices whole instead; see below.)
 - **An empty above slice** is one into which the last full paint routed no
   draw op, with no partial frame adding one since. Its texture is dropped.
   A partial frame cannot prove that something which left the slice made it
@@ -364,15 +367,34 @@ inside a region for a later PR:
   (`RinchApp::build_gpu_frame_split`). Every node over the region is painted
   again, the surface is split again, and its slices are replaced whole; below
   is re-rendered over the damage as any partial frame (S3, not S4). Damage
-  elsewhere leaves the kept slices alone: nothing painted outside a region
-  reaches its pixels, and the inverse clip only wraps draws that cross one.
+  elsewhere leaves the kept slices alone.
+- **A slice is only made from a frame that painted all of its region**
+  (#1899 review). A partial frame culls what lies over R outside its damage,
+  while the surface node itself is painted, and split, whenever its **ink**
+  rect (padding, border, shadow, outline) meets the damage: a slice made
+  then lacks what is over it. So the damage meeting kept regions grows to a
+  fixpoint (adding one region can merge the damage into a rect that meets
+  another), and after the paint every split whose region the damage does
+  not cover has its region added and the frame painted again.
 - **A full frame** replaces every kept slice.
 - **Slices are rendered where the window draws them.** The painter encodes
   above slices and masks in window coordinates; the window renders each into
   a scratch target reaching R's far corner and keeps R (`split_frame.rs`). A
   slice rendered moved to R's origin flipped an MSAA sample on an own-radius
   corner (16 levels), the runtime oracle's first finding, as #1718 found for
-  partial frames.
+  partial frames. Cropping to R's 16-px tiles instead (moving the scene by
+  whole tiles) was measured (`split_slice_shift_probe`): exact below 1024 px,
+  but at a 4K window's far side one or two pixels differ by up to 24 levels,
+  by whole tiles and by 31 px alike: f32 magnitude, not tile phase. So the
+  scratch target stays; one is shared by all of a window's slices, grows in
+  128-px steps and is freed when nothing is split. Its cost is the D6 note.
+- **The inverse clip's outer edge lies outside the window**: an edge on the
+  window's own edge sent every tile along it through Vello's 8-bit blend
+  stack (one level off on a shadow at the window's bottom, far from any
+  region; the #1899 review's random sequences).
+- **Slicing only on a frame with a GPU frame to split** (no mirror of the
+  open clips otherwise), and a split surface whose texture changed size
+  under its slice (the atlas share moved) is damage.
 - **Taint (D5a)** repaints the frame with every surface in the scene, and
   splitting stays off for 120 frames before it is tried again. The record's
   "until the style or structure generation changes" has nothing to key on:
@@ -617,6 +639,11 @@ All nine were accepted as recommended (Joe, 2026-10-23).
   frame that has a surface.
 
 ### D6. Memory cap for split slices (above slices and masks; the composited target not counted)
+
+*As built, the window also holds one **scratch target** for rendering slices
+in place (see Damage per slice, As built): up to R's far corner, so up to the
+window's size (33 MB at 4K) while anything is split, and none otherwise. The
+cap PR counts it.*
 
 - **a.** A fixed 64 MB per window.
 - **b.** Twice the window's own texture bytes: 16.6 MB at 1080p, 66 MB at
