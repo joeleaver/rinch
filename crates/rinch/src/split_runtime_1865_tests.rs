@@ -33,6 +33,10 @@ const W: u32 = 400;
 const H: u32 = 300;
 
 fn texture(size: (u32, u32), usage: TextureUsages) -> Texture {
+    texture_of(size, TextureFormat::Rgba8Unorm, usage)
+}
+
+fn texture_of(size: (u32, u32), format: TextureFormat, usage: TextureUsages) -> Texture {
     test_gpu().device.create_texture(&wgpu::TextureDescriptor {
         label: Some("split_runtime_1865_tests"),
         size: wgpu::Extent3d {
@@ -43,7 +47,7 @@ fn texture(size: (u32, u32), usage: TextureUsages) -> Texture {
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: TextureFormat::Rgba8Unorm,
+        format,
         usage,
         view_formats: &[],
     })
@@ -109,6 +113,18 @@ struct Window {
     compositor: SplitCompositor,
     target: Texture,
     splits: bool,
+    slice_renders: usize,
+    /// The ring class's pixels so far (see `allowances`).
+    ring: Vec<i32>,
+    /// The window's scale factor, and its size in device pixels.
+    scale: f64,
+    dev: (u32, u32),
+    /// Presented to a surface of this format and alpha mode, through
+    /// `present_step` as `WgpuRenderer::present` does, and read back from
+    /// there; `None` reads the composited (or UI) texture.
+    surface: Option<(TextureFormat, wgpu::CompositeAlphaMode)>,
+    /// A transparent window: the UI renders over transparent.
+    transparent: bool,
 }
 
 /// A frame: what it presented, which surfaces it composited split, and the
@@ -121,11 +137,27 @@ struct Shown {
 
 impl Window {
     fn new(splits: bool) -> Self {
+        Self::with(splits, 1.0, None, false)
+    }
+
+    /// A window at `scale`, presented to `surface` (format, alpha mode) when
+    /// given, transparent or not.
+    fn with(
+        splits: bool,
+        scale: f64,
+        surface: Option<(TextureFormat, wgpu::CompositeAlphaMode)>,
+        transparent: bool,
+    ) -> Self {
+        let dev = (
+            (W as f64 * scale).round() as u32,
+            (H as f64 * scale).round() as u32,
+        );
+        let format = surface.map_or(TextureFormat::Rgba8Unorm, |s| s.0);
         Self {
             vello: vello_renderer(),
             registry: SurfaceImages::default(),
             ui: texture(
-                (W, H),
+                dev,
                 TextureUsages::STORAGE_BINDING
                     | TextureUsages::TEXTURE_BINDING
                     | TextureUsages::COPY_SRC
@@ -133,18 +165,27 @@ impl Window {
             ),
             partial: None,
             split: SplitFrame::default(),
-            compositor: SplitCompositor::new(&test_gpu().device, TextureFormat::Rgba8Unorm),
-            target: texture(
-                (W, H),
-                TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            compositor: SplitCompositor::new(&test_gpu().device, format),
+            target: texture_of(
+                dev,
+                format,
+                TextureUsages::RENDER_ATTACHMENT
+                    | TextureUsages::COPY_SRC
+                    | TextureUsages::TEXTURE_BINDING,
             ),
             splits,
+            slice_renders: 0,
+            ring: Vec::new(),
+            scale,
+            dev,
+            surface,
+            transparent,
         }
     }
 
     fn frame(&mut self, app: &mut RinchApp, full: bool, fault: Fault) -> Shown {
         let gpu = test_gpu();
-        paint_like_paint_gpu(app, 1.0);
+        paint_like_paint_gpu(app, self.scale as f32);
         let frames = collect_gpu_surface_frames();
         let split_ids: Vec<usize> = self.split.surface_ids().collect();
         let fresh: Vec<usize> = frames
@@ -156,7 +197,8 @@ impl Window {
             &mut self.vello,
             frames.into_iter().map(|(id, texture, _)| (id, texture)),
         );
-        app.mark_fresh_surfaces(&fresh, &split_ids);
+        let stale = self.split.stale_ids(&self.registry.textures());
+        app.mark_fresh_surfaces(&fresh, &split_ids, &stale);
         rinch_dom::paint::set_surface_gpu_images(Some(images));
         app.install_gpu_viewport_frames(
             collect_viewport_frames_by_name(),
@@ -164,8 +206,14 @@ impl Window {
         );
         app.set_split_enabled(self.splits);
         let target = full.then_some(rinch_dom::perf::FullRepaintReason::FirstFrame);
-        let (frame, change) = app.build_gpu_frame_split(1.0, (W, H), target);
-        let base = vello::peniko::Color::WHITE;
+        let (frame, change) = app.build_gpu_frame_split(self.scale, (W, H), target);
+        // As `WgpuRenderer` renders the UI: over the window's base colour.
+        let base = if self.transparent {
+            vello::peniko::Color::TRANSPARENT
+        } else {
+            vello::peniko::Color::WHITE
+        };
+        let (dw, dh) = self.dev;
         let ui_view = self.ui.create_view(&Default::default());
         let params = |w, h| vello::RenderParams {
             base_color: base,
@@ -176,11 +224,14 @@ impl Window {
         let kind = match frame {
             GpuFrame::Full(scene) => {
                 self.vello
-                    .render_to_texture(&gpu.device, &gpu.queue, scene, &ui_view, &params(W, H))
+                    .render_to_texture(&gpu.device, &gpu.queue, scene, &ui_view, &params(dw, dh))
                     .expect("render");
                 "full"
             }
             GpuFrame::Partial { scene, size, rects } => {
+                if self.splits || std::env::var("PROBE_ALL").is_ok() {
+                    eprintln!("[probe]   partial rects {rects:?} (splits {})", self.splits);
+                }
                 render_partial(
                     &gpu.device,
                     &gpu.queue,
@@ -201,6 +252,9 @@ impl Window {
         };
         RinchApp::clear_viewport_frames();
         rinch_dom::paint::set_surface_gpu_images(None);
+        if let Some(c) = &change {
+            self.slice_renders += c.add.len();
+        }
         if let Some(change) = change
             && fault != Fault::StaleSlices
         {
@@ -209,9 +263,8 @@ impl Window {
                 .expect("apply");
         }
         let split_ids: Vec<usize> = self.split.surface_ids().collect();
-        let pixels = if self.split.is_empty() || fault == Fault::NoComposite {
-            read(&self.ui)
-        } else {
+        let layered = !(self.split.is_empty() || fault == Fault::NoComposite);
+        if layered {
             let mut encoder = gpu.device.create_command_encoder(&Default::default());
             self.split.composite(
                 &self.compositor,
@@ -219,11 +272,62 @@ impl Window {
                 &mut encoder,
                 &ui_view,
                 &self.target.create_view(&Default::default()),
-                (W, H),
+                self.dev,
                 &self.registry.textures(),
             );
             gpu.queue.submit(Some(encoder.finish()));
-            read(&self.target)
+        }
+        let pixels = match self.surface {
+            None if layered => read(&self.target),
+            None => read(&self.ui),
+            // `WgpuRenderer::present`'s last step, into a surface-format
+            // texture standing in for the swapchain's.
+            Some((format, alpha_mode)) => {
+                use crate::shell::desktop::{PresentStep, present_step};
+                let out = texture_of(
+                    self.dev,
+                    format,
+                    TextureUsages::RENDER_ATTACHMENT
+                        | TextureUsages::COPY_DST
+                        | TextureUsages::COPY_SRC,
+                );
+                let (source, step) = if layered {
+                    (&self.target, present_step(alpha_mode, true, true))
+                } else {
+                    (
+                        &self.ui,
+                        present_step(alpha_mode, false, format == TextureFormat::Rgba8Unorm),
+                    )
+                };
+                let mut encoder = gpu.device.create_command_encoder(&Default::default());
+                match step {
+                    PresentStep::Copy => {
+                        encoder.copy_texture_to_texture(
+                            source.as_image_copy(),
+                            out.as_image_copy(),
+                            source.size(),
+                        );
+                    }
+                    PresentStep::Pass(alpha) => {
+                        crate::shell::compositor::LayerCompositor::new(&gpu.device, format)
+                            .present(
+                                &gpu.device,
+                                &mut encoder,
+                                source,
+                                &out.create_view(&Default::default()),
+                                alpha,
+                            );
+                    }
+                }
+                gpu.queue.submit(Some(encoder.finish()));
+                let mut px = read(&out);
+                if format == TextureFormat::Bgra8Unorm {
+                    for p in &mut px {
+                        p.swap(0, 2);
+                    }
+                }
+                px
+            }
         };
         Shown {
             pixels,
@@ -233,14 +337,22 @@ impl Window {
     }
 
     /// The allowance at each pixel (D10, from this window's own slices).
-    fn allowances(&self, edges: bool) -> Vec<i32> {
-        let mut allow = vec![0; (W * H) as usize];
+    /// The allowance at each pixel. The ring class (one level within a tile
+    /// of a region, outside it) stays on a pixel once granted: a below pixel
+    /// painted while a region was near keeps its rounding until something
+    /// repaints it, after the region has moved on.
+    fn allowances(&mut self, edges: bool) -> Vec<i32> {
+        let (w, h) = self.dev;
+        let mut allow = vec![0; (w * h) as usize];
+        if self.ring.len() != allow.len() {
+            self.ring = vec![0; allow.len()];
+        }
         let fractional = |a: u8| a != 0 && a != 255;
         for ((rx, ry, rw, rh), textures) in self.split.slices() {
             let read: Vec<Option<Vec<[u8; 4]>>> = textures.iter().map(|t| t.map(read)).collect();
-            for y in 0..H {
-                for x in 0..W {
-                    let i = (y * W + x) as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let i = (y * w + x) as usize;
                     let inside = x >= rx && x < rx + rw && y >= ry && y < ry + rh;
                     if inside {
                         let local = ((y - ry) * rw + (x - rx)) as usize;
@@ -253,10 +365,13 @@ impl Window {
                         && y + 16 >= ry
                         && y < ry + rh + 16
                     {
-                        allow[i] = allow[i].max(1);
+                        self.ring[i] = 1;
                     }
                 }
             }
+        }
+        for (a, r) in allow.iter_mut().zip(&self.ring) {
+            *a = (*a).max(*r);
         }
         allow
     }
@@ -266,7 +381,7 @@ impl Window {
 type Violation = (u32, u32, [u8; 4], [u8; 4], i32);
 
 /// The pixels past their allowance.
-fn compare(got: &[[u8; 4]], want: &[[u8; 4]], allow: &[i32]) -> Vec<Violation> {
+fn compare(got: &[[u8; 4]], want: &[[u8; 4]], allow: &[i32], width: u32) -> Vec<Violation> {
     let mut out = Vec::new();
     for (i, (g, w)) in got.iter().zip(want).enumerate() {
         let off = (0..4)
@@ -274,7 +389,7 @@ fn compare(got: &[[u8; 4]], want: &[[u8; 4]], allow: &[i32]) -> Vec<Violation> {
             .max()
             .unwrap();
         if off > allow[i] {
-            out.push((i as u32 % W, i as u32 / W, *g, *w, allow[i]));
+            out.push((i as u32 % width, i as u32 / width, *g, *w, allow[i]));
         }
     }
     out
@@ -380,6 +495,14 @@ const SIDEBAR: &str = "position: absolute; left: 320px; top: 0; width: 80px; hei
 
 /// One page, split against in-scene, over the frames `steps` makes. `split`
 /// says whether the surfaces must end up split (or must not).
+/// The window `check` builds: scale, surface (format, alpha mode),
+/// transparent. Scale 1, no surface, opaque unless a test sets it.
+type WindowConfig = (f64, Option<(TextureFormat, wgpu::CompositeAlphaMode)>, bool);
+
+thread_local! {
+    static WINDOW: Cell<WindowConfig> = const { Cell::new((1.0, None, false)) };
+}
+
 fn check(
     name: &str,
     parts: Vec<Part>,
@@ -393,8 +516,9 @@ fn check(
     let mut split_page = page(&parts);
     let mut scene_page = page(&parts);
     let surfaces: Vec<usize> = split_page.surfaces.iter().map(|s| s.id()).collect();
-    let mut win = Window::new(true);
-    let mut reference = Window::new(false);
+    let (scale, surface, transparent) = WINDOW.with(|w| w.get());
+    let mut win = Window::with(true, scale, surface, transparent);
+    let mut reference = Window::with(false, scale, surface, transparent);
     let noop = |_: &Page| {};
     let all: Vec<&dyn Fn(&Page)> = std::iter::once(&noop as &dyn Fn(&Page))
         .chain(steps.iter().copied())
@@ -422,7 +546,7 @@ fn check(
         if !split && !got.split_ids.is_empty() {
             failures.push(format!("{name}, frame {n}: split {:?}", got.split_ids));
         }
-        let wrong = compare(&got.pixels, &want.pixels, &win.allowances(edges));
+        let wrong = compare(&got.pixels, &want.pixels, &win.allowances(edges), win.dev.0);
         if !wrong.is_empty() {
             failures.push(format!(
                 "{name}, frame {n} ({}): {} pixels past their allowance (x, y, split, in-scene, allowance): {:?}",
@@ -652,4 +776,732 @@ fn gpu_split_runtime_controls() {
         );
     }
     crate::shell::renderer::set_gpu_presenting(false);
+}
+
+// ---------------------------------------------------------------------------
+// Review probes (#1899 adversarial review). Pixels only: which surfaces end
+// up split is reported, not asserted.
+// ---------------------------------------------------------------------------
+
+/// A step of a random sequence.
+type Step = Box<dyn Fn(&Page)>;
+
+/// `check` without the split assertions: every frame against in-scene.
+fn probe(
+    name: &str,
+    parts: Vec<Part>,
+    edges: bool,
+    steps: &[&dyn Fn(&Page)],
+    toggles: &[bool],
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    let mut split_page = page(&parts);
+    let mut scene_page = page(&parts);
+    let mut win = Window::new(true);
+    let mut reference = Window::new(false);
+    let noop = |_: &Page| {};
+    let all: Vec<&dyn Fn(&Page)> = std::iter::once(&noop as &dyn Fn(&Page))
+        .chain(steps.iter().copied())
+        .collect();
+    for (n, step) in all.into_iter().enumerate() {
+        step(&split_page);
+        step(&scene_page);
+        win.splits = toggles.get(n).copied().unwrap_or(true);
+        let got = win.frame(&mut split_page.app, n == 0, Fault::None);
+        let want = reference.frame(&mut scene_page.app, true, Fault::None);
+        let wrong = compare(&got.pixels, &want.pixels, &win.allowances(edges), win.dev.0);
+        eprintln!(
+            "[probe] {name}, frame {n}: {} frame, split {:?}, {} wrong, slices so far {}",
+            got.kind,
+            got.split_ids,
+            wrong.len(),
+            win.slice_renders
+        );
+        if !wrong.is_empty() {
+            failures.push(format!(
+                "{name}, frame {n} ({}, split {:?}): {} pixels past their allowance: {:?}",
+                got.kind,
+                got.split_ids,
+                wrong.len(),
+                &wrong[..wrong.len().min(6)]
+            ));
+        }
+    }
+    for s in split_page.surfaces.iter().chain(&scene_page.surfaces) {
+        unregister_render_surface(s.id());
+    }
+    failures
+}
+
+/// Damage that meets the surface's box (its padding) but not its region R:
+/// the painter paints the surface node (its ink meets the damage) and splits
+/// it again, with what is over R outside the damage culled.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_review_damage_on_padding_only() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let tick = |p: &Page| {
+        p.boxes.borrow()[2].set_style("background", "rgb(255, 0, 255)");
+    };
+    let failures = probe(
+        "padding tick",
+        vec![
+            (
+                "position: absolute; left: 50px; top: 40px; width: 120px; height: 80px; \
+                 box-sizing: border-box; padding: 12px; background: rgb(0, 0, 255)",
+                Some(red()),
+            ),
+            // A badge over the content box (inside R, outside the damage).
+            (
+                "position: absolute; left: 110px; top: 70px; width: 30px; height: 14px; \
+                 background: rgb(250, 250, 250)",
+                None,
+            ),
+            // A tick over the padding only.
+            (
+                "position: absolute; left: 52px; top: 42px; width: 6px; height: 6px; \
+                 background: rgb(0, 255, 0)",
+                None,
+            ),
+        ],
+        false,
+        &[&tick],
+        &[],
+    );
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A surface refused for overlapping another (in the scene) becomes
+/// splittable when the other moves away, on a partial frame whose damage
+/// meets only part of it.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_review_overlap_refusal_then_partial() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let away = |p: &Page| {
+        p.boxes.borrow()[0].set_style("top", "200px");
+        p.boxes.borrow()[0].set_style("left", "20px");
+    };
+    let failures = probe(
+        "overlap then move",
+        vec![
+            (
+                "position: absolute; left: 50px; top: 40px; width: 120px; height: 80px",
+                Some(red()),
+            ),
+            (
+                "position: absolute; left: 140px; top: 60px; width: 120px; height: 80px",
+                Some(Rc::new(Cell::new([30, 160, 90, 255]))),
+            ),
+            (
+                "position: absolute; left: 230px; top: 100px; width: 20px; height: 12px; \
+                 background: rgb(250, 250, 250)",
+                None,
+            ),
+        ],
+        false,
+        &[&away],
+        &[],
+    );
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Splitting turned off (a GameViewport layer came) and back on, then a
+/// partial frame meeting part of the surface.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_review_reenabled_then_partial() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let noop = |_: &Page| {};
+    let tick = |p: &Page| {
+        p.boxes.borrow()[2].set_style("background", "rgb(255, 0, 255)");
+    };
+    let failures = probe(
+        "re-enabled",
+        vec![
+            (SURFACE, Some(red())),
+            (BADGE, None),
+            // A tick across the surface's bottom-right corner.
+            (
+                "position: absolute; left: 160px; top: 110px; width: 20px; height: 20px; \
+                 background: rgb(0, 255, 0)",
+                None,
+            ),
+        ],
+        false,
+        &[&noop, &noop, &tick],
+        &[true, false, true, true],
+    );
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A random sequence of page changes, every frame against in-scene.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_review_random_sequences() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let seeds: Vec<u64> = std::env::var("PROBE_SEEDS")
+        .ok()
+        .map(|s| s.split(',').filter_map(|v| v.parse().ok()).collect())
+        .unwrap_or_else(|| vec![1, 2, 3, 4]);
+    let steps_n: usize = std::env::var("PROBE_STEPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(12);
+    let mut failures = Vec::new();
+    for seed in seeds {
+        let rng = Rc::new(Cell::new(
+            seed.wrapping_mul(6364136223846793005).wrapping_add(1),
+        ));
+        let next = {
+            let rng = rng.clone();
+            move |n: u32| -> u32 {
+                let x = rng
+                    .get()
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                rng.set(x);
+                ((x >> 33) as u32) % n
+            }
+        };
+        // Pre-draw the ops so both pages get the same ones.
+        let color = red();
+        let mut ops: Vec<Step> = Vec::new();
+        let mut log = Vec::new();
+        for _ in 0..steps_n {
+            let kind = next(7);
+            let b = 1 + next(4) as usize; // boxes 1..=4
+            let x = next(360) as i32 - 20;
+            let y = next(260) as i32 - 20;
+            let c = [next(256) as u8, next(256) as u8, next(256) as u8];
+            log.push(format!("{kind}:{b}:{x}:{y}"));
+            let color = color.clone();
+            ops.push(match kind {
+                0 => Box::new(move |p: &Page| {
+                    p.boxes.borrow()[b]
+                        .set_style("background", &format!("rgb({}, {}, {})", c[0], c[1], c[2]));
+                }),
+                1 => Box::new(move |p: &Page| {
+                    p.boxes.borrow()[b].set_style("left", &format!("{x}px"));
+                    p.boxes.borrow()[b].set_style("top", &format!("{y}px"));
+                }),
+                2 => Box::new(move |p: &Page| {
+                    color.set([c[0], c[1], c[2], 255]);
+                    for s in &p.surfaces {
+                        s.request_frame();
+                    }
+                }),
+                3 => Box::new(move |p: &Page| {
+                    p.boxes.borrow()[0].set_style("left", &format!("{}px", x.max(0) / 2));
+                    p.boxes.borrow()[0].set_style("top", &format!("{}px", y.max(0) / 2));
+                }),
+                4 => Box::new(move |p: &Page| {
+                    p.boxes.borrow()[0].set_style("padding", &format!("{}px", c[0] % 16));
+                }),
+                5 => Box::new(move |p: &Page| {
+                    p.boxes.borrow()[b]
+                        .set_style("box-shadow", &format!("0 0 {}px rgb(0, 0, 0)", c[1] % 12));
+                }),
+                // The surface's own shadow: damage beside its box, not on R.
+                _ => Box::new(move |p: &Page| {
+                    p.boxes.borrow()[0].set_style(
+                        "box-shadow",
+                        &format!("0 0 {}px rgb({}, 0, 0)", c[1] % 12, c[2]),
+                    );
+                }),
+            });
+        }
+        eprintln!("[probe] seed {seed}: {log:?}");
+        let refs: Vec<&dyn Fn(&Page)> = ops.iter().map(|o| o.as_ref()).collect();
+        failures.extend(probe(
+            &format!("seed {seed}"),
+            vec![
+                (
+                    "position: absolute; left: 50px; top: 40px; width: 120px; height: 80px; \
+                     box-sizing: border-box; background: rgb(0, 0, 255)",
+                    Some(color.clone()),
+                ),
+                (BADGE, None),
+                (OPAQUE_BAR, None),
+                (SIDEBAR, None),
+                (
+                    "position: absolute; left: 180px; top: 60px; width: 24px; height: 24px; \
+                     background: rgb(0, 255, 0)",
+                    None,
+                ),
+            ],
+            true,
+            &refs,
+            &[],
+        ));
+    }
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Two kept surfaces; damage meets the second's region only, and adding that
+/// region merges into a rect that meets the first's, which was checked
+/// before it (not added).
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_review_merge_after_check() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let tick = |p: &Page| {
+        p.boxes.borrow()[3].set_style("background", "rgb(255, 0, 255)");
+    };
+    let failures = probe(
+        "merge after check",
+        vec![
+            (SURFACE, Some(red())),
+            (
+                "position: absolute; left: 200px; top: 40px; width: 60px; height: 100px",
+                Some(Rc::new(Cell::new([30, 160, 90, 255]))),
+            ),
+            (BADGE, None),
+            (
+                "position: absolute; left: 100px; top: 125px; width: 105px; height: 5px; \
+                 background: rgb(0, 255, 0)",
+                None,
+            ),
+        ],
+        false,
+        &[&tick],
+        &[],
+    );
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The surface's own box-shadow: damage over the shadow, not the box.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_review_damage_on_own_shadow() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let tick = |p: &Page| {
+        p.boxes.borrow()[2].set_style("background", "rgb(255, 0, 255)");
+    };
+    let failures = probe(
+        "own shadow tick",
+        vec![
+            (
+                "position: absolute; left: 50px; top: 40px; width: 120px; height: 80px; \
+                 box-shadow: 0 0 12px rgb(0, 0, 0)",
+                Some(red()),
+            ),
+            (BADGE, None),
+            // A tick in the shadow, outside the box.
+            (
+                "position: absolute; left: 174px; top: 60px; width: 6px; height: 6px; \
+                 background: rgb(0, 255, 0)",
+                None,
+            ),
+        ],
+        true,
+        &[&tick],
+        &[],
+    );
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Taint (D5a): a grayscale badge over the surface, then 130 frames of
+/// changes elsewhere, then the badge recoloured.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_review_taint_sequence() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let gray = |p: &Page| {
+        p.boxes.borrow()[1].set_style("filter", "grayscale(1)");
+        p.boxes.borrow()[1].set_style("background", "rgb(250, 100, 100)");
+    };
+    let flip = Rc::new(Cell::new(0u32));
+    let f2 = flip.clone();
+    let elsewhere = move |p: &Page| {
+        // Applied to both pages in turn: flip every other call.
+        let n = f2.get();
+        f2.set(n + 1);
+        let on = (n / 2).is_multiple_of(2);
+        let k = p.boxes.borrow().len();
+        let _ = k;
+        p.boxes.borrow()[2].set_style(
+            "background",
+            if on {
+                "rgb(128, 0, 128)"
+            } else {
+                "rgb(0, 0, 128)"
+            },
+        );
+    };
+    let recolor = |p: &Page| {
+        p.boxes.borrow()[1].set_style("background", "rgb(100, 250, 100)");
+    };
+    let ungray = |p: &Page| {
+        p.boxes.borrow()[1].set_style("filter", "none");
+    };
+    let mut steps: Vec<&dyn Fn(&Page)> = vec![&gray];
+    for _ in 0..130 {
+        steps.push(&elsewhere);
+    }
+    steps.push(&recolor);
+    steps.push(&ungray);
+    let failures = probe(
+        "taint",
+        vec![(SURFACE, Some(red())), (BADGE, None), (SIDEBAR, None)],
+        true,
+        &steps,
+        &[],
+    );
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A continuous surface over an idle UI: how many slice renders and which
+/// frame kinds.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_review_continuous_idle() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let color = red();
+    let c2 = color.clone();
+    let play = move |p: &Page| {
+        let [r, g, b, a] = c2.get();
+        c2.set([g, b, r, a]);
+        for s in &p.surfaces {
+            s.set_continuous(true);
+        }
+    };
+    let steps: Vec<&dyn Fn(&Page)> = vec![&play; 6];
+    let failures = probe(
+        "continuous",
+        vec![
+            (SURFACE, Some(color.clone())),
+            (BADGE, None),
+            (SIDEBAR, None),
+        ],
+        false,
+        &steps,
+        &[],
+    );
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The scratch target's cost: one slice (a rounded own mask and an above
+/// scene) of a 64 px region at the window's top-left, at its bottom-right,
+/// and a full-window region, in a 1920x1080 window, against the same scenes
+/// rendered into a region-sized target.
+#[test]
+#[ignore = "a measurement; needs a GPU adapter"]
+fn split_runtime_scratch_cost_probe() {
+    use rinch_dom::paint::slicing::{SliceCoverage, SurfaceSlice};
+    use vello::kurbo::{Affine, Rect, RoundedRect};
+    use vello::peniko::{Color, Fill};
+    let _p = presenting_lock();
+    let gpu = test_gpu();
+    let mut vello = vello_renderer();
+    let scenes = |r: (u32, u32, u32, u32), at: Affine| {
+        let (x, y, w, h) = (r.0 as f64, r.1 as f64, r.2 as f64, r.3 as f64);
+        let mut mask = vello::Scene::new();
+        mask.push_clip_layer(
+            Fill::NonZero,
+            at,
+            &RoundedRect::new(x, y, x + w, y + h, 12.0),
+        );
+        mask.fill(
+            Fill::NonZero,
+            at,
+            Color::WHITE,
+            None,
+            &Rect::new(x, y, x + w, y + h),
+        );
+        mask.pop_layer();
+        let mut above = vello::Scene::new();
+        above.fill(
+            Fill::NonZero,
+            at,
+            Color::from_rgba8(0, 0, 0, 140),
+            None,
+            &Rect::new(x + 4.0, y + h - 20.0, x + w - 4.0, y + h - 4.0),
+        );
+        (mask, above)
+    };
+    let cases = [
+        ("64px at top-left", (0, 0, 64, 64)),
+        ("64px at bottom-right", (1856, 1016, 64, 64)),
+        ("full window", (0, 0, 1920, 1080)),
+    ];
+    for (what, r) in cases {
+        let mut frame = SplitFrame::default();
+        let n = 6;
+        let mut total = std::time::Duration::ZERO;
+        for i in 0..n {
+            let (mask, above) = scenes(r, Affine::IDENTITY);
+            let change = crate::shell::split_frame::SplitChange {
+                drop: vec![],
+                all: true,
+                add: vec![SurfaceSlice {
+                    surface_id: 1,
+                    region: r,
+                    above_in: Some(above),
+                    above_out: None,
+                    own: SliceCoverage::Mask(Box::new(mask)),
+                    ancestors: SliceCoverage::Rect([r.0, r.1, r.0 + r.2, r.1 + r.3]),
+                    device_from_image: [1.0, 0.0, 0.0, 1.0, r.0 as f64, r.1 as f64],
+                    extents: (r.2, r.3),
+                    tainted: false,
+                }],
+            };
+            let t = std::time::Instant::now();
+            frame
+                .apply(&gpu.device, &gpu.queue, &mut vello, change)
+                .unwrap();
+            gpu.device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .unwrap();
+            if i > 0 {
+                total += t.elapsed();
+            }
+        }
+        // The same two scenes into an R-sized target, translated.
+        let target = texture((r.2, r.3), TextureUsages::STORAGE_BINDING);
+        let view = target.create_view(&Default::default());
+        let mut total_r = std::time::Duration::ZERO;
+        for i in 0..n {
+            let at = Affine::translate((-(r.0 as f64), -(r.1 as f64)));
+            let (mask, above) = scenes(r, at);
+            let t = std::time::Instant::now();
+            for s in [&mask, &above] {
+                vello
+                    .render_to_texture(
+                        &gpu.device,
+                        &gpu.queue,
+                        s,
+                        &view,
+                        &vello::RenderParams {
+                            base_color: Color::TRANSPARENT,
+                            width: r.2,
+                            height: r.3,
+                            antialiasing_method: vello::AaConfig::Msaa16,
+                        },
+                    )
+                    .unwrap();
+            }
+            gpu.device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .unwrap();
+            if i > 0 {
+                total_r += t.elapsed();
+            }
+        }
+        eprintln!(
+            "[probe] scratch cost, {what}: apply (scratch) {:.2} ms, R-sized {:.2} ms",
+            total.as_secs_f64() * 1000.0 / (n - 1) as f64,
+            total_r.as_secs_f64() * 1000.0 / (n - 1) as f64
+        );
+    }
+}
+
+/// After a taint's suspension runs out, a surface left in the scene is split
+/// again by a partial frame whose damage covers only part of its region.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_review_after_suspension() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let gray = |p: &Page| {
+        p.boxes.borrow()[1].set_style("filter", "grayscale(1)");
+    };
+    let ungray = |p: &Page| {
+        p.boxes.borrow()[1].set_style("filter", "none");
+    };
+    let count = Rc::new(Cell::new(0u32));
+    let c2 = count.clone();
+    let elsewhere = move |p: &Page| {
+        let n = c2.get();
+        c2.set(n + 1);
+        p.boxes.borrow()[3].set_style(
+            "background",
+            if (n / 2).is_multiple_of(2) {
+                "rgb(128, 0, 128)"
+            } else {
+                "rgb(0, 0, 128)"
+            },
+        );
+    };
+    let badge2 = |p: &Page| {
+        p.boxes.borrow()[2].set_style("background", "rgb(255, 0, 255)");
+    };
+    let mut steps: Vec<&dyn Fn(&Page)> = vec![&gray, &ungray];
+    for _ in 0..125 {
+        steps.push(&elsewhere);
+    }
+    steps.push(&badge2);
+    let failures = probe(
+        "after suspension",
+        vec![
+            (SURFACE, Some(red())),
+            (
+                "position: absolute; left: 120px; top: 90px; width: 30px; height: 14px; \
+                 background: rgb(250, 100, 100)",
+                None,
+            ),
+            (BADGE, None),
+            (SIDEBAR, None),
+        ],
+        true,
+        &steps,
+        &[],
+    );
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// An idle surface in a window that never splits, a change elsewhere: is the
+/// surface's box damaged each frame?
+#[test]
+#[ignore = "a measurement; needs a GPU adapter"]
+fn split_runtime_in_scene_idle_probe() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let count = Rc::new(Cell::new(0u32));
+    let c2 = count.clone();
+    let elsewhere = move |p: &Page| {
+        let n = c2.get();
+        c2.set(n + 1);
+        p.boxes.borrow()[2].set_style(
+            "background",
+            if (n / 2).is_multiple_of(2) {
+                "rgb(128, 0, 128)"
+            } else {
+                "rgb(0, 0, 128)"
+            },
+        );
+    };
+    let gray = |p: &Page| {
+        p.boxes.borrow()[1].set_style("filter", "grayscale(1)");
+    };
+    let ungray = |p: &Page| {
+        p.boxes.borrow()[1].set_style("filter", "none");
+    };
+    let steps: Vec<&dyn Fn(&Page)> = if std::env::var("PROBE_NOGRAY").is_ok() {
+        vec![
+            &elsewhere, &elsewhere, &elsewhere, &elsewhere, &elsewhere, &elsewhere,
+        ]
+    } else {
+        vec![
+            &elsewhere, &elsewhere, &gray, &ungray, &elsewhere, &elsewhere,
+        ]
+    };
+    let failures = probe(
+        "in-scene idle",
+        vec![
+            (SURFACE, Some(red())),
+            (
+                "position: absolute; left: 60px; top: 48px; width: 20px; height: 12px; \
+                 background: rgb(250, 100, 100)",
+                None,
+            ),
+            (SIDEBAR, None),
+        ],
+        true,
+        &steps,
+        &if std::env::var("PROBE_LATE").is_ok() {
+            vec![false, false, false, false, true, true, true]
+        } else {
+            vec![false, false, false, true, true, true, true]
+        },
+    );
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Through `WgpuRenderer::present`'s last step (`present_step`), into a
+/// `Bgra8Unorm` surface: the composited texture in the surface's format, the
+/// alpha path of an opaque window and of a transparent one (premultiplied
+/// and post-multiplied surfaces), and a 1.5 scale factor (#1899 review).
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_presented_to_a_surface() {
+    use wgpu::CompositeAlphaMode as A;
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let bgra = TextureFormat::Bgra8Unorm;
+    let mut failures = Vec::new();
+    for (config, what) in [
+        ((1.0, Some((bgra, A::Opaque)), false), "opaque, Bgra8"),
+        (
+            (1.5, Some((bgra, A::Opaque)), false),
+            "opaque, Bgra8, scale 1.5",
+        ),
+        (
+            (1.0, Some((bgra, A::PreMultiplied)), true),
+            "transparent, premultiplied surface",
+        ),
+        (
+            (1.0, Some((bgra, A::PostMultiplied)), true),
+            "transparent, post-multiplied surface",
+        ),
+        (
+            (1.5, Some((TextureFormat::Rgba8Unorm, A::Opaque)), false),
+            "opaque, Rgba8, scale 1.5",
+        ),
+    ] {
+        WINDOW.with(|w| w.set(config));
+        for mut f in [
+            check(
+                "a surface, a sidebar",
+                vec![(SURFACE, Some(red())), (SIDEBAR, None)],
+                false,
+                &[true],
+                &[],
+                &["full"],
+                Fault::None,
+            ),
+            check(
+                "own radius, an opaque bar across it",
+                vec![
+                    (
+                        "position: absolute; left: 50px; top: 40px; width: 120px; height: 80px; \
+                         border-radius: 14px",
+                        Some(red()),
+                    ),
+                    (OPAQUE_BAR, None),
+                ],
+                false,
+                &[true],
+                &[],
+                &["full"],
+                Fault::None,
+            ),
+        ] {
+            for line in &mut f {
+                *line = format!("{what}: {line}");
+            }
+            failures.extend(f);
+        }
+    }
+    WINDOW.with(|w| w.set((1.0, None, false)));
+    run(vec![failures]);
 }

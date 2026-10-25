@@ -32,6 +32,10 @@ mod split_compositor_1865_tests;
 #[cfg(feature = "gpu")]
 pub(crate) mod split_frame;
 #[cfg(all(test, feature = "gpu"))]
+mod split_pages_1865_oracle;
+#[cfg(all(test, feature = "gpu"))]
+mod split_pages_1865_tests;
+#[cfg(all(test, feature = "gpu"))]
 mod split_slices_1865_tests;
 pub mod types;
 #[cfg(feature = "desktop")]

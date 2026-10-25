@@ -1470,6 +1470,13 @@ fn paint_surface_frame(
 /// renders the scene (`vello::Renderer::register_texture`); only the Vello
 /// painter draws them. A surface with an image here draws it in place of its
 /// CPU pixels. `None` clears.
+/// Whether this paint has any GPU surface frame to draw: a frame with none
+/// has nothing to split, and the runtime does not open it for slicing
+/// (#1899 review: a frame opened for slicing copies every clip's shape).
+pub fn has_surface_gpu_images() -> bool {
+    SURFACE_GPU_IMAGES.with(|g| g.borrow().as_ref().is_some_and(|m| !m.is_empty()))
+}
+
 pub fn set_surface_gpu_images(images: Option<HashMap<usize, peniko::ImageData>>) {
     SURFACE_GPU_IMAGES.with(|v| *v.borrow_mut() = images);
 }

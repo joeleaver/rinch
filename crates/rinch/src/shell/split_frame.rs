@@ -197,6 +197,23 @@ impl SplitFrame {
     /// Drop every kept slice (the window stopped splitting).
     pub fn clear(&mut self) {
         self.kept.clear();
+        self.scratch = None;
+    }
+
+    /// The kept surfaces whose texture is no longer the size the slice was
+    /// made for (the image atlas's share moved, #1768): their `extents` and
+    /// image transform are stale, so the runtime marks them damaged and the
+    /// frame splits them again (#1899 review).
+    pub fn stale_ids(&self, textures: &HashMap<usize, Texture>) -> Vec<usize> {
+        self.kept
+            .iter()
+            .filter(|k| {
+                textures
+                    .get(&k.surface_id)
+                    .is_some_and(|t| (t.width(), t.height()) != k.extents)
+            })
+            .map(|k| k.surface_id)
+            .collect()
     }
 
     /// Apply `change`: drop what it replaces, render what it adds.
@@ -252,6 +269,10 @@ impl SplitFrame {
                 above_in,
                 above_out,
             });
+        }
+        if self.kept.is_empty() {
+            // Nothing split: the scratch target (up to the window's size) goes.
+            self.scratch = None;
         }
         Ok(())
     }

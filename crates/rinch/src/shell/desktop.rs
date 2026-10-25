@@ -1233,13 +1233,15 @@ impl WgpuRenderer {
         self.gpu_layers = layers;
     }
 
-    /// Register this paint's `RenderSurface` GPU frames with the Vello
-    /// renderer and hand back each one's image, by surface id (#1768); see
-    /// [`SurfaceImages::sync`].
     /// Apply a painted frame's split change (#1865): render the new slices.
     pub fn apply_split(&mut self, change: super::split_frame::SplitChange) -> Result<(), String> {
         self.split
             .apply(&self.device, &self.queue, &mut self.renderer, change)
+    }
+
+    /// The split surfaces whose texture changed size under their slice.
+    pub fn split_stale_ids(&self) -> Vec<usize> {
+        self.split.stale_ids(&self.surface_images.textures())
     }
 
     /// The surfaces this window composites split, by id.
@@ -1247,6 +1249,9 @@ impl WgpuRenderer {
         self.split.surface_ids().collect()
     }
 
+    /// Register this paint's `RenderSurface` GPU frames with the Vello
+    /// renderer and hand back each one's image, by surface id (#1768); see
+    /// [`SurfaceImages::sync`].
     pub fn sync_surface_images(
         &mut self,
         frames: impl Iterator<Item = (usize, Texture)>,
