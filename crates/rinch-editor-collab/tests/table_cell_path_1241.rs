@@ -151,9 +151,10 @@ impl Peer {
                 .record_local(&self.schema, &self.state.doc, &next.doc)
                 .expect("the edit projects");
         }
-        // Not asserted here that the model is the projection's read: an undo after a
-        // peer's change can leave the editor two adjacent unmarked text nodes the read
-        // joins (#1856), in both worlds alike. The trial compares the two worlds'
+        // Not asserted here that the model is the projection's read: a link added over
+        // another link leaves the model two link marks where the read has one
+        // (#1886), in both worlds alike. (An undo after a peer's change no longer
+        // leaves unjoined text nodes, #1856.) The trial compares the two worlds'
         // reads instead.
         self.state = next;
     }
