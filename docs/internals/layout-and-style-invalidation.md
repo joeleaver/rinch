@@ -412,10 +412,10 @@ input a shaped layout is built from:
   holds atomic inlines and any element that does not wrap gets the seams
   (`UnhungSpaces::seams`), and the hang pass re-breaks a line of it where
   CSS ends it (`ifc::css_line`, the #1426 edge-box re-break generalised:
-  `LineUnit::wrap_after`) wherever it ends a soft-wrapped line elsewhere
-  than parley did (#1243; it used to ask only when parley's break followed a
-  leaf `white-space` allows no wrap after, `wrap_allowed_after`, or the line
-  overflowed), when the line overflows (`line_overflows`: parley appends a
+  `LineUnit::wrap_after`) when parley's break follows a leaf `white-space`
+  allows no wrap after (`wrap_allowed_after`), in a paragraph with `pre`
+  seams (#1243, below) at every soft wrap that can reach a `pre` space
+  (`ifc::NearPre`), when the line overflows (`line_overflows`: parley appends a
   box after text that does not wrap where CSS breaks before it), or when
   parley took its emergency break after a box too wide for the line that
   `white-space` glues to what follows (Chrome: `[B]cc` stays together) — not
@@ -441,31 +441,42 @@ input a shaped layout is built from:
   line starts at 0 as in Chrome. On a left-to-right line aligned `right`,
   `center` or `end`, every space before the hanging run at the line's end
   counts too, whatever its `white-space` (#1042, below). A paragraph
-  broken at a width that holds a `pre` element's spaces or tabs takes the
-  seams path above as well (#1243; `RinchDocument::any_pre_space`): parley
-  has no break between a wrapping run of spaces and a `pre` one (UAX #14
-  has none between two spaces) and hung the one `pre` space that overflowed,
-  breaking the `pre` run after it. Chrome 155 breaks between the two runs —
-  the first hangs, the `pre` spaces start the next line — but how depends on
-  the text nodes the wrapping run lies in (`ifc::pre_seam`): an ordinary
-  break when the wrapping spaces' element closes there into one that does
-  not wrap, or when the run starts in the word's text node and goes on into
-  another; only when what is before it fits when the run ends the word's
-  text node (`aaaa  <span pre>  </span>bbbb` breaks in 50px,
+  broken at a width that holds a `pre` element's spaces or tabs
+  (`RinchDocument::any_pre_space`) takes the seams path above as well when
+  parley's breaks can be wrong there (#1243; `ifc::pre_seams_needed`, asked
+  once parley has broken it, `UnhungSpaces::pre_seams`): a `pre` run that
+  starts with a space right after text that wraps, or a soft-wrapped line
+  parley ended in a `pre` space or right before `pre` text. parley has no
+  break between a wrapping run of spaces and a `pre` one (UAX #14 has none
+  between two spaces), and it hung the one `pre` space that overflowed,
+  breaking the `pre` run after it. A paragraph whose `pre` spaces nothing
+  wrapping touches pays no pass for them
+  (`perf_regression_scenarios::pre_spaces_nothing_wrapping_touches_pay_no_pass`),
+  and one that takes the seams scans only the lines that can reach a `pre`
+  space (`ifc_css_line_scans`,
+  `a_pre_wrap_paragraph_with_pre_spaces_scans_only_lines_near_them`).
+  Chrome 155 breaks between the two runs — the first hangs, the `pre`
+  spaces start the next line — but how depends on the text nodes the
+  wrapping run lies in (`ifc::pre_seam`): an ordinary break when the
+  wrapping spaces' element closes there into one that does not wrap, when
+  the run starts in the word's text node and goes on into another, or when
+  the run is collapsible spaces right after an element that closes there
+  (`<span>dd</span> <span pre>    dd</span>` in a `normal` root); only when
+  what is before it fits when the run ends the word's text node
+  (`aaaa  <span pre>  </span>bbbb` breaks in 50px,
   `hhhhhhh  <span pre>  </span>bbbb` does not); and only when the line
   overflows before the `pre` spaces when the run is a text node of its own
   (`aaaa<span pre-wrap>  </span><span pre>  dd</span>` does not break,
-  `hhhhhhh<span pre-wrap>  </span>…` does). A wrapping space then a
-  `break-spaces` one break between them too, in `css_line`'s scan. With
-  seams, `css_line` is asked about every soft wrap, not only one `white-space`
-  forbids or whose line overflows: parley misses the seams' opportunities,
-  so it stops at an earlier one that fits (` eee    ` then `pre` spaces in
-  a `nowrap` root broke after the first space). Pins:
-  `tests/pre_space_seams_1243_tests.rs` (Chrome 155). Not Chrome's yet: a
-  wrapping run of *collapsible* spaces closing into such a seam
-  (`<span pre-wrap>aaaa</span>  <span pre>  dd</span>` in a `normal` root
-  breaks in Chrome), and on a right-to-left line a mixed run is still
-  narrowed by its final `pre` part only. **The "…" is cut at paint time, over the lines as laid out**
+  `hhhhhhh<span pre-wrap>  </span>…` does). In such a paragraph only, a
+  wrapping space then a `break-spaces` one break between them too, in
+  `css_line`'s scan; a paragraph with no `pre` spaces is laid out as before
+  #1243. A line whose trailing run of spaces has `pre` spaces before the
+  part that hangs is aligned with them as content
+  (`any_unhung_trailing_line`). Pins: `tests/pre_space_seams_1243_tests.rs`
+  (Chrome 155). Not Chrome's yet (#1898): in the review's family corpus,
+  8 of 78 `pre-wrap` and 11 of 42 `break-spaces` base cases, a word of a
+  `pre` element before the run, and on a right-to-left line a
+  mixed run is still narrowed by its final `pre` part only. **The "…" is cut at paint time, over the lines as laid out**
   (#1100; `ifc::ellipsis_cut`, `node::EllipsisCut`, `InlineLayout::ellipsis`):
   on each overflowing line everything whose visual extent passes the point
   where the "…" still fits before the line's end edge is hidden — each

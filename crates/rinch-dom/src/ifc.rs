@@ -310,6 +310,9 @@ pub struct HangStats {
     /// tabs at their stops (#1122): one for a line of tabs that do not wrap,
     /// at most [`MAX_TAB_BUILDS`]` - 1`.
     pub tab_rebuilds: u32,
+    /// Lines [`css_line`] was asked about (#1426, #1238, #1243): one scan of
+    /// the line's units each, whether or not the line was broken again.
+    pub css_scans: u32,
 }
 
 impl HangStats {
@@ -320,6 +323,7 @@ impl HangStats {
         self.phantom_rebreaks += other.phantom_rebreaks;
         self.unglue_rebreaks += other.unglue_rebreaks;
         self.tab_rebuilds += other.tab_rebuilds;
+        self.css_scans += other.css_scans;
     }
 
     /// Add these to `perf`'s `ifc_hang_*` counters.
@@ -337,6 +341,10 @@ impl HangStats {
         perf.add(
             crate::perf::Counter::IfcTabRebuilds,
             u64::from(self.tab_rebuilds),
+        );
+        perf.add(
+            crate::perf::Counter::IfcCssLineScans,
+            u64::from(self.css_scans),
         );
     }
 }
@@ -459,6 +467,11 @@ pub(crate) fn break_lines_hanging_spaces(
     }
     layout.break_all_lines(max_width);
     let max = max_width.filter(|max| max.is_finite());
+    // #1243: whether the seams are in force for `pre` spaces depends on
+    // where parley broke the paragraph.
+    unhung
+        .pre_seams
+        .set(unhung.pre_candidate && max.is_some() && pre_seams_needed(layout, text, unhung));
     // parley offsets a right-to-left line by its trailing white space, so a
     // narrowed alignment width would move it the wrong way: left as it was.
     let count_trailing = count_trailing && !layout.is_rtl();
@@ -478,7 +491,7 @@ pub(crate) fn break_lines_hanging_spaces(
             || (count_trailing && any_counted_trailing_line(layout, text, preserves_spaces))
             || (justify && any_miscounted_justified_line(layout, text, max))
             || any_line_split_at_edge(layout)
-            || unhung.seams.is_some()
+            || unhung.active_seams().is_some()
     });
     let fix = fix.map(|max| (max, preserves_spaces));
     let mut stats = match fix {
@@ -1849,7 +1862,9 @@ fn hang_pass(
     let units = logical_units(layout, text, unhung);
     let has_edges = units.iter().any(|u| u.edge != 0);
     // #1238: parley's breaks next to atomic inlines are not CSS's here.
-    let seams = unhung.seams.is_some();
+    let seams = unhung.active_seams().is_some();
+    let pre_seams = seams && unhung.pre_seams.get();
+    let near_pre = pre_seams.then(|| NearPre::new(&units));
     let breaks = TextBreaks::new(text);
     stats.passes = 1;
     let mut breaker = layout.break_lines();
@@ -1895,10 +1910,14 @@ fn hang_pass(
             };
             let wrong = (has_edges
                 && soft
-                && !edge_break_allowed(&units, &breaks, end, emergency, false))
+                && !edge_break_allowed(&units, &breaks, end, emergency, false, pre_seams))
                 || (seams
                     && !emergency
-                    && (soft
+                    && ((soft
+                        && (!wrap_allowed_after(&units, end)
+                            || near_pre
+                                .as_ref()
+                                .is_some_and(|n| n.touches(&units, cursor, end, max))))
                         || line_overflows(&units[cursor..end], max)))
                 // parley's emergency break after a box too wide for the
                 // line, where `white-space` glues what follows to it.
@@ -1908,7 +1927,10 @@ fn hang_pass(
                     && units[end - 1].inline_box
                     && !wrap_allowed_after(&units, end));
             let css = wrong
-                .then(|| css_line(&units, &breaks, cursor, max))
+                .then(|| {
+                    stats.css_scans += 1;
+                    css_line(&units, &breaks, cursor, max, pre_seams)
+                })
                 .filter(|css| !same_end(&units, css.0, end));
             if let Some(css) = css {
                 let Some((reason, advance)) =
@@ -2470,6 +2492,21 @@ pub(crate) struct UnhungSpaces {
     /// and some element that does not wrap (#1238); `None` otherwise, where
     /// parley's own rule around boxes is CSS's.
     pub seams: Option<WrapSeams>,
+    /// [`Self::seams`] are for atomic inlines next to an element that does
+    /// not wrap (#1238): always in force.
+    pub box_seams: bool,
+    /// The paragraph holds a `pre` element's spaces and is broken at a
+    /// width (#1243): [`Self::seams`] are filled, and in force when
+    /// [`pre_seams_needed`] says so of parley's lines ([`Self::pre_seams`]).
+    pub pre_candidate: bool,
+    /// The paragraph takes [`Self::seams`] for a `pre` element's spaces
+    /// (#1243): [`pre_seam`] and the rules only such a paragraph gets. Set
+    /// by [`break_lines_hanging_spaces`] once parley has broken it.
+    pub pre_seams: std::cell::Cell<bool>,
+    /// Text whose element collapses its spaces (`normal`, `nowrap`,
+    /// `pre-line`), filled only with [`Self::pre_seams`]
+    /// ([`LineUnit::collapsible`]).
+    pub collapsible: Vec<std::ops::Range<usize>>,
 }
 
 /// Whether `white-space` allows a soft wrap after each text node and each
@@ -2517,6 +2554,10 @@ pub(crate) struct Seam {
     /// What makes the break between a wrapping run of spaces and a `pre`
     /// one an ordinary break ([`pre_seam`], #1243).
     closes_into_nowrap: bool,
+    /// Elements close between this leaf and the next, and none opens: the
+    /// next leaf's element is a proper ancestor of this one's
+    /// (`<span>dd</span>` then its parent's space; [`pre_seam`]).
+    closes: bool,
 }
 
 impl WrapSeams {
@@ -2551,6 +2592,7 @@ impl WrapSeams {
                     .is_some_and(|next| closes_into_wrap(nodes, root_id, node, next)),
                 closes_into_nowrap: next
                     .is_some_and(|next| closes_into_nowrap(nodes, root_id, node, next)),
+                closes: next.is_some_and(|next| only_closes(nodes, root_id, node, next)),
             };
             if kind == 0 {
                 seams.boxes.push((layout.inline_boxes()[index].id, seam));
@@ -2603,6 +2645,28 @@ fn closes_into_wrap(nodes: &slab::Slab<Node>, root_id: usize, leaf: usize, next:
         wraps |= RinchDocument::text_wrap_mode(&node.computed_style)
             == parley::style::TextWrapMode::Wrap;
         el = node.parent;
+    }
+    false
+}
+
+/// Whether `next`'s parent element is a proper ancestor of `leaf`'s: elements
+/// close between them and none opens ([`Seam::closes`]).
+fn only_closes(nodes: &slab::Slab<Node>, root_id: usize, leaf: usize, next: usize) -> bool {
+    let Some(target) = nodes.get(next).and_then(|n| n.parent) else {
+        return false;
+    };
+    let mut el = nodes.get(leaf).and_then(|n| n.parent);
+    if el == Some(target) {
+        return false;
+    }
+    while let Some(id) = el {
+        if id == target {
+            return true;
+        }
+        if id == root_id {
+            return false;
+        }
+        el = nodes.get(id).and_then(|n| n.parent);
     }
     false
 }
@@ -2674,6 +2738,13 @@ fn wraps_between(nodes: &slab::Slab<Node>, root_id: usize, leaf: usize, next: us
 }
 
 impl UnhungSpaces {
+    /// The seams in force: [`Self::box_seams`], or [`Self::pre_seams`].
+    fn active_seams(&self) -> Option<&WrapSeams> {
+        self.seams
+            .as_ref()
+            .filter(|_| self.box_seams || self.pre_seams.get())
+    }
+
     fn is_empty(&self) -> bool {
         self.pre.is_empty() && self.breaking.is_empty()
     }
@@ -2791,6 +2862,11 @@ struct LineUnit {
     /// The last cluster of a text node, known only with [`WrapSeams`]
     /// ([`pre_seam`]).
     text_end: bool,
+    /// [`Seam::closes`] at the end of a text run.
+    closes: bool,
+    /// A cluster of text whose element collapses its spaces, known only
+    /// with [`UnhungSpaces::pre_seams`] ([`pre_seam`]).
+    collapsible: bool,
     /// The byte a cluster starts at, or a box stands at.
     byte: usize,
 }
@@ -2815,6 +2891,7 @@ fn edge_break_allowed(
     e: usize,
     emergency: bool,
     between_spaces: bool,
+    pre_seams: bool,
 ) -> bool {
     if e == 0 {
         return false;
@@ -2863,8 +2940,10 @@ fn edge_break_allowed(
     // A wrapping space then a `break-spaces` one: the first hangs, the
     // second starts the next line (Chrome 155: ` gggcccc ` / `        b`
     // for ` ggg<span normal>cccc  </span>        <span pre>b</span>` in a
-    // 70px `break-spaces` root; #1243).
-    if between_spaces && is_plain_space(p) && p.own_wrap && n.breaks {
+    // 70px `break-spaces` root; #1243). Only in a paragraph that takes the
+    // seams for `pre` spaces: elsewhere (the #1426 edge-box path) it is
+    // left as it was.
+    if between_spaces && pre_seams && is_plain_space(p) && p.own_wrap && n.breaks {
         return true;
     }
     // A run of spaces that does not wrap, in an element a wrapping one
@@ -2898,17 +2977,28 @@ fn edge_break_allowed(
 ///   ([`PreSeam::RewindOnly`]) — Chrome rewinds to it from an overflow later
 ///   in the line, and does not stop at it when the word already overflows;
 /// - the run is a text node of its own after the word (`hhhhhhh<span
-///   pre-wrap>  </span><span pre>…`), whether the word wraps or not and
-///   whatever closes there: only when the line overflows before the `pre`
-///   spaces, in the word or in the run ([`PreSeam::ForwardOnly`]);
-///   `aaaa<span pre-wrap>  </span><span pre>  dd</span>` stays on one line,
-///   as does `<span pre>gggg</span><span normal> </span><span pre> a</span>`;
+///   pre-wrap>  </span><span pre>…`, or the word and the run split into
+///   two text nodes of one element), whether the word wraps or not: only
+///   when the line overflows before the `pre` spaces, in the word or in the
+///   run ([`PreSeam::ForwardOnly`]); `aaaa<span pre-wrap>  </span><span
+///   pre>  dd</span>` stays on one line, as does `<span pre>gggg</span><span
+///   normal> </span><span pre> a</span>`;
+/// - except that a run of *collapsible* spaces right after a wrapping
+///   element that closes there ([`Seam::closes`]: `<span>dd</span> <span
+///   pre>    dd</span>`
+///   in a `normal` or `pre-line` root) is an ordinary break, taken whether
+///   the word fits or overflows (review of #1897: of 100 such variants in
+///   `normal` and `pre-line` roots Chrome lays out 79 as it lays out the
+///   word unwrapped, and rinch now matches Chrome on 95, main on 60; a
+///   preserved run, in a `pre-wrap` root, is the text node of its own
+///   above);
 /// - the run starts in the word's text node and goes on into another: an
 ///   ordinary break.
 ///
 /// A run after an inline box, or at the start of the paragraph, is an
 /// ordinary break, as #1238 has it. Edge boxes at the break are looked
-/// past, as [`edge_break_allowed`] looks past them.
+/// past, as [`edge_break_allowed`] looks past them. Not every case is
+/// Chrome's (#1898).
 fn pre_seam(units: &[LineUnit], e: usize) -> Option<PreSeam> {
     let mut i0 = e.min(units.len());
     while i0 > 0 && units[i0 - 1].edge != 0 {
@@ -2933,8 +3023,15 @@ fn pre_seam(units: &[LineUnit], e: usize) -> Option<PreSeam> {
         .checked_sub(1)
         .map(|i| &units[i])
         .filter(|w| !w.inline_box && w.edge == 0 && !w.newline);
-    if w.is_some_and(|w| w.text_end) {
-        return Some(PreSeam::ForwardOnly);
+    if let Some(w) = w.filter(|w| w.text_end) {
+        // A run of collapsible spaces right after an element that closes
+        // there (`<span>dd</span> <span pre>…` in a `normal` root) breaks
+        // both ways: when the word fits, and after it when it overflows.
+        return Some(if w.closes && w.own_wrap && units[r0].collapsible {
+            PreSeam::Ordinary
+        } else {
+            PreSeam::ForwardOnly
+        });
     }
     if w.is_none() || p.closes_into_nowrap {
         return Some(PreSeam::Ordinary);
@@ -3061,7 +3158,13 @@ fn complex_context_seam(text: &str, byte: usize) -> bool {
 /// out) fits `max`, or, when none fits, the first allowed break — the
 /// unbreakable stretch overflows, as in CSS — or a forced break, whichever
 /// comes first.
-fn css_line(units: &[LineUnit], breaks: &TextBreaks<'_>, cursor: usize, max: f32) -> (usize, f32) {
+fn css_line(
+    units: &[LineUnit],
+    breaks: &TextBreaks<'_>,
+    cursor: usize,
+    max: f32,
+    pre_seams: bool,
+) -> (usize, f32) {
     // The table's cursor can sit on the zero-width newline that ended the
     // line before; a newline is never the first unit of a line.
     let first = cursor + units[cursor..].iter().take_while(|u| u.newline).count();
@@ -3088,10 +3191,10 @@ fn css_line(units: &[LineUnit], breaks: &TextBreaks<'_>, cursor: usize, max: f32
         } else {
             0.0
         };
-        if !edge_break_allowed(units, breaks, e, false, true) {
+        if !edge_break_allowed(units, breaks, e, false, true, pre_seams) {
             continue;
         }
-        let seam = pre_seam(units, e);
+        let seam = pre_seams.then(|| pre_seam(units, e)).flatten();
         if seam == Some(PreSeam::ForwardOnly) && x <= max + 0.005 {
             continue;
         }
@@ -3153,6 +3256,93 @@ fn line_overflows(line: &[LineUnit], max: f32) -> bool {
         .map(|u| u.advance)
         .sum();
     advance - hanging > max + 0.005
+}
+
+/// Whether a paragraph that holds a `pre` element's spaces takes the seams
+/// for them (#1243), asked of its text and of the lines parley broke it
+/// into: a `pre` element's text that starts with a space or tab right after
+/// text that wraps (a run of wrapping spaces before it is a [`pre_seam`],
+/// where parley has no break; a word of a wrapping element that closes
+/// there has its break before the `pre` run, [`Seam::closes_into_wrap`]),
+/// or a soft-wrapped line that parley ended in a `pre` space (it hung one,
+/// breaking the `pre` run) or right before `pre` text (it went back to its
+/// last break when the `pre` text overflowed, where CSS may hang the spaces
+/// before it, or break later). None of these, and parley's breaks stand: a
+/// paragraph whose `pre` spaces start it, or follow other text that does
+/// not wrap, and whose lines parley does not end next to them, pays no pass
+/// for them.
+fn pre_seams_needed(layout: &parley::Layout<Brush>, text: &str, unhung: &UnhungSpaces) -> bool {
+    use parley::layout::BreakReason;
+    let is_space = |b: usize| matches!(text.as_bytes().get(b), Some(b' ' | b'\t'));
+    let pre_space = |b: usize| is_space(b) && in_ranges(&unhung.pre, b);
+    let seam = unhung.pre.iter().any(|r| {
+        r.start > 0
+            && pre_space(r.start)
+            && !in_ranges(&unhung.pre, r.start - 1)
+            && !in_ranges(&unhung.nowrap, r.start - 1)
+    });
+    seam || layout.lines().any(|line| {
+        matches!(
+            line.break_reason(),
+            BreakReason::Regular | BreakReason::Emergency
+        ) && {
+            let e = line.text_range().end;
+            (e > 0 && pre_space(e - 1)) || (e < text.len() && in_ranges(&unhung.pre, e))
+        }
+    })
+}
+
+/// Where a paragraph's `pre` spaces are, for the cheap test that sends a
+/// soft-wrapped line of it to [`css_line`] (#1243): only a line that can
+/// reach a `pre` space — one on the line, or the next one after it within
+/// the room — can end elsewhere for a [`pre_seam`] than where parley ended
+/// it. Built once per pass.
+struct NearPre {
+    /// The first `pre` space at or after each unit (`units.len()` for none).
+    next: Vec<usize>,
+    /// The advance of `units[..i]`.
+    x: Vec<f32>,
+}
+
+impl NearPre {
+    fn new(units: &[LineUnit]) -> Self {
+        let mut next = vec![units.len(); units.len() + 1];
+        for i in (0..units.len()).rev() {
+            next[i] = if units[i].unhung && !units[i].breaks {
+                i
+            } else {
+                next[i + 1]
+            };
+        }
+        let mut x = Vec::with_capacity(units.len() + 1);
+        let mut acc = 0.0f32;
+        x.push(acc);
+        for u in units {
+            acc += u.advance;
+            x.push(acc);
+        }
+        Self { next, x }
+    }
+
+    /// Whether the line from `units[cursor]` to `units[end]` holds a `pre`
+    /// space, or the first one after it is within `max` of the line's start,
+    /// the hanging spaces right before it left out.
+    fn touches(&self, units: &[LineUnit], cursor: usize, end: usize, max: f32) -> bool {
+        let p = self.next[cursor.min(units.len())];
+        if p >= units.len() {
+            return false;
+        }
+        if p <= end {
+            return true;
+        }
+        let hanging: f32 = units[cursor..p]
+            .iter()
+            .rev()
+            .take_while(|u| u.hangs)
+            .map(|u| u.advance)
+            .sum();
+        self.x[p] - self.x[cursor] - hanging <= max + 0.005
+    }
 }
 
 /// Whether a line ending before `units[a]` ends where one ending before
@@ -3432,9 +3622,11 @@ fn in_ranges(ranges: &[std::ops::Range<usize>], byte: usize) -> bool {
 }
 
 /// Whether some line ends (before any newline) in a space or tab of an
-/// `unhung` range — the cheap test that sends a paragraph through
-/// [`hang_pass`] for [`align_unhung_trailing`], and for
-/// [`break_overflowing_spaces`] when the range is `break-spaces` text.
+/// `unhung` range, or in a run of spaces and tabs that holds a `pre` one
+/// (#1243: wrapping spaces after it hang, the `pre` ones count) — the cheap
+/// test that sends a paragraph through [`hang_pass`] for
+/// [`align_unhung_trailing`], and for [`break_overflowing_spaces`] when the
+/// range is `break-spaces` text.
 fn any_unhung_trailing_line(
     layout: &parley::Layout<Brush>,
     text: &str,
@@ -3445,7 +3637,13 @@ fn any_unhung_trailing_line(
             let r = line.text_range();
             let body = text.get(r.clone()).unwrap_or("");
             let trimmed = body.trim_end_matches(['\n', '\r']);
-            trimmed.ends_with([' ', '\t']) && unhung.contains(r.start + trimmed.len() - 1)
+            let content = trimmed.trim_end_matches([' ', '\t']).len();
+            trimmed.len() > content
+                && (unhung.contains(r.start + trimmed.len() - 1)
+                    // #1243: `pre` spaces before the run of spaces that
+                    // hangs at the line's end count as content.
+                    || (r.start + content..r.start + trimmed.len())
+                        .any(|b| in_ranges(&unhung.pre, b)))
         })
 }
 
@@ -3476,7 +3674,7 @@ fn logical_units(
                 let pre = space && in_ranges(&unhung.pre, range.start);
                 let breaks = space && in_ranges(&unhung.breaking, range.start);
                 let own_wrap = !in_ranges(&unhung.nowrap, range.start);
-                let seam = unhung.seams.as_ref().and_then(|s| s.after_text(range.end));
+                let seam = unhung.active_seams().and_then(|s| s.after_text(range.end));
                 keyed.push((
                     (range.start, 1, n),
                     LineUnit {
@@ -3503,6 +3701,8 @@ fn logical_units(
                         closes_into_wrap: seam.is_some_and(|s| s.closes_into_wrap),
                         closes_into_nowrap: seam.is_some_and(|s| s.closes_into_nowrap),
                         text_end: seam.is_some(),
+                        closes: seam.is_some_and(|s| s.closes),
+                        collapsible: in_ranges(&unhung.collapsible, range.start),
                         byte: range.start,
                     },
                 ));
@@ -3511,7 +3711,7 @@ fn logical_units(
     }
     for (i, b) in layout.inline_boxes().iter().enumerate() {
         let in_flow = matches!(b.kind, parley::InlineBoxKind::InFlow);
-        let seam = unhung.seams.as_ref().and_then(|s| s.after_box(b.id));
+        let seam = unhung.active_seams().and_then(|s| s.after_box(b.id));
         let advance = if in_flow { b.width } else { 0.0 };
         keyed.push((
             (b.index, 0, i),
@@ -3537,6 +3737,8 @@ fn logical_units(
                 closes_into_wrap: seam.is_some_and(|s| s.closes_into_wrap),
                 closes_into_nowrap: seam.is_some_and(|s| s.closes_into_nowrap),
                 text_end: false,
+                closes: false,
+                collapsible: false,
                 byte: b.index,
             },
         ));
@@ -9290,14 +9492,42 @@ impl RinchDocument {
         // then): parley takes no break between a wrapping run of spaces and
         // a `pre` one, and hangs a `pre` space that overflows, breaking the
         // `pre` run.
+        // Whether it does is known once parley has broken it
+        // ([`pre_seams_needed`]); its ranges are filled now.
+        let pre_candidate =
+            effective_max_width.is_some() && Self::any_pre_space(nodes, &text_ranges, &unhung.pre);
+        unhung.pre_candidate = pre_candidate;
         let needs_seams = effective_max_width.is_some()
-            && ((!boxes.is_empty()
-                && Self::any_nowrap_element(nodes, root_id, &text_ranges, &boxes))
-                || Self::any_pre_space(nodes, &text_ranges, &unhung.pre));
+            && !boxes.is_empty()
+            && Self::any_nowrap_element(nodes, root_id, &text_ranges, &boxes);
+        unhung.box_seams = needs_seams;
+        if pre_candidate {
+            use crate::computed_style::WhiteSpaceValue;
+            for r in text_ranges
+                .iter()
+                .filter(|r| !r.is_br && r.flat_end > r.flat_start)
+            {
+                let collapses = nodes
+                    .get(r.node_id)
+                    .and_then(|t| t.parent)
+                    .and_then(|el| nodes.get(el))
+                    .is_some_and(|el| {
+                        matches!(
+                            el.computed_style.white_space,
+                            WhiteSpaceValue::Normal
+                                | WhiteSpaceValue::NoWrap
+                                | WhiteSpaceValue::PreLine
+                        )
+                    });
+                if collapses {
+                    unhung.collapsible.push(r.flat_start..r.flat_end);
+                }
+            }
+        }
         // #1426: where an edge box's false break opportunities are undone,
         // text that may not wrap offers no opportunity either; the same where
         // a box's are (#1238).
-        if ifc_text.has_edge_boxes() || needs_seams {
+        if ifc_text.has_edge_boxes() || needs_seams || pre_candidate {
             for r in text_ranges
                 .iter()
                 .filter(|r| !r.is_br && r.flat_end > r.flat_start)
@@ -9352,7 +9582,7 @@ impl RinchDocument {
             ifc_text.replay(&mut builder, emoji_family.as_ref(), &tab_spacing);
             let (mut text_layout, text_content) = builder.build();
             builds += 1;
-            if needs_seams && unhung.seams.is_none() {
+            if (needs_seams || pre_candidate) && unhung.seams.is_none() {
                 unhung.seams = Some(WrapSeams::of(nodes, root_id, &text_ranges, &text_layout));
             }
             hang.add(break_lines_hanging_spaces(

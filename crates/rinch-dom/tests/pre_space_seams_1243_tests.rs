@@ -27,9 +27,8 @@ use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
 
-/// Each line's text and alignment offset, for `<div style="font:16px/25px
-/// ProbeFace;{style}">{inner}</div>`.
-fn lines(style: &str, inner: &str) -> Vec<(String, f32)> {
+/// `<div style="font:16px/25px ProbeFace;{style}">{inner}</div>`, laid out.
+fn lay_out(style: &str, inner: &str) -> (RinchDocument, rinch_core::dom::NodeId) {
     use parley::fontique::{Blob, FontInfoOverride};
     let mut d = RinchDocument::new();
     let registered = d.font_cx.collection.register_fonts(
@@ -46,15 +45,29 @@ fn lines(style: &str, inner: &str) -> Vec<(String, f32)> {
     d.append_child(body, c);
     d.set_inner_html(c, inner);
     d.resolve_layout(800.0, 600.0);
+    (d, c)
+}
+
+/// Each line's text and the x of its first character (its caret, as
+/// Chrome's character rects are read: an inline box or an element's start
+/// padding before it on the line is counted), for [`lay_out`].
+fn lines(style: &str, inner: &str) -> Vec<(String, f32)> {
+    use rinch_core::dom::CaretAffinity;
+    use rinch_dom::text_query as tq;
+    let (d, c) = lay_out(style, inner);
     let n = d.tree.get(c.0).unwrap();
     let il = n.text_layout.as_ref().expect("the div is an IFC root");
     il.layout
         .lines()
         .map(|l| {
-            (
-                il.text_content[l.text_range()].to_string(),
-                l.metrics().offset,
+            let r = l.text_range();
+            let x = tq::caret_position_for_offset_layout_with_affinity(
+                &il.layout,
+                r.start,
+                CaretAffinity::Downstream,
             )
+            .0;
+            (il.text_content[r].to_string(), x)
         })
         .collect()
 }
@@ -204,4 +217,154 @@ fn a_wrapping_space_then_break_spaces_break_between_them() {
     );
     assert_lines(&l, &[("", 65.5), ("gggcccc", 4.0), ("b", 1.70), ("", 65.5)]);
     assert!(l[2].0.starts_with("        b"), "{l:?}");
+}
+
+/// A word in a plain `<span>`, then its parent's collapsible space, then
+/// `pre` spaces: Chrome finds that run as if it were in the word's text node
+/// (review of #1897), and breaks before the `pre` spaces whether or not
+/// the word fits. Main and the first head of #1897 kept the first two words
+/// on one overflowing line.
+#[test]
+fn a_collapsible_space_after_a_closing_span_breaks_before_pre_spaces() {
+    let l = lines(
+        "width:47px;text-align:right;white-space:normal",
+        "<span>dd</span> <span style=\"white-space:pre\">    dd</span> ee",
+    );
+    assert_lines(&l, &[("dd", 27.41), ("dd", 9.41), ("ee", 28.34)]);
+    // With an inline box before the word, in a `pre-line` root: the first
+    // head of #1897 put the box on a line of its own.
+    let l = lines(
+        "width:48px;text-align:right;white-space:pre-line",
+        "<b style=\"display:inline-block;width:12px;height:10px\"></b>\
+         <span>bbb</span> <span style=\"white-space:pre\">    dd</span>",
+    );
+    assert_lines(&l, &[("bbb", 18.61), ("dd", 10.41)]);
+}
+
+/// A paragraph with no `pre` spaces is laid out as main lays it out
+/// (review of #1897): the wrapping-space-then-`break-spaces` break belongs
+/// to the `pre`-space seams only. Here, on the #1426 edge-box path, the
+/// first head of #1897 broke between the padded span's `pre-wrap` spaces
+/// and the root's `break-spaces` ones, so the `pre-wrap` spaces stopped
+/// hanging (line 1 at 3.38) and the caret at the start of line 2 was drawn
+/// at the end of line 1. Main's answer is kept: 18.88 (Chrome 16.88, a
+/// separate difference), `   cc` at 64.22 after the span's end padding, and
+/// the caret at the start of line 2 is on line 2.
+#[test]
+fn break_spaces_after_a_padded_span_without_pre_spaces_are_main_s() {
+    use rinch_core::dom::CaretAffinity;
+    use rinch_dom::text_query as tq;
+    let style = "width:96px;text-align:right;white-space:break-spaces";
+    let html = "aaaa<span style=\"white-space:pre-wrap;padding:0 2px\">bbbb   </span>   cc";
+    let l = lines(style, html);
+    assert_lines(&l, &[("aaaabbbb", 18.88), ("cc", 64.22)]);
+    let (d, c) = lay_out(style, html);
+    let il = d.tree.get(c.0).unwrap().text_layout.as_ref().unwrap();
+    let second = il.layout.lines().nth(1).unwrap();
+    let (y0, y1) = (
+        second.metrics().block_min_coord,
+        second.metrics().block_max_coord,
+    );
+    let (_, y) = tq::caret_position_for_offset_layout_with_affinity(
+        &il.layout,
+        second.text_range().start,
+        CaretAffinity::Downstream,
+    );
+    assert!(
+        y >= y0 - 0.5 && y <= y1 + 0.5,
+        "caret y {y} on line 2 ({y0}..{y1})"
+    );
+}
+
+/// A line whose trailing run is `pre` spaces then a collapsible one: the
+/// collapsible space hangs, the `pre` spaces are content (#1243's second
+/// item). parley counted the whole run as hanging and nothing sent the
+/// paragraph through the hang pass (main: 11.81).
+#[test]
+fn pre_spaces_before_a_hanging_space_are_content() {
+    let l = lines(
+        "width:60px;text-align:right;white-space:normal",
+        "<span style=\"white-space:pre\">  dddd  </span>  ccccd",
+    );
+    assert_lines(&l, &[("dddd", 2.81), ("ccccd", 13.64)]);
+}
+
+/// A word of a `pre` element, then the root's collapsible spaces, then `pre`
+/// spaces: the word does not wrap, so the run after it breaks only when the
+/// line already overflows — here it does not, and Chrome keeps one line.
+#[test]
+fn a_collapsible_space_after_a_pre_word_breaks_only_after_an_overflow() {
+    let l = lines(
+        &format!("{RIGHT_50};white-space:normal"),
+        "<span style=\"white-space:pre\">aaaa</span>  <span style=\"white-space:pre\">  dd</span>",
+    );
+    assert_lines(&l, &[("aaaa   dd", 0.0)]);
+}
+
+/// A known difference, tracked in #1898 (review of #1897): the word and a
+/// collapsible space split into two text nodes, after an inline box. Chrome
+/// keeps the box with `mmmmm` and breaks before the `pre` space (`mmmmm` at
+/// 8.92, ` ee` at 69.34); rinch takes the run as a text node of its own,
+/// which the line does not overflow before, so it breaks after the box.
+/// Main had `mmmmm` at 17.92. Pinned so a change shows.
+#[test]
+fn known_difference_split_word_after_a_box() {
+    use rinch_core::dom::DomDocument;
+    let (mut d, c) = lay_out(
+        "width:88px;text-align:right;white-space:normal",
+        "<b style=\"display:inline-block;width:12px;height:10px\"></b>mmmmm \
+         <span style=\"white-space:pre\"> </span> ee",
+    );
+    // Split `mmmmm ` into `mmmmm` and ` `.
+    let t = d.get_children(c)[1];
+    d.set_text_content(t, "mmmmm");
+    let sp = d.create_text(" ");
+    let pre = d.get_children(c)[2];
+    d.insert_before(c, sp, pre);
+    d.resolve_layout(801.0, 600.0);
+    let il = d.tree.get(c.0).unwrap().text_layout.as_ref().unwrap();
+    let texts: Vec<String> = il
+        .layout
+        .lines()
+        // A line holding only the box has no text range of its own.
+        .map(|l| {
+            il.text_content
+                .get(l.text_range())
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(texts, ["", "mmmmm", "ee"], "Chrome: [\"mmmmm\", \"ee\"]");
+}
+
+/// No `pre` run here starts right after wrapping text, so only parley's
+/// lines tell that the paragraph needs the seams (`ifc::pre_seams_needed`):
+/// parley went back to its break after `hh ` when the `pre` text overflowed,
+/// so its line ends right before the `pre` text. Chrome lets the `pre-wrap`
+/// spaces after it hang and keeps `hh eeee` together.
+#[test]
+fn a_line_parley_ends_before_pre_text_takes_the_seams() {
+    let l = lines(
+        "width:70px;text-align:left;white-space:nowrap",
+        "<span style=\"white-space:normal\">hh </span><span style=\"white-space:normal\">  </span>\
+         <span style=\"white-space:pre\">eeee  </span><span style=\"white-space:pre-wrap\">    c</span>",
+    );
+    assert_lines(&l, &[("hh eeee", 0.0), ("c", 0.0)]);
+}
+
+/// parley broke after a `pre` run, before an inline box (main: the five
+/// `pre` spaces, then the box and three spaces on a line of their own), where
+/// `white-space: pre` allows no break; Chrome keeps the run, the box and the
+/// trailing `pre-wrap` spaces on one line, the spaces hanging. A line parley
+/// ended in a `pre` space sends the paragraph to the seams.
+#[test]
+fn a_pre_run_before_an_inline_box_is_not_broken() {
+    let (d, c) = lay_out(
+        "width:115px;text-align:left;white-space:pre-wrap",
+        "<span style=\"white-space:pre\">     </span>\
+         <b style=\"display:inline-block;font-weight:normal\">dmqksqymr</b>   ",
+    );
+    let il = d.tree.get(c.0).unwrap().text_layout.as_ref().unwrap();
+    assert_eq!(il.layout.len(), 1, "one line, as in Chrome 155");
 }
