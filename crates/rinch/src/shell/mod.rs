@@ -24,6 +24,15 @@ pub mod rinch_runtime;
 pub mod screenshot;
 #[cfg(feature = "desktop")]
 pub mod softbuffer_renderer;
+// Wired into the desktop present path by #1865 PR 3; until then only its
+// tests use it.
+#[cfg(feature = "gpu")]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod split_compositor;
+#[cfg(all(test, feature = "gpu"))]
+mod split_compositor_1865_tests;
+#[cfg(all(test, feature = "gpu"))]
+mod split_slices_1865_tests;
 pub mod types;
 #[cfg(feature = "desktop")]
 pub mod window;
