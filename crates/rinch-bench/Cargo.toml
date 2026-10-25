@@ -26,6 +26,8 @@ rinch-dom = { workspace = true, features = ["software-renderer"] }
 rinch = { workspace = true, features = ["desktop"] }
 rinch-platform = { workspace = true }
 parley = { workspace = true }
+# The Vello painter's image type, for `vello_paint_split`'s GPU frame (#1865).
+peniko = "0.6"
 # The theme's and the component library's stylesheets, for `drawer_toggle`.
 rinch-components = { workspace = true }
 rinch-theme = { workspace = true }

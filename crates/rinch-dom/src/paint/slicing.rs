@@ -6,8 +6,9 @@
 //! reached ([`super::painter::Painter::split_surface`]) and nothing open
 //! around it is a group effect, the surface leaves the scene and gets a
 //! **region** R (its content box's bounding box, snapped out to whole device
-//! pixels) and an **above** scene in R's own coordinates. From then on every
-//! draw is routed by its device bounds:
+//! pixels, and one pixel further left: Vello's antialiasing reaches a pixel
+//! left of a fractional edge) and **above** scenes. From then on every draw is
+//! routed by its device bounds (grown a pixel left, for the same reason):
 //!
 //! - disjoint from every R: the window's scene (**below**) only, unclipped;
 //! - inside one R: that surface's above scene only;
@@ -102,16 +103,12 @@ pub(crate) struct Slice {
     pub(crate) out: SurfaceSlice,
     /// R as a rect (empty when off-screen).
     pub(crate) r: Rect,
-    /// The transform slices are encoded under: the identity (see `split`).
-    pub(crate) to_r: Affine,
     pub(crate) above_in: Scene,
     pub(crate) above_in_draws: usize,
     /// Started when the first entry open at the split closes.
     pub(crate) above_out: Option<Scene>,
     pub(crate) above_out_draws: usize,
-    /// How many entries were open at the split.
-    pub(crate) depth: usize,
-    /// How many of those are still open (`depth` until the first closes).
+    /// How many of the entries open at the split are still open.
     pub(crate) remaining: usize,
 }
 
@@ -191,37 +188,32 @@ fn whole_pixel_rect(t: Affine, r: Rect) -> Option<Rect> {
     (whole(m.x0) && whole(m.y0) && whole(m.x1) && whole(m.y1)).then_some(m)
 }
 
-/// `t` under the slice's pre-transform: the identity leaves `t` exactly as it
-/// was, so the window's scene encodes what it always has.
-pub(crate) fn pre(pre: Affine, t: Affine) -> Affine {
-    if pre == Affine::IDENTITY { t } else { pre * t }
+/// `b` grown one pixel left: Vello's antialiasing of a fractional
+/// horizontal edge reaches the pixel left of the shape's bounds (#1894
+/// review), so routing must treat that pixel as touched.
+fn spill(b: Rect) -> Rect {
+    Rect::new(b.x0 - 1.0, b.y0, b.x1, b.y1)
 }
 
-pub(crate) fn push_open(scene: &mut Scene, entry: &Open, at: Affine) {
+pub(crate) fn push_open(scene: &mut Scene, entry: &Open) {
     use super::vello_painter::{push_clip_into, push_layer_into};
     match entry {
         Open::Clip {
             fill,
             transform,
             shape,
-        } => push_clip_into(scene, *fill, pre(at, *transform), shape),
+        } => push_clip_into(scene, *fill, *transform, shape),
         Open::Layer {
             blend,
             opacity,
             transform,
             bounds,
-        } => push_layer_into(scene, *blend, *opacity, pre(at, *transform), bounds),
+        } => push_layer_into(scene, *blend, *opacity, *transform, bounds),
         Open::Isolated {
             opacity,
             transform,
             bounds,
-        } => push_layer_into(
-            scene,
-            BlendMode::Normal,
-            *opacity,
-            pre(at, *transform),
-            bounds,
-        ),
+        } => push_layer_into(scene, BlendMode::Normal, *opacity, *transform, bounds),
     }
 }
 
@@ -271,8 +263,9 @@ impl Slicing {
         &mut self,
         below: &mut Scene,
         bounds: Option<Rect>,
-        op: &dyn Fn(&mut Scene, Affine),
+        op: &dyn Fn(&mut Scene),
     ) {
+        let bounds = bounds.map(spill);
         let mut to_below = true;
         let mut across = false;
         for s in &mut self.slices {
@@ -296,8 +289,7 @@ impl Slicing {
             } else {
                 s.above_in_draws += 1;
             }
-            let to_r = s.to_r;
-            op(s.current(), to_r);
+            op(s.current());
             match bounds {
                 Some(b) if contains(s.r, b) => to_below = false,
                 _ => across = true,
@@ -309,14 +301,14 @@ impl Slicing {
             } else {
                 self.close_inverse(below);
             }
-            op(below, Affine::IDENTITY);
+            op(below);
         }
     }
 
     /// Mirror a push into every above scene and record it.
     pub(crate) fn push(&mut self, below: &mut Scene, entry: Open) {
         self.close_inverse(below);
-        push_open(below, &entry, Affine::IDENTITY);
+        push_open(below, &entry);
         if let Open::Layer {
             blend,
             bounds,
@@ -329,9 +321,11 @@ impl Slicing {
             // backdrop without the surface in it (D5): unless an isolated
             // layer opened after the split holds it, the frame must be
             // painted in-scene.
-            let b = transform.transform_rect_bbox(bounds.bounding_box());
+            let b = spill(transform.transform_rect_bbox(bounds.bounding_box()));
             for s in &mut self.slices {
-                let isolated = self.open[s.depth.min(self.open.len())..]
+                // Opened after the split, or after the last of the entries
+                // open at it closed: what `s` is drawn into now.
+                let isolated = self.open[s.remaining.min(self.open.len())..]
                     .iter()
                     .any(|o| matches!(o, Open::Isolated { .. }));
                 if !isolated && !s.r.is_zero_area() && overlaps(b, s.r) {
@@ -340,8 +334,7 @@ impl Slicing {
             }
         }
         for s in &mut self.slices {
-            let to_r = s.to_r;
-            push_open(s.current(), &entry, to_r);
+            push_open(s.current(), &entry);
         }
         self.open.push(entry);
     }
@@ -362,7 +355,7 @@ impl Slicing {
                     None => {
                         let mut out = Scene::new();
                         for o in &self.open[..index] {
-                            push_open(&mut out, o, s.to_r);
+                            push_open(&mut out, o);
                         }
                         s.above_out = Some(out);
                     }
@@ -374,8 +367,12 @@ impl Slicing {
         self.open.pop();
     }
 
-    /// Take `split` out of the scene, or say why not.
-    pub(crate) fn split(&mut self, split: &SurfaceSplit) -> SplitVerdict {
+    /// Take `split` out of the scene, or say why not. Below's inverse clip is
+    /// closed first: it is cut for the regions so far, and a draw after this
+    /// split must open one with this region's hole too (#1894 review: a draw
+    /// across the second region landed in below inside it).
+    pub(crate) fn split(&mut self, below: &mut Scene, split: &SurfaceSplit) -> SplitVerdict {
+        self.close_inverse(below);
         if self.open.iter().any(|o| match o {
             Open::Clip { .. } => false,
             Open::Layer { blend, opacity, .. } => {
@@ -389,7 +386,10 @@ impl Slicing {
             return SplitVerdict::InScene(Refusal::Transform);
         }
         let b = split.node_transform.transform_rect_bbox(split.content);
-        let snapped = Rect::new(b.x0.floor(), b.y0.floor(), b.x1.ceil(), b.y1.ceil());
+        // Snapped out to whole pixels, and a pixel further left, where Vello's
+        // antialiasing of a fractional edge reaches (a resampled frame paints
+        // the pixel left of its box).
+        let snapped = Rect::new(b.x0.floor() - 1.0, b.y0.floor(), b.x1.ceil(), b.y1.ceil());
         let r = snapped.intersect(self.window);
         let r = if r.width() > 0.0 && r.height() > 0.0 {
             r
@@ -408,8 +408,7 @@ impl Slicing {
         // R's origin: Vello's output for a pixel depends on where the target
         // puts it (an MSAA sample on a curve's edge flips under a translation,
         // 16 levels; #1718's note on partial frames). The renderer draws each
-        // into a target reaching R's far corner and keeps R.
-        let to_r = Affine::IDENTITY;
+        // into a target covering R and keeps R.
         let image_rect = Rect::new(0.0, 0.0, split.extents.0 as f64, split.extents.1 as f64);
 
         // The surface's own coverage: its image rect under its own clips.
@@ -431,22 +430,18 @@ impl Slicing {
                     super::vello_painter::push_clip_into(
                         &mut mask,
                         Fill::NonZero,
-                        pre(to_r, split.node_transform),
+                        split.node_transform,
                         inner,
                     );
                     clips += 1;
                 }
                 if split.clip_to_content {
-                    mask.push_clip_layer(
-                        Fill::NonZero,
-                        pre(to_r, split.node_transform),
-                        &split.content,
-                    );
+                    mask.push_clip_layer(Fill::NonZero, split.node_transform, &split.content);
                     clips += 1;
                 }
                 mask.fill(
                     Fill::NonZero,
-                    pre(to_r, split.image_transform),
+                    split.image_transform,
                     Color::WHITE,
                     None,
                     &image_rect,
@@ -474,7 +469,7 @@ impl Slicing {
             None => {
                 let mut mask = Scene::new();
                 for c in &clips {
-                    push_open(&mut mask, c, to_r);
+                    push_open(&mut mask, c);
                 }
                 mask.fill(Fill::NonZero, Affine::IDENTITY, Color::WHITE, None, &r);
                 for _ in 0..clips.len() {
@@ -503,15 +498,21 @@ impl Slicing {
                 tainted: false,
             },
             r,
-            to_r,
             above_in: Scene::new(),
             above_in_draws: 0,
             above_out: None,
             above_out_draws: 0,
-            depth: self.open.len(),
             remaining: self.open.len(),
         });
         SplitVerdict::Split
+    }
+
+    /// Taint every split surface: something of unknown bounds that blends
+    /// with its backdrop is painted (an appended scene, the drag ghost).
+    pub(crate) fn taint_all(&mut self) {
+        for s in &mut self.slices {
+            s.out.tainted = true;
+        }
     }
 
     /// The frame's slices; below's inverse clip closed.
@@ -526,5 +527,97 @@ impl Slicing {
                 out
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use peniko::kurbo::{ParamCurveArea, PathEl};
+
+    fn split_at(slicing: &mut Slicing, below: &mut Scene, id: usize, content: Rect) {
+        let verdict = slicing.split(
+            below,
+            &SurfaceSplit {
+                surface_id: id,
+                content,
+                node_transform: Affine::IDENTITY,
+                inner: None,
+                clip_to_content: false,
+                image_transform: Affine::translate((content.x0, content.y0)),
+                extents: (content.width() as u32, content.height() as u32),
+            },
+        );
+        assert_eq!(verdict, SplitVerdict::Split);
+    }
+
+    /// Each subpath's signed area.
+    fn areas(path: &BezPath) -> Vec<f64> {
+        let mut out = Vec::new();
+        let mut sub = BezPath::new();
+        for el in path.elements() {
+            if matches!(el, PathEl::MoveTo(_)) && !sub.elements().is_empty() {
+                out.push(sub.segments().map(|s| s.signed_area()).sum());
+                sub = BezPath::new();
+            }
+            sub.push(*el);
+        }
+        if !sub.elements().is_empty() {
+            out.push(sub.segments().map(|s| s.signed_area()).sum());
+        }
+        out
+    }
+
+    /// The inverse clip, filled non-zero: the window wound one way and every
+    /// region's hole the other, so the holes are holes (#1894 review: wound
+    /// the same way, a region kept its after-content beneath the surface,
+    /// 47 levels). Even-odd would not need it, and misrenders on lavapipe.
+    #[test]
+    fn the_inverse_clip_winds_each_hole_against_the_window() {
+        let mut slicing = Slicing::new(Rect::new(0.0, 0.0, 200.0, 120.0));
+        let mut below = Scene::new();
+        split_at(
+            &mut slicing,
+            &mut below,
+            1,
+            Rect::new(20.0, 12.0, 60.0, 38.0),
+        );
+        split_at(
+            &mut slicing,
+            &mut below,
+            2,
+            Rect::new(100.0, 60.0, 140.0, 86.0),
+        );
+        let a = areas(&slicing.inverse_path());
+        assert_eq!(a.len(), 3, "the window and two holes");
+        assert!(a[0].abs() > 0.0);
+        for hole in &a[1..] {
+            assert!(
+                hole.signum() == -a[0].signum(),
+                "a hole wound as the window is: {a:?}"
+            );
+        }
+    }
+
+    /// A second split closes below's inverse clip, so the next draw across a
+    /// region opens one cut for every region so far.
+    #[test]
+    fn a_split_closes_the_inverse_clip() {
+        let mut slicing = Slicing::new(Rect::new(0.0, 0.0, 200.0, 120.0));
+        let mut below = Scene::new();
+        split_at(
+            &mut slicing,
+            &mut below,
+            1,
+            Rect::new(20.0, 12.0, 60.0, 38.0),
+        );
+        slicing.open_inverse(&mut below);
+        split_at(
+            &mut slicing,
+            &mut below,
+            2,
+            Rect::new(100.0, 60.0, 140.0, 86.0),
+        );
+        assert!(!slicing.inverse_open);
     }
 }

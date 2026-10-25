@@ -646,6 +646,115 @@ pub fn op_full_paint(mut f: PaintFixture) -> PaintFixture {
     f
 }
 
+/// A page painted by the **Vello** painter, the GPU window's: the encoding
+/// walk alone, no GPU. CI's other paint benchmarks measure the software
+/// painter only (#1894 review), and the split-layer path (#1865) lives in
+/// this one: with no GPU surface it must cost nothing, and with one split it
+/// routes every draw over the surface.
+pub struct VelloPaintFixture {
+    pub doc: RinchDocument,
+    pub painter: rinch_dom::paint::vello_painter::VelloPainter,
+    /// The window the frame is opened for slicing over, when it is.
+    pub slicing: Option<peniko::kurbo::Rect>,
+}
+
+impl VelloPaintFixture {
+    /// Paint, and how many surfaces the frame split.
+    fn paint(&mut self) -> usize {
+        use rinch_dom::paint::painter::Painter;
+        self.painter.reset();
+        if let Some(window) = self.slicing {
+            self.painter.begin_slicing(window);
+        }
+        let doc = &mut self.doc;
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            &mut self.painter,
+            1.0,
+            VP,
+            &mut doc.font_cx,
+            &mut doc.layout_cx,
+        );
+        std::hint::black_box(self.painter.take_slices()).len()
+    }
+}
+
+/// The text page of [`setup_full_paint`], painted by the Vello painter on a
+/// frame opened for slicing with no GPU surface in it: the cost of the
+/// split-layer bookkeeping where it does nothing.
+pub fn setup_vello_paint() -> VelloPaintFixture {
+    let PaintFixture { doc, .. } = setup_full_paint();
+    let mut f = VelloPaintFixture {
+        doc,
+        painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
+        slicing: Some(peniko::kurbo::Rect::new(
+            0.0,
+            0.0,
+            SIZE.0 as f64,
+            SIZE.1 as f64,
+        )),
+    };
+    f.paint();
+    f
+}
+
+/// A 640x360 GPU surface split out of the scene, 70 boxes painted over it
+/// (rounded, some translucent) and 70 beside it: every draw after the split
+/// is routed. The frame stays installed for the measured paint.
+pub fn setup_vello_paint_split() -> VelloPaintFixture {
+    let mut doc = new_document();
+    doc.load_css(
+        "body { margin: 0; } .b { position: absolute; width: 30px; height: 20px; \
+         border-radius: 4px; background: rgba(20, 30, 40, 0.6); }",
+    );
+    let mut html = String::from(
+        "<div data-render-surface=\"1\" style=\"position: absolute; left: 80px; top: 60px; \
+         width: 640px; height: 360px\"></div>",
+    );
+    for i in 0..140 {
+        let (x, y) = if i < 70 {
+            (90 + (i % 10) * 62, 70 + (i / 10) * 48)
+        } else {
+            (10 + (i % 10) * 70, 450 + ((i - 70) / 10) * 20)
+        };
+        html.push_str(&format!(
+            "<div class=\"b\" style=\"left: {x}px; top: {y}px\"></div>"
+        ));
+    }
+    let body = doc.body();
+    doc.set_inner_html(body, &html);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    rinch_dom::paint::set_surface_gpu_images(Some(std::collections::HashMap::from([(
+        1,
+        peniko::ImageData {
+            data: peniko::Blob::new(std::sync::Arc::new([])),
+            format: peniko::ImageFormat::Rgba8,
+            alpha_type: peniko::ImageAlphaType::AlphaPremultiplied,
+            width: 640,
+            height: 360,
+        },
+    )])));
+    let mut f = VelloPaintFixture {
+        doc,
+        painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
+        slicing: Some(peniko::kurbo::Rect::new(
+            0.0,
+            0.0,
+            SIZE.0 as f64,
+            SIZE.1 as f64,
+        )),
+    };
+    f.paint();
+    f
+}
+
+/// One Vello paint of the fixture's page.
+pub fn op_vello_paint(mut f: VelloPaintFixture) -> VelloPaintFixture {
+    std::hint::black_box(f.paint());
+    f
+}
+
 /// 40 form fields styled the way an app styles a text input — a 1px border,
 /// a small radius and a blurred `inset` shadow — laid out and painted once
 /// (#974). An inset shadow builds and draws a blurred mask per box per paint,

@@ -4989,6 +4989,7 @@ version = "0.1.0"
 dependencies = [
  "gungraun",
  "parley",
+ "peniko",
  "rinch",
  "rinch-components",
  "rinch-core",

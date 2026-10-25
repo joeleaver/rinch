@@ -137,6 +137,43 @@ fn same_encoding(a: &Scene, b: &Scene) -> bool {
         && format!("{:?}", a.transforms) == format!("{:?}", b.transforms)
         && a.n_paths == b.n_paths
         && a.n_clips == b.n_clips
+        // Glyph runs live in the resources (#1894 review: compared too).
+        && format!("{:?}", a.resources.glyphs) == format!("{:?}", b.resources.glyphs)
+        && a.resources.glyph_runs.len() == b.resources.glyph_runs.len()
+        && a.resources
+            .glyph_runs
+            .iter()
+            .zip(&b.resources.glyph_runs)
+            .all(|(x, y)| {
+                format!("{:?}{:?}", x.transform, x.glyph_transform)
+                    == format!("{:?}{:?}", y.transform, y.glyph_transform)
+                    && x.font_size == y.font_size
+                    && x.hint == y.hint
+                    && x.glyphs == y.glyphs
+                    && x.normalized_coords == y.normalized_coords
+                    && x.font.data.id() == y.font.data.id()
+            })
+        && a.resources.normalized_coords == b.resources.normalized_coords
+}
+
+/// Append `text` in a paragraph at `style` to the page, and lay it out again.
+fn add_text(doc: &mut RinchDocument, style: &str, text: &str) {
+    let body = doc.body();
+    let p = doc.create_element("p");
+    doc.set_attribute(p, "style", style);
+    let t = doc.create_text(text);
+    doc.append_child(p, t);
+    doc.append_child(body, p);
+    doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+}
+
+/// A box after the surface, its style `style`.
+fn after(doc: &mut RinchDocument, style: &str) {
+    let body = doc.body();
+    let e = doc.create_element("div");
+    doc.set_attribute(e, "style", style);
+    doc.append_child(body, e);
+    doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
 }
 
 fn balanced(scene: &Scene) -> bool {
@@ -155,6 +192,11 @@ fn slicing_changes_nothing_where_nothing_splits() {
         &[
             "position: absolute; left: 70px; top: 30px; width: 50px; height: 30px; background: rgba(0, 0, 0, 0.5)",
         ],
+    );
+    add_text(
+        &mut doc,
+        "position: absolute; left: 4px; top: 70px; margin: 0; font: 13px sans-serif",
+        "Glyphs too: the quick brown fox",
     );
     rinch_dom::paint::set_surface_gpu_images(None);
     let mut plain = VelloPainter::new();
@@ -201,9 +243,11 @@ fn a_plain_surface_leaves_the_scene() {
     assert_eq!(on.slices.len(), 1);
     let s = &on.slices[0];
     assert_eq!(s.surface_id, 1);
-    assert_eq!(s.region, (20, 12, 40, 26));
+    // The content box, and the pixel left of it Vello's antialiasing of a
+    // fractional edge can reach (#1894 review).
+    assert_eq!(s.region, (19, 12, 41, 26));
     assert!(matches!(s.own, SliceCoverage::Rect([20, 12, 60, 38])));
-    assert!(matches!(s.ancestors, SliceCoverage::Rect([20, 12, 60, 38])));
+    assert!(matches!(s.ancestors, SliceCoverage::Rect([19, 12, 60, 38])));
     assert!(
         s.above_in.is_none(),
         "the sidebar is nowhere near the surface"
@@ -306,9 +350,9 @@ fn a_whole_pixel_scroller_cuts_the_coverage_rect() {
     let on = paint(&mut doc, true);
     let s = &on.slices[0];
     // The surface is positioned against the scroller now: (20, 32).
-    assert_eq!(s.region, (20, 32, 40, 26));
+    assert_eq!(s.region, (19, 32, 41, 26));
     assert!(matches!(s.own, SliceCoverage::Rect([20, 32, 60, 58])));
-    assert!(matches!(s.ancestors, SliceCoverage::Rect([20, 32, 60, 58])));
+    assert!(matches!(s.ancestors, SliceCoverage::Rect([19, 32, 60, 58])));
 
     // Scrolled so the scroller cuts R's bottom: the ancestors' rect is cut,
     // the surface's own is not.
@@ -319,7 +363,7 @@ fn a_whole_pixel_scroller_cuts_the_coverage_rect() {
     );
     let s = &paint(&mut doc, true).slices[0];
     assert!(matches!(s.own, SliceCoverage::Rect([20, 32, 60, 58])));
-    assert!(matches!(s.ancestors, SliceCoverage::Rect([20, 32, 60, 50])));
+    assert!(matches!(s.ancestors, SliceCoverage::Rect([19, 32, 60, 50])));
 }
 
 /// The card's case (#1887 review): a rounded `overflow: hidden` card, the
@@ -366,7 +410,7 @@ fn a_rounded_card_puts_its_content_in_above_in_and_after_it_in_above_out() {
     doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
     let on = paint(&mut doc, true);
     let s = &on.slices[0];
-    assert_eq!(s.region, (20, 12, 40, 26));
+    assert_eq!(s.region, (19, 12, 41, 26));
     assert!(matches!(s.own, SliceCoverage::Rect([20, 12, 60, 38])));
     let SliceCoverage::Mask(card_mask) = &s.ancestors else {
         panic!("a rounded card's coverage as a rect");
@@ -436,7 +480,16 @@ fn content_between_two_closes_over_a_ring_taints() {
         let on = paint(&mut doc, true);
         assert_eq!(on.slices.len(), 1);
         assert_eq!(on.slices[0].tainted, tainted, "radius {radius}");
-        assert!(on.slices[0].above_out.is_some(), "radius {radius}");
+        let out = on.slices[0]
+            .above_out
+            .as_ref()
+            .expect("the bar is above_out");
+        // The card's clip, still open, replayed at above_out's start.
+        assert!(
+            tags(out, BEGIN_CLIP) >= 1,
+            "radius {radius}: the still-open card is not replayed into above_out"
+        );
+        assert!(balanced(out));
     }
 }
 
@@ -517,5 +570,99 @@ fn the_slice_carries_the_in_scene_image_transform() {
     assert_eq!(
         on.slices[0].device_from_image,
         [1.0, 0.0, 0.0, 1.0, 19.5, 11.5]
+    );
+}
+
+/// A box whose left edge is R's right edge and whose top is fractional:
+/// Vello paints the pixel left of its bounds, inside R, so it is routed
+/// across R, not to below only (#1894 review, 9 levels).
+#[test]
+fn a_box_touching_r_from_the_right_is_routed_across_it() {
+    let mut doc = document("", "", &[]);
+    after(
+        &mut doc,
+        "position: absolute; left: 60px; top: 20.4px; width: 20px; height: 10px; \
+         background: rgb(0, 0, 0)",
+    );
+    let on = paint(&mut doc, true);
+    let above = on.slices[0]
+        .above_in
+        .as_ref()
+        .expect("the box's left antialiased pixel is in R");
+    assert_eq!(draws(above), 1);
+}
+
+/// Routing goes by **device** bounds: a box laid out far from the surface
+/// and moved over it by a transform is above it.
+#[test]
+fn a_transformed_box_is_routed_where_it_lands() {
+    let mut doc = document("", "", &[]);
+    after(
+        &mut doc,
+        "position: absolute; left: 150px; top: 20px; width: 20px; height: 10px; \
+         background: rgb(0, 0, 0); transform: translateX(-120px)",
+    );
+    let on = paint(&mut doc, true);
+    assert!(
+        on.slices[0].above_in.is_some(),
+        "the box moved over the surface is not above it"
+    );
+}
+
+/// Two surfaces, a draw across the first between them (opening below's
+/// inverse clip), then a draw across the second: the inverse clip is
+/// opened again after the second split, with its hole (#1894 review: the
+/// first one, without it, was still open: 49 levels).
+#[test]
+fn a_second_split_reopens_the_inverse_clip_with_its_hole() {
+    let mut doc = document(
+        "",
+        "",
+        &[
+            "position: absolute; left: 10px; top: 30px; width: 70px; height: 14px; \
+           background: rgba(0, 0, 0, 0.5)",
+        ],
+    );
+    let body = doc.body();
+    let second = doc.create_element("div");
+    doc.set_attribute(second, "data-render-surface", "2");
+    doc.set_attribute(
+        second,
+        "style",
+        "position: absolute; left: 100px; top: 60px; width: 40px; height: 26px",
+    );
+    doc.append_child(body, second);
+    after(
+        &mut doc,
+        "position: absolute; left: 90px; top: 80px; width: 70px; height: 14px; \
+         background: rgba(0, 0, 0, 0.5)",
+    );
+    let images = HashMap::from([(1, frame(40, 26)), (2, frame(40, 26))]);
+    let mut count = |slicing: bool| {
+        rinch_dom::paint::set_surface_gpu_images(Some(images.clone()));
+        let mut painter = VelloPainter::new();
+        if slicing {
+            painter.begin_slicing(Rect::new(0.0, 0.0, 200.0, 120.0));
+        }
+        let mut layout_cx: LayoutContext<Brush> = LayoutContext::new();
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            &mut painter,
+            1.0,
+            VIEWPORT,
+            &mut doc.font_cx,
+            &mut layout_cx,
+        );
+        let slices = painter.take_slices();
+        rinch_dom::paint::set_surface_gpu_images(None);
+        (tags(painter.scene(), BEGIN_CLIP), slices.len())
+    };
+    let (plain, _) = count(false);
+    let (sliced, n) = count(true);
+    assert_eq!(n, 2);
+    assert_eq!(
+        sliced,
+        plain + 2,
+        "one inverse clip around each bar, the second cut for both regions"
     );
 }
