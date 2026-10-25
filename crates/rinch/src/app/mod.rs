@@ -2255,7 +2255,7 @@ impl RinchApp {
             let (tx, ty) = drag.ghost_translate(scale);
             // Routed like any draw, so a ghost over a split surface is over it.
             self.painter
-                .append_scene(drag.snapshot.scene(), Affine::translate((tx, ty)));
+                .append_scene(&drag.snapshot, Affine::translate((tx, ty)));
         }
         if let Some((x, y, w_r, h_r)) = self.inspect_highlight {
             Self::paint_inspect_overlay(&mut self.painter, scale, x, y, w_r, h_r);

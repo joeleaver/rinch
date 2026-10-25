@@ -48,11 +48,17 @@ impl VelloPainter {
         }
     }
 
-    /// Append `scene` under `transform`, routed like any draw on a sliced
-    /// frame (bounds unknown: every region it may meet). The runtime's drag
-    /// ghost (#1865).
-    pub fn append_scene(&mut self, scene: &Scene, transform: Affine) {
-        self.draw(|| None, &|s, at| s.append(scene, Some(pre(at, transform))));
+    /// Append `other`'s scene under `transform`, routed like any draw on a
+    /// sliced frame (bounds unknown: every region it may meet). The runtime's
+    /// drag ghost (#1865). A ghost that blends with its backdrop (grayscale)
+    /// over a split surface taints it, as a layer painted in place would.
+    pub fn append_scene(&mut self, other: &VelloPainter, transform: Affine) {
+        if other.reads_backdrop
+            && let Some(slicing) = &mut self.slicing
+        {
+            slicing.taint_all();
+        }
+        self.draw(|| None, |s| s.append(&other.scene, Some(transform)));
     }
 
     /// Paint `op` where it belongs: straight into the scene when the frame

@@ -610,10 +610,17 @@ fn split_slice_shift_probe() {
             let worst = got
                 .iter()
                 .zip(&window)
-                .map(|(a, b)| (0..4).map(|c| (a[c] as i32 - b[c] as i32).abs()).max().unwrap())
+                .map(|(a, b)| {
+                    (0..4)
+                        .map(|c| (a[c] as i32 - b[c] as i32).abs())
+                        .max()
+                        .unwrap()
+                })
                 .max()
                 .unwrap();
-            eprintln!("PHASE at {at:?} shift {shift:?} whole_tiles={whole_tiles}: {differ} differ, worst {worst}");
+            eprintln!(
+                "PHASE at {at:?} shift {shift:?} whole_tiles={whole_tiles}: {differ} differ, worst {worst}"
+            );
         }
     }
     assert_eq!(*errors.lock().unwrap(), Vec::<String>::new());
