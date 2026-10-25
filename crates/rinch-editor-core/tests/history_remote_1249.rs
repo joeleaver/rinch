@@ -339,3 +339,144 @@ fn undo_restores_the_selection_mapped_through_a_peers_insert() {
     assert_eq!(html(&st), "<p>PPabcd</p>");
     assert_eq!(st.selection, Selection::cursor(Pos(5)));
 }
+
+// --- cost: a peer's change and my keystroke cost the history a flat amount ------------
+
+/// A document of 30 paragraphs with my `X` typed into the first, then `n` peer
+/// keystrokes in paragraph 15, each applied the way the collab integration applies
+/// one (a replace of the whole paragraph, not recorded).
+fn after_peer_keystrokes(n: usize) -> EditorState {
+    let paras: String = (0..30).map(|i| format!("<p>paragraph {i}</p>")).collect();
+    let st = state(&paras);
+    let mut st = type_at(&st, 3, "X", 0);
+    let s = st.schema().clone();
+    for k in 0..n {
+        let start: usize = (0..15).map(|i| st.doc.child(i).node_size()).sum();
+        let old = st.doc.child(15).clone();
+        let mut text = String::new();
+        for i in 0..old.child_count() {
+            text.push_str(old.child(i).text().unwrap_or(""));
+        }
+        // Keep the paragraph short, so only the history could grow.
+        if text.len() > 40 {
+            text = "p".into();
+        }
+        text.push((b'A' + (k % 26) as u8) as char);
+        let p = s
+            .branch("paragraph", Fragment::from_node(s.text(&text).unwrap()))
+            .unwrap();
+        st = remote(&st, |tr| {
+            tr.replace_with(start, start + old.node_size(), Fragment::from_node(p))
+                .unwrap();
+        });
+    }
+    st
+}
+
+fn work_of<T>(f: impl FnOnce() -> T) -> (u64, u64, T) {
+    let (w, c) = (
+        rinch_editor_core::plugins::__history_work(),
+        rinch_editor_core::transform::step_map::__step_map_clones(),
+    );
+    let out = f();
+    (
+        rinch_editor_core::plugins::__history_work() - w,
+        rinch_editor_core::transform::step_map::__step_map_clones() - c,
+        out,
+    )
+}
+
+/// Review of #1889: the history used to copy its whole item list on every
+/// transaction and keep every peer change's map, so a peer's keystroke after 64k of
+/// them cost 117 µs (2 µs on main) and a local one 456 µs. The list is persistent
+/// and a run of peer changes folds into one item, so each costs the same however
+/// many came before; an undo copies the maps of its own event, not every map since.
+#[test]
+fn a_peers_change_my_keystroke_and_my_undo_cost_the_same_after_100_or_3000_peer_changes() {
+    let cost = |n: usize| {
+        let st = after_peer_keystrokes(n);
+        let peer = work_of(|| after_one_more(&st)).0;
+        let key = work_of(|| type_at(&st, 4, "Y", 10_000)).0;
+        let (undo_work, undo_clones, undone) = work_of(|| st.run("undo").unwrap());
+        assert_eq!(
+            node_to_html(&Node::clone(undone.doc.child(0))),
+            "<p>paragraph 0</p>",
+            "the undo reverted my X"
+        );
+        (peer, key, undo_work, undo_clones)
+    };
+    let small = cost(100);
+    let large = cost(3000);
+    assert_eq!(
+        small, large,
+        "(peer, keystroke, undo, undo map clones) work"
+    );
+    assert!(small.2 <= 8 && small.3 <= 8, "{small:?}");
+}
+
+fn after_one_more(st: &EditorState) -> EditorState {
+    let s = st.schema().clone();
+    let start: usize = (0..15).map(|i| st.doc.child(i).node_size()).sum();
+    let old = st.doc.child(15).clone();
+    let p = s
+        .branch("paragraph", Fragment::from_node(s.text("pZ").unwrap()))
+        .unwrap();
+    remote(st, |tr| {
+        tr.replace_with(start, start + old.node_size(), Fragment::from_node(p))
+            .unwrap();
+    })
+}
+
+/// Past the depth cap the oldest events go, and so do the maps before them: the
+/// history holds the cap's events however long the session.
+#[test]
+fn events_past_the_depth_cap_are_dropped_with_their_maps() {
+    let schema = Rc::new(Schema::starter_kit());
+    let slice = slice_from_html(&schema, "<p>abc</p>").unwrap();
+    let doc = schema.branch("doc", slice.content.clone()).unwrap();
+    let mut st = EditorState::create(
+        schema,
+        doc,
+        vec![
+            Rc::new(rinch_editor_core::BaseCommandsPlugin) as Rc<dyn rinch_editor_core::Plugin>,
+            Rc::new(rinch_editor_core::HistoryPlugin::with(500, 5)),
+        ],
+    );
+    for i in 0..200u64 {
+        st = type_at(&st, 2, "x", i * 1000);
+        st = insert_remote(&st, 1, "P");
+    }
+    let depth = |st: &EditorState| {
+        st.plugin_state::<rinch_editor_core::plugins::HistoryState>(
+            rinch_editor_core::plugins::HISTORY_KEY,
+        )
+        .unwrap()
+        .undo_depth()
+    };
+    assert_eq!(depth(&st), 5);
+    // An undo walks only its own event and what came after it.
+    let (w, _, st) = work_of(|| st.run("undo").unwrap());
+    assert!(w <= 8, "undo walked {w} items");
+    let mut st = st;
+    let mut undos = 1;
+    while let Some(n) = st.run("undo") {
+        st = n;
+        undos += 1;
+    }
+    assert_eq!(undos, 5);
+}
+
+/// An undo of a long typing group after a peer's change maps each of its steps
+/// through a slice of one mapping. A slice shares the maps: the undo copies each
+/// map a few times, not the whole mapping once per step (which was 50 × 50 here).
+#[test]
+fn an_undo_maps_each_step_without_copying_the_mapping() {
+    let mut st = state("<p>abc</p>");
+    for i in 0..50u64 {
+        st = type_at(&st, 2 + i as usize, "x", i);
+    }
+    let st = insert_remote(&st, 1, "P");
+    let (_, clones, undone) = work_of(|| st.run("undo").unwrap());
+    assert_eq!(html(&undone), "<p>Pabc</p>");
+    assert!(clones <= 5 * 50, "{clones} step maps copied");
+}

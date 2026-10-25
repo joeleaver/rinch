@@ -809,9 +809,13 @@ its inverted steps as a transaction that doesn't re-enter history, and restores 
 recorded selection. A change the history does not record (a collaboration peer's, any
 transaction with `add_to_history(false)`) is kept as its step maps, and an undo maps each
 inverted step through everything after it before applying it (ProseMirror's
-`Branch.addMaps` / `popEvent`, #1249): it lands on the text where it now is. A step that no
-longer maps (its text was deleted) or no longer applies is skipped, and the undo is still
-used up. `undo` / `redo` are the only history entry points.
+`Branch.addMaps` / `popEvent`, #1249): it lands on the text where it now is. The maps of
+such a change are reconstructed from the documents before and after it, diffed position by
+position (marks and block types ignored), so where identical content makes that ambiguous an
+undo can land on the wrong copy (#1895). A step that no longer maps (its text was deleted)
+or no longer applies is skipped, and the undo is still used up; an undo of typing a peer has
+since typed inside deletes only the typed text, around theirs. `undo` / `redo` are the only
+history entry points.
 
 ## Plugins
 

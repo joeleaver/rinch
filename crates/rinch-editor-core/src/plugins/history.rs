@@ -3,9 +3,9 @@
 //! This is the **only** undo system (design §5; it replaces the old engine's two
 //! competing interpreters). History stores **inverted Steps**, not byte positions:
 //! a recorded event is "the steps that, applied in reverse, revert this edit",
-//! plus the selection to restore and a timestamp. Undo applies an event's inverse
-//! steps as a transaction (`addToHistory=false`); redo re-applies the forward
-//! steps. The same event machinery serves both branches.
+//! plus the selection to restore. Undo applies an event's inverse steps as a
+//! transaction (`addToHistory=false`); redo re-applies the forward steps. The same
+//! event machinery serves both branches.
 //!
 //! **Changes the history does not record** (a transaction with `addToHistory=false`
 //! that changes the document: a collaboration peer's edit, a cure) are kept as
@@ -18,6 +18,15 @@
 //! of the event still undoes. Before #1249 such a change was ignored, so an undo
 //! replayed its steps at their old positions — in a peer's text.
 //!
+//! **Cost.** A branch is a persistent list (newest item first), so the state
+//! copy every transaction makes is a pointer copy, and recording a step or a
+//! peer's change is O(1). A run of a peer's changes with no recorded step between
+//! them is folded into one item ([`StepMap::compose`]), so the list holds about as
+//! many items as the retained events have steps, however long the peers type.
+//! Events past the depth cap are hidden at once and dropped from the list in a
+//! batch. [`__history_work`] counts the items each operation touches; the pins in
+//! `tests/history_remote_1249.rs` hold it flat.
+//!
 //! Grouping: consecutive **typing** transactions within a time window merge into a
 //! single undo step (so a word is one undo, not one-per-keystroke); any non-typing
 //! transaction (a mark, a block change, a split) is its own group, and an explicit
@@ -28,11 +37,12 @@
 //! which tests pin by spacing timestamps apart.
 
 use std::any::Any;
+use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::command::Command;
 use crate::keymap::KeyBinding;
-use crate::model::Node;
+use crate::model::{Fragment, Node, Slice};
 use crate::plugin::{Plugin, PluginKey};
 use crate::selection::Selection;
 use crate::state::{EditorState, Transaction};
@@ -45,6 +55,26 @@ pub const HISTORY_KEY: PluginKey = PluginKey("history");
 /// Transaction meta key marking an undo/redo (so the plugin shifts branches
 /// instead of recording a new event).
 const HISTORY_META: &str = "history";
+/// How many events past the depth cap a branch hides before it drops them from
+/// its list in one pass (ProseMirror's `DEPTH_OVERFLOW`).
+const DEPTH_OVERFLOW: usize = 20;
+
+thread_local! {
+    static HISTORY_WORK: Cell<u64> = const { Cell::new(0) };
+}
+
+fn work(n: usize) {
+    HISTORY_WORK.with(|w| w.set(w.get() + n as u64));
+}
+
+/// How many history items this thread's history has created or walked. A work
+/// counter for the cost pins (#1249): recording a keystroke or a peer's change
+/// touches a fixed number of items, whatever the history holds. Not part of the
+/// API.
+#[doc(hidden)]
+pub fn __history_work() -> u64 {
+    HISTORY_WORK.with(|w| w.get())
+}
 
 /// Marks a transaction as an undo or redo for the history plugin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,19 +93,17 @@ struct HistoryMeta {
     typing: bool,
 }
 
-/// What an event's first (oldest) item carries: the selection to restore, the
-/// time of its last recorded transaction, and whether it is a typing group
-/// (mergeable).
+/// What an event's first (oldest) item carries: the selection to restore and
+/// whether it is a typing group.
 #[derive(Clone)]
 struct EventInfo {
     selection: Selection,
-    time: u64,
     typing: bool,
 }
 
 /// One entry of a branch: the forward step map of a step, and for a recorded
 /// step its inverse. A map-only item (`step: None`) is a change the history did
-/// not record, or the map of a step an undo applied.
+/// not record (`peer`), or the map of a step an undo applied.
 #[derive(Clone)]
 struct Item {
     map: StepMap,
@@ -85,6 +113,8 @@ struct Item {
     /// How many items back the item whose map this one inverts sits (PM's
     /// `mirrorOffset`), so mapping through both recovers a deleted position.
     mirror_offset: Option<usize>,
+    /// A change the history did not record: the next one folds into it.
+    peer: bool,
 }
 
 impl Item {
@@ -94,96 +124,161 @@ impl Item {
             step: None,
             event: None,
             mirror_offset,
+            peer: false,
+        }
+    }
+}
+
+struct Cons {
+    item: Item,
+    next: Items,
+}
+
+/// A persistent list of items, newest first: cloning it is a pointer copy, and
+/// pushing shares everything older.
+#[derive(Clone, Default)]
+struct Items(Option<Rc<Cons>>);
+
+impl Items {
+    fn push(&self, item: Item) -> Items {
+        work(1);
+        Items(Some(Rc::new(Cons {
+            item,
+            next: self.clone(),
+        })))
+    }
+
+    fn head(&self) -> Option<&Item> {
+        self.0.as_ref().map(|c| &c.item)
+    }
+
+    fn tail(&self) -> Items {
+        self.0.as_ref().map(|c| c.next.clone()).unwrap_or_default()
+    }
+
+    /// Newest first.
+    fn iter(&self) -> impl Iterator<Item = &Item> {
+        let mut cur = self.0.as_deref();
+        std::iter::from_fn(move || {
+            let c = cur?;
+            work(1);
+            cur = c.next.0.as_deref();
+            Some(&c.item)
+        })
+    }
+
+    /// The list of `items`, oldest first, pushed onto `self`.
+    fn extend(mut self, items: impl IntoIterator<Item = Item>) -> Items {
+        for item in items {
+            self = self.push(item);
+        }
+        self
+    }
+}
+
+impl Drop for Items {
+    // Iteratively, so a long list does not overflow the stack.
+    fn drop(&mut self) {
+        let mut cur = self.0.take();
+        while let Some(rc) = cur {
+            match Rc::try_unwrap(rc) {
+                Ok(mut cons) => cur = cons.next.0.take(),
+                Err(_) => break,
+            }
         }
     }
 }
 
 /// One side of the history (the undo stack or the redo stack). Port of
-/// prosemirror-history's `Branch`, without its item compression.
+/// prosemirror-history's `Branch` on a persistent list.
 #[derive(Clone, Default)]
 struct Branch {
-    items: Vec<Rc<Item>>,
+    items: Items,
+    /// Events an undo (or redo) can reach.
     event_count: usize,
+    /// Older events past the depth cap, still in `items` until a batch drops them.
+    hidden: usize,
+    /// The newest event's time and typing flag while it may take more typing
+    /// (set by recording, cleared by an undo or redo).
+    last: Option<(u64, bool)>,
 }
 
 impl Branch {
-    /// The newest event's info.
-    fn last_event(&self) -> Option<&EventInfo> {
-        if self.event_count == 0 {
-            return None;
-        }
-        self.items.iter().rev().find_map(|i| i.event.as_ref())
-    }
-
     /// Record `tr`'s steps (inverted against their pre-step documents). `event`
     /// starts a new event; `None` appends them to the newest one.
     fn add_transform(&mut self, tr: &Transaction, mut event: Option<EventInfo>) {
+        let time = tr.time();
+        self.last = match (&event, self.last) {
+            (Some(e), _) => Some((time, e.typing)),
+            (None, Some((_, typing))) => Some((time, typing)),
+            (None, None) => None,
+        };
+        let mut items = std::mem::take(&mut self.items);
         for (i, step) in tr.steps().iter().enumerate() {
             let info = event.take();
             if info.is_some() {
                 self.event_count += 1;
             }
-            self.items.push(Rc::new(Item {
+            items = items.push(Item {
                 map: step.get_map(),
                 step: Some(step.invert(&tr.docs()[i])),
                 event: info,
                 mirror_offset: None,
-            }));
+                peer: false,
+            });
         }
+        self.items = items;
     }
 
     /// Record a change this branch's events must be mapped through (PM's
-    /// `addMaps`). Nothing to map when the branch holds no event.
+    /// `addMaps`), folded into the previous item when that is a change of the same
+    /// kind. Nothing to map when the branch holds no event.
     fn add_maps(&mut self, maps: &[StepMap]) {
         if self.event_count == 0 {
+            *self = Branch::default();
             return;
         }
-        self.items.extend(
-            maps.iter()
-                .map(|m| Rc::new(Item::map_only(m.clone(), None))),
-        );
-    }
-
-    /// The maps of items `from..to`, with their mirror relations (PM's
-    /// `remapping`).
-    fn remapping(&self, from: usize, to: usize) -> Mapping {
-        let mut maps = Mapping::new();
-        for i in from..to {
-            let item = &self.items[i];
-            let mirror = item
-                .mirror_offset
-                .filter(|&off| i >= from + off)
-                .map(|off| maps.len() - off);
-            match mirror {
-                Some(m) => maps.append_map_mirrored(item.map.clone(), m),
-                None => maps.append_map(item.map.clone()),
-            }
+        for map in maps {
+            let folded = match self.items.head() {
+                Some(head) if head.peer => head.map.compose(map),
+                _ => None,
+            };
+            self.items = match folded {
+                Some(map) => self.items.tail().push(Item {
+                    peer: true,
+                    ..Item::map_only(map, None)
+                }),
+                None => self.items.push(Item {
+                    peer: true,
+                    ..Item::map_only(map.clone(), None)
+                }),
+            };
         }
-        maps
     }
 
-    /// Drop the oldest events (and any maps before them) until at most `depth`
-    /// remain.
+    /// Hide the oldest events past `depth`, and drop hidden ones from the list
+    /// once there are enough of them.
     fn cut_to_depth(&mut self, depth: usize) {
-        if self.event_count <= depth {
+        if self.event_count > depth {
+            self.hidden += self.event_count - depth;
+            self.event_count = depth;
+        }
+        if self.hidden <= DEPTH_OVERFLOW {
             return;
         }
-        let mut skip = self.event_count - depth;
-        let cut = self
-            .items
-            .iter()
-            .position(|i| {
-                if i.event.is_some() {
-                    if skip == 0 {
-                        return true;
-                    }
-                    skip -= 1;
-                }
-                false
-            })
-            .unwrap_or(self.items.len());
-        self.items.drain(..cut);
-        self.event_count = depth;
+        let mut kept: Vec<Item> = Vec::new();
+        let mut seen = 0;
+        for item in self.items.iter() {
+            if seen == self.event_count {
+                break;
+            }
+            if item.event.is_some() {
+                seen += 1;
+            }
+            kept.push(item.clone());
+        }
+        self.items = Items::default().extend(kept.into_iter().rev());
+        self.hidden = 0;
     }
 
     /// Build the transaction that reverts the newest event (PM's `popEvent`).
@@ -193,25 +288,35 @@ impl Branch {
     /// inverse re-inserted is recovered). A step that no longer maps or applies
     /// is skipped. Returns the transaction (selection not set yet), the
     /// selection to restore, the branch without the event, and the event.
-    fn pop_event(
-        &self,
-        state: &EditorState,
-    ) -> Option<(Transaction, Selection, Branch, EventInfo)> {
+    fn pop_event(&self, state: &EditorState) -> Option<(Transaction, Selection, Branch, EventInfo)> {
         if self.event_count == 0 {
             return None;
         }
-        let len = self.items.len();
-        let end = (0..len).rev().find(|&i| self.items[i].event.is_some())?;
+        // The newest event's items and everything after them, oldest first.
+        let mut seg: Vec<&Item> = Vec::new();
+        let mut rest = Items::default();
+        let mut cur = &self.items;
+        while let Some(c) = cur.0.as_deref() {
+            work(1);
+            seg.push(&c.item);
+            if c.item.event.is_some() {
+                rest = c.next.clone();
+                break;
+            }
+            cur = &c.next;
+        }
+        seg.reverse();
+        let len = seg.len();
         let mut tr = state.tr();
         let mut remap: Option<Mapping> = None;
         let mut map_from = 0usize;
-        let mut add_before: Vec<Rc<Item>> = Vec::new();
-        let mut add_after: Vec<Rc<Item>> = Vec::new();
-        for i in (end..len).rev() {
-            let item = &self.items[i];
+        let mut add_before: Vec<Item> = Vec::new();
+        let mut add_after: Vec<Item> = Vec::new();
+        for i in (0..len).rev() {
+            let item = seg[i];
             let Some(step) = &item.step else {
                 if remap.is_none() {
-                    let m = self.remapping(end, i + 1);
+                    let m = remapping(&seg, 0, i + 1);
                     map_from = m.len();
                     remap = Some(m);
                 }
@@ -220,19 +325,39 @@ impl Branch {
                 continue;
             };
             if let Some(remap) = remap.as_mut() {
-                add_before.push(Rc::new(Item::map_only(item.map.clone(), None)));
+                add_before.push(Item::map_only(item.map.clone(), None));
+                let after = remap.slice(map_from, remap.len());
+                if let Some(pieces) = split_delete(step.as_ref(), &after, tr.doc()) {
+                    // A delete of text a peer has since typed inside: delete my
+                    // pieces around theirs, back to front.
+                    let mut maps = Vec::new();
+                    for &(from, to) in pieces.iter().rev() {
+                        let piece = ReplaceStep::new(from, to, Slice::empty());
+                        if tr.step(Box::new(piece)).is_ok() {
+                            let map = tr.mapping().maps().last().cloned().unwrap_or_else(StepMap::empty);
+                            add_after.push(Item::map_only(map.clone(), None));
+                            maps.push(map);
+                        }
+                    }
+                    drop(after);
+                    map_from -= 1;
+                    for map in maps {
+                        remap.append_map(map);
+                    }
+                    if let Some(info) = &item.event {
+                        let selection = info.selection.map(tr.doc(), &remap.slice(map_from, remap.len()));
+                        return Some(self.finish(tr, selection, rest, add_before, add_after, info));
+                    }
+                    continue;
+                }
+                drop(after);
                 let mut applied = None;
                 if let Some(mapped) = step.map(&remap.slice(map_from, remap.len()))
                     && tr.step(mapped).is_ok()
                 {
-                    let map = tr
-                        .mapping()
-                        .maps()
-                        .last()
-                        .cloned()
-                        .unwrap_or_else(StepMap::empty);
+                    let map = tr.mapping().maps().last().cloned().unwrap_or_else(StepMap::empty);
                     let offset = add_after.len() + add_before.len();
-                    add_after.push(Rc::new(Item::map_only(map.clone(), Some(offset))));
+                    add_after.push(Item::map_only(map.clone(), Some(offset)));
                     applied = Some(map);
                 }
                 map_from -= 1;
@@ -249,23 +374,87 @@ impl Branch {
                     Some(r) => info.selection.map(tr.doc(), &r.slice(map_from, r.len())),
                     None => info.selection.clone(),
                 };
-                let event_count = self.event_count - 1;
-                let mut items = if event_count == 0 {
-                    Vec::new()
-                } else {
-                    self.items[..end].to_vec()
-                };
-                if event_count > 0 {
-                    add_before.reverse();
-                    items.extend(add_before);
-                    items.extend(add_after);
-                }
-                let remaining = Branch { items, event_count };
-                return Some((tr, selection, remaining, info.clone()));
+                return Some(self.finish(tr, selection, rest, add_before, add_after, info));
             }
         }
         None
     }
+
+    /// `pop_event`'s result: the branch left behind is the items before the event,
+    /// then the maps it walked past (oldest first), then the maps of what the undo
+    /// applied.
+    fn finish(
+        &self,
+        tr: Transaction,
+        selection: Selection,
+        rest: Items,
+        mut add_before: Vec<Item>,
+        add_after: Vec<Item>,
+        info: &EventInfo,
+    ) -> (Transaction, Selection, Branch, EventInfo) {
+        let event_count = self.event_count - 1;
+        let remaining = if event_count == 0 {
+            Branch::default()
+        } else {
+            add_before.reverse();
+            Branch {
+                items: rest.extend(add_before.into_iter().chain(add_after)),
+                event_count,
+                hidden: self.hidden,
+                last: None,
+            }
+        };
+        (tr, selection, remaining, info.clone())
+    }
+}
+
+/// An inverse step that deletes text (the undo of my typing), split around the
+/// text a later change put inside it, when it did: the ranges, in `doc`'s
+/// positions, of the chars it deletes that are still there, each mapped on its
+/// own (its start after what was inserted before it, its end before what was
+/// inserted after it). ProseMirror maps the delete as one range, which grows over
+/// a peer's text typed inside mine, so the undo deleted their text too (review of
+/// #1889). `None` when the delete maps as one range, or is not a delete inside one
+/// textblock.
+fn split_delete(step: &dyn Step, mapping: &Mapping, doc: &Node) -> Option<Vec<(usize, usize)>> {
+    let r = step.as_any().downcast_ref::<ReplaceStep>()?;
+    if r.slice.size() > 0 || r.to <= r.from || r.to - r.from > 4096 {
+        return None;
+    }
+    let mut pieces: Vec<(usize, usize)> = Vec::new();
+    for p in r.from..r.to {
+        let (a, b) = (mapping.map(p, 1), mapping.map(p + 1, -1));
+        if b <= a {
+            continue;
+        }
+        match pieces.last_mut() {
+            Some(last) if last.1 == a => last.1 = b,
+            _ => pieces.push((a, b)),
+        }
+    }
+    if pieces.len() < 2 {
+        return None;
+    }
+    let (first, last) = (pieces[0].0, pieces[pieces.len() - 1].1);
+    let (ra, rb) = (doc.resolve(crate::pos::Pos(first)).ok()?, doc.resolve(crate::pos::Pos(last)).ok()?);
+    (ra.parent().is_textblock() && ra.parent().same_ref(rb.parent())).then_some(pieces)
+}
+
+/// The maps of `seg[from..to]` (oldest first), with their mirror relations (PM's
+/// `remapping`).
+fn remapping(seg: &[&Item], from: usize, to: usize) -> Mapping {
+    let mut maps = Mapping::new();
+    for (i, item) in seg.iter().enumerate().take(to).skip(from) {
+        let mirror = item
+            .mirror_offset
+            .filter(|&off| i >= from + off)
+            .map(|off| maps.len() - off);
+        match mirror {
+            Some(m) => maps.append_map_mirrored(item.map.clone(), m),
+            None => maps.append_map(item.map.clone()),
+        }
+    }
+    maps
 }
 
 /// The history plugin's folded state.
@@ -302,72 +491,260 @@ fn is_typing(tr: &Transaction) -> bool {
 /// Whether a new typing transaction at `time` should merge into the last
 /// recorded done event.
 fn should_merge(hist: &HistoryState, typing: bool, time: u64, delay: u64) -> bool {
-    if hist.break_group || !typing {
+    if hist.break_group || !typing || hist.done.event_count == 0 {
         return false;
     }
-    match hist.done.last_event() {
-        Some(last) => last.typing && time >= last.time && time - last.time < delay,
+    match hist.done.last {
+        Some((last_time, last_typing)) => {
+            last_typing && time >= last_time && time - last_time < delay
+        }
         None => false,
     }
 }
 
-/// Slide the newest done event's window forward to `time` (the group keeps its
-/// selection).
-fn touch_last_event(branch: &mut Branch, time: u64) {
-    if let Some(item) = branch.items.iter_mut().rev().find(|i| i.event.is_some())
-        && let Some(info) = &mut Rc::make_mut(item).event
-    {
-        info.time = time;
+/// One position's worth of a document, for [`unrecorded_maps`]: what a step map
+/// cares about, and nothing it does not (marks, a block's type or attributes).
+#[derive(PartialEq)]
+enum Tok<'a> {
+    Open,
+    Close,
+    Char(char),
+    Leaf(&'a str),
+}
+
+/// The tokens of positions `from..to` of `content` (which starts at `base`).
+fn tokens<'a>(content: &'a Fragment, base: usize, from: usize, to: usize, out: &mut Vec<Tok<'a>>) {
+    let mut pos = base;
+    for child in content.children() {
+        let end = pos + child.node_size();
+        if end <= from {
+            pos = end;
+            continue;
+        }
+        if pos >= to {
+            break;
+        }
+        if let Some(text) = child.text() {
+            let lo = from.saturating_sub(pos);
+            let hi = (to - pos).min(end - pos);
+            out.extend(text.chars().skip(lo).take(hi - lo).map(Tok::Char));
+        } else if child.is_leaf() {
+            out.push(Tok::Leaf(child.type_name()));
+        } else {
+            if pos >= from {
+                out.push(Tok::Open);
+            }
+            tokens(child.content(), pos + 1, from, to, out);
+            if end - 1 < to {
+                out.push(Tok::Close);
+            }
+        }
+        pos = end;
     }
 }
 
 /// The maps the history keeps for a change it does not record: each step's map,
-/// narrowed for a replace to the range the documents before and after it
-/// actually differ in (PM's `findDiffStart` / `findDiffEnd`, as its view reads a
-/// DOM change).
+/// narrowed for a replace to the positions that actually changed, and none for a
+/// step that moves nothing (a mark, a block's type or attributes).
 ///
 /// A collaboration peer's edit arrives as a replace of every block it changed
 /// (`rinch-editor-collab`'s remote integration), and a position inside a replaced
 /// range has nowhere to map: an undo step there is dropped. Narrowed to what
 /// changed — the char a peer typed — a step of mine elsewhere in that paragraph
-/// maps past it and still undoes. Everything outside the narrowed range is the
-/// same content in both documents, so the map is exact for it.
+/// maps past it and still undoes. The narrowing compares positions, not nodes: a
+/// char is the same char whatever its marks, and a block's open and close tokens
+/// are the same whatever its type, so a peer's bold, heading or alignment moves
+/// no position and keeps my edit undoable (review of #1889). Everything outside
+/// the narrowed range is the same in both documents, so the map is exact for it.
 fn unrecorded_maps(tr: &Transaction) -> Vec<StepMap> {
     let docs = tr.docs();
-    tr.steps()
-        .iter()
-        .enumerate()
-        .map(|(i, step)| {
+    let steps = tr.steps();
+    // Several replaces in one change (the collab integration replaces each changed
+    // block, back to front): diffed as one range of the document before and after
+    // all of them, so a block one step deletes and another inserts elsewhere (a
+    // peer's move) is found as the move it is, not as blocks paired by place.
+    if steps.len() > 1
+        && steps
+            .iter()
+            .all(|s| s.as_any().downcast_ref::<ReplaceStep>().is_some())
+    {
+        let maps = tr.mapping().maps();
+        let back = |i: usize, pos: usize, assoc: i32| {
+            maps[..i]
+                .iter()
+                .rev()
+                .fold(pos, |p, m| m.invert().map(p, assoc))
+        };
+        let (mut lo, mut hi) = (usize::MAX, 0);
+        for (i, step) in steps.iter().enumerate() {
+            let r = step.as_any().downcast_ref::<ReplaceStep>().unwrap();
+            lo = lo.min(back(i, r.from, -1));
+            hi = hi.max(back(i, r.to, 1));
+        }
+        let (new_lo, new_hi) = (tr.mapping().map(lo, -1), tr.mapping().map(hi, 1));
+        if let Some(found) = narrowed(&docs[0], tr.doc(), lo, hi, new_lo.min(new_hi), new_hi, true) {
+            return found.into_iter().collect();
+        }
+    }
+    let mut out = Vec::with_capacity(steps.len());
+    for (i, step) in steps.iter().enumerate() {
+        let Some(r) = step.as_any().downcast_ref::<ReplaceStep>() else {
             let map = step.get_map();
-            let Some(r) = step.as_any().downcast_ref::<ReplaceStep>() else {
-                return map;
-            };
-            let before = &docs[i];
-            let after = docs.get(i + 1).unwrap_or(tr.doc());
-            let (a, b) = (before.content(), after.content());
-            let Some(mut start) = a.find_diff_start(b, 0) else {
-                return StepMap::empty();
-            };
-            let Some((mut end_a, mut end_b)) = a.find_diff_end(b, a.size(), b.size()) else {
-                return StepMap::empty();
-            };
-            // The change repeats the content beside it (`ab` → `abab`): the two
-            // scans overlap, and the range is placed at `start` (PM's `findDiff`).
-            if end_a < start && a.size() < b.size() {
-                end_b = start + (end_b - end_a);
-                end_a = start;
-            } else if end_b < start {
-                end_a = start + (end_a - end_b);
-                end_b = start;
+            if !map.is_empty() {
+                out.push(map);
             }
-            start = start.min(end_a);
-            if end_a - start < r.to - r.from {
-                StepMap::new(vec![start, end_a - start, end_b - start])
+            continue;
+        };
+        let after = docs.get(i + 1).unwrap_or(tr.doc());
+        let to_new = r.from + r.slice.size();
+        if let Some(Some(map)) = narrowed(&docs[i], after, r.from, r.to, r.from, to_new, false) {
+            out.push(map);
+        }
+    }
+    out
+}
+
+/// The map of a change that turned positions `from..to` of `before` into
+/// `new_from..new_to` of `after` (everything outside them the same), narrowed to
+/// the tokens that differ: `Some(None)` when none do. With `exact`, `None` when
+/// the difference is too large to diff run by run (the caller then maps step by
+/// step); otherwise one range covers it.
+fn narrowed(
+    before: &Node,
+    after: &Node,
+    from: usize,
+    to: usize,
+    new_from: usize,
+    new_to: usize,
+    exact: bool,
+) -> Option<Option<StepMap>> {
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    tokens(before.content(), 0, from, to, &mut a);
+    tokens(after.content(), 0, new_from, new_to, &mut b);
+    let prefix = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let room = a.len().min(b.len()) - prefix;
+    let suffix = a
+        .iter()
+        .rev()
+        .zip(b.iter().rev())
+        .take(room)
+        .take_while(|(x, y)| x == y)
+        .count();
+    let (old, new) = (a.len() - prefix - suffix, b.len() - prefix - suffix);
+    if old == 0 && new == 0 {
+        return Some(None);
+    }
+    let start = from + prefix;
+    let ranges = if old == 0 || new == 0 {
+        vec![start, old, new]
+    } else {
+        match token_diff(&a[prefix..prefix + old], &b[prefix..prefix + new]) {
+            Some(edits) => edits
+                .into_iter()
+                .flat_map(|(at, o, n)| [start + at, o, n])
+                .collect(),
+            None if exact => return None,
+            None => vec![start, old, new],
+        }
+    };
+    Some(Some(StepMap::new(ranges)))
+}
+
+/// The changes that turn `a` into `b`, as `(position in a, deleted, inserted)`
+/// runs in order: a shortest edit script (Myers). Separate changes in one replace
+/// (a peer's keystrokes at both ends of a paragraph, a block wrapped in a quote:
+/// an open token before it and a close token after) stay separate, so a position
+/// between them maps exactly. `None` when the two differ too much for that to be
+/// worth it, and the caller keeps one range.
+fn token_diff(a: &[Tok<'_>], b: &[Tok<'_>]) -> Option<Vec<(usize, usize, usize)>> {
+    const MAX_EDITS: usize = 64;
+    const MAX_LEN: usize = 8192;
+    let (n, m) = (a.len() as isize, b.len() as isize);
+    if a.len() + b.len() > MAX_LEN {
+        return None;
+    }
+    let max = (a.len() + b.len()).min(MAX_EDITS) as isize;
+    let off = max + 1;
+    let idx = |k: isize| (k + off) as usize;
+    let mut v = vec![0isize; 2 * off as usize + 1];
+    let mut trace: Vec<Vec<isize>> = Vec::new();
+    let mut found = false;
+    'outer: for d in 0..=max {
+        trace.push(v.clone());
+        let mut k = -d;
+        while k <= d {
+            let mut x = if k == -d || (k != d && v[idx(k - 1)] < v[idx(k + 1)]) {
+                v[idx(k + 1)]
             } else {
-                map
+                v[idx(k - 1)] + 1
+            };
+            let mut y = x - k;
+            while x < n && y < m && a[x as usize] == b[y as usize] {
+                x += 1;
+                y += 1;
             }
-        })
-        .collect()
+            v[idx(k)] = x;
+            if x >= n && y >= m {
+                found = true;
+                break 'outer;
+            }
+            k += 2;
+        }
+    }
+    if !found {
+        return None;
+    }
+    // Walk back: `true` for an op that consumes `a` (a delete), `false` for an
+    // insert; equal runs are skipped.
+    let (mut x, mut y) = (n, m);
+    let mut ops: Vec<(isize, bool)> = Vec::new();
+    for (d, v) in trace.iter().enumerate().rev() {
+        let d = d as isize;
+        let k = x - y;
+        let prev_k = if k == -d || (k != d && v[idx(k - 1)] < v[idx(k + 1)]) {
+            k + 1
+        } else {
+            k - 1
+        };
+        let prev_x = v[idx(prev_k)];
+        let prev_y = prev_x - prev_k;
+        while x > prev_x && y > prev_y {
+            x -= 1;
+            y -= 1;
+        }
+        if d > 0 {
+            if x == prev_x {
+                ops.push((x, false));
+            } else {
+                ops.push((prev_x, true));
+            }
+        }
+        x = prev_x;
+        y = prev_y;
+    }
+    ops.reverse();
+    // Group the ops that sit at one place in `a` (a delete run and the inserts
+    // beside it) into one range.
+    let mut out: Vec<(usize, usize, usize)> = Vec::new();
+    let mut del_end = 0usize;
+    for (at, del) in ops {
+        let at = at as usize;
+        match out.last_mut() {
+            Some(last) if at <= del_end => {
+                if del {
+                    last.1 += 1;
+                    del_end += 1;
+                } else {
+                    last.2 += 1;
+                }
+            }
+            _ => {
+                out.push((at, usize::from(del), usize::from(!del)));
+                del_end = at + usize::from(del);
+            }
+        }
+    }
+    Some(out)
 }
 
 /// The history plugin. `new_group_delay` is the typing-merge window in
@@ -452,7 +829,6 @@ impl Plugin for HistoryPlugin {
                 // and merged with the next keystroke.
                 let event = EventInfo {
                     selection: old.selection.clone(),
-                    time: tr.time(),
                     typing: meta.typing,
                 };
                 match meta.action {
@@ -476,14 +852,11 @@ impl Plugin for HistoryPlugin {
             None => {
                 if tr.add_to_history() && tr.doc_changed() {
                     let typing = is_typing(tr);
-                    let time = tr.time();
-                    if should_merge(&hist, typing, time, self.new_group_delay) {
+                    if should_merge(&hist, typing, tr.time(), self.new_group_delay) {
                         hist.done.add_transform(tr, None);
-                        touch_last_event(&mut hist.done, time);
                     } else {
                         let event = EventInfo {
                             selection: old.selection.clone(),
-                            time,
                             typing,
                         };
                         hist.done.add_transform(tr, Some(event));
@@ -497,6 +870,9 @@ impl Plugin for HistoryPlugin {
                         let maps = unrecorded_maps(tr);
                         hist.done.add_maps(&maps);
                         hist.undone.add_maps(&maps);
+                    } else {
+                        hist.done = Branch::default();
+                        hist.undone = Branch::default();
                     }
                 } else if tr.selection_set() || tr.stored_marks_set() {
                     // A caret-only move or a stored-mark toggle (e.g. cursor-bold)
