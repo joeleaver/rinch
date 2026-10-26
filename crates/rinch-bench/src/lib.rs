@@ -1475,3 +1475,151 @@ pub fn setup_collab_table_keystroke(rows: usize) -> CollabFixture {
         session,
     }
 }
+
+/// Type one character into cell `col` of the middle row of the table (block 1).
+fn collab_table_type_in(
+    state: &rinch_editor_core::EditorState,
+    col: usize,
+) -> rinch_editor_core::EditorState {
+    use rinch_editor_core::{Pos, Selection};
+    let doc = &state.doc;
+    let table = doc.child(1);
+    let row = table.child_count() / 2;
+    let mut at = doc.child(0).node_size() + 1;
+    at += (0..row).map(|r| table.child(r).node_size()).sum::<usize>() + 1;
+    let cells = table.child(row);
+    at += (0..col).map(|k| cells.child(k).node_size()).sum::<usize>() + 1;
+    at += 1 + 3;
+    let mut tr = state.tr();
+    tr.set_selection(Selection::cursor(Pos(at)));
+    tr.insert_text("x").expect("insert");
+    state.apply(tr)
+}
+
+/// Two peers on a table of `rows` × [`COLLAB_TABLE_COLS`] cells: the host and a guest
+/// joined from its snapshot.
+fn collab_table_peers(
+    rows: usize,
+) -> (
+    Rc<rinch_editor_core::Schema>,
+    (
+        rinch_editor_core::EditorState,
+        rinch_editor_collab::CollabSession,
+    ),
+    (
+        rinch_editor_core::EditorState,
+        rinch_editor_collab::CollabSession,
+    ),
+) {
+    use rinch_editor_core::{EditorState, Plugin, default_plugins};
+    let schema = Rc::new(rinch_editor_core::Schema::starter_kit());
+    let host = collab_table_state(&schema, rows);
+    let host_session = rinch_editor_collab::CollabSession::new(&host).expect("session");
+    let guest_session =
+        rinch_editor_collab::CollabSession::from_bytes(&host_session.snapshot()).expect("join");
+    let mut plugins: Vec<Rc<dyn Plugin>> = default_plugins();
+    plugins.push(Rc::new(rinch_editor_collab::CollabPlugin));
+    let guest = EditorState::create(
+        schema.clone(),
+        guest_session.projected_doc(&schema).expect("read"),
+        plugins,
+    );
+    (schema, (host, host_session), (guest, guest_session))
+}
+
+/// The guest types in `col`, records it, and hands over its delta.
+fn collab_table_peer_types(
+    schema: &rinch_editor_core::Schema,
+    guest: &mut (
+        rinch_editor_core::EditorState,
+        rinch_editor_collab::CollabSession,
+    ),
+    col: usize,
+) -> Vec<u8> {
+    let next = collab_table_type_in(&guest.0, col);
+    guest
+        .1
+        .record_local(schema, &guest.0.doc, &next.doc)
+        .expect("projects");
+    guest.0 = next;
+    guest.1.save_incremental().expect("drain")
+}
+
+/// A peer's keystroke for [`op_collab_integrate`] to integrate: the receiving
+/// editor's state and session, and the delta.
+pub struct CollabIntegrateFixture {
+    pub state: rinch_editor_core::EditorState,
+    pub session: rinch_editor_collab::CollabSession,
+    pub delta: Vec<u8>,
+}
+
+/// A table of `rows` × [`COLLAB_TABLE_COLS`] cells shared by two peers. The guest
+/// types in a cell of the middle row and the host integrates it, once to warm up,
+/// then the guest types again: the host's integrate of that second keystroke is
+/// what [`op_collab_integrate`] measures.
+///
+/// It should not depend on `rows`: the peer changed one cell. #1241 measured it
+/// reading back the whole document (18 ms at 1000 rows, release).
+pub fn setup_collab_table_integrate(rows: usize) -> CollabIntegrateFixture {
+    alloc::reserve();
+    let (schema, mut host, mut guest) = collab_table_peers(rows);
+    let delta = collab_table_peer_types(&schema, &mut guest, 2);
+    host.0 = host
+        .1
+        .integrate_incremental(&host.0, &delta)
+        .expect("integrates")
+        .expect("changes");
+    let delta = collab_table_peer_types(&schema, &mut guest, 2);
+    CollabIntegrateFixture {
+        state: host.0,
+        session: host.1,
+        delta,
+    }
+}
+
+/// Integrate the peer's keystroke into the editor: the converged document as a
+/// transaction, applied (the history's map of it included).
+pub fn op_collab_integrate(mut f: CollabIntegrateFixture) -> CollabIntegrateFixture {
+    f.state = f
+        .session
+        .integrate_incremental(&f.state, &f.delta)
+        .expect("integrates")
+        .expect("changes");
+    f
+}
+
+/// Live collaboration in a table of `rows` × [`COLLAB_TABLE_COLS`] cells: the host
+/// has typed in one cell of the middle row, the guest in another, and the host has
+/// just integrated the guest's keystroke. What [`op_collab_keystroke`] then
+/// projects is the host's next keystroke in its own cell, the first after a peer's
+/// change (#1241: any remote change used to make it read the whole table again).
+pub fn setup_collab_table_keystroke_after_remote(rows: usize) -> CollabFixture {
+    alloc::reserve();
+    let (schema, mut host, mut guest) = collab_table_peers(rows);
+    for _ in 0..2 {
+        let next = collab_table_type_in(&host.0, 1);
+        host.1
+            .record_local(&schema, &host.0.doc, &next.doc)
+            .expect("projects");
+        host.0 = next;
+        let mine = host.1.save_incremental().expect("drain");
+        let theirs = collab_table_peer_types(&schema, &mut guest, 2);
+        guest.0 = guest
+            .1
+            .integrate_incremental(&guest.0, &mine)
+            .expect("integrates")
+            .expect("changes");
+        host.0 = host
+            .1
+            .integrate_incremental(&host.0, &theirs)
+            .expect("integrates")
+            .expect("changes");
+    }
+    let next = collab_table_type_in(&host.0, 1);
+    CollabFixture {
+        schema,
+        before: host.0.doc.clone(),
+        after: next.doc.clone(),
+        session: host.1,
+    }
+}

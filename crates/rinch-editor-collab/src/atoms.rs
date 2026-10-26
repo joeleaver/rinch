@@ -290,6 +290,20 @@ pub(crate) fn text_scans() -> u64 {
     TEXT_SCANS.with(Cell::get)
 }
 
+/// Both of this thread's counts, for [`set_counts`].
+pub(crate) fn counts() -> (u64, u64) {
+    (
+        OVERLAY_ENTRY_READS.with(Cell::get),
+        TEXT_SCANS.with(Cell::get),
+    )
+}
+
+/// Put both of this thread's counts back to what [`counts`] gave.
+pub(crate) fn set_counts((entries, scans): (u64, u64)) {
+    OVERLAY_ENTRY_READS.with(|c| c.set(entries));
+    TEXT_SCANS.with(|c| c.set(scans));
+}
+
 /// How many [`ATOMS`] entries this thread has read so far (`testing::overlay_entry_reads`).
 #[cfg_attr(not(feature = "test-util"), allow(dead_code))]
 pub(crate) fn overlay_entry_reads() -> u64 {

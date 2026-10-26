@@ -27,11 +27,78 @@
 //! Both leave the [`CollabDoc`] converged; turning the converged CRDT back into model
 //! [`Step`](rinch_editor_core::Step)s is [`crate::remote`]'s job.
 
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
+
+use yrs::types::{Path, PathSegment};
 use yrs::updates::decoder::Decode;
-use yrs::{Origin, ReadTxn, StateVector, Transact, Update, merge_updates_v1};
+use yrs::{
+    DeepObservable, Observable, Origin, ReadTxn, StateVector, Transact, Update, merge_updates_v1,
+};
 
 use crate::error::Result;
 use crate::projection::{CollabDoc, ENGINE_APPLY_ORIGIN, lock_outbox};
+
+/// What the last update [`CollabDoc::apply_decoded`] applied changed: what an
+/// integrate needs to read back only that (#1241).
+#[derive(Debug, Clone)]
+pub(crate) struct AppliedChanges {
+    /// The document's [`CollabDoc::epoch`] before the update was applied.
+    pub epoch: u64,
+    /// The path from the `content` root to every shared type the update changed
+    /// (its children or its keys), as yrs reports it: `Index` segments count the
+    /// array's live items, `Key` segments name a map's key. Empty for the root
+    /// itself (a top-level block inserted or deleted). Types the update created are
+    /// not here; their parent is.
+    pub paths: Vec<Path>,
+    /// Whether the update changed something no path describes (an `atoms` entry),
+    /// failed to apply, was applied while a client's clocks had a gap or updates were
+    /// parked on missing dependencies (yrs then reports no change inside a type created
+    /// after the gap: see [`CollabDoc::apply_decoded`]), or changed more than
+    /// [`Self::MAX_PATHS`] types: then only a whole read knows what the document is.
+    pub spoiled: bool,
+}
+
+impl AppliedChanges {
+    /// Past this many changed types an integrate reads the whole document anyway.
+    pub(crate) const MAX_PATHS: usize = 4096;
+
+    /// The top-level blocks the update changed, by index, sorted and distinct;
+    /// `None` when it inserted or deleted one (or is [spoiled](Self::spoiled)).
+    pub(crate) fn top_level_blocks(&self) -> Option<Vec<u32>> {
+        if self.spoiled {
+            return None;
+        }
+        let mut out = Vec::new();
+        for path in &self.paths {
+            match path.front() {
+                Some(PathSegment::Index(i)) => out.push(*i),
+                _ => return None,
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        Some(out)
+    }
+}
+
+/// The upper bound of every client's clocks among the blocks `update` carries, gaps
+/// and all (`Update::state_vector` stops at a client's first gap).
+pub(crate) fn clocks_inserted(update: &Update) -> StateVector {
+    let mut sv = StateVector::default();
+    for (client, ranges) in update.insertions(true).iter() {
+        if let Some(end) = ranges.iter().map(|r| r.end).max() {
+            sv.set_max(*client, end);
+        }
+    }
+    sv
+}
+
+fn lock_changes(changes: &Mutex<AppliedChanges>) -> std::sync::MutexGuard<'_, AppliedChanges> {
+    changes
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 impl CollabDoc {
     /// The CRDT's current state vector — the insertions this replica has seen. What to
@@ -67,17 +134,92 @@ impl CollabDoc {
     /// can leave the document unprojectable (issue #196).
     ///
     /// Merging foreign bytes is the only thing that can leave a void container at the
-    /// top level (or fill one), so it is where `top_void` is recomputed: one pass over
-    /// the top-level shapes, beside an integrate that rebuilds the whole document anyway.
+    /// top level (or fill one), so it is where `top_void` is recomputed. A top-level
+    /// block's shape depends on its own subtree alone, so when the top level held no
+    /// void container and the update inserted or deleted no top-level block, only the
+    /// blocks it changed are checked; otherwise every top-level shape is, in one pass.
     /// It is recomputed on a failed apply too — yrs may have integrated part of it.
+    ///
+    /// What the update changed is noted for the integrate that follows
+    /// ([`AppliedChanges`], #1241): the path from the top level to every shared type yrs
+    /// reports changed (`Event::path`), from a deep observer on the `content` root that
+    /// lives for this one transaction, so a local edit pays nothing for it.
     pub(crate) fn apply_decoded(&mut self, update: Update) -> Result<()> {
+        let before = self.epoch.load(Ordering::Relaxed);
+        let changes = Arc::new(Mutex::new(AppliedChanges {
+            epoch: before,
+            paths: Vec::new(),
+            spoiled: false,
+        }));
+        // Review of #1926. yrs reports a change only inside a type that existed before
+        // the transaction: one whose creator's clock is below the transaction's
+        // `before_state` for that client. A client's state stops at the first gap in
+        // its clocks (a `Skip`: an update that arrived ahead of one it follows, or a
+        // merged update with a hole), so while a gap is open every type its client
+        // created after it counts as new, whoever changes it, and a change inside one
+        // fires no event and leaves no path. Updates parked on missing dependencies and
+        // integrated now are the same. So while any client holds clocks past its state
+        // (`CollabDoc::clocks_seen`, the upper bound of every update applied) or updates
+        // are parked, the record is spoiled: the whole document is read, and no table's
+        // cell index is carried (a map it holds may be gone).
+        {
+            let txn = self.doc.transact();
+            let state = txn.state_vector();
+            let gap = self
+                .clocks_seen
+                .iter()
+                .any(|(client, &clock)| clock > state.get(client));
+            if gap || txn.has_missing_updates() {
+                lock_changes(&changes).spoiled = true;
+            }
+        }
+        self.clocks_seen.merge(clocks_inserted(&update));
         let applied = {
+            // Both observers are dropped after the transaction, which fires them as it
+            // commits: locals drop in reverse order, `txn` first.
+            let atoms = self.doc.get_or_insert_map(crate::atoms::ATOMS);
+            let sink = changes.clone();
+            let _deep = self.content.observe_deep(move |_, events| {
+                let mut c = lock_changes(&sink);
+                for e in events.iter() {
+                    if c.paths.len() >= AppliedChanges::MAX_PATHS {
+                        c.spoiled = true;
+                        break;
+                    }
+                    c.paths.push(e.path());
+                }
+            });
+            // A changed `atoms` entry changes the read of whichever block holds the
+            // atom it is for, which no path names.
+            let sink = changes.clone();
+            let _atoms = atoms.observe(move |_, _| lock_changes(&sink).spoiled = true);
             let mut txn = self
                 .doc
                 .transact_mut_with(Origin::from(ENGINE_APPLY_ORIGIN));
             txn.apply_update(update)
         };
-        self.top_void = crate::projection::holds_void(&self.doc.transact(), &self.content);
+        let mut changes = std::mem::replace(
+            &mut *lock_changes(&changes),
+            AppliedChanges {
+                epoch: before,
+                paths: Vec::new(),
+                spoiled: true,
+            },
+        );
+        // An apply that failed may have integrated part of the update: nothing it
+        // noted is trusted.
+        changes.spoiled |= applied.is_err();
+        self.top_void = {
+            let txn = self.doc.transact();
+            match changes.top_level_blocks() {
+                Some(touched) if !self.top_void => touched.into_iter().any(|i| {
+                    crate::projection::child_map(&txn, &self.content, i)
+                        .is_some_and(|m| crate::projection::map_is_void(&txn, &m))
+                }),
+                _ => crate::projection::holds_void(&txn, &self.content),
+            }
+        };
+        self.last_apply = Some(changes);
         applied?;
         Ok(())
     }

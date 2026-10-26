@@ -152,6 +152,13 @@
 //! wherever the whole-table reconcile would write more than the cell (a filler, a cell
 //! left clipped by concurrent merges), and the table is reconciled whole.
 //!
+//! The same index lets an integrate read a peer's change of a cell's blocks back from
+//! that cell alone (`CollabDoc::read_changed`, by the cell's key in the CRDT:
+//! [`changed_cells`], [`places_of`]), and is carried through every transaction known to
+//! leave the table's grid alone — a cell write, a change of other blocks, local or a
+//! peer's — so neither side reads the table again until its grid may have changed
+//! ([`carry_cell_indexes`]).
+//!
 //! ## What concurrency can still lose
 //!
 //! Convergence holds for every interleaving; these are the edits that lose to another:
@@ -801,6 +808,16 @@ fn read_cell<T: ReadTxn>(txn: &T, cell: &MapRef, cs: usize, rs: usize) -> Result
             attrs = attrs.with(key, AttrValue::Int(extent as i64));
         }
     }
+    Ok(CellData {
+        type_name,
+        attrs,
+        children: read_cell_blocks(txn, cell)?,
+    })
+}
+
+/// A cell map's blocks as the read gives them: its visible children, or one empty
+/// paragraph when it has none (rule 3).
+pub(crate) fn read_cell_blocks<T: ReadTxn>(txn: &T, cell: &MapRef) -> Result<Vec<NodeData>> {
     let mut children: Vec<NodeData> = match node_content(txn, cell) {
         Some(content) => read_children(txn, &content)?
             .into_iter()
@@ -811,11 +828,38 @@ fn read_cell<T: ReadTxn>(txn: &T, cell: &MapRef, cs: usize, rs: usize) -> Result
     if children.is_empty() {
         children.push(empty_block());
     }
-    Ok(CellData {
-        type_name,
-        attrs,
-        children,
-    })
+    Ok(children)
+}
+
+/// Where the changes at `paths` (each a path from a table's node map down, as yrs
+/// reports it: `rows`, the row's index in the `rows` array, `cells`, the column id,
+/// `content`, …) are: inside the blocks of the cells anchored at these `(row index,
+/// column id)` keys, distinct, in the order met. `None` when any path changed
+/// anything else — the table's attrs, its lines, a row, a row's cell map, a cell's
+/// own keys — which may move the grid.
+pub(crate) fn changed_cells(paths: &[&[yrs::types::PathSegment]]) -> Option<Vec<(u32, String)>> {
+    use yrs::types::PathSegment::{Index, Key};
+    let mut cells: Vec<(u32, String)> = Vec::new();
+    for path in paths {
+        let [
+            Key(rows_key),
+            Index(r),
+            Key(cells_key),
+            Key(col),
+            Key(content),
+            ..,
+        ] = path
+        else {
+            return None;
+        };
+        if &**rows_key != ROWS || &**cells_key != CELLS || &**content != CONTENT {
+            return None;
+        }
+        if !cells.iter().any(|(rr, c)| rr == r && **c == **col) {
+            cells.push((*r, col.to_string()));
+        }
+    }
+    Some(cells)
 }
 
 /// Whether a table node map is void: no live row, or no live column. Read off the
@@ -1388,7 +1432,8 @@ pub(crate) fn one_changed_cell<'a>(b: &'a Node, a: &'a Node) -> Option<CellEdit<
 
 /// Where the cells of one table are in the CRDT: what [`locate_cell`] keeps between
 /// keystrokes so that the next one in the table finds its cell without reading the
-/// table.
+/// table, and what an integrate keeps so that a peer's keystroke in a cell is read
+/// back from that cell alone (#1241).
 struct CellIndex {
     /// The document's [`CollabDoc::epoch`] when the index was last true.
     epoch: u64,
@@ -1399,16 +1444,44 @@ struct CellIndex {
     map: MapRef,
     /// Per row, per cell in model order, its cell map (`None` for a filler).
     cells: Vec<Vec<Option<MapRef>>>,
+    /// The other way round: the place of each cell the read shows, by where it is
+    /// keyed in the CRDT — the index of its anchor row's line in the `rows` array and
+    /// its anchor column's id — which is how yrs names a change inside it.
+    places: HashMap<(u32, String), (usize, usize)>,
 }
 
+/// The cells of a table read that an index holds: per row, per cell in model order,
+/// its cell map (`None` for a filler), and the place of each shown cell by its key in
+/// the CRDT (see [`CellIndex::places`]).
+pub(crate) struct IndexedCells {
+    cells: Vec<Vec<Option<MapRef>>>,
+    places: HashMap<(u32, String), (usize, usize)>,
+}
+
+impl CellIndex {
+    fn new(epoch: u64, table: Node, map: MapRef, cells: IndexedCells) -> CellIndex {
+        CellIndex {
+            epoch,
+            table,
+            map,
+            cells: cells.cells,
+            places: cells.places,
+        }
+    }
+}
+
+/// How many tables' indexes one document keeps: the tables its last keystrokes (and
+/// its peers') were in. The oldest goes first.
+const CELL_INDEXES: usize = 8;
+
 thread_local! {
-    /// One [`CellIndex`] per document (`CollabDoc::uid`), for the table its last
-    /// keystroke in a table was in. A `CollabDoc` used from another thread finds
+    /// The [`CellIndex`]es of each document (`CollabDoc::uid`), newest last, at most
+    /// [`CELL_INDEXES`]. A `CollabDoc` used from another thread finds
     /// nothing here and builds its own there; one dropped on another thread than the
     /// one it indexed on leaves its entry on that one (`forget_cell_index` runs where
-    /// the drop does), never used again (its uid is unique) and holding one table
+    /// the drop does), never used again (its uid is unique) and holding its tables
     /// until that thread ends — as the atom cache does (`crate::atom_cache`).
-    static CELL_INDEX: RefCell<HashMap<u64, CellIndex>> = RefCell::new(HashMap::new());
+    static CELL_INDEX: RefCell<HashMap<u64, Vec<CellIndex>>> = RefCell::new(HashMap::new());
     /// How many times [`locate_cell`] read a whole table to build an index, and how
     /// many cell edits it located; see [`crate::testing::table_cell_edits`].
     static CELL_INDEX_COUNTS: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
@@ -1434,9 +1507,24 @@ pub(crate) fn cell_index_counts() -> (u64, u64) {
     CELL_INDEX_COUNTS.with(|c| c.get())
 }
 
-/// Forget document `uid`'s index (it is dropped).
+/// Forget document `uid`'s indexes (it is dropped).
 pub(crate) fn forget_cell_index(uid: u64) {
     let _ = CELL_INDEX.try_with(|c| c.borrow_mut().remove(&uid));
+}
+
+/// Keep `index` for document `uid`, in place of any index of the same table map. An
+/// index true at another epoch is dropped unread: a map it holds may be gone (a later
+/// transaction deleted it and yrs collected it), so nothing of it may be touched.
+fn keep_index(uid: u64, index: CellIndex) {
+    let _ = CELL_INDEX.try_with(|c| {
+        let mut c = c.borrow_mut();
+        let list = c.entry(uid).or_default();
+        list.retain(|x| x.epoch == index.epoch && !same_map(&x.map, &index.map));
+        if list.len() >= CELL_INDEXES {
+            list.remove(0);
+        }
+        list.push(index);
+    });
 }
 
 /// The CRDT cell map of [`CellEdit`] `e` in the table node map `node`, whose model
@@ -1444,13 +1532,14 @@ pub(crate) fn forget_cell_index(uid: u64) {
 /// the CRDT's table does not read as `table`, both of which the whole-table reconcile
 /// handles.
 ///
-/// The index of document `uid` answers when it was made at `epoch` (no transaction
-/// has changed the CRDT since) for this very model table and node map. Otherwise the
-/// table is read once ([`read_table`]) and checked against the model's read of `table`
-/// before it is indexed: the cell found is then the cell the whole-table reconcile
-/// would write, which pairs the cells of a grid that did not change by their place.
-/// The epoch is compared **first**: a map an index holds may have been deleted by a
-/// later transaction, and only an unchanged epoch says none was.
+/// An index of document `uid` answers when it was made at `epoch` (no transaction
+/// has changed the CRDT since, or every one since is known to have left the table's
+/// grid alone: [`rekey_cell_index`], [`carry_cell_indexes`]) for this very model table
+/// and node map. Otherwise the table is read once ([`read_table`]) and checked against
+/// the model's read of `table` before it is indexed: the cell found is then the cell
+/// the whole-table reconcile would write, which pairs the cells of a grid that did not
+/// change by their place. The epoch is compared **first**: a map an index holds may
+/// have been deleted by a later transaction, and only an unchanged epoch says none was.
 pub(crate) fn locate_cell<T: ReadTxn>(
     txn: &T,
     uid: u64,
@@ -1462,8 +1551,9 @@ pub(crate) fn locate_cell<T: ReadTxn>(
     let cached = CELL_INDEX
         .try_with(|c| {
             c.borrow()
-                .get(&uid)
-                .filter(|x| x.epoch == epoch && x.table.same_ref(table) && same_map(&x.map, node))
+                .get(&uid)?
+                .iter()
+                .find(|x| x.epoch == epoch && x.table.same_ref(table) && same_map(&x.map, node))
                 .map(|x| x.cells.get(e.row)?.get(e.cell)?.clone())
         })
         .ok()
@@ -1473,31 +1563,123 @@ pub(crate) fn locate_cell<T: ReadTxn>(
         None => {
             CELL_INDEX_COUNTS.with(|c| c.set((c.get().0 + 1, c.get().1)));
             let read = read_table(txn, node).ok()?;
-            if read.data != read_model_table(table).ok()? || !stored_as_read(txn, &read) {
+            if read.data != read_model_table(table).ok()? {
                 return None;
             }
-            let cells: Vec<Vec<Option<MapRef>>> = read
-                .cells
-                .into_iter()
-                .map(|row| row.into_iter().map(|c| c.map).collect())
-                .collect();
-            let found = cells.get(e.row)?.get(e.cell)?.clone();
-            let _ = CELL_INDEX.try_with(|c| {
-                c.borrow_mut().insert(
-                    uid,
-                    CellIndex {
-                        epoch,
-                        table: table.clone(),
-                        map: node.clone(),
-                        cells,
-                    },
-                )
-            });
+            let cells = indexable_cells(txn, read)?;
+            let found = cells.cells.get(e.row)?.get(e.cell)?.clone();
+            keep_index(
+                uid,
+                CellIndex::new(epoch, table.clone(), node.clone(), cells),
+            );
             found
         }
     };
     CELL_INDEX_COUNTS.with(|c| c.set((c.get().0, c.get().1 + 1)));
     found
+}
+
+/// The cells of a table `read` an index holds, when the table may be indexed: when
+/// every cell is stored as it reads ([`stored_as_read`]).
+pub(crate) fn indexable_cells<T: ReadTxn>(txn: &T, read: TableRead) -> Option<IndexedCells> {
+    if !stored_as_read(txn, &read) {
+        return None;
+    }
+    let mut places = HashMap::new();
+    for (i, row) in read.cells.iter().enumerate() {
+        for (k, cell) in row.iter().enumerate() {
+            if cell.map.is_some() {
+                places.insert((read.rows[i].raw, read.cols[cell.col].id.clone()), (i, k));
+            }
+        }
+    }
+    Some(IndexedCells {
+        cells: read
+            .cells
+            .into_iter()
+            .map(|row| row.into_iter().map(|c| c.map).collect())
+            .collect(),
+        places,
+    })
+}
+
+/// The place (row, and cell in it, in model order) and the cell map of each cell
+/// anchored at the `keys` (see [`changed_cells`]) of the table node map `node`, by
+/// document `uid`'s index of it, when that index is true at `epoch` for the model
+/// table `table`: what lets an integrate read a peer's change of a cell back from
+/// that cell alone. `None` when there is no such index, or when a key is no cell it
+/// shows (a cell a span hides, a cell keyed in a deleted column).
+pub(crate) fn places_of(
+    uid: u64,
+    epoch: u64,
+    node: &MapRef,
+    table: &Node,
+    keys: &[(u32, String)],
+) -> Option<Vec<((usize, usize), MapRef)>> {
+    CELL_INDEX
+        .try_with(|c| {
+            let c = c.borrow();
+            let x = c
+                .get(&uid)?
+                .iter()
+                .find(|x| x.epoch == epoch && x.table.same_ref(table) && same_map(&x.map, node))?;
+            keys.iter()
+                .map(|key| {
+                    let &(r, k) = x.places.get(key)?;
+                    Some(((r, k), x.cells.get(r)?.get(k)?.clone()?))
+                })
+                .collect()
+        })
+        .ok()
+        .flatten()
+}
+
+/// Index the table node map `map`, read with `cells`, as the model table `table` at
+/// `epoch`: an integrate that read the whole table back keeps what it read.
+pub(crate) fn install_cell_index(
+    uid: u64,
+    epoch: u64,
+    table: Node,
+    map: MapRef,
+    cells: IndexedCells,
+) {
+    keep_index(uid, CellIndex::new(epoch, table, map, cells));
+}
+
+/// After a transaction that changed the CRDT from `from` to `to` (epochs): carry each
+/// of document `uid`'s indexes true at `from` over to `to` as `carry` says for its
+/// table map — the model table it now describes (the same one, or the table after a
+/// change of its cells' blocks alone, whose grid and cell maps are unchanged), or
+/// `None` when the transaction may have changed its grid, which drops it. An index
+/// true at another epoch is dropped unread (see [`keep_index`]); `carry` is called
+/// only for ones true at `from`, whose maps the transaction did not collect as long
+/// as it deleted no top-level block.
+pub(crate) fn carry_cell_indexes(
+    uid: u64,
+    from: u64,
+    to: u64,
+    mut carry: impl FnMut(&MapRef, &Node) -> Option<Node>,
+) {
+    if from == to {
+        return;
+    }
+    let _ = CELL_INDEX.try_with(|c| {
+        if let Some(list) = c.borrow_mut().get_mut(&uid) {
+            list.retain_mut(|x| {
+                if x.epoch != from {
+                    return false;
+                }
+                match carry(&x.map, &x.table) {
+                    Some(table) => {
+                        x.table = table;
+                        x.epoch = to;
+                        true
+                    }
+                    None => false,
+                }
+            });
+        }
+    });
 }
 
 /// Whether every cell the read placed stores the extent it was read with: its attrs as
@@ -1526,21 +1708,22 @@ fn stored_as_read<T: ReadTxn>(txn: &T, read: &TableRead) -> bool {
     })
 }
 
-/// After [`locate_cell`]'s cell was written: the index describes the table after the
-/// edit (its grid and cells' maps are the ones it had), at the document's new `epoch`.
-pub(crate) fn rekey_cell_index(uid: u64, from: &Node, to: &Node, epoch: u64) {
-    let _ = CELL_INDEX.try_with(|c| {
-        if let Some(x) = c.borrow_mut().get_mut(&uid)
-            && x.table.same_ref(from)
-        {
-            x.table = to.clone();
-            x.epoch = epoch;
-        }
+/// After [`locate_cell`]'s cell was written, in the transaction that took the document
+/// from epoch `before` to `epoch`: the index describes the table after the edit (its
+/// grid and cells' maps are the ones it had), and every other index true before it
+/// still is (the write changed one cell's blocks and nothing else).
+pub(crate) fn rekey_cell_index(uid: u64, from: &Node, to: &Node, before: u64, epoch: u64) {
+    carry_cell_indexes(uid, before, epoch, |_, table| {
+        Some(if table.same_ref(from) {
+            to.clone()
+        } else {
+            table.clone()
+        })
     });
 }
 
 /// Whether two maps are one (the same yrs branch).
-fn same_map(a: &MapRef, b: &MapRef) -> bool {
+pub(crate) fn same_map(a: &MapRef, b: &MapRef) -> bool {
     AsRef::<yrs::branch::Branch>::as_ref(a).id() == AsRef::<yrs::branch::Branch>::as_ref(b).id()
 }
 

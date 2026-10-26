@@ -21,6 +21,24 @@
 //! Because both peers rebuild from the same converged CRDT, their models converge. The
 //! session never consults the host DOM — it is pure model ↔ CRDT.
 //!
+//! ## Reading back what an update changed (#1241)
+//!
+//! The rebuild reads back only what the update changed when the session knows the
+//! model it is handed to be the CRDT's read from just before it
+//! (`atom_cache::synced`: the document the last integrate brought the model to, a
+//! local edit projected from that document since, or the model a session was started
+//! on or a guest built from [`CollabSession::projected_doc`]). yrs reports what an
+//! update changed as the path to each shared type it touched
+//! (`sync::AppliedChanges`); each top-level block a path
+//! leads into is read again, a table whose cells' blocks alone changed only in those
+//! cells, and every other block is the model's own. Anything a path does not describe
+//! — a top-level block inserted or deleted, an atom's entry, a void container, a
+//! table too large to read, a block that fails to read — makes it the whole read, as
+//! before. A local edit that touched an atom forgets the document, since an atom's
+//! identity is what the last read noted for its node. In this crate's debug tests
+//! every partial read is compared with a whole one
+//! (`testing::set_incremental_read_check`).
+//!
 //! ## Outbound stalls (issue #220)
 //!
 //! A local edit outside the staged A22 scope — pasting a ragged table, toggling a task
@@ -64,7 +82,9 @@
 //! some future inbound bytes change the content, so the session cannot receive.
 //! Detecting that costs nothing extra: the converged rebuild ([`CollabDoc::to_doc`])
 //! already runs on every integrate, and its failure *after* bytes touched the CRDT
-//! **is** the diagnosis — with one carve-out. A rebuild failure while yrs holds
+//! **is** the diagnosis (a partial read that fails to read a block it changed makes
+//! the whole read, whose failure is the verdict; a block no update touched reads as it
+//! did) — with one carve-out. A rebuild failure while yrs holds
 //! updates parked on **missing dependencies** ([`CollabDoc::has_pending_updates`]) is
 //! *transient*, not poison: a misrouted reconciliation diff can delete a map item
 //! whose replacement waits on an insertion this replica has not seen, and the missing
@@ -165,6 +185,14 @@ impl CollabSession {
     /// such an atom.
     fn with_atom_ids(self, state: &EditorState) -> CollabSession {
         let (blocks, inline) = (block_atoms(&state.doc) > 0, inline_atoms(&state.doc) > 0);
+        // The new CRDT is the projection of `state`'s document, so it reads as that
+        // document: the first peer's update is read back from what it changes.
+        atom_cache::set_synced(
+            self.uid,
+            state.doc.clone(),
+            self.cdoc.epoch(),
+            !(blocks || inline),
+        );
         if (blocks || inline)
             && let Ok((read, ids, inline_ids)) = self.cdoc.to_doc_with_all_atom_ids(state.schema())
             && read == state.doc
@@ -499,6 +527,12 @@ impl CollabSession {
         self.guard()?;
         let was_matching = self.model_matches_crdt();
         let cached = atom_cache::lookup(self.uid, self.touch(), before);
+        // Whether `before` is what the CRDT reads as now (`atom_cache::synced`): then
+        // `after` is once the change is projected, which is the projection's own
+        // invariant, and the next integrate reads back only what it changes (#1241).
+        // A change refused below leaves the CRDT as it was, so this stays true of
+        // `before`; one that writes moves the epoch past it.
+        let synced = atom_cache::synced(self.uid, before, self.cdoc.epoch());
         // Frozen while the shared document holds a table too large to read: the model
         // shows a placeholder for it, and a diff that touches a placeholder can delete
         // real content (a value-matched pairing, an export loaded back, …), so no diff
@@ -527,6 +561,19 @@ impl CollabSession {
             Some(prev) => prev,
             None => match self.cdoc.project_change(before, after) {
                 Ok(()) => {
+                    // Only while the change touched no atom: an atom's identity is
+                    // what the last read noted for its node (`atom_cache`), which a
+                    // change that rewrites its char may leave behind.
+                    if let Some(no_atoms) = synced
+                        && !self.cdoc.touched_atoms
+                    {
+                        atom_cache::set_synced(
+                            self.uid,
+                            after.clone(),
+                            self.cdoc.epoch(),
+                            no_atoms,
+                        );
+                    }
                     // A document with no leaf block atom gains nothing from the
                     // cache: the next integrate's miss costs one walk of the blocks
                     // beside a whole read of the CRDT, where keeping it costs every
@@ -856,7 +903,17 @@ impl CollabSession {
         // anything, which costs a whole read of the CRDT, and only while the model
         // holds an atom at all.
         let generation = self.touch();
-        let old_ids = if self.model_matches_crdt() {
+        // Whether the model is what the CRDT reads as right now, as the last
+        // operation left it (`atom_cache::synced`): then only what the update changes
+        // is read back (#1241), and `Some(true)` says the document holds no atom.
+        let epoch = self.cdoc.epoch();
+        let synced =
+            (self.model_matches_crdt() && self.frozen().is_none() && incremental_read_enabled())
+                .then(|| atom_cache::synced(self.uid, &state.doc, epoch))
+                .flatten();
+        let old_ids = if synced == Some(true) {
+            Some(Vec::new())
+        } else if self.model_matches_crdt() {
             atom_cache::lookup(self.uid, generation, &state.doc).or_else(|| {
                 if block_atoms(&state.doc) == 0 {
                     return Some(Vec::new());
@@ -896,16 +953,51 @@ impl CollabSession {
                 Err(_) => Err(self.classify_unprojectable(apply_err)),
             };
         }
-        // The converged rebuild — the projectability verdict for these bytes.
-        // Noting the atoms' blocks costs no read of its own.
         // Which char each inline atom of the model is, from what the last read
         // left (`atom_cache::inline_lookup`): a picture the model made since is
         // unknown, and a peer's attribute change of it is a replace.
-        let old_inline = atom_cache::inline_lookup(self.uid, &state.doc);
-        let (target, new_ids, new_inline) = match self.cdoc.to_doc_with_all_atom_ids(state.schema())
-        {
-            Ok(read) => read,
-            Err(cause) => return Err(self.classify_unprojectable(cause)),
+        let old_inline = if synced == Some(true) {
+            Vec::new()
+        } else {
+            atom_cache::inline_lookup(self.uid, &state.doc)
+        };
+        // The converged document: read back from what the update changed when the
+        // model is the CRDT's read from before it and every atom of it is known
+        // (#1241), else the whole converged rebuild, which is also the
+        // projectability verdict for these bytes. Noting the atoms' blocks costs no
+        // read of its own either way.
+        let changed = synced.and_then(|no_atoms| {
+            let changes = self.cdoc.last_apply.as_ref().filter(|c| c.epoch == epoch)?;
+            let old_ids = old_ids.as_deref()?;
+            if old_inline.iter().any(Option::is_none) {
+                return None;
+            }
+            self.cdoc.read_changed(
+                state.schema(),
+                &state.doc,
+                changes,
+                old_ids,
+                &old_inline,
+                no_atoms,
+            )
+        });
+        note_read(changed.is_some());
+        let (target, new_ids, new_inline, touched) = match changed {
+            Some(read) => {
+                if incremental_read_checked() {
+                    check_against_whole_read(&self.cdoc, state.schema(), &read);
+                }
+                (
+                    read.doc,
+                    Some(read.block_ids),
+                    Some(read.inline_ids),
+                    Some(read.touched),
+                )
+            }
+            None => match self.cdoc.to_doc_with_all_atom_ids(state.schema()) {
+                Ok((doc, ids, inline)) => (doc, ids, inline, None),
+                Err(cause) => return Err(self.classify_unprojectable(cause)),
+            },
         };
         // The document is projectable: a previously-poisoned session is healed by
         // exactly this — a full inbound integration whose rebuild succeeds (the
@@ -933,20 +1025,29 @@ impl CollabSession {
             old: &old_inline,
             new,
         });
+        // Neither document holds an atom: the model by what the session knows of it,
+        // the converged one by its read.
+        let next_no_atoms = new_ids.as_ref().is_some_and(Vec::is_empty)
+            && new_inline.as_ref().is_some_and(Vec::is_empty);
+        let no_atoms = synced == Some(true) && next_no_atoms;
         let ids = match (&old_ids, &new_ids) {
-            (Some(old), Some(new)) => Some(AtomIds { old, new, inline }),
+            (Some(old), Some(new)) => Some(AtomIds {
+                old,
+                new,
+                inline,
+                none: no_atoms,
+            }),
             _ => None,
         };
         let tr = build_remote_transaction_with(state, &target, ids.as_ref())?;
+        let next = tr
+            .as_ref()
+            .map_or_else(|| state.doc.clone(), |tr| tr.doc().clone());
         // The document the editor holds next is the read, atom for atom: note
         // which char each of its inline atoms is.
         match &new_inline {
-            Some(new_inline) => {
-                let doc = tr
-                    .as_ref()
-                    .map_or_else(|| state.doc.clone(), |tr| tr.doc().clone());
-                atom_cache::inline_store(self.uid, &doc, new_inline);
-            }
+            Some(_) if no_atoms => atom_cache::inline_store_none(self.uid),
+            Some(new_inline) => atom_cache::inline_store(self.uid, &next, new_inline),
             None => atom_cache::inline_forget(self.uid),
         }
         // The document the editor holds next, and its atoms' blocks — for the next
@@ -954,10 +1055,42 @@ impl CollabSession {
         if ids.is_some()
             && let Some(new_ids) = new_ids
         {
-            let doc = tr
-                .as_ref()
-                .map_or_else(|| state.doc.clone(), |tr| tr.doc().clone());
-            atom_cache::store(self.uid, self.generation, doc, new_ids);
+            atom_cache::store(self.uid, self.generation, next.clone(), new_ids);
+        }
+        // The tables' cell indexes (`table::locate_cell`) stay true through this
+        // update where it left a table's grid alone (#1241): one it did not touch, and
+        // one whose cells' blocks alone it changed, which is the table at the same
+        // place in the next document. A table it read whole is indexed afresh. After a
+        // whole read nothing is known, and every index goes stale.
+        let written = self.cdoc.epoch();
+        if let Some(touched) = touched {
+            use crate::projection::TouchedRead;
+            crate::table::carry_cell_indexes(self.cdoc.uid, epoch, written, |map, table| {
+                match touched.iter().find(|t| crate::table::same_map(&t.map, map)) {
+                    None => Some(table.clone()),
+                    Some(t) if matches!(t.read, TouchedRead::Cells) => {
+                        next.content().maybe_child(t.index).cloned()
+                    }
+                    Some(_) => None,
+                }
+            });
+            for t in touched {
+                if let (TouchedRead::Table(Some(cells)), Some(table)) =
+                    (t.read, next.content().maybe_child(t.index))
+                {
+                    crate::table::install_cell_index(
+                        self.cdoc.uid,
+                        written,
+                        table.clone(),
+                        t.map,
+                        cells,
+                    );
+                }
+            }
+        }
+        // The model is the CRDT's read now: note it for the next operation.
+        if self.model_matches_crdt() && self.frozen().is_none() {
+            atom_cache::set_synced(self.uid, next, written, next_no_atoms);
         }
         Ok(tr)
     }
@@ -1038,7 +1171,19 @@ impl CollabSession {
         self.guard()?;
         let (doc, ids, inline) = self.cdoc.to_doc_with_all_atom_ids(schema)?;
         // An editor built on this document (a guest joining) then knows its atoms'
-        // blocks, and which char each of its inline atoms is, without another read.
+        // blocks, and which char each of its inline atoms is, without another read;
+        // and, unless the session already knows a document its CRDT reads as now
+        // (an editor's own, which a test's look at the read must not displace), that
+        // the CRDT reads as this one (#1241).
+        let epoch = self.cdoc.epoch();
+        if self.model_matches_crdt()
+            && self.frozen().is_none()
+            && !atom_cache::synced_at(self.uid, epoch)
+        {
+            let none = ids.as_ref().is_some_and(Vec::is_empty)
+                && inline.as_ref().is_some_and(Vec::is_empty);
+            atom_cache::set_synced(self.uid, doc.clone(), epoch, none);
+        }
         if let Some(ids) = ids {
             atom_cache::store(self.uid, self.generation, doc.clone(), ids);
         }
@@ -1195,4 +1340,64 @@ fn one_place_pairs(before: &Node, after: &Node, kept: &[(Node, Node)]) -> Vec<(N
         })
         .cloned()
         .collect()
+}
+
+// ─── Reading back only what an update changed (#1241) ────────────────────────
+
+thread_local! {
+    /// Whether an integrate may read back only what an update changed
+    /// ([`crate::testing::set_incremental_read`]).
+    static INCREMENTAL_READ: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    /// Whether every such read is compared with a whole read
+    /// ([`crate::testing::set_incremental_read_check`]): on in this crate's own debug
+    /// test builds, off everywhere else.
+    static INCREMENTAL_CHECK: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(cfg!(all(feature = "test-util", debug_assertions))) };
+    /// Integrates that read back only what changed, and ones that read the whole
+    /// document ([`crate::testing::integrate_reads`]).
+    static READS: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+fn incremental_read_enabled() -> bool {
+    INCREMENTAL_READ.with(|c| c.get())
+}
+
+fn incremental_read_checked() -> bool {
+    INCREMENTAL_CHECK.with(|c| c.get())
+}
+
+fn note_read(changed_only: bool) {
+    READS.with(|c| {
+        let (a, b) = c.get();
+        c.set(if changed_only { (a + 1, b) } else { (a, b + 1) });
+    });
+}
+
+#[cfg_attr(not(feature = "test-util"), allow(dead_code))]
+pub(crate) fn set_incremental_read(on: bool) {
+    INCREMENTAL_READ.with(|c| c.set(on));
+}
+
+#[cfg_attr(not(feature = "test-util"), allow(dead_code))]
+pub(crate) fn set_incremental_read_check(on: bool) {
+    INCREMENTAL_CHECK.with(|c| c.set(on));
+}
+
+#[cfg_attr(not(feature = "test-util"), allow(dead_code))]
+pub(crate) fn integrate_reads() -> (u64, u64) {
+    READS.with(|c| c.get())
+}
+
+/// Panic unless `read` is what a whole read of the CRDT gives: the document and
+/// its atoms' identities. Only while a test asks for it.
+fn check_against_whole_read(
+    cdoc: &CollabDoc,
+    schema: &Schema,
+    read: &crate::projection::ChangedRead,
+) {
+    let (doc, ids, inline) = crate::projection::uncounted(|| cdoc.to_doc_with_all_atom_ids(schema))
+        .expect("a document read back in part reads back whole");
+    assert_eq!(read.doc, doc, "the document read back in part");
+    assert_eq!(Some(&read.block_ids), ids.as_ref(), "its leaf block atoms");
+    assert_eq!(Some(&read.inline_ids), inline.as_ref(), "its inline atoms");
 }
