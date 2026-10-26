@@ -243,11 +243,11 @@ fn a_plain_surface_leaves_the_scene() {
     assert_eq!(on.slices.len(), 1);
     let s = &on.slices[0];
     assert_eq!(s.surface_id, 1);
-    // The content box, and the pixel left of it Vello's antialiasing of a
-    // fractional edge can reach (#1894 review).
-    assert_eq!(s.region, (19, 12, 41, 26));
+    // The content box: its edges are whole pixels, so not the pixel left of
+    // it either (#1899 review).
+    assert_eq!(s.region, (20, 12, 40, 26));
     assert!(matches!(s.own, SliceCoverage::Rect([20, 12, 60, 38])));
-    assert!(matches!(s.ancestors, SliceCoverage::Rect([19, 12, 60, 38])));
+    assert!(matches!(s.ancestors, SliceCoverage::Rect([20, 12, 60, 38])));
     assert!(
         s.above_in.is_none(),
         "the sidebar is nowhere near the surface"
@@ -350,9 +350,9 @@ fn a_whole_pixel_scroller_cuts_the_coverage_rect() {
     let on = paint(&mut doc, true);
     let s = &on.slices[0];
     // The surface is positioned against the scroller now: (20, 32).
-    assert_eq!(s.region, (19, 32, 41, 26));
+    assert_eq!(s.region, (20, 32, 40, 26));
     assert!(matches!(s.own, SliceCoverage::Rect([20, 32, 60, 58])));
-    assert!(matches!(s.ancestors, SliceCoverage::Rect([19, 32, 60, 58])));
+    assert!(matches!(s.ancestors, SliceCoverage::Rect([20, 32, 60, 58])));
 
     // Scrolled so the scroller cuts R's bottom: the ancestors' rect is cut,
     // the surface's own is not.
@@ -363,7 +363,7 @@ fn a_whole_pixel_scroller_cuts_the_coverage_rect() {
     );
     let s = &paint(&mut doc, true).slices[0];
     assert!(matches!(s.own, SliceCoverage::Rect([20, 32, 60, 58])));
-    assert!(matches!(s.ancestors, SliceCoverage::Rect([19, 32, 60, 50])));
+    assert!(matches!(s.ancestors, SliceCoverage::Rect([20, 32, 60, 50])));
 }
 
 /// The card's case (#1887 review): a rounded `overflow: hidden` card, the
@@ -410,7 +410,7 @@ fn a_rounded_card_puts_its_content_in_above_in_and_after_it_in_above_out() {
     doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
     let on = paint(&mut doc, true);
     let s = &on.slices[0];
-    assert_eq!(s.region, (19, 12, 41, 26));
+    assert_eq!(s.region, (20, 12, 40, 26));
     assert!(matches!(s.own, SliceCoverage::Rect([20, 12, 60, 38])));
     let SliceCoverage::Mask(card_mask) = &s.ancestors else {
         panic!("a rounded card's coverage as a rect");
@@ -573,11 +573,12 @@ fn the_slice_carries_the_in_scene_image_transform() {
     );
 }
 
-/// A box whose left edge is R's right edge and whose top is fractional:
-/// Vello paints the pixel left of its bounds, inside R, so it is routed
-/// across R, not to below only (#1894 review, 9 levels).
+/// A box whose left edge is R's right edge, at a whole pixel, its top
+/// fractional: it touches R without reaching into it, and goes to below
+/// alone. The 9-level case the #1894 review found here comes out exact on
+/// the GPU without any growth (#1899 review; `gpu_split_runtime_review2_spill_exact`).
 #[test]
-fn a_box_touching_r_from_the_right_is_routed_across_it() {
+fn a_box_touching_r_from_the_right_stays_in_below() {
     let mut doc = document("", "", &[]);
     after(
         &mut doc,
@@ -585,11 +586,87 @@ fn a_box_touching_r_from_the_right_is_routed_across_it() {
          background: rgb(0, 0, 0)",
     );
     let on = paint(&mut doc, true);
+    assert!(on.slices[0].above_in.is_none(), "nothing reaches into R");
+}
+
+/// A box whose left edge is fractional, half a pixel right of R: Vello's
+/// antialiasing of that edge may reach the pixel left of it, inside R, so it
+/// is routed across R.
+#[test]
+fn a_box_with_a_fractional_left_edge_by_r_is_routed_across_it() {
+    let mut doc = document("", "", &[]);
+    after(
+        &mut doc,
+        "position: absolute; left: 60.5px; top: 20px; width: 20px; height: 10px; \
+         background: rgb(0, 0, 0)",
+    );
+    let on = paint(&mut doc, true);
     let above = on.slices[0]
         .above_in
         .as_ref()
-        .expect("the box's left antialiased pixel is in R");
+        .expect("the box's antialiased left pixel may be in R");
     assert_eq!(draws(above), 1);
+}
+
+/// A sibling outside R whose wide outline reaches into it: a stroke is routed
+/// by its bounds grown by half its width (#1899 review's mutant: routed
+/// without it, the outline's part over the surface went to below alone).
+#[test]
+fn an_outline_reaching_into_r_is_routed_across_it() {
+    let mut doc = document("", "", &[]);
+    after(
+        &mut doc,
+        "position: absolute; left: 70px; top: 14px; width: 20px; height: 10px; \
+         outline: 14px solid rgb(250, 250, 0)",
+    );
+    let on = paint(&mut doc, true);
+    assert!(
+        on.slices[0].above_in.is_some(),
+        "the outline over the surface is not above it"
+    );
+}
+
+/// Two surfaces side by side at whole pixels touch without overlapping:
+/// both split (#1899 review: a region grown a pixel left overlapped its
+/// neighbour, the second was refused and every frame became a partial
+/// repaint).
+#[test]
+fn two_surfaces_touching_at_whole_pixels_both_split() {
+    let mut doc = document("", "", &[]);
+    let body = doc.body();
+    let second = doc.create_element("div");
+    doc.set_attribute(second, "data-render-surface", "2");
+    doc.set_attribute(
+        second,
+        "style",
+        "position: absolute; left: 60px; top: 12px; width: 40px; height: 26px",
+    );
+    doc.append_child(body, second);
+    doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    rinch_dom::paint::set_surface_gpu_images(Some(HashMap::from([
+        (1, frame(40, 26)),
+        (2, frame(40, 26)),
+    ])));
+    let mut painter = VelloPainter::new();
+    painter.reset();
+    painter.begin_slicing(Rect::new(0.0, 0.0, VIEWPORT.0 as f64, VIEWPORT.1 as f64));
+    let mut layout_cx: LayoutContext<Brush> = LayoutContext::new();
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut painter,
+        1.0,
+        VIEWPORT,
+        &mut doc.font_cx,
+        &mut layout_cx,
+    );
+    let slices = painter.take_slices();
+    rinch_dom::paint::set_surface_gpu_images(None);
+    let regions: Vec<_> = slices.iter().map(|s| (s.surface_id, s.region)).collect();
+    assert_eq!(
+        regions,
+        vec![(1, (20, 12, 40, 26)), (2, (60, 12, 40, 26))],
+        "both split, touching"
+    );
 }
 
 /// Routing goes by **device** bounds: a box laid out far from the surface
@@ -665,4 +742,16 @@ fn a_second_split_reopens_the_inverse_clip_with_its_hole() {
         plain + 2,
         "one inverse clip around each bar, the second cut for both regions"
     );
+}
+
+/// A surface whose left edge is fractional: its region takes the pixel left
+/// of the one the edge falls in, where Vello's antialiasing of that edge may
+/// reach; a whole-pixel edge takes none (`a_plain_surface_leaves_the_scene`).
+#[test]
+fn a_fractional_left_edge_takes_the_pixel_left_of_it() {
+    let mut doc = document("left: 20.5px", "", &[]);
+    doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    let on = paint(&mut doc, true);
+    assert_eq!(on.slices.len(), 1);
+    assert_eq!(on.slices[0].region.0, 19, "{:?}", on.slices[0].region);
 }

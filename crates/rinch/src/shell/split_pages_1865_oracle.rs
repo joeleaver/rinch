@@ -230,6 +230,14 @@ pub(crate) struct Outcome {
 impl Outcome {
     /// `(x, y, split, in_scene, maxdiff)` for every pixel over `tol`.
     pub fn over(&self, tol: i32) -> Vec<Off> {
+        self.over_by(|i| tol.max(if tol > 0 { self.allow[i] } else { 0 }))
+    }
+    /// Every pixel past its D10 classes' allowance (`allow`), with no floor.
+    pub fn over_classes(&self) -> Vec<Off> {
+        self.over_by(|i| self.allow[i])
+    }
+
+    fn over_by(&self, allowed: impl Fn(usize) -> i32) -> Vec<Off> {
         let mut out = Vec::new();
         for y in 0..H {
             for x in 0..W {
@@ -239,13 +247,14 @@ impl Outcome {
                     .map(|c| (a[c] as i32 - b[c] as i32).abs())
                     .max()
                     .unwrap();
-                if d > tol.max(if tol > 0 { self.allow[i] } else { 0 }) {
+                if d > allowed(i) {
                     out.push((x, y, a, b, d));
                 }
             }
         }
         out
     }
+
     pub fn summary(&self, name: &str) -> String {
         let o = self.over(1);
         let max = self.over(0).iter().map(|v| v.4).max().unwrap_or(0);
@@ -329,6 +338,21 @@ pub(crate) fn oracle(html: &str, frames: &[Frame]) -> Outcome {
         .collect();
     let regions: Vec<_> = slices.iter().map(|s| s.region).collect();
     let tainted: Vec<bool> = slices.iter().map(|s| s.tainted).collect();
+    // A frame not at its own size on whole pixels is resampled: D10's
+    // resampled class (the compositor's bilinear tap against Vello's).
+    let resampled: HashMap<usize, bool> = slices
+        .iter()
+        .map(|s| {
+            let [a, b, c, d, e, f] = s.device_from_image;
+            let whole = a == 1.0
+                && d == 1.0
+                && b == 0.0
+                && c == 0.0
+                && (e - 0.5).fract() == 0.0
+                && (f - 0.5).fract() == 0.0;
+            (s.surface_id, !whole)
+        })
+        .collect();
     let mut frame = SplitFrame::default();
     frame
         .apply(
@@ -365,9 +389,48 @@ pub(crate) fn oracle(html: &str, frames: &[Frame]) -> Outcome {
         "{:?}",
         errors.lock().unwrap()
     );
-    // One level anywhere (classes the page reaches, as the hand oracle
-    // computes precisely), and D8's halo on an ancestor's ring.
-    let mut allow = vec![1; (W * H) as usize];
+    // D10's classes, from this page's own slices, one level each and summed
+    // where two meet (a translucent frame under an antialiased above
+    // slice). Inside R: a slice texture's fractional coverage, a translucent
+    // frame, a resampled one, and one level at least (below where the frame
+    // does not cover). Within a tile outside R: two (below's rounding where
+    // the inverse clip's edge crosses, an ancestor clip's antialiased edge).
+    // Nothing anywhere else (#1899 review: a blanket two levels let a surface
+    // dimmed by two pass). Then D8's halo on an ancestor's ring.
+    let translucent: HashMap<usize, bool> = frames
+        .iter()
+        .map(|f| (f.id, f.px.chunks(4).any(|p| p[3] != 255)))
+        .collect();
+    let mut allow = vec![0; (W * H) as usize];
+    let kept_ids: Vec<usize> = frame.surface_ids().collect();
+    for (((rx, ry, rw, rh), textures), id) in frame.slices().into_iter().zip(&kept_ids) {
+        let read: Vec<Vec<[u8; 4]>> = textures
+            .iter()
+            .flatten()
+            .map(|t| read(&device, &queue, t))
+            .collect();
+        let frame_class = i32::from(translucent.get(id).copied().unwrap_or(false))
+            + i32::from(resampled.get(id).copied().unwrap_or(false));
+        for y in 0..H {
+            for x in 0..W {
+                let i = (y * W + x) as usize;
+                if x >= rx && x < rx + rw && y >= ry && y < ry + rh {
+                    let local = ((y - ry) * rw + (x - rx)) as usize;
+                    let coverage = read
+                        .iter()
+                        .any(|px| px[local][3] != 0 && px[local][3] != 255);
+                    // At least one level: below shows inside R wherever the
+                    // frame does not cover it (a letterbox, a rounded
+                    // corner), with the inverse clip's rounding.
+                    allow[i] = allow[i].max((i32::from(coverage) + frame_class).max(1));
+                } else if x + 16 >= rx && x < rx + rw + 16 && y + 16 >= ry && y < ry + rh + 16 {
+                    // Below's rounding in a tile the inverse clip's edge
+                    // crosses, and an ancestor clip's antialiased edge there.
+                    allow[i] = allow[i].max(2);
+                }
+            }
+        }
+    }
     for (region, mask) in regions.iter().zip(&anc_masks) {
         let (rx, ry, rw, rh) = *region;
         let Some(px) = mask else { continue };
