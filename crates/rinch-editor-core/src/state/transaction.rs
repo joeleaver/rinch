@@ -653,24 +653,24 @@ impl Transaction {
     ///
     /// Only the tables a step can have changed the grid of are looked at, so
     /// that undoing a keystroke costs nothing in the size of the table around
-    /// it: the undo of typing (`typing`, per step, from the history: the
-    /// inverse of inline content put in at one position deletes inline content
-    /// of one textblock, wherever it is mapped) and an inline insertion change
-    /// no grid and are not even resolved; any other step inside one textblock,
-    /// or inside one cell, that puts in no table, row or cell changes no grid
-    /// (one resolve of its start in the document it applied to, as the editing
-    /// paths make); a step whose ends
+    /// it: an inline insertion changes no grid and is not looked up; a range
+    /// inside one textblock that puts in no table, row or cell (the undo of
+    /// typing, while it still is) is found so by one walk down the document it
+    /// applied to, without a resolve; any other step inside one cell that puts
+    /// in no table part changes no grid (one resolve of its start); a step whose
+    /// ends
     /// are in different cells, a `BatchStep` and a span attribute set on a cell
     /// look at the tables around them; a step that puts in a table, row or cell
     /// inside one cell looks at the tables inside its range. A table that was
     /// ragged before the undo (its old self found through the inverted
     /// mapping) stays as it is.
-    pub(crate) fn repair_tables_after_history(&mut self, typing: &[bool]) -> Result<(), StepError> {
+    pub(crate) fn repair_tables_after_history(&mut self) -> Result<(), StepError> {
         use crate::transform::steps::{BatchStep, ReplaceAroundStep, ReplaceStep, SetNodeAttrStep};
         let n = self.steps.len();
         if n == 0 {
             return Ok(());
         }
+        let full = full_repair_scan();
         let maps = self.mapping.maps();
         // A position of step `k`'s document, in the document now.
         let through =
@@ -678,11 +678,16 @@ impl Transaction {
         // Ranges of the document now to look for tables in, each with the cell
         // around it whose own tables are not this step's to check.
         let mut scans: Vec<(usize, usize, Option<usize>)> = Vec::new();
+        if full {
+            scans.push((0, self.doc.content_size(), None));
+        }
         for (k, (step, doc)) in self.steps.iter().zip(&self.docs).enumerate() {
-            // The inverse of typing, or typing (inline content put in at one
-            // position, which only a textblock takes): no grid changes, and
-            // nothing is resolved.
-            if typing.get(k).copied().unwrap_or(false) || inline_insertion(step.as_ref()) {
+            if full {
+                break;
+            }
+            // Inline content put in at one position, which only a textblock
+            // takes: no grid changes, and nothing is looked up.
+            if inline_insertion(step.as_ref()) {
                 continue;
             }
             let step = step.as_any();
@@ -717,16 +722,27 @@ impl Transaction {
                 continue;
             };
             let structural = holds_table_parts(&slice.content);
+            // A range inside one textblock that puts in no table part: the undo
+            // of typing, wherever it was mapped, when it still is (review of
+            // #1950: a peer who moved half of my pasted text into a new cell
+            // made its undo a delete across two cells). One walk down the
+            // document, no resolve.
+            if !structural && inside_one_textblock(doc, from, to) {
+                continue;
+            }
             let Ok(r) = doc.resolve(Pos(from)) else {
                 around(&mut scans, from, to);
                 continue;
             };
-            if !structural && r.parent().is_textblock() && to <= r.end(r.depth()) {
-                continue;
-            }
             let cell = (1..=r.depth()).rev().find(|&d| tables::is_cell(r.node(d)));
+            // A slice open at either end puts its open nodes' closing and opening
+            // tokens in at its ends: with a cell or a row among them it splits the
+            // table around it (review of #1950: the inverse of a delete from one
+            // row's cell into the next row's is such a slice, put in at one point
+            // inside a cell), so the tables around it are looked at.
+            let open = slice.open_start > 0 || slice.open_end > 0;
             match cell {
-                Some(d) if to <= r.end(d) => {
+                Some(d) if to <= r.end(d) && !(structural && open) => {
                     if structural {
                         let floor = r.before(d).map(|c| through(k, c, -1));
                         scans.push((through(k, from, -1), through(k, to, 1), floor));
@@ -1011,6 +1027,61 @@ fn holds_table(node: &Node) -> bool {
         return true;
     }
     !node.is_textblock() && node.content().children().iter().any(holds_table)
+}
+
+thread_local! {
+    /// How the history's repair looks for tables an undo or redo left ragged
+    /// ([`__set_full_repair_scan`]): `0` where its steps can have changed a grid,
+    /// `1` at every table, `2` at every table after every undo and redo, local
+    /// ones included.
+    static FULL_REPAIR_SCAN: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether the repair looks at every table ([`__set_full_repair_scan`]).
+pub(crate) fn full_repair_scan() -> bool {
+    FULL_REPAIR_SCAN.with(|f| f.get()) >= 1
+}
+
+/// Whether every undo and redo runs the repair, local ones included.
+pub(crate) fn repair_every_undo() -> bool {
+    FULL_REPAIR_SCAN.with(|f| f.get()) >= 2
+}
+
+/// **Test seam** (#1937): on this thread, make the history's repair look at
+/// every table of the document for one an undo or redo left ragged (`1`), and
+/// also after a local undo or redo, which needs none (`2`), instead of where its
+/// steps can have changed a grid (`0`, the default). A differential test runs one
+/// history both ways and requires the same documents.
+#[doc(hidden)]
+pub fn __set_full_repair_scan(level: u8) {
+    FULL_REPAIR_SCAN.with(|f| f.set(level));
+}
+
+/// Whether `from..to` of `doc` lies inside the content of one textblock: one walk
+/// down from the top, a scan of each level's children (what a resolve scans too,
+/// without building one).
+fn inside_one_textblock(doc: &Node, from: usize, to: usize) -> bool {
+    let (mut node, mut from, mut to) = (doc, from, to);
+    loop {
+        if node.is_textblock() {
+            return true;
+        }
+        let content = node.content();
+        if from > content.size() || to > content.size() {
+            return false;
+        }
+        let (i, start) = content.find_index(from);
+        let Some(child) = content.maybe_child(i) else {
+            return false;
+        };
+        let end = start + child.node_size();
+        if !(from > start && to < end) || child.is_leaf() {
+            return false;
+        }
+        node = child;
+        from -= start + 1;
+        to -= start + 1;
+    }
 }
 
 /// Whether `content` holds a table, a row or a cell anywhere: what a replace must

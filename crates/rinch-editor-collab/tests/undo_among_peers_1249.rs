@@ -863,3 +863,40 @@ fn s20_undo_of_my_merge_after_a_peers_merge_still_reaches_the_peer() {
     a.type_at(2, "!", 9_000);
     sync(&mut a, &mut b);
 }
+
+/// Review of #1950, with two sessions: I paste "XY" after "a" in the first cell.
+/// The peer adds a column after it and moves "Y" into the new cell (cut and
+/// paste). My undo deletes "XY", mapped from the first cell into the new one, and
+/// joined the two cells: a ragged table, `Unsupported` to the projection. The
+/// first round skipped every undo of typing without looking.
+#[test]
+fn s21_undo_of_my_paste_after_a_peer_moved_half_of_it_into_a_new_column() {
+    let (mut a, mut b) = world(
+        "<p>a</p><table><tr><td><p>a</p></td><td><p>b</p></td></tr>\
+         <tr><td><p>c</p></td><td><p>d</p></td></tr></table><p>z</p>",
+        21,
+    );
+    a.paste_text(8, "XY", 1_000);
+    sync(&mut a, &mut b);
+    b.cmd(Selection::cursor(Pos(8)), "addColumnAfter");
+    b.delete(9, 10, 2_000);
+    b.paste_text(13, "Y", 3_000);
+    sync(&mut a, &mut b);
+    // `commit` expects the undo to project.
+    assert!(a.undo(), "the undo applies");
+    assert_eq!(a.session.outbound_stall(), None, "outbound keeps sending");
+    sync(&mut a, &mut b);
+    a.state
+        .doc
+        .nodes_between(0, a.state.doc.content_size(), &mut |n: &Node, _, _| {
+            if n.type_name() == "table" {
+                assert_eq!(
+                    rinch_editor_core::tables::table_problems(n),
+                    vec![],
+                    "the table tiles: {}",
+                    a.html()
+                );
+            }
+            true
+        });
+}

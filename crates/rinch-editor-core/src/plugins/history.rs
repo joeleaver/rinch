@@ -103,9 +103,9 @@ struct EventInfo {
 }
 
 /// What [`Branch::pop_event`] answers: the transaction, the selection to
-/// restore, the branch without the event, the event, and the per-step typing
-/// flags when a step was remapped.
-type Popped = (Transaction, Selection, Branch, EventInfo, Option<Vec<bool>>);
+/// restore, the branch without the event, the event, and whether a step was
+/// mapped through a change the history did not record.
+type Popped = (Transaction, Selection, Branch, EventInfo, bool);
 
 /// One entry of a branch: the forward step map of a step, and for a recorded
 /// step its inverse. A map-only item (`step: None`) is a change the history did
@@ -126,11 +126,11 @@ struct Item {
     /// exact; stored as two numbers, so a long run costs one item. `map` is then
     /// the run as one range, for nothing but display.
     unit_run: Option<(usize, usize)>,
-    /// The recorded step put in inline content alone, at one position (typing):
-    /// its inverse deletes inline content of one textblock, and mapped through
-    /// any change since it still changes no table's grid, so an undo of it
-    /// checks no table (#1937).
-    inline_insert: bool,
+    /// A change the history did not record came after this item and moved no
+    /// position (`unrecorded_maps` gave it no map: a peer's attribute change, a
+    /// cell's `colspan` among them), so it has no item of its own. An undo that
+    /// walks past it is not the plain inverse of its event (#1937).
+    unmapped_after: bool,
 }
 
 impl Item {
@@ -142,7 +142,7 @@ impl Item {
             mirror_offset,
             peer: false,
             unit_run: None,
-            inline_insert: false,
+            unmapped_after: false,
         }
     }
 }
@@ -244,10 +244,24 @@ impl Branch {
                 mirror_offset: None,
                 peer: false,
                 unit_run: None,
-                inline_insert: crate::state::transaction::inline_insertion(step.as_ref()),
+                unmapped_after: false,
             });
         }
         self.items = items;
+    }
+
+    /// Note a change the history did not record that moved no position, on the
+    /// newest item ([`Item::unmapped_after`]).
+    fn note_unmapped(&mut self) {
+        let Some(head) = self.items.head() else {
+            return;
+        };
+        if head.unmapped_after {
+            return;
+        }
+        let mut item = head.clone();
+        item.unmapped_after = true;
+        self.items = self.items.tail().push(item);
     }
 
     /// Record a change this branch's events must be mapped through (PM's
@@ -305,9 +319,8 @@ impl Branch {
     /// applied (mirrored, so a position the event's own step deleted and its
     /// inverse re-inserted is recovered). A step that no longer maps or applies
     /// is skipped. Returns the transaction (selection not set yet), the
-    /// selection to restore, the branch without the event, the event, and —
-    /// when a step was mapped through a change the history did not record —
-    /// per step applied, whether it undoes typing (`Item::inline_insert`).
+    /// selection to restore, the branch without the event, the event, and
+    /// whether a step was mapped through a change the history did not record.
     fn pop_event(&self, state: &EditorState) -> Option<Popped> {
         if self.event_count == 0 {
             return None;
@@ -327,13 +340,14 @@ impl Branch {
         }
         seg.reverse();
         let len = seg.len();
+        // A change the history did not record and that moved no position (a
+        // peer's `colspan`) came after the event: the undo is not its plain
+        // inverse either (#1937).
+        let unmapped = seg.iter().any(|item| item.unmapped_after);
         let mut tr = state.tr();
         let mut remap: Option<(Mapping, Vec<usize>)> = None;
         let mut add_before: Vec<Item> = Vec::new();
         let mut add_after: Vec<Item> = Vec::new();
-        // Per step the undo applies: whether it is the inverse of typing, which
-        // changes no table's grid wherever it is mapped (`Item::inline_insert`).
-        let mut typing: Vec<bool> = Vec::new();
         for i in (0..len).rev() {
             let item = seg[i];
             let Some(step) = &item.step else {
@@ -361,7 +375,6 @@ impl Branch {
                     for &(from, to) in pieces.iter().rev() {
                         let piece = ReplaceStep::new(from, to, Slice::empty());
                         if tr.step(Box::new(piece)).is_ok() {
-                            typing.push(item.inline_insert);
                             let map = last_map(&tr);
                             add_after.push(Item::map_only(map.clone(), None));
                             remap.append_map(map);
@@ -370,7 +383,6 @@ impl Branch {
                 } else if let Some(mapped) = mapped
                     && tr.step(mapped).is_ok()
                 {
-                    typing.push(item.inline_insert);
                     let map = last_map(&tr);
                     // Mirrored with the step's own map only when it is that map's
                     // image, range for range (#1935): a position a map deleted is
@@ -392,22 +404,20 @@ impl Branch {
             } else {
                 // Nothing recorded after this step: it applies where it was made.
                 // A step that fails is skipped, as PM's `maybeStep` does.
-                if tr.step(step.clone()).is_ok() {
-                    typing.push(item.inline_insert);
-                }
+                let _ = tr.step(step.clone());
             }
             if let Some(info) = &item.event {
                 let selection = match &remap {
                     Some((r, starts)) => info.selection.map(tr.doc(), &r.slice(starts[i], r.len())),
                     None => info.selection.clone(),
                 };
-                // Whether a step was mapped through a change the history did not
-                // record (a peer's): only then can the result differ from the
+                // Whether a change the history did not record (a peer's) came
+                // after the event: only then can the result differ from the
                 // document before the event (#1937).
-                let remapped = remap.is_some();
+                let remapped = remap.is_some() || unmapped;
                 let (tr, selection, branch, info) =
                     self.finish(tr, selection, rest, add_before, add_after, info);
-                return Some((tr, selection, branch, info, remapped.then_some(typing)));
+                return Some((tr, selection, branch, info, remapped));
             }
         }
         None
@@ -986,6 +996,10 @@ impl Plugin for HistoryPlugin {
                     // branches' events are mapped through it when they are undone.
                     if hist.done.event_count > 0 || hist.undone.event_count > 0 {
                         let maps = unrecorded_maps(tr);
+                        if maps.is_empty() {
+                            hist.done.note_unmapped();
+                            hist.undone.note_unmapped();
+                        }
                         hist.done.add_maps(&maps);
                         hist.undone.add_maps(&maps);
                     } else {
@@ -1023,9 +1037,9 @@ fn hist_transaction(state: &EditorState, action: HistoryAction) -> Option<Transa
     // made for, and brings back the document before the event, table for table.
     // So a local undo checks nothing, whatever the table's size.
     let steps = tr.steps().len();
-    if let Some(typing) = remapped {
+    if remapped || crate::state::transaction::repair_every_undo() {
         // A repair that fails part way leaves the steps it made; none should.
-        let _ = tr.repair_tables_after_history(&typing);
+        let _ = tr.repair_tables_after_history();
     }
     let selection = if tr.steps().len() > steps {
         selection.map(tr.doc(), &tr.mapping().slice(steps, tr.mapping().len()))
