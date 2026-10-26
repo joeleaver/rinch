@@ -26,7 +26,7 @@ use std::rc::Rc;
 
 use crate::model::{AttrValue, Attrs, Fragment, Mark, NodeType};
 use crate::model::{Node, Slice};
-use crate::pos::Pos;
+use crate::pos::{Pos, ResolvedPos};
 use crate::schema::Schema;
 use crate::selection::Selection;
 use crate::tables::{self, TableProblem};
@@ -222,7 +222,7 @@ impl Transaction {
     pub fn replace_selection(&mut self, slice: Slice) -> Result<&mut Self, StepError> {
         let (from, to) = self.selection_range()?;
         let tables = slice.content.children().iter().any(holds_table);
-        self.with_table_repair(from, to, tables, |tr| {
+        self.with_table_repair(from, to, tables, None, |tr| {
             tr.replace_selection_inner(from, to, slice)
         })?;
         Ok(self)
@@ -369,15 +369,26 @@ impl Transaction {
             return Ok(self);
         }
         let (from, to) = self.selection_range()?;
-        self.with_table_repair(from, to, false, |tr| tr.insert_text_inner(from, to, text))?;
+        // One resolve of `from`, for the inherited marks and for the table
+        // check alike: resolving walks every row before it in a table.
+        let r = self
+            .doc
+            .resolve(Pos(from))
+            .map_err(|e| StepError::new(e.to_string()))?;
+        let marks = self.stored_marks.clone().unwrap_or_else(|| r.marks());
+        self.with_table_repair(from, to, false, Some(r), |tr| {
+            tr.insert_text_inner(from, to, text, marks)
+        })?;
         Ok(self)
     }
 
-    fn insert_text_inner(&mut self, from: usize, to: usize, text: &str) -> Result<(), StepError> {
-        let marks = self
-            .stored_marks
-            .clone()
-            .unwrap_or_else(|| self.marks_at(from));
+    fn insert_text_inner(
+        &mut self,
+        from: usize,
+        to: usize,
+        text: &str,
+        marks: Vec<Mark>,
+    ) -> Result<(), StepError> {
         let node = self
             .schema
             .text_with_marks(text, marks)
@@ -393,7 +404,7 @@ impl Transaction {
     pub fn replace_selection_with(&mut self, node: Node) -> Result<&mut Self, StepError> {
         let (from, to) = self.selection_range()?;
         let tables = holds_table(&node);
-        self.with_table_repair(from, to, tables, |tr| {
+        self.with_table_repair(from, to, tables, None, |tr| {
             let size = node.node_size();
             tr.replace_with(from, to, Fragment::from_node(node))?;
             let after = Selection::near(&tr.doc, Pos(from + size), 1);
@@ -413,7 +424,9 @@ impl Transaction {
     pub fn insert_block(&mut self, node: Node) -> Result<&mut Self, StepError> {
         let (from, to) = self.selection_range()?;
         let tables = holds_table(&node);
-        self.with_table_repair(from, to, tables, |tr| tr.insert_block_inner(from, to, node))?;
+        self.with_table_repair(from, to, tables, None, |tr| {
+            tr.insert_block_inner(from, to, node)
+        })?;
         Ok(self)
     }
 
@@ -463,7 +476,7 @@ impl Transaction {
         if from == to {
             return Ok(self);
         }
-        self.with_table_repair(from, to, false, |tr| {
+        self.with_table_repair(from, to, false, None, |tr| {
             tr.delete(from, to)?;
             // A fitted delete whose tail could not join the textblock it began
             // in (code, then marked text) maps the range's end past `from`: the
@@ -506,9 +519,11 @@ impl Transaction {
     /// Which tables are looked at, so that an edit inside one cell costs
     /// nothing in the size of the table around it:
     ///
-    /// - **a caret, or both ends in one textblock, and no table inserted**
-    ///   (`inserts_tables` false — typing, a delete, a paste of text): none,
-    ///   and nothing is resolved but the range's start;
+    /// - **a caret, or a range inside one textblock or inside the innermost
+    ///   cell around its start, and no table inserted** (`inserts_tables`
+    ///   false — typing, a delete, a paste of text): none, and nothing is
+    ///   resolved but the range's start (`r_from`, the caller's own resolve
+    ///   when it has one: `insert_text` shares it with the inherited marks);
     /// - **both ends in one cell** (the innermost cell around each is the
     ///   same), or both outside every table: the edit cannot change the grid
     ///   of any table around it, so only the tables inside the edited range
@@ -526,30 +541,39 @@ impl Transaction {
         from: usize,
         to: usize,
         inserts_tables: bool,
+        r_from: Option<ResolvedPos>,
         f: impl FnOnce(&mut Self) -> Result<(), StepError>,
     ) -> Result<(), StepError> {
-        // Nothing to check when the edit takes nothing out of a table's
-        // grid and puts no table in: a caret, or a range inside one
-        // textblock, with no table inserted. This is every keystroke, so it
-        // is decided before any table is looked at (one resolve, for a
-        // range).
-        if !inserts_tables {
-            let in_one_block = from == to
-                || self
-                    .doc
-                    .resolve(Pos(from))
-                    .is_ok_and(|r| r.parent().is_textblock() && to <= r.end(r.depth()));
-            if in_one_block {
-                return f(self);
-            }
+        if from == to && !inserts_tables {
+            return f(self);
         }
-        let cell_at = |p: usize| {
+        // Everything below is read off `from`'s resolved position (the
+        // caller's, when it has one) without resolving `to`: a resolve walks
+        // every row before the position in a table, so an edit inside one
+        // cell would cost in the table's size.
+        let Some(r) = r_from.or_else(|| self.doc.resolve(Pos(from)).ok()) else {
+            return f(self);
+        };
+        let cell_depth = (1..=r.depth()).rev().find(|&d| tables::is_cell(r.node(d)));
+        let in_from_cell = cell_depth.is_some_and(|d| to <= r.end(d));
+        let in_block = r.parent().is_textblock() && to <= r.end(r.depth());
+        // Nothing to check when the edit takes nothing out of a table's grid
+        // and puts no table in: a range inside one textblock or one cell (a
+        // nested table wholly inside the range goes whole; one an end is in
+        // makes that end's innermost cell another), with no table inserted.
+        // This is every keystroke over a range.
+        if !inserts_tables && (in_block || in_from_cell) {
+            return f(self);
+        }
+        let from_cell = cell_depth.and_then(|d| r.before(d));
+        let to_cell = if in_from_cell {
+            from_cell
+        } else {
             self.doc
-                .resolve(Pos(p))
+                .resolve(Pos(to))
                 .ok()
                 .and_then(|r| tables::cell_around(&r))
         };
-        let (from_cell, to_cell) = (cell_at(from), cell_at(to));
         let confined = from_cell == to_cell;
         let old_doc = self.doc.clone();
         let first = self.mapping.maps().len();

@@ -1497,8 +1497,8 @@ pub struct EditorFixture {
 /// walked the whole table (1.0 ms at 1,024 rows, 24.6 ms at 4,096). The
 /// caret variants are the yardstick: a keystroke anywhere in the table is
 /// linear in its rows already (resolving a position walks the row list, and
-/// the edit copies it), and a range costs a caret's keystroke plus one
-/// resolve of its start (which finds it inside one textblock).
+/// the edit copies it), and the check adds nothing linear to that: it reads
+/// the start's resolve that the inherited marks need anyway.
 pub fn setup_range_type_in_table((rows, len): (usize, usize)) -> EditorFixture {
     use rinch_editor_core::{EditorState, Fragment, Pos, Selection, default_plugins};
     alloc::reserve();

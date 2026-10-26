@@ -78,8 +78,15 @@ fn sel_ranges(state: &EditorState) -> Vec<(usize, usize)> {
         .collect()
 }
 
-/// Whether any of the selection's ranges carries `mark_type`.
+/// Whether any of the selection's ranges carries `mark_type`. Over a cell
+/// selection each selected cell is read as its own node, so asking costs in
+/// the selected cells, not the table (a toolbar asks for every mark).
 fn ranges_have_mark(state: &EditorState, mark_type: &MarkType) -> bool {
+    if let crate::selection::Selection::Cell(c) = &state.selection {
+        return crate::tables::selected_cells(&state.doc, c.anchor_cell.0, c.head_cell.0)
+            .iter()
+            .any(|(_, cell)| range_has_mark(cell, 0, cell.content_size(), mark_type));
+    }
     sel_ranges(state)
         .into_iter()
         .any(|(from, to)| range_has_mark(&state.doc, from, to, mark_type))

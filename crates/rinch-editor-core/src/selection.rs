@@ -135,25 +135,9 @@ impl Selection {
         let Selection::Cell(c) = self else {
             return vec![(self.from(), self.to())];
         };
-        let Some((table, start)) = doc
-            .resolve(Pos(c.head_cell.0 + 1))
-            .ok()
-            .and_then(|r| tables::table_around(&r))
-        else {
-            return Vec::new();
-        };
-        let map = tables::table_map(&table, start);
-        let Some(rect) = map.rect_between(c.anchor_cell.0, c.head_cell.0) else {
-            return Vec::new();
-        };
-        let mut cells = map.cells_in_rect(rect);
-        cells.sort_unstable();
-        cells
+        tables::selected_cells(doc, c.anchor_cell.0, c.head_cell.0)
             .into_iter()
-            .filter_map(|p| {
-                let cell = doc.node_at(p)?;
-                Some((Pos(p + 1), Pos(p + cell.node_size() - 1)))
-            })
+            .map(|(p, cell)| (Pos(p + 1), Pos(p + cell.node_size() - 1)))
             .collect()
     }
 
