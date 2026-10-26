@@ -607,9 +607,14 @@ What it does not do, where ProseMirror does:
   asked for either. A fit that would need one fails, and a paste then falls back to
   its plain text.
 - A range whose two ends are in different isolating nodes (two table cells) is not
-  fitted: only the plain `replace` is tried, as before.
+  fitted: only the plain `replace` is tried, as before. Two cells of one table never
+  reach it from a selection: `EditorState::apply` holds that range as a cell
+  selection (`Selection::normalized`, #1847). Across two tables, the selection
+  gestures repair a table the replace left ragged (see `Transaction::delete_selection`).
 - A **cell selection** is not a range: its `from()..to()` are the positions before
-  its two corner cells. `Transaction::replace_selection` refuses one. The paste
+  its two corner cells. `Transaction::replace_selection` refuses one, and so do
+  `delete_selection`, `insert_text`, `replace_selection_with` and `insert_block`
+  (#1847; `splitBlock` and Enter therefore refuse one too). The paste
   (`EditorHandle`) clears the selected cells (`commands::table_ops::clear_cells`) and
   fits the content in the top-left cell, in one transaction — what ProseMirror's
   `CellSelection.replace` does with content that is not cells. `replace_range` itself

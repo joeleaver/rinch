@@ -267,6 +267,155 @@ impl Selection {
     }
 }
 
+impl Selection {
+    /// This selection as the editor holds it in `doc` (#1847), ProseMirror's
+    /// `normalizeSelection` from prosemirror-tables, which
+    /// [`EditorState::apply`](crate::state::EditorState::apply) runs on every
+    /// selection it lands:
+    ///
+    /// - a [`NodeSelection`] of a **cell** becomes a [`CellSelection`] of it,
+    ///   and one of a **row** a cell selection across the row (an empty row,
+    ///   every slot of it covered from above, is not a selection of anything:
+    ///   the nearest text selection). A whole **table** stays node-selected:
+    ///   Backspace after a table selects it, and the next one deletes it.
+    /// - a [`TextSelection`] with an end at **row or table level** (between
+    ///   cells or rows) has that end moved into the nearest text towards the
+    ///   other end;
+    /// - one that only crosses a **cell boundary** — from the end of one
+    ///   cell's content to the start of the next — becomes a caret at its
+    ///   start (PM `isCellBoundarySelection`);
+    /// - one whose ends are in **two cells of one table** becomes a cell
+    ///   selection of the rectangle between them, as a drag across cells
+    ///   does on the desktop.
+    ///
+    /// Commands then never see a range that would take cells out of their
+    /// rows. A text selection with an end outside the table (a drag from a
+    /// cell out of it) stays a text selection: the selection gestures repair
+    /// a table such a range leaves ragged (`Transaction::delete_selection`).
+    pub fn normalized(&self, doc: &Node) -> Selection {
+        match self {
+            Selection::Node(n) => normalize_node(doc, n).unwrap_or_else(|| self.clone()),
+            Selection::Text(t) if t.anchor != t.head => normalize_text(doc, *t),
+            _ => self.clone(),
+        }
+    }
+}
+
+/// A node selection of a cell or row as a cell selection; `None` to keep it.
+fn normalize_node(doc: &Node, n: &NodeSelection) -> Option<Selection> {
+    let node = doc.node_at(n.anchor.0)?;
+    if tables::is_cell(&node) {
+        return Some(Selection::cell(n.anchor, n.anchor));
+    }
+    if !tables::is_row(&node) {
+        return None;
+    }
+    let (map, table, _) = tables::map_around(doc, Pos(n.anchor.0 + 1))?;
+    let row = (0..table.child_count()).find(|&r| map.row_start(r) == Some(n.anchor.0));
+    let ends = row.and_then(|r| Some((map.cell_at(r, 0)?, map.cell_at(r, map.width() - 1)?)));
+    Some(match ends {
+        Some((first, last)) => Selection::cell(Pos(first), Pos(last)),
+        None => Selection::near(doc, n.anchor, 1),
+    })
+}
+
+/// True if `doc`'s node at `pos`'s parent is a table or a row: a position
+/// between cells or between rows.
+fn at_table_level(doc: &Node, pos: Pos) -> bool {
+    doc.resolve(pos)
+        .is_ok_and(|r| tables::is_table(r.parent()) || tables::is_row(r.parent()))
+}
+
+fn normalize_text(doc: &Node, t: TextSelection) -> Selection {
+    // Move an end between cells or rows into the text towards the other end.
+    let snap = |end: Pos, other: Pos| {
+        if !at_table_level(doc, end) {
+            return end;
+        }
+        let dir = if other.0 > end.0 { 1 } else { -1 };
+        Selection::near_text(doc, end, dir).map_or(end, |s| s.head())
+    };
+    let (anchor, head) = (snap(t.anchor, t.head), snap(t.head, t.anchor));
+    if (anchor.0 < head.0) != (t.anchor.0 < t.head.0) || anchor == head {
+        // The ends met or crossed: there is no text between them.
+        return Selection::cursor(Pos(anchor.0.min(head.0)));
+    }
+    let (from, to) = (anchor.min(head), anchor.max(head));
+    if is_cell_boundary(doc, from, to) {
+        return Selection::cursor(from);
+    }
+    // Two cells of the table that holds both ends, below their shared depth.
+    let (Ok(ra), Ok(rh)) = (doc.resolve(anchor), doc.resolve(head)) else {
+        return Selection::text(anchor, head);
+    };
+    let shared = ra.shared_depth(head);
+    let node = ra.node(shared);
+    let table_depth = if tables::is_table(node) {
+        Some(shared)
+    } else if tables::is_row(node) {
+        shared.checked_sub(1)
+    } else {
+        None
+    };
+    let cells = table_depth
+        .filter(|&d| ra.depth() >= d + 2 && rh.depth() >= d + 2)
+        .and_then(|d| Some((ra.before(d + 2)?, rh.before(d + 2)?)));
+    match cells {
+        Some((a, h)) if a != h => Selection::cell(Pos(a), Pos(h)),
+        _ => Selection::text(anchor, head),
+    }
+}
+
+/// Whether `from..to` crosses only the tokens between two cells (the end of
+/// one cell's content to the start of the next): PM `isCellBoundarySelection`.
+fn is_cell_boundary(doc: &Node, from: Pos, to: Pos) -> bool {
+    if from == to || from.0 + 6 < to.0 {
+        return false;
+    }
+    let (Ok(rf), Ok(rt)) = (doc.resolve(from), doc.resolve(to)) else {
+        return false;
+    };
+    // Climb out of every node `from` is at the end of, counting its close
+    // token, and every node `to` is at the start of, counting its open token.
+    let mut after_from = from.0 as isize;
+    let mut depth = rf.depth() as isize;
+    while depth >= 0 {
+        let d = depth as usize;
+        let after = if d == rf.depth() {
+            Some(from.0)
+        } else {
+            rf.after(d + 1)
+        };
+        if after.is_some_and(|a| a < rf.end(d)) {
+            break;
+        }
+        depth -= 1;
+        after_from += 1;
+    }
+    let mut before_to = to.0 as isize;
+    let mut d = rt.depth() as isize;
+    while d >= 0 {
+        let du = d as usize;
+        let before = if du == rt.depth() {
+            Some(to.0)
+        } else {
+            rt.before(du + 1)
+        };
+        if before.is_some_and(|b| b > rt.start(du)) {
+            break;
+        }
+        d -= 1;
+        before_to -= 1;
+    }
+    if depth < 0 {
+        return false;
+    }
+    after_from == before_to && {
+        let n = rf.node(depth as usize);
+        tables::is_row(n) || tables::is_table(n)
+    }
+}
+
 /// True if the node immediately after `pos` is a table cell — i.e. `pos` is a valid
 /// cell-selection corner. Port of `pointsAtCell`.
 fn points_at_cell(doc: &Node, pos: usize) -> bool {

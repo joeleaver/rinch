@@ -2850,16 +2850,26 @@ impl EditorHandle {
     /// the plain text is the `text/plain` alternative.
     ///
     /// A selection inside a list is copied with the list around its items
-    /// (`<ol start="3">`, a task list with its checkboxes), and one across
-    /// table cells with its table: content that is nothing without the node
-    /// it was in keeps it ([`clipboard_slice`]).
+    /// (`<ol start="3">`, a task list with its checkboxes): content that is
+    /// nothing without the node it was in keeps it ([`clipboard_slice`]). A
+    /// selection across the cells of one table is a cell selection (#1847),
+    /// which copies as a table of the selected cells, whole
+    /// ([`cell_selection_slice`](rinch_editor_core::commands::table_ops::cell_selection_slice)),
+    /// as ProseMirror copies one.
     pub fn selection_clipboard(&self) -> Option<(String, String)> {
         let core = self.core();
         let sel = &core.state.selection;
         if sel.is_empty() {
             return None;
         }
-        let slice = clipboard_slice(&core.state.doc, sel.from().0, sel.to().0).ok()?;
+        // A cell selection's `from()..to()` is not a range of content: it
+        // copies as a table of the selected cells.
+        let slice = match sel {
+            Selection::Cell(_) => {
+                rinch_editor_core::commands::table_ops::cell_selection_slice(&core.state)?
+            }
+            _ => clipboard_slice(&core.state.doc, sel.from().0, sel.to().0).ok()?,
+        };
         Some((slice_to_html(&slice), slice_to_text(&slice)))
     }
 

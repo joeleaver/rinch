@@ -331,7 +331,8 @@ fn a_browsers_wrappers_do_not_eat_the_paste() {
     );
 }
 
-/// A selection across table cells is copied as a table.
+/// A selection across table cells is copied as a table. It is a cell
+/// selection (#1847), so the cells are copied whole, as ProseMirror copies one.
 #[test]
 fn a_selection_across_cells_is_copied_as_a_table() {
     let src = editor(
@@ -339,10 +340,11 @@ fn a_selection_across_cells_is_copied_as_a_table() {
         5,
         11,
     );
+    assert!(matches!(src.selection(), Selection::Cell(_)));
     let (html, _) = src.selection_clipboard().unwrap();
     assert_eq!(
         html,
-        "<table><tr><td><p>b</p></td><td><p>c</p></td></tr></table>"
+        "<table><tr><td><p>ab</p></td><td><p>cd</p></td></tr></table>"
     );
     assert_eq!(
         paste("<p>xy</p>", 2, 2, &html),

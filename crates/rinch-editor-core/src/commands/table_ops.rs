@@ -14,7 +14,7 @@
 use crate::AttrValue;
 use crate::command::Command;
 use crate::commands::command_tr;
-use crate::model::{Attrs, Fragment, Node};
+use crate::model::{Attrs, Fragment, Node, Slice};
 use crate::pos::Pos;
 use crate::schema::Schema;
 use crate::selection::Selection;
@@ -843,6 +843,54 @@ pub fn clear_cells(state: &EditorState) -> Option<Transaction> {
     let sel = Selection::near(tr.doc(), Pos(top_left + 1), 1);
     tr.set_selection(sel);
     Some(tr)
+}
+
+/// The current cell selection's cells as a table of their own: what copying a
+/// cell selection puts on the clipboard. A merged cell that pokes out of the
+/// rectangle keeps only its span inside it. `None` unless a cell selection is
+/// active. Port of prosemirror-tables' `CellSelection.content`, as a whole
+/// table rather than its rows.
+pub fn cell_selection_slice(state: &EditorState) -> Option<Slice> {
+    if !matches!(state.selection, Selection::Cell(_)) {
+        return None;
+    }
+    let info = selected_rect(state)?;
+    let (map, rect) = (&info.map, info.rect);
+    let mut seen = HashSet::new();
+    let mut rows = Vec::new();
+    for row in rect.top..rect.bottom {
+        let mut cells = Vec::new();
+        for col in rect.left..rect.right {
+            let index = row * map.width() + col;
+            let Some(cell_rect) = map.cell_rect(index) else {
+                continue;
+            };
+            let pos = map.map()[index];
+            if !seen.insert(pos) {
+                continue;
+            }
+            let Some(cell) = info.table.node_at(pos - info.table_start) else {
+                continue;
+            };
+            let cols = cell_rect.right.min(rect.right) - cell_rect.left.max(rect.left);
+            let rows_in = cell_rect.bottom.min(rect.bottom) - cell_rect.top.max(rect.top);
+            let mut attrs = cell.attrs().clone();
+            if cols != cell_rect.right - cell_rect.left {
+                attrs = attrs.with("colspan", span_value(cols));
+            }
+            if rows_in != cell_rect.bottom - cell_rect.top {
+                attrs = attrs.with("rowspan", span_value(rows_in));
+            }
+            cells.push(cell.with_attrs(attrs));
+        }
+        rows.push(
+            info.table
+                .child(row)
+                .copy_with_content(Fragment::from_children(cells)),
+        );
+    }
+    let table = info.table.copy_with_content(Fragment::from_children(rows));
+    Some(Slice::from_fragment(Fragment::from_node(table)))
 }
 
 /// `deleteCellSelection` — clear the selected cells' content (see [`clear_cells`]).

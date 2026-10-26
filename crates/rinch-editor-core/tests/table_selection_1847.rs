@@ -47,10 +47,14 @@ fn cell(s: &Schema, colspan: i64, rowspan: i64, blocks: Vec<Node>) -> Node {
     .unwrap()
 }
 
+/// A state holding `selection` the way an editor lands one: through a
+/// transaction (`EditorHandle::set_selection`, a drag, a mapped remote edit),
+/// which normalizes it.
 fn state(s: &Rc<Schema>, doc: Node, selection: Selection) -> EditorState {
-    let mut st = EditorState::create(s.clone(), doc, default_plugins());
-    st.selection = selection;
-    st
+    let st = EditorState::create(s.clone(), doc, default_plugins());
+    let mut tr = st.tr();
+    tr.set_selection(selection);
+    st.apply(tr)
 }
 
 fn span(cell: &Node, name: &str) -> usize {
@@ -73,8 +77,8 @@ fn tiling_problem(table: &Node) -> Option<String> {
             let c = row.child(i);
             let (cs, rs) = (span(c, "colspan"), span(c, "rowspan"));
             w += cs;
-            for below in r + 1..(r + rs).min(height) {
-                carried[below] += cs;
+            for below in &mut carried[r + 1..(r + rs).min(height).max(r + 1)] {
+                *below += cs;
             }
         }
         width = width.max(w);
@@ -146,52 +150,192 @@ fn grid_doc(s: &Schema) -> Node {
         branch(
             s,
             "table_row",
-            vec![cell(s, 1, 1, vec![para(s, a)]), cell(s, 1, 1, vec![para(s, b)])],
+            vec![
+                cell(s, 1, 1, vec![para(s, a)]),
+                cell(s, 1, 1, vec![para(s, b)]),
+            ],
         )
     };
     let table = branch(s, "table", vec![row("ab", "cd"), row("ef", "gh")]);
     branch(s, "doc", vec![para(s, "x"), table, para(s, "zw")])
 }
 
-// Positions in `grid_doc`: p("x") 0..3, the table opens at 3, row 1 at 4, its
+// Positions in `grid_doc`: p("x") 0..3, the table 3..33, row 1 at 4, its
 // cells at 5 and 11 (texts 7..9 and 13..15), row 2 at 18, its cells at 19 and
-// 25 (texts 21..23 and 27..29); the table closes at 32, p("zw") 32..36.
+// 25 (texts 21..23 and 27..29); p("zw") 33..37, its text 34..36.
 
 #[test]
-fn a_text_selection_across_two_cells_of_a_row_keeps_the_row() {
+fn a_selection_of_table_parts_is_held_as_a_cell_selection() {
+    let s = Rc::new(Schema::starter_kit());
+    let node = |a: usize, h: usize| {
+        Selection::Node(NodeSelection {
+            anchor: Pos(a),
+            head: Pos(h),
+        })
+    };
+    let held = |sel: Selection| state(&s, grid_doc(&s), sel).selection;
+    // A cell, a row: cell selections.
+    assert_eq!(held(node(11, 17)), Selection::cell(Pos(11), Pos(11)));
+    assert_eq!(held(node(18, 32)), Selection::cell(Pos(19), Pos(25)));
+    // The whole table stays node-selected (Backspace after a table, #1232).
+    assert_eq!(held(node(3, 33)), node(3, 33));
+    // Text across two cells: the rectangle between them.
+    assert_eq!(
+        held(Selection::text(Pos(8), Pos(28))),
+        Selection::cell(Pos(5), Pos(25))
+    );
+    assert_eq!(
+        held(Selection::text(Pos(22), Pos(14))),
+        Selection::cell(Pos(19), Pos(11))
+    );
+    // An end at table level moves into the text towards the other end.
+    assert_eq!(
+        held(Selection::text(Pos(4), Pos(14))),
+        Selection::cell(Pos(5), Pos(11))
+    );
+    // Only the boundary between two cells: a caret at its start.
+    assert_eq!(
+        held(Selection::text(Pos(9), Pos(13))),
+        Selection::cursor(Pos(9))
+    );
+    // Controls: text inside one cell, and a range out of the table, stay.
+    assert_eq!(
+        held(Selection::text(Pos(7), Pos(9))),
+        Selection::text(Pos(7), Pos(9))
+    );
+    assert_eq!(
+        held(Selection::text(Pos(8), Pos(35))),
+        Selection::text(Pos(8), Pos(35))
+    );
+}
+
+#[test]
+fn enter_and_split_block_refuse_a_cell_selection() {
+    let s = Rc::new(Schema::starter_kit());
+    let st = state(&s, grid_doc(&s), Selection::cell(Pos(5), Pos(25)));
+    for cmd in ["enter", "splitBlock"] {
+        assert!(st.run(cmd).is_none(), "{cmd}");
+        assert!(!st.can_run(cmd), "{cmd}");
+    }
+    // Control: Backspace over it still clears the cells.
+    let cleared = st.run("deleteCharBackward").expect("clears the cells");
+    assert_eq!(
+        serialize::node_to_html(&cleared.doc),
+        "<p>x</p><table><tr><td><p></p></td><td><p></p></td></tr>\
+         <tr><td><p></p></td><td><p></p></td></tr></table><p>zw</p>"
+    );
+}
+
+/// The position `offset` chars into the first text node reading `text`.
+fn at(doc: &Node, text: &str, offset: usize) -> usize {
+    let mut found = None;
+    doc.nodes_between(0, doc.content().size(), &mut |n, pos, _| {
+        if found.is_none() && n.text() == Some(text) {
+            found = Some(pos + offset);
+        }
+        found.is_none()
+    });
+    found.unwrap_or_else(|| panic!("no text {text:?}"))
+}
+
+/// `table(row(td(p a), td(p b)), row(td(p cd), td(p q)))` and
+/// `table(row(td(p ef), td(p gh)), row(td(p ij), td(p kl)))` side by side,
+/// then `p(zw)`; with
+/// `ragged`, the first table's second row lacks its `q` cell, as a table
+/// loaded from HTML may.
+fn two_tables(s: &Schema, ragged: bool) -> Node {
+    let row = |cells: Vec<Node>| branch(s, "table_row", cells);
+    let td = |t: &str| cell(s, 1, 1, vec![para(s, t)]);
+    let mut second = vec![td("cd")];
+    if !ragged {
+        second.push(td("q"));
+    }
+    let first = branch(s, "table", vec![row(vec![td("a"), td("b")]), row(second)]);
+    let other = branch(
+        s,
+        "table",
+        vec![row(vec![td("ef"), td("gh")]), row(vec![td("ij"), td("kl")])],
+    );
+    branch(s, "doc", vec![first, other, para(s, "zw")])
+}
+
+#[test]
+fn a_drag_from_a_cell_into_the_next_table_leaves_whole_tables() {
+    // The ends are in cells of two tables: no cell selection stands for it.
+    // The fitted delete joins "c" with "h", one cell where the row had two,
+    // and the second table's last row into the first table; the repair pads
+    // the short row.
+    let s = Rc::new(Schema::starter_kit());
+    let doc = two_tables(&s, false);
+    let sel = Selection::text(Pos(at(&doc, "cd", 1)), Pos(at(&doc, "gh", 1)));
+    let st = state(&s, doc.clone(), sel.clone());
+    assert_eq!(st.selection, sel);
+    let next = st.run("deleteSelection").expect("deletes");
+    assert_eq!(ragged_tables(&next.doc), Vec::<String>::new());
+    assert_eq!(
+        serialize::node_to_html(&next.doc),
+        "<table><tr><td><p>a</p></td><td><p>b</p></td></tr>\
+         <tr><td><p>ch</p></td><td><p></p></td></tr>\
+         <tr><td><p>ij</p></td><td><p>kl</p></td></tr></table><p>zw</p>"
+    );
+    // One undo puts it all back, the repair included.
+    assert_eq!(next.run("undo").expect("undo").doc, doc);
+    for name in EXTRA {
+        let next = run_extra(&st, name).expect(name);
+        assert_eq!(ragged_tables(&next.doc), Vec::<String>::new(), "{name}");
+    }
+}
+
+#[test]
+fn a_drag_from_a_cell_out_of_the_table_is_refused_and_keeps_the_table() {
+    // The desktop drag gate makes a cell selection only between two cells of
+    // one table; from "a|b" to "z|w" it stays a text selection with one end
+    // outside every table. The fitted replace refuses that range ("inconsistent
+    // open depths"), as it did before #1847, so no edit over it changes the
+    // document, and none leaves the table ragged.
     let s = Rc::new(Schema::starter_kit());
     let doc = grid_doc(&s);
-    assert!(ragged_tables(&doc).is_empty());
-    // "a|b" in the first cell to "c|d" in the second.
-    let st = state(&s, doc, Selection::text(Pos(8), Pos(14)));
-    for cmd in [
-        "deleteSelection",
-        "deleteCharBackward",
-        "insertHardBreak",
-        "enter",
-        "insertHorizontalRule",
+    for sel in [
+        Selection::text(Pos(8), Pos(35)),
+        Selection::text(Pos(35), Pos(8)),
     ] {
-        if let Some(next) = st.run(cmd) {
-            assert_eq!(ragged_tables(&next.doc), Vec::<String>::new(), "{cmd}");
-            assert!(valid(&s, &next.doc), "{cmd}");
+        let st = state(&s, doc.clone(), sel.clone());
+        assert_eq!(st.selection, sel);
+        for cmd in [
+            "deleteSelection",
+            "deleteCharBackward",
+            "enter",
+            "insertHardBreak",
+        ] {
+            assert!(st.run(cmd).is_none(), "{cmd}");
+        }
+        for name in EXTRA {
+            if let Some(next) = run_extra(&st, name) {
+                assert_eq!(next.doc, doc, "{name}");
+            }
         }
     }
 }
 
 #[test]
-fn a_node_selected_cell_is_not_deleted_out_of_its_row() {
+fn a_table_that_was_ragged_before_the_edit_is_left_as_it_was() {
+    // The same drag with the first table loaded ragged: it is not this
+    // edit's doing, so nothing is repaired: exactly the raw delete.
     let s = Rc::new(Schema::starter_kit());
-    let doc = grid_doc(&s);
-    let sel = Selection::Node(NodeSelection {
-        anchor: Pos(11),
-        head: Pos(17),
-    });
-    let st = state(&s, doc, sel);
-    for cmd in ["deleteSelection", "deleteCharBackward", "deleteCharForward"] {
-        if let Some(next) = st.run(cmd) {
-            assert_eq!(ragged_tables(&next.doc), Vec::<String>::new(), "{cmd}");
-        }
-    }
+    let doc = two_tables(&s, true);
+    assert_eq!(ragged_tables(&doc).len(), 1);
+    let (from, to) = (at(&doc, "cd", 1), at(&doc, "gh", 1));
+    let st = state(&s, doc.clone(), Selection::text(Pos(from), Pos(to)));
+    let next = st.run("deleteSelection").expect("deletes");
+    let mut raw = EditorState::create(s.clone(), doc, default_plugins()).tr();
+    raw.delete(from, to).unwrap();
+    assert_eq!(next.doc, *raw.doc());
+    assert_eq!(
+        serialize::node_to_html(&next.doc),
+        "<table><tr><td><p>a</p></td><td><p>b</p></td></tr>\
+         <tr><td><p>ch</p></td></tr>\
+         <tr><td><p>ij</p></td><td><p>kl</p></td></tr></table><p>zw</p>"
+    );
 }
 
 // ── seeded ──────────────────────────────────────────────────────────────────
@@ -387,7 +531,10 @@ fn no_edit_over_a_cross_cell_or_table_part_selection_makes_a_ragged_table() {
     for seed in 1..=seeds {
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ seed.wrapping_mul(0x2545_F491_4F6C_DD1D));
         let doc = random_doc(&s, &mut rng);
-        assert!(valid(&s, &doc), "seed {seed}: generator made an invalid doc");
+        assert!(
+            valid(&s, &doc),
+            "seed {seed}: generator made an invalid doc"
+        );
         assert_eq!(
             ragged_tables(&doc),
             Vec::<String>::new(),
@@ -510,10 +657,16 @@ fn no_edit_over_a_cross_cell_or_table_part_selection_makes_a_ragged_table() {
         "text(one cell)",
         "cell",
     ] {
-        assert!(kinds.get(kind).copied().unwrap_or(0) > 10, "few {kind}: {kinds:?}");
+        assert!(
+            kinds.get(kind).copied().unwrap_or(0) > 10,
+            "few {kind}: {kinds:?}"
+        );
     }
     assert!(applied > runs / 10, "only {applied} of {runs} runs applied");
-    assert!(undone > applied / 4, "only {undone} of {applied} edits undone");
+    assert!(
+        undone > applied / 4,
+        "only {undone} of {applied} edits undone"
+    );
     let mut by_kind = std::collections::BTreeMap::<String, usize>::new();
     for (k, _) in &failures {
         *by_kind.entry(k.clone()).or_default() += 1;
@@ -525,8 +678,38 @@ fn no_edit_over_a_cross_cell_or_table_part_selection_makes_a_ragged_table() {
         failures.len(),
         by_kind
             .keys()
-            .filter_map(|k| failures.iter().find(|(n, _)| n == k).map(|(_, f)| f.clone()))
+            .filter_map(|k| failures
+                .iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, f)| f.clone()))
             .collect::<Vec<_>>()
             .join("\n")
+    );
+}
+
+#[test]
+fn a_cell_selection_copies_its_cells_with_spans_cut_to_the_rectangle() {
+    // `a b / c(rowspan 2) d / e`: the rectangle from `a` to `d` takes the
+    // top row of `c` only.
+    let s = Rc::new(Schema::starter_kit());
+    let row = |cells: Vec<Node>| branch(&s, "table_row", cells);
+    let td = |rs: i64, t: &str| cell(&s, 1, rs, vec![para(&s, t)]);
+    let table = branch(
+        &s,
+        "table",
+        vec![
+            row(vec![td(1, "a"), td(1, "b")]),
+            row(vec![td(2, "c"), td(1, "d")]),
+            row(vec![td(1, "e")]),
+        ],
+    );
+    let doc = branch(&s, "doc", vec![table]);
+    let (a, d) = (at(&doc, "a", 0) - 2, at(&doc, "d", 0) - 2);
+    let st = state(&s, doc, Selection::cell(Pos(a), Pos(d)));
+    let slice = commands::table_ops::cell_selection_slice(&st).expect("a cell selection");
+    assert_eq!(
+        serialize::slice_to_html(&slice),
+        "<table><tr><td><p>a</p></td><td><p>b</p></td></tr>\
+         <tr><td><p>c</p></td><td><p>d</p></td></tr></table>"
     );
 }

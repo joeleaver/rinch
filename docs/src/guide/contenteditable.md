@@ -122,6 +122,33 @@ table), the new row gets a cell per empty column, unless there are more than 100
 columns and more of them than the whole table has cells; then it gets cells up to 1000
 columns wide.
 
+**Selections in a table are held as cell selections** (#1847), as prosemirror-tables
+holds them. A selection that lands (`set_selection`, a drag, Shift+arrow, a peer's
+edit mapping it) is normalized first: a node selection of a cell, or of a row, becomes
+a cell selection of it; a text range whose ends are in two cells of one table becomes
+the cell selection of the rectangle between them, on the web as on the desktop; an end
+between cells or rows moves into the nearest text towards the other end; and a range
+that only crosses the boundary between two cells becomes a caret at its start. A node
+selection of a whole table stays one (Backspace after a table selects it, and the next
+Backspace deletes it). `selection()` reads back the normalized selection, and copying a
+cell selection copies the selected cells, whole, as a table. Enter (`enter`,
+`splitBlock`) does nothing over a cell selection; Backspace, Delete, typing and paste
+clear the cells first.
+
+A text range with its ends in two different tables, or with one end outside every
+table, has no cell selection to stand for it. An edit over it that takes cells out of
+a row, or rows out from under a `rowspan`, has the table put back in the same
+transaction (one undo step): a span past the last row or into another cell is cut, and
+each short row gets empty cells at its end. Only a table the edit made ragged is
+repaired; a table that was already ragged (loaded that way from HTML) is left as it
+is. A range from text inside a cell to text outside the table (a drag out of the
+table) is refused by Backspace, typing and paste, as before. The repair runs in the
+`Transaction` methods that replace the selection (`delete_selection`,
+`replace_selection`, `insert_text`, `replace_selection_with`, `insert_block`), which
+every built-in command and the handle's typing and paste use. **A transaction an app
+builds from the position methods (`delete`, `replace`, `replace_with`, `step`, ...)
+is not repaired**: give it whole cells or rows, or it can leave a ragged table.
+
 A block-type command clears what the new type cannot hold, as ProseMirror's `setBlockType` does: `setCodeBlock` removes the marks (a code block takes none), turns a hard break into a line break (`\n`) and deletes an image.
 
 > Links need a destination, so applying a link is a builder rather than a bare named
@@ -298,7 +325,7 @@ rsx! { Editor { editor: editor.clone() } }
 | `active_link_href() -> Option<String>` | The `href` of the link the selection is on, for pre-filling an "edit link" dialog: for a range, the first link in it; for a caret, the link text typed there would carry. A link is not inclusive, so a caret inside it answers its `href` and a caret at its start or right after its last character answers `None` — except where it runs straight into a different link, where the caret is in the first. |
 | `paste(&PasteContent) -> bool` | Paste `text/plain` and/or `text/html` over the selection the way the user's paste does: your plugins first, then the default. See [Seeing and rewriting a paste](#seeing-and-rewriting-a-paste). |
 | `replace_selection_with_html(&str)` | Replace the selection with parsed HTML (the default rich paste; no plugin sees it), fitted to where it lands. See [What a paste does](#what-a-paste-does). |
-| `selection_clipboard()` | The current selection serialized as `(html, plain_text)` for the clipboard. A selection inside a list is copied with its list, one across table cells with its table. |
+| `selection_clipboard()` | The current selection serialized as `(html, plain_text)` for the clipboard. A selection inside a list is copied with its list, one across table cells with its table. A selection across the cells of one table is a cell selection, and copies those cells whole (#1847). |
 | `anchor_selection() -> SelectionAnchor` | Capture the selection for a later insertion, kept pointing at the same content as the user keeps editing. See [Pasting is asynchronous](#pasting-is-asynchronous). |
 
 HTML is **schema-whitelisted** on load: known block tags become nodes and known
