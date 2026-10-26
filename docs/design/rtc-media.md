@@ -384,8 +384,8 @@ What the table means:
 - **A 720p30 H.264 stream costs most of one core** to encode without
   assembly (22 ms of a 33 ms budget). 640×480 costs about a third of one.
   So the default camera size is 640×480 at 30 fps, with 1280×720 opt-in.
-  Whether openh264's assembly (built when nasm is present) changes this was
-  not measured.
+  Whether openh264's assembly (its nasm build path) changes this was not
+  measured.
 - **Decode is cheap.** Even 720p takes a sixth of a core, so one desktop
   can show several remote streams.
 - **Browser interop:**
@@ -597,8 +597,9 @@ None of these tests touches a real device; every source is synthetic.
   - Both happen only where `rinch-rtc/media` is on: the media tests, the
     ported example, and ui-zoo.
   - libopus needs `cmake`, which the GitHub runner images ship.
-  - openh264 builds its assembly only with nasm present, and I haven't
-    checked the runners for it. Installing it is an option, not a need.
+  - openh264-sys2 has an optional nasm build path for its assembly. This
+    host has no nasm, so the spike measured the C-only build, and I haven't
+    checked the runners for nasm. Installing it is an option, not a need.
 
 ## 7. Dependency weight
 
