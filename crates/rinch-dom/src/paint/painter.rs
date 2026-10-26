@@ -450,6 +450,13 @@ pub trait Painter {
         SplitVerdict::InScene(Refusal::Unsupported)
     }
 
+    /// Paint is starting `node`, one the runtime asked to place in paint
+    /// order against the surfaces split so far (#1865 S4,
+    /// `set_paint_order_watch`). The default ignores it.
+    fn note_node_start(&mut self, node: usize) {
+        let _ = node;
+    }
+
     /// Append all drawing operations from another painter of the same type.
     ///
     /// Used for DnD snapshot overlays. Default implementation is a no-op

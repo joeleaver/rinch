@@ -463,6 +463,11 @@ struct FrameDamage {
     ghost_now: Option<peniko::kurbo::Rect>,
     inspect_now: Option<peniko::kurbo::Rect>,
     tooltip_now: Option<peniko::kurbo::Rect>,
+    /// Each change's rects with the node that paints them (#1865 S4), when
+    /// asked for and the frame is partial; `None` otherwise, or when a change
+    /// was not attributed to any rect (`repaint_unattributed`).
+    #[cfg_attr(not(all(feature = "gpu", software_shell)), allow(dead_code))]
+    by_node: Option<Vec<rinch_dom::paint::NodeDamage>>,
 }
 
 /// The split-layer paint state of a window (#1865); see [`RinchApp`]'s `split`.
@@ -507,6 +512,32 @@ const SPLIT_TAINT_FRAMES: u32 = 120;
 /// twice, once every this many frames.
 #[cfg(all(feature = "gpu", software_shell))]
 const SPLIT_CAP_RETRY_FRAMES: u32 = 120;
+
+/// `r` without `k` (both `(x, y, width, height)` in device pixels): up to four
+/// rects, the bands above and below `k`, and its left and right within them.
+#[cfg(all(feature = "gpu", software_shell))]
+fn subtract_px(r: (u32, u32, u32, u32), k: (u32, u32, u32, u32)) -> Vec<(u32, u32, u32, u32)> {
+    let (rx1, ry1) = (r.0 + r.2, r.1 + r.3);
+    let (kx1, ky1) = (k.0 + k.2, k.1 + k.3);
+    if k.0 >= rx1 || kx1 <= r.0 || k.1 >= ry1 || ky1 <= r.1 {
+        return vec![r];
+    }
+    let mut out = Vec::new();
+    if k.1 > r.1 {
+        out.push((r.0, r.1, r.2, k.1 - r.1));
+    }
+    if ky1 < ry1 {
+        out.push((r.0, ky1, r.2, ry1 - ky1));
+    }
+    let (my0, my1) = (r.1.max(k.1), ry1.min(ky1));
+    if k.0 > r.0 {
+        out.push((r.0, my0, k.0 - r.0, my1 - my0));
+    }
+    if kx1 < rx1 {
+        out.push((kx1, my0, rx1 - kx1, my1 - my0));
+    }
+    out
+}
 
 /// What [`RinchApp::build_gpu_frame`] painted, before it borrows the scene.
 #[cfg(all(feature = "gpu", software_shell))]
@@ -2375,6 +2406,10 @@ impl RinchApp {
         let w = (size.0 as f64 * scale).round() as u32;
         let h = (size.1 as f64 * scale).round() as u32;
         let paint_start = Instant::now();
+        // Attributed (S4) only while something is kept split: a change
+        // inside a kept region painted after its surface re-renders the
+        // region's above slices and not below there.
+        let attribute = self.split.enabled && !self.split.kept.is_empty();
         // A cached scene the renderer no longer holds is painted again, in
         // full, but with nothing in the document changed there is no damage
         // to work out: its paint-dirty lists are empty.
@@ -2384,7 +2419,8 @@ impl RinchApp {
             ghost_now,
             inspect_now,
             tooltip_now,
-        } = self.frame_damage(scale, w, h, target, true);
+            by_node,
+        } = self.frame_damage(scale, w, h, target, true, attribute);
         // The lists are consumed: the software pixmap (should this window
         // present with it again) no longer has a region to catch up with.
         self.has_previous_frame = false;
@@ -2450,6 +2486,28 @@ impl RinchApp {
                 &self.split.ink,
             );
         }
+        // S4: the changes meeting a kept region are placed in paint order
+        // against its surface's split: paint reports when it starts each node
+        // that paints one (`set_paint_order_watch`).
+        let rect_meets = |a: &peniko::kurbo::Rect, b: &peniko::kurbo::Rect| {
+            a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
+        };
+        let by_node = by_node.filter(|_| full.is_none() && !split_hit.is_empty());
+        let watch: Vec<usize> = by_node
+            .iter()
+            .flatten()
+            .filter(|d| {
+                d.rects
+                    .iter()
+                    .any(|r| self.split.kept.iter().any(|(_, k)| rect_meets(r, k)))
+            })
+            .filter_map(|d| d.node)
+            .collect();
+        if !watch.is_empty()
+            && let Some(doc) = &self.doc
+        {
+            rinch_dom::paint::set_paint_order_watch(&doc.borrow().tree, &watch, true);
+        }
         // Opened only for a frame with a GPU frame to split: with none, the
         // painter keeps no mirror of the open clips at all.
         let slicing = (self.split.enabled
@@ -2470,6 +2528,8 @@ impl RinchApp {
         let cap = crate::shell::split_frame::split_memory_cap((w, h));
 
         let mut partial = full.is_none() && !damage.is_empty();
+        // The kept regions below is not re-rendered over this frame (S4).
+        let mut below_kept: Vec<(u32, u32, u32, u32)> = Vec::new();
         if full.is_some() || partial {
             let mut slices;
             loop {
@@ -2599,6 +2659,45 @@ impl RinchApp {
                 );
                 partial = full.is_none();
             }
+            if !watch.is_empty()
+                && let Some(doc) = &self.doc
+            {
+                rinch_dom::paint::set_paint_order_watch(&doc.borrow().tree, &watch, false);
+            }
+            // S4: a kept surface split again at the same region, where every
+            // change that meets the region was painted after its split, left
+            // below unchanged there: it went to the region's above slices,
+            // and below is cut out around the region. Below is not
+            // re-rendered over it. A change placed by no node's paint (a
+            // removed node, a moved or reordered subtree) is not after it.
+            if partial && let Some(by_node) = &by_node {
+                let starts = self.painter.node_starts();
+                for (i, sl) in slices.iter().enumerate() {
+                    let (x, y, sw, sh) = sl.region;
+                    let r = peniko::kurbo::Rect::new(
+                        x as f64,
+                        y as f64,
+                        (x + sw) as f64,
+                        (y + sh) as f64,
+                    );
+                    // A surface whose region moved was moved by its own node
+                    // or an ancestor, painted before its split: that change
+                    // is not above-only, so no check of the region is
+                    // needed here (#1923 review: the check was unreachable).
+                    if !split_hit.contains(&sl.surface_id) || sw == 0 || sh == 0 {
+                        continue;
+                    }
+                    let above_only = by_node.iter().all(|d| {
+                        !d.rects.iter().any(|q| rect_meets(q, &r))
+                            || d.node
+                                .and_then(|n| starts.get(&n))
+                                .is_some_and(|&first| first > i)
+                    });
+                    if above_only {
+                        below_kept.push(sl.region);
+                    }
+                }
+            }
             if self.split.enabled || !self.split.kept.is_empty() {
                 let all = full.is_some();
                 let before: Vec<usize> = self.split.kept.iter().map(|(id, _)| *id).collect();
@@ -2694,13 +2793,27 @@ impl RinchApp {
         // output for a pixel depends on where the target puts it (a scene
         // translated by 31px drew a glyph edge 7 levels off), so a partial
         // frame drawn anywhere else would not be the full frame's pixels.
-        let (bx, by, bw, bh) = px(bounds);
-        let rects: Vec<_> = damage
+        let (mut bx, mut by, mut bw, mut bh) = px(bounds);
+        let mut rects: Vec<_> = damage
             .rects()
             .iter()
             .map(|r| px(*r))
             .filter(|r| r.2 > 0 && r.3 > 0)
             .collect();
+        if !below_kept.is_empty() {
+            // S4: what below keeps is not rendered or copied; the target
+            // shrinks to what is left.
+            for k in &below_kept {
+                rects = rects.iter().flat_map(|r| subtract_px(*r, *k)).collect();
+            }
+            self.perf_add(Counter::SplitBelowKept, below_kept.len() as u64);
+            let x1 = rects.iter().map(|r| r.0 + r.2).max().unwrap_or(0);
+            let y1 = rects.iter().map(|r| r.1 + r.3).max().unwrap_or(0);
+            bx = rects.iter().map(|r| r.0).min().unwrap_or(0);
+            by = rects.iter().map(|r| r.1).min().unwrap_or(0);
+            bw = x1.saturating_sub(bx);
+            bh = y1.saturating_sub(by);
+        }
         if rects.is_empty() || bw == 0 || bh == 0 {
             return GpuFrameKind::Unchanged;
         }
@@ -2811,7 +2924,8 @@ impl RinchApp {
                 ghost_now,
                 inspect_now,
                 tooltip_now,
-            } = self.frame_damage(scale, w, h, fresh, has_previous);
+                ..
+            } = self.frame_damage(scale, w, h, fresh, has_previous, false);
             let painter = self.skia_painter.as_mut().unwrap();
 
             if full_reason.is_some() {
@@ -2957,6 +3071,7 @@ impl RinchApp {
         h: u32,
         fresh: Option<rinch_dom::perf::FullRepaintReason>,
         has_previous: bool,
+        attribute: bool,
     ) -> FrameDamage {
         use rinch_dom::perf::FullRepaintReason;
         // The overlays paint straight into the framebuffer after the
@@ -2999,6 +3114,7 @@ impl RinchApp {
             .as_ref()
             .is_some_and(|doc| doc.borrow().tree.whole_document_damaged);
         let mut damage = rinch_dom::paint::DamageRegion::new(w as f64, h as f64);
+        let mut by_node = None;
         let full = if let Some(reason) = fresh {
             Some(reason)
         } else if let Some(reason) = invalidated {
@@ -3010,7 +3126,15 @@ impl RinchApp {
         } else {
             if let Some(doc) = &self.doc {
                 let d = doc.borrow();
-                damage = rinch_dom::paint::compute_damage(&d.tree, scale, w as f64, h as f64);
+                if attribute && !unattributed {
+                    let (region, nodes) = rinch_dom::paint::compute_damage_attributed(
+                        &d.tree, scale, w as f64, h as f64,
+                    );
+                    damage = region;
+                    by_node = Some(nodes);
+                } else {
+                    damage = rinch_dom::paint::compute_damage(&d.tree, scale, w as f64, h as f64);
+                }
             }
             for r in [
                 self.last_ghost_rect,
@@ -3048,6 +3172,7 @@ impl RinchApp {
             ghost_now,
             inspect_now,
             tooltip_now,
+            by_node: by_node.filter(|_| full.is_none()),
         }
     }
 

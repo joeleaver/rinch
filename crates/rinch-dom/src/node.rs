@@ -1537,6 +1537,13 @@ pub struct Node {
     /// `taffy_detach_contribution` consults it: computed display alone
     /// cannot distinguish a healed wrapper from a stale-spliced one.
     pub contents_spliced: bool,
+
+    /// Paint tells the painter when it starts this node
+    /// (`Painter::note_node_start`): the runtime places a change in paint
+    /// order against a split surface (#1865 S4,
+    /// `paint::set_paint_order_watch`). A flag on the node, so a paint with
+    /// nothing watched pays one load per node it already holds.
+    pub paint_watch: std::cell::Cell<bool>,
 }
 
 impl std::fmt::Debug for Node {
@@ -1772,6 +1779,7 @@ impl Node {
             form_label_width: Cell::new(None),
             input_line_metrics: Cell::new(None),
             estimated_height: None,
+            paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
             ifc_detached: false,
         }
@@ -1852,6 +1860,7 @@ impl Node {
             form_label_width: Cell::new(None),
             input_line_metrics: Cell::new(None),
             estimated_height: None,
+            paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
             ifc_detached: false,
         }
@@ -1931,6 +1940,7 @@ impl Node {
             form_label_width: Cell::new(None),
             input_line_metrics: Cell::new(None),
             estimated_height: None,
+            paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
             ifc_detached: false,
         }
@@ -2008,6 +2018,7 @@ impl Node {
             form_label_width: Cell::new(None),
             input_line_metrics: Cell::new(None),
             estimated_height: None,
+            paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
             ifc_detached: false,
         }
