@@ -807,7 +807,16 @@ fn probe(
         step(&split_page);
         step(&scene_page);
         win.splits = toggles.get(n).copied().unwrap_or(true);
+        let p0 = split_page.app.split_paint_passes();
         let got = win.frame(&mut split_page.app, n == 0, Fault::None);
+        // One paint a frame, two when it tainted (painted again in the
+        // scene): the fallback that paints again for a region the damage
+        // missed is a safety net (#1899 second review).
+        let passes = split_page.app.split_paint_passes() - p0;
+        let tainted = split_page.app.split_tainted_this_frame();
+        if passes > 1 + u32::from(tainted) {
+            failures.push(format!("{name}, frame {n}: painted {passes} times"));
+        }
         let want = reference.frame(&mut scene_page.app, true, Fault::None);
         let wrong = compare(&got.pixels, &want.pixels, &win.allowances(edges), win.dev.0);
         eprintln!(
@@ -1268,6 +1277,12 @@ fn split_runtime_scratch_cost_probe() {
                     device_from_image: [1.0, 0.0, 0.0, 1.0, r.0 as f64, r.1 as f64],
                     extents: (r.2, r.3),
                     tainted: false,
+                    ink: peniko::kurbo::Rect::new(
+                        r.0 as f64,
+                        r.1 as f64,
+                        (r.0 + r.2) as f64,
+                        (r.1 + r.3) as f64,
+                    ),
                 }],
             };
             let t = std::time::Instant::now();
@@ -1504,4 +1519,833 @@ fn gpu_split_runtime_presented_to_a_surface() {
     }
     WINDOW.with(|w| w.set((1.0, None, false)));
     run(vec![failures]);
+}
+
+// The #1899 second review's probes, adopted: carets blinking in a surface's
+// shadow and over its border, surfaces moving, ink and transforms reaching
+// into R, adjacent surfaces, R at the window's edges, fixed boxes over a
+// scrolled surface, the left-edge spill, and `above_out`'s replay of an outer
+// clip. Each frame against in-scene, and painted once: the fallback that
+// paints a frame again is a safety net, never the path (`split_paint_passes`).
+#[cfg(test)]
+// Adopted as the review wrote them.
+#[allow(clippy::type_complexity, clippy::vec_init_then_push)]
+mod review_b {
+    use super::*;
+
+    /// A page built by `build` (root children), with surfaces from `colors`.
+    pub(super) fn custom_page(
+        colors: &[Rc<Cell<[u8; 4]>>],
+        build: Rc<
+            dyn Fn(
+                &mut RenderScope,
+                &NodeHandle,
+                &[RenderSurfaceHandle],
+                &RefCell<Vec<NodeHandle>>,
+            ),
+        >,
+    ) -> Page {
+        let surfaces: Vec<RenderSurfaceHandle> = colors.iter().cloned().map(surface).collect();
+        let boxes: Rc<RefCell<Vec<NodeHandle>>> = Default::default();
+        let kept = boxes.clone();
+        let ss = surfaces.clone();
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute(
+                "style",
+                "position: absolute; left: 0; top: 0; width: 400px; height: 300px; \
+                 background: rgb(60, 70, 90)",
+            );
+            build(scope, &root, &ss, &kept);
+            root
+        });
+        app.mount_component(W as f32, H as f32);
+        app.resolve_and_repaint(W as f32, H as f32);
+        Page {
+            app,
+            boxes,
+            surfaces,
+        }
+    }
+
+    /// Every frame against in-scene; prints paint passes per frame.
+    pub(super) fn probe_b(
+        name: &str,
+        make: &dyn Fn() -> Page,
+        edges: bool,
+        steps: &[&dyn Fn(&Page)],
+    ) -> (Vec<String>, Vec<usize>) {
+        let mut failures = Vec::new();
+        let mut per_frame = Vec::new();
+        let mut split_page = make();
+        let mut scene_page = make();
+        let mut win = Window::new(true);
+        let mut reference = Window::new(false);
+        let noop = |_: &Page| {};
+        let all: Vec<&dyn Fn(&Page)> = std::iter::once(&noop as &dyn Fn(&Page))
+            .chain(steps.iter().copied())
+            .collect();
+        for (n, step) in all.into_iter().enumerate() {
+            step(&split_page);
+            step(&scene_page);
+            let p0 = split_page.app.split_paint_passes() as usize;
+            let got = win.frame(&mut split_page.app, n == 0, Fault::None);
+            let p = split_page.app.split_paint_passes() as usize - p0;
+            if p > 1 {
+                failures.push(format!("{name}, frame {n}: painted {p} times"));
+            }
+            per_frame.push(p);
+            let want = reference.frame(&mut scene_page.app, true, Fault::None);
+            let wrong = compare(&got.pixels, &want.pixels, &win.allowances(edges), win.dev.0);
+            eprintln!(
+                "[rb] {name}, frame {n}: {} frame, passes {p}, split {:?}, {} wrong",
+                got.kind,
+                got.split_ids,
+                wrong.len(),
+            );
+            if !wrong.is_empty() {
+                failures.push(format!(
+                    "{name}, frame {n} ({}, split {:?}): {} pixels past allowance: {:?}",
+                    got.kind,
+                    got.split_ids,
+                    wrong.len(),
+                    &wrong[..wrong.len().min(6)]
+                ));
+            }
+        }
+        for s in split_page.surfaces.iter().chain(&scene_page.surfaces) {
+            unregister_render_surface(s.id());
+        }
+        eprintln!("[rb] {name}: passes per frame {per_frame:?}");
+        (failures, per_frame)
+    }
+
+    fn simple(parts: Vec<Part>) -> impl Fn() -> Page {
+        move || page(&parts)
+    }
+
+    fn report(all: Vec<(Vec<String>, Vec<usize>)>) {
+        let failures: Vec<String> = all.into_iter().flat_map(|f| f.0).collect();
+        crate::shell::renderer::set_gpu_presenting(false);
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    const CARET_IN: &str = "position: absolute; left: 90px; top: 100px; width: 2px; height: 14px; \
+                            background: rgb(255, 255, 255)";
+
+    /// Q1: caret blinking over / near a surface; a moving surface.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_split_runtime_review2_caret_and_motion() {
+        let _p = presenting_lock();
+        test_gpu();
+        crate::shell::renderer::set_gpu_presenting(true);
+        let blink_on = |p: &Page| p.boxes.borrow()[1].set_style("background", "rgb(255, 255, 255)");
+        let blink_off = |p: &Page| p.boxes.borrow()[1].set_style("background", "transparent");
+        let blink: Vec<&dyn Fn(&Page)> = (0..10)
+            .map(|i| {
+                if i % 2 == 0 {
+                    &blink_off as &dyn Fn(&Page)
+                } else {
+                    &blink_on
+                }
+            })
+            .collect();
+        let mut out = Vec::new();
+        // a) caret inside R (an input over the viewport).
+        out.push(probe_b(
+            "caret inside R",
+            &simple(vec![(SURFACE, Some(red())), (CARET_IN, None)]),
+            false,
+            &blink,
+        ));
+        // b) caret beside R, the surface plain.
+        out.push(probe_b(
+            "caret beside plain surface",
+            &simple(vec![
+                (SURFACE, Some(red())),
+                (
+                    "position: absolute; left: 176px; top: 60px; width: 2px; height: 14px; \
+                     background: rgb(255, 255, 255)",
+                    None,
+                ),
+            ]),
+            false,
+            &blink,
+        ));
+        // c) caret beside R inside the surface's box-shadow.
+        out.push(probe_b(
+            "caret in surface's shadow",
+            &simple(vec![
+                (
+                    "position: absolute; left: 50px; top: 40px; width: 120px; height: 80px; \
+                     box-shadow: 0 0 10px rgb(0, 0, 0)",
+                    Some(red()),
+                ),
+                (
+                    "position: absolute; left: 174px; top: 60px; width: 2px; height: 14px; \
+                     background: rgb(255, 255, 255)",
+                    None,
+                ),
+            ]),
+            true,
+            &blink,
+        ));
+        // c2) caret right of R inside the surface's 2px border.
+        out.push(probe_b(
+            "caret over surface border",
+            &simple(vec![
+                (
+                    "position: absolute; left: 50px; top: 40px; width: 120px; height: 80px; \
+                     border: 4px solid rgb(0, 0, 200)",
+                    Some(red()),
+                ),
+                (
+                    "position: absolute; left: 172px; top: 60px; width: 2px; height: 14px; \
+                     background: rgb(255, 255, 255)",
+                    None,
+                ),
+            ]),
+            false,
+            &blink,
+        ));
+        // d) the surface moving 3 px a frame (a dragged panel).
+        let moves: Vec<Box<dyn Fn(&Page)>> = (1..=8)
+            .map(|i| {
+                Box::new(move |p: &Page| {
+                    p.boxes.borrow()[0].set_style("left", &format!("{}px", 50 + 3 * i));
+                }) as Box<dyn Fn(&Page)>
+            })
+            .collect();
+        let refs: Vec<&dyn Fn(&Page)> = moves.iter().map(|b| b.as_ref()).collect();
+        out.push(probe_b(
+            "surface moving",
+            &simple(vec![(SURFACE, Some(red())), (SIDEBAR, None)]),
+            false,
+            &refs,
+        ));
+        // e) moving at fractional positions.
+        let fmoves: Vec<Box<dyn Fn(&Page)>> = (1..=8)
+            .map(|i| {
+                Box::new(move |p: &Page| {
+                    p.boxes.borrow()[0].set_style("left", &format!("{}px", 50.0 + 2.3 * i as f64));
+                    p.boxes.borrow()[0].set_style("top", &format!("{}px", 40.0 + 1.7 * i as f64));
+                }) as Box<dyn Fn(&Page)>
+            })
+            .collect();
+        let refs: Vec<&dyn Fn(&Page)> = fmoves.iter().map(|b| b.as_ref()).collect();
+        out.push(probe_b(
+            "surface moving fractional, badge over",
+            &simple(vec![(SURFACE, Some(red())), (BADGE, None)]),
+            false,
+            &refs,
+        ));
+        report(out);
+    }
+
+    /// Q1: ink overflow of nodes over R; transforms.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_split_runtime_review2_ink_overflow_and_transforms() {
+        let _p = presenting_lock();
+        test_gpu();
+        crate::shell::renderer::set_gpu_presenting(true);
+        let recolor = |p: &Page| p.boxes.borrow()[1].set_style("background", "rgb(255, 0, 255)");
+        let recolor2 = |p: &Page| p.boxes.borrow()[1].set_style("background", "rgb(0, 200, 255)");
+        let outline_col =
+            |p: &Page| p.boxes.borrow()[1].set_style("outline-color", "rgb(255, 255, 0)");
+        let shadow_col =
+            |p: &Page| p.boxes.borrow()[1].set_style("box-shadow", "0 0 0 8px rgb(255, 255, 0)");
+        let tick = |p: &Page| p.boxes.borrow()[2].set_style("background", "rgb(255, 0, 255)");
+        let mut out = Vec::new();
+        // a) a sibling outside R whose outline reaches into R.
+        out.push(probe_b(
+            "outline into R",
+            &simple(vec![
+                (SURFACE, Some(red())),
+                (
+                    "position: absolute; left: 180px; top: 60px; width: 30px; height: 20px; \
+                     background: rgb(0, 255, 0); outline: 14px solid rgb(250, 250, 250)",
+                    None,
+                ),
+            ]),
+            false,
+            &[&recolor, &outline_col, &recolor2],
+        ));
+        // b) a sibling outside R whose spread shadow reaches into R.
+        out.push(probe_b(
+            "spread shadow into R",
+            &simple(vec![
+                (SURFACE, Some(red())),
+                (
+                    "position: absolute; left: 176px; top: 60px; width: 30px; height: 20px; \
+                     background: rgb(0, 255, 0); box-shadow: 0 0 0 10px rgb(250, 250, 250)",
+                    None,
+                ),
+            ]),
+            false,
+            &[&recolor, &shadow_col, &recolor2],
+        ));
+        // c) a box over R whose shadow spills outside R; a tick changes in the
+        //    spill only (outside R), then the box itself.
+        out.push(probe_b(
+            "box over R, tick in its spill",
+            &simple(vec![
+                (SURFACE, Some(red())),
+                (
+                    "position: absolute; left: 150px; top: 60px; width: 18px; height: 20px; \
+                     background: rgb(0, 255, 0); box-shadow: 0 0 0 12px rgb(250, 250, 250)",
+                    None,
+                ),
+                (
+                    "position: absolute; left: 172px; top: 62px; width: 4px; height: 4px; \
+                     background: rgb(0, 0, 0)",
+                    None,
+                ),
+            ]),
+            false,
+            &[&tick, &recolor],
+        ));
+        // d) a rotated sibling across R's edge, recoloured.
+        out.push(probe_b(
+            "rotated across edge",
+            &simple(vec![
+                (SURFACE, Some(red())),
+                (
+                    "position: absolute; left: 150px; top: 60px; width: 50px; height: 20px; \
+                     background: rgb(0, 255, 0); transform: rotate(20deg)",
+                    None,
+                ),
+            ]),
+            true,
+            &[&recolor, &recolor2],
+        ));
+        // e) a scaled sibling outside R whose transform carries it into R.
+        out.push(probe_b(
+            "scaled into R",
+            &simple(vec![
+                (SURFACE, Some(red())),
+                (
+                    "position: absolute; left: 182px; top: 60px; width: 10px; height: 10px; \
+                     background: rgb(0, 255, 0); transform: scale(4)",
+                    None,
+                ),
+            ]),
+            false,
+            &[&recolor, &recolor2],
+        ));
+        // f) the surface at a fractional translate.
+        out.push(probe_b(
+            "surface translate(0.5, 0.25)",
+            &simple(vec![
+                (
+                    "position: absolute; left: 50px; top: 40px; width: 120px; height: 80px; \
+                     transform: translate(0.5px, 0.25px)",
+                    Some(red()),
+                ),
+                (BADGE, None),
+            ]),
+            false,
+            &[&recolor, &recolor2],
+        ));
+        report(out);
+    }
+
+    /// Q1/Q2: adjacent surfaces; R at the window's edges; window-sized clips.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_split_runtime_review2_adjacent_and_edges() {
+        let _p = presenting_lock();
+        test_gpu();
+        crate::shell::renderer::set_gpu_presenting(true);
+        let green = || Rc::new(Cell::new([30, 160, 90, 255]));
+        let mut out = Vec::new();
+        let draw2 = |p: &Page| p.surfaces[1].request_frame();
+        let draw1 = |p: &Page| p.surfaces[0].request_frame();
+        let badge = |p: &Page| p.boxes.borrow()[2].set_style("background", "rgb(255, 0, 255)");
+        // a) two surfaces side by side, touching at x = 150.
+        out.push(probe_b(
+            "adjacent surfaces",
+            &simple(vec![
+                (
+                    "position: absolute; left: 50px; top: 40px; width: 100px; height: 80px",
+                    Some(red()),
+                ),
+                (
+                    "position: absolute; left: 150px; top: 40px; width: 100px; height: 80px",
+                    Some(green()),
+                ),
+                (
+                    "position: absolute; left: 60px; top: 50px; width: 20px; height: 12px; \
+                     background: rgb(250, 250, 250)",
+                    None,
+                ),
+            ]),
+            false,
+            &[&draw2, &draw2, &draw1, &badge, &draw2],
+        ));
+        // b) stacked vertically, touching at y = 120 (no left growth there).
+        out.push(probe_b(
+            "stacked surfaces",
+            &simple(vec![
+                (
+                    "position: absolute; left: 50px; top: 40px; width: 100px; height: 80px",
+                    Some(red()),
+                ),
+                (
+                    "position: absolute; left: 50px; top: 120px; width: 100px; height: 80px",
+                    Some(green()),
+                ),
+                (BADGE, None),
+            ]),
+            false,
+            &[&draw2, &draw1, &badge],
+        ));
+        let recolor = |p: &Page| p.boxes.borrow()[1].set_style("background", "rgb(255, 0, 255)");
+        let recolor2 = |p: &Page| p.boxes.borrow()[1].set_style("background", "rgba(0, 0, 0, 0.4)");
+        // c) R at x = 0 and y = 0, a bar across its right edge.
+        out.push(probe_b(
+            "R at the window's left",
+            &simple(vec![
+                (
+                    "position: absolute; left: 0px; top: 0px; width: 120px; height: 80px",
+                    Some(red()),
+                ),
+                (
+                    "position: absolute; left: 0px; top: 30px; width: 200px; height: 14px; \
+                     background: rgba(0, 0, 0, 0.55)",
+                    None,
+                ),
+            ]),
+            true,
+            &[&recolor, &recolor2],
+        ));
+        // d) R at the window's right and bottom edges.
+        out.push(probe_b(
+            "R at the window's right",
+            &simple(vec![
+                (
+                    "position: absolute; left: 280px; top: 220px; width: 120px; height: 80px",
+                    Some(red()),
+                ),
+                (
+                    "position: absolute; left: 250px; top: 250px; width: 150px; height: 14px; \
+                     background: rgba(0, 0, 0, 0.55)",
+                    None,
+                ),
+            ]),
+            true,
+            &[&recolor, &recolor2],
+        ));
+        // e) R past the window's right (fractional left).
+        out.push(probe_b(
+            "R past the right, fractional",
+            &simple(vec![
+                (
+                    "position: absolute; left: 300.4px; top: 100px; width: 160px; height: 80px",
+                    Some(red()),
+                ),
+                (
+                    "position: absolute; left: 280px; top: 130px; width: 150px; height: 14px; \
+                     background: rgba(0, 0, 0, 0.55)",
+                    None,
+                ),
+            ]),
+            true,
+            &[&recolor, &recolor2],
+        ));
+        // f) a window-sized overflow clip (whole pixels), the surface in it,
+        //    a translucent bar from R to the window's edge.
+        out.push(probe_b(
+            "window-sized clip",
+            &simple(vec![
+                (
+                    "wrap:position: absolute; left: 0; top: 0; width: 400px; height: 300px; \
+                     overflow: hidden|position: absolute; left: 50px; top: 40px; width: 120px; \
+                     height: 80px",
+                    Some(red()),
+                ),
+                (
+                    "wrap:position: absolute; left: 0; top: 0; width: 400px; height: 300px; \
+                     overflow: hidden|position: absolute; left: 0px; top: 100px; width: 400px; \
+                     height: 14px; background: rgba(0, 0, 0, 0.55)",
+                    None,
+                ),
+            ]),
+            true,
+            &[&recolor, &recolor2],
+        ));
+        // g) a window-sized rounded clip around both.
+        out.push(probe_b(
+            "window-sized rounded clip",
+            &move || {
+                custom_page(
+                    &[red()],
+                    Rc::new(|scope, root, ss, kept| {
+                        let clip = scope.create_element("div");
+                        clip.set_attribute(
+                            "style",
+                            "position: absolute; left: 0; top: 0; width: 400px; height: 300px; \
+                             overflow: hidden; border-radius: 16px; background: rgb(90, 60, 70)",
+                        );
+                        let n = RenderSurface {
+                            surface: Some(ss[0].clone()),
+                        }
+                        .render(scope, &[]);
+                        n.set_attribute(
+                            "style",
+                            "position: absolute; left: 0px; top: 0px; width: 120px; height: 80px",
+                        );
+                        let bar = scope.create_element("div");
+                        bar.set_attribute(
+                            "style",
+                            "position: absolute; left: 0px; top: 30px; width: 400px; height: 14px; \
+                             background: rgba(0, 0, 0, 0.55)",
+                        );
+                        clip.append_child(&n);
+                        clip.append_child(&bar);
+                        root.append_child(&clip);
+                        kept.borrow_mut().push(n);
+                        kept.borrow_mut().push(bar);
+                    }),
+                )
+            },
+            true,
+            &[&recolor, &recolor2],
+        ));
+        report(out);
+    }
+
+    /// Q1: position: fixed over a scrolled surface.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_split_runtime_review2_fixed_over_scrolled() {
+        let _p = presenting_lock();
+        test_gpu();
+        crate::shell::renderer::set_gpu_presenting(true);
+        let make = || {
+            custom_page(
+                &[red()],
+                Rc::new(|scope, root, ss, kept| {
+                    let sc = scope.create_element("div");
+                    sc.set_attribute(
+                        "style",
+                        "position: absolute; left: 20px; top: 20px; width: 300px; height: 200px; \
+                         overflow: auto; background: rgb(40, 40, 40)",
+                    );
+                    let inner = scope.create_element("div");
+                    inner.set_attribute("style", "position: relative; width: 280px; height: 800px");
+                    let n = RenderSurface {
+                        surface: Some(ss[0].clone()),
+                    }
+                    .render(scope, &[]);
+                    n.set_attribute(
+                        "style",
+                        "position: absolute; left: 30px; top: 60px; width: 160px; height: 100px",
+                    );
+                    inner.append_child(&n);
+                    sc.append_child(&inner);
+                    root.append_child(&sc);
+                    let fixed = scope.create_element("div");
+                    fixed.set_attribute(
+                        "style",
+                        "position: fixed; left: 70px; top: 90px; width: 40px; height: 16px; \
+                         background: rgba(255, 255, 255, 0.7)",
+                    );
+                    root.append_child(&fixed);
+                    kept.borrow_mut().push(sc);
+                    kept.borrow_mut().push(fixed);
+                }),
+            )
+        };
+        let scrolls: Vec<Box<dyn Fn(&Page)>> = [7.0, 15.0, 33.5, 60.0, 61.0, 140.0, 20.0]
+            .into_iter()
+            .map(|y| {
+                Box::new(move |p: &Page| p.boxes.borrow()[0].set_scroll_top(y))
+                    as Box<dyn Fn(&Page)>
+            })
+            .collect();
+        let refs: Vec<&dyn Fn(&Page)> = scrolls.iter().map(|b| b.as_ref()).collect();
+        let out = vec![probe_b("fixed over scrolled", &make, true, &refs)];
+        report(out);
+    }
+}
+
+#[cfg(test)]
+// Adopted as the review wrote them.
+#[allow(clippy::type_complexity, clippy::vec_init_then_push)]
+mod review_b_idle {
+    use super::review_b::probe_b;
+    use super::*;
+
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_split_runtime_review2_idle_in_scene() {
+        let _p = presenting_lock();
+        test_gpu();
+        crate::shell::renderer::set_gpu_presenting(true);
+        let noop = |_: &Page| {};
+        let green = || Rc::new(Cell::new([30, 160, 90, 255]));
+        let mut f = Vec::new();
+        f.extend(
+            probe_b(
+                "adjacent idle",
+                &|| {
+                    page(&[
+                        (
+                            "position: absolute; left: 50px; top: 40px; width: 100px; height: 80px",
+                            Some(red()),
+                        ),
+                        (
+                            "position: absolute; left: 150px; top: 40px; width: 100px; height: 80px",
+                            Some(green()),
+                        ),
+                    ])
+                },
+                false,
+                &[&noop, &noop, &noop],
+            )
+            .0,
+        );
+        f.extend(
+            probe_b(
+                "opacity idle",
+                &|| {
+                    page(&[(
+                        "position: absolute; left: 50px; top: 40px; width: 100px; height: 80px; opacity: 0.9",
+                        Some(red()),
+                    )])
+                },
+                false,
+                &[&noop, &noop, &noop],
+            )
+            .0,
+        );
+        f.extend(
+            probe_b(
+                "gap of 1px",
+                &|| {
+                    page(&[
+                        (
+                            "position: absolute; left: 50px; top: 40px; width: 100px; height: 80px",
+                            Some(red()),
+                        ),
+                        (
+                            "position: absolute; left: 151px; top: 40px; width: 100px; height: 80px",
+                            Some(green()),
+                        ),
+                    ])
+                },
+                false,
+                &[&noop],
+            )
+            .0,
+        );
+        crate::shell::renderer::set_gpu_presenting(false);
+        assert!(f.is_empty(), "{}", f.join("\n"));
+    }
+}
+
+#[cfg(test)]
+// Adopted as the review wrote them.
+#[allow(clippy::type_complexity, clippy::vec_init_then_push)]
+mod review_b_edges {
+    use super::review_b::{custom_page, probe_b};
+    use super::*;
+
+    /// A box whose left edge is R's right edge, fractional top (the AA spill).
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_split_runtime_review2_touching_right_edge() {
+        let _p = presenting_lock();
+        test_gpu();
+        crate::shell::renderer::set_gpu_presenting(true);
+        let recolor = |p: &Page| p.boxes.borrow()[1].set_style("background", "rgb(255, 0, 255)");
+        let mut f = Vec::new();
+        for (sl, bl, bt) in [
+            ("50px", "170px", "60.5px"),
+            ("50px", "170px", "60.25px"),
+            ("50.5px", "170.5px", "60.5px"),
+            ("50px", "170.3px", "60px"),
+            ("50px", "169.7px", "60.5px"),
+        ] {
+            let s1 =
+                format!("position: absolute; left: {sl}; top: 40px; width: 120px; height: 80px");
+            let s2 = format!(
+                "position: absolute; left: {bl}; top: {bt}; width: 30px; height: 20.5px; \
+                 background: rgb(250, 250, 250)"
+            );
+            let s1: &'static str = Box::leak(s1.into_boxed_str());
+            let s2: &'static str = Box::leak(s2.into_boxed_str());
+            f.extend(
+                probe_b(
+                    &format!("touching right {sl} {bl} {bt}"),
+                    &move || page(&[(s1, Some(red())), (s2, None)]),
+                    false,
+                    &[&recolor],
+                )
+                .0,
+            );
+        }
+        crate::shell::renderer::set_gpu_presenting(false);
+        assert!(f.is_empty(), "{}", f.join("\n"));
+    }
+
+    /// Nested whole-pixel clips around the surface (an outer scroller, an
+    /// inner wrapper), the surface reaching past the scroller's bottom; a
+    /// sibling after the inner wrapper closes, inside the scroller, over R
+    /// and past the scroller's edge: `above_out` must replay the scroller.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_split_runtime_review2_above_out_replays_outer_clip() {
+        let _p = presenting_lock();
+        test_gpu();
+        crate::shell::renderer::set_gpu_presenting(true);
+        let make = || {
+            custom_page(
+                &[red()],
+                Rc::new(|scope, root, ss, kept| {
+                    let sc = scope.create_element("div");
+                    sc.set_attribute(
+                        "style",
+                        "position: absolute; left: 20px; top: 20px; width: 300px; height: 150px; \
+                         overflow: hidden; background: rgb(40, 40, 40)",
+                    );
+                    let wrap = scope.create_element("div");
+                    wrap.set_attribute(
+                        "style",
+                        "position: absolute; left: 10px; top: 10px; width: 260px; height: 220px; \
+                         overflow: hidden",
+                    );
+                    let n = RenderSurface {
+                        surface: Some(ss[0].clone()),
+                    }
+                    .render(scope, &[]);
+                    n.set_attribute(
+                        "style",
+                        "position: absolute; left: 20px; top: 60px; width: 160px; height: 140px",
+                    );
+                    wrap.append_child(&n);
+                    sc.append_child(&wrap);
+                    let bar = scope.create_element("div");
+                    bar.set_attribute(
+                        "style",
+                        "position: absolute; left: 60px; top: 120px; width: 60px; height: 60px; \
+                         background: rgb(250, 250, 250)",
+                    );
+                    sc.append_child(&bar);
+                    root.append_child(&sc);
+                    kept.borrow_mut().push(bar);
+                }),
+            )
+        };
+        let recolor = |p: &Page| p.boxes.borrow()[0].set_style("background", "rgb(0, 255, 255)");
+        let f = probe_b("above_out replay", &make, false, &[&recolor]).0;
+        crate::shell::renderer::set_gpu_presenting(false);
+        assert!(f.is_empty(), "{}", f.join("\n"));
+    }
+}
+
+#[cfg(test)]
+// Adopted as the review wrote them.
+#[allow(clippy::type_complexity, clippy::vec_init_then_push)]
+mod review_b_spill {
+    use super::review_b::probe_b;
+    use super::*;
+
+    /// The #1894 review's 9-level case at runtime scale: a black box whose
+    /// left edge is R's right edge, its top fractional.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_split_runtime_review2_spill_exact() {
+        let _p = presenting_lock();
+        test_gpu();
+        crate::shell::renderer::set_gpu_presenting(true);
+        let recolor = |p: &Page| p.boxes.borrow()[1].set_style("background", "rgb(255, 255, 255)");
+        let mut f = Vec::new();
+        for top in ["60.4px", "60.1px", "60.7px", "41.3px"] {
+            let s2 = format!(
+                "position: absolute; left: 170px; top: {top}; width: 20px; height: 10px; \
+                 background: rgb(0, 0, 0)"
+            );
+            let s2: &'static str = Box::leak(s2.into_boxed_str());
+            f.extend(
+                probe_b(
+                    &format!("spill exact top {top}"),
+                    &move || page(&[(SURFACE, Some(red())), (s2, None)]),
+                    false,
+                    &[&recolor],
+                )
+                .0,
+            );
+        }
+        crate::shell::renderer::set_gpu_presenting(false);
+        assert!(f.is_empty(), "{}", f.join("\n"));
+    }
+}
+
+/// Two surfaces side by side at whole pixels, touching: both split, and a
+/// frame in which only they draw repaints nothing (#1899 review: a region
+/// grown a pixel left overlapped its neighbour, the second was refused, and
+/// every one of its frames became a partial repaint).
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_adjacent_surfaces_both_split() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let green = Rc::new(Cell::new([30, 160, 90, 255]));
+    let p = page(&[
+        (
+            "position: absolute; left: 50px; top: 40px; width: 100px; height: 80px",
+            Some(red()),
+        ),
+        (
+            "position: absolute; left: 150px; top: 40px; width: 100px; height: 80px",
+            Some(green),
+        ),
+    ]);
+    let mut p = p;
+    let mut ids: Vec<usize> = p.surfaces.iter().map(|s| s.id()).collect();
+    ids.sort_unstable();
+    let mut win = Window::new(true);
+    let mut reference = Window::new(false);
+    let mut scene = page(&[
+        (
+            "position: absolute; left: 50px; top: 40px; width: 100px; height: 80px",
+            Some(red()),
+        ),
+        (
+            "position: absolute; left: 150px; top: 40px; width: 100px; height: 80px",
+            Some(Rc::new(Cell::new([30, 160, 90, 255]))),
+        ),
+    ]);
+    for n in 0..4 {
+        if n > 0 {
+            for s in p.surfaces.iter().chain(&scene.surfaces) {
+                s.request_frame();
+            }
+        }
+        let got = win.frame(&mut p.app, n == 0, Fault::None);
+        let want = reference.frame(&mut scene.app, true, Fault::None);
+        let mut split = got.split_ids.clone();
+        split.sort_unstable();
+        assert_eq!(split, ids, "frame {n}: both split");
+        if n > 0 {
+            assert_eq!(
+                got.kind, "unchanged",
+                "frame {n}: new frames alone repaint nothing"
+            );
+        }
+        let wrong = compare(&got.pixels, &want.pixels, &win.allowances(false), win.dev.0);
+        assert!(
+            wrong.is_empty(),
+            "frame {n}: {:?}",
+            &wrong[..wrong.len().min(6)]
+        );
+    }
+    for s in p.surfaces.iter().chain(&scene.surfaces) {
+        unregister_render_surface(s.id());
+    }
+    crate::shell::renderer::set_gpu_presenting(false);
 }

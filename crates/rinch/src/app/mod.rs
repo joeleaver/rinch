@@ -471,6 +471,13 @@ struct FrameDamage {
 struct SplitPaint {
     enabled: bool,
     kept: Vec<(usize, peniko::kurbo::Rect)>,
+    /// Each kept surface's element ink (`SurfaceSlice::ink`): damage that
+    /// meets it paints the surface, and so splits it, again.
+    ink: std::collections::HashMap<usize, peniko::kurbo::Rect>,
+    /// Paint passes, for the tests (#1899 review: the fallback must stay a
+    /// safety net).
+    #[cfg(test)]
+    passes: u32,
     change: Option<crate::shell::split_frame::SplitChange>,
     suspended: u32,
 }
@@ -2219,6 +2226,10 @@ impl RinchApp {
         ghost_now: Option<peniko::kurbo::Rect>,
         slicing: Option<peniko::kurbo::Rect>,
     ) -> Vec<rinch_dom::paint::slicing::SurfaceSlice> {
+        #[cfg(test)]
+        {
+            self.split.passes += 1;
+        }
         self.painter.reset();
         if let Some(window) = slicing {
             self.painter.begin_slicing(window);
@@ -2251,6 +2262,20 @@ impl RinchApp {
         }
         Self::paint_title_tooltip(self.title_tooltip.shown.as_ref(), &mut self.painter, scale);
         self.painter.take_slices()
+    }
+
+    /// Paint passes so far (#1865: a frame paints once, again for a taint,
+    /// and again only as the safety net for a region its damage missed).
+    #[cfg(all(test, feature = "gpu", software_shell))]
+    pub(crate) fn split_paint_passes(&self) -> u32 {
+        self.split.passes
+    }
+
+    /// Whether the last painted frame tainted (splitting suspended for the
+    /// full count from it).
+    #[cfg(all(test, feature = "gpu", software_shell))]
+    pub(crate) fn split_tainted_this_frame(&self) -> bool {
+        self.split.suspended == SPLIT_TAINT_FRAMES
     }
 
     /// Whether this frame may split GPU surfaces out of the scene (#1865):
@@ -2361,26 +2386,42 @@ impl RinchApp {
             let held: f64 = d.rects().iter().map(|d| d.intersect(*r).area()).sum();
             held >= r.area() - 0.5
         };
-        let grow = |damage: &mut rinch_dom::paint::DamageRegion,
-                    full: &mut Option<rinch_dom::perf::FullRepaintReason>,
-                    hit: &mut Vec<usize>,
-                    kept: &[(usize, peniko::kurbo::Rect)]| {
-            let mut changed = true;
-            while changed && full.is_none() {
-                changed = false;
-                for (id, r) in kept {
-                    if !hit.contains(id) && meets(damage, r) {
-                        hit.push(*id);
-                        changed = true;
-                        if damage.add(*r) {
-                            *full = Some(rinch_dom::perf::FullRepaintReason::RegionTooLarge);
+        // A kept region is added whole when the damage meets it or the
+        // surface element's ink (its shadow, border, padding): the frame
+        // paints the surface there and splits it again, and a slice needs
+        // all of R painted. Without the ink, damage on a shadow alone was
+        // caught only after the paint, and the frame painted twice (#1899
+        // review: a caret blinking in a surface's shadow, every blink).
+        let grow =
+            |damage: &mut rinch_dom::paint::DamageRegion,
+             full: &mut Option<rinch_dom::perf::FullRepaintReason>,
+             hit: &mut Vec<usize>,
+             kept: &[(usize, peniko::kurbo::Rect)],
+             ink: &std::collections::HashMap<usize, peniko::kurbo::Rect>| {
+                let mut changed = true;
+                while changed && full.is_none() {
+                    changed = false;
+                    for (id, r) in kept {
+                        if !hit.contains(id)
+                            && (meets(damage, r) || ink.get(id).is_some_and(|k| meets(damage, k)))
+                        {
+                            hit.push(*id);
+                            changed = true;
+                            if damage.add(*r) {
+                                *full = Some(rinch_dom::perf::FullRepaintReason::RegionTooLarge);
+                            }
                         }
                     }
                 }
-            }
-        };
+            };
         if self.split.enabled && full.is_none() && !damage.is_empty() {
-            grow(&mut damage, &mut full, &mut split_hit, &self.split.kept);
+            grow(
+                &mut damage,
+                &mut full,
+                &mut split_hit,
+                &self.split.kept,
+                &self.split.ink,
+            );
         }
         // Opened only for a frame with a GPU frame to split: with none, the
         // painter keeps no mirror of the open clips at all.
@@ -2435,18 +2476,26 @@ impl RinchApp {
                         full = Some(rinch_dom::perf::FullRepaintReason::RegionTooLarge);
                     }
                 }
-                grow(&mut damage, &mut full, &mut split_hit, &self.split.kept);
+                grow(
+                    &mut damage,
+                    &mut full,
+                    &mut split_hit,
+                    &self.split.kept,
+                    &self.split.ink,
+                );
                 partial = full.is_none();
             }
             if self.split.enabled || !self.split.kept.is_empty() {
                 let all = full.is_some();
                 if all {
                     self.split.kept.clear();
+                    self.split.ink.clear();
                 } else {
                     self.split.kept.retain(|(id, _)| !split_hit.contains(id));
                 }
                 for s in &slices {
                     let (x, y, sw, sh) = s.region;
+                    self.split.ink.insert(s.surface_id, s.ink);
                     self.split.kept.retain(|(id, _)| *id != s.surface_id);
                     self.split.kept.push((
                         s.surface_id,

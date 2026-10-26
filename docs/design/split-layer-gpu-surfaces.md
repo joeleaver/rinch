@@ -375,7 +375,18 @@ inside a region for a later PR:
   then lacks what is over it. So the damage meeting kept regions grows to a
   fixpoint (adding one region can merge the damage into a rect that meets
   another), and after the paint every split whose region the damage does
-  not cover has its region added and the frame painted again.
+  not cover has its region added and the frame painted again. That second
+  paint is a safety net, not the path: the damage also meets a kept surface's
+  element ink up front (its shadow, border, padding: `SurfaceSlice::ink`, what
+  the paint cull tests), and a region whose ink it meets is added before the
+  first paint (#1899 second review: a caret blinking in a surface's shadow
+  painted every blink twice). The tests count passes (`split_paint_passes`).
+- **R and routing bounds grow one pixel left only for a fractional left
+  edge** (the box's, or the fitted frame's in R's first column). The #1894
+  review's 9-level case at a whole-pixel edge came out exact on the GPU
+  without any growth (#1899 second review), and a growth at whole pixels
+  made two surfaces touching side by side overlap: the second was refused
+  and every frame became a partial repaint.
 - **A full frame** replaces every kept slice.
 - **Slices are rendered where the window draws them.** The painter encodes
   above slices and masks in window coordinates; the window renders each into
