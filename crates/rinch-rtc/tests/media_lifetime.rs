@@ -75,7 +75,8 @@ fn thirty_calls_leave_nothing_behind() {
     init();
     let mixed = rinch_rtc::testing::capture_audio_output();
     let (w, h) = (320u32, 240u32);
-    let mut rss_at_10 = 0;
+    // RSS after calls 10, 20 and 30.
+    let mut rss: Vec<u64> = Vec::new();
     let calls: usize = std::env::var("RINCH_RTC_LIFETIME_CALLS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -139,17 +140,22 @@ fn thirty_calls_leave_nothing_behind() {
             .filter(|t| t.starts_with("rinch-rtc-"))
             .collect();
         assert!(left.is_empty(), "call {call}: threads left {left:?}");
-        if call == 10 {
-            rss_at_10 = rss_kb();
-        }
         if call % 10 == 9 {
-            eprintln!("RSS after {} calls: {} kB", call + 1, rss_kb());
+            let r = rss_kb();
+            eprintln!("RSS after {} calls: {r} kB", call + 1);
+            rss.push(r);
         }
     }
-    let grown = rss_kb().saturating_sub(rss_at_10);
-    eprintln!("RSS grew {grown} kB over calls 10-29");
-    assert!(
-        grown < 10_000,
-        "RSS grew {grown} kB over 20 calls (a leak of 0.5 MB a call)"
-    );
+    // A leak grows every ten calls; the allocator can also keep a single
+    // step (seen twice in about fifteen runs on a loaded host: 14 MB once,
+    // flat before and after), which is not one. So the smaller of the last
+    // two ten-call growths must stay under 3 MB (0.3 MB a call; the leak
+    // this was written for was 1 MB).
+    if let [_, a, b, c, ..] | [a, b, c] = rss.as_slice() {
+        let (g1, g2) = (b.saturating_sub(*a), c.saturating_sub(*b));
+        assert!(
+            g1.min(g2) < 3_000,
+            "RSS grew {g1} kB over calls 10-20 and {g2} kB over calls 20-30: a leak"
+        );
+    }
 }

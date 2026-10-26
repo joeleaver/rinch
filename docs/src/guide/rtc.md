@@ -307,7 +307,17 @@ rinch-rtc = { workspace = true, features = ["media"] }
   desktop↔Firefox and desktop↔desktop calls use VP8. H.264 is used where
   the other side offers it first, as Safari does. VP8 comes first because
   every browser can encode it, while a Firefox without Cisco's OpenH264
-  plugin lists H.264 in its offers and then sends nothing.
+  plugin lists H.264 in its offers and then sends nothing. A desktop
+  answers an offer with only the codecs it lists (an H.264-only offer gets
+  an H.264 answer, and is sent H.264), and follows a renegotiation that
+  changes the codec.
+
+  **Bitrate on hard pictures.** `set_max_bitrate` holds in both codecs.
+  A keyframe of a very busy picture can be larger than a second's worth
+  of a low cap, though (openh264's several times larger than VP8's), and
+  the frames after it are skipped to pay it back, so such video pauses
+  after each keyframe. Ordinary camera pictures are far from that.
+  Pictures under 16 pixels a side are scaled up.
 
 ### H.264 and its patents: `media` or `media-cisco-openh264`
 
@@ -326,9 +336,11 @@ covers the licensing:
   - Hand its path to `rinch_rtc::media::load_openh264(path)`.
   - Only **OpenH264 2.6.0** is accepted: the file's SHA-256 must be
     Cisco's 2.6.0 build for this platform.
-  - The path is made absolute before the file is read, so the file that
-    is checked is the file that is loaded. A second call with another file
-    is an error.
+  - The path is made absolute before the file is read. A second call with
+    another file is an error.
+  - The file is hashed, then the system loader opens it again by path, so
+    whoever can replace it in that moment could have other code loaded.
+    Keep it where only your app's user can write.
   - Until it has loaded, desktop peers offer and accept VP8 only, so video
     still works, in VP8. Peers made after the load offer H.264 too.
 

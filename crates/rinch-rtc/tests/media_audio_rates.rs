@@ -2,7 +2,9 @@
 //! (#1947's review, adopted): 11025 Hz took 220 frames per 20 ms tick
 //! instead of 220.5 and fell further behind every second. 1049 Hz is the
 //! extreme case (20.98 frames a tick: 47 ms behind per second without the
-//! carry); 11025 and 44100 are the rates an app would use.
+//! carry); 11025 and 44100 are the rates an app would use. And a burst
+//! after a stall (#1947's second review): 300 ms pushed at once stayed
+//! 290 ms of latency for good; the backlog is now trimmed.
 #![cfg(all(not(target_arch = "wasm32"), feature = "media"))]
 
 mod common;
@@ -15,7 +17,15 @@ use rinch_rtc::media::{AudioSourceOptions, LocalTrack};
 #[test]
 fn odd_rates_do_not_build_up_latency() {
     init();
-    for rate in [48_000u32, 11_025, 44_100, 1_049] {
+    // (rate, a burst of this many ms pushed at once 2 s in: what a source
+    // does after a stall, its thread or the whole process paused).
+    for (rate, burst_ms) in [
+        (48_000u32, 0u64),
+        (11_025, 0),
+        (44_100, 0),
+        (1_049, 0),
+        (48_000, 300),
+    ] {
         let (t, w) = LocalTrack::audio_source(AudioSourceOptions {
             sample_rate: rate,
             channels: 1,
@@ -31,7 +41,12 @@ fn odd_rates_do_not_build_up_latency() {
                 if let Some(d) = due.checked_duration_since(Instant::now()) {
                     std::thread::sleep(d);
                 }
-                let target = u64::from(rate) * k / 100;
+                let target = u64::from(rate) * k / 100
+                    + if k >= 200 {
+                        u64::from(rate) * burst_ms / 1000
+                    } else {
+                        0
+                    };
                 w2.push(&vec![0.1f32; (target - pushed) as usize]);
                 pushed = target;
             }
@@ -43,7 +58,7 @@ fn odd_rates_do_not_build_up_latency() {
         let backlog_ms = (pushed - taken) as f64 * 1000.0 / f64::from(rate);
         assert!(
             backlog_ms < 60.0,
-            "{rate} Hz: {backlog_ms:.0} ms behind after {secs} s"
+            "{rate} Hz (burst {burst_ms} ms): {backlog_ms:.0} ms behind after {secs} s"
         );
         drop(t);
     }

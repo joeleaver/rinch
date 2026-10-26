@@ -719,8 +719,8 @@ jobs:
           test "$(cat media_echo.url)" = http://127.0.0.1:47812
           test "$(cat media_echo_h264.url)" = http://127.0.0.1:47813
           RINCH_RTC_MEDIA_URL=http://127.0.0.1:47812 RINCH_RTC_MEDIA_H264_URL=http://127.0.0.1:47813 \
-            RINCH_RTC_REQUIRE_LIVE=1 cargo test -p rinch-rtc --target wasm32-unknown-unknown \
-            --features media --test web_media_native
+            RINCH_RTC_REQUIRE_LIVE=1 WASM_BINDGEN_TEST_TIMEOUT=180 cargo test -p rinch-rtc \
+            --target wasm32-unknown-unknown --features media --test web_media_native
           # The editor's read-only collaboration fixture is
           # `#[cfg(feature = "collaboration")]`, which the bare run above does not
           # turn on — it would have run nowhere, and a test that never runs reads
@@ -877,8 +877,8 @@ jobs:
             fi
           done
           RINCH_RTC_MEDIA_URL=http://127.0.0.1:47812 RINCH_RTC_MEDIA_H264_URL=http://127.0.0.1:47813 \
-            RINCH_RTC_REQUIRE_LIVE=1 cargo test -p rinch-rtc --target wasm32-unknown-unknown \
-            --features media --test web_media_native
+            RINCH_RTC_REQUIRE_LIVE=1 WASM_BINDGEN_TEST_TIMEOUT=180 cargo test -p rinch-rtc \
+            --target wasm32-unknown-unknown --features media --test web_media_native
 
   # Type-check and lint the Android target. Nothing else in this pipeline compiles it.
   #

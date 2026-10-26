@@ -3,7 +3,7 @@
 //! 2026-10-27: VP8 so desktop video works with a Firefox that has no
 //! OpenH264 plugin). Pictures travel as I420 between them.
 
-use std::os::raw::{c_int, c_ulong};
+use std::os::raw::{c_int, c_uint, c_ulong};
 
 /// A negotiated video codec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -13,6 +13,30 @@ pub(crate) enum VideoCodec {
 }
 
 impl VideoCodec {
+    /// Whether an encoded frame (VP8, or H.264 in Annex B) can be decoded
+    /// on its own: a VP8 key frame, or an H.264 access unit with an IDR
+    /// slice.
+    pub(crate) fn is_keyframe(self, frame: &[u8]) -> bool {
+        match self {
+            // The frame tag's first bit: 0 for a key frame (RFC 6386 9.1).
+            Self::Vp8 => frame.first().is_some_and(|b| b & 1 == 0),
+            Self::H264 => {
+                let mut i = 0;
+                while i + 3 < frame.len() {
+                    if frame[i] == 0 && frame[i + 1] == 0 && frame[i + 2] == 1 {
+                        if frame[i + 3] & 0x1f == 5 {
+                            return true;
+                        }
+                        i += 3;
+                    } else {
+                        i += 1;
+                    }
+                }
+                false
+            }
+        }
+    }
+
     pub(crate) fn from_mime(mime: &str) -> Option<Self> {
         if mime.eq_ignore_ascii_case("video/H264") {
             Some(Self::H264)
@@ -82,6 +106,9 @@ pub(crate) trait VideoEncoder: Send {
     /// Encode one picture; `key` forces a keyframe. An empty result is a
     /// frame the rate control skipped.
     fn encode(&mut self, pic: &I420, ts_ms: u64, key: bool) -> Result<Vec<u8>, String>;
+    /// A new target bitrate for the running encoder: no keyframe, no new
+    /// encoder (a cap set mid-call must not cost a keyframe).
+    fn set_bitrate(&mut self, bps: u32) -> Result<(), String>;
 }
 
 pub(crate) trait VideoDecoder: Send {
@@ -112,10 +139,36 @@ pub(crate) fn new_decoder(codec: VideoCodec) -> Result<Box<dyn VideoDecoder>, St
 
 // ================================================================== H.264
 
-struct H264Encoder(openh264::encoder::Encoder);
+struct H264Encoder {
+    enc: openh264::encoder::Encoder,
+    fps: u32,
+    /// openh264 initialises itself on the first picture; options can be
+    /// set only after that.
+    started: bool,
+}
+
+/// openh264's `SBitrateInfo` (`codec_app_def.h`), for
+/// `ENCODER_OPTION_BITRATE`.
+#[repr(C)]
+struct SBitrateInfo {
+    /// `LAYER_NUM`: `SPATIAL_LAYER_ALL` is 4.
+    layer: c_int,
+    bitrate: c_int,
+}
+
+/// `ENCODER_OPTION_BITRATE` in openh264's `ENCODER_OPTION` enum.
+const ENCODER_OPTION_BITRATE: c_int = 5;
 
 impl H264Encoder {
     fn new(fps: u32, bitrate: u32) -> Result<Self, String> {
+        Ok(Self {
+            enc: Self::make(fps, bitrate)?,
+            fps,
+            started: false,
+        })
+    }
+
+    fn make(fps: u32, bitrate: u32) -> Result<openh264::encoder::Encoder, String> {
         let api = crate::native_media::h264_api().map_err(|e| e.to_string())?;
         // Bitrate mode with frame skipping: without skipping, openh264
         // cannot hold a bitrate (it warns so), and full-frame noise ran at
@@ -127,9 +180,7 @@ impl H264Encoder {
             .rate_control_mode(openh264::encoder::RateControlMode::Bitrate)
             .profile(openh264::encoder::Profile::Baseline)
             .skip_frames(true);
-        openh264::encoder::Encoder::with_api_config(api, config)
-            .map(Self)
-            .map_err(|e| e.to_string())
+        openh264::encoder::Encoder::with_api_config(api, config).map_err(|e| e.to_string())
     }
 }
 
@@ -137,12 +188,39 @@ impl VideoEncoder for H264Encoder {
     fn encode(&mut self, pic: &I420, ts_ms: u64, key: bool) -> Result<Vec<u8>, String> {
         let yuv = openh264::formats::YUVBuffer::from_vec(pic.data.clone(), pic.w, pic.h);
         if key {
-            self.0.force_intra_frame();
+            self.enc.force_intra_frame();
         }
-        self.0
+        let out = self
+            .enc
             .encode_at(&yuv, openh264::Timestamp::from_millis(ts_ms))
             .map(|b| b.to_vec())
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        self.started = true;
+        Ok(out)
+    }
+
+    fn set_bitrate(&mut self, bps: u32) -> Result<(), String> {
+        if !self.started {
+            self.enc = Self::make(self.fps, bps)?;
+            return Ok(());
+        }
+        let mut info = SBitrateInfo {
+            layer: 4,
+            bitrate: bps.min(i32::MAX as u32) as c_int,
+        };
+        // SAFETY: the encoder is initialised (a picture went through it),
+        // and the option takes a pointer to an SBitrateInfo, which `info`
+        // is laid out as; openh264 reads it during the call.
+        let r = unsafe {
+            self.enc
+                .raw_api()
+                .set_option(ENCODER_OPTION_BITRATE, (&raw mut info).cast())
+        };
+        if r == 0 {
+            Ok(())
+        } else {
+            Err(format!("openh264: set bitrate: {r}"))
+        }
     }
 }
 
@@ -202,9 +280,17 @@ fn vpx_ok(e: vpx_sys::vpx_codec_err_t, what: &str) -> Result<(), String> {
 
 struct Vp8Encoder {
     ctx: VpxCtx,
+    cfg: vpx_sys::vpx_codec_enc_cfg_t,
     w: u32,
     h: u32,
+    /// One frame's duration at the track's rate, in the 1 ms timebase:
+    /// libvpx's rate control spends bitrate × duration on a frame.
+    frame_ms: u64,
 }
+
+// SAFETY: `cfg` is plain configuration (its pointer fields are libvpx's
+// unused two-pass buffers, null); the context is `Send` as VpxCtx says.
+unsafe impl Send for Vp8Encoder {}
 
 impl Vp8Encoder {
     fn new(w: u32, h: u32, fps: u32, bitrate: u32) -> Result<Self, String> {
@@ -243,7 +329,6 @@ impl Vp8Encoder {
             // Keyframes on request (and the sender's periodic one), not
             // by libvpx's own schedule.
             cfg.kf_mode = vpx_sys::vpx_kf_mode::VPX_KF_DISABLED;
-            let _ = fps;
             let mut ctx = std::mem::MaybeUninit::<vpx_sys::vpx_codec_ctx_t>::uninit();
             vpx_ok(
                 vpx_sys::vpx_codec_enc_init_ver(
@@ -255,15 +340,29 @@ impl Vp8Encoder {
                 ),
                 "encoder init",
             )?;
-            let ctx = VpxCtx(ctx.assume_init());
-            let mut ctx = ctx;
+            let mut ctx = VpxCtx(ctx.assume_init());
             // Speed over quality for real time.
             let _ = vpx_sys::vpx_codec_control_(
                 &mut ctx.0,
                 vpx_sys::vp8e_enc_control_id::VP8E_SET_CPUUSED as c_int,
                 8 as c_int,
             );
-            Ok(Self { ctx, w, h })
+            // A keyframe may take at most 9 frames' worth of bits, WebRTC's
+            // own setting (`MaxIntraTarget`: half a 600 ms buffer at 30
+            // fps): a keyframe of a hard picture otherwise ate seconds of
+            // budget.
+            let _ = vpx_sys::vpx_codec_control_(
+                &mut ctx.0,
+                vpx_sys::vp8e_enc_control_id::VP8E_SET_MAX_INTRA_BITRATE_PCT as c_int,
+                (30 * fps).max(300) as c_uint,
+            );
+            Ok(Self {
+                ctx,
+                cfg,
+                w,
+                h,
+                frame_ms: u64::from((1000 / fps.max(1)).max(1)),
+            })
         }
     }
 }
@@ -290,6 +389,12 @@ impl VideoEncoder for Vp8Encoder {
                 return Err("VP8: could not wrap the picture".into());
             }
             let img = img.assume_init();
+            // One frame period, also after frames the pump's send budget
+            // skipped: told the real gap (a second or more on a hard
+            // picture), libvpx spent it all on the next frame (180 KB of
+            // noise at 300 kbps). It was told 1 ms before #1947's second
+            // review.
+            let duration = self.frame_ms as c_ulong;
             let flags: vpx_sys::vpx_enc_frame_flags_t = if key {
                 vpx_sys::VPX_EFLAG_FORCE_KF as _
             } else {
@@ -300,7 +405,7 @@ impl VideoEncoder for Vp8Encoder {
                     &mut self.ctx.0,
                     &img,
                     ts_ms as i64,
-                    1,
+                    duration,
                     flags,
                     vpx_sys::VPX_DL_REALTIME as c_ulong,
                 ),
@@ -319,6 +424,17 @@ impl VideoEncoder for Vp8Encoder {
                 }
             }
             Ok(out)
+        }
+    }
+
+    fn set_bitrate(&mut self, bps: u32) -> Result<(), String> {
+        self.cfg.rc_target_bitrate = (bps / 1000).max(30);
+        // SAFETY: a live context and a configuration libvpx filled.
+        unsafe {
+            vpx_ok(
+                vpx_sys::vpx_codec_enc_config_set(&mut self.ctx.0, &self.cfg),
+                "bitrate",
+            )
         }
     }
 }
@@ -448,5 +564,52 @@ mod tests {
     #[test]
     fn h264_round_trips_a_moving_box() {
         round_trip(VideoCodec::H264);
+    }
+
+    /// A busy but compressible picture: a gradient, a textured square
+    /// moving across it, mild noise.
+    fn medium(w: usize, h: usize, k: usize, seed: &mut u32) -> Vec<u8> {
+        let mut f = vec![0u8; w * h * 4];
+        for (i, px) in f.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let (x, y) = (i % w, i / w);
+            *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let n = ((*seed >> 24) as i32 & 15) - 8;
+            let sq = (x + 100_000 - k * 5) % 200 < 100 && (y + 100_000 - k * 3) % 160 < 80;
+            let t = if sq {
+                (((x ^ y) & 8) * 28) as i32
+            } else {
+                ((x * 255 / w + y * 128 / h) / 2) as i32
+            };
+            let v = (t + n).clamp(0, 255) as u8;
+            *px = [v, v / 2 + 60, 255 - v, 255];
+        }
+        f
+    }
+
+    /// `set_bitrate` reaches a running encoder: its output falls to the new
+    /// rate without a new encoder (a cap set mid-call costs no keyframe).
+    #[test]
+    fn a_running_encoder_takes_a_new_bitrate() {
+        for codec in [VideoCodec::Vp8, VideoCodec::H264] {
+            let (w, h) = (640usize, 480usize);
+            let mut enc = new_encoder(codec, w as u32, h as u32, 30, 1_500_000).unwrap();
+            let mut seed = 1u32;
+            let bytes = |enc: &mut Box<dyn VideoEncoder>, from: usize, n: usize, seed: &mut u32| {
+                (from..from + n)
+                    .map(|k| {
+                        let pic = I420::from_rgba(&medium(w, h, k, seed), w, h);
+                        enc.encode(&pic, k as u64 * 33, k == 0).unwrap().len()
+                    })
+                    .sum::<usize>()
+            };
+            let high = bytes(&mut enc, 0, 90, &mut seed) * 8 / 3;
+            enc.set_bitrate(200_000).unwrap();
+            bytes(&mut enc, 90, 30, &mut seed);
+            let low = bytes(&mut enc, 120, 90, &mut seed) * 8 / 3;
+            assert!(
+                low < 300_000 && low * 2 < high,
+                "{codec:?}: {high} bps at 1.5 Mbps, then {low} bps at 200 kbps"
+            );
+        }
     }
 }

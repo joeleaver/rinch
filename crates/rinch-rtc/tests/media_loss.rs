@@ -5,8 +5,9 @@
 //!   Opus PLC), not spliced: no more clicks than with no loss, and no gaps.
 //! - Video: after a 300 ms outage the picture comes back within 1.5 s,
 //!   five times at different points of the stream (the receiver asks for a
-//!   keyframe, and the request is seen at the sender). It used to freeze
-//!   for good.
+//!   keyframe at once, and the request is seen at the sender), with no
+//!   corrupt picture shown before it. It used to freeze for good, and then
+//!   to show broken pictures for half a second.
 #![cfg(all(not(target_arch = "wasm32"), feature = "media"))]
 
 mod common;
@@ -26,6 +27,15 @@ const H: u32 = 240;
 #[test]
 fn losses_are_concealed_and_recovered() {
     init();
+    call("VP8");
+    // Read as each peer's connection is built: on for the whole call.
+    testing::prefer_h264(true);
+    call("H264");
+    testing::prefer_h264(false);
+}
+
+/// One call: audio loss (in the VP8 call only), then five video outages.
+fn call(codec: &str) {
     let mixed = testing::capture_audio_output();
     let run = Arc::new(AtomicBool::new(true));
     let (audio, aw) = LocalTrack::audio_source(AudioSourceOptions {
@@ -45,6 +55,7 @@ fn losses_are_concealed_and_recovered() {
     pair.a.add_track(&audio).unwrap();
     pair.a.add_track(&video).unwrap();
     pair.connect(2);
+    assert_eq!(testing::sending_codecs(&video), [codec]);
     let rv = pair
         .remotes
         .borrow()
@@ -61,31 +72,33 @@ fn losses_are_concealed_and_recovered() {
     });
     pair.wait(2000);
 
-    // ---- audio
-    let left_since = |mark: usize| -> Vec<f32> {
-        let m = mixed.lock().unwrap();
-        m[mark..].iter().step_by(2).copied().collect()
-    };
-    let mark = mixed.lock().unwrap().len();
-    pair.wait(4000);
-    let (clicks0, gaps0) = defects(&left_since(mark));
-    testing::drop_incoming_audio_every(25);
-    let mark = mixed.lock().unwrap().len();
-    pair.wait(4000);
-    testing::drop_incoming_audio_every(0);
-    let lossy = left_since(mark);
-    let (clicks, gaps) = defects(&lossy);
-    assert!(
-        lossy.len() > 48_000 * 3,
-        "audio kept flowing: {} samples",
-        lossy.len()
-    );
-    assert_eq!(gaps0, 0, "the control has no gaps");
-    assert_eq!(gaps, 0, "1 in 25 lost: no silent gaps");
-    assert!(
-        clicks <= clicks0 + 2,
-        "1 in 25 lost: {clicks} clicks (control {clicks0})"
-    );
+    if codec == "VP8" {
+        // ---- audio
+        let left_since = |mark: usize| -> Vec<f32> {
+            let m = mixed.lock().unwrap();
+            m[mark..].iter().step_by(2).copied().collect()
+        };
+        let mark = mixed.lock().unwrap().len();
+        pair.wait(4000);
+        let (clicks0, gaps0) = defects(&left_since(mark));
+        testing::drop_incoming_audio_every(25);
+        let mark = mixed.lock().unwrap().len();
+        pair.wait(4000);
+        testing::drop_incoming_audio_every(0);
+        let lossy = left_since(mark);
+        let (clicks, gaps) = defects(&lossy);
+        assert!(
+            lossy.len() > 48_000 * 3,
+            "audio kept flowing: {} samples",
+            lossy.len()
+        );
+        assert_eq!(gaps0, 0, "the control has no gaps");
+        assert_eq!(gaps, 0, "1 in 25 lost: no silent gaps");
+        assert!(
+            clicks <= clicks0 + 2,
+            "1 in 25 lost: {clicks} clicks (control {clicks0})"
+        );
+    }
 
     // ---- video
     for (i, extra) in [0u64, 450, 900, 1350, 1800].iter().enumerate() {
@@ -96,12 +109,21 @@ fn losses_are_concealed_and_recovered() {
         testing::drop_incoming_video(false);
         let resumed = Instant::now();
         frames.lock().unwrap().clear();
+        // The receiver asks as soon as it sees the gap (the first packet
+        // after it), not when the assembler gives the frame up 500 ms on.
+        pair.until("the receiver's PLI at the sender", || {
+            testing::keyframe_requests(&video) > asked
+        });
+        let asked_after = resumed.elapsed().as_millis();
+        assert!(
+            asked_after < 400,
+            "outage {i}: the keyframe request reached the sender after {asked_after} ms"
+        );
         pair.until("a box after the outage", || {
             frames.lock().unwrap().iter().any(|f| f.1)
         });
-        let back = frames
-            .lock()
-            .unwrap()
+        let shown = frames.lock().unwrap().clone();
+        let back = shown
             .iter()
             .find(|f| f.1)
             .map(|f| f.0.duration_since(resumed).as_millis())
@@ -110,11 +132,13 @@ fn losses_are_concealed_and_recovered() {
             back < 1500,
             "outage {i}: the picture came back after {back} ms"
         );
-        // VP8 can limp on without a keyframe, so recovery alone does not
-        // show the request reached the sender: count it there.
-        pair.until("the receiver's PLI at the sender", || {
-            testing::keyframe_requests(&video) > asked
-        });
+        // Nothing corrupt in between: frames after a loss are held back
+        // until the keyframe.
+        let corrupt = shown.iter().take_while(|f| !f.1).count();
+        assert_eq!(
+            corrupt, 0,
+            "outage {i}: {corrupt} corrupt pictures shown before the keyframe"
+        );
     }
     run.store(false, Ordering::Relaxed);
     pair.close();

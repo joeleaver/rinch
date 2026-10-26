@@ -36,6 +36,12 @@ impl Pair {
     pub fn new() -> Self {
         let a = Peer::new(RtcConfig::default()).unwrap();
         let b = Peer::new(RtcConfig::default()).unwrap();
+        Self::with(a, b)
+    }
+
+    /// Two given peers, wired as `new` wires its own (trickled candidates,
+    /// `b`'s remote tracks collected).
+    pub fn with(a: Peer, b: Peer) -> Self {
         let (a_out, b_out) = (trickle(&a), trickle(&b));
         let remotes: Rc<RefCell<Vec<RemoteTrack>>> = Rc::default();
         let r = remotes.clone();

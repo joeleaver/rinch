@@ -550,13 +550,26 @@ Where the native backend differs from 3.1–3.6, the code holds:
     first (Safari). VP8 first because every browser encodes it, and a
     Firefox without the OpenH264 plugin lists H.264 and then sends nothing
     (3.2). A browser's own offer usually lists VP8 first too.
-  - **One encode per codec.** Each sender learns its negotiated codec from
-    webrtc-rs's `get_parameters` (polled every 250 ms by the worker), and
+  - **A sender's track carries no codec.** webrtc-rs makes a track's
+    codec its transceiver's only codec preference: a VP8-labelled track
+    offered VP8 alone, and answered an H.264-only offer it then could not
+    send ("unsupported codec type by this transceiver"). Without one, every
+    video m-line offers both codecs in the engine's order, and an answer
+    lists only what the offer did (#1947's second review).
+  - **The sender encodes whatever was negotiated.** Each sender reads its
+    codec from webrtc-rs's `get_parameters` (every 250 ms until known,
+    then every 2 s, so a renegotiation that changes it is followed), and
     the pump encodes once per codec its senders want, not once per sender.
-  - The receiver picks the decoder from the remote track's codec.
+  - **The receiver picks its decoder per packet,** by payload type, from
+    the receiver's negotiated parameters. A packet of another codec (a
+    renegotiation from VP8 to H.264) replaces the decoder and the
+    depacketizer, and waits for a keyframe.
   - Tests can reorder (`testing::prefer_h264`) or drop VP8
-    (`testing::h264_only`) to cover H.264 against Chrome and between
-    desktops.
+    (`testing::h264_only`). Both are read when a peer's connection is
+    built, on the worker, shortly after `Peer::new`.
+    `tests/media_codecs.rs` pins the order, an answer to an H.264-only and
+    an H.264-first offer (both directions in H.264), and a renegotiated
+    change of codec.
 - **Features (M3).**
   - `media` builds openh264 from source.
   - `media-cisco-openh264` builds no H.264 code and loads Cisco's binary
@@ -564,7 +577,9 @@ Where the native backend differs from 3.1–3.6, the code holds:
     absolute, reads the file once, checks its SHA-256 against Cisco's
     OpenH264 2.6.0 build for the platform, and loads that same file; a
     second call with another path is an error. Until it has loaded, peers
-    offer and accept VP8 only.
+    offer and accept VP8 only. A window remains between the hash and the
+    loader opening the file again by path (it cannot load from memory);
+    the guide says to keep the file where only the app's user can write.
   - Both turn on `media-core`, the code's gate. VP8 is in both.
 - **A sender keeps one webrtc-rs track for life,** a
   `TrackLocalStaticRTP` that the worker packetizes into itself (one
@@ -581,15 +596,59 @@ Where the native backend differs from 3.1–3.6, the code holds:
   interceptor (`KeyframeRequests`) passes them on, and the worker sets the
   sending pump's keyframe flag. A keyframe also goes out on a new sender,
   on enable, and once the codec is known.
+  - At most one keyframe a second: a receiver repeats its PLI until a
+    keyframe comes, and one still being paced out must not be followed by
+    another. A request inside that second waits, it is not dropped.
   - The receiver's `SampleBuilder` (512 packets) gives up a frame missing a
     packet after 500 ms (`with_max_time_delay`); without that a lost packet
-    held every later frame. A sequence gap sends a PLI (at most one per
-    500 ms), and so does a decode error (at most one a second). After a 300 ms outage the picture is back
-    within 1.5 s (`tests/media_loss.rs`).
-- **Bitrate.** openh264 runs in its Bitrate rate-control mode with frame
-  skipping, libvpx in CBR, both at `set_max_bitrate` (or a default from the
-  size). A noisy picture holds the cap (`tests/media_bitrate.rs`, which
-  measures the bytes the encoder produced).
+    held every later frame.
+  - **A sequence gap is acted on at once:** the receiver sends a PLI on the
+    first packet after it (again every 500 ms until a keyframe), and holds
+    every frame back from the decoder until a keyframe, so no corrupt
+    picture is shown. The same holds at the start and after a codec
+    change. A decode error also sends a PLI (at most one a second). After
+    a 300 ms outage the request reaches the sender within 400 ms and a
+    clean picture is back within 1.5 s (`tests/media_loss.rs`).
+- **Bitrate.** Both encoders run at `set_max_bitrate` (or a default from
+  the size), and a new cap reaches the running encoder (libvpx
+  `vpx_codec_enc_config_set`, openh264 `ENCODER_OPTION_BITRATE`): no new
+  encoder, no keyframe.
+  - **Neither encoder holds a cap alone on a hard picture.** openh264 in
+    its Bitrate mode with frame skipping ran at 2.6× the cap on noise, and
+    has nothing to limit a keyframe's size: no max-intra setting;
+    `ENCODER_OPTION_MAX_BITRATE` and `BITS_VARY_PERCENTAGE` changed nothing
+    measurable; a QP floor is the only lever (a noise keyframe at 640×480
+    is 172 KB at the default range, 66 KB at QP ≥ 42, 12.5 KB only at 51),
+    and it would cost every frame. libvpx (CBR, frame dropping,
+    `VP8E_SET_MAX_INTRA_BITRATE_PCT` at 30 × fps %, WebRTC's
+    `MaxIntraTarget`) keeps a noise keyframe to 36 KB, which a keyframe a
+    second (a lossy link's PLIs) still makes three times a 100 kbps cap.
+  - **So the pump keeps a send budget per encoder:** the bitrate since the
+    last frame, with half a second saved at most. While it is spent no
+    frame is encoded, a requested keyframe included (the request waits; it
+    is consumed only when a keyframe goes out), and an overshoot is paid
+    back in skipped frames, up to 10 s. On ordinary pictures it never
+    binds; on noise at 100 kbps a keyframe is three (VP8) to seven (H.264)
+    seconds of it.
+  - libvpx is told each frame lasts one frame period, also after frames
+    the budget skipped: told the real gap it spent it all on the next
+    frame (180 KB of noise at 300 kbps). It was told 1 ms before.
+  - **Pacing.** A frame's packets go out at 2.5 × the bitrate (WebRTC's
+    pacing factor), not in one burst: 150-packet frames lost packets on
+    the far side's socket even on loopback, and the receiver then asked
+    for keyframes it also lost.
+  - `tests/media_bitrate.rs` sets the cap mid-call on full-frame noise, in
+    VP8 and in H.264 (checked to be what the call negotiated), at 300 and
+    100 kbps, and checks the bytes produced over 6 s against the cap plus
+    half a second and the largest frame.
+- **RTP timestamps** advance by the time since the codec's last frame, not
+  by 1/fps: the pump takes the latest picture at each tick, so that is
+  capture time to within a tick, through skipped frames and the
+  half-second repeats of a still source.
+- **Small and odd sizes.** openh264 takes nothing under 16 pixels a side,
+  so a smaller picture is scaled up by a whole factor; an odd last row or
+  column is dropped (`tests/media_sizes.rs`, both codecs: a 1×1 picture
+  arrives, a 641×481 one is not sheared).
 - **Mute is synthesised.** webrtc-rs reports no mute when negotiation stops
   a track's media. After each offer, answer and remote description, the
   worker mutes remote tracks whose transceiver no longer receives, and the
@@ -605,7 +664,15 @@ Where the native backend differs from 3.1–3.6, the code holds:
   packets are ordered by (extended) sequence number, duplicates and late
   ones are dropped, and one packet is held for a late arrival (more would
   outlast the mixer's 60 ms). A lost packet is rebuilt from the next one's
-  in-band FEC when it has it, and concealed by Opus PLC otherwise.
+  in-band FEC when it has it, and concealed by Opus PLC otherwise, as long
+  as the packets are (10 to 60 ms: the next packet's duration for FEC,
+  the last one's for PLC).
+  - **A jump is a resync.** A gap of more than 15 packets is not
+    concealed but skipped, and a packet more than 50 behind starts the
+    sequence again rather than being dropped as late. Two packets from any
+    remote 0x7fff apart used to make 655 s of concealment in one call on
+    the worker every peer shares; a jump of 0x8000 or backwards silenced
+    the track for minutes.
   libopus puts FEC only in frames its voice detector calls speech, so
   a steady tone or music gets PLC (`jitter_tests` pins both).
   - The mixer's buffer is per track: 60 ms before playback starts, 300 ms
@@ -613,11 +680,18 @@ Where the native backend differs from 3.1–3.6, the code holds:
     trimmed to 80 ms.
   - A source at a rate that isn't a multiple of 50 Hz (11.025 kHz) carries
     the remainder from one 20 ms frame to the next.
+  - **Send latency cannot ratchet.** After a stall (the pump late, the
+    process paused) a source is ahead of the 20 ms ticks; past 60 ms of
+    backlog the oldest audio is dropped, down to one tick. A 300 ms pause
+    used to stay 290 ms of latency for the rest of the call.
 - **Memory.** #1947's review measured about 1 MB of RSS growth a call. It
   was the tests' audio capture (`testing::capture_audio_output` keeps every
   sample). With it cleared, RSS is flat over 60 calls under
   `MALLOC_ARENA_MAX=1`, and levels off with glibc's default arenas
-  (`tests/media_lifetime.rs`).
+  (`tests/media_lifetime.rs`). On a loaded host the allocator sometimes
+  keeps one step (14 MB once in about fifteen runs, flat before and after),
+  so the test fails on the smaller of two ten-call growths, which a leak
+  raises and a step does not.
 - **No audio device** (a CI runner) is reported once through `on_error`
   as `RtcError::Media`; decoding goes on. Tests read the mix through
   `testing::capture_audio_output`.

@@ -235,7 +235,18 @@ code's gate is `media-core`, which both turn on.
     `h264_available()`: built from source, or Cisco's binary loaded), each
     with RTX. Test hooks: `testing::prefer_h264` puts H.264 first,
     `testing::h264_only` drops VP8 (`media_echo --h264-only`, for the
-    Chrome H.264 step); a track is labelled with the first codec.
+    Chrome H.264 step); both are read when the worker builds the peer's
+    connection.
+  - **Trap: a sender track must carry no codec.** `track_for` gives video
+    an empty `RTCRtpCodec`. rtc's `codec_preferences_from_encodings` turns
+    a track's codec into the transceiver's only codec preference, so a
+    labelled track offers that codec alone and cannot send after answering
+    an offer without it ("unsupported codec type by this transceiver",
+    #1947's second review).
+  - **Receive by payload type.** `read_remote` maps payload types to codecs
+    from the receiver's `get_parameters` (refreshed on an unknown one) and
+    rebuilds the decoder and `Assembler` when a packet's codec differs
+    from the current one.
   - **Keyframes.** On request, plus a 10 s backstop. The default
     interceptors deliver no PLI/FIR to the sender
     (`TrackLocalEvent::OnRtcpPacket` fires only for packets an interceptor
@@ -246,9 +257,23 @@ code's gate is `media-core`, which both turn on.
     so a still picture comes back).
   - **Receive.** `Assembler` is a `SampleBuilder` per codec (512 packets,
     `with_max_time_delay(500 ms)`: without it one lost packet stalled every
-    later frame). The reader sends a PLI on a sequence gap (at most every
-    500 ms) and the decoder thread on a decode error (at most once a
-    second).
+    later frame). A sequence gap sets `KeyGate::awaiting`: a PLI goes at once
+    (and every 500 ms while it stays set), and frames are held back from
+    the decoder until `VideoCodec::is_keyframe`; it starts set, and a codec
+    change sets it (`gate_tests`). The decoder thread sends a PLI on a decode error (at
+    most once a second). The sender honours at most one keyframe request
+    a second.
+  - **Rate.** `PumpEncoder` per codec: a new cap goes to the running
+    encoder (`VideoEncoder::set_bitrate`), and a send budget gates every
+    frame, keyframes included (the request flag is cleared only when a
+    keyframe goes out). libvpx gets `VP8E_SET_MAX_INTRA_BITRATE_PCT` and a
+    fixed one-period duration per frame: given the real gap after skipped
+    frames, its rate control spent it all on one 180 KB frame. `forward`
+    paces a frame's packets at `Encoded::pace_bps` (2.5 × the bitrate).
+  - **RTP timestamps** step by the time since the codec's last frame
+    (`PumpEncoder::last_sent`), not by 1/fps.
+  - **Sizes.** The pump scales a picture under 16 pixels a side up by a
+    whole factor (openh264's minimum) and drops an odd last row or column.
   - **Mute.** webrtc-rs reports no mute when negotiation stops a track's
     media (inactive, sendonly on our side). `PeerWorker::refresh`, which
     runs after every offer, answer and remote description, mutes the
@@ -283,6 +308,12 @@ code's gate is `media-core`, which both turn on.
       only for frames its voice detector calls active speech: a steady tone
       (the loopback tests' source) gets none, which is why `jitter_tests`
       encodes a gliding, syllabic buzz.
+    - `OpusJitter` resyncs on a jump: more than `MAX_GAP` (15) packets
+      ahead skips instead of concealing, more than `MAX_LATE` (50) behind
+      starts again; concealment is one packet's duration (`frame`, the
+      last decoded packet's; FEC uses the next packet's).
+    - The send side trims a backlog past 60 ms down to one tick
+      (`audio_pump`), so a stall leaves no lasting latency.
     - The per-track buffer: 60 ms before it starts, 300 ms at most, and
       trimmed to 80 ms past 160 ms (`DRIFT_HIGH` / `DRIFT_TARGET`: a sender
       whose clock runs fast).
