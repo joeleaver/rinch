@@ -17,7 +17,7 @@ pub struct VelloPainter {
     /// Open on a frame the runtime paints for the split-layer path (#1865).
     slicing: Option<Slicing>,
     /// See [`Self::node_starts`].
-    node_starts: std::collections::HashMap<usize, (usize, usize)>,
+    node_starts: std::collections::HashMap<usize, usize>,
     /// This scene holds a layer that blends with its backdrop (grayscale's
     /// saturation): appended over a split surface, it taints it (D5a).
     reads_backdrop: bool,
@@ -93,10 +93,10 @@ impl VelloPainter {
 
     /// Where the last sliced frame started each watched node
     /// (`paint::set_paint_order_watch`), as the number of surfaces split
-    /// before it: `(fewest, most)` over each time it was started (#1865 S4).
-    /// A node started after the `i`th split (0-based) has `fewest > i`.
-    /// Filled by [`Self::take_slices`].
-    pub fn node_starts(&self) -> &std::collections::HashMap<usize, (usize, usize)> {
+    /// before its first start (#1865 S4): a node started after the `i`th
+    /// split (0-based) has a count past `i`, every time it starts, since the
+    /// count only grows through a paint. Filled by [`Self::take_slices`].
+    pub fn node_starts(&self) -> &std::collections::HashMap<usize, usize> {
         &self.node_starts
     }
 
@@ -593,15 +593,9 @@ impl Painter for VelloPainter {
 
     fn note_node_start(&mut self, node: usize) {
         if let Some(slicing) = &mut self.slicing {
+            // The first start is the earliest: the count only grows.
             let n = slicing.slices.len();
-            slicing
-                .starts
-                .entry(node)
-                .and_modify(|(lo, hi)| {
-                    *lo = (*lo).min(n);
-                    *hi = (*hi).max(n);
-                })
-                .or_insert((n, n));
+            slicing.starts.entry(node).or_insert(n);
         }
     }
 

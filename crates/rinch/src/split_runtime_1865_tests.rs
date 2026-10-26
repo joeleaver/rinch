@@ -3358,6 +3358,9 @@ fn gpu_split_runtime_above_only_changes() {
     // The surface rounded, so below shows at its corners inside R.
     const ROUNDED: &str = "position: absolute; left: 50px; top: 40px; width: 120px; height: 80px; \
                            box-sizing: border-box; border-radius: 14px";
+    // In flow, before the surface: its removal is a partial frame.
+    const UNDER_FLOW: &str = "margin-left: 40px; margin-top: 30px; width: 140px; height: 100px; \
+                              background: rgb(200, 60, 160)";
     const UNDER: &str = "position: absolute; left: 40px; top: 30px; width: 140px; height: 100px; \
                          background: rgb(200, 60, 160)";
     const LABEL: &str = "position: absolute; left: 70px; top: 60px; width: 60px; height: 16px; \
@@ -3378,6 +3381,16 @@ fn gpu_split_runtime_above_only_changes() {
     let recolor: &'static dyn Fn(&NodeHandle) = &|n: &NodeHandle| {
         n.set_style("background", "rgb(240, 200, 0)");
     };
+    let remove: &'static dyn Fn(&NodeHandle) = &|n: &NodeHandle| n.remove();
+    let raise: &'static dyn Fn(&NodeHandle) = &|n: &NodeHandle| {
+        n.set_style("z-index", "3");
+    };
+    let span_colour: &'static dyn Fn(&NodeHandle) = &|n: &NodeHandle| {
+        n.children()[1].set_style("color", "rgb(255, 255, 0)");
+    };
+    // Over the corner, beneath a z-index 2 surface until raised.
+    const UNDER_Z: &str = "position: absolute; left: 150px; top: 100px; width: 40px; height: 40px; \
+                           background: rgba(0, 0, 255, 0.5); z-index: 1";
     let shift: &'static dyn Fn(&NodeHandle) = &|n: &NodeHandle| {
         n.set_style("left", "90px");
     };
@@ -3424,6 +3437,35 @@ fn gpu_split_runtime_above_only_changes() {
             below_kept: 1,
         },
         Case {
+            name: "a span's colour in a label over the surface: below kept",
+            parts: vec![(ROUNDED, Some(red())), (LABEL, None)],
+            target: 1,
+            step: span_colour,
+            kind: "",
+            below_kept: 1,
+        },
+        Case {
+            // Its old pixels are in below, its new start after the split: a
+            // reordered box is never placed.
+            name: "a box beneath the surface raised over it by z-index: below re-rendered",
+            parts: vec![(HIGH_Z, Some(red())), (UNDER_Z, None)],
+            target: 1,
+            step: raise,
+            kind: "partial",
+            below_kept: 0,
+        },
+        Case {
+            // A removal restyles the whole document today, so the frame is
+            // full; S4's removed-rect entry (never placed) is for the day it
+            // is not.
+            name: "the box under the surface removed: below re-rendered",
+            parts: vec![(UNDER_FLOW, None), (ROUNDED, Some(red())), (BADGE, None)],
+            target: 0,
+            step: remove,
+            kind: "",
+            below_kept: 0,
+        },
+        Case {
             name: "the box under the surface recoloured: below re-rendered",
             parts: vec![(UNDER, None), (ROUNDED, Some(red())), (BADGE, None)],
             target: 0,
@@ -3455,9 +3497,13 @@ fn gpu_split_runtime_above_only_changes() {
         let act = move |p: &Page| step(&p.boxes.borrow()[target]);
         let mut split_page = page(&case.parts);
         let mut scene_page = page(&case.parts);
-        if case.name.contains("label") {
+        if case.name.contains("label's text") {
             split_page.boxes.borrow()[1].set_text("12:59");
             scene_page.boxes.borrow()[1].set_text("12:59");
+        }
+        if case.name.contains("span") {
+            split_page.boxes.borrow()[1].set_inner_html("ab <span>cdef</span> gh");
+            scene_page.boxes.borrow()[1].set_inner_html("ab <span>cdef</span> gh");
         }
         let surfaces: Vec<usize> = split_page.surfaces.iter().map(|s| s.id()).collect();
         let mut win = Window::new(true);
@@ -3499,5 +3545,513 @@ fn gpu_split_runtime_above_only_changes() {
         }
     }
     crate::shell::renderer::set_gpu_presenting(false);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// The #1923 review's probes, adopted: DOM moves across the paint order,
+// boxes with negatively z-indexed descendants (clipped, scrolled, moved,
+// hidden, recoloured, resized), a span recoloured, a removal, z-index flips,
+// static to relative, mixed inline content, `display: contents`; and a random
+// driver over above-only and mixed changes around a kept surface.
+
+/// Every frame of `steps` against in-scene; each frame's kind and
+/// `split_below_kept` printed.
+fn s4_probe(name: &str, parts: Vec<Part>, steps: &[&dyn Fn(&Page)]) -> Vec<String> {
+    let mut failures = Vec::new();
+    let mut split_page = page(&parts);
+    let mut scene_page = page(&parts);
+    let mut win = Window::new(true);
+    let mut reference = Window::new(false);
+    let noop = |_: &Page| {};
+    let all: Vec<&dyn Fn(&Page)> = std::iter::once(&noop as &dyn Fn(&Page))
+        .chain(steps.iter().copied())
+        .collect();
+    let mut prev: Option<Vec<[u8; 4]>> = None;
+    for (n, step) in all.into_iter().enumerate() {
+        step(&split_page);
+        step(&scene_page);
+        let got = win.frame(&mut split_page.app, n == 0, Fault::None);
+        let want = reference.frame(&mut scene_page.app, true, Fault::None);
+        let wrong = compare(&got.pixels, &want.pixels, &win.allowances(EDGES), win.dev.0);
+        let (mut ch, mut ch_r) = (0, 0);
+        if let Some(p) = &prev {
+            for (i, (a, b)) in p.iter().zip(&want.pixels).enumerate() {
+                if a != b {
+                    ch += 1;
+                    let (x, y) = (i as u32 % W, i as u32 / W);
+                    if (50..170).contains(&x) && (40..120).contains(&y) {
+                        ch_r += 1;
+                    }
+                }
+            }
+        }
+        prev = Some(want.pixels.clone());
+        eprintln!(
+            "[rv1923] {name}, frame {n}: ref changed {ch} px ({ch_r} in R); {} frame, split {:?}, below_kept {}, {} wrong {:?}",
+            got.kind,
+            got.split_ids,
+            got.below_kept,
+            wrong.len(),
+            &wrong[..wrong.len().min(3)]
+        );
+        if !wrong.is_empty() {
+            failures.push(format!(
+                "{name}, frame {n} ({}, below_kept {}): {} pixels past their allowance: {:?}",
+                got.kind,
+                got.below_kept,
+                wrong.len(),
+                &wrong[..wrong.len().min(6)]
+            ));
+        }
+    }
+    for s in split_page.surfaces.iter().chain(&scene_page.surfaces) {
+        unregister_render_surface(s.id());
+    }
+    failures
+}
+
+const RV_ROUNDED: &str = "position: absolute; left: 50px; top: 40px; width: 120px; height: 80px; \
+                          box-sizing: border-box; border-radius: 14px";
+
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_review_s4_probes() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let only: Option<String> = std::env::var("RV_ONLY").ok();
+    let want = |n: &str| only.as_deref().is_none_or(|o| n.contains(o));
+    let mut failures = Vec::new();
+
+    // 1. A translucent box before the surface in the tree moved (DOM) after
+    // it, same geometry, across the surface's rounded corner.
+    let to_end = |i: usize| {
+        move |p: &Page| {
+            let b = p.boxes.borrow()[i].clone();
+            let root = b.parent_node().unwrap();
+            root.append_child(&b);
+        }
+    };
+    let corner_translucent = "position: absolute; left: 150px; top: 100px; width: 40px; \
+                              height: 40px; background: rgba(0, 0, 255, 0.5)";
+    if want("dom-move-after") {
+        failures.extend(s4_probe(
+            "dom-move-after",
+            vec![
+                (corner_translucent, None),
+                (RV_ROUNDED, Some(red())),
+                (BADGE, None),
+            ],
+            &[&to_end(0)],
+        ));
+    }
+    // 2. The same, opaque, moved away in the same step.
+    let corner_opaque = "position: absolute; left: 150px; top: 100px; width: 40px; \
+                         height: 40px; background: rgb(0, 200, 255)";
+    if want("dom-move-away") {
+        let mv = move |p: &Page| {
+            to_end(0)(p);
+            p.boxes.borrow()[0].set_style("left", "250px");
+        };
+        failures.extend(s4_probe(
+            "dom-move-away",
+            vec![
+                (corner_opaque, None),
+                (RV_ROUNDED, Some(red())),
+                (BADGE, None),
+            ],
+            &[&mv],
+        ));
+    }
+    // 3. Control: after -> before.
+    if want("dom-move-before") {
+        let mv = |p: &Page| {
+            let b = p.boxes.borrow()[1].clone();
+            let a = p.boxes.borrow()[0].clone();
+            b.parent_node().unwrap().insert_before(&b, &a);
+        };
+        failures.extend(s4_probe(
+            "dom-move-before",
+            vec![
+                (RV_ROUNDED, Some(red())),
+                (corner_translucent, None),
+                (BADGE, None),
+            ],
+            &[&mv],
+        ));
+    }
+    // 4. A positioned box after the surface whose negative-z child paints
+    // under the surface's corner; the box starts clipping.
+    let neg = "wrap:position: absolute; left: 140px; top: 95px; width: 20px; height: 15px\
+               |position: relative; z-index: -1; width: 60px; height: 50px; \
+               background: rgb(40, 200, 90)";
+    let parent_style = |k: &'static str, v: &'static str| {
+        move |p: &Page| {
+            let c = p.boxes.borrow()[1].clone();
+            c.parent_node().unwrap().set_style(k, v);
+        }
+    };
+    // The page's root a stacking context, so a negative z paints over its
+    // background (and under the surface).
+    let root_ctx = |p: &Page| {
+        let s = p.boxes.borrow()[0].clone();
+        s.parent_node().unwrap().set_style("z-index", "0");
+    };
+    if want("neg-z-inside-clip") {
+        let n2 = "wrap:position: absolute; left: 150px; top: 100px; width: 10px; height: 10px\
+                  |position: relative; z-index: -1; width: 20px; height: 20px; \
+                  background: rgb(40, 200, 90)";
+        failures.extend(s4_probe(
+            "neg-z-inside-clip",
+            vec![(RV_ROUNDED, Some(red())), (n2, None), (BADGE, None)],
+            &[&root_ctx, &parent_style("overflow", "hidden")],
+        ));
+        failures.extend(s4_probe(
+            "neg-z-inside-radius",
+            vec![(RV_ROUNDED, Some(red())), (n2, None), (BADGE, None)],
+            &[
+                &root_ctx,
+                &parent_style("overflow", "hidden"),
+                &parent_style("border-radius", "5px"),
+            ],
+        ));
+    }
+    if want("neg-z-move") {
+        let n4 = "wrap:position: absolute; left: 150px; top: 100px; width: 10px; height: 10px\
+                  |position: relative; z-index: -1; width: 20px; height: 20px; \
+                  background: rgb(40, 200, 90)";
+        failures.extend(s4_probe(
+            "neg-z-move",
+            vec![(RV_ROUNDED, Some(red())), (n4, None), (BADGE, None)],
+            &[&root_ctx, &parent_style("left", "140px")],
+        ));
+    }
+    if want("span-recolour") {
+        let lab = "position: absolute; left: 70px; top: 60px; width: 80px; height: 16px; \
+                   font: 12px/16px sans-serif; color: white";
+        let init = |p: &Page| {
+            p.boxes.borrow()[1].set_inner_html("ab <span>cdef</span> gh");
+        };
+        let recolour = |p: &Page| {
+            let l = p.boxes.borrow()[1].clone();
+            l.children()[1].set_style("color", "rgb(255, 255, 0)");
+        };
+        failures.extend(s4_probe(
+            "span-recolour",
+            vec![(RV_ROUNDED, Some(red())), (lab, None)],
+            &[&init, &recolour],
+        ));
+    }
+    if want("remove-badge") {
+        let rm = |p: &Page| {
+            p.boxes.borrow()[1].remove();
+        };
+        failures.extend(s4_probe(
+            "remove-badge",
+            vec![(RV_ROUNDED, Some(red())), (BADGE, None), (OPAQUE_BAR, None)],
+            &[&rm],
+        ));
+    }
+    if want("neg-z-scroll") {
+        let n3 = "wrap:position: absolute; left: 150px; top: 95px; width: 20px; height: 25px; \
+                  overflow: hidden\
+                  |position: relative; z-index: -1; width: 20px; height: 30px; \
+                  border-top: 30px solid rgb(40, 200, 90); background: rgb(0, 0, 255)";
+        let scroll = |p: &Page| {
+            let c = p.boxes.borrow()[1].clone();
+            c.parent_node().unwrap().set_scroll_top(20.0);
+        };
+        failures.extend(s4_probe(
+            "neg-z-scroll",
+            vec![(RV_ROUNDED, Some(red())), (n3, None), (BADGE, None)],
+            &[&root_ctx, &scroll],
+        ));
+    }
+    // #1929: a clip change on the box does not damage its hoisted child's
+    // overflow outside it, with nothing split either; the case stays out
+    // until that is in (`S4_PROBE_1929=1` runs it).
+    if want("neg-z-clip") && std::env::var("S4_PROBE_1929").is_ok() {
+        failures.extend(s4_probe(
+            "neg-z-clip",
+            vec![(RV_ROUNDED, Some(red())), (neg, None), (BADGE, None)],
+            &[&root_ctx, &parent_style("overflow", "hidden")],
+        ));
+    }
+    if want("neg-z-visibility") {
+        failures.extend(s4_probe(
+            "neg-z-visibility",
+            vec![(RV_ROUNDED, Some(red())), (neg, None), (BADGE, None)],
+            &[&root_ctx, &parent_style("visibility", "hidden")],
+        ));
+    }
+    if want("neg-z-recolour-parent") {
+        failures.extend(s4_probe(
+            "neg-z-recolour-parent",
+            vec![(RV_ROUNDED, Some(red())), (neg, None), (BADGE, None)],
+            &[&root_ctx, &parent_style("background", "rgb(250, 250, 0)")],
+        ));
+    }
+    if want("neg-z-parent-resize") {
+        // The child sized from its parent: a percentage width.
+        let neg_pct = "wrap:position: absolute; left: 140px; top: 95px; width: 20px; height: 15px\
+                       |position: relative; z-index: -1; width: 300%; height: 50px; \
+                       background: rgb(40, 200, 90)";
+        failures.extend(s4_probe(
+            "neg-z-parent-resize",
+            vec![(RV_ROUNDED, Some(red())), (neg_pct, None), (BADGE, None)],
+            &[&root_ctx, &parent_style("width", "8px")],
+        ));
+    }
+    // 5. z-index flips on a box over the corner.
+    if want("z-flip") {
+        let zb = "position: absolute; left: 150px; top: 100px; width: 40px; height: 40px; \
+                  background: rgba(0, 0, 255, 0.5); z-index: 3";
+        let s = "position: absolute; left: 50px; top: 40px; width: 120px; height: 80px; \
+                 box-sizing: border-box; border-radius: 14px; z-index: 2";
+        failures.extend(s4_probe(
+            "z-flip",
+            vec![(s, Some(red())), (zb, None)],
+            &[
+                &|p: &Page| p.boxes.borrow()[1].set_style("z-index", "1"),
+                &|p: &Page| p.boxes.borrow()[1].set_style("z-index", "3"),
+            ],
+        ));
+    }
+    // 6. Static -> relative: a later static block paints under an absolute
+    // surface until it is positioned.
+    if want("static-to-relative") {
+        let st = "margin-left: 150px; margin-top: 100px; width: 40px; height: 40px; \
+                  background: rgba(0, 0, 255, 0.5)";
+        failures.extend(s4_probe(
+            "static-to-relative",
+            vec![(RV_ROUNDED, Some(red())), (st, None)],
+            &[&|p: &Page| p.boxes.borrow()[1].set_style("position", "relative")],
+        ));
+    }
+    // 7. Mixed inline content: the IFC root after the surface, a relative
+    // negative-z span inside, text changed.
+    if want("ifc-span") {
+        let lab = "position: absolute; left: 140px; top: 100px; width: 80px; height: 20px; \
+                   font: 14px/16px sans-serif; color: white";
+        let step = |p: &Page| {
+            let b = p.boxes.borrow()[1].clone();
+            b.set_inner_html(
+                "a<span style=\"position: relative; z-index: -1; background: rgb(0,180,0)\">WWWW</span>",
+            );
+        };
+        let step2 = |p: &Page| {
+            let b = p.boxes.borrow()[1].clone();
+            b.set_inner_html(
+                "a<span style=\"position: relative; z-index: -1; background: rgb(0,180,0)\">MMMMMM</span>",
+            );
+        };
+        failures.extend(s4_probe(
+            "ifc-span",
+            vec![(RV_ROUNDED, Some(red())), (lab, None)],
+            &[&step, &step2],
+        ));
+    }
+    // 8. display: contents wrapper after the surface, its child over the corner.
+    if want("contents") {
+        let dc = "wrap:display: contents; color: white|position: absolute; left: 150px; top: 100px; \
+                  width: 40px; height: 40px; background: rgba(0, 0, 255, 0.5)";
+        failures.extend(s4_probe(
+            "contents",
+            vec![(RV_ROUNDED, Some(red())), (dc, None)],
+            &[
+                &parent_style_any(1, "display", "block"),
+                &parent_style_any(1, "display", "contents"),
+            ],
+        ));
+    }
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+fn parent_style_any(i: usize, k: &'static str, v: &'static str) -> impl Fn(&Page) {
+    move |p: &Page| {
+        let c = p.boxes.borrow()[i].clone();
+        c.parent_node().unwrap().set_style(k, v);
+    }
+}
+
+/// Random above-only and mixed changes around a kept surface, every frame
+/// against in-scene (review of #1923). `RV_NEGZ=0` leaves out the
+/// negative-z child's container ops.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_review_s4_random() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let seeds: Vec<u64> = std::env::var("PROBE_SEEDS")
+        .ok()
+        .map(|s| s.split(',').filter_map(|v| v.parse().ok()).collect())
+        .unwrap_or_else(|| (1..=10).collect());
+    let steps_n: usize = std::env::var("PROBE_STEPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(14);
+    let negz = std::env::var("RV_NEGZ").map_or(true, |v| v != "0");
+    let mut failures = Vec::new();
+    let mut kept_total = 0u64;
+    for seed in seeds {
+        let rng = Rc::new(Cell::new(
+            seed.wrapping_mul(6364136223846793005).wrapping_add(7),
+        ));
+        let next = {
+            let rng = rng.clone();
+            move |n: u32| -> u32 {
+                let x = rng
+                    .get()
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                rng.set(x);
+                ((x >> 33) as u32) % n
+            }
+        };
+        let color = red();
+        let mut ops: Vec<Step> = vec![Box::new(|p: &Page| {
+            let s = p.boxes.borrow()[1].clone();
+            s.parent_node().unwrap().set_style("z-index", "0");
+        })];
+        let mut log = Vec::new();
+        for _ in 0..steps_n {
+            let kind = next(if negz { 11 } else { 9 });
+            let x = next(200) as i32 + 20;
+            let y = next(120) as i32 + 20;
+            let c = [next(256) as u8, next(256) as u8, next(256) as u8];
+            log.push(format!("{kind}:{x}:{y}"));
+            let color = color.clone();
+            ops.push(match kind {
+                // Badge (box 2) recoloured, translucent sometimes.
+                0 => Box::new(move |p: &Page| {
+                    p.boxes.borrow()[2].set_style(
+                        "background",
+                        &format!(
+                            "rgba({}, {}, {}, {})",
+                            c[0],
+                            c[1],
+                            c[2],
+                            if c[0] > 128 { 1.0 } else { 0.5 }
+                        ),
+                    );
+                }),
+                // Badge moved.
+                1 => Box::new(move |p: &Page| {
+                    p.boxes.borrow()[2].set_style("left", &format!("{x}px"));
+                    p.boxes.borrow()[2].set_style("top", &format!("{y}px"));
+                }),
+                // Label text.
+                2 => Box::new(move |p: &Page| {
+                    p.boxes.borrow()[3].set_text(&format!("{}:{:02}", c[0] % 24, c[1] % 60));
+                }),
+                // Under-box (box 0) recoloured.
+                3 => Box::new(move |p: &Page| {
+                    p.boxes.borrow()[0]
+                        .set_style("background", &format!("rgb({}, {}, {})", c[0], c[1], c[2]));
+                }),
+                // Badge z-index flips (surface is z auto: 0 above, -1 below).
+                4 => Box::new(move |p: &Page| {
+                    p.boxes.borrow()[2].set_style("z-index", if c[2] > 128 { "-1" } else { "1" });
+                }),
+                // Badge visibility.
+                5 => Box::new(move |p: &Page| {
+                    p.boxes.borrow()[2]
+                        .set_style("visibility", if c[1] > 128 { "hidden" } else { "visible" });
+                }),
+                // Surface redraw.
+                6 => Box::new(move |p: &Page| {
+                    color.set([c[0], c[1], c[2], 255]);
+                    for s in &p.surfaces {
+                        s.request_frame();
+                    }
+                }),
+                // Label's colour (inherited by its text).
+                7 => Box::new(move |p: &Page| {
+                    p.boxes.borrow()[3]
+                        .set_style("color", &format!("rgb({}, {}, {})", c[0], c[1], c[2]));
+                }),
+                // Badge shadow.
+                8 => Box::new(move |p: &Page| {
+                    p.boxes.borrow()[2]
+                        .set_style("box-shadow", &format!("0 0 {}px rgb(0, 0, 0)", c[1] % 12));
+                }),
+                // The negative-z child's container: clip toggled.
+                9 => Box::new(move |p: &Page| {
+                    let n = p.boxes.borrow()[4].clone();
+                    n.parent_node()
+                        .unwrap()
+                        .set_style("overflow", if c[0] > 128 { "hidden" } else { "visible" });
+                }),
+                // The negative-z child's container: recoloured.
+                _ => Box::new(move |p: &Page| {
+                    let n = p.boxes.borrow()[4].clone();
+                    n.parent_node().unwrap().set_style(
+                        "background",
+                        &format!("rgba({}, {}, {}, 0.5)", c[0], c[1], c[2]),
+                    );
+                }),
+            });
+        }
+        eprintln!("[rv1923r] seed {seed}: {log:?}");
+        let parts: Vec<Part> = vec![
+            (
+                "position: absolute; left: 40px; top: 30px; width: 60px; height: 40px; \
+                 background: rgb(200, 60, 160)",
+                None,
+            ),
+            (RV_ROUNDED, Some(color.clone())),
+            (BADGE, None),
+            (
+                "position: absolute; left: 70px; top: 60px; width: 60px; height: 16px; \
+                 color: white; font: 12px/16px sans-serif",
+                None,
+            ),
+            (
+                "wrap:position: absolute; left: 150px; top: 100px; width: 10px; height: 10px\
+                 |position: relative; z-index: -1; width: 20px; height: 20px; \
+                 background: rgb(40, 200, 90)",
+                None,
+            ),
+        ];
+        let mut split_page = page(&parts);
+        let mut scene_page = page(&parts);
+        split_page.boxes.borrow()[3].set_text("12:00");
+        scene_page.boxes.borrow()[3].set_text("12:00");
+        let mut win = Window::new(true);
+        let mut reference = Window::new(false);
+        let noop: Step = Box::new(|_: &Page| {});
+        for (n, step) in std::iter::once(&noop).chain(ops.iter()).enumerate() {
+            step(&split_page);
+            step(&scene_page);
+            let got = win.frame(&mut split_page.app, n == 0, Fault::None);
+            let want = reference.frame(&mut scene_page.app, true, Fault::None);
+            kept_total += got.below_kept;
+            let wrong = compare(&got.pixels, &want.pixels, &win.allowances(EDGES), win.dev.0);
+            eprintln!(
+                "[rv1923r] seed {seed}, frame {n} ({}): {} frame, below_kept {}, {} wrong",
+                if n >= 2 { &log[n - 2] } else { "-" },
+                got.kind,
+                got.below_kept,
+                wrong.len()
+            );
+            if !wrong.is_empty() {
+                failures.push(format!(
+                    "seed {seed}, frame {n} ({}, below_kept {}): {} wrong: {:?}",
+                    got.kind,
+                    got.below_kept,
+                    wrong.len(),
+                    &wrong[..wrong.len().min(4)]
+                ));
+            }
+        }
+        for s in split_page.surfaces.iter().chain(&scene_page.surfaces) {
+            unregister_render_surface(s.id());
+        }
+    }
+    eprintln!("[rv1923r] below kept over {kept_total} regions in all");
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert!(kept_total > 0, "no frame kept below: S4 never ran");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

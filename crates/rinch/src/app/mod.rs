@@ -2680,19 +2680,18 @@ impl RinchApp {
                         (x + sw) as f64,
                         (y + sh) as f64,
                     );
-                    let same = self
-                        .split
-                        .kept
-                        .iter()
-                        .any(|(id, k)| *id == sl.surface_id && *k == r);
-                    if !same || !split_hit.contains(&sl.surface_id) || sw == 0 || sh == 0 {
+                    // A surface whose region moved was moved by its own node
+                    // or an ancestor, painted before its split: that change
+                    // is not above-only, so no check of the region is
+                    // needed here (#1923 review: the check was unreachable).
+                    if !split_hit.contains(&sl.surface_id) || sw == 0 || sh == 0 {
                         continue;
                     }
                     let above_only = by_node.iter().all(|d| {
                         !d.rects.iter().any(|q| rect_meets(q, &r))
                             || d.node
                                 .and_then(|n| starts.get(&n))
-                                .is_some_and(|&(first, _)| first > i)
+                                .is_some_and(|&first| first > i)
                     });
                     if above_only {
                         below_kept.push(sl.region);

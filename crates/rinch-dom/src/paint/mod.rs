@@ -147,8 +147,9 @@ pub fn compute_damage(
 /// the node whose painting draws them (`node`), so the runtime can place the
 /// change in paint order against a split surface (#1865, S4). `None` when
 /// the change cannot be placed by one node's paint: a removed node's old
-/// rect, a moved positioned box or a reordered one (its subtree moves with
-/// it), a split inline's fragments, a box-less wrapper's subtree.
+/// rect, a reordered box, a box with a negatively z-indexed descendant
+/// hoisted out of it (painted before the box starts), a split inline's
+/// fragments, a box-less wrapper's subtree, a node drawn by an owner.
 #[derive(Clone, Debug)]
 pub struct NodeDamage {
     pub node: Option<RawNodeId>,
@@ -258,11 +259,9 @@ fn compute_damage_impl(
         // boxes around it, wherever the subtree reaches (#1384). One compare
         // for a node whose order held.
         let reordered = reorders_subtree(node);
-        // A reordered box's place against a split surface may have changed;
-        // a moved one's subtree moves with it, and a part of it painted with
-        // a negative `z-index` paints before the box starts. Neither is placed
-        // by the box's own start (S4).
-        if attributing && (reordered || (moved && subtree_has_negative_z(tree, node_id))) {
+        // A reordered box's place against a split surface may have changed:
+        // not placed by its own start (S4).
+        if attributing && reordered {
             located.set(None);
         }
         // Whether the rects below are clipped as an absolute box at this
@@ -460,8 +459,10 @@ fn compute_damage_impl(
         if !named.get()
             && let Some(owner) = boxed_owner(tree, node_id)
         {
-            // Drawn by the owner's paint.
-            located.set(located.get().map(|_| owner));
+            // Drawn by the owner's paint, along with whatever else the owner
+            // draws: not placed (#1923 review: a path no case reaches above
+            // a surface, kept conservative rather than untested).
+            located.set(None);
             if let Some(owner_node) = tree.get(owner) {
                 let (ox, oy, ot) = compute_absolute_position_and_transform(tree, owner, scale);
                 let ow = owner_node.layout.width as f64 * scale;
@@ -488,12 +489,21 @@ fn compute_damage_impl(
             if !rects.is_empty() {
                 // Text is painted by the box its inline content flows into,
                 // which paint starts; a text node itself is never started.
-                let node = located.get().and_then(|id| match tree.get(id) {
-                    Some(n) if matches!(n.kind, crate::node::NodeKind::Text(_)) => {
-                        n.ifc_root.or(n.parent)
-                    }
-                    _ => Some(id),
-                });
+                let node = located
+                    .get()
+                    .and_then(|id| match tree.get(id) {
+                        Some(n) if matches!(n.kind, crate::node::NodeKind::Text(_)) => {
+                            n.ifc_root.or(n.parent)
+                        }
+                        _ => Some(id),
+                    })
+                    // A change to a box that is no stacking context can
+                    // change what a negatively z-indexed descendant paints
+                    // (its clip, its scroll offset, its position), and that
+                    // descendant is hoisted into an ancestor context's
+                    // negative layer, painted before the box starts: such a
+                    // change is not placed by the box's start (#1923 review).
+                    .filter(|&id| !hoists_negative_z(tree, id));
                 out.push(NodeDamage { node, rects });
             }
         }
@@ -553,23 +563,6 @@ fn reorders_subtree(node: &Node) -> bool {
 /// budget, though that walk has just answered for the same subtree: it does
 /// not enter an `opacity: 0` or collapsed child, and this one skips only
 /// `display: none`.
-/// Whether a positioned box with a negative `z-index` is under `node_id`
-/// (#1865 S4): it paints in an ancestor context's negative layer, before
-/// `node_id` itself starts.
-fn subtree_has_negative_z(tree: &NodeTree, node_id: RawNodeId) -> bool {
-    let Some(node) = tree.get(node_id) else {
-        return false;
-    };
-    node.children.iter().any(|&child_id| {
-        tree.get(child_id).is_some_and(|child| {
-            !matches!(child.computed_style.display, DisplayValue::None)
-                && ((child.box_position() != PositionValue::Static
-                    && child.computed_style.z_index.is_some_and(|z| z < 0))
-                    || subtree_has_negative_z(tree, child_id))
-        })
-    })
-}
-
 fn subtree_has_escaping_absolute(tree: &NodeTree, node_id: RawNodeId) -> bool {
     let Some(node) = tree.get(node_id) else {
         return false;
@@ -595,6 +588,62 @@ fn subtree_has_escaping_absolute(tree: &NodeTree, node_id: RawNodeId) -> bool {
             return true;
         }
     }
+    false
+}
+
+/// Nodes [`hoists_negative_z`] visits before it answers `true` unasked.
+const HOIST_WALK_BUDGET: u32 = 256;
+
+/// Whether a box under `node_id` paints in an **ancestor's** negative layer:
+/// positioned with a negative `z-index`, under `node_id` with no stacking
+/// context between (one would hold it). Such a box paints before `node_id`
+/// starts, so a change to `node_id` that reaches it is not placed by
+/// `node_id`'s start (#1865 S4). `false` when `node_id` is itself a stacking
+/// context. Bounded: past [`HOIST_WALK_BUDGET`] nodes it answers `true`, which
+/// only stops a frame from keeping below. Each node visited is counted on
+/// `split_hoist_walk_nodes`.
+fn hoists_negative_z(tree: &NodeTree, node_id: RawNodeId) -> bool {
+    let Some(node) = tree.get(node_id) else {
+        return false;
+    };
+    if node.creates_stacking_context() {
+        return false;
+    }
+    let mut stack: Vec<RawNodeId> = node.children.clone();
+    let mut visited = 0u32;
+    while let Some(id) = stack.pop() {
+        visited += 1;
+        if visited > HOIST_WALK_BUDGET {
+            tree.perf.add(
+                crate::perf::Counter::SplitHoistWalkNodes,
+                u64::from(visited),
+            );
+            return true;
+        }
+        let Some(child) = tree.get(id) else {
+            continue;
+        };
+        if matches!(child.computed_style.display, DisplayValue::None) {
+            continue;
+        }
+        if child.box_position() != PositionValue::Static
+            && child.computed_style.z_index.is_some_and(|z| z < 0)
+        {
+            tree.perf.add(
+                crate::perf::Counter::SplitHoistWalkNodes,
+                u64::from(visited),
+            );
+            return true;
+        }
+        // A stacking context holds the negative layers under it.
+        if !child.creates_stacking_context() {
+            stack.extend(child.children.iter().copied());
+        }
+    }
+    tree.perf.add(
+        crate::perf::Counter::SplitHoistWalkNodes,
+        u64::from(visited),
+    );
     false
 }
 
@@ -1184,7 +1233,6 @@ thread_local! {
     /// (#1865, video on the GPU window), by `data-viewport` name: the id the
     /// split slice is keyed by.
     static VIEWPORT_SPLIT_IDS: RefCell<Option<HashMap<String, usize>>> = const { RefCell::new(None) };
-
 
     /// GPU frames for inline painting, keyed by surface ID (#1768): a texture
     /// registered with the renderer that will render this scene, drawn as an

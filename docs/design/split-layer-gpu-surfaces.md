@@ -449,19 +449,31 @@ over a video changing renders no below at all.
 - **Attribution.** On a frame with something kept split,
   `compute_damage_attributed` returns each change's rects with the node
   whose paint draws them (`NodeDamage`): the node itself, a text node's IFC
-  root, a box-less inline's root, an owner painting it. `None`, never placed
-  after a surface, for a removed node's old rect, a reordered box, a moved
-  box with a negatively z-indexed positioned descendant (painted before the
-  box starts), a split inline's fragments and a box-less wrapper's subtree.
-  A frame marked dirty without naming what changed attributes nothing.
+  root, a box-less inline's root. `None`, never placed after a surface, for
+  a removed node's old rect, a reordered box, a node drawn by an owner, a
+  split inline's fragments, a box-less wrapper's subtree, and **any** change
+  to a box that is no stacking context and has a positioned descendant with
+  a negative `z-index` under it (no stacking context between): that
+  descendant is hoisted into an ancestor's negative layer and paints before
+  the box starts, and a change to the box (its clip, its scroll offset, its
+  position) can change it (#1923 review: a clip or scroll change left 57
+  pixels inside R stale, up to 40 levels off). The walk that finds such a
+  descendant (`hoists_negative_z`) stops at stacking contexts and answers
+  "not placed" past 256 nodes, counted on `split_hoist_walk_nodes`. A frame
+  marked dirty without naming what changed attributes nothing. A removal
+  restyles the whole document today, so its frame is full; the removed-rect
+  entry is for the day it is not.
 - **Placement in paint order.** The nodes whose changes meet a kept region
   are watched (`set_paint_order_watch`); paint reports when it starts each
   (`Painter::note_node_start`, through `ClipTrackingPainter`), and
   `VelloPainter::node_starts` records how many surfaces were split by then.
-  A change is above-only for the `i`th split when its node started after it
-  (`fewest > i`), every time it started.
-- **Below kept** for a kept surface split again at the same R when every
-  change meeting R is above-only. The partial frame's rects then exclude R,
+  A change is above-only for the `i`th split when its node's first start
+  came after it (the count only grows through a paint, so every later start
+  does too).
+- **Below kept** for a kept surface split again when every change meeting
+  its region is above-only. (A surface whose region moved was moved by its
+  own node or an ancestor, painted before its split, so that change is not
+  above-only: no separate check of the region is needed.) The partial frame's rects then exclude R,
   and its target shrinks to what is left; with nothing left the frame is
   `Unchanged` for the UI texture.
 - **Conservative everywhere else**: a node not started (hidden, culled), a

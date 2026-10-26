@@ -330,7 +330,11 @@ in-scene image transform; `tainted`.
   forwarded by `ClipTrackingPainter`) as counts of surfaces split so far
   (`VelloPainter::node_starts`). A frame whose every change in a kept region
   started after its surface skips below over that region
-  (`split_below_kept`). Design record: *Damage per slice → As built (S4)*.
+  (`split_below_kept`). A change to a box that is no stacking context with a
+  negatively z-indexed descendant hoisted out of it is never placed: that
+  descendant paints before the box starts (`hoists_negative_z`, bounded at
+  256 nodes, `split_hoist_walk_nodes`; #1929 is the older damage bug next to
+  it). Design record: *Damage per slice → As built (S4)*.
 - **No surface costs one bool per draw**: `route!` (a macro, not a generic)
   tests `VelloPainter::routing`, set when a surface splits, and otherwise is
   the draw itself; no closure or bounds are built.

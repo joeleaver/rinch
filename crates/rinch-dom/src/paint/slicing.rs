@@ -138,7 +138,7 @@ pub(crate) struct Slicing {
     pub(crate) refused: Vec<usize>,
     /// Watched nodes' starts against the splits (S4): see
     /// `VelloPainter::node_starts`.
-    pub(crate) starts: std::collections::HashMap<usize, (usize, usize)>,
+    pub(crate) starts: std::collections::HashMap<usize, usize>,
 }
 
 /// Whether two rects share any area.
