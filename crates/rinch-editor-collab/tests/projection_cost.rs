@@ -355,23 +355,24 @@ fn remote_keystroke_reads(n: usize, embed: bool) -> Vec<u64> {
     reads
 }
 
-/// A peer's keystroke reads the CRDT once (its converged rebuild) whether or not
-/// the document holds an embed: the embed costs what one more paragraph costs and nothing more. It
-/// used to cost a second whole read — the old document's atoms' blocks, read again
-/// before every update to tell an embed whose attributes a peer changed from
-/// another — about 50% more at any size (6003 nodes against 4000 at 2000
+/// A peer's keystroke reads the CRDT once whether or not the document holds an
+/// embed: it used to cost a second whole read — the old document's atoms' blocks,
+/// read again before every update to tell an embed whose attributes a peer changed
+/// from another — about 50% more at any size (6003 nodes against 4000 at 2000
 /// paragraphs). Those blocks are now kept from the previous operation
 /// (`atom_cache`), on the host from the session's start and on a guest from the
 /// read it joined with.
+///
+/// Since #1241 that one read is of the block the keystroke changed, plus its shape
+/// checked for a void container: two nodes, at any size, embed or not (it read every
+/// block, the embed costing what one more paragraph costs).
 #[test]
 fn a_remote_keystroke_beside_an_embed_reads_the_crdt_once() {
     for n in [50, 100] {
         let without = remote_keystroke_reads(n, false);
         let with = remote_keystroke_reads(n, true);
-        // What one more block costs: a paragraph's share of the read.
-        let per_block = without[0] / n as u64;
-        let plus_one: Vec<u64> = without.iter().map(|r| r + per_block).collect();
-        assert_eq!(with, plus_one, "n = {n}");
+        assert_eq!(with, without, "n = {n}");
+        assert_eq!(with, vec![2; 6], "n = {n}");
     }
 }
 
@@ -542,7 +543,10 @@ fn live_collaboration_in_a_table_costs_the_same_at_any_size() {
     let big = live_table_rounds(1000);
     assert_eq!(big, small, "a 1000-row table against a 10-row one");
     for (integrate, local, builds) in small {
-        assert!(integrate <= 3, "integrating a peer's keystroke read {integrate}");
+        assert!(
+            integrate <= 3,
+            "integrating a peer's keystroke read {integrate}"
+        );
         assert_eq!((local, builds), (1, 0), "my keystroke after it");
     }
 }

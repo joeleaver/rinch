@@ -878,11 +878,30 @@ fn fuzz_deletion_to_empty_trial(seed: u64, peers: usize, rounds: usize) -> Finge
     swarm.fingerprint()
 }
 
+/// How many integrates on this thread read back only what their update changed,
+/// and how many read the whole document, while `f` runs (#1241). Every partial read
+/// is compared with a whole one as it happens (`testing::set_incremental_read_check`,
+/// on in this crate's debug tests).
+fn integrate_reads_in(f: impl FnOnce()) -> (u64, u64) {
+    use rinch_editor_collab::testing::integrate_reads;
+    let before = integrate_reads();
+    f();
+    let after = integrate_reads();
+    (after.0 - before.0, after.1 - before.1)
+}
+
 #[test]
 fn fuzz_two_peers_converge() {
-    for seed in 1..=24u64 {
-        let _ = fuzz_trial(seed, 2, 220);
-    }
+    let (partial, whole) = integrate_reads_in(|| {
+        for seed in 1..=24u64 {
+            let _ = fuzz_trial(seed, 2, 220);
+        }
+    });
+    // The positive control for the partial read (#1241): about half the
+    // integrates of this test, of the tables test and of the images test take it
+    // (2359 of 4404, 1634 of 3078 and 3586 of 6047 when written), each compared
+    // with a whole read.
+    assert!(partial >= 1000, "{partial} partial reads, {whole} whole");
 }
 
 #[test]
@@ -905,9 +924,13 @@ fn fuzz_edits_tables_among_everything_else() {
     // The positive control for the table arm: tables inserted and restructured while
     // the other arms type, split, wrap and delete in and around their cells.
     let before = TABLE_EDITS.load(Ordering::Relaxed);
-    for seed in 900..=907u64 {
-        let _ = fuzz_trial(seed, 3, 300);
-    }
+    let (partial, whole) = integrate_reads_in(|| {
+        for seed in 900..=907u64 {
+            let _ = fuzz_trial(seed, 3, 300);
+        }
+    });
+    // The partial read's positive control (see `fuzz_two_peers_converge`).
+    assert!(partial >= 1000, "{partial} partial reads, {whole} whole");
     let applied = TABLE_EDITS.load(Ordering::Relaxed) - before;
     assert!(
         applied >= 20,
@@ -974,9 +997,13 @@ fn fuzz_many_peers_converge() {
 fn fuzz_with_images_converges() {
     let before = IMAGES_INSERTED.load(Ordering::Relaxed);
     let attrs_before = IMAGE_ATTRS_SET.load(Ordering::Relaxed);
-    for seed in 700..=715u64 {
-        let _ = fuzz_trial_with(seed, 2 + (seed % 3) as usize, 300, true);
-    }
+    let (partial, whole) = integrate_reads_in(|| {
+        for seed in 700..=715u64 {
+            let _ = fuzz_trial_with(seed, 2 + (seed % 3) as usize, 300, true);
+        }
+    });
+    // The partial read's positive control (see `fuzz_two_peers_converge`).
+    assert!(partial >= 1000, "{partial} partial reads, {whole} whole");
     let inserted = IMAGES_INSERTED.load(Ordering::Relaxed) - before;
     assert!(
         inserted >= 20,

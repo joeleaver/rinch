@@ -27,11 +27,64 @@
 //! Both leave the [`CollabDoc`] converged; turning the converged CRDT back into model
 //! [`Step`](rinch_editor_core::Step)s is [`crate::remote`]'s job.
 
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
+
+use yrs::types::{Path, PathSegment};
 use yrs::updates::decoder::Decode;
-use yrs::{Origin, ReadTxn, StateVector, Transact, Update, merge_updates_v1};
+use yrs::{
+    DeepObservable, Observable, Origin, ReadTxn, StateVector, Transact, Update, merge_updates_v1,
+};
 
 use crate::error::Result;
 use crate::projection::{CollabDoc, ENGINE_APPLY_ORIGIN, lock_outbox};
+
+/// What the last update [`CollabDoc::apply_decoded`] applied changed: what an
+/// integrate needs to read back only that (#1241).
+#[derive(Debug, Clone)]
+pub(crate) struct AppliedChanges {
+    /// The document's [`CollabDoc::epoch`] before the update was applied.
+    pub epoch: u64,
+    /// The path from the `content` root to every shared type the update changed
+    /// (its children or its keys), as yrs reports it: `Index` segments count the
+    /// array's live items, `Key` segments name a map's key. Empty for the root
+    /// itself (a top-level block inserted or deleted). Types the update created are
+    /// not here; their parent is.
+    pub paths: Vec<Path>,
+    /// Whether the update changed something no path describes (an `atoms` entry),
+    /// failed to apply, or changed more than [`Self::MAX_PATHS`] types: then only a
+    /// whole read knows what the document is.
+    pub spoiled: bool,
+}
+
+impl AppliedChanges {
+    /// Past this many changed types an integrate reads the whole document anyway.
+    pub(crate) const MAX_PATHS: usize = 4096;
+
+    /// The top-level blocks the update changed, by index, sorted and distinct;
+    /// `None` when it inserted or deleted one (or is [spoiled](Self::spoiled)).
+    pub(crate) fn top_level_blocks(&self) -> Option<Vec<u32>> {
+        if self.spoiled {
+            return None;
+        }
+        let mut out = Vec::new();
+        for path in &self.paths {
+            match path.front() {
+                Some(PathSegment::Index(i)) => out.push(*i),
+                _ => return None,
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        Some(out)
+    }
+}
+
+fn lock_changes(changes: &Mutex<AppliedChanges>) -> std::sync::MutexGuard<'_, AppliedChanges> {
+    changes
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 impl CollabDoc {
     /// The CRDT's current state vector — the insertions this replica has seen. What to
@@ -67,17 +120,69 @@ impl CollabDoc {
     /// can leave the document unprojectable (issue #196).
     ///
     /// Merging foreign bytes is the only thing that can leave a void container at the
-    /// top level (or fill one), so it is where `top_void` is recomputed: one pass over
-    /// the top-level shapes, beside an integrate that rebuilds the whole document anyway.
+    /// top level (or fill one), so it is where `top_void` is recomputed. A top-level
+    /// block's shape depends on its own subtree alone, so when the top level held no
+    /// void container and the update inserted or deleted no top-level block, only the
+    /// blocks it changed are checked; otherwise every top-level shape is, in one pass.
     /// It is recomputed on a failed apply too — yrs may have integrated part of it.
+    ///
+    /// What the update changed is noted for the integrate that follows
+    /// ([`AppliedChanges`], #1241): the path from the top level to every shared type yrs
+    /// reports changed (`Event::path`), from a deep observer on the `content` root that
+    /// lives for this one transaction, so a local edit pays nothing for it.
     pub(crate) fn apply_decoded(&mut self, update: Update) -> Result<()> {
+        let before = self.epoch.load(Ordering::Relaxed);
+        let changes = Arc::new(Mutex::new(AppliedChanges {
+            epoch: before,
+            paths: Vec::new(),
+            spoiled: false,
+        }));
         let applied = {
+            // Both observers are dropped after the transaction, which fires them as it
+            // commits: locals drop in reverse order, `txn` first.
+            let atoms = self.doc.get_or_insert_map(crate::atoms::ATOMS);
+            let sink = changes.clone();
+            let _deep = self.content.observe_deep(move |_, events| {
+                let mut c = lock_changes(&sink);
+                for e in events.iter() {
+                    if c.paths.len() >= AppliedChanges::MAX_PATHS {
+                        c.spoiled = true;
+                        break;
+                    }
+                    c.paths.push(e.path());
+                }
+            });
+            // A changed `atoms` entry changes the read of whichever block holds the
+            // atom it is for, which no path names.
+            let sink = changes.clone();
+            let _atoms = atoms.observe(move |_, _| lock_changes(&sink).spoiled = true);
             let mut txn = self
                 .doc
                 .transact_mut_with(Origin::from(ENGINE_APPLY_ORIGIN));
             txn.apply_update(update)
         };
-        self.top_void = crate::projection::holds_void(&self.doc.transact(), &self.content);
+        let mut changes = std::mem::replace(
+            &mut *lock_changes(&changes),
+            AppliedChanges {
+                epoch: before,
+                paths: Vec::new(),
+                spoiled: true,
+            },
+        );
+        // An apply that failed may have integrated part of the update: nothing it
+        // noted is trusted.
+        changes.spoiled |= applied.is_err();
+        self.top_void = {
+            let txn = self.doc.transact();
+            match changes.top_level_blocks() {
+                Some(touched) if !self.top_void => touched.into_iter().any(|i| {
+                    crate::projection::child_map(&txn, &self.content, i)
+                        .is_some_and(|m| crate::projection::map_is_void(&txn, &m))
+                }),
+                _ => crate::projection::holds_void(&txn, &self.content),
+            }
+        };
+        self.last_apply = Some(changes);
         applied?;
         Ok(())
     }

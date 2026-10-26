@@ -1502,8 +1502,14 @@ fn collab_table_peers(
     rows: usize,
 ) -> (
     Rc<rinch_editor_core::Schema>,
-    (rinch_editor_core::EditorState, rinch_editor_collab::CollabSession),
-    (rinch_editor_core::EditorState, rinch_editor_collab::CollabSession),
+    (
+        rinch_editor_core::EditorState,
+        rinch_editor_collab::CollabSession,
+    ),
+    (
+        rinch_editor_core::EditorState,
+        rinch_editor_collab::CollabSession,
+    ),
 ) {
     use rinch_editor_core::{EditorState, Plugin, default_plugins};
     let schema = Rc::new(rinch_editor_core::Schema::starter_kit());
@@ -1524,7 +1530,10 @@ fn collab_table_peers(
 /// The guest types in `col`, records it, and hands over its delta.
 fn collab_table_peer_types(
     schema: &rinch_editor_core::Schema,
-    guest: &mut (rinch_editor_core::EditorState, rinch_editor_collab::CollabSession),
+    guest: &mut (
+        rinch_editor_core::EditorState,
+        rinch_editor_collab::CollabSession,
+    ),
     col: usize,
 ) -> Vec<u8> {
     let next = collab_table_type_in(&guest.0, col);
