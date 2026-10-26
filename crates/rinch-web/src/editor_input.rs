@@ -2701,6 +2701,11 @@ fn vertical_step(
     down: bool,
     extend: bool,
 ) -> bool {
+    let dir = if down { 1 } else { -1 };
+    // Shift+Up/Down over a cell selection steps its head cell (#1847).
+    if extend && matches!(handle.selection(), Selection::Cell(_)) {
+        return handle.shift_arrow_cells(rinch_editor_core::Axis::Vert, dir, None);
+    }
     let head = handle.selection().head();
     let Some((hx, hy, hh)) = head_screen_rect(handle, head) else {
         return false;
@@ -2754,11 +2759,18 @@ fn vertical_step(
         handle.select_from_arrow(sel, from);
         return true;
     }
-    let Some((new_head, affinity)) = geo_head.or_else(|| {
+    let step = geo_head.or_else(|| {
         handle
             .vertical_block_fallback(down)
             .map(|s| (s.head(), CaretAffinity::Downstream))
-    }) else {
+    });
+    // Shift+Up/Down at a cell's top or bottom line selects cells, as
+    // prosemirror-tables' `shiftArrow` does (#1847).
+    if extend && handle.shift_arrow_cells(rinch_editor_core::Axis::Vert, dir, step.map(|(p, _)| p))
+    {
+        return true;
+    }
+    let Some((new_head, affinity)) = step else {
         return false;
     };
 

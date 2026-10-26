@@ -4126,6 +4126,18 @@ impl RinchApp {
             return handle.move_cursor(cm, extend);
         }
         let state = handle.state();
+        let vertical = match motion {
+            Motion::LineUp => Some(-1),
+            Motion::LineDown => Some(1),
+            _ => None,
+        };
+        // Shift+Up/Down over a cell selection steps its head cell (#1847).
+        if extend
+            && let Some(dir) = vertical
+            && matches!(state.selection, Selection::Cell(_))
+        {
+            return handle.shift_arrow_cells(rinch_editor_core::Axis::Vert, dir, None);
+        }
         let doc = state.doc.clone();
         let head = state.selection.head();
         use rinch_core::dom::CaretAffinity;
@@ -4175,6 +4187,18 @@ impl RinchApp {
             // The model motions returned early via `handle.move_cursor` above.
             _ => None,
         };
+        // Shift+Up/Down at a cell's top or bottom line selects cells, as
+        // prosemirror-tables' `shiftArrow` does (#1847).
+        if extend
+            && let Some(dir) = vertical
+            && handle.shift_arrow_cells(
+                rinch_editor_core::Axis::Vert,
+                dir,
+                new_head.map(|(p, _)| p),
+            )
+        {
+            return true;
+        }
         // Up or Down leaving the caret's textblock (or a selected node) must not
         // step over a node an app draws with a node view: it is node-selected and
         // offered the caret (`NodeViewSpec::on_caret_enter`), as Left and Right

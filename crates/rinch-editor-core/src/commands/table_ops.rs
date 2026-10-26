@@ -845,6 +845,123 @@ pub fn clear_cells(state: &EditorState) -> Option<Transaction> {
     Some(tr)
 }
 
+/// Shift+Arrow at a table cell's edge: prosemirror-tables' `shiftArrow`, a
+/// keyboard handler in front of [`Selection::normalized`].
+///
+/// `new_head` is where the plain extension (the text motion, or the vertical
+/// step) would put the head; `None` when it goes nowhere. Returns the
+/// selection to land, or `None` to let the plain extension stand:
+///
+/// - over a **cell selection**, the head cell steps to its neighbour along
+///   `axis` (`dir` `-1`/`+1`), the anchor cell stays; at the table's edge the
+///   selection stays as it is (the key is still consumed);
+/// - over a **text selection** whose ends are both in one cell (or a caret
+///   there), when the plain extension would take the head out of that cell,
+///   or (horizontally) the head is at the cell's end in that direction: the
+///   cell selection from that cell to its neighbour. Past a row's end, where
+///   prosemirror-tables lets the browser extend into the next row (and its
+///   normalization then collapses that boundary-only range), the neighbour
+///   is the cell the plain motion reached. Out of the top or bottom row, a
+///   step that stayed in the table (a platform's fallback to the next
+///   textblock in document order) becomes a text extension to the first text
+///   past the table's edge.
+///
+/// Anything else (a head that stays in its cell, a range already reaching
+/// outside the cell, a head in no table, an extension out of the table) is
+/// `None`.
+pub fn shift_arrow(
+    state: &EditorState,
+    axis: tables::Axis,
+    dir: i32,
+    new_head: Option<Pos>,
+) -> Option<Selection> {
+    let doc = &state.doc;
+    match &state.selection {
+        Selection::Cell(c) => {
+            let (map, _, _) = tables::map_around(doc, Pos(c.head_cell.0 + 1))?;
+            let head = map
+                .next_cell(c.head_cell.0, axis, dir)
+                .unwrap_or(c.head_cell.0);
+            Some(Selection::cell(c.anchor_cell, Pos(head)))
+        }
+        Selection::Text(t) => {
+            let cell = tables::cell_at_pos(doc, t.head)?;
+            if tables::cell_at_pos(doc, t.anchor) != Some(cell) {
+                return None;
+            }
+            let landed = new_head.and_then(|h| tables::cell_at_pos(doc, h));
+            // A word motion stops at its textblock's end rather than leave
+            // it, so the head being at the cell's end (start) counts too
+            // (PM `atEndOfCell`); vertically only the platform's step knows.
+            let at_edge = axis == tables::Axis::Horiz && at_cell_edge(doc, t.head, dir);
+            if landed == Some(cell) && !at_edge {
+                return None;
+            }
+            let (map, table, start) = tables::map_around(doc, Pos(cell + 1))?;
+            let in_table = landed.filter(|&l| tables::same_table(doc, Pos(l + 1), Pos(cell + 1)));
+            if let Some(next) = map.next_cell(cell, axis, dir) {
+                return Some(Selection::cell(Pos(cell), Pos(next)));
+            }
+            match axis {
+                // Past a row's end, the cell the plain motion reached when it
+                // is in this table; out of the table, the plain extension.
+                tables::Axis::Horiz => in_table.map(|next| Selection::cell(Pos(cell), Pos(next))),
+                // Out of the top or bottom row. A step that stayed in the
+                // table got there by document order (the platform's fallback
+                // to the next textblock), not by going up or down: extend to
+                // the text past the table's edge instead.
+                tables::Axis::Vert => {
+                    in_table?;
+                    let edge = if dir > 0 {
+                        start - 1 + table.node_size()
+                    } else {
+                        start - 1
+                    };
+                    let head = Selection::near_text(doc, Pos(edge), dir)?.head();
+                    Some(Selection::text(t.anchor, head))
+                }
+            }
+        }
+        Selection::Node(_) => None,
+    }
+}
+
+/// Whether `pos` is at the end (`dir > 0`) or start of its innermost cell's
+/// content: at its textblock's edge, and that block the cell's last (first)
+/// at every level up to the cell. The structural half of PM `atEndOfCell`.
+fn at_cell_edge(doc: &Node, pos: Pos, dir: i32) -> bool {
+    let Ok(r) = doc.resolve(pos) else {
+        return false;
+    };
+    let edge = if dir > 0 {
+        r.parent_offset() == r.parent().content_size()
+    } else {
+        r.parent_offset() == 0
+    };
+    if !edge {
+        return false;
+    }
+    for d in (0..r.depth()).rev() {
+        if tables::is_cell(r.node(d + 1)) {
+            return true;
+        }
+        let index = if dir > 0 {
+            r.index_after(d)
+        } else {
+            r.index(d)
+        };
+        let at = if dir > 0 {
+            index == r.node(d).child_count()
+        } else {
+            index == 0
+        };
+        if !at {
+            return false;
+        }
+    }
+    false
+}
+
 /// The current cell selection's cells as a table of their own: what copying a
 /// cell selection puts on the clipboard. A merged cell that pokes out of the
 /// rectangle keeps only its span inside it. `None` unless a cell selection is

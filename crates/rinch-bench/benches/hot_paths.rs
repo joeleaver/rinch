@@ -182,6 +182,19 @@ fn collab_table_keystroke(f: CollabFixture) -> CollabFixture {
     black_box(measure(black_box(f), op_collab_keystroke))
 }
 
+// Typing over a two-character selection inside one cell of a table of 100
+// rows and of 1000, and at a caret there: a range costing a caret's keystroke
+// plus one resolve means the check for a table the edit left ragged (#1847)
+// does not walk the table (its first round did: 1.0 ms at 1,024 rows).
+#[library_benchmark]
+#[bench::rows_100(args = ((100, 2)), setup = setup_range_type_in_table)]
+#[bench::rows_1000(args = ((1000, 2)), setup = setup_range_type_in_table)]
+#[bench::caret_rows_100(args = ((100, 0)), setup = setup_range_type_in_table)]
+#[bench::caret_rows_1000(args = ((1000, 0)), setup = setup_range_type_in_table)]
+fn range_type_in_table(f: EditorFixture) -> EditorFixture {
+    black_box(measure(black_box(f), op_range_type_in_table))
+}
+
 #[library_benchmark]
 #[bench::rows_1000(setup = setup_branch_hide)]
 fn branch_hide(f: ShellFixture<Signal<bool>>) -> ShellFixture<Signal<bool>> {
@@ -202,7 +215,11 @@ library_benchmark_group!(
 
 library_benchmark_group!(
     name = editor,
-    benchmarks = [collab_keystroke, collab_table_keystroke]
+    benchmarks = [
+        collab_keystroke,
+        collab_table_keystroke,
+        range_type_in_table
+    ]
 );
 
 main!(library_benchmark_groups = dom, shell, editor);

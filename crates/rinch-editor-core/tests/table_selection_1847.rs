@@ -713,3 +713,181 @@ fn a_cell_selection_copies_its_cells_with_spans_cut_to_the_rectangle() {
          <tr><td><p>c</p></td><td><p>d</p></td></tr></table>"
     );
 }
+
+// ── review of #1931 ─────────────────────────────────────────────────────────
+
+#[test]
+fn extending_a_cell_selection_keeps_its_anchor_cell() {
+    // A shift+click builds `text(selection.anchor(), clicked)`; a cell
+    // selection's anchor is the position before its cell. Anchored on "cd"
+    // (11), a click in "ab" (8) is the rectangle from "cd" to "ab", not a
+    // range in "ab".
+    let s = Rc::new(Schema::starter_kit());
+    for (from, click, want) in [
+        (
+            Selection::cell(Pos(11), Pos(11)),
+            8,
+            Selection::cell(Pos(11), Pos(5)),
+        ),
+        (
+            Selection::cell(Pos(11), Pos(25)),
+            8,
+            Selection::cell(Pos(11), Pos(5)),
+        ),
+        (
+            Selection::cell(Pos(19), Pos(19)),
+            14,
+            Selection::cell(Pos(19), Pos(11)),
+        ),
+        (
+            Selection::cell(Pos(5), Pos(5)),
+            28,
+            Selection::cell(Pos(5), Pos(25)),
+        ),
+    ] {
+        let st = state(&s, grid_doc(&s), from.clone());
+        let mut tr = st.tr();
+        tr.set_selection(Selection::text(st.selection.anchor(), Pos(click)));
+        assert_eq!(st.apply(tr).selection, want, "{from:?} shift+click {click}");
+    }
+}
+
+#[test]
+fn select_all_in_a_table_only_document_stays_a_text_selection() {
+    // ProseMirror's select-all is an `AllSelection`, never a cell selection.
+    let s = Rc::new(Schema::starter_kit());
+    let row = |a: &str, b: &str| {
+        branch(
+            &s,
+            "table_row",
+            vec![
+                cell(&s, 1, 1, vec![para(&s, a)]),
+                cell(&s, 1, 1, vec![para(&s, b)]),
+            ],
+        )
+    };
+    let doc = branch(
+        &s,
+        "doc",
+        vec![branch(&s, "table", vec![row("ab", "cd"), row("ef", "gh")])],
+    );
+    let st = state(&s, doc.clone(), Selection::cursor(Pos(4)));
+    let all = st.run("selectAll").expect("selectAll");
+    assert!(
+        matches!(all.selection, Selection::Text(_)),
+        "{:?}",
+        all.selection
+    );
+    // Control: the same extent short of the last character is a cell selection.
+    let to = all.selection.to().0;
+    let near = state(&s, doc, Selection::text(all.selection.from(), Pos(to - 1)));
+    assert!(matches!(near.selection, Selection::Cell(_)));
+    // Backspace deletes the range, as at main: the text from the first cell's
+    // to the last cell's, which leaves one empty cell (not the cleared 2x2 a
+    // cell selection would leave).
+    let gone = all.run("deleteCharBackward").expect("deletes");
+    assert_eq!(
+        serialize::node_to_html(&gone.doc),
+        "<table><tr><td><p></p></td></tr></table>"
+    );
+}
+
+#[test]
+fn a_ragged_table_pasted_at_a_caret_is_padded_as_over_a_range() {
+    let s = Rc::new(Schema::starter_kit());
+    let doc = branch(&s, "doc", vec![para(&s, "x"), para(&s, "yz")]);
+    let html =
+        "<table><tr><td><p>a</p></td><td><p>b</p></td></tr><tr><td><p>c</p></td></tr></table>";
+    for sel in [Selection::cursor(Pos(4)), Selection::text(Pos(4), Pos(6))] {
+        let st = state(&s, doc.clone(), sel.clone());
+        let mut tr = st.tr();
+        tr.replace_selection(serialize::slice_from_html(&s, html).unwrap())
+            .unwrap();
+        let next = st.apply(tr);
+        assert_eq!(ragged_tables(&next.doc), Vec::<String>::new(), "{sel:?}");
+        assert!(
+            serialize::node_to_html(&next.doc)
+                .contains("<tr><td><p>c</p></td><td><p></p></td></tr>"),
+            "{sel:?}: {}",
+            serialize::node_to_html(&next.doc)
+        );
+    }
+}
+
+#[test]
+fn inserts_over_a_cell_selection_clear_the_cells_and_go_in_the_first() {
+    // prosemirror-tables' `CellSelection.replace`: what typing and paste do.
+    let s = Rc::new(Schema::starter_kit());
+    let st = state(&s, grid_doc(&s), Selection::cell(Pos(5), Pos(25)));
+    let empty = "<td><p></p></td>";
+    for (cmd, first) in [
+        ("insertHardBreak", "<td><p><br></p></td>".to_string()),
+        ("insertHorizontalRule", "<td><hr><p></p></td>".to_string()),
+        (
+            "insertTable",
+            format!(
+                "<td><table>{}</table><p></p></td>",
+                format!("<tr>{}</tr>", empty.repeat(3)).repeat(3)
+            ),
+        ),
+    ] {
+        let next = st.run(cmd).unwrap_or_else(|| panic!("{cmd} applies"));
+        assert_eq!(
+            serialize::node_to_html(&next.doc),
+            format!(
+                "<p>x</p><table><tr>{first}{empty}</tr><tr>{empty}{empty}</tr></table><p>zw</p>"
+            ),
+            "{cmd}"
+        );
+        assert_eq!(next.run("undo").expect("undo").doc, grid_doc(&s), "{cmd}");
+    }
+}
+
+#[test]
+fn marks_block_types_and_alignment_reach_every_selected_cell() {
+    // A cell selection's `from()..to()` stops before its last cell; the
+    // commands walk `Selection::ranges`, one per cell (PM `selection.ranges`).
+    let s = Rc::new(Schema::starter_kit());
+    // The right column only: "cd" and "gh".
+    let st = state(&s, grid_doc(&s), Selection::cell(Pos(11), Pos(25)));
+    let html = |cmd: &str| serialize::node_to_html(&st.run(cmd).expect(cmd).doc);
+    assert_eq!(
+        html("toggleBold"),
+        "<p>x</p><table><tr><td><p>ab</p></td><td><p><strong>cd</strong></p></td></tr>\
+         <tr><td><p>ef</p></td><td><p><strong>gh</strong></p></td></tr></table><p>zw</p>"
+    );
+    assert_eq!(
+        html("setHeading2"),
+        "<p>x</p><table><tr><td><p>ab</p></td><td><h2>cd</h2></td></tr>\
+         <tr><td><p>ef</p></td><td><h2>gh</h2></td></tr></table><p>zw</p>"
+    );
+    let centred = st.run("setTextAlignCenter").expect("align");
+    let aligned: Vec<Option<String>> = ["ab", "cd", "ef", "gh"]
+        .iter()
+        .map(|t| {
+            let p = at(&centred.doc, t, 0) - 1;
+            centred
+                .doc
+                .node_at(p)
+                .unwrap()
+                .attrs()
+                .get_str("text_align")
+                .map(str::to_string)
+        })
+        .collect();
+    assert_eq!(
+        aligned,
+        [None, Some("center".into()), None, Some("center".into())]
+    );
+    // Toggling again removes the mark from both cells; the toolbar state
+    // reads every cell.
+    let bold = st.run("toggleBold").unwrap();
+    let mt = s.mark_type("bold").unwrap();
+    assert!(commands::is_mark_active(&bold, mt));
+    assert_eq!(bold.run("toggleBold").unwrap().doc, grid_doc(&s));
+    // Ranges: one per cell, in document order.
+    assert_eq!(
+        st.selection.ranges(&st.doc),
+        vec![(Pos(12), Pos(16)), (Pos(26), Pos(30))]
+    );
+}

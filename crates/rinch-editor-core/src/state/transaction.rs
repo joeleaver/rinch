@@ -33,7 +33,7 @@ use crate::tables::{self, TableProblem};
 use crate::transform::Transform;
 use crate::transform::node_range::NodeRange;
 use crate::transform::step::{Step, StepError};
-use crate::transform::step_map::Mapping;
+use crate::transform::step_map::{Mapping, StepMap};
 
 /// Meta key: when set to `false`, the history plugin will not record this
 /// transaction (used by undo/redo themselves).
@@ -221,7 +221,10 @@ impl Transaction {
     /// paste does.
     pub fn replace_selection(&mut self, slice: Slice) -> Result<&mut Self, StepError> {
         let (from, to) = self.selection_range()?;
-        self.with_table_repair(from, to, |tr| tr.replace_selection_inner(from, to, slice))?;
+        let tables = slice.content.children().iter().any(holds_table);
+        self.with_table_repair(from, to, tables, |tr| {
+            tr.replace_selection_inner(from, to, slice)
+        })?;
         Ok(self)
     }
 
@@ -366,7 +369,7 @@ impl Transaction {
             return Ok(self);
         }
         let (from, to) = self.selection_range()?;
-        self.with_table_repair(from, to, |tr| tr.insert_text_inner(from, to, text))?;
+        self.with_table_repair(from, to, false, |tr| tr.insert_text_inner(from, to, text))?;
         Ok(self)
     }
 
@@ -389,7 +392,8 @@ impl Transaction {
     /// or horizontal rule), placing the cursor after it.
     pub fn replace_selection_with(&mut self, node: Node) -> Result<&mut Self, StepError> {
         let (from, to) = self.selection_range()?;
-        self.with_table_repair(from, to, |tr| {
+        let tables = holds_table(&node);
+        self.with_table_repair(from, to, tables, |tr| {
             let size = node.node_size();
             tr.replace_with(from, to, Fragment::from_node(node))?;
             let after = Selection::near(&tr.doc, Pos(from + size), 1);
@@ -408,7 +412,8 @@ impl Transaction {
     /// cursor inside a paragraph. Leaves the cursor just after the inserted node.
     pub fn insert_block(&mut self, node: Node) -> Result<&mut Self, StepError> {
         let (from, to) = self.selection_range()?;
-        self.with_table_repair(from, to, |tr| tr.insert_block_inner(from, to, node))?;
+        let tables = holds_table(&node);
+        self.with_table_repair(from, to, tables, |tr| tr.insert_block_inner(from, to, node))?;
         Ok(self)
     }
 
@@ -458,7 +463,7 @@ impl Transaction {
         if from == to {
             return Ok(self);
         }
-        self.with_table_repair(from, to, |tr| {
+        self.with_table_repair(from, to, false, |tr| {
             tr.delete(from, to)?;
             // A fitted delete whose tail could not join the textblock it began
             // in (code, then marked text) maps the range's end past `from`: the
@@ -486,53 +491,128 @@ impl Transaction {
     }
 
     /// Run the selection gesture `f`, which replaces `from..to`, then repair
-    /// every table the gesture left ragged that was not ragged before it
+    /// every table the gesture left ragged that it did not find ragged
     /// (#1847): ProseMirror's `fixTables`, scoped to this edit.
     ///
     /// A range whose ends are in different tables, or with one end outside
-    /// every table — a drag from a cell out of the table — has no cell
-    /// selection to stand for it ([`Selection::normalized`] makes one only
-    /// for two cells of one table), so the fitted replace can take cells out
-    /// of a row or rows out from under a rowspan. The repair puts the grid
-    /// back: a rowspan past the last row or a span into another cell's slot
-    /// is cut, then each short row gets empty cells at its end.
+    /// every table, has no cell selection to stand for it
+    /// ([`Selection::normalized`] makes one only for two cells of one table),
+    /// so the fitted replace can take cells out of a row or rows out from
+    /// under a rowspan; and a pasted table may itself be ragged. The repair
+    /// puts the grid back: a rowspan past the last row or a span into another
+    /// cell's slot is cut, then each short row gets an empty cell at its end for
+    /// each run of slots it lacks, spanning the run.
     ///
-    /// Only tables this gesture made ragged are touched: a table that was
-    /// already ragged (one loaded from HTML, drawn as a browser draws it)
-    /// stays as it is. A collapsed range takes nothing out, so it skips the
-    /// check.
+    /// Which tables are looked at, so that an edit inside one cell costs
+    /// nothing in the size of the table around it:
+    ///
+    /// - **a caret, or both ends in one textblock, and no table inserted**
+    ///   (`inserts_tables` false — typing, a delete, a paste of text): none,
+    ///   and nothing is resolved but the range's start;
+    /// - **both ends in one cell** (the innermost cell around each is the
+    ///   same), or both outside every table: the edit cannot change the grid
+    ///   of any table around it, so only the tables inside the edited range
+    ///   afterwards — pasted ones — are checked;
+    /// - **ends in different cells**: also the tables around the two ends (and
+    ///   one either side of the range, which a fitted replace may join), each
+    ///   checked whole.
+    ///
+    /// A table counts as this edit's when it is new (pasted) or was not
+    /// ragged before (its old self is found through the inverted mapping): a
+    /// table that was already ragged, loaded from HTML and drawn as a browser
+    /// draws it, stays as it is.
     fn with_table_repair(
         &mut self,
         from: usize,
         to: usize,
+        inserts_tables: bool,
         f: impl FnOnce(&mut Self) -> Result<(), StepError>,
     ) -> Result<(), StepError> {
-        if from == to {
-            return f(self);
+        // Nothing to check when the edit takes nothing out of a table's
+        // grid and puts no table in: a caret, or a range inside one
+        // textblock, with no table inserted. This is every keystroke, so it
+        // is decided before any table is looked at (one resolve, for a
+        // range).
+        if !inserts_tables {
+            let in_one_block = from == to
+                || self
+                    .doc
+                    .resolve(Pos(from))
+                    .is_ok_and(|r| r.parent().is_textblock() && to <= r.end(r.depth()));
+            if in_one_block {
+                return f(self);
+            }
         }
-        // One position either side: a table that starts or ends right at
-        // the range is joined into by the fitted replace too.
-        let lo = from.saturating_sub(1);
-        let hi = (to + 1).min(self.doc.content_size());
-        let before = ragged_tables_between(&self.doc, lo, hi);
+        let cell_at = |p: usize| {
+            self.doc
+                .resolve(Pos(p))
+                .ok()
+                .and_then(|r| tables::cell_around(&r))
+        };
+        let (from_cell, to_cell) = (cell_at(from), cell_at(to));
+        let confined = from_cell == to_cell;
+        let old_doc = self.doc.clone();
         let first = self.mapping.maps().len();
         f(self)?;
         let total = self.mapping.maps().len();
         if total == first {
             return Ok(());
         }
-        let sub = self.mapping.slice(first, total);
-        let was: Vec<usize> = before
-            .iter()
-            .flat_map(|&p| [sub.map(p, -1), sub.map(p, 1)])
-            .collect();
+        // The steps' own maps, read in place: slicing the mapping would clone
+        // them on every keystroke.
+        let maps = &self.mapping.maps()[first..total];
+        let through = |maps: &[StepMap], pos: usize, assoc: i32| {
+            maps.iter().fold(pos, |p, m| m.map(p, assoc))
+        };
         let end = self.doc.content_size();
-        let (lo, hi) = (sub.map(lo, -1).min(end), sub.map(hi, 1).min(end));
-        let mut made = ragged_tables_between(&self.doc, lo, hi);
-        made.retain(|p| !was.contains(p));
+        let (lo, hi) = if confined {
+            (from, to)
+        } else {
+            (from.saturating_sub(1), (to + 1).min(old_doc.content_size()))
+        };
+        let (mut lo, mut hi) = (through(maps, lo, -1), through(maps, hi, 1));
+        // Everything a step put in, wherever the fit placed it (a pasted
+        // table may go in beside the textblock the caret was in).
+        for (k, m) in maps.iter().enumerate() {
+            for t in m.ranges().as_chunks::<3>().0 {
+                lo = lo.min(through(&maps[k + 1..], m.map(t[0], -1), -1));
+                hi = hi.max(through(&maps[k + 1..], m.map(t[0] + t[1], 1), 1));
+            }
+        }
+        let (lo, hi) = (lo.min(end), hi.min(end));
+        // In a confined edit, the cell's own position: the tables around it
+        // are not this edit's to check.
+        let floor = from_cell.map(|c| through(maps, c, -1));
+        let mut ragged = Vec::new();
+        self.doc.nodes_between(lo, hi, &mut |node, pos, _| {
+            let around = confined && floor.is_some_and(|c| pos <= c);
+            if tables::is_table(node) && !around && !tables::table_problems(node).is_empty() {
+                ragged.push(pos);
+            }
+            !node.is_textblock()
+        });
+        if ragged.is_empty() {
+            return Ok(());
+        }
+        let mut back = Mapping::new();
+        for m in maps.iter().rev() {
+            back.append_map(m.invert());
+        }
+        let was_ragged = |pos: usize| {
+            // Inside the table, so a table pasted right at an old one is not
+            // taken for it.
+            let r = back.map_result(pos + 1, 1);
+            !r.deleted()
+                && r.pos
+                    .checked_sub(1)
+                    .and_then(|p| old_doc.node_at(p))
+                    .filter(tables::is_table)
+                    .is_some_and(|t| !tables::table_problems(&t).is_empty())
+        };
+        ragged.retain(|&p| !was_ragged(p));
         // Innermost (later) tables first: a repair only adds or changes
         // things inside its own table, so the positions before it hold.
-        for pos in made.into_iter().rev() {
+        for pos in ragged.into_iter().rev() {
             self.repair_table(pos)?;
         }
         Ok(())
@@ -540,9 +620,11 @@ impl Transaction {
 
     /// Make the table at `table_pos` tile its grid ([`tables::table_problems`]):
     /// cut each colliding or overlong span to what fits, then give each short
-    /// row empty cells at its end. Port of prosemirror-tables' `fixTable`, which
-    /// cuts a colliding cell's colspan and pads the rows; a collision below a
-    /// cell's first row cuts its rowspan instead.
+    /// row an empty cell per run of missing slots at its end, spanning the run.
+    /// Port of prosemirror-tables' `fixTable`, which cuts a colliding cell's
+    /// colspan and pads a cell per missing column (a bomb under a wide span:
+    /// one deleted or pasted `colspan = 1000` cell becomes 999 cells per
+    /// row); a collision below a cell's first row cuts its rowspan instead.
     fn repair_table(&mut self, table_pos: usize) -> Result<(), StepError> {
         // A cut can uncover slots, which the next round pads; three rounds
         // settle any table an edit can make (the seeded #1847 check).
@@ -557,13 +639,13 @@ impl Transaction {
             let start = table_pos + 1;
             let mut cut = false;
             for problem in &problems {
-                let (pos, attr, value) = match *problem {
-                    TableProblem::OverlongRowspan { pos, rows_fit } => (pos, "rowspan", rows_fit),
-                    TableProblem::Collision { pos, rows_fit, .. } if rows_fit > 0 => {
-                        (pos, "rowspan", rows_fit)
+                let (pos, attr, value) = match problem {
+                    TableProblem::OverlongRowspan { pos, rows_fit } => (*pos, "rowspan", *rows_fit),
+                    TableProblem::Collision { pos, rows_fit, .. } if *rows_fit > 0 => {
+                        (*pos, "rowspan", *rows_fit)
                     }
-                    TableProblem::Collision { pos, cols_fit, .. } if cols_fit > 0 => {
-                        (pos, "colspan", cols_fit)
+                    TableProblem::Collision { pos, cols_fit, .. } if *cols_fit > 0 => {
+                        (*pos, "colspan", *cols_fit)
                     }
                     _ => continue,
                 };
@@ -582,25 +664,33 @@ impl Transaction {
                 row_ends.push(pos - 1);
             }
             for problem in problems.iter().rev() {
-                let TableProblem::Missing { row, n } = *problem else {
+                let TableProblem::Missing { row, runs } = problem else {
                     continue;
                 };
                 let header = table
-                    .child(row)
+                    .child(*row)
                     .content()
                     .children()
                     .first()
                     .is_some_and(|c| c.type_name() == "table_header_cell");
-                let cell = self.empty_cell(header)?;
-                let cells = Fragment::from_children(vec![cell; n]);
-                self.replace_with(row_ends[row], row_ends[row], cells)?;
+                // One cell per run of uncovered slots, spanning it: the
+                // padding is a cell per gap, not per column, so a short row
+                // under a 1000-column cell gets one cell, not 999 (a pasted
+                // `<td colspan=1000>` over 65 bare rows made 65,001 cells).
+                let cells = runs
+                    .iter()
+                    .map(|&n| self.empty_cell(header, n))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let at = row_ends[*row];
+                self.replace_with(at, at, Fragment::from_children(cells))?;
             }
         }
         Ok(())
     }
 
-    /// An empty cell (one empty paragraph), a header cell when `header`.
-    fn empty_cell(&self, header: bool) -> Result<Node, StepError> {
+    /// An empty cell (one empty paragraph) `colspan` columns wide, a header
+    /// cell when `header`.
+    fn empty_cell(&self, header: bool, colspan: usize) -> Result<Node, StepError> {
         let err = |e: crate::error::EditorError| StepError::new(e.to_string());
         let para = self
             .schema
@@ -611,8 +701,13 @@ impl Transaction {
         } else {
             "table_cell"
         };
+        let attrs = if colspan > 1 {
+            Attrs::from_iter([("colspan", AttrValue::Int(colspan as i64))])
+        } else {
+            Attrs::new()
+        };
         self.schema
-            .create_node(name, Attrs::new(), Fragment::from_node(para))
+            .create_node(name, attrs, Fragment::from_node(para))
             .map_err(err)
     }
 
@@ -716,17 +811,13 @@ impl Transaction {
     }
 }
 
-/// The positions of the tables overlapping `from..to` whose cells do not tile
-/// their grid ([`tables::table_problems`]), in document order.
-fn ragged_tables_between(doc: &Node, from: usize, to: usize) -> Vec<usize> {
-    let mut out = Vec::new();
-    doc.nodes_between(from, to, &mut |node, pos, _| {
-        if tables::is_table(node) && !tables::table_problems(node).is_empty() {
-            out.push(pos);
-        }
-        !node.is_textblock()
-    });
-    out
+/// Whether `node` is or holds a table: what a slice or node inserted by a
+/// selection gesture must be checked for (a pasted table may be ragged).
+fn holds_table(node: &Node) -> bool {
+    if tables::is_table(node) {
+        return true;
+    }
+    !node.is_textblock() && node.content().children().iter().any(holds_table)
 }
 
 #[cfg(test)]

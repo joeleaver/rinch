@@ -125,6 +125,33 @@ impl Selection {
         }
     }
 
+    /// The content ranges the selection covers, in document order: one,
+    /// `from()..to()`, for a text or node selection; for a cell selection one
+    /// per selected cell, its content (a cell selection's own `from()..to()`
+    /// is only a coarse bound). What a command that applies to "the selected
+    /// text" — a mark, a block type, an alignment — walks, as ProseMirror's
+    /// `Selection.ranges` (#1847).
+    pub fn ranges(&self, doc: &Node) -> Vec<(Pos, Pos)> {
+        let Selection::Cell(c) = self else {
+            return vec![(self.from(), self.to())];
+        };
+        let Some((map, _, _)) = tables::map_around(doc, Pos(c.head_cell.0 + 1)) else {
+            return Vec::new();
+        };
+        let Some(rect) = map.rect_between(c.anchor_cell.0, c.head_cell.0) else {
+            return Vec::new();
+        };
+        let mut cells = map.cells_in_rect(rect);
+        cells.sort_unstable();
+        cells
+            .into_iter()
+            .filter_map(|p| {
+                let cell = doc.node_at(p)?;
+                Some((Pos(p + 1), Pos(p + cell.node_size() - 1)))
+            })
+            .collect()
+    }
+
     /// The fixed end of the selection.
     pub fn anchor(&self) -> Pos {
         match self {
@@ -279,14 +306,19 @@ impl Selection {
     ///   the nearest text selection). A whole **table** stays node-selected:
     ///   Backspace after a table selects it, and the next one deletes it.
     /// - a [`TextSelection`] with an end at **row or table level** (between
-    ///   cells or rows) has that end moved into the nearest text towards the
-    ///   other end;
+    ///   cells or rows) has that end moved into the text of the cell after it
+    ///   (before it, at a row's end): the cell a cell selection names by that
+    ///   position, so extending one keeps its anchor cell;
     /// - one that only crosses a **cell boundary** — from the end of one
     ///   cell's content to the start of the next — becomes a caret at its
     ///   start (PM `isCellBoundarySelection`);
     /// - one whose ends are in **two cells of one table** becomes a cell
     ///   selection of the rectangle between them, as a drag across cells
     ///   does on the desktop.
+    ///
+    /// A text selection spanning the whole document (`selectAll`) is left
+    /// alone: it stands for ProseMirror's `AllSelection`, which is never a
+    /// cell selection.
     ///
     /// Commands then never see a range that would take cells out of their
     /// rows. A text selection with an end outside the table (a drag from a
@@ -295,10 +327,21 @@ impl Selection {
     pub fn normalized(&self, doc: &Node) -> Selection {
         match self {
             Selection::Node(n) => normalize_node(doc, n).unwrap_or_else(|| self.clone()),
-            Selection::Text(t) if t.anchor != t.head => normalize_text(doc, *t),
+            Selection::Text(t) if t.anchor != t.head && !is_whole_document(doc, t) => {
+                normalize_text(doc, *t)
+            }
             _ => self.clone(),
         }
     }
+}
+
+/// Whether `t` spans the whole document, first text to last: what `selectAll`
+/// makes. ProseMirror's select-all is an `AllSelection`, which
+/// prosemirror-tables never turns into a cell selection; rinch has no such
+/// kind, so a text selection of this extent stands for it.
+fn is_whole_document(doc: &Node, t: &TextSelection) -> bool {
+    let (from, to) = (t.anchor.min(t.head), t.anchor.max(t.head));
+    from == Selection::at_start(doc).head() && to == Selection::at_end(doc).head()
 }
 
 /// A node selection of a cell or row as a cell selection; `None` to keep it.
@@ -328,14 +371,19 @@ fn at_table_level(doc: &Node, pos: Pos) -> bool {
 
 fn normalize_text(doc: &Node, t: TextSelection) -> Selection {
     // Move an end between cells or rows into the text towards the other end.
-    let snap = |end: Pos, other: Pos| {
+    // An end between cells or rows belongs to the cell (or row) after it, the
+    // one a cell selection names by the position before it — so a cell
+    // selection's anchor, extended by a shift+click or a motion, stays in its
+    // own cell. At a row's or table's end it belongs to the one before it.
+    let snap = |end: Pos| {
         if !at_table_level(doc, end) {
             return end;
         }
-        let dir = if other.0 > end.0 { 1 } else { -1 };
+        let forward = doc.resolve(end).is_ok_and(|r| r.node_after().is_some());
+        let dir = if forward { 1 } else { -1 };
         Selection::near_text(doc, end, dir).map_or(end, |s| s.head())
     };
-    let (anchor, head) = (snap(t.anchor, t.head), snap(t.head, t.anchor));
+    let (anchor, head) = (snap(t.anchor), snap(t.head));
     if (anchor.0 < head.0) != (t.anchor.0 < t.head.0) || anchor == head {
         // The ends met or crossed: there is no text between them.
         return Selection::cursor(Pos(anchor.0.min(head.0)));

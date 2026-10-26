@@ -711,7 +711,7 @@ pub fn next_cell_in_table(doc: &Node, pos: Pos, dir: i32) -> Option<usize> {
 /// [`Transaction`](crate::state::Transaction)'s selection gestures repair in a
 /// table their edit left ragged (#1847). `pos` is the offending cell's offset
 /// from the table's content start (the position before the table plus one).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TableProblem {
     /// The cell at `pos` spans into a slot another cell already covers, or
     /// past the grid's right edge: on its row `rows_fit` (`0` for its first
@@ -733,12 +733,15 @@ pub enum TableProblem {
         /// How many of its rows are in the table.
         rows_fit: usize,
     },
-    /// Row `row` has `n` grid slots no cell covers: a ragged row.
+    /// Row `row` has grid slots no cell covers: a ragged row. They are past
+    /// its last cell (a row's cells fill the slots left to right), in `runs`
+    /// of adjacent slots, left to right — split where a rowspan from above
+    /// covers a slot between them.
     Missing {
         /// The row's index.
         row: usize,
-        /// How many slots it lacks.
-        n: usize,
+        /// The lengths of the uncovered runs, left to right.
+        runs: Vec<usize>,
     },
 }
 
@@ -789,12 +792,23 @@ pub fn table_problems(table: &Node) -> Vec<TableProblem> {
             slot += colspan;
             pos += cell.node_size();
         }
-        let n = covered[row * width..row_end]
-            .iter()
-            .filter(|c| !**c)
-            .count();
-        if n > 0 {
-            problems.push(TableProblem::Missing { row, n });
+        let mut runs = Vec::new();
+        let mut run = 0;
+        for &c in &covered[row * width..row_end] {
+            if c {
+                if run > 0 {
+                    runs.push(run);
+                }
+                run = 0;
+            } else {
+                run += 1;
+            }
+        }
+        if run > 0 {
+            runs.push(run);
+        }
+        if !runs.is_empty() {
+            problems.push(TableProblem::Missing { row, runs });
         }
         pos += 1;
     }
@@ -1126,7 +1140,10 @@ mod grid_bound_tests {
         assert_eq!(problems(&[vec![(1, 1), (1, 1)], vec![(2, 1)]]), vec![]);
         assert_eq!(
             problems(&[vec![(1, 1), (1, 1)], vec![(1, 1)]]),
-            vec![TableProblem::Missing { row: 1, n: 1 }]
+            vec![TableProblem::Missing {
+                row: 1,
+                runs: vec![1]
+            }]
         );
         assert_eq!(
             problems(&[vec![(1, 3)], vec![]]),
@@ -1139,13 +1156,19 @@ mod grid_bound_tests {
         assert_eq!(
             problems(&[vec![(1, 1), (1, 2)], vec![(2, 1)]]),
             vec![
-                TableProblem::Missing { row: 0, n: 1 },
+                TableProblem::Missing {
+                    row: 0,
+                    runs: vec![1]
+                },
                 TableProblem::Collision {
                     pos: 11,
                     rows_fit: 0,
                     cols_fit: 1
                 },
-                TableProblem::Missing { row: 1, n: 1 },
+                TableProblem::Missing {
+                    row: 1,
+                    runs: vec![1]
+                },
             ]
         );
     }

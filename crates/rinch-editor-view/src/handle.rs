@@ -2569,13 +2569,37 @@ impl EditorHandle {
     /// visual-line and vertical geometry on top.
     pub fn move_cursor(&self, motion: CursorMotion, extend: bool) -> bool {
         let st = self.state();
-        match rinch_editor_core::resolve_cursor_motion(
+        let horizontal = match motion {
+            CursorMotion::CharLeft | CursorMotion::WordLeft => Some(-1),
+            CursorMotion::CharRight | CursorMotion::WordRight => Some(1),
+            _ => None,
+        };
+        // Over a cell selection a horizontal Shift+arrow steps its head cell;
+        // the text motion has no head to start from.
+        if extend
+            && let Some(dir) = horizontal
+            && matches!(st.selection, Selection::Cell(_))
+        {
+            return self.shift_arrow_cells(rinch_editor_core::tables::Axis::Horiz, dir, None);
+        }
+        let resolved = rinch_editor_core::resolve_cursor_motion(
             &st.doc,
             st.selection.head(),
             st.selection.anchor(),
             motion,
             extend,
-        ) {
+        );
+        if extend
+            && let Some(dir) = horizontal
+            && self.shift_arrow_cells(
+                rinch_editor_core::tables::Axis::Horiz,
+                dir,
+                resolved.as_ref().map(|s| s.head()),
+            )
+        {
+            return true;
+        }
+        match resolved {
             // A caret moved onto a node a view is drawn for offers it the
             // keyboard (`NodeViewSpec::on_caret_enter`).
             Some(sel) if !extend => {
@@ -2588,6 +2612,36 @@ impl EditorHandle {
                 self.select_from_arrow(sel, from);
                 true
             }
+            Some(sel) => {
+                self.set_selection(sel);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Shift+arrow at a table cell's edge, or over a cell selection: select
+    /// cells, as prosemirror-tables' `shiftArrow` does
+    /// ([`shift_arrow`](rinch_editor_core::commands::table_ops::shift_arrow)).
+    /// `new_head` is where the plain extension would put the head (the text
+    /// motion, or the platform's vertical step; `None` when it goes nowhere).
+    /// Returns whether the cell rule took the key, having set the selection;
+    /// `false` leaves the plain extension to the caller.
+    ///
+    /// [`move_cursor`](Self::move_cursor) asks it for every horizontal
+    /// Shift+arrow; the platforms ask it for Shift+Up/Down with their
+    /// geometry's step (#1847).
+    pub fn shift_arrow_cells(
+        &self,
+        axis: rinch_editor_core::tables::Axis,
+        dir: i32,
+        new_head: Option<Pos>,
+    ) -> bool {
+        let next = {
+            let core = self.core();
+            rinch_editor_core::commands::table_ops::shift_arrow(&core.state, axis, dir, new_head)
+        };
+        match next {
             Some(sel) => {
                 self.set_selection(sel);
                 true

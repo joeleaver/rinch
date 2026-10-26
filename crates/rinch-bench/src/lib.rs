@@ -1475,3 +1475,81 @@ pub fn setup_collab_table_keystroke(rows: usize) -> CollabFixture {
         session,
     }
 }
+
+// ── rinch-editor-core: typing over a selection in one cell of a large table ─
+
+/// Columns of the table [`setup_range_type_in_table`] types into.
+pub const RANGE_TABLE_COLS: usize = 10;
+
+/// An editor state, and the state one operation over it led to (kept, so the
+/// measured operation does not also pay to drop it).
+pub struct EditorFixture {
+    pub state: rinch_editor_core::EditorState,
+    pub next: Option<rinch_editor_core::EditorState>,
+}
+
+/// A table of `rows` × [`RANGE_TABLE_COLS`] cells, and a text selection
+/// `len` characters long (`0`: a caret) inside one cell of its middle row.
+///
+/// Typing over a range replaces the selection, which checks the edit for a
+/// table it left ragged (#1847). An edit inside one cell cannot change any
+/// table's grid, so the check reads no table here: the first round of it
+/// walked the whole table (1.0 ms at 1,024 rows, 24.6 ms at 4,096). The
+/// caret variants are the yardstick: a keystroke anywhere in the table is
+/// linear in its rows already (resolving a position walks the row list, and
+/// the edit copies it), and a range costs a caret's keystroke plus one
+/// resolve of its start (which finds it inside one textblock).
+pub fn setup_range_type_in_table((rows, len): (usize, usize)) -> EditorFixture {
+    use rinch_editor_core::{EditorState, Fragment, Pos, Selection, default_plugins};
+    alloc::reserve();
+    let schema = Rc::new(rinch_editor_core::Schema::starter_kit());
+    let para = |text: &str| {
+        let text = schema.text(text).expect("text");
+        schema
+            .branch("paragraph", Fragment::from_node(text))
+            .expect("paragraph")
+    };
+    let branch = |name: &str, children: Vec<rinch_editor_core::Node>| {
+        schema
+            .branch(name, Fragment::from_children(children))
+            .expect(name)
+    };
+    let table = branch(
+        "table",
+        (0..rows)
+            .map(|_| {
+                branch(
+                    "table_row",
+                    (0..RANGE_TABLE_COLS)
+                        .map(|_| branch("table_cell", vec![para("abcd")]))
+                        .collect(),
+                )
+            })
+            .collect(),
+    );
+    let doc = branch("doc", vec![para("before the table"), table]);
+    // Into the table, the middle row, its third cell and its paragraph; "bc"
+    // of "abcd".
+    let tbl = doc.child(1);
+    let row = tbl.child_count() / 2;
+    let mut at = doc.child(0).node_size() + 1;
+    at += (0..row).map(|r| tbl.child(r).node_size()).sum::<usize>() + 1;
+    at += (0..2)
+        .map(|k| tbl.child(row).child(k).node_size())
+        .sum::<usize>()
+        + 1;
+    at += 1 + 1;
+    let mut state = EditorState::create(schema.clone(), doc, default_plugins());
+    let mut tr = state.tr();
+    tr.set_selection(Selection::text(Pos(at), Pos(at + len)));
+    state = state.apply(tr);
+    EditorFixture { state, next: None }
+}
+
+/// Type one character over the selection, and land the state.
+pub fn op_range_type_in_table(mut f: EditorFixture) -> EditorFixture {
+    let mut tr = f.state.tr();
+    tr.insert_text("Q").expect("insert");
+    f.next = Some(f.state.apply(tr));
+    f
+}

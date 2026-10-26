@@ -352,6 +352,36 @@ fn a_selection_across_cells_is_copied_as_a_table() {
     );
 }
 
+/// A table pasted with a ragged row is padded in the paste's own
+/// transaction (#1847), so a collaborating editor projects it and the peer
+/// gets it, where the paste stalled outbound before. At a caret, as over a
+/// range.
+#[cfg(feature = "collaboration")]
+#[test]
+fn a_pasted_ragged_table_is_padded_and_reaches_the_peer() {
+    use std::cell::RefCell;
+    type Q = Rc<RefCell<Vec<Vec<u8>>>>;
+    let ragged = "<table><tr><td><p>a</p></td><td><p>b</p></td></tr>\
+                  <tr><td><p>c</p></td></tr></table>";
+    let host = editor("<p>xy</p>", 2, 2);
+    let to_guest: Q = Rc::default();
+    let sink = to_guest.clone();
+    let snap = host
+        .start_collaboration_host(move |d| sink.borrow_mut().push(d))
+        .unwrap();
+    let guest = create_editor();
+    guest.start_collaboration_guest(&snap, |_| {}).unwrap();
+    assert!(host.replace_selection_with_html(ragged));
+    assert!(host.collab_outbound_stall().is_none());
+    for delta in to_guest.borrow_mut().drain(..) {
+        assert!(guest.collab_receive(&delta));
+    }
+    let want = "<p>x</p><table><tr><td><p>a</p></td><td><p>b</p></td></tr>\
+                <tr><td><p>c</p></td><td><p></p></td></tr></table><p>y</p>";
+    assert_eq!(node_to_html(&host.doc()), want);
+    assert_eq!(node_to_html(&guest.doc()), want);
+}
+
 /// A collaborating editor records a fitted paste like any edit: the peer
 /// gets the list. A task list is outside what collaboration carries, and
 /// stalls outbound as it did.
