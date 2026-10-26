@@ -98,13 +98,7 @@ enum PeerCmd {
     },
 }
 
-/// A channel's settings as the stack holds them (test hook).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChannelSettings {
-    pub ordered: bool,
-    pub max_retransmits: Option<u16>,
-    pub negotiated: bool,
-}
+use crate::ChannelSettings;
 
 static WORKER: OnceLock<mpsc::UnboundedSender<Cmd>> = OnceLock::new();
 
@@ -195,7 +189,15 @@ pub(crate) fn new_peer(id: u64, config: &RtcConfig) -> Result<(), RtcError> {
         .map_err(|_| RtcError::Internal("the rinch-rtc worker has stopped".into()))
 }
 
-pub(crate) fn create_channel(id: u64, key: u64, label: String, options: ChannelOptions) {
+/// Returns the stream id when it is known now: a negotiated channel's
+/// (webrtc-rs 0.21 never reports an in-band one's).
+pub(crate) fn create_channel(
+    id: u64,
+    key: u64,
+    label: String,
+    options: ChannelOptions,
+) -> Option<u16> {
+    let sid = options.negotiated;
     post(
         id,
         PeerCmd::Channel {
@@ -204,6 +206,7 @@ pub(crate) fn create_channel(id: u64, key: u64, label: String, options: ChannelO
             options,
         },
     );
+    sid
 }
 
 pub(crate) fn create_offer(id: u64, req: u64, restart: bool) {
@@ -277,7 +280,7 @@ pub mod testing {
         super::OVERRIDES.lock().unwrap().ice_timeouts = Some((disconnected, failed, keepalive));
     }
 
-    pub use super::ChannelSettings;
+    pub use crate::ChannelSettings;
 
     /// The channel's settings as webrtc-rs holds them, asked of the worker
     /// directly (blocks up to 5 s; no main-thread pumping needed).
@@ -464,8 +467,11 @@ impl PeerConnectionEventHandler for Handler {
     async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
         let key = crate::next_id();
         let label = dc.label().await.unwrap_or_default();
-        // Incoming before any of the channel's own events: both go through
-        // the same FIFO to the main thread, and the pump starts after.
+        // The peer's task keeps it and starts its pump (not awaited here:
+        // that would stall the driver). Adopted *before* the main thread hears
+        // of it, so a call the app makes from inside on_data_channel (close,
+        // a low-water threshold) finds the channel already there.
+        let _ = self.me.send(PeerCmd::Adopt { key, dc });
         emit(
             self.id,
             Event::Incoming {
@@ -474,9 +480,6 @@ impl PeerConnectionEventHandler for Handler {
                 id: None,
             },
         );
-        // The peer's task keeps it and starts its pump (not awaited here:
-        // that would stall the driver).
-        let _ = self.me.send(PeerCmd::Adopt { key, dc });
     }
 }
 

@@ -7,7 +7,7 @@
 //!   peers on one worker thread running a current-thread tokio runtime.
 //!   STUN and TURN (UDP) gathering, trickle ICE, ICE restart.
 //! - **Web** (`cfg(target_arch = "wasm32")`): the browser's
-//!   `RTCPeerConnection` (not yet: it lands in the next PR of #1896).
+//!   `RTCPeerConnection` and `RTCDataChannel`, through web-sys.
 //!
 //! # Signalling is the app's
 //!
@@ -121,10 +121,9 @@ mod native;
 use native as backend;
 
 #[cfg(target_arch = "wasm32")]
-compile_error!(
-    "rinch-rtc's web backend is not in this version yet (issue #1896, next PR); \
-     depend on rinch-rtc only for native targets until then"
-);
+mod wasm;
+#[cfg(target_arch = "wasm32")]
+use wasm as backend;
 
 pub use error::{RtcError, SendError};
 
@@ -584,7 +583,18 @@ impl Peer {
                 ),
             )
         });
-        backend::create_channel(id, key, label.to_string(), options);
+        // The id the stack gave it, if it says at once (the web assigns an
+        // in-band channel's as soon as the DTLS role is known), so the
+        // duplicate check above sees it before the channel opens.
+        if let Some(sid) = backend::create_channel(id, key, label.to_string(), options) {
+            with_peer(id, |e| {
+                if let Some(c) = e.channels.get_mut(&key)
+                    && c.id.is_none()
+                {
+                    c.id = Some(sid);
+                }
+            });
+        }
         Ok(Channel { peer: id, key })
     }
 
@@ -634,15 +644,18 @@ impl Peer {
 }
 
 /// Close every peer now and wait (at most about half a second) until the
-/// far ends have been told, closes already under way included. Done
+/// far ends have been told, closes already under way included. On the web
+/// it closes every peer at once (the browser sends the closes; there is
+/// nothing to wait for). Done
 /// automatically at normal process exit on native (see the [crate
 /// docs](crate#process-exit)); call it before `std::process::exit` on
 /// Windows, or whenever the program is about to stop without returning
-/// from `main`. It is for the end of the program: a peer used after it
-/// does nothing (its calls are not answered).
-#[cfg(not(target_arch = "wasm32"))]
+/// from `main`. Every peer then reads as `Closed`, silently (no callbacks
+/// run for these closes), and a peer used after it does nothing.
 pub fn shutdown() {
     backend::shutdown();
+    // Every peer reads as Closed from here, as after a drop: no callbacks.
+    registry::remove_all_peers();
 }
 
 fn expect_description(r: Result<Option<Description>, RtcError>) -> Result<Description, RtcError> {
@@ -852,6 +865,18 @@ pub mod testing {
     //! Hooks for rinch-rtc's own tests. Not API.
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::native::testing::*;
+    #[cfg(target_arch = "wasm32")]
+    pub use crate::wasm::testing::*;
+}
+
+/// A channel's settings as the stack holds them (test hook,
+/// `testing::channel_settings`).
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChannelSettings {
+    pub ordered: bool,
+    pub max_retransmits: Option<u16>,
+    pub negotiated: bool,
 }
 
 #[cfg(test)]

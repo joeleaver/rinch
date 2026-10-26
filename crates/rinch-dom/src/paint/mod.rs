@@ -16,6 +16,7 @@ pub mod painter;
 pub mod radii;
 pub mod scrollbar;
 mod select;
+pub mod slicing;
 mod svg;
 mod text;
 mod text_shadow;
@@ -1309,6 +1310,9 @@ impl Painter for ClipTrackingPainter<'_> {
         });
         self.inner.pop_layer();
     }
+    fn split_surface(&mut self, split: &painter::SurfaceSplit) -> painter::SplitVerdict {
+        self.inner.split_surface(split)
+    }
 }
 
 /// The render target, and the rect outside which paint emits nothing.
@@ -1372,10 +1376,8 @@ fn paint_surface_frame(
     painter: &mut dyn Painter,
     node: &Node,
     scale: f64,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
+    (x, y, w, h): (f64, f64, f64, f64),
+    ink: Rect,
     radii: BorderRadii,
     node_transform: Affine,
 ) {
@@ -1405,6 +1407,29 @@ fn paint_surface_frame(
             .as_ref()
             .and_then(|m| m.get(&surface_id).cloned())
     });
+    // A GPU frame is offered to the split-layer path first (#1865): a painter
+    // that takes it draws nothing here, the compositor does.
+    if let Some(image) = &gpu
+        && let Some((image_transform, clip_to_content)) = image::fit_image(
+            image.width as f64,
+            image.height as f64,
+            content,
+            fit,
+            node_transform,
+        )
+        && painter.split_surface(&painter::SurfaceSplit {
+            surface_id,
+            content,
+            node_transform,
+            inner: rounded.then(|| inner.shape(content)),
+            clip_to_content,
+            image_transform,
+            extents: (image.width, image.height),
+            ink,
+        }) == painter::SplitVerdict::Split
+    {
+        return;
+    }
     if rounded {
         painter.push_clip(Fill::NonZero, node_transform, &inner.shape(content));
     }
@@ -1444,6 +1469,13 @@ fn paint_surface_frame(
 /// renders the scene (`vello::Renderer::register_texture`); only the Vello
 /// painter draws them. A surface with an image here draws it in place of its
 /// CPU pixels. `None` clears.
+/// Whether this paint has any GPU surface frame to draw: a frame with none
+/// has nothing to split, and the runtime does not open it for slicing
+/// (#1899 review: a frame opened for slicing copies every clip's shape).
+pub fn has_surface_gpu_images() -> bool {
+    SURFACE_GPU_IMAGES.with(|g| g.borrow().as_ref().is_some_and(|m| !m.is_empty()))
+}
+
 pub fn set_surface_gpu_images(images: Option<HashMap<usize, peniko::ImageData>>) {
     SURFACE_GPU_IMAGES.with(|v| *v.borrow_mut() = images);
 }
@@ -4171,7 +4203,20 @@ fn paint_node_unmasked(
                 // picture is (#1768): in the content box, over the background
                 // and inside the border, rounded by the inner radius.
                 if node.attributes.contains_key("data-render-surface") {
-                    paint_surface_frame(painter, node, scale, x, y, w, h, radii, node_transform);
+                    // The box's ink, where the window draws it: what the paint
+                    // cull tests, so a split's runtime damages the surface's
+                    // region before any frame paints it (#1899 review).
+                    let ink =
+                        node_transform.transform_rect_bbox(ink_rect(tree, node, x, y, w, h, scale));
+                    paint_surface_frame(
+                        painter,
+                        node,
+                        scale,
+                        (x, y, w, h),
+                        ink,
+                        radii,
+                        node_transform,
+                    );
                 }
 
                 // Render input element value

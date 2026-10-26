@@ -572,8 +572,10 @@ ICE-lite echo peer, the shape of str0m's own `chat` example. The CI job
 starts it in the background before
 `cargo test -p rinch-rtc --target wasm32-unknown-unknown`, and passes its
 URL at build time as `RINCH_RTC_TEST_URL`, the convention of rinch-ws's
-`RINCH_WS_TEST_URL`. The wasm test mounts through `rinch_web::mount_into`
-(the brief's wasm fixture rule), connects, and repeats cases 1, 2 and 4.
+`RINCH_WS_TEST_URL`. The wasm test connects and repeats cases 1, 2 and 4.
+It mounts nothing: rinch-rtc dispatches its callbacks itself and needs no
+`rinch_web` mount, and its positive control is bytes that came back
+through the server.
 Two traps:
 
 - **A skip is not a pass.** rinch-ws's live web test logs and passes when
@@ -696,6 +698,37 @@ webrtc-rs row has all three.
    complete, the host-many-peers pattern, lifetime and `unowned`,
    back-pressure, reconnection), and an internals page `docs/internals/rtc.md`
    with its row in `CLAUDE.md`'s index (the one CLAUDE.md edit allowed).
+
+## 9. Implementation notes and corrections
+
+The implementation is #1909 (native), #1915 (web) and the docs PR. What it
+taught, and what this record got wrong:
+
+- **str0m's answer does advertise `a=max-message-size:262144`.** Sections 4
+  and 7 say it carries none. The spike's 200 kB refusal was webrtc-rs's own
+  ceiling: it sends at most what it advertises itself, 64 KiB by default.
+  The native backend now advertises 256 KiB. The registry applies the
+  remote SDP's value the same way on both backends (absent: 64 KiB, `0`: no
+  limit), because Chrome reports 256 KiB to a peer whose SDP says nothing.
+- **str0m's SCTP send buffer defaults to 128 KiB**, and str0m never accepts a
+  single write larger than its free buffer. So by default a str0m server
+  cannot send any message over 128 KiB.
+- **str0m 0.24.1 does not deliver a close on a stream that has carried no
+  data yet.**
+- **Back-pressure** (section 5): `on_buffered_amount_low` follows the
+  stack's falling edge ungated. `with_data_channel_send_buffer_limit` is set
+  to a 16 MiB backstop rather than the per-channel limit, because it is a
+  per-connection setting. Per-channel limits clamp to 16 MiB.
+- **Lifetime** (section 1.5) gained process-exit handling: an `atexit` close,
+  and `rinch_rtc::shutdown()`. Windows' `std::process::exit` may skip the
+  former.
+- **Events reach the UI through `dispatch_main_callback`**, so a peer made
+  before `App::run` queues its events. That also defines headless use: drain
+  the queue yourself.
+- **Tests:** the str0m dev-dependency uses `openssl`, not `rust-crypto`,
+  which would have put aws-lc into the rcgen that webrtc-rs uses.
+
+Mechanism detail is on `docs/internals/rtc.md`.
 
 ## Decisions
 

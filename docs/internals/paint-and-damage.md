@@ -302,3 +302,50 @@ paint; a literal `style` value that is no paint is dropped and the attribute
 applies, as Chrome 155 does. Not read: a `fill`/`stroke` in a stylesheet
 rule, and `stroke-width`/`stroke-linecap`/`stroke-linejoin` in `style` (still
 attributes only). Pins: `crates/rinch-dom/tests/svg_paint_var_1800_tests.rs`.
+
+### Split GPU surfaces in the Vello painter (#1865)
+
+Design record: `docs/design/split-layer-gpu-surfaces.md`, *Painter split*.
+`paint_surface_frame` offers each GPU frame to `Painter::split_surface`
+before drawing it; the default refuses (`Refusal::Unsupported`) and the frame
+is drawn in the scene as before. `VelloPainter` takes it only on a frame
+opened with `begin_slicing(window)` (after `reset`, which closes it), and the
+surfaces it took come back from `take_slices()` as `paint::slicing::SurfaceSlice`:
+region R; `above_in` and `above_out` (scenes in window coordinates, rendered where the window draws them and R kept, or `None`);
+`own` and `ancestors` coverage (each a whole-pixel rect or a mask scene); the
+in-scene image transform; `tainted`.
+
+- **Refusals**, the frame then drawn in-scene: a group effect open around it
+  (a layer with opacity below 1 or a non-normal blend, or any isolated
+  layer: masks, text-shadow groups), a transform that rotates or skews, or a
+  region overlapping an earlier split surface's. R is the content box
+  snapped out to whole pixels, a pixel further left only when that left edge
+  (or the fitted frame's, in R's first column) is fractional; routing bounds
+  grow the same way. Two surfaces touching at whole pixels both split.
+- **No surface costs one bool per draw**: `route!` (a macro, not a generic)
+  tests `VelloPainter::routing`, set when a surface splits, and otherwise is
+  the draw itself; no closure or bounds are built.
+- **Routing** (`paint/slicing.rs`): every draw after the split goes by its
+  device bounds. Disjoint from every R: the window's scene, unclipped. Inside
+  one R: that surface's above scene only. Across an edge, or bounds unknown
+  (`append`): every above scene it meets, and the window's scene inside the
+  inverse clip (the window with every R cut out, holes wound backwards,
+  **non-zero**; even-odd nested in a clip drops coverage on lavapipe). The
+  inverse clip is opened only around such draws and closed before any push or
+  pop, so it never wraps a layer boundary.
+- **Two above scenes.** `above_in` takes what is painted while every entry
+  open at the split is still open, **without** those entries: the compositor
+  applies the ancestors' coverage once, to the surface and `above_in`
+  together, as the scene does (applying it to each separately conflated on a
+  rounded card's ring, #1887 review). `above_out` starts when the first of
+  them closes, with those still open replayed; a draw over R while one of
+  those is not a whole-pixel rect clip taints the slice. Pushes and pops
+  after the split go to whichever is current. Without `begin_slicing` nothing is mirrored
+  and no shape is copied; a sliced frame with nothing split encodes the
+  window's scene byte for byte as an unsliced one
+  (`tests/split_surface_painter_1865_tests.rs`).
+- **Taint** (D5a): a non-normal blend layer (grayscale's saturation overlay)
+  over an R, not inside an isolated layer opened after the split, marks the
+  slice: the runtime must paint the frame again with it in-scene.
+- Not routed yet: content the runtime appends to `scene_mut()` after
+  `paint_document` (drag ghost, inspect highlight, tooltip) — PR 3.

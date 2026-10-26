@@ -324,8 +324,9 @@ jobs:
             fi
           }
           # The render-surface, compositor and partial-frame fixtures, and
-          # the split compositor's oracle (`gpu_split_*`, #1865: 25).
-          run 44 -p rinch --features gpu,video --lib -- \
+          # the split oracles (`gpu_split_*`, #1865: 25 compositor, 22 runtime,
+          # 2 pages).
+          run 68 -p rinch --features gpu,video --lib -- \
             --ignored gpu_ --skip gpu_hover_probe --test-threads=1
           # #1798's gradients and masks against Chrome's pixels.
           run 1 -p rinch --features gpu,video --test gpu_gradient_mask_1798 -- \
@@ -471,7 +472,7 @@ jobs:
       - name: Run clippy (wasm32)
         run: |
           for crate in rinch-core rinch-words rinch-editor-core rinch-editor-collab \
-                       rinch-editor-view rinch-http rinch-ws rinch-web; do
+                       rinch-editor-view rinch-http rinch-ws rinch-rtc rinch-web; do
             echo "::group::clippy $crate (wasm32)"
             cargo clippy -p "$crate" --target wasm32-unknown-unknown \
               --all-targets -- -D warnings
@@ -635,6 +636,19 @@ jobs:
           cargo test -p rinch-storage --target wasm32-unknown-unknown
           cargo test -p rinch-ws --target wasm32-unknown-unknown
           cargo test -p rinch-web --target wasm32-unknown-unknown
+          # rinch-rtc against the interop target (design record
+          # docs/design/webrtc-data-channels.md, section 4): a str0m ICE-lite
+          # echo peer behind `lite_echo`'s HTTP signalling. Its URL is baked in
+          # at build time, and RINCH_RTC_REQUIRE_LIVE makes the live test FAIL
+          # rather than skip if it is missing: a skip must not read as a pass.
+          # The URL is fixed (port 47811), so the Firefox step below builds
+          # the same test binaries and rebuilds nothing.
+          cargo build -p rinch-rtc --example lite_echo
+          target/debug/examples/lite_echo --port 47811 --url-file lite_echo.url &
+          for i in $(seq 1 50); do [ -s lite_echo.url ] && break; sleep 0.2; done
+          test "$(cat lite_echo.url)" = http://127.0.0.1:47811
+          RINCH_RTC_TEST_URL=http://127.0.0.1:47811 RINCH_RTC_REQUIRE_LIVE=1 \
+            cargo test -p rinch-rtc --target wasm32-unknown-unknown
           # The editor's read-only collaboration fixture is
           # `#[cfg(feature = "collaboration")]`, which the bare run above does not
           # turn on — it would have run nowhere, and a test that never runs reads
@@ -706,6 +720,17 @@ jobs:
           cargo test -p rinch-web --target wasm32-unknown-unknown
           cargo test -p rinch-web --target wasm32-unknown-unknown \
             --features collaboration --test editor_read_only
+          # The Chrome step's lite_echo, or a new one on the same port if that
+          # one did not outlive its step: the same URL keeps the test binaries
+          # the Chrome step built (no rebuild).
+          if ! curl -s -o /dev/null -X OPTIONS http://127.0.0.1:47811/offer; then
+            rm -f lite_echo_ff.url
+            target/debug/examples/lite_echo --port 47811 --url-file lite_echo_ff.url &
+            for i in $(seq 1 50); do [ -s lite_echo_ff.url ] && break; sleep 0.2; done
+            test "$(cat lite_echo_ff.url)" = http://127.0.0.1:47811
+          fi
+          RINCH_RTC_TEST_URL=http://127.0.0.1:47811 RINCH_RTC_REQUIRE_LIVE=1 \
+            cargo test -p rinch-rtc --target wasm32-unknown-unknown
 
   # Type-check and lint the Android target. Nothing else in this pipeline compiles it.
   #

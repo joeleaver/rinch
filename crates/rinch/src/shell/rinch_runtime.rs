@@ -1795,10 +1795,13 @@ impl RinchRuntime {
             .collect();
         let gpu_images = renderer
             .sync_surface_images(gpu_frames.into_iter().map(|(id, texture, _)| (id, texture)));
-        if !fresh.is_empty() {
-            self.app.request_repaint();
-            self.app.mark_surface_nodes_paint_dirty(&fresh);
-        }
+        // A surface the window composites split (#1865) is not damage: its new
+        // frame is composited from the kept slices, with no repaint.
+        self.app.mark_fresh_surfaces(
+            &fresh,
+            &renderer.split_surface_ids(),
+            &renderer.split_stale_ids(),
+        );
         if !gpu_images.is_empty() {
             rinch_dom::paint::set_surface_gpu_images(Some(gpu_images));
         }
@@ -1966,9 +1969,14 @@ impl RinchRuntime {
         // Build the frame from the document — CPU surfaces paint inline via
         // draw_image(). Only what its damage reaches is encoded and rendered
         // while the renderer's UI texture holds the last frame (#1718).
-        let frame = self
-            .app
-            .build_gpu_frame(scale, size, renderer.ui_invalid_reason(transparent));
+        // Split GPU surfaces (#1865) while no `GameViewport` layer is under the
+        // UI: the base-layer path and the split path do not compose yet (a
+        // base layer under split slices is the design's next step).
+        let has_layers = renderer.has_composite_layers() || skipped_unready;
+        self.app.set_split_enabled(!has_layers);
+        let (frame, split_change) =
+            self.app
+                .build_gpu_frame_split(scale, size, renderer.ui_invalid_reason(transparent));
 
         RinchApp::clear_viewport_frames();
         rinch_dom::paint::set_surface_pixels(None);
@@ -1976,6 +1984,25 @@ impl RinchRuntime {
 
         // Render to screen
         let present_start = std::time::Instant::now();
+        let before: Vec<usize> = renderer.split_surface_ids();
+        if let Some(change) = split_change {
+            renderer.apply_split(change)?;
+        }
+        if has_layers {
+            renderer.split.clear();
+        }
+        #[cfg(debug_assertions)]
+        {
+            let after = renderer.split_surface_ids();
+            for id in after.iter().filter(|id| !before.contains(id)) {
+                tracing::debug!("rinch: render surface {id} composited split (#1865)");
+            }
+            for id in before.iter().filter(|id| !after.contains(id)) {
+                tracing::debug!("rinch: render surface {id} drawn in the scene (#1865)");
+            }
+        }
+        #[cfg(not(debug_assertions))]
+        let _ = before;
         renderer.paint_frame(frame, transparent)?;
         self.app.perf_add(
             rinch_dom::perf::Counter::TimePresentNs,

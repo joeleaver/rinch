@@ -465,6 +465,40 @@ struct FrameDamage {
     tooltip_now: Option<peniko::kurbo::Rect>,
 }
 
+/// The split-layer paint state of a window (#1865); see [`RinchApp`]'s `split`.
+#[cfg(all(feature = "gpu", software_shell))]
+#[derive(Default)]
+struct SplitPaint {
+    enabled: bool,
+    kept: Vec<(usize, peniko::kurbo::Rect)>,
+    /// Each kept surface's element ink (`SurfaceSlice::ink`): damage that
+    /// meets it paints the surface, and so splits it, again.
+    ink: std::collections::HashMap<usize, peniko::kurbo::Rect>,
+    /// Paint passes, for the tests (#1899 review: the fallback must stay a
+    /// safety net).
+    #[cfg(test)]
+    passes: u32,
+    change: Option<crate::shell::split_frame::SplitChange>,
+    suspended: u32,
+}
+
+/// Frames splitting stays off after a slice is tainted (D5a): the frame is
+/// painted again with its surfaces in the scene, and the next attempt is this
+/// many frames later.
+#[cfg(all(feature = "gpu", software_shell))]
+const SPLIT_TAINT_FRAMES: u32 = 120;
+
+/// What [`RinchApp::build_gpu_frame`] painted, before it borrows the scene.
+#[cfg(all(feature = "gpu", software_shell))]
+enum GpuFrameKind {
+    Unchanged,
+    Full,
+    Partial {
+        size: (u32, u32),
+        rects: Vec<(u32, u32, u32, u32)>,
+    },
+}
+
 /// What [`RinchApp::build_gpu_frame`] hands the desktop GPU renderer (#1718).
 #[cfg(all(feature = "gpu", software_shell))]
 pub enum GpuFrame<'a> {
@@ -764,6 +798,14 @@ pub struct RinchApp {
     /// pruned encoding (#1718): `build_scene` re-encodes when it does not.
     #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
     pub(crate) scene_is_full: bool,
+    /// The split-layer path (#1865, `docs/design/split-layer-gpu-surfaces.md`):
+    /// whether this window splits GPU surfaces out of the scene this frame
+    /// (the runtime decides, [`Self::set_split_enabled`]); the surfaces it
+    /// keeps split and their regions; the change the last painted frame made,
+    /// for the renderer ([`Self::take_split_change`]); and how many frames
+    /// splitting stays off after a slice was tainted (D5a).
+    #[cfg(all(feature = "gpu", software_shell))]
+    split: SplitPaint,
     /// Software painter (reused across frames). Uses tiny-skia for CPU rendering.
     #[cfg(software_shell)]
     pub(crate) skia_painter: Option<TinySkiaPainter>,
@@ -1099,6 +1141,8 @@ impl RinchApp {
             painter: VelloPainter::new(),
             #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
             scene_is_full: false,
+            #[cfg(all(feature = "gpu", software_shell))]
+            split: SplitPaint::default(),
             #[cfg(software_shell)]
             skia_painter: None,
             #[cfg(feature = "debug")]
@@ -2169,6 +2213,84 @@ impl RinchApp {
         self.painter.scene()
     }
 
+    /// Paint the frame's scene: the document (under `rects`, a partial
+    /// frame's damage, when given), then the drag ghost, the inspect
+    /// highlight and the `title` tooltip. With `slicing` (the window rect),
+    /// GPU surfaces may be split out (#1865); their slices are returned.
+    #[cfg(all(feature = "gpu", software_shell))]
+    fn paint_frame_scene(
+        &mut self,
+        scale: f64,
+        size: (u32, u32),
+        rects: Option<&[peniko::kurbo::Rect]>,
+        ghost_now: Option<peniko::kurbo::Rect>,
+        slicing: Option<peniko::kurbo::Rect>,
+    ) -> Vec<rinch_dom::paint::slicing::SurfaceSlice> {
+        #[cfg(test)]
+        {
+            self.split.passes += 1;
+        }
+        self.painter.reset();
+        if let Some(window) = slicing {
+            self.painter.begin_slicing(window);
+        }
+        if let Some(rects) = rects {
+            rinch_dom::paint::set_dirty_rects(Some(rects));
+        }
+        if let Some(doc) = &self.doc {
+            let mut d = doc.borrow_mut();
+            let d = &mut *d;
+            rinch_dom::paint::paint_document(
+                &d.tree,
+                &mut self.painter,
+                scale,
+                (size.0 as f32, size.1 as f32),
+                &mut d.font_cx,
+                &mut d.layout_cx,
+            );
+        }
+        rinch_dom::paint::set_dirty_region(None);
+        if let (Some(drag), Some(_)) = (&self.active_dnd, ghost_now) {
+            use peniko::kurbo::Affine;
+            let (tx, ty) = drag.ghost_translate(scale);
+            // Routed like any draw, so a ghost over a split surface is over it.
+            self.painter
+                .append_scene(&drag.snapshot, Affine::translate((tx, ty)));
+        }
+        if let Some((x, y, w_r, h_r)) = self.inspect_highlight {
+            Self::paint_inspect_overlay(&mut self.painter, scale, x, y, w_r, h_r);
+        }
+        Self::paint_title_tooltip(self.title_tooltip.shown.as_ref(), &mut self.painter, scale);
+        self.painter.take_slices()
+    }
+
+    /// Paint passes so far (#1865: a frame paints once, again for a taint,
+    /// and again only as the safety net for a region its damage missed).
+    #[cfg(all(test, feature = "gpu", software_shell))]
+    pub(crate) fn split_paint_passes(&self) -> u32 {
+        self.split.passes
+    }
+
+    /// Whether the last painted frame tainted (splitting suspended for the
+    /// full count from it).
+    #[cfg(all(test, feature = "gpu", software_shell))]
+    pub(crate) fn split_tainted_this_frame(&self) -> bool {
+        self.split.suspended == SPLIT_TAINT_FRAMES
+    }
+
+    /// Whether this frame may split GPU surfaces out of the scene (#1865):
+    /// the runtime's call, made before each [`Self::build_gpu_frame`].
+    #[cfg(all(feature = "gpu", software_shell))]
+    pub fn set_split_enabled(&mut self, enabled: bool) {
+        if enabled != self.split.enabled {
+            self.split.enabled = enabled;
+            if !enabled && !self.split.kept.is_empty() {
+                // Repainted in full next frame, the surfaces in the scene.
+                self.scene_dirty = true;
+            }
+        }
+    }
+
     /// The desktop GPU renderer's frame (#1718): like [`Self::build_scene`],
     /// but limited to the frame's damage when the renderer's UI texture still
     /// holds the previous frame, as the software path is.
@@ -2187,10 +2309,41 @@ impl RinchApp {
         size: (u32, u32),
         target: Option<rinch_dom::perf::FullRepaintReason>,
     ) -> GpuFrame<'_> {
+        self.build_gpu_frame_split(scale, size, target).0
+    }
+
+    /// [`Self::build_gpu_frame`], and the change it made to the split
+    /// surfaces (#1865) for the renderer to apply before presenting it.
+    #[cfg(all(feature = "gpu", software_shell))]
+    pub fn build_gpu_frame_split(
+        &mut self,
+        scale: f64,
+        size: (u32, u32),
+        target: Option<rinch_dom::perf::FullRepaintReason>,
+    ) -> (GpuFrame<'_>, Option<crate::shell::split_frame::SplitChange>) {
+        let kind = self.gpu_frame_kind(scale, size, target);
+        let change = self.split.change.take();
+        let scene = self.painter.scene();
+        let frame = match kind {
+            GpuFrameKind::Unchanged => GpuFrame::Unchanged,
+            GpuFrameKind::Full => GpuFrame::Full(scene),
+            GpuFrameKind::Partial { size, rects } => GpuFrame::Partial { scene, size, rects },
+        };
+        (frame, change)
+    }
+
+    /// The work of [`Self::build_gpu_frame`], the frame named, not borrowed.
+    #[cfg(all(feature = "gpu", software_shell))]
+    fn gpu_frame_kind(
+        &mut self,
+        scale: f64,
+        size: (u32, u32),
+        target: Option<rinch_dom::perf::FullRepaintReason>,
+    ) -> GpuFrameKind {
         use rinch_dom::perf::Counter;
         if !self.scene_dirty && target.is_none() {
             self.perf_add(Counter::PaintCachedFrames, 1);
-            return GpuFrame::Unchanged;
+            return GpuFrameKind::Unchanged;
         }
         let w = (size.0 as f64 * scale).round() as u32;
         let h = (size.1 as f64 * scale).round() as u32;
@@ -2199,8 +2352,8 @@ impl RinchApp {
         // full, but with nothing in the document changed there is no damage
         // to work out: its paint-dirty lists are empty.
         let FrameDamage {
-            full,
-            damage,
+            mut full,
+            mut damage,
             ghost_now,
             inspect_now,
             tooltip_now,
@@ -2209,37 +2362,157 @@ impl RinchApp {
         // present with it again) no longer has a region to catch up with.
         self.has_previous_frame = false;
 
-        let bounds = damage.bounds();
-        let partial = full.is_none() && !damage.is_empty();
+        // Split surfaces (#1865). A frame whose damage meets a kept surface's
+        // region repaints all of the region: every node over it is painted
+        // again, the surface split again, and its slices replaced whole. A
+        // window that stops splitting repaints in full, its surfaces back in
+        // the scene.
+        let split_window = peniko::kurbo::Rect::new(0.0, 0.0, w as f64, h as f64);
+        if !self.split.enabled && !self.split.kept.is_empty() && full.is_none() {
+            full = Some(rinch_dom::perf::FullRepaintReason::Invalidated);
+        }
+        // Damage meeting a kept region has the region added, to a fixpoint:
+        // a region added can merge the damage into a rect that meets another
+        // (#1899 review, case 3).
+        let mut split_hit: Vec<usize> = Vec::new();
+        let meets = |d: &rinch_dom::paint::DamageRegion, r: &peniko::kurbo::Rect| {
+            d.rects()
+                .iter()
+                .any(|d| d.x0 < r.x1 && r.x0 < d.x1 && d.y0 < r.y1 && r.y0 < d.y1)
+        };
+        let covers = |d: &rinch_dom::paint::DamageRegion, r: &peniko::kurbo::Rect| {
+            // The damage's rects are disjoint: R is covered when what they
+            // hold of it is all of it.
+            let held: f64 = d.rects().iter().map(|d| d.intersect(*r).area()).sum();
+            held >= r.area() - 0.5
+        };
+        // A kept region is added whole when the damage meets it or the
+        // surface element's ink (its shadow, border, padding): the frame
+        // paints the surface there and splits it again, and a slice needs
+        // all of R painted. Without the ink, damage on a shadow alone was
+        // caught only after the paint, and the frame painted twice (#1899
+        // review: a caret blinking in a surface's shadow, every blink).
+        let grow =
+            |damage: &mut rinch_dom::paint::DamageRegion,
+             full: &mut Option<rinch_dom::perf::FullRepaintReason>,
+             hit: &mut Vec<usize>,
+             kept: &[(usize, peniko::kurbo::Rect)],
+             ink: &std::collections::HashMap<usize, peniko::kurbo::Rect>| {
+                let mut changed = true;
+                while changed && full.is_none() {
+                    changed = false;
+                    for (id, r) in kept {
+                        if !hit.contains(id)
+                            && (meets(damage, r) || ink.get(id).is_some_and(|k| meets(damage, k)))
+                        {
+                            hit.push(*id);
+                            changed = true;
+                            if damage.add(*r) {
+                                *full = Some(rinch_dom::perf::FullRepaintReason::RegionTooLarge);
+                            }
+                        }
+                    }
+                }
+            };
+        if self.split.enabled && full.is_none() && !damage.is_empty() {
+            grow(
+                &mut damage,
+                &mut full,
+                &mut split_hit,
+                &self.split.kept,
+                &self.split.ink,
+            );
+        }
+        // Opened only for a frame with a GPU frame to split: with none, the
+        // painter keeps no mirror of the open clips at all.
+        let slicing = (self.split.enabled
+            && self.split.suspended == 0
+            && rinch_dom::paint::has_surface_gpu_images())
+        .then_some(split_window);
+        self.split.suspended = self.split.suspended.saturating_sub(1);
+
+        let mut partial = full.is_none() && !damage.is_empty();
         if full.is_some() || partial {
-            self.painter.reset();
-            if partial {
-                rinch_dom::paint::set_dirty_rects(Some(damage.rects()));
-            }
-            if let Some(doc) = &self.doc {
-                let mut d = doc.borrow_mut();
-                let d = &mut *d;
-                rinch_dom::paint::paint_document(
-                    &d.tree,
-                    &mut self.painter,
-                    scale,
-                    (size.0 as f32, size.1 as f32),
-                    &mut d.font_cx,
-                    &mut d.layout_cx,
+            let mut slices;
+            loop {
+                let rects = partial.then(|| damage.rects().to_vec());
+                slices = self.paint_frame_scene(scale, size, rects.as_deref(), ghost_now, slicing);
+                if slices.iter().any(|s| s.tainted) {
+                    // Something over a surface reads its backdrop (D5a): this
+                    // frame is painted again with every surface in the scene.
+                    self.split.suspended = SPLIT_TAINT_FRAMES;
+                    slices = self.paint_frame_scene(scale, size, rects.as_deref(), ghost_now, None);
+                }
+                // A slice is whole only if the frame painted all of its region:
+                // a partial frame culls what is over R outside its damage
+                // (the surface itself is painted, and split, by its ink rect:
+                // padding, border, shadow; #1899 review). A split whose R the
+                // damage does not cover has its R added, and the frame is
+                // painted again.
+                if !partial {
+                    break;
+                }
+                let short: Vec<(usize, peniko::kurbo::Rect)> = slices
+                    .iter()
+                    .filter_map(|s| {
+                        let (x, y, sw, sh) = s.region;
+                        let r = peniko::kurbo::Rect::new(
+                            x as f64,
+                            y as f64,
+                            (x + sw) as f64,
+                            (y + sh) as f64,
+                        );
+                        (sw > 0 && sh > 0 && !covers(&damage, &r)).then_some((s.surface_id, r))
+                    })
+                    .collect();
+                if short.is_empty() {
+                    break;
+                }
+                for (id, r) in &short {
+                    if !split_hit.contains(id) {
+                        split_hit.push(*id);
+                    }
+                    if damage.add(*r) {
+                        full = Some(rinch_dom::perf::FullRepaintReason::RegionTooLarge);
+                    }
+                }
+                grow(
+                    &mut damage,
+                    &mut full,
+                    &mut split_hit,
+                    &self.split.kept,
+                    &self.split.ink,
                 );
+                partial = full.is_none();
             }
-            rinch_dom::paint::set_dirty_region(None);
-            if let (Some(drag), Some(_)) = (&self.active_dnd, ghost_now) {
-                use peniko::kurbo::Affine;
-                let (tx, ty) = drag.ghost_translate(scale);
-                self.painter
-                    .scene_mut()
-                    .append(drag.snapshot.scene(), Some(Affine::translate((tx, ty))));
+            if self.split.enabled || !self.split.kept.is_empty() {
+                let all = full.is_some();
+                if all {
+                    self.split.kept.clear();
+                    self.split.ink.clear();
+                } else {
+                    self.split.kept.retain(|(id, _)| !split_hit.contains(id));
+                }
+                for s in &slices {
+                    let (x, y, sw, sh) = s.region;
+                    self.split.ink.insert(s.surface_id, s.ink);
+                    self.split.kept.retain(|(id, _)| *id != s.surface_id);
+                    self.split.kept.push((
+                        s.surface_id,
+                        peniko::kurbo::Rect::new(
+                            x as f64,
+                            y as f64,
+                            (x + sw) as f64,
+                            (y + sh) as f64,
+                        ),
+                    ));
+                }
+                self.split.change = Some(crate::shell::split_frame::SplitChange {
+                    drop: split_hit,
+                    all,
+                    add: slices,
+                });
             }
-            if let Some((x, y, w_r, h_r)) = self.inspect_highlight {
-                Self::paint_inspect_overlay(&mut self.painter, scale, x, y, w_r, h_r);
-            }
-            Self::paint_title_tooltip(self.title_tooltip.shown.as_ref(), &mut self.painter, scale);
         }
         self.last_ghost_rect = ghost_now;
         self.last_inspect_rect = inspect_now;
@@ -2271,10 +2544,10 @@ impl RinchApp {
         self.scene_is_full = full.is_some();
 
         if full.is_some() {
-            return GpuFrame::Full(self.painter.scene());
+            return GpuFrameKind::Full;
         }
-        let Some(bounds) = bounds.filter(|_| partial) else {
-            return GpuFrame::Unchanged;
+        let Some(bounds) = damage.bounds().filter(|_| partial) else {
+            return GpuFrameKind::Unchanged;
         };
         // Whole device pixels: the damage is (`compute_damage` rounds out),
         // but a rect is never trusted to be.
@@ -2298,10 +2571,9 @@ impl RinchApp {
             .filter(|r| r.2 > 0 && r.3 > 0)
             .collect();
         if rects.is_empty() || bw == 0 || bh == 0 {
-            return GpuFrame::Unchanged;
+            return GpuFrameKind::Unchanged;
         }
-        GpuFrame::Partial {
-            scene: self.painter.scene(),
+        GpuFrameKind::Partial {
             size: (bx + bw, by + bh),
             rects,
         }
@@ -5818,6 +6090,29 @@ impl RinchApp {
             return;
         }
         self.mark_attribute_nodes_paint_dirty("data-viewport", |value| names.contains(&value));
+    }
+
+    /// The damage of `fresh` surfaces (those that drew a new GPU frame since
+    /// the last paint): every one the window does **not** composite split
+    /// (`split`, #1865) is marked paint-dirty and a repaint requested; a split
+    /// one is composited from the kept slices with no repaint. `stale` (split
+    /// surfaces whose texture changed size under their slice) are damage
+    /// whatever they drew, so the frame splits them again.
+    pub fn mark_fresh_surfaces(&mut self, fresh: &[usize], split: &[usize], stale: &[usize]) {
+        let mut damaged: Vec<usize> = fresh
+            .iter()
+            .copied()
+            .filter(|id| !split.contains(id))
+            .collect();
+        for id in stale {
+            if !damaged.contains(id) {
+                damaged.push(*id);
+            }
+        }
+        if !damaged.is_empty() {
+            self.request_repaint();
+            self.mark_surface_nodes_paint_dirty(&damaged);
+        }
     }
 
     /// The `RenderSurface` half of the same problem, by `data-render-surface`
