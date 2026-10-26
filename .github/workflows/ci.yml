@@ -738,6 +738,21 @@ jobs:
       # above exported (wasm-bindgen-test-runner reads the variables in that
       # order), and the runner image ships Firefox with a matching geckodriver
       # at `$GECKOWEBDRIVER`.
+      # Firefox opens an AudioContext only with a working audio output, and
+      # the runner has no sound server: without one every AudioContext stays
+      # `suspended` for ever (measured on ubuntu-24.04, Firefox 157). The
+      # rinch-av capture tests then fail (they used to hang until the
+      # runner killed them). Headless Chrome plays into its own null sink
+      # and needs none of this. A null PulseAudio sink costs about 16 s.
+      - name: Start a null audio sink (for Firefox's AudioContext)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends pulseaudio
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=ci_null
+          pactl set-default-sink ci_null
+          pactl info | grep -E 'Server String|Default Sink'
+
       - name: Run wasm tests (headless Firefox)
         env:
           CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner

@@ -52,6 +52,30 @@ extern "C" {
     fn rv_ua() -> String;
 }
 
+/// Resume `ctx`, waiting at most 3 s. A browser with no audio output can
+/// leave `resume()` pending for ever; that must be a fast, named failure,
+/// not a test the runner kills at its timeout.
+async fn resume_within_3s(ctx: &web_sys::AudioContext) {
+    let resume = ctx.resume().unwrap();
+    let timeout = js_sys::Promise::new(&mut |resolve, _| {
+        let _ = web_sys::window()
+            .unwrap()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 3000);
+    });
+    let both: js_sys::Array = [JsValue::from(resume), JsValue::from(timeout)]
+        .into_iter()
+        .collect();
+    let race = js_sys::Promise::race(&both);
+    let _ = JsFuture::from(race).await;
+    assert_eq!(
+        ctx.state(),
+        web_sys::AudioContextState::Running,
+        "the test's AudioContext did not start within 3 s (state {:?}): this browser \
+         has no working audio output (CI: is a sound server running?)",
+        ctx.state()
+    );
+}
+
 async fn sleep_ms(ms: i32) {
     let p = js_sys::Promise::new(&mut |resolve, _| {
         let _ = web_sys::window()
@@ -91,7 +115,7 @@ async fn tone_ctx(rate: Option<f32>) -> Tone {
     let osc = ctx.create_oscillator().unwrap();
     osc.frequency().set_value(440.0);
     osc.start().unwrap();
-    let _ = JsFuture::from(ctx.resume().unwrap()).await;
+    resume_within_3s(&ctx).await;
     Tone { ctx, osc }
 }
 
@@ -365,7 +389,15 @@ async fn audio_status_says_whether_samples_arrive() {
         c.fetch_add(1, Ordering::Relaxed);
     });
     assert_eq!(input.status(), AudioInputStatus::Starting);
-    sleep_ms(800).await;
+    // A context that will run may take a while to open the output (real
+    // Firefox's first stream on a sound server); one that is held stays
+    // held. Wait up to 5 s for samples, then judge.
+    for _ in 0..50 {
+        sleep_ms(100).await;
+        if calls.load(Ordering::Relaxed) > 0 {
+            break;
+        }
+    }
     let n = calls.load(Ordering::Relaxed);
     let status = input.status();
     log(&format!(
