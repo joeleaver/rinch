@@ -429,6 +429,14 @@ define_counters! {
     /// compositor. One per new frame of a video the window composites split,
     /// after paint; a video drawn in the scene uploads none here.
     SplitFrameUploads = "split_frame_uploads",
+    /// GPU window, split path (#1865 S4): kept regions a partial frame did
+    /// not re-render below over, because every change in them was painted
+    /// after the surface (into its above slices).
+    SplitBelowKept = "split_below_kept",
+    /// GPU window, split path (#1865 S4): nodes the attribution walked to
+    /// find a negatively z-indexed descendant hoisted out of a changed box
+    /// (at most 256 a changed box, on frames with a surface kept split).
+    SplitHoistWalkNodes = "split_hoist_walk_nodes",
 
     // ── Input ──────────────────────────────────────────────────────────
     /// Hit tests run (`RinchApp::hit_test`).

@@ -324,9 +324,9 @@ jobs:
             fi
           }
           # The render-surface, compositor and partial-frame fixtures, and
-          # the split oracles (`gpu_split_*`, #1865: 25 compositor, 30 runtime,
+          # the split oracles (`gpu_split_*`, #1865: 25 compositor, 33 runtime,
           # 2 pages).
-          run 76 -p rinch --features gpu,video --lib -- \
+          run 79 -p rinch --features gpu,video --lib -- \
             --ignored gpu_ --skip gpu_hover_probe --test-threads=1
           # #1798's gradients and masks against Chrome's pixels.
           run 1 -p rinch --features gpu,video --test gpu_gradient_mask_1798 -- \
@@ -483,6 +483,11 @@ jobs:
           # above, but `embed` on wasm32 is reached by no crate in the
           # workspace and broke unnoticed (an OS file-drop path calling a
           # native-only `LocalFile::from_path`).
+          # rinch-av's web capture, with the features that compile it.
+          echo "::group::clippy rinch-av audio,camera (wasm32)"
+          cargo clippy -p rinch-av --features audio,camera --target wasm32-unknown-unknown \
+            --all-targets -- -D warnings
+          echo "::endgroup::"
           echo "::group::clippy rinch embed (wasm32)"
           cargo clippy -p rinch --no-default-features --features components,theme,embed \
             --target wasm32-unknown-unknown -- -D warnings
@@ -636,6 +641,10 @@ jobs:
           cargo test -p rinch-storage --target wasm32-unknown-unknown
           cargo test -p rinch-ws --target wasm32-unknown-unknown
           cargo test -p rinch-web --target wasm32-unknown-unknown
+          # rinch-av's web capture against synthetic sources (an oscillator,
+          # a canvas stream; no device). Its crates/rinch-av/webdriver.json
+          # lets Chrome run audio without a user gesture.
+          cargo test -p rinch-av --features audio,camera --target wasm32-unknown-unknown
           # rinch-rtc against the interop target (design record
           # docs/design/webrtc-data-channels.md, section 4): a str0m ICE-lite
           # echo peer behind `lite_echo`'s HTTP signalling. Its URL is baked in
@@ -661,6 +670,27 @@ jobs:
           # the one place CI compiles rinch-web with `word-dictionary` on.
           cargo test -p rinch-web --target wasm32-unknown-unknown \
             --features word-dictionary --test editor_word_dictionary
+
+      # rinch-av's audio capture where the browser holds an AudioContext
+      # until a user gesture (Chrome's default; the step above allows
+      # autoplay). The capture must say `WaitingForGesture`, not deliver
+      # silence with no error (#1928's review). Built with
+      # RINCH_AV_NO_AUTOPLAY=1, the test asserts that state, so a run
+      # under the permissive webdriver.json fails rather than passes.
+      - name: Run rinch-av capture without autoplay (headless Chrome)
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        working-directory: crates/rinch-av
+        run: |
+          set -o pipefail
+          cp webdriver.json webdriver.json.keep
+          echo '{"goog:chromeOptions":{"args":["--headless=new"]}}' > webdriver.json
+          RINCH_AV_NO_AUTOPLAY=1 cargo test -p rinch-av --features audio,camera \
+            --target wasm32-unknown-unknown --test web_capture_lifetimes \
+            -- audio_status 2>&1 | tee noautoplay.log
+          mv webdriver.json.keep webdriver.json
+          # Positive control: the one test ran.
+          grep -q 'test result: ok. 1 passed' noautoplay.log
 
       # `editor_node_view_real_tab` is `#[ignore]`d above (a synthetic keydown moves
       # no focus): this step builds it with RINCH_REAL_KEYS=1 and runs it with
@@ -699,6 +729,21 @@ jobs:
           # Positive control: the browser really ran at 1.5 (review2_1592 logs it).
           grep -q '^dpr 1.5 ' dpr.log
 
+      # Firefox opens an AudioContext only with a working audio output, and
+      # the runner has no sound server: without one every AudioContext stays
+      # `suspended` for ever (measured on ubuntu-24.04, Firefox 157). The
+      # rinch-av capture tests then fail (they used to hang until the
+      # runner killed them). Headless Chrome plays into its own null sink
+      # and needs none of this. A null PulseAudio sink costs about 16 s.
+      - name: Start a null audio sink (for Firefox's AudioContext)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends pulseaudio
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=ci_null
+          pactl set-default-sink ci_null
+          pactl info | grep -E 'Server String|Default Sink'
+
       # The same test binaries, a second engine. The suite was written against
       # Chrome alone, and the first Firefox run found a real bug (the caret on
       # the last line of a code block drawn a line too high: Firefox answers a
@@ -720,6 +765,7 @@ jobs:
           cargo test -p rinch-web --target wasm32-unknown-unknown
           cargo test -p rinch-web --target wasm32-unknown-unknown \
             --features collaboration --test editor_read_only
+          cargo test -p rinch-av --features audio,camera --target wasm32-unknown-unknown
           # The Chrome step's lite_echo, or a new one on the same port if that
           # one did not outlive its step: the same URL keeps the test binaries
           # the Chrome step built (no rebuild).

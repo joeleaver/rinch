@@ -140,10 +140,55 @@ pub fn compute_damage(
     viewport_w: f64,
     viewport_h: f64,
 ) -> DamageRegion {
+    compute_damage_impl(tree, scale, viewport_w, viewport_h, None)
+}
+
+/// What one change named in [`compute_damage_attributed`]: its rects, and
+/// the node whose painting draws them (`node`), so the runtime can place the
+/// change in paint order against a split surface (#1865, S4). `None` when
+/// the change cannot be placed by one node's paint: a removed node's old
+/// rect, a reordered box, a box with a negatively z-indexed descendant
+/// hoisted out of it (painted before the box starts), a split inline's
+/// fragments, a box-less wrapper's subtree, a node drawn by an owner.
+#[derive(Clone, Debug)]
+pub struct NodeDamage {
+    pub node: Option<RawNodeId>,
+    pub rects: Vec<Rect>,
+}
+
+/// [`compute_damage`], and each change's rects with the node that paints
+/// them ([`NodeDamage`]). The region is the same; a full region carries no
+/// list.
+pub fn compute_damage_attributed(
+    tree: &NodeTree,
+    scale: f64,
+    viewport_w: f64,
+    viewport_h: f64,
+) -> (DamageRegion, Vec<NodeDamage>) {
+    let mut by_node = Vec::new();
+    let region = compute_damage_impl(tree, scale, viewport_w, viewport_h, Some(&mut by_node));
+    if region.is_full() {
+        by_node.clear();
+    }
+    (region, by_node)
+}
+
+fn compute_damage_impl(
+    tree: &NodeTree,
+    scale: f64,
+    viewport_w: f64,
+    viewport_h: f64,
+    mut by_node: Option<&mut Vec<NodeDamage>>,
+) -> DamageRegion {
     let mut region = DamageRegion::new(viewport_w, viewport_h);
     if tree.paint_dirty_nodes.is_empty() {
         return region;
     }
+    // The rects the node being measured names, and the node that paints
+    // them, when attributing.
+    let named_rects: RefCell<Vec<Rect>> = RefCell::new(Vec::new());
+    let located: Cell<Option<RawNodeId>> = Cell::new(None);
+    let attributing = by_node.is_some();
 
     let margin = 4.0; // pixels margin for anti-aliasing
     // Whether the node being measured has named any rect yet. A paint-dirty
@@ -168,6 +213,9 @@ pub fn compute_damage(
             },
             None => r,
         };
+        if attributing {
+            named_rects.borrow_mut().push(r);
+        }
         region.add(r)
     };
 
@@ -181,6 +229,8 @@ pub fn compute_damage(
             continue;
         };
         named.set(false);
+        named_rects.borrow_mut().clear();
+        located.set(Some(node_id));
 
         // Current position. CSS transforms displace where a node renders, so
         // use the transform-aware absolute rect — the region must cover the
@@ -209,6 +259,11 @@ pub fn compute_damage(
         // boxes around it, wherever the subtree reaches (#1384). One compare
         // for a node whose order held.
         let reordered = reorders_subtree(node);
+        // A reordered box's place against a split surface may have changed:
+        // not placed by its own start (S4).
+        if attributing && reordered {
+            located.set(None);
+        }
         // Whether the rects below are clipped as an absolute box at this
         // node would be, instead of by the node's own chain: a reordered
         // descendant that is absolute against a box above this one escapes
@@ -273,6 +328,7 @@ pub fn compute_damage(
         // that text paints — a colour frame, which re-shapes nothing (#679) —
         // damages each of those boxes, found as its text children's roots.
         if node.is_split_inline() {
+            located.set(None);
             for &child in &node.children {
                 let Some(root_id) = tree
                     .get(child)
@@ -318,6 +374,8 @@ pub fn compute_damage(
             && root_id != node_id
             && let Some(root) = tree.get(root_id)
         {
+            // Drawn by the root's paint.
+            located.set(located.get().map(|_| root_id));
             let (rx, ry, rt) = compute_absolute_position_and_transform(tree, root_id, scale);
             let rw = root.layout.width as f64 * scale;
             let rh = root.layout.height as f64 * scale;
@@ -357,6 +415,7 @@ pub fn compute_damage(
             && !node.children.is_empty()
             && !matches!(node.computed_style.display, DisplayValue::None)
         {
+            located.set(None);
             // A subtree that paints nothing now — a block whose only content
             // was just hidden — adds nothing here; its old pixels are named by
             // its painted rect below.
@@ -400,6 +459,10 @@ pub fn compute_damage(
         if !named.get()
             && let Some(owner) = boxed_owner(tree, node_id)
         {
+            // Drawn by the owner's paint, along with whatever else the owner
+            // draws: not placed (#1923 review: a path no case reaches above
+            // a surface, kept conservative rather than untested).
+            located.set(None);
             if let Some(owner_node) = tree.get(owner) {
                 let (ox, oy, ot) = compute_absolute_position_and_transform(tree, owner, scale);
                 let ow = owner_node.layout.width as f64 * scale;
@@ -421,9 +484,33 @@ pub fn compute_damage(
                 return DamageRegion::full(viewport_w, viewport_h);
             }
         }
+        if let Some(out) = by_node.as_deref_mut() {
+            let rects = std::mem::take(&mut *named_rects.borrow_mut());
+            if !rects.is_empty() {
+                // Text is painted by the box its inline content flows into,
+                // which paint starts; a text node itself is never started.
+                let node = located
+                    .get()
+                    .and_then(|id| match tree.get(id) {
+                        Some(n) if matches!(n.kind, crate::node::NodeKind::Text(_)) => {
+                            n.ifc_root.or(n.parent)
+                        }
+                        _ => Some(id),
+                    })
+                    // A change to a box that is no stacking context can
+                    // change what a negatively z-indexed descendant paints
+                    // (its clip, its scroll offset, its position), and that
+                    // descendant is hoisted into an ancestor context's
+                    // negative layer, painted before the box starts: such a
+                    // change is not placed by the box's start (#1923 review).
+                    .filter(|&id| !hoists_negative_z(tree, id));
+                out.push(NodeDamage { node, rects });
+            }
+        }
     }
 
     // Include rects from removed nodes (saved before deletion).
+    named_rects.borrow_mut().clear();
     for &(rx, ry, rw, rh) in &tree.paint_dirty_removed_rects {
         // Rects stored at scale=1; apply current scale
         if rw > 0.0
@@ -434,6 +521,14 @@ pub fn compute_damage(
             )
         {
             return DamageRegion::full(viewport_w, viewport_h);
+        }
+    }
+
+    // A removed node's old pixels are placed by no paint.
+    if let Some(out) = by_node {
+        let rects = std::mem::take(&mut *named_rects.borrow_mut());
+        if !rects.is_empty() {
+            out.push(NodeDamage { node: None, rects });
         }
     }
 
@@ -493,6 +588,62 @@ fn subtree_has_escaping_absolute(tree: &NodeTree, node_id: RawNodeId) -> bool {
             return true;
         }
     }
+    false
+}
+
+/// Nodes [`hoists_negative_z`] visits before it answers `true` unasked.
+const HOIST_WALK_BUDGET: u32 = 256;
+
+/// Whether a box under `node_id` paints in an **ancestor's** negative layer:
+/// positioned with a negative `z-index`, under `node_id` with no stacking
+/// context between (one would hold it). Such a box paints before `node_id`
+/// starts, so a change to `node_id` that reaches it is not placed by
+/// `node_id`'s start (#1865 S4). `false` when `node_id` is itself a stacking
+/// context. Bounded: past [`HOIST_WALK_BUDGET`] nodes it answers `true`, which
+/// only stops a frame from keeping below. Each node visited is counted on
+/// `split_hoist_walk_nodes`.
+fn hoists_negative_z(tree: &NodeTree, node_id: RawNodeId) -> bool {
+    let Some(node) = tree.get(node_id) else {
+        return false;
+    };
+    if node.creates_stacking_context() {
+        return false;
+    }
+    let mut stack: Vec<RawNodeId> = node.children.clone();
+    let mut visited = 0u32;
+    while let Some(id) = stack.pop() {
+        visited += 1;
+        if visited > HOIST_WALK_BUDGET {
+            tree.perf.add(
+                crate::perf::Counter::SplitHoistWalkNodes,
+                u64::from(visited),
+            );
+            return true;
+        }
+        let Some(child) = tree.get(id) else {
+            continue;
+        };
+        if matches!(child.computed_style.display, DisplayValue::None) {
+            continue;
+        }
+        if child.box_position() != PositionValue::Static
+            && child.computed_style.z_index.is_some_and(|z| z < 0)
+        {
+            tree.perf.add(
+                crate::perf::Counter::SplitHoistWalkNodes,
+                u64::from(visited),
+            );
+            return true;
+        }
+        // A stacking context holds the negative layers under it.
+        if !child.creates_stacking_context() {
+            stack.extend(child.children.iter().copied());
+        }
+    }
+    tree.perf.add(
+        crate::perf::Counter::SplitHoistWalkNodes,
+        u64::from(visited),
+    );
     false
 }
 
@@ -1319,6 +1470,9 @@ impl Painter for ClipTrackingPainter<'_> {
     fn split_surface(&mut self, split: &painter::SurfaceSplit) -> painter::SplitVerdict {
         self.inner.split_surface(split)
     }
+    fn note_node_start(&mut self, node: usize) {
+        self.inner.note_node_start(node)
+    }
 }
 
 /// The render target, and the rect outside which paint emits nothing.
@@ -1476,6 +1630,18 @@ fn paint_surface_frame(
 /// (the default, and every host but the desktop GPU window) splits none.
 pub fn set_viewport_split_ids(ids: Option<HashMap<String, usize>>) {
     VIEWPORT_SPLIT_IDS.with(|v| *v.borrow_mut() = ids);
+}
+
+/// Watch `nodes` (or stop, with `on` false) on the next paints: each time
+/// paint starts one, it tells the painter (`Painter::note_node_start`), which
+/// places it against the surfaces split so far (#1865 S4,
+/// `VelloPainter::node_starts`).
+pub fn set_paint_order_watch(tree: &NodeTree, nodes: &[RawNodeId], on: bool) {
+    for &id in nodes {
+        if let Some(node) = tree.get(id) {
+            node.paint_watch.set(on);
+        }
+    }
 }
 
 /// Whether this paint has anything to split: a GPU surface frame, or a video
@@ -3354,6 +3520,9 @@ fn paint_node_unmasked(
     let Some(node) = tree.get(node_id) else {
         return;
     };
+    if node.paint_watch.get() {
+        painter.note_node_start(node_id);
+    }
 
     // Skip elements that generate no box at all.
     //

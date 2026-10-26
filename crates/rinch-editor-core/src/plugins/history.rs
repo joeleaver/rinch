@@ -356,9 +356,22 @@ impl Branch {
                     && tr.step(mapped).is_ok()
                 {
                     let map = last_map(&tr);
+                    // Mirrored with the step's own map only when it is that map's
+                    // image, range for range (#1935): a position a map deleted is
+                    // recovered by its mirror's range of the same index. A mapped
+                    // step can lose ranges — a `BatchStep` drops each replace a later
+                    // change deleted across (a `mergeCells` undone after a peer
+                    // replaced the table), and may still apply, its attributes kept —
+                    // and recovering into a map with fewer ranges indexed past its end
+                    // (`StepMap::recover`). Unmirrored, a position maps through both.
+                    let mirrored = map.ranges().len() == item.map.ranges().len();
                     let offset = add_after.len() + add_before.len();
-                    add_after.push(Item::map_only(map.clone(), Some(offset)));
-                    remap.append_map_mirrored(map, starts[i]);
+                    add_after.push(Item::map_only(map.clone(), mirrored.then_some(offset)));
+                    if mirrored {
+                        remap.append_map_mirrored(map, starts[i]);
+                    } else {
+                        remap.append_map(map);
+                    }
                 }
             } else {
                 // Nothing recorded after this step: it applies where it was made.

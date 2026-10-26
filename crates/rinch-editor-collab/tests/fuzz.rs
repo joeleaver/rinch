@@ -288,6 +288,12 @@ fn random_edit_unchecked(rng: &mut Rng, state: &EditorState, images: bool) -> Op
         // arms, whose random positions land in cells as anywhere else.
         13 | 14 => {
             let p = random_pos(rng, state);
+            if EXTRA_TABLE_OPS.with(|x| x.get())
+                && let Some(next) = extra_table_op(rng, state, p)
+            {
+                TABLE_EDITS.fetch_add(1, Ordering::Relaxed);
+                return Some(next);
+            }
             let mut tr = state.tr();
             tr.set_selection(Selection::cursor(p));
             let placed = state.apply(tr);
@@ -444,6 +450,13 @@ struct Swarm {
     /// trial but [`fuzz_undo_and_redo_among_remote_changes`], so the others' random
     /// streams are what they were.
     undo_percent: u64,
+    /// How deltas reach the peers ([`Delivery`]), from a random stream of its own.
+    delivery: Delivery,
+    delivery_rng: Rng,
+    /// `got[q][i]`: whether peer `q` has integrated `queue[i]` (out-of-order delivery).
+    got: Vec<Vec<bool>>,
+    /// Integrates that failed transiently while delivery was out of order.
+    transient_errors: u64,
 }
 
 /// Undos and redos that applied and changed the document — the positive control for
@@ -462,6 +475,90 @@ static QUOTES_WRAPPED: AtomicUsize = AtomicUsize::new(0);
 
 /// Table commands applied by [`random_edit`] — the positive control for tables.
 static TABLE_EDITS: AtomicUsize = AtomicUsize::new(0);
+
+thread_local! {
+    /// Whether [`random_edit`]'s table arm also merges cells, sets a cell attribute and
+    /// swaps two rows ([`extra_table_op`]): changes of a table's grid and of a cell's
+    /// own keys, which a table's cell index must not be carried through (review of
+    /// #1926). Off in the older trials, so their random streams are what they were.
+    static EXTRA_TABLE_OPS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// One of the table changes [`EXTRA_TABLE_OPS`] adds, around position `p`, or `None`
+/// (then the table arm runs a command as before).
+fn extra_table_op(rng: &mut Rng, state: &EditorState, p: Pos) -> Option<EditorState> {
+    let cell_at = |doc: &Node, p: usize| -> Option<usize> {
+        let r = doc.resolve(Pos(p)).ok()?;
+        (1..=r.depth())
+            .rev()
+            .find(|&d| r.node(d).type_name().ends_with("cell"))
+            .and_then(|d| r.before(d))
+    };
+    match rng.below(4) {
+        0 => {
+            // Merge the cells around two positions.
+            let q = random_pos(rng, state);
+            let (a, b) = (cell_at(&state.doc, p.0)?, cell_at(&state.doc, q.0)?);
+            if a == b {
+                return None;
+            }
+            let mut tr = state.tr();
+            tr.set_selection(Selection::cell(Pos(a), Pos(b)));
+            state.apply(tr).run("mergeCells")
+        }
+        1 => {
+            // A cell attribute: one of the cell map's own keys, not its blocks.
+            let a = cell_at(&state.doc, p.0)?;
+            let mut tr = state.tr();
+            let v = format!("n{}", rng.below(5));
+            tr.set_node_attr(a, "data-note", AttrValue::from(v.as_str()))
+                .ok()?;
+            Some(state.apply(tr))
+        }
+        2 => {
+            // Swap two rows of the table around `p`, as one replace of the table.
+            let r = state.doc.resolve(p).ok()?;
+            let d = (1..=r.depth()).find(|&d| r.node(d).type_name() == "table")?;
+            let table = r.node(d).clone();
+            let at = r.before(d)?;
+            let (i, j) = (
+                rng.below(table.child_count()),
+                rng.below(table.child_count()),
+            );
+            if i == j {
+                return None;
+            }
+            let mut rows: Vec<Node> = (0..table.child_count())
+                .map(|k| table.child(k).clone())
+                .collect();
+            rows.swap(i, j);
+            let new_table = table.copy_with_content(Fragment::from_children(rows));
+            let mut tr = state.tr();
+            tr.replace(
+                at,
+                at + table.node_size(),
+                Slice::new(Fragment::from_node(new_table), 0, 0),
+            )
+            .ok()?;
+            Some(state.apply(tr))
+        }
+        _ => None,
+    }
+}
+
+/// How a [`Swarm`] delivers the deltas its peers produce.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Delivery {
+    /// Each peer integrates every delta in production order.
+    Fifo,
+    /// A peer integrates the next delta it has not had 60% of the time, else any one
+    /// it has not had: an update ahead of one it depends on is parked by yrs, or leaves
+    /// a gap in a client's clocks.
+    OutOfOrder,
+    /// As `OutOfOrder`, and 15% of the time two to four undelivered deltas merged into
+    /// one update (`merge_updates_v1`), which may itself carry a gap.
+    Merged,
+}
 
 /// A distinct, deterministic yrs client id for peer `p` of the trial at `seed`.
 ///
@@ -520,6 +617,10 @@ impl Swarm {
             edits: 0,
             images: false,
             undo_percent: 0,
+            delivery: Delivery::Fifo,
+            delivery_rng: Rng::new(seed.wrapping_mul(31)),
+            got: vec![Vec::new(); peers],
+            transient_errors: 0,
         }
     }
 
@@ -530,10 +631,29 @@ impl Swarm {
     /// Project peer `p`'s move to `next`, check the load-bearing invariant, and queue
     /// whatever it broadcasts.
     fn record_local(&mut self, seed: u64, p: usize, next: EditorState) {
-        self.sessions[p]
-            .record_local(&self.schema, &self.states[p].doc, &next.doc)
-            .expect("flat edit projects cleanly");
-        let projected = self.sessions[p].projected_doc(&self.schema).unwrap();
+        let recorded = self.sessions[p].record_local(&self.schema, &self.states[p].doc, &next.doc);
+        if let Err(e) = recorded {
+            // Out of order, the shared document may not read until a missing update
+            // arrives (#196's transient class), and the edit stalls outbound (#220):
+            // the model keeps it, and a later edit or the flush catches up.
+            assert!(
+                self.delivery != Delivery::Fifo && !self.sessions[p].is_poisoned(),
+                "flat edit projects cleanly (seed={seed}, peer={p}): {e}"
+            );
+            self.transient_errors += 1;
+            self.states[p] = next;
+            return;
+        }
+        let projected = match self.sessions[p].projected_doc(&self.schema) {
+            Ok(doc) => doc,
+            // Out of order, the shared document may not read until a missing update
+            // arrives (#196's transient class).
+            Err(e) if self.delivery != Delivery::Fifo => {
+                let _ = e;
+                next.doc.clone()
+            }
+            Err(e) => panic!("the projection reads back (seed={seed}, peer={p}): {e}"),
+        };
         if !same(&projected, &next.doc) {
             use rinch_editor_core::serialize::node_to_html;
             panic!(
@@ -554,17 +674,71 @@ impl Swarm {
         self.edits += 1;
     }
 
-    /// Deliver peer `q`'s next unseen delta (a no-op when it is already caught up).
+    /// Deliver to peer `q` a delta it has not had (a no-op when it is caught up): the
+    /// next one, or under out-of-order [`Delivery`] any one, or several merged.
     fn deliver(&mut self, seed: u64, q: usize) {
-        if self.seen[q] >= self.queue.len() {
+        if self.delivery == Delivery::Fifo {
+            if self.seen[q] >= self.queue.len() {
+                return;
+            }
+            let delta = self.queue[self.seen[q]].clone();
+            self.seen[q] += 1;
+            let next = self.sessions[q]
+                .integrate_incremental(&self.states[q], &delta)
+                .expect("delta integrates");
+            self.integrated(seed, q, next);
             return;
         }
-        let delta = self.queue[self.seen[q]].clone();
-        self.seen[q] += 1;
-        if let Some(next) = self.sessions[q]
-            .integrate_incremental(&self.states[q], &delta)
-            .expect("delta integrates")
-        {
+        self.got[q].resize(self.queue.len(), false);
+        let undelivered: Vec<usize> = (0..self.queue.len()).filter(|&i| !self.got[q][i]).collect();
+        if undelivered.is_empty() {
+            return;
+        }
+        let (roll, pick) = (self.delivery_rng.next() % 100, self.delivery_rng.next());
+        let picks: Vec<usize> = if roll < 60 {
+            vec![undelivered[0]]
+        } else if roll < 85 || self.delivery == Delivery::OutOfOrder {
+            vec![undelivered[pick as usize % undelivered.len()]]
+        } else {
+            // Two to four of the first few undelivered, in a random order.
+            let k = 2 + pick as usize % 3;
+            let mut first: Vec<usize> = undelivered.iter().copied().take(k + 2).collect();
+            let mut out = Vec::new();
+            while !first.is_empty() && out.len() < k {
+                out.push(first.remove(self.delivery_rng.below(first.len())));
+            }
+            out
+        };
+        for &i in &picks {
+            self.got[q][i] = true;
+        }
+        self.seen[q] = self.got[q].iter().take_while(|g| **g).count();
+        let delta = if picks.len() == 1 {
+            self.queue[picks[0]].clone()
+        } else {
+            yrs::merge_updates_v1(
+                picks
+                    .iter()
+                    .map(|&i| self.queue[i].as_slice())
+                    .collect::<Vec<_>>(),
+            )
+            .expect("updates merge")
+        };
+        match self.sessions[q].integrate_incremental(&self.states[q], &delta) {
+            Ok(next) => self.integrated(seed, q, next),
+            Err(e) => {
+                assert!(
+                    !self.sessions[q].is_poisoned(),
+                    "an out-of-order integrate poisoned the session (seed={seed}, peer={q}): {e}"
+                );
+                self.transient_errors += 1;
+            }
+        }
+    }
+
+    /// Check and keep what peer `q`'s integrate answered.
+    fn integrated(&mut self, seed: u64, q: usize, next: Option<EditorState>) {
+        if let Some(next) = next {
             // A remote integration also lands the model at project(CRDT).
             assert!(
                 same(
@@ -588,6 +762,19 @@ impl Swarm {
         for q in 0..self.peers() {
             while self.seen[q] < self.queue.len() {
                 self.deliver(seed, q);
+            }
+        }
+        if self.delivery != Delivery::Fifo {
+            // A transient failure left a model behind its CRDT: every delta at once
+            // (nothing new to the CRDT) brings each model to the read.
+            let all =
+                yrs::merge_updates_v1(self.queue.iter().map(|d| d.as_slice()).collect::<Vec<_>>())
+                    .expect("updates merge");
+            for q in 0..self.peers() {
+                let next = self.sessions[q]
+                    .integrate_incremental(&self.states[q], &all)
+                    .expect("the whole history integrates");
+                self.integrated(seed, q, next);
             }
         }
     }
@@ -878,11 +1065,30 @@ fn fuzz_deletion_to_empty_trial(seed: u64, peers: usize, rounds: usize) -> Finge
     swarm.fingerprint()
 }
 
+/// How many integrates on this thread read back only what their update changed,
+/// and how many read the whole document, while `f` runs (#1241). Every partial read
+/// is compared with a whole one as it happens (`testing::set_incremental_read_check`,
+/// on in this crate's debug tests).
+fn integrate_reads_in(f: impl FnOnce()) -> (u64, u64) {
+    use rinch_editor_collab::testing::integrate_reads;
+    let before = integrate_reads();
+    f();
+    let after = integrate_reads();
+    (after.0 - before.0, after.1 - before.1)
+}
+
 #[test]
 fn fuzz_two_peers_converge() {
-    for seed in 1..=24u64 {
-        let _ = fuzz_trial(seed, 2, 220);
-    }
+    let (partial, whole) = integrate_reads_in(|| {
+        for seed in 1..=24u64 {
+            let _ = fuzz_trial(seed, 2, 220);
+        }
+    });
+    // The positive control for the partial read (#1241): about half the
+    // integrates of this test, of the tables test and of the images test take it
+    // (2359 of 4404, 1634 of 3078 and 3586 of 6047 when written), each compared
+    // with a whole read.
+    assert!(partial >= 1000, "{partial} partial reads, {whole} whole");
 }
 
 #[test]
@@ -905,9 +1111,13 @@ fn fuzz_edits_tables_among_everything_else() {
     // The positive control for the table arm: tables inserted and restructured while
     // the other arms type, split, wrap and delete in and around their cells.
     let before = TABLE_EDITS.load(Ordering::Relaxed);
-    for seed in 900..=907u64 {
-        let _ = fuzz_trial(seed, 3, 300);
-    }
+    let (partial, whole) = integrate_reads_in(|| {
+        for seed in 900..=907u64 {
+            let _ = fuzz_trial(seed, 3, 300);
+        }
+    });
+    // The partial read's positive control (see `fuzz_two_peers_converge`).
+    assert!(partial >= 1000, "{partial} partial reads, {whole} whole");
     let applied = TABLE_EDITS.load(Ordering::Relaxed) - before;
     assert!(
         applied >= 20,
@@ -974,9 +1184,13 @@ fn fuzz_many_peers_converge() {
 fn fuzz_with_images_converges() {
     let before = IMAGES_INSERTED.load(Ordering::Relaxed);
     let attrs_before = IMAGE_ATTRS_SET.load(Ordering::Relaxed);
-    for seed in 700..=715u64 {
-        let _ = fuzz_trial_with(seed, 2 + (seed % 3) as usize, 300, true);
-    }
+    let (partial, whole) = integrate_reads_in(|| {
+        for seed in 700..=715u64 {
+            let _ = fuzz_trial_with(seed, 2 + (seed % 3) as usize, 300, true);
+        }
+    });
+    // The partial read's positive control (see `fuzz_two_peers_converge`).
+    assert!(partial >= 1000, "{partial} partial reads, {whole} whole");
     let inserted = IMAGES_INSERTED.load(Ordering::Relaxed) - before;
     assert!(
         inserted >= 20,
@@ -1004,6 +1218,86 @@ fn fuzz_deletion_to_empty_recovers_and_converges() {
     for seed in 600..=603u64 {
         let _ = fuzz_deletion_to_empty_trial(seed, 4, 400);
     }
+}
+
+// ─── Delivery out of order, and grid changes (review of #1926) ──────────────────
+
+/// One trial with `delivery`, the extra table changes on ([`EXTRA_TABLE_OPS`]),
+/// pictures every other seed and undo/redo every fourth. Answers the integrates and
+/// local edits that failed transiently (out of order only).
+fn delivery_trial(seed: u64, peers: usize, delivery: Delivery) -> u64 {
+    EXTRA_TABLE_OPS.with(|x| x.set(true));
+    let schema = schema();
+    let mut rng = Rng::new(seed);
+    let mut swarm = Swarm::new(
+        seed,
+        schema.clone(),
+        initial_state(&schema).doc.clone(),
+        peers,
+    );
+    swarm.images = seed.is_multiple_of(2);
+    // Undo and redo every fourth seed: with these grid changes an undo panicked in
+    // the history's mapping (`StepMap::recover`, from `Branch::pop_event`) until
+    // #1935.
+    swarm.undo_percent = if seed % 4 == 1 { 15 } else { 0 };
+    swarm.delivery = delivery;
+    swarm.delivery_rng = Rng::new(seed.wrapping_mul(31) + delivery as u64);
+    swarm.run_rounds(seed, 300, &mut rng);
+    swarm.flush(seed);
+    swarm.assert_converged(seed);
+    EXTRA_TABLE_OPS.with(|x| x.set(false));
+    swarm.transient_errors
+}
+
+/// Grid changes (merged cells, a cell's attributes, swapped rows) among everything
+/// else, delivered in order: every partial read is compared with a whole read
+/// (`testing::set_incremental_read_check`), so a table's cell index carried through a
+/// change of its grid shows as a wrong read.
+#[test]
+fn fuzz_grid_changes_in_order() {
+    let before = TABLE_EDITS.load(Ordering::Relaxed);
+    let (partial, whole) = integrate_reads_in(|| {
+        for seed in 5001..=5024u64 {
+            delivery_trial(seed, 2 + (seed % 3) as usize, Delivery::Fifo);
+        }
+    });
+    assert!(partial >= 1000, "{partial} partial reads, {whole} whole");
+    let applied = TABLE_EDITS.load(Ordering::Relaxed) - before;
+    assert!(applied >= 100, "only {applied} table changes applied");
+}
+
+/// Deltas delivered out of order (review of #1926). yrs parks an update that arrives
+/// ahead of one it depends on, or keeps a gap in its sender's clocks, and the update
+/// that fills the gap fires no event for a change inside any type its sender created
+/// after the gap: no path names it, so the read must be the whole one. Seeds 9001 and
+/// 9002 diverged before the record was spoiled for it (a paragraph read back without
+/// the char typed in it).
+#[test]
+fn fuzz_out_of_order_delivery_converges() {
+    let mut transient = 0;
+    let (partial, whole) = integrate_reads_in(|| {
+        for seed in 9001..=9024u64 {
+            transient += delivery_trial(seed, 2 + (seed % 3) as usize, Delivery::OutOfOrder);
+        }
+    });
+    // Both kinds of read ran (437 partial, 7865 whole when written: a gap stays
+    // open for a while, and every integrate while it is reads the whole document).
+    assert!(partial >= 200, "{partial} partial reads, {whole} whole");
+    assert!(whole >= 500, "{partial} partial reads, {whole} whole");
+    let _ = transient;
+}
+
+/// As [`fuzz_out_of_order_delivery_converges`], with batches of deltas merged into one
+/// update, which can carry a gap of its own.
+#[test]
+fn fuzz_merged_delivery_converges() {
+    let (partial, whole) = integrate_reads_in(|| {
+        for seed in 9101..=9124u64 {
+            delivery_trial(seed, 2 + (seed % 3) as usize, Delivery::Merged);
+        }
+    });
+    assert!(partial >= 200, "{partial} partial reads, {whole} whole");
+    assert!(whole >= 500, "{partial} partial reads, {whole} whole");
 }
 
 /// Issue #214: a `(seed, peers, rounds)` triple must reproduce a trial **exactly**, or a

@@ -136,6 +136,9 @@ pub(crate) struct Slicing {
     /// The surfaces the runtime refuses this frame: they did not fit the
     /// window's split memory cap (D6).
     pub(crate) refused: Vec<usize>,
+    /// Watched nodes' starts against the splits (S4): see
+    /// `VelloPainter::node_starts`.
+    pub(crate) starts: std::collections::HashMap<usize, usize>,
 }
 
 /// Whether two rects share any area.
@@ -240,6 +243,7 @@ impl Slicing {
             slices: Vec::new(),
             inverse_open: false,
             refused: Vec::new(),
+            starts: Default::default(),
         }
     }
 
