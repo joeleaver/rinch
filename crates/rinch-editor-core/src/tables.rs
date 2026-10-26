@@ -386,6 +386,22 @@ impl TableMap {
     pub fn row_start(&self, row: usize) -> Option<usize> {
         (row <= self.height).then(|| self.row_starts[row])
     }
+
+    /// The row whose span of positions holds `pos`: a binary search of the
+    /// row starts. A cell's position is in the row it starts in.
+    fn row_of(&self, pos: usize) -> Option<usize> {
+        let r = self.row_starts[..self.height].partition_point(|&s| s <= pos);
+        (r > 0 && pos < self.row_starts[self.height]).then(|| r - 1)
+    }
+
+    /// [`Self::find_cell`] without scanning the whole grid: the cell's row
+    /// by binary search, then that row's slots. `O(log rows + width)`.
+    pub fn find_cell_in_row(&self, pos: usize) -> Option<Rect> {
+        let row = self.row_of(pos)?;
+        let first = row * self.width;
+        let index = (first..first + self.width).find(|&i| self.map[i] == pos)?;
+        self.cell_rect(index)
+    }
 }
 
 /// The number of columns in `table` (its grid width), honoring colspan/rowspan —
@@ -617,10 +633,20 @@ pub fn table_around(r: &ResolvedPos) -> Option<(Node, usize)> {
     None
 }
 
+/// A cached [`TableMap`]: the table node (kept, so its identity cannot be
+/// reused while cached), its content start, the map, and the document it was
+/// last found in through [`selected_cells`] (so a lookup in that same
+/// document needs no resolve).
+struct CachedMap {
+    table: Node,
+    start: usize,
+    map: std::rc::Rc<TableMap>,
+    doc: Option<Node>,
+}
+
 thread_local! {
-    /// The last [`table_map`]: the table node (kept, so its identity cannot
-    /// be reused while cached), its content start, and its map.
-    static MAP_CACHE: std::cell::RefCell<Option<(Node, usize, std::rc::Rc<TableMap>)>> =
+    /// The last [`table_map`].
+    static MAP_CACHE: std::cell::RefCell<Option<CachedMap>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -633,16 +659,91 @@ thread_local! {
 /// the whole map (1.36M instructions at 1000×10 cells).
 pub fn table_map(table: &Node, table_start: usize) -> std::rc::Rc<TableMap> {
     MAP_CACHE.with(|cache| {
-        if let Some((node, start, map)) = cache.borrow().as_ref()
-            && node.same_ref(table)
-            && *start == table_start
+        if let Some(c) = cache.borrow().as_ref()
+            && c.table.same_ref(table)
+            && c.start == table_start
         {
-            return map.clone();
+            return c.map.clone();
         }
         let map = std::rc::Rc::new(TableMap::compute(table, table_start));
-        *cache.borrow_mut() = Some((table.clone(), table_start, map.clone()));
+        *cache.borrow_mut() = Some(CachedMap {
+            table: table.clone(),
+            start: table_start,
+            map: map.clone(),
+            doc: None,
+        });
         map
     })
+}
+
+/// The cells of the cell selection from `anchor_cell` to `head_cell` (the
+/// positions before its corner cells), as `(position, cell)` in document
+/// order: the cells whose origin is in the rectangle between the corners.
+///
+/// What a command walks to touch every selected cell, so it costs in the
+/// selected cells, not the table: in the document [`table_map`] last
+/// answered for, the table is the cached one (no resolve, which walks every
+/// row before the position), the corners are found by row
+/// ([`TableMap::find_cell_in_row`]), and each cell's node is read off its
+/// row. A new document resolves once and reuses the table's map while the
+/// table node is unchanged. Empty when the corners are not cells of one
+/// table.
+pub fn selected_cells(doc: &Node, anchor_cell: usize, head_cell: usize) -> Vec<(usize, Node)> {
+    let cached = MAP_CACHE.with(|cache| {
+        let c = cache.borrow();
+        let c = c.as_ref()?;
+        let in_doc = c.doc.as_ref().is_some_and(|d| d.same_ref(doc));
+        let within = |p: usize| p >= c.start && p < c.start + c.table.content_size();
+        (in_doc && within(head_cell) && c.map.find_cell_in_row(head_cell).is_some())
+            .then(|| (c.table.clone(), c.map.clone()))
+    });
+    let (table, map) = match cached {
+        Some(hit) => hit,
+        None => {
+            let Some((table, start)) = doc
+                .resolve(Pos(head_cell + 1))
+                .ok()
+                .and_then(|r| table_around(&r))
+            else {
+                return Vec::new();
+            };
+            let map = table_map(&table, start);
+            MAP_CACHE.with(|cache| {
+                if let Some(c) = cache.borrow_mut().as_mut() {
+                    c.doc = Some(doc.clone());
+                }
+            });
+            (table, map)
+        }
+    };
+    let (Some(a), Some(h)) = (
+        map.find_cell_in_row(anchor_cell),
+        map.find_cell_in_row(head_cell),
+    ) else {
+        return Vec::new();
+    };
+    let rect = Rect {
+        left: a.left.min(h.left),
+        top: a.top.min(h.top),
+        right: a.right.max(h.right),
+        bottom: a.bottom.max(h.bottom),
+    };
+    let mut cells = map.cells_in_rect(rect);
+    cells.sort_unstable();
+    cells
+        .into_iter()
+        .filter_map(|p| {
+            let row = map.row_of(p)?;
+            let mut at = map.row_starts[row] + 1;
+            for cell in table.child(row).content().children() {
+                if at == p {
+                    return Some((p, cell.clone()));
+                }
+                at += cell.node_size();
+            }
+            None
+        })
+        .collect()
 }
 
 /// The [`TableMap`] of the table enclosing `pos`, with the table node and its

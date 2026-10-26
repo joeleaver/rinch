@@ -183,9 +183,10 @@ fn collab_table_keystroke(f: CollabFixture) -> CollabFixture {
 }
 
 // Typing over a two-character selection inside one cell of a table of 100
-// rows and of 1000, and at a caret there: a range costing a caret's keystroke
-// plus one resolve means the check for a table the edit left ragged (#1847)
-// does not walk the table (its first round did: 1.0 ms at 1,024 rows).
+// rows and of 1000, and at a caret there: the check for a table the edit left
+// ragged (#1847) reads the range's start, resolved once with the inherited
+// marks, and nothing of the table (its first round walked it: 1.0 ms at 1,024
+// rows).
 #[library_benchmark]
 #[bench::rows_100(args = ((100, 2)), setup = setup_range_type_in_table)]
 #[bench::rows_1000(args = ((1000, 2)), setup = setup_range_type_in_table)]
@@ -206,9 +207,10 @@ fn range_across_paragraphs_in_cell(f: EditorFixture) -> EditorFixture {
 }
 
 // Whether bold is active over a two-cell selection, in a table of 100 and of
-// 1000 rows: the table's map is computed once per table node and kept
-// (`tables::table_map`), so a toolbar asking per mark does not recompute it.
-// The fixture's setup asks once, as the toolbar's first mark does.
+// 1000 rows: equal counts mean asking costs in the selected cells, not the
+// table (`tables::selected_cells`: the table's map is kept per table node, and
+// in the same document the cells are found without a resolve). The fixture's
+// setup asks once, as the toolbar's first mark does.
 #[library_benchmark]
 #[bench::rows_100(args = ((100, 1)), setup = setup_cells_in_table)]
 #[bench::rows_1000(args = ((1000, 1)), setup = setup_cells_in_table)]
