@@ -56,18 +56,20 @@ impl AudioTrack {
     pub fn from_microphone(config: crate::audio::AudioInputConfig) -> Result<Self, crate::AvError> {
         let mut track = Self::new("microphone");
         let subscribers = track.subscribers.clone();
-        let sample_rate = config.sample_rate;
-        let channels = config.channels;
         let start = std::time::Instant::now();
 
-        let stream = crate::audio::open_audio_input(config, move |samples| {
-            push_to_subscribers(
-                &subscribers,
-                samples,
-                sample_rate,
-                channels,
-                start.elapsed().as_micros() as u64,
-            );
+        // Tagged with the format the device really runs, not the request.
+        let stream = crate::audio::open_audio_input_with(None, config, move |actual| {
+            let (sample_rate, channels) = (actual.sample_rate, actual.channels);
+            move |samples: &[f32]| {
+                push_to_subscribers(
+                    &subscribers,
+                    samples,
+                    sample_rate,
+                    channels,
+                    start.elapsed().as_micros() as u64,
+                );
+            }
         })?;
 
         track._input_stream = Some(stream);
@@ -81,18 +83,19 @@ impl AudioTrack {
     ) -> Result<Self, crate::AvError> {
         let mut track = Self::new("microphone");
         let subscribers = track.subscribers.clone();
-        let sample_rate = config.sample_rate;
-        let channels = config.channels;
         let start = std::time::Instant::now();
 
-        let stream = crate::audio::open_audio_input_on(device, config, move |samples| {
-            push_to_subscribers(
-                &subscribers,
-                samples,
-                sample_rate,
-                channels,
-                start.elapsed().as_micros() as u64,
-            );
+        let stream = crate::audio::open_audio_input_with(Some(device), config, move |actual| {
+            let (sample_rate, channels) = (actual.sample_rate, actual.channels);
+            move |samples: &[f32]| {
+                push_to_subscribers(
+                    &subscribers,
+                    samples,
+                    sample_rate,
+                    channels,
+                    start.elapsed().as_micros() as u64,
+                );
+            }
         })?;
 
         track._input_stream = Some(stream);
