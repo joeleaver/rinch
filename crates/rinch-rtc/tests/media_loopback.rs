@@ -433,8 +433,18 @@ fn native_media_end_to_end() {
     let (tc, _wc) = LocalTrack::video_source(VideoSourceOptions::default()).unwrap();
     pair.a.add_track(&tc).unwrap();
     let _ = drive(pair.a.create_offer(), T).unwrap();
+    assert_eq!(
+        rinch_rtc::testing::pending_descriptions(&pair.a),
+        Some((true, false)),
+        "webrtc-rs holds our offer"
+    );
     drive(pair.a.set_remote_description(Description::rollback()), T).unwrap();
     assert_eq!(pair.a.signaling_state(), SignalingState::Stable);
+    assert_eq!(
+        rinch_rtc::testing::pending_descriptions(&pair.a),
+        Some((false, false)),
+        "webrtc-rs rolled the offer back"
+    );
     pair.a.close();
     pair.b.close();
 

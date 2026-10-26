@@ -96,6 +96,11 @@ enum PeerCmd {
         key: u64,
         reply: std::sync::mpsc::Sender<Option<ChannelSettings>>,
     },
+    /// Test hook: whether a local / remote description is pending (an
+    /// offer made or taken and not yet answered), as webrtc-rs holds it.
+    Pending {
+        reply: std::sync::mpsc::Sender<(bool, bool)>,
+    },
     /// Audio and video (the `media` feature).
     #[cfg(feature = "media-core")]
     Media(crate::native_media::MediaCmd),
@@ -295,6 +300,14 @@ pub mod testing {
     }
 
     pub use crate::ChannelSettings;
+
+    /// Whether webrtc-rs holds a pending local / remote description for
+    /// `peer` (blocks up to 5 s).
+    pub fn pending_descriptions(peer: &crate::Peer) -> Option<(bool, bool)> {
+        let (reply, rx) = std::sync::mpsc::channel();
+        super::post(peer.id(), super::PeerCmd::Pending { reply });
+        rx.recv_timeout(Duration::from_secs(5)).ok()
+    }
 
     /// The channel's settings as webrtc-rs holds them, asked of the worker
     /// directly (blocks up to 5 s; no main-thread pumping needed).
@@ -617,6 +630,9 @@ async fn peer_task(
                     PeerCmd::Inspect { reply, .. } => {
                         let _ = reply.send(None);
                     }
+                    PeerCmd::Pending { reply } => {
+                        let _ = reply.send((false, false));
+                    }
                     #[cfg(feature = "media-core")]
                     PeerCmd::Media(crate::native_media::MediaCmd::ReplaceTrack { req, .. }) => {
                         emit(
@@ -778,6 +794,11 @@ async fn peer_task(
             PeerCmd::Media(cmd) => media.handle(&pc, cmd).await,
             #[cfg(feature = "media-core")]
             PeerCmd::RemoteTrack(track) => media.remote_track(&pc, track).await,
+            PeerCmd::Pending { reply } => {
+                let local = pc.pending_local_description().await.is_some();
+                let remote = pc.pending_remote_description().await.is_some();
+                let _ = reply.send((local, remote));
+            }
             PeerCmd::Inspect { key, reply } => {
                 let settings = match channels.get(&key) {
                     Some(dc) => match (

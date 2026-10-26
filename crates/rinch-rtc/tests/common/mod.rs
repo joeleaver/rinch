@@ -88,5 +88,7 @@ pub fn drive<T>(fut: impl Future<Output = T>, timeout: Duration) -> T {
 pub const T: Duration = Duration::from_secs(15);
 
 mod lite;
+#[cfg(feature = "media")]
+pub mod media;
 #[allow(unused_imports)]
 pub use lite::{LitePeer, LiteStats};

@@ -23,7 +23,20 @@ static FACTORY: OnceLock<Factory> = OnceLock::new();
 /// call wins; later ones are ignored (the shell may start more than once in
 /// a process's tests).
 pub fn set_video_sink_factory(f: impl Fn(&str) -> VideoFrameSink + Send + Sync + 'static) {
+    INSTALLS.with(|n| n.set(n.get() + 1));
     let _ = FACTORY.set(Box::new(f));
+}
+
+thread_local! {
+    static INSTALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times this thread has called [`set_video_sink_factory`] (a test
+/// hook: the shell's install is pinned by it, per thread so another test's
+/// install cannot stand in for it).
+#[doc(hidden)]
+pub fn installs_on_this_thread() -> usize {
+    INSTALLS.with(|n| n.get())
 }
 
 /// A sink showing frames in the element with `data-viewport = viewport`,

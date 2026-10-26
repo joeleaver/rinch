@@ -1,17 +1,22 @@
 //! Browser ↔ native media (design record `docs/design/rtc-media.md`,
-//! section 6): the browser sends a moving box as H.264 to
-//! `examples/media_echo.rs`, a native rinch-rtc peer that decodes it with
-//! openh264 and sends it back re-encoded; the box must come back. Both
-//! directions of openh264 ↔ the browser's H.264 are in this one loop.
+//! section 6): the browser sends a moving box to `examples/media_echo.rs`,
+//! a native rinch-rtc peer that decodes it and sends it back re-encoded;
+//! the box must come back. Both directions of the codec interop are in this
+//! one loop.
 //!
-//! The URL comes in at build time: `RINCH_RTC_MEDIA_URL=http://127.0.0.1:N`.
-//! Without it the test logs that it skipped, unless `RINCH_RTC_REQUIRE_LIVE=1`
-//! was also set (CI does), when it fails.
+//! - `RINCH_RTC_MEDIA_URL`: a `media_echo` with both codecs. A browser
+//!   offers VP8 first, so this is **VP8** (libvpx on the native side). It
+//!   must pass in every browser, Firefox included: VP8 is why desktop video
+//!   works with a Firefox that has no OpenH264 plugin (M2, 2026-10-27).
+//! - `RINCH_RTC_MEDIA_H264_URL` (optional): a `media_echo --h264-only`, for
+//!   **H.264** (openh264 on the native side). It runs where the browser can
+//!   encode H.264. A browser that cannot (Firefox without Cisco's plugin)
+//!   is named in the log and that half is not run: H.264 needs the plugin
+//!   there, by design.
 //!
-//! **Firefox** gets H.264 from Cisco's OpenH264 plugin, which it downloads
-//! itself. A Firefox without it offers no H.264, and the native side (H.264
-//! only, M2) cannot answer its video. That is reported as a failure naming
-//! the cause, not skipped.
+//! The URLs come in at build time. Without `RINCH_RTC_MEDIA_URL` the test
+//! logs that it skipped, unless `RINCH_RTC_REQUIRE_LIVE=1` (CI), when it
+//! fails.
 #![cfg(all(target_arch = "wasm32", feature = "media-core"))]
 
 use std::cell::RefCell;
@@ -28,6 +33,7 @@ use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 
 const URL: Option<&str> = option_env!("RINCH_RTC_MEDIA_URL");
+const H264_URL: Option<&str> = option_env!("RINCH_RTC_MEDIA_H264_URL");
 const REQUIRE: Option<&str> = option_env!("RINCH_RTC_REQUIRE_LIVE");
 const W: u32 = 320;
 const H: u32 = 240;
@@ -143,17 +149,8 @@ async fn browser_h264_frames() -> f64 {
     JsFuture::from(p).await.unwrap().as_f64().unwrap_or(0.0)
 }
 
-#[wasm_bindgen_test]
-async fn h264_round_trips_through_a_native_peer() {
-    let Some(url) = URL else {
-        assert!(
-            REQUIRE.is_none(),
-            "RINCH_RTC_REQUIRE_LIVE is set but RINCH_RTC_MEDIA_URL is not: the browser-native \
-             media test would not run"
-        );
-        web_sys::console::log_1(&"web_media_native: skipped (no RINCH_RTC_MEDIA_URL)".into());
-        return;
-    };
+/// Send the box to the echo at `url`, wait for it to come back.
+async fn round_trip(url: &str, label: &str) {
     let peer = Peer::new(RtcConfig {
         gathering: Gathering::Complete,
         ..Default::default()
@@ -173,25 +170,18 @@ async fn h264_round_trips_through_a_native_peer() {
     let got: Rc<RefCell<Vec<RemoteTrack>>> = Rc::default();
     let g = got.clone();
     peer.on_track(move |t| g.borrow_mut().push(t));
-
-    // The cause, named, when this browser cannot encode H.264. Firefox
-    // lists H.264 in its SDP and capabilities even without Cisco's
-    // OpenH264 plugin, then encodes nothing; only sending tells.
-    let ua = web_sys::window()
-        .unwrap()
-        .navigator()
-        .user_agent()
-        .unwrap_or_default();
-    let encoded = browser_h264_frames().await;
-    assert!(
-        encoded > 0.0,
-        "this browser encodes no H.264 ({ua}): 0 frames in 3 s of a browser-only H.264 \
-         loopback. In Firefox that is Cisco's OpenH264 plugin missing (Firefox downloads \
-         it itself). The native side is H.264 only (M2), so video between desktop and this \
-         browser cannot work until VP8 is added there."
-    );
     let offer = peer.create_offer().await.unwrap();
     let answer = signal(url, &offer.sdp).await;
+    let codec = if answer.contains("VP8/90000") && !answer.contains("H264/90000") {
+        "VP8"
+    } else if answer.contains("H264/90000") && !answer.contains("VP8/90000") {
+        "H264"
+    } else {
+        "VP8 or H264"
+    };
+    web_sys::console::log_1(
+        &format!("web_media_native {label}: the answer carries {codec}").into(),
+    );
     peer.set_remote_description(Description::answer(answer))
         .await
         .unwrap();
@@ -213,15 +203,51 @@ async fn h264_round_trips_through_a_native_peer() {
             f.lock().unwrap().push(is_box(rgba, w, h));
         }
     });
-    until("echoed frames", 30, || frames.lock().unwrap().len() >= 60).await;
+    until(&format!("{label}: echoed frames"), 30, || {
+        frames.lock().unwrap().len() >= 60
+    })
+    .await;
     let seen = frames.lock().unwrap().clone();
     let boxes = seen.iter().filter(|b| **b).count();
     assert!(
         boxes * 10 >= seen.len() * 7,
-        "{boxes} of {} echoed frames show the box",
+        "{label}: {boxes} of {} echoed frames show the box",
         seen.len()
     );
-    assert!(errors.borrow().is_empty(), "{:?}", errors.borrow());
+    assert!(errors.borrow().is_empty(), "{label}: {:?}", errors.borrow());
     web_sys::window().unwrap().clear_interval_with_handle(timer);
     peer.close();
+}
+
+#[wasm_bindgen_test]
+async fn video_round_trips_through_a_native_peer() {
+    let Some(url) = URL else {
+        assert!(
+            REQUIRE.is_none(),
+            "RINCH_RTC_REQUIRE_LIVE is set but RINCH_RTC_MEDIA_URL is not: the browser-native \
+             media test would not run"
+        );
+        web_sys::console::log_1(&"web_media_native: skipped (no RINCH_RTC_MEDIA_URL)".into());
+        return;
+    };
+    round_trip(url, "VP8").await;
+    let Some(h264_url) = H264_URL else {
+        return;
+    };
+    let ua = web_sys::window()
+        .unwrap()
+        .navigator()
+        .user_agent()
+        .unwrap_or_default();
+    if browser_h264_frames().await > 0.0 {
+        round_trip(h264_url, "H.264").await;
+    } else {
+        web_sys::console::log_1(
+            &format!(
+                "web_media_native: H.264 half not run: this browser encodes no H.264 ({ua}); \
+                 in Firefox that is Cisco's OpenH264 plugin missing"
+            )
+            .into(),
+        );
+    }
 }

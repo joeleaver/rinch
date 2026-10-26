@@ -128,6 +128,8 @@ use wasm as backend;
 #[cfg(feature = "media-core")]
 pub mod media;
 #[cfg(all(feature = "media-core", not(target_arch = "wasm32")))]
+mod native_codec;
+#[cfg(all(feature = "media-core", not(target_arch = "wasm32")))]
 mod native_media;
 #[cfg(all(feature = "media-core", target_arch = "wasm32"))]
 mod wasm_media;

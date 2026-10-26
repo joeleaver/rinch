@@ -12,7 +12,7 @@
 //! is in capture mode).
 //!
 //! ```text
-//! cargo run -p rinch-rtc --features media --example media_echo -- [--port 0] [--url-file PATH]
+//! cargo run -p rinch-rtc --features media --example media_echo -- [--port 0] [--url-file PATH] [--h264-only]
 //! ```
 //!
 //! It prints `media_echo http://127.0.0.1:<port>` (and writes the URL to
@@ -54,6 +54,9 @@ mod app {
             match a.as_str() {
                 "--port" => port = args.next().and_then(|p| p.parse().ok()).expect("--port N"),
                 "--url-file" => url_file = args.next(),
+                // H.264 only, no VP8: a browser offers VP8 first, so this is
+                // how its H.264 is exercised.
+                "--h264-only" => rinch_rtc::testing::h264_only(true),
                 other => panic!("unknown argument {other}"),
             }
         }

@@ -1,28 +1,28 @@
 //! Native media backend (design record `docs/design/rtc-media.md`, section 3):
-//! webrtc-rs packetizes, openh264 and Opus encode and decode, rinch-av
-//! captures and plays, and received video reaches `MediaView` through
-//! rinch-core's named video sink (M6).
+//! webrtc-rs negotiates and carries RTP; libvpx (VP8), openh264 (H.264) and
+//! Opus encode and decode; rinch-av captures and plays; and received video
+//! reaches `MediaView` through rinch-core's named video sink (M6).
 //!
 //! Threads:
 //! - **The main thread** keeps the local tracks' sources (`LOCALS`), the
 //!   capture handles, and the view elements.
 //! - **One pump thread per local track** (`rinch-rtc-enc-<key>`): video at
-//!   the track's fps (latest frame, RGBA→I420, openh264), audio every 20 ms
-//!   (resampled to 48 kHz, Opus). It feeds the track's self-views and every
-//!   sender carrying the track: one encoder however many peers send it.
+//!   the track's fps (latest frame, RGBA→I420, then one encode per codec the
+//!   track's senders negotiated), audio every 20 ms (resampled to 48 kHz,
+//!   Opus). It feeds the track's self-views and every sender carrying the
+//!   track: one encoder per codec however many peers send it.
 //! - **The rinch-rtc worker** (native.rs) owns the peer connections: it
-//!   writes each sender's encoded frames as samples, and reads each remote
-//!   track's RTP.
+//!   packetizes each sender's encoded frames into RTP, forwards PLIs to the
+//!   pumps, and reads each remote track's RTP.
 //! - **One decoder thread per remote video track** (`rinch-rtc-dec-<key>`):
-//!   openh264, I420→RGBA, then the views and `on_frame`.
+//!   VP8 or H.264, whichever the stream carries, I420→RGBA, then the views
+//!   and `on_frame`. A decode error or a gap sends a PLI.
 //! - **Remote audio** is decoded on the worker (Opus is cheap), buffered per
-//!   track (60 ms before it starts), mixed, and played through one rinch-av
-//!   output stream for the process.
+//!   track (60 ms before it starts; Opus FEC or PLC for a lost packet),
+//!   mixed, and played through one rinch-av output stream for the process.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-#[cfg(feature = "media-cisco-openh264")]
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -36,12 +36,16 @@ use crate::media::{
     MediaError, MediaKind, MediaTrack, MicrophoneOptions, VideoSlot, VideoSourceOptions,
     VideoSourceWriter,
 };
+use crate::native_codec::{I420, VideoCodec, VideoEncoder};
 
 /// One encoded frame for the senders.
 #[derive(Clone)]
 pub(crate) struct Encoded {
     pub(crate) data: bytes::Bytes,
     pub(crate) duration: Duration,
+    /// Video: which codec this frame is in (one encode per codec a sender
+    /// negotiated). `None` for audio (always Opus).
+    pub(crate) codec: Option<VideoCodec>,
 }
 
 /// How many encoded frames a sender may have waiting before new ones are
@@ -50,32 +54,137 @@ const SENDER_QUEUE: usize = 32;
 
 // ================================================================ H.264
 
+/// Cisco's OpenH264 2.6.0 builds rinch-rtc accepts, by SHA-256: the one for
+/// this platform only (from openh264-sys2 0.9.9's list of known builds).
 #[cfg(feature = "media-cisco-openh264")]
-static CISCO_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
+const CISCO_SHA256: Option<&str> = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+    Some("2f0cde7c6a6abcf5cae76942894ea42897fa677bce4ed6c91a24dd1b041d5f04")
+} else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+    Some("12e7b33623667cdab0e575170c147b1b36eadb77d0d2aa7ceb5afd3e58902140")
+} else if cfg!(all(target_os = "linux", target_arch = "x86")) {
+    Some("a46589ccc95df7565ff8b1722d3dead29c0809be28322dc763767e0aa35a6443")
+} else if cfg!(all(target_os = "linux", target_arch = "arm")) {
+    Some("df91866de0e93773019e30a8f2bdee8b15de4abe2bf89a228ae9f064ff1e85bb")
+} else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+    Some("052e98bfcf7a9167d22f3bbb3f5988ef79065591f36af8b52924b22b13624551")
+} else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+    Some("e3dc8bc01fe69363f61fd3c02fd27798537a585eadd38cd808f303d1ee505a19")
+} else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+    Some("2076cb5675ec6c1a4c70e7a2a322552f547b6eeed649d6dfcd9e02a543b24691")
+} else if cfg!(all(target_os = "windows", target_arch = "x86")) {
+    Some("b0098db6acbd290a1fe13997d61d461e7327e39b42bf868db41faf498b7621a2")
+} else if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
+    Some("fb75103938f4f47d119b983e06334df41a803bc72fb5c46e3623f6fea5782732")
+} else if cfg!(all(target_os = "android", target_arch = "aarch64")) {
+    Some("4d9bc54d2d38e53eb7bd551ec61acb8ad8320d8b957bda751cfdbdcbfabc3b07")
+} else if cfg!(all(target_os = "android", target_arch = "arm")) {
+    Some("45d8d77c119a488cad42549987a4a1ac50f634cfd6b08454c5565652e482022c")
+} else if cfg!(all(target_os = "android", target_arch = "x86_64")) {
+    Some("548fa57935ff0eaf0a1d44c7963c1681daa5bf4cef2b34029fcd20a1e71adf81")
+} else if cfg!(all(target_os = "android", target_arch = "x86")) {
+    Some("f8433906e94e719bed537b54e0cd5ae573798cdc3a16a567a25336e8597444bc")
+} else {
+    None
+};
 
-/// Use Cisco's prebuilt OpenH264 library at `path` for H.264 (the
-/// `media-cisco-openh264` feature; M3). The app downloads it from Cisco
-/// itself, separately from the app, as Cisco's licence requires. The file's
-/// hash must be one openh264 0.9.9 knows. Call it once, before any video
-/// track is sent or received.
+/// The loaded library: its canonical path, and the first handle, kept open
+/// for the life of the process. Every encoder and decoder opens the same
+/// canonical path again, which the dynamic loader answers with this
+/// already-resident image (a reference count), never by reading the file.
+#[cfg(feature = "media-cisco-openh264")]
+struct Cisco {
+    path: std::path::PathBuf,
+    _resident: Mutex<openh264::OpenH264API>,
+}
+
+#[cfg(feature = "media-cisco-openh264")]
+static CISCO: std::sync::OnceLock<Cisco> = std::sync::OnceLock::new();
+
+/// Use Cisco's prebuilt OpenH264 library for H.264 (the
+/// `media-cisco-openh264` feature; M3).
+///
+/// - `path` is the library the app downloaded from Cisco itself, separately
+///   from the app, as Cisco's licence requires (Cisco ships it bzip2'd;
+///   decompress it first). It must be **OpenH264 2.6.0** for this platform:
+///   the file's SHA-256 is checked against that one build.
+/// - The path is made absolute (canonicalised) before anything reads it, so
+///   the file that is hashed is the file that is loaded; a bare file name
+///   is not looked up on the system's library path.
+/// - Call it once. A second call with the same file is a no-op; with a
+///   different one it is an error.
+/// - Until it has succeeded, desktop peers offer and accept VP8 only.
 #[cfg(feature = "media-cisco-openh264")]
 pub fn load_openh264(path: impl AsRef<std::path::Path>) -> Result<(), MediaError> {
-    let path = path.as_ref().to_path_buf();
-    openh264::OpenH264API::from_blob_path(&path)
+    let canon = std::fs::canonicalize(path.as_ref()).map_err(|e| {
+        MediaError::NotSupported(format!("OpenH264 library {}: {e}", path.as_ref().display()))
+    })?;
+    if let Some(c) = CISCO.get() {
+        return if c.path == canon {
+            Ok(())
+        } else {
+            Err(MediaError::Backend(format!(
+                "OpenH264 is already loaded from {}",
+                c.path.display()
+            )))
+        };
+    }
+    let Some(want) = CISCO_SHA256 else {
+        return Err(MediaError::NotSupported(
+            "Cisco ships no OpenH264 2.6.0 build for this platform".into(),
+        ));
+    };
+    let bytes = std::fs::read(&canon)
         .map_err(|e| MediaError::NotSupported(format!("OpenH264 library: {e}")))?;
-    let _ = CISCO_PATH.set(path);
+    use sha2::Digest;
+    let got: String = sha2::Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    if got != want {
+        return Err(MediaError::NotSupported(format!(
+            "{} is not Cisco's OpenH264 2.6.0 for this platform (SHA-256 {got})",
+            canon.display()
+        )));
+    }
+    // SAFETY: the file at this canonical path was just checked to be the
+    // known build for this platform.
+    let api = unsafe { openh264::OpenH264API::from_blob_path_unchecked(&canon) }
+        .map_err(|e| MediaError::NotSupported(format!("OpenH264 library: {e}")))?;
+    let set = CISCO.set(Cisco {
+        path: canon.clone(),
+        _resident: Mutex::new(api),
+    });
+    if set.is_err() && CISCO.get().is_some_and(|c| c.path != canon) {
+        return Err(MediaError::Backend(
+            "OpenH264 was loaded concurrently from another path".into(),
+        ));
+    }
     Ok(())
 }
 
-fn h264_api() -> Result<openh264::OpenH264API, MediaError> {
+/// Whether this build can encode and decode H.264 now.
+pub(crate) fn h264_available() -> bool {
     #[cfg(feature = "media-cisco-openh264")]
     {
-        let path = CISCO_PATH.get().ok_or_else(|| {
+        CISCO.get().is_some()
+    }
+    #[cfg(not(feature = "media-cisco-openh264"))]
+    {
+        true
+    }
+}
+
+pub(crate) fn h264_api() -> Result<openh264::OpenH264API, MediaError> {
+    #[cfg(feature = "media-cisco-openh264")]
+    {
+        let c = CISCO.get().ok_or_else(|| {
             MediaError::NotSupported(
                 "H.264: call rinch_rtc::media::load_openh264 with Cisco's library first".into(),
             )
         })?;
-        openh264::OpenH264API::from_blob_path(path)
+        // SAFETY: the same canonical path load_openh264 checked; its image
+        // is resident (`_resident`), so this only bumps its reference count.
+        unsafe { openh264::OpenH264API::from_blob_path_unchecked(&c.path) }
             .map_err(|e| MediaError::NotSupported(format!("OpenH264 library: {e}")))
     }
     #[cfg(not(feature = "media-cisco-openh264"))]
@@ -86,8 +195,28 @@ fn h264_api() -> Result<openh264::OpenH264API, MediaError> {
 
 // ============================================================ local tracks
 
-/// A sender carrying a local track: (peer, sender key) and its queue.
-type Subscriber = ((u64, u64), tokio::sync::mpsc::Sender<Encoded>);
+/// A sender carrying a local track: (peer, sender key), its queue, and the
+/// video codec it negotiated (0 not yet known, else `codec_id`).
+type Subscriber = (
+    (u64, u64),
+    tokio::sync::mpsc::Sender<Encoded>,
+    Arc<std::sync::atomic::AtomicU8>,
+);
+
+pub(crate) fn codec_id(c: VideoCodec) -> u8 {
+    match c {
+        VideoCodec::H264 => 1,
+        VideoCodec::Vp8 => 2,
+    }
+}
+
+fn codec_of(id: u8) -> Option<VideoCodec> {
+    match id {
+        1 => Some(VideoCodec::H264),
+        2 => Some(VideoCodec::Vp8),
+        _ => None,
+    }
+}
 
 /// A local track's source, shared with its pump thread and the senders.
 pub(crate) struct LocalSource {
@@ -108,6 +237,8 @@ pub(crate) struct LocalSource {
     caps: Mutex<HashMap<(u64, u64), u32>>,
     /// Self-views: (view id, sink).
     views: Mutex<Vec<(String, VideoFrameSink)>>,
+    /// Encoded bytes published, all codecs (test hook: the real bitrate).
+    encoded_bytes: std::sync::atomic::AtomicU64,
 }
 
 impl LocalSource {
@@ -130,6 +261,7 @@ impl LocalSource {
             keyframe: AtomicBool::new(true),
             caps: Mutex::new(HashMap::new()),
             views: Mutex::new(Vec::new()),
+            encoded_bytes: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -142,11 +274,15 @@ impl LocalSource {
     }
 
     /// A sender starts carrying this track; it gets a keyframe first.
-    pub(crate) fn subscribe(&self, who: (u64, u64)) -> tokio::sync::mpsc::Receiver<Encoded> {
+    pub(crate) fn subscribe(
+        &self,
+        who: (u64, u64),
+        codec: Arc<std::sync::atomic::AtomicU8>,
+    ) -> tokio::sync::mpsc::Receiver<Encoded> {
         let (tx, rx) = tokio::sync::mpsc::channel(SENDER_QUEUE);
         if let Ok(mut s) = self.subscribers.lock() {
-            s.retain(|(w, _)| *w != who);
-            s.push((who, tx));
+            s.retain(|(w, _, _)| *w != who);
+            s.push((who, tx, codec));
         }
         self.keyframe.store(true, Ordering::Release);
         rx
@@ -154,7 +290,7 @@ impl LocalSource {
 
     pub(crate) fn unsubscribe(&self, who: (u64, u64)) {
         if let Ok(mut s) = self.subscribers.lock() {
-            s.retain(|(w, _)| *w != who);
+            s.retain(|(w, _, _)| *w != who);
         }
         if let Ok(mut c) = self.caps.lock() {
             c.remove(&who);
@@ -172,10 +308,32 @@ impl LocalSource {
             .unwrap_or(false)
     }
 
+    /// The video codecs some sender has negotiated.
+    fn wanted_codecs(&self) -> Vec<VideoCodec> {
+        let mut out = Vec::new();
+        if let Ok(s) = self.subscribers.lock() {
+            for (_, _, c) in s.iter() {
+                if let Some(c) = codec_of(c.load(Ordering::Acquire))
+                    && !out.contains(&c)
+                {
+                    out.push(c);
+                }
+            }
+        }
+        out
+    }
+
+    /// To every sender of `frame`'s codec (audio: every sender).
     fn publish(&self, frame: Encoded) {
+        self.encoded_bytes
+            .fetch_add(frame.data.len() as u64, Ordering::Relaxed);
         if let Ok(mut s) = self.subscribers.lock() {
             // A closed queue is a sender that went away.
-            s.retain(|(_, tx)| {
+            s.retain(|(_, tx, c)| {
+                let theirs = codec_of(c.load(Ordering::Acquire));
+                if frame.codec.is_some() && theirs != frame.codec {
+                    return !tx.is_closed();
+                }
                 !matches!(
                     tx.try_send(frame.clone()),
                     Err(tokio::sync::mpsc::error::TrySendError::Closed(_))
@@ -388,7 +546,8 @@ pub(crate) fn stop_local(key: u64) {
 }
 
 /// Video: at the track's fps, the latest frame to the self-views and, when
-/// someone sends the track, through openh264 to every sender.
+/// a sender carries the track, encoded once per codec the senders
+/// negotiated (H.264, VP8) to every sender of that codec.
 fn video_pump(src: Arc<LocalSource>) {
     let Some(slot) = src.video.clone() else {
         return;
@@ -397,11 +556,14 @@ fn video_pump(src: Arc<LocalSource>) {
     let mut next = Instant::now();
     let mut seen = u64::MAX;
     let mut frame: Vec<u8> = Vec::new();
+    let mut black: Vec<u8> = Vec::new();
     let (mut w, mut h) = (0u32, 0u32);
-    let mut encoder: Option<(openh264::encoder::Encoder, u32, u32, u32)> = None;
+    // Per codec: the encoder and the (width, height, bitrate) it was made for.
+    let mut encoders: HashMap<VideoCodec, (Box<dyn VideoEncoder>, u32, u32, u32)> = HashMap::new();
     let mut last_key = Instant::now();
     let mut last_encode = Instant::now() - Duration::from_secs(1);
     let mut warned = false;
+    let mut was_enabled = true;
     let started = Instant::now();
     while !src.stopped.load(Ordering::Acquire) {
         next += period;
@@ -411,6 +573,14 @@ fn video_pump(src: Arc<LocalSource>) {
         } else {
             next = now;
         }
+        let enabled = src.enabled.load(Ordering::Acquire);
+        if enabled && !was_enabled {
+            // Re-read the source on enable: a still source pushes no new
+            // frame, and what is shown must be its picture again.
+            seen = u64::MAX;
+            src.request_keyframe();
+        }
+        was_enabled = enabled;
         let seq = slot.seq.load(Ordering::Acquire);
         let fresh = seq != seen;
         if fresh {
@@ -418,7 +588,7 @@ fn video_pump(src: Arc<LocalSource>) {
             if let Ok(l) = slot.latest.lock()
                 && let Some((rgba, fw, fh)) = l.as_ref()
             {
-                // openh264 wants even dimensions: drop an odd last row or
+                // The codecs want even dimensions: drop an odd last row or
                 // column.
                 let (ew, eh) = (*fw & !1, *fh & !1);
                 if ew == 0 || eh == 0 {
@@ -437,17 +607,25 @@ fn video_pump(src: Arc<LocalSource>) {
         if w == 0 {
             continue;
         }
-        let enabled = src.enabled.load(Ordering::Acquire);
-        if !enabled {
-            // Black, as a browser shows and sends a disabled track.
-            frame.iter_mut().enumerate().for_each(|(i, p)| {
-                *p = if i % 4 == 3 { 255 } else { 0 };
-            });
-        }
+        // Black, as a browser shows and sends a disabled track; the
+        // source's own picture is kept for re-enable.
+        let picture: &[u8] = if enabled {
+            &frame
+        } else {
+            if black.len() != frame.len() {
+                black = frame
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| if i % 4 == 3 { 255 } else { 0 })
+                    .collect();
+            }
+            &black
+        };
         if fresh || !enabled {
-            src.show(&frame, w, h);
+            src.show(picture, w, h);
         }
-        if !src.has_subscribers() {
+        let codecs = src.wanted_codecs();
+        if codecs.is_empty() {
             continue;
         }
         // A still source is re-sent at least twice a second (a viewer that
@@ -461,66 +639,50 @@ fn video_pump(src: Arc<LocalSource>) {
             continue;
         }
         let bitrate = src.bitrate(w, h);
-        if encoder
-            .as_ref()
-            .is_none_or(|(_, ew, eh, eb)| (*ew, *eh, *eb) != (w, h, bitrate))
-        {
-            let api = match h264_api() {
-                Ok(api) => api,
-                Err(e) => {
-                    if !warned {
-                        tracing::error!("rinch-rtc: no H.264 encoder: {e}");
-                        warned = true;
-                    }
-                    continue;
-                }
-            };
-            let config = openh264::encoder::EncoderConfig::new()
-                .bitrate(openh264::encoder::BitRate::from_bps(bitrate))
-                .max_frame_rate(openh264::encoder::FrameRate::from_hz(src.fps as f32))
-                .usage_type(openh264::encoder::UsageType::CameraVideoRealTime)
-                .profile(openh264::encoder::Profile::Baseline)
-                .skip_frames(false);
-            match openh264::encoder::Encoder::with_api_config(api, config) {
-                Ok(e) => {
-                    encoder = Some((e, w, h, bitrate));
-                    src.request_keyframe();
-                }
-                Err(e) => {
-                    if !warned {
-                        tracing::error!("rinch-rtc: H.264 encoder: {e}");
-                        warned = true;
-                    }
-                    continue;
-                }
-            }
-        }
-        let Some((enc, ..)) = encoder.as_mut() else {
-            continue;
-        };
-        // A keyframe on request, and every 2 s so a lost one heals (no PLI
-        // reaches the sender through webrtc-rs's default interceptors).
-        if src.keyframe.swap(false, Ordering::AcqRel) || last_key.elapsed() > Duration::from_secs(2)
-        {
-            enc.force_intra_frame();
+        // A keyframe on request (a new sender, a receiver's PLI or FIR, an
+        // enable) and every 10 s as a backstop.
+        let key = src.keyframe.swap(false, Ordering::AcqRel)
+            || last_key.elapsed() > Duration::from_secs(10);
+        if key {
             last_key = Instant::now();
         }
-        let yuv = openh264::formats::YUVBuffer::from_rgb_source(
-            openh264::formats::RgbaSliceU8::new(&frame, (w as usize, h as usize)),
-        );
-        let ts = openh264::Timestamp::from_millis(started.elapsed().as_millis() as u64);
-        match enc.encode_at(&yuv, ts) {
-            Ok(bits) => {
-                let data = bits.to_vec();
-                if !data.is_empty() {
+        let pic = I420::from_rgba(picture, w as usize, h as usize);
+        let ts = started.elapsed().as_millis() as u64;
+        for codec in codecs {
+            let stale = encoders
+                .get(&codec)
+                .is_none_or(|(_, ew, eh, eb)| (*ew, *eh, *eb) != (w, h, bitrate));
+            let mut fresh_encoder = false;
+            if stale {
+                match crate::native_codec::new_encoder(codec, w, h, src.fps, bitrate) {
+                    Ok(e) => {
+                        encoders.insert(codec, (e, w, h, bitrate));
+                        fresh_encoder = true;
+                    }
+                    Err(e) => {
+                        if !warned {
+                            tracing::error!("rinch-rtc: {codec:?} encoder: {e}");
+                            warned = true;
+                        }
+                        continue;
+                    }
+                }
+            }
+            let Some((enc, ..)) = encoders.get_mut(&codec) else {
+                continue;
+            };
+            match enc.encode(&pic, ts, key || fresh_encoder) {
+                Ok(data) if !data.is_empty() => {
                     last_encode = Instant::now();
                     src.publish(Encoded {
                         data: bytes::Bytes::from(data),
                         duration: period,
+                        codec: Some(codec),
                     });
                 }
+                Ok(_) => {} // skipped by rate control
+                Err(e) => tracing::warn!("rinch-rtc: {codec:?} encode: {e}"),
             }
-            Err(e) => tracing::warn!("rinch-rtc: H.264 encode: {e}"),
         }
     }
 }
@@ -608,8 +770,17 @@ fn audio_pump(src: Arc<LocalSource>) {
             return;
         }
     };
+    // In-band FEC: each packet carries a coarse copy of the one before, so
+    // the far side can rebuild a single lost packet (OpusJitter).
+    let _ = encoder.set_inband_fec(true);
+    let _ = encoder.set_packet_loss_perc(10);
     let mut resampler = Resampler::new(queue.sample_rate, 48_000, out_ch);
-    let per_tick = (queue.sample_rate as usize / 50) * in_ch;
+    // Frames per 20 ms tick, with the remainder carried: a rate that is not
+    // a multiple of 50 (11025, 22050) would otherwise take too few
+    // frames each tick and fall behind.
+    let rate = queue.sample_rate as u64;
+    let mut ticks = 0u64;
+    let mut taken_frames = 0u64;
     let mut pending: Vec<f32> = Vec::new();
     let mut out = vec![0u8; 4000];
     let period = Duration::from_millis(20);
@@ -622,6 +793,10 @@ fn audio_pump(src: Arc<LocalSource>) {
         } else {
             next = now;
         }
+        ticks += 1;
+        let due = rate * ticks / 50;
+        let per_tick = (due - taken_frames) as usize * in_ch;
+        taken_frames = due;
         let mut chunk: Vec<f32> = match queue.samples.lock() {
             Ok(mut q) => {
                 let n = q.len().min(per_tick);
@@ -653,6 +828,7 @@ fn audio_pump(src: Arc<LocalSource>) {
                 Ok(n) => src.publish(Encoded {
                     data: bytes::Bytes::copy_from_slice(&out[..n]),
                     duration: period,
+                    codec: None,
                 }),
                 Err(e) => tracing::warn!("rinch-rtc: Opus encode: {e}"),
             }
@@ -971,11 +1147,12 @@ pub(crate) fn on_remote_frame(p: u64, k: u64, cb: media::FrameCallback) {
     }
 }
 
-/// A decoder thread for one remote video track: H.264 access units in,
-/// RGBA out to the sink. A frame it cannot decode asks for a keyframe
+/// A decoder thread for one remote video track: access units of `codec`
+/// in, RGBA out to the sink. A frame it cannot decode asks for a keyframe
 /// through `pli` (at most once a second).
 pub(crate) fn start_video_decoder(
     key: u64,
+    codec: VideoCodec,
     sink: Arc<RemoteSink>,
     pli: tokio::sync::mpsc::UnboundedSender<()>,
 ) -> Option<std::sync::mpsc::SyncSender<bytes::Bytes>> {
@@ -983,20 +1160,10 @@ pub(crate) fn start_video_decoder(
     let started = std::thread::Builder::new()
         .name(format!("rinch-rtc-dec-{key}"))
         .spawn(move || {
-            let api = match h264_api() {
-                Ok(a) => a,
-                Err(e) => {
-                    tracing::error!("rinch-rtc: no H.264 decoder: {e}");
-                    return;
-                }
-            };
-            let mut dec = match openh264::decoder::Decoder::with_api_config(
-                api,
-                openh264::decoder::DecoderConfig::new(),
-            ) {
+            let mut dec = match crate::native_codec::new_decoder(codec) {
                 Ok(d) => d,
                 Err(e) => {
-                    tracing::error!("rinch-rtc: H.264 decoder: {e}");
+                    tracing::error!("rinch-rtc: no {codec:?} decoder: {e}");
                     return;
                 }
             };
@@ -1006,14 +1173,8 @@ pub(crate) fn start_video_decoder(
                 if sink.ended.load(Ordering::Acquire) {
                     break;
                 }
-                match dec.decode(&au) {
-                    Ok(Some(yuv)) => {
-                        use openh264::formats::YUVSource;
-                        let (w, h) = yuv.dimensions();
-                        rgba.resize(w * h * 4, 0);
-                        yuv.write_rgba8(&mut rgba);
-                        sink.deliver(&rgba, w as u32, h as u32);
-                    }
+                match dec.decode(&au, &mut rgba) {
+                    Ok(Some((w, h))) => sink.deliver(&rgba, w, h),
                     Ok(None) => {}
                     Err(_) => {
                         if last_pli.elapsed() > Duration::from_secs(1) {
@@ -1041,6 +1202,10 @@ struct MixTrack {
 const PRIME: usize = 48 * 60 * 2;
 /// At most 300 ms buffered; older samples go.
 const MAX_BUF: usize = 48 * 300 * 2;
+/// Past this much buffered (160 ms), the buffer is cut back to
+/// `DRIFT_TARGET` (80 ms).
+const DRIFT_HIGH: usize = 48 * 160 * 2;
+const DRIFT_TARGET: usize = 48 * 80 * 2;
 
 enum Output {
     /// Nothing opened yet.
@@ -1082,6 +1247,13 @@ pub(crate) fn mixer_push(peer: u64, key: u64, sink: &Arc<RemoteSink>, pcm: &[f32
             primed: false,
         });
         t.buf.extend(pcm.iter().copied());
+        // The far side's clock runs a little fast against ours: let the
+        // buffer drift no further than 160 ms before cutting it back to
+        // 80 ms (one cut, not a stream of them), so latency stays bounded.
+        if t.buf.len() > DRIFT_HIGH {
+            let cut = t.buf.len() - DRIFT_TARGET;
+            t.buf.drain(..cut);
+        }
         while t.buf.len() > MAX_BUF {
             t.buf.pop_front();
         }
@@ -1103,15 +1275,22 @@ fn open_output(peer: u64) {
     if OUTPUT.with(|o| o.borrow().is_some()) {
         return;
     }
-    let rate = Arc::new(AtomicU32::new(48_000));
+    // 0 until the device's real rate is known: the first callback can come
+    // before `open_audio_output` returns, and must not build a resampler
+    // for a guessed rate.
+    let rate = Arc::new(AtomicU32::new(0));
     let channels = Arc::new(AtomicU32::new(2));
     let (r2, c2) = (rate.clone(), channels.clone());
     let mut resampler: Option<Resampler> = None;
     let mut mixed: Vec<f32> = Vec::new();
     let mut converted: Vec<f32> = Vec::new();
     let fill = move |out: &mut [f32]| {
-        let dev_rate = r2.load(Ordering::Relaxed);
-        let dev_ch = c2.load(Ordering::Relaxed).max(1) as usize;
+        let dev_rate = r2.load(Ordering::Acquire);
+        if dev_rate == 0 {
+            out.fill(0.0);
+            return;
+        }
+        let dev_ch = c2.load(Ordering::Acquire).max(1) as usize;
         let frames = out.len() / dev_ch;
         let rs = resampler.get_or_insert_with(|| Resampler::new(48_000, dev_rate, 2));
         // Pull enough 48 kHz stereo for `frames` device frames.
@@ -1137,8 +1316,9 @@ fn open_output(peer: u64) {
     };
     match rinch_av::audio::open_audio_output(rinch_av::audio::AudioOutputConfig::default(), fill) {
         Ok(stream) => {
-            rate.store(stream.config().sample_rate, Ordering::Relaxed);
-            channels.store(u32::from(stream.config().channels), Ordering::Relaxed);
+            // Channels first: the rate is what releases the callback.
+            channels.store(u32::from(stream.config().channels), Ordering::Release);
+            rate.store(stream.config().sample_rate, Ordering::Release);
             OUTPUT.with(|o| *o.borrow_mut() = Some(stream));
         }
         Err(e) => {
@@ -1191,6 +1371,26 @@ pub(crate) fn mixer_remove(peer: u64, key: u64) {
 
 fn mixer_remove_peer(peer: u64) {
     with_mixer(|m| m.tracks.retain(|(p, _), _| *p != peer));
+}
+
+// ============================================================ test hooks
+
+/// Loss injection for rinch-rtc's tests (`testing::drop_incoming_*`).
+static DROP_VIDEO: AtomicBool = AtomicBool::new(false);
+static DROP_AUDIO_EVERY: AtomicU32 = AtomicU32::new(0);
+static AUDIO_SEEN: AtomicU32 = AtomicU32::new(0);
+/// Offer H.264 first (`testing::prefer_h264`), or only (`h264_only`).
+pub(crate) static PREFER_H264: AtomicBool = AtomicBool::new(false);
+pub(crate) static H264_ONLY: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn drop_video_packet() -> bool {
+    DROP_VIDEO.load(Ordering::Relaxed)
+}
+
+pub(crate) fn drop_audio_packet() -> bool {
+    let every = DROP_AUDIO_EVERY.load(Ordering::Relaxed);
+    let n = AUDIO_SEEN.fetch_add(1, Ordering::Relaxed);
+    every != 0 && n % every == every - 1
 }
 
 // ================================================================ the view
@@ -1330,8 +1530,16 @@ pub mod testing {
         let b = buf.clone();
         std::thread::spawn(move || {
             let mut chunk = Vec::new();
+            // Paced to the clock (a device's pace), not 20 ms of sleep
+            // plus the work.
+            let start = std::time::Instant::now();
+            let mut k = 0u32;
             loop {
-                std::thread::sleep(std::time::Duration::from_millis(20));
+                k += 1;
+                let due = start + std::time::Duration::from_millis(20) * k;
+                if let Some(d) = due.checked_duration_since(std::time::Instant::now()) {
+                    std::thread::sleep(d);
+                }
                 super::mix(960, &mut chunk);
                 match b.lock() {
                     Ok(mut v) => v.extend_from_slice(&chunk),
@@ -1343,6 +1551,42 @@ pub mod testing {
             }
         });
         buf
+    }
+
+    /// Drop every incoming video packet while `on` (loss injection).
+    pub fn drop_incoming_video(on: bool) {
+        super::DROP_VIDEO.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Drop every `n`th incoming audio packet (0: none).
+    pub fn drop_incoming_audio_every(n: u32) {
+        super::DROP_AUDIO_EVERY.store(n, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The deepest remote-audio buffer in the mixer, in ms.
+    pub fn mixer_depth_ms() -> f32 {
+        super::with_mixer(|m| m.tracks.values().map(|t| t.buf.len()).max().unwrap_or(0)) as f32
+            / 96.0
+    }
+
+    /// Encoded bytes a local track has published (all codecs).
+    pub fn encoded_bytes(track: &crate::media::LocalTrack) -> u64 {
+        super::local_source(track.key())
+            .map(|s| s.encoded_bytes.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
+    /// Offer H.264 before VP8 in peers created from now on (tests of the
+    /// H.264 path; the default prefers VP8).
+    pub fn prefer_h264(on: bool) {
+        super::PREFER_H264.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Offer and accept H.264 only, no VP8, in peers created from now on
+    /// (`media_echo --h264-only`: H.264 interop with a browser, which
+    /// offers VP8 first).
+    pub fn h264_only(on: bool) {
+        super::H264_ONLY.store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// The bitrate a local video track's encoder targets at `w`×`h`: the
@@ -1420,16 +1664,24 @@ pub(crate) mod worker {
     use std::sync::atomic::Ordering;
     use std::time::Instant;
 
-    use rtc::interceptor::Registry;
-    use rtc::media::Sample;
+    use std::collections::{BTreeMap, VecDeque};
+    use std::time::Duration;
+
+    use rtc::interceptor::{
+        Attribute, Interceptor, Packet, Registry, Slot, StreamInfo, TaggedPacket,
+    };
     use rtc::media::io::sample_builder::SampleBuilder;
     use rtc::media_stream::MediaStreamTrack;
     use rtc::peer_connection::configuration::interceptor_registry::register_default_interceptors;
     use rtc::peer_connection::configuration::media_engine::{
-        MIME_TYPE_H264, MIME_TYPE_OPUS, MIME_TYPE_RTX, MediaEngine,
+        MIME_TYPE_H264, MIME_TYPE_OPUS, MIME_TYPE_RTX, MIME_TYPE_VP8, MediaEngine,
     };
+    use rtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
     use rtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
     use rtc::rtp::codec::h264::H264Packet;
+    use rtc::rtp::codec::vp8::Vp8Packet;
+    use rtc::rtp::packetizer::{Packetizer, new_packetizer};
+    use rtc::rtp::sequence::{Sequencer, new_random_sequencer};
     use rtc::rtp_transceiver::rtp_sender::{
         RTCPFeedback, RTCRtpCodec, RTCRtpCodecParameters, RTCRtpCodingParameters,
         RTCRtpEncodingParameters, RtpCodecKind,
@@ -1437,23 +1689,55 @@ pub(crate) mod worker {
     use rtc::rtp_transceiver::{
         RTCRtpTransceiverDirection, RTCRtpTransceiverId, RTCRtpTransceiverInit,
     };
-    use webrtc::media_stream::Track;
-    use webrtc::media_stream::track_local::TrackLocal;
-    use webrtc::media_stream::track_local::static_sample::TrackLocalStaticSample;
+    use rtc::sansio::Protocol;
+    use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
+    use webrtc::media_stream::track_local::{TrackLocal, TrackLocalEvent};
     use webrtc::media_stream::track_remote::{TrackRemote, TrackRemoteEvent};
     use webrtc::peer_connection::PeerConnection;
     use webrtc::rtp_transceiver::{RtpSender, RtpTransceiver};
 
     use super::{
-        Encoded, LocalSource, MediaCmd, RemoteSink, TxMirror, drop_remotes, insert_remote,
-        mixer_push, mixer_remove, remote, start_video_decoder, with_mirror,
+        Encoded, LocalSource, MediaCmd, RemoteSink, TxMirror, codec_id, drop_audio_packet,
+        drop_remotes, drop_video_packet, insert_remote, mixer_push, mixer_remove, remote,
+        start_video_decoder, with_mirror,
     };
     use crate::RtcError;
     use crate::media::{Direction, MediaEvent, MediaKind};
+    use crate::native_codec::VideoCodec;
     use crate::registry::Event;
 
     const H264_PT: u8 = 102;
+    const VP8_PT: u8 = 96;
     const OPUS_PT: u8 = 111;
+    /// The packetizer's MTU (as webrtc-rs's own sample track uses).
+    const MTU: usize = 1200;
+
+    fn video_feedback() -> Vec<RTCPFeedback> {
+        vec![
+            RTCPFeedback {
+                typ: "nack".to_owned(),
+                parameter: String::new(),
+            },
+            RTCPFeedback {
+                typ: "nack".to_owned(),
+                parameter: "pli".to_owned(),
+            },
+            RTCPFeedback {
+                typ: "ccm".to_owned(),
+                parameter: "fir".to_owned(),
+            },
+        ]
+    }
+
+    fn vp8() -> RTCRtpCodec {
+        RTCRtpCodec {
+            mime_type: MIME_TYPE_VP8.to_owned(),
+            clock_rate: 90_000,
+            channels: 0,
+            sdp_fmtp_line: String::new(),
+            rtcp_feedback: video_feedback(),
+        }
+    }
 
     fn h264() -> RTCRtpCodec {
         RTCRtpCodec {
@@ -1489,9 +1773,17 @@ pub(crate) mod worker {
         }
     }
 
-    /// The codecs a media peer offers and accepts: H.264 constrained
-    /// baseline (with its RTX) and Opus. Nothing else: the native side can
-    /// decode nothing else (M2).
+    /// The codecs a media peer offers and accepts, in preference order:
+    /// VP8 first, then H.264 constrained baseline (each with its RTX), and
+    /// Opus (M2, decided 2026-10-27).
+    ///
+    /// VP8 first because every browser encodes it, while a Firefox without
+    /// Cisco's OpenH264 plugin still *lists* H.264 in its SDP and then
+    /// sends nothing: preferring H.264 would pick a codec that side cannot
+    /// send. An answer follows the offer's order, so H.264 is used where
+    /// the other side offers it first (Safari does). H.264 is left out
+    /// altogether until it is available (`media-cisco-openh264` before
+    /// `load_openh264`).
     pub(crate) fn media_engine() -> Result<(MediaEngine, Registry), RtcError> {
         let mut me = MediaEngine::default();
         let err = |e: rtc::shared::error::Error| RtcError::Internal(format!("media engine: {e}"));
@@ -1503,30 +1795,101 @@ pub(crate) mod worker {
             RtpCodecKind::Audio,
         )
         .map_err(err)?;
-        me.register_codec(
-            RTCRtpCodecParameters {
-                rtp_codec: h264(),
-                payload_type: H264_PT,
+        let rtx = |pt: u8| RTCRtpCodecParameters {
+            rtp_codec: RTCRtpCodec {
+                mime_type: MIME_TYPE_RTX.to_owned(),
+                clock_rate: 90_000,
+                channels: 0,
+                sdp_fmtp_line: format!("apt={pt}"),
+                rtcp_feedback: vec![],
             },
-            RtpCodecKind::Video,
-        )
-        .map_err(err)?;
-        me.register_codec(
-            RTCRtpCodecParameters {
-                rtp_codec: RTCRtpCodec {
-                    mime_type: MIME_TYPE_RTX.to_owned(),
-                    clock_rate: 90_000,
-                    channels: 0,
-                    sdp_fmtp_line: format!("apt={H264_PT}"),
-                    rtcp_feedback: vec![],
+            payload_type: pt + 1,
+        };
+        let mut video = vec![(vp8(), VP8_PT)];
+        if super::H264_ONLY.load(Ordering::Relaxed) {
+            video.clear();
+        }
+        if super::h264_available() {
+            if super::PREFER_H264.load(Ordering::Relaxed) {
+                video.insert(0, (h264(), H264_PT));
+            } else {
+                video.push((h264(), H264_PT));
+            }
+        }
+        for (codec, pt) in video {
+            me.register_codec(
+                RTCRtpCodecParameters {
+                    rtp_codec: codec,
+                    payload_type: pt,
                 },
-                payload_type: H264_PT + 1,
-            },
-            RtpCodecKind::Video,
-        )
-        .map_err(err)?;
+                RtpCodecKind::Video,
+            )
+            .map_err(err)?;
+            me.register_codec(rtx(pt), RtpCodecKind::Video)
+                .map_err(err)?;
+        }
         let registry = register_default_interceptors(Registry::new(), &mut me).map_err(err)?;
+        // Last in the chain: pass the far side's keyframe requests (PLI,
+        // FIR) to the sender, which the default chain stops.
+        let registry = registry.with(Slot::from(14_000), KeyframeRequests::default());
         Ok((me, registry))
+    }
+
+    /// Marks inbound PLI and FIR for the application (webrtc-rs's
+    /// `rtcp-processing` example); everything else inbound stops here, as
+    /// it would at the end of the default chain.
+    #[derive(Default)]
+    struct KeyframeRequests {
+        read: VecDeque<TaggedPacket>,
+        write: VecDeque<TaggedPacket>,
+    }
+
+    impl Protocol<TaggedPacket, TaggedPacket, ()> for KeyframeRequests {
+        type Rout = TaggedPacket;
+        type Wout = TaggedPacket;
+        type Eout = ();
+        type Error = rtc::shared::error::Error;
+        type Time = Instant;
+
+        fn handle_read(&mut self, mut msg: TaggedPacket) -> Result<(), Self::Error> {
+            if let Packet::Rtcp(packets) = &msg.message.packet {
+                let requests: Vec<Box<dyn rtc::rtcp::Packet>> = packets
+                    .iter()
+                    .filter(|p| {
+                        let a = p.as_any();
+                        a.is::<PictureLossIndication>() || a.is::<FullIntraRequest>()
+                    })
+                    .cloned()
+                    .collect();
+                if requests.is_empty() {
+                    return Ok(());
+                }
+                msg.message.packet = Packet::Rtcp(requests);
+                msg.message.add(Attribute::DeliverToApplication);
+            }
+            self.read.push_back(msg);
+            Ok(())
+        }
+
+        fn poll_read(&mut self) -> Option<Self::Rout> {
+            self.read.pop_front()
+        }
+
+        fn handle_write(&mut self, msg: TaggedPacket) -> Result<(), Self::Error> {
+            self.write.push_back(msg);
+            Ok(())
+        }
+
+        fn poll_write(&mut self) -> Option<Self::Wout> {
+            self.write.pop_front()
+        }
+    }
+
+    impl Interceptor for KeyframeRequests {
+        fn bind_local_stream(&mut self, _info: &StreamInfo) {}
+        fn unbind_local_stream(&mut self, _info: &StreamInfo) {}
+        fn bind_remote_stream(&mut self, _info: &StreamInfo) {}
+        fn unbind_remote_stream(&mut self, _info: &StreamInfo) {}
     }
 
     fn codec_kind(k: MediaKind) -> RtpCodecKind {
@@ -1562,9 +1925,10 @@ pub(crate) mod worker {
         /// another (the SSRC and sequence numbers run on, as a browser's
         /// replaceTrack does). webrtc-rs's own `replace_track` would leave
         /// the new track unbound, and its writes fail.
-        track: Option<Arc<TrackLocalStaticSample>>,
-        /// The negotiated payload type, once a forwarder has learnt it.
-        pt: Arc<std::sync::atomic::AtomicU32>,
+        track: Option<Arc<TrackLocalStaticRTP>>,
+        /// What outlives one forwarder: the SSRC, the sequence numbers, and
+        /// the codec the sender negotiated.
+        shared: Arc<SendShared>,
         kind: MediaKind,
         source: Option<Arc<LocalSource>>,
         forward: Option<tokio::task::JoinHandle<()>>,
@@ -1589,35 +1953,55 @@ pub(crate) mod worker {
         rinch_core::dispatch_main_callback(Box::new(move || crate::registry::dispatch(id, event)));
     }
 
+    /// A sender's track. It carries packets the forwarder packetizes
+    /// itself, for whichever codec negotiation picks (the codec named here
+    /// only labels the track).
     fn track_for(
         kind: MediaKind,
         track_id: &str,
         stream_id: &str,
         ssrc: u32,
-    ) -> Option<Arc<TrackLocalStaticSample>> {
+    ) -> Arc<TrackLocalStaticRTP> {
+        // A codec the peer registered (webrtc-rs refuses a track whose
+        // codec it does not know).
         let codec = match kind {
-            MediaKind::Video => h264(),
+            MediaKind::Video if super::H264_ONLY.load(Ordering::Relaxed) => h264(),
+            MediaKind::Video => vp8(),
             MediaKind::Audio => opus(),
         };
-        TrackLocalStaticSample::new(
-            Instant::now(),
-            MediaStreamTrack::new(
-                stream_id.to_owned(),
-                track_id.to_owned(),
-                track_id.to_owned(),
-                codec_kind(kind),
-                vec![RTCRtpEncodingParameters {
-                    rtp_coding_parameters: RTCRtpCodingParameters {
-                        ssrc: Some(ssrc),
-                        ..Default::default()
-                    },
-                    codec,
+        Arc::new(TrackLocalStaticRTP::new(MediaStreamTrack::new(
+            stream_id.to_owned(),
+            track_id.to_owned(),
+            track_id.to_owned(),
+            codec_kind(kind),
+            vec![RTCRtpEncodingParameters {
+                rtp_coding_parameters: RTCRtpCodingParameters {
+                    ssrc: Some(ssrc),
                     ..Default::default()
-                }],
-            ),
-        )
-        .ok()
-        .map(Arc::new)
+                },
+                codec,
+                ..Default::default()
+            }],
+        )))
+    }
+
+    /// One sender's lasting state.
+    pub(crate) struct SendShared {
+        ssrc: u32,
+        sequencer: Box<dyn Sequencer>,
+        /// The video codec negotiated (`codec_id`; 0 not known yet), shared
+        /// with the source so it encodes in that codec.
+        codec: Arc<std::sync::atomic::AtomicU8>,
+    }
+
+    impl SendShared {
+        fn new(ssrc: u32) -> Arc<Self> {
+            Arc::new(Self {
+                ssrc,
+                sequencer: Box::new(new_random_sequencer()),
+                codec: Arc::default(),
+            })
+        }
     }
 
     fn rand_ssrc() -> u32 {
@@ -1628,50 +2012,100 @@ pub(crate) mod worker {
         (h.finish() as u32) | 1
     }
 
-    /// Write a source's encoded frames to one sender's track until either
-    /// goes away.
+    /// Packetize a source's encoded frames for the codec the sender
+    /// negotiated and write them to its track, until either goes away;
+    /// pass the far side's keyframe requests to the source.
     async fn forward(
         rtp: Arc<dyn RtpSender>,
-        track: Arc<TrackLocalStaticSample>,
+        track: Arc<TrackLocalStaticRTP>,
         source: Arc<LocalSource>,
         mut rx: tokio::sync::mpsc::Receiver<Encoded>,
-        known_pt: Arc<std::sync::atomic::AtomicU32>,
+        shared: Arc<SendShared>,
     ) {
-        let Some(ssrc) = track.ssrcs().await.first().copied() else {
-            return;
-        };
-        // Known from an earlier track on this sender: webrtc-rs reports no
-        // codecs for a replaced track.
-        let mut pt: Option<u8> = match known_pt.load(Ordering::Acquire) {
-            0 => None,
-            p => Some(p as u8),
-        };
-        while let Some(f) = rx.recv().await {
-            if pt.is_none() {
-                // The payload type is known once negotiation chose a codec;
-                // until then frames are dropped, and the first one after
-                // is a keyframe.
-                pt = rtp
-                    .get_parameters()
-                    .await
-                    .ok()
-                    .and_then(|p| p.rtp_parameters.codecs.first().map(|c| c.payload_type));
-                let Some(p) = pt else {
-                    continue;
-                };
-                known_pt.store(u32::from(p), Ordering::Release);
-                source.request_keyframe();
-            }
-            let sample = Sample {
-                data: f.data,
-                duration: f.duration,
-                ..Sample::new(Instant::now())
+        // (mime, payload type, clock rate, packetizer) once negotiation has
+        // chosen a codec; looked at again every 2 s (a renegotiation). It
+        // is looked for on a timer too, not only when a frame comes: a
+        // video source encodes nothing until a sender says which codec.
+        let mut current: Option<(String, u8, u32, Box<dyn Packetizer>)> = None;
+        let mut checked = Instant::now() - Duration::from_secs(10);
+        let mut tick = tokio::time::interval(Duration::from_millis(250));
+        loop {
+            let frame = tokio::select! {
+                f = rx.recv() => match f {
+                    Some(f) => Some(f),
+                    None => break,
+                },
+                _ = tick.tick() => None,
+                ev = poll_rtcp(&track) => {
+                    if let Some(TrackLocalEvent::OnRtcpPacket(_)) = ev {
+                        source.request_keyframe();
+                    }
+                    None
+                }
             };
-            if let Some(pt) = pt
-                && track.write_sample(ssrc, pt, &sample, &[]).await.is_err()
-            {
-                // The sender has gone (replaced, stopped).
-                break;
+            if current.is_none() || checked.elapsed() > Duration::from_secs(2) {
+                checked = Instant::now();
+                match rtp.get_parameters().await {
+                    Ok(p) => {
+                        if let Some(c) = p.rtp_parameters.codecs.first()
+                            && current.as_ref().is_none_or(|(m, pt, ..)| {
+                                *m != c.rtp_codec.mime_type || *pt != c.payload_type
+                            })
+                            && let Ok(payloader) = c.rtp_codec.payloader()
+                        {
+                            let pk = new_packetizer(
+                                Instant::now(),
+                                MTU,
+                                c.payload_type,
+                                shared.ssrc,
+                                payloader,
+                                shared.sequencer.clone(),
+                                c.rtp_codec.clock_rate,
+                            );
+                            if let Some(v) = VideoCodec::from_mime(&c.rtp_codec.mime_type) {
+                                shared.codec.store(codec_id(v), Ordering::Release);
+                            }
+                            current = Some((
+                                c.rtp_codec.mime_type.clone(),
+                                c.payload_type,
+                                c.rtp_codec.clock_rate,
+                                Box::new(pk),
+                            ));
+                            source.request_keyframe();
+                        }
+                    }
+                    // The sender is gone.
+                    Err(_) => break,
+                }
+            }
+            let Some(f) = frame else { continue };
+            let Some((mime, _, clock, pk)) = current.as_mut() else {
+                continue;
+            };
+            if f.codec.is_some() && f.codec != VideoCodec::from_mime(mime) {
+                continue;
+            }
+            let samples = (f.duration.as_secs_f64() * f64::from(*clock)) as u32;
+            let Ok(packets) = pk.packetize(Instant::now(), &f.data, samples) else {
+                continue;
+            };
+            for p in packets {
+                // Not bound yet: the frame is dropped.
+                if track.write_rtp_with_extensions(p, &[]).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// The track's next RTCP event; before the track is bound (no events
+    /// yet) wait a little and say nothing.
+    async fn poll_rtcp(track: &TrackLocalStaticRTP) -> Option<TrackLocalEvent> {
+        match track.poll().await {
+            Some(e) => Some(e),
+            None => {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                None
             }
         }
     }
@@ -1693,26 +2127,20 @@ pub(crate) mod worker {
             &mut self,
             sender: u64,
             rtp: Arc<dyn RtpSender>,
-            track: Arc<TrackLocalStaticSample>,
+            track: Arc<TrackLocalStaticRTP>,
             source: Arc<LocalSource>,
-            pt: Arc<std::sync::atomic::AtomicU32>,
+            shared: Arc<SendShared>,
         ) -> tokio::task::JoinHandle<()> {
-            let rx = source.subscribe((self.peer, sender));
-            tokio::spawn(forward(rtp, track, source, rx, pt))
+            let rx = source.subscribe((self.peer, sender), shared.codec.clone());
+            tokio::spawn(forward(rtp, track, source, rx, shared))
         }
 
         pub(crate) async fn handle(&mut self, pc: &Arc<dyn PeerConnection>, cmd: MediaCmd) {
             match cmd {
                 MediaCmd::AddTrack { sender, tx, source } => {
                     let kind = source.kind();
-                    let Some(track) = track_for(kind, source.id(), &self.stream_id, rand_ssrc())
-                    else {
-                        emit(
-                            self.peer,
-                            Event::Error(RtcError::Media("could not make the track".into())),
-                        );
-                        return;
-                    };
+                    let shared = SendShared::new(rand_ssrc());
+                    let track = track_for(kind, source.id(), &self.stream_id, shared.ssrc);
                     match pc.add_track(track.clone() as Arc<dyn TrackLocal>).await {
                         Ok(rtp) => {
                             for t in pc.get_transceivers().await {
@@ -1722,20 +2150,19 @@ pub(crate) mod worker {
                                     self.tx_keys.insert(t.id(), (tx, sender));
                                 }
                             }
-                            let pt = Arc::new(std::sync::atomic::AtomicU32::new(0));
                             let forward = self.start_forward(
                                 sender,
                                 rtp.clone(),
                                 track.clone(),
                                 source.clone(),
-                                pt.clone(),
+                                shared.clone(),
                             );
                             self.senders.insert(
                                 sender,
                                 SenderState {
                                     rtp,
                                     track: Some(track),
-                                    pt,
+                                    shared,
                                     kind,
                                     source: Some(source),
                                     forward: Some(forward),
@@ -1763,13 +2190,8 @@ pub(crate) mod worker {
                     // With a track of our own from the start, so a later
                     // replace_track has one to write.
                     let id = format!("rinch-none-{sender}");
-                    let Some(track) = track_for(kind, &id, &self.stream_id, rand_ssrc()) else {
-                        emit(
-                            self.peer,
-                            Event::Error(RtcError::Media("could not make the track".into())),
-                        );
-                        return;
-                    };
+                    let shared = SendShared::new(rand_ssrc());
+                    let track = track_for(kind, &id, &self.stream_id, shared.ssrc);
                     match pc
                         .add_transceiver_from_track(
                             track.clone() as Arc<dyn TrackLocal>,
@@ -1785,7 +2207,7 @@ pub(crate) mod worker {
                                     SenderState {
                                         rtp,
                                         track: Some(track),
-                                        pt: Arc::default(),
+                                        shared,
                                         kind,
                                         source: None,
                                         forward: None,
@@ -1857,8 +2279,7 @@ pub(crate) mod worker {
                     // sender a track of ours (webrtc-rs binds it at the
                     // next negotiation).
                     let id = format!("rinch-none-{sender}");
-                    let t = track_for(st.kind, &id, &stream_id, rand_ssrc())
-                        .ok_or_else(|| RtcError::Internal("could not make the track".into()))?;
+                    let t = track_for(st.kind, &id, &stream_id, st.shared.ssrc);
                     st.rtp
                         .replace_track(t.clone() as Arc<dyn TrackLocal>)
                         .await
@@ -1874,13 +2295,13 @@ pub(crate) mod worker {
                 old.unsubscribe((peer, sender));
             }
             if let Some(src) = source {
-                let rx = src.subscribe((peer, sender));
+                let rx = src.subscribe((peer, sender), st.shared.codec.clone());
                 st.forward = Some(tokio::spawn(forward(
                     st.rtp.clone(),
                     track,
                     src.clone(),
                     rx,
-                    st.pt.clone(),
+                    st.shared.clone(),
                 )));
                 st.source = Some(src);
             }
@@ -1936,7 +2357,7 @@ pub(crate) mod worker {
                         SenderState {
                             rtp,
                             track: None,
-                            pt: Arc::default(),
+                            shared: SendShared::new(rand_ssrc()),
                             kind,
                             source: None,
                             forward: None,
@@ -2077,6 +2498,157 @@ pub(crate) mod worker {
 
     /// Read one remote track until it ends: video to its decoder thread,
     /// audio through Opus into the mixer, mute and end to the main thread.
+    /// Video depacketizing, for the codec the stream turned out to carry.
+    enum Assembler {
+        H264(SampleBuilder<H264Packet>),
+        Vp8(SampleBuilder<Vp8Packet>),
+    }
+
+    impl Assembler {
+        fn new(codec: VideoCodec) -> Self {
+            // A frame missing a packet is given up after 500 ms instead of
+            // blocking every later one (the builder has no limit otherwise);
+            // 512 packets is a frame of about 600 KB.
+            let delay = Duration::from_millis(500);
+            match codec {
+                VideoCodec::H264 => Self::H264(
+                    SampleBuilder::new(512, H264Packet::default(), 90_000)
+                        .with_max_time_delay(delay),
+                ),
+                VideoCodec::Vp8 => Self::Vp8(
+                    SampleBuilder::new(512, Vp8Packet::default(), 90_000)
+                        .with_max_time_delay(delay),
+                ),
+            }
+        }
+
+        fn push(&mut self, p: rtc::rtp::Packet) {
+            match self {
+                Self::H264(b) => b.push(Instant::now(), p),
+                Self::Vp8(b) => b.push(Instant::now(), p),
+            }
+        }
+
+        /// The next whole frame, and whether packets were lost before it.
+        fn pop(&mut self) -> Option<(bytes::Bytes, bool)> {
+            let s = match self {
+                Self::H264(b) => b.pop(Instant::now()),
+                Self::Vp8(b) => b.pop(Instant::now()),
+            }?;
+            Some((s.data, s.prev_dropped_packets > 0))
+        }
+    }
+
+    /// Opus packets back in sequence order, with losses concealed: a gap
+    /// is filled from the next packet's in-band FEC (the frame just
+    /// before it) and Opus's packet-loss concealment (any earlier ones);
+    /// duplicates and packets older than what was played are dropped. It
+    /// holds one packet (20 ms) waiting for a late one: longer would
+    /// outlast the mixer's 60 ms of buffer.
+    pub(crate) struct OpusJitter {
+        dec: opus::Decoder,
+        /// Extended (wrap-free) sequence number of the next packet to play.
+        next: Option<u64>,
+        last_ext: u64,
+        pending: BTreeMap<u64, bytes::Bytes>,
+        pcm: Vec<f32>,
+    }
+
+    /// 20 ms at 48 kHz.
+    const OPUS_FRAME: usize = 960;
+    const OPUS_HOLD: usize = 1;
+
+    impl OpusJitter {
+        pub(crate) fn new() -> Option<Self> {
+            Some(Self {
+                dec: opus::Decoder::new(48_000, opus::Channels::Stereo).ok()?,
+                next: None,
+                last_ext: 0,
+                pending: BTreeMap::new(),
+                pcm: vec![0f32; 5760 * 2],
+            })
+        }
+
+        fn extend(&mut self, seq: u16) -> u64 {
+            if self.next.is_none() && self.pending.is_empty() && self.last_ext == 0 {
+                self.last_ext = u64::from(seq) + (1 << 16);
+                return self.last_ext;
+            }
+            let base = self.last_ext & !0xffff;
+            let mut ext = base | u64::from(seq);
+            if ext + 0x8000 < self.last_ext {
+                ext += 1 << 16;
+            } else if ext > self.last_ext + 0x8000 && ext >= 1 << 16 {
+                ext -= 1 << 16;
+            }
+            if ext > self.last_ext {
+                self.last_ext = ext;
+            }
+            ext
+        }
+
+        /// Take one packet; append what can be played now (48 kHz stereo)
+        /// to `out`.
+        pub(crate) fn push(&mut self, seq: u16, payload: bytes::Bytes, out: &mut Vec<f32>) {
+            let ext = self.extend(seq);
+            let next = *self.next.get_or_insert(ext);
+            if ext < next || self.pending.contains_key(&ext) {
+                return; // late or a duplicate
+            }
+            self.pending.insert(ext, payload);
+            loop {
+                let next = self.next.unwrap_or(ext);
+                if let Some(p) = self.pending.remove(&next) {
+                    self.decode(&p, false, out);
+                    self.next = Some(next + 1);
+                    continue;
+                }
+                // A gap: wait for it while there is room, then conceal it.
+                if self.pending.len() <= OPUS_HOLD {
+                    break;
+                }
+                let Some((&first, first_payload)) = self.pending.iter().next() else {
+                    break;
+                };
+                let first_payload = first_payload.clone();
+                for lost in next..first {
+                    if lost + 1 == first {
+                        // The next packet's FEC carries this frame.
+                        self.decode(&first_payload, true, out);
+                    } else {
+                        self.decode(&[], false, out);
+                    }
+                }
+                self.next = Some(first);
+            }
+        }
+
+        fn decode(&mut self, data: &[u8], fec: bool, out: &mut Vec<f32>) {
+            // Concealment (no data, or FEC) produces exactly one 20 ms frame.
+            let frames = if data.is_empty() || fec {
+                OPUS_FRAME
+            } else {
+                self.pcm.len() / 2
+            };
+            match self
+                .dec
+                .decode_float(data, &mut self.pcm[..frames * 2], fec)
+            {
+                Ok(n) => out.extend_from_slice(&self.pcm[..n * 2]),
+                Err(_) if !data.is_empty() && !fec => {
+                    // A packet libopus refuses: conceal it instead.
+                    if let Ok(n) =
+                        self.dec
+                            .decode_float(&[], &mut self.pcm[..OPUS_FRAME * 2], false)
+                    {
+                        out.extend_from_slice(&self.pcm[..n * 2]);
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+    }
+
     async fn read_remote(
         peer: u64,
         key: u64,
@@ -2086,17 +2658,17 @@ pub(crate) mod worker {
         muted: Arc<std::sync::atomic::AtomicBool>,
     ) {
         let (pli_tx, mut pli_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-        let decoder = match kind {
-            MediaKind::Video => start_video_decoder(key, sink.clone(), pli_tx),
-            MediaKind::Audio => None,
-        };
-        let mut builder = SampleBuilder::new(128, H264Packet::default(), 90_000);
-        let mut opus = match kind {
-            MediaKind::Audio => opus::Decoder::new(48_000, opus::Channels::Stereo).ok(),
+        // Video: the decoder and depacketizer, made once the first packet
+        // says which codec the stream carries.
+        let mut video: Option<(Option<std::sync::mpsc::SyncSender<bytes::Bytes>>, Assembler)> =
+            None;
+        let mut jitter = match kind {
+            MediaKind::Audio => OpusJitter::new(),
             MediaKind::Video => None,
         };
-        let mut pcm = vec![0f32; 5760 * 2];
+        let mut pcm: Vec<f32> = Vec::new();
         let mut ssrc = 0u32;
+        let mut last_pli = Instant::now() - Duration::from_secs(2);
         loop {
             tokio::select! {
                 ev = track.poll() => {
@@ -2109,18 +2681,43 @@ pub(crate) mod worker {
                             }
                             match kind {
                                 MediaKind::Video => {
-                                    builder.push(Instant::now(), p);
-                                    while let Some(s) = builder.pop(Instant::now()) {
-                                        if let Some(d) = &decoder {
-                                            let _ = d.try_send(s.data);
+                                    if drop_video_packet() {
+                                        continue;
+                                    }
+                                    if video.is_none() {
+                                        let mime = track.codec(ssrc).await.map(|c| c.mime_type).unwrap_or_default();
+                                        let Some(codec) = VideoCodec::from_mime(&mime) else {
+                                            continue;
+                                        };
+                                        video = Some((
+                                            start_video_decoder(key, codec, sink.clone(), pli_tx.clone()),
+                                            Assembler::new(codec),
+                                        ));
+                                    }
+                                    let Some((decoder, asm)) = video.as_mut() else { continue };
+                                    asm.push(p);
+                                    while let Some((frame, lost)) = asm.pop() {
+                                        if lost && last_pli.elapsed() > Duration::from_millis(500) {
+                                            // A frame went missing: ask now, not
+                                            // only once the decoder fails.
+                                            last_pli = Instant::now();
+                                            let _ = pli_tx.send(());
+                                        }
+                                        if let Some(d) = decoder {
+                                            let _ = d.try_send(frame);
                                         }
                                     }
                                 }
                                 MediaKind::Audio => {
-                                    if let Some(dec) = opus.as_mut()
-                                        && let Ok(n) = dec.decode_float(&p.payload, &mut pcm, false)
-                                    {
-                                        mixer_push(peer, key, &sink, &pcm[..n * 2]);
+                                    if drop_audio_packet() {
+                                        continue;
+                                    }
+                                    if let Some(j) = jitter.as_mut() {
+                                        pcm.clear();
+                                        j.push(p.header.sequence_number, p.payload, &mut pcm);
+                                        if !pcm.is_empty() {
+                                            mixer_push(peer, key, &sink, &pcm);
+                                        }
                                     }
                                 }
                             }

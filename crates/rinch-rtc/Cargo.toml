@@ -35,11 +35,12 @@ serde = ["dep:serde"]
 #     `media::load_openh264` at run time. Cisco's binary licence covers the
 #     MPEG LA royalties when its conditions are met. See the user guide.
 media = ["media-core", "openh264?/source"]
-media-cisco-openh264 = ["media-core", "openh264?/libloading"]
+media-cisco-openh264 = ["media-core", "openh264?/libloading", "dep:sha2"]
 # What both share (the cfg gate in the code). Not for direct use.
 media-core = [
     "dep:openh264",
     "dep:opus",
+    "dep:vpx-sys",
     "dep:rinch-av",
     "web-sys/AudioBuffer",
     "web-sys/AudioContext",
@@ -107,6 +108,12 @@ libc = "0.2"
 # The `media` feature's codecs and devices (desktop only).
 openh264 = { version = "=0.9.9", default-features = false, optional = true }
 opus = { version = "0.4", optional = true }
+# VP8 (M2, decided 2026-10-27): the system's libvpx, found by pkg-config,
+# bindings generated at build time (bindgen: libclang). libvpx-dev 1.14 on
+# Ubuntu 24.04 is newer than the crate's pre-generated bindings.
+vpx-sys = { package = "env-libvpx-sys", version = "=5.1.3", features = ["generate"], optional = true }
+# Hashing Cisco's OpenH264 binary before it is loaded (media-cisco-openh264).
+sha2 = { version = "0.10", optional = true }
 rinch-av = { workspace = true, features = ["audio", "camera"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
