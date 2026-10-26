@@ -196,6 +196,18 @@ fn range_type_in_table(f: EditorFixture) -> EditorFixture {
     black_box(measure(black_box(f), op_range_type_in_table))
 }
 
+// Undoing a keystroke in a cell of a table of 100 and of 1000 rows, alone and
+// after a peer's keystroke in another cell: the check for a table the undo
+// left ragged (#1937) reads no table.
+#[library_benchmark]
+#[bench::rows_100(args = ((100, false)), setup = setup_undo_in_table)]
+#[bench::rows_1000(args = ((1000, false)), setup = setup_undo_in_table)]
+#[bench::after_peer_rows_100(args = ((100, true)), setup = setup_undo_in_table)]
+#[bench::after_peer_rows_1000(args = ((1000, true)), setup = setup_undo_in_table)]
+fn undo_in_table(f: EditorFixture) -> EditorFixture {
+    black_box(measure(black_box(f), op_undo))
+}
+
 // Typing over a range from one paragraph of a cell into the next, in a table
 // of 100 and of 1000 rows: the range is inside one cell, so the check for a
 // table the edit left ragged (#1847) reads no table.
@@ -266,6 +278,7 @@ library_benchmark_group!(
         collab_keystroke,
         collab_table_keystroke,
         range_type_in_table,
+        undo_in_table,
         range_across_paragraphs_in_cell,
         cell_selection_mark_active,
         cell_selection_toggle_bold,

@@ -291,7 +291,7 @@ fn random_edit_unchecked(rng: &mut Rng, state: &EditorState, images: bool) -> Op
             if EXTRA_TABLE_OPS.with(|x| x.get())
                 && let Some(next) = extra_table_op(rng, state, p)
             {
-                TABLE_EDITS.fetch_add(1, Ordering::Relaxed);
+                TABLE_EDITS.with(|c| c.set(c.get() + 1));
                 return Some(next);
             }
             let mut tr = state.tr();
@@ -306,7 +306,7 @@ fn random_edit_unchecked(rng: &mut Rng, state: &EditorState, images: bool) -> Op
                 "splitCell",
             ][rng.below(6)];
             let next = placed.run(cmd)?;
-            TABLE_EDITS.fetch_add(1, Ordering::Relaxed);
+            TABLE_EDITS.with(|c| c.set(c.get() + 1));
             Some(next)
         }
         // Indent / outdent a list item (creates and collapses nesting depth).
@@ -459,9 +459,12 @@ struct Swarm {
     transient_errors: u64,
 }
 
-/// Undos and redos that applied and changed the document — the positive control for
-/// [`fuzz_undo_and_redo_among_remote_changes`].
-static HISTORY_EDITS: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    /// Undos and redos that applied and changed the document, on this thread (a
+    /// test's own: the tests of this binary run in parallel) — the positive
+    /// control for [`fuzz_undo_and_redo_among_remote_changes`].
+    static HISTORY_EDITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 /// Images inserted by [`random_edit`] across the whole test binary — the positive
 /// control that the image trial generated any.
@@ -473,8 +476,31 @@ static IMAGE_ATTRS_SET: AtomicUsize = AtomicUsize::new(0);
 /// exercise quotes at all.
 static QUOTES_WRAPPED: AtomicUsize = AtomicUsize::new(0);
 
-/// Table commands applied by [`random_edit`] — the positive control for tables.
-static TABLE_EDITS: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    /// Table commands applied by [`random_edit`] on this thread — the positive
+    /// control for tables.
+    static TABLE_EDITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+thread_local! {
+    /// Undos and redos whose tables [`assert_tables_tile`] checked (#1937), on
+    /// this thread.
+    static UNDOS_CHECKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Panic unless every table of `doc` tiles its grid, after peer `p`'s `cmd`.
+fn assert_tables_tile(doc: &Node, seed: u64, p: usize, cmd: &str) {
+    doc.nodes_between(0, doc.content_size(), &mut |n: &Node, at, _| {
+        if n.type_name() == "table" {
+            let problems = rinch_editor_core::tables::table_problems(n);
+            assert!(
+                problems.is_empty(),
+                "a {cmd} left the table at {at} ragged (seed={seed}, peer={p}): {problems:?}"
+            );
+        }
+        true
+    });
+}
 
 thread_local! {
     /// Whether [`random_edit`]'s table arm also merges cells, sets a cell attribute and
@@ -637,7 +663,9 @@ impl Swarm {
             // arrives (#196's transient class), and the edit stalls outbound (#220):
             // the model keeps it, and a later edit or the flush catches up.
             assert!(
-                self.delivery != Delivery::Fifo && !self.sessions[p].is_poisoned(),
+                self.delivery != Delivery::Fifo
+                    && !self.sessions[p].is_poisoned()
+                    && !matches!(e, rinch_editor_collab::CollabError::Unsupported(_)),
                 "flat edit projects cleanly (seed={seed}, peer={p}): {e}"
             );
             self.transient_errors += 1;
@@ -789,7 +817,14 @@ impl Swarm {
                     let cmd = if rng.chance(50) { "undo" } else { "redo" };
                     let next = self.states[p].run(cmd);
                     if next.as_ref().is_some_and(|n| n.doc != self.states[p].doc) {
-                        HISTORY_EDITS.fetch_add(1, Ordering::Relaxed);
+                        HISTORY_EDITS.with(|c| c.set(c.get() + 1));
+                    }
+                    // An undo or redo leaves every table tiling its grid (#1937):
+                    // one it made ragged is repaired in its own transaction, so
+                    // the edit still projects (a ragged table is `Unsupported`).
+                    if let Some(next) = &next {
+                        assert_tables_tile(&next.doc, seed, p, cmd);
+                        UNDOS_CHECKED.with(|c| c.set(c.get() + 1));
                     }
                     next
                 } else {
@@ -1110,7 +1145,7 @@ fn fuzz_wraps_blocks_in_quotes() {
 fn fuzz_edits_tables_among_everything_else() {
     // The positive control for the table arm: tables inserted and restructured while
     // the other arms type, split, wrap and delete in and around their cells.
-    let before = TABLE_EDITS.load(Ordering::Relaxed);
+    let before = TABLE_EDITS.with(|c| c.get());
     let (partial, whole) = integrate_reads_in(|| {
         for seed in 900..=907u64 {
             let _ = fuzz_trial(seed, 3, 300);
@@ -1118,7 +1153,7 @@ fn fuzz_edits_tables_among_everything_else() {
     });
     // The partial read's positive control (see `fuzz_two_peers_converge`).
     assert!(partial >= 1000, "{partial} partial reads, {whole} whole");
-    let applied = TABLE_EDITS.load(Ordering::Relaxed) - before;
+    let applied = TABLE_EDITS.with(|c| c.get()) - before;
     assert!(
         applied >= 20,
         "the trials must actually edit tables to test them (applied {applied})"
@@ -1132,7 +1167,7 @@ fn fuzz_edits_tables_among_everything_else() {
 /// undo or a redo (seed 275 with two peers was #1249's first repro).
 #[test]
 fn fuzz_undo_and_redo_among_remote_changes() {
-    let before = HISTORY_EDITS.load(Ordering::Relaxed);
+    let before = HISTORY_EDITS.with(|c| c.get());
     for seed in (1000..=1023u64).chain([275]) {
         let peers = 2 + (seed % 2) as usize;
         let schema = schema();
@@ -1148,7 +1183,7 @@ fn fuzz_undo_and_redo_among_remote_changes() {
         swarm.flush(seed);
         swarm.assert_converged(seed);
     }
-    let applied = HISTORY_EDITS.load(Ordering::Relaxed) - before;
+    let applied = HISTORY_EDITS.with(|c| c.get()) - before;
     assert!(
         applied >= 200,
         "the trials must actually undo and redo to test them (applied {applied})"
@@ -1226,6 +1261,12 @@ fn fuzz_deletion_to_empty_recovers_and_converges() {
 /// pictures every other seed and undo/redo every fourth. Answers the integrates and
 /// local edits that failed transiently (out of order only).
 fn delivery_trial(seed: u64, peers: usize, delivery: Delivery) -> u64 {
+    let undo = if seed % 4 == 1 { 15 } else { 0 };
+    delivery_trial_with(seed, peers, delivery, undo)
+}
+
+/// [`delivery_trial`] with `undo` percent of local edits an undo or a redo.
+fn delivery_trial_with(seed: u64, peers: usize, delivery: Delivery, undo: u64) -> u64 {
     EXTRA_TABLE_OPS.with(|x| x.set(true));
     let schema = schema();
     let mut rng = Rng::new(seed);
@@ -1239,7 +1280,7 @@ fn delivery_trial(seed: u64, peers: usize, delivery: Delivery) -> u64 {
     // Undo and redo every fourth seed: with these grid changes an undo panicked in
     // the history's mapping (`StepMap::recover`, from `Branch::pop_event`) until
     // #1935.
-    swarm.undo_percent = if seed % 4 == 1 { 15 } else { 0 };
+    swarm.undo_percent = undo;
     swarm.delivery = delivery;
     swarm.delivery_rng = Rng::new(seed.wrapping_mul(31) + delivery as u64);
     swarm.run_rounds(seed, 300, &mut rng);
@@ -1255,14 +1296,14 @@ fn delivery_trial(seed: u64, peers: usize, delivery: Delivery) -> u64 {
 /// change of its grid shows as a wrong read.
 #[test]
 fn fuzz_grid_changes_in_order() {
-    let before = TABLE_EDITS.load(Ordering::Relaxed);
+    let before = TABLE_EDITS.with(|c| c.get());
     let (partial, whole) = integrate_reads_in(|| {
         for seed in 5001..=5024u64 {
             delivery_trial(seed, 2 + (seed % 3) as usize, Delivery::Fifo);
         }
     });
     assert!(partial >= 1000, "{partial} partial reads, {whole} whole");
-    let applied = TABLE_EDITS.load(Ordering::Relaxed) - before;
+    let applied = TABLE_EDITS.with(|c| c.get()) - before;
     assert!(applied >= 100, "only {applied} table changes applied");
 }
 
@@ -1298,6 +1339,35 @@ fn fuzz_merged_delivery_converges() {
     });
     assert!(partial >= 200, "{partial} partial reads, {whole} whole");
     assert!(whole >= 500, "{partial} partial reads, {whole} whole");
+}
+
+/// #1937: undo and redo among peers' grid changes (merged cells, cell attributes,
+/// swapped rows), delivered in order, out of order and in merged batches. After every
+/// undo and redo every table tiles its grid (`assert_tables_tile`): one the undo made
+/// ragged is repaired in its own transaction (an undo of my merge after a peer's merge
+/// restored cells into the peer's table and kept the spans). And the edit still
+/// records to the CRDT: a ragged table is `Unsupported`, which stalled outbound.
+#[test]
+fn fuzz_undo_among_grid_changes_keeps_tables_tiling() {
+    let before = (
+        UNDOS_CHECKED.with(|c| c.get()),
+        HISTORY_EDITS.with(|c| c.get()),
+    );
+    for (base, delivery) in [
+        (7001u64, Delivery::Fifo),
+        (7101, Delivery::OutOfOrder),
+        (7201, Delivery::Merged),
+    ] {
+        for seed in base..base + 16 {
+            delivery_trial_with(seed, 2 + (seed % 3) as usize, delivery, 30);
+        }
+    }
+    let checked = UNDOS_CHECKED.with(|c| c.get()) - before.0;
+    let applied = HISTORY_EDITS.with(|c| c.get()) - before.1;
+    assert!(
+        checked >= 1000 && applied >= 300,
+        "{checked} undos and redos checked, {applied} changed the document"
+    );
 }
 
 /// Issue #214: a `(seed, peers, rounds)` triple must reproduce a trial **exactly**, or a

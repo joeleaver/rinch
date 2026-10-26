@@ -202,6 +202,13 @@ impl BatchStep {
         self.reps.len() + self.attrs.len()
     }
 
+    /// The positions of the nodes whose attributes this step sets, in the
+    /// document it applies to (#1937: a span set by an undo can make a table
+    /// ragged without moving a position).
+    pub(crate) fn attr_positions(&self) -> impl Iterator<Item = usize> + '_ {
+        self.attrs.iter().map(|a| a.pos)
+    }
+
     /// Whether the step changes nothing.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
