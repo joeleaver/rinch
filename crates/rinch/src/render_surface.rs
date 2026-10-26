@@ -3088,7 +3088,7 @@ mod compositor_routing_tests {
     /// whole body, or one reads the other's `true` halfway through.
     static PRESENTING: Mutex<()> = Mutex::new(());
 
-    fn presenting_lock() -> std::sync::MutexGuard<'static, ()> {
+    pub(super) fn presenting_lock() -> std::sync::MutexGuard<'static, ()> {
         PRESENTING.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -3122,7 +3122,7 @@ mod compositor_routing_tests {
     /// the surfaces (component surfaces from their painted boxes, then named
     /// viewports), run the callbacks.
     #[cfg(feature = "gpu")]
-    fn paint_like_paint_gpu(app: &mut crate::app::RinchApp, s: f32) {
+    pub(super) fn paint_like_paint_gpu(app: &mut crate::app::RinchApp, s: f32) {
         app.resolve_and_repaint(400.0, 300.0);
         app.update_render_surface_layouts(s, true);
         for name in registered_viewport_names() {
@@ -3135,7 +3135,7 @@ mod compositor_routing_tests {
     }
 
     #[cfg(feature = "gpu")]
-    fn test_gpu() -> &'static crate::shell::desktop::GpuHandle {
+    pub(super) fn test_gpu() -> &'static crate::shell::desktop::GpuHandle {
         crate::shell::desktop::gpu_handle_for_tests(|| {
             let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
             let adapter = pollster::block_on(
@@ -3190,7 +3190,7 @@ mod compositor_routing_tests {
 
     /// Clear `f`'s target to `rgba` (0–255, premultiplied).
     #[cfg(feature = "gpu")]
-    fn clear_to(f: &GpuSurfaceFrame<'_>, [r, g, b, a]: [u8; 4]) {
+    pub(super) fn clear_to(f: &GpuSurfaceFrame<'_>, [r, g, b, a]: [u8; 4]) {
         let mut encoder = f.device.create_command_encoder(&Default::default());
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
@@ -3314,7 +3314,7 @@ mod compositor_routing_tests {
     }
 
     #[cfg(feature = "gpu")]
-    fn vello_renderer() -> vello::Renderer {
+    pub(super) fn vello_renderer() -> vello::Renderer {
         vello::Renderer::new(
             &test_gpu().device,
             vello::RendererOptions {
@@ -4551,3 +4551,7 @@ mod pacing_tests_1768 {
 #[cfg(all(test, feature = "video"))]
 #[path = "video_surface_lifetime_tests.rs"]
 mod video_surface_lifetime_tests;
+
+#[cfg(all(test, feature = "gpu", software_shell))]
+#[path = "split_runtime_1865_tests.rs"]
+mod split_runtime_1865_tests;

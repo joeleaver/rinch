@@ -91,6 +91,15 @@ fn full_paint(f: PaintFixture) -> PaintFixture {
 }
 
 #[library_benchmark]
+#[bench::text_page(setup = setup_vello_paint)]
+#[bench::split_surface_140_boxes(setup = setup_vello_paint_split)]
+#[bench::text_page_unsliced(setup = setup_vello_paint_unsliced)]
+#[bench::split_140_unsliced(setup = setup_vello_paint_split_unsliced)]
+fn vello_paint(f: VelloPaintFixture) -> VelloPaintFixture {
+    black_box(measure(black_box(f), op_vello_paint))
+}
+
+#[library_benchmark]
 #[bench::fields_40(setup = setup_shadow_paint)]
 fn shadow_paint(f: PaintFixture) -> PaintFixture {
     black_box(measure(black_box(f), op_shadow_paint))
@@ -152,6 +161,7 @@ library_benchmark_group!(
         abs_badge_relayout,
         abs_badge_scroll,
         full_paint,
+        vello_paint,
         shadow_paint,
         text_shadow_paint
     ]

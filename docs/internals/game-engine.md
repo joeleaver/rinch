@@ -231,6 +231,22 @@ inverse clip must be non-zero with the hole wound backwards, since even-odd
 nested in a clip drops coverage on lavapipe). Both are `#[ignore]`d GPU tests
 named `gpu_split_*`; `split_composite_cost_probe` is the cost measurement.
 
+**The split path in the desktop window (#1865 PR 3).** `paint_gpu` enables
+splitting (`RinchApp::set_split_enabled`) unless a `GameViewport` layer is
+under the UI; `build_gpu_frame_split` paints with `VelloPainter::begin_slicing`
+and hands back a `shell::split_frame::SplitChange` (the surfaces whose kept
+slices it replaces, and the new slices); `WgpuRenderer::apply_split` renders
+the new slices into region textures (`SplitFrame`, each slice rendered where
+the window draws it into a scratch target, region kept) and `present`
+composites (`SplitFrame::composite`) when anything is split. A fresh frame of
+a split surface is not damage (`RinchApp::mark_fresh_surfaces`): the window
+composites without repainting. Damage meeting a kept region has the region
+added, so the region's slices are replaced whole. A tainted slice repaints the
+frame in-scene and suspends splitting for 120 frames. Debug builds log each
+surface's placement change (`tracing::debug!`). Oracle:
+`crates/rinch/src/split_runtime_1865_tests.rs` (`gpu_split_runtime_*`, a child of `render_surface`),
+the runtime's own steps against an in-scene window.
+
 **Sharing a high-capability GPU device (issue #57):** zero-copy compositing needs your texture on the *same* device rinch composites with (`gpu_handle()` → `device`/`queue`/**`adapter`**). `gpu_handle()` is `None` whenever the window presents with the software renderer (`RINCH_RENDERER=cpu`, or the `Renderer::Auto` fallback), so handle `None` unless you use one of the two entry points below — they always present on the GPU. By default that device is created with `Features::default()` / `Limits::default()`. To raise it:
 
 | Entry point | Ownership | Use when |
