@@ -1,4 +1,4 @@
-# Chrome 155 corpus for #1243's review rounds (PR #1897): N (a `pre`/`nowrap` element ending in punctuation glued to the next word), M's a0/b0 families, AB (the 15 cases of the first review's random corpus, each with letter-spacing, word-spacing, font sizes, padding and tabs taken out).
+# Chrome 155 corpus for #1243 review rounds (PR #1897): K (the third review family slice), N (a `pre`/`nowrap` element ending in punctuation glued to the next word), M's a0/b0 families, AB (the 15 cases of the first review's random corpus, each with letter-spacing, word-spacing, font sizes, padding and tabs taken out).
 # id \t root style \t inner HTML (`~` splits a text node; \n and \t escaped) \t Chrome lines \t rinch lines where they differ (a known difference, #1898)
 # Lines are joined by ||, each with its spaces, tabs and newlines left out. Set in Inter (ProbeFace) 16px/25px.
 N:n1_normal_60	width:60px;white-space:normal;text-align:left	aaaa bbbb <span style="white-space:pre">cccc!</span>dddd eeee <span style="white-space:pre"> ff</span> gg	aaaa||bbbb||cccc!dddd||eeeeff||gg	
@@ -532,3 +532,116 @@ AB:s12_1396.noTab	width:138px;white-space:pre-wrap;text-align:left	<span style="
 AB:s12_1396.noPad	width:138px;white-space:pre-wrap;text-align:left	<span style="white-space:pre-line">dM~Mk <span style="white-space:pre"><span style="white-space:normal">ebaWk pdbq  gsamMzytzrp</span></span></span>  <span style="white-space:pre"> cqmoa</span><span style="white-space:pre-line"><span style="word-spacing:3px;font-size:11px"><span style="white-space:pre;word-spacing:3px">     </span>nigatlazs~rMoejgjuk</span>czubhspkoW-</span><span style="white-space:nowrap"> luebmwxi  ~ mevvhpeoswfMeswpl     </span><span style="white-space:pre">p<b style="display:inline-block;font-weight:normal">l</b></span>lgpsfmzndbzj~l	dMMkebaWk||pdbq||gsamMzytzrp||cqmoanigatlazsrMoejgjukczubhspkoW-luebmwximevvhpeoswfMeswplp||lgpsfmzndbzjl	dMMkebaWk||pdbq||gsamMzytzrpcqmoanigatlazsrMoejgjukczubhspkoW-luebmwximevvhpeoswfMeswplp||lgpsfmzndbzjl
 AB:s12_1396.noFS	width:138px;white-space:pre-wrap;text-align:left	<span style="white-space:pre-line">dM~Mk <span style="white-space:pre"><span style="white-space:normal">ebaWk pdbq  gsamMzytzrp</span></span></span>  <span style="white-space:pre"> cqmoa</span><span style="white-space:pre-line"><span style="word-spacing:3px"><span style="white-space:pre;word-spacing:3px">     </span>nigatlazs~rMoejgjuk</span>czubhspkoW-</span><span style="white-space:nowrap;padding:0 2px"> luebmwxi  ~ mevvhpeoswfMeswpl     </span><span style="white-space:pre">p<b style="display:inline-block;font-weight:normal">l</b></span>lgpsfmzndbzj~l	dMMkebaWk||pdbq||gsamMzytzrp||cqmoanigatlazsrMoejgjukczubhspkoW-luebmwximevvhpeoswfMeswplp||lgpsfmzndbzjl	dMMkebaWk||pdbq||gsamMzytzrpcqmoanigatlazsrMoejgjukczubhspkoW-luebmwximevvhpeoswfMeswplp||lgpsfmzndbzjl
 AB:s12_1396.noAll	width:138px;white-space:pre-wrap;text-align:left	<span style="white-space:pre-line">dM~Mk <span style="white-space:pre"><span style="white-space:normal">ebaWk pdbq  gsamMzytzrp</span></span></span>  <span style="white-space:pre"> cqmoa</span><span style="white-space:pre-line"><span style=";font-size:11px"><span style="white-space:pre">     </span>nigatlazs~rMoejgjuk</span>czubhspkoW-</span><span style="white-space:nowrap"> luebmwxi  ~ mevvhpeoswfMeswpl     </span><span style="white-space:pre">p<b style="display:inline-block;font-weight:normal">l</b></span>lgpsfmzndbzj~l	dMMkebaWk||pdbq||gsamMzytzrp||cqmoanigatlazsrMoejgjukczubhspkoW-luebmwximevvhpeoswfMeswplp||lgpsfmzndbzjl	dMMkebaWk||pdbq||gsamMzytzrpcqmoanigatlazsrMoejgjukczubhspkoW-luebmwximevvhpeoswfMeswplp||lgpsfmzndbzjl
+K:k1.base	width:99px;white-space:normal;text-align:left	<span style="white-space:pre-line">qq</span>mmmmmmmmm   <span style="white-space:pre"> bee</span>	qqmmmmmmmmmbee	
+K:k1.rootcol	width:99px;white-space:normal;text-align:left	<span style="white-space:pre-line">qq</span>mmmmmmmmm   ~ <span style="white-space:pre"> bee</span>	qqmmmmmmmmmbee	
+K:k1.spcol	width:99px;white-space:normal;text-align:left	<span style="white-space:pre-line">qq</span>mmmmmmmmm   <span> </span><span style="white-space:pre"> bee</span>	qqmmmmmmmmmbee	
+K:k1.spempty	width:99px;white-space:normal;text-align:left	<span style="white-space:pre-line">qq</span>mmmmmmmmm   <span></span><span style="white-space:pre"> bee</span>	qqmmmmmmmmmbee	
+K:k1.comment	width:99px;white-space:normal;text-align:left	<span style="white-space:pre-line">qq</span>mmmmmmmmm   <!-- --> <span style="white-space:pre"> bee</span>	qqmmmmmmmmmbee	
+K:k1.wrap	width:99px;white-space:normal;text-align:left	<span style="white-space:pre-line">qq</span><span>mmmmmmmmm   </span><span style="white-space:pre"> bee</span>	qqmmmmmmmmmbee	
+K:k1.wrapcol	width:99px;white-space:normal;text-align:left	<span style="white-space:pre-line">qq</span><span>mmmmmmmmm   </span> <span style="white-space:pre"> bee</span>	qqmmmmmmmmm||bee	
+K:k1.wrapspcol	width:99px;white-space:normal;text-align:left	<span style="white-space:pre-line">qq</span><span>mmmmmmmmm   </span><span> </span><span style="white-space:pre"> bee</span>	qqmmmmmmmmmbee	
+K:k1.wrapempty	width:99px;white-space:normal;text-align:left	<span style="white-space:pre-line">qq</span><span>mmmmmmmmm   </span><span></span><span style="white-space:pre"> bee</span>	qqmmmmmmmmmbee	
+K:k1.wordspan	width:99px;white-space:normal;text-align:left	<span style="white-space:pre-line">qq</span><span>mmmmmmmmm</span>   <span style="white-space:pre"> bee</span>	qqmmmmmmmmm||bee	
+K:k1.wordspancol	width:99px;white-space:normal;text-align:left	<span style="white-space:pre-line">qq</span><span>mmmmmmmmm</span>   ~ <span style="white-space:pre"> bee</span>	qqmmmmmmmmm||bee	
+K:k1.splitcol	width:99px;white-space:normal;text-align:left	<span style="white-space:pre-line">qq</span>mmmmmmmmm ~   ~ <span style="white-space:pre"> bee</span>	qqmmmmmmmmmbee	
+K:k1.nestcol	width:99px;white-space:normal;text-align:left	<span style="white-space:pre-line">qq</span><span><span>mmmmmmmmm   </span> </span><span style="white-space:pre"> bee</span>	qqmmmmmmmmm||bee	
+K:k1.colbefore	width:99px;white-space:normal;text-align:left	<span style="white-space:pre-line">qq</span>mmmmmmmmm~ ~   <span style="white-space:pre"> bee</span>	qqmmmmmmmmm||bee	
+K:k20.base	width:76px;white-space:normal;text-align:left	xx mmmmmmmmm  <span style="white-space:pre">  dd</span> ee ff	xx||mmmmmmmmmdd||eeff	
+K:k20.rootcol	width:76px;white-space:normal;text-align:left	xx mmmmmmmmm  ~ <span style="white-space:pre">  dd</span> ee ff	xx||mmmmmmmmmdd||eeff	
+K:k20.spcol	width:76px;white-space:normal;text-align:left	xx mmmmmmmmm  <span> </span><span style="white-space:pre">  dd</span> ee ff	xx||mmmmmmmmmdd||eeff	
+K:k20.spempty	width:76px;white-space:normal;text-align:left	xx mmmmmmmmm  <span></span><span style="white-space:pre">  dd</span> ee ff	xx||mmmmmmmmmdd||eeff	
+K:k20.comment	width:76px;white-space:normal;text-align:left	xx mmmmmmmmm  <!-- --> <span style="white-space:pre">  dd</span> ee ff	xx||mmmmmmmmmdd||eeff	
+K:k20.wrap	width:76px;white-space:normal;text-align:left	xx <span>mmmmmmmmm  </span><span style="white-space:pre">  dd</span> ee ff	xx||mmmmmmmmmdd||eeff	
+K:k20.wrapcol	width:76px;white-space:normal;text-align:left	xx <span>mmmmmmmmm  </span> <span style="white-space:pre">  dd</span> ee ff	xx||mmmmmmmmm||ddeeff	
+K:k20.wrapspcol	width:76px;white-space:normal;text-align:left	xx <span>mmmmmmmmm  </span><span> </span><span style="white-space:pre">  dd</span> ee ff	xx||mmmmmmmmmdd||eeff	
+K:k20.wrapempty	width:76px;white-space:normal;text-align:left	xx <span>mmmmmmmmm  </span><span></span><span style="white-space:pre">  dd</span> ee ff	xx||mmmmmmmmmdd||eeff	
+K:k20.wordspan	width:76px;white-space:normal;text-align:left	xx <span>mmmmmmmmm</span>  <span style="white-space:pre">  dd</span> ee ff	xx||mmmmmmmmm||ddeeff	
+K:k20.wordspancol	width:76px;white-space:normal;text-align:left	xx <span>mmmmmmmmm</span>  ~ <span style="white-space:pre">  dd</span> ee ff	xx||mmmmmmmmm||ddeeff	
+K:k20.splitcol	width:76px;white-space:normal;text-align:left	xx mmmmmmmmm ~  ~ <span style="white-space:pre">  dd</span> ee ff	xx||mmmmmmmmmdd||eeff	
+K:k20.nestcol	width:76px;white-space:normal;text-align:left	xx <span><span>mmmmmmmmm  </span> </span><span style="white-space:pre">  dd</span> ee ff	xx||mmmmmmmmm||ddeeff	
+K:k20.colbefore	width:76px;white-space:normal;text-align:left	xx mmmmmmmmm~ ~  <span style="white-space:pre">  dd</span> ee ff	xx||mmmmmmmmm||ddeeff	
+K:k45.base	width:34px;white-space:pre-line;text-align:left	xx lvWa.  <span style="white-space:pre"> dd</span>	xx||lvWa.dd	
+K:k45.rootcol	width:34px;white-space:pre-line;text-align:left	xx lvWa.  ~ <span style="white-space:pre"> dd</span>	xx||lvWa.dd	
+K:k45.spcol	width:34px;white-space:pre-line;text-align:left	xx lvWa.  <span> </span><span style="white-space:pre"> dd</span>	xx||lvWa.dd	
+K:k45.spempty	width:34px;white-space:pre-line;text-align:left	xx lvWa.  <span></span><span style="white-space:pre"> dd</span>	xx||lvWa.dd	
+K:k45.comment	width:34px;white-space:pre-line;text-align:left	xx lvWa.  <!-- --> <span style="white-space:pre"> dd</span>	xx||lvWa.dd	
+K:k45.wrap	width:34px;white-space:pre-line;text-align:left	xx <span>lvWa.  </span><span style="white-space:pre"> dd</span>	xx||lvWa.dd	
+K:k45.wrapcol	width:34px;white-space:pre-line;text-align:left	xx <span>lvWa.  </span> <span style="white-space:pre"> dd</span>	xx||lvWa.||dd	
+K:k45.wrapspcol	width:34px;white-space:pre-line;text-align:left	xx <span>lvWa.  </span><span> </span><span style="white-space:pre"> dd</span>	xx||lvWa.dd	
+K:k45.wrapempty	width:34px;white-space:pre-line;text-align:left	xx <span>lvWa.  </span><span></span><span style="white-space:pre"> dd</span>	xx||lvWa.dd	
+K:k45.wordspan	width:34px;white-space:pre-line;text-align:left	xx <span>lvWa.</span>  <span style="white-space:pre"> dd</span>	xx||lvWa.||dd	
+K:k45.wordspancol	width:34px;white-space:pre-line;text-align:left	xx <span>lvWa.</span>  ~ <span style="white-space:pre"> dd</span>	xx||lvWa.||dd	
+K:k45.splitcol	width:34px;white-space:pre-line;text-align:left	xx lvWa. ~  ~ <span style="white-space:pre"> dd</span>	xx||lvWa.dd	
+K:k45.nestcol	width:34px;white-space:pre-line;text-align:left	xx <span><span>lvWa.  </span> </span><span style="white-space:pre"> dd</span>	xx||lvWa.||dd	
+K:k45.colbefore	width:34px;white-space:pre-line;text-align:left	xx lvWa.~ ~  <span style="white-space:pre"> dd</span>	xx||lvWa.||dd	
+K:k56.base	width:100px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span>mmmmmmmmm <span style="white-space:pre">   bee</span><span> gg hh</span>	qqmmmmmmmmmbee||gghh	
+K:k56.rootcol	width:100px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span>mmmmmmmmm ~ <span style="white-space:pre">   bee</span><span> gg hh</span>	qqmmmmmmmmmbee||gghh	
+K:k56.spcol	width:100px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span>mmmmmmmmm <span> </span><span style="white-space:pre">   bee</span><span> gg hh</span>	qqmmmmmmmmmbee||gghh	
+K:k56.spempty	width:100px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span>mmmmmmmmm <span></span><span style="white-space:pre">   bee</span><span> gg hh</span>	qqmmmmmmmmmbee||gghh	
+K:k56.comment	width:100px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span>mmmmmmmmm <!-- --> <span style="white-space:pre">   bee</span><span> gg hh</span>	qqmmmmmmmmmbee||gghh	
+K:k56.wrap	width:100px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span><span>mmmmmmmmm </span><span style="white-space:pre">   bee</span><span> gg hh</span>	qqmmmmmmmmmbee||gghh	
+K:k56.wrapcol	width:100px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span><span>mmmmmmmmm </span> <span style="white-space:pre">   bee</span><span> gg hh</span>	qqmmmmmmmmm||beegghh	
+K:k56.wrapspcol	width:100px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span><span>mmmmmmmmm </span><span> </span><span style="white-space:pre">   bee</span><span> gg hh</span>	qqmmmmmmmmmbee||gghh	
+K:k56.wrapempty	width:100px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span><span>mmmmmmmmm </span><span></span><span style="white-space:pre">   bee</span><span> gg hh</span>	qqmmmmmmmmmbee||gghh	
+K:k56.wordspan	width:100px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span><span>mmmmmmmmm</span> <span style="white-space:pre">   bee</span><span> gg hh</span>	qqmmmmmmmmm||beegghh	
+K:k56.wordspancol	width:100px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span><span>mmmmmmmmm</span> ~ <span style="white-space:pre">   bee</span><span> gg hh</span>	qqmmmmmmmmm||beegghh	
+K:k56.splitcol	width:100px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span>mmmmmmmmm ~ ~ <span style="white-space:pre">   bee</span><span> gg hh</span>	qqmmmmmmmmmbee||gghh	
+K:k56.nestcol	width:100px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span><span><span>mmmmmmmmm </span> </span><span style="white-space:pre">   bee</span><span> gg hh</span>	qqmmmmmmmmm||beegghh	
+K:k56.colbefore	width:100px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span>mmmmmmmmm~ ~ <span style="white-space:pre">   bee</span><span> gg hh</span>	qqmmmmmmmmm||beegghh	
+K:k74.base	width:71px;white-space:pre-line;text-align:left	mmmmmmmmm   <span style="white-space:pre"> dd</span>	mmmmmmmmmdd	
+K:k74.rootcol	width:71px;white-space:pre-line;text-align:left	mmmmmmmmm   ~ <span style="white-space:pre"> dd</span>	mmmmmmmmmdd	
+K:k74.spcol	width:71px;white-space:pre-line;text-align:left	mmmmmmmmm   <span> </span><span style="white-space:pre"> dd</span>	mmmmmmmmmdd	
+K:k74.spempty	width:71px;white-space:pre-line;text-align:left	mmmmmmmmm   <span></span><span style="white-space:pre"> dd</span>	mmmmmmmmmdd	
+K:k74.comment	width:71px;white-space:pre-line;text-align:left	mmmmmmmmm   <!-- --> <span style="white-space:pre"> dd</span>	mmmmmmmmmdd	
+K:k74.wrap	width:71px;white-space:pre-line;text-align:left	<span>mmmmmmmmm   </span><span style="white-space:pre"> dd</span>	mmmmmmmmmdd	
+K:k74.wrapcol	width:71px;white-space:pre-line;text-align:left	<span>mmmmmmmmm   </span> <span style="white-space:pre"> dd</span>	mmmmmmmmm||dd	
+K:k74.wrapspcol	width:71px;white-space:pre-line;text-align:left	<span>mmmmmmmmm   </span><span> </span><span style="white-space:pre"> dd</span>	mmmmmmmmmdd	
+K:k74.wrapempty	width:71px;white-space:pre-line;text-align:left	<span>mmmmmmmmm   </span><span></span><span style="white-space:pre"> dd</span>	mmmmmmmmmdd	
+K:k74.wordspan	width:71px;white-space:pre-line;text-align:left	<span>mmmmmmmmm</span>   <span style="white-space:pre"> dd</span>	mmmmmmmmm||dd	
+K:k74.wordspancol	width:71px;white-space:pre-line;text-align:left	<span>mmmmmmmmm</span>   ~ <span style="white-space:pre"> dd</span>	mmmmmmmmm||dd	
+K:k74.splitcol	width:71px;white-space:pre-line;text-align:left	mmmmmmmmm ~   ~ <span style="white-space:pre"> dd</span>	mmmmmmmmmdd	
+K:k74.nestcol	width:71px;white-space:pre-line;text-align:left	<span><span>mmmmmmmmm   </span> </span><span style="white-space:pre"> dd</span>	mmmmmmmmm||dd	
+K:k74.colbefore	width:71px;white-space:pre-line;text-align:left	mmmmmmmmm~ ~   <span style="white-space:pre"> dd</span>	mmmmmmmmm||dd	
+K:k94.base	width:96px;white-space:pre-line;text-align:left	mmmmmmmmm <span style="white-space:pre">   ggggg</span> ee ff	mmmmmmmmmggggg||eeff	
+K:k94.rootcol	width:96px;white-space:pre-line;text-align:left	mmmmmmmmm ~ <span style="white-space:pre">   ggggg</span> ee ff	mmmmmmmmmggggg||eeff	
+K:k94.spcol	width:96px;white-space:pre-line;text-align:left	mmmmmmmmm <span> </span><span style="white-space:pre">   ggggg</span> ee ff	mmmmmmmmmggggg||eeff	
+K:k94.spempty	width:96px;white-space:pre-line;text-align:left	mmmmmmmmm <span></span><span style="white-space:pre">   ggggg</span> ee ff	mmmmmmmmmggggg||eeff	
+K:k94.comment	width:96px;white-space:pre-line;text-align:left	mmmmmmmmm <!-- --> <span style="white-space:pre">   ggggg</span> ee ff	mmmmmmmmmggggg||eeff	
+K:k94.wrap	width:96px;white-space:pre-line;text-align:left	<span>mmmmmmmmm </span><span style="white-space:pre">   ggggg</span> ee ff	mmmmmmmmmggggg||eeff	
+K:k94.wrapcol	width:96px;white-space:pre-line;text-align:left	<span>mmmmmmmmm </span> <span style="white-space:pre">   ggggg</span> ee ff	mmmmmmmmm||gggggee||ff	
+K:k94.wrapspcol	width:96px;white-space:pre-line;text-align:left	<span>mmmmmmmmm </span><span> </span><span style="white-space:pre">   ggggg</span> ee ff	mmmmmmmmmggggg||eeff	
+K:k94.wrapempty	width:96px;white-space:pre-line;text-align:left	<span>mmmmmmmmm </span><span></span><span style="white-space:pre">   ggggg</span> ee ff	mmmmmmmmmggggg||eeff	
+K:k94.wordspan	width:96px;white-space:pre-line;text-align:left	<span>mmmmmmmmm</span> <span style="white-space:pre">   ggggg</span> ee ff	mmmmmmmmm||gggggee||ff	
+K:k94.wordspancol	width:96px;white-space:pre-line;text-align:left	<span>mmmmmmmmm</span> ~ <span style="white-space:pre">   ggggg</span> ee ff	mmmmmmmmm||gggggee||ff	
+K:k94.splitcol	width:96px;white-space:pre-line;text-align:left	mmmmmmmmm ~ ~ <span style="white-space:pre">   ggggg</span> ee ff	mmmmmmmmmggggg||eeff	
+K:k94.nestcol	width:96px;white-space:pre-line;text-align:left	<span><span>mmmmmmmmm </span> </span><span style="white-space:pre">   ggggg</span> ee ff	mmmmmmmmm||gggggee||ff	
+K:k94.colbefore	width:96px;white-space:pre-line;text-align:left	mmmmmmmmm~ ~ <span style="white-space:pre">   ggggg</span> ee ff	mmmmmmmmm||gggggee||ff	
+K:k112.base	width:86px;white-space:normal;text-align:left	xx mmmmmmmmm  <span style="white-space:pre">  bee</span><span> gg hh</span>	xx||mmmmmmmmmbee||gghh	
+K:k112.rootcol	width:86px;white-space:normal;text-align:left	xx mmmmmmmmm  ~ <span style="white-space:pre">  bee</span><span> gg hh</span>	xx||mmmmmmmmmbee||gghh	
+K:k112.spcol	width:86px;white-space:normal;text-align:left	xx mmmmmmmmm  <span> </span><span style="white-space:pre">  bee</span><span> gg hh</span>	xx||mmmmmmmmmbee||gghh	
+K:k112.spempty	width:86px;white-space:normal;text-align:left	xx mmmmmmmmm  <span></span><span style="white-space:pre">  bee</span><span> gg hh</span>	xx||mmmmmmmmmbee||gghh	
+K:k112.comment	width:86px;white-space:normal;text-align:left	xx mmmmmmmmm  <!-- --> <span style="white-space:pre">  bee</span><span> gg hh</span>	xx||mmmmmmmmmbee||gghh	
+K:k112.wrap	width:86px;white-space:normal;text-align:left	xx <span>mmmmmmmmm  </span><span style="white-space:pre">  bee</span><span> gg hh</span>	xx||mmmmmmmmmbee||gghh	
+K:k112.wrapcol	width:86px;white-space:normal;text-align:left	xx <span>mmmmmmmmm  </span> <span style="white-space:pre">  bee</span><span> gg hh</span>	xx||mmmmmmmmm||beegghh	
+K:k112.wrapspcol	width:86px;white-space:normal;text-align:left	xx <span>mmmmmmmmm  </span><span> </span><span style="white-space:pre">  bee</span><span> gg hh</span>	xx||mmmmmmmmmbee||gghh	
+K:k112.wrapempty	width:86px;white-space:normal;text-align:left	xx <span>mmmmmmmmm  </span><span></span><span style="white-space:pre">  bee</span><span> gg hh</span>	xx||mmmmmmmmmbee||gghh	
+K:k112.wordspan	width:86px;white-space:normal;text-align:left	xx <span>mmmmmmmmm</span>  <span style="white-space:pre">  bee</span><span> gg hh</span>	xx||mmmmmmmmm||beegghh	
+K:k112.wordspancol	width:86px;white-space:normal;text-align:left	xx <span>mmmmmmmmm</span>  ~ <span style="white-space:pre">  bee</span><span> gg hh</span>	xx||mmmmmmmmm||beegghh	
+K:k112.splitcol	width:86px;white-space:normal;text-align:left	xx mmmmmmmmm ~  ~ <span style="white-space:pre">  bee</span><span> gg hh</span>	xx||mmmmmmmmmbee||gghh	
+K:k112.nestcol	width:86px;white-space:normal;text-align:left	xx <span><span>mmmmmmmmm  </span> </span><span style="white-space:pre">  bee</span><span> gg hh</span>	xx||mmmmmmmmm||beegghh	
+K:k112.colbefore	width:86px;white-space:normal;text-align:left	xx mmmmmmmmm~ ~  <span style="white-space:pre">  bee</span><span> gg hh</span>	xx||mmmmmmmmm||beegghh	
+K:k124.base	width:41px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span>aaaa  <span style="white-space:pre">  dd</span><span> gg hh</span>	qqaaaadd||gg||hh	
+K:k124.rootcol	width:41px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span>aaaa  ~ <span style="white-space:pre">  dd</span><span> gg hh</span>	qqaaaadd||gg||hh	
+K:k124.spcol	width:41px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span>aaaa  <span> </span><span style="white-space:pre">  dd</span><span> gg hh</span>	qqaaaadd||gg||hh	
+K:k124.spempty	width:41px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span>aaaa  <span></span><span style="white-space:pre">  dd</span><span> gg hh</span>	qqaaaadd||gg||hh	
+K:k124.comment	width:41px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span>aaaa  <!-- --> <span style="white-space:pre">  dd</span><span> gg hh</span>	qqaaaadd||gg||hh	
+K:k124.wrap	width:41px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span><span>aaaa  </span><span style="white-space:pre">  dd</span><span> gg hh</span>	qqaaaadd||gg||hh	
+K:k124.wrapcol	width:41px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span><span>aaaa  </span> <span style="white-space:pre">  dd</span><span> gg hh</span>	qqaaaa||dd||gg||hh	
+K:k124.wrapspcol	width:41px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span><span>aaaa  </span><span> </span><span style="white-space:pre">  dd</span><span> gg hh</span>	qqaaaadd||gg||hh	
+K:k124.wrapempty	width:41px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span><span>aaaa  </span><span></span><span style="white-space:pre">  dd</span><span> gg hh</span>	qqaaaadd||gg||hh	
+K:k124.wordspan	width:41px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span><span>aaaa</span>  <span style="white-space:pre">  dd</span><span> gg hh</span>	qqaaaa||dd||gg||hh	
+K:k124.wordspancol	width:41px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span><span>aaaa</span>  ~ <span style="white-space:pre">  dd</span><span> gg hh</span>	qqaaaa||dd||gg||hh	
+K:k124.splitcol	width:41px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span>aaaa ~  ~ <span style="white-space:pre">  dd</span><span> gg hh</span>	qqaaaadd||gg||hh	
+K:k124.nestcol	width:41px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span><span><span>aaaa  </span> </span><span style="white-space:pre">  dd</span><span> gg hh</span>	qqaaaa||dd||gg||hh	
+K:k124.colbefore	width:41px;white-space:pre-line;text-align:left	<span style="white-space:pre-line">qq</span>aaaa~ ~  <span style="white-space:pre">  dd</span><span> gg hh</span>	qqaaaa||dd||gg||hh	
+K:min1	width:32px;white-space:normal;text-align:left	aaaa ~ <span style="white-space:pre">  dd</span> ee ff	aaaadd||ee||ff	

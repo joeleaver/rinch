@@ -9,6 +9,11 @@
 //!   with a letter or digit after them (`ifc::chrome_glues_ascii`);
 //! - `M`'s `a0`/`b0` families: a wrapping run of spaces, through a text node
 //!   whose spaces collapsed away, before `pre` spaces (`ifc::pre_seam`);
+//! - `K`: a slice of the third review's family corpus: a run of spaces
+//!   before `pre` spaces in 14 DOM shapes (the run split into two text
+//!   nodes, a comment, an empty or space-only span, the word or the run in a
+//!   span), whose collapsed space breaks only in an element the run's own
+//!   element closes into (`RinchDocument::collapsed_after_close`);
 //! - `AB`: the 15 cases of the first review's random corpus that #1897 made
 //!   worse than main, each also with `letter-spacing`, `word-spacing`, font
 //!   sizes, padding, tabs and all of those taken out.
@@ -212,4 +217,18 @@ fn known_line_start_differences() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Two adjacent text nodes of one element — what rsx makes — the second
+/// only a space that collapses away, then `pre` spaces (third review of
+/// #1897). Chrome 155 does not break after `aaaa`: the collapsed space is in
+/// the run's own element, not one it closes into. The second head of #1897
+/// broke there.
+#[test]
+fn a_collapsed_text_node_of_the_same_element_does_not_break() {
+    let got = lines_of(
+        "width:32px;white-space:normal;text-align:left",
+        "aaaa ~ <span style=\"white-space:pre\">  dd</span> ee ff",
+    );
+    assert_eq!(got, "aaaadd||ee||ff");
 }

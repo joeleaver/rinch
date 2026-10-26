@@ -474,7 +474,11 @@ input a shaped layout is built from:
   part that hangs is aligned with them as content
   (`any_unhung_trailing_line`). A text node whose spaces collapsed away
   between the wrapping run and the `pre` spaces counts as the run going on
-  into another text node (`UnhungSpaces::collapsed`). The seams' break
+  into another text node when the run's element closes into it
+  (`<span>dd </span> <span pre>`; `UnhungSpaces::collapsed`), not when it
+  is a second text node of the same element, a sibling element's, or after
+  a comment (rsx makes adjacent text nodes; Chrome 155 does not break
+  there). The seams' break
   opportunities (`ifc::TextBreaks`, ICU4X's segmenter, the one parley uses)
   are Chrome's where they differ for ASCII: no break between `!`, `/`, `|`
   or `}` and a letter or digit after it (`ifc::chrome_glues_ascii`;

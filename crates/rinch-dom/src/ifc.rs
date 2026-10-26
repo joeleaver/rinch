@@ -2507,9 +2507,10 @@ pub(crate) struct UnhungSpaces {
     /// `pre-line`), filled only with [`Self::pre_seams`]
     /// ([`LineUnit::collapsible`]).
     pub collapsible: Vec<std::ops::Range<usize>>,
-    /// Where a text node whose spaces collapsed away entirely stands, as a
-    /// sorted flat byte, filled only with [`Self::pre_candidate`]
-    /// ([`pre_seam`]).
+    /// Where a text node whose spaces collapsed away entirely stands, in an
+    /// element the text before it closes into, as a sorted flat byte;
+    /// filled only with [`Self::pre_candidate`]
+    /// ([`RinchDocument::collapsed_after_close`], [`pre_seam`]).
     pub collapsed: Vec<usize>,
 }
 
@@ -2871,8 +2872,9 @@ struct LineUnit {
     /// A cluster of text whose element collapses its spaces, known only
     /// with [`UnhungSpaces::pre_seams`] ([`pre_seam`]).
     collapsible: bool,
-    /// A text node whose spaces collapsed away stands right before this
-    /// cluster ([`UnhungSpaces::collapsed`], [`pre_seam`]).
+    /// A text node whose spaces collapsed away, in an element the text before
+    /// it closes into, stands right before this cluster
+    /// ([`UnhungSpaces::collapsed`], [`pre_seam`]).
     after_collapsed: bool,
     /// The byte a cluster starts at, or a box stands at.
     byte: usize,
@@ -2999,10 +3001,12 @@ fn edge_break_allowed(
 ///   word unwrapped, and rinch now matches Chrome on 95, main on 60; a
 ///   preserved run, in a `pre-wrap` root, is the text node of its own
 ///   above);
-/// - the run starts in the word's text node and goes on into another (a
-///   text node whose spaces all collapsed away counts): an ordinary break.
-///   `<span><span pre-line>…</span>lvWa.   </span> <span pre>  bee…` in a
-///   `pre-line` root breaks before the `pre` spaces (review of #1897).
+/// - the run starts in the word's text node and goes on into another: an
+///   ordinary break. A text node whose spaces collapsed away counts when it
+///   is in an element the run's own element closes into
+///   ([`UnhungSpaces::collapsed`]): `<span>…lvWa.   </span> <span pre>  bee…`
+///   breaks before the `pre` spaces, `aaaa ` and ` ` as two text nodes of
+///   one element do not (review of #1897).
 ///
 /// A run after an inline box, or at the start of the paragraph, is an
 /// ordinary break, as #1238 has it. Edge boxes at the break are looked
@@ -3045,9 +3049,9 @@ fn pre_seam(units: &[LineUnit], e: usize) -> Option<PreSeam> {
     if w.is_none() || p.closes_into_nowrap {
         return Some(PreSeam::Ordinary);
     }
-    // A run that goes on into a text node whose spaces collapsed away
-    // (`<span>…lvWa.   </span> <span pre>…`: the root's space between) goes
-    // on into another text node, as Chrome's items have it.
+    // A run whose element closes into a text node whose spaces collapsed
+    // away (`<span>…lvWa.   </span> <span pre>…`: the root's space between)
+    // goes on into another text node, as Chrome's items have it.
     Some(
         if n.after_collapsed || units[r0..i0 - 1].iter().any(|u| u.text_end) {
             PreSeam::Ordinary
@@ -9539,18 +9543,7 @@ impl RinchDocument {
             && Self::any_nowrap_element(nodes, root_id, &text_ranges, &boxes);
         unhung.box_seams = needs_seams;
         if pre_candidate {
-            unhung.collapsed = text_ranges
-                .iter()
-                .filter(|r| !r.is_br && r.flat_end == r.flat_start)
-                .filter(|r| {
-                    nodes
-                        .get(r.node_id)
-                        .and_then(|n| n.text_content())
-                        .is_some_and(|t| !t.is_empty())
-                })
-                .map(|r| r.flat_start)
-                .collect();
-            unhung.collapsed.sort_unstable();
+            unhung.collapsed = Self::collapsed_after_close(nodes, root_id, &text_ranges);
             use crate::computed_style::WhiteSpaceValue;
             for r in text_ranges
                 .iter()
@@ -9711,6 +9704,55 @@ impl RinchDocument {
             || boxes
                 .iter()
                 .any(|&b| Self::ancestors_in_ifc(nodes, root_id, b).any(wraps))
+    }
+
+    /// Where a text node whose spaces collapsed away entirely stands right
+    /// after text whose element closes into the collapsed node's (#1243,
+    /// review of #1897): `<span>dd </span> <span pre>…` — the root's space
+    /// collapsed after the span's. Chrome 155 breaks before the `pre` spaces
+    /// there as it does after a run of spaces across two text nodes; not
+    /// when the collapsed space is in the same element as the text before
+    /// it (`dd ` and ` ` as two text nodes of one element), in a sibling
+    /// element that opens there (`dd <span> </span><span pre>`), or after a
+    /// comment. Sorted flat bytes.
+    fn collapsed_after_close(
+        nodes: &slab::Slab<Node>,
+        root_id: usize,
+        text_ranges: &[crate::node::IfcTextRange],
+    ) -> Vec<usize> {
+        let parent = |id: usize| nodes.get(id).and_then(|n| n.parent);
+        let mut out = Vec::new();
+        let mut prev: Option<&crate::node::IfcTextRange> = None;
+        for r in text_ranges.iter().filter(|r| !r.is_br) {
+            if r.flat_end > r.flat_start {
+                prev = Some(r);
+                continue;
+            }
+            let collapsed_space = nodes
+                .get(r.node_id)
+                .and_then(|n| n.text_content())
+                .is_some_and(|t| !t.is_empty());
+            let Some(before) = prev.filter(|p| p.flat_end == r.flat_start) else {
+                continue;
+            };
+            let (Some(into), Some(from)) = (parent(r.node_id), parent(before.node_id)) else {
+                continue;
+            };
+            // `into` is a proper ancestor of the element the text before it is
+            // in: that element closes there.
+            let closes = into != from
+                && std::iter::successors(parent(from), |&id| {
+                    (id != root_id).then(|| parent(id)).flatten()
+                })
+                .chain(std::iter::once(root_id))
+                .any(|id| id == into);
+            if collapsed_space && closes {
+                out.push(r.flat_start);
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
     /// Whether some text of a `pre` element (`pre`, the `white-space` ranges
