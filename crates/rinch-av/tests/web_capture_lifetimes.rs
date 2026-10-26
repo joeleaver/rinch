@@ -389,7 +389,15 @@ async fn audio_status_says_whether_samples_arrive() {
         c.fetch_add(1, Ordering::Relaxed);
     });
     assert_eq!(input.status(), AudioInputStatus::Starting);
-    sleep_ms(800).await;
+    // A context that will run may take a while to open the output (real
+    // Firefox's first stream on a sound server); one that is held stays
+    // held. Wait up to 5 s for samples, then judge.
+    for _ in 0..50 {
+        sleep_ms(100).await;
+        if calls.load(Ordering::Relaxed) > 0 {
+            break;
+        }
+    }
     let n = calls.load(Ordering::Relaxed);
     let status = input.status();
     log(&format!(
