@@ -163,9 +163,11 @@ jobs:
             run: |
               cargo test -p rinch-editor-core --features serde,markdown
               cargo test -p rinch-editor-view --features collaboration
-              # rinch-rtc's `media` feature (#1916): its native unit tests
-              # (src/tests.rs `media_events`) are cfg(feature = "media"),
-              # which nothing in the workspace turns on.
+              # rinch-rtc's `media` feature (#1916), which nothing in the
+              # workspace turns on: its unit tests (src/tests.rs
+              # `media_events`, the codecs' round trips) and the native media
+              # tests (tests/media_*.rs: two peers in the process, synthetic
+              # sources, no audio device).
               cargo test -p rinch-rtc --features media
               cargo test -p rinch --features desktop,embed,theme,clipboard,debug
               # Bare on purpose: `desktop` (the default) WITHOUT `clipboard`. The

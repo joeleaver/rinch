@@ -150,7 +150,24 @@ async fn browser_h264_frames() -> f64 {
 }
 
 /// Send the box to the echo at `url`, wait for it to come back.
-async fn round_trip(url: &str, label: &str) {
+/// The encoding name of an SDP's first video payload type (`VP8`, `H264`).
+fn first_video_codec(sdp: &str) -> String {
+    let Some(pt) = sdp
+        .lines()
+        .find(|l| l.starts_with("m=video"))
+        .and_then(|l| l.split_whitespace().nth(3))
+    else {
+        return "no video".into();
+    };
+    let tag = format!("a=rtpmap:{pt} ");
+    sdp.lines()
+        .find_map(|l| l.strip_prefix(&tag))
+        .and_then(|r| r.split('/').next())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+async fn round_trip(url: &str, label: &str, want: &str) {
     let peer = Peer::new(RtcConfig {
         gathering: Gathering::Complete,
         ..Default::default()
@@ -172,16 +189,10 @@ async fn round_trip(url: &str, label: &str) {
     peer.on_track(move |t| g.borrow_mut().push(t));
     let offer = peer.create_offer().await.unwrap();
     let answer = signal(url, &offer.sdp).await;
-    let codec = if answer.contains("VP8/90000") && !answer.contains("H264/90000") {
-        "VP8"
-    } else if answer.contains("H264/90000") && !answer.contains("VP8/90000") {
-        "H264"
-    } else {
-        "VP8 or H264"
-    };
-    web_sys::console::log_1(
-        &format!("web_media_native {label}: the answer carries {codec}").into(),
-    );
+    // The codec both sides send is the answer's first video payload type.
+    let codec = first_video_codec(&answer);
+    web_sys::console::log_1(&format!("web_media_native {label}: video in {codec}").into());
+    assert_eq!(codec, want, "{label}: the answer's first video codec");
     peer.set_remote_description(Description::answer(answer))
         .await
         .unwrap();
@@ -230,7 +241,7 @@ async fn video_round_trips_through_a_native_peer() {
         web_sys::console::log_1(&"web_media_native: skipped (no RINCH_RTC_MEDIA_URL)".into());
         return;
     };
-    round_trip(url, "VP8").await;
+    round_trip(url, "VP8", "VP8").await;
     let Some(h264_url) = H264_URL else {
         return;
     };
@@ -240,7 +251,7 @@ async fn video_round_trips_through_a_native_peer() {
         .user_agent()
         .unwrap_or_default();
     if browser_h264_frames().await > 0.0 {
-        round_trip(h264_url, "H.264").await;
+        round_trip(h264_url, "H.264", "H264").await;
     } else {
         web_sys::console::log_1(
             &format!(

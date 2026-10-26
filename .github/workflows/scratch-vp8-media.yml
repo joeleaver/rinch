@@ -1,0 +1,123 @@
+# Throwaway (#1947): VP8's build cost on the runner, and browser <-> native
+# media over VP8 in the runner's Chrome and Firefox. Not for merge.
+name: scratch-vp8-media
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  build-cost:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [b2-without-vp8, head]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Pick the tree
+        run: |
+          if [ "${{ matrix.variant }}" = b2-without-vp8 ]; then
+            git checkout -q 54074ecf
+          fi
+          git log --oneline -1
+      - name: Install Rust toolchain
+        id: rust
+        uses: ./.github/actions/rust-toolchain
+      - name: apt (timed, uncached)
+        run: |
+          sudo apt-get update -qq
+          start=$(date +%s.%N)
+          sudo apt-get install -y -qq --no-install-recommends libasound2-dev nasm
+          echo "base packages: $(echo "$(date +%s.%N) - $start" | bc) s"
+          if [ "${{ matrix.variant }}" = head ]; then
+            start=$(date +%s.%N)
+            sudo apt-get install -y -qq --no-install-recommends libvpx-dev
+            echo "libvpx-dev: $(echo "$(date +%s.%N) - $start" | bc) s" | tee -a "$GITHUB_STEP_SUMMARY"
+            pkg-config --modversion vpx
+            ls /usr/lib/llvm-*/lib/libclang*.so* | head -3
+          fi
+      - name: Cold build (timed)
+        run: |
+          start=$(date +%s.%N)
+          cargo build -p rinch-rtc --features media --tests --timings
+          echo "${{ matrix.variant }}: cold \`cargo build -p rinch-rtc --features media --tests\`: $(echo "$(date +%s.%N) - $start" | bc) s" | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import re, json, glob
+          html = open(sorted(glob.glob('target/cargo-timings/cargo-timing*.html'))[-1]).read()
+          m = re.search(r'const UNIT_DATA = (\[.*?\]);\n', html, re.S)
+          units = json.loads(m.group(1))
+          units.sort(key=lambda u: -u['duration'])
+          print('\n| unit | s |\n|---|---|')
+          for u in units[:20]:
+              print(f"| {u['name']} {u['version']} {u.get('target','')} | {u['duration']:.1f} |")
+          for u in units:
+              if any(k in u['name'] for k in ('vpx', 'bindgen', 'clang-sys')):
+                  print(f"| **{u['name']} {u.get('target','')}** | {u['duration']:.1f} |")
+          PY
+      - name: Test run (timed)
+        if: matrix.variant == 'head'
+        run: |
+          start=$(date +%s.%N)
+          cargo test -p rinch-rtc --features media 2>&1 | grep -E '^(test result|     Running|test .*(FAILED|ok)$)'
+          echo "head: \`cargo test -p rinch-rtc --features media\` after the build: $(echo "$(date +%s.%N) - $start" | bc) s" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  interop:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        id: rust
+        uses: ./.github/actions/rust-toolchain
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Install wasm-bindgen-test-runner
+        run: |
+          version=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | grep '^version' | head -1 | cut -d'"' -f2)
+          cargo install wasm-bindgen-cli --version "$version" --locked
+      - name: Install chromedriver matching the runner's Chrome
+        run: |
+          chrome_version=$(google-chrome --version | grep -oE '[0-9.]+')
+          npx --yes @puppeteer/browsers install "chromedriver@$chrome_version"
+          echo "CHROMEDRIVER=$(find "$PWD/chromedriver" -name chromedriver -type f | head -1)" >> "$GITHUB_ENV"
+      - name: Install system dependencies
+        uses: ./.github/actions/apt-install
+        with:
+          packages: libasound2-dev libvpx-dev nasm
+      - name: Chrome
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        run: |
+          cargo build -p rinch-rtc --features media --example media_echo
+          target/debug/examples/media_echo --port 47812 --url-file media_echo.url &
+          target/debug/examples/media_echo --port 47813 --h264-only --url-file media_echo_h264.url &
+          for i in $(seq 1 100); do [ -s media_echo.url ] && [ -s media_echo_h264.url ] && break; sleep 0.2; done
+          test "$(cat media_echo.url)" = http://127.0.0.1:47812
+          test "$(cat media_echo_h264.url)" = http://127.0.0.1:47813
+          RINCH_RTC_MEDIA_URL=http://127.0.0.1:47812 RINCH_RTC_MEDIA_H264_URL=http://127.0.0.1:47813 \
+            RINCH_RTC_REQUIRE_LIVE=1 cargo test -p rinch-rtc --target wasm32-unknown-unknown \
+            --features media --test web_media_native -- --nocapture
+      - name: Start a null audio sink (for Firefox's AudioContext)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends pulseaudio
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=ci_null
+          pactl set-default-sink ci_null
+      - name: Firefox
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        run: |
+          export GECKODRIVER="$GECKOWEBDRIVER/geckodriver"
+          firefox --version
+          for spec in "47812:" "47813:--h264-only"; do
+            port=${spec%%:*}; flag=${spec#*:}
+            if ! curl -s -o /dev/null -X OPTIONS "http://127.0.0.1:$port/offer"; then
+              rm -f "media_echo_ff_$port.url"
+              target/debug/examples/media_echo --port "$port" $flag --url-file "media_echo_ff_$port.url" &
+              for i in $(seq 1 100); do [ -s "media_echo_ff_$port.url" ] && break; sleep 0.2; done
+            fi
+          done
+          RINCH_RTC_MEDIA_URL=http://127.0.0.1:47812 RINCH_RTC_MEDIA_H264_URL=http://127.0.0.1:47813 \
+            RINCH_RTC_REQUIRE_LIVE=1 cargo test -p rinch-rtc --target wasm32-unknown-unknown \
+            --features media --test web_media_native -- --nocapture
