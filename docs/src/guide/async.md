@@ -1,7 +1,7 @@
 # Async Tasks
 
 rinch's asynchronous APIs call you back on the UI thread: `set_timeout`,
-`rinch_http::fetch`, `rinch_ws` callbacks. When the logic is sequential — sign
+`rinch_http::fetch`, `rinch_ws` and `rinch_rtc` callbacks. When the logic is sequential — sign
 in, then list projects, then open one; retry with a back-off; debounce — the
 same calls can be awaited instead, in a **task** that runs on the UI thread on
 every platform (desktop, Android, embed and the web):

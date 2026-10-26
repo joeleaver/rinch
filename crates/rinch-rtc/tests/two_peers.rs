@@ -49,6 +49,14 @@ fn two_peers_in_one_app() {
     let chat = a
         .create_data_channel("chat", ChannelOptions::new(Reliability::Reliable))
         .unwrap();
+    // b closes this one from inside on_data_channel: the close must reach
+    // the stack (the channel is adopted before the app hears of it).
+    let doomed = a
+        .create_data_channel("doomed", ChannelOptions::new(Reliability::Reliable))
+        .unwrap();
+    let doomed_closed = Rc::new(Cell::new(0));
+    let k = doomed_closed.clone();
+    doomed.on_close(move || k.set(k.get() + 1));
     let tick_opts = ChannelOptions::negotiated(5, Reliability::Unreliable { max_retransmits: 0 });
     let tick_a = a.create_data_channel("tick", tick_opts).unwrap();
     let tick_b = b.create_data_channel("tick", tick_opts).unwrap();
@@ -61,7 +69,13 @@ fn two_peers_in_one_app() {
 
     let heard: Rc<RefCell<Option<Channel>>> = Rc::default();
     let h = heard.clone();
-    b.on_data_channel(move |ch| *h.borrow_mut() = Some(ch));
+    b.on_data_channel(move |ch| {
+        if ch.label() == "doomed" {
+            ch.close();
+        } else {
+            *h.borrow_mut() = Some(ch);
+        }
+    });
     let got: Got = Rc::default();
     let g = got.clone();
     tick_b.on_message(move |m| g.borrow_mut().push(("tick".into(), m)));
@@ -140,6 +154,11 @@ fn two_peers_in_one_app() {
             ("chat".to_string(), b"over dcep".to_vec()),
             ("tick".to_string(), b"over a negotiated id".to_vec()),
         ]
+    );
+
+    assert!(
+        pump_until(|| doomed_closed.get() == 1, T),
+        "a close made inside on_data_channel reaches the other side"
     );
 
     // A channel closed on one side closes on the other.

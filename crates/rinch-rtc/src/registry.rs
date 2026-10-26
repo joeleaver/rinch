@@ -225,6 +225,14 @@ pub(crate) fn remove_peer(id: u64) {
     }
 }
 
+/// Remove every peer, as [`remove_peer`] does one.
+pub(crate) fn remove_all_peers() {
+    let ids: Vec<u64> = PEERS.with(|p| p.borrow().keys().copied().collect());
+    for id in ids {
+        remove_peer(id);
+    }
+}
+
 /// Start a signalling request on peer `id`; its reply arrives as
 /// [`Event::Reply`].
 pub(crate) fn new_request(id: u64) -> u64 {

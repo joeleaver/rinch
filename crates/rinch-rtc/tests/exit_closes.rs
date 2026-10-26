@@ -49,6 +49,14 @@ fn exit_child() {
     match std::env::var(CHILD).as_deref() {
         Ok("close") => peer.close(),
         Ok("drop") => drop(peer),
+        // rinch_rtc::shutdown(), then an exit that runs no atexit handler
+        // (what std::process::exit may be on Windows): shutdown alone must
+        // have closed it.
+        Ok("shutdown") => {
+            rinch_rtc::shutdown();
+            // SAFETY: ends the process at once, skipping atexit.
+            unsafe { libc::_exit(0) }
+        }
         _ => std::mem::forget(peer),
     }
     std::process::exit(0);
@@ -59,7 +67,7 @@ fn the_far_end_sees_a_peer_close_when_its_process_exits() {
     if std::env::var(CHILD).is_ok() {
         return;
     }
-    for how in ["open", "close", "drop"] {
+    for how in ["open", "close", "drop", "shutdown"] {
         far_end_sees_the_close(how);
     }
 }
