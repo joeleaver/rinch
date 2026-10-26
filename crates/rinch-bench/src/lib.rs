@@ -1554,6 +1554,40 @@ pub fn op_range_type_in_table(mut f: EditorFixture) -> EditorFixture {
     f
 }
 
+// ── rinch-editor-core: an undo in a large table (#1937) ─────────────────────
+
+/// A keystroke typed in a cell of the middle row of a table of `rows` ×
+/// [`RANGE_TABLE_COLS`] cells, recorded: what [`op_undo`] undoes. With `peer`, a
+/// peer's keystroke follows in the first cell of the table (unrecorded, as a
+/// collaboration integrate applies it), so the undo maps its step through it.
+///
+/// An undo repairs a table it left ragged (#1937). Only an undo mapped through a
+/// change the history did not record can leave one, so a local undo checks
+/// nothing; the peer variant resolves its step's start once, which a keystroke
+/// anywhere in the table already does, and reads no table.
+pub fn setup_undo_in_table((rows, peer): (usize, bool)) -> EditorFixture {
+    use rinch_editor_core::{Pos, Selection};
+    let f = op_range_type_in_table(setup_range_type_in_table((rows, 0)));
+    let mut state = f.next.expect("typed");
+    if peer {
+        // Inside the first cell's paragraph: the table, its row, the cell and
+        // the paragraph open after the paragraph before the table.
+        let at = state.doc.child(0).node_size() + 4 + 1;
+        let mut tr = state.tr();
+        tr.set_selection(Selection::cursor(Pos(at)));
+        tr.insert_text("p").expect("insert");
+        tr.set_add_to_history(false);
+        state = state.apply(tr);
+    }
+    EditorFixture { state, next: None }
+}
+
+/// Undo the newest event.
+pub fn op_undo(mut f: EditorFixture) -> EditorFixture {
+    f.next = f.state.run("undo");
+    f
+}
+
 // ── rinch-editor-core: a cell selection in a large table (#1847) ───────────
 
 /// A table of `rows` × [`RANGE_TABLE_COLS`] cells, each of two paragraphs,

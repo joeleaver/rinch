@@ -796,3 +796,107 @@ fn z4_peer_types_in_my_word_then_deletes_my_next_char() {
     sync(&mut a, &mut b);
     assert_eq!(a.html(), "<p>Qz</p>");
 }
+
+/// The position before the cell whose first text starts with `needle`.
+fn cell_of(doc: &Node, needle: &str) -> usize {
+    fn first_text(n: &Node) -> Option<String> {
+        if let Some(t) = n.text() {
+            return Some(t.to_string());
+        }
+        (0..n.child_count()).find_map(|i| first_text(n.child(i)))
+    }
+    let mut found = None;
+    doc.nodes_between(0, doc.content_size(), &mut |n: &Node, at, _| {
+        if found.is_none()
+            && n.type_name().ends_with("cell")
+            && first_text(n).is_some_and(|t| t.starts_with(needle))
+        {
+            found = Some(at);
+        }
+        found.is_none()
+    });
+    found.unwrap_or_else(|| panic!("no cell `{needle}`"))
+}
+
+/// #1937 with two real sessions: I merge two columns, a peer merges the third,
+/// and my undo maps the merge's inverse through the peer's change. It left the
+/// table ragged, which the projection refuses (`Unsupported`): my undo then
+/// reached no peer, and every edit after it stalled outbound (#220). The undo
+/// repairs the table it made ragged in its own transaction, so it records, and
+/// both peers converge on a table that tiles.
+#[test]
+fn s20_undo_of_my_merge_after_a_peers_merge_still_reaches_the_peer() {
+    let (mut a, mut b) = world(
+        "<p>a</p><table>\
+         <tr><td><p>c00</p></td><td><p>c01</p></td><td><p>c02</p></td></tr>\
+         <tr><td><p>c10</p></td><td><p>c11</p></td><td><p>c12</p></td></tr>\
+         <tr><td><p>c20</p></td><td><p>c21</p></td><td><p>c22</p></td></tr>\
+         </table><p>z</p>",
+        20,
+    );
+    let doc = &a.state.doc;
+    let sel = Selection::cell(Pos(cell_of(doc, "c02")), Pos(cell_of(doc, "c21")));
+    a.cmd(sel, "mergeCells");
+    sync(&mut a, &mut b);
+    let doc = &b.state.doc;
+    let sel = Selection::cell(Pos(cell_of(doc, "c00")), Pos(cell_of(doc, "c20")));
+    b.cmd(sel, "mergeCells");
+    sync(&mut a, &mut b);
+    // `commit` expects the undo to project.
+    assert!(a.undo(), "the undo applies");
+    assert_eq!(a.session.outbound_stall(), None, "outbound keeps sending");
+    sync(&mut a, &mut b);
+    a.state
+        .doc
+        .nodes_between(0, a.state.doc.content_size(), &mut |n: &Node, _, _| {
+            if n.type_name() == "table" {
+                assert_eq!(
+                    rinch_editor_core::tables::table_problems(n),
+                    vec![],
+                    "the table tiles: {}",
+                    a.html()
+                );
+            }
+            true
+        });
+    // And an edit after it reaches the peer too.
+    a.type_at(2, "!", 9_000);
+    sync(&mut a, &mut b);
+}
+
+/// Review of #1950, with two sessions: I paste "XY" after "a" in the first cell.
+/// The peer adds a column after it and moves "Y" into the new cell (cut and
+/// paste). My undo deletes "XY", mapped from the first cell into the new one, and
+/// joined the two cells: a ragged table, `Unsupported` to the projection. The
+/// first round skipped every undo of typing without looking.
+#[test]
+fn s21_undo_of_my_paste_after_a_peer_moved_half_of_it_into_a_new_column() {
+    let (mut a, mut b) = world(
+        "<p>a</p><table><tr><td><p>a</p></td><td><p>b</p></td></tr>\
+         <tr><td><p>c</p></td><td><p>d</p></td></tr></table><p>z</p>",
+        21,
+    );
+    a.paste_text(8, "XY", 1_000);
+    sync(&mut a, &mut b);
+    b.cmd(Selection::cursor(Pos(8)), "addColumnAfter");
+    b.delete(9, 10, 2_000);
+    b.paste_text(13, "Y", 3_000);
+    sync(&mut a, &mut b);
+    // `commit` expects the undo to project.
+    assert!(a.undo(), "the undo applies");
+    assert_eq!(a.session.outbound_stall(), None, "outbound keeps sending");
+    sync(&mut a, &mut b);
+    a.state
+        .doc
+        .nodes_between(0, a.state.doc.content_size(), &mut |n: &Node, _, _| {
+            if n.type_name() == "table" {
+                assert_eq!(
+                    rinch_editor_core::tables::table_problems(n),
+                    vec![],
+                    "the table tiles: {}",
+                    a.html()
+                );
+            }
+            true
+        });
+}
