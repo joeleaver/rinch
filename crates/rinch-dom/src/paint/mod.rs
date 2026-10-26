@@ -1376,10 +1376,8 @@ fn paint_surface_frame(
     painter: &mut dyn Painter,
     node: &Node,
     scale: f64,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
+    (x, y, w, h): (f64, f64, f64, f64),
+    ink: Rect,
     radii: BorderRadii,
     node_transform: Affine,
 ) {
@@ -1427,6 +1425,7 @@ fn paint_surface_frame(
             clip_to_content,
             image_transform,
             extents: (image.width, image.height),
+            ink,
         }) == painter::SplitVerdict::Split
     {
         return;
@@ -4197,7 +4196,20 @@ fn paint_node_unmasked(
                 // picture is (#1768): in the content box, over the background
                 // and inside the border, rounded by the inner radius.
                 if node.attributes.contains_key("data-render-surface") {
-                    paint_surface_frame(painter, node, scale, x, y, w, h, radii, node_transform);
+                    // The box's ink, where the window draws it: what the paint
+                    // cull tests, so a split's runtime damages the surface's
+                    // region before any frame paints it (#1899 review).
+                    let ink =
+                        node_transform.transform_rect_bbox(ink_rect(tree, node, x, y, w, h, scale));
+                    paint_surface_frame(
+                        painter,
+                        node,
+                        scale,
+                        (x, y, w, h),
+                        ink,
+                        radii,
+                        node_transform,
+                    );
                 }
 
                 // Render input element value
