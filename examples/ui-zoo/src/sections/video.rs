@@ -14,7 +14,7 @@ pub fn video_section() -> NodeHandle {
             Stack { gap: "xs",
                 Title { order: 1, "Video Player" }
                 Text { size: "lg", color: "dimmed",
-                    "Video playback powered by libmpv. VideoViewport renders decoded frames as a compositor layer beneath the UI on the GPU backend, and inline during paint — at the viewport's own z-order, so overlays cover it — on the software one. VideoControls provides play/pause, seeking, volume, and timestamp."
+                    "Video playback powered by libmpv. VideoViewport draws each decoded frame at the viewport's own place in paint order, so whatever is painted after it covers it, like any element. On the GPU window the frame is composited outside the scene when it can be, so a new frame under a still UI repaints nothing. VideoControls provides play/pause, seeking, volume, and timestamp."
                 }
             }
             Space { h: "xl" }
@@ -25,7 +25,7 @@ pub fn video_section() -> NodeHandle {
 
                 div { style: "display: flex; flex-direction: column;",
                     // Viewport
-                    div { style: "width: 100%; height: 400px; background: transparent;",
+                    div { style: "width: 100%; height: 400px;",
                         VideoViewport { player: player.clone() }
                     }
 

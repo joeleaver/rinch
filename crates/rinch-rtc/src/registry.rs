@@ -72,6 +72,10 @@ pub(crate) enum Event {
     },
     /// `close()` finished: every channel and the peer are closed. Last event.
     Closed,
+    /// Something about the peer's media tracks (the `media` feature).
+    #[cfg(feature = "media")]
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    Media(crate::media::MediaEvent),
 }
 
 /// One registered callback and the scope that registered it.
@@ -177,6 +181,8 @@ pub(crate) struct PeerEntry {
     pub(crate) closing: bool,
     pub(crate) cbs: PeerCallbacks,
     pub(crate) channels: HashMap<u64, ChannelEntry>,
+    #[cfg(feature = "media")]
+    pub(crate) media: crate::media::PeerMedia,
     replies: HashMap<u64, Reply>,
 }
 
@@ -192,6 +198,8 @@ impl PeerEntry {
             closing: false,
             cbs: PeerCallbacks::default(),
             channels: HashMap::new(),
+            #[cfg(feature = "media")]
+            media: Default::default(),
             replies: HashMap::new(),
         }
     }
@@ -409,7 +417,11 @@ pub(crate) fn dispatch(id: u64, event: Event) {
                 });
             }
         }
+        #[cfg(feature = "media")]
+        Event::Media(m) => crate::media::dispatch(id, m),
         Event::Closed => {
+            #[cfg(feature = "media")]
+            crate::media::peer_closed(id);
             let keys: Vec<u64> =
                 with_peer(id, |e| e.channels.keys().copied().collect()).unwrap_or_default();
             for key in keys {
@@ -455,7 +467,7 @@ pub(crate) fn install<T: 'static>(
 /// (rinch-ws's `invoke`): taken out, run in a batch under its owner and
 /// frame, put back if its slot is still empty; dropped and the peer's other
 /// dead slots swept if its owner is gone.
-fn invoke<T: 'static>(
+pub(crate) fn invoke<T: 'static>(
     id: u64,
     arg: T,
     select: impl Fn(&mut PeerEntry) -> Option<&mut Option<Slot<T>>>,
@@ -494,31 +506,59 @@ fn invoke<T: 'static>(
     drop(leftover);
 }
 
-/// Take out every slot of peer `id` (and its channels) whose owner is gone.
-fn sweep_dead(id: u64) {
-    fn take<T>(s: &mut Option<Slot<T>>, dead: &mut Vec<Box<dyn std::any::Any>>)
-    where
-        T: 'static,
+/// Run a slot that lives outside a peer (a local track's `on_ended`) the way
+/// [`invoke`] runs one: dropped, not run, once its owner is gone; otherwise
+/// run in a batch under its owner and frame and handed back.
+#[cfg(feature = "media")]
+pub(crate) fn run_slot<T: 'static>(slot: Slot<T>, arg: T) -> Option<Slot<T>> {
+    let Slot {
+        owner,
+        frame,
+        mut cb,
+    } = slot;
+    if owner.as_ref().is_some_and(|o| !o.is_alive()) {
+        return None;
+    }
     {
-        if s.as_ref().is_some_and(Slot::is_dead)
-            && let Some(slot) = s.take()
-        {
-            dead.push(Box::new(slot.cb));
+        let _frame = frame.enter();
+        match &owner {
+            Some(o) => rinch_core::batch(|| o.run(|| cb(arg))),
+            None => rinch_core::batch(|| unowned(|| cb(arg))),
         }
     }
+    Some(Slot { owner, frame, cb })
+}
+
+/// Take a slot out if its owner is gone, into `dead` (dropped by the caller
+/// outside any borrow).
+pub(crate) fn take_dead<T: 'static>(
+    s: &mut Option<Slot<T>>,
+    dead: &mut Vec<Box<dyn std::any::Any>>,
+) {
+    if s.as_ref().is_some_and(Slot::is_dead)
+        && let Some(slot) = s.take()
+    {
+        dead.push(Box::new(slot.cb));
+    }
+}
+
+/// Take out every slot of peer `id` (and its channels) whose owner is gone.
+fn sweep_dead(id: u64) {
     let _dead = with_peer(id, |e| {
         let mut dead: Vec<Box<dyn std::any::Any>> = Vec::new();
-        take(&mut e.cbs.ice_candidate, &mut dead);
-        take(&mut e.cbs.connection_state, &mut dead);
-        take(&mut e.cbs.data_channel, &mut dead);
-        take(&mut e.cbs.error, &mut dead);
+        take_dead(&mut e.cbs.ice_candidate, &mut dead);
+        take_dead(&mut e.cbs.connection_state, &mut dead);
+        take_dead(&mut e.cbs.data_channel, &mut dead);
+        take_dead(&mut e.cbs.error, &mut dead);
         for c in e.channels.values_mut() {
-            take(&mut c.cbs.open, &mut dead);
-            take(&mut c.cbs.message, &mut dead);
-            take(&mut c.cbs.close, &mut dead);
-            take(&mut c.cbs.error, &mut dead);
-            take(&mut c.cbs.buffered_amount_low, &mut dead);
+            take_dead(&mut c.cbs.open, &mut dead);
+            take_dead(&mut c.cbs.message, &mut dead);
+            take_dead(&mut c.cbs.close, &mut dead);
+            take_dead(&mut c.cbs.error, &mut dead);
+            take_dead(&mut c.cbs.buffered_amount_low, &mut dead);
         }
+        #[cfg(feature = "media")]
+        crate::media::sweep_dead(&mut e.media, &mut dead);
         dead
     });
 }

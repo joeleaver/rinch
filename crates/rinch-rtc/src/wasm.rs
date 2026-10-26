@@ -296,6 +296,9 @@ pub(crate) fn new_peer(id: u64, config: &RtcConfig) -> Result<(), RtcError> {
     let queue: Queue = Rc::default();
     wasm_bindgen_futures::spawn_local(work(id, pc.clone(), queue.clone(), trickle, gather.clone()));
 
+    #[cfg(feature = "media")]
+    crate::wasm_media::attach(id, &pc);
+
     PEERS.with(|p| {
         p.borrow_mut().insert(
             id,
@@ -549,6 +552,8 @@ pub(crate) fn close(id: u64, notify: bool) {
     // A Gathering::Complete wait in progress: settle it, so its task ends
     // and its listener goes.
     settle_gather(&peer.pc, &peer.gather);
+    #[cfg(feature = "media")]
+    crate::wasm_media::detach(id);
     peer.pc.close();
     {
         let mut q = peer.queue.borrow_mut();

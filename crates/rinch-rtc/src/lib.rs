@@ -125,6 +125,13 @@ mod wasm;
 #[cfg(target_arch = "wasm32")]
 use wasm as backend;
 
+#[cfg(feature = "media")]
+pub mod media;
+#[cfg(all(feature = "media", not(target_arch = "wasm32")))]
+mod native_media;
+#[cfg(all(feature = "media", target_arch = "wasm32"))]
+mod wasm_media;
+
 pub use error::{RtcError, SendError};
 
 use std::future::Future;
@@ -867,6 +874,8 @@ pub mod testing {
     pub use crate::native::testing::*;
     #[cfg(target_arch = "wasm32")]
     pub use crate::wasm::testing::*;
+    #[cfg(all(feature = "media", target_arch = "wasm32"))]
+    pub use crate::wasm_media::testing::*;
 }
 
 /// A channel's settings as the stack holds them (test hook,

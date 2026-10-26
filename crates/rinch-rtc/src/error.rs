@@ -32,6 +32,10 @@ pub enum RtcError {
     Closed,
     /// The stack failed underneath rinch (on native: the worker thread).
     Internal(String),
+    /// A media track could not be sent or played (the `media` feature):
+    /// remote audio the browser's autoplay policy refused, a codec that
+    /// failed.
+    Media(String),
 }
 
 impl fmt::Display for RtcError {
@@ -44,6 +48,7 @@ impl fmt::Display for RtcError {
             RtcError::Channel(m) => write!(f, "data channel: {m}"),
             RtcError::Closed => write!(f, "the peer is closed"),
             RtcError::Internal(m) => write!(f, "internal: {m}"),
+            RtcError::Media(m) => write!(f, "media: {m}"),
         }
     }
 }

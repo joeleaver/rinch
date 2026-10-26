@@ -8,12 +8,36 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rinch_av::audio::{AudioInputConfig, open_audio_input_from_stream};
 use rinch_av::camera::{CameraConfig, open_camera_from_stream};
-use wasm_bindgen::JsCast;
+use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::*;
 use web_sys::{MediaStream, MediaStreamTrackState};
 
 wasm_bindgen_test_configure!(run_in_browser);
+
+/// Resume `ctx`, waiting at most 3 s. A browser with no audio output can
+/// leave `resume()` pending for ever; that must be a fast, named failure,
+/// not a test the runner kills at its timeout.
+async fn resume_within_3s(ctx: &web_sys::AudioContext) {
+    let resume = ctx.resume().unwrap();
+    let timeout = js_sys::Promise::new(&mut |resolve, _| {
+        let _ = web_sys::window()
+            .unwrap()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 3000);
+    });
+    let both: js_sys::Array = [JsValue::from(resume), JsValue::from(timeout)]
+        .into_iter()
+        .collect();
+    let race = js_sys::Promise::race(&both);
+    let _ = JsFuture::from(race).await;
+    assert_eq!(
+        ctx.state(),
+        web_sys::AudioContextState::Running,
+        "the test's AudioContext did not start within 3 s (state {:?}): this browser \
+         has no working audio output (CI: is a sound server running?)",
+        ctx.state()
+    );
+}
 
 async fn sleep_ms(ms: i32) {
     let p = js_sys::Promise::new(&mut |resolve, _| {
@@ -32,7 +56,7 @@ async fn tone() -> (web_sys::AudioContext, MediaStream) {
     let dest = ctx.create_media_stream_destination().unwrap();
     osc.connect_with_audio_node(&dest).unwrap();
     osc.start().unwrap();
-    let _ = JsFuture::from(ctx.resume().unwrap()).await;
+    resume_within_3s(&ctx).await;
     (ctx, dest.stream())
 }
 

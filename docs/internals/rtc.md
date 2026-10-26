@@ -170,6 +170,74 @@ There are no cargo features for the backends: the target picks one.
   - Locally, run Firefox through Playwright's bundled build against
     `wasm-bindgen-test-runner`'s interactive page (`NO_HEADLESS=1`).
 
+## Media (the `media` feature, #1916)
+
+Design record: `docs/design/rtc-media.md`. The web backend is here; native
+media is the next PR (`native_media.rs` returns `NotSupported` until then).
+
+- **Layout.** `media/mod.rs` holds the API and the main-thread state:
+  - local tracks in their own thread-local `LOCALS` (they belong to no
+    peer);
+  - remote tracks and the `on_track` / `on_negotiation_needed` slots in the
+    peer's registry entry (`PeerEntry::media`), so they follow the
+    data-channel rules: a batch, owner pruning in `sweep_dead`, `on_ended`
+    for every remote track when the peer closes (`media::peer_closed`).
+
+  A backend reports `Event::Media(MediaEvent)` through
+  `registry::dispatch`. `media/view.rs` is `MediaView`.
+- **Web (`wasm_media.rs`).**
+  - `attach` / `detach` are called from `wasm.rs`'s `new_peer` / `close`.
+    They own `ontrack`, `onnegotiationneeded` and every remote track's
+    closures. Detached closures are dropped after the current call, which
+    may be one of them.
+  - Everything a peer sends goes in one `MediaStream`, so the far side's
+    `stream_ids` group one person's audio and video.
+  - `addTrack`, `addTransceiver`, `setParameters` and
+    `transceiver.stop` go through a catching `Function::apply`.
+  - A transceiver gets its keys when first seen (ours, or one the far side's
+    offer made). A sender is keyed separately, because `addTrack` may reuse
+    an existing transceiver.
+  - `video_source` is a detached canvas's `captureStream(fps)`, painted by a
+    timer from the writer's latest frame.
+  - `audio_source` is an `AudioContext` into a
+    `MediaStreamAudioDestinationNode`. A `ScriptProcessorNode` feeds it at
+    once; an `AudioWorklet` (module from a Blob URL, fed by a 10 ms pump
+    through its port) replaces it once loaded.
+  - A remote audio track gets a hidden `<audio data-rinch-rtc-audio>` in
+    the body, removed on `ended` or close.
+  - `MediaView` looks its `<video>` up by `data-rtc-view` on animation
+    frames, for up to ~5 s, then sets `srcObject`, and `muted` as a
+    property as well as the attribute.
+  - `on_frame` uses `requestVideoFrameCallback`. A live stream's
+    `currentTime` advances with the clock, frames or not, so rAF plus
+    `currentTime` re-read the frozen last frame.
+- **Trap: `MediaStreamTrack` and `MediaStream` have an inherent `clone()`**
+  (JS `clone()`, which makes a *new* track), and it outranks `Clone::clone`.
+  `track.clone()` handed the sender a copy that `set_enabled` never
+  reached: the first test run sent the box while "disabled". Write
+  `Clone::clone(&track)`. `testing::sender_track_id` pins it.
+- **Tests:**
+  - `tests/web_media.rs` runs two peers in the page with synthetic sources.
+    It covers:
+    - a moving box through `video_source`: at least 80% of frames show it,
+      checked by its bright bounding box;
+    - disabled sends black;
+    - `replace_track` with no negotiation;
+    - `set_max_bitrate`;
+    - Inactive mutes the far side after renegotiating;
+    - close ends the remote track;
+    - a 440 Hz tone through `audio_source`, analysed on the far side;
+    - `MediaView` mounted through rinch-web and read back;
+    - recvonly and the refusals.
+  - The crate's `webdriver.json` allows autoplay.
+  - Native unit tests (`src/tests.rs`, `media_events`) dispatch media
+    events by hand.
+- **Known gaps:**
+  - Remote audio routed to a chosen output device (`setSinkId`) is not
+    exposed.
+  - The worklet-or-processor choice is not reported.
+  - The gesture that unblocks autoplay is the app's job.
+
 ## Known gaps
 
 - On native, TURN is UDP only (D11; #1917).
