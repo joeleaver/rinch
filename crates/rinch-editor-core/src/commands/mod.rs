@@ -63,8 +63,33 @@ pub fn is_mark_active(state: &EditorState, mark_type: &MarkType) -> bool {
             .unwrap_or_else(|| marks_at(state, sel.from().0));
         marks.iter().any(|m| &m.typ == mark_type)
     } else {
-        range_has_mark(&state.doc, sel.from().0, sel.to().0, mark_type)
+        ranges_have_mark(state, mark_type)
     }
+}
+
+/// The selection's content ranges ([`Selection::ranges`](crate::Selection::ranges)):
+/// each selected cell's for a cell selection.
+fn sel_ranges(state: &EditorState) -> Vec<(usize, usize)> {
+    state
+        .selection
+        .ranges(&state.doc)
+        .into_iter()
+        .map(|(a, b)| (a.0, b.0))
+        .collect()
+}
+
+/// Whether any of the selection's ranges carries `mark_type`. Over a cell
+/// selection each selected cell is read as its own node, so asking costs in
+/// the selected cells, not the table (a toolbar asks for every mark).
+fn ranges_have_mark(state: &EditorState, mark_type: &MarkType) -> bool {
+    if let crate::selection::Selection::Cell(c) = &state.selection {
+        return crate::tables::selected_cells(&state.doc, c.anchor_cell.0, c.head_cell.0)
+            .iter()
+            .any(|(_, cell)| range_has_mark(cell, 0, cell.content_size(), mark_type));
+    }
+    sel_ranges(state)
+        .into_iter()
+        .any(|(from, to)| range_has_mark(&state.doc, from, to, mark_type))
 }
 
 /// The node type of the textblock at the selection head — drives the block-style
@@ -143,12 +168,15 @@ pub fn toggle_mark(mark_type: &'static str) -> Command {
                 tr.add_stored_mark(mark);
             }
         } else {
-            let (from, to) = (sel.from().0, sel.to().0);
+            // Mark steps move no position, so every range stays valid.
             let mark = Mark::simple(mt.clone());
-            if range_has_mark(&state.doc, from, to, &mt) {
-                tr.remove_mark(from, to, mark).ok()?;
-            } else {
-                tr.add_mark(from, to, mark).ok()?;
+            let remove = ranges_have_mark(state, &mt);
+            for (from, to) in sel_ranges(state) {
+                if remove {
+                    tr.remove_mark(from, to, mark.clone()).ok()?;
+                } else {
+                    tr.add_mark(from, to, mark.clone()).ok()?;
+                }
             }
         }
         Some(tr)
@@ -164,14 +192,16 @@ pub fn toggle_link(href: String) -> Command {
         if sel.is_empty() {
             return None;
         }
-        let (from, to) = (sel.from().0, sel.to().0);
         let mut tr = state.tr();
-        if range_has_mark(&state.doc, from, to, &mt) {
-            // Remove every link in the range, regardless of href.
-            remove_marks_of_type(&mut tr, &state.doc, from, to, &mt).ok()?;
-        } else {
-            let attrs = Attrs::from_iter([("href", crate::AttrValue::from(href.clone()))]);
-            tr.add_mark(from, to, Mark::new(mt.clone(), attrs)).ok()?;
+        let remove = ranges_have_mark(state, &mt);
+        for (from, to) in sel_ranges(state) {
+            if remove {
+                // Remove every link in the range, regardless of href.
+                remove_marks_of_type(&mut tr, &state.doc, from, to, &mt).ok()?;
+            } else {
+                let attrs = Attrs::from_iter([("href", crate::AttrValue::from(href.clone()))]);
+                tr.add_mark(from, to, Mark::new(mt.clone(), attrs)).ok()?;
+            }
         }
         Some(tr)
     })
@@ -181,13 +211,13 @@ pub fn toggle_link(href: String) -> Command {
 pub fn remove_link() -> Command {
     command_tr(|state| {
         let mt = state.schema().mark_type("link")?.clone();
-        let sel = &state.selection;
-        let (from, to) = (sel.from().0, sel.to().0);
-        if to <= from || !range_has_mark(&state.doc, from, to, &mt) {
+        if state.selection.is_empty() || !ranges_have_mark(state, &mt) {
             return None;
         }
         let mut tr = state.tr();
-        remove_marks_of_type(&mut tr, &state.doc, from, to, &mt).ok()?;
+        for (from, to) in sel_ranges(state) {
+            remove_marks_of_type(&mut tr, &state.doc, from, to, &mt).ok()?;
+        }
         Some(tr)
     })
 }
@@ -241,21 +271,27 @@ pub fn set_block_type(node_type: &'static str, attrs: Attrs) -> Command {
         if !ty.is_textblock() {
             return None;
         }
-        let (from, to) = (state.selection.from().0, state.selection.to().0);
+        let ranges = sel_ranges(state);
         let mut applies = false;
-        state
-            .doc
-            .nodes_between(from, to, &mut |node, _pos, _parent| {
-                if node.is_textblock() && !node.has_markup(&ty, &attrs) {
-                    applies = true;
-                }
-                true
-            });
+        for &(from, to) in &ranges {
+            state
+                .doc
+                .nodes_between(from, to, &mut |node, _pos, _parent| {
+                    if node.is_textblock() && !node.has_markup(&ty, &attrs) {
+                        applies = true;
+                    }
+                    true
+                });
+        }
         if !applies {
             return None;
         }
+        // A block-type change keeps every block's size, so the ranges hold.
         let mut tr = state.tr();
-        tr.set_block_type(from, to, ty, attrs.clone()).ok()?;
+        for (from, to) in ranges {
+            tr.set_block_type(from, to, ty.clone(), attrs.clone())
+                .ok()?;
+        }
         tr.doc_changed().then_some(tr)
     })
 }
@@ -655,22 +691,23 @@ fn build_set_text_align(state: &EditorState, align: &str) -> Option<Transaction>
     if !TEXT_ALIGN_VALUES.contains(&align) {
         return None;
     }
-    let (from, to) = (state.selection.from().0, state.selection.to().0);
     // `(position-before-block, current alignment)` for each alignable textblock.
     let mut targets: Vec<(usize, String)> = Vec::new();
-    state
-        .doc
-        .nodes_between(from, to, &mut |node, pos, _parent| {
-            if matches!(node.type_name(), "paragraph" | "heading") {
-                let cur = node
-                    .attrs()
-                    .get_str("text_align")
-                    .unwrap_or("left")
-                    .to_string();
-                targets.push((pos, cur));
-            }
-            true
-        });
+    for (from, to) in sel_ranges(state) {
+        state
+            .doc
+            .nodes_between(from, to, &mut |node, pos, _parent| {
+                if matches!(node.type_name(), "paragraph" | "heading") {
+                    let cur = node
+                        .attrs()
+                        .get_str("text_align")
+                        .unwrap_or("left")
+                        .to_string();
+                    targets.push((pos, cur));
+                }
+                true
+            });
+    }
     if targets.is_empty() {
         return None;
     }
@@ -699,7 +736,9 @@ fn build_set_text_align(state: &EditorState, align: &str) -> Option<Transaction>
 pub fn set_paragraph() -> Command {
     command_tr(|state| {
         let para_ty = state.schema().node_type("paragraph")?.clone();
-        let (from, to) = (state.selection.from().0, state.selection.to().0);
+        // Each selected cell's content for a cell selection. Every step below
+        // keeps positions (marks, block types and attrs change no size).
+        let ranges = sel_ranges(state);
         let mut tr = state.tr();
 
         // 1. Strip every inline mark over the selection. Mark steps don't shift
@@ -709,32 +748,38 @@ pub fn set_paragraph() -> Command {
         mark_names.sort();
         for name in &mark_names {
             if let Some(mt) = state.schema().mark_type(name) {
-                remove_marks_of_type(&mut tr, &state.doc, from, to, mt).ok()?;
+                for &(from, to) in &ranges {
+                    remove_marks_of_type(&mut tr, &state.doc, from, to, mt).ok()?;
+                }
             }
         }
 
         // 2. Convert the selected textblock(s) to plain paragraphs. `set_block_type`
         //    preserves block-boundary positions (same open/close token count).
-        let _ = tr.set_block_type(from, to, para_ty, Attrs::new());
+        for &(from, to) in &ranges {
+            let _ = tr.set_block_type(from, to, para_ty.clone(), Attrs::new());
+        }
 
         // 3. Reset the indent attribute to 0 and the alignment back to left on the
         //    (now-)paragraphs in range — but only where they aren't already at their
         //    defaults, so a plain paragraph stays a true no-op.
         let mut indent_targets: Vec<usize> = Vec::new();
         let mut align_targets: Vec<usize> = Vec::new();
-        state
-            .doc
-            .nodes_between(from, to, &mut |node, pos, _parent| {
-                if matches!(node.type_name(), "paragraph" | "heading") {
-                    if node.attrs().get_int("indent").unwrap_or(0) != 0 {
-                        indent_targets.push(pos);
+        for &(from, to) in &ranges {
+            state
+                .doc
+                .nodes_between(from, to, &mut |node, pos, _parent| {
+                    if matches!(node.type_name(), "paragraph" | "heading") {
+                        if node.attrs().get_int("indent").unwrap_or(0) != 0 {
+                            indent_targets.push(pos);
+                        }
+                        if node.attrs().get_str("text_align").unwrap_or("left") != "left" {
+                            align_targets.push(pos);
+                        }
                     }
-                    if node.attrs().get_str("text_align").unwrap_or("left") != "left" {
-                        align_targets.push(pos);
-                    }
-                }
-                true
-            });
+                    true
+                });
+        }
         for pos in indent_targets {
             let _ = tr.set_node_attr(pos, "indent", crate::AttrValue::Int(0));
         }
@@ -963,6 +1008,18 @@ pub fn split_block_or_list_item() -> Command {
     ])
 }
 
+/// The transaction an insert starts from: over a cell selection, the
+/// selected cells cleared and the caret in the first of them, where the
+/// inserted node goes (prosemirror-tables' `CellSelection.replace`, as typing
+/// and paste over one do, #1847); otherwise a fresh transaction.
+fn insertion_tr(state: &EditorState) -> Option<Transaction> {
+    if matches!(state.selection, crate::selection::Selection::Cell(_)) {
+        table_ops::clear_cells(state)
+    } else {
+        Some(state.tr())
+    }
+}
+
 /// Insert a hard break at the cursor (Shift+Enter).
 pub fn insert_hard_break() -> Command {
     command_tr(|state| {
@@ -970,7 +1027,7 @@ pub fn insert_hard_break() -> Command {
             .schema()
             .create_node("hard_break", Attrs::new(), Fragment::empty())
             .ok()?;
-        let mut tr = state.tr();
+        let mut tr = insertion_tr(state)?;
         tr.replace_selection_with(hb).ok()?;
         Some(tr)
     })
@@ -983,7 +1040,7 @@ pub fn insert_horizontal_rule() -> Command {
             .schema()
             .create_node("horizontal_rule", Attrs::new(), Fragment::empty())
             .ok()?;
-        let mut tr = state.tr();
+        let mut tr = insertion_tr(state)?;
         tr.insert_block(hr).ok()?;
         Some(tr)
     })
@@ -1025,7 +1082,7 @@ pub fn build_table(schema: &crate::Schema, rows: usize, cols: usize) -> Option<N
 pub fn insert_table(rows: usize, cols: usize) -> Command {
     command_tr(move |state| {
         let table = build_table(state.schema(), rows, cols)?;
-        let mut tr = state.tr();
+        let mut tr = insertion_tr(state)?;
         tr.insert_block(table).ok()?;
         Some(tr)
     })
@@ -1042,7 +1099,7 @@ pub fn insert_image(src: String, alt: String) -> Command {
             .schema()
             .create_node("image", attrs, Fragment::empty())
             .ok()?;
-        let mut tr = state.tr();
+        let mut tr = insertion_tr(state)?;
         tr.replace_selection_with(img).ok()?;
         Some(tr)
     })

@@ -1476,6 +1476,199 @@ pub fn setup_collab_table_keystroke(rows: usize) -> CollabFixture {
     }
 }
 
+// ── rinch-editor-core: typing over a selection in one cell of a large table ─
+
+/// Columns of the table [`setup_range_type_in_table`] types into.
+pub const RANGE_TABLE_COLS: usize = 10;
+
+/// An editor state, and the state one operation over it led to (kept, so the
+/// measured operation does not also pay to drop it).
+pub struct EditorFixture {
+    pub state: rinch_editor_core::EditorState,
+    pub next: Option<rinch_editor_core::EditorState>,
+}
+
+/// A table of `rows` × [`RANGE_TABLE_COLS`] cells, and a text selection
+/// `len` characters long (`0`: a caret) inside one cell of its middle row.
+///
+/// Typing over a range replaces the selection, which checks the edit for a
+/// table it left ragged (#1847). An edit inside one cell cannot change any
+/// table's grid, so the check reads no table here: the first round of it
+/// walked the whole table (1.0 ms at 1,024 rows, 24.6 ms at 4,096). The
+/// caret variants are the yardstick: a keystroke anywhere in the table is
+/// linear in its rows already (resolving a position walks the row list, and
+/// the edit copies it), and the check adds nothing linear to that: it reads
+/// the start's resolve that the inherited marks need anyway.
+pub fn setup_range_type_in_table((rows, len): (usize, usize)) -> EditorFixture {
+    use rinch_editor_core::{EditorState, Fragment, Pos, Selection, default_plugins};
+    alloc::reserve();
+    let schema = Rc::new(rinch_editor_core::Schema::starter_kit());
+    let para = |text: &str| {
+        let text = schema.text(text).expect("text");
+        schema
+            .branch("paragraph", Fragment::from_node(text))
+            .expect("paragraph")
+    };
+    let branch = |name: &str, children: Vec<rinch_editor_core::Node>| {
+        schema
+            .branch(name, Fragment::from_children(children))
+            .expect(name)
+    };
+    let table = branch(
+        "table",
+        (0..rows)
+            .map(|_| {
+                branch(
+                    "table_row",
+                    (0..RANGE_TABLE_COLS)
+                        .map(|_| branch("table_cell", vec![para("abcd")]))
+                        .collect(),
+                )
+            })
+            .collect(),
+    );
+    let doc = branch("doc", vec![para("before the table"), table]);
+    // Into the table, the middle row, its third cell and its paragraph; "bc"
+    // of "abcd".
+    let tbl = doc.child(1);
+    let row = tbl.child_count() / 2;
+    let mut at = doc.child(0).node_size() + 1;
+    at += (0..row).map(|r| tbl.child(r).node_size()).sum::<usize>() + 1;
+    at += (0..2)
+        .map(|k| tbl.child(row).child(k).node_size())
+        .sum::<usize>()
+        + 1;
+    at += 1 + 1;
+    let mut state = EditorState::create(schema.clone(), doc, default_plugins());
+    let mut tr = state.tr();
+    tr.set_selection(Selection::text(Pos(at), Pos(at + len)));
+    state = state.apply(tr);
+    EditorFixture { state, next: None }
+}
+
+/// Type one character over the selection, and land the state.
+pub fn op_range_type_in_table(mut f: EditorFixture) -> EditorFixture {
+    let mut tr = f.state.tr();
+    tr.insert_text("Q").expect("insert");
+    f.next = Some(f.state.apply(tr));
+    f
+}
+
+// ── rinch-editor-core: an undo in a large table (#1937) ─────────────────────
+
+/// A keystroke typed in a cell of the middle row of a table of `rows` ×
+/// [`RANGE_TABLE_COLS`] cells, recorded: what [`op_undo`] undoes. With `peer`, a
+/// peer's keystroke follows in the first cell of the table (unrecorded, as a
+/// collaboration integrate applies it), so the undo maps its step through it.
+///
+/// An undo repairs a table it left ragged (#1937). Only an undo mapped through a
+/// change the history did not record can leave one, so a local undo checks
+/// nothing; the peer variant resolves its step's start once, which a keystroke
+/// anywhere in the table already does, and reads no table.
+pub fn setup_undo_in_table((rows, peer): (usize, bool)) -> EditorFixture {
+    use rinch_editor_core::{Pos, Selection};
+    let f = op_range_type_in_table(setup_range_type_in_table((rows, 0)));
+    let mut state = f.next.expect("typed");
+    if peer {
+        // Inside the first cell's paragraph: the table, its row, the cell and
+        // the paragraph open after the paragraph before the table.
+        let at = state.doc.child(0).node_size() + 4 + 1;
+        let mut tr = state.tr();
+        tr.set_selection(Selection::cursor(Pos(at)));
+        tr.insert_text("p").expect("insert");
+        tr.set_add_to_history(false);
+        state = state.apply(tr);
+    }
+    EditorFixture { state, next: None }
+}
+
+/// Undo the newest event.
+pub fn op_undo(mut f: EditorFixture) -> EditorFixture {
+    f.next = f.state.run("undo");
+    f
+}
+
+// ── rinch-editor-core: a cell selection in a large table (#1847) ───────────
+
+/// A table of `rows` × [`RANGE_TABLE_COLS`] cells, each of two paragraphs,
+/// and in its middle row either (`kind` 0) a text range from the first
+/// paragraph of the third cell into its second, or (`kind` 1) a cell
+/// selection of the third and fourth cells. Adopted from the second review
+/// of #1931.
+pub fn setup_cells_in_table((rows, kind): (usize, usize)) -> EditorFixture {
+    use rinch_editor_core::{EditorState, Fragment, Pos, Selection, default_plugins};
+    alloc::reserve();
+    let schema = Rc::new(rinch_editor_core::Schema::starter_kit());
+    let para = |text: &str| {
+        schema
+            .branch(
+                "paragraph",
+                Fragment::from_node(schema.text(text).expect("text")),
+            )
+            .expect("paragraph")
+    };
+    let branch = |name: &str, children: Vec<rinch_editor_core::Node>| {
+        schema
+            .branch(name, Fragment::from_children(children))
+            .expect(name)
+    };
+    let table = branch(
+        "table",
+        (0..rows)
+            .map(|_| {
+                branch(
+                    "table_row",
+                    (0..RANGE_TABLE_COLS)
+                        .map(|_| branch("table_cell", vec![para("abcd"), para("efgh")]))
+                        .collect(),
+                )
+            })
+            .collect(),
+    );
+    let doc = branch("doc", vec![para("before the table"), table]);
+    let tbl = doc.child(1);
+    let row = tbl.child_count() / 2;
+    let row_start = doc.child(0).node_size()
+        + 1
+        + (0..row).map(|r| tbl.child(r).node_size()).sum::<usize>()
+        + 1;
+    let cell2 = row_start
+        + (0..2)
+            .map(|k| tbl.child(row).child(k).node_size())
+            .sum::<usize>();
+    let cell3 = cell2 + tbl.child(row).child(2).node_size();
+    let sel = if kind == 0 {
+        // "a|bcd" .. "ef|gh" in the third cell.
+        Selection::text(Pos(cell2 + 3), Pos(cell2 + 1 + 6 + 3))
+    } else {
+        Selection::cell(Pos(cell2), Pos(cell3))
+    };
+    let mut state = EditorState::create(schema.clone(), doc, default_plugins());
+    let mut tr = state.tr();
+    tr.set_selection(sel.clone());
+    state = state.apply(tr);
+    assert_eq!(state.selection, sel);
+    // The toolbar's first ask, which computes the table's map; the measured
+    // one is the next mark's.
+    let bold = schema.mark_type("bold").expect("bold").clone();
+    std::hint::black_box(rinch_editor_core::commands::is_mark_active(&state, &bold));
+    EditorFixture { state, next: None }
+}
+
+/// Whether bold is active over the selection: what a toolbar asks once per
+/// mark on every update.
+pub fn op_bold_active(f: EditorFixture) -> EditorFixture {
+    let bold = f.state.schema().mark_type("bold").expect("bold").clone();
+    std::hint::black_box(rinch_editor_core::commands::is_mark_active(&f.state, &bold));
+    f
+}
+
+/// Run `toggleBold` over the selection.
+pub fn op_toggle_bold(mut f: EditorFixture) -> EditorFixture {
+    f.next = f.state.run("toggleBold");
+    f
+}
+
 /// Type one character into cell `col` of the middle row of the table (block 1).
 fn collab_table_type_in(
     state: &rinch_editor_core::EditorState,

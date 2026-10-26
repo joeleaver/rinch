@@ -95,7 +95,58 @@ fn undoing_my_merge_after_a_peer_replaced_the_table_does_not_panic() {
     let undone = peer.run("undo").expect("the undo applies");
     // The selection it restores is a valid one of the document it made.
     assert!(undone.selection.from().0 <= undone.doc.content_size());
+    // The table the undo made ragged is repaired in its own transaction (#1937):
+    // the merge's inverse, mapped through the peer's table, restored some cells
+    // and kept the spans.
+    assert_eq!(
+        problems(&undone.doc),
+        Vec::<String>::new(),
+        "after the undo"
+    );
     // And back.
     let redone = undone.run("redo").expect("the redo applies");
     assert!(redone.selection.from().0 <= redone.doc.content_size());
+    assert_eq!(
+        problems(&redone.doc),
+        Vec::<String>::new(),
+        "after the redo"
+    );
+    // The undo and the redo undo each other.
+    let again = redone.run("undo").expect("a second undo applies");
+    assert_eq!(node_to_html(&again.doc), node_to_html(&undone.doc));
+}
+
+/// How the tables of `doc` fail to tile their grids, one entry per problem.
+fn problems(doc: &Node) -> Vec<String> {
+    let mut out = Vec::new();
+    doc.nodes_between(0, doc.content_size(), &mut |n: &Node, at, _| {
+        if n.type_name() == "table" {
+            for p in rinch_editor_core::tables::table_problems(n) {
+                out.push(format!("table at {at}: {p:?}"));
+            }
+        }
+        true
+    });
+    out
+}
+
+/// A table that was ragged before the undo (loaded so: a browser draws it as it is)
+/// and that the undo does not touch stays as it is (#1937): only the tables an undo
+/// or redo made ragged are repaired.
+#[test]
+fn an_undo_leaves_a_table_it_did_not_make_ragged_as_it_is() {
+    let schema = Rc::new(Schema::starter_kit());
+    let html = "<table><tr><td><p>r0</p></td><td><p>r1</p></td></tr><tr><td><p>short</p></td></tr></table>\
+        <p>text</p>";
+    let slice = slice_from_html(&schema, html).unwrap();
+    let doc = schema.branch("doc", slice.content.clone()).unwrap();
+    let st = EditorState::create(schema, doc, default_plugins());
+    assert_eq!(problems(&st.doc).len(), 1, "the setup: one short row");
+    let at = st.doc.child(0).node_size() + 2;
+    let mut tr = st.tr();
+    tr.set_selection(Selection::cursor(Pos(at)));
+    tr.insert_text("x").unwrap();
+    let typed = st.apply(tr);
+    let undone = typed.run("undo").expect("the undo applies");
+    assert_eq!(node_to_html(&undone.doc), node_to_html(&st.doc));
 }
