@@ -1,5 +1,5 @@
 /// Errors from audio/video device operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AvError {
     #[error("device not found: {0}")]
     DeviceNotFound(String),
