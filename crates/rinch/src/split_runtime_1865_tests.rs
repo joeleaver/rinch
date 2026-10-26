@@ -672,7 +672,8 @@ fn check_split(
             ));
         }
         let cap = crate::shell::split_frame::split_memory_cap(win.dev);
-        let held = win.split.resident_bytes();
+        // Uploaded frames are held but not counted (D6, second amendment).
+        let held = win.split.resident_bytes() - win.split.upload_bytes();
         if held > cap {
             failures.push(format!(
                 "{name}, frame {n}: split memory {held} bytes, past the cap of {cap}"
@@ -2200,33 +2201,39 @@ fn gpu_split_runtime_review_video_taint() {
     assert_eq!(bad, 0);
 }
 
-/// The memory cap (D6): a 400x300 window may hold 4 x 480,000 bytes split.
-/// Each 500x400 frame is 800,000 bytes uploaded, so two fit and a third does
-/// not; a 700x700 frame (1,960,000) does not fit alone. Surfaces are split in
-/// paint order until one does not fit, and it and the rest stay in the scene,
-/// pixel for pixel what in-scene draws. `check_split` also holds every
-/// frame's allocation to the cap.
+/// The memory cap (D6), under a cap the test sets (`CAP_OVERRIDE`): each
+/// 100x80 video carries a badge over it, so one above slice (32,000 bytes)
+/// beside the shared scratch target. Uploaded frames are not counted (the
+/// second amendment). Surfaces are split in paint order, after those kept
+/// from earlier frames, until one does not fit; it and the rest stay in the
+/// scene, pixel for pixel what in-scene draws. `check_split` also holds every
+/// frame's allocation of slices and scratch to the cap.
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn gpu_split_runtime_memory_cap() {
     let _p = presenting_lock();
     test_gpu();
     crate::shell::renderer::set_gpu_presenting(true);
-    assert_eq!(
-        crate::shell::split_frame::split_memory_cap((W, H)),
-        1_920_000
-    );
+    // A and B with their slices: 2 x 32,000 and a 256x128 scratch target
+    // (131,072); with C as well, 3 x 32,000 and 384x128 (196,608).
+    const CAP: u64 = 250_000;
+    crate::shell::split_frame::CAP_OVERRIDE.with(|c| c.set(Some(CAP)));
     let v = |st: &'static str| -> Part { (st, Some(red())) };
     const A: &str =
-        "video:500x400|position: absolute; left: 10px; top: 40px; width: 100px; height: 80px";
+        "video:100x80|position: absolute; left: 10px; top: 40px; width: 100px; height: 80px";
     const B: &str =
-        "video:500x400|position: absolute; left: 140px; top: 40px; width: 100px; height: 80px";
+        "video:100x80|position: absolute; left: 140px; top: 40px; width: 100px; height: 80px";
     const C: &str =
-        "video:500x400|position: absolute; left: 270px; top: 40px; width: 100px; height: 80px";
+        "video:100x80|position: absolute; left: 270px; top: 40px; width: 100px; height: 80px";
     const BIG: &str =
-        "video:700x700|position: absolute; left: 10px; top: 140px; width: 100px; height: 100px";
+        "video:100x80|position: absolute; left: 10px; top: 20px; width: 360px; height: 250px";
+    const BADGE_A: &str = "position: absolute; left: 20px; top: 50px; width: 20px; height: 12px; background: rgb(250, 250, 250)";
+    const BADGE_B: &str = "position: absolute; left: 150px; top: 50px; width: 20px; height: 12px; background: rgb(250, 250, 250)";
+    const BADGE_C: &str = "position: absolute; left: 280px; top: 50px; width: 20px; height: 12px; background: rgb(250, 250, 250)";
+    const BADGE_BIG: &str = "position: absolute; left: 20px; top: 30px; width: 20px; height: 12px; background: rgb(250, 250, 250)";
     const SMALL: &str =
-        "video:100x80|position: absolute; left: 140px; top: 140px; width: 100px; height: 80px";
+        "video:100x80|position: absolute; left: 10px; top: 272px; width: 100px; height: 26px";
+    const BADGE_SMALL: &str = "position: absolute; left: 20px; top: 278px; width: 20px; height: 12px; background: rgb(250, 250, 250)";
     let redraw = |p: &Page| {
         for v in &p.videos {
             v.redraw();
@@ -2234,6 +2241,7 @@ fn gpu_split_runtime_memory_cap() {
     };
     let hide_first = |p: &Page| {
         p.boxes.borrow()[0].set_style("display", "none");
+        p.boxes.borrow()[1].set_style("display", "none");
     };
     // The visible ones: a hidden viewport's new frame has no box to damage.
     let redraw_shown = |p: &Page| {
@@ -2241,10 +2249,20 @@ fn gpu_split_runtime_memory_cap() {
             v.redraw();
         }
     };
+    let three = || {
+        vec![
+            v(A),
+            (BADGE_A, None),
+            v(B),
+            (BADGE_B, None),
+            v(C),
+            (BADGE_C, None),
+        ]
+    };
     run(vec![
         check_split(
-            "three frames, the third past the cap",
-            vec![v(A), v(B), v(C)],
+            "three with slices, the third past the cap",
+            three(),
             RESAMPLED,
             &|_, s| s[..2].to_vec(),
             // The refused one's new frame is damage; the split ones' are not.
@@ -2253,8 +2271,8 @@ fn gpu_split_runtime_memory_cap() {
             Fault::None,
         ),
         check_split(
-            "a frame past the cap alone, then one that fits: neither splits",
-            vec![v(BIG), v(SMALL)],
+            "one past the cap alone, then one that fits: neither splits",
+            vec![v(BIG), (BADGE_BIG, None), v(SMALL), (BADGE_SMALL, None)],
             RESAMPLED,
             &|_, _| Vec::new(),
             &[],
@@ -2262,17 +2280,8 @@ fn gpu_split_runtime_memory_cap() {
             Fault::None,
         ),
         check_split(
-            "one that fits, then a frame past the cap",
-            vec![v(SMALL), v(BIG)],
-            RESAMPLED,
-            &|_, s| s[..1].to_vec(),
-            &[],
-            &["full"],
-            Fault::None,
-        ),
-        check_split(
             "a split surface gone frees its memory: the refused one splits at its next frame",
-            vec![v(A), v(B), v(C)],
+            three(),
             RESAMPLED,
             &|n, s| match n {
                 0 => s[..2].to_vec(),
@@ -2284,9 +2293,33 @@ fn gpu_split_runtime_memory_cap() {
             Fault::None,
         ),
     ]);
+    crate::shell::split_frame::CAP_OVERRIDE.with(|c| c.set(None));
 }
 
-/// A split video whose frame grows past the cap goes to the scene once, and
+/// A 4K-size frame under its controls splits at the real cap: the frame is
+/// not counted (D6, second amendment), only the slice and the scratch target.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_memory_cap_large_frame_splits() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    // 4 times the window's frame bytes, more than the 4x cap alone.
+    const VIDEO: &str =
+        "video:800x600|position: absolute; left: 0; top: 0; width: 400px; height: 300px";
+    const CONTROLS: &str = "position: absolute; left: 0; top: 270px; width: 400px; height: 30px; background: rgba(0, 0, 0, 0.6)";
+    run(vec![check_split(
+        "a frame of four windows' bytes under its controls",
+        vec![(VIDEO, Some(red())), (CONTROLS, None)],
+        RESAMPLED,
+        &|_, s| s.to_vec(),
+        &[],
+        &["full"],
+        Fault::None,
+    )]);
+}
+
+/// A split surface that grows past the cap goes to the scene once, and
 /// stays there: its leaving the split set is not memory freed for a retry
 /// (which would paint every frame twice, refusing it again each time).
 #[test]
@@ -2295,14 +2328,23 @@ fn gpu_split_runtime_memory_cap_is_not_retried_every_frame() {
     let _p = presenting_lock();
     test_gpu();
     crate::shell::renderer::set_gpu_presenting(true);
+    crate::shell::split_frame::CAP_OVERRIDE.with(|c| c.set(Some(250_000)));
     let parts: Vec<Part> = vec![
         (
-            "video:500x400|position: absolute; left: 10px; top: 40px; width: 100px; height: 80px",
+            "video:100x80|position: absolute; left: 10px; top: 40px; width: 100px; height: 80px",
             Some(red()),
         ),
         (
-            "video:500x400|position: absolute; left: 140px; top: 40px; width: 100px; height: 80px",
+            "position: absolute; left: 20px; top: 50px; width: 20px; height: 12px; background: rgb(250, 250, 250)",
+            None,
+        ),
+        (
+            "video:100x80|position: absolute; left: 140px; top: 40px; width: 100px; height: 80px",
             Some(red()),
+        ),
+        (
+            "position: absolute; left: 150px; top: 50px; width: 20px; height: 12px; background: rgb(250, 250, 250)",
+            None,
         ),
     ];
     let mut p = page(&parts);
@@ -2313,33 +2355,30 @@ fn gpu_split_runtime_memory_cap_is_not_retried_every_frame() {
         v
     };
     let got = win.frame(&mut p.app, true, Fault::None);
-    assert_eq!(sorted(got.split_ids), ids);
+    assert_eq!(sorted(got.split_ids), sorted(ids.clone()));
     assert_eq!(p.app.split_cap_repaints(), 0);
-    let grow = |p: &Page| {
-        let v = &p.videos[1];
-        v.surface
-            .writer()
-            .submit_frame(&video_frame(v.color.get(), (700, 700)), 700, 700);
-    };
-    grow(&p);
+    // The second grows to 250x250: its slice alone is 250,000 bytes.
+    p.boxes.borrow()[2].set_style("width", "250px");
+    p.boxes.borrow()[2].set_style("height", "250px");
     let got = win.frame(&mut p.app, false, Fault::None);
     assert_eq!(
         got.split_ids,
         vec![ids[0]],
-        "the grown frame goes to the scene"
+        "the grown one goes to the scene"
     );
     assert_eq!(p.app.split_cap_repaints(), 1);
     for n in 0..4 {
-        p.videos[0].redraw();
-        grow(&p);
+        for v in &p.videos {
+            v.redraw();
+        }
         let got = win.frame(&mut p.app, false, Fault::None);
         assert_eq!(got.split_ids, vec![ids[0]], "frame {n}");
         assert_eq!(p.app.split_cap_repaints(), 1, "frame {n}: painted again");
-        let cap = crate::shell::split_frame::split_memory_cap(win.dev);
-        assert!(win.split.resident_bytes() <= cap);
+        assert!(win.split.resident_bytes() - win.split.upload_bytes() <= 250_000);
     }
     for s in &p.surfaces {
         unregister_render_surface(s.id());
     }
+    crate::shell::split_frame::CAP_OVERRIDE.with(|c| c.set(None));
     crate::shell::renderer::set_gpu_presenting(false);
 }

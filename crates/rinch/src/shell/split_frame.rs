@@ -84,11 +84,18 @@ pub struct SplitFrame {
 const SCRATCH_STEP: u32 = 128;
 
 /// The window's split memory may be this many times its own texture bytes
-/// (`width * height * 4`) (#1865 D6). Counted: the scratch target, every
-/// kept slice's rendered textures (above slices and coverage masks) and the
-/// CPU frames uploaded for split video. Not counted: the window's own
-/// textures, and a `RenderSurface`'s texture, which is the app's.
+/// (`width * height * 4`) (#1865 D6). Counted: what splitting adds over
+/// drawing in the scene, the scratch target and every kept slice's rendered
+/// textures (above slices and coverage masks). Not counted: the window's own
+/// textures, a `RenderSurface`'s texture (the app's), and the CPU frames
+/// uploaded for split video ([`COUNT_UPLOADS`]).
 pub const SPLIT_MEMORY_CAP_WINDOWS: u64 = 4;
+
+/// Whether the uploaded video frames count against the cap. They do not
+/// (D6, second amendment, Joe 2026-10-25): in the scene the same frame sits
+/// in Vello's image atlas, so splitting a video adds no memory for it. They
+/// are still allocated, and freed, by [`SplitFrame::upload_split_frames`].
+pub const COUNT_UPLOADS: bool = false;
 
 /// What one split surface holds in GPU memory, as [`split_bytes`] counts it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,7 +122,7 @@ impl SliceCost {
                 + u32::from(s.above_out.is_some()),
             // A CPU frame is uploaded at its own size (`upload_split_frames`);
             // a registered GPU frame is the app's texture.
-            upload: if s.straight_alpha {
+            upload: if COUNT_UPLOADS && s.straight_alpha {
                 u64::from(s.extents.0) * u64::from(s.extents.1) * 4
             } else {
                 0
@@ -160,7 +167,25 @@ pub fn split_bytes<'a>(costs: impl IntoIterator<Item = &'a SliceCost> + Clone) -
 
 /// The cap for a window of `size` device pixels.
 pub fn split_memory_cap(size: (u32, u32)) -> u64 {
+    #[cfg(test)]
+    if let Some(cap) = CAP_OVERRIDE.with(|c| c.get()) {
+        return cap;
+    }
     SPLIT_MEMORY_CAP_WINDOWS * u64::from(size.0) * u64::from(size.1) * 4
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A cap the GPU oracles set, so a 400x300 window's slices can pass it.
+    pub(crate) static CAP_OVERRIDE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether refusals made under the cap for `old` window size are tried
+/// again at `new`: only if the cap grew. A resize storm that shrinks or
+/// keeps the window keeps them, rather than painting each frame twice to
+/// refuse the same surfaces again (#1911 review).
+pub fn cap_grew(old: (u32, u32), new: (u32, u32)) -> bool {
+    split_memory_cap(new) > split_memory_cap(old)
 }
 
 /// Which of `new` (this frame's slices, in paint order) do not fit the cap
@@ -403,6 +428,15 @@ impl SplitFrame {
         kept + self.pixels.values().map(bytes).sum::<u64>() + self.scratch.as_ref().map_or(0, bytes)
     }
 
+    /// The bytes of the uploaded video frames this window holds.
+    #[cfg(test)]
+    pub(crate) fn upload_bytes(&self) -> u64 {
+        self.pixels
+            .values()
+            .map(|t| u64::from(t.width()) * u64::from(t.height()) * 4)
+            .sum()
+    }
+
     /// How many uploaded video frames this window holds.
     #[cfg(test)]
     pub(crate) fn pixel_textures(&self) -> usize {
@@ -631,6 +665,7 @@ pub fn prepare_split_viewports(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vello::Scene;
 
     fn cost(id: usize, region: (u32, u32, u32, u32), textures: u32, upload: u64) -> SliceCost {
         SliceCost {
@@ -642,21 +677,52 @@ mod tests {
     }
 
     /// The record's worked case (D6): a full-window video with controls over
-    /// it holds the scratch target (rounded up to 128 px), `above_in` and its
-    /// uploaded frame, about 3.06 windows; the cap is 4.
+    /// it holds the scratch target (rounded up to 128 px) and `above_in`,
+    /// about 2.07 windows; the cap is 4. Its uploaded frame is not counted
+    /// (second amendment), so a 4K frame in a 1080p window splits too.
     #[test]
     fn full_window_video_under_controls_fits_the_cap() {
         for (w, h) in [(1920u32, 1080u32), (3840, 2160)] {
-            let frame = u64::from(w) * u64::from(h) * 4;
-            let c = cost(1, (0, 0, w, h), 1, frame);
+            let window = u64::from(w) * u64::from(h) * 4;
+            let mut s = slice(1, (0, 0, w, h), (w, h));
+            s.above_in = Some(Scene::new());
+            let c = SliceCost::of(&s);
             let scratch = u64::from(scratch_step(w)) * u64::from(scratch_step(h)) * 4;
-            assert_eq!(split_bytes(&[c]), frame * 2 + scratch);
+            assert_eq!(c.upload, 0, "the frame is not counted");
+            assert_eq!(split_bytes(&[c]), window + scratch);
             assert!(split_bytes(&[c]) <= split_memory_cap((w, h)));
         }
-        assert_eq!(
-            split_bytes(&[cost(1, (0, 0, 1920, 1080), 1, 8_294_400)]),
-            25_436_160
-        );
+        // A 4K frame under its controls in a 1080p window.
+        let mut s = slice(1, (0, 0, 1920, 1080), (3840, 2160));
+        s.above_in = Some(Scene::new());
+        let c = SliceCost::of(&s);
+        assert_eq!(split_bytes(&[c]), 8_294_400 + 8_847_360);
+        assert!(over_cap(&[], &[c], split_memory_cap((1920, 1080))).is_empty());
+    }
+
+    /// A video slice as paint makes one: straight alpha, rect coverage.
+    fn slice(id: usize, region: (u32, u32, u32, u32), extents: (u32, u32)) -> SurfaceSlice {
+        SurfaceSlice {
+            surface_id: id,
+            region,
+            above_in: None,
+            above_out: None,
+            own: SliceCoverage::Rect([0; 4]),
+            ancestors: SliceCoverage::Rect([0; 4]),
+            device_from_image: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            extents,
+            straight_alpha: true,
+            tainted: false,
+        }
+    }
+
+    /// Only a bigger window retries the cap's refusals.
+    #[test]
+    fn only_a_bigger_cap_retries_refusals() {
+        assert!(cap_grew((800, 600), (801, 600)));
+        assert!(!cap_grew((800, 600), (800, 600)));
+        assert!(!cap_grew((800, 600), (799, 600)));
+        assert!(!cap_grew((800, 600), (1600, 300)), "the same area");
     }
 
     /// The scratch target is counted once, reaching the far corner of every

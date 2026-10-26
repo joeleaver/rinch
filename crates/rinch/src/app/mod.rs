@@ -481,6 +481,8 @@ struct SplitPaint {
     capped: Vec<usize>,
     capped_at: (u32, u32),
     capped_frames: u32,
+    /// The loop guard has logged its error (once per window).
+    cap_guard_logged: bool,
     /// Frames painted again for the cap, for the tests.
     #[cfg(test)]
     cap_repaints: u32,
@@ -2414,12 +2416,16 @@ impl RinchApp {
             && rinch_dom::paint::has_surface_gpu_images())
         .then_some(split_window);
         self.split.suspended = self.split.suspended.saturating_sub(1);
-        // The memory cap's refusals (D6) are retried when the cap moves, or
-        // after a while.
+        // The memory cap's refusals (D6) are retried when the cap grows, or
+        // after a while. A resize that does not grow it keeps them (#1911
+        // review: a resize storm otherwise painted every frame twice).
         self.split.capped_frames = self.split.capped_frames.saturating_sub(1);
-        if self.split.capped_at != (w, h) || self.split.capped_frames == 0 {
+        if crate::shell::split_frame::cap_grew(self.split.capped_at, (w, h))
+            || self.split.capped_frames == 0
+        {
             self.split.capped.clear();
         }
+        self.split.capped_at = (w, h);
         let cap = crate::shell::split_frame::split_memory_cap((w, h));
 
         let mut partial = full.is_none() && !damage.is_empty();
@@ -2469,8 +2475,23 @@ impl RinchApp {
                         break slices;
                     }
                     if over.iter().all(|id| self.split.capped.contains(id)) {
-                        // The painter split what it was told to refuse: every
-                        // surface goes to the scene rather than paint forever.
+                        // The painter split what it was told to refuse: a
+                        // painter bug. Every surface goes to the scene rather
+                        // than paint forever, and splitting is suspended as
+                        // for taint, so a broken painter does not pay a
+                        // second paint every frame in silence.
+                        debug_assert!(
+                            false,
+                            "the painter split a surface refused for the cap: {over:?}"
+                        );
+                        if !self.split.cap_guard_logged {
+                            self.split.cap_guard_logged = true;
+                            tracing::error!(
+                                "rinch: the painter split render surfaces {over:?} refused for the \
+                                 split memory cap; splitting suspended (#1865 D6)"
+                            );
+                        }
+                        self.split.suspended = SPLIT_TAINT_FRAMES;
                         break self.paint_frame_scene(
                             scale,
                             size,
@@ -2488,7 +2509,6 @@ impl RinchApp {
                     }
                     if self.split.capped.is_empty() {
                         self.split.capped_frames = SPLIT_CAP_RETRY_FRAMES;
-                        self.split.capped_at = (w, h);
                     }
                     self.split.capped.extend(over);
                     #[cfg(test)]

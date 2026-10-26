@@ -254,15 +254,19 @@ backdrop. After the frame's change is applied,
 keeps split, and only those (one texture per surface id, straight alpha;
 counter `split_frame_uploads`). **Memory cap (PR 5, D6):** a window's split
 memory (the scratch target at the size its kept slices need, each slice's
-masks and above slices, the uploaded video frames; not the window's own
-textures nor a `RenderSurface`'s) may be `SPLIT_MEMORY_CAP_WINDOWS` (4) times
+masks and above slices; not the window's own textures, a `RenderSurface`'s,
+or the uploaded video frames, which in the scene sit in Vello's atlas:
+`split_frame::COUNT_UPLOADS`) may be `SPLIT_MEMORY_CAP_WINDOWS` (4) times
 the window's texture bytes (`split_frame::split_bytes`, `over_cap`). After
 paint, `RinchApp::gpu_frame_kind` adds this frame's slices in paint order to
 what stays split from earlier frames; the first that passes the cap and every
 one after it are refused (`VelloPainter::refuse_split`,
 `Refusal::MemoryCap`) and the frame is painted again with them in the scene.
-They stay refused until the window's size changes, a split surface the cap did
-not refuse goes, or 120 painted frames pass. The scratch target is dropped
+They stay refused until the cap grows (a bigger window: a resize that shrinks
+it keeps them), a split surface the cap did not refuse goes, or 120 painted
+frames pass. A painter that splits what it was told to refuse sends every
+surface to the scene, logs an error once and suspends splitting as taint
+does. The scratch target is dropped
 when it is larger than the kept slices need. Oracle:
 `crates/rinch/src/split_runtime_1865_tests.rs` (`gpu_split_runtime_*`, a child of `render_surface`),
 the runtime's own steps against an in-scene window.

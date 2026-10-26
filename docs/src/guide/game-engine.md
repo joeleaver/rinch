@@ -820,9 +820,12 @@ if let Some(rect) = ctx.viewport_rect("main") {
 > scene's except on the edge classes the design record's D10 bounds
 > (`docs/design/split-layer-gpu-surfaces.md`). A surface inside an opacity group, a blend or a mask, under a
 > rotating or skewing transform, or overlapping another split surface is
-> drawn in the scene instead. So is one past the window's split memory cap,
-> four times the window's own texture bytes (33 MB at 1080p, 133 MB at 4K),
-> counted in paint order.
+> drawn in the scene instead. So is one past the window's split memory cap:
+> what splitting adds over the scene (slice textures and a scratch target,
+> not the video frame, which the scene holds too) may be four times the
+> window's own texture bytes (33 MB at 1080p, 133 MB at 4K). The surfaces
+> kept split from earlier frames are counted first, then this frame's in
+> paint order.
 >
 > So on software a frame goes through **paint** instead, on the same inline
 > path a `RenderSurface` component has always used: the `data-viewport` node

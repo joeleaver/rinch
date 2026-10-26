@@ -403,10 +403,12 @@ inside a region for a later PR:
   (and the surfaces it had split are repainted into the scene). See *Video,
   and later GameViewport*.
 - **The memory cap (D6) as built (PR 5).** Counted: the scratch target at
-  the size the kept slices need (it is dropped when larger), each kept
-  slice's coverage masks and above slices (R-sized each), and the CPU frames
-  uploaded for split video. Not counted: the window's own textures, and a
-  `RenderSurface`'s texture (the app's). With all of that counted, D6b's
+  the size the kept slices need (it is dropped when larger) and each kept
+  slice's coverage masks and above slices (R-sized each). Not counted: the
+  window's own textures, a `RenderSurface`'s texture (the app's), and, since
+  D6's second amendment, the CPU frames uploaded for split video (still
+  allocated and freed as before; `split_frame::COUNT_UPLOADS`). With the
+  uploads counted, as first built, D6b's
   twice-the-window refused a full-window video under its controls at any
   size (scratch rounded up to 128 px, `above_in` and the frame: 25.4 MB at
   1080p against 16.6, 99.8 MB at 4K against 66, about 3.06 windows), so the
@@ -417,9 +419,12 @@ inside a region for a later PR:
   order to what stays split from earlier frames; the first that passes the
   cap and every one after it are named to the painter
   (`VelloPainter::refuse_split`, `Refusal::MemoryCap`) and the frame is
-  painted again, as for taint. They stay refused until the window's size
-  changes, a split surface the cap did not refuse goes, or 120 painted frames
-  pass.
+  painted again, as for taint. They stay refused until the cap grows (a
+  resize that does not grow it keeps them: a resize storm otherwise painted
+  every frame twice, #1911 review), a split surface the cap did not refuse
+  goes, or 120 painted frames pass. A painter that splits what it was told to
+  refuse sends every surface to the scene, logs an error once and suspends
+  splitting as taint does.
 
 ## The decision point
 
@@ -709,6 +714,17 @@ Even without the upload it was 2.07 windows, over 2× because of the scratch
 target's rounding. The upload is not extra memory against in-scene, where
 the same frame sits in Vello's image atlas, but it is counted all the same.
 A 640×360 video in a page holds about 3.4 MB.
+
+**Second amendment (decided, Joe, 2026-10-25).** The uploaded video frames
+are **not** counted: the cap counts only what splitting adds over drawing
+in the scene, the scratch target, the above slices and the masks. In the
+scene the same frame sits in Vello's image atlas, so counting the upload
+charged the split path for memory the scene holds anyway, and at 1080p the
+cap equals exactly one 4K frame: a 4K stream in a 1080p window could never
+split under its controls (#1911 review). The multiple stays 4×. A
+full-window video under its controls now holds about 2.07 windows (17.1 MB
+at 1080p, 66.6 MB at 4K), a 4K frame in a 1080p window among them. The
+frames are still uploaded, held and freed exactly as before.
 
 ### D7. Two split surfaces whose regions overlap
 
