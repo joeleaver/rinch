@@ -627,11 +627,12 @@ fn a_cell_edit_writes_what_the_whole_table_reconcile_writes() {
     }
 }
 
-/// A keystroke in a cell after the CRDT changed under the index (an edit elsewhere, a
-/// peer's change) rebuilds it rather than trusting it; consecutive keystrokes in one
-/// table use it.
+/// A table's cell index is kept through every change that leaves its grid alone —
+/// keystrokes in its cells, an edit elsewhere, an edit of another table, a peer's
+/// change elsewhere or in its cells — and rebuilt after one that may move its grid
+/// (#1241: it was rebuilt after any other change at all, a read of the whole table).
 #[test]
-fn the_cell_index_is_rebuilt_after_any_other_change() {
+fn the_cell_index_is_kept_until_the_grid_may_have_changed() {
     let s = Rc::new(Schema::starter_kit());
     let mut peers = world(&s, 7);
     let type_in = |peers: &mut [Peer], needle: &str| {
@@ -646,26 +647,50 @@ fn the_cell_index_is_rebuilt_after_any_other_change() {
         let after = table_cell_edits();
         (after.0 - before.0, after.1 - before.1)
     };
+    let peer_types = |peers: &mut [Peer], needle: &str| {
+        let at = pos_of(&peers[1].state.doc, needle);
+        let mut tr = peers[1].state.tr();
+        tr.set_selection(Selection::cursor(Pos(at)));
+        tr.insert_text("y").unwrap();
+        let next = peers[1].state.apply(tr);
+        peers[1].commit(next);
+        apply(peers, &Op::Exchange);
+    };
     // (index builds, cell edits)
     assert_eq!(type_in(&mut peers, "bottom 1"), (1, 1), "the first: built");
     assert_eq!(type_in(&mut peers, "bottom 1"), (0, 1), "the next: kept");
     assert_eq!(type_in(&mut peers, "top right"), (0, 1), "another cell");
     assert_eq!(type_in(&mut peers, "t2 r0 c1"), (1, 1), "another table");
-    assert_eq!(type_in(&mut peers, "bottom 2"), (1, 1), "back again");
+    assert_eq!(type_in(&mut peers, "bottom 2"), (0, 1), "back again: kept");
     assert_eq!(type_in(&mut peers, "between"), (0, 0), "outside the tables");
-    assert_eq!(type_in(&mut peers, "bottom 2"), (1, 1), "after that");
-    // A peer's change elsewhere.
-    let at = pos_of(&peers[1].state.doc, "after");
-    let mut tr = peers[1].state.tr();
-    tr.set_selection(Selection::cursor(Pos(at)));
-    tr.insert_text("y").unwrap();
-    let next = peers[1].state.apply(tr);
-    peers[1].commit(next);
-    apply(&mut peers, &Op::Exchange);
+    assert_eq!(type_in(&mut peers, "bottom 2"), (0, 1), "after that: kept");
+    peer_types(&mut peers, "after");
+    assert_eq!(
+        type_in(&mut peers, "bottom 2"),
+        (0, 1),
+        "after a peer's change elsewhere"
+    );
+    peer_types(&mut peers, "top right");
+    assert_eq!(
+        type_in(&mut peers, "bottom 2"),
+        (0, 1),
+        "after a peer's keystroke in another cell of the table"
+    );
+    // My own change of a cell's attributes reconciles the whole table: its index goes.
+    let at = pos_of(&peers[0].state.doc, "top right");
+    assert!(
+        apply(&mut peers, &Op::CellAttr(0, at)),
+        "the cell attribute applies"
+    );
     assert_eq!(
         type_in(&mut peers, "bottom 2"),
         (1, 1),
-        "after a peer's change"
+        "after a change of the table's cells"
+    );
+    assert_eq!(
+        type_in(&mut peers, "t2 r0 c1"),
+        (0, 1),
+        "the other table's: kept"
     );
     apply(&mut peers, &Op::Exchange);
     assert_eq!(peers[0].state.doc, peers[1].state.doc);
@@ -785,11 +810,14 @@ fn type_at(peers: &mut [Peer], who: usize, needle: &str) -> (u64, u64) {
 
 /// What the index buys in live collaboration, for both ways of recording a change
 /// (`record_local_edit`, what the editor view uses, and `record_local`): consecutive
-/// local keystrokes in a cell build it once, and a keystroke after integrating a
-/// peer's keystroke (elsewhere in the same table) builds it again, since any remote
-/// update changes the CRDT under it. (`(index builds, cell edits)` per keystroke.)
+/// local keystrokes in a cell build it once, and integrating a peer's keystroke
+/// elsewhere in the same table keeps it (#1241: it was built again after each one,
+/// since any remote update changes the CRDT under it). The peer's keystrokes are read
+/// back from their cells alone (`integrate_reads`). (`(index builds, cell edits)` per
+/// keystroke.)
 #[test]
-fn live_collaboration_rebuilds_the_index_after_each_peer_change() {
+fn live_collaboration_keeps_the_index_through_each_peer_change() {
+    use rinch_editor_collab::testing::integrate_reads;
     let rows = 50;
     let s = Rc::new(Schema::starter_kit());
     for edit in [true, false] {
@@ -804,10 +832,16 @@ fn live_collaboration_rebuilds_the_index_after_each_peer_change() {
         for i in 0..3 {
             type_at(&mut peers, 1, &format!("row {} column 1", i + 1));
             let d = peers[1].session.save_incremental().unwrap();
+            let reads = integrate_reads();
             peers[0].receive(&d);
             assert_eq!(
+                (integrate_reads().0 - reads.0, integrate_reads().1 - reads.1),
+                (1, 0),
+                "edit={edit}: peer change {i} read back in part"
+            );
+            assert_eq!(
                 type_at(&mut peers, 0, &needle),
-                (1, 1),
+                (0, 1),
                 "edit={edit}: after peer change {i}"
             );
             let d = peers[0].session.save_incremental().unwrap();
@@ -856,4 +890,68 @@ fn a_link_in_another_cell_changes_nothing_the_cell_path_writes() {
             "peer {p}: the CRDTs differ item by item"
         );
     }
+}
+
+/// A peer's change of a table's grid is no change of cells' blocks: integrating it
+/// reads the table whole and indexes it afresh, never carrying the index it had
+/// (review of #1926: an index carried through a grid change holds a cell map yrs has
+/// collected). My next keystroke then finds its cell through the fresh index, and both
+/// peers converge with it in the right cell.
+#[test]
+fn a_peers_grid_change_rebuilds_the_index() {
+    use rinch_editor_collab::testing::{integrate_reads, node_reads};
+    let rows = 50;
+    let s = Rc::new(Schema::starter_kit());
+    let mut peers = big_world(&s, rows, true);
+    let needle = format!("row {} column 2", rows / 2);
+    assert_eq!(type_at(&mut peers, 0, &needle), (1, 1), "the first: built");
+    let d = peers[0].session.save_incremental().unwrap();
+    peers[1].receive(&d);
+    // The peer merges the first two cells of row 3.
+    let cell_before = |doc: &Node, needle: &str| {
+        let r = doc.resolve(Pos(pos_of(doc, needle))).unwrap();
+        let d = (1..=r.depth())
+            .rev()
+            .find(|&d| r.node(d).type_name().ends_with("cell"))
+            .unwrap();
+        r.before(d).unwrap()
+    };
+    let doc = &peers[1].state.doc;
+    let (a, b) = (
+        cell_before(doc, "row 3 column 0"),
+        cell_before(doc, "row 3 column 1"),
+    );
+    let mut tr = peers[1].state.tr();
+    tr.set_selection(Selection::cell(Pos(a), Pos(b)));
+    let next = peers[1]
+        .state
+        .apply(tr)
+        .run("mergeCells")
+        .expect("the cells merge");
+    peers[1].commit(next);
+    let d = peers[1].session.save_incremental().unwrap();
+    let (reads, nodes) = (integrate_reads(), node_reads());
+    peers[0].receive(&d);
+    let nodes = node_reads() - nodes;
+    assert_eq!(
+        (integrate_reads().0 - reads.0, integrate_reads().1 - reads.1),
+        (1, 0),
+        "read back from what changed"
+    );
+    assert!(
+        nodes > 4 * rows as u64,
+        "the table was read whole ({nodes} nodes for {rows} rows)"
+    );
+    assert_eq!(
+        type_at(&mut peers, 0, &needle),
+        (0, 1),
+        "my next keystroke: the index the integrate built"
+    );
+    let d = peers[0].session.save_incremental().unwrap();
+    peers[1].receive(&d);
+    assert_eq!(peers[0].state.doc, peers[1].state.doc);
+    assert_eq!(
+        peers[0].state.doc,
+        peers[0].session.projected_doc(&s).unwrap()
+    );
 }

@@ -182,6 +182,22 @@ fn collab_table_keystroke(f: CollabFixture) -> CollabFixture {
     black_box(measure(black_box(f), op_collab_keystroke))
 }
 
+// A peer's keystroke in one cell, integrated, at 100 and 1000 rows (#1241).
+#[library_benchmark]
+#[bench::rows_100(args = (100), setup = setup_collab_table_integrate)]
+#[bench::rows_1000(args = (1000), setup = setup_collab_table_integrate)]
+fn collab_table_integrate(f: CollabIntegrateFixture) -> CollabIntegrateFixture {
+    black_box(measure(black_box(f), op_collab_integrate))
+}
+
+// A local keystroke in a table cell right after integrating a peer's (#1241).
+#[library_benchmark]
+#[bench::rows_100(args = (100), setup = setup_collab_table_keystroke_after_remote)]
+#[bench::rows_1000(args = (1000), setup = setup_collab_table_keystroke_after_remote)]
+fn collab_table_keystroke_after_remote(f: CollabFixture) -> CollabFixture {
+    black_box(measure(black_box(f), op_collab_keystroke))
+}
+
 #[library_benchmark]
 #[bench::rows_1000(setup = setup_branch_hide)]
 fn branch_hide(f: ShellFixture<Signal<bool>>) -> ShellFixture<Signal<bool>> {
@@ -202,7 +218,12 @@ library_benchmark_group!(
 
 library_benchmark_group!(
     name = editor,
-    benchmarks = [collab_keystroke, collab_table_keystroke]
+    benchmarks = [
+        collab_keystroke,
+        collab_table_keystroke,
+        collab_table_integrate,
+        collab_table_keystroke_after_remote
+    ]
 );
 
 main!(library_benchmark_groups = dom, shell, editor);

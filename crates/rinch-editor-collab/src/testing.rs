@@ -108,6 +108,30 @@ pub fn set_table_cell_path(on: bool) {
     crate::table::set_cell_path(on)
 }
 
+/// Let an integrate read back only what an update changed (`true`, the default) or
+/// make it read the whole document every time (`false`), as before #1241, on this
+/// **thread**: the switch a test comparing the two turns.
+pub fn set_incremental_read(on: bool) {
+    crate::session::set_incremental_read(on)
+}
+
+/// Compare every integrate that read back only what an update changed with a whole
+/// read of the document, and panic on any difference — the document or its atoms'
+/// identities — on this **thread**. On by default in this crate's debug test builds,
+/// so every test that integrates checks it; the whole read changes none of the work
+/// counts ([`node_reads`], [`text_scans`], [`overlay_entry_reads`]).
+pub fn set_incremental_read_check(on: bool) {
+    crate::session::set_incremental_read_check(on)
+}
+
+/// How many integrates on this **thread** so far read back only what their update
+/// changed, and how many read the whole document. Take the difference across an
+/// operation; the first count is the positive control that a test exercised the
+/// partial read.
+pub fn integrate_reads() -> (u64, u64) {
+    crate::session::integrate_reads()
+}
+
 /// Whether two snapshots ([`CollabSession::snapshot`]) hold the same CRDT: the same
 /// items, with the same ids, origins and content, and the same deletions. Comparing
 /// the bytes is not that: a map value (an inline atom's `@atom`) encodes its keys in

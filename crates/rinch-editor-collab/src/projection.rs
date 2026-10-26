@@ -567,11 +567,24 @@ pub struct CollabDoc {
     /// Keeps that observer alive.
     _atoms_changed: Subscription,
     /// How many transactions have changed the CRDT, local or remote: the update
-    /// observer counts every one. The table cell index (`table::locate_cell`) is valid
-    /// at one value of it, so no write it did not make itself can leave it stale.
+    /// observer counts every one. A table cell index (`table::locate_cell`) is valid
+    /// at one value of it, and is carried to the next only by a write known to leave
+    /// its grid alone, so no other write can leave it stale; the document the session
+    /// knows its CRDT reads as (`atom_cache::synced`) is valid at one value too.
     pub(crate) epoch: Arc<AtomicU64>,
     /// This document's key in the table cell index, unique in the process.
     pub(crate) uid: u64,
+    /// What the last update applied ([`CollabDoc::apply_decoded`]) changed, for the
+    /// integrate that follows it (#1241).
+    pub(crate) last_apply: Option<crate::sync::AppliedChanges>,
+    /// Whether the last local change projected ([`CollabDoc::project_change`]) may have
+    /// written, rewritten or removed an atom of either kind: a block it changed holds
+    /// one, before or after. `true` until a change says otherwise.
+    pub(crate) touched_atoms: bool,
+    /// The upper bound of every client's clocks in the updates applied from peers (and
+    /// the snapshot loaded): past the store's state vector for a client while a gap in
+    /// its clocks is open (review of #1926, `sync::AppliedChanges::spoiled`).
+    pub(crate) clocks_seen: StateVector,
 }
 
 impl Drop for CollabDoc {
@@ -669,6 +682,7 @@ impl CollabDoc {
         }
 
         let (ydoc, outbox, updates, overlay, atoms_changed, epoch) = CollabDoc::blank(client_id);
+        let clocks_seen = StateVector::default();
         // Both roots are resolved before the write transaction opens: resolving one takes
         // exclusive store access and panics if a transaction is already live.
         let content = ydoc.get_or_insert_array(CONTENT);
@@ -700,6 +714,9 @@ impl CollabDoc {
             _atoms_changed: atoms_changed,
             epoch,
             uid: crate::atom_cache::next_uid(),
+            last_apply: None,
+            touched_atoms: true,
+            clocks_seen,
         })
     }
 
@@ -741,6 +758,7 @@ impl CollabDoc {
         client_id: Option<ClientID>,
     ) -> Result<CollabDoc> {
         let update = Update::decode_v1(bytes)?;
+        let clocks_seen = crate::sync::clocks_inserted(&update);
         let (ydoc, outbox, updates, overlay, atoms_changed, epoch) = CollabDoc::blank(client_id);
         {
             let mut txn = ydoc.transact_mut_with(Origin::from(ENGINE_APPLY_ORIGIN));
@@ -780,7 +798,15 @@ impl CollabDoc {
             _atoms_changed: atoms_changed,
             epoch,
             uid: crate::atom_cache::next_uid(),
+            last_apply: None,
+            touched_atoms: true,
+            clocks_seen,
         })
+    }
+
+    /// How many transactions have changed the CRDT so far ([`CollabDoc::epoch`]).
+    pub(crate) fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Relaxed)
     }
 
     /// Save the whole projection (for forking a peer): the complete document state as
@@ -893,6 +919,308 @@ impl CollabDoc {
     }
 }
 
+// --- a remote change read back from what it changed (#1241) --------------------
+
+/// What [`CollabDoc::read_changed`] read: the document the CRDT now reads as, its
+/// atoms' identities as [`CollabDoc::to_doc_with_all_atom_ids`] gives them, and the
+/// top-level blocks the change touched.
+pub(crate) struct ChangedRead {
+    pub doc: Node,
+    pub block_ids: Vec<BlockId>,
+    pub inline_ids: Vec<Option<String>>,
+    pub touched: Vec<Touched>,
+}
+
+/// A top-level block a change touched: its index, its node map, and how it was read.
+pub(crate) struct Touched {
+    pub index: usize,
+    pub map: MapRef,
+    pub read: TouchedRead,
+}
+
+/// How [`CollabDoc::read_changed`] read a touched top-level block.
+pub(crate) enum TouchedRead {
+    /// A table whose cells' blocks alone changed, read cell by cell: its grid and its
+    /// cell maps are the ones it had.
+    Cells,
+    /// A table read whole, with its cells when it may be indexed
+    /// (`table::indexable_cells`).
+    Table(Option<crate::table::IndexedCells>),
+    /// Any other block, read whole.
+    Block,
+}
+
+/// One node [`CollabDoc::read_changed`] read: where it stands (a top-level index,
+/// and a cell's row and place when it is a cell of the table there), the node it
+/// replaces, and what was read with its atoms' identities.
+struct ReadPart {
+    at: (usize, Option<(usize, usize)>),
+    old: Node,
+    new: Node,
+    blocks: Vec<BlockId>,
+    inline: Vec<Option<String>>,
+}
+
+/// Run `read` with the atoms' identities recorded, as
+/// [`CollabDoc::to_doc_with_all_atom_ids`] records them: `None` when it fails, when a
+/// leaf block atom had no id, or when its inline atoms could not be counted.
+fn read_recording(
+    read: impl FnOnce() -> Result<Node>,
+) -> Option<(Node, Vec<BlockId>, Vec<Option<String>>)> {
+    struct Recording;
+    impl Drop for Recording {
+        fn drop(&mut self) {
+            ATOM_IDS.with(|ids| *ids.borrow_mut() = None);
+            INLINE_IDS.with(|ids| *ids.borrow_mut() = None);
+        }
+    }
+    let _recording = Recording;
+    ATOM_IDS.with(|ids| *ids.borrow_mut() = Some(Ok(Vec::new())));
+    INLINE_IDS.with(|ids| *ids.borrow_mut() = Some(Vec::new()));
+    let node = read().ok()?;
+    let blocks = ATOM_IDS.with(|ids| ids.borrow_mut().take())?.ok()?;
+    let inline = INLINE_IDS.with(|ids| ids.borrow_mut().take())?;
+    (inline.len() == crate::remote::inline_atoms(&node)).then_some((node, blocks, inline))
+}
+
+/// The atoms of `old` before the node `at` names, and that node's own, as ranges of
+/// the document-order lists: (leaf block atoms, inline atoms).
+fn atom_ranges(
+    old: &Node,
+    at: (usize, Option<(usize, usize)>),
+) -> (std::ops::Range<usize>, std::ops::Range<usize>) {
+    use crate::remote::{block_atoms, inline_atoms};
+    let (mut b, mut i) = (0, 0);
+    let mut count = |n: &Node| {
+        b += block_atoms(n);
+        i += inline_atoms(n);
+    };
+    (0..at.0).for_each(|j| count(old.child(j)));
+    let node = match at.1 {
+        None => old.child(at.0),
+        Some((r, k)) => {
+            let table = old.child(at.0);
+            (0..r).for_each(|j| count(table.child(j)));
+            let row = table.child(r);
+            (0..k).for_each(|j| count(row.child(j)));
+            row.child(k)
+        }
+    };
+    (b..b + block_atoms(node), i..i + inline_atoms(node))
+}
+
+impl CollabDoc {
+    /// The document this CRDT reads as after the update [`Self::apply_decoded`] last
+    /// applied (`changes`), built from `old` — the document it read as before that
+    /// update, whose atoms' identities are `old_ids` and `old_inline` — by reading
+    /// back only what the update changed (#1241): each top-level block it changed,
+    /// and in a table whose cells' blocks alone changed, each such cell's blocks. The
+    /// rest of `old` is kept, `Rc` for `Rc`, so the diff that follows compares a
+    /// pointer per block it did not touch.
+    ///
+    /// `None` whenever only a whole read can say what the document is, and the caller
+    /// then makes one: the update inserted or deleted a top-level block, changed an
+    /// atom's entry, failed or changed more than [`AppliedChanges::MAX_PATHS`](crate::sync::AppliedChanges::MAX_PATHS) types;
+    /// the top level holds a void container; a block it reads is too large to read
+    /// (only the whole read records an [`OversizedTable`]) or fails to read; a table's
+    /// cell is not one its index (`table::places_of`) knows at the update's epoch, in
+    /// which case the table is read whole instead. `no_atoms` says `old` holds no atom,
+    /// so nothing is counted to place the identities read.
+    ///
+    /// Equal to [`Self::to_doc_with_all_atom_ids`] whenever `old` is this CRDT's read
+    /// before the update: a block is read by the functions the whole read uses, and a
+    /// cell's blocks by the ones the table read uses (`table::read_cell_blocks`), into
+    /// the cell's own type and attrs, which only a change of the grid would move.
+    /// `testing::set_incremental_read_check` compares the two on every integrate.
+    pub(crate) fn read_changed(
+        &self,
+        schema: &Schema,
+        old: &Node,
+        changes: &crate::sync::AppliedChanges,
+        old_ids: &[BlockId],
+        old_inline: &[Option<String>],
+        no_atoms: bool,
+    ) -> Option<ChangedRead> {
+        use yrs::types::PathSegment;
+        if self.top_void {
+            return None;
+        }
+        let tops = changes.top_level_blocks()?;
+        let _overlay = overlay_scope(&self.overlay);
+        let txn = self.doc.transact();
+        let n = old.child_count();
+        if n == 0 || self.content.len(&txn) as usize != n {
+            return None;
+        }
+        let mut parts: Vec<ReadPart> = Vec::new();
+        let mut touched = Vec::with_capacity(tops.len());
+        for &top in &tops {
+            let i = top as usize;
+            if i >= n {
+                return None;
+            }
+            let map = child_map(&txn, &self.content, top)?;
+            let old_block = old.child(i);
+            let tails: Vec<Vec<PathSegment>> = changes
+                .paths
+                .iter()
+                .filter(|p| matches!(p.front(), Some(PathSegment::Index(j)) if *j == top))
+                .map(|p| p.iter().skip(1).cloned().collect())
+                .collect();
+            if !is_table_map(&txn, &map) {
+                let (new, blocks, inline) = read_recording(|| {
+                    let nd = read_map_data(&txn, &map)?;
+                    if is_void(&nd) {
+                        return Err(CollabError::schema("a void block where none is"));
+                    }
+                    build_node(schema, &nd)
+                })?;
+                parts.push(ReadPart {
+                    at: (i, None),
+                    old: old_block.clone(),
+                    new,
+                    blocks,
+                    inline,
+                });
+                touched.push(Touched {
+                    index: i,
+                    map,
+                    read: TouchedRead::Block,
+                });
+                continue;
+            }
+            if node_type(&txn, &map).as_deref() != Some(TABLE) {
+                return None;
+            }
+            // The cells whose blocks alone changed, by their place in the grid the
+            // table's index knows.
+            let cells = (|| {
+                let tails: Vec<&[PathSegment]> = tails.iter().map(Vec::as_slice).collect();
+                let keys = crate::table::changed_cells(&tails)?;
+                let places =
+                    crate::table::places_of(self.uid, changes.epoch, &map, old_block, &keys)?;
+                let mut read = Vec::with_capacity(places.len());
+                for ((r, k), cell) in &places {
+                    let (r, k) = (*r, *k);
+                    let old_cell = old_block
+                        .content()
+                        .maybe_child(r)?
+                        .content()
+                        .maybe_child(k)?;
+                    let (new, blocks, inline) = read_recording(|| {
+                        let mut nodes = Vec::new();
+                        for nd in crate::table::read_cell_blocks(&txn, cell)? {
+                            nodes.push(build_node(schema, &nd)?);
+                        }
+                        schema
+                            .create_node(
+                                old_cell.type_name(),
+                                old_cell.attrs().clone(),
+                                Fragment::from_children(nodes),
+                            )
+                            .map_err(CollabError::from)
+                    })?;
+                    read.push(ReadPart {
+                        at: (i, Some((r, k))),
+                        old: old_cell.clone(),
+                        new,
+                        blocks,
+                        inline,
+                    });
+                }
+                read.sort_by_key(|p| p.at);
+                Some(read)
+            })();
+            match cells {
+                Some(cells) => {
+                    parts.extend(cells);
+                    touched.push(Touched {
+                        index: i,
+                        map,
+                        read: TouchedRead::Cells,
+                    });
+                }
+                None => {
+                    // Read inside the recording: the inline atoms' identities are
+                    // noted as their texts are read.
+                    let mut read = None;
+                    let (new, blocks, inline) = read_recording(|| {
+                        let table = crate::table::read_table(&txn, &map)?;
+                        let node = build_node(schema, &NodeData::Table(table.data.clone()))?;
+                        read = Some(table);
+                        Ok(node)
+                    })?;
+                    let cells = crate::table::indexable_cells(&txn, read?);
+                    parts.push(ReadPart {
+                        at: (i, None),
+                        old: old_block.clone(),
+                        new,
+                        blocks,
+                        inline,
+                    });
+                    touched.push(Touched {
+                        index: i,
+                        map,
+                        read: TouchedRead::Table(cells),
+                    });
+                }
+            }
+        }
+
+        // The atoms' identities: `old`'s, with each part's own in place of what it
+        // replaces (back to front, so the ranges found in `old` stay true).
+        let (mut block_ids, mut inline_ids) = (old_ids.to_vec(), old_inline.to_vec());
+        if no_atoms {
+            if !(old_ids.is_empty() && old_inline.is_empty()) {
+                return None;
+            }
+            for p in &parts {
+                block_ids.extend(p.blocks.iter().copied());
+                inline_ids.extend(p.inline.iter().cloned());
+            }
+        } else {
+            let ranges: Vec<_> = parts.iter().map(|p| atom_ranges(old, p.at)).collect();
+            for (p, (b, i)) in parts.iter().zip(ranges).rev() {
+                if b.end > block_ids.len() || i.end > inline_ids.len() {
+                    return None;
+                }
+                block_ids.splice(b, p.blocks.iter().copied());
+                inline_ids.splice(i, p.inline.iter().cloned());
+            }
+        }
+
+        // The document: `old`, each part in place of the node it replaces.
+        let mut content = old.content().clone();
+        let mut k = 0;
+        while k < parts.len() {
+            let i = parts[k].at.0;
+            let block = if parts[k].at.1.is_none() {
+                k += 1;
+                parts[k - 1].new.clone()
+            } else {
+                let mut table = old.child(i).clone();
+                while k < parts.len() && parts[k].at.0 == i {
+                    let (r, c) = parts[k].at.1?;
+                    debug_assert!(table.child(r).child(c).same_ref(&parts[k].old));
+                    let row = table.child(r);
+                    let row =
+                        row.copy_with_content(row.content().replace_child(c, parts[k].new.clone()));
+                    table = table.copy_with_content(table.content().replace_child(r, row));
+                    k += 1;
+                }
+                table
+            };
+            content = content.replace_child(i, block);
+        }
+        Some(ChangedRead {
+            doc: old.copy_with_content(content),
+            block_ids,
+            inline_ids,
+            touched,
+        })
+    }
+}
+
 // --- offset conversion ----------------------------------------------------------
 
 /// The UTF-16 code-unit offset of char offset `chars` inside `s`.
@@ -925,6 +1253,17 @@ thread_local! {
 
 fn count_node_read() {
     NODE_READS.with(|c| c.set(c.get() + 1));
+}
+
+/// Run `f` leaving this thread's work counts as they were: a check that a test turns
+/// on (`testing::set_incremental_read_check`) costs nothing the counts pin.
+pub(crate) fn uncounted<R>(f: impl FnOnce() -> R) -> R {
+    let reads = NODE_READS.with(|c| c.get());
+    let atoms = crate::atoms::counts();
+    let out = f();
+    NODE_READS.with(|c| c.set(reads));
+    crate::atoms::set_counts(atoms);
+    out
 }
 
 /// A block's identity in the CRDT: its node map's yrs item id `(client, clock)`.
