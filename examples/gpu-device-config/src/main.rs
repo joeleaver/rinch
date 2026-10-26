@@ -20,9 +20,11 @@
 //! and confirms the shared device carries the raised limit and that the
 //! embedder can create GPU resources on it.
 //!
-//! For the full zero-copy present loop (register a `wgpu::TextureView` the
-//! compositor samples directly), see the `game-embed` and `render-test`
-//! examples plus `RenderSurfaceHandle::gpu_registrar()` / `set_texture_source`.
+//! `RINCH_GPU_MODE=zerocopy` draws with that device through a `RenderSurface`'s
+//! GPU render callback (`RenderSurfaceHandle::set_gpu_render_callback`): the
+//! callback renders into a texture on the shared device, and the window draws
+//! it as the element's content, with no readback (composited outside the scene
+//! when it can be, #1865).
 
 use rinch::prelude::*;
 // `rinch::wgpu` is the exact (patched) wgpu rinch links against — construct GPU
@@ -100,87 +102,58 @@ fn app() -> NodeHandle {
 }
 
 /// `RINCH_GPU_MODE=zerocopy` — prove ask #3: the same `App::gpu_config`
-/// device (configurable features) ALSO does zero-copy GPU layer compositing.
+/// device (configurable features) ALSO draws a surface with no readback.
 ///
-/// We create a texture on **rinch's shared device**, fill it with a solid color,
-/// and register it as the source for a named compositor surface bound to a
-/// `data-viewport` node. `WgpuRenderer::set_gpu_layers` samples that texture
-/// directly (no CPU readback) and composites it under the UI — on a transparent
-/// window, through the exact device we raised the limits on.
+/// The surface's GPU render callback is handed a target texture on **rinch's
+/// shared device** and clears it to a solid colour with a render pass; the
+/// window draws that texture as the element's content, at its place in paint
+/// order like an `<img>` (composited outside the scene when it can be, #1865),
+/// through the exact device we raised the limits on.
 #[component]
 fn zerocopy_app() -> NodeHandle {
-    use rinch::render_surface::create_render_surface_with_name;
+    use rinch::render_surface::create_render_surface;
 
-    let handle = gpu_handle().expect("gpu_handle available after the renderer starts");
-    let (w, h) = (320u32, 220u32);
-
-    // Texture on rinch's shared device — the zero-copy contract.
-    let texture = handle.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("zerocopy-layer"),
-        size: wgpu::Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
+    let surface = create_render_surface();
+    surface.set_gpu_render_callback(|frame| {
+        let mut encoder = frame
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            // Solid teal, fully opaque: cleared straight into the target.
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("zerocopy-surface"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: frame.target,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0x14 as f64 / 255.0,
+                            g: 0xb8 as f64 / 255.0,
+                            b: 0xa6 as f64 / 255.0,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+        }
+        frame.queue.submit([encoder.finish()]);
     });
-    // Solid teal, fully opaque.
-    let pixels: Vec<u8> = std::iter::repeat_n([0x14u8, 0xb8, 0xa6, 0xff], (w * h) as usize)
-        .flatten()
-        .collect();
-    handle.queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &pixels,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(4 * w),
-            rows_per_image: Some(h),
-        },
-        wgpu::Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-    );
-    let view = texture.create_view(&Default::default());
-
-    // Named surface → matched to the data-viewport node below → composited as a
-    // zero-copy GPU layer.
-    let surface = create_render_surface_with_name("gpu-layer");
-    let registrar = surface.gpu_registrar();
-    registrar.set_texture_source(texture, view, w, h);
-    registrar.notify_frame_ready();
-    std::mem::forget(surface); // keep alive for the app's lifetime
-
-    // Transparent hole the compositor samples the texture through.
-    let viewport = __scope.create_element("div");
-    viewport.set_attribute("data-viewport", "gpu-layer");
-    viewport.set_attribute(
-        "style",
-        "width:320px; height:220px; background:transparent;",
-    );
 
     rsx! {
         div {
             style: "display:flex; flex-direction:column; gap:10px; padding:20px; \
                     font-family: system-ui, sans-serif;",
-            h1 { style: "margin:0; font-size:18px;", "Zero-copy GPU layer (issue #57 ask #3)" }
+            h1 { style: "margin:0; font-size:18px;", "Zero-copy GPU surface (issue #57 ask #3)" }
             p {
                 style: "margin:0; color:#333; font-size:13px;",
-                "The teal box is a wgpu texture created on the App::gpu_config device \
-                 and composited directly by WgpuRenderer — no CPU readback."
+                "The teal box is drawn by a RenderSurface's GPU render callback into a \
+                 texture on the App::gpu_config device, and drawn by the window \
+                 directly — no CPU readback."
             }
-            {viewport}
+            RenderSurface { surface: Some(surface), style: "width:320px; height:220px;" }
         }
     }
 }
@@ -209,12 +182,7 @@ fn main() {
     match std::env::var("RINCH_GPU_MODE").as_deref() {
         Ok("external") => run_external(app, props),
         Ok("zerocopy") => {
-            // Transparent window + gpu_config device + zero-copy GPU layer.
-            let props = WindowProps {
-                transparent: true,
-                borderless: true,
-                ..props
-            };
+            // gpu_config device + a surface drawn on it with no readback.
             App::new(zerocopy_app)
                 .window_props(props)
                 .gpu_config(gpu)
