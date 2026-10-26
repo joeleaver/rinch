@@ -130,6 +130,17 @@ struct Window {
     transparent: bool,
 }
 
+/// Every frame's `split_below_kept` so far (S4).
+fn below_kept_total(app: &RinchApp) -> u64 {
+    app.doc.as_ref().map_or(0, |d| {
+        d.borrow()
+            .tree
+            .perf
+            .total()
+            .get(rinch_dom::perf::Counter::SplitBelowKept)
+    })
+}
+
 /// A frame: what it presented, which surfaces it composited split, the
 /// frame's kind (`"full"`, `"partial"`, `"unchanged"`), and how many video
 /// frames it uploaded for the compositor.
@@ -138,6 +149,8 @@ struct Shown {
     split_ids: Vec<usize>,
     kind: &'static str,
     uploads: u64,
+    /// Kept regions the frame did not re-render below over (S4).
+    below_kept: u64,
 }
 
 impl Window {
@@ -191,6 +204,7 @@ impl Window {
 
     fn frame(&mut self, app: &mut RinchApp, full: bool, fault: Fault) -> Shown {
         let gpu = test_gpu();
+        let kept_before = below_kept_total(app);
         paint_like_paint_gpu(app, self.scale as f32);
         let frames = collect_gpu_surface_frames();
         let split_ids: Vec<usize> = self.split.surface_ids().collect();
@@ -347,6 +361,7 @@ impl Window {
             split_ids,
             kind,
             uploads,
+            below_kept: below_kept_total(app) - kept_before,
         }
     }
 
@@ -3328,4 +3343,161 @@ fn gpu_split_runtime_refused_at_fractional_scale() {
     ATLAS.with(|a| a.borrow_mut().clear());
     WINDOW.with(|w| w.set((1.0, None, false)));
     run(vec![failures]);
+}
+
+/// S4: a change inside a kept region painted after its surface goes to the
+/// region's above slices, and below is not re-rendered over the region; any
+/// other change there re-renders it. Each case against in-scene pixels, the
+/// frames' `split_below_kept` pinned.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_above_only_changes() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    // The surface rounded, so below shows at its corners inside R.
+    const ROUNDED: &str = "position: absolute; left: 50px; top: 40px; width: 120px; height: 80px; \
+                           box-sizing: border-box; border-radius: 14px";
+    const UNDER: &str = "position: absolute; left: 40px; top: 30px; width: 140px; height: 100px; \
+                         background: rgb(200, 60, 160)";
+    const LABEL: &str = "position: absolute; left: 70px; top: 60px; width: 60px; height: 16px; \
+                         color: white; font: 12px sans-serif";
+    // Later in the tree, painted before the surface (a lower z-index).
+    const LOW_Z: &str = "position: absolute; left: 44px; top: 34px; width: 132px; height: 92px; \
+                         background: rgb(40, 180, 90); z-index: 1";
+    const HIGH_Z: &str = "position: absolute; left: 50px; top: 40px; width: 120px; height: 80px; \
+                          box-sizing: border-box; border-radius: 14px; z-index: 2";
+    struct Case {
+        name: &'static str,
+        parts: Vec<Part>,
+        target: usize,
+        step: &'static dyn Fn(&NodeHandle),
+        kind: &'static str,
+        below_kept: u64,
+    }
+    let recolor: &'static dyn Fn(&NodeHandle) = &|n: &NodeHandle| {
+        n.set_style("background", "rgb(240, 200, 0)");
+    };
+    let shift: &'static dyn Fn(&NodeHandle) = &|n: &NodeHandle| {
+        n.set_style("left", "90px");
+    };
+    let hide: &'static dyn Fn(&NodeHandle) = &|n: &NodeHandle| {
+        n.set_style("display", "none");
+    };
+    static TICK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let retext: &'static dyn Fn(&NodeHandle) = &|n: &NodeHandle| {
+        // The same text on both pages: each tick is set twice in a row.
+        let t = TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed) / 2;
+        n.set_text(&format!("12:{t:02}"));
+    };
+    let cases = vec![
+        Case {
+            name: "controls across the region recoloured: below kept inside it",
+            parts: vec![(ROUNDED, Some(red())), (OPAQUE_BAR, None)],
+            target: 1,
+            step: recolor,
+            kind: "partial",
+            below_kept: 1,
+        },
+        Case {
+            name: "a badge inside the region recoloured: no below render at all",
+            parts: vec![(ROUNDED, Some(red())), (BADGE, None)],
+            target: 1,
+            step: recolor,
+            kind: "unchanged",
+            below_kept: 1,
+        },
+        Case {
+            name: "a label's text over the surface changes",
+            parts: vec![(ROUNDED, Some(red())), (LABEL, None)],
+            target: 1,
+            step: retext,
+            kind: "",
+            below_kept: 1,
+        },
+        Case {
+            name: "a badge over the surface moved within it: below kept",
+            parts: vec![(ROUNDED, Some(red())), (BADGE, None)],
+            target: 1,
+            step: shift,
+            kind: "unchanged",
+            below_kept: 1,
+        },
+        Case {
+            name: "the box under the surface recoloured: below re-rendered",
+            parts: vec![(UNDER, None), (ROUNDED, Some(red())), (BADGE, None)],
+            target: 0,
+            step: recolor,
+            kind: "partial",
+            below_kept: 0,
+        },
+        Case {
+            name: "a box later in the tree but painted first recoloured: below re-rendered",
+            parts: vec![(HIGH_Z, Some(red())), (LOW_Z, None)],
+            target: 1,
+            step: recolor,
+            kind: "partial",
+            below_kept: 0,
+        },
+        Case {
+            name: "a badge over the surface hidden: below re-rendered (it paints nowhere now)",
+            parts: vec![(ROUNDED, Some(red())), (BADGE, None)],
+            target: 1,
+            step: hide,
+            kind: "",
+            below_kept: 0,
+        },
+    ];
+    let mut failures = Vec::new();
+    for case in cases {
+        let target = case.target;
+        let step = case.step;
+        let act = move |p: &Page| step(&p.boxes.borrow()[target]);
+        let mut split_page = page(&case.parts);
+        let mut scene_page = page(&case.parts);
+        if case.name.contains("label") {
+            split_page.boxes.borrow()[1].set_text("12:59");
+            scene_page.boxes.borrow()[1].set_text("12:59");
+        }
+        let surfaces: Vec<usize> = split_page.surfaces.iter().map(|s| s.id()).collect();
+        let mut win = Window::new(true);
+        let mut reference = Window::new(false);
+        for n in 0..3 {
+            if n > 0 {
+                act(&split_page);
+                act(&scene_page);
+            }
+            let got = win.frame(&mut split_page.app, n == 0, Fault::None);
+            let want = reference.frame(&mut scene_page.app, true, Fault::None);
+            let name = case.name;
+            if got.split_ids != surfaces {
+                failures.push(format!("{name}, frame {n}: split {:?}", got.split_ids));
+            }
+            if n == 1 {
+                if !case.kind.is_empty() && got.kind != case.kind {
+                    failures.push(format!("{name}: a {} frame, want {}", got.kind, case.kind));
+                }
+                if got.below_kept != case.below_kept {
+                    failures.push(format!(
+                        "{name}: below kept over {} regions, want {}",
+                        got.below_kept, case.below_kept
+                    ));
+                }
+            }
+            let wrong = compare(&got.pixels, &want.pixels, &win.allowances(EDGES), win.dev.0);
+            if !wrong.is_empty() {
+                failures.push(format!(
+                    "{name}, frame {n} ({}): {} pixels past their allowance: {:?}",
+                    got.kind,
+                    wrong.len(),
+                    &wrong[..wrong.len().min(6)]
+                ));
+            }
+        }
+        for s in split_page.surfaces.iter().chain(&scene_page.surfaces) {
+            unregister_render_surface(s.id());
+        }
+    }
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

@@ -324,6 +324,13 @@ in-scene image transform; `tainted`.
   pixel further left only when that left edge (or the fitted frame's, in R's
   first column) is fractional; routing bounds grow the same way. Two surfaces
   touching at whole pixels both split.
+- **Per-region repainting (S4)**: `compute_damage_attributed` names the
+  node whose paint draws each change (`NodeDamage`); paint reports watched
+  nodes' starts (`set_paint_order_watch`, `Painter::note_node_start`,
+  forwarded by `ClipTrackingPainter`) as counts of surfaces split so far
+  (`VelloPainter::node_starts`). A frame whose every change in a kept region
+  started after its surface skips below over that region
+  (`split_below_kept`). Design record: *Damage per slice → As built (S4)*.
 - **No surface costs one bool per draw**: `route!` (a macro, not a generic)
   tests `VelloPainter::routing`, set when a surface splits, and otherwise is
   the draw itself; no closure or bounds are built.

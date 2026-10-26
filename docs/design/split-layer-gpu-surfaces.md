@@ -437,6 +437,43 @@ inside a region for a later PR:
   refuse sends every surface to the scene, logs an error once and suspends
   splitting as taint does.
 
+### As built (S4)
+
+A partial frame whose every change inside a kept region R was painted
+**after** its surface leaves below as it was over R: the change went to R's
+above slices, and below is cut out around R. Only the above slices (and
+masks) are rendered again; below's render and copy skip R
+(`RinchApp::gpu_frame_kind`, counter `split_below_kept`). A badge or a label
+over a video changing renders no below at all.
+
+- **Attribution.** On a frame with something kept split,
+  `compute_damage_attributed` returns each change's rects with the node
+  whose paint draws them (`NodeDamage`): the node itself, a text node's IFC
+  root, a box-less inline's root, an owner painting it. `None`, never placed
+  after a surface, for a removed node's old rect, a reordered box, a moved
+  box with a negatively z-indexed positioned descendant (painted before the
+  box starts), a split inline's fragments and a box-less wrapper's subtree.
+  A frame marked dirty without naming what changed attributes nothing.
+- **Placement in paint order.** The nodes whose changes meet a kept region
+  are watched (`set_paint_order_watch`); paint reports when it starts each
+  (`Painter::note_node_start`, through `ClipTrackingPainter`), and
+  `VelloPainter::node_starts` records how many surfaces were split by then.
+  A change is above-only for the `i`th split when its node started after it
+  (`fewest > i`), every time it started.
+- **Below kept** for a kept surface split again at the same R when every
+  change meeting R is above-only. The partial frame's rects then exclude R,
+  and its target shrinks to what is left; with nothing left the frame is
+  `Unchanged` for the UI texture.
+- **Conservative everywhere else**: a node not started (hidden, culled), a
+  surface that moved or was not split again, an unattributed change. All of
+  these re-render below as in PR 3.
+- **Oracle**: `gpu_split_runtime_above_only_changes` (controls across R and
+  a badge inside it recoloured or moved, a label's text: below kept; the
+  box under the surface, a box later in the tree painted first by a lower
+  `z-index`, a badge hidden: below re-rendered), every case against
+  in-scene pixels with `split_below_kept` pinned. Treating every region as
+  above-only fails the under-box and lower-z cases (a hidden badge's old pixels were in the above slice, which is replaced, so keeping below there is right).
+
 ## The decision point
 
 `surface_route` (`render_surface.rs`) stays the only place that routes a

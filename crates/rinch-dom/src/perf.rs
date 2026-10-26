@@ -429,6 +429,10 @@ define_counters! {
     /// compositor. One per new frame of a video the window composites split,
     /// after paint; a video drawn in the scene uploads none here.
     SplitFrameUploads = "split_frame_uploads",
+    /// GPU window, split path (#1865 S4): kept regions a partial frame did
+    /// not re-render below over, because every change in them was painted
+    /// after the surface (into its above slices).
+    SplitBelowKept = "split_below_kept",
 
     // ── Input ──────────────────────────────────────────────────────────
     /// Hit tests run (`RinchApp::hit_test`).
