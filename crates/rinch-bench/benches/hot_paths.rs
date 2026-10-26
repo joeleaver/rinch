@@ -182,6 +182,50 @@ fn collab_table_keystroke(f: CollabFixture) -> CollabFixture {
     black_box(measure(black_box(f), op_collab_keystroke))
 }
 
+// Typing over a two-character selection inside one cell of a table of 100
+// rows and of 1000, and at a caret there: the check for a table the edit left
+// ragged (#1847) reads the range's start, resolved once with the inherited
+// marks, and nothing of the table (its first round walked it: 1.0 ms at 1,024
+// rows).
+#[library_benchmark]
+#[bench::rows_100(args = ((100, 2)), setup = setup_range_type_in_table)]
+#[bench::rows_1000(args = ((1000, 2)), setup = setup_range_type_in_table)]
+#[bench::caret_rows_100(args = ((100, 0)), setup = setup_range_type_in_table)]
+#[bench::caret_rows_1000(args = ((1000, 0)), setup = setup_range_type_in_table)]
+fn range_type_in_table(f: EditorFixture) -> EditorFixture {
+    black_box(measure(black_box(f), op_range_type_in_table))
+}
+
+// Typing over a range from one paragraph of a cell into the next, in a table
+// of 100 and of 1000 rows: the range is inside one cell, so the check for a
+// table the edit left ragged (#1847) reads no table.
+#[library_benchmark]
+#[bench::rows_100(args = ((100, 0)), setup = setup_cells_in_table)]
+#[bench::rows_1000(args = ((1000, 0)), setup = setup_cells_in_table)]
+fn range_across_paragraphs_in_cell(f: EditorFixture) -> EditorFixture {
+    black_box(measure(black_box(f), op_range_type_in_table))
+}
+
+// Whether bold is active over a two-cell selection, in a table of 100 and of
+// 1000 rows: equal counts mean asking costs in the selected cells, not the
+// table (`tables::selected_cells`: the table's map is kept per table node, and
+// in the same document the cells are found without a resolve). The fixture's
+// setup asks once, as the toolbar's first mark does.
+#[library_benchmark]
+#[bench::rows_100(args = ((100, 1)), setup = setup_cells_in_table)]
+#[bench::rows_1000(args = ((1000, 1)), setup = setup_cells_in_table)]
+fn cell_selection_mark_active(f: EditorFixture) -> EditorFixture {
+    black_box(measure(black_box(f), op_bold_active))
+}
+
+// `toggleBold` over a two-cell selection, in a table of 100 and of 1000 rows.
+#[library_benchmark]
+#[bench::rows_100(args = ((100, 1)), setup = setup_cells_in_table)]
+#[bench::rows_1000(args = ((1000, 1)), setup = setup_cells_in_table)]
+fn cell_selection_toggle_bold(f: EditorFixture) -> EditorFixture {
+    black_box(measure(black_box(f), op_toggle_bold))
+}
+
 // A peer's keystroke in one cell, integrated, at 100 and 1000 rows (#1241).
 #[library_benchmark]
 #[bench::rows_100(args = (100), setup = setup_collab_table_integrate)]
@@ -221,6 +265,10 @@ library_benchmark_group!(
     benchmarks = [
         collab_keystroke,
         collab_table_keystroke,
+        range_type_in_table,
+        range_across_paragraphs_in_cell,
+        cell_selection_mark_active,
+        cell_selection_toggle_bold,
         collab_table_integrate,
         collab_table_keystroke_after_remote
     ]

@@ -4332,3 +4332,111 @@ fn r7_an_index_in_a_table_that_becomes_oversized() {
     let loaded = rinch_editor_collab::CollabDoc::load(&b.session.snapshot()).unwrap();
     assert_eq!(loaded.locate_sticky_in(&s, &cell_idx).unwrap(), None);
 }
+
+// --- #1847: a delete across two tables, repaired, reaches a peer ---------------
+
+fn two_tables(s: &Schema) -> Vec<Node> {
+    let t = |p: &str| {
+        branch(
+            s,
+            "table",
+            vec![
+                branch(
+                    s,
+                    "table_row",
+                    vec![cell(s, &format!("{p}a")), cell(s, &format!("{p}b"))],
+                ),
+                branch(
+                    s,
+                    "table_row",
+                    vec![cell(s, &format!("{p}c")), cell(s, &format!("{p}d"))],
+                ),
+            ],
+        )
+    };
+    vec![t("x"), t("y"), para(s, "zw")]
+}
+
+/// A range from a cell of one table into a cell of the next is no cell
+/// selection; the delete joins the tables and the repair pads the rows it left
+/// short, in the same transaction. A peer typing in the second table at the
+/// same time converges with it, every table tiling its grid, and the undo
+/// (one step, the repair included) reaches the peer too. Adopted from the
+/// review of #1931.
+#[test]
+fn a_cross_table_delete_and_its_repair_reach_a_peer() {
+    let s = schema();
+    let (mut a, mut b) = pair(&s, two_tables(&s), (1, 2));
+    let from = pos_of(&a.state.doc, "xc") + 1;
+    let to = pos_of(&a.state.doc, "yb") + 1;
+    b.type_after("yd", "!");
+    assert!(
+        a.try_run(Selection::text(Pos(from), Pos(to)), "deleteSelection"),
+        "applies"
+    );
+    exchange(&mut a, &mut b);
+    assert_eq!(a.state.doc, b.state.doc);
+    let (table, _) = first_table(&a.state.doc).expect("a table");
+    assert_tiles(&table);
+    let undone = a.state.run("undo").expect("undo");
+    a.commit(undone);
+    exchange(&mut a, &mut b);
+    assert_eq!(a.state.doc, b.state.doc);
+}
+
+// --- #1847: commands over a cell selection reach a peer (second review of #1931)
+
+fn merged_blocks(s: &Schema) -> Vec<Node> {
+    // row0: [A cs2][B]; row1: [C rs2][D][E]; row2: [F][G]
+    let r0 = branch(s, "table_row", vec![spanning(s, "A", 2, 1), cell(s, "B")]);
+    let r1 = branch(
+        s,
+        "table_row",
+        vec![spanning(s, "C", 1, 2), cell(s, "D"), cell(s, "E")],
+    );
+    let r2 = branch(s, "table_row", vec![cell(s, "F"), cell(s, "G")]);
+    vec![
+        para(s, "x"),
+        branch(s, "table", vec![r0, r1, r2]),
+        para(s, "zw"),
+    ]
+}
+
+/// Marks, block types and alignment over a cell selection of merged cells
+/// (`Selection::ranges`, one range per cell) reach a peer typing in another
+/// cell, converge, and undo in one step that the peer sees too.
+#[test]
+fn commands_over_a_cell_selection_reach_a_peer() {
+    let s = schema();
+    for (a_txt, h_txt) in [("A", "E"), ("B", "F"), ("D", "G"), ("C", "B")] {
+        for cmd in [
+            "toggleBold",
+            "setHeading2",
+            "setTextAlignCenter",
+            "setParagraph",
+            "toggleHighlight",
+        ] {
+            let (mut a, mut b) = pair(&s, merged_blocks(&s), (1, 2));
+            let start = a.state.doc.clone();
+            let cell_of = |d: &Node, t: &str| pos_of(d, t) - 2;
+            let sel = Selection::cell(
+                Pos(cell_of(&a.state.doc, a_txt)),
+                Pos(cell_of(&a.state.doc, h_txt)),
+            );
+            b.type_after("G", "!");
+            let applied = a.try_run(sel, cmd);
+            exchange(&mut a, &mut b);
+            assert_eq!(a.state.doc, b.state.doc, "{cmd} {a_txt}->{h_txt}");
+            if applied {
+                let undone = a.state.run("undo").expect("undo");
+                a.commit(undone);
+                exchange(&mut a, &mut b);
+                assert_eq!(a.state.doc, b.state.doc, "undo {cmd}");
+                let html = rinch_editor_core::serialize::node_to_html(&a.state.doc);
+                let want = rinch_editor_core::serialize::node_to_html(&start)
+                    .replace("<p>G</p>", "<p>G!</p>");
+                assert_eq!(html, want, "one undo {cmd}");
+            }
+        }
+    }
+}
