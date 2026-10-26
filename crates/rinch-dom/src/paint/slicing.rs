@@ -62,6 +62,8 @@ pub struct SurfaceSlice {
     /// transform times its centre-sampling brush transform).
     pub device_from_image: [f64; 6],
     pub extents: (u32, u32),
+    /// Whether the frame's texels are straight alpha.
+    pub straight_alpha: bool,
     /// Something painted over the surface reads the backdrop it lands on
     /// (`filter: grayscale`'s saturation layer): the frame must be painted
     /// again with this surface in the scene (D5a).
@@ -131,6 +133,9 @@ pub(crate) struct Slicing {
     pub(crate) slices: Vec<Slice>,
     /// Below is inside the inverse clip.
     pub(crate) inverse_open: bool,
+    /// The surfaces the runtime refuses this frame: they did not fit the
+    /// window's split memory cap (D6).
+    pub(crate) refused: Vec<usize>,
 }
 
 /// Whether two rects share any area.
@@ -234,6 +239,7 @@ impl Slicing {
             open: Vec::new(),
             slices: Vec::new(),
             inverse_open: false,
+            refused: Vec::new(),
         }
     }
 
@@ -388,6 +394,9 @@ impl Slicing {
     /// across the second region landed in below inside it).
     pub(crate) fn split(&mut self, below: &mut Scene, split: &SurfaceSplit) -> SplitVerdict {
         self.close_inverse(below);
+        if self.refused.contains(&split.surface_id) {
+            return SplitVerdict::InScene(Refusal::MemoryCap);
+        }
         if self.open.iter().any(|o| match o {
             Open::Clip { .. } => false,
             Open::Layer { blend, opacity, .. } => {
@@ -520,6 +529,7 @@ impl Slicing {
                 ancestors,
                 device_from_image: (t * centre_sampling(t, Affine::IDENTITY)).as_coeffs(),
                 extents: split.extents,
+                straight_alpha: split.straight_alpha,
                 ink: split.ink,
                 tainted: false,
             },
@@ -572,6 +582,7 @@ mod tests {
                 clip_to_content: false,
                 image_transform: Affine::translate((content.x0, content.y0)),
                 extents: (content.width() as u32, content.height() as u32),
+                straight_alpha: false,
                 ink: content,
             },
         );

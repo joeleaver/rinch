@@ -63,6 +63,15 @@ impl VelloPainter {
         self.routing = false;
     }
 
+    /// Refuse to split `ids` this frame ([`super::painter::Refusal::MemoryCap`]):
+    /// the runtime's memory cap (#1865 D6). Call after [`Self::begin_slicing`];
+    /// a frame not opened for slicing splits nothing anyway.
+    pub fn refuse_split(&mut self, ids: &[usize]) {
+        if let Some(slicing) = &mut self.slicing {
+            slicing.refused = ids.to_vec();
+        }
+    }
+
     /// The surfaces this frame took out of the scene, in paint order, and the
     /// end of slicing for the frame. Empty when the frame was not opened.
     pub fn take_slices(&mut self) -> Vec<SurfaceSlice> {

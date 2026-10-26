@@ -425,6 +425,10 @@ define_counters! {
     /// instead of sampled through `draw_pixmap` — a frame whose producer
     /// vouched every pixel opaque, drawn with no rotation or skew, a positive scale, destination edges on whole pixels, and a clip that is fully on or fully off wherever the frame lands (#361). Scaled draws count.
     OpaqueImageCopies = "opaque_image_copies",
+    /// GPU window, split path (#1865): video frames uploaded for the
+    /// compositor. One per new frame of a video the window composites split,
+    /// after paint; a video drawn in the scene uploads none here.
+    SplitFrameUploads = "split_frame_uploads",
 
     // ── Input ──────────────────────────────────────────────────────────
     /// Hit tests run (`RinchApp::hit_test`).

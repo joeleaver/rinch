@@ -413,7 +413,29 @@ inside a region for a later PR:
 - **While a `GameViewport` layer is under the UI the window does not split**
   (and the surfaces it had split are repainted into the scene). See *Video,
   and later GameViewport*.
-- The memory cap (D6) is PR 5.
+- **The memory cap (D6) as built (PR 5).** Counted: the scratch target at
+  the size the kept slices need (it is dropped when larger) and each kept
+  slice's coverage masks and above slices (R-sized each). Not counted: the
+  window's own textures, a `RenderSurface`'s texture (the app's), and, since
+  D6's second amendment, the CPU frames uploaded for split video (still
+  allocated and freed as before; `split_frame::COUNT_UPLOADS`). With the
+  uploads counted, as first built, D6b's
+  twice-the-window refused a full-window video under its controls at any
+  size (scratch rounded up to 128 px, `above_in` and the frame: 25.4 MB at
+  1080p against 16.6, 99.8 MB at 4K against 66, about 3.06 windows), so the
+  cap is **4 windows** (`SPLIT_MEMORY_CAP_WINDOWS`; 33 MB at 1080p, 133 MB at
+  4K). It is applied after paint, from the slices as built, not before
+  paint in `surface_route`: whether a slice has above slices or masks is
+  known only once the frame is painted. The frame's slices are added in paint
+  order to what stays split from earlier frames; the first that passes the
+  cap and every one after it are named to the painter
+  (`VelloPainter::refuse_split`, `Refusal::MemoryCap`) and the frame is
+  painted again, as for taint. They stay refused until the cap grows (a
+  resize that does not grow it keeps them: a resize storm otherwise painted
+  every frame twice, #1911 review), a split surface the cap did not refuse
+  goes, or 120 painted frames pass. A painter that splits what it was told to
+  refuse sends every surface to the scene, logs an error once and suspends
+  splitting as taint does.
 
 ## The decision point
 
@@ -487,6 +509,25 @@ Not on this list, because they split exactly:
   below's overlay second, and split surfaces after that. That ordering must
   be re-checked against #1866's PR when it lands. There was no PR when this
   record was written.
+- **Video as built (PR 4).** The runtime hands paint the split-able video
+  viewports by name (`rinch_dom::paint::set_viewport_split_ids`, name to
+  surface id); the video arm of paint offers the frame to `split_surface`
+  after its black letterbox backdrop, which stays in the scene beneath it
+  (`straight_alpha`, as `draw_image` draws a CPU frame; the viewport's
+  `border-radius` as the own clip; fitted `contain`, which both paths
+  hard-code whatever the element's `object-fit` says, #1908).
+  `SplitFrame::upload_split_frames` uploads each new frame into a texture per
+  id, after paint and only for the videos the frame keeps split (the #1906
+  review: uploading before paint uploaded a hidden, culled, refused or
+  overlapped video's frames too, 0.9 ms a frame at 1080p, and a hidden one
+  held its texture; `split_frame_uploads` counts them). A new frame of a
+  video the window composites split is not damage unless its size is not the
+  slice's (`prepare_split_viewports`, shared by the runtime and the oracle;
+  the #1906 review: a size change mid-stream, as adaptive streaming makes,
+  was composited with the old slice's transform on every later frame):
+  a playing video under a static UI is an upload and a composite, with no
+  Vello. Measured (release, RADV, median): 4K full-window, 4.85 to 6.52 ms
+  between runs; 1080p 1.64 ms. An opacity on the viewport is a group effect: in the scene (D3a).
 - **`GpuTextureRegistrar`** is unchanged.
 
 **How `GameViewport` fits on the split path (after PR 3; #1866 is parked
@@ -665,6 +706,37 @@ cap PR counts it.*
   not fit. The rest fall back with `MemoryCap`, then use the atlas with its
   own never-silent budget (#1861).
 
+**Amendment (decided, Joe, 2026-10-25).** The cap counts all four: the
+scratch target, the above slices, the coverage masks and the uploaded video
+frames. It is **4×** the window's texture bytes (`SPLIT_MEMORY_CAP_WINDOWS`),
+not D6b's 2×. Building the cap (PR 5) showed that with everything counted, 2×
+refused the commonest case, a full-window video under its controls:
+
+| Held while split | 1080p | 4K |
+|---|---|---|
+| scratch target, rounded up to 128 px | 8.85 MB | 33.4 MB |
+| `above_in`, the size of R | 8.29 MB | 33.2 MB |
+| the uploaded frame, at window resolution | 8.29 MB | 33.2 MB |
+| **total** (about 3.06 windows) | **25.4 MB** | **99.8 MB** |
+| D6b's cap (2 windows) | 16.6 MB | 66.4 MB |
+| the cap (4 windows) | 33.2 MB | 132.7 MB |
+
+Even without the upload it was 2.07 windows, over 2× because of the scratch
+target's rounding. The upload is not extra memory against in-scene, where
+the same frame sits in Vello's image atlas, but it is counted all the same.
+A 640×360 video in a page holds about 3.4 MB.
+
+**Second amendment (decided, Joe, 2026-10-25).** The uploaded video frames
+are **not** counted: the cap counts only what splitting adds over drawing
+in the scene, the scratch target, the above slices and the masks. In the
+scene the same frame sits in Vello's image atlas, so counting the upload
+charged the split path for memory the scene holds anyway, and at 1080p the
+cap equals exactly one 4K frame: a 4K stream in a 1080p window could never
+split under its controls (#1911 review). The multiple stays 4×. A
+full-window video under its controls now holds about 2.07 windows (17.1 MB
+at 1080p, 66.6 MB at 4K), a 4K frame in a 1080p window among them. The
+frames are still uploaded, held and freed exactly as before.
+
 ### D7. Two split surfaces whose regions overlap
 
 - **a.** The later one in paint order falls back. It is then an image inside
@@ -759,6 +831,18 @@ it):
 
 The alternative, falling back to in-scene for translucent and resampled
 surfaces, would have sent every letterboxed video in-scene.
+
+**Note (measured, 2026-10-25; not a new decision).** A frame drawn **in the
+scene**, resampled, is not deterministic against its own scene: Vello's
+output for a resampled image depends on which other images share its image
+atlas. Two in-scene windows, one with two other videos' frames in the atlas
+and one without, differ in the third video's box by one level on 145 pixels
+at scale 1.05 (1493 at 1.5, none at 1.0). A surface refused for the cap or
+for overlap is drawn in the scene while the split ones' frames are not in the
+atlas, so against an in-scene reference it shows this. The oracles bound it
+at one level, inside such a frame's box only
+(`gpu_split_runtime_refused_at_fractional_scale`, at 1.05 and 1.5). It is not
+a split defect and nothing in the split path can remove it.
 
 ## Risks
 

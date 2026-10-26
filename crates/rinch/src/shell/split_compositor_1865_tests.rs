@@ -1293,6 +1293,35 @@ fn split_composite_cost_probe() {
                 );
                 finish(e);
             }));
+            // A video on the split path (#1865 PR 4): its new CPU frame
+            // uploaded (`SplitFrame::upload_split_frames`), then composited.
+            let pixels = vec![200u8; (s.0 * s.1 * 4) as usize];
+            let video = time(Box::new(|| {
+                queue.write_texture(
+                    surface.as_image_copy(),
+                    &pixels,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(s.0 * 4),
+                        rows_per_image: Some(s.1),
+                    },
+                    wgpu::Extent3d {
+                        width: s.0,
+                        height: s.1,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                let mut e = device.create_command_encoder(&Default::default());
+                split.composite(
+                    &device,
+                    &mut e,
+                    &uv,
+                    &tv,
+                    win,
+                    &[draw(&sv, s, (x, y), None)],
+                );
+                finish(e);
+            }));
             let ms = |(m, p): (f64, f64)| format!("{m:5.2} / {p:5.2} ms");
             eprintln!("{}x{} {label}:", win.0, win.1);
             eprintln!("  old layer path (blit + overlay + copy)  {}", ms(old));
@@ -1301,6 +1330,7 @@ fn split_composite_cost_probe() {
                 "  split, above cached                     {}",
                 ms(with_above)
             );
+            eprintln!("  split video (upload + composite)        {}", ms(video));
         }
     }
 }
@@ -1411,4 +1441,97 @@ fn gpu_split_rx_region_past_the_window() {
         above_out: true,
         ..plain()
     });
+}
+
+/// N videos uploaded and composited in one frame (the #1906 review).
+#[test]
+#[ignore = "a measurement; needs a GPU adapter"]
+fn split_multi_video_cost_probe() {
+    use std::time::{Duration, Instant};
+    let (device, queue, _errors) = device();
+    let split = SplitCompositor::new(&device, TextureFormat::Rgba8Unorm);
+    let rt = TextureUsages::RENDER_ATTACHMENT
+        | TextureUsages::TEXTURE_BINDING
+        | TextureUsages::COPY_SRC
+        | TextureUsages::COPY_DST;
+    for (win, s, n) in [
+        ((1920u32, 1080u32), (960u32, 540u32), 1usize),
+        ((1920, 1080), (960, 540), 2),
+        ((1920, 1080), (960, 540), 4),
+        ((3840, 2160), (1920, 1080), 1),
+        ((3840, 2160), (1920, 1080), 4),
+    ] {
+        let ui = texture(&device, win, rt);
+        let target = texture(&device, win, rt);
+        let (uv, tv) = (
+            ui.create_view(&Default::default()),
+            target.create_view(&Default::default()),
+        );
+        let surfaces: Vec<_> = (0..n).map(|_| texture(&device, s, rt)).collect();
+        let views: Vec<_> = surfaces
+            .iter()
+            .map(|t| t.create_view(&Default::default()))
+            .collect();
+        let pos: Vec<(u32, u32)> = (0..n)
+            .map(|i| ((i as u32 % 2) * s.0, (i as u32 / 2) * s.1))
+            .collect();
+        let pixels = vec![200u8; (s.0 * s.1 * 4) as usize];
+        let frame = || {
+            for t in &surfaces {
+                queue.write_texture(
+                    t.as_image_copy(),
+                    &pixels,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(s.0 * 4),
+                        rows_per_image: Some(s.1),
+                    },
+                    wgpu::Extent3d {
+                        width: s.0,
+                        height: s.1,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+            let draws: Vec<SurfaceDraw<'_>> = views
+                .iter()
+                .zip(&pos)
+                .map(|(v, &(x, y))| SurfaceDraw {
+                    texture: v,
+                    extents: s,
+                    straight_alpha: true,
+                    device_from_image: device_from_image(Affine::translate((x as f64, y as f64))),
+                    own: Coverage::Rect([x, y, x + s.0, y + s.1]),
+                    ancestors: Coverage::Rect([x, y, x + s.0, y + s.1]),
+                    region: (x, y, s.0, s.1),
+                    above_in: None,
+                    above_out: None,
+                })
+                .collect();
+            let mut e = device.create_command_encoder(&Default::default());
+            split.composite(&device, &mut e, &uv, &tv, win, &draws);
+            queue.submit(Some(e.finish()));
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        };
+        for _ in 0..10 {
+            frame();
+        }
+        let mut v: Vec<Duration> = (0..120)
+            .map(|_| {
+                let t = Instant::now();
+                frame();
+                t.elapsed()
+            })
+            .collect();
+        v.sort();
+        eprintln!(
+            "[rvcost] window {}x{}, {n} videos of {}x{}: {:.2} / {:.2} ms",
+            win.0,
+            win.1,
+            s.0,
+            s.1,
+            v[60].as_secs_f64() * 1e3,
+            v[108].as_secs_f64() * 1e3
+        );
+    }
 }

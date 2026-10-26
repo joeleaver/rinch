@@ -219,6 +219,10 @@ pub struct SurfaceSplit {
     /// (`fit_image`), and the image's size in texels.
     pub image_transform: Affine,
     pub extents: (u32, u32),
+    /// Whether the frame's texels are straight alpha (a CPU frame, drawn as
+    /// `draw_image` draws one) rather than premultiplied (a registered GPU
+    /// texture, #1768).
+    pub straight_alpha: bool,
     /// The element's ink in device pixels (its border box grown by its
     /// shadows and outline, transformed): where the paint cull reaches it,
     /// so where damage makes the frame paint it, and split it, again.
@@ -247,6 +251,10 @@ pub enum Refusal {
     Transform,
     /// Its region overlaps an earlier split surface's (D7a).
     Overlap,
+    /// The window's split memory would pass its cap with this surface (D6):
+    /// the runtime names the surfaces that do not fit
+    /// ([`super::vello_painter::VelloPainter::refuse_split`]).
+    MemoryCap,
 }
 
 // ── The Painter trait ───────────────────────────────────────────────────────
