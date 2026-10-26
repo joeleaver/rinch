@@ -105,6 +105,9 @@ const COMMANDS: [&str; 6] = [
 /// cell selection or a caret in a cell, a cell attribute, or a keystroke.
 fn change(rng: &mut Rng, st: &EditorState, remote: bool, time: u64) -> Option<EditorState> {
     let cs = cells(&st.doc);
+    if cs.is_empty() {
+        return None; // the table was deleted
+    }
     let pick = rng.below(8);
     let mine = if pick < 6 {
         let (a, b) = (cs[rng.below(cs.len())], cs[rng.below(cs.len())]);
