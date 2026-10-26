@@ -617,6 +617,34 @@ pub fn table_around(r: &ResolvedPos) -> Option<(Node, usize)> {
     None
 }
 
+thread_local! {
+    /// The last [`table_map`]: the table node (kept, so its identity cannot
+    /// be reused while cached), its content start, and its map.
+    static MAP_CACHE: std::cell::RefCell<Option<(Node, usize, std::rc::Rc<TableMap>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The [`TableMap`] of `table` with its content at `table_start`, computed
+/// once per table node: the last one asked for is kept, keyed by the node's
+/// identity (an edit makes a new node) and the start. prosemirror-tables
+/// caches its maps per table node the same way. A toolbar asks whether
+/// each mark is active over a cell selection on every update
+/// ([`Selection::ranges`](crate::Selection::ranges)), and each ask computed
+/// the whole map (1.36M instructions at 1000×10 cells).
+pub fn table_map(table: &Node, table_start: usize) -> std::rc::Rc<TableMap> {
+    MAP_CACHE.with(|cache| {
+        if let Some((node, start, map)) = cache.borrow().as_ref()
+            && node.same_ref(table)
+            && *start == table_start
+        {
+            return map.clone();
+        }
+        let map = std::rc::Rc::new(TableMap::compute(table, table_start));
+        *cache.borrow_mut() = Some((table.clone(), table_start, map.clone()));
+        map
+    })
+}
+
 /// The [`TableMap`] of the table enclosing `pos`, with the table node and its
 /// content-start position. `None` if `pos` is not inside a table.
 pub fn map_around(doc: &Node, pos: Pos) -> Option<(TableMap, Node, usize)> {
@@ -704,6 +732,115 @@ pub fn next_cell_in_table(doc: &Node, pos: Pos, dir: i32) -> Option<usize> {
         }
         None
     }
+}
+
+/// One way a table's cells fail to tile its grid: what ProseMirror's
+/// `computeMap` reports as a table's `problems`, and what
+/// [`Transaction`](crate::state::Transaction)'s selection gestures repair in a
+/// table their edit left ragged (#1847). `pos` is the offending cell's offset
+/// from the table's content start (the position before the table plus one).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TableProblem {
+    /// The cell at `pos` spans into a slot another cell already covers, or
+    /// past the grid's right edge: on its row `rows_fit` (`0` for its first
+    /// row, where its colspan runs into a rowspan from above), after
+    /// `cols_fit` of its columns.
+    Collision {
+        /// The cell's offset from the table's content start.
+        pos: usize,
+        /// How many of the cell's rows fit before the collision.
+        rows_fit: usize,
+        /// How many of its columns fit on the colliding row.
+        cols_fit: usize,
+    },
+    /// The cell at `pos` spans past the table's last row: `rows_fit` of its
+    /// rows are in the table.
+    OverlongRowspan {
+        /// The cell's offset from the table's content start.
+        pos: usize,
+        /// How many of its rows are in the table.
+        rows_fit: usize,
+    },
+    /// Row `row` has grid slots no cell covers: a ragged row. They are past
+    /// its last cell (a row's cells fill the slots left to right), in `runs`
+    /// of adjacent slots, left to right — split where a rowspan from above
+    /// covers a slot between them.
+    Missing {
+        /// The row's index.
+        row: usize,
+        /// The lengths of the uncovered runs, left to right.
+        runs: Vec<usize>,
+    },
+}
+
+/// What is wrong with how `table`'s cells tile its grid, by
+/// prosemirror-tables' `computeMap`: a cell that collides with another, a
+/// rowspan past the last row, a row with uncovered slots. Empty for a table
+/// whose cells tile it, and for one whose grid the [`TableMap`] cuts (wider
+/// than [`grid_slot_budget`] allows), which no edit can have made.
+pub fn table_problems(table: &Node) -> Vec<TableProblem> {
+    let height = table.child_count();
+    let width = column_count(table);
+    if height == 0 || find_width(table) != width as u64 {
+        return Vec::new();
+    }
+    let mut problems = Vec::new();
+    let mut covered = vec![false; width * height];
+    let mut pos = 0usize;
+    for row in 0..height {
+        let row_node = table.child(row);
+        pos += 1;
+        let row_end = (row + 1) * width;
+        let mut slot = row * width;
+        for i in 0..row_node.child_count() {
+            let cell = row_node.child(i);
+            while slot < row_end && covered[slot] {
+                slot += 1;
+            }
+            let col = slot - row * width;
+            let (colspan, rowspan) = (span_attr(cell, "colspan"), span_attr(cell, "rowspan"));
+            'rows: for h in 0..rowspan {
+                if row + h >= height {
+                    problems.push(TableProblem::OverlongRowspan { pos, rows_fit: h });
+                    break;
+                }
+                for w in 0..colspan {
+                    let at = (row + h) * width + col + w;
+                    if col + w >= width || covered[at] {
+                        problems.push(TableProblem::Collision {
+                            pos,
+                            rows_fit: h,
+                            cols_fit: w,
+                        });
+                        break 'rows;
+                    }
+                    covered[at] = true;
+                }
+            }
+            slot += colspan;
+            pos += cell.node_size();
+        }
+        let mut runs = Vec::new();
+        let mut run = 0;
+        for &c in &covered[row * width..row_end] {
+            if c {
+                if run > 0 {
+                    runs.push(run);
+                }
+                run = 0;
+            } else {
+                run += 1;
+            }
+        }
+        if run > 0 {
+            runs.push(run);
+        }
+        if !runs.is_empty() {
+            problems.push(TableProblem::Missing { row, runs });
+        }
+        pos += 1;
+    }
+    problems
 }
 
 #[cfg(test)]
@@ -1019,6 +1156,49 @@ mod grid_bound_tests {
             .map(|r| row(s, r.iter().map(|&(c, h)| cell(s, c, h)).collect()))
             .collect();
         table(s, rows)
+    }
+
+    /// `table_problems` names prosemirror-tables' `computeMap` problems:
+    /// `pos` is a cell's offset from the table's content start (a cell of
+    /// one empty paragraph is 4 wide, a row opens with 1).
+    #[test]
+    fn table_problems_name_each_way_a_table_fails_to_tile() {
+        let s = Schema::starter_kit();
+        let problems = |rows: &[Vec<(i64, i64)>]| table_problems(&spans_table(&s, rows));
+        assert_eq!(problems(&[vec![(1, 1), (1, 1)], vec![(2, 1)]]), vec![]);
+        assert_eq!(
+            problems(&[vec![(1, 1), (1, 1)], vec![(1, 1)]]),
+            vec![TableProblem::Missing {
+                row: 1,
+                runs: vec![1]
+            }]
+        );
+        assert_eq!(
+            problems(&[vec![(1, 3)], vec![]]),
+            vec![TableProblem::OverlongRowspan {
+                pos: 1,
+                rows_fit: 2
+            }]
+        );
+        // `b` spans down into the slot `c`'s colspan needs.
+        assert_eq!(
+            problems(&[vec![(1, 1), (1, 2)], vec![(2, 1)]]),
+            vec![
+                TableProblem::Missing {
+                    row: 0,
+                    runs: vec![1]
+                },
+                TableProblem::Collision {
+                    pos: 11,
+                    rows_fit: 0,
+                    cols_fit: 1
+                },
+                TableProblem::Missing {
+                    row: 1,
+                    runs: vec![1]
+                },
+            ]
+        );
     }
 
     /// The document position before row `r`'s `i`th cell (the table's content
