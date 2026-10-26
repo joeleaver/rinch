@@ -917,10 +917,12 @@ impl RenderSurfaceHandle {
     ///
     /// Desktop: the target is a texture on rinch's compositor device
     /// ([`gpu_handle`](crate::shell::desktop::gpu_handle)), reallocated when the
-    /// surface's size changes, and the frame is drawn **in the scene** as the
-    /// surface element's content, like an `<img>`: ancestor backgrounds are
-    /// beneath it, later or higher content covers it, and every clip, rounded
-    /// corner, opacity, transform and scroll offset around it applies. A frame
+    /// surface's size changes, and the frame is drawn as the surface
+    /// element's content, like an `<img>`: ancestor backgrounds are beneath it,
+    /// later or higher content covers it, and every clip, rounded corner,
+    /// opacity, transform and scroll offset around it applies. The window
+    /// composites it outside the scene when it can, with the same pixels, so a
+    /// new frame under a still UI renders no Vello (#1865). A frame
     /// is available only while a GPU renderer presents the window
     /// ([`gpu_frames_available`](Self::gpu_frames_available)): under the
     /// software renderer, and in an embedded context, the ordinary render
