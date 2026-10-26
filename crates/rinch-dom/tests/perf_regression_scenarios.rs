@@ -32,6 +32,8 @@
 //! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs` `build_ifc_layouts` (the paint layout) and `layout_engine.rs` (the root compute's measure) | [`a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass`] — 40 lines from each site |
 //! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, `NodeContext::InlineRoot` (an atomic inline's measure) | [`an_inline_block_hangs_its_spaces_in_one_pass`] |
 //! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, a paragraph with seams (atomic inlines and an element that does not wrap, #1238) | [`a_paragraph_with_seams_pays_one_hang_pass_per_layout`] |
+//! | `ifc_hang_passes`, `ifc_css_line_scans` | `ifc.rs`, a paragraph with a `pre` element's spaces (#1243) | [`a_pre_wrap_paragraph_with_pre_spaces_scans_only_lines_near_them`], [`pre_spaces_nothing_wrapping_touches_pay_no_pass`] (0) |
+//! | `ifc_css_line_scans` | `ifc.rs` `hang_pass`, a paragraph with seams or edge boxes | [`a_paragraph_with_seams_pays_one_hang_pass_per_layout`], [`a_text_edit_in_a_paragraph_of_pills_walks_each_pill_s_lines_once`] |
 //! | `ifc_unglue_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure (an IFC root) | [`an_nbsp_glued_chain_is_rebroken_in_logarithmically_many_breaks`] |
 //! | `ifc_unglue_rebreaks` | `ifc.rs` `NodeContext::Text` and `layout_engine.rs`'s leaf measure (`shape_text_leaf`) | [`an_nbsp_glued_chain_in_a_flex_items_own_text_is_rebroken_the_same_way`] |
 //! | `ifc_phantom_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure, together | [`an_overflowing_last_chip_is_rebroken_without_parleys_empty_line`] — 1 from each |
@@ -1282,6 +1284,112 @@ fn a_double_spaced_pre_wrap_paragraph_hangs_in_one_pass() {
     );
 }
 
+/// #1243: a `pre-wrap` paragraph that holds a `pre` element's spaces takes
+/// the seams too (`ifc::pre_seam`): every layout of it pays one hang pass.
+/// Only a line that can reach a `pre` space is asked where CSS ends it
+/// (`ifc_css_line_scans`, `ifc::NearPre`): here forty words of prose, then
+/// the `pre` spaces and two more words, in a 120px paragraph: of its
+/// eighteen lines two are scanned, in each of the paint layout and the root
+/// compute's measure (`ifc_css_line_scans` 4, not 36); each of those two
+/// layouts re-breaks one line.
+#[test]
+fn a_pre_wrap_paragraph_with_pre_spaces_scans_only_lines_near_them() {
+    let mut doc =
+        doc_with(".p { width: 120px; white-space: pre-wrap; } .pre { white-space: pre; }");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    text(&mut doc, p, &"lorem ipsum dolor sit amet ".repeat(8));
+    let pre = el(&mut doc, p, "span", "pre");
+    text(&mut doc, pre, "  ");
+    text(&mut doc, p, "consectetur adipiscing");
+    let s = cold_frame(&mut doc);
+    let lines = doc
+        .tree
+        .get(p.0)
+        .unwrap()
+        .text_layout
+        .as_ref()
+        .unwrap()
+        .layout
+        .len();
+    assert_eq!(lines, 18, "the paragraph's lines");
+    expect(
+        "pre-wrap paragraph with pre spaces",
+        &s,
+        &[
+            (StyleResolves, 3),
+            (ElementsCascaded, 4),
+            (StyleNodesVisited, 4),
+            (FullStyleWalks, 1),
+            (TaffyStyleSyncs, 4),
+            (TaffyStyleChanges, 3),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 5),
+            (IfcSignatureChanges, 1),
+            (IfcHangPasses, 2),
+            (IfcHangLines, 2),
+            (IfcCssLineScans, 4),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// #1243: a `pre` element's spaces that nothing wrapping touches — here
+/// they start the paragraph — and next to which parley ends no line cost
+/// nothing: the paragraph pays no hang pass, as it did before #1243
+/// (`ifc::pre_seams_needed`).
+#[test]
+fn pre_spaces_nothing_wrapping_touches_pay_no_pass() {
+    let mut doc =
+        doc_with(".p { width: 120px; white-space: pre-wrap; } .pre { white-space: pre; }");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    let pre = el(&mut doc, p, "span", "pre");
+    text(&mut doc, pre, "  ");
+    text(
+        &mut doc,
+        p,
+        "lorem ipsum dolor sit amet\n".repeat(8).trim_end(),
+    );
+    let s = cold_frame(&mut doc);
+    expect(
+        "pre spaces at the start",
+        &s,
+        &[
+            (StyleResolves, 3),
+            (ElementsCascaded, 4),
+            (StyleNodesVisited, 4),
+            (FullStyleWalks, 1),
+            (TaffyStyleSyncs, 4),
+            (TaffyStyleChanges, 3),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 4),
+            (IfcSignatureChanges, 1),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
 /// #1238: a paragraph that holds atomic inlines and an element that does
 /// not wrap is broken where CSS breaks next to its boxes, not where parley
 /// does (`ifc::WrapSeams`): every layout of it pays one hang pass, whether or
@@ -1322,6 +1430,7 @@ fn a_paragraph_with_seams_pays_one_hang_pass_per_layout() {
             (IfcSignatureChanges, 1),
             (IfcHangPasses, 2),
             (IfcHangLines, 2),
+            (IfcCssLineScans, 2),
             (LayoutResolves, 2),
             (LayoutSkippedPaintOnly, 1),
             (IfcSetupPasses, 1),
@@ -3778,7 +3887,7 @@ fn pill_paragraph(pills: usize) -> (RinchDocument, Vec<NodeId>) {
 /// their square.
 #[test]
 fn a_text_edit_in_a_paragraph_of_pills_walks_each_pill_s_lines_once() {
-    for (pills, visits, hang_lines) in [(40, 255, 22), (80, 525, 50)] {
+    for (pills, visits, hang_lines, css_scans) in [(40, 255, 22, 22), (80, 525, 50, 50)] {
         let (mut doc, texts) = pill_paragraph(pills);
         doc.set_text_content(texts[pills / 2], "pilx");
         doc.resolve_layout(VP.0, VP.1);
@@ -3795,6 +3904,7 @@ fn a_text_edit_in_a_paragraph_of_pills_walks_each_pill_s_lines_once() {
                 (IfcMeasureInvalidations, 3),
                 (IfcHangPasses, 2),
                 (IfcHangLines, hang_lines),
+                (IfcCssLineScans, css_scans),
                 (LayoutResolves, 1),
                 (TaffyRootComputes, 1),
                 (TaffyMeasureCalls, 1),

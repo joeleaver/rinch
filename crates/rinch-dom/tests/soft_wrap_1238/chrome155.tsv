@@ -18,7 +18,7 @@ g:g4_80	white-space:pre;width:80px	aa<span style="white-space:normal">ddddhello<
 g:g1_120	white-space:nowrap;width:120px	aa<span style="white-space:normal">ddddhello</span> ccc ccc<b id="B2" style="display:inline-block;width:30px;height:10px"></b>	aaddddhello||cccccc[B2]	
 g:g2_120	white-space:nowrap;width:120px	aa<span style="white-space:normal">ddddhello</span> ccc ccc	aaddddhello||cccccc	aaddddhellocccccc
 g:g3_120	white-space:pre;width:120px	aa<span style="white-space:normal">ddddhello</span> ccc ccc<b id="B2" style="display:inline-block;width:30px;height:10px"></b>	aaddddhello||cccccc[B2]	
-g:g4_120	white-space:pre;width:120px	aa<span style="white-space:normal">ddddhello</span> ccc ccc	aaddddhello||cccccc	aaddddhellocccccc
+g:g4_120	white-space:pre;width:120px	aa<span style="white-space:normal">ddddhello</span> ccc ccc	aaddddhello||cccccc	
 h:h1_40	white-space:nowrap;width:40px	<span style="white-space:pre-line">aa<span style="white-space:nowrap">mm</span></span><b id="B3" style="display:inline-block;width:30px;height:10px"></b>	aamm||[B3]	
 h:h2_40	white-space:nowrap;width:40px	<span style="white-space:normal"><span style="white-space:nowrap"><b id="B1" style="display:inline-block;width:30px;height:10px"></b></span></span><b id="B2" style="display:inline-block;width:30px;height:10px"></b>	[B1]||[B2]	
 h:h3_40	white-space:normal;width:40px	<span style="white-space:nowrap"><span style="white-space:normal"><span style="white-space:nowrap"><b id="B1" style="display:inline-block;width:30px;height:10px"></b></span></span><b id="B2" style="display:inline-block;width:30px;height:10px"></b></span>	[B1]||[B2]	
@@ -58,7 +58,7 @@ v:v6	white-space:normal;width:55px	abc <span style="white-space:nowrap">def </sp
 v:v7	white-space:normal;width:120px	lorem ipsum <span style="white-space:nowrap">dolor sit </span><b id="B3" style="display:inline-block;width:60px;height:10px"></b> amet	loremipsum||dolorsit[B3]||amet	
 v:v8	white-space:pre-wrap;width:55px	<span style="white-space:nowrap">abc def </span><b id="B3" style="display:inline-block;width:60px;height:10px"></b>	abcdef[B3]	
 w:w1	white-space:pre;width:120px	<span style="white-space:normal">bbhelloadddd</span>  q-r <b id="B1" style="display:inline-block;width:10px;height:10px"></b>	bbhelloadddd||q-r[B1]	
-w:w2	white-space:pre;width:120px	<span style="white-space:normal">bbhelloadddd</span>  q-r	bbhelloadddd||q-r	bbhelloaddddq-r
+w:w2	white-space:pre;width:120px	<span style="white-space:normal">bbhelloadddd</span>  q-r	bbhelloadddd||q-r	
 w:w3	white-space:normal;width:55px	<span style="white-space:nowrap">abc def </span><span style="padding:0 3px">xyz</span>	abcdefxyz	
 w:w4_66	white-space:pre-wrap;width:66px	<span style="padding:0 3px"><b id="B1" style="display:inline-block;width:45px;height:10px"></b>q-r </span>\nxy	[B1]q-||r||xy	
 w:w5_66	white-space:pre-wrap;width:66px	<span style="padding:0 3px"><b id="B1" style="display:inline-block;width:45px;height:10px"></b>q-r </span>\nxy<span style="white-space:nowrap">z</span>	[B1]q-||r||xyz	

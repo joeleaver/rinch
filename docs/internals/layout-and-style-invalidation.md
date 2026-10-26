@@ -413,12 +413,13 @@ input a shaped layout is built from:
   (`UnhungSpaces::seams`), and the hang pass re-breaks a line of it where
   CSS ends it (`ifc::css_line`, the #1426 edge-box re-break generalised:
   `LineUnit::wrap_after`) when parley's break follows a leaf `white-space`
-  allows no wrap after (`wrap_allowed_after`), when the line overflows
-  (`line_overflows`: parley appends a box after text that does not wrap where
-  CSS breaks before it), or when parley took its emergency break after a box
-  too wide for the line that `white-space` glues to what follows (Chrome:
-  `[B]cc` stays together) — not an `overflow-wrap` line. A break parley found
-  inside a text run is kept. Inside text a re-broken line asks
+  allows no wrap after (`wrap_allowed_after`), in a paragraph with `pre`
+  seams (#1243, below) at every soft wrap that can reach a `pre` space
+  (`ifc::NearPre`), when the line overflows (`line_overflows`: parley appends a
+  box after text that does not wrap where CSS breaks before it), or when
+  parley took its emergency break after a box too wide for the line that
+  `white-space` glues to what follows (Chrome: `[B]cc` stays together) — not
+  an `overflow-wrap` line. Inside text a re-broken line asks
   `ifc::TextBreaks`, the segmenter parley uses (`LineSegmenter::new_dictionary`,
   so Thai, Lao, Khmer and Burmese keep their word breaks), less a break
   between a complex-context (`SA`) character and a letter or digit, which
@@ -439,11 +440,60 @@ input a shaped layout is built from:
   width by the `pre` spaces at its very end), so an overflowing right-aligned
   line starts at 0 as in Chrome. On a left-to-right line aligned `right`,
   `center` or `end`, every space before the hanging run at the line's end
-  counts too, whatever its `white-space` (#1042, below). One mixed seam is
-  not Chrome's yet, tracked in #1243: parley still hangs the one `pre`
-  space that overflows right after `pre-wrap` spaces (and on a
-  right-to-left line a mixed run is still narrowed by its final `pre` part
-  only). **The "…" is cut at paint time, over the lines as laid out**
+  counts too, whatever its `white-space` (#1042, below). A paragraph
+  broken at a width that holds a `pre` element's spaces or tabs
+  (`RinchDocument::any_pre_space`) takes the seams path above as well when
+  parley's breaks can be wrong there (#1243; `ifc::pre_seams_needed`, asked
+  once parley has broken it, `UnhungSpaces::pre_seams`): a `pre` run that
+  starts with a space right after text that wraps, or a soft-wrapped line
+  parley ended in a `pre` space or right before `pre` text. parley has no
+  break between a wrapping run of spaces and a `pre` one (UAX #14 has none
+  between two spaces), and it hung the one `pre` space that overflowed,
+  breaking the `pre` run after it. A paragraph whose `pre` spaces nothing
+  wrapping touches pays no pass for them
+  (`perf_regression_scenarios::pre_spaces_nothing_wrapping_touches_pay_no_pass`),
+  and one that takes the seams scans only the lines that can reach a `pre`
+  space (`ifc_css_line_scans`,
+  `a_pre_wrap_paragraph_with_pre_spaces_scans_only_lines_near_them`).
+  Chrome 155 breaks between the two runs — the first hangs, the `pre`
+  spaces start the next line — but how depends on the text nodes the
+  wrapping run lies in (`ifc::pre_seam`): an ordinary break when the
+  wrapping spaces' element closes there into one that does not wrap, when
+  the run starts in the word's text node and goes on into another, or when
+  the run is collapsible spaces right after an element that closes there
+  (`<span>dd</span> <span pre>    dd</span>` in a `normal` root); only when
+  what is before it fits when the run ends the word's text node
+  (`aaaa  <span pre>  </span>bbbb` breaks in 50px,
+  `hhhhhhh  <span pre>  </span>bbbb` does not); and only when the line
+  overflows before the `pre` spaces when the run is a text node of its own
+  (`aaaa<span pre-wrap>  </span><span pre>  dd</span>` does not break,
+  `hhhhhhh<span pre-wrap>  </span>…` does). In such a paragraph only, a
+  wrapping space then a `break-spaces` one break between them too, in
+  `css_line`'s scan; a paragraph with no `pre` spaces is laid out as before
+  #1243. A line whose trailing run of spaces has `pre` spaces before the
+  part that hangs is aligned with them as content
+  (`any_unhung_trailing_line`). A text node whose spaces collapsed away
+  between the wrapping run and the `pre` spaces counts as the run going on
+  into another text node when the run's element closes into it
+  (`<span>dd </span> <span pre>`; `UnhungSpaces::collapsed`), not when it
+  is a second text node of the same element, a sibling element's, or after
+  a comment (rsx makes adjacent text nodes; Chrome 155 does not break
+  there). The seams' break
+  opportunities (`ifc::TextBreaks`, ICU4X's segmenter, the one parley uses)
+  are Chrome's where they differ for ASCII: no break between `!`, `/`, `|`
+  or `}` and a letter or digit after it (`ifc::chrome_glues_ascii`;
+  `<span pre>cccc!</span>dddd` stays whole), on the #1238 box seams and the
+  #1426 edge-box path too (the review's no-`pre` corpora: 128 of 4,500
+  cases now match Chrome that did not, none stopped matching). parley's own breaks elsewhere still split there
+  (#1910). Pins: `tests/pre_space_seams_1243_tests.rs` and
+  `tests/pre_space_seams_1243_differential.rs`, a checked-in Chrome 155
+  corpus (`tests/pre_space_seams_1243/chrome155.tsv`, its known differences
+  pinned). Not Chrome's yet (#1898): in the review's family corpus,
+  8 of 78 `pre-wrap` and 11 of 42 `break-spaces` base cases, a word of a
+  `pre` element before the run, six random cases with an inline-block whose
+  breaks differ and three whose line after an inline box starts at the
+  box line's far end, and on a right-to-left line a
+  mixed run is still narrowed by its final `pre` part only. **The "…" is cut at paint time, over the lines as laid out**
   (#1100; `ifc::ellipsis_cut`, `node::EllipsisCut`, `InlineLayout::ellipsis`):
   on each overflowing line everything whose visual extent passes the point
   where the "…" still fits before the line's end edge is hidden — each
