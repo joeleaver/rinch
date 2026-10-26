@@ -832,6 +832,18 @@ it):
 The alternative, falling back to in-scene for translucent and resampled
 surfaces, would have sent every letterboxed video in-scene.
 
+**Note (measured, 2026-10-25; not a new decision).** A frame drawn **in the
+scene**, resampled, is not deterministic against its own scene: Vello's
+output for a resampled image depends on which other images share its image
+atlas. Two in-scene windows, one with two other videos' frames in the atlas
+and one without, differ in the third video's box by one level on 145 pixels
+at scale 1.05 (1493 at 1.5, none at 1.0). A surface refused for the cap or
+for overlap is drawn in the scene while the split ones' frames are not in the
+atlas, so against an in-scene reference it shows this. The oracles bound it
+at one level, inside such a frame's box only
+(`gpu_split_runtime_refused_at_fractional_scale`, at 1.05 and 1.5). It is not
+a split defect and nothing in the split path can remove it.
+
 ## Risks
 
 1. **Registered but undrawn images. Resolved: free.** Vello 0.7 builds its

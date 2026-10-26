@@ -116,6 +116,9 @@ struct Window {
     slice_renders: usize,
     /// The ring class's pixels so far (see `allowances`).
     ring: Vec<i32>,
+    /// Device rects of frames drawn in the scene whose Vello image-atlas
+    /// neighbours differ from the reference's (D10's note): one level.
+    atlas: Vec<(u32, u32, u32, u32)>,
     /// The window's scale factor, and its size in device pixels.
     scale: f64,
     dev: (u32, u32),
@@ -178,6 +181,7 @@ impl Window {
             splits,
             slice_renders: 0,
             ring: Vec::new(),
+            atlas: Vec::new(),
             scale,
             dev,
             surface,
@@ -384,6 +388,14 @@ impl Window {
         }
         for (a, r) in allow.iter_mut().zip(&self.ring) {
             *a = (*a).max(*r);
+        }
+        for &(ax, ay, aw, ah) in &self.atlas {
+            for y in ay..(ay + ah).min(h) {
+                for x in ax..(ax + aw).min(w) {
+                    let i = (y * w + x) as usize;
+                    allow[i] = allow[i].max(1);
+                }
+            }
         }
         allow
     }
@@ -603,6 +615,9 @@ type WindowConfig = (f64, Option<(TextureFormat, wgpu::CompositeAlphaMode)>, boo
 
 thread_local! {
     static WINDOW: Cell<WindowConfig> = const { Cell::new((1.0, None, false)) };
+    /// CSS rects of frames `check_split` expects in the scene beside split
+    /// ones, resampled: D10's atlas note, one level inside each.
+    static ATLAS: RefCell<Vec<(f64, f64, f64, f64)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// One page, split against in-scene, over the frames `steps` makes. `split`
@@ -644,6 +659,15 @@ fn check_split(
     let surfaces: Vec<usize> = split_page.surfaces.iter().map(|s| s.id()).collect();
     let (scale, surface, transparent) = WINDOW.with(|w| w.get());
     let mut win = Window::with(true, scale, surface, transparent);
+    win.atlas = ATLAS
+        .with(|a| a.borrow().clone())
+        .into_iter()
+        .map(|(x, y, w, h): (f64, f64, f64, f64)| {
+            let (x0, y0) = ((x * scale).floor(), (y * scale).floor());
+            let (x1, y1) = (((x + w) * scale).ceil(), ((y + h) * scale).ceil());
+            (x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32)
+        })
+        .collect();
     let mut reference = Window::with(false, scale, surface, transparent);
     let noop = |_: &Page| {};
     let all: Vec<&dyn Fn(&Page)> = std::iter::once(&noop as &dyn Fn(&Page))
@@ -2230,8 +2254,9 @@ fn gpu_split_runtime_memory_cap() {
     test_gpu();
     crate::shell::renderer::set_gpu_presenting(true);
     // A and B with their slices: 2 x 32,000 and a 256x128 scratch target
-    // (131,072); with C as well, 3 x 32,000 and 384x128 (196,608).
-    const CAP: u64 = 250_000;
+    // (195,072 in all); B and C: 2 x 32,000 and 384x128 (260,608); all three
+    // 3 x 32,000 and 384x128 (292,608).
+    const CAP: u64 = 270_000;
     crate::shell::split_frame::CAP_OVERRIDE.with(|c| c.set(Some(CAP)));
     let v = |st: &'static str| -> Part { (st, Some(red())) };
     const A: &str =
@@ -3231,4 +3256,76 @@ fn gpu_split_runtime_adjacent_surfaces_both_split() {
         unregister_render_surface(s.id());
     }
     crate::shell::renderer::set_gpu_presenting(false);
+}
+
+/// A surface refused (for the cap, or for overlap) and drawn in the scene
+/// beside split ones, at fractional scales (#1911 review). In the scene,
+/// Vello's output for a resampled image depends on which other images share
+/// its atlas, and the reference holds the split ones' frames there too: D10's
+/// atlas note, one level inside the refused frame's box (measured: 145
+/// pixels at 1.05 between two in-scene windows, one with its neighbours'
+/// frames and one without). Everything else as in-scene, and the split set
+/// as expected.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_refused_at_fractional_scale() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let v = |st: &'static str| -> Part { (st, Some(red())) };
+    const A: &str =
+        "video:500x400|position: absolute; left: 10px; top: 40px; width: 100px; height: 80px";
+    const B: &str =
+        "video:500x400|position: absolute; left: 140px; top: 40px; width: 100px; height: 80px";
+    const BADGE_A: &str = "position: absolute; left: 20px; top: 50px; width: 20px; height: 12px; background: rgb(250, 250, 250)";
+    const BADGE_B: &str = "position: absolute; left: 150px; top: 50px; width: 20px; height: 12px; background: rgb(250, 250, 250)";
+    // Far from A and B: its slice moves the scratch target to the window's
+    // corner, past the cap.
+    const C: &str =
+        "video:500x400|position: absolute; left: 260px; top: 180px; width: 130px; height: 100px";
+    const BADGE_C: &str = "position: absolute; left: 270px; top: 190px; width: 20px; height: 12px; background: rgb(250, 250, 250)";
+    // Over B: refused for overlap.
+    const D: &str =
+        "video:500x400|position: absolute; left: 200px; top: 70px; width: 100px; height: 80px";
+    let redraw = |p: &Page| {
+        for v in &p.videos {
+            v.redraw();
+        }
+    };
+    let mut failures = Vec::new();
+    for (scale, cap) in [(1.05, 500_000u64), (1.5, 900_000)] {
+        WINDOW.with(|w| w.set((scale, None, false)));
+        crate::shell::split_frame::CAP_OVERRIDE.with(|c| c.set(Some(cap)));
+        ATLAS.with(|a| *a.borrow_mut() = vec![(260.0, 180.0, 130.0, 100.0)]);
+        failures.extend(check_split(
+            &format!("scale {scale}: the third refused by the cap"),
+            vec![
+                v(A),
+                (BADGE_A, None),
+                v(B),
+                (BADGE_B, None),
+                v(C),
+                (BADGE_C, None),
+            ],
+            RESAMPLED,
+            &|_, s| s[..2].to_vec(),
+            &[&redraw, &redraw],
+            &[],
+            Fault::None,
+        ));
+        crate::shell::split_frame::CAP_OVERRIDE.with(|c| c.set(None));
+        ATLAS.with(|a| *a.borrow_mut() = vec![(200.0, 70.0, 100.0, 80.0)]);
+        failures.extend(check_split(
+            &format!("scale {scale}: the third refused for overlap"),
+            vec![v(A), v(B), v(D)],
+            RESAMPLED,
+            &|_, s| s[..2].to_vec(),
+            &[&redraw, &redraw],
+            &[],
+            Fault::None,
+        ));
+    }
+    ATLAS.with(|a| a.borrow_mut().clear());
+    WINDOW.with(|w| w.set((1.0, None, false)));
+    run(vec![failures]);
 }
