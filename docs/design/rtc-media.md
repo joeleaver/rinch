@@ -1,7 +1,9 @@
 # Media tracks on rinch-rtc (#1916)
 
-**Status:** Proposed. Nothing is implemented. The decisions for Joe are
-numbered at the end (M1–M12), each with options and a recommendation.
+**Status:** Decided (issue #1916). Joe accepted M1–M12 as recommended,
+2026-10-26. For M3 that is option (c): openh264 built from source by
+default, an opt-in to load Cisco's binary at run time, and docs that say
+plainly what each covers. Implementation follows section 9.
 **Context:** Joe decided #1916: rebuild the media call on `rinch-rtc`, then
 remove `rinch-webrtc`. `rinch-rtc` (data channels) is the design record
 `docs/design/webrtc-data-channels.md`, and is implemented on main
@@ -645,7 +647,9 @@ agents' builds, so timings are indicative rather than benchmarks.
 4. **The ports and the removal** (5.1–5.3), with the user guide page and an
    internals section.
 
-## Decisions for Joe
+## Decisions
+
+**Decided by Joe, 2026-10-26: M1–M12 as recommended (M3: option (c)).**
 
 **M1. Where media lives.**
 (a) In `rinch-rtc`, behind a `media` feature that is off by default.
