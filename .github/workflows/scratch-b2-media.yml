@@ -10,6 +10,8 @@ jobs:
       - uses: ./.github/actions/rust-toolchain
         with:
           targets: wasm32-unknown-unknown
+      - name: apt
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends libasound2-dev libudev-dev
       - name: Install wasm-bindgen-test-runner
         run: |
           version=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | grep '^version' | head -1 | cut -d'"' -f2)
@@ -54,6 +56,8 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/rust-toolchain
+      - name: apt
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends libasound2-dev libudev-dev
       - name: nasm
         if: matrix.nasm == 'yes'
         run: |
@@ -71,7 +75,8 @@ jobs:
       - name: Build with media (timings)
         run: |
           start=$(date +%s)
-          cargo build -p rinch-rtc --features media --tests --timings 2>&1 | tail -3
+          set -o pipefail
+          cargo build -p rinch-rtc --features media --tests --timings 2>&1 | grep -E "^error|failed|Finished" 
           echo "MEDIA BUILD (incremental over base) $(( $(date +%s) - start )) s"
           f=$(ls target/cargo-timings/cargo-timing-*.html | tail -1)
           python3 - "$f" <<'PY'
@@ -79,7 +84,7 @@ jobs:
           html = open(sys.argv[1]).read()
           m = re.search(r"const UNIT_DATA = (\[.*?\]);", html, re.S)
           units = json.loads(m.group(1))
-          for u in sorted(units, key=lambda u: -u["duration"])[:15]:
+          for u in sorted(units, key=lambda u: -u["duration"])[:25]:
               print(f'{u["duration"]:7.1f}s {u["name"]} {u.get("version","")} {u.get("target","")}')
           PY
       - name: Codec bench (spike, release)
