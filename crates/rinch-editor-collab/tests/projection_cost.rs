@@ -488,3 +488,61 @@ fn a_keystroke_in_a_table_cell_reads_only_its_block() {
     assert_eq!(small, vec![1, 1, 1], "a keystroke in a 10-row table");
     assert_eq!(big, small, "a keystroke in a 200-row table");
 }
+
+// --- live collaboration in a table: a peer's keystroke, then mine (#1241) ---
+
+/// What each round of live collaboration in one table of `rows` × 4 cells costs, after
+/// a warm-up round: the guest types in one cell of the middle row and the host
+/// integrates it (CRDT nodes read), then the host types in another cell of that row
+/// (CRDT nodes read, and how many times a whole table was read to find its cells).
+fn live_table_rounds(rows: usize) -> Vec<(u64, u64, u64)> {
+    use rinch_editor_collab::testing::table_cell_edits;
+    let s = Rc::new(Schema::starter_kit());
+    let blocks = vec![para(&s, "before"), table(&s, rows), para(&s, "after")];
+    let mut a = Peer::host(&s, blocks, 1);
+    let mut b = a.join(2);
+    let mine = format!("row {} column 1", rows / 2);
+    let theirs = format!("row {} column 2", rows / 2);
+    let mut out = Vec::new();
+    for round in 0..4 {
+        let at = pos_of(&b.state.doc, &theirs) + theirs.len();
+        b.type_at(at, "b");
+        let delta = b.session.save_incremental().unwrap();
+        let before = node_reads();
+        a.state = a
+            .session
+            .integrate_incremental(&a.state, &delta)
+            .unwrap()
+            .expect("the peer's keystroke changes the host");
+        let integrate = node_reads() - before;
+        let at = pos_of(&a.state.doc, &mine) + mine.len();
+        let (builds, _) = table_cell_edits();
+        let local = a.type_at(at, "a");
+        let builds = table_cell_edits().0 - builds;
+        a.exchange(&mut b);
+        if round > 0 {
+            out.push((integrate, local, builds));
+        }
+    }
+    a.assert_model_is_projection();
+    b.assert_model_is_projection();
+    assert_eq!(a.state.doc, b.state.doc);
+    out
+}
+
+/// In live collaboration a keystroke in a table cell costs what the cell holds, on
+/// both sides, whatever the table's size: integrating a peer's keystroke reads the
+/// block it changed (it read the whole document back: 77M instructions at 1000 rows,
+/// `editor::collab_table_integrate`), and my next keystroke finds its cell without
+/// reading the table again (any remote change made it re-read the whole table:
+/// `editor::collab_table_keystroke_after_remote`).
+#[test]
+fn live_collaboration_in_a_table_costs_the_same_at_any_size() {
+    let small = live_table_rounds(10);
+    let big = live_table_rounds(1000);
+    assert_eq!(big, small, "a 1000-row table against a 10-row one");
+    for (integrate, local, builds) in small {
+        assert!(integrate <= 3, "integrating a peer's keystroke read {integrate}");
+        assert_eq!((local, builds), (1, 0), "my keystroke after it");
+    }
+}
