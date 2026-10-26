@@ -40,6 +40,35 @@ async-trait = "0.1"
 # `atexit`, to close open peers on a normal process exit. Already in the tree.
 libc = "0.2"
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Event",
+    "EventTarget",
+    "MessageEvent",
+    "RtcConfiguration",
+    "RtcDataChannel",
+    "RtcDataChannelEvent",
+    "RtcDataChannelInit",
+    "RtcDataChannelState",
+    "RtcDataChannelType",
+    "RtcIceCandidate",
+    "RtcIceCandidateInit",
+    "RtcIceGatheringState",
+    "RtcIceServer",
+    "RtcIceTransportPolicy",
+    "RtcOfferOptions",
+    "RtcPeerConnection",
+    "RtcPeerConnectionIceErrorEvent",
+    "RtcPeerConnectionIceEvent",
+    "RtcPeerConnectionState",
+    "RtcSdpType",
+    "RtcSessionDescription",
+    "RtcSessionDescriptionInit",
+] }
+
 [dev-dependencies]
 rinch-core = { workspace = true }
 
@@ -53,3 +82,16 @@ rinch-core = { workspace = true }
 # compile aws-lc-sys. openssl-sys is already built for the workspace
 # (rinch-webrtc's str0m 0.7).
 str0m = { version = "=0.24.1", default-features = false, features = ["openssl"] }
+
+# Browser tests. Run with a chromedriver (or geckodriver):
+#     CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
+#     cargo test -p rinch-rtc --target wasm32-unknown-unknown
+# web_in_page needs nothing else. web_live_lite needs the lite_echo example
+# running (cargo run -p rinch-rtc --example lite_echo) and its URL in
+# RINCH_RTC_TEST_URL at build time; with RINCH_RTC_REQUIRE_LIVE=1 (CI) it
+# fails instead of skipping when the URL is missing.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window", "Request", "RequestInit", "RequestMode", "Response", "console"] }
