@@ -729,15 +729,6 @@ jobs:
           # Positive control: the browser really ran at 1.5 (review2_1592 logs it).
           grep -q '^dpr 1.5 ' dpr.log
 
-      # The same test binaries, a second engine. The suite was written against
-      # Chrome alone, and the first Firefox run found a real bug (the caret on
-      # the last line of a code block drawn a line too high: Firefox answers a
-      # collapsed range after a newline differently) beside two dozen tests that
-      # asserted Chrome's own answers. Nothing is rebuilt: only the runner's
-      # browser changes. `GECKODRIVER` outranks the `CHROMEDRIVER` the step
-      # above exported (wasm-bindgen-test-runner reads the variables in that
-      # order), and the runner image ships Firefox with a matching geckodriver
-      # at `$GECKOWEBDRIVER`.
       # Firefox opens an AudioContext only with a working audio output, and
       # the runner has no sound server: without one every AudioContext stays
       # `suspended` for ever (measured on ubuntu-24.04, Firefox 157). The
@@ -753,6 +744,15 @@ jobs:
           pactl set-default-sink ci_null
           pactl info | grep -E 'Server String|Default Sink'
 
+      # The same test binaries, a second engine. The suite was written against
+      # Chrome alone, and the first Firefox run found a real bug (the caret on
+      # the last line of a code block drawn a line too high: Firefox answers a
+      # collapsed range after a newline differently) beside two dozen tests that
+      # asserted Chrome's own answers. Nothing is rebuilt: only the runner's
+      # browser changes. `GECKODRIVER` outranks the `CHROMEDRIVER` the step
+      # above exported (wasm-bindgen-test-runner reads the variables in that
+      # order), and the runner image ships Firefox with a matching geckodriver
+      # at `$GECKOWEBDRIVER`.
       - name: Run wasm tests (headless Firefox)
         env:
           CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
