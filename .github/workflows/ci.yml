@@ -405,6 +405,9 @@ jobs:
           cargo clippy -p rinch --no-default-features --features embed --all-targets -- -D warnings
           cargo clippy -p rinch --features gpu,embed --all-targets -- -D warnings
           cargo clippy -p rinch --no-default-features --features components,theme -- -D warnings
+          # rinch-rtc's `media` feature (#1916) is off by default and nothing
+          # in the workspace turns it on yet.
+          cargo clippy -p rinch-rtc --features media --all-targets -- -D warnings
 
       # Every optional feature of `rinch` that builds on this host, in one
       # build (#1786). Nothing else in the workspace turns `file-dialogs` on,
@@ -483,6 +486,10 @@ jobs:
           # above, but `embed` on wasm32 is reached by no crate in the
           # workspace and broke unnoticed (an OS file-drop path calling a
           # native-only `LocalFile::from_path`).
+          echo "::group::clippy rinch-rtc media (wasm32)"
+          cargo clippy -p rinch-rtc --features media --target wasm32-unknown-unknown \
+            --all-targets -- -D warnings
+          echo "::endgroup::"
           echo "::group::clippy rinch embed (wasm32)"
           cargo clippy -p rinch --no-default-features --features components,theme,embed \
             --target wasm32-unknown-unknown -- -D warnings
@@ -649,6 +656,11 @@ jobs:
           test "$(cat lite_echo.url)" = http://127.0.0.1:47811
           RINCH_RTC_TEST_URL=http://127.0.0.1:47811 RINCH_RTC_REQUIRE_LIVE=1 \
             cargo test -p rinch-rtc --target wasm32-unknown-unknown
+          # rinch-rtc's audio and video (#1916), behind its `media` feature:
+          # two peers in the page, synthetic sources only (no getUserMedia).
+          # The crate's webdriver.json lets audio play without a gesture.
+          cargo test -p rinch-rtc --target wasm32-unknown-unknown \
+            --features media --test web_media
           # The editor's read-only collaboration fixture is
           # `#[cfg(feature = "collaboration")]`, which the bare run above does not
           # turn on — it would have run nowhere, and a test that never runs reads
@@ -731,6 +743,8 @@ jobs:
           fi
           RINCH_RTC_TEST_URL=http://127.0.0.1:47811 RINCH_RTC_REQUIRE_LIVE=1 \
             cargo test -p rinch-rtc --target wasm32-unknown-unknown
+          cargo test -p rinch-rtc --target wasm32-unknown-unknown \
+            --features media --test web_media
 
   # Type-check and lint the Android target. Nothing else in this pipeline compiles it.
   #

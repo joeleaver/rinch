@@ -5636,6 +5636,7 @@ dependencies = [
  "js-sys",
  "libc",
  "rinch-core",
+ "rinch-web",
  "rtc",
  "serde",
  "str0m 0.24.1",
