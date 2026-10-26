@@ -52,8 +52,10 @@ pub(crate) struct AppliedChanges {
     /// not here; their parent is.
     pub paths: Vec<Path>,
     /// Whether the update changed something no path describes (an `atoms` entry),
-    /// failed to apply, or changed more than [`Self::MAX_PATHS`] types: then only a
-    /// whole read knows what the document is.
+    /// failed to apply, was applied while a client's clocks had a gap or updates were
+    /// parked on missing dependencies (yrs then reports no change inside a type created
+    /// after the gap: see [`CollabDoc::apply_decoded`]), or changed more than
+    /// [`Self::MAX_PATHS`] types: then only a whole read knows what the document is.
     pub spoiled: bool,
 }
 
@@ -78,6 +80,18 @@ impl AppliedChanges {
         out.dedup();
         Some(out)
     }
+}
+
+/// The upper bound of every client's clocks among the blocks `update` carries, gaps
+/// and all (`Update::state_vector` stops at a client's first gap).
+pub(crate) fn clocks_inserted(update: &Update) -> StateVector {
+    let mut sv = StateVector::default();
+    for (client, ranges) in update.insertions(true).iter() {
+        if let Some(end) = ranges.iter().map(|r| r.end).max() {
+            sv.set_max(*client, end);
+        }
+    }
+    sv
 }
 
 fn lock_changes(changes: &Mutex<AppliedChanges>) -> std::sync::MutexGuard<'_, AppliedChanges> {
@@ -137,6 +151,29 @@ impl CollabDoc {
             paths: Vec::new(),
             spoiled: false,
         }));
+        // Review of #1926. yrs reports a change only inside a type that existed before
+        // the transaction: one whose creator's clock is below the transaction's
+        // `before_state` for that client. A client's state stops at the first gap in
+        // its clocks (a `Skip`: an update that arrived ahead of one it follows, or a
+        // merged update with a hole), so while a gap is open every type its client
+        // created after it counts as new, whoever changes it, and a change inside one
+        // fires no event and leaves no path. Updates parked on missing dependencies and
+        // integrated now are the same. So while any client holds clocks past its state
+        // (`CollabDoc::clocks_seen`, the upper bound of every update applied) or updates
+        // are parked, the record is spoiled: the whole document is read, and no table's
+        // cell index is carried (a map it holds may be gone).
+        {
+            let txn = self.doc.transact();
+            let state = txn.state_vector();
+            let gap = self
+                .clocks_seen
+                .iter()
+                .any(|(client, &clock)| clock > state.get(client));
+            if gap || txn.has_missing_updates() {
+                lock_changes(&changes).spoiled = true;
+            }
+        }
+        self.clocks_seen.merge(clocks_inserted(&update));
         let applied = {
             // Both observers are dropped after the transaction, which fires them as it
             // commits: locals drop in reverse order, `txn` first.

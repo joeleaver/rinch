@@ -891,3 +891,67 @@ fn a_link_in_another_cell_changes_nothing_the_cell_path_writes() {
         );
     }
 }
+
+/// A peer's change of a table's grid is no change of cells' blocks: integrating it
+/// reads the table whole and indexes it afresh, never carrying the index it had
+/// (review of #1926: an index carried through a grid change holds a cell map yrs has
+/// collected). My next keystroke then finds its cell through the fresh index, and both
+/// peers converge with it in the right cell.
+#[test]
+fn a_peers_grid_change_rebuilds_the_index() {
+    use rinch_editor_collab::testing::{integrate_reads, node_reads};
+    let rows = 50;
+    let s = Rc::new(Schema::starter_kit());
+    let mut peers = big_world(&s, rows, true);
+    let needle = format!("row {} column 2", rows / 2);
+    assert_eq!(type_at(&mut peers, 0, &needle), (1, 1), "the first: built");
+    let d = peers[0].session.save_incremental().unwrap();
+    peers[1].receive(&d);
+    // The peer merges the first two cells of row 3.
+    let cell_before = |doc: &Node, needle: &str| {
+        let r = doc.resolve(Pos(pos_of(doc, needle))).unwrap();
+        let d = (1..=r.depth())
+            .rev()
+            .find(|&d| r.node(d).type_name().ends_with("cell"))
+            .unwrap();
+        r.before(d).unwrap()
+    };
+    let doc = &peers[1].state.doc;
+    let (a, b) = (
+        cell_before(doc, "row 3 column 0"),
+        cell_before(doc, "row 3 column 1"),
+    );
+    let mut tr = peers[1].state.tr();
+    tr.set_selection(Selection::cell(Pos(a), Pos(b)));
+    let next = peers[1]
+        .state
+        .apply(tr)
+        .run("mergeCells")
+        .expect("the cells merge");
+    peers[1].commit(next);
+    let d = peers[1].session.save_incremental().unwrap();
+    let (reads, nodes) = (integrate_reads(), node_reads());
+    peers[0].receive(&d);
+    let nodes = node_reads() - nodes;
+    assert_eq!(
+        (integrate_reads().0 - reads.0, integrate_reads().1 - reads.1),
+        (1, 0),
+        "read back from what changed"
+    );
+    assert!(
+        nodes > 4 * rows as u64,
+        "the table was read whole ({nodes} nodes for {rows} rows)"
+    );
+    assert_eq!(
+        type_at(&mut peers, 0, &needle),
+        (0, 1),
+        "my next keystroke: the index the integrate built"
+    );
+    let d = peers[0].session.save_incremental().unwrap();
+    peers[1].receive(&d);
+    assert_eq!(peers[0].state.doc, peers[1].state.doc);
+    assert_eq!(
+        peers[0].state.doc,
+        peers[0].session.projected_doc(&s).unwrap()
+    );
+}

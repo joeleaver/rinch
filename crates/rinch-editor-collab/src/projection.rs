@@ -581,6 +581,10 @@ pub struct CollabDoc {
     /// written, rewritten or removed an atom of either kind: a block it changed holds
     /// one, before or after. `true` until a change says otherwise.
     pub(crate) touched_atoms: bool,
+    /// The upper bound of every client's clocks in the updates applied from peers (and
+    /// the snapshot loaded): past the store's state vector for a client while a gap in
+    /// its clocks is open (review of #1926, `sync::AppliedChanges::spoiled`).
+    pub(crate) clocks_seen: StateVector,
 }
 
 impl Drop for CollabDoc {
@@ -678,6 +682,7 @@ impl CollabDoc {
         }
 
         let (ydoc, outbox, updates, overlay, atoms_changed, epoch) = CollabDoc::blank(client_id);
+        let clocks_seen = StateVector::default();
         // Both roots are resolved before the write transaction opens: resolving one takes
         // exclusive store access and panics if a transaction is already live.
         let content = ydoc.get_or_insert_array(CONTENT);
@@ -711,6 +716,7 @@ impl CollabDoc {
             uid: crate::atom_cache::next_uid(),
             last_apply: None,
             touched_atoms: true,
+            clocks_seen,
         })
     }
 
@@ -752,6 +758,7 @@ impl CollabDoc {
         client_id: Option<ClientID>,
     ) -> Result<CollabDoc> {
         let update = Update::decode_v1(bytes)?;
+        let clocks_seen = crate::sync::clocks_inserted(&update);
         let (ydoc, outbox, updates, overlay, atoms_changed, epoch) = CollabDoc::blank(client_id);
         {
             let mut txn = ydoc.transact_mut_with(Origin::from(ENGINE_APPLY_ORIGIN));
@@ -793,6 +800,7 @@ impl CollabDoc {
             uid: crate::atom_cache::next_uid(),
             last_apply: None,
             touched_atoms: true,
+            clocks_seen,
         })
     }
 
