@@ -672,53 +672,88 @@ async fn glare_resolves_with_perfect_negotiation() {
 #[wasm_bindgen_test]
 async fn renegotiation_and_recvonly_end_to_end() {
     let pair = Pair::new();
+    web_sys::console::log_1(&"STEP 1".into());
     let rx = pair
         .b
         .add_transceiver(MediaKind::Video, Direction::RecvOnly)
         .unwrap();
+    web_sys::console::log_1(&"STEP 2".into());
     let remotes = remote_slot(&pair.b);
+    web_sys::console::log_1(&"STEP 3".into());
     let offer = pair.b.create_offer().await.unwrap();
+    web_sys::console::log_1(&"STEP 4".into());
     pair.a.set_remote_description(offer).await.unwrap();
+    web_sys::console::log_1(&"STEP 5".into());
     let (track, writer) = LocalTrack::video_source(VideoSourceOptions {
         width: W,
         height: H,
         fps: 30,
     })
     .unwrap();
+    web_sys::console::log_1(&"STEP 6".into());
     let (timer, _feed) = moving_box(writer, Rc::new(Cell::new(BOX)));
+    web_sys::console::log_1(&"STEP 7".into());
     pair.a.add_track(&track).unwrap();
+    web_sys::console::log_1(&"STEP 8".into());
     let answer = pair.a.create_answer().await.unwrap();
+    web_sys::console::log_1(&"STEP 9".into());
     pair.b.set_remote_description(answer).await.unwrap();
+    web_sys::console::log_1(&"STEP 10".into());
     pair.pump();
+    web_sys::console::log_1(&"STEP 11".into());
     until("connected", || {
         pair.pump();
+    web_sys::console::log_1(&"STEP 12".into());
         pair.a.state() == PeerState::Connected && pair.b.state() == PeerState::Connected
     })
     .await;
+    web_sys::console::log_1(&"STEP 13".into());
     until("b hears the track", || !remotes.borrow().is_empty()).await;
+    web_sys::console::log_1(&"STEP 14".into());
     let remote = remotes.borrow()[0].clone();
+    web_sys::console::log_1(&"STEP 15".into());
     let frames = record_frames(&remote);
+    web_sys::console::log_1(&"STEP 16".into());
     let seen = fresh_frames(&frames, 500, 20).await;
+    web_sys::console::log_1(&"STEP 17".into());
     assert!(share(&seen, BOX) >= 0.8, "{seen:?}");
+    web_sys::console::log_1(&"STEP 18".into());
     assert_eq!(rx.current_direction(), Some(Direction::RecvOnly));
+    web_sys::console::log_1(&"STEP 19".into());
     assert_eq!(remote.transceiver().unwrap().mid(), rx.mid());
+    web_sys::console::log_1(&"STEP 20".into());
 
     // A second track after connecting: negotiationneeded, then it arrives.
     let n = Rc::new(Cell::new(0));
+    web_sys::console::log_1(&"STEP 21".into());
     let m = n.clone();
+    web_sys::console::log_1(&"STEP 22".into());
     pair.a.on_negotiation_needed(move || m.set(m.get() + 1));
+    web_sys::console::log_1(&"STEP 23".into());
     let (t2, _w2) = LocalTrack::audio_source(AudioSourceOptions::default()).unwrap();
+    web_sys::console::log_1(&"STEP 24".into());
     let s2 = pair.a.add_track(&t2).unwrap();
+    web_sys::console::log_1(&"STEP 25".into());
     assert_eq!(s2.track().map(|t| t.id()), Some(t2.id()));
+    web_sys::console::log_1(&"STEP 26".into());
     until("negotiationneeded after connect", || n.get() > 0).await;
+    web_sys::console::log_1(&"STEP 27".into());
     let offer = pair.a.create_offer().await.unwrap();
+    web_sys::console::log_1(&"STEP 28".into());
     pair.b.set_remote_description(offer).await.unwrap();
+    web_sys::console::log_1(&"STEP 29".into());
     let answer = pair.b.create_answer().await.unwrap();
+    web_sys::console::log_1(&"STEP 30".into());
     pair.a.set_remote_description(answer).await.unwrap();
+    web_sys::console::log_1(&"STEP 31".into());
     until("b hears the second track", || remotes.borrow().len() == 2).await;
+    web_sys::console::log_1(&"STEP 32".into());
     pair.a.close();
+    web_sys::console::log_1(&"STEP 33".into());
     pair.b.close();
+    web_sys::console::log_1(&"STEP 34".into());
     web_sys::window().unwrap().clear_interval_with_handle(timer);
+    web_sys::console::log_1(&"STEP 35".into());
 }
 
 /// The far side stops its transceiver: the remote track ends through the

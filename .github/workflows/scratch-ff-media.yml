@@ -1,0 +1,35 @@
+# SCRATCH (do not merge): which web_media test hangs in CI's Firefox 157?
+name: scratch-ff-media
+on: pull_request
+jobs:
+  ff:
+    if: startsWith(github.head_ref, 'scratch-ff-media')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/rust-toolchain
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Install wasm-bindgen-test-runner
+        run: |
+          version=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | grep '^version' | head -1 | cut -d'"' -f2)
+          cargo install wasm-bindgen-cli --version "$version" --locked
+      - name: Null audio sink
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends pulseaudio
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=ci_null
+          pactl set-default-sink ci_null
+      - name: Each web_media test alone in Firefox
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+          WASM_BINDGEN_TEST_TIMEOUT: "60"
+        run: |
+          export GECKODRIVER="$GECKOWEBDRIVER/geckodriver"
+          cargo test -p rinch-rtc --features media --target wasm32-unknown-unknown --test web_media --no-run
+          for t in $(grep -B1 '^async fn' crates/rinch-rtc/tests/web_media.rs | grep -oP 'async fn \K\w+'); do
+            echo "=== $t"
+            timeout 150 cargo test -p rinch-rtc --features media --target wasm32-unknown-unknown --test web_media -- --exact $t 2>&1 \
+              | grep -E "^test |test result|STEP|panicked|timed out|Script terminated|Failed to detect" | head -30 || true
+          done
