@@ -1222,9 +1222,9 @@ fn fuzz_deletion_to_empty_recovers_and_converges() {
 
 // ─── Delivery out of order, and grid changes (review of #1926) ──────────────────
 
-/// One trial with `delivery`, the extra table changes on ([`EXTRA_TABLE_OPS`]) and
-/// pictures every other seed. Answers the integrates and local edits that failed
-/// transiently (out of order only).
+/// One trial with `delivery`, the extra table changes on ([`EXTRA_TABLE_OPS`]),
+/// pictures every other seed and undo/redo every fourth. Answers the integrates and
+/// local edits that failed transiently (out of order only).
 fn delivery_trial(seed: u64, peers: usize, delivery: Delivery) -> u64 {
     EXTRA_TABLE_OPS.with(|x| x.set(true));
     let schema = schema();
@@ -1236,9 +1236,10 @@ fn delivery_trial(seed: u64, peers: usize, delivery: Delivery) -> u64 {
         peers,
     );
     swarm.images = seed.is_multiple_of(2);
-    // No undo: with these grid changes an undo can panic in the history's mapping
-    // (`StepMap::recover`, reached from `Branch::pop_event`), whole reads or partial:
+    // Undo and redo every fourth seed: with these grid changes an undo panicked in
+    // the history's mapping (`StepMap::recover`, from `Branch::pop_event`) until
     // #1935.
+    swarm.undo_percent = if seed % 4 == 1 { 15 } else { 0 };
     swarm.delivery = delivery;
     swarm.delivery_rng = Rng::new(seed.wrapping_mul(31) + delivery as u64);
     swarm.run_rounds(seed, 300, &mut rng);
