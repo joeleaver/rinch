@@ -671,6 +671,27 @@ jobs:
           cargo test -p rinch-web --target wasm32-unknown-unknown \
             --features word-dictionary --test editor_word_dictionary
 
+      # rinch-av's audio capture where the browser holds an AudioContext
+      # until a user gesture (Chrome's default; the step above allows
+      # autoplay). The capture must say `WaitingForGesture`, not deliver
+      # silence with no error (#1928's review). Built with
+      # RINCH_AV_NO_AUTOPLAY=1, the test asserts that state, so a run
+      # under the permissive webdriver.json fails rather than passes.
+      - name: Run rinch-av capture without autoplay (headless Chrome)
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        working-directory: crates/rinch-av
+        run: |
+          set -o pipefail
+          cp webdriver.json webdriver.json.keep
+          echo '{"goog:chromeOptions":{"args":["--headless=new"]}}' > webdriver.json
+          RINCH_AV_NO_AUTOPLAY=1 cargo test -p rinch-av --features audio,camera \
+            --target wasm32-unknown-unknown --test web_capture_lifetimes \
+            -- audio_status 2>&1 | tee noautoplay.log
+          mv webdriver.json.keep webdriver.json
+          # Positive control: the one test ran.
+          grep -q 'test result: ok. 1 passed' noautoplay.log
+
       # `editor_node_view_real_tab` is `#[ignore]`d above (a synthetic keydown moves
       # no focus): this step builds it with RINCH_REAL_KEYS=1 and runs it with
       # trusted keys sent over the DevTools protocol by `real_keys.mjs`, which needs

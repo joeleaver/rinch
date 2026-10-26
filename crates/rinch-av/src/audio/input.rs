@@ -60,8 +60,36 @@ pub struct AudioInputStream {
     /// itself (it holds only a `Weak`).
     #[cfg(target_arch = "wasm32")]
     _wasm_state: std::rc::Rc<std::cell::RefCell<Option<WasmAudioInputState>>>,
+    /// Where the web setup stands (it finishes after the open call returns).
+    #[cfg(target_arch = "wasm32")]
+    status: std::rc::Rc<std::cell::RefCell<AudioInputStatus>>,
     config: AudioInputConfig,
 }
+
+/// Whether an [`AudioInputStream`] is delivering samples.
+///
+/// On desktop a stream that opened is `Running`: the device is open when
+/// the open call returns. On the web the setup finishes later (after
+/// `getUserMedia`, or the given stream, resolves), and the browser may hold
+/// the capture `AudioContext` until the user interacts with the page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AudioInputStatus {
+    /// Web: setup has not finished yet.
+    Starting,
+    /// Samples are being delivered.
+    Running,
+    /// Web: the browser's autoplay policy holds the capture `AudioContext`
+    /// suspended, so no samples arrive (the track itself is live). Capture
+    /// resumes by itself on the page's next click, tap or key press. The
+    /// usual way to never see this is to open capture from a click handler.
+    WaitingForGesture,
+    /// Setup failed. On the web the stream's tracks have been stopped and
+    /// nothing is delivered.
+    Failed(AvError),
+}
+
+#[cfg(target_arch = "wasm32")]
+type JsHandler = wasm_bindgen::closure::Closure<dyn FnMut(web_sys::Event)>;
 
 #[cfg(target_arch = "wasm32")]
 struct WasmAudioInputState {
@@ -70,23 +98,63 @@ struct WasmAudioInputState {
     processor: web_sys::ScriptProcessorNode,
     _closure: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::AudioProcessingEvent)>,
     tracks: Vec<web_sys::MediaStreamTrack>,
+    /// The context's `statechange` handler, keeping the status current.
+    _on_state: JsHandler,
+    /// While the context waits for a gesture: the window listener that
+    /// resumes it on the next click, tap or key press.
+    gesture: Option<JsHandler>,
+}
+
+#[cfg(target_arch = "wasm32")]
+const GESTURES: [&str; 3] = ["pointerdown", "keydown", "touchend"];
+
+#[cfg(target_arch = "wasm32")]
+fn remove_gesture_listener(cb: &JsHandler) {
+    use wasm_bindgen::JsCast;
+    if let Some(w) = web_sys::window() {
+        for ev in GESTURES {
+            let _ = w.remove_event_listener_with_callback_and_bool(
+                ev,
+                cb.as_ref().unchecked_ref(),
+                true,
+            );
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
 impl Drop for WasmAudioInputState {
     fn drop(&mut self) {
-        // Disconnect processor
+        // Detach the handler first: an audioprocess event already queued
+        // would otherwise reach the closure after it is freed ("closure
+        // invoked recursively or after being dropped").
+        self.processor.set_onaudioprocess(None);
+        self.audio_ctx.set_onstatechange(None);
+        if let Some(g) = &self.gesture {
+            remove_gesture_listener(g);
+        }
         let _ = self.processor.disconnect();
-        // Stop all tracks
         for track in &self.tracks {
             track.stop();
         }
-        // Close audio context
-        let _ = self.audio_ctx.close();
+        quiet(self.audio_ctx.close());
     }
 }
 
 impl AudioInputStream {
+    /// Whether the stream is delivering samples (see [`AudioInputStatus`]).
+    /// Always `Running` on desktop.
+    pub fn status(&self) -> AudioInputStatus {
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.status.borrow().clone()
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            AudioInputStatus::Running
+        }
+    }
+
     /// What the stream really delivers: the sample rate and channel count
     /// the device was opened with, which may differ from what was requested
     /// (the nearest the device supports). Samples are interleaved by this
@@ -304,8 +372,10 @@ fn start_audio_input_wasm(
     use wasm_bindgen_futures::JsFuture;
 
     let state: Rc<RefCell<Option<WasmAudioInputState>>> = Rc::new(RefCell::new(None));
-    // The task holds only a Weak: the AudioInputStream owns the state.
+    let status = Rc::new(RefCell::new(AudioInputStatus::Starting));
+    // The task holds only Weaks: the AudioInputStream owns the state.
     let weak = Rc::downgrade(&state);
+    let weak_status = Rc::downgrade(&status);
 
     let buffer_size = if config.buffer_size == 0 {
         4096
@@ -316,10 +386,16 @@ fn start_audio_input_wasm(
     let channels = config.channels.max(1);
 
     wasm_bindgen_futures::spawn_local(async move {
+        let set_status = |s: AudioInputStatus| {
+            if let Some(st) = weak_status.upgrade() {
+                *st.borrow_mut() = s;
+            }
+        };
         let media_stream: web_sys::MediaStream = match JsFuture::from(stream_promise).await {
             Ok(val) => val.into(),
             Err(e) => {
                 tracing::error!("getUserMedia rejected: {:?}", e);
+                set_status(AudioInputStatus::Failed(gum_error(&e)));
                 return;
             }
         };
@@ -338,21 +414,32 @@ fn start_audio_input_wasm(
             return;
         };
 
+        // Every failure from here on releases the device and says why: a
+        // setup that only logged left a real microphone (and its indicator)
+        // on, delivering nothing.
+        let fail = |what: &str, e: JsValue, ctx: Option<&web_sys::AudioContext>| {
+            tracing::error!("rinch-av: audio capture setup failed: {what}: {:?}", e);
+            for t in &tracks {
+                t.stop();
+            }
+            if let Some(c) = ctx {
+                quiet(c.close());
+            }
+            set_status(AudioInputStatus::Failed(AvError::Backend(format!(
+                "{what}: {}",
+                js_message(&e)
+            ))));
+        };
+
         let ctx_opts = web_sys::AudioContextOptions::new();
         ctx_opts.set_sample_rate(sample_rate as f32);
         let audio_ctx = match web_sys::AudioContext::new_with_context_options(&ctx_opts) {
             Ok(ctx) => ctx,
-            Err(e) => {
-                tracing::error!("Failed to create AudioContext: {:?}", e);
-                return;
-            }
+            Err(e) => return fail("AudioContext", e, None),
         };
         let source = match audio_ctx.create_media_stream_source(&media_stream) {
             Ok(s) => s,
-            Err(e) => {
-                tracing::error!("Failed to create MediaStreamSource: {:?}", e);
-                return;
-            }
+            Err(e) => return fail("MediaStreamAudioSourceNode", e, Some(&audio_ctx)),
         };
         let processor = match audio_ctx
             .create_script_processor_with_buffer_size_and_number_of_input_channels_and_number_of_output_channels(
@@ -361,10 +448,7 @@ fn start_audio_input_wasm(
                 channels as u32,
             ) {
             Ok(p) => p,
-            Err(e) => {
-                tracing::error!("Failed to create ScriptProcessorNode: {:?}", e);
-                return;
-            }
+            Err(e) => return fail("ScriptProcessorNode", e, Some(&audio_ctx)),
         };
 
         // Interleave every channel, as on desktop (it used to deliver
@@ -394,8 +478,69 @@ fn start_audio_input_wasm(
             },
         );
         processor.set_onaudioprocess(Some(closure.as_ref().unchecked_ref()));
-        let _ = source.connect_with_audio_node(&processor);
-        let _ = processor.connect_with_audio_node(&audio_ctx.destination());
+        if let Err(e) = source.connect_with_audio_node(&processor) {
+            processor.set_onaudioprocess(None);
+            return fail("connecting the source", e, Some(&audio_ctx));
+        }
+        if let Err(e) = processor.connect_with_audio_node(&audio_ctx.destination()) {
+            processor.set_onaudioprocess(None);
+            return fail("connecting the processor", e, Some(&audio_ctx));
+        }
+
+        // A context made outside a user gesture starts `suspended` and
+        // delivers nothing, with no error. Ask it to run; if the browser
+        // holds it, say so, and resume on the page's next gesture.
+        let running = |c: &web_sys::AudioContext| c.state() == web_sys::AudioContextState::Running;
+        let ctx2 = audio_ctx.clone();
+        let ws = weak_status.clone();
+        let weak_state = Rc::downgrade(&state);
+        let on_state = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
+            let Some(st) = ws.upgrade() else { return };
+            let now = match ctx2.state() {
+                web_sys::AudioContextState::Running => AudioInputStatus::Running,
+                web_sys::AudioContextState::Suspended => AudioInputStatus::WaitingForGesture,
+                _ => return,
+            };
+            let run = now == AudioInputStatus::Running;
+            *st.borrow_mut() = now;
+            if run {
+                // Running: the gesture listener has done its job. Dropped
+                // after this call (it may be on the stack).
+                if let Some(s) = weak_state.upgrade() {
+                    let g = s.borrow_mut().as_mut().and_then(|s| s.gesture.take());
+                    if let Some(g) = g {
+                        remove_gesture_listener(&g);
+                        wasm_bindgen_futures::spawn_local(async move { drop(g) });
+                    }
+                }
+            }
+        });
+        audio_ctx.set_onstatechange(Some(on_state.as_ref().unchecked_ref()));
+        quiet(audio_ctx.resume());
+        let gesture = if running(&audio_ctx) {
+            set_status(AudioInputStatus::Running);
+            None
+        } else {
+            set_status(AudioInputStatus::WaitingForGesture);
+            tracing::warn!(
+                "rinch-av: the browser holds audio capture until the page gets a click or key \
+                 press (autoplay policy); no samples until then"
+            );
+            let ctx3 = audio_ctx.clone();
+            let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
+                quiet(ctx3.resume());
+            });
+            if let Some(w) = web_sys::window() {
+                for ev in GESTURES {
+                    let _ = w.add_event_listener_with_callback_and_bool(
+                        ev,
+                        cb.as_ref().unchecked_ref(),
+                        true,
+                    );
+                }
+            }
+            Some(cb)
+        };
 
         *state.borrow_mut() = Some(WasmAudioInputState {
             audio_ctx,
@@ -403,11 +548,56 @@ fn start_audio_input_wasm(
             processor,
             _closure: closure,
             tracks,
+            _on_state: on_state,
+            gesture,
         });
     });
 
     AudioInputStream {
         _wasm_state: state,
+        status,
         config,
+    }
+}
+
+/// Let a promise settle with nothing listening, without the browser
+/// reporting an unhandled rejection (a `resume()` the page's `close()`
+/// overtook rejects "Closed before resume completed").
+#[cfg(target_arch = "wasm32")]
+fn quiet(p: Result<js_sys::Promise, wasm_bindgen::JsValue>) {
+    if let Ok(p) = p {
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = wasm_bindgen_futures::JsFuture::from(p).await;
+        });
+    }
+}
+
+/// The `name`/`message` of a JS error.
+#[cfg(target_arch = "wasm32")]
+fn js_message(e: &wasm_bindgen::JsValue) -> String {
+    let get = |k: &str| {
+        js_sys::Reflect::get(e, &k.into())
+            .ok()
+            .and_then(|v| v.as_string())
+    };
+    match (get("name"), get("message")) {
+        (Some(n), Some(m)) => format!("{n}: {m}"),
+        (None, Some(m)) => m,
+        _ => e.as_string().unwrap_or_else(|| format!("{e:?}")),
+    }
+}
+
+/// A `getUserMedia` rejection as an `AvError`.
+#[cfg(target_arch = "wasm32")]
+fn gum_error(e: &wasm_bindgen::JsValue) -> AvError {
+    let name = js_sys::Reflect::get(e, &"name".into())
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
+    match name.as_str() {
+        "NotAllowedError" | "SecurityError" => AvError::PermissionDenied,
+        "NotFoundError" | "OverconstrainedError" => AvError::DeviceNotFound(js_message(e)),
+        "NotReadableError" | "AbortError" => AvError::DeviceInUse,
+        _ => AvError::Backend(js_message(e)),
     }
 }

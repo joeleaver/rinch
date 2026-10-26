@@ -253,7 +253,10 @@ pub(crate) fn select_config(
         .iter()
         .filter_map(|r| format_rank(r.sample_format()).map(|rank| (r, rank)))
         .map(|(r, rank)| {
-            let rate = want_rate.clamp(r.min_sample_rate(), r.max_sample_rate());
+            // `clamp` panics on min > max; a backend reporting a range
+            // the wrong way round is read as the range it spans.
+            let (lo, hi) = (r.min_sample_rate(), r.max_sample_rate());
+            let rate = want_rate.clamp(lo.min(hi), lo.max(hi));
             let key = (
                 r.channels() != want_channels,
                 r.channels().abs_diff(want_channels),
@@ -293,10 +296,21 @@ fn negotiate(
     channels: u16,
     buffer_size: u32,
 ) -> Result<(StreamConfig, Negotiated), AvError> {
-    let ranges = ranges.unwrap_or_default();
-    let default = default.ok();
+    // Either query may fail while the other answers; only when neither
+    // gives anything is it an error, and then it is the backend's own
+    // (a busy or refused device is not "not found").
+    let (ranges, ranges_err) = match ranges {
+        Ok(r) => (r, None),
+        Err(e) => (Vec::new(), Some(e)),
+    };
+    let (default, default_err) = match default {
+        Ok(d) => (Some(d), None),
+        Err(e) => (None, Some(e)),
+    };
     if ranges.is_empty() && default.is_none() {
-        return Err(AvError::DeviceNotFound("device not available".into()));
+        return Err(ranges_err.or(default_err).map(map_err).unwrap_or_else(|| {
+            AvError::FormatUnsupported("the device reports no stream configuration".into())
+        }));
     }
     let n = select_config(&ranges, default.as_ref(), sample_rate, channels)?;
     let config = StreamConfig {
@@ -608,6 +622,55 @@ mod tests {
             (n.sample_rate, n.sample_format),
             (32_000, SampleFormat::F32)
         );
+    }
+
+    #[test]
+    fn the_channel_count_outranks_the_sample_format() {
+        // Mono only in i16, f32 only in stereo, mono asked for: mono i16.
+        let ranges = [
+            range(2, 48_000, 48_000, SampleFormat::F32),
+            range(1, 48_000, 48_000, SampleFormat::I16),
+        ];
+        let n = select_config(&ranges, None, 48_000, 1).unwrap();
+        assert_eq!((n.channels, n.sample_format), (1, SampleFormat::I16));
+    }
+
+    #[test]
+    fn a_range_reported_the_wrong_way_round_does_not_panic() {
+        let ranges = [range(1, 48_000, 16_000, SampleFormat::F32)];
+        let n = select_config(&ranges, None, 96_000, 1).unwrap();
+        assert_eq!(n.sample_rate, 48_000);
+        let n = select_config(&ranges, None, 8_000, 1).unwrap();
+        assert_eq!(n.sample_rate, 16_000);
+    }
+
+    #[test]
+    fn negotiation_passes_the_backends_error_on() {
+        use cpal::ErrorKind as K;
+        let err = |k| cpal::Error::with_message(k, "probe");
+        let busy = negotiate(
+            Err(err(K::DeviceBusy)),
+            Err(err(K::DeviceBusy)),
+            48_000,
+            1,
+            0,
+        );
+        assert!(
+            matches!(busy, Err(AvError::DeviceInUse)),
+            "{:?}",
+            busy.err()
+        );
+        let denied = negotiate(Ok(Vec::new()), Err(err(K::PermissionDenied)), 48_000, 1, 0);
+        assert!(
+            matches!(denied, Err(AvError::PermissionDenied)),
+            "{:?}",
+            denied.err()
+        );
+        // One query failing while the other answers is no error.
+        let default =
+            SupportedStreamConfig::new(1, 44_100, SupportedBufferSize::Unknown, SampleFormat::F32);
+        let (_, n) = negotiate(Err(err(K::DeviceBusy)), Ok(default), 48_000, 1, 0).unwrap();
+        assert_eq!(n.sample_rate, 44_100);
     }
 
     #[test]

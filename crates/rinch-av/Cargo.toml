@@ -51,6 +51,10 @@ web-sys = { version = "0.3", features = [
     "AudioBuffer",
     "GainNode",
     "GainOptions",
+    "AudioContextState",
+    "BaseAudioContext",
+    "EventTarget",
+    "AddEventListenerOptions",
 ] }
 
 [features]
@@ -66,6 +70,9 @@ camera = ["dep:nokhwa"]
 wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3", features = [
     "OscillatorNode",
+    "ChannelMergerNode",
+    "console",
+    "AudioContextOptions",
     "AudioParam",
     "AudioScheduledSourceNode",
     "MediaStreamAudioDestinationNode",
