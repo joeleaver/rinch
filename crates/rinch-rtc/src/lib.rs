@@ -583,7 +583,18 @@ impl Peer {
                 ),
             )
         });
-        backend::create_channel(id, key, label.to_string(), options);
+        // The id the stack gave it, if it says at once (the web assigns an
+        // in-band channel's as soon as the DTLS role is known), so the
+        // duplicate check above sees it before the channel opens.
+        if let Some(sid) = backend::create_channel(id, key, label.to_string(), options) {
+            with_peer(id, |e| {
+                if let Some(c) = e.channels.get_mut(&key)
+                    && c.id.is_none()
+                {
+                    c.id = Some(sid);
+                }
+            });
+        }
         Ok(Channel { peer: id, key })
     }
 
@@ -854,6 +865,18 @@ pub mod testing {
     //! Hooks for rinch-rtc's own tests. Not API.
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::native::testing::*;
+    #[cfg(target_arch = "wasm32")]
+    pub use crate::wasm::testing::*;
+}
+
+/// A channel's settings as the stack holds them (test hook,
+/// `testing::channel_settings`).
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChannelSettings {
+    pub ordered: bool,
+    pub max_retransmits: Option<u16>,
+    pub negotiated: bool,
 }
 
 #[cfg(test)]

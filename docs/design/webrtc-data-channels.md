@@ -572,8 +572,10 @@ ICE-lite echo peer, the shape of str0m's own `chat` example. The CI job
 starts it in the background before
 `cargo test -p rinch-rtc --target wasm32-unknown-unknown`, and passes its
 URL at build time as `RINCH_RTC_TEST_URL`, the convention of rinch-ws's
-`RINCH_WS_TEST_URL`. The wasm test mounts through `rinch_web::mount_into`
-(the brief's wasm fixture rule), connects, and repeats cases 1, 2 and 4.
+`RINCH_WS_TEST_URL`. The wasm test connects and repeats cases 1, 2 and 4.
+It mounts nothing: rinch-rtc dispatches its callbacks itself and needs no
+`rinch_web` mount, and its positive control is bytes that came back
+through the server.
 Two traps:
 
 - **A skip is not a pass.** rinch-ws's live web test logs and passes when

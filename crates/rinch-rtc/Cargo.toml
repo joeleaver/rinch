@@ -94,4 +94,4 @@ str0m = { version = "=0.24.1", default-features = false, features = ["openssl"] 
 wasm-bindgen-test = "0.3"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Window", "Request", "RequestInit", "RequestMode", "Response", "console"] }
+web-sys = { version = "0.3", features = ["Window", "Navigator", "Request", "RequestInit", "RequestMode", "Response", "console"] }

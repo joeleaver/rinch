@@ -67,16 +67,90 @@ impl WebChannel {
     }
 }
 
+type Channels = Rc<RefCell<HashMap<u64, WebChannel>>>;
+
+/// A `Gathering::Complete` wait in progress: its promise's `resolve` and
+/// its `icegatheringstatechange` listener. Taken (and the listener removed)
+/// when gathering completes or the peer closes, whichever comes first.
+type GatherWait = Rc<RefCell<Option<(js_sys::Function, JsCallback)>>>;
+
 struct WebPeer {
     pc: RtcPeerConnection,
     queue: Queue,
-    channels: Rc<RefCell<HashMap<u64, WebChannel>>>,
+    channels: Channels,
+    gather: GatherWait,
     _closures: Vec<Closure<dyn FnMut(JsValue)>>,
     on_ice_error: Closure<dyn FnMut(JsValue)>,
 }
 
 thread_local! {
     static PEERS: RefCell<HashMap<u64, WebPeer>> = RefCell::new(HashMap::new());
+    /// Gathering waits not yet settled (test hook).
+    static GATHER_WAITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// `createDataChannel`, catching: web-sys's binding does not, so a throw
+/// (a label over 65535 bytes, id 65535, an id in use) unwound out of wasm
+/// with no destructor run. `Function::call2` returns the exception as `Err`.
+fn create_data_channel_catching(
+    pc: &RtcPeerConnection,
+    label: &str,
+    init: &RtcDataChannelInit,
+) -> Result<RtcDataChannel, JsValue> {
+    let f: js_sys::Function = Reflect::get(pc, &"createDataChannel".into())?.dyn_into()?;
+    f.call2(pc, &JsValue::from_str(label), init)
+        .map(|dc| dc.unchecked_into())
+}
+
+/// Settle a gathering wait: remove its listener, resolve its promise, and
+/// drop the listener after the current call (it may be the caller).
+fn settle_gather(pc: &RtcPeerConnection, gather: &GatherWait) {
+    let taken = gather.borrow_mut().take();
+    if let Some((resolve, cb)) = taken {
+        let _ = pc.remove_event_listener_with_callback(
+            "icegatheringstatechange",
+            cb.as_ref().unchecked_ref(),
+        );
+        let _ = resolve.call0(&JsValue::NULL);
+        GATHER_WAITS.with(|n| n.set(n.get().saturating_sub(1)));
+        wasm_bindgen_futures::spawn_local(async move { drop(cb) });
+    }
+}
+
+pub mod testing {
+    //! Hooks for rinch-rtc's own tests (`#[doc(hidden)]`, not API).
+    use wasm_bindgen::JsValue;
+
+    pub use crate::ChannelSettings;
+
+    /// The channel's settings as the browser's RTCDataChannel holds them.
+    pub fn channel_settings(channel: &crate::Channel) -> Option<ChannelSettings> {
+        super::with_channel(channel.peer, channel.key, |dc| {
+            let get = |k: &str| js_sys::Reflect::get(dc, &JsValue::from_str(k)).ok();
+            ChannelSettings {
+                ordered: get("ordered").and_then(|v| v.as_bool()).unwrap_or(true),
+                max_retransmits: dc.max_retransmits(),
+                negotiated: get("negotiated").and_then(|v| v.as_bool()).unwrap_or(false),
+            }
+        })
+    }
+
+    /// The browser's own `bufferedAmountLowThreshold` for the channel.
+    pub fn browser_low_threshold(channel: &crate::Channel) -> Option<u32> {
+        super::with_channel(channel.peer, channel.key, |dc| {
+            dc.buffered_amount_low_threshold()
+        })
+    }
+
+    /// `Gathering::Complete` waits not yet settled, over every peer.
+    pub fn pending_gathering_waits() -> usize {
+        super::GATHER_WAITS.with(|n| n.get())
+    }
+
+    /// Channels whose JS closures are still held, over every peer.
+    pub fn live_channels() -> usize {
+        super::PEERS.with(|p| p.borrow().values().map(|w| w.channels.borrow().len()).sum())
+    }
 }
 
 fn js_err(e: &JsValue) -> String {
@@ -125,7 +199,8 @@ pub(crate) fn new_peer(id: u64, config: &RtcConfig) -> Result<(), RtcError> {
         .map_err(|e| RtcError::InvalidState(js_err(&e)))?;
 
     let trickle = config.gathering == Gathering::Trickle;
-    let channels: Rc<RefCell<HashMap<u64, WebChannel>>> = Rc::default();
+    let channels: Channels = Rc::default();
+    let gather: GatherWait = Rc::default();
 
     let on_candidate = Closure::<dyn FnMut(JsValue)>::new(move |e: JsValue| {
         if !trickle {
@@ -174,6 +249,10 @@ pub(crate) fn new_peer(id: u64, config: &RtcConfig) -> Result<(), RtcError> {
         };
         let dc = e.channel();
         let key = crate::next_id();
+        // Wired and kept *before* the app hears of it: a call made from
+        // inside on_data_channel (close, a low-water threshold) must find it.
+        let ch = wire(id, key, dc.clone(), &pc3, &chans);
+        chans.borrow_mut().insert(key, ch);
         registry::dispatch(
             id,
             Event::Incoming {
@@ -182,8 +261,6 @@ pub(crate) fn new_peer(id: u64, config: &RtcConfig) -> Result<(), RtcError> {
                 id: dc.id(),
             },
         );
-        let ch = wire(id, key, dc.clone(), &pc3);
-        chans.borrow_mut().insert(key, ch);
         // An in-band channel is often already open when it is announced.
         if dc.ready_state() == web_sys::RtcDataChannelState::Open {
             registry::dispatch(
@@ -217,7 +294,7 @@ pub(crate) fn new_peer(id: u64, config: &RtcConfig) -> Result<(), RtcError> {
     );
 
     let queue: Queue = Rc::default();
-    wasm_bindgen_futures::spawn_local(work(id, pc.clone(), queue.clone(), trickle));
+    wasm_bindgen_futures::spawn_local(work(id, pc.clone(), queue.clone(), trickle, gather.clone()));
 
     PEERS.with(|p| {
         p.borrow_mut().insert(
@@ -226,6 +303,7 @@ pub(crate) fn new_peer(id: u64, config: &RtcConfig) -> Result<(), RtcError> {
                 pc,
                 queue,
                 channels,
+                gather,
                 _closures: vec![on_candidate, on_state, on_channel],
                 on_ice_error,
             },
@@ -261,10 +339,16 @@ pub(crate) fn add_candidate(id: u64, candidate: Option<IceCandidate>) {
     push(id, Op::Candidate(candidate));
 }
 
-pub(crate) fn create_channel(id: u64, key: u64, label: String, options: ChannelOptions) {
-    let Some(pc) = with_pc(id, |p| p.pc.clone()) else {
-        return;
-    };
+/// Returns the stream id the browser gave the channel, when it has one
+/// already (a negotiated channel's, or an in-band one's once the DTLS role
+/// is known).
+pub(crate) fn create_channel(
+    id: u64,
+    key: u64,
+    label: String,
+    options: ChannelOptions,
+) -> Option<u16> {
+    let (pc, chans) = with_pc(id, |p| (p.pc.clone(), p.channels.clone()))?;
     let init = RtcDataChannelInit::new();
     match options.reliability {
         Reliability::Reliable => init.set_ordered(true),
@@ -277,13 +361,34 @@ pub(crate) fn create_channel(id: u64, key: u64, label: String, options: ChannelO
         init.set_negotiated(true);
         init.set_id(sid);
     }
-    let dc = pc.create_data_channel_with_data_channel_dict(&label, &init);
-    let ch = wire(id, key, dc, &pc);
-    with_pc(id, |p| p.channels.borrow_mut().insert(key, ch));
+    match create_data_channel_catching(&pc, &label, &init) {
+        Ok(dc) => {
+            let sid = dc.id();
+            let ch = wire(id, key, dc, &pc, &chans);
+            chans.borrow_mut().insert(key, ch);
+            sid
+        }
+        // As native reports a channel the stack refused: an error, then the
+        // close, after the call returns.
+        Err(e) => {
+            let error = RtcError::Channel(js_err(&e));
+            wasm_bindgen_futures::spawn_local(async move {
+                registry::dispatch(id, Event::ChannelError { key, error });
+                registry::dispatch(id, Event::ChannelClosed { key });
+            });
+            None
+        }
+    }
 }
 
 /// Attach the channel's event closures; they report to the registry.
-fn wire(id: u64, key: u64, dc: RtcDataChannel, pc: &RtcPeerConnection) -> WebChannel {
+fn wire(
+    id: u64,
+    key: u64,
+    dc: RtcDataChannel,
+    pc: &RtcPeerConnection,
+    chans: &Channels,
+) -> WebChannel {
     dc.set_binary_type(RtcDataChannelType::Arraybuffer);
     let (pc, dc2) = (pc.clone(), dc.clone());
     let on_open = Closure::<dyn FnMut(JsValue)>::new(move |_e: JsValue| {
@@ -311,8 +416,18 @@ fn wire(id: u64, key: u64, dc: RtcDataChannel, pc: &RtcPeerConnection) -> WebCha
         };
         registry::dispatch(id, Event::Message { key, data: bytes });
     });
+    let chans = chans.clone();
     let on_close = Closure::<dyn FnMut(JsValue)>::new(move |_e: JsValue| {
         registry::dispatch(id, Event::ChannelClosed { key });
+        // This channel's closures go now, not with the peer: detached, and
+        // dropped after this call (this closure is one of them).
+        let chans = chans.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let gone = chans.borrow_mut().remove(&key);
+            if let Some(ch) = gone {
+                ch.detach();
+            }
+        });
     });
     let on_error = Closure::<dyn FnMut(JsValue)>::new(move |e: JsValue| {
         let text = e
@@ -431,6 +546,9 @@ pub(crate) fn close(id: u64, notify: bool) {
     for ch in peer.channels.borrow().values() {
         ch.detach();
     }
+    // A Gathering::Complete wait in progress: settle it, so its task ends
+    // and its listener goes.
+    settle_gather(&peer.pc, &peer.gather);
     peer.pc.close();
     {
         let mut q = peer.queue.borrow_mut();
@@ -471,11 +589,11 @@ async fn next_op(queue: &Queue) -> Option<Op> {
     .await
 }
 
-async fn work(id: u64, pc: RtcPeerConnection, queue: Queue, trickle: bool) {
+async fn work(id: u64, pc: RtcPeerConnection, queue: Queue, trickle: bool, gather: GatherWait) {
     while let Some(op) = next_op(&queue).await {
         match op {
             Op::Offer { req, restart } => {
-                let result = describe(&pc, SdpKind::Offer, restart, trickle).await;
+                let result = describe(&pc, SdpKind::Offer, restart, trickle, &gather).await;
                 registry::dispatch(
                     id,
                     Event::Reply {
@@ -485,7 +603,7 @@ async fn work(id: u64, pc: RtcPeerConnection, queue: Queue, trickle: bool) {
                 );
             }
             Op::Answer { req } => {
-                let result = describe(&pc, SdpKind::Answer, false, trickle).await;
+                let result = describe(&pc, SdpKind::Answer, false, trickle, &gather).await;
                 registry::dispatch(
                     id,
                     Event::Reply {
@@ -531,6 +649,7 @@ async fn describe(
     kind: SdpKind,
     restart: bool,
     trickle: bool,
+    gather: &GatherWait,
 ) -> Result<Description, RtcError> {
     let created = match kind {
         SdpKind::Offer => {
@@ -548,7 +667,7 @@ async fn describe(
         .await
         .map_err(|e| RtcError::Sdp(js_err(&e)))?;
     if !trickle {
-        gathering_complete(pc).await;
+        gathering_complete(pc, gather).await;
     }
     let sdp = pc
         .local_description()
@@ -558,34 +677,27 @@ async fn describe(
     Ok(Description { kind, sdp })
 }
 
-/// Resolve once `iceGatheringState` is `complete`.
-async fn gathering_complete(pc: &RtcPeerConnection) {
+/// Resolve once `iceGatheringState` is `complete`, or once the peer closes
+/// (`close` settles the wait).
+async fn gathering_complete(pc: &RtcPeerConnection, gather: &GatherWait) {
     if pc.ice_gathering_state() == RtcIceGatheringState::Complete {
         return;
     }
-    let pc2 = pc.clone();
+    let (pc2, slot) = (pc.clone(), gather.clone());
     let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-        let pc3 = pc2.clone();
-        let listener: Rc<RefCell<Option<JsCallback>>> = Rc::default();
-        let l2 = listener.clone();
+        let (pc3, slot3) = (pc2.clone(), slot.clone());
         let cb = Closure::<dyn FnMut(JsValue)>::new(move |_e: JsValue| {
             if pc3.ice_gathering_state() == RtcIceGatheringState::Complete {
-                let _ = resolve.call0(&JsValue::NULL);
-                if let Some(cb) = l2.borrow_mut().take() {
-                    let _ = pc3.remove_event_listener_with_callback(
-                        "icegatheringstatechange",
-                        cb.as_ref().unchecked_ref(),
-                    );
-                    // Dropped after this call returns, not inside it.
-                    wasm_bindgen_futures::spawn_local(async move { drop(cb) });
-                }
+                settle_gather(&pc3, &slot3);
             }
         });
         let _ = pc2.add_event_listener_with_callback(
             "icegatheringstatechange",
             cb.as_ref().unchecked_ref(),
         );
-        *listener.borrow_mut() = Some(cb);
+        // One wait per peer at a time: the peer's ops run in order.
+        *slot.borrow_mut() = Some((resolve, cb));
+        GATHER_WAITS.with(|n| n.set(n.get() + 1));
     });
     let _ = JsFuture::from(promise).await;
 }
