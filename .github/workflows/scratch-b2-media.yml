@@ -1,0 +1,89 @@
+# SCRATCH (do not merge): #1916 B2 measurements on the CI runner.
+name: scratch-b2-media
+on: pull_request
+jobs:
+  browsers:
+    if: startsWith(github.head_ref, 'scratch-b2-media')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/rust-toolchain
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Install wasm-bindgen-test-runner
+        run: |
+          version=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | grep '^version' | head -1 | cut -d'"' -f2)
+          cargo install wasm-bindgen-cli --version "$version" --locked
+      - name: Install chromedriver
+        run: |
+          chrome_version=$(google-chrome --version | grep -oE '[0-9.]+')
+          npx --yes @puppeteer/browsers install "chromedriver@$chrome_version"
+          echo "CHROMEDRIVER=$(find "$PWD/chromedriver" -name chromedriver -type f | head -1)" >> "$GITHUB_ENV"
+      - name: Null audio sink
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends pulseaudio
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=ci_null
+          pactl set-default-sink ci_null
+      - name: media_echo + web_media_native (Chrome, then Firefox)
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        run: |
+          cargo build -p rinch-rtc --features media --example media_echo
+          target/debug/examples/media_echo --port 47812 --url-file echo.url &
+          for i in $(seq 1 50); do [ -s echo.url ] && break; sleep 0.2; done
+          RINCH_RTC_MEDIA_URL=http://127.0.0.1:47812 RINCH_RTC_REQUIRE_LIVE=1 \
+            cargo test -p rinch-rtc --features media --target wasm32-unknown-unknown --test web_media_native 2>&1 | grep -vE '^\s+at ' || true
+          export GECKODRIVER="$GECKOWEBDRIVER/geckodriver"
+          firefox --version
+          ls ~/.mozilla 2>/dev/null; find / -maxdepth 6 -iname "*gmpopenh264*" 2>/dev/null | head
+          RINCH_RTC_MEDIA_URL=http://127.0.0.1:47812 RINCH_RTC_REQUIRE_LIVE=1 \
+            cargo test -p rinch-rtc --features media --target wasm32-unknown-unknown --test web_media_native 2>&1 | grep -vE '^\s+at ' || true
+      - name: native media tests
+        run: cargo test -p rinch-rtc --features media --test media_loopback 2>&1 | tail -5
+  build-cost:
+    if: startsWith(github.head_ref, 'scratch-b2-media')
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        nasm: [no, yes]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/rust-toolchain
+      - name: nasm
+        if: matrix.nasm == 'yes'
+        run: |
+          start=$(date +%s)
+          sudo apt-get update -qq && sudo apt-get install -y -qq nasm
+          nasm -v
+          echo "NASM INSTALL $(( $(date +%s) - start )) s"
+      - name: cmake present?
+        run: cmake --version | head -1; which nasm || echo "no nasm"
+      - name: Build without media (baseline)
+        run: |
+          start=$(date +%s)
+          cargo build -p rinch-rtc --tests
+          echo "BASE BUILD $(( $(date +%s) - start )) s"
+      - name: Build with media (timings)
+        run: |
+          start=$(date +%s)
+          cargo build -p rinch-rtc --features media --tests --timings 2>&1 | tail -3
+          echo "MEDIA BUILD (incremental over base) $(( $(date +%s) - start )) s"
+          f=$(ls target/cargo-timings/cargo-timing-*.html | tail -1)
+          python3 - "$f" <<'PY'
+          import json, re, sys
+          html = open(sys.argv[1]).read()
+          m = re.search(r"const UNIT_DATA = (\[.*?\]);", html, re.S)
+          units = json.loads(m.group(1))
+          for u in sorted(units, key=lambda u: -u["duration"])[:15]:
+              print(f'{u["duration"]:7.1f}s {u["name"]} {u.get("version","")} {u.get("target","")}')
+          PY
+      - name: Codec bench (spike, release)
+        run: |
+          git checkout origin/spike-1916 -- spikes/1916
+          cd spikes/1916
+          cargo run --release --bin codec_bench 2>&1 | tail -15
