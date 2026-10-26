@@ -642,6 +642,144 @@ impl Transaction {
         Ok(())
     }
 
+    /// After an undo or redo (`plugins::history`): repair each table its steps
+    /// left ragged, in this transaction (#1937). The steps an undo reverts are
+    /// mapped through the changes made since — a peer's, which the history did
+    /// not record — and a mapped table command can apply in part: a
+    /// `mergeCells` undone after a peer's merge restored cells into the peer's
+    /// table and kept the spans. #1847 decided to repair, not skip, what an edit
+    /// leaves ragged; this is that repair for the history's transactions, which
+    /// are built step by step rather than through [`Self::with_table_repair`].
+    ///
+    /// Only the tables a step can have changed the grid of are looked at, so
+    /// that undoing a keystroke costs nothing in the size of the table around
+    /// it: the undo of typing (`typing`, per step, from the history: the
+    /// inverse of inline content put in at one position deletes inline content
+    /// of one textblock, wherever it is mapped) and an inline insertion change
+    /// no grid and are not even resolved; any other step inside one textblock,
+    /// or inside one cell, that puts in no table, row or cell changes no grid
+    /// (one resolve of its start in the document it applied to, as the editing
+    /// paths make); a step whose ends
+    /// are in different cells, a `BatchStep` and a span attribute set on a cell
+    /// look at the tables around them; a step that puts in a table, row or cell
+    /// inside one cell looks at the tables inside its range. A table that was
+    /// ragged before the undo (its old self found through the inverted
+    /// mapping) stays as it is.
+    pub(crate) fn repair_tables_after_history(&mut self, typing: &[bool]) -> Result<(), StepError> {
+        use crate::transform::steps::{BatchStep, ReplaceAroundStep, ReplaceStep, SetNodeAttrStep};
+        let n = self.steps.len();
+        if n == 0 {
+            return Ok(());
+        }
+        let maps = self.mapping.maps();
+        // A position of step `k`'s document, in the document now.
+        let through =
+            |k: usize, pos: usize, assoc: i32| maps[k..].iter().fold(pos, |p, m| m.map(p, assoc));
+        // Ranges of the document now to look for tables in, each with the cell
+        // around it whose own tables are not this step's to check.
+        let mut scans: Vec<(usize, usize, Option<usize>)> = Vec::new();
+        for (k, (step, doc)) in self.steps.iter().zip(&self.docs).enumerate() {
+            // The inverse of typing, or typing (inline content put in at one
+            // position, which only a textblock takes): no grid changes, and
+            // nothing is resolved.
+            if typing.get(k).copied().unwrap_or(false) || inline_insertion(step.as_ref()) {
+                continue;
+            }
+            let step = step.as_any();
+            let size = doc.content_size();
+            let around = |scans: &mut Vec<(usize, usize, Option<usize>)>, f: usize, t: usize| {
+                scans.push((
+                    through(k, f.saturating_sub(1), -1),
+                    through(k, (t + 1).min(size), 1),
+                    None,
+                ));
+            };
+            let (from, to, slice) = if let Some(s) = step.downcast_ref::<ReplaceStep>() {
+                (s.from, s.to, &s.slice)
+            } else if let Some(s) = step.downcast_ref::<ReplaceAroundStep>() {
+                (s.from, s.to, &s.slice)
+            } else if let Some(s) = step.downcast_ref::<SetNodeAttrStep>() {
+                if matches!(s.attr.as_str(), "colspan" | "rowspan") {
+                    around(&mut scans, s.pos, s.pos + 1);
+                }
+                continue;
+            } else if let Some(s) = step.downcast_ref::<BatchStep>() {
+                let map = &maps[k];
+                for t in map.ranges().as_chunks::<3>().0 {
+                    around(&mut scans, t[0], t[0] + t[1]);
+                }
+                for pos in s.attr_positions() {
+                    around(&mut scans, pos, pos + 1);
+                }
+                continue;
+            } else {
+                // Marks and document attributes change no grid.
+                continue;
+            };
+            let structural = holds_table_parts(&slice.content);
+            let Ok(r) = doc.resolve(Pos(from)) else {
+                around(&mut scans, from, to);
+                continue;
+            };
+            if !structural && r.parent().is_textblock() && to <= r.end(r.depth()) {
+                continue;
+            }
+            let cell = (1..=r.depth()).rev().find(|&d| tables::is_cell(r.node(d)));
+            match cell {
+                Some(d) if to <= r.end(d) => {
+                    if structural {
+                        let floor = r.before(d).map(|c| through(k, c, -1));
+                        scans.push((through(k, from, -1), through(k, to, 1), floor));
+                    }
+                }
+                _ => around(&mut scans, from, to),
+            }
+        }
+        if scans.is_empty() {
+            return Ok(());
+        }
+        let end = self.doc.content_size();
+        let mut ragged: Vec<usize> = Vec::new();
+        for (lo, hi, floor) in scans {
+            let (lo, hi) = (lo.min(end), hi.min(end));
+            self.doc.nodes_between(lo, hi, &mut |node, pos, _| {
+                let skip = floor.is_some_and(|c| pos <= c);
+                if tables::is_table(node)
+                    && !skip
+                    && !ragged.contains(&pos)
+                    && !tables::table_problems(node).is_empty()
+                {
+                    ragged.push(pos);
+                }
+                !node.is_textblock()
+            });
+        }
+        if ragged.is_empty() {
+            return Ok(());
+        }
+        let old_doc = &self.docs[0];
+        let mut back = Mapping::new();
+        for m in maps.iter().rev() {
+            back.append_map(m.invert());
+        }
+        let was_ragged = |pos: usize| {
+            let r = back.map_result(pos + 1, 1);
+            !r.deleted()
+                && r.pos
+                    .checked_sub(1)
+                    .and_then(|p| old_doc.node_at(p))
+                    .filter(tables::is_table)
+                    .is_some_and(|t| !tables::table_problems(&t).is_empty())
+        };
+        ragged.retain(|&p| !was_ragged(p));
+        // Innermost (later) tables first, so the positions before each hold.
+        ragged.sort_unstable();
+        for pos in ragged.into_iter().rev() {
+            self.repair_table(pos)?;
+        }
+        Ok(())
+    }
+
     /// Make the table at `table_pos` tile its grid ([`tables::table_problems`]):
     /// cut each colliding or overlong span to what fits, then give each short
     /// row empty cells at its end, until the table tiles. Port of
@@ -873,6 +1011,32 @@ fn holds_table(node: &Node) -> bool {
         return true;
     }
     !node.is_textblock() && node.content().children().iter().any(holds_table)
+}
+
+/// Whether `content` holds a table, a row or a cell anywhere: what a replace must
+/// put in to change a table's grid from inside one cell.
+fn holds_table_parts(content: &Fragment) -> bool {
+    content.children().iter().any(|n| {
+        tables::is_table(n)
+            || tables::is_cell(n)
+            || n.type_name() == "table_row"
+            || (!n.is_textblock() && !n.is_leaf() && holds_table_parts(n.content()))
+    })
+}
+
+/// Whether `step` puts in inline content alone at one position (typing, an
+/// inline paste): a `ReplaceStep` that replaces nothing with a closed slice of
+/// inline nodes. Only a textblock takes inline content, so it changes no table's
+/// grid, and its inverse deletes inline content of one textblock (#1937).
+pub(crate) fn inline_insertion(step: &dyn Step) -> bool {
+    step.as_any()
+        .downcast_ref::<crate::transform::steps::ReplaceStep>()
+        .is_some_and(|s| {
+            s.from == s.to
+                && s.slice.open_start == 0
+                && s.slice.open_end == 0
+                && s.slice.content.children().iter().all(Node::is_inline)
+        })
 }
 
 #[cfg(test)]

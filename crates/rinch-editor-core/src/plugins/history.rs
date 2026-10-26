@@ -102,6 +102,11 @@ struct EventInfo {
     typing: bool,
 }
 
+/// What [`Branch::pop_event`] answers: the transaction, the selection to
+/// restore, the branch without the event, the event, and the per-step typing
+/// flags when a step was remapped.
+type Popped = (Transaction, Selection, Branch, EventInfo, Option<Vec<bool>>);
+
 /// One entry of a branch: the forward step map of a step, and for a recorded
 /// step its inverse. A map-only item (`step: None`) is a change the history did
 /// not record (`peer`), or the map of a step an undo applied.
@@ -121,6 +126,11 @@ struct Item {
     /// exact; stored as two numbers, so a long run costs one item. `map` is then
     /// the run as one range, for nothing but display.
     unit_run: Option<(usize, usize)>,
+    /// The recorded step put in inline content alone, at one position (typing):
+    /// its inverse deletes inline content of one textblock, and mapped through
+    /// any change since it still changes no table's grid, so an undo of it
+    /// checks no table (#1937).
+    inline_insert: bool,
 }
 
 impl Item {
@@ -132,6 +142,7 @@ impl Item {
             mirror_offset,
             peer: false,
             unit_run: None,
+            inline_insert: false,
         }
     }
 }
@@ -233,6 +244,7 @@ impl Branch {
                 mirror_offset: None,
                 peer: false,
                 unit_run: None,
+                inline_insert: crate::state::transaction::inline_insertion(step.as_ref()),
             });
         }
         self.items = items;
@@ -293,11 +305,10 @@ impl Branch {
     /// applied (mirrored, so a position the event's own step deleted and its
     /// inverse re-inserted is recovered). A step that no longer maps or applies
     /// is skipped. Returns the transaction (selection not set yet), the
-    /// selection to restore, the branch without the event, and the event.
-    fn pop_event(
-        &self,
-        state: &EditorState,
-    ) -> Option<(Transaction, Selection, Branch, EventInfo)> {
+    /// selection to restore, the branch without the event, the event, and —
+    /// when a step was mapped through a change the history did not record —
+    /// per step applied, whether it undoes typing (`Item::inline_insert`).
+    fn pop_event(&self, state: &EditorState) -> Option<Popped> {
         if self.event_count == 0 {
             return None;
         }
@@ -320,6 +331,9 @@ impl Branch {
         let mut remap: Option<(Mapping, Vec<usize>)> = None;
         let mut add_before: Vec<Item> = Vec::new();
         let mut add_after: Vec<Item> = Vec::new();
+        // Per step the undo applies: whether it is the inverse of typing, which
+        // changes no table's grid wherever it is mapped (`Item::inline_insert`).
+        let mut typing: Vec<bool> = Vec::new();
         for i in (0..len).rev() {
             let item = seg[i];
             let Some(step) = &item.step else {
@@ -347,6 +361,7 @@ impl Branch {
                     for &(from, to) in pieces.iter().rev() {
                         let piece = ReplaceStep::new(from, to, Slice::empty());
                         if tr.step(Box::new(piece)).is_ok() {
+                            typing.push(item.inline_insert);
                             let map = last_map(&tr);
                             add_after.push(Item::map_only(map.clone(), None));
                             remap.append_map(map);
@@ -355,6 +370,7 @@ impl Branch {
                 } else if let Some(mapped) = mapped
                     && tr.step(mapped).is_ok()
                 {
+                    typing.push(item.inline_insert);
                     let map = last_map(&tr);
                     // Mirrored with the step's own map only when it is that map's
                     // image, range for range (#1935): a position a map deleted is
@@ -376,14 +392,22 @@ impl Branch {
             } else {
                 // Nothing recorded after this step: it applies where it was made.
                 // A step that fails is skipped, as PM's `maybeStep` does.
-                let _ = tr.step(step.clone());
+                if tr.step(step.clone()).is_ok() {
+                    typing.push(item.inline_insert);
+                }
             }
             if let Some(info) = &item.event {
                 let selection = match &remap {
                     Some((r, starts)) => info.selection.map(tr.doc(), &r.slice(starts[i], r.len())),
                     None => info.selection.clone(),
                 };
-                return Some(self.finish(tr, selection, rest, add_before, add_after, info));
+                // Whether a step was mapped through a change the history did not
+                // record (a peer's): only then can the result differ from the
+                // document before the event (#1937).
+                let remapped = remap.is_some();
+                let (tr, selection, branch, info) =
+                    self.finish(tr, selection, rest, add_before, add_after, info);
+                return Some((tr, selection, branch, info, remapped.then_some(typing)));
             }
         }
         None
@@ -991,7 +1015,23 @@ fn hist_transaction(state: &EditorState, action: HistoryAction) -> Option<Transa
         HistoryAction::Undo => &hist.done,
         HistoryAction::Redo => &hist.undone,
     };
-    let (mut tr, selection, remaining, event) = branch.pop_event(state)?;
+    let (mut tr, selection, remaining, event, remapped) = branch.pop_event(state)?;
+    // A table the undo left ragged is repaired here, in its transaction (#1937),
+    // and the selection follows the repair. Only an undo whose steps were mapped
+    // through a change the history did not record (a peer's) can leave one: one
+    // that was not applies the recorded inverses to the very documents they were
+    // made for, and brings back the document before the event, table for table.
+    // So a local undo checks nothing, whatever the table's size.
+    let steps = tr.steps().len();
+    if let Some(typing) = remapped {
+        // A repair that fails part way leaves the steps it made; none should.
+        let _ = tr.repair_tables_after_history(&typing);
+    }
+    let selection = if tr.steps().len() > steps {
+        selection.map(tr.doc(), &tr.mapping().slice(steps, tr.mapping().len()))
+    } else {
+        selection
+    };
     tr.set_selection(selection);
     tr.set_add_to_history(false);
     tr.set_meta(
