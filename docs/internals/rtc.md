@@ -172,8 +172,9 @@ There are no cargo features for the backends: the target picks one.
 
 ## Media (the `media` feature, #1916)
 
-Design record: `docs/design/rtc-media.md`. The web backend is here; native
-media is the next PR (`native_media.rs` returns `NotSupported` until then).
+Design record: `docs/design/rtc-media.md`. Features: `media` (openh264 from
+source) or `media-cisco-openh264` (Cisco's binary, loaded at run time); the
+code's gate is `media-core`, which both turn on.
 
 - **Layout.** `media/mod.rs` holds the API and the main-thread state:
   - local tracks in their own thread-local `LOCALS` (they belong to no
@@ -211,6 +212,58 @@ media is the next PR (`native_media.rs` returns `NotSupported` until then).
   - `on_frame` uses `requestVideoFrameCallback`. A live stream's
     `currentTime` advances with the clock, frames or not, so rAF plus
     `currentTime` re-read the frozen last frame.
+- **Desktop (`native_media.rs`).** The module comment lists the threads.
+  Things that are not obvious:
+  - **One webrtc-rs track per sender, for life.** webrtc-rs 0.21's
+    `RtpSender::replace_track` swaps the track in its core but never binds
+    the new handle, so its writes fail ("bind failed"). `replace_track` here
+    re-points the sender's forwarder from one source to another, and the
+    SSRC and sequence numbers run on, as a browser's replaceTrack does.
+    `add_transceiver` makes its transceiver from a track of ours
+    (`add_transceiver_from_track`) for the same reason. A transceiver that
+    the far side's offer made still goes through webrtc-rs's
+    `replace_track`.
+  - **The payload type** comes from `RtpSender::get_parameters` once
+    negotiation has chosen a codec. It is kept per sender: the parameters
+    of a replaced track report no codecs.
+  - **Keyframes.** On a new sender, on the payload type becoming known,
+    on enable, and every 2 s. The default interceptors deliver no
+    PLI/FIR to the sender (`TrackLocalEvent::OnRtcpPacket` fires only for
+    packets an interceptor marks), so the 2 s keyframe is what heals a
+    loss. The receiver still sends PLI on a decode error, for browsers.
+  - **Mute.** webrtc-rs reports no mute when negotiation stops a track's
+    media (inactive, sendonly on our side). `PeerWorker::refresh`, which
+    runs after every offer, answer and remote description, mutes the
+    remote tracks of transceivers that no longer receive. The reader
+    unmutes on the next packet.
+  - **Remote tracks are keyed on the stack's track id.** `on_track` again
+    for the same id reuses the key and starts a new reader; no second
+    `Track` event.
+  - **Rollback.** `apply_remote` rolls our pending offer back
+    (`SetLocal(rollback)`) before an incoming offer, because webrtc-rs has
+    no implicit rollback. An explicit `Description::rollback()` goes to
+    SetLocal or SetRemote by which offer is pending (`pending_local_description`).
+  - **Mirror.** The main thread answers `transceivers()`, `mid()` and the
+    directions from `MIRRORS`. `add_track` and `add_transceiver` push an
+    entry at once; `refresh` fills in mids and negotiated directions. The
+    direction *asked for* is the main thread's own and `refresh` leaves it
+    alone (a SetDirection still on its way would otherwise be overwritten).
+  - **Audio.**
+    - Sources are resampled linearly to 48 kHz (`Resampler`), not with
+      rubato as the record said: one small resampler shared with playback,
+      no new dependency. Fine for voice; a music app may want better.
+    - Remote Opus is decoded on the worker into a per-track buffer: 60 ms
+      before it starts, 300 ms at most.
+    - One mixer feeds one rinch-av output, opened on the main thread on the
+      first remote audio. With no device (a CI runner) that is reported
+      once as `RtcError::Media`, and decoding carries on.
+    - `testing::capture_audio_output` replaces the device with a 20 ms
+      pull into a buffer.
+  - **Video sink (M6).** `rinch_core::video_sink` holds the factory the
+    shell installs (`rinch::render_surface::create_video_frame_sink`);
+    rinch-video's `set_frame_sink_factory` forwards to it.
+    `MediaView`'s sink is created on the main thread (the surface registry
+    is the main thread's) and dropped by the view's scope cleanup.
 - **Trap: `MediaStreamTrack` and `MediaStream` have an inherent `clone()`**
   (JS `clone()`, which makes a *new* track), and it outranks `Clone::clone`.
   `track.clone()` handed the sender a copy that `set_enabled` never

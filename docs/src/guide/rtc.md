@@ -17,9 +17,7 @@ Use it when a WebSocket is the wrong tool:
   ones queued behind it: game ticks, cursors, voice-like data.
 
 Audio and video tracks are behind the `media` feature (see
-[Audio and video](#audio-and-video)). In this release they work on the web
-only; on desktop every media call returns `NotSupported` until the native
-backend lands.
+[Audio and video](#audio-and-video)).
 
 ```toml
 [dependencies]
@@ -289,6 +287,42 @@ Turn on the `media` feature:
 rinch-rtc = { workspace = true, features = ["media"] }
 ```
 
+- **On the web** it uses the browser's own capture, codecs and playback.
+- **On desktop** it uses:
+  - H.264 through openh264 and Opus through libopus, both built from
+    source (a C compiler, and cmake for libopus);
+  - capture through rinch-av (cpal and nokhwa);
+  - playback through one rinch-av output stream for the process.
+
+  **Build with nasm installed** (`apt install nasm`, `brew install nasm`):
+  openh264 then uses its assembly and encodes about 3× faster. A
+  1280×720 call goes from about two-thirds of a core to a sixth. Without
+  nasm it still builds, C only.
+
+  Desktop video is H.264 only. Chrome, Edge and Safari decode and encode it
+  natively. Firefox needs Cisco's OpenH264 plugin, which it normally
+  downloads by itself; see "Firefox and H.264" below.
+
+### H.264 and its patents: `media` or `media-cisco-openh264`
+
+H.264 is patented. How a desktop build gets its encoder decides who
+covers the licensing:
+
+- **`media`** builds openh264 from Cisco's C source into your app. That
+  build is *not* covered by Cisco's MPEG LA licence: H.264 patent
+  licensing is then your app's own concern.
+- **`media-cisco-openh264`** builds no H.264 code in. Your app downloads
+  Cisco's prebuilt OpenH264 library itself (from
+  `ciscobinary.openh264.org`, separately from your app, as Cisco's terms
+  require: <https://www.openh264.org/faq.html>), and hands its path to
+  `rinch_rtc::media::load_openh264(path)` before any video is sent or
+  received. Cisco's binary licence covers the royalties when its
+  conditions are met. Video calls fail with `NotSupported` until it is
+  loaded.
+
+Pick exactly one. Audio (Opus) is royalty-free either way. This is not
+legal advice; ask your counsel which fits your distribution.
+
 The model is the browser's, simplified.
 
 - A **`LocalTrack`** is something this app sends:
@@ -332,9 +366,23 @@ rsx! {
 }
 ```
 
-`MediaView` is a `<video>` playing the track, muted (remote audio has its
-own element), with `object-fit: contain` on black. Its track is fixed for
-the component's life: key the component on the track to show another.
+`MediaView` shows the track with `object-fit: contain` on black, and its
+track is fixed for the component's life: key the component on the track to
+show another. Under the hood:
+
+- **On the web** it is a `<video>` playing the track, muted (remote audio
+  has its own element).
+- **On desktop** it is a `div` the window's compositor draws decoded frames
+  into. Remote frames are decoded on a thread of their own, with RGBA
+  handed to the renderer. It is black until the first frame.
+
+Both carry `data-rtc-view` with the same view id. On desktop the div also
+carries `data-viewport`, the compositor's key for a video surface, and
+`data-viewport-ready="true"` once a frame has arrived.
+
+**Desktop audio has no echo cancellation** (M5). Browsers cancel echo for
+microphone audio, but desktop capture does not. Two desktop peers on
+speakers will hear themselves, so desktop calls want headphones.
 
 The usual signalling, callback and lifetime rules apply. Media callbacks run
 on the UI thread and are dropped when the component that registered them
@@ -399,3 +447,13 @@ if collision {
 `set_remote_description(Description::rollback())` undoes a pending offer
 explicitly. That's on the web for now; desktop gets it, and the implicit
 rollback above, with the native media PR.
+
+### Firefox and H.264
+
+Firefox does H.264 through Cisco's OpenH264 plugin, which it downloads by
+itself into the profile shortly after first start. Until it has the
+plugin, Firefox still *lists* H.264 in its offers but encodes nothing,
+and since desktop rinch-rtc is H.264 only, video between a desktop peer and
+that Firefox does not flow. Audio is unaffected. A browser-only call is
+unaffected too: browsers fall back to VP8 between themselves.
+

@@ -530,6 +530,68 @@ to a browser makes the browser user hear themselves.
 `webrtc-audio-processing` 2.1 wraps Google's module, but it is a C++ build.
 M5 is whether v1 ships without it (and documents headphones) or with it.
 
+### 3.7 As built (PR B2)
+
+Where the native backend differs from 3.1–3.6, the code holds:
+
+- **Features (M3).**
+  - `media` builds openh264 from source.
+  - `media-cisco-openh264` builds no H.264 code and loads Cisco's binary
+    at run time (`media::load_openh264`, hash-checked by openh264).
+  - Both turn on `media-core`, the code's gate.
+- **A sender keeps one webrtc-rs track for life.**
+  - webrtc-rs 0.21's `RtpSender::replace_track` does not bind the new
+    track, so its writes fail. `replace_track` re-points the sender's
+    forwarder to the new source instead; the SSRC and sequence numbers run
+    on, as a browser's does.
+  - `add_transceiver` makes its transceiver from a track of ours for the
+    same reason.
+- **Keyframes every 2 s,** plus one on a new sender, on enable, and once
+  the payload type is known. webrtc-rs's default interceptors pass no
+  PLI/FIR to the sending app, so the periodic keyframe is what heals a
+  loss. The receiver still sends PLI on a decode error.
+- **Mute is synthesised.** webrtc-rs reports no mute when negotiation stops
+  a track's media. After each offer, answer and remote description, the
+  worker mutes remote tracks whose transceiver no longer receives, and the
+  next packet unmutes them.
+- **Rollback (1.7):**
+  - an incoming offer while ours is pending is applied as
+    `SetLocal(rollback)` then `SetRemote(offer)`;
+  - `Description::rollback()` rolls back whichever offer is pending.
+- **Resampling is linear,** not rubato (3.3). It serves sources at any rate
+  into 48 kHz Opus, and 48 kHz into the output device. It is good enough
+  for voice and adds no dependency.
+- **Opus PLC is not wired** (3.4). Lost packets are silence. The jitter
+  buffer is per track: 60 ms before playback starts, 300 ms at most.
+- **No audio device** (a CI runner) is reported once through `on_error`
+  as `RtcError::Media`; decoding goes on. Tests read the mix through
+  `testing::capture_audio_output`.
+- **`MediaView` on desktop** is a div with both `data-rtc-view` (the
+  identity it shares with the web's `<video>`; reserved) and
+  `data-viewport` (the compositor's key, already reserved). The sink comes
+  from `rinch_core::video_sink` (M6); rinch-video's factory now forwards
+  there.
+- **Codec cost on the CI runner** (ubuntu-24.04, release, codec_bench from
+  the spike):
+
+  | | C only | with nasm |
+  |---|---|---|
+  | H.264 encode 640×480 | 8.4 ms (6.8 ms on another run) | 2.3 ms |
+  | H.264 encode 1280×720 | 19.8 ms (16.3) | 5.4 ms |
+  | H.264 decode 640×480 / 1280×720 | 2.0 / 4.4 ms | 0.7 / 1.6 ms |
+  | Opus 20 ms stereo enc / dec | 0.13 / 0.03 ms | same |
+
+  With nasm a 720p30 call costs about a sixth of a core instead of
+  two-thirds. CI installs nasm, and the guide tells apps to build with it.
+- **Build cost on the CI runner** (debug, cold):
+  - openh264-sys2's build script takes 28–31 s, with or without nasm
+    (nasm's assembly builds in parallel).
+  - opusic-sys's (cmake) takes about 20 s.
+  - `cargo build -p rinch-rtc --features media --tests` over the same build
+    without `media` adds 52–57 s.
+  - Installing nasm is 8 s uncached, and it is cached with the other apt
+    packages.
+
 ## 4. Rendering received video: the split path
 
 The received-video path ends at the named video sink:

@@ -3929,12 +3929,10 @@ where
     // Set global proxy so run_on_main_thread() works from any thread
     install_global_proxy(&proxy);
 
-    // Register video frame sink factory so video players deliver frames
-    // through the RenderSurface compositing pipeline.
-    #[cfg(feature = "video")]
-    {
-        rinch_video::set_frame_sink_factory(crate::render_surface::create_video_frame_sink);
-    }
+    // Register the named video sink factory (rinch-core's hook) so video
+    // players and rinch-rtc's remote tracks deliver frames through the
+    // RenderSurface compositing pipeline.
+    rinch_core::video_sink::set_video_sink_factory(crate::render_surface::create_video_frame_sink);
 
     // Start debug IPC server if feature is enabled (disable with RINCH_DEBUG=0)
     #[cfg(feature = "debug")]
@@ -4055,12 +4053,10 @@ pub fn run_rinch_with_window_props_and_menu<F>(
     // Set global proxy so run_on_main_thread() works from any thread
     install_global_proxy(&proxy);
 
-    // Register video frame sink factory so video players deliver frames
-    // through the RenderSurface compositing pipeline.
-    #[cfg(feature = "video")]
-    {
-        rinch_video::set_frame_sink_factory(crate::render_surface::create_video_frame_sink);
-    }
+    // Register the named video sink factory (rinch-core's hook) so video
+    // players and rinch-rtc's remote tracks deliver frames through the
+    // RenderSurface compositing pipeline.
+    rinch_core::video_sink::set_video_sink_factory(crate::render_surface::create_video_frame_sink);
 
     #[cfg(feature = "debug")]
     {
