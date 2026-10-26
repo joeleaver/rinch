@@ -490,13 +490,14 @@ jobs:
           # above, but `embed` on wasm32 is reached by no crate in the
           # workspace and broke unnoticed (an OS file-drop path calling a
           # native-only `LocalFile::from_path`).
-          echo "::group::clippy rinch-rtc media (wasm32)"
-          cargo clippy -p rinch-rtc --features media --target wasm32-unknown-unknown \
-            --all-targets -- -D warnings
-          echo "::endgroup::"
           echo "::group::clippy rinch embed (wasm32)"
           cargo clippy -p rinch --no-default-features --features components,theme,embed \
             --target wasm32-unknown-unknown -- -D warnings
+          echo "::endgroup::"
+          # rinch-rtc's `media` feature (#1916), which nothing turns on.
+          echo "::group::clippy rinch-rtc media (wasm32)"
+          cargo clippy -p rinch-rtc --features media --target wasm32-unknown-unknown \
+            --all-targets -- -D warnings
           echo "::endgroup::"
 
       # The web examples are excluded from the workspace (they pin their own
