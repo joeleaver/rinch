@@ -617,6 +617,34 @@ pub fn table_around(r: &ResolvedPos) -> Option<(Node, usize)> {
     None
 }
 
+thread_local! {
+    /// The last [`table_map`]: the table node (kept, so its identity cannot
+    /// be reused while cached), its content start, and its map.
+    static MAP_CACHE: std::cell::RefCell<Option<(Node, usize, std::rc::Rc<TableMap>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The [`TableMap`] of `table` with its content at `table_start`, computed
+/// once per table node: the last one asked for is kept, keyed by the node's
+/// identity (an edit makes a new node) and the start. prosemirror-tables
+/// caches its maps per table node the same way. A toolbar asks whether
+/// each mark is active over a cell selection on every update
+/// ([`Selection::ranges`](crate::Selection::ranges)), and each ask computed
+/// the whole map (1.36M instructions at 1000×10 cells).
+pub fn table_map(table: &Node, table_start: usize) -> std::rc::Rc<TableMap> {
+    MAP_CACHE.with(|cache| {
+        if let Some((node, start, map)) = cache.borrow().as_ref()
+            && node.same_ref(table)
+            && *start == table_start
+        {
+            return map.clone();
+        }
+        let map = std::rc::Rc::new(TableMap::compute(table, table_start));
+        *cache.borrow_mut() = Some((table.clone(), table_start, map.clone()));
+        map
+    })
+}
+
 /// The [`TableMap`] of the table enclosing `pos`, with the table node and its
 /// content-start position. `None` if `pos` is not inside a table.
 pub fn map_around(doc: &Node, pos: Pos) -> Option<(TableMap, Node, usize)> {

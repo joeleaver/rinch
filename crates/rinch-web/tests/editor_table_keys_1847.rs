@@ -160,3 +160,29 @@ fn shift_click_from_a_cell_selection_keeps_its_anchor_cell_on_the_web() {
     f.press(0, true);
     assert_eq!(f.handle.selection(), Selection::cell(Pos(11), Pos(5)));
 }
+
+/// Second review of #1931: Shift+Down out of the bottom row and Shift+Up
+/// back lands in the cell under the caret, so the range is text inside the
+/// anchor's cell, not a cell selection of the table's last cell.
+#[wasm_bindgen_test]
+fn shift_down_out_of_the_table_and_back_up_is_text_on_the_web() {
+    let f = F::new();
+    f.handle.set_selection(Selection::cursor(Pos(22)));
+    f.shift_key("ArrowDown");
+    f.shift_key("ArrowUp");
+    let sel = f.handle.selection();
+    assert!(
+        matches!(sel, Selection::Text(t) if t.anchor == Pos(22) && (21..=23).contains(&t.head.0)),
+        "{sel:?}"
+    );
+}
+
+#[wasm_bindgen_test]
+fn shift_left_out_of_the_first_cell_extends_as_text_on_the_web() {
+    // No cell left of "ab": the plain extension, into the paragraph above,
+    // not a selection of "ab"'s own cell.
+    let f = F::new();
+    f.handle.set_selection(Selection::cursor(Pos(7)));
+    f.shift_key("ArrowLeft");
+    assert_eq!(f.handle.selection(), Selection::text(Pos(7), Pos(2)));
+}

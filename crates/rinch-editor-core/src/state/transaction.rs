@@ -500,8 +500,8 @@ impl Transaction {
     /// so the fitted replace can take cells out of a row or rows out from
     /// under a rowspan; and a pasted table may itself be ragged. The repair
     /// puts the grid back: a rowspan past the last row or a span into another
-    /// cell's slot is cut, then each short row gets an empty cell at its end for
-    /// each run of slots it lacks, spanning the run.
+    /// cell's slot is cut, then each short row gets empty cells at its end
+    /// ([`Self::repair_table`]).
     ///
     /// Which tables are looked at, so that an edit inside one cell costs
     /// nothing in the size of the table around it:
@@ -620,15 +620,31 @@ impl Transaction {
 
     /// Make the table at `table_pos` tile its grid ([`tables::table_problems`]):
     /// cut each colliding or overlong span to what fits, then give each short
-    /// row an empty cell per run of missing slots at its end, spanning the run.
-    /// Port of prosemirror-tables' `fixTable`, which cuts a colliding cell's
-    /// colspan and pads a cell per missing column (a bomb under a wide span:
-    /// one deleted or pasted `colspan = 1000` cell becomes 999 cells per
-    /// row); a collision below a cell's first row cuts its rowspan instead.
+    /// row empty cells at its end, until the table tiles. Port of
+    /// prosemirror-tables' `fixTable`, which cuts a colliding cell's colspan
+    /// (a collision below a cell's first row cuts its rowspan here) and pads
+    /// a cell per missing column — which this does too, up to the HTML
+    /// reader's padding bound; past it a short row gets one cell per run of
+    /// missing slots, spanning the run, so a wide span cannot make the
+    /// padding explode.
     fn repair_table(&mut self, table_pos: usize) -> Result<(), StepError> {
-        // A cut can uncover slots, which the next round pads; three rounds
-        // settle any table an edit can make (the seeded #1847 check).
-        for _ in 0..3 {
+        // Each round cuts every colliding or overlong span it finds (so the
+        // spans' sum falls), or pads; a cut can move the cells after it and
+        // uncover or collide again, so it runs until the table tiles. The
+        // bound — twice the cells, plus the pad — is only a backstop. A fixed
+        // three rounds left one random pasted table in 3,000 ragged (the
+        // second review of #1931; `table_paste_repair_1847.rs`).
+        let cells = |t: &Node| {
+            (0..t.child_count())
+                .map(|r| t.child(r).child_count())
+                .sum::<usize>()
+        };
+        let rounds = self
+            .doc
+            .node_at(table_pos)
+            .filter(tables::is_table)
+            .map_or(0, |t| 2 * cells(&t) + 3);
+        for _ in 0..rounds {
             let Some(table) = self.doc.node_at(table_pos).filter(tables::is_table) else {
                 return Ok(());
             };
@@ -656,7 +672,19 @@ impl Transaction {
                 continue;
             }
             // Pad the short rows, the last first so the earlier rows'
-            // positions hold.
+            // positions hold: a cell per missing column, as prosemirror-tables
+            // pads, while that is at most the HTML reader's padding bound (8
+            // empty cells per cell in the table, 16 whatever); past it one
+            // cell per run of missing slots, spanning the run — a pasted
+            // `<td colspan=1000>` over 65 bare rows asks for 64,935 cells.
+            let missing: usize = problems
+                .iter()
+                .map(|p| match p {
+                    TableProblem::Missing { runs, .. } => runs.iter().sum(),
+                    _ => 0,
+                })
+                .sum();
+            let per_column = missing <= 8 * cells(&table) + 16;
             let mut row_ends = Vec::with_capacity(table.child_count());
             let mut pos = start;
             for r in 0..table.child_count() {
@@ -673,16 +701,19 @@ impl Transaction {
                     .children()
                     .first()
                     .is_some_and(|c| c.type_name() == "table_header_cell");
-                // One cell per run of uncovered slots, spanning it: the
-                // padding is a cell per gap, not per column, so a short row
-                // under a 1000-column cell gets one cell, not 999 (a pasted
-                // `<td colspan=1000>` over 65 bare rows made 65,001 cells).
-                let cells = runs
-                    .iter()
-                    .map(|&n| self.empty_cell(header, n))
+                let widths: Vec<usize> = if per_column {
+                    runs.iter()
+                        .flat_map(|&n| std::iter::repeat_n(1, n))
+                        .collect()
+                } else {
+                    runs.clone()
+                };
+                let pad = widths
+                    .into_iter()
+                    .map(|n| self.empty_cell(header, n))
                     .collect::<Result<Vec<_>, _>>()?;
                 let at = row_ends[*row];
-                self.replace_with(at, at, Fragment::from_children(cells))?;
+                self.replace_with(at, at, Fragment::from_children(pad))?;
             }
         }
         Ok(())

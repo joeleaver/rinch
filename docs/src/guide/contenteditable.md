@@ -137,12 +137,17 @@ table selects it, and the next Backspace deletes it), and the whole-document sel
 the selected cells, whole, as a table.
 
 **Shift+arrow at a cell's edge selects cells**, as prosemirror-tables' `shiftArrow`
-does, in front of the normalization: at the end of a cell (Shift+Right, or
-Ctrl+Shift+Right, whose word motion stops there) or its start (Shift+Left), or on its
-last or first line (Shift+Down / Shift+Up), the key selects the cell and its neighbour;
-over a cell selection every Shift+arrow moves the head cell, and stops at the table's
-edge. Past a row's end Shift+Right reaches the next row's first cell; out of the table
-(the last cell's end, the bottom row's last line) the selection extends as text.
+does, in front of the normalization: at the end of a cell's last block (Shift+Right,
+or Ctrl+Shift+Right, whose word motion stops there) or the start of its first
+(Shift+Left), or on its last or first line (Shift+Down / Shift+Up), the key selects
+the cell and its neighbour; over a cell selection every Shift+arrow moves the head
+cell, and stops at the table's edge. In any other block of the cell (a paragraph above
+a nested table, say) the selection extends as text, and a nested table counts as inside
+its cell. Past a row's end Shift+Right reaches the next row's first cell; out of the
+table (the last cell's end, the bottom row's last line) the selection extends as text,
+and at the document's start or end the key does nothing. Up or Down into a table from
+outside it lands in the cell under the caret, so Shift+Down out of the bottom row and
+Shift+Up back is a text selection again.
 `EditorHandle::move_cursor` does this for the horizontal motions;
 `EditorHandle::shift_arrow_cells` is the hook a platform's Shift+Up/Down calls with its
 own vertical step, as the desktop and web input paths do.
@@ -158,7 +163,9 @@ A text range with its ends in two different tables, or with one end outside ever
 table, has no cell selection to stand for it. An edit over it that takes cells out of
 a row, or rows out from under a `rowspan`, has the table put back in the same
 transaction (one undo step): a span past the last row or into another cell is cut, and
-each short row gets an empty cell at its end for each gap, spanning it. A pasted table whose rows are ragged is
+each short row gets an empty cell for each missing column (one cell spanning each gap,
+when that would be an unreasonable number of cells: a pasted `colspan=1000` cell over
+bare rows), until the table tiles. A pasted table whose rows are ragged is
 padded the same way, at a caret as over a range. Only a table the edit made ragged, or
 pasted, is repaired; a table that was already ragged (loaded that way from HTML) is
 left as it is. An edit inside one cell is not checked against the tables around it, so

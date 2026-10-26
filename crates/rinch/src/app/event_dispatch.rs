@@ -5314,12 +5314,23 @@ impl RinchApp {
         } else {
             head.0
         };
-        Selection::near_text(
+        let target = Selection::near_text(
             &doc,
             Pos(probe.min(doc.content_size())),
             if down { 1 } else { -1 },
-        )
-        .map(|sel| (sel, CaretAffinity::Downstream))
+        )?;
+        // Into a table from outside it: the cell under the goal column, not
+        // the table's last (first) cell in document order (#1847).
+        let goal = goal_x.or_else(|| self.editor_caret_point(handle, head).map(|(x, _, _)| x));
+        let entry = goal.and_then(|gx| {
+            handle.vertical_table_entry(target.head(), down, gx, |p| {
+                self.editor_caret_point(handle, p).map(|(x, _, _)| x)
+            })
+        });
+        Some((
+            entry.map_or(target, Selection::cursor),
+            CaretAffinity::Downstream,
+        ))
     }
 
     /// Where Up (`down = false`) or Down puts a caret at `head` when the line

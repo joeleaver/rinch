@@ -135,9 +135,14 @@ impl Selection {
         let Selection::Cell(c) = self else {
             return vec![(self.from(), self.to())];
         };
-        let Some((map, _, _)) = tables::map_around(doc, Pos(c.head_cell.0 + 1)) else {
+        let Some((table, start)) = doc
+            .resolve(Pos(c.head_cell.0 + 1))
+            .ok()
+            .and_then(|r| tables::table_around(&r))
+        else {
             return Vec::new();
         };
+        let map = tables::table_map(&table, start);
         let Some(rect) = map.rect_between(c.anchor_cell.0, c.head_cell.0) else {
             return Vec::new();
         };

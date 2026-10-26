@@ -2760,9 +2760,13 @@ fn vertical_step(
         return true;
     }
     let step = geo_head.or_else(|| {
-        handle
-            .vertical_block_fallback(down)
-            .map(|s| (s.head(), CaretAffinity::Downstream))
+        let target = handle.vertical_block_fallback(down)?.head();
+        // Into a table from outside it: the cell under the goal column, not
+        // the table's last (first) cell in document order (#1847).
+        let entry = handle.vertical_table_entry(target, down, gx, |p| {
+            head_screen_rect(handle, p).map(|(x, _, _)| x)
+        });
+        Some((entry.unwrap_or(target), CaretAffinity::Downstream))
     });
     // Shift+Up/Down at a cell's top or bottom line selects cells, as
     // prosemirror-tables' `shiftArrow` does (#1847).

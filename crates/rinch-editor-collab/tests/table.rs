@@ -4383,3 +4383,60 @@ fn a_cross_table_delete_and_its_repair_reach_a_peer() {
     exchange(&mut a, &mut b);
     assert_eq!(a.state.doc, b.state.doc);
 }
+
+// --- #1847: commands over a cell selection reach a peer (second review of #1931)
+
+fn merged_blocks(s: &Schema) -> Vec<Node> {
+    // row0: [A cs2][B]; row1: [C rs2][D][E]; row2: [F][G]
+    let r0 = branch(s, "table_row", vec![spanning(s, "A", 2, 1), cell(s, "B")]);
+    let r1 = branch(
+        s,
+        "table_row",
+        vec![spanning(s, "C", 1, 2), cell(s, "D"), cell(s, "E")],
+    );
+    let r2 = branch(s, "table_row", vec![cell(s, "F"), cell(s, "G")]);
+    vec![
+        para(s, "x"),
+        branch(s, "table", vec![r0, r1, r2]),
+        para(s, "zw"),
+    ]
+}
+
+/// Marks, block types and alignment over a cell selection of merged cells
+/// (`Selection::ranges`, one range per cell) reach a peer typing in another
+/// cell, converge, and undo in one step that the peer sees too.
+#[test]
+fn commands_over_a_cell_selection_reach_a_peer() {
+    let s = schema();
+    for (a_txt, h_txt) in [("A", "E"), ("B", "F"), ("D", "G"), ("C", "B")] {
+        for cmd in [
+            "toggleBold",
+            "setHeading2",
+            "setTextAlignCenter",
+            "setParagraph",
+            "toggleHighlight",
+        ] {
+            let (mut a, mut b) = pair(&s, merged_blocks(&s), (1, 2));
+            let start = a.state.doc.clone();
+            let cell_of = |d: &Node, t: &str| pos_of(d, t) - 2;
+            let sel = Selection::cell(
+                Pos(cell_of(&a.state.doc, a_txt)),
+                Pos(cell_of(&a.state.doc, h_txt)),
+            );
+            b.type_after("G", "!");
+            let applied = a.try_run(sel, cmd);
+            exchange(&mut a, &mut b);
+            assert_eq!(a.state.doc, b.state.doc, "{cmd} {a_txt}->{h_txt}");
+            if applied {
+                let undone = a.state.run("undo").expect("undo");
+                a.commit(undone);
+                exchange(&mut a, &mut b);
+                assert_eq!(a.state.doc, b.state.doc, "undo {cmd}");
+                let html = rinch_editor_core::serialize::node_to_html(&a.state.doc);
+                let want = rinch_editor_core::serialize::node_to_html(&start)
+                    .replace("<p>G</p>", "<p>G!</p>");
+                assert_eq!(html, want, "one undo {cmd}");
+            }
+        }
+    }
+}

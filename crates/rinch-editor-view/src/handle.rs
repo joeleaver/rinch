@@ -2359,6 +2359,29 @@ impl EditorHandle {
         )
     }
 
+    /// Where an Up/Down step from the caret into a table lands when the
+    /// platform's geometry fell back to `target` (the next textblock in
+    /// document order): the cell of the table's edge row under `goal_x`
+    /// instead of its last (first) cell
+    /// ([`vertical_entry`](rinch_editor_core::commands::table_ops::vertical_entry)).
+    /// `x_of` gives a position's caret x in the platform's coordinates.
+    /// `None` leaves `target` as it is.
+    pub fn vertical_table_entry(
+        &self,
+        target: Pos,
+        down: bool,
+        goal_x: f32,
+        x_of: impl Fn(Pos) -> Option<f32>,
+    ) -> Option<Pos> {
+        let (doc, head) = {
+            let core = self.core();
+            (core.state.doc.clone(), core.state.selection.head())
+        };
+        rinch_editor_core::commands::table_ops::vertical_entry(
+            &doc, head, target, down, goal_x, x_of,
+        )
+    }
+
     /// A [`Selection::Node`] for the leaf node (image / horizontal rule) whose host
     /// element is `host_id` — the pointer hit-test path for node-selecting a leaf the
     /// user clicks. `None` if `host_id` isn't a placed node, or its node isn't

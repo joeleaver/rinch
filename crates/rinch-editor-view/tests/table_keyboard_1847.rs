@@ -163,3 +163,155 @@ fn the_handles_commands_over_a_cell_selection() {
          <tr><td><p></p></td><td><p></p></td></tr></table><p>zw</p>"
     );
 }
+
+// ── adopted from the second review of #1931 ─────────────────────────────────
+
+fn at(doc: &rinch_editor_core::Node, text: &str) -> usize {
+    let mut f = None;
+    doc.nodes_between(0, doc.content().size(), &mut |n, pos, _| {
+        if f.is_none() && n.is_text() && n.text().is_some_and(|t| t.contains(text)) {
+            f = Some(pos + n.text().unwrap().find(text).unwrap());
+        }
+        f.is_none()
+    });
+    f.unwrap_or_else(|| panic!("no {text}"))
+}
+
+fn ed(html: &str, sel: Selection) -> EditorHandle {
+    let h = create_editor();
+    h.load_html(html);
+    h.set_selection(sel);
+    h
+}
+
+/// `cell(p(ab), table(in1 | in2)) | cell(cd)`, then `p(zw)`.
+const NESTED: &str = "<table><tr><td><p>ab</p><table><tr><td><p>in1</p></td>\
+                      <td><p>in2</p></td></tr></table></td><td><p>cd</p></td></tr></table><p>zw</p>";
+
+#[test]
+fn a_nested_table_in_the_cell_is_inside_the_cell() {
+    let d = ed(NESTED, Selection::cursor(Pos(0))).doc();
+    let ab_end = Pos(at(&d, "ab") + 2);
+    // "ab" is not its cell's last block (PM `atEndOfCell`): text, for the
+    // character, word and line motions alike.
+    for m in [CharRight, WordRight] {
+        let h = ed(NESTED, Selection::cursor(ab_end));
+        h.move_cursor(m, true);
+        assert!(
+            matches!(h.selection(), Selection::Text(t) if t.anchor == ab_end),
+            "{m:?}: {:?}",
+            h.selection()
+        );
+    }
+    let h = ed(NESTED, Selection::cursor(ab_end));
+    assert!(!h.shift_arrow_cells(Axis::Vert, 1, Some(Pos(at(&d, "in1") + 1))));
+    assert_eq!(h.selection(), Selection::cursor(ab_end));
+    // Inside the nested table its own cells are the neighbours.
+    let in1_end = Pos(at(&d, "in1") + 3);
+    let h = ed(NESTED, Selection::cursor(in1_end));
+    h.move_cursor(CharRight, true);
+    let (c1, c2) = (at(&d, "in1") - 2, at(&d, "in2") - 2);
+    assert_eq!(h.selection(), Selection::cell(Pos(c1), Pos(c2)));
+    // Out of the nested table's last cell into the next outer cell: that
+    // cell alone, so the anchor stays in it (the plain extension made a cell
+    // selection of the outer cells).
+    let in2_end = Pos(at(&d, "in2") + 3);
+    let h = ed(NESTED, Selection::cursor(in2_end));
+    h.move_cursor(CharRight, true);
+    assert_eq!(h.selection(), Selection::cell(Pos(c2), Pos(c2)));
+    // Control: from "cd" leftwards the outer cells.
+    let h = ed(NESTED, Selection::cursor(Pos(at(&d, "cd"))));
+    h.move_cursor(CharLeft, true);
+    assert_eq!(
+        h.selection(),
+        Selection::cell(Pos(at(&d, "cd") - 2), Pos(at(&d, "ab") - 2))
+    );
+}
+
+#[test]
+fn shift_arrows_at_the_documents_edges_do_nothing() {
+    const ONE_ROW: &str = "<table><tr><td><p>ab</p></td><td><p>cd</p></td></tr></table>";
+    let d = ed(ONE_ROW, Selection::cursor(Pos(0))).doc();
+    let start = Pos(at(&d, "ab"));
+    let h = ed(ONE_ROW, Selection::cursor(start));
+    h.move_cursor(CharLeft, true);
+    assert_eq!(h.selection(), Selection::cursor(start), "not its own cell");
+    let end = Pos(at(&d, "cd") + 2);
+    let h = ed(ONE_ROW, Selection::cursor(end));
+    h.move_cursor(CharRight, true);
+    assert_eq!(h.selection(), Selection::cursor(end));
+}
+
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+}
+
+/// Random horizontal Shift-walks from every caret of tables with merged
+/// cells, a nested table, lists in cells and a second table: the anchor (the
+/// caret's position, or its cell once a cell selection) never moves.
+#[test]
+fn the_anchor_holds_in_random_horizontal_walks() {
+    const MERGED: &str = "<p>x</p><table><tr><td colspan=\"2\"><p>A</p></td><td><p>B</p></td></tr>\
+        <tr><td rowspan=\"2\"><p>C</p></td><td><p>D</p></td><td><p>E</p></td></tr>\
+        <tr><td><p>F</p></td><td><p>G</p></td></tr></table><p>zw</p>";
+    const MIXED: &str = "<p>x</p><table><tr><td><p>a b</p><p>c</p></td><td><ul><li><p>l1</p></li></ul></td></tr>\
+        <tr><td><p></p></td><td><p>gh</p></td></tr></table><table><tr><td><p>t2</p></td></tr></table><p>zw</p>";
+    let (mut fails, mut walks) = (Vec::new(), 0);
+    for html in [MERGED, NESTED, MIXED] {
+        let d = ed(html, Selection::cursor(Pos(0))).doc();
+        let carets: Vec<usize> = (0..=d.content().size())
+            .filter(|&p| d.resolve(Pos(p)).unwrap().parent().is_textblock())
+            .collect();
+        let mut rng = Rng(0x1234_5678_9abc_def1);
+        for &c in &carets {
+            for _ in 0..20 {
+                let h = ed(html, Selection::cursor(Pos(c)));
+                let start_cell = rinch_editor_core::tables::cell_at_pos(&d, Pos(c));
+                walks += 1;
+                for _ in 0..1 + rng.below(8) {
+                    let m = [CharLeft, CharRight, WordLeft, WordRight][rng.below(4)];
+                    h.move_cursor(m, true);
+                    let ok = match h.selection() {
+                        Selection::Text(t) => t.anchor == Pos(c) || t.anchor == t.head,
+                        Selection::Cell(cs) => Some(cs.anchor_cell.0) == start_cell,
+                        Selection::Node(_) => true,
+                    };
+                    if !ok {
+                        fails.push(format!("{html} caret {c}: {:?}", h.selection()));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    assert!(walks > 1000, "{walks} walks");
+    assert!(
+        fails.is_empty(),
+        "{} of {walks}: {:?}",
+        fails.len(),
+        &fails[..fails.len().min(3)]
+    );
+}
+
+#[test]
+fn a_loaded_ragged_table_stays_and_a_pasted_one_is_padded() {
+    let html = "<p>x</p><table><tr><td><p>A</p></td><td><p>B</p></td></tr><tr><td><p>C</p></td></tr></table><p>zw</p>";
+    let h = ed(html, Selection::cursor(Pos(1)));
+    assert_eq!(node_to_html(&h.doc()), html);
+    let h2 = ed("<p>x</p>", Selection::cursor(Pos(1)));
+    assert!(h2.paste(&PasteContent::new(None, Some(html.to_string()))));
+    assert!(
+        node_to_html(&h2.doc()).contains("<tr><td><p>C</p></td><td><p></p></td></tr>"),
+        "{}",
+        node_to_html(&h2.doc())
+    );
+}
