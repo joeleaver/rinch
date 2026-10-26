@@ -39,13 +39,13 @@ jobs:
             cargo test -p rinch-rtc --features media --target wasm32-unknown-unknown --test web_media_native 2>&1 | grep -vE '^\s+at ' || true
           export GECKODRIVER="$GECKOWEBDRIVER/geckodriver"
           firefox --version
-          ls ~/.mozilla 2>/dev/null; find / -maxdepth 6 -iname "*gmpopenh264*" 2>/dev/null | head
+          ls ~/.mozilla 2>/dev/null || true; find / -maxdepth 6 -iname "*gmpopenh264*" 2>/dev/null | head || true
           RINCH_RTC_MEDIA_URL=http://127.0.0.1:47812 RINCH_RTC_REQUIRE_LIVE=1 \
             cargo test -p rinch-rtc --features media --target wasm32-unknown-unknown --test web_media_native 2>&1 | grep -vE '^\s+at ' || true
       - name: native media tests
         run: cargo test -p rinch-rtc --features media --test media_loopback 2>&1 | tail -5
   build-cost:
-    if: startsWith(github.head_ref, 'scratch-b2-media')
+    if: false
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
