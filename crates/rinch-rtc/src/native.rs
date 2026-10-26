@@ -658,6 +658,21 @@ async fn peer_task(
                 let parsed = match description.kind {
                     SdpKind::Offer => RTCSessionDescription::offer(description.sdp),
                     SdpKind::Answer => RTCSessionDescription::answer(description.sdp),
+                    // webrtc-rs 0.21 supports an explicit rollback; it is
+                    // wired with native media (#1916, the next PR).
+                    _ => {
+                        let error = RtcError::Sdp(
+                            "rollback is not supported on desktop yet (#1916)".into(),
+                        );
+                        emit(
+                            id,
+                            Event::Reply {
+                                req,
+                                result: Err(error),
+                            },
+                        );
+                        continue;
+                    }
                 };
                 let result = match parsed {
                     Ok(d) => pc
@@ -764,7 +779,7 @@ async fn describe(
 ) -> Result<Description, RtcError> {
     let sdp = match kind {
         SdpKind::Offer => pc.create_offer(None).await,
-        SdpKind::Answer => pc.create_answer(None).await,
+        _ => pc.create_answer(None).await,
     }
     .map_err(|e| RtcError::InvalidState(e.to_string()))?;
     // Gathering starts with this local description; a "complete" seen

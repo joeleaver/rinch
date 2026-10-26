@@ -296,6 +296,9 @@ pub(crate) fn new_peer(id: u64, config: &RtcConfig) -> Result<(), RtcError> {
     let queue: Queue = Rc::default();
     wasm_bindgen_futures::spawn_local(work(id, pc.clone(), queue.clone(), trickle, gather.clone()));
 
+    #[cfg(feature = "media")]
+    crate::wasm_media::attach(id, &pc);
+
     PEERS.with(|p| {
         p.borrow_mut().insert(
             id,
@@ -549,6 +552,8 @@ pub(crate) fn close(id: u64, notify: bool) {
     // A Gathering::Complete wait in progress: settle it, so its task ends
     // and its listener goes.
     settle_gather(&peer.pc, &peer.gather);
+    #[cfg(feature = "media")]
+    crate::wasm_media::detach(id);
     peer.pc.close();
     {
         let mut q = peer.queue.borrow_mut();
@@ -613,12 +618,25 @@ async fn work(id: u64, pc: RtcPeerConnection, queue: Queue, trickle: bool, gathe
                 );
             }
             Op::Remote { req, description } => {
+                let rollback = description.kind == SdpKind::Rollback;
                 let init = RtcSessionDescriptionInit::new(match description.kind {
                     SdpKind::Offer => RtcSdpType::Offer,
                     SdpKind::Answer => RtcSdpType::Answer,
+                    _ => RtcSdpType::Rollback,
                 });
-                init.set_sdp(&description.sdp);
-                let result = JsFuture::from(pc.set_remote_description(&init))
+                if !rollback {
+                    init.set_sdp(&description.sdp);
+                }
+                // A rollback undoes whichever offer is pending: ours through
+                // setLocalDescription, theirs through setRemoteDescription.
+                let promise = if rollback
+                    && pc.signaling_state() == web_sys::RtcSignalingState::HaveLocalOffer
+                {
+                    pc.set_local_description(&init)
+                } else {
+                    pc.set_remote_description(&init)
+                };
+                let result = JsFuture::from(promise)
                     .await
                     .map(|_| None)
                     .map_err(|e| RtcError::Sdp(js_err(&e)));
@@ -657,7 +675,7 @@ async fn describe(
             opts.set_ice_restart(restart);
             pc.create_offer_with_rtc_offer_options(&opts)
         }
-        SdpKind::Answer => pc.create_answer(),
+        _ => pc.create_answer(),
     };
     let desc = JsFuture::from(created)
         .await
