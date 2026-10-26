@@ -50,15 +50,20 @@ async fn sleep(ms: i32) {
     let _ = wasm_bindgen_futures::JsFuture::from(p).await;
 }
 
-/// Wait until `cond` holds, or panic after ~15 s.
+/// Wait until `cond` holds, or fail naming `what` after 10 s of wall
+/// clock (not a tick count: a throttled timer would stretch that).
 async fn until(what: &str, mut cond: impl FnMut() -> bool) {
-    for _ in 0..3000 {
+    let deadline = js_sys::Date::now() + 10_000.0;
+    while js_sys::Date::now() < deadline {
         if cond() {
             return;
         }
         tick().await;
     }
-    panic!("timed out waiting for {what}");
+    if cond() {
+        return;
+    }
+    panic!("timed out after 10 s waiting for {what}");
 }
 
 type Inbox = Rc<RefCell<Vec<Option<IceCandidate>>>>;
@@ -257,7 +262,9 @@ async fn video_crosses_and_follows_the_track() {
     let mt = rinch_rtc::testing::local_media_track(&track).unwrap();
     assert!(!mt.enabled());
     assert_eq!(rinch_rtc::testing::sender_track_id(&sender), Some(mt.id()));
-    let seen = fresh_frames(&frames, 1000, 10).await;
+    // A disabled track's black frames come at about one a second in
+    // Firefox (Chrome sends more): three are enough.
+    let seen = fresh_frames(&frames, 1000, 3).await;
     assert!(
         seen.iter().filter(|s| s.bright == 0).count() * 10 >= seen.len() * 8,
         "black frames: {seen:?}"

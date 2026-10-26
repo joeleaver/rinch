@@ -664,7 +664,12 @@ jobs:
           # rinch-rtc's audio and video (#1916), behind its `media` feature:
           # two peers in the page, synthetic sources only (no getUserMedia).
           # The crate's webdriver.json lets audio play without a gesture.
-          cargo test -p rinch-rtc --target wasm32-unknown-unknown \
+          # The runner's timeout covers the whole binary (20 s by default),
+          # and these 15 tests take about 25 s in Firefox: in batch 30 the
+          # runner killed a suite that was still passing (each test alone:
+          # 0.03-15 s; every wait inside a test is bounded and fails with
+          # its name).
+          WASM_BINDGEN_TEST_TIMEOUT=180 cargo test -p rinch-rtc --target wasm32-unknown-unknown \
             --features media --test web_media
           # The editor's read-only collaboration fixture is
           # `#[cfg(feature = "collaboration")]`, which the bare run above does not
@@ -784,7 +789,7 @@ jobs:
           fi
           RINCH_RTC_TEST_URL=http://127.0.0.1:47811 RINCH_RTC_REQUIRE_LIVE=1 \
             cargo test -p rinch-rtc --target wasm32-unknown-unknown
-          cargo test -p rinch-rtc --target wasm32-unknown-unknown \
+          WASM_BINDGEN_TEST_TIMEOUT=180 cargo test -p rinch-rtc --target wasm32-unknown-unknown \
             --features media --test web_media
 
   # Type-check and lint the Android target. Nothing else in this pipeline compiles it.
