@@ -320,7 +320,13 @@ in-scene image transform; `tainted`.
   layer: masks, text-shadow groups), a transform that rotates or skews, or a
   region overlapping an earlier split surface's, or a surface the runtime
   named with `refuse_split(ids)` after `begin_slicing` (`Refusal::MemoryCap`,
-  its memory cap, D6).
+  its memory cap, D6). R is the content box snapped out to whole pixels, a
+  pixel further left only when that left edge (or the fitted frame's, in R's
+  first column) is fractional; routing bounds grow the same way. Two surfaces
+  touching at whole pixels both split.
+- **No surface costs one bool per draw**: `route!` (a macro, not a generic)
+  tests `VelloPainter::routing`, set when a surface splits, and otherwise is
+  the draw itself; no closure or bounds are built.
 - **Routing** (`paint/slicing.rs`): every draw after the split goes by its
   device bounds. Disjoint from every R: the window's scene, unclipped. Inside
   one R: that surface's above scene only. Across an edge, or bounds unknown

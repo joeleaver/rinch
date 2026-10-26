@@ -713,6 +713,7 @@ mod tests {
             extents,
             straight_alpha: true,
             tainted: false,
+            ink: peniko::kurbo::Rect::ZERO,
         }
     }
 

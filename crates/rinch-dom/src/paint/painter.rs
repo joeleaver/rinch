@@ -223,6 +223,10 @@ pub struct SurfaceSplit {
     /// `draw_image` draws one) rather than premultiplied (a registered GPU
     /// texture, #1768).
     pub straight_alpha: bool,
+    /// The element's ink in device pixels (its border box grown by its
+    /// shadows and outline, transformed): where the paint cull reaches it,
+    /// so where damage makes the frame paint it, and split it, again.
+    pub ink: Rect,
 }
 
 /// What a painter did with a [`SurfaceSplit`].

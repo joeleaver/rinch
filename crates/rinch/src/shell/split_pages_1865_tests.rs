@@ -590,12 +590,20 @@ fn frames_for(root: &N, frames: &[Frame]) -> Vec<Frame> {
         .collect()
 }
 
-/// Bad: untainted with a pixel more than `tol` off.
-fn bad(root: &N, frames: &[Frame], tol: i32) -> Option<Outcome> {
+/// Bad: untainted with a pixel past its allowance: `tol` levels when given,
+/// else its D10 classes'.
+fn bad(root: &N, frames: &[Frame], tol: Option<i32>) -> Option<Outcome> {
     let fr = frames_for(root, frames);
     let o = oracle(&root.html(), &fr);
     let tainted = o.tainted.iter().any(|t| *t);
-    (!tainted && !o.over(tol).is_empty()).then_some(o)
+    (!tainted && !past(&o, tol).is_empty()).then_some(o)
+}
+
+fn past(o: &Outcome, tol: Option<i32>) -> Vec<super::split_pages_1865_oracle::Off> {
+    match tol {
+        Some(t) => o.over(t),
+        None => o.over_classes(),
+    }
 }
 
 #[test]
@@ -609,11 +617,12 @@ fn gpu_split_pages_random() {
     };
     let from = env("SPLIT_PAGES_FROM", 0);
     let count = env("SPLIT_PAGES_COUNT", 60);
-    // Two levels: on a random page two of D10's one-level classes can reach
-    // the same pixel (a translucent frame under an antialiased above slice),
-    // and their roundings add. The hand oracle holds each class to its own
-    // pixels; this one is after anything gross.
-    let tol = env("SPLIT_PAGES_TOL", 2) as i32;
+    // Each pixel to its D10 classes (`Outcome::over_classes`), as the hand
+    // oracles hold theirs; `SPLIT_PAGES_TOL` sets a flat tolerance instead,
+    // for exploring.
+    let tol = std::env::var("SPLIT_PAGES_TOL")
+        .ok()
+        .and_then(|v| v.parse::<i32>().ok());
     let minimize = std::env::var("SPLIT_PAGES_MIN").is_ok();
     let mut nbad = 0;
     let mut split_cases = 0;
@@ -628,11 +637,31 @@ fn gpu_split_pages_random() {
         }
         split_cases += 1;
         let tainted = o.tainted.iter().any(|t| *t);
-        if tainted || o.over(tol).is_empty() {
+        if tainted || past(&o, tol).is_empty() {
             continue;
         }
         nbad += 1;
         eprintln!("SEED {seed} {}", o.summary("rand"));
+        for (x, y, a, b, d) in past(&o, tol).into_iter().take(8) {
+            let near = o
+                .regions
+                .iter()
+                .map(|&(rx, ry, rw, rh)| {
+                    let dx = (rx as i64 - x as i64)
+                        .max(x as i64 - (rx + rw) as i64 + 1)
+                        .max(0);
+                    let dy = (ry as i64 - y as i64)
+                        .max(y as i64 - (ry + rh) as i64 + 1)
+                        .max(0);
+                    dx.max(dy)
+                })
+                .min();
+            let i = (y * 200 + x) as usize;
+            eprintln!(
+                "  past ({x},{y}) d{d} allow {} split {a:?} scene {b:?} from R {near:?}",
+                o.allow.get(i).copied().unwrap_or(-1)
+            );
+        }
         if minimize {
             loop {
                 let mut changed = false;

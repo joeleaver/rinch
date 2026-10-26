@@ -19,6 +19,28 @@ pub struct VelloPainter {
     /// This scene holds a layer that blends with its backdrop (grayscale's
     /// saturation): appended over a split surface, it taints it (D5a).
     reads_backdrop: bool,
+    /// A surface was split this frame, so draws are routed by their bounds.
+    /// A plain field, so a draw on a frame with none tests one bool and is
+    /// otherwise the draw itself (#1899 review: the routing generic cost
+    /// 8.1k instructions a text page with no surface).
+    routing: bool,
+}
+
+/// Paint `$body` (with `$s` the scene) where it belongs: on a frame with no
+/// split surface, the body itself on the window's scene, its bounds never
+/// worked out; else routed by its device bounds (`$bounds()`). A macro, not a
+/// generic method: the no-surface path then builds no closure at all.
+macro_rules! route {
+    ($self:ident, $bounds:expr, |$s:ident| $body:expr) => {
+        if !$self.routing {
+            let $s = &mut $self.scene;
+            $body;
+        } else {
+            $self.draw_routed(&$bounds, &|$s: &mut Scene| {
+                $body;
+            })
+        }
+    };
 }
 
 impl VelloPainter {
@@ -28,6 +50,7 @@ impl VelloPainter {
             scene: Scene::new(),
             slicing: None,
             reads_backdrop: false,
+            routing: false,
         }
     }
 
@@ -37,6 +60,7 @@ impl VelloPainter {
     /// painting; collect with [`Self::take_slices`].
     pub fn begin_slicing(&mut self, window: Rect) {
         self.slicing = Some(Slicing::new(window));
+        self.routing = false;
     }
 
     /// Refuse to split `ids` this frame ([`super::painter::Refusal::MemoryCap`]):
@@ -51,6 +75,7 @@ impl VelloPainter {
     /// The surfaces this frame took out of the scene, in paint order, and the
     /// end of slicing for the frame. Empty when the frame was not opened.
     pub fn take_slices(&mut self) -> Vec<SurfaceSlice> {
+        self.routing = false;
         match self.slicing.take() {
             Some(slicing) => slicing.finish(&mut self.scene),
             None => Vec::new(),
@@ -67,30 +92,35 @@ impl VelloPainter {
         {
             slicing.taint_all();
         }
-        self.draw(|| None, |s| s.append(&other.scene, Some(transform)));
+        route!(self, || None, |s| s.append(&other.scene, Some(transform)));
     }
 
-    /// Paint `op` where it belongs: straight into the scene when the frame
-    /// has no split surface, else routed by its device `bounds`.
-    ///
-    /// Generic over `op`, so the no-surface path is the draw itself, inlined:
-    /// routing (and the `dyn` call it takes) is reached only once a surface
-    /// was split (#1894 review: +0.93% per paint with no surface before).
-    #[inline(always)]
-    fn draw<F: Fn(&mut Scene)>(&mut self, bounds: impl FnOnce() -> Option<Rect>, op: F) {
-        match &mut self.slicing {
-            Some(slicing) if !slicing.slices.is_empty() => {
-                slicing.draw(&mut self.scene, bounds(), &op)
-            }
-            _ => op(&mut self.scene),
+    /// A draw on a frame with a split surface, routed by its `bounds`
+    /// ([`route!`]).
+    #[inline(never)]
+    fn draw_routed(&mut self, bounds: &dyn Fn() -> Option<Rect>, op: &dyn Fn(&mut Scene)) {
+        let Self { slicing, scene, .. } = self;
+        match slicing {
+            Some(slicing) => slicing.draw(scene, bounds(), op),
+            None => op(scene),
         }
     }
 
-    /// Record and push `entry` on a sliced frame (the callers push straight
-    /// into the scene otherwise, with no copy of the shape).
-    fn push(&mut self, entry: Open) {
+    /// Record and push the entry `make` builds on a sliced frame (the callers
+    /// push straight into the scene otherwise, with no copy of the shape).
+    /// Out of line, so a frame not opened for slicing pays one test.
+    #[inline(never)]
+    fn push_sliced(&mut self, make: impl FnOnce() -> Open) {
         if let Some(slicing) = &mut self.slicing {
-            slicing.push(&mut self.scene, entry);
+            slicing.push(&mut self.scene, make());
+        }
+    }
+
+    /// Pop on a sliced frame.
+    #[inline(never)]
+    fn pop_sliced(&mut self) {
+        if let Some(slicing) = &mut self.slicing {
+            slicing.pop(&mut self.scene);
         }
     }
 
@@ -103,6 +133,87 @@ impl VelloPainter {
     pub fn scene_mut(&mut self) -> &mut Scene {
         &mut self.scene
     }
+}
+
+impl VelloPainter {
+    /// [`Painter::draw_glyphs`] on a frame with a split surface: routed by
+    /// the run's bounds, its origins grown by two ems for the glyphs' extent
+    /// under any glyph transform (synthetic skew), then mapped.
+    #[allow(clippy::too_many_arguments)]
+    #[cold]
+    #[inline(never)]
+    fn draw_glyphs_routed(
+        &mut self,
+        font: &FontData,
+        font_size: f32,
+        transform: Affine,
+        glyph_transform: Option<Affine>,
+        brush: &Brush,
+        hint: bool,
+        normalized_coords: &[i16],
+        glyphs: &[PaintGlyph],
+    ) {
+        let bounds = || {
+            let mut it = glyphs.iter();
+            let first = it.next()?;
+            let mut r = Rect::new(
+                first.x as f64,
+                first.y as f64,
+                first.x as f64,
+                first.y as f64,
+            );
+            for g in it {
+                r = r.union_pt((g.x as f64, g.y as f64));
+            }
+            let em = 2.0 * font_size as f64;
+            Some(transform.transform_rect_bbox(r.inflate(em, em)))
+        };
+        self.draw_routed(&bounds, &|scene: &mut Scene| {
+            encode_glyphs(
+                scene,
+                font,
+                font_size,
+                transform,
+                glyph_transform,
+                brush,
+                hint,
+                normalized_coords,
+                glyphs,
+            )
+        });
+    }
+}
+
+/// Encode one glyph run into `scene`.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn encode_glyphs(
+    scene: &mut Scene,
+    font: &FontData,
+    font_size: f32,
+    transform: Affine,
+    glyph_transform: Option<Affine>,
+    brush: &Brush,
+    hint: bool,
+    normalized_coords: &[i16],
+    glyphs: &[PaintGlyph],
+) {
+    scene
+        .draw_glyphs(font)
+        .font_size(font_size)
+        .transform(transform)
+        .glyph_transform(glyph_transform)
+        .brush(brush)
+        .hint(hint)
+        .normalized_coords(normalized_coords)
+        .draw(
+            Fill::NonZero,
+            glyphs.iter().map(|g| vello::Glyph {
+                id: g.id,
+                x: g.x,
+                y: g.y,
+            }),
+        );
 }
 
 impl Default for VelloPainter {
@@ -223,6 +334,7 @@ impl Painter for VelloPainter {
     fn reset(&mut self) {
         self.scene.reset();
         self.slicing = None;
+        self.routing = false;
         self.reads_backdrop = false;
     }
 
@@ -233,9 +345,10 @@ impl Painter for VelloPainter {
         // gradient fell between two corners and was not drawn (#1798).
         let bt = matches!(brush, Brush::Gradient(_))
             .then(|| centre_sampling(transform, Affine::IDENTITY));
-        self.draw(
+        route!(
+            self,
             || shape_bounds(transform, shape),
-            |scene| dispatch_fill!(scene, fill, transform, brush, bt, shape),
+            |scene| dispatch_fill!(scene, fill, transform, brush, bt, shape)
         );
     }
 
@@ -246,12 +359,16 @@ impl Painter for VelloPainter {
         brush: &Brush,
         shape: &PaintShape,
     ) {
-        // Half the width each side, under the transform's largest stretch.
-        let [a, b, c, d, _, _] = transform.as_coeffs();
-        let grow = stroke.width * (a.abs() + b.abs() + c.abs() + d.abs()) + 1.0;
-        self.draw(
-            || shape_bounds(transform, shape).map(|r| r.inflate(grow, grow)),
-            |scene| dispatch_stroke!(scene, stroke, transform, brush, shape),
+        route!(
+            self,
+            || {
+                // Half the width each side, under the transform's largest
+                // stretch.
+                let [a, b, c, d, _, _] = transform.as_coeffs();
+                let grow = stroke.width * (a.abs() + b.abs() + c.abs() + d.abs()) + 1.0;
+                shape_bounds(transform, shape).map(|r| r.inflate(grow, grow))
+            },
+            |scene| dispatch_stroke!(scene, stroke, transform, brush, shape)
         );
     }
 
@@ -266,41 +383,32 @@ impl Painter for VelloPainter {
         normalized_coords: &[i16],
         glyphs: &[PaintGlyph],
     ) {
-        // The run's bounds: its origins, grown by two ems for the glyphs'
-        // extent under any glyph transform (synthetic skew), then mapped.
-        let bounds = || {
-            let mut it = glyphs.iter();
-            let first = it.next()?;
-            let mut r = Rect::new(
-                first.x as f64,
-                first.y as f64,
-                first.x as f64,
-                first.y as f64,
+        // The hottest draw: with nothing split it is exactly the encode, and
+        // the routed draw is a call out of line (#1899 review: through
+        // `route!` the glyph path still cost 8.1k instructions a text page).
+        if self.routing {
+            return self.draw_glyphs_routed(
+                font,
+                font_size,
+                transform,
+                glyph_transform,
+                brush,
+                hint,
+                normalized_coords,
+                glyphs,
             );
-            for g in it {
-                r = r.union_pt((g.x as f64, g.y as f64));
-            }
-            let em = 2.0 * font_size as f64;
-            Some(transform.transform_rect_bbox(r.inflate(em, em)))
-        };
-        self.draw(bounds, |scene| {
-            scene
-                .draw_glyphs(font)
-                .font_size(font_size)
-                .transform(transform)
-                .glyph_transform(glyph_transform)
-                .brush(brush)
-                .hint(hint)
-                .normalized_coords(normalized_coords)
-                .draw(
-                    Fill::NonZero,
-                    glyphs.iter().map(|g| vello::Glyph {
-                        id: g.id,
-                        x: g.x,
-                        y: g.y,
-                    }),
-                );
-        });
+        }
+        encode_glyphs(
+            &mut self.scene,
+            font,
+            font_size,
+            transform,
+            glyph_transform,
+            brush,
+            hint,
+            normalized_coords,
+            glyphs,
+        );
     }
 
     fn draw_image(&mut self, image: &PaintImage<'_>, transform: Affine) {
@@ -317,9 +425,10 @@ impl Painter for VelloPainter {
         let rect = peniko::kurbo::Rect::new(0.0, 0.0, image.width as f64, image.height as f64);
         let brush = peniko::ImageBrush::new(image_data);
         let bt = Some(centre_sampling(transform, Affine::IDENTITY));
-        self.draw(
+        route!(
+            self,
             || Some(transform.transform_rect_bbox(rect)),
-            |scene| scene.fill(Fill::NonZero, transform, &brush, bt, &rect),
+            |scene| scene.fill(Fill::NonZero, transform, &brush, bt, &rect)
         );
     }
 
@@ -329,9 +438,10 @@ impl Painter for VelloPainter {
         let rect = peniko::kurbo::Rect::new(0.0, 0.0, image.width as f64, image.height as f64);
         let brush = peniko::ImageBrush::new(image.clone());
         let bt = Some(centre_sampling(transform, Affine::IDENTITY));
-        self.draw(
+        route!(
+            self,
             || Some(transform.transform_rect_bbox(rect)),
-            |scene| scene.fill(Fill::NonZero, transform, &brush, bt, &rect),
+            |scene| scene.fill(Fill::NonZero, transform, &brush, bt, &rect)
         );
     }
 
@@ -388,9 +498,10 @@ impl Painter for VelloPainter {
             .with_quality(quality)
             .into();
         let brush_transform = Some(centre_sampling(transform, tile_transform));
-        self.draw(
+        route!(
+            self,
             || shape_bounds(transform, shape),
-            |scene| dispatch_fill!(scene, fill, transform, &brush, brush_transform, shape),
+            |scene| dispatch_fill!(scene, fill, transform, &brush, brush_transform, shape)
         );
     }
 
@@ -398,7 +509,7 @@ impl Painter for VelloPainter {
         if self.slicing.is_none() {
             return push_clip_into(&mut self.scene, fill, transform, shape);
         }
-        self.push(Open::Clip {
+        self.push_sliced(|| Open::Clip {
             fill,
             transform,
             shape: shape.clone(),
@@ -418,7 +529,7 @@ impl Painter for VelloPainter {
         if self.slicing.is_none() {
             return push_layer_into(&mut self.scene, blend, opacity, transform, bounds);
         }
-        self.push(Open::Layer {
+        self.push_sliced(|| Open::Layer {
             blend,
             opacity,
             transform,
@@ -436,7 +547,7 @@ impl Painter for VelloPainter {
                 bounds,
             );
         }
-        self.push(Open::Isolated {
+        self.push_sliced(|| Open::Isolated {
             opacity,
             transform,
             bounds: bounds.clone(),
@@ -444,20 +555,22 @@ impl Painter for VelloPainter {
     }
 
     fn pop_layer(&mut self) {
-        match &mut self.slicing {
-            Some(slicing) => slicing.pop(&mut self.scene),
-            None => self.scene.pop_layer(),
+        if self.slicing.is_none() {
+            return self.scene.pop_layer();
         }
+        self.pop_sliced();
     }
 
     fn split_surface(
         &mut self,
         split: &super::painter::SurfaceSplit,
     ) -> super::painter::SplitVerdict {
-        match &mut self.slicing {
+        let verdict = match &mut self.slicing {
             Some(slicing) => slicing.split(&mut self.scene, split),
             None => super::painter::SplitVerdict::InScene(super::painter::Refusal::Unsupported),
-        }
+        };
+        self.routing |= verdict == super::painter::SplitVerdict::Split;
+        verdict
     }
 
     fn append(&mut self, other: &Self) {
@@ -469,7 +582,7 @@ impl Painter for VelloPainter {
             slicing.taint_all();
         }
         let scene = &other.scene;
-        self.draw(|| None, |s| s.append(scene, None));
+        route!(self, || None, |s| s.append(scene, None));
     }
 }
 

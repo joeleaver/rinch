@@ -68,6 +68,9 @@ pub struct SurfaceSlice {
     /// (`filter: grayscale`'s saturation layer): the frame must be painted
     /// again with this surface in the scene (D5a).
     pub tainted: bool,
+    /// The element's ink in device pixels (`SurfaceSplit::ink`): damage that
+    /// meets it repaints the surface, so its region must be repainted whole.
+    pub ink: Rect,
 }
 
 /// The surface's coverage of R's pixels.
@@ -193,11 +196,18 @@ fn whole_pixel_rect(t: Affine, r: Rect) -> Option<Rect> {
     (whole(m.x0) && whole(m.y0) && whole(m.x1) && whole(m.y1)).then_some(m)
 }
 
-/// `b` grown one pixel left: Vello's antialiasing of a fractional
-/// horizontal edge reaches the pixel left of the shape's bounds (#1894
-/// review), so routing must treat that pixel as touched.
+/// `b` grown one pixel left when its left edge is fractional: Vello's
+/// antialiasing of such an edge may reach the pixel left of the shape's
+/// bounds (#1894 review), so routing treats that pixel as touched. A
+/// whole-pixel left edge is not grown: two surfaces side by side at whole
+/// pixels then touch without overlapping (#1899 review: the growth refused
+/// the second and made every frame a partial repaint).
 fn spill(b: Rect) -> Rect {
-    Rect::new(b.x0 - 1.0, b.y0, b.x1, b.y1)
+    if b.x0.fract() == 0.0 {
+        b
+    } else {
+        Rect::new(b.x0 - 1.0, b.y0, b.x1, b.y1)
+    }
 }
 
 pub(crate) fn push_open(scene: &mut Scene, entry: &Open) {
@@ -400,10 +410,20 @@ impl Slicing {
             return SplitVerdict::InScene(Refusal::Transform);
         }
         let b = split.node_transform.transform_rect_bbox(split.content);
-        // Snapped out to whole pixels, and a pixel further left, where Vello's
-        // antialiasing of a fractional edge reaches (a resampled frame paints
-        // the pixel left of its box).
-        let snapped = Rect::new(b.x0.floor() - 1.0, b.y0.floor(), b.x1.ceil(), b.y1.ceil());
+        // Snapped out to whole pixels, and a pixel further left where an
+        // edge in the first column is fractional (the box's, or the fitted
+        // frame's), which Vello's antialiasing may spill left of (`spill`).
+        let image = split.image_transform.transform_rect_bbox(Rect::new(
+            0.0,
+            0.0,
+            split.extents.0 as f64,
+            split.extents.1 as f64,
+        ));
+        let first = b.x0.floor();
+        let fractional_left =
+            b.x0 != first || (image.x0 != image.x0.floor() && image.x0 < first + 1.0);
+        let left = if fractional_left { first - 1.0 } else { first };
+        let snapped = Rect::new(left, b.y0.floor(), b.x1.ceil(), b.y1.ceil());
         let r = snapped.intersect(self.window);
         let r = if r.width() > 0.0 && r.height() > 0.0 {
             r
@@ -510,6 +530,7 @@ impl Slicing {
                 device_from_image: (t * centre_sampling(t, Affine::IDENTITY)).as_coeffs(),
                 extents: split.extents,
                 straight_alpha: split.straight_alpha,
+                ink: split.ink,
                 tainted: false,
             },
             r,
@@ -562,6 +583,7 @@ mod tests {
                 image_transform: Affine::translate((content.x0, content.y0)),
                 extents: (content.width() as u32, content.height() as u32),
                 straight_alpha: false,
+                ink: content,
             },
         );
         assert_eq!(verdict, SplitVerdict::Split);

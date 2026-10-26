@@ -749,6 +749,25 @@ pub fn setup_vello_paint_split() -> VelloPaintFixture {
     f
 }
 
+/// The text page of [`setup_vello_paint`] on a frame not opened for slicing:
+/// a window with no GPU surface, which must cost what it did before #1865
+/// (#1899 review).
+pub fn setup_vello_paint_unsliced() -> VelloPaintFixture {
+    let mut f = setup_vello_paint();
+    f.slicing = None;
+    f.paint();
+    f
+}
+
+/// The page of [`setup_vello_paint_split`] on a frame not opened for slicing:
+/// the surface drawn in the scene, as before #1865 (#1899 review).
+pub fn setup_vello_paint_split_unsliced() -> VelloPaintFixture {
+    let mut f = setup_vello_paint_split();
+    f.slicing = None;
+    f.paint();
+    f
+}
+
 /// One Vello paint of the fixture's page.
 pub fn op_vello_paint(mut f: VelloPaintFixture) -> VelloPaintFixture {
     std::hint::black_box(f.paint());
