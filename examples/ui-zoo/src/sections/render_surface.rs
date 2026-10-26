@@ -510,31 +510,36 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    // ── Desktop backend (zero-copy via shared device) ─────────────────────
+    // ── Desktop backend (the surface's GPU render callback) ──────────────
 
+    /// Draws into the target a GPU render callback is handed
+    /// (`RenderSurface::set_gpu_render_callback`): a texture on rinch's own
+    /// device, which the window draws as the surface element's content, in
+    /// paint order like an `<img>`, composited outside the scene when it can
+    /// be (#1865).
     #[cfg(feature = "gpu")]
     pub struct GpuCube {
-        device: std::sync::Arc<wgpu::Device>,
-        queue: std::sync::Arc<wgpu::Queue>,
+        queue: wgpu::Queue,
+        device: wgpu::Device,
         pipeline: wgpu::RenderPipeline,
         vertex_buffer: wgpu::Buffer,
         uniform_buffer: wgpu::Buffer,
         bind_group: wgpu::BindGroup,
         depth_view: wgpu::TextureView,
         current_size: (u32, u32),
-        offscreen_texture: wgpu::Texture,
-        offscreen_view: wgpu::TextureView,
     }
+
+    /// The format the cube is drawn in: the frame's own (`Rgba8Unorm`), so
+    /// the shader's output is what shows, as it did when the cube was a
+    /// compositor layer.
+    #[cfg(feature = "gpu")]
+    const COLOR_FORMAT: wgpu::TextureFormat = rinch::render_surface::DESKTOP_GPU_FRAME_FORMAT;
 
     #[cfg(feature = "gpu")]
     impl GpuCube {
-        /// Create using rinch's shared GPU device for zero-copy compositing.
-        pub fn new(gpu: &rinch::shell::desktop::GpuHandle) -> Self {
-            let device = gpu.device.clone();
-            let queue = gpu.queue.clone();
-
-            // Use Rgba8UnormSrgb to match rinch's compositor expectations
-            let color_format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+            let device = device.clone();
+            let queue = queue.clone();
 
             let vertex_data = build_vertex_data();
             let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -574,53 +579,41 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 }],
             });
 
-            let pipeline = create_pipeline(&device, &bind_group_layout, color_format);
+            let pipeline = create_pipeline(&device, &bind_group_layout, COLOR_FORMAT);
             let depth_view = create_depth_view(&device, 1, 1);
-            let (offscreen_texture, offscreen_view) =
-                create_offscreen_texture(&device, 1, 1, color_format);
 
             Self {
-                device,
                 queue,
+                device,
                 pipeline,
                 vertex_buffer,
                 uniform_buffer,
                 bind_group,
                 depth_view,
                 current_size: (0, 0),
-                offscreen_texture,
-                offscreen_view,
             }
         }
 
-        /// Render to offscreen texture and return the view for compositing.
+        /// Draw one frame into `texture` (the callback's target), `w`x`h`.
         #[allow(clippy::too_many_arguments)]
         pub fn render(
             &mut self,
+            texture: &wgpu::Texture,
             angle_x: f32,
             angle_y: f32,
             zoom: f32,
             time: f32,
             grid_size: u32,
-            w: u32,
-            h: u32,
-        ) -> Option<(&wgpu::TextureView, u32, u32)> {
+            (w, h): (u32, u32),
+        ) {
             if w == 0 || h == 0 {
-                return None;
+                return;
             }
-
             if (w, h) != self.current_size {
                 self.depth_view = create_depth_view(&self.device, w, h);
-                let (tex, view) = create_offscreen_texture(
-                    &self.device,
-                    w,
-                    h,
-                    wgpu::TextureFormat::Rgba8UnormSrgb,
-                );
-                self.offscreen_texture = tex;
-                self.offscreen_view = view;
                 self.current_size = (w, h);
             }
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
             let (mvp, model) = compute_matrices(angle_x, angle_y, zoom, w, h);
             let uniform_bytes = uniforms_to_bytes(&mvp, &model, time, grid_size, 0.5, 2.0);
@@ -630,56 +623,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-
             encode_render_pass(
                 &mut encoder,
-                &self.offscreen_view,
+                &view,
                 &self.depth_view,
                 &self.pipeline,
                 &self.bind_group,
                 &self.vertex_buffer,
                 grid_size,
             );
-
             self.queue.submit([encoder.finish()]);
-
-            Some((&self.offscreen_view, w, h))
         }
-
-        pub fn offscreen_view(&self) -> &wgpu::TextureView {
-            &self.offscreen_view
-        }
-
-        pub fn offscreen_texture(&self) -> &wgpu::Texture {
-            &self.offscreen_texture
-        }
-    }
-
-    #[cfg(feature = "gpu")]
-    fn create_offscreen_texture(
-        device: &wgpu::Device,
-        w: u32,
-        h: u32,
-        format: wgpu::TextureFormat,
-    ) -> (wgpu::Texture, wgpu::TextureView) {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("cube offscreen"),
-            size: wgpu::Extent3d {
-                width: w.max(1),
-                height: h.max(1),
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&Default::default());
-        (texture, view)
     }
 
     // ── Shared helpers ──────────────────────────────────────────────────────
@@ -750,12 +704,6 @@ struct CubeState {
     zoom: f32,
     dragging: bool,
     last_mouse: (f32, f32),
-    // Animation params (written by UI signals, read by render thread)
-    spinning: bool,
-    speed: f32,
-    grid_size: u32,
-    // FPS counter (written by render thread, read by UI)
-    fps: u32,
 }
 
 impl Default for CubeState {
@@ -766,10 +714,6 @@ impl Default for CubeState {
             zoom: 1.0,
             dragging: false,
             last_mouse: (0.0, 0.0),
-            spinning: true,
-            speed: 1.0,
-            grid_size: 50,
-            fps: 0,
         }
     }
 }
@@ -889,111 +833,43 @@ pub fn render_surface_section() -> NodeHandle {
 
         #[cfg(feature = "gpu")]
         {
-            // Spawn a render thread — the game engine drives its own loop,
-            // completely independent of the UI event loop.
-            let registrar = cube_surface.gpu_registrar();
-            let state = state.clone();
-
-            // Sync signal values into CubeState so the thread can read them.
-            // Effects run on the main thread and write to Arc<Mutex<CubeState>>.
-            {
-                let state = state.clone();
-                __scope.create_effect(move || {
+            // The surface's GPU render callback: rinch hands it a target on
+            // its own device each frame, at the surface's size, and draws the
+            // result as the element's content (#1768), composited outside the
+            // scene when it can be (#1865). Continuous: a frame every paint.
+            cube_surface.set_continuous(true);
+            let mut cube: Option<gpu_cube::GpuCube> = None;
+            let mut time = 0.0_f32;
+            let mut frame_count = 0u32;
+            let mut last_fps_time = std::time::Instant::now();
+            cube_surface.set_gpu_render_callback(move |frame| {
+                let cube =
+                    cube.get_or_insert_with(|| gpu_cube::GpuCube::new(frame.device, frame.queue));
+                let spd = speed.get() as f32;
+                let (angle_x, angle_y, zoom) = {
                     let mut s = state.lock().unwrap();
-                    s.spinning = spinning.get();
-                    s.speed = speed.get() as f32;
-                    s.grid_size = grid_size.get();
-                });
-            }
-
-            // Read FPS from CubeState back into signal (polled by UI).
-            // The render callback on the gradient surface fires every frame anyway,
-            // so we piggyback on that to avoid needing a separate timer.
-            {
-                let state = state.clone();
-                let last_fps = Rc::new(Cell::new(0u32));
-                cube_surface.set_render_callback(move |_writer, _w, _h| {
-                    let current = state.lock().unwrap().fps;
-                    if current != last_fps.get() {
-                        last_fps.set(current);
-                        fps.set(current);
+                    if spinning.get() {
+                        s.angle_y += 0.005 * spd;
                     }
-                });
-            }
-
-            std::thread::spawn(move || {
-                // Wait for the GPU handle to be available
-                let gpu = loop {
-                    if let Some(gpu) = rinch::shell::desktop::gpu_handle() {
-                        break gpu;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    (s.angle_x, s.angle_y, s.zoom)
                 };
+                time += 0.016 * spd;
+                cube.render(
+                    frame.texture,
+                    angle_x,
+                    angle_y,
+                    zoom,
+                    time,
+                    grid_size.get(),
+                    frame.size,
+                );
 
-                let mut cube = gpu_cube::GpuCube::new(gpu);
-                let mut time = 0.0_f32;
-                let mut registered_size = (0u32, 0u32);
-                let mut frame_count = 0u32;
-                let mut last_fps_time = std::time::Instant::now();
-
-                loop {
-                    let frame_start = std::time::Instant::now();
-
-                    let (w, h) = registrar.layout_size();
-                    if w == 0 || h == 0 {
-                        std::thread::sleep(std::time::Duration::from_millis(16));
-                        continue;
-                    }
-
-                    let (angle_x, angle_y, zoom, _is_spinning, spd, gs) = {
-                        let mut s = state.lock().unwrap();
-                        if s.spinning {
-                            s.angle_y += 0.005 * s.speed;
-                        }
-                        (
-                            s.angle_x,
-                            s.angle_y,
-                            s.zoom,
-                            s.spinning,
-                            s.speed,
-                            s.grid_size,
-                        )
-                    };
-
-                    time += 0.016 * spd;
-
-                    if cube
-                        .render(angle_x, angle_y, zoom, time, gs, w, h)
-                        .is_some()
-                    {
-                        if (w, h) != registered_size {
-                            registered_size = (w, h);
-                            registrar.set_texture_source(
-                                cube.offscreen_texture().clone(),
-                                cube.offscreen_view().clone(),
-                                w,
-                                h,
-                            );
-                        } else {
-                            registrar.notify_frame_ready();
-                        }
-                    }
-
-                    // FPS tracking
-                    frame_count += 1;
-                    let elapsed = last_fps_time.elapsed().as_secs_f64();
-                    if elapsed >= 1.0 {
-                        state.lock().unwrap().fps = (frame_count as f64 / elapsed) as u32;
-                        frame_count = 0;
-                        last_fps_time = std::time::Instant::now();
-                    }
-
-                    // Frame pacing — target ~60fps, subtract time spent rendering
-                    let frame_time = frame_start.elapsed();
-                    let target = std::time::Duration::from_micros(16_000);
-                    if frame_time < target {
-                        std::thread::sleep(target - frame_time);
-                    }
+                frame_count += 1;
+                let elapsed = last_fps_time.elapsed().as_secs_f64();
+                if elapsed >= 1.0 {
+                    fps.set((frame_count as f64 / elapsed) as u32);
+                    frame_count = 0;
+                    last_fps_time = std::time::Instant::now();
                 }
             });
         }
