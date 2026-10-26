@@ -13,7 +13,7 @@ thiserror = "2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Audio (desktop)
-cpal = { version = "0.15", optional = true }
+cpal = { version = "0.18", optional = true }
 # Camera (desktop)
 nokhwa = { version = "0.10", features = ["input-native"], optional = true }
 
@@ -32,6 +32,7 @@ web-sys = { version = "0.3", features = [
     "MediaTrackConstraints",
     "MediaTrackConstraintSet",
     "HtmlVideoElement",
+    "HtmlMediaElement",
     "HtmlCanvasElement",
     "HtmlElement",
     "CssStyleDeclaration",
@@ -56,3 +57,25 @@ web-sys = { version = "0.3", features = [
 default = []
 audio = ["dep:cpal"]
 camera = ["dep:nokhwa"]
+
+# Browser tests, synthetic sources only (an OscillatorNode, a canvas
+# stream): no camera, no microphone, no permission prompt. Run with
+#     CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
+#     cargo test -p rinch-av --features audio,camera --target wasm32-unknown-unknown
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+web-sys = { version = "0.3", features = [
+    "OscillatorNode",
+    "AudioParam",
+    "AudioScheduledSourceNode",
+    "MediaStreamAudioDestinationNode",
+    "MediaStreamTrackState",
+    "AudioContextState",
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "Window",
+    "Document",
+    "NodeList",
+    "Node",
+    "HtmlMediaElement",
+] }

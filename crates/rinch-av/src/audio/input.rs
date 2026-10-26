@@ -54,8 +54,12 @@ impl Default for AudioInputConfig {
 pub struct AudioInputStream {
     #[cfg(all(not(target_arch = "wasm32"), feature = "audio"))]
     _stream: cpal::Stream,
+    /// Shared with the setup task, which fills it once getUserMedia (or the
+    /// given stream) is ready. Dropping the stream drops the state, which
+    /// stops the tracks; a setup that finishes after that drop stops them
+    /// itself (it holds only a `Weak`).
     #[cfg(target_arch = "wasm32")]
-    _wasm_state: Option<WasmAudioInputState>,
+    _wasm_state: std::rc::Rc<std::cell::RefCell<Option<WasmAudioInputState>>>,
     config: AudioInputConfig,
 }
 
@@ -83,7 +87,10 @@ impl Drop for WasmAudioInputState {
 }
 
 impl AudioInputStream {
-    /// Returns the config used for this stream.
+    /// What the stream really delivers: the sample rate and channel count
+    /// the device was opened with, which may differ from what was requested
+    /// (the nearest the device supports). Samples are interleaved by this
+    /// channel count.
     pub fn config(&self) -> &AudioInputConfig {
         &self.config
     }
@@ -167,30 +174,56 @@ pub fn open_audio_input(
     config: AudioInputConfig,
     on_data: impl FnMut(&[f32]) + Send + 'static,
 ) -> Result<AudioInputStream, AvError> {
+    open_audio_input_with(None, config, move |_| on_data)
+}
+
+/// Open an input with a callback built once the stream's real format is
+/// known (`make` gets the negotiated config), so a consumer that tags its
+/// samples (an `AudioTrack`) tags them with what the device really runs.
+pub(crate) fn open_audio_input_with<F: FnMut(&[f32]) + Send + 'static>(
+    device: Option<&DeviceId>,
+    config: AudioInputConfig,
+    make: impl FnOnce(&AudioInputConfig) -> F,
+) -> Result<AudioInputStream, AvError> {
     #[cfg(all(not(target_arch = "wasm32"), feature = "audio"))]
     {
-        let device = crate::native::cpal_audio::default_input_device()?;
-        let stream = crate::native::cpal_audio::open_input_stream(
-            &device,
+        let dev = match device {
+            Some(id) => crate::native::cpal_audio::get_input_device(id)?,
+            None => crate::native::cpal_audio::default_input_device()?,
+        };
+        let buffer_size = config.buffer_size;
+        let (stream, n) = crate::native::cpal_audio::open_input_stream(
+            &dev,
             config.sample_rate,
             config.channels,
             config.buffer_size,
-            on_data,
+            |n| {
+                make(&AudioInputConfig {
+                    sample_rate: n.sample_rate,
+                    channels: n.channels,
+                    buffer_size,
+                })
+            },
         )?;
         Ok(AudioInputStream {
             _stream: stream,
-            config,
+            config: AudioInputConfig {
+                sample_rate: n.sample_rate,
+                channels: n.channels,
+                buffer_size,
+            },
         })
     }
 
     #[cfg(target_arch = "wasm32")]
     {
-        open_audio_input_wasm(None, config, on_data)
+        let actual = config.clone();
+        open_audio_input_wasm(device.map(|d| d.0.clone()), config, make(&actual))
     }
 
     #[cfg(all(not(target_arch = "wasm32"), not(feature = "audio")))]
     {
-        let _ = (config, on_data);
+        let _ = (device, config, make);
         Err(AvError::Backend("audio feature not enabled".into()))
     }
 }
@@ -203,32 +236,24 @@ pub fn open_audio_input_on(
     config: AudioInputConfig,
     on_data: impl FnMut(&[f32]) + Send + 'static,
 ) -> Result<AudioInputStream, AvError> {
-    #[cfg(all(not(target_arch = "wasm32"), feature = "audio"))]
-    {
-        let dev = crate::native::cpal_audio::get_input_device(device)?;
-        let stream = crate::native::cpal_audio::open_input_stream(
-            &dev,
-            config.sample_rate,
-            config.channels,
-            config.buffer_size,
-            on_data,
-        )?;
-        Ok(AudioInputStream {
-            _stream: stream,
-            config,
-        })
-    }
+    open_audio_input_with(Some(device), config, move |_| on_data)
+}
 
-    #[cfg(target_arch = "wasm32")]
-    {
-        open_audio_input_wasm(Some(device.0.clone()), config, on_data)
-    }
-
-    #[cfg(all(not(target_arch = "wasm32"), not(feature = "audio")))]
-    {
-        let _ = (device, config, on_data);
-        Err(AvError::Backend("audio feature not enabled".into()))
-    }
+/// Capture from a `MediaStream` the app already has: a remote WebRTC
+/// track, an `OscillatorNode` through a `MediaStreamAudioDestinationNode`,
+/// or a stream from `getUserMedia` it made itself. Web only. Dropping the
+/// returned stream stops the stream's audio tracks.
+#[cfg(target_arch = "wasm32")]
+pub fn open_audio_input_from_stream(
+    stream: &web_sys::MediaStream,
+    config: AudioInputConfig,
+    on_data: impl FnMut(&[f32]) + Send + 'static,
+) -> AudioInputStream {
+    start_audio_input_wasm(
+        js_sys::Promise::resolve(AsRef::<wasm_bindgen::JsValue>::as_ref(stream)),
+        config,
+        on_data,
+    )
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -237,10 +262,7 @@ fn open_audio_input_wasm(
     config: AudioInputConfig,
     on_data: impl FnMut(&[f32]) + Send + 'static,
 ) -> Result<AudioInputStream, AvError> {
-    use std::cell::RefCell;
-    use std::rc::Rc;
     use wasm_bindgen::prelude::*;
-    use wasm_bindgen_futures::JsFuture;
 
     let md = web_sys::window()
         .ok_or_else(|| AvError::Backend("no window".into()))?
@@ -266,11 +288,24 @@ fn open_audio_input_wasm(
     let promise = md
         .get_user_media_with_constraints(&constraints)
         .map_err(|e| AvError::Backend(format!("getUserMedia failed: {:?}", e)))?;
+    Ok(start_audio_input_wasm(promise, config, on_data))
+}
 
-    // We need to store the WASM state once the async operation completes.
-    // Since the API is sync, we spawn the async work and store state in a shared cell.
-    let state_cell: Rc<RefCell<Option<WasmAudioInputState>>> = Rc::new(RefCell::new(None));
-    let state_clone = state_cell.clone();
+/// Set up capture once `stream_promise` resolves to a `MediaStream`.
+#[cfg(target_arch = "wasm32")]
+fn start_audio_input_wasm(
+    stream_promise: js_sys::Promise,
+    config: AudioInputConfig,
+    on_data: impl FnMut(&[f32]) + Send + 'static,
+) -> AudioInputStream {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen_futures::JsFuture;
+
+    let state: Rc<RefCell<Option<WasmAudioInputState>>> = Rc::new(RefCell::new(None));
+    // The task holds only a Weak: the AudioInputStream owns the state.
+    let weak = Rc::downgrade(&state);
 
     let buffer_size = if config.buffer_size == 0 {
         4096
@@ -278,10 +313,10 @@ fn open_audio_input_wasm(
         config.buffer_size
     };
     let sample_rate = config.sample_rate;
+    let channels = config.channels.max(1);
 
     wasm_bindgen_futures::spawn_local(async move {
-        let result = JsFuture::from(promise).await;
-        let media_stream: web_sys::MediaStream = match result {
+        let media_stream: web_sys::MediaStream = match JsFuture::from(stream_promise).await {
             Ok(val) => val.into(),
             Err(e) => {
                 tracing::error!("getUserMedia rejected: {:?}", e);
@@ -289,15 +324,20 @@ fn open_audio_input_wasm(
             }
         };
 
-        // Collect tracks for cleanup
         let track_list = media_stream.get_audio_tracks();
-        let mut tracks = Vec::new();
-        for i in 0..track_list.length() {
-            let track: web_sys::MediaStreamTrack = track_list.get(i).into();
-            tracks.push(track);
-        }
+        let tracks: Vec<web_sys::MediaStreamTrack> = (0..track_list.length())
+            .map(|i| track_list.get(i).into())
+            .collect();
 
-        // Create AudioContext
+        // The stream was dropped (stopped) before the setup finished: release
+        // the device now instead of leaving it open.
+        let Some(state) = weak.upgrade() else {
+            for t in &tracks {
+                t.stop();
+            }
+            return;
+        };
+
         let ctx_opts = web_sys::AudioContextOptions::new();
         ctx_opts.set_sample_rate(sample_rate as f32);
         let audio_ctx = match web_sys::AudioContext::new_with_context_options(&ctx_opts) {
@@ -307,8 +347,6 @@ fn open_audio_input_wasm(
                 return;
             }
         };
-
-        // Create source from the media stream
         let source = match audio_ctx.create_media_stream_source(&media_stream) {
             Ok(s) => s,
             Err(e) => {
@@ -316,9 +354,12 @@ fn open_audio_input_wasm(
                 return;
             }
         };
-
-        // Create ScriptProcessorNode
-        let processor = match audio_ctx.create_script_processor_with_buffer_size(buffer_size) {
+        let processor = match audio_ctx
+            .create_script_processor_with_buffer_size_and_number_of_input_channels_and_number_of_output_channels(
+                buffer_size,
+                channels as u32,
+                channels as u32,
+            ) {
             Ok(p) => p,
             Err(e) => {
                 tracing::error!("Failed to create ScriptProcessorNode: {:?}", e);
@@ -326,30 +367,37 @@ fn open_audio_input_wasm(
             }
         };
 
-        // Set up the onaudioprocess handler
+        // Interleave every channel, as on desktop (it used to deliver
+        // channel 0 only, whatever `channels` said).
         let on_data = Rc::new(RefCell::new(on_data));
+        let mut interleaved: Vec<f32> = Vec::new();
         let closure = Closure::<dyn FnMut(web_sys::AudioProcessingEvent)>::new(
             move |event: web_sys::AudioProcessingEvent| {
-                let input_buffer = match event.input_buffer() {
-                    Ok(buf) => buf,
-                    Err(_) => return,
+                let Ok(input) = event.input_buffer() else {
+                    return;
                 };
-
-                // Get channel 0 data
-                if let Ok(channel_data) = input_buffer.get_channel_data(0) {
-                    (on_data.borrow_mut())(channel_data.as_slice());
+                let n = input.number_of_channels().min(channels as u32) as usize;
+                let planes: Vec<Vec<f32>> = (0..n)
+                    .filter_map(|c| input.get_channel_data(c as u32).ok())
+                    .collect();
+                if planes.is_empty() {
+                    return;
                 }
+                let frames = planes[0].len();
+                let last = planes.len() - 1;
+                interleaved.clear();
+                interleaved.extend((0..frames).flat_map(|i| {
+                    let planes = &planes;
+                    (0..channels as usize).map(move |c| planes[c.min(last)][i])
+                }));
+                (on_data.borrow_mut())(&interleaved);
             },
         );
-
         processor.set_onaudioprocess(Some(closure.as_ref().unchecked_ref()));
-
-        // Connect: source -> processor -> destination
         let _ = source.connect_with_audio_node(&processor);
         let _ = processor.connect_with_audio_node(&audio_ctx.destination());
 
-        // Store state
-        *state_clone.borrow_mut() = Some(WasmAudioInputState {
+        *state.borrow_mut() = Some(WasmAudioInputState {
             audio_ctx,
             _source: source,
             processor,
@@ -358,8 +406,8 @@ fn open_audio_input_wasm(
         });
     });
 
-    Ok(AudioInputStream {
-        _wasm_state: None, // Will be populated asynchronously via the Rc<RefCell>
+    AudioInputStream {
+        _wasm_state: state,
         config,
-    })
+    }
 }
