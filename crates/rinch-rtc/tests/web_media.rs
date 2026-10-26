@@ -9,7 +9,7 @@
 //! browser's encoder, RTP and decoder.
 //!
 //! `webdriver.json` (this crate's) lets audio play without a user gesture.
-#![cfg(all(target_arch = "wasm32", feature = "media"))]
+#![cfg(all(target_arch = "wasm32", feature = "media-core"))]
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

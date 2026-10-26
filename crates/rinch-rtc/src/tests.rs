@@ -371,7 +371,7 @@ fn signaling_state_follows_the_exchange_and_counts_an_offer_in_flight() {
 
 /// The `media` feature's main-thread half: remote-track events dispatched
 /// by hand, as a backend reports them.
-#[cfg(feature = "media")]
+#[cfg(feature = "media-core")]
 mod media_events {
     use super::*;
     use crate::media::{MediaEvent, MediaKind, RemoteTrack};
@@ -498,14 +498,13 @@ mod media_events {
     }
 
     #[test]
-    fn native_media_says_not_yet() {
-        let r = crate::media::LocalTrack::video_source(Default::default());
-        assert!(matches!(r, Err(crate::media::MediaError::NotSupported(_))));
-        let peer = fake_peer();
-        assert!(
-            peer.add_transceiver(MediaKind::Video, crate::media::Direction::RecvOnly)
-                .is_err()
-        );
-        drop(peer);
+    fn a_local_source_runs_until_stopped() {
+        let (t, w) = crate::media::LocalTrack::video_source(Default::default()).unwrap();
+        assert_eq!(t.kind(), MediaKind::Video);
+        assert_eq!(t.status(), crate::media::LocalStatus::Live);
+        w.push_rgba(&[7; 16], 2, 2);
+        t.stop();
+        assert!(w.is_ended());
+        assert_eq!(t.status(), crate::media::LocalStatus::Ended);
     }
 }

@@ -37,6 +37,7 @@ pub mod reconcile;
 pub mod show;
 pub mod task;
 pub mod timer;
+pub mod video_sink;
 pub mod virtual_list;
 
 #[cfg(test)]

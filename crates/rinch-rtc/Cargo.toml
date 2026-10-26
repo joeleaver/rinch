@@ -23,8 +23,24 @@ serde = { version = "1", features = ["derive"], optional = true }
 default = []
 serde = ["dep:serde"]
 # Audio and video tracks (docs/design/rtc-media.md, M1). Off by default: a
-# data-channel-only app pays nothing. On the web it adds only bindings.
-media = [
+# data-channel-only app pays nothing. On the web it adds only bindings; on
+# desktop it adds the codecs (openh264, Opus), rinch-av's capture and
+# playback, and the decode/encode threads.
+#
+# H.264 comes one of two ways (M3); pick exactly one:
+#   * `media`: openh264 built from Cisco's C source (a C compiler; nasm
+#     optional). H.264 patent licensing is then the app's own concern.
+#   * `media-cisco-openh264`: no H.264 code built in; the app downloads
+#     Cisco's prebuilt OpenH264 binary separately and hands its path to
+#     `media::load_openh264` at run time. Cisco's binary licence covers the
+#     MPEG LA royalties when its conditions are met. See the user guide.
+media = ["media-core", "openh264?/source"]
+media-cisco-openh264 = ["media-core", "openh264?/libloading"]
+# What both share (the cfg gate in the code). Not for direct use.
+media-core = [
+    "dep:openh264",
+    "dep:opus",
+    "dep:rinch-av",
     "web-sys/AudioBuffer",
     "web-sys/AudioContext",
     "web-sys/AudioContextOptions",
@@ -83,11 +99,15 @@ webrtc = { version = "=0.21.1", default-features = false, features = ["runtime-t
 # webrtc-rs's sans-IO core, already in the graph through `webrtc`: named
 # only for `SctpMaxMessageSize`, which `webrtc` does not re-export.
 rtc = { version = "=0.21.1", default-features = false }
-tokio = { version = "1.52", default-features = false, features = ["rt", "sync", "time", "net"] }
+tokio = { version = "1.52", default-features = false, features = ["rt", "sync", "time", "net", "macros"] }
 bytes = "1"
 async-trait = "0.1"
 # `atexit`, to close open peers on a normal process exit. Already in the tree.
 libc = "0.2"
+# The `media` feature's codecs and devices (desktop only).
+openh264 = { version = "=0.9.9", default-features = false, optional = true }
+opus = { version = "0.4", optional = true }
+rinch-av = { workspace = true, features = ["audio", "camera"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
