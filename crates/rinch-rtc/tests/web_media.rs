@@ -275,6 +275,7 @@ async fn video_crosses_and_follows_the_track() {
     let (timer2, _feed2) = moving_box(writer2, Rc::new(Cell::new(32)));
     let before = needed.get();
     sender.replace_track(Some(&track2)).await.unwrap();
+    assert_eq!(sender.track().map(|t| t.id()), Some(track2.id()));
     let seen = fresh_frames(&frames, 1000, 30).await;
     assert!(share(&seen, 32) >= 0.8, "small box frames: {seen:?}");
     assert_eq!(needed.get(), before, "replace_track renegotiated");
