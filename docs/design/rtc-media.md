@@ -104,9 +104,11 @@ drives it through web-sys, and the same trick works here.
   do (`canvas.captureStream` and a WebAudio graph).
 - **Desktop:** webrtc-rs 0.21 packetizes, depacketizes and negotiates, but
   encodes nothing. The codecs come from elsewhere:
-  - **Video: H.264 through `openh264`** (built from source with `cc`, BSD,
-    no system library). The spike sent a test pattern through webrtc-rs,
-    and 89 of 90 frames decoded correctly. The H.264 patent position is M3.
+  - **Video: VP8 through the system libvpx, and H.264 through `openh264`**
+    (built from source with `cc`, BSD, no system library). VP8 is offered
+    first (M2, decided 2026-10-27). The spike sent a test pattern through
+    webrtc-rs, and 89 of 90 H.264 frames decoded correctly. The H.264
+    patent position is M3.
   - **Audio: Opus through `opus` 0.4**, with bundled libopus. On this host it
     costs 0.14 ms to encode and 0.04 ms to decode a 20 ms frame.
   - Capture is rinch-av, with its defects fixed.
@@ -456,7 +458,9 @@ What the table means:
   - **Firefox** does H.264 through Cisco's OpenH264 plugin, which it
     downloads itself. The plugin is normally present, but can be missing on
     some Linux builds; VP8 is built into every browser.
-  - The native↔Firefox test (section 6) pins which way that goes in CI.
+  - The native↔Firefox test (section 6) found the gap: CI's Firefox, and
+    Playwright's, have no plugin, still list H.264 in their offers, and send
+    nothing. That decided M2 for VP8 (3.7).
 - **VP9 and AV1:** not offered. Their encoders cost several times H.264's
   in software, and every browser does H.264 or VP8.
 
@@ -491,7 +495,7 @@ capture or encoder thread; it is cheap), then `write_sample`.
 
 - **Video.** Each track has a decode task. RTP from `TrackRemote::poll()`
   goes into a `SampleBuilder` with the codec's depacketizer, which assembles
-  frames. They are decoded with openh264 (or VP8 under M2), on a decoder
+  frames. They are decoded with libvpx or openh264, on a decoder
   thread (`rinch-rtc-dec-<n>`), converted I420→RGBA (openh264's SIMD
   `write_rgba8`, 0.35 ms at 720p), and then:
   - sent to every `MediaView` showing the track, through the named video
@@ -529,6 +533,245 @@ desktop peers on speakers will echo, and a desktop peer on speakers talking
 to a browser makes the browser user hear themselves.
 `webrtc-audio-processing` 2.1 wraps Google's module, but it is a C++ build.
 M5 is whether v1 ships without it (and documents headphones) or with it.
+
+### 3.7 As built (PR B2)
+
+Where the native backend differs from 3.1–3.6, the code holds:
+
+- **Video codecs (M2, decided 2026-10-27: VP8 and H.264).**
+  - VP8 is libvpx through `env-libvpx-sys` 5.1.3 with its `generate`
+    feature (bindgen at build time), on the system's libvpx (pkg-config).
+    No `vpx-encode`: `native_codec.rs` calls the encoder and decoder
+    directly (CBR, `kf_mode` disabled so keyframes come only on request,
+    `cpu-used` 8, error-resilient).
+  - **Order.** A desktop peer registers VP8 first, then H.264 (no RTX;
+    see the retransmission bullet). An answer follows the offer's order, so a call between two desktops
+    or with any browser uses VP8; H.264 is used where the offer puts it
+    first (Safari). VP8 first because every browser encodes it, and a
+    Firefox without the OpenH264 plugin lists H.264 and then sends nothing
+    (3.2). A browser's own offer usually lists VP8 first too.
+  - **A sender's track is labelled, and its preferences reset.** webrtc-rs
+    0.21 uses a track's codec twice. It becomes the transceiver's only
+    codec preference: a VP8-labelled track offered VP8 alone and answered
+    an H.264-only offer it then could not send (#1947's second review). And
+    a sender is bound to the interceptors (the NACK responder, sender
+    reports) only if that codec is among the negotiated ones: the
+    unlabelled tracks the second review's fix used were never bound, so
+    nothing was retransmitted (third review). So a video track is labelled
+    with the codec negotiation will most likely pick (the far side's first
+    supported one when its offer is already here, our first otherwise),
+    and its transceiver's preferences are set again to every codec, that
+    one first (`video_label`). Every m-line offers both codecs, and an
+    answer lists only what the offer did. A negotiation that leaves the
+    label out (a track added before an H.264-only offer arrives) still
+    sends, unbound: no retransmission or sender reports. rtc gives a
+    sender's track no codec at negotiation, as it does a receiver's; that
+    upstream change would close the gap.
+  - **The sender encodes whatever was negotiated.** Each sender reads its
+    codec from webrtc-rs's `get_parameters` (every 250 ms until known,
+    then every 2 s, so a renegotiation that changes it is followed), and
+    the pump encodes once per codec its senders want, not once per sender.
+  - **The receiver picks its decoder per packet,** by payload type, from
+    the receiver's negotiated parameters. A packet of another codec (a
+    renegotiation from VP8 to H.264) replaces the decoder and the
+    depacketizer, and waits for a keyframe.
+  - Tests can reorder (`testing::prefer_h264`) or drop VP8
+    (`testing::h264_only`). Both are read when a peer's connection is
+    built, on the worker, shortly after `Peer::new`.
+    `tests/media_codecs.rs` pins the order, an answer to an H.264-only and
+    an H.264-first offer (both directions in H.264), and a renegotiated
+    change of codec.
+- **Features (M3).**
+  - `media` builds openh264 from source.
+  - `media-cisco-openh264` builds no H.264 code and loads Cisco's binary
+    at run time (`media::load_openh264`). rinch-rtc makes the path
+    absolute, reads the file once, checks its SHA-256 against Cisco's
+    OpenH264 2.6.0 build for the platform, and loads that same file; a
+    second call with another path is an error. Until it has loaded, peers
+    offer and accept VP8 only. A window remains between the hash and the
+    loader opening the file again by path (it cannot load from memory);
+    the guide says to keep the file where only the app's user can write.
+  - Both turn on `media-core`, the code's gate. VP8 is in both.
+- **A sender keeps one webrtc-rs track for life,** a
+  `TrackLocalStaticRTP` that the worker packetizes into itself (one
+  packetizer per sender, built once the codec is known), not a
+  `TrackLocalStaticSample`.
+  - webrtc-rs 0.21's `RtpSender::replace_track` does not bind the new
+    track, so its writes fail. `replace_track` re-points the sender's
+    forwarder to the new source instead; the SSRC and sequence numbers run
+    on, as a browser's does.
+  - `add_transceiver` makes its transceiver from a track of ours for the
+    same reason.
+- **Keyframes on request,** with a 10 s backstop. webrtc-rs's default
+  interceptors stop PLI and FIR before the sending app, so a last
+  interceptor (`KeyframeRequests`) passes them on, and the worker sets the
+  sending pump's keyframe flag. A keyframe also goes out on a new sender,
+  on enable, and once the codec is known.
+  - At most one keyframe a second per encoder: a receiver repeats its PLI
+    until a keyframe comes, and one still being paced out must not be
+    followed by another. A request inside that second waits, it is not
+    dropped, and it waits for each codec's encoder separately (one codec's
+    keyframe does not answer for another's).
+  - The receiver's `SampleBuilder` (512 packets) gives up a frame missing a
+    packet after 500 ms (`with_max_time_delay`); without that a lost packet
+    held every later frame.
+  - **Retransmission.** The receiver's interceptors NACK a missing
+    packet and the sender's resend it from their buffer, as itself (same
+    SSRC and sequence number): RTX is not registered, because webrtc-rs's
+    NACK generator tracks arrivals by SSRC before RTX is resolved, so a
+    repair sent as RTX never counted as received (79 NACKs and 261 RTX
+    packets for 5 losses in 10 s). A browser offering RTX is answered
+    without it and resends the same way. Measured with a UDP relay
+    dropping video RTP on the wire (320×240 box, 15 s): before, 0.5% loss
+    froze the picture 12% of the time, 1% about 30%, 3% about 60%; after,
+    0% at 0.5, 1 and 3%, in VP8 and H.264, one NACK per loss, no keyframe
+    requested (`tests/media_wire_loss.rs`, 3%).
+  - **A gap that is not repaired is acted on:** the assembler holds the
+    frame while a retransmission may come; a gap still open after 200 ms
+    (`KeyGate`, `REPAIR`) gets a PLI at once (again every 500 ms until a
+    keyframe), and frames are held back from the decoder until the
+    keyframe, so no corrupt picture is shown. The same holds at the start,
+    after a codec change, and when the assembler reports a frame lost. A
+    decode error also sends a PLI (at most one a second). After a 300 ms
+    outage (`tests/media_loss.rs`, which drops packets after the
+    interceptors, so nothing is retransmitted) the request reaches the
+    sender within 400 ms and a clean picture is back within 1.5 s.
+- **Bitrate.** Both encoders run at `set_max_bitrate` (or a default from
+  the size), and a new cap reaches the running encoder (libvpx
+  `vpx_codec_enc_config_set`, openh264 `ENCODER_OPTION_BITRATE`): no new
+  encoder, no keyframe.
+  - **Neither encoder holds a cap alone on a hard picture.** openh264 in
+    its Bitrate mode with frame skipping ran at 2.6× the cap on noise, and
+    has nothing to limit a keyframe's size: no max-intra setting;
+    `ENCODER_OPTION_MAX_BITRATE` and `BITS_VARY_PERCENTAGE` changed nothing
+    measurable; a QP floor is the only lever (a noise keyframe at 640×480
+    is 172 KB at the default range, 66 KB at QP ≥ 42, 12.5 KB only at 51),
+    and it would cost every frame. libvpx (CBR, frame dropping,
+    `VP8E_SET_MAX_INTRA_BITRATE_PCT` at 30 × fps %, WebRTC's
+    `MaxIntraTarget`) keeps a noise keyframe to 36 KB, which a keyframe a
+    second (a lossy link's PLIs) still makes three times a 100 kbps cap.
+  - **So the pump keeps a send budget per encoder:** the bitrate since the
+    last frame, with half a second saved at most. While it is spent no
+    frame is encoded, a requested keyframe included (the request waits; it
+    is consumed only when a keyframe goes out), and an overshoot is paid
+    back in skipped frames, up to 10 s. On noise at 100 kbps a keyframe is
+    three (VP8) to seven (H.264) seconds of it. A new size makes a new
+    encoder (a keyframe) but keeps the budget and its debt.
+  - **libvpx runs on a synthetic clock:** each frame lasts one frame
+    period and its pts is the frame count times that, also after frames
+    the budget skipped. Given the real gap as duration it spent it all on
+    the next frame (180 KB of noise at 300 kbps); given the wall clock as
+    pts (cf3e999e), it read the skipped frames as a falling frame rate and
+    made each frame larger, which the budget skipped more of. On
+    camera-like content (a 640×480 gradient, a textured square moving, a
+    drifting blob, sensor noise ±3) that was 4–12 fps at 300 kbps, and the
+    rate stayed at 8–12 fps after the cap was lifted (#1947's third
+    review). Now: 24–28 fps at 300 kbps, 30 at 1 Mbps and uncapped,
+    settling within a second of a change; H.264, 30 throughout
+    (`tests/media_frame_rate.rs`). The budget does bind on such content at
+    300 kbps; it skips a frame in five or six.
+  - **Pacing.** A frame's packets go out at 2.5 × the bitrate (WebRTC's
+    pacing factor), not in one burst: 150-packet frames lost packets on
+    the far side's socket even on loopback, and the receiver then asked
+    for keyframes it also lost.
+  - `tests/media_bitrate.rs` sets the cap mid-call on full-frame noise, in
+    VP8 and in H.264 (checked to be what the call negotiated), at 300 and
+    100 kbps, and checks the bytes produced over 6 s against the cap plus
+    half a second and the largest frame.
+- **RTP timestamps** advance by the time since the codec's last frame, not
+  by 1/fps: the pump takes the latest picture at each tick, so that is
+  capture time to within a tick, through skipped frames and the
+  half-second repeats of a still source. The advance comes before the
+  frame (`skip_samples`, then `packetize` with 0): `packetize`'s own
+  `samples` is added after the packets, which put each frame's
+  timestamp one gap late (third review; `tests/media_rtp_time.rs`).
+- **Small and odd sizes.** openh264 takes nothing under 16 pixels a side,
+  so a smaller picture is scaled up by a whole factor; an odd last row or
+  column is dropped (`tests/media_sizes.rs`, both codecs: a 1×1 picture
+  arrives, a 641×481 one is not sheared).
+- **Mute is synthesised.** webrtc-rs reports no mute when negotiation stops
+  a track's media. After each offer, answer and remote description, the
+  worker mutes remote tracks whose transceiver no longer receives, and the
+  next packet unmutes them.
+- **Rollback (1.7):**
+  - an incoming offer while ours is pending is applied as
+    `SetLocal(rollback)` then `SetRemote(offer)`;
+  - `Description::rollback()` rolls back whichever offer is pending.
+- **Resampling is linear,** not rubato (3.3). It serves sources at any rate
+  into 48 kHz Opus, and 48 kHz into the output device. It is good enough
+  for voice and adds no dependency.
+- **Opus loss handling.** Each remote audio track has an `OpusJitter`:
+  packets are ordered by (extended) sequence number, duplicates and late
+  ones are dropped, and one packet is held for a late arrival (more would
+  outlast the mixer's 60 ms). A lost packet is rebuilt from the next one's
+  in-band FEC when it has it, and concealed by Opus PLC otherwise, as long
+  as the packets are (10 to 60 ms: the next packet's duration for FEC,
+  the last one's for PLC).
+  - **A jump is a resync.** A gap of more than 15 packets is not
+    concealed but skipped, and a packet more than 50 behind starts the
+    sequence again rather than being dropped as late. Two packets from any
+    remote 0x7fff apart used to make 655 s of concealment in one call on
+    the worker every peer shares; a jump of 0x8000 or backwards silenced
+    the track for minutes.
+  libopus puts FEC only in frames its voice detector calls speech, so
+  a steady tone or music gets PLC (`jitter_tests` pins both).
+  - The mixer's buffer is per track: 60 ms before playback starts, 300 ms
+    at most. A buffer past 160 ms (the sender's clock faster than ours) is
+    trimmed to 80 ms.
+  - A source at a rate that isn't a multiple of 50 Hz (11.025 kHz) carries
+    the remainder from one 20 ms frame to the next.
+  - **Send latency cannot ratchet.** After a stall (the pump late, the
+    process paused) a source is ahead of the 20 ms ticks; past 60 ms of
+    backlog the oldest audio is dropped, down to one tick. A 300 ms pause
+    used to stay 290 ms of latency for the rest of the call.
+- **Memory.** #1947's review measured about 1 MB of RSS growth a call. It
+  was the tests' audio capture (`testing::capture_audio_output` keeps every
+  sample). With it cleared, RSS is flat over 60 calls under
+  `MALLOC_ARENA_MAX=1`, and levels off with glibc's default arenas
+  (`tests/media_lifetime.rs`). On a loaded host the allocator sometimes
+  keeps one step (14 MB once in about fifteen runs, flat before and after),
+  so the test fails on the smaller of two ten-call growths, which a leak
+  raises and a step does not.
+- **No audio device** (a CI runner) is reported once through `on_error`
+  as `RtcError::Media`; decoding goes on. Tests read the mix through
+  `testing::capture_audio_output`.
+- **`MediaView` on desktop** is a div with both `data-rtc-view` (the
+  identity it shares with the web's `<video>`; reserved) and
+  `data-viewport` (the compositor's key, already reserved). The sink comes
+  from `rinch_core::video_sink` (M6); rinch-video's factory now forwards
+  there.
+- **Codec cost on the CI runner** (ubuntu-24.04, release, codec_bench from
+  the spike):
+
+  | | C only | with nasm |
+  |---|---|---|
+  | H.264 encode 640×480 | 8.4 ms (6.8 ms on another run) | 2.3 ms |
+  | H.264 encode 1280×720 | 19.8 ms (16.3) | 5.4 ms |
+  | H.264 decode 640×480 / 1280×720 | 2.0 / 4.4 ms | 0.7 / 1.6 ms |
+  | Opus 20 ms stereo enc / dec | 0.13 / 0.03 ms | same |
+
+  With nasm a 720p30 call costs about a sixth of a core instead of
+  two-thirds. CI installs nasm, and the guide tells apps to build with it.
+- **Build cost on the CI runner** (debug, cold):
+  - openh264-sys2's build script takes 28–31 s, with or without nasm
+    (nasm's assembly builds in parallel).
+  - opusic-sys's (cmake) takes about 20 s.
+  - `cargo build -p rinch-rtc --features media --tests` over the same build
+    without `media` adds 52–57 s.
+  - Installing nasm is 8 s uncached, and it is cached with the other apt
+    packages.
+  - **VP8** (scratch PR #1949, 2026-10-26) adds `bindgen` 0.68.1 (3.7 s)
+    and `env-libvpx-sys` (1 s, its bindgen run included); `clang-sys` was
+    already built for nokhwa's v4l2-sys. Both run while openh264-sys2's
+    build script (26–33 s) does, so the cold build's wall clock does not
+    move measurably (82.7 s with VP8, 100.6 s for B2 without it: runner
+    noise). `libvpx-dev` (1.14) installs in 2.5 s uncached.
+  - **CI time.** The native media tests took 144 s on the runner in the
+    feature-gated shard, about 150 s with the last round of test changes
+    (`media_lifetime` 26 s, `media_loss` 25 s, `media_audio_rates` 24 s,
+    `media_longrun` 20 s, `media_bitrate` 16 s).
+    test-wasm builds `media_echo` (64 s cold) and `web_media_native`
+    (30 s), which runs for 10 s in Chrome and 5 s in Firefox.
 
 ## 4. Rendering received video: the split path
 
@@ -673,8 +916,10 @@ None of these tests touches a real device; every source is synthetic.
   - Size: the spike's H.264 loopback binary is 7.77 MB stripped, against
     6.30 MB for the data-channel spike (the same webrtc-rs). That is about
     1.5 MB for openh264, the media engine and the interceptors.
-- **VP8 (if M2 includes it)** adds the system libvpx, `env-libvpx-sys`,
-  `vpx-encode`, and **bindgen with libclang at build time** for libvpx 1.16.
+- **VP8 (M2)** adds the system libvpx (`libvpx-dev`), `env-libvpx-sys`,
+  and **bindgen with libclang at build time**: the crate's pregenerated
+  bindings stop below the libvpx in current distributions (1.14 on
+  ubuntu-24.04, 1.16 on this host).
 - **Capture and playback** (cpal, nokhwa) come through rinch-av and are
   already in the tree.
 - **Web:** web-sys feature flags only.
@@ -720,7 +965,9 @@ agents' builds, so timings are indicative rather than benchmarks.
 (b) would need `Peer` to expose a media hook to a second crate, a public
 seam with little benefit.
 
-**M2. The video codec on desktop.**
+**M2. The video codec on desktop. Decided by Joe, 2026-10-27: VP8 is
+added, both codecs are negotiated, VP8 first (3.7).** The Firefox interop
+test showed the gap the recommendation below left open.
 (a) H.264 only, through `openh264` built from source.
 (b) VP8 only, through the system libvpx.
 (c) H.264 by default, plus VP8 behind a feature.

@@ -647,6 +647,13 @@ impl RinchRuntime {
         // fallback and reflows once the real face arrives.
         #[cfg(test)]
         let _queue_lock = TestQueueLock::hold();
+        // The named video sink factory (rinch-core's hook), so video players
+        // and rinch-rtc's remote tracks deliver frames through the
+        // RenderSurface compositing pipeline. Here rather than in the two
+        // entry points, which create the event loop and cannot be tested.
+        rinch_core::video_sink::set_video_sink_factory(
+            crate::render_surface::create_video_frame_sink,
+        );
         let mut app = RinchApp::new(component);
         app.register_app_fonts(fonts);
         // The main window's size, scale and focus reach `rinch::window`
@@ -3929,13 +3936,6 @@ where
     // Set global proxy so run_on_main_thread() works from any thread
     install_global_proxy(&proxy);
 
-    // Register video frame sink factory so video players deliver frames
-    // through the RenderSurface compositing pipeline.
-    #[cfg(feature = "video")]
-    {
-        rinch_video::set_frame_sink_factory(crate::render_surface::create_video_frame_sink);
-    }
-
     // Start debug IPC server if feature is enabled (disable with RINCH_DEBUG=0)
     #[cfg(feature = "debug")]
     {
@@ -4054,13 +4054,6 @@ pub fn run_rinch_with_window_props_and_menu<F>(
 
     // Set global proxy so run_on_main_thread() works from any thread
     install_global_proxy(&proxy);
-
-    // Register video frame sink factory so video players deliver frames
-    // through the RenderSurface compositing pipeline.
-    #[cfg(feature = "video")]
-    {
-        rinch_video::set_frame_sink_factory(crate::render_surface::create_video_frame_sink);
-    }
 
     #[cfg(feature = "debug")]
     {
@@ -5189,6 +5182,20 @@ mod bundled_font_tests {
             ],
             "both faces must reach the app, in the order they were declared"
         );
+    }
+
+    /// The shell installs the named video sink factory (rinch-core's hook
+    /// that rinch-video and rinch-rtc draw through). Counted on this thread,
+    /// so another test installing it meanwhile cannot make this pass.
+    #[test]
+    fn the_runtime_installs_the_video_sink_factory() {
+        let before = rinch_core::video_sink::installs_on_this_thread();
+        let _runtime = RinchRuntime::new("t", 800, 600, component, &[]);
+        assert_eq!(
+            rinch_core::video_sink::installs_on_this_thread(),
+            before + 1
+        );
+        assert!(rinch_core::video_sink::has_video_sink_factory());
     }
 
     /// And a build that bundles none is not handed a phantom face.

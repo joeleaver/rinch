@@ -96,6 +96,17 @@ enum PeerCmd {
         key: u64,
         reply: std::sync::mpsc::Sender<Option<ChannelSettings>>,
     },
+    /// Test hook: whether a local / remote description is pending (an
+    /// offer made or taken and not yet answered), as webrtc-rs holds it.
+    Pending {
+        reply: std::sync::mpsc::Sender<(bool, bool)>,
+    },
+    /// Audio and video (the `media` feature).
+    #[cfg(feature = "media-core")]
+    Media(crate::native_media::MediaCmd),
+    /// From the peer's own handler: a remote track arrived.
+    #[cfg(feature = "media-core")]
+    RemoteTrack(Arc<dyn webrtc::media_stream::track_remote::TrackRemote>),
 }
 
 use crate::ChannelSettings;
@@ -144,6 +155,12 @@ fn post(id: u64, cmd: PeerCmd) {
             registry::dispatch(id, Event::Closed);
         }));
     }
+}
+
+/// Post a media command to peer `id`'s task.
+#[cfg(feature = "media-core")]
+pub(crate) fn post_media(id: u64, cmd: crate::native_media::MediaCmd) {
+    post(id, PeerCmd::Media(cmd));
 }
 
 /// How long process exit waits for the worker to close every peer.
@@ -241,6 +258,8 @@ pub(crate) fn close_channel(id: u64, key: u64) {
 /// explicit `close()`); otherwise the peer's registry entry is already gone
 /// (a drop, an unmount) and nothing is reported.
 pub(crate) fn close(id: u64, notify: bool) {
+    #[cfg(feature = "media-core")]
+    crate::native_media::peer_closed_main(id);
     if let Some(tx) = WORKER.get() {
         let _ = tx.send(Cmd::Peer {
             id,
@@ -281,6 +300,14 @@ pub mod testing {
     }
 
     pub use crate::ChannelSettings;
+
+    /// Whether webrtc-rs holds a pending local / remote description for
+    /// `peer` (blocks up to 5 s).
+    pub fn pending_descriptions(peer: &crate::Peer) -> Option<(bool, bool)> {
+        let (reply, rx) = std::sync::mpsc::channel();
+        super::post(peer.id(), super::PeerCmd::Pending { reply });
+        rx.recv_timeout(Duration::from_secs(5)).ok()
+    }
 
     /// The channel's settings as webrtc-rs holds them, asked of the worker
     /// directly (blocks up to 5 s; no main-thread pumping needed).
@@ -464,6 +491,20 @@ impl PeerConnectionEventHandler for Handler {
         emit(self.id, Event::State(state));
     }
 
+    #[cfg(feature = "media-core")]
+    async fn on_track(&self, track: Arc<dyn webrtc::media_stream::track_remote::TrackRemote>) {
+        // The peer's task finds its transceiver and starts its reader.
+        let _ = self.me.send(PeerCmd::RemoteTrack(track));
+    }
+
+    #[cfg(feature = "media-core")]
+    async fn on_negotiation_needed(&self) {
+        emit(
+            self.id,
+            Event::Media(crate::media::MediaEvent::NegotiationNeeded),
+        );
+    }
+
     async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
         let key = crate::next_id();
         let label = dc.label().await.unwrap_or_default();
@@ -519,7 +560,17 @@ async fn build(
     let bind = overrides
         .bind
         .unwrap_or_else(|| vec!["0.0.0.0:0".to_string()]);
-    let pc = PeerConnectionBuilder::new()
+    let builder = PeerConnectionBuilder::new();
+    // Media: the codecs the native side can encode and decode (H.264,
+    // Opus) and the default RTCP interceptors (NACK, reports, TWCC).
+    #[cfg(feature = "media-core")]
+    let builder = {
+        let (me, registry) = crate::native_media::worker::media_engine()?;
+        builder
+            .with_media_engine(me)
+            .with_interceptor_registry(registry)
+    };
+    let pc = builder
         .with_configuration(rtc_config)
         .with_setting_engine(setting.build())
         .with_runtime(Arc::new(TokioRuntime))
@@ -579,6 +630,19 @@ async fn peer_task(
                     PeerCmd::Inspect { reply, .. } => {
                         let _ = reply.send(None);
                     }
+                    PeerCmd::Pending { reply } => {
+                        let _ = reply.send((false, false));
+                    }
+                    #[cfg(feature = "media-core")]
+                    PeerCmd::Media(crate::native_media::MediaCmd::ReplaceTrack { req, .. }) => {
+                        emit(
+                            id,
+                            Event::Reply {
+                                req,
+                                result: Err(e.clone()),
+                            },
+                        )
+                    }
                     _ => {}
                 }
             }
@@ -587,6 +651,8 @@ async fn peer_task(
     };
 
     let mut channels: HashMap<u64, Arc<dyn DataChannel>> = HashMap::new();
+    #[cfg(feature = "media-core")]
+    let mut media = crate::native_media::worker::PeerWorker::new(id);
     while let Some(cmd) = rx.recv().await {
         match cmd {
             PeerCmd::Channel {
@@ -636,6 +702,8 @@ async fn peer_task(
                     continue;
                 }
                 let result = describe(&*pc, &gathered, trickle, SdpKind::Offer).await;
+                #[cfg(feature = "media-core")]
+                media.refresh(&pc).await;
                 emit(
                     id,
                     Event::Reply {
@@ -646,6 +714,8 @@ async fn peer_task(
             }
             PeerCmd::Answer { req } => {
                 let result = describe(&*pc, &gathered, trickle, SdpKind::Answer).await;
+                #[cfg(feature = "media-core")]
+                media.refresh(&pc).await;
                 emit(
                     id,
                     Event::Reply {
@@ -655,33 +725,9 @@ async fn peer_task(
                 );
             }
             PeerCmd::Remote { req, description } => {
-                let parsed = match description.kind {
-                    SdpKind::Offer => RTCSessionDescription::offer(description.sdp),
-                    SdpKind::Answer => RTCSessionDescription::answer(description.sdp),
-                    // webrtc-rs 0.21 supports an explicit rollback; it is
-                    // wired with native media (#1916, the next PR).
-                    _ => {
-                        let error = RtcError::Sdp(
-                            "rollback is not supported on desktop yet (#1916)".into(),
-                        );
-                        emit(
-                            id,
-                            Event::Reply {
-                                req,
-                                result: Err(error),
-                            },
-                        );
-                        continue;
-                    }
-                };
-                let result = match parsed {
-                    Ok(d) => pc
-                        .set_remote_description(d)
-                        .await
-                        .map(|()| None)
-                        .map_err(|e| RtcError::Sdp(e.to_string())),
-                    Err(e) => Err(RtcError::Sdp(e.to_string())),
-                };
+                let result = apply_remote(&*pc, description).await;
+                #[cfg(feature = "media-core")]
+                media.refresh(&pc).await;
                 emit(id, Event::Reply { req, result });
             }
             PeerCmd::Candidate(c) => {
@@ -733,6 +779,8 @@ async fn peer_task(
                 tokio::spawn(pump(id, key, dc, pc.clone()));
             }
             PeerCmd::Close { notify, done } => {
+                #[cfg(feature = "media-core")]
+                media.close();
                 let _ = pc.close().await;
                 if notify {
                     emit(id, Event::Closed);
@@ -741,6 +789,15 @@ async fn peer_task(
                     let _ = d.send(());
                 }
                 return;
+            }
+            #[cfg(feature = "media-core")]
+            PeerCmd::Media(cmd) => media.handle(&pc, cmd).await,
+            #[cfg(feature = "media-core")]
+            PeerCmd::RemoteTrack(track) => media.remote_track(&pc, track).await,
+            PeerCmd::Pending { reply } => {
+                let local = pc.pending_local_description().await.is_some();
+                let remote = pc.pending_remote_description().await.is_some();
+                let _ = reply.send((local, remote));
             }
             PeerCmd::Inspect { key, reply } => {
                 let settings = match channels.get(&key) {
@@ -765,7 +822,56 @@ async fn peer_task(
         }
     }
     // Every sender is gone: the main thread can no longer reach this peer.
+    #[cfg(feature = "media-core")]
+    media.close();
     let _ = pc.close().await;
+}
+
+/// Apply a remote description, with the rollbacks browsers do:
+/// - an offer that arrives while ours is pending rolls ours back first
+///   (webrtc-rs 0.21 has no implicit rollback: design record 1.7);
+/// - an explicit rollback undoes whichever offer is pending.
+async fn apply_remote(
+    pc: &dyn PeerConnection,
+    description: Description,
+) -> Result<Option<Description>, RtcError> {
+    use webrtc::peer_connection::RTCSdpType;
+    let local_offer = pc
+        .pending_local_description()
+        .await
+        .is_some_and(|d| d.sdp_type == RTCSdpType::Offer);
+    let sdp_err = |e: webrtc::error::Error| RtcError::Sdp(e.to_string());
+    let rollback =
+        || RTCSessionDescription::rollback(None).map_err(|e| RtcError::Sdp(e.to_string()));
+    match description.kind {
+        SdpKind::Offer => {
+            if local_offer {
+                pc.set_local_description(rollback()?)
+                    .await
+                    .map_err(sdp_err)?;
+            }
+            let d = RTCSessionDescription::offer(description.sdp)
+                .map_err(|e| RtcError::Sdp(e.to_string()))?;
+            pc.set_remote_description(d).await.map_err(sdp_err)?;
+        }
+        SdpKind::Answer => {
+            let d = RTCSessionDescription::answer(description.sdp)
+                .map_err(|e| RtcError::Sdp(e.to_string()))?;
+            pc.set_remote_description(d).await.map_err(sdp_err)?;
+        }
+        _ => {
+            if local_offer {
+                pc.set_local_description(rollback()?)
+                    .await
+                    .map_err(sdp_err)?;
+            } else {
+                pc.set_remote_description(rollback()?)
+                    .await
+                    .map_err(sdp_err)?;
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Create an offer or answer, set it as the local description, and (when

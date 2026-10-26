@@ -75,7 +75,7 @@ pub(crate) enum Event {
     /// `close()` finished: every channel and the peer are closed. Last event.
     Closed,
     /// Something about the peer's media tracks (the `media` feature).
-    #[cfg(feature = "media")]
+    #[cfg(feature = "media-core")]
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     Media(crate::media::MediaEvent),
 }
@@ -183,7 +183,7 @@ pub(crate) struct PeerEntry {
     pub(crate) closing: bool,
     pub(crate) cbs: PeerCallbacks,
     pub(crate) channels: HashMap<u64, ChannelEntry>,
-    #[cfg(feature = "media")]
+    #[cfg(feature = "media-core")]
     pub(crate) media: crate::media::PeerMedia,
     replies: HashMap<u64, Reply>,
     /// The signalling state as of the last completed request.
@@ -236,7 +236,7 @@ impl PeerEntry {
             closing: false,
             cbs: PeerCallbacks::default(),
             channels: HashMap::new(),
-            #[cfg(feature = "media")]
+            #[cfg(feature = "media-core")]
             media: Default::default(),
             replies: HashMap::new(),
             signaling: SignalingState::Stable,
@@ -472,10 +472,10 @@ pub(crate) fn dispatch(id: u64, event: Event) {
                 });
             }
         }
-        #[cfg(feature = "media")]
+        #[cfg(feature = "media-core")]
         Event::Media(m) => crate::media::dispatch(id, m),
         Event::Closed => {
-            #[cfg(feature = "media")]
+            #[cfg(feature = "media-core")]
             crate::media::peer_closed(id);
             let keys: Vec<u64> =
                 with_peer(id, |e| e.channels.keys().copied().collect()).unwrap_or_default();
@@ -564,7 +564,7 @@ pub(crate) fn invoke<T: 'static>(
 /// Run a slot that lives outside a peer (a local track's `on_ended`) the way
 /// [`invoke`] runs one: dropped, not run, once its owner is gone; otherwise
 /// run in a batch under its owner and frame and handed back.
-#[cfg(feature = "media")]
+#[cfg(feature = "media-core")]
 pub(crate) fn run_slot<T: 'static>(slot: Slot<T>, arg: T) -> Option<Slot<T>> {
     let Slot {
         owner,
@@ -612,7 +612,7 @@ fn sweep_dead(id: u64) {
             take_dead(&mut c.cbs.error, &mut dead);
             take_dead(&mut c.cbs.buffered_amount_low, &mut dead);
         }
-        #[cfg(feature = "media")]
+        #[cfg(feature = "media-core")]
         crate::media::sweep_dead(&mut e.media, &mut dead);
         dead
     });

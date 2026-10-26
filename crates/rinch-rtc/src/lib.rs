@@ -125,11 +125,13 @@ mod wasm;
 #[cfg(target_arch = "wasm32")]
 use wasm as backend;
 
-#[cfg(feature = "media")]
+#[cfg(feature = "media-core")]
 pub mod media;
-#[cfg(all(feature = "media", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "media-core", not(target_arch = "wasm32")))]
+mod native_codec;
+#[cfg(all(feature = "media-core", not(target_arch = "wasm32")))]
 mod native_media;
-#[cfg(all(feature = "media", target_arch = "wasm32"))]
+#[cfg(all(feature = "media-core", target_arch = "wasm32"))]
 mod wasm_media;
 
 pub use error::{RtcError, SendError};
@@ -915,9 +917,11 @@ pub mod testing {
     //! Hooks for rinch-rtc's own tests. Not API.
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::native::testing::*;
+    #[cfg(all(feature = "media-core", not(target_arch = "wasm32")))]
+    pub use crate::native_media::testing::*;
     #[cfg(target_arch = "wasm32")]
     pub use crate::wasm::testing::*;
-    #[cfg(all(feature = "media", target_arch = "wasm32"))]
+    #[cfg(all(feature = "media-core", target_arch = "wasm32"))]
     pub use crate::wasm_media::testing::*;
 }
 
