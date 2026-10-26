@@ -93,6 +93,8 @@ fn full_paint(f: PaintFixture) -> PaintFixture {
 #[library_benchmark]
 #[bench::text_page(setup = setup_vello_paint)]
 #[bench::split_surface_140_boxes(setup = setup_vello_paint_split)]
+#[bench::text_page_unsliced(setup = setup_vello_paint_unsliced)]
+#[bench::split_140_unsliced(setup = setup_vello_paint_split_unsliced)]
 fn vello_paint(f: VelloPaintFixture) -> VelloPaintFixture {
     black_box(measure(black_box(f), op_vello_paint))
 }

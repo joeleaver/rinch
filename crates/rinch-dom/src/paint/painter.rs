@@ -219,6 +219,10 @@ pub struct SurfaceSplit {
     /// (`fit_image`), and the image's size in texels.
     pub image_transform: Affine,
     pub extents: (u32, u32),
+    /// The element's ink in device pixels (its border box grown by its
+    /// shadows and outline, transformed): where the paint cull reaches it,
+    /// so where damage makes the frame paint it, and split it, again.
+    pub ink: Rect,
 }
 
 /// What a painter did with a [`SurfaceSplit`].
