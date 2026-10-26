@@ -586,8 +586,11 @@ struct PumpEncoder {
     /// Bits the send budget has left (negative: overspent).
     budget: f64,
     at: Instant,
-    /// No frame out yet: the first is a keyframe.
+    /// A new encoder: its first frame is a keyframe.
     fresh: bool,
+    /// A keyframe was asked for and this encoder has not sent it yet.
+    key_pending: bool,
+    last_key: Instant,
     last_sent: Option<Instant>,
 }
 
@@ -603,7 +606,6 @@ fn video_pump(src: Arc<LocalSource>) {
     let (mut w, mut h) = (0u32, 0u32);
     // One encoder per codec the senders negotiated.
     let mut encoders: HashMap<VideoCodec, PumpEncoder> = HashMap::new();
-    let mut last_key = Instant::now();
     let mut last_encode = Instant::now() - Duration::from_secs(1);
     let mut warned = false;
     let mut was_enabled = true;
@@ -689,7 +691,11 @@ fn video_pump(src: Arc<LocalSource>) {
         } else {
             Duration::from_secs(1)
         };
-        if !fresh && last_encode.elapsed() < gap && !src.keyframe.load(Ordering::Acquire) {
+        if !fresh
+            && last_encode.elapsed() < gap
+            && !src.keyframe.load(Ordering::Acquire)
+            && !encoders.values().any(|e| e.key_pending)
+        {
             continue;
         }
         let bitrate = src.bitrate(w, h);
@@ -697,12 +703,14 @@ fn video_pump(src: Arc<LocalSource>) {
         // enable) and every 10 s as a backstop; at most one a second (a
         // receiver repeats its PLI until a keyframe arrives, and a
         // keyframe still being paced out must not be followed by another).
-        // The request is consumed only when a keyframe goes out: one the
-        // send budget holds back waits for it.
-        let key = (last_key.elapsed() >= Duration::from_secs(1)
-            && src.keyframe.load(Ordering::Acquire))
-            || last_key.elapsed() > Duration::from_secs(10);
-        let mut key_sent = false;
+        // A request is handed to every encoder and kept by each until it
+        // sends its keyframe: one the send budget holds back waits for it,
+        // and one codec's keyframe does not answer for another's.
+        if src.keyframe.swap(false, Ordering::AcqRel) {
+            for e in encoders.values_mut() {
+                e.key_pending = true;
+            }
+        }
         let pic = I420::from_rgba(picture, w as usize, h as usize);
         let ts = started.elapsed().as_millis() as u64;
         let now = Instant::now();
@@ -710,6 +718,10 @@ fn video_pump(src: Arc<LocalSource>) {
             if encoders.get(&codec).is_none_or(|e| (e.w, e.h) != (w, h)) {
                 match crate::native_codec::new_encoder(codec, w, h, src.fps, bitrate) {
                     Ok(enc) => {
+                        // A new size is a new encoder, starting with a
+                        // keyframe; the send budget and the timing carry
+                        // over (a debt is still owed).
+                        let old = encoders.remove(&codec);
                         encoders.insert(
                             codec,
                             PumpEncoder {
@@ -717,10 +729,12 @@ fn video_pump(src: Arc<LocalSource>) {
                                 w,
                                 h,
                                 bitrate,
-                                budget: 0.0,
-                                at: now,
+                                budget: old.as_ref().map_or(0.0, |o| o.budget),
+                                at: old.as_ref().map_or(now, |o| o.at),
                                 fresh: true,
-                                last_sent: None,
+                                key_pending: false,
+                                last_key: now,
+                                last_sent: old.as_ref().and_then(|o| o.last_sent),
                             },
                         );
                     }
@@ -758,13 +772,26 @@ fn video_pump(src: Arc<LocalSource>) {
             e.budget = (e.budget + rate * now.duration_since(e.at).as_secs_f64())
                 .clamp(-rate * 10.0, rate * 0.5);
             e.at = now;
-            if !e.fresh && e.budget < 0.0 {
+            // Only an encoder's very first frame goes out on credit.
+            if e.last_sent.is_some() && e.budget < 0.0 {
                 continue;
             }
-            match e.enc.encode(&pic, ts, key || e.fresh) {
+            // A keyframe on request (a new sender, a receiver's PLI or FIR,
+            // an enable) and every 10 s as a backstop; at most one a second
+            // (a receiver repeats its PLI until a keyframe arrives, and a
+            // keyframe still being paced out must not be followed by
+            // another).
+            let since = now.duration_since(e.last_key);
+            let key = e.fresh
+                || (e.key_pending && since >= Duration::from_secs(1))
+                || since > Duration::from_secs(10);
+            match e.enc.encode(&pic, ts, key) {
                 Ok(data) if !data.is_empty() => {
-                    e.fresh = false;
-                    key_sent |= key;
+                    if key {
+                        e.fresh = false;
+                        e.key_pending = false;
+                        e.last_key = now;
+                    }
                     // Overspending is paid back in skipped frames, up to
                     // 10 s of debt (a picture no codec can compress).
                     e.budget = (e.budget - data.len() as f64 * 8.0).max(-rate * 10.0);
@@ -786,10 +813,6 @@ fn video_pump(src: Arc<LocalSource>) {
                 Ok(_) => {} // skipped by rate control
                 Err(err) => tracing::warn!("rinch-rtc: {codec:?} encode: {err}"),
             }
-        }
-        if key_sent {
-            src.keyframe.store(false, Ordering::Release);
-            last_key = now;
         }
     }
 }
@@ -1176,6 +1199,9 @@ pub(crate) struct RemoteSink {
     pub(crate) ended: AtomicBool,
     /// The views have been told a frame exists.
     shown: AtomicBool,
+    /// Video: (arrival, RTP timestamp) of the last packets that ended a
+    /// frame (test hook: timestamps against time).
+    pub(crate) frame_times: Mutex<VecDeque<(Instant, u32)>>,
 }
 
 impl RemoteSink {
@@ -1187,6 +1213,7 @@ impl RemoteSink {
             playing: AtomicBool::new(true),
             ended: AtomicBool::new(false),
             shown: AtomicBool::new(false),
+            frame_times: Mutex::new(VecDeque::new()),
         })
     }
 
@@ -1765,6 +1792,19 @@ pub mod testing {
             .unwrap_or(0)
     }
 
+    /// (arrival, RTP timestamp) of the last frames a remote video track
+    /// received (up to 512), oldest first.
+    pub fn frame_rtp_times(track: &crate::media::RemoteTrack) -> Vec<(std::time::Instant, u32)> {
+        super::remote(track.peer, track.key)
+            .and_then(|s| {
+                s.frame_times
+                    .lock()
+                    .ok()
+                    .map(|t| t.iter().copied().collect())
+            })
+            .unwrap_or_default()
+    }
+
     /// Frames a video source took into its track (painted or encoded).
     pub fn video_frames_taken(writer: &crate::media::VideoSourceWriter) -> u64 {
         writer.slot.taken.load(std::sync::atomic::Ordering::Relaxed)
@@ -1855,7 +1895,7 @@ pub(crate) mod worker {
     use rtc::media_stream::MediaStreamTrack;
     use rtc::peer_connection::configuration::interceptor_registry::register_default_interceptors;
     use rtc::peer_connection::configuration::media_engine::{
-        MIME_TYPE_H264, MIME_TYPE_OPUS, MIME_TYPE_RTX, MIME_TYPE_VP8, MediaEngine,
+        MIME_TYPE_H264, MIME_TYPE_OPUS, MIME_TYPE_VP8, MediaEngine,
     };
     use rtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
     use rtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
@@ -1965,27 +2005,9 @@ pub(crate) mod worker {
     /// the other side offers it first (Safari does). H.264 is left out
     /// altogether until it is available (`media-cisco-openh264` before
     /// `load_openh264`).
-    pub(crate) fn media_engine() -> Result<(MediaEngine, Registry), RtcError> {
-        let mut me = MediaEngine::default();
-        let err = |e: rtc::shared::error::Error| RtcError::Internal(format!("media engine: {e}"));
-        me.register_codec(
-            RTCRtpCodecParameters {
-                rtp_codec: opus(),
-                payload_type: OPUS_PT,
-            },
-            RtpCodecKind::Audio,
-        )
-        .map_err(err)?;
-        let rtx = |pt: u8| RTCRtpCodecParameters {
-            rtp_codec: RTCRtpCodec {
-                mime_type: MIME_TYPE_RTX.to_owned(),
-                clock_rate: 90_000,
-                channels: 0,
-                sdp_fmtp_line: format!("apt={pt}"),
-                rtcp_feedback: vec![],
-            },
-            payload_type: pt + 1,
-        };
+    /// The video codecs a peer offers and accepts, in preference order
+    /// (M2: VP8 first; the testing flags reorder or drop it).
+    fn video_codecs() -> Vec<(RTCRtpCodec, u8)> {
         let mut video = vec![(vp8(), VP8_PT)];
         if super::H264_ONLY.load(Ordering::Relaxed) {
             video.clear();
@@ -1997,7 +2019,118 @@ pub(crate) mod worker {
                 video.push((h264(), H264_PT));
             }
         }
-        for (codec, pt) in video {
+        video
+    }
+
+    /// The codec a new video track is labelled with, and the codec
+    /// preferences its transceiver gets (that codec first, then ours).
+    ///
+    /// The label matters to webrtc-rs 0.21 twice over. A track's codec
+    /// becomes its transceiver's only codec preference, which is why the
+    /// preferences are set again to every codec. And a sender is bound to
+    /// the interceptors (the NACK responder that retransmits, the sender
+    /// reports) only if its label is among the negotiated codecs
+    /// (`interceptor_local_streams_op`); an unlabelled track never was, so
+    /// nothing was retransmitted (#1947's third review). So the label is
+    /// the codec negotiation will most likely pick: the far side's first
+    /// one we support when its offer is already here, our first otherwise.
+    /// A negotiation that leaves the label out still sends, unbound: no
+    /// retransmission or sender reports (rtc gives a sender's track no
+    /// codec at negotiation, as it does a receiver's).
+    async fn video_label(
+        pc: &Arc<dyn PeerConnection>,
+    ) -> (RTCRtpCodec, Vec<RTCRtpCodecParameters>) {
+        let ours = video_codecs();
+        let mut first = 0;
+        if let Some(d) = pc.remote_description().await {
+            for name in sdp_video_codecs(&d.sdp) {
+                if let Some(i) = ours.iter().position(|(c, _)| {
+                    c.mime_type
+                        .rsplit('/')
+                        .next()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(&name))
+                }) {
+                    first = i;
+                    break;
+                }
+            }
+        }
+        let mut prefs: Vec<RTCRtpCodecParameters> = ours
+            .iter()
+            .map(|(c, pt)| RTCRtpCodecParameters {
+                rtp_codec: c.clone(),
+                payload_type: *pt,
+            })
+            .collect();
+        if prefs.is_empty() {
+            return (RTCRtpCodec::default(), prefs);
+        }
+        let label = prefs.remove(first);
+        prefs.insert(0, label.clone());
+        (label.rtp_codec, prefs)
+    }
+
+    /// The encoding names of an SDP's first video m-line, in its order.
+    fn sdp_video_codecs(sdp: &str) -> Vec<String> {
+        let mut pts: Vec<&str> = Vec::new();
+        let mut names: HashMap<&str, &str> = HashMap::new();
+        let mut in_video = false;
+        for l in sdp.lines() {
+            if let Some(m) = l.strip_prefix("m=") {
+                if !pts.is_empty() {
+                    break;
+                }
+                in_video = m.starts_with("video");
+                if in_video {
+                    pts = m.split(' ').skip(3).collect();
+                }
+            } else if in_video
+                && let Some(r) = l.strip_prefix("a=rtpmap:")
+                && let Some((pt, rest)) = r.split_once(' ')
+            {
+                names.insert(pt, rest.split('/').next().unwrap_or(""));
+            }
+        }
+        pts.iter()
+            .filter_map(|p| names.get(p).map(|n| n.to_string()))
+            .collect()
+    }
+
+    /// Give the transceiver carrying `rtp` our video codec preferences.
+    async fn set_video_prefs(
+        pc: &Arc<dyn PeerConnection>,
+        rtp: &Arc<dyn RtpSender>,
+        prefs: Vec<RTCRtpCodecParameters>,
+    ) {
+        for t in pc.get_transceivers().await {
+            if let Ok(Some(s)) = t.sender().await
+                && s.id() == rtp.id()
+                && let Err(e) = t.set_codec_preferences(prefs.clone()).await
+            {
+                tracing::warn!("rinch-rtc: video codec preferences: {e}");
+            }
+        }
+    }
+
+    pub(crate) fn media_engine() -> Result<(MediaEngine, Registry), RtcError> {
+        let mut me = MediaEngine::default();
+        let err = |e: rtc::shared::error::Error| RtcError::Internal(format!("media engine: {e}"));
+        me.register_codec(
+            RTCRtpCodecParameters {
+                rtp_codec: opus(),
+                payload_type: OPUS_PT,
+            },
+            RtpCodecKind::Audio,
+        )
+        .map_err(err)?;
+        // No RTX (RFC 4588): a NACKed packet is resent as itself, same SSRC
+        // and sequence number. webrtc-rs's NACK generator tracks arrivals
+        // by SSRC before RTX is resolved, so a repair sent as RTX never
+        // counted as received: it NACKed the same packet every 100 ms
+        // (79 NACKs and 261 RTX packets for 5 losses in 10 s); resent as
+        // itself, one NACK and one retransmission each. A browser offering
+        // RTX is answered without it and retransmits the same way.
+        for (codec, pt) in video_codecs() {
             me.register_codec(
                 RTCRtpCodecParameters {
                     rtp_codec: codec,
@@ -2006,8 +2139,6 @@ pub(crate) mod worker {
                 RtpCodecKind::Video,
             )
             .map_err(err)?;
-            me.register_codec(rtx(pt), RtpCodecKind::Video)
-                .map_err(err)?;
         }
         let registry = register_default_interceptors(Registry::new(), &mut me).map_err(err)?;
         // Last in the chain: pass the far side's keyframe requests (PLI,
@@ -2135,22 +2266,17 @@ pub(crate) mod worker {
     }
 
     /// A sender's track. It carries packets the forwarder packetizes
-    /// itself, for whichever codec negotiation picks (the codec named here
-    /// only labels the track).
+    /// itself, for whichever codec negotiation picks; `video` labels a
+    /// video track (`video_label`). Audio is Opus.
     fn track_for(
         kind: MediaKind,
         track_id: &str,
         stream_id: &str,
         ssrc: u32,
+        video: &RTCRtpCodec,
     ) -> Arc<TrackLocalStaticRTP> {
-        // Video: no codec on the track. webrtc-rs makes a track's codec the
-        // transceiver's only codec preference, so a VP8-labelled track
-        // offered VP8 alone and could not answer an H.264-only offer. With
-        // none, the transceiver offers and accepts every video codec the
-        // peer registered, in the engine's order, and the sender encodes
-        // whichever one negotiation picks (`forward`). Audio is Opus only.
         let codec = match kind {
-            MediaKind::Video => RTCRtpCodec::default(),
+            MediaKind::Video => video.clone(),
             MediaKind::Audio => opus(),
         };
         Arc::new(TrackLocalStaticRTP::new(MediaStreamTrack::new(
@@ -2269,8 +2395,13 @@ pub(crate) mod worker {
             if f.codec.is_some() && f.codec != VideoCodec::from_mime(mime) {
                 continue;
             }
+            // `duration` is the time since the previous frame: the
+            // timestamp advances by it before this frame, not after
+            // (`packetize`'s `samples` is added after the packets it makes,
+            // which put every frame's timestamp one gap late).
             let samples = (f.duration.as_secs_f64() * f64::from(*clock)) as u32;
-            let Ok(packets) = pk.packetize(Instant::now(), &f.data, samples) else {
+            pk.skip_samples(samples);
+            let Ok(packets) = pk.packetize(Instant::now(), &f.data, 0) else {
                 continue;
             };
             let mut at = tokio::time::Instant::now();
@@ -2332,9 +2463,13 @@ pub(crate) mod worker {
                 MediaCmd::AddTrack { sender, tx, source } => {
                     let kind = source.kind();
                     let shared = SendShared::new(rand_ssrc());
-                    let track = track_for(kind, source.id(), &self.stream_id, shared.ssrc);
+                    let (label, prefs) = video_label(pc).await;
+                    let track = track_for(kind, source.id(), &self.stream_id, shared.ssrc, &label);
                     match pc.add_track(track.clone() as Arc<dyn TrackLocal>).await {
                         Ok(rtp) => {
+                            if kind == MediaKind::Video {
+                                set_video_prefs(pc, &rtp, prefs).await;
+                            }
                             for t in pc.get_transceivers().await {
                                 if let Ok(Some(s)) = t.sender().await
                                     && s.id() == rtp.id()
@@ -2383,7 +2518,8 @@ pub(crate) mod worker {
                     // replace_track has one to write.
                     let id = format!("rinch-none-{sender}");
                     let shared = SendShared::new(rand_ssrc());
-                    let track = track_for(kind, &id, &self.stream_id, shared.ssrc);
+                    let (label, prefs) = video_label(pc).await;
+                    let track = track_for(kind, &id, &self.stream_id, shared.ssrc, &label);
                     match pc
                         .add_transceiver_from_track(
                             track.clone() as Arc<dyn TrackLocal>,
@@ -2392,6 +2528,11 @@ pub(crate) mod worker {
                         .await
                     {
                         Ok(t) => {
+                            if kind == MediaKind::Video
+                                && let Err(e) = t.set_codec_preferences(prefs).await
+                            {
+                                tracing::warn!("rinch-rtc: video codec preferences: {e}");
+                            }
                             self.tx_keys.insert(t.id(), (tx, sender));
                             if let Ok(Some(rtp)) = t.sender().await {
                                 self.senders.insert(
@@ -2471,7 +2612,16 @@ pub(crate) mod worker {
                     // sender a track of ours (webrtc-rs binds it at the
                     // next negotiation).
                     let id = format!("rinch-none-{sender}");
-                    let t = track_for(st.kind, &id, &stream_id, st.shared.ssrc);
+                    // Labelled with the codec the offer already chose
+                    // (`video_label` says why a label matters).
+                    let label = st
+                        .rtp
+                        .get_parameters()
+                        .await
+                        .ok()
+                        .and_then(|p| p.rtp_parameters.codecs.first().map(|c| c.rtp_codec.clone()))
+                        .unwrap_or_default();
+                    let t = track_for(st.kind, &id, &stream_id, st.shared.ssrc, &label);
                     st.rtp
                         .replace_track(t.clone() as Arc<dyn TrackLocal>)
                         .await
@@ -2893,42 +3043,74 @@ pub(crate) mod worker {
         }
     }
 
-    /// Which received video frames go to the decoder. A gap in the sequence
-    /// numbers is a lost packet (a NACK may still bring it back, but the
-    /// picture is corrupt until then): from there, and at the start and
-    /// after a codec change, frames are held back until a keyframe, and the
-    /// reader asks for one at once rather than when the assembler gives
-    /// the frame up 500 ms later.
+    /// Which received video frames go to the decoder, and when to ask for
+    /// a keyframe. A gap in the sequence numbers is a lost packet, which
+    /// the far side retransmits on our NACK (the interceptors send it):
+    /// the assembler holds the frame meanwhile, so nothing corrupt is
+    /// decoded. A gap not repaired within `REPAIR` is given up on at once
+    /// (a PLI, and frames held back until the keyframe) rather than when
+    /// the assembler drops the frame 500 ms later. Frames also wait for a
+    /// keyframe at the start, after a codec change, and after the
+    /// assembler reports a frame lost.
     pub(crate) struct KeyGate {
         pub(crate) awaiting: bool,
         last_seq: Option<u16>,
+        /// Sequence numbers in a gap not yet filled, and when the oldest
+        /// such gap opened.
+        missing: Vec<u16>,
+        gap_at: Option<Instant>,
     }
+
+    /// How long a gap may wait for a retransmission: a few round trips.
+    pub(crate) const REPAIR: Duration = Duration::from_millis(200);
 
     impl Default for KeyGate {
         fn default() -> Self {
             Self {
                 awaiting: true,
                 last_seq: None,
+                missing: Vec::new(),
+                gap_at: None,
             }
         }
     }
 
     impl KeyGate {
-        /// A packet arrived (before the assembler): note a gap.
-        pub(crate) fn packet(&mut self, seq: u16) {
+        /// A packet arrived (before the assembler): note a gap, or the
+        /// filling of one.
+        pub(crate) fn packet(&mut self, seq: u16, now: Instant) {
             match self.last_seq {
                 Some(last) => {
                     let d = seq.wrapping_sub(last);
-                    // Newer (by up to half the space): a gap if not the next.
                     if d < 0x8000 {
-                        if d > 1 {
-                            self.awaiting = true;
+                        // Newer (by up to half the space).
+                        if d > 256 {
+                            // A jump no retransmission will fill.
+                            self.give_up();
+                        } else if d > 1 {
+                            self.missing.extend((1..d).map(|k| last.wrapping_add(k)));
+                            self.gap_at.get_or_insert(now);
                         }
                         self.last_seq = Some(seq);
+                    } else {
+                        // Older: a retransmission (or reordering) filling a
+                        // gap.
+                        self.missing.retain(|m| *m != seq);
                     }
                 }
                 None => self.last_seq = Some(seq),
             }
+            if self.missing.is_empty() {
+                self.gap_at = None;
+            } else if self.gap_at.is_some_and(|t| now.duration_since(t) >= REPAIR) {
+                self.give_up();
+            }
+        }
+
+        fn give_up(&mut self) {
+            self.awaiting = true;
+            self.missing.clear();
+            self.gap_at = None;
         }
 
         /// Whether an assembled frame goes to the decoder (`lost`: the
@@ -3005,6 +3187,14 @@ pub(crate) mod worker {
                                     if drop_video_packet() {
                                         continue;
                                     }
+                                    if p.header.marker
+                                        && let Ok(mut t) = sink.frame_times.lock()
+                                    {
+                                        if t.len() >= 512 {
+                                            t.pop_front();
+                                        }
+                                        t.push_back((Instant::now(), p.header.timestamp));
+                                    }
                                     let pt = p.header.payload_type;
                                     if !pt_codecs.contains_key(&pt) {
                                         pt_codecs = video_payload_types(receiver.as_deref()).await;
@@ -3030,7 +3220,7 @@ pub(crate) mod worker {
                                         ));
                                     }
                                     let Some((codec, decoder, asm)) = video.as_mut() else { continue };
-                                    gate.packet(p.header.sequence_number);
+                                    gate.packet(p.header.sequence_number, Instant::now());
                                     asm.push(p);
                                     while let Some((frame, lost)) = asm.pop() {
                                         if gate.admit(*codec, &frame, lost)
@@ -3275,7 +3465,7 @@ pub(crate) mod worker {
 
     #[cfg(test)]
     mod gate_tests {
-        use super::KeyGate;
+        use super::{KeyGate, REPAIR};
         use crate::native_codec::VideoCodec;
 
         /// VP8 frame tags: bit 0 clear is a key frame.
@@ -3284,33 +3474,47 @@ pub(crate) mod worker {
 
         #[test]
         fn frames_wait_for_a_keyframe_after_a_gap() {
+            let t0 = std::time::Instant::now();
+            let at = |ms: u64| t0 + std::time::Duration::from_millis(ms);
             let mut g = KeyGate::default();
             let v = VideoCodec::Vp8;
             // From the start: deltas wait for the first keyframe.
-            g.packet(10);
+            g.packet(10, at(0));
             assert!(!g.admit(v, DELTA, false));
             assert!(g.admit(v, KEY, false));
-            g.packet(11);
+            g.packet(11, at(10));
             assert!(g.admit(v, DELTA, false));
-            // A gap (12 lost): nothing until a keyframe, at once.
-            g.packet(13);
-            assert!(g.awaiting, "a gap is seen when the next packet comes");
-            assert!(!g.admit(v, DELTA, false));
+            // A gap (12 lost) waits for the retransmission...
+            g.packet(13, at(20));
+            assert!(!g.awaiting, "a gap is not given up on at once");
+            // ...which comes: nothing to give up.
+            g.packet(12, at(60));
+            g.packet(14, at(400));
+            assert!(!g.awaiting, "a repaired gap");
+            assert!(g.admit(v, DELTA, false));
+            // A gap that stays open past REPAIR is given up on: the next
+            // packet after that sees it, and deltas wait for a keyframe.
+            g.packet(16, at(410));
+            g.packet(17, at(500));
+            assert!(!g.awaiting);
+            g.packet(18, at(410 + REPAIR.as_millis() as u64));
+            assert!(g.awaiting, "an unrepaired gap past REPAIR");
             assert!(!g.admit(v, DELTA, false));
             assert!(g.admit(v, KEY, false));
             assert!(g.admit(v, DELTA, false));
-            // A late packet (reordered) is no gap; wrapping is no gap.
-            g.packet(12);
-            g.packet(14);
-            assert!(g.admit(v, DELTA, false));
+            // Wrapping is no gap; a big jump is given up on at once.
             let mut w = KeyGate::default();
-            w.packet(65_535);
-            w.packet(0);
+            w.packet(65_535, at(0));
+            w.packet(0, at(10));
             assert!(w.admit(v, KEY, false));
-            w.packet(1);
+            w.packet(1, at(20));
             assert!(w.admit(v, DELTA, false));
+            w.packet(2000, at(30));
+            assert!(w.awaiting);
             // The assembler's own loss report counts too.
-            assert!(!w.admit(v, DELTA, true));
+            let mut a = KeyGate::default();
+            assert!(a.admit(v, KEY, false));
+            assert!(!a.admit(v, DELTA, true));
             // H.264: an IDR slice (NAL type 5) is the keyframe.
             let mut h = KeyGate::default();
             assert!(!h.admit(VideoCodec::H264, &[0, 0, 0, 1, 0x41, 9], false));

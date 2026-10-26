@@ -237,12 +237,22 @@ code's gate is `media-core`, which both turn on.
     `testing::h264_only` drops VP8 (`media_echo --h264-only`, for the
     Chrome H.264 step); both are read when the worker builds the peer's
     connection.
-  - **Trap: a sender track must carry no codec.** `track_for` gives video
-    an empty `RTCRtpCodec`. rtc's `codec_preferences_from_encodings` turns
-    a track's codec into the transceiver's only codec preference, so a
-    labelled track offers that codec alone and cannot send after answering
-    an offer without it ("unsupported codec type by this transceiver",
-    #1947's second review).
+  - **Trap: a sender track's codec label.** rtc uses it twice.
+    `codec_preferences_from_encodings` makes it the transceiver's only
+    codec preference (a labelled track offers that codec alone), and
+    `interceptor_local_streams_op` binds the sender to the interceptors
+    (NACK responder, sender reports) only if the label is among the
+    negotiated codecs, so an unlabelled track is never bound and nothing
+    is retransmitted. `video_label` picks the label (the remote offer's
+    first supported codec, else ours) and the worker resets the
+    transceiver's preferences to all codecs, the label first. A label the
+    negotiation leaves out still sends, unbound.
+  - **No RTX.** rtc's NACK generator records arrivals by SSRC before RTX
+    is resolved, so an RTX repair never counted and the same packet was
+    NACKed every 100 ms. Without RTX registered the responder resends the
+    original packet. `tests/media_wire_loss.rs` drops packets in a UDP
+    relay between the peers, which is the only place loss is visible to
+    the interceptors.
   - **Receive by payload type.** `read_remote` maps payload types to codecs
     from the receiver's `get_parameters` (refreshed on an unknown one) and
     rebuilds the decoder and `Assembler` when a packet's codec differs
@@ -257,21 +267,26 @@ code's gate is `media-core`, which both turn on.
     so a still picture comes back).
   - **Receive.** `Assembler` is a `SampleBuilder` per codec (512 packets,
     `with_max_time_delay(500 ms)`: without it one lost packet stalled every
-    later frame). A sequence gap sets `KeyGate::awaiting`: a PLI goes at once
-    (and every 500 ms while it stays set), and frames are held back from
-    the decoder until `VideoCodec::is_keyframe`; it starts set, and a codec
-    change sets it (`gate_tests`). The decoder thread sends a PLI on a decode error (at
+    later frame). A sequence gap still open after `REPAIR` (200 ms: time for a
+    retransmission) sets `KeyGate::awaiting`: a PLI goes at once (and
+    every 500 ms while it stays set), and frames are held back from the
+    decoder until `VideoCodec::is_keyframe`; it starts set, a codec change
+    sets it, and so does a jump of over 256 (`gate_tests`). The decoder thread sends a PLI on a decode error (at
     most once a second). The sender honours at most one keyframe request
     a second.
   - **Rate.** `PumpEncoder` per codec: a new cap goes to the running
     encoder (`VideoEncoder::set_bitrate`), and a send budget gates every
     frame, keyframes included (the request flag is cleared only when a
-    keyframe goes out). libvpx gets `VP8E_SET_MAX_INTRA_BITRATE_PCT` and a
-    fixed one-period duration per frame: given the real gap after skipped
-    frames, its rate control spent it all on one 180 KB frame. `forward`
+    keyframe goes out). libvpx gets `VP8E_SET_MAX_INTRA_BITRATE_PCT`, a
+    fixed one-period duration per frame and a synthetic pts (frame count
+    × period): given the real gap or the wall clock, its rate control read
+    the budget's skipped frames as a slower stream and made larger frames
+    (180 KB, or 4 fps on camera-like content at 300 kbps). Keyframe
+    requests are per encoder (`PumpEncoder::key_pending`). `forward`
     paces a frame's packets at `Encoded::pace_bps` (2.5 × the bitrate).
   - **RTP timestamps** step by the time since the codec's last frame
-    (`PumpEncoder::last_sent`), not by 1/fps.
+    (`PumpEncoder::last_sent`), not by 1/fps, before the frame:
+    `forward` calls `skip_samples` and then `packetize(…, 0)`.
   - **Sizes.** The pump scales a picture under 16 pixels a side up by a
     whole factor (openh264's minimum) and drops an odd last row or column.
   - **Mute.** webrtc-rs reports no mute when negotiation stops a track's

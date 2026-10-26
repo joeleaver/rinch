@@ -316,7 +316,14 @@ rinch-rtc = { workspace = true, features = ["media"] }
   A keyframe of a very busy picture can be larger than a second's worth
   of a low cap, though (openh264's several times larger than VP8's), and
   the frames after it are skipped to pay it back, so such video pauses
-  after each keyframe. Ordinary camera pictures are far from that.
+  after each keyframe. Ordinary camera pictures are not that hard: a
+  busy 640×480 picture with sensor noise keeps 24–28 fps in VP8 at
+  300 kbps and 30 fps in H.264.
+
+  **Packet loss** is repaired by retransmission (NACK): on a link losing
+  3% of video packets the picture does not freeze. A lost packet that
+  cannot be recovered within about 200 ms gets a keyframe request, and
+  nothing corrupt is shown meanwhile.
   Pictures under 16 pixels a side are scaled up.
 
 ### H.264 and its patents: `media` or `media-cisco-openh264`

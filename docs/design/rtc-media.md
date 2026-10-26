@@ -544,18 +544,29 @@ Where the native backend differs from 3.1–3.6, the code holds:
     No `vpx-encode`: `native_codec.rs` calls the encoder and decoder
     directly (CBR, `kf_mode` disabled so keyframes come only on request,
     `cpu-used` 8, error-resilient).
-  - **Order.** A desktop peer registers VP8 first, then H.264, each with
-    RTX. An answer follows the offer's order, so a call between two desktops
+  - **Order.** A desktop peer registers VP8 first, then H.264 (no RTX;
+    see the retransmission bullet). An answer follows the offer's order, so a call between two desktops
     or with any browser uses VP8; H.264 is used where the offer puts it
     first (Safari). VP8 first because every browser encodes it, and a
     Firefox without the OpenH264 plugin lists H.264 and then sends nothing
     (3.2). A browser's own offer usually lists VP8 first too.
-  - **A sender's track carries no codec.** webrtc-rs makes a track's
-    codec its transceiver's only codec preference: a VP8-labelled track
-    offered VP8 alone, and answered an H.264-only offer it then could not
-    send ("unsupported codec type by this transceiver"). Without one, every
-    video m-line offers both codecs in the engine's order, and an answer
-    lists only what the offer did (#1947's second review).
+  - **A sender's track is labelled, and its preferences reset.** webrtc-rs
+    0.21 uses a track's codec twice. It becomes the transceiver's only
+    codec preference: a VP8-labelled track offered VP8 alone and answered
+    an H.264-only offer it then could not send (#1947's second review). And
+    a sender is bound to the interceptors (the NACK responder, sender
+    reports) only if that codec is among the negotiated ones: the
+    unlabelled tracks the second review's fix used were never bound, so
+    nothing was retransmitted (third review). So a video track is labelled
+    with the codec negotiation will most likely pick (the far side's first
+    supported one when its offer is already here, our first otherwise),
+    and its transceiver's preferences are set again to every codec, that
+    one first (`video_label`). Every m-line offers both codecs, and an
+    answer lists only what the offer did. A negotiation that leaves the
+    label out (a track added before an H.264-only offer arrives) still
+    sends, unbound: no retransmission or sender reports. rtc gives a
+    sender's track no codec at negotiation, as it does a receiver's; that
+    upstream change would close the gap.
   - **The sender encodes whatever was negotiated.** Each sender reads its
     codec from webrtc-rs's `get_parameters` (every 250 ms until known,
     then every 2 s, so a renegotiation that changes it is followed), and
@@ -596,19 +607,35 @@ Where the native backend differs from 3.1–3.6, the code holds:
   interceptor (`KeyframeRequests`) passes them on, and the worker sets the
   sending pump's keyframe flag. A keyframe also goes out on a new sender,
   on enable, and once the codec is known.
-  - At most one keyframe a second: a receiver repeats its PLI until a
-    keyframe comes, and one still being paced out must not be followed by
-    another. A request inside that second waits, it is not dropped.
+  - At most one keyframe a second per encoder: a receiver repeats its PLI
+    until a keyframe comes, and one still being paced out must not be
+    followed by another. A request inside that second waits, it is not
+    dropped, and it waits for each codec's encoder separately (one codec's
+    keyframe does not answer for another's).
   - The receiver's `SampleBuilder` (512 packets) gives up a frame missing a
     packet after 500 ms (`with_max_time_delay`); without that a lost packet
     held every later frame.
-  - **A sequence gap is acted on at once:** the receiver sends a PLI on the
-    first packet after it (again every 500 ms until a keyframe), and holds
-    every frame back from the decoder until a keyframe, so no corrupt
-    picture is shown. The same holds at the start and after a codec
-    change. A decode error also sends a PLI (at most one a second). After
-    a 300 ms outage the request reaches the sender within 400 ms and a
-    clean picture is back within 1.5 s (`tests/media_loss.rs`).
+  - **Retransmission.** The receiver's interceptors NACK a missing
+    packet and the sender's resend it from their buffer, as itself (same
+    SSRC and sequence number): RTX is not registered, because webrtc-rs's
+    NACK generator tracks arrivals by SSRC before RTX is resolved, so a
+    repair sent as RTX never counted as received (79 NACKs and 261 RTX
+    packets for 5 losses in 10 s). A browser offering RTX is answered
+    without it and resends the same way. Measured with a UDP relay
+    dropping video RTP on the wire (320×240 box, 15 s): before, 0.5% loss
+    froze the picture 12% of the time, 1% about 30%, 3% about 60%; after,
+    0% at 0.5, 1 and 3%, in VP8 and H.264, one NACK per loss, no keyframe
+    requested (`tests/media_wire_loss.rs`, 3%).
+  - **A gap that is not repaired is acted on:** the assembler holds the
+    frame while a retransmission may come; a gap still open after 200 ms
+    (`KeyGate`, `REPAIR`) gets a PLI at once (again every 500 ms until a
+    keyframe), and frames are held back from the decoder until the
+    keyframe, so no corrupt picture is shown. The same holds at the start,
+    after a codec change, and when the assembler reports a frame lost. A
+    decode error also sends a PLI (at most one a second). After a 300 ms
+    outage (`tests/media_loss.rs`, which drops packets after the
+    interceptors, so nothing is retransmitted) the request reaches the
+    sender within 400 ms and a clean picture is back within 1.5 s.
 - **Bitrate.** Both encoders run at `set_max_bitrate` (or a default from
   the size), and a new cap reaches the running encoder (libvpx
   `vpx_codec_enc_config_set`, openh264 `ENCODER_OPTION_BITRATE`): no new
@@ -627,12 +654,22 @@ Where the native backend differs from 3.1–3.6, the code holds:
     last frame, with half a second saved at most. While it is spent no
     frame is encoded, a requested keyframe included (the request waits; it
     is consumed only when a keyframe goes out), and an overshoot is paid
-    back in skipped frames, up to 10 s. On ordinary pictures it never
-    binds; on noise at 100 kbps a keyframe is three (VP8) to seven (H.264)
-    seconds of it.
-  - libvpx is told each frame lasts one frame period, also after frames
-    the budget skipped: told the real gap it spent it all on the next
-    frame (180 KB of noise at 300 kbps). It was told 1 ms before.
+    back in skipped frames, up to 10 s. On noise at 100 kbps a keyframe is
+    three (VP8) to seven (H.264) seconds of it. A new size makes a new
+    encoder (a keyframe) but keeps the budget and its debt.
+  - **libvpx runs on a synthetic clock:** each frame lasts one frame
+    period and its pts is the frame count times that, also after frames
+    the budget skipped. Given the real gap as duration it spent it all on
+    the next frame (180 KB of noise at 300 kbps); given the wall clock as
+    pts (cf3e999e), it read the skipped frames as a falling frame rate and
+    made each frame larger, which the budget skipped more of. On
+    camera-like content (a 640×480 gradient, a textured square moving, a
+    drifting blob, sensor noise ±3) that was 4–12 fps at 300 kbps, and the
+    rate stayed at 8–12 fps after the cap was lifted (#1947's third
+    review). Now: 24–28 fps at 300 kbps, 30 at 1 Mbps and uncapped,
+    settling within a second of a change; H.264, 30 throughout
+    (`tests/media_frame_rate.rs`). The budget does bind on such content at
+    300 kbps; it skips a frame in five or six.
   - **Pacing.** A frame's packets go out at 2.5 × the bitrate (WebRTC's
     pacing factor), not in one burst: 150-packet frames lost packets on
     the far side's socket even on loopback, and the receiver then asked
@@ -644,7 +681,10 @@ Where the native backend differs from 3.1–3.6, the code holds:
 - **RTP timestamps** advance by the time since the codec's last frame, not
   by 1/fps: the pump takes the latest picture at each tick, so that is
   capture time to within a tick, through skipped frames and the
-  half-second repeats of a still source.
+  half-second repeats of a still source. The advance comes before the
+  frame (`skip_samples`, then `packetize` with 0): `packetize`'s own
+  `samples` is added after the packets, which put each frame's
+  timestamp one gap late (third review; `tests/media_rtp_time.rs`).
 - **Small and odd sizes.** openh264 takes nothing under 16 pixels a side,
   so a smaller picture is scaled up by a whole factor; an odd last row or
   column is dropped (`tests/media_sizes.rs`, both codecs: a 1×1 picture

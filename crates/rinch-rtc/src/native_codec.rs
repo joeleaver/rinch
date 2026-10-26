@@ -286,6 +286,9 @@ struct Vp8Encoder {
     /// One frame's duration at the track's rate, in the 1 ms timebase:
     /// libvpx's rate control spends bitrate × duration on a frame.
     frame_ms: u64,
+    /// Pictures given to libvpx so far: its pts is this count of frame
+    /// periods, not the wall clock.
+    frames: u64,
 }
 
 // SAFETY: `cfg` is plain configuration (its pointer fields are libvpx's
@@ -362,6 +365,7 @@ impl Vp8Encoder {
                 w,
                 h,
                 frame_ms: u64::from((1000 / fps.max(1)).max(1)),
+                frames: 0,
             })
         }
     }
@@ -395,6 +399,16 @@ impl VideoEncoder for Vp8Encoder {
             // noise at 300 kbps). It was told 1 ms before #1947's second
             // review.
             let duration = self.frame_ms as c_ulong;
+            // A synthetic pts, one frame period apart. Given the wall clock
+            // (`ts_ms`), the gaps the pump's send budget leaves read to
+            // libvpx as a falling frame rate, so it made each frame larger,
+            // which the budget skipped more of: VP8 on camera-like content
+            // fell to 4 fps at 300 kbps and never recovered after the cap
+            // was lifted (#1947's third review). The RTP timestamps keep
+            // the real time (the pump's `duration`).
+            let _ = ts_ms;
+            let pts = (self.frames * self.frame_ms) as i64;
+            self.frames += 1;
             let flags: vpx_sys::vpx_enc_frame_flags_t = if key {
                 vpx_sys::VPX_EFLAG_FORCE_KF as _
             } else {
@@ -404,7 +418,7 @@ impl VideoEncoder for Vp8Encoder {
                 vpx_sys::vpx_codec_encode(
                     &mut self.ctx.0,
                     &img,
-                    ts_ms as i64,
+                    pts,
                     duration,
                     flags,
                     vpx_sys::VPX_DL_REALTIME as c_ulong,
