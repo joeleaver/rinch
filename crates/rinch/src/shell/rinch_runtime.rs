@@ -1961,18 +1961,22 @@ impl RinchRuntime {
         // one that has just delivered its first frame.
         //
         // Video frames go in with them: painted inline, in the scene (#1768).
-        self.app.install_gpu_viewport_frames(
-            crate::render_surface::collect_viewport_frames_by_name(),
-            Some(compositor_viewport_names),
+        // Split GPU surfaces and video (#1865) while no `GameViewport` layer is
+        // under the UI: the base-layer path and the split path do not compose
+        // yet (a base layer under split slices is the design's next step).
+        let has_layers = renderer.has_composite_layers() || skipped_unready;
+        let mut viewport_frames = crate::render_surface::collect_viewport_frames_by_name();
+        let split_uploads = super::split_frame::prepare_split_viewports(
+            &mut viewport_frames,
+            &mut renderer.split,
+            !has_layers,
         );
+        self.app
+            .install_gpu_viewport_frames(viewport_frames, Some(compositor_viewport_names));
 
         // Build the frame from the document — CPU surfaces paint inline via
         // draw_image(). Only what its damage reaches is encoded and rendered
         // while the renderer's UI texture holds the last frame (#1718).
-        // Split GPU surfaces (#1865) while no `GameViewport` layer is under the
-        // UI: the base-layer path and the split path do not compose yet (a
-        // base layer under split slices is the design's next step).
-        let has_layers = renderer.has_composite_layers() || skipped_unready;
         self.app.set_split_enabled(!has_layers);
         let (frame, split_change) =
             self.app
@@ -1981,6 +1985,7 @@ impl RinchRuntime {
         RinchApp::clear_viewport_frames();
         rinch_dom::paint::set_surface_pixels(None);
         rinch_dom::paint::set_surface_gpu_images(None);
+        rinch_dom::paint::set_viewport_split_ids(None);
 
         // Render to screen
         let present_start = std::time::Instant::now();
@@ -1991,6 +1996,15 @@ impl RinchRuntime {
         if has_layers {
             renderer.split.clear();
         }
+        // After the change: only the videos this frame keeps split upload
+        // their frame (#1906 review: a hidden or refused one uploaded too).
+        let uploads = {
+            let renderer = &mut *renderer;
+            renderer
+                .split
+                .upload_split_frames(&renderer.device, &renderer.queue, split_uploads)
+        };
+
         #[cfg(debug_assertions)]
         {
             let after = renderer.split_surface_ids();
@@ -2004,6 +2018,8 @@ impl RinchRuntime {
         #[cfg(not(debug_assertions))]
         let _ = before;
         renderer.paint_frame(frame, transparent)?;
+        self.app
+            .perf_add(rinch_dom::perf::Counter::SplitFrameUploads, uploads);
         self.app.perf_add(
             rinch_dom::perf::Counter::TimePresentNs,
             present_start.elapsed().as_nanos() as u64,
