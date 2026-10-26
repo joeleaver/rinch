@@ -6044,6 +6044,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rtc-loopback"
+version = "0.1.0"
+dependencies = [
+ "rinch",
+ "rinch-core",
+ "rinch-rtc",
+]
+
+[[package]]
 name = "rtc-mdns"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

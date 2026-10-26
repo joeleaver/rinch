@@ -1,0 +1,12 @@
+[package]
+name = "rtc-loopback"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# Two rinch-rtc peers in one window, signalling to each other in-process:
+# the smallest app that shows the API (docs/src/guide/rtc.md).
+[dependencies]
+rinch = { workspace = true, features = ["desktop", "components", "theme", "debug"] }
+rinch-core = { workspace = true }
+rinch-rtc = { workspace = true }

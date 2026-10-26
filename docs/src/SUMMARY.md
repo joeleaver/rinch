@@ -25,6 +25,7 @@
 - [Windows](./guide/windows.md)
 - [Menus](./guide/menus.md)
 - [Platform Features](./guide/platform.md)
+- [WebRTC Data Channels](./guide/rtc.md)
 - [Game Engine Integration](./guide/game-engine.md)
 - [ContentEditable API](./guide/contenteditable.md)
 - [Rich-Text Editor](./guide/editor.md)

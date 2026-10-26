@@ -41,6 +41,7 @@ Load-bearing dependency facts (detail and history in `docs/internals/dependencie
 | `reactive-rendering.md` | `remove` vs `discard`, scope ownership of nodes, cache scopes, execution order, styles and animations across detach/hide, transitions and animations, transform interpolation, easing |
 | `rsx-control-flow-and-props.md` | `if`/`for`/`match` in rsx, keyed reconciliation, `_fn` bindings and the echo guard, undo/caret keys in fields, `onsubmit`, rsx prop transformation rules, boolean attributes, merged `style:`/`class:`, root attributes on components |
 | `common-issues.md` | a rendering surprise: inline-level flex/grid, UA stylesheet defaults (headings, lists, `<hr>`, form controls, `<select>`), CSS tables, unsupported selectors, sizing keywords, empty blocks |
+| `rtc.md` | `rinch-rtc` (WebRTC data channels): the native webrtc-rs worker, the web backend, the main-thread registry rules, exit handling, the str0m interop tests |
 | `ci.md` | GitHub Actions workflows, which checks a PR gets, batched merges and the batch procedure, a red batch, the `test` shards, retargets |
 
 User-facing guides are in `docs/src/guide/`, architecture write-ups in `docs/src/architecture/`, design records in `docs/design/`. The rsx usage rules every UI change needs are in `.claude/rules/rinch-best-practices.md` (loaded automatically).
