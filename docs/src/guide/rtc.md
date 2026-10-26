@@ -16,7 +16,10 @@ Use it when a WebSocket is the wrong tool:
 - **Unordered, unreliable delivery.** A lost packet doesn't stall the newer
   ones queued behind it: game ticks, cursors, voice-like data.
 
-Media tracks (audio, video) are not part of `rinch-rtc`.
+Audio and video tracks are behind the `media` feature (see
+[Audio and video](#audio-and-video)). In this release they work on the web
+only; on desktop every media call returns `NotSupported` until the native
+backend lands.
 
 ```toml
 [dependencies]
@@ -277,3 +280,122 @@ loop {
 Until something drains it, the queue only grows, payloads included. A peer
 created in `main` before `App::run` is fine: its events wait for the event
 loop.
+
+## Audio and video
+
+Turn on the `media` feature:
+
+```toml
+rinch-rtc = { workspace = true, features = ["media"] }
+```
+
+The model is the browser's, simplified.
+
+- A **`LocalTrack`** is something this app sends:
+  - `LocalTrack::camera(..)` and `LocalTrack::microphone(..)` are futures that
+    ask the user's permission (`getUserMedia`).
+  - `LocalTrack::video_source(..)` and `LocalTrack::audio_source(..)` are
+    tracks the app feeds itself: a game view, a test pattern, generated
+    sound. Each returns a writer you push into from any thread:
+    `push_rgba(rgba, w, h)` for RGBA8 frames (only the latest is kept), and
+    `push(&[f32])` for interleaved samples (at most a second is queued).
+- **`peer.add_track(&track)`** sends a track and returns a `Sender`.
+  `sender.replace_track(Some(&other))` swaps what is sent without
+  renegotiating, and `set_max_bitrate` caps it.
+- **`peer.add_transceiver(kind, Direction::RecvOnly)`** asks to receive with
+  nothing to send. `peer.transceivers()` lists them all.
+  `transceiver.set_direction(..)` takes effect at the next negotiation.
+- **`peer.on_negotiation_needed(..)`** fires when something changed that
+  needs a new offer and answer: a track added, a direction changed. Run your
+  offer/answer exchange again there.
+- **`peer.on_track(..)`** hands over each `RemoteTrack`.
+  - Remote audio plays by itself; `set_volume` and `set_playing` control it.
+  - Remote video is shown with `MediaView`.
+  - `on_mute`, `on_unmute` and `on_ended` report the track's state.
+    `on_frame` hands over decoded RGBA frames, for analysis and tests only:
+    on the web it reads the video back through a canvas, which is costly.
+- **Mute** is `track.set_enabled(false)`: video sends black frames and audio
+  sends silence. The device stays open. `stop()` releases it, and so does
+  dropping the last clone of the track.
+
+```rust
+use rinch_rtc::media::{LocalTrack, MediaView, CameraOptions};
+
+// From a click handler, so the browser allows playback and capture.
+let camera = LocalTrack::camera(CameraOptions::default()).await?;
+peer.add_track(&camera)?;
+peer.on_track(move |remote| remote_video.set(Some(remote)));
+
+rsx! {
+    MediaView { track: camera.clone(), mirrored: true, style: "width: 160px;" }
+    // ...and the remote one, keyed on the track.
+}
+```
+
+`MediaView` is a `<video>` playing the track, muted (remote audio has its
+own element), with `object-fit: contain` on black. Its track is fixed for
+the component's life: key the component on the track to show another.
+
+The usual signalling, callback and lifetime rules apply. Media callbacks run
+on the UI thread and are dropped when the component that registered them
+unmounts. Closing the peer ends its remote tracks.
+
+**Autoplay.** Browsers let audio play and an `AudioContext` run only after
+the user has interacted with the page. Start a call from a click.
+
+- If remote audio is refused, the peer's `on_error` reports
+  `RtcError::Media`, and a later `remote.set_playing(true)` from a click
+  retries.
+- An `audio_source` made before any interaction reports
+  `track.status() == LocalStatus::WaitingForGesture` and sends silence until
+  the page's next click, tap or key press.
+
+**Other things worth knowing.**
+
+- `sender.track()` is what the sender carries now: what `add_track` gave
+  it, or the last `replace_track`.
+- A source's writer reports `is_ended()` once its track is stopped or
+  dropped. Stop producing frames then.
+- A camera or microphone request whose future is dropped while the
+  permission prompt is still open (the component that asked unmounted)
+  leaves no device on.
+- Unmounting a `MediaView` lets go of its track.
+- A remote track that pauses (its sender went inactive) and comes back is
+  the same `RemoteTrack`: it mutes, then unmutes. `on_track` does not fire
+  again.
+
+### Glare: both sides offer at once
+
+When both sides change something at the same moment (each adds a track,
+say), both run `on_negotiation_needed` and both send an offer. The usual
+answer is *perfect negotiation*:
+
+- One side is **polite**; pick by anything both agree on, such as the
+  lower peer id.
+- On an incoming offer, a collision is `peer.signaling_state() !=
+  SignalingState::Stable`. An offer still being made already counts, so you
+  need no flag of your own.
+- The **impolite** side ignores a colliding offer. Its own offer wins.
+- The **polite** side just sets the incoming offer, which rolls its own
+  back, then answers. Its change still needs sending, so it offers again
+  afterwards.
+
+```rust
+// On an offer from the signalling channel:
+let collision = peer.signaling_state() != SignalingState::Stable;
+if collision && !polite {
+    return; // ours wins; theirs is dropped
+}
+peer.set_remote_description(offer).await?; // polite: rolls ours back
+let answer = peer.create_answer().await?;
+send(answer);
+// polite and collided: our own change still needs an offer
+if collision {
+    let offer = peer.create_offer().await?;
+    send(offer);
+}
+```
+
+`set_remote_description(Description::rollback())` undoes a pending offer
+explicitly. That's on the web for now; desktop gets it, and the implicit
+rollback above, with the native media PR.

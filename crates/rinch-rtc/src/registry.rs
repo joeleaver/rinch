@@ -19,7 +19,9 @@ use std::task::{Poll, Waker};
 
 use rinch_core::reactive::{Owner, current_owner, unowned};
 
-use crate::{Channel, ChannelState, Description, IceCandidate, PeerState, RtcError};
+use crate::{
+    Channel, ChannelState, Description, IceCandidate, PeerState, RtcError, SdpKind, SignalingState,
+};
 
 /// What a backend reports for one peer. Plain data, `Send`.
 #[derive(Debug)]
@@ -72,6 +74,10 @@ pub(crate) enum Event {
     },
     /// `close()` finished: every channel and the peer are closed. Last event.
     Closed,
+    /// Something about the peer's media tracks (the `media` feature).
+    #[cfg(feature = "media")]
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    Media(crate::media::MediaEvent),
 }
 
 /// One registered callback and the scope that registered it.
@@ -177,7 +183,45 @@ pub(crate) struct PeerEntry {
     pub(crate) closing: bool,
     pub(crate) cbs: PeerCallbacks,
     pub(crate) channels: HashMap<u64, ChannelEntry>,
+    #[cfg(feature = "media")]
+    pub(crate) media: crate::media::PeerMedia,
     replies: HashMap<u64, Reply>,
+    /// The signalling state as of the last completed request.
+    signaling: SignalingState,
+    /// The signalling requests in flight, by request id.
+    signaling_ops: HashMap<u64, SignalingOp>,
+}
+
+/// A signalling request, for [`signaling_state`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SignalingOp {
+    Offer,
+    Answer,
+    Remote(crate::SdpKind),
+}
+
+/// Record that request `req` is a signalling call of kind `op`.
+pub(crate) fn signaling_request(id: u64, req: u64, op: SignalingOp) {
+    with_peer(id, |e| e.signaling_ops.insert(req, op));
+}
+
+/// Peer `id`'s signalling state; an offer in flight counts as
+/// `HaveLocalOffer`.
+pub(crate) fn signaling_state(id: u64) -> SignalingState {
+    with_peer(id, |e| {
+        if e.closing {
+            SignalingState::Closed
+        } else if e
+            .signaling_ops
+            .values()
+            .any(|op| matches!(op, SignalingOp::Offer))
+        {
+            SignalingState::HaveLocalOffer
+        } else {
+            e.signaling
+        }
+    })
+    .unwrap_or(SignalingState::Closed)
 }
 
 impl PeerEntry {
@@ -192,7 +236,11 @@ impl PeerEntry {
             closing: false,
             cbs: PeerCallbacks::default(),
             channels: HashMap::new(),
+            #[cfg(feature = "media")]
+            media: Default::default(),
             replies: HashMap::new(),
+            signaling: SignalingState::Stable,
+            signaling_ops: HashMap::new(),
         }
     }
 }
@@ -275,6 +323,21 @@ pub(crate) async fn reply(id: u64, req: u64) -> Result<Option<Description>, RtcE
 pub(crate) fn dispatch(id: u64, event: Event) {
     match event {
         Event::Reply { req, result } => {
+            // The signalling state follows each completed request.
+            let ok = result.is_ok();
+            with_peer(id, |e| {
+                if let Some(op) = e.signaling_ops.remove(&req)
+                    && ok
+                {
+                    e.signaling = match op {
+                        SignalingOp::Offer => SignalingState::HaveLocalOffer,
+                        SignalingOp::Answer => SignalingState::Stable,
+                        // Their offer replaces (implicitly rolls back) ours.
+                        SignalingOp::Remote(SdpKind::Offer) => SignalingState::HaveRemoteOffer,
+                        SignalingOp::Remote(_) => SignalingState::Stable,
+                    };
+                }
+            });
             // A set_remote_description that succeeded: from now on remote
             // candidates go straight to the stack, and the held ones follow it.
             let applied = result.is_ok();
@@ -409,7 +472,11 @@ pub(crate) fn dispatch(id: u64, event: Event) {
                 });
             }
         }
+        #[cfg(feature = "media")]
+        Event::Media(m) => crate::media::dispatch(id, m),
         Event::Closed => {
+            #[cfg(feature = "media")]
+            crate::media::peer_closed(id);
             let keys: Vec<u64> =
                 with_peer(id, |e| e.channels.keys().copied().collect()).unwrap_or_default();
             for key in keys {
@@ -455,7 +522,7 @@ pub(crate) fn install<T: 'static>(
 /// (rinch-ws's `invoke`): taken out, run in a batch under its owner and
 /// frame, put back if its slot is still empty; dropped and the peer's other
 /// dead slots swept if its owner is gone.
-fn invoke<T: 'static>(
+pub(crate) fn invoke<T: 'static>(
     id: u64,
     arg: T,
     select: impl Fn(&mut PeerEntry) -> Option<&mut Option<Slot<T>>>,
@@ -494,31 +561,59 @@ fn invoke<T: 'static>(
     drop(leftover);
 }
 
-/// Take out every slot of peer `id` (and its channels) whose owner is gone.
-fn sweep_dead(id: u64) {
-    fn take<T>(s: &mut Option<Slot<T>>, dead: &mut Vec<Box<dyn std::any::Any>>)
-    where
-        T: 'static,
+/// Run a slot that lives outside a peer (a local track's `on_ended`) the way
+/// [`invoke`] runs one: dropped, not run, once its owner is gone; otherwise
+/// run in a batch under its owner and frame and handed back.
+#[cfg(feature = "media")]
+pub(crate) fn run_slot<T: 'static>(slot: Slot<T>, arg: T) -> Option<Slot<T>> {
+    let Slot {
+        owner,
+        frame,
+        mut cb,
+    } = slot;
+    if owner.as_ref().is_some_and(|o| !o.is_alive()) {
+        return None;
+    }
     {
-        if s.as_ref().is_some_and(Slot::is_dead)
-            && let Some(slot) = s.take()
-        {
-            dead.push(Box::new(slot.cb));
+        let _frame = frame.enter();
+        match &owner {
+            Some(o) => rinch_core::batch(|| o.run(|| cb(arg))),
+            None => rinch_core::batch(|| unowned(|| cb(arg))),
         }
     }
+    Some(Slot { owner, frame, cb })
+}
+
+/// Take a slot out if its owner is gone, into `dead` (dropped by the caller
+/// outside any borrow).
+pub(crate) fn take_dead<T: 'static>(
+    s: &mut Option<Slot<T>>,
+    dead: &mut Vec<Box<dyn std::any::Any>>,
+) {
+    if s.as_ref().is_some_and(Slot::is_dead)
+        && let Some(slot) = s.take()
+    {
+        dead.push(Box::new(slot.cb));
+    }
+}
+
+/// Take out every slot of peer `id` (and its channels) whose owner is gone.
+fn sweep_dead(id: u64) {
     let _dead = with_peer(id, |e| {
         let mut dead: Vec<Box<dyn std::any::Any>> = Vec::new();
-        take(&mut e.cbs.ice_candidate, &mut dead);
-        take(&mut e.cbs.connection_state, &mut dead);
-        take(&mut e.cbs.data_channel, &mut dead);
-        take(&mut e.cbs.error, &mut dead);
+        take_dead(&mut e.cbs.ice_candidate, &mut dead);
+        take_dead(&mut e.cbs.connection_state, &mut dead);
+        take_dead(&mut e.cbs.data_channel, &mut dead);
+        take_dead(&mut e.cbs.error, &mut dead);
         for c in e.channels.values_mut() {
-            take(&mut c.cbs.open, &mut dead);
-            take(&mut c.cbs.message, &mut dead);
-            take(&mut c.cbs.close, &mut dead);
-            take(&mut c.cbs.error, &mut dead);
-            take(&mut c.cbs.buffered_amount_low, &mut dead);
+            take_dead(&mut c.cbs.open, &mut dead);
+            take_dead(&mut c.cbs.message, &mut dead);
+            take_dead(&mut c.cbs.close, &mut dead);
+            take_dead(&mut c.cbs.error, &mut dead);
+            take_dead(&mut c.cbs.buffered_amount_low, &mut dead);
         }
+        #[cfg(feature = "media")]
+        crate::media::sweep_dead(&mut e.media, &mut dead);
         dead
     });
 }

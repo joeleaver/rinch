@@ -314,3 +314,198 @@ fn overlapping_remote_descriptions_are_applied_each_on_its_own_reply() {
     );
     remove_peer(id);
 }
+
+#[test]
+fn signaling_state_follows_the_exchange_and_counts_an_offer_in_flight() {
+    use super::registry::{SignalingOp, signaling_request, signaling_state};
+    let id = next_id();
+    insert_peer(id);
+    let reply = |req, ok: bool| Event::Reply {
+        req,
+        result: if ok {
+            Ok(None)
+        } else {
+            Err(RtcError::Sdp("x".into()))
+        },
+    };
+    assert_eq!(signaling_state(id), SignalingState::Stable);
+    let r1 = next_id();
+    signaling_request(id, r1, SignalingOp::Offer);
+    assert_eq!(
+        signaling_state(id),
+        SignalingState::HaveLocalOffer,
+        "in flight"
+    );
+    dispatch(id, reply(r1, true));
+    assert_eq!(signaling_state(id), SignalingState::HaveLocalOffer);
+    // Their offer over ours (glare, polite side): have-remote-offer.
+    let r2 = next_id();
+    signaling_request(id, r2, SignalingOp::Remote(SdpKind::Offer));
+    dispatch(id, reply(r2, true));
+    assert_eq!(signaling_state(id), SignalingState::HaveRemoteOffer);
+    // A failed answer changes nothing; a good one is stable.
+    let r3 = next_id();
+    signaling_request(id, r3, SignalingOp::Answer);
+    dispatch(id, reply(r3, false));
+    assert_eq!(signaling_state(id), SignalingState::HaveRemoteOffer);
+    let r4 = next_id();
+    signaling_request(id, r4, SignalingOp::Answer);
+    dispatch(id, reply(r4, true));
+    assert_eq!(signaling_state(id), SignalingState::Stable);
+    // A failed offer leaves no offer in flight.
+    let r5 = next_id();
+    signaling_request(id, r5, SignalingOp::Offer);
+    dispatch(id, reply(r5, false));
+    assert_eq!(signaling_state(id), SignalingState::Stable);
+    // Rollback: back to stable.
+    let r6 = next_id();
+    signaling_request(id, r6, SignalingOp::Offer);
+    dispatch(id, reply(r6, true));
+    let r7 = next_id();
+    signaling_request(id, r7, SignalingOp::Remote(SdpKind::Rollback));
+    dispatch(id, reply(r7, true));
+    assert_eq!(signaling_state(id), SignalingState::Stable);
+    remove_peer(id);
+    assert_eq!(signaling_state(id), SignalingState::Closed);
+}
+
+/// The `media` feature's main-thread half: remote-track events dispatched
+/// by hand, as a backend reports them.
+#[cfg(feature = "media")]
+mod media_events {
+    use super::*;
+    use crate::media::{MediaEvent, MediaKind, RemoteTrack};
+
+    fn fake_peer() -> Peer {
+        let id = next_id();
+        insert_peer(id);
+        Peer {
+            inner: Rc::new(PeerInner { id }),
+        }
+    }
+
+    fn track_event(key: u64, kind: MediaKind, muted: bool) -> Event {
+        Event::Media(MediaEvent::Track {
+            key,
+            kind,
+            id: "t".into(),
+            stream_ids: vec!["s".into()],
+            transceiver: 99,
+            muted,
+        })
+    }
+
+    #[test]
+    fn a_remote_track_is_handed_over_and_its_mute_and_end_fire_once() {
+        let peer = fake_peer();
+        let id = peer.id();
+        let got: Rc<RefCell<Vec<RemoteTrack>>> = Rc::default();
+        let g = got.clone();
+        peer.on_track(move |t| g.borrow_mut().push(t));
+        let key = next_id();
+        dispatch(id, track_event(key, MediaKind::Audio, true));
+        assert_eq!(got.borrow().len(), 1);
+        let t = got.borrow()[0].clone();
+        assert_eq!(t.kind(), MediaKind::Audio);
+        assert_eq!(t.stream_ids(), vec!["s".to_string()]);
+        assert!(t.muted(), "it starts as the backend said");
+
+        let log: Rc<RefCell<Vec<&str>>> = Rc::default();
+        let l = log.clone();
+        t.on_mute(move || l.borrow_mut().push("mute"));
+        let l = log.clone();
+        t.on_unmute(move || l.borrow_mut().push("unmute"));
+        let l = log.clone();
+        t.on_ended(move || l.borrow_mut().push("ended"));
+        let muted = |m| Event::Media(MediaEvent::Muted { key, muted: m });
+        dispatch(id, muted(true)); // no change: nothing
+        dispatch(id, muted(false));
+        dispatch(id, muted(false));
+        dispatch(id, muted(true));
+        dispatch(id, Event::Media(MediaEvent::Ended { key }));
+        dispatch(id, Event::Media(MediaEvent::Ended { key }));
+        dispatch(id, muted(false)); // ended: nothing more
+        assert_eq!(*log.borrow(), vec!["unmute", "mute", "ended"]);
+        assert!(t.ended());
+        drop(peer);
+    }
+
+    #[test]
+    fn closing_the_peer_ends_its_remote_tracks() {
+        let peer = fake_peer();
+        let id = peer.id();
+        let got: Rc<RefCell<Vec<RemoteTrack>>> = Rc::default();
+        let g = got.clone();
+        peer.on_track(move |t| g.borrow_mut().push(t));
+        dispatch(id, track_event(next_id(), MediaKind::Video, false));
+        dispatch(id, track_event(next_id(), MediaKind::Audio, false));
+        let ended = Rc::new(Cell::new(0));
+        for t in got.borrow().iter() {
+            let e = ended.clone();
+            t.on_ended(move || e.set(e.get() + 1));
+        }
+        dispatch(id, Event::Closed);
+        assert_eq!(ended.get(), 2);
+        assert!(got.borrow().iter().all(|t| t.ended()));
+        drop(peer);
+    }
+
+    #[test]
+    fn media_callbacks_registered_in_a_scope_are_dropped_with_it() {
+        let peer = fake_peer();
+        let id = peer.id();
+        let ran = Rc::new(Cell::new(0));
+        let scope = Scope::new();
+        scope.run(|| {
+            let r = ran.clone();
+            peer.on_track(move |_| r.set(r.get() + 1));
+            let r = ran.clone();
+            peer.on_negotiation_needed(move || r.set(r.get() + 10));
+        });
+        dispatch(id, Event::Media(MediaEvent::NegotiationNeeded));
+        dispatch(id, track_event(next_id(), MediaKind::Video, false));
+        assert_eq!(ran.get(), 11);
+        scope.dispose();
+        dispatch(id, Event::Media(MediaEvent::NegotiationNeeded));
+        dispatch(id, track_event(next_id(), MediaKind::Video, false));
+        assert_eq!(ran.get(), 11, "pruned with their owner");
+        drop(peer);
+    }
+
+    #[test]
+    fn source_writers_keep_the_latest_frame_and_at_most_a_second_of_audio() {
+        use crate::media::{AudioSourceOptions, AudioSourceWriter, VideoSourceWriter};
+        use std::sync::atomic::Ordering;
+        let v = VideoSourceWriter::new();
+        v.push_rgba(&[1; 16], 2, 2);
+        v.push_rgba(&[0; 7], 2, 2); // the wrong length: ignored
+        v.push_rgba(&[2; 16], 2, 2);
+        assert_eq!(v.slot.seq.load(Ordering::Acquire), 2);
+        assert_eq!(
+            v.slot.latest.lock().unwrap().as_ref().map(|f| f.0[0]),
+            Some(2)
+        );
+        let a = AudioSourceWriter::new(AudioSourceOptions {
+            sample_rate: 100,
+            channels: 2,
+        });
+        a.push(&[0.5; 150]);
+        a.push(&[0.25; 150]);
+        let q = a.queue.samples.lock().unwrap();
+        assert_eq!(q.len(), 200, "one second of 100 Hz stereo");
+        assert_eq!(q.front(), Some(&0.5), "the oldest went first");
+        assert_eq!(q.back(), Some(&0.25));
+    }
+
+    #[test]
+    fn native_media_says_not_yet() {
+        let r = crate::media::LocalTrack::video_source(Default::default());
+        assert!(matches!(r, Err(crate::media::MediaError::NotSupported(_))));
+        let peer = fake_peer();
+        assert!(
+            peer.add_transceiver(MediaKind::Video, crate::media::Direction::RecvOnly)
+                .is_err()
+        );
+        drop(peer);
+    }
+}

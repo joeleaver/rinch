@@ -300,6 +300,66 @@ pub enum MediaError {
 A codec failure on desktop (an encoder that cannot start, a decoder error)
 is reported through the track's `on_ended` and through `Peer::on_error`.
 
+### 1.6 As built (PR B1, #1933)
+
+Where the code differs from the sketches above, it is the code that holds:
+
+- `video_source` and `audio_source` return `Result<(LocalTrack, Writer),
+  MediaError>`: the web can fail to make the canvas or the AudioContext.
+- The writers have `is_ended()`, so a producer can stop when its track ends
+  (stopped or dropped).
+- `LocalTrack` also has `ended()` and `status()`. `status()` returns
+  `LocalStatus::{Live, WaitingForGesture, Ended}`.
+  - An `audio_source` made outside a user gesture is `WaitingForGesture`
+    while the browser holds its AudioContext.
+  - The page's next click, tap or key press resumes it, as rinch-av's
+    capture does (#1928).
+- `RemoteTrack::transceiver()` returns `Option<Transceiver>`, which is
+  `None` once the peer is gone. `RemoteTrack` also has `ended()`.
+- **A remote track is keyed on the browser track.** A transceiver that goes
+  inactive and comes back fires `track` again for the same track. That stays
+  one `RemoteTrack`, with one `<audio>`, and it unmutes. B2 applies the same
+  rule natively.
+- `MediaView` takes a `MediaTrack` (`None`, `Local`, `Remote`, with `From`
+  for both tracks), plus `style` and `class`. Unmounting it clears the
+  `<video>`'s `srcObject`.
+- `RtcError::Media(String)` carries what a peer reports about media: remote
+  audio that the autoplay policy refused.
+- `LocalTrack::camera` and `microphone` make the `getUserMedia` request in
+  a task of their own. A future dropped while the prompt is open (its
+  component unmounted) leaves no device on: the track the browser grants
+  later is stopped.
+- The native `data-viewport` naming (1.4) is settled in B2.
+
+### 1.7 Glare and rollback
+
+`Peer::signaling_state()` returns `SignalingState::{Stable, HaveLocalOffer,
+HaveRemoteOffer, Closed}`.
+
+- An offer still being made counts as `HaveLocalOffer`. Perfect
+  negotiation's collision test is therefore just "an offer arrived and the
+  state is not `Stable`". The app needs no "making an offer" flag of its
+  own, because rinch-rtc's per-peer queue orders each signalling call after
+  the ones before it.
+- The polite peer simply sets the incoming offer. Browsers roll its own
+  offer back implicitly.
+- `SdpKind` is `#[non_exhaustive]` and has `Rollback`
+  (`Description::rollback()`), which undoes whichever offer is pending. The
+  web backend does this through `setLocalDescription` or
+  `setRemoteDescription` by the signalling state. Desktop returns an error
+  until B2.
+
+**webrtc-rs 0.21 does not roll back implicitly.** Its signalling state
+machine (`rtc` 0.21.1, `peer_connection/state/signaling_state.rs`,
+`check_next_signaling_state`) has no `have-local-offer → SetRemote(offer)`
+transition, so the polite peer's `set_remote_description(offer)` fails
+there. It does support an explicit rollback through
+`set_local_description(rollback)` and `set_remote_description(rollback)`
+(RFC 9429 5.7, with tests in `peer_connection/mod.rs`). B2's native backend
+therefore does the implicit rollback itself: a remote offer arriving in
+`have-local-offer` is applied as `SetLocal(rollback)` and then
+`SetRemote(offer)`. That keeps the polite side the same on both backends.
+
 ## 2. Web backend
 
 ### 2.1 Capture and sending

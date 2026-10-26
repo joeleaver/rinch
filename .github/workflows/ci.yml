@@ -163,6 +163,10 @@ jobs:
             run: |
               cargo test -p rinch-editor-core --features serde,markdown
               cargo test -p rinch-editor-view --features collaboration
+              # rinch-rtc's `media` feature (#1916): its native unit tests
+              # (src/tests.rs `media_events`) are cfg(feature = "media"),
+              # which nothing in the workspace turns on.
+              cargo test -p rinch-rtc --features media
               cargo test -p rinch --features desktop,embed,theme,clipboard,debug
               # Bare on purpose: `desktop` (the default) WITHOUT `clipboard`. The
               # text context menu's no-clipboard pin (#813,
@@ -405,6 +409,9 @@ jobs:
           cargo clippy -p rinch --no-default-features --features embed --all-targets -- -D warnings
           cargo clippy -p rinch --features gpu,embed --all-targets -- -D warnings
           cargo clippy -p rinch --no-default-features --features components,theme -- -D warnings
+          # rinch-rtc's `media` feature (#1916) is off by default and nothing
+          # in the workspace turns it on yet.
+          cargo clippy -p rinch-rtc --features media --all-targets -- -D warnings
 
       # Every optional feature of `rinch` that builds on this host, in one
       # build (#1786). Nothing else in the workspace turns `file-dialogs` on,
@@ -491,6 +498,11 @@ jobs:
           echo "::group::clippy rinch embed (wasm32)"
           cargo clippy -p rinch --no-default-features --features components,theme,embed \
             --target wasm32-unknown-unknown -- -D warnings
+          echo "::endgroup::"
+          # rinch-rtc's `media` feature (#1916), which nothing turns on.
+          echo "::group::clippy rinch-rtc media (wasm32)"
+          cargo clippy -p rinch-rtc --features media --target wasm32-unknown-unknown \
+            --all-targets -- -D warnings
           echo "::endgroup::"
 
       # The web examples are excluded from the workspace (they pin their own
@@ -658,6 +670,16 @@ jobs:
           test "$(cat lite_echo.url)" = http://127.0.0.1:47811
           RINCH_RTC_TEST_URL=http://127.0.0.1:47811 RINCH_RTC_REQUIRE_LIVE=1 \
             cargo test -p rinch-rtc --target wasm32-unknown-unknown
+          # rinch-rtc's audio and video (#1916), behind its `media` feature:
+          # two peers in the page, synthetic sources only (no getUserMedia).
+          # The crate's webdriver.json lets audio play without a gesture.
+          # The runner's timeout covers the whole binary (20 s by default),
+          # and these 15 tests take about 25 s in Firefox: in batch 30 the
+          # runner killed a suite that was still passing (each test alone:
+          # 0.03-15 s; every wait inside a test is bounded and fails with
+          # its name).
+          WASM_BINDGEN_TEST_TIMEOUT=180 cargo test -p rinch-rtc --target wasm32-unknown-unknown \
+            --features media --test web_media
           # The editor's read-only collaboration fixture is
           # `#[cfg(feature = "collaboration")]`, which the bare run above does not
           # turn on — it would have run nowhere, and a test that never runs reads
@@ -709,6 +731,27 @@ jobs:
 
       - name: Run the trusted-key test (headless Chrome)
         run: bash crates/rinch-web/tests/support/run_real_keys.sh
+
+      # rinch-rtc's app-fed audio source where the browser holds an
+      # AudioContext until a user gesture (Chrome's default; the steps above
+      # allow autoplay). The track must say `WaitingForGesture`, not read
+      # `live` while sending silence (#1933's review). Built with
+      # RINCH_RTC_NO_AUTOPLAY=1 the test asserts that state, so a run under
+      # the permissive webdriver.json fails rather than passes.
+      - name: Run rinch-rtc audio source without autoplay (headless Chrome)
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        working-directory: crates/rinch-rtc
+        run: |
+          set -o pipefail
+          cp webdriver.json webdriver.json.keep
+          echo '{"goog:chromeOptions":{"args":["--headless=new"]}}' > webdriver.json
+          RINCH_RTC_NO_AUTOPLAY=1 cargo test -p rinch-rtc --features media \
+            --target wasm32-unknown-unknown --test web_media \
+            -- audio_source_status 2>&1 | tee noautoplay.log
+          mv webdriver.json.keep webdriver.json
+          # Positive control: the one test ran.
+          grep -q 'test result: ok. 1 passed' noautoplay.log
 
       # The drag auto-scroll fixtures again at a fractional devicePixelRatio
       # (#1592): at DPR 1 a scroll offset is always whole, so the loop's
@@ -777,6 +820,8 @@ jobs:
           fi
           RINCH_RTC_TEST_URL=http://127.0.0.1:47811 RINCH_RTC_REQUIRE_LIVE=1 \
             cargo test -p rinch-rtc --target wasm32-unknown-unknown
+          WASM_BINDGEN_TEST_TIMEOUT=180 cargo test -p rinch-rtc --target wasm32-unknown-unknown \
+            --features media --test web_media
 
   # Type-check and lint the Android target. Nothing else in this pipeline compiles it.
   #
