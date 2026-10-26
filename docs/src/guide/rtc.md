@@ -166,9 +166,10 @@ peer.on_data_channel(move |ch| {
   `on_error` (followed by `on_close`), `on_buffered_amount_low`.
 - **Bytes only.** A text message from a browser peer arrives as its UTF-8
   bytes.
-- **`id()`** is the SCTP stream id. A negotiated channel reports its id. An
-  in-band channel reports it on the web once it is open, and never on the
-  desktop.
+- **`id()`** is the SCTP stream id. A negotiated channel reports its id. On
+  the web, an in-band channel reports the id the browser gives it, which is
+  at creation once the connection's DTLS role is known and otherwise when
+  the channel opens. On the desktop an in-band channel never reports one.
 
 ### Sending, back-pressure and message size
 

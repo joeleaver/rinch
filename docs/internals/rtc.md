@@ -32,9 +32,11 @@ There are no cargo features for the backends: the target picks one.
     and a slow one (an offer waiting for `Gathering::Complete`) holds up only
     that peer.
   - Each channel has a pump task that forwards `DataChannel::poll()` events.
-    A channel the remote side opens is announced by the handler (`Incoming`).
-    The handler then hands it to the peer task (`Adopt`), which starts its
-    pump: the handler must not await, or it stalls webrtc-rs's driver.
+    For a channel the remote side opens, the handler first hands it to the
+    peer task (`Adopt`, which starts its pump), and only then announces it
+    to the main thread (`Incoming`). So a call the app makes from inside
+    `on_data_channel`, such as `close()`, finds the channel already there.
+    The handler must not await, or it stalls webrtc-rs's driver.
 - **Events go out through `dispatch_main_callback`, not
   `run_on_main_thread`.** The latter panics on a thread with no dispatcher,
   so a peer created before `App::run` would kill the worker. The former
@@ -95,7 +97,9 @@ There are no cargo features for the backends: the target picks one.
   swallowed it and an app that sends only from `on_low` stalled.
 - **A negotiated id already used** by an open channel of the same peer is
   refused. webrtc-rs's registry overwrote the first channel's entry and left
-  it open but deaf. In-band ids are known only on the web, after open.
+  it open but deaf. In-band ids are known only on the web: the backend
+  reads the id the browser gives a channel at creation (once the DTLS role
+  is known), so an unopened in-band channel's id is checked too.
 - **After `close()`,** `state()` answers `Closed` at once, and only the final
   `Closed` event is reported. Late states from the stack are ignored.
   `Event::Closed` closes each channel (`on_close` once), then reports the
@@ -114,6 +118,19 @@ There are no cargo features for the backends: the target picks one.
 - **`close()` detaches every closure** (`set_on*(None)`,
   `remove_event_listener`) before they drop. The browser then fires nothing,
   so the deferred `Event::Closed` closes the channels in the registry.
+- **`createDataChannel` goes through a catching `Function::call2`.** The
+  web-sys binding doesn't catch, so a throw (a label over 65535 bytes, id
+  65535) unwound out of wasm. A refused channel is reported as native
+  reports it: `ChannelError`, then `ChannelClosed`.
+- **An incoming channel is wired into the peer's map before `Incoming` is
+  dispatched,** for the same reason as native's `Adopt` ordering.
+- **A channel's closures are freed when it closes:** detached and dropped
+  after its own `close` callback returns. `close()` also settles a pending
+  `Gathering::Complete` wait: it removes the listener and resolves the
+  promise, so the peer's task ends.
+- **Test hooks** (`testing`, wasm): `channel_settings` (the browser
+  channel's ordered, maxRetransmits and negotiated values),
+  `browser_low_threshold`, `pending_gathering_waits` and `live_channels`.
 - **An announced in-band channel may already be open** when `ondatachannel`
   fires. The backend dispatches `Open` there too. The registry opens a
   channel once, so the later `open` event is a no-op.
