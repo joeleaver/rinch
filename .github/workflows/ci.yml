@@ -163,6 +163,10 @@ jobs:
             run: |
               cargo test -p rinch-editor-core --features serde,markdown
               cargo test -p rinch-editor-view --features collaboration
+              # rinch-rtc's `media` feature (#1916): its native unit tests
+              # (src/tests.rs `media_events`) are cfg(feature = "media"),
+              # which nothing in the workspace turns on.
+              cargo test -p rinch-rtc --features media
               cargo test -p rinch --features desktop,embed,theme,clipboard,debug
               # Bare on purpose: `desktop` (the default) WITHOUT `clipboard`. The
               # text context menu's no-clipboard pin (#813,
@@ -692,6 +696,27 @@ jobs:
       - name: Run the trusted-key test (headless Chrome)
         run: bash crates/rinch-web/tests/support/run_real_keys.sh
 
+      # rinch-rtc's app-fed audio source where the browser holds an
+      # AudioContext until a user gesture (Chrome's default; the steps above
+      # allow autoplay). The track must say `WaitingForGesture`, not read
+      # `live` while sending silence (#1933's review). Built with
+      # RINCH_RTC_NO_AUTOPLAY=1 the test asserts that state, so a run under
+      # the permissive webdriver.json fails rather than passes.
+      - name: Run rinch-rtc audio source without autoplay (headless Chrome)
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        working-directory: crates/rinch-rtc
+        run: |
+          set -o pipefail
+          cp webdriver.json webdriver.json.keep
+          echo '{"goog:chromeOptions":{"args":["--headless=new"]}}' > webdriver.json
+          RINCH_RTC_NO_AUTOPLAY=1 cargo test -p rinch-rtc --features media \
+            --target wasm32-unknown-unknown --test web_media \
+            -- audio_source_status 2>&1 | tee noautoplay.log
+          mv webdriver.json.keep webdriver.json
+          # Positive control: the one test ran.
+          grep -q 'test result: ok. 1 passed' noautoplay.log
+
       # The drag auto-scroll fixtures again at a fractional devicePixelRatio
       # (#1592): at DPR 1 a scroll offset is always whole, so the loop's
       # end-of-list test was right there and spun for ever at 1.5. The runner
@@ -710,6 +735,21 @@ jobs:
           rm webdriver.json
           # Positive control: the browser really ran at 1.5 (review2_1592 logs it).
           grep -q '^dpr 1.5 ' dpr.log
+
+      # Firefox opens an AudioContext only with a working audio output, and
+      # the runner has no sound server: without one every AudioContext stays
+      # `suspended` for ever (measured on ubuntu-24.04, Firefox 157). The
+      # rinch-av capture tests then fail (they used to hang until the
+      # runner killed them). Headless Chrome plays into its own null sink
+      # and needs none of this. A null PulseAudio sink costs about 16 s.
+      - name: Start a null audio sink (for Firefox's AudioContext)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends pulseaudio
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=ci_null
+          pactl set-default-sink ci_null
+          pactl info | grep -E 'Server String|Default Sink'
 
       # The same test binaries, a second engine. The suite was written against
       # Chrome alone, and the first Firefox run found a real bug (the caret on

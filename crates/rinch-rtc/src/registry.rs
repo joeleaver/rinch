@@ -19,7 +19,9 @@ use std::task::{Poll, Waker};
 
 use rinch_core::reactive::{Owner, current_owner, unowned};
 
-use crate::{Channel, ChannelState, Description, IceCandidate, PeerState, RtcError};
+use crate::{
+    Channel, ChannelState, Description, IceCandidate, PeerState, RtcError, SdpKind, SignalingState,
+};
 
 /// What a backend reports for one peer. Plain data, `Send`.
 #[derive(Debug)]
@@ -184,6 +186,42 @@ pub(crate) struct PeerEntry {
     #[cfg(feature = "media")]
     pub(crate) media: crate::media::PeerMedia,
     replies: HashMap<u64, Reply>,
+    /// The signalling state as of the last completed request.
+    signaling: SignalingState,
+    /// The signalling requests in flight, by request id.
+    signaling_ops: HashMap<u64, SignalingOp>,
+}
+
+/// A signalling request, for [`signaling_state`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SignalingOp {
+    Offer,
+    Answer,
+    Remote(crate::SdpKind),
+}
+
+/// Record that request `req` is a signalling call of kind `op`.
+pub(crate) fn signaling_request(id: u64, req: u64, op: SignalingOp) {
+    with_peer(id, |e| e.signaling_ops.insert(req, op));
+}
+
+/// Peer `id`'s signalling state; an offer in flight counts as
+/// `HaveLocalOffer`.
+pub(crate) fn signaling_state(id: u64) -> SignalingState {
+    with_peer(id, |e| {
+        if e.closing {
+            SignalingState::Closed
+        } else if e
+            .signaling_ops
+            .values()
+            .any(|op| matches!(op, SignalingOp::Offer))
+        {
+            SignalingState::HaveLocalOffer
+        } else {
+            e.signaling
+        }
+    })
+    .unwrap_or(SignalingState::Closed)
 }
 
 impl PeerEntry {
@@ -201,6 +239,8 @@ impl PeerEntry {
             #[cfg(feature = "media")]
             media: Default::default(),
             replies: HashMap::new(),
+            signaling: SignalingState::Stable,
+            signaling_ops: HashMap::new(),
         }
     }
 }
@@ -283,6 +323,21 @@ pub(crate) async fn reply(id: u64, req: u64) -> Result<Option<Description>, RtcE
 pub(crate) fn dispatch(id: u64, event: Event) {
     match event {
         Event::Reply { req, result } => {
+            // The signalling state follows each completed request.
+            let ok = result.is_ok();
+            with_peer(id, |e| {
+                if let Some(op) = e.signaling_ops.remove(&req)
+                    && ok
+                {
+                    e.signaling = match op {
+                        SignalingOp::Offer => SignalingState::HaveLocalOffer,
+                        SignalingOp::Answer => SignalingState::Stable,
+                        // Their offer replaces (implicitly rolls back) ours.
+                        SignalingOp::Remote(SdpKind::Offer) => SignalingState::HaveRemoteOffer,
+                        SignalingOp::Remote(_) => SignalingState::Stable,
+                    };
+                }
+            });
             // A set_remote_description that succeeded: from now on remote
             // candidates go straight to the stack, and the held ones follow it.
             let applied = result.is_ok();

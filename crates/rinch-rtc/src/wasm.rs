@@ -618,12 +618,25 @@ async fn work(id: u64, pc: RtcPeerConnection, queue: Queue, trickle: bool, gathe
                 );
             }
             Op::Remote { req, description } => {
+                let rollback = description.kind == SdpKind::Rollback;
                 let init = RtcSessionDescriptionInit::new(match description.kind {
                     SdpKind::Offer => RtcSdpType::Offer,
                     SdpKind::Answer => RtcSdpType::Answer,
+                    _ => RtcSdpType::Rollback,
                 });
-                init.set_sdp(&description.sdp);
-                let result = JsFuture::from(pc.set_remote_description(&init))
+                if !rollback {
+                    init.set_sdp(&description.sdp);
+                }
+                // A rollback undoes whichever offer is pending: ours through
+                // setLocalDescription, theirs through setRemoteDescription.
+                let promise = if rollback
+                    && pc.signaling_state() == web_sys::RtcSignalingState::HaveLocalOffer
+                {
+                    pc.set_local_description(&init)
+                } else {
+                    pc.set_remote_description(&init)
+                };
+                let result = JsFuture::from(promise)
                     .await
                     .map(|_| None)
                     .map_err(|e| RtcError::Sdp(js_err(&e)));
@@ -662,7 +675,7 @@ async fn describe(
             opts.set_ice_restart(restart);
             pc.create_offer_with_rtc_offer_options(&opts)
         }
-        SdpKind::Answer => pc.create_answer(),
+        _ => pc.create_answer(),
     };
     let desc = JsFuture::from(created)
         .await

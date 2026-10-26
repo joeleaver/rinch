@@ -43,6 +43,10 @@ pub(crate) fn open_audio_source(
     Err(not_yet())
 }
 
+pub(crate) fn waiting_for_gesture(_key: u64) -> bool {
+    false
+}
+
 pub(crate) fn set_local_enabled(_key: u64, _enabled: bool) {}
 
 pub(crate) fn stop_local(_key: u64) {}

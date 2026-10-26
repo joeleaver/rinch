@@ -315,6 +315,60 @@ fn overlapping_remote_descriptions_are_applied_each_on_its_own_reply() {
     remove_peer(id);
 }
 
+#[test]
+fn signaling_state_follows_the_exchange_and_counts_an_offer_in_flight() {
+    use super::registry::{SignalingOp, signaling_request, signaling_state};
+    let id = next_id();
+    insert_peer(id);
+    let reply = |req, ok: bool| Event::Reply {
+        req,
+        result: if ok {
+            Ok(None)
+        } else {
+            Err(RtcError::Sdp("x".into()))
+        },
+    };
+    assert_eq!(signaling_state(id), SignalingState::Stable);
+    let r1 = next_id();
+    signaling_request(id, r1, SignalingOp::Offer);
+    assert_eq!(
+        signaling_state(id),
+        SignalingState::HaveLocalOffer,
+        "in flight"
+    );
+    dispatch(id, reply(r1, true));
+    assert_eq!(signaling_state(id), SignalingState::HaveLocalOffer);
+    // Their offer over ours (glare, polite side): have-remote-offer.
+    let r2 = next_id();
+    signaling_request(id, r2, SignalingOp::Remote(SdpKind::Offer));
+    dispatch(id, reply(r2, true));
+    assert_eq!(signaling_state(id), SignalingState::HaveRemoteOffer);
+    // A failed answer changes nothing; a good one is stable.
+    let r3 = next_id();
+    signaling_request(id, r3, SignalingOp::Answer);
+    dispatch(id, reply(r3, false));
+    assert_eq!(signaling_state(id), SignalingState::HaveRemoteOffer);
+    let r4 = next_id();
+    signaling_request(id, r4, SignalingOp::Answer);
+    dispatch(id, reply(r4, true));
+    assert_eq!(signaling_state(id), SignalingState::Stable);
+    // A failed offer leaves no offer in flight.
+    let r5 = next_id();
+    signaling_request(id, r5, SignalingOp::Offer);
+    dispatch(id, reply(r5, false));
+    assert_eq!(signaling_state(id), SignalingState::Stable);
+    // Rollback: back to stable.
+    let r6 = next_id();
+    signaling_request(id, r6, SignalingOp::Offer);
+    dispatch(id, reply(r6, true));
+    let r7 = next_id();
+    signaling_request(id, r7, SignalingOp::Remote(SdpKind::Rollback));
+    dispatch(id, reply(r7, true));
+    assert_eq!(signaling_state(id), SignalingState::Stable);
+    remove_peer(id);
+    assert_eq!(signaling_state(id), SignalingState::Closed);
+}
+
 /// The `media` feature's main-thread half: remote-track events dispatched
 /// by hand, as a backend reports them.
 #[cfg(feature = "media")]

@@ -232,6 +232,27 @@ media is the next PR (`native_media.rs` returns `NotSupported` until then).
   - The crate's `webdriver.json` allows autoplay.
   - Native unit tests (`src/tests.rs`, `media_events`) dispatch media
     events by hand.
+- **Review of #1933, as fixed:**
+  - Remote tracks are deduplicated on the browser track: `track` fires again
+    when a transceiver comes back from inactive.
+  - `on_frame`'s loop is a `Loop` the `RemoteWeb` can stop. A
+    requestVideoFrameCallback closure holds itself to re-register, and a
+    video that presents no more frames never calls it again, so close and
+    `ended` break it from outside.
+  - `audio_source` keeps the AudioContext's `statechange` handler and a
+    window gesture listener while the context is held (`LocalStatus`).
+  - `getUserMedia` runs in its own task (`request`, with a one-shot
+    channel), so a dropped future leaves no device on: `keep_local` stops a
+    track whose handle is gone.
+  - `MediaView` clears `srcObject` from a scope cleanup.
+  - Signalling state is tracked in the registry per request kind
+    (`SignalingOp`). An offer in flight reads as `HaveLocalOffer`.
+  - Test hooks: `video_frames_taken`, `audio_samples_taken`,
+    `sender_track_id`, `remote_audio_elements`, `live_local_tracks`.
+  - CI runs `web_media` in Firefox after a null PulseAudio sink is started.
+    It passed without one too, but rinch-av's capture needs it. A Chrome
+    step without the autoplay flag pins `WaitingForGesture`
+    (`RINCH_RTC_NO_AUTOPLAY`).
 - **Known gaps:**
   - Remote audio routed to a chosen output device (`setSinkId`) is not
     exposed.

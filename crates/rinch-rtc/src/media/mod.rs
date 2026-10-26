@@ -27,8 +27,8 @@ pub use view::{MediaTrack, MediaView};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
-use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::registry::{self, Slot, with_peer};
@@ -166,6 +166,11 @@ pub(crate) struct VideoSlot {
     pub(crate) latest: Mutex<Option<(Vec<u8>, u32, u32)>>,
     /// Bumped by every push, so a reader can tell a new frame.
     pub(crate) seq: AtomicU64,
+    /// Set when the track ends (stopped or dropped).
+    pub(crate) ended: Arc<AtomicBool>,
+    /// Frames the backend took into the track (test hook).
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) taken: AtomicU64,
 }
 
 /// Feeds a [`LocalTrack::video_source`]. `Send + Sync`: push from any thread.
@@ -181,6 +186,8 @@ impl VideoSourceWriter {
             slot: Arc::new(VideoSlot {
                 latest: Mutex::new(None),
                 seq: AtomicU64::new(0),
+                ended: Arc::new(AtomicBool::new(false)),
+                taken: AtomicU64::new(0),
             }),
         }
     }
@@ -203,6 +210,12 @@ impl VideoSourceWriter {
         }
         self.slot.seq.fetch_add(1, Ordering::Release);
     }
+
+    /// The track ended (stopped, dropped, or its peer's sender let go of
+    /// nothing: the *track* is what counts). Stop producing frames.
+    pub fn is_ended(&self) -> bool {
+        self.slot.ended.load(Ordering::Acquire)
+    }
 }
 
 /// Samples queued by an app-fed audio source; at most one second is kept
@@ -211,6 +224,11 @@ pub(crate) struct AudioQueue {
     pub(crate) samples: Mutex<VecDeque<f32>>,
     pub(crate) sample_rate: u32,
     pub(crate) channels: u16,
+    /// Set when the track ends (stopped or dropped).
+    pub(crate) ended: Arc<AtomicBool>,
+    /// Samples the backend took off the queue (test hook).
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) taken: AtomicU64,
 }
 
 /// Feeds a [`LocalTrack::audio_source`]. `Send + Sync`.
@@ -226,6 +244,8 @@ impl AudioSourceWriter {
                 samples: Mutex::new(VecDeque::new()),
                 sample_rate: options.sample_rate.max(1),
                 channels: options.channels.max(1),
+                ended: Arc::new(AtomicBool::new(false)),
+                taken: AtomicU64::new(0),
             }),
         }
     }
@@ -241,6 +261,11 @@ impl AudioSourceWriter {
             }
         }
     }
+
+    /// The track ended: stop producing samples.
+    pub fn is_ended(&self) -> bool {
+        self.queue.ended.load(Ordering::Acquire)
+    }
 }
 
 // ------------------------------------------------------------ local tracks
@@ -251,13 +276,15 @@ struct LocalEntry {
     enabled: bool,
     ended: bool,
     on_ended: Option<Slot<()>>,
+    /// An app-fed source's writer: told when the track ends.
+    writer_ended: Option<Arc<AtomicBool>>,
 }
 
 thread_local! {
     static LOCALS: RefCell<HashMap<u64, LocalEntry>> = RefCell::new(HashMap::new());
 }
 
-struct LocalInner {
+pub(crate) struct LocalInner {
     key: u64,
 }
 
@@ -265,8 +292,33 @@ impl Drop for LocalInner {
     fn drop(&mut self) {
         backend::stop_local(self.key);
         let gone = LOCALS.with(|l| l.borrow_mut().remove(&self.key));
+        if let Some(w) = gone.as_ref().and_then(|e| e.writer_ended.as_ref()) {
+            w.store(true, Ordering::Release);
+        }
         drop(gone);
     }
+}
+
+fn set_writer_ended(key: u64, flag: &Arc<AtomicBool>) {
+    LOCALS.with(|l| {
+        if let Some(e) = l.borrow_mut().get_mut(&key) {
+            e.writer_ended = Some(flag.clone());
+        }
+    });
+}
+
+/// What a [`LocalTrack`] is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalStatus {
+    /// Sending (or ready to, once added to a peer).
+    Live,
+    /// Web: the browser holds the source until the user interacts with the
+    /// page (the autoplay policy). An `audio_source` made outside a click
+    /// sends silence until then; the page's next click, tap or key press
+    /// resumes it. Make sources from a click handler to never see this.
+    WaitingForGesture,
+    /// Stopped, or its device went away.
+    Ended,
 }
 
 /// Something this app sends: a camera, a microphone, or an app-fed source.
@@ -304,6 +356,7 @@ fn new_local(kind: MediaKind) -> LocalTrack {
                 enabled: true,
                 ended: false,
                 on_ended: None,
+                writer_ended: None,
             },
         )
     });
@@ -349,6 +402,7 @@ impl LocalTrack {
     ) -> Result<(LocalTrack, VideoSourceWriter), MediaError> {
         let track = new_local(MediaKind::Video);
         let writer = VideoSourceWriter::new();
+        set_writer_ended(track.key(), &writer.slot.ended);
         backend::open_video_source(track.key(), options, writer.clone())?;
         Ok((track, writer))
     }
@@ -360,6 +414,7 @@ impl LocalTrack {
     ) -> Result<(LocalTrack, AudioSourceWriter), MediaError> {
         let track = new_local(MediaKind::Audio);
         let writer = AudioSourceWriter::new(options);
+        set_writer_ended(track.key(), &writer.queue.ended);
         backend::open_audio_source(track.key(), options, writer.clone())?;
         Ok((track, writer))
     }
@@ -395,6 +450,17 @@ impl LocalTrack {
         LOCALS
             .with(|l| l.borrow().get(&self.key()).map(|e| e.enabled))
             .unwrap_or(false)
+    }
+
+    /// Live, held by the browser until a gesture, or ended.
+    pub fn status(&self) -> LocalStatus {
+        if self.ended() {
+            LocalStatus::Ended
+        } else if backend::waiting_for_gesture(self.key()) {
+            LocalStatus::WaitingForGesture
+        } else {
+            LocalStatus::Live
+        }
     }
 
     /// Whether the track has ended (stopped, or its device went away).
@@ -439,6 +505,9 @@ pub(crate) fn local_ended(key: u64) {
                 None
             } else {
                 e.ended = true;
+                if let Some(w) = &e.writer_ended {
+                    w.store(true, Ordering::Release);
+                }
                 e.on_ended.take()
             }
         })
@@ -455,6 +524,9 @@ pub(crate) fn local_ended(key: u64) {
 #[derive(Default)]
 pub(crate) struct PeerMedia {
     pub(crate) remotes: HashMap<u64, RemoteEntry>,
+    /// What each of our senders carries (`Sender::track`). Weak: a sender
+    /// does not keep a track alive.
+    pub(crate) sending: HashMap<u64, Weak<LocalInner>>,
     pub(crate) on_track: Option<Slot<RemoteTrack>>,
     pub(crate) on_negotiation_needed: Option<Slot<()>>,
 }
@@ -604,7 +676,25 @@ impl Sender {
         &self,
         track: Option<&LocalTrack>,
     ) -> impl Future<Output = Result<(), RtcError>> + 'static {
-        backend::replace_track(self.peer, self.key, track.map(LocalTrack::key))
+        let (peer, key) = (self.peer, self.key);
+        let weak = track.map(|t| Rc::downgrade(&t.inner));
+        let replaced = backend::replace_track(peer, key, track.map(LocalTrack::key));
+        async move {
+            replaced.await?;
+            with_peer(peer, |e| match weak {
+                Some(w) => e.media.sending.insert(key, w),
+                None => e.media.sending.remove(&key),
+            });
+            Ok(())
+        }
+    }
+
+    /// The track this sender carries: the one `add_track` or the last
+    /// successful `replace_track` gave it, while that track is alive.
+    pub fn track(&self) -> Option<LocalTrack> {
+        with_peer(self.peer, |e| e.media.sending.get(&self.key)?.upgrade())
+            .flatten()
+            .map(|inner| LocalTrack { inner })
     }
 
     /// Cap the bitrate (`encodings[0].maxBitrate`), or `None` for no cap.
@@ -767,6 +857,9 @@ impl Peer {
         }
         let (sender, transceiver) = (next_id(), next_id());
         backend::add_track(self.id(), track.key(), sender, transceiver)?;
+        with_peer(self.id(), |e| {
+            e.media.sending.insert(sender, Rc::downgrade(&track.inner))
+        });
         Ok(Sender {
             peer: self.id(),
             key: sender,

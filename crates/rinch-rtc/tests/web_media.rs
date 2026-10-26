@@ -526,3 +526,458 @@ async fn a_recvonly_transceiver_and_refusals() {
     pair.a.close();
     pair.b.close();
 }
+
+// ------------------------------------------------- #1933's review, adopted
+
+fn count(sel: &str) -> u32 {
+    web_sys::window()
+        .unwrap()
+        .document()
+        .unwrap()
+        .query_selector_all(sel)
+        .unwrap()
+        .length()
+}
+
+/// A transceiver that goes inactive and comes back makes the browser fire
+/// `track` again for the same browser track: it is still one RemoteTrack,
+/// with one `<audio>`, and that handle unmutes.
+#[wasm_bindgen_test]
+async fn a_track_that_comes_back_is_handed_over_once() {
+    let pair = Pair::new();
+    let (track, writer) = LocalTrack::audio_source(AudioSourceOptions::default()).unwrap();
+    let (timer, _feed) = feed_tone(writer, 48_000);
+    let remotes = remote_slot(&pair.b);
+    pair.a.add_track(&track).unwrap();
+    pair.connect().await;
+    until("b hears the track", || !remotes.borrow().is_empty()).await;
+    let first = remotes.borrow()[0].clone();
+    until("first unmuted", || !first.muted()).await;
+    let tx = pair.a.transceivers()[0].clone();
+    tx.set_direction(Direction::Inactive);
+    pair.negotiate().await;
+    until("first mutes", || first.muted()).await;
+    tx.set_direction(Direction::SendRecv);
+    pair.negotiate().await;
+    until("first unmutes again", || !first.muted()).await;
+    sleep(500).await;
+    assert_eq!(
+        remotes.borrow().len(),
+        1,
+        "on_track fired again for the same track"
+    );
+    assert_eq!(
+        rinch_rtc::testing::remote_audio_elements(),
+        1,
+        "a second <audio>"
+    );
+    pair.a.close();
+    pair.b.close();
+    web_sys::window().unwrap().clear_interval_with_handle(timer);
+}
+
+/// SendOnly and RecvOnly reach the far side: a sender turned RecvOnly stops
+/// sending (the far track mutes), SendOnly sends again.
+#[wasm_bindgen_test]
+async fn send_only_and_recv_only_take_effect() {
+    let pair = Pair::new();
+    let (track, writer) = LocalTrack::video_source(VideoSourceOptions {
+        width: W,
+        height: H,
+        fps: 30,
+    })
+    .unwrap();
+    let (timer, _feed) = moving_box(writer, Rc::new(Cell::new(BOX)));
+    let remotes = remote_slot(&pair.b);
+    pair.a.add_track(&track).unwrap();
+    pair.connect().await;
+    until("b hears the track", || !remotes.borrow().is_empty()).await;
+    let remote = remotes.borrow()[0].clone();
+    until("unmuted", || !remote.muted()).await;
+    let tx = pair.a.transceivers()[0].clone();
+    tx.set_direction(Direction::RecvOnly);
+    pair.negotiate().await;
+    assert_eq!(tx.current_direction(), Some(Direction::Inactive));
+    until("far track mutes", || remote.muted()).await;
+    tx.set_direction(Direction::SendOnly);
+    assert_eq!(tx.direction(), Direction::SendOnly);
+    pair.negotiate().await;
+    assert_eq!(tx.current_direction(), Some(Direction::SendOnly));
+    until("far track unmutes", || !remote.muted()).await;
+    assert_eq!(remotes.borrow().len(), 1);
+    pair.a.close();
+    pair.b.close();
+    web_sys::window().unwrap().clear_interval_with_handle(timer);
+}
+
+/// Perfect negotiation: both sides add a track and offer at once. The
+/// impolite side ignores the incoming offer (its own is in flight:
+/// `signaling_state()` is not Stable); the polite side takes it, which
+/// rolls its own offer back by itself, answers, and offers again.
+#[wasm_bindgen_test]
+async fn glare_resolves_with_perfect_negotiation() {
+    use rinch_rtc::{Description, SignalingState};
+    let pair = Pair::new();
+    let _ch = pair.a.create_data_channel("x", Default::default()).unwrap();
+    pair.connect().await;
+    let (ta, _wa) = LocalTrack::video_source(VideoSourceOptions::default()).unwrap();
+    let (tb, _wb) = LocalTrack::video_source(VideoSourceOptions::default()).unwrap();
+    let (ra, rb) = (remote_slot(&pair.a), remote_slot(&pair.b));
+    pair.a.add_track(&ta).unwrap();
+    pair.b.add_track(&tb).unwrap();
+    assert_eq!(pair.a.signaling_state(), SignalingState::Stable);
+    let (oa, ob) = (pair.a.create_offer(), pair.b.create_offer());
+    // An offer in flight already counts.
+    assert_eq!(pair.a.signaling_state(), SignalingState::HaveLocalOffer);
+    assert_eq!(pair.b.signaling_state(), SignalingState::HaveLocalOffer);
+    let (oa, ob) = (oa.await.unwrap(), ob.await.unwrap());
+    // Impolite a: b's offer collides; ignored.
+    assert_ne!(pair.a.signaling_state(), SignalingState::Stable);
+    drop(ob);
+    // Polite b: takes a's offer over its own (implicit rollback).
+    pair.b.set_remote_description(oa).await.unwrap();
+    assert_eq!(pair.b.signaling_state(), SignalingState::HaveRemoteOffer);
+    let answer = pair.b.create_answer().await.unwrap();
+    assert_eq!(pair.b.signaling_state(), SignalingState::Stable);
+    pair.a.set_remote_description(answer).await.unwrap();
+    assert_eq!(pair.a.signaling_state(), SignalingState::Stable);
+    pair.pump();
+    until("b hears a's track", || !rb.borrow().is_empty()).await;
+    // b's rolled-back track still needs sending: b offers again.
+    let offer = pair.b.create_offer().await.unwrap();
+    pair.a.set_remote_description(offer).await.unwrap();
+    let answer = pair.a.create_answer().await.unwrap();
+    pair.b.set_remote_description(answer).await.unwrap();
+    pair.pump();
+    until("a hears b's track", || !ra.borrow().is_empty()).await;
+
+    // An explicit rollback of our own offer.
+    let (tc, _wc) = LocalTrack::video_source(VideoSourceOptions::default()).unwrap();
+    pair.a.add_track(&tc).unwrap();
+    let _ = pair.a.create_offer().await.unwrap();
+    assert_eq!(pair.a.signaling_state(), SignalingState::HaveLocalOffer);
+    pair.a
+        .set_remote_description(Description::rollback())
+        .await
+        .unwrap();
+    assert_eq!(pair.a.signaling_state(), SignalingState::Stable);
+    pair.a.close();
+    pair.b.close();
+}
+
+/// negotiationneeded after connecting, for a second track; and recvonly
+/// end to end: b, with nothing to send, offers a RecvOnly transceiver and
+/// a answers carrying a track.
+#[wasm_bindgen_test]
+async fn renegotiation_and_recvonly_end_to_end() {
+    let pair = Pair::new();
+    let rx = pair
+        .b
+        .add_transceiver(MediaKind::Video, Direction::RecvOnly)
+        .unwrap();
+    let remotes = remote_slot(&pair.b);
+    let offer = pair.b.create_offer().await.unwrap();
+    pair.a.set_remote_description(offer).await.unwrap();
+    let (track, writer) = LocalTrack::video_source(VideoSourceOptions {
+        width: W,
+        height: H,
+        fps: 30,
+    })
+    .unwrap();
+    let (timer, _feed) = moving_box(writer, Rc::new(Cell::new(BOX)));
+    pair.a.add_track(&track).unwrap();
+    let answer = pair.a.create_answer().await.unwrap();
+    pair.b.set_remote_description(answer).await.unwrap();
+    pair.pump();
+    until("connected", || {
+        pair.pump();
+        pair.a.state() == PeerState::Connected && pair.b.state() == PeerState::Connected
+    })
+    .await;
+    until("b hears the track", || !remotes.borrow().is_empty()).await;
+    let remote = remotes.borrow()[0].clone();
+    let frames = record_frames(&remote);
+    let seen = fresh_frames(&frames, 500, 20).await;
+    assert!(share(&seen, BOX) >= 0.8, "{seen:?}");
+    assert_eq!(rx.current_direction(), Some(Direction::RecvOnly));
+    assert_eq!(remote.transceiver().unwrap().mid(), rx.mid());
+
+    // A second track after connecting: negotiationneeded, then it arrives.
+    let n = Rc::new(Cell::new(0));
+    let m = n.clone();
+    pair.a.on_negotiation_needed(move || m.set(m.get() + 1));
+    let (t2, _w2) = LocalTrack::audio_source(AudioSourceOptions::default()).unwrap();
+    let s2 = pair.a.add_track(&t2).unwrap();
+    assert_eq!(s2.track().map(|t| t.id()), Some(t2.id()));
+    until("negotiationneeded after connect", || n.get() > 0).await;
+    let offer = pair.a.create_offer().await.unwrap();
+    pair.b.set_remote_description(offer).await.unwrap();
+    let answer = pair.b.create_answer().await.unwrap();
+    pair.a.set_remote_description(answer).await.unwrap();
+    until("b hears the second track", || remotes.borrow().len() == 2).await;
+    pair.a.close();
+    pair.b.close();
+    web_sys::window().unwrap().clear_interval_with_handle(timer);
+}
+
+/// The far side stops its transceiver: the remote track ends through the
+/// browser's `ended` event (not the peer-close path), and its `<audio>` goes.
+#[wasm_bindgen_test]
+async fn a_stopped_transceiver_ends_the_remote_track() {
+    let pair = Pair::new();
+    let (track, writer) = LocalTrack::audio_source(AudioSourceOptions::default()).unwrap();
+    let (timer, _feed) = feed_tone(writer, 48_000);
+    let remotes = remote_slot(&pair.b);
+    pair.a.add_track(&track).unwrap();
+    pair.connect().await;
+    until("b hears the track", || !remotes.borrow().is_empty()).await;
+    let remote = remotes.borrow()[0].clone();
+    let ended = Rc::new(Cell::new(0));
+    let e = ended.clone();
+    remote.on_ended(move || e.set(e.get() + 1));
+    let before = rinch_rtc::testing::remote_audio_elements();
+    pair.a.transceivers()[0].stop();
+    pair.negotiate().await;
+    until("remote ended", || ended.get() == 1).await;
+    assert!(remote.ended());
+    assert_eq!(rinch_rtc::testing::remote_audio_elements(), before - 1);
+    web_sys::window().unwrap().clear_interval_with_handle(timer);
+    pair.a.close();
+    pair.b.close();
+}
+
+/// Unmounting a MediaView lets go of the track (`srcObject` cleared).
+#[wasm_bindgen_test]
+async fn media_view_unmount_clears_the_source() {
+    let (track, writer) = LocalTrack::video_source(VideoSourceOptions {
+        width: W,
+        height: H,
+        fps: 30,
+    })
+    .unwrap();
+    let (timer, _feed) = moving_box(writer, Rc::new(Cell::new(BOX)));
+    let doc = web_sys::window().unwrap().document().unwrap();
+    let host = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&host).unwrap();
+    let t = track.clone();
+    let root = rinch_web::mount_into(&host, Default::default(), move |scope| {
+        MediaView {
+            track: t.into(),
+            ..Default::default()
+        }
+        .render(scope, &[])
+    });
+    let mut found: Option<web_sys::HtmlVideoElement> = None;
+    until("the view plays", || {
+        found = host
+            .query_selector("video[data-rtc-view]")
+            .ok()
+            .flatten()
+            .and_then(|e| e.dyn_into().ok());
+        found.as_ref().is_some_and(|v| v.src_object().is_some())
+    })
+    .await;
+    let video = found.unwrap();
+    root.unmount();
+    assert!(video.src_object().is_none(), "srcObject kept after unmount");
+    host.remove();
+    web_sys::window().unwrap().clear_interval_with_handle(timer);
+}
+
+/// `on_frame`'s reader is freed when the peer closes: the loop's closure
+/// (and the app's callback in it) does not hold itself for ever.
+#[wasm_bindgen_test]
+async fn on_frame_is_freed_when_the_peer_closes() {
+    let pair = Pair::new();
+    let (track, writer) = LocalTrack::video_source(VideoSourceOptions {
+        width: W,
+        height: H,
+        fps: 30,
+    })
+    .unwrap();
+    let (timer, _feed) = moving_box(writer, Rc::new(Cell::new(BOX)));
+    let remotes = remote_slot(&pair.b);
+    pair.a.add_track(&track).unwrap();
+    pair.connect().await;
+    until("b hears the track", || !remotes.borrow().is_empty()).await;
+    let remote = remotes.borrow()[0].clone();
+    let token = Arc::new(());
+    let got = Arc::new(Mutex::new(0u32));
+    let (tk, g) = (token.clone(), got.clone());
+    remote.on_frame(move |_, _, _| {
+        let _ = &tk;
+        *g.lock().unwrap() += 1;
+    });
+    until("frames", || *got.lock().unwrap() > 5).await;
+    pair.b.close();
+    pair.a.close();
+    until("the reader's closure freed", || {
+        Arc::strong_count(&token) == 1
+    })
+    .await;
+    web_sys::window().unwrap().clear_interval_with_handle(timer);
+}
+
+/// 50 rounds of connect, add audio and video, receive, replace, close and
+/// drop leave no callback, local track or `<audio>` behind.
+#[wasm_bindgen_test]
+async fn fifty_rounds_leave_nothing_behind() {
+    let token = Rc::new(());
+    let base_locals = rinch_rtc::testing::live_local_tracks();
+    let base_video = count("video");
+    for _ in 0..50 {
+        let pair = Pair::new();
+        let (tv, wv) = LocalTrack::video_source(VideoSourceOptions {
+            width: 64,
+            height: 48,
+            fps: 30,
+        })
+        .unwrap();
+        let (ta, wa) = LocalTrack::audio_source(AudioSourceOptions::default()).unwrap();
+        wv.push_rgba(&[255u8; 64 * 48 * 4], 64, 48);
+        wa.push(&[0.1f32; 4800]);
+        let t1 = token.clone();
+        pair.a.on_negotiation_needed(move || {
+            let _ = &t1;
+        });
+        let got = Rc::new(RefCell::new(Vec::<RemoteTrack>::new()));
+        let (g, t2) = (got.clone(), token.clone());
+        pair.b.on_track(move |r| {
+            let t3 = t2.clone();
+            r.on_ended(move || {
+                let _ = &t3;
+            });
+            g.borrow_mut().push(r);
+        });
+        let t5 = token.clone();
+        ta.on_ended(move || {
+            let _ = &t5;
+        });
+        let s = pair.a.add_track(&tv).unwrap();
+        pair.a.add_track(&ta).unwrap();
+        pair.connect().await;
+        until("both tracks", || got.borrow().len() == 2).await;
+        s.replace_track(None).await.unwrap();
+        assert!(s.track().is_none());
+        pair.a.close();
+        pair.b.close();
+        tick().await;
+        drop((got, pair, tv, ta, wv, wa));
+    }
+    sleep(500).await;
+    assert_eq!(Rc::strong_count(&token), 1, "callbacks leaked");
+    assert_eq!(rinch_rtc::testing::live_local_tracks(), base_locals);
+    assert_eq!(rinch_rtc::testing::remote_audio_elements(), 0);
+    assert_eq!(count("video"), base_video);
+}
+
+/// An app-fed audio source says whether the browser runs it. With this
+/// crate's webdriver.json (autoplay allowed) it is Live; built with
+/// RINCH_RTC_NO_AUTOPLAY=1 and run without the flag (a CI step, Chrome),
+/// it is WaitingForGesture, not silently live.
+#[wasm_bindgen_test]
+async fn audio_source_status_says_whether_it_runs() {
+    use rinch_rtc::media::LocalStatus;
+    let no_autoplay = option_env!("RINCH_RTC_NO_AUTOPLAY").is_some();
+    let (track, writer) = LocalTrack::audio_source(AudioSourceOptions::default()).unwrap();
+    let (timer, _feed) = feed_tone(writer.clone(), 48_000);
+    let mut status = track.status();
+    for _ in 0..50 {
+        sleep(100).await;
+        status = track.status();
+        if status == LocalStatus::Live && !no_autoplay {
+            break;
+        }
+    }
+    let taken = rinch_rtc::testing::audio_samples_taken(&writer);
+    if no_autoplay {
+        assert_eq!(status, LocalStatus::WaitingForGesture);
+    } else {
+        assert_eq!(status, LocalStatus::Live);
+        assert!(taken > 0, "a running source takes samples");
+    }
+    web_sys::window().unwrap().clear_interval_with_handle(timer);
+    track.stop();
+    assert_eq!(track.status(), LocalStatus::Ended);
+}
+
+/// The writers keep up: a source takes what is pushed (video: most frames
+/// at 30 fps; audio: every sample, within the one-second cap), and they
+/// see their track end.
+#[wasm_bindgen_test]
+async fn source_writers_keep_up_and_see_the_end() {
+    let (vt, vw) = LocalTrack::video_source(VideoSourceOptions {
+        width: 64,
+        height: 48,
+        fps: 30,
+    })
+    .unwrap();
+    let (at, aw) = LocalTrack::audio_source(AudioSourceOptions::default()).unwrap();
+    let pushes = Rc::new(Cell::new(0u64));
+    let p = pushes.clone();
+    let vw2 = vw.clone();
+    let cb = Closure::<dyn FnMut()>::new(move || {
+        p.set(p.get() + 1);
+        vw2.push_rgba(&[200u8; 64 * 48 * 4], 64, 48);
+    });
+    let vtimer = web_sys::window()
+        .unwrap()
+        .set_interval_with_callback_and_timeout_and_arguments_0(cb.as_ref().unchecked_ref(), 33)
+        .unwrap();
+    let (atimer, _feed) = feed_tone(aw.clone(), 48_000);
+    sleep(3000).await;
+    let (pushed, painted) = (pushes.get(), rinch_rtc::testing::video_frames_taken(&vw));
+    let taken = rinch_rtc::testing::audio_samples_taken(&aw);
+    let w = web_sys::window().unwrap();
+    w.clear_interval_with_handle(vtimer);
+    w.clear_interval_with_handle(atimer);
+    assert!(
+        painted * 10 >= pushed * 7,
+        "painted {painted} of {pushed} frames"
+    );
+    // 3 s of 48 kHz mono were pushed; all but the queue (<= 1 s) is taken.
+    assert!(taken >= 48_000 * 2, "took {taken} samples in 3 s");
+    assert!(!vw.is_ended() && !aw.is_ended());
+    vt.stop();
+    assert!(vw.is_ended());
+    drop(at);
+    assert!(aw.is_ended(), "dropping the track ends it for the writer");
+}
+
+/// A camera request whose future is dropped while the prompt is open (its
+/// component unmounted): the track the browser grants later is stopped.
+/// getUserMedia is a stand-in that answers with a canvas stream; no device.
+#[wasm_bindgen_test]
+async fn a_dropped_camera_request_stops_the_late_track() {
+    use rinch_rtc::media::CameraOptions;
+    js_sys::eval(
+        "window.__gum = []; \
+         navigator.mediaDevices.getUserMedia = () => new Promise(r => window.__gum.push(r));",
+    )
+    .unwrap();
+    let grant = || {
+        js_sys::eval(
+            "(() => { const c = document.createElement('canvas'); c.width = 8; c.height = 8; \
+              c.getContext('2d').fillRect(0, 0, 8, 8); const s = c.captureStream(5); \
+              const t = s.getVideoTracks()[0]; window.__gum.shift()(s); return t; })()",
+        )
+        .unwrap()
+        .unchecked_into::<web_sys::MediaStreamTrack>()
+    };
+    // Dropped before the grant.
+    let pending = LocalTrack::camera(CameraOptions::default());
+    drop(pending);
+    // The request is made from its own task: let it run (the prompt opens).
+    sleep(10).await;
+    let late = grant();
+    sleep(100).await;
+    assert_eq!(late.ready_state(), web_sys::MediaStreamTrackState::Ended);
+    // Positive control: awaited, the granted track is kept and live.
+    let asked = LocalTrack::camera(CameraOptions::default());
+    sleep(10).await;
+    let kept = grant();
+    let track = asked.await.unwrap();
+    assert_eq!(kept.ready_state(), web_sys::MediaStreamTrackState::Live);
+    drop(track);
+    assert_eq!(kept.ready_state(), web_sys::MediaStreamTrackState::Ended);
+}

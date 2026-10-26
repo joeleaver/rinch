@@ -239,13 +239,34 @@ pub enum Gathering {
 
 // ------------------------------------------------------------- signalling
 
-/// Whether a [`Description`] is an offer or an answer.
+/// Whether a [`Description`] is an offer, an answer or a rollback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+#[non_exhaustive]
 pub enum SdpKind {
     Offer,
     Answer,
+    /// Undo the pending offer, ours or theirs, back to `Stable`
+    /// ([`Description::rollback`], given to `set_remote_description`).
+    /// Perfect negotiation rarely needs it: a polite peer's
+    /// `set_remote_description(their_offer)` rolls its own offer back by
+    /// itself. Web now; desktop returns an error until the native media PR.
+    Rollback,
+}
+
+/// Where the offer/answer exchange stands (`RTCSignalingState`), as
+/// [`Peer::signaling_state`] reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SignalingState {
+    /// No exchange in progress.
+    Stable,
+    /// We are making an offer, or made one and wait for the answer.
+    HaveLocalOffer,
+    /// Their offer is set; we owe an answer.
+    HaveRemoteOffer,
+    Closed,
 }
 
 /// An SDP offer or answer, to carry to the other side.
@@ -270,6 +291,13 @@ impl Description {
         Self {
             kind: SdpKind::Answer,
             sdp: sdp.into(),
+        }
+    }
+    /// A rollback (no SDP).
+    pub fn rollback() -> Self {
+        Self {
+            kind: SdpKind::Rollback,
+            sdp: String::new(),
         }
     }
 }
@@ -453,6 +481,15 @@ impl Peer {
         WeakPeer(Rc::downgrade(&self.inner))
     }
 
+    /// Where the offer/answer exchange stands. An offer still being made
+    /// (`create_offer` called, not yet resolved) already counts as
+    /// `HaveLocalOffer`, so in perfect negotiation an incoming offer
+    /// collides exactly when this is not `Stable`; no "making an offer"
+    /// flag of the app's own is needed (see the guide's "Glare").
+    pub fn signaling_state(&self) -> SignalingState {
+        registry::signaling_state(self.id())
+    }
+
     /// The connection state. `Closed` once [`close`](Self::close) was called.
     pub fn state(&self) -> PeerState {
         with_peer(self.id(), |e| {
@@ -481,6 +518,7 @@ impl Peer {
         let queued = self.live().map(|()| {
             let restart = with_peer(id, |e| std::mem::take(&mut e.restart)).unwrap_or(false);
             let req = registry::new_request(id);
+            registry::signaling_request(id, req, registry::SignalingOp::Offer);
             backend::create_offer(id, req, restart);
             req
         });
@@ -496,6 +534,7 @@ impl Peer {
         let id = self.id();
         let queued = self.live().map(|()| {
             let req = registry::new_request(id);
+            registry::signaling_request(id, req, registry::SignalingOp::Answer);
             backend::create_answer(id, req);
             req
         });
@@ -515,10 +554,14 @@ impl Peer {
         let id = self.id();
         let queued = self.live().map(|()| {
             let req = registry::new_request(id);
-            let advertised = advertised_max_message_size(&description.sdp);
+            registry::signaling_request(id, req, registry::SignalingOp::Remote(description.kind));
             // Held candidates go out when this succeeds (registry::dispatch,
-            // on its reply), whether or not the caller awaits the future.
-            with_peer(id, |e| e.remote_pending.push((req, advertised)));
+            // on its reply), whether or not the caller awaits the future. A
+            // rollback applies no remote description.
+            if description.kind != SdpKind::Rollback {
+                let advertised = advertised_max_message_size(&description.sdp);
+                with_peer(id, |e| e.remote_pending.push((req, advertised)));
+            }
             backend::set_remote(id, req, description);
             req
         });

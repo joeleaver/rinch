@@ -70,10 +70,36 @@ fn call(obj: &JsValue, name: &str, args: &[&JsValue]) -> Result<JsValue, JsValue
     f.apply(obj, &a)
 }
 
-/// Run `tick` on every animation frame until it returns `false`.
-fn every_frame(tick: impl FnMut() -> bool + 'static) {
-    type Raf = Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>>;
-    let slot: Raf = Rc::default();
+/// A running frame loop. [`stop`](Self::stop) breaks it from outside: a
+/// loop whose callback is never called again (a video that presents no more
+/// frames) would otherwise hold its closure, and everything it captured,
+/// for ever, since the closure holds itself to re-register.
+struct Loop(Box<dyn Fn()>);
+
+impl Loop {
+    fn stop(&self) {
+        (self.0)()
+    }
+}
+
+/// The slot a self-re-registering closure lives in, and the stopper for it.
+fn loop_slot<F: ?Sized + 'static>() -> (Rc<RefCell<Option<Closure<F>>>>, Loop) {
+    let slot: Rc<RefCell<Option<Closure<F>>>> = Rc::new(RefCell::new(None));
+    let weak = Rc::downgrade(&slot);
+    let stop = Loop(Box::new(move || {
+        if let Some(s) = weak.upgrade() {
+            // Dropped after the current call: it may be the caller.
+            let gone = s.borrow_mut().take();
+            wasm_bindgen_futures::spawn_local(async move { drop(gone) });
+        }
+    }));
+    (slot, stop)
+}
+
+/// Run `tick` on every animation frame until it returns `false` or the
+/// returned [`Loop`] is stopped.
+fn every_frame(tick: impl FnMut() -> bool + 'static) -> Loop {
+    let (slot, stop) = loop_slot::<dyn FnMut(f64)>();
     let slot2 = slot.clone();
     let mut tick = tick;
     *slot.borrow_mut() = Some(Closure::new(move |_t: f64| {
@@ -87,7 +113,6 @@ fn every_frame(tick: impl FnMut() -> bool + 'static) {
             })
             .flatten();
         if next.is_none() {
-            // Drop the closure after this call (it is the caller).
             let gone = slot2.borrow_mut().take();
             wasm_bindgen_futures::spawn_local(async move { drop(gone) });
         }
@@ -100,6 +125,7 @@ fn every_frame(tick: impl FnMut() -> bool + 'static) {
     if started.is_none() {
         slot.borrow_mut().take();
     }
+    stop
 }
 
 // ------------------------------------------------------------ local tracks
@@ -118,7 +144,37 @@ enum Source {
         _process: Option<JsCallback>,
         timer: Option<i32>,
         _pump: Option<Closure<dyn FnMut()>>,
+        /// The context's `statechange` handler (drops the gesture listener
+        /// once it runs).
+        _on_state: JsCallback,
+        /// While the browser holds the context: the window listener that
+        /// resumes it on the page's next click, tap or key press.
+        gesture: Rc<RefCell<Option<JsCallback>>>,
     },
+}
+
+const GESTURES: [&str; 3] = ["pointerdown", "keydown", "touchend"];
+
+fn remove_gesture_listener(cb: &JsCallback) {
+    if let Some(w) = window() {
+        for ev in GESTURES {
+            let _ = w.remove_event_listener_with_callback_and_bool(
+                ev,
+                cb.as_ref().unchecked_ref(),
+                true,
+            );
+        }
+    }
+}
+
+/// Let a promise settle with nothing listening, without the browser
+/// reporting an unhandled rejection (a `resume()` that `close()` overtook).
+fn quiet(p: Result<js_sys::Promise, JsValue>) {
+    if let Ok(p) = p {
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = JsFuture::from(p).await;
+        });
+    }
 }
 
 struct LocalWeb {
@@ -170,7 +226,11 @@ fn stop_source(s: Source) {
     match s {
         Source::Canvas { timer, .. } => w.clear_interval_with_handle(timer),
         Source::Audio {
-            ctx, node, timer, ..
+            ctx,
+            node,
+            timer,
+            gesture,
+            ..
         } => {
             if let Some(t) = timer {
                 w.clear_interval_with_handle(t);
@@ -178,8 +238,12 @@ fn stop_source(s: Source) {
             if let Some(p) = node.dyn_ref::<ScriptProcessorNode>() {
                 p.set_onaudioprocess(None);
             }
+            ctx.set_onstatechange(None);
+            if let Some(g) = gesture.borrow_mut().take() {
+                remove_gesture_listener(&g);
+            }
             let _ = node.disconnect();
-            let _ = ctx.close();
+            quiet(ctx.close());
         }
     }
 }
@@ -235,7 +299,46 @@ fn first_track(stream: &MediaStream, kind: MediaKind) -> Option<MediaStreamTrack
     tracks.get(0).dyn_into().ok()
 }
 
-pub(crate) async fn open_camera(key: u64, o: CameraOptions) -> Result<(), MediaError> {
+/// Ask for `constraints` and keep the first `kind` track for local track
+/// `key`. The request runs in its own task, not in the returned future: a
+/// future dropped while the permission prompt is open (its component
+/// unmounted) must not leave the device the browser grants later running.
+/// `keep_local` stops a track whose `LocalTrack` is gone.
+fn request(
+    key: u64,
+    constraints: MediaStreamConstraints,
+    kind: MediaKind,
+) -> impl Future<Output = Result<(), MediaError>> + 'static {
+    let (tx, rx) = oneshot();
+    wasm_bindgen_futures::spawn_local(async move {
+        let result = async {
+            let stream = get_user_media(constraints).await?;
+            let track = first_track(&stream, kind)
+                .ok_or_else(|| MediaError::DeviceNotFound(format!("no {kind:?} track")))?;
+            // Any other tracks the stream carries are not ours to keep.
+            for t in stream.get_tracks().iter() {
+                if let Ok(t) = t.dyn_into::<MediaStreamTrack>()
+                    && !Object::is(&t, &track)
+                {
+                    t.stop();
+                }
+            }
+            keep_local(key, track, None);
+            Ok(())
+        }
+        .await;
+        tx.send(result);
+    });
+    async move {
+        rx.await
+            .unwrap_or_else(|| Err(MediaError::Backend("the request was dropped".into())))
+    }
+}
+
+pub(crate) fn open_camera(
+    key: u64,
+    o: CameraOptions,
+) -> impl Future<Output = Result<(), MediaError>> + 'static {
     let video = MediaTrackConstraints::new();
     video.set_width_i32(o.width as i32);
     video.set_height_i32(o.height as i32);
@@ -247,14 +350,13 @@ pub(crate) async fn open_camera(key: u64, o: CameraOptions) -> Result<(), MediaE
     }
     let c = MediaStreamConstraints::new();
     c.set_video(&video);
-    let stream = get_user_media(c).await?;
-    let track = first_track(&stream, MediaKind::Video)
-        .ok_or_else(|| MediaError::DeviceNotFound("no video track".into()))?;
-    keep_local(key, track, None);
-    Ok(())
+    request(key, c, MediaKind::Video)
 }
 
-pub(crate) async fn open_microphone(key: u64, o: MicrophoneOptions) -> Result<(), MediaError> {
+pub(crate) fn open_microphone(
+    key: u64,
+    o: MicrophoneOptions,
+) -> impl Future<Output = Result<(), MediaError>> + 'static {
     let c = MediaStreamConstraints::new();
     match &o.device {
         Some(d) => {
@@ -266,11 +368,70 @@ pub(crate) async fn open_microphone(key: u64, o: MicrophoneOptions) -> Result<()
         }
         None => c.set_audio(&JsValue::TRUE),
     }
-    let stream = get_user_media(c).await?;
-    let track = first_track(&stream, MediaKind::Audio)
-        .ok_or_else(|| MediaError::DeviceNotFound("no audio track".into()))?;
-    keep_local(key, track, None);
-    Ok(())
+    request(key, c, MediaKind::Audio)
+}
+
+/// A one-shot channel on the one web thread.
+struct OneShot<T> {
+    value: Option<T>,
+    closed: bool,
+    waker: Option<std::task::Waker>,
+}
+
+struct OneTx<T>(Rc<RefCell<OneShot<T>>>);
+struct OneRx<T>(Rc<RefCell<OneShot<T>>>);
+
+fn oneshot<T>() -> (OneTx<T>, OneRx<T>) {
+    let s = Rc::new(RefCell::new(OneShot {
+        value: None,
+        closed: false,
+        waker: None,
+    }));
+    (OneTx(s.clone()), OneRx(s))
+}
+
+impl<T> OneTx<T> {
+    fn send(self, v: T) {
+        let w = {
+            let mut s = self.0.borrow_mut();
+            s.value = Some(v);
+            s.waker.take()
+        };
+        if let Some(w) = w {
+            w.wake();
+        }
+    }
+}
+
+impl<T> Drop for OneTx<T> {
+    fn drop(&mut self) {
+        let w = {
+            let mut s = self.0.borrow_mut();
+            s.closed = true;
+            s.waker.take()
+        };
+        if let Some(w) = w {
+            w.wake();
+        }
+    }
+}
+
+impl<T> Future for OneRx<T> {
+    type Output = Option<T>;
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<T>> {
+        let mut s = self.0.borrow_mut();
+        if let Some(v) = s.value.take() {
+            return std::task::Poll::Ready(Some(v));
+        }
+        if s.closed {
+            return std::task::Poll::Ready(None);
+        }
+        s.waker = Some(cx.waker().clone());
+        std::task::Poll::Pending
+    }
 }
 
 pub(crate) fn open_video_source(
@@ -326,8 +487,10 @@ pub(crate) fn open_video_source(
             *fw,
             *fh,
         );
-        if let Ok(img) = img {
-            let _ = ctx.put_image_data(&img, 0.0, 0.0);
+        if let Ok(img) = img
+            && ctx.put_image_data(&img, 0.0, 0.0).is_ok()
+        {
+            slot.taken.fetch_add(1, Ordering::Relaxed);
         }
     });
     let timer = window()
@@ -401,6 +564,7 @@ fn drain(queue: &AudioQueue, max: usize) -> Vec<f32> {
         return Vec::new();
     };
     let n = q.len().min(max);
+    queue.taken.fetch_add(n as u64, Ordering::Relaxed);
     q.drain(..n).collect()
 }
 
@@ -419,8 +583,39 @@ pub(crate) fn open_audio_source(
     let track = first_track(&dest.stream(), MediaKind::Audio)
         .ok_or_else(|| MediaError::Backend("no audio track from the destination".into()))?;
     let channels = u32::from(w.queue.channels);
-    // A context made without a user gesture starts suspended.
-    let _ = ctx.resume();
+    // A context made outside a user gesture starts suspended and sends
+    // silence, with no error, while the track reads `live`. Ask it to run;
+    // if the browser holds it, `LocalTrack::status` says
+    // `WaitingForGesture` and the page's next click, tap or key press
+    // resumes it.
+    quiet(ctx.resume());
+    let gesture: Rc<RefCell<Option<JsCallback>>> = Rc::default();
+    if ctx.state() != web_sys::AudioContextState::Running {
+        let c = ctx.clone();
+        let cb = Closure::<dyn FnMut(JsValue)>::new(move |_e: JsValue| quiet(c.resume()));
+        if let Some(win) = window() {
+            for ev in GESTURES {
+                let _ = win.add_event_listener_with_callback_and_bool(
+                    ev,
+                    cb.as_ref().unchecked_ref(),
+                    true,
+                );
+            }
+        }
+        *gesture.borrow_mut() = Some(cb);
+    }
+    let (c, g) = (ctx.clone(), Rc::downgrade(&gesture));
+    let on_state = Closure::<dyn FnMut(JsValue)>::new(move |_e: JsValue| {
+        if c.state() == web_sys::AudioContextState::Running
+            && let Some(g) = g.upgrade()
+            && let Some(cb) = g.borrow_mut().take()
+        {
+            remove_gesture_listener(&cb);
+            // Dropped after this call: it may be on the stack.
+            wasm_bindgen_futures::spawn_local(async move { drop(cb) });
+        }
+    });
+    ctx.set_onstatechange(Some(on_state.as_ref().unchecked_ref()));
 
     // The ScriptProcessorNode path: synchronous, so the track exists with
     // its source attached. (An AudioWorklet module loads asynchronously;
@@ -460,6 +655,8 @@ pub(crate) fn open_audio_source(
             _process: Some(process),
             timer: None,
             _pump: None,
+            _on_state: on_state,
+            gesture,
         }),
     );
     wasm_bindgen_futures::spawn_local(upgrade_to_worklet(key, ctx, dest, channels, w));
@@ -568,6 +765,17 @@ async fn upgrade_to_worklet(
     });
 }
 
+/// Whether the browser holds this local track's source until a gesture
+/// (an app-fed audio source whose AudioContext is suspended).
+pub(crate) fn waiting_for_gesture(key: u64) -> bool {
+    LOCAL_WEB.with(|l| {
+        l.borrow().get(&key).is_some_and(|w| {
+            matches!(&w.source, Some(Source::Audio { ctx, .. })
+                if ctx.state() == web_sys::AudioContextState::Suspended)
+        })
+    })
+}
+
 pub(crate) fn set_local_enabled(key: u64, enabled: bool) {
     if let Some(t) = local_track(key) {
         t.set_enabled(enabled);
@@ -593,8 +801,8 @@ struct RemoteWeb {
     track: MediaStreamTrack,
     stream: MediaStream,
     audio: Option<HtmlAudioElement>,
-    /// Cleared to stop an `on_frame` read-back loop.
-    frames: Option<Rc<Cell<bool>>>,
+    /// An `on_frame` read-back: its loop and its hidden `<video>`.
+    frames: Option<FrameReader>,
     _closures: Vec<JsCallback>,
 }
 
@@ -609,8 +817,23 @@ impl RemoteWeb {
             a.remove();
         }
         if let Some(f) = &self.frames {
-            f.set(false);
+            f.stop();
         }
+    }
+}
+
+struct FrameReader {
+    frames: Loop,
+    video: HtmlVideoElement,
+}
+
+impl FrameReader {
+    /// Break the loop (its closure holds itself, the canvas and the app's
+    /// callback) and let the hidden `<video>` go.
+    fn stop(&self) {
+        self.frames.stop();
+        let _ = self.video.pause();
+        self.video.set_src_object(None);
     }
 }
 
@@ -729,6 +952,15 @@ fn remote_track(id: u64, e: RtcTrackEvent) {
     } else {
         MediaKind::Video
     };
+    // The same browser track again: a transceiver that went inactive and
+    // came back fires `track` once more. It is one remote track, already
+    // handed over (its unmute reports the return), with one `<audio>`.
+    let known = with_peer(id, |p| {
+        p.remotes.values().any(|r| Object::is(&r.track, &track))
+    });
+    if known != Some(false) {
+        return;
+    }
     let key = crate::next_id();
     let Some(tx_key) = with_peer(id, |p| tx_keys(p, &e.transceiver()).0) else {
         return;
@@ -747,10 +979,19 @@ fn remote_track(id: u64, e: RtcTrackEvent) {
     let on_mute = mk(|key| MediaEvent::Muted { key, muted: true });
     let on_unmute = mk(|key| MediaEvent::Muted { key, muted: false });
     let on_ended = Closure::<dyn FnMut(JsValue)>::new(move |_e: JsValue| {
-        let gone = with_peer(id, |p| p.remotes.get_mut(&key).and_then(|r| r.audio.take()));
-        if let Some(Some(a)) = gone {
-            a.set_src_object(None);
-            a.remove();
+        let gone = with_peer(id, |p| {
+            p.remotes
+                .get_mut(&key)
+                .map(|r| (r.audio.take(), r.frames.take()))
+        });
+        if let Some(Some((audio, frames))) = gone {
+            if let Some(a) = audio {
+                a.set_src_object(None);
+                a.remove();
+            }
+            if let Some(f) = frames {
+                f.stop();
+            }
         }
         registry::dispatch(id, Event::Media(MediaEvent::Ended { key }));
     });
@@ -1033,16 +1274,13 @@ pub(crate) fn on_remote_frame(p: u64, k: u64, cb: media::FrameCallback) {
     let Some(stream) = with_peer(p, |peer| {
         let r = peer.remotes.get_mut(&k)?;
         if let Some(old) = r.frames.take() {
-            old.set(false);
+            old.stop();
         }
-        let live = Rc::new(Cell::new(true));
-        r.frames = Some(live.clone());
-        Some((Clone::clone(&r.stream), live))
+        Some(Clone::clone(&r.stream))
     })
     .flatten() else {
         return;
     };
-    let (stream, live) = stream;
     let Some(doc) = document() else { return };
     let Ok(video) = doc.create_element("video") else {
         return;
@@ -1069,11 +1307,7 @@ pub(crate) fn on_remote_frame(p: u64, k: u64, cb: media::FrameCallback) {
     };
     let mut cb = cb;
     let v2 = video.clone();
-    every_video_frame(video, move || {
-        if !live.get() {
-            v2.set_src_object(None);
-            return false;
-        }
+    let frames = every_video_frame(video.clone(), move || {
         let (w, h) = (v2.video_width(), v2.video_height());
         if w == 0 || h == 0 {
             return true;
@@ -1093,22 +1327,30 @@ pub(crate) fn on_remote_frame(p: u64, k: u64, cb: media::FrameCallback) {
         }
         true
     });
+    let mut reader = Some(FrameReader { frames, video });
+    with_peer(p, |peer| {
+        if let Some(r) = peer.remotes.get_mut(&k) {
+            r.frames = reader.take();
+        }
+    });
+    // The track or the peer went meanwhile: nothing would stop it later.
+    if let Some(r) = reader {
+        r.stop();
+    }
 }
 
 /// Run `tick` once per new video frame `video` presents, until it returns
 /// `false`: `requestVideoFrameCallback` where the browser has it (a live
 /// stream's `currentTime` advances with the clock, frames or not, so it
 /// cannot tell a new frame), else every animation frame.
-fn every_video_frame(video: HtmlVideoElement, tick: impl FnMut() -> bool + 'static) {
+fn every_video_frame(video: HtmlVideoElement, tick: impl FnMut() -> bool + 'static) -> Loop {
     let has_rvfc = Reflect::get(&video, &"requestVideoFrameCallback".into())
         .map(|f| f.is_function())
         .unwrap_or(false);
     if !has_rvfc {
-        every_frame(tick);
-        return;
+        return every_frame(tick);
     }
-    type Rvfc = Rc<RefCell<Option<Closure<dyn FnMut(JsValue, JsValue)>>>>;
-    let slot: Rvfc = Rc::default();
+    let (slot, stop) = loop_slot::<dyn FnMut(JsValue, JsValue)>();
     let (slot2, v2) = (slot.clone(), video.clone());
     let mut tick = tick;
     *slot.borrow_mut() = Some(Closure::new(move |_now: JsValue, _meta: JsValue| {
@@ -1132,6 +1374,7 @@ fn every_video_frame(video: HtmlVideoElement, tick: impl FnMut() -> bool + 'stat
     if !started {
         slot.borrow_mut().take();
     }
+    stop
 }
 
 // ------------------------------------------------------------- the view
@@ -1164,10 +1407,13 @@ pub(crate) fn create_view(scope: &mut RenderScope, view_id: &str, t: &MediaTrack
         return el;
     };
     let selector = format!("[data-rtc-view=\"{view_id}\"]");
+    // The element once found, so unmounting can let go of the track.
+    let shown: Rc<RefCell<Option<HtmlVideoElement>>> = Rc::default();
+    let shown2 = shown.clone();
     // Mounting is not synchronous on every path: look for it each frame,
     // for up to ~5 s.
     let mut frames = 0u32;
-    every_frame(move || {
+    let lookup = every_frame(move || {
         frames += 1;
         let found = document()
             .and_then(|d| d.query_selector(&selector).ok().flatten())
@@ -1183,9 +1429,19 @@ pub(crate) fn create_view(scope: &mut RenderScope, view_id: &str, t: &MediaTrack
                 video.set_muted(true);
                 video.set_src_object(Some(&stream));
                 let _ = video.play();
+                *shown2.borrow_mut() = Some(video);
                 false
             }
             None => frames < 300,
+        }
+    });
+    // Unmounted: stop looking, and clear `srcObject` so the element (which
+    // the page may keep a while) does not hold the track.
+    scope.on_cleanup(move || {
+        lookup.stop();
+        if let Some(v) = shown.borrow_mut().take() {
+            let _ = v.pause();
+            v.set_src_object(None);
         }
     });
     el
@@ -1231,6 +1487,19 @@ pub mod testing {
     /// Local tracks whose browser track is held.
     pub fn live_local_tracks() -> usize {
         super::LOCAL_WEB.with(|l| l.borrow().len())
+    }
+
+    /// Frames a video source painted into its track.
+    pub fn video_frames_taken(writer: &crate::media::VideoSourceWriter) -> u64 {
+        writer.slot.taken.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Samples an audio source took off its queue.
+    pub fn audio_samples_taken(writer: &crate::media::AudioSourceWriter) -> u64 {
+        writer
+            .queue
+            .taken
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The browser track behind a remote track.
