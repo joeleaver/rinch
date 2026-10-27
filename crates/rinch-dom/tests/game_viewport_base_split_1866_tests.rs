@@ -138,7 +138,12 @@ fn a_game_viewport_leaves_the_scene_as_a_base_slice() {
     // The image is the fitted frame, not the box: a mask (its bars fall on
     // half pixels).
     assert!(matches!(s.own, SliceCoverage::Mask(_)));
-    assert_eq!(s.device_from_image[5].fract(), 0.0, "{:?}", s.device_from_image);
+    assert_eq!(
+        s.device_from_image[5].fract(),
+        0.0,
+        "{:?}",
+        s.device_from_image
+    );
     assert_eq!(layers(&p.below), 0, "no erase in the scene");
 }
 

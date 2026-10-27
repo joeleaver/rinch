@@ -477,13 +477,14 @@ impl Drop for ForgetCurrentPointer {
 
 // ── RinchRuntime ─────────────────────────────────────────────────────────────
 
+/// Frames the GPU window composites its `GameViewport`s as layers after a
+/// base split was refused, before it tries the split again (#1866).
+#[cfg(feature = "gpu")]
+const BASE_FALLBACK_FRAMES: u32 = 120;
+
 /// The desktop runtime: thin winit `ApplicationHandler` that delegates to
 /// [`RinchApp`] for all platform-agnostic logic and uses [`WgpuRenderer`]
 /// + [`WinitWindow`] for the platform-specific parts.
-/// Frames the GPU window composites its `GameViewport`s as layers after a
-/// base split was refused, before it tries the split again (#1866).
-const BASE_FALLBACK_FRAMES: u32 = 120;
-
 pub struct RinchRuntime {
     /// Platform-agnostic application logic.
     app: RinchApp,
@@ -547,6 +548,7 @@ pub struct RinchRuntime {
     /// layers under the UI (cleared in the scene) rather than as split base
     /// layers (#1866): a base split was refused, so the window falls back
     /// for a while before it tries again.
+    #[cfg(feature = "gpu")]
     base_fallback_frames: u32,
 
     // ── DevTools ─────────────────────────────────────────────────
@@ -690,6 +692,7 @@ impl RinchRuntime {
             layer: None,
             output_override: None,
             layer_awaiting_output: false,
+            #[cfg(feature = "gpu")]
             base_fallback_frames: 0,
             devtools_store: None,
             devtools_app: None,

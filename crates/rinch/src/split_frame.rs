@@ -652,33 +652,35 @@ impl SplitFrame {
             .kept
             .iter()
             .zip(&views)
-            .map(|(k, (texture, own, ancestors, above_in, above_out, clear))| {
-                // A surface without a texture: nothing of it covers R.
-                let (texture, own) = match texture {
-                    Some(t) => (t, coverage(&k.own, own.as_ref())),
-                    None => (
-                        views.iter().find_map(|v| v.0.as_ref()).unwrap_or(below),
-                        Coverage::Rect([0; 4]),
-                    ),
-                };
-                SurfaceDraw {
-                    texture,
-                    extents: k.extents,
-                    // A registered GPU frame is premultiplied
-                    // (`SurfaceImages::sync`); a CPU frame straight.
-                    straight_alpha: k.straight_alpha,
-                    device_from_image: k.device_from_image,
-                    own,
-                    ancestors: coverage(&k.ancestors, ancestors.as_ref()),
-                    region: k.region,
-                    above_in: above_in.as_ref(),
-                    above_out: above_out.as_ref(),
-                    base: k.base.as_ref().map(|(c, black)| BaseDraw {
-                        clear: coverage(c, clear.as_ref()),
-                        black_backdrop: *black,
-                    }),
-                }
-            })
+            .map(
+                |(k, (texture, own, ancestors, above_in, above_out, clear))| {
+                    // A surface without a texture: nothing of it covers R.
+                    let (texture, own) = match texture {
+                        Some(t) => (t, coverage(&k.own, own.as_ref())),
+                        None => (
+                            views.iter().find_map(|v| v.0.as_ref()).unwrap_or(below),
+                            Coverage::Rect([0; 4]),
+                        ),
+                    };
+                    SurfaceDraw {
+                        texture,
+                        extents: k.extents,
+                        // A registered GPU frame is premultiplied
+                        // (`SurfaceImages::sync`); a CPU frame straight.
+                        straight_alpha: k.straight_alpha,
+                        device_from_image: k.device_from_image,
+                        own,
+                        ancestors: coverage(&k.ancestors, ancestors.as_ref()),
+                        region: k.region,
+                        above_in: above_in.as_ref(),
+                        above_out: above_out.as_ref(),
+                        base: k.base.as_ref().map(|(c, black)| BaseDraw {
+                            clear: coverage(c, clear.as_ref()),
+                            black_backdrop: *black,
+                        }),
+                    }
+                },
+            )
             .collect();
         if straight {
             compositor.composite_straight(device, encoder, below, target, size, &draws);

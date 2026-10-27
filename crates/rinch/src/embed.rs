@@ -950,7 +950,12 @@ impl RinchOverlayRenderer {
     ///
     /// Call it once per frame, in place of `ctx.scene()`: it drives the
     /// context's `RenderSurface`s as `scene()` does.
-    pub fn render(&mut self, device: &Device, queue: &Queue, ctx: &mut RinchContext) -> TextureView {
+    pub fn render(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        ctx: &mut RinchContext,
+    ) -> TextureView {
         if let Some(slices) = ctx.sliced_frame() {
             if let Err(e) = self.split.apply(
                 device,
@@ -1018,9 +1023,9 @@ impl RinchOverlayRenderer {
 
         if let Some(below) = below {
             let format = self.format;
-            let compositor = self
-                .compositor
-                .get_or_insert_with(|| crate::split_compositor::SplitCompositor::new(device, format));
+            let compositor = self.compositor.get_or_insert_with(|| {
+                crate::split_compositor::SplitCompositor::new(device, format)
+            });
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("rinch overlay split"),
             });

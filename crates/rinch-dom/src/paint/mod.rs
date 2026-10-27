@@ -1678,7 +1678,7 @@ pub fn set_bases_without_game(on: bool) {
 
 /// The ids [`set_bases_without_game`]'s slices are keyed by start here: the
 /// viewport's node id is added. Far from any surface id.
-pub const BASE_WITHOUT_GAME_IDS: usize = 1 << 40;
+pub const BASE_WITHOUT_GAME_IDS: usize = usize::MAX / 2;
 
 /// Whether a base viewport's split was refused since the last call (and
 /// its box cleared in the scene instead): the GPU window then composites
@@ -2542,16 +2542,19 @@ fn offer_base_split(
     radii: BorderRadii,
     node_transform: Affine,
 ) -> bool {
-    let named = node.attributes.get("data-viewport").and_then(|name| {
-        BASE_VIEWPORTS.with(|v| v.borrow().as_ref()?.get(name).copied())
-    });
+    let named = node
+        .attributes
+        .get("data-viewport")
+        .and_then(|name| BASE_VIEWPORTS.with(|v| v.borrow().as_ref()?.get(name).copied()));
     let Some(base) = named.or_else(|| {
-        BASES_WITHOUT_GAME.with(|b| b.get()).then_some(BaseViewport {
-            surface_id: BASE_WITHOUT_GAME_IDS + node_id,
-            // No texture: the compositor draws no image, only the clear.
-            extents: (1, 1),
-            letterbox: false,
-        })
+        BASES_WITHOUT_GAME
+            .with(|b| b.get())
+            .then_some(BaseViewport {
+                surface_id: BASE_WITHOUT_GAME_IDS + node_id,
+                // No texture: the compositor draws no image, only the clear.
+                extents: (1, 1),
+                letterbox: false,
+            })
     }) else {
         return false;
     };
@@ -4703,7 +4706,16 @@ fn paint_node_unmasked(
                 // clip). Refused, the box is cleared in the scene and the
                 // runtime composites this frame's game as a layer.
                 let base_split = clears_for_viewport
-                    && offer_base_split(tree, node_id, node, painter, scale, rect, radii, node_transform);
+                    && offer_base_split(
+                        tree,
+                        node_id,
+                        node,
+                        painter,
+                        scale,
+                        rect,
+                        radii,
+                        node_transform,
+                    );
                 if clears_for_viewport && !base_split {
                     clear_viewport_box(
                         tree,

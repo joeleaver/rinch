@@ -93,14 +93,14 @@ pub mod font;
 /// instead. See the module docs.
 pub mod menu;
 pub mod render_surface;
+#[cfg(any(feature = "desktop", feature = "android"))]
+pub mod shell;
 /// The split-layer compositor and a window's split surfaces (#1865), shared
 /// by the desktop GPU window and the embed overlay (#1866).
 #[cfg(any(feature = "gpu", feature = "embed"))]
 pub(crate) mod split_compositor;
 #[cfg(any(feature = "gpu", feature = "embed"))]
 pub(crate) mod split_frame;
-#[cfg(any(feature = "desktop", feature = "android"))]
-pub mod shell;
 /// Window-level facts and acts that work on the desktop and in the browser
 /// alike (issue #1770): [`open_url`](window::open_url),
 /// [`set_window_title`](window::set_window_title), and the reactive

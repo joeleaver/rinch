@@ -643,7 +643,10 @@ mod gpu {
         let px = Window::with_game(Mode::Split, half, (W, H), false).frame(&mut app, name);
         let at = |x: u32, y: u32| px[(y * W + x) as usize];
         let mut bad = Vec::new();
-        for (p, what) in [((100, 100), "over the red sibling"), ((200, 150), "over the green")] {
+        for (p, what) in [
+            ((100, 100), "over the red sibling"),
+            ((200, 150), "over the green"),
+        ] {
             if !near(at(p.0, p.1), [128, 0, 128, 128]) {
                 bad.push((what, p, at(p.0, p.1)));
             }
@@ -655,7 +658,11 @@ mod gpu {
             .frame(&mut app, "desk-letterbox");
         let at = |x: u32, y: u32| px[(y * W + x) as usize];
         for (p, want, what) in [
-            ((100, 75), [0, 0, 0, 255], "the top bar, over the red sibling"),
+            (
+                (100, 75),
+                [0, 0, 0, 255],
+                "the top bar, over the red sibling",
+            ),
             ((200, 225), [0, 0, 0, 255], "the bottom bar"),
             ((200, 150), MAGENTA, "the frame"),
         ] {
@@ -796,7 +803,9 @@ mod gpu {
             let stats = app.end_perf_frame().expect("mounted");
             // Positive control: the second frame was a partial one.
             if stats.get(rinch_dom::perf::Counter::RepaintPartial) != 1 {
-                failures.push(format!("{mode:?}: the second frame was not partial: {stats:?}"));
+                failures.push(format!(
+                    "{mode:?}: the second frame was not partial: {stats:?}"
+                ));
             }
 
             let fresh_html = with_box(halo_page(&name, true), "rgb(200,200,0)");
