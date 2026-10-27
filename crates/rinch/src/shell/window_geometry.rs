@@ -25,6 +25,7 @@
 //! compositor places the window.
 
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use winit::dpi::{LogicalPosition, PhysicalPosition, PhysicalSize, Position, Size};
 use winit::window::{Window, WindowAttributes};
@@ -315,59 +316,107 @@ fn grip_on_desktop(strip: Span, w: i64, h: i64, monitors: &[MonitorRect]) -> boo
     false
 }
 
+/// How long after its creation a window created maximized may report a
+/// maximize it has not yet said it has (see [`MaximizeWait`]). The X11 window
+/// manager maximizes a window as it maps it, within milliseconds; a reading
+/// after this is believed.
+pub(crate) const MAXIMIZE_GRACE: Duration = Duration::from_secs(2);
+
 /// A window created maximized, until the platform says it is: the window
-/// manager of X11 maximizes it some time after the creation, and a resize
-/// can arrive while `is_maximized` still answers `false` (winit reads the
-/// `_NET_WM_STATE` property, and no event follows when it changes). Such a
-/// reading would record the full-screen size as the normal geometry and the
-/// window as not maximized. So until a reading says maximized, a reading
-/// that says otherwise is taken as maximized, except one back at the created
-/// size after one at another size: an un-maximize (to where it was created)
-/// that came before any reading saw the window maximized. Windows and macOS
-/// maximize at creation, so their first reading ends the wait.
+/// manager of X11 maximizes it some time after the creation, and the resize
+/// that does it can arrive while `is_maximized` still answers `false` (winit
+/// reads the `_NET_WM_STATE` property, and no event follows when it
+/// changes). Believed, that reading would record the full-screen size as the
+/// normal geometry and the window as not maximized.
 ///
-/// A window manager that never maximizes the window leaves it waiting: its
-/// normal geometry stays the created one until it is resized back to it.
+/// So for [`MAXIMIZE_GRACE`] after the creation, a reading that does not say
+/// maximized is taken as maximized while the window is at its created size
+/// (before the maximize) or at the first other size it reached (the
+/// maximize). The wait ends — every reading believed from then on — at the
+/// first reading that says maximized, at the end of the grace, or at a
+/// reading at yet another size, or back at the created one, after that first
+/// other size: an un-maximize (to the created size, or to a smaller one the
+/// window manager chose because the created size does not fit the screen),
+/// or a resize by the person. Windows and macOS maximize at creation, so
+/// their first reading ends the wait.
+///
+/// What it does not see through: a window manager that refuses the maximize
+/// (a tiling one, or none) leaves the window reported maximized until the
+/// first reading after the grace, so a move made in the first two seconds
+/// and never followed by another event is not recorded; and a maximize the
+/// window manager makes in two resizes of different sizes, both before the
+/// property says so, ends the wait at the second. A window that cannot be
+/// maximized (not resizable: winit gives it equal minimum and maximum sizes;
+/// a layer surface) never waits.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) enum MaximizeWait {
     #[default]
     Done,
-    /// Created maximized at this (normal) inner size, no reading at another
-    /// size yet.
-    Created(Size),
-    /// A reading at another size came (the maximize, not yet reported).
-    Resized(Size),
+    /// Created maximized at this (normal) inner size, at `since`; no reading
+    /// at another size yet.
+    Created { size: Size, since: Instant },
+    /// A reading at another size came (the maximize, not yet reported): the
+    /// window is taken as maximized while it stays at `at`.
+    Resized {
+        at: PhysicalSize<u32>,
+        since: Instant,
+    },
+}
+
+/// Whether two surface sizes are the same, to a rounding pixel.
+fn same_size(a: PhysicalSize<u32>, b: PhysicalSize<u32>) -> bool {
+    a.width.abs_diff(b.width) <= 1 && a.height.abs_diff(b.height) <= 1
 }
 
 impl MaximizeWait {
-    /// For a window created with `attrs`.
-    pub(crate) fn after_create(attrs: &WindowAttributes) -> Self {
+    /// For a window created with `attrs` at `now`; `layer_surface` for a
+    /// Wayland layer surface, which has no maximize.
+    pub(crate) fn after_create(
+        attrs: &WindowAttributes,
+        layer_surface: bool,
+        now: Instant,
+    ) -> Self {
         match attrs.surface_size {
-            Some(size) if attrs.maximized => MaximizeWait::Created(size),
+            Some(size) if attrs.maximized && attrs.resizable && !layer_surface => {
+                MaximizeWait::Created { size, since: now }
+            }
             _ => MaximizeWait::Done,
         }
     }
 
-    /// `r` as the geometry rules should take it.
-    pub(crate) fn filter(&mut self, mut r: WindowReading) -> WindowReading {
-        let size = match *self {
+    /// `r`, read at `now`, as the geometry rules should take it.
+    pub(crate) fn filter(&mut self, mut r: WindowReading, now: Instant) -> WindowReading {
+        let since = match *self {
             MaximizeWait::Done => return r,
-            MaximizeWait::Created(s) | MaximizeWait::Resized(s) => s,
+            MaximizeWait::Created { since, .. } | MaximizeWait::Resized { since, .. } => since,
         };
-        if r.maximized {
+        if r.maximized || now.saturating_duration_since(since) >= MAXIMIZE_GRACE {
             *self = MaximizeWait::Done;
             return r;
         }
-        let created: PhysicalSize<u32> = size.to_physical(r.scale);
-        let at_created = created.width.abs_diff(r.surface.width) <= 1
-            && created.height.abs_diff(r.surface.height) <= 1;
-        match (*self, at_created) {
-            (MaximizeWait::Resized(_), true) => {
-                *self = MaximizeWait::Done;
-                return r;
+        if r.minimized {
+            // No geometry to judge by (Windows reports 0x0); the rules
+            // record nothing of a minimized window anyway.
+            return r;
+        }
+        match *self {
+            MaximizeWait::Created { size, since } => {
+                let created: PhysicalSize<u32> = size.to_physical(r.scale);
+                if !same_size(created, r.surface) {
+                    *self = MaximizeWait::Resized {
+                        at: r.surface,
+                        since,
+                    };
+                }
             }
-            (MaximizeWait::Created(s), false) => *self = MaximizeWait::Resized(s),
-            _ => {}
+            MaximizeWait::Resized { at, .. } => {
+                // A scale change since is another size too.
+                if !same_size(at, r.surface) {
+                    *self = MaximizeWait::Done;
+                    return r;
+                }
+            }
+            MaximizeWait::Done => return r,
         }
         r.maximized = true;
         r
@@ -806,60 +855,201 @@ mod tests {
         }
     }
 
-    /// X11: the window manager maximizes after the creation, and the resize
-    /// can come before `is_maximized` says so. Until a reading says
-    /// maximized, the full-screen size is not taken as the normal geometry
-    /// and the window stays maximized.
-    #[test]
-    fn a_window_created_maximized_waits_for_the_platform_to_say_so() {
-        let created = attrs().with_maximized(true);
-        let mut wait = MaximizeWait::after_create(&created);
-        assert_eq!(
-            MaximizeWait::after_create(&attrs()),
-            MaximizeWait::Done,
-            "not created maximized: nothing to wait for"
-        );
-        let mut saved = SavedGeometry::default();
+    /// A wait for a window created maximized at 560x280 at `t0`, and the
+    /// instant `ms` milliseconds after.
+    fn waiting() -> (MaximizeWait, impl Fn(u64) -> Instant) {
+        let t0 = Instant::now();
+        let wait = MaximizeWait::after_create(&attrs().with_maximized(true), false, t0);
+        (wait, move |ms| t0 + Duration::from_millis(ms))
+    }
+
+    /// Feeds `readings` (each with its milliseconds after the creation)
+    /// through `wait` into the published geometry of a window created
+    /// maximized at (40, 50), 560x280.
+    fn feed(
+        wait: &mut MaximizeWait,
+        t: &impl Fn(u64) -> Instant,
+        readings: &[(u64, WindowReading)],
+    ) -> PublishedGeometry {
         let mut g = created_into(
             PublishedGeometry::default(),
             Some((40.0, 50.0)),
             (560.0, 280.0),
             true,
         );
-        for r in [
-            reading(1.0, (40, 50), (560, 280)),
-            reading(1.0, (0, 0), (1920, 1050)),
-        ] {
-            let r = wait.filter(r);
-            saved.note(&r);
-            g = read_into(g, &r);
+        for (ms, r) in readings {
+            g = read_into(g, &wait.filter(*r, t(*ms)));
         }
+        g
+    }
+
+    /// Only a window that can be maximized waits: not one created
+    /// un-maximized, not a fixed-size one (winit gives it equal minimum and
+    /// maximum sizes, which window managers refuse to maximize), not a layer
+    /// surface.
+    #[test]
+    fn only_a_window_that_can_be_maximized_waits() {
+        let now = Instant::now();
+        let max = attrs().with_maximized(true);
+        assert!(matches!(
+            MaximizeWait::after_create(&max, false, now),
+            MaximizeWait::Created { .. }
+        ));
+        assert_eq!(
+            MaximizeWait::after_create(&attrs(), false, now),
+            MaximizeWait::Done
+        );
+        assert_eq!(
+            MaximizeWait::after_create(&max.clone().with_resizable(false), false, now),
+            MaximizeWait::Done
+        );
+        assert_eq!(
+            MaximizeWait::after_create(&max, true, now),
+            MaximizeWait::Done
+        );
+    }
+
+    /// X11: the window manager maximizes after the creation, and the resize
+    /// can come before `is_maximized` says so. Until a reading says
+    /// maximized, the full-screen size is not taken as the normal geometry
+    /// and the window stays maximized.
+    #[test]
+    fn a_window_created_maximized_waits_for_the_platform_to_say_so() {
+        let (mut wait, t) = waiting();
+        let mut saved = SavedGeometry::default();
+        for (ms, r) in [
+            (5, reading(1.0, (40, 50), (560, 280))),
+            (30, reading(1.0, (0, 0), (1920, 1050))),
+            (40, reading(1.0, (0, 0), (1920, 1050))),
+        ] {
+            saved.note(&wait.filter(r, t(ms)));
+        }
+        assert_eq!(saved.size, None, "no normal geometry recorded yet");
+        let (mut wait, t) = waiting();
+        let g = feed(
+            &mut wait,
+            &t,
+            &[
+                (5, reading(1.0, (40, 50), (560, 280))),
+                (30, reading(1.0, (0, 0), (1920, 1050))),
+            ],
+        );
         assert!(g.maximized, "a reading before the property is not believed");
         assert_eq!(g.normal_size, Some((560.0, 280.0)));
-        assert_eq!(saved.size, None, "no normal geometry recorded yet");
         // The property arrives: from here on, readings are believed.
-        let r = wait.filter(maxed((1920, 1050)));
-        g = read_into(g, &r);
+        let g = read_into(g, &wait.filter(maxed((1920, 1050)), t(60)));
         assert_eq!(wait, MaximizeWait::Done);
-        let r = wait.filter(reading(1.0, (40, 50), (560, 280)));
-        g = read_into(g, &r);
+        let g = read_into(g, &wait.filter(reading(1.0, (40, 50), (560, 280)), t(70)));
         assert!(!g.maximized, "an un-maximize after it is believed");
     }
 
-    /// Un-maximized (back to the created size) before any reading saw it
+    /// Un-maximized back to the created size before any reading saw it
     /// maximized: that is an un-maximize, and the wait ends.
     #[test]
     fn back_at_the_created_size_after_another_ends_the_wait() {
-        let mut wait = MaximizeWait::after_create(&attrs().with_maximized(true));
-        assert!(wait.filter(reading(1.0, (40, 50), (560, 280))).maximized);
-        assert!(wait.filter(reading(1.0, (0, 0), (1920, 1050))).maximized);
-        assert!(wait.filter(reading(1.0, (0, 0), (1920, 1050))).maximized);
-        let back = wait.filter(reading(1.0, (40, 50), (560, 280)));
+        let (mut wait, t) = waiting();
+        assert!(
+            wait.filter(reading(1.0, (40, 50), (560, 280)), t(5))
+                .maximized
+        );
+        assert!(
+            wait.filter(reading(1.0, (0, 0), (1920, 1050)), t(30))
+                .maximized
+        );
+        assert!(
+            wait.filter(reading(1.0, (0, 0), (1920, 1050)), t(40))
+                .maximized
+        );
+        let back = wait.filter(reading(1.0, (40, 50), (560, 280)), t(900));
         assert!(!back.maximized);
         assert_eq!(wait, MaximizeWait::Done);
         // In logical pixels: the created size at scale 2.
-        let mut hidpi = MaximizeWait::after_create(&attrs().with_maximized(true));
-        assert!(hidpi.filter(reading(2.0, (0, 0), (3840, 2100))).maximized);
-        assert!(!hidpi.filter(reading(2.0, (80, 100), (1120, 560))).maximized);
+        let t0 = Instant::now();
+        let mut hidpi = MaximizeWait::after_create(&attrs().with_maximized(true), false, t0);
+        assert!(
+            hidpi
+                .filter(reading(2.0, (0, 0), (3840, 2100)), t0)
+                .maximized
+        );
+        assert!(
+            !hidpi
+                .filter(reading(2.0, (80, 100), (1120, 560)), t0)
+                .maximized
+        );
+    }
+
+    /// #1884 second review: the window manager refuses the maximize (a
+    /// tiling one, or none at all). Every reading is at the created size,
+    /// and none says maximized: the move to (700, 400) is recorded once the
+    /// grace is over, and the window is not maximized.
+    #[test]
+    fn a_maximize_the_window_manager_refuses_ends_at_the_grace() {
+        let (mut wait, t) = waiting();
+        let g = feed(
+            &mut wait,
+            &t,
+            &[
+                (5, reading(1.0, (40, 50), (560, 280))),
+                (1500, reading(1.0, (400, 300), (560, 280))),
+            ],
+        );
+        assert!(g.maximized, "inside the grace, still taken as maximized");
+        let g = read_into(
+            g,
+            &wait.filter(reading(1.0, (700, 400), (560, 280)), t(2100)),
+        );
+        assert_eq!(
+            (g.maximized, g.normal_position, g.normal_size),
+            (false, Some((700.0, 400.0)), Some((560.0, 280.0)))
+        );
+        assert_eq!(wait, MaximizeWait::Done);
+    }
+
+    /// A tiling window manager puts the window in a tile instead: a resize
+    /// to another size that never says maximized. After the grace, the tile
+    /// is the normal geometry.
+    #[test]
+    fn a_tiling_window_manager_ends_the_wait_at_the_grace() {
+        let (mut wait, t) = waiting();
+        let g = feed(
+            &mut wait,
+            &t,
+            &[
+                (20, reading(1.0, (0, 0), (960, 1050))),
+                (2500, reading(1.0, (0, 0), (960, 1050))),
+            ],
+        );
+        assert_eq!((g.maximized, g.normal_size), (false, Some((960.0, 1050.0))));
+    }
+
+    /// #1884 second review: the created size does not fit the screen, the
+    /// window manager maximizes (not yet reported), then the person
+    /// un-maximizes and it restores to a smaller size than the created one;
+    /// then they resize it. The un-maximize ends the wait, inside the grace.
+    #[test]
+    fn an_un_maximize_to_another_size_ends_the_wait() {
+        let t0 = Instant::now();
+        let t = |ms| t0 + Duration::from_millis(ms);
+        let big = WindowAttributes::default()
+            .with_surface_size(LogicalSize::new(1920.0, 1200.0))
+            .with_maximized(true);
+        let mut wait = MaximizeWait::after_create(&big, false, t0);
+        let mut g = created_into(PublishedGeometry::default(), None, (1920.0, 1200.0), true);
+        for (ms, r) in [
+            (20, reading(1.0, (0, 0), (1920, 1050))),
+            (800, reading(1.0, (50, 40), (1800, 1000))),
+        ] {
+            g = read_into(g, &wait.filter(r, t(ms)));
+        }
+        assert_eq!(wait, MaximizeWait::Done);
+        assert_eq!(
+            (g.maximized, g.normal_size),
+            (false, Some((1800.0, 1000.0)))
+        );
+        g = read_into(
+            g,
+            &wait.filter(reading(1.0, (300, 200), (1200, 800)), t(1200)),
+        );
+        assert_eq!((g.maximized, g.normal_size), (false, Some((1200.0, 800.0))));
     }
 }

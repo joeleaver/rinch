@@ -400,11 +400,21 @@ normal (restore) geometry, since a window created maximized has none to read.
 manager applies `with_maximized` after creation, a `SurfaceResized` can come
 while `is_maximized` (read off `_NET_WM_STATE`, which raises no winit event)
 still answers false, and that reading would make the full-screen size the
-normal geometry. `MaximizeWait` (set from the creation attributes) takes
-not-maximized readings as maximized until one says maximized, or one returns to
-the created size after another size (an un-maximize before any reading saw the
-maximize). A window manager that never maximizes leaves the creation geometry
-as the normal one until the window is resized back to it. Pins:
+normal geometry. `MaximizeWait` (set from the creation attributes; not for a
+non-resizable window, which winit gives equal minimum and maximum sizes and
+window managers refuse to maximize, nor a layer surface) takes not-maximized
+readings as maximized for `MAXIMIZE_GRACE` (2 s) after the creation, while
+the window is at its created size or at the first other size it reached (the
+maximize). It ends — every reading believed — at the first reading that says
+maximized, at the end of the grace, or at a reading at yet another size or
+back at the created one after that first other size (an un-maximize, to the
+created size or to a smaller one a window manager chose because the created
+size does not fit the screen; or a resize by the person). Residue: a window
+manager that refuses the maximize (tiling, or none) leaves the window reported
+maximized until the first reading after the grace, so a move made within the
+grace and followed by no other event is not recorded; a maximize done in two
+resizes of different sizes before the property is set ends the wait at the
+second. Pins:
 `window_geometry::tests`, `rinch_runtime::window_restore_tests`. **On
 X11 the frame position is read by rinch** (`overlay_window::outer_position`:
 the client's root coordinates less `_NET_FRAME_EXTENTS`), because winit's

@@ -1153,7 +1153,9 @@ impl RinchRuntime {
     /// window, through the wait for a maximize the platform has not reported
     /// yet.
     fn take_reading(&mut self, reading: window_geometry::WindowReading) {
-        let reading = self.maximize_wait.filter(reading);
+        let reading = self
+            .maximize_wait
+            .filter(reading, std::time::Instant::now());
         self.saved_geometry.note(&reading);
         window_geometry::publish_window(&reading);
         self.publish_layer_position();
@@ -1440,7 +1442,11 @@ impl RinchRuntime {
             self.main_window_attributes(steps, backend, true, true),
             hidden,
         );
-        self.maximize_wait = window_geometry::MaximizeWait::after_create(&window_attrs);
+        self.maximize_wait = window_geometry::MaximizeWait::after_create(
+            &window_attrs,
+            steps.wayland_layer,
+            std::time::Instant::now(),
+        );
 
         let window = event_loop
             .create_window(window_attrs)
@@ -1523,9 +1529,10 @@ impl RinchRuntime {
             // start (#1520), which was never on screen and sits wherever the
             // system put it.
             if self.shown_once {
-                let reading = self
-                    .maximize_wait
-                    .filter(window_geometry::WindowReading::of(w.raw()));
+                let reading = self.maximize_wait.filter(
+                    window_geometry::WindowReading::of(w.raw()),
+                    std::time::Instant::now(),
+                );
                 self.saved_geometry.record(&reading);
                 window_geometry::publish_window(&reading);
                 self.publish_layer_position();
@@ -1572,7 +1579,11 @@ impl RinchRuntime {
         // (#1546), with the size it had.
         let first_show = self.begin_appearance(connected_monitors(event_loop), true);
         let window_attrs = self.main_window_attributes(steps, backend, false, first_show);
-        self.maximize_wait = window_geometry::MaximizeWait::after_create(&window_attrs);
+        self.maximize_wait = window_geometry::MaximizeWait::after_create(
+            &window_attrs,
+            steps.wayland_layer,
+            std::time::Instant::now(),
+        );
 
         let window = event_loop
             .create_window(window_attrs)
@@ -6084,7 +6095,8 @@ mod window_restore_tests {
             attrs.position,
             Some(Position::Physical(PhysicalPosition::new(100, 80)))
         );
-        rt.maximize_wait = window_geometry::MaximizeWait::after_create(&attrs);
+        rt.maximize_wait =
+            window_geometry::MaximizeWait::after_create(&attrs, false, std::time::Instant::now());
         rt.take_reading(reading(true, (0, 0), (1920, 1050)));
         assert_eq!(
             current_window_restore(),
@@ -6113,7 +6125,8 @@ mod window_restore_tests {
         });
         assert!(rt.begin_appearance(one_monitor(), true));
         let attrs = attributes(&mut rt, true);
-        rt.maximize_wait = window_geometry::MaximizeWait::after_create(&attrs);
+        rt.maximize_wait =
+            window_geometry::MaximizeWait::after_create(&attrs, false, std::time::Instant::now());
         rt.take_reading(reading(false, (100, 80), (800, 600)));
         rt.take_reading(reading(false, (0, 0), (1920, 1050)));
         assert_eq!(

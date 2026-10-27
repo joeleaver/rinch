@@ -342,8 +342,12 @@ X11 and Windows and points on macOS), so a window comes back to the pixel.
 
 Give them back as `WindowProps::x`/`y`, `width`/`height` and `maximized`. A
 window that opens maximized answers the geometry it was created with until it
-is first un-maximized; on X11, where the window manager maximizes it a moment
-after creation, rinch keeps that answer until the window says it is maximized.
+is first un-maximized. On X11, where the window manager maximizes it a moment
+after creation, rinch keeps that answer for up to two seconds until the
+window says it is maximized, so the maximize itself is not mistaken for a
+resize; an un-maximize or a resize to another size within them is still
+taken. A window manager that refuses the maximize (a tiling one) has its
+geometry taken from the end of those two seconds.
 It keeps answering while the window is hidden, and after a
 [hidden start](#starting-with-no-window-tray-only-apps) it answers from the
 first show.
