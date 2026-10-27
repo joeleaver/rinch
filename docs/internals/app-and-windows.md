@@ -340,6 +340,8 @@ set_click_through_current_window(true);
 // Geometry, logical px, any thread (#1546); kept while hidden:
 let pos: Option<(f64, f64)> = current_window_position(); // None on Wayland
 let size: Option<(f64, f64)> = current_window_size();
+// What to persist and give back as WindowProps x/y, width/height, maximized:
+let restore: Option<WindowRestore> = current_window_restore();
 set_current_window_position(300.0, 200.0); // while hidden: where it comes back
 set_current_window_size(700.0, 200.0);
 ```
@@ -360,9 +362,50 @@ with them
 appearance only). The position is kept in desktop pixels (X11, Windows) or
 points (macOS), the size in logical pixels; a maximized window comes back
 maximized with its earlier normal geometry as the restore geometry. A
-recorded position on no connected monitor at show (`on_some_monitor`) is
-dropped. Wayland restores the size only; a position set while hidden there is
-dropped. **On
+recorded position out of reach at show is dropped (`begin_appearance`). Wayland
+restores the size only; a position set while hidden there is dropped.
+
+**Reachable positions** (`window_geometry::reachable`, #1884). A position —
+recorded at hide, or `WindowProps::x`/`y` — is kept only where a *grip* of the
+window's top is on the desktop: `GRIP` = 64 x 12 logical pixels (each capped at
+the window's width / height), anywhere in its top `GRIP_STRIP` = 24 (a
+Windows outer frame a few pixels above a monitor leaves the title bar below
+it). "On the desktop" is the union of the monitors (`grip_on_desktop`: x-slabs
+between monitor edges, a row band starting at the strip's top or a monitor's
+top edge), so a window across two adjacent monitors counts and a gap between
+monitors does not. The grip is sized in the scale of a monitor the strip
+overlaps. No monitors listed: kept.
+
+**`WindowProps::x`/`y` on a mixed-scale desktop** (`place_requested`). A
+logical desktop position is the outer position over the scale of the monitor
+the window is on (what the getters publish), but winit converts a
+`Position::Logical` with a guessed scale — X11 the monitor under the pointer
+(`winit-x11` `window.rs`, `guessed_monitor`), Windows the scale the new window
+starts with — so a position next to a scale-2 primary could be created at
+twice its coordinates, on no monitor. `place_requested` tries each monitor as
+the one the position is on (convert with its scale; the strip must overlap it
+and be reachable) and gives winit the resulting `Position::Physical`. Where
+two monitors both fit (a logical position is ambiguous on such a desktop) the
+first in winit's order wins; the window is reachable either way. macOS keeps
+the logical position: `connected_monitors` gives its monitors in points at
+scale 1, the unit AppKit positions in.
+
+**First appearance and `current_window_restore`** (#1884). `begin_appearance`
+runs before both `create_window` (visible) and `show_window`: on the first
+appearance — a creation, or the first show after a hidden start —
+`publish_created` publishes the geometry the window is created with as the
+normal (restore) geometry, since a window created maximized has none to read.
+`current_window_restore()` answers `normal_position` / `normal_size` and
+`maximized` from the published geometry. **X11 maximizes late**: the window
+manager applies `with_maximized` after creation, a `SurfaceResized` can come
+while `is_maximized` (read off `_NET_WM_STATE`, which raises no winit event)
+still answers false, and that reading would make the full-screen size the
+normal geometry. `MaximizeWait` (set from the creation attributes) takes
+not-maximized readings as maximized until one says maximized, or one returns to
+the created size after another size (an un-maximize before any reading saw the
+maximize). A window manager that never maximizes leaves the creation geometry
+as the normal one until the window is resized back to it. Pins:
+`window_geometry::tests`, `rinch_runtime::window_restore_tests`. **On
 X11 the frame position is read by rinch** (`overlay_window::outer_position`:
 the client's root coordinates less `_NET_FRAME_EXTENTS`), because winit's
 `outer_position` subtracts extents cached before the window manager wrote

@@ -34,6 +34,7 @@ pub struct WindowProps {
     pub resizable: bool,
     pub transparent: bool,
     pub always_on_top: bool,
+    pub maximized: bool,
     pub visible: bool,
     pub resize_inset: Option<f32>,
 }

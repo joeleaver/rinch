@@ -48,8 +48,10 @@ fn main() {
         resizable: true,        // Allow resizing
         transparent: false,     // No transparency
         always_on_top: false,   // Normal z-order
+        maximized: false,       // Open un-maximized
         visible: true,          // Show on creation
         resize_inset: None,     // No custom resize handles
+        ..Default::default()
     };
 
     App::new(app).window_props(props).run();
@@ -61,12 +63,13 @@ fn main() {
 | `title` | `String` | "Rinch Window" | Window title bar text |
 | `width` | `u32` | 800 | Initial window width in pixels |
 | `height` | `u32` | 600 | Initial window height in pixels |
-| `x` | `Option<i32>` | `None` | Initial x position (centered if None) |
-| `y` | `Option<i32>` | `None` | Initial y position (centered if None) |
+| `x` | `Option<i32>` | `None` | Initial outer x, logical pixels (system-placed if `None`, or if the window would be out of reach there: see [Reachable positions](#reachable-positions)) |
+| `y` | `Option<i32>` | `None` | Initial outer y, as `x` |
 | `borderless` | `bool` | `false` | Remove native window decorations |
 | `resizable` | `bool` | `true` | Allow window resizing |
 | `transparent` | `bool` | `false` | Enable window transparency |
 | `always_on_top` | `bool` | `false` | Keep window above others |
+| `maximized` | `bool` | `false` | Open the first appearance maximized, `width` x `height` at `x`/`y` being what an un-maximize returns to (see [Bringing the window back as it was](#bringing-the-window-back-as-it-was)) |
 | `visible` | `bool` | `true` | Whether the window is on screen at startup; `false` starts a tray-only app (see below) |
 | `resize_inset` | `Option<f32>` | `None` | Resize handle inset for borderless windows |
 | `non_activating` | `bool` | `false` | Never take keyboard focus or activation, even when clicked (see [Overlay Windows](#overlay-windows)) |
@@ -260,9 +263,9 @@ position — except a [layer-shell overlay](#wayland-layer-shell-overlays),
 which is placed by rinch and comes back where it was. A maximized window comes back maximized, and un-maximizing it
 returns it to the last place and size it had before it was maximized. A
 minimized window's position is never recorded (Windows reports it as
-(-32000, -32000)), and a position that lies on no connected monitor when the
-window is shown (a monitor unplugged while it was hidden) is dropped, so the
-system places the window.
+(-32000, -32000)), and a position [out of reach](#reachable-positions) when the
+window is shown (on a monitor unplugged while it was hidden) is dropped, so
+the system places the window.
 
 The shell does this by recording the window's outer (frame) position and inner
 size at the hide and creating the new window with them, rather than by keeping
@@ -280,6 +283,7 @@ it appears at `WindowProps::x`/`y`, as a window created visible does.
 |----------|-------------|
 | `current_window_position() -> Option<(f64, f64)>` | Outer top-left in logical pixels; `None` before the window exists and on Wayland (a layer-shell overlay answers its position on its output) |
 | `current_window_size() -> Option<(f64, f64)>` | Inner (content) size in logical pixels; `None` before the window exists |
+| `current_window_restore() -> Option<WindowRestore>` | What to persist to bring the window back as it is: its normal (un-maximized) position and size, and whether it is maximized; `None` before the window exists |
 | `set_current_window_position(x, y)` | Move the outer top-left (ignored on Wayland, except a layer-shell overlay) |
 | `current_window_surface_kind() -> Option<WindowSurfaceKind>` | `Toplevel`, or `LayerShell` for a Wayland layer-shell overlay |
 | `set_current_window_output(Option<&str>)` | The output a layer-shell overlay is on, by connector name |
@@ -312,11 +316,67 @@ let props = WindowProps {
 };
 ```
 
-The position is in logical pixels, like `WindowProps::x`/`y`. On a desktop
-whose monitors have different scale factors a logical position is ambiguous;
-the hide/show round trip itself does not go through it (it keeps desktop
-pixels on X11 and Windows and points on macOS), so a window comes back to the
-pixel.
+For a window that can be maximized, persist `current_window_restore()`
+instead (below): the getters above answer the maximized geometry while it is
+maximized.
+
+The position is in logical pixels, like `WindowProps::x`/`y`: the outer
+position over the scale of the monitor the window is on. On a desktop whose
+monitors have different scale factors, rinch reads a `WindowProps::x`/`y` back
+the same way, in the scale of the monitor it falls on, and creates the window
+at the desktop pixels that names (winit alone would convert it with a guessed
+scale, such as the monitor under the pointer on X11). Where a logical position
+fits two such monitors, the first the platform lists wins. The hide/show round
+trip itself does not go through a logical position (it keeps desktop pixels on
+X11 and Windows and points on macOS), so a window comes back to the pixel.
+
+### Bringing the window back as it was
+
+`current_window_restore()` answers a `WindowRestore`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `position` | `Option<(f64, f64)>` | Outer top-left, logical pixels, of the window when it is neither maximized nor minimized (what an un-maximize returns to); `None` on Wayland |
+| `size` | `(f64, f64)` | Inner (content) size, logical pixels, likewise |
+| `maximized` | `bool` | Whether the window is maximized |
+
+Give them back as `WindowProps::x`/`y`, `width`/`height` and `maximized`. A
+window that opens maximized answers the geometry it was created with until it
+is first un-maximized; on X11, where the window manager maximizes it a moment
+after creation, rinch keeps that answer until the window says it is maximized.
+It keeps answering while the window is hidden, and after a
+[hidden start](#starting-with-no-window-tray-only-apps) it answers from the
+first show.
+
+```rust
+// At exit:
+if let Some(r) = current_window_restore() {
+    save_restore(r.position, r.size, r.maximized);
+}
+
+// At startup:
+let props = WindowProps {
+    x: saved.position.map(|(x, _)| x as i32),
+    y: saved.position.map(|(_, y)| y as i32),
+    width: saved.size.0 as u32,
+    height: saved.size.1 as u32,
+    maximized: saved.maximized,
+    ..Default::default()
+};
+```
+
+### Reachable positions
+
+A position — `WindowProps::x`/`y`, or the one a hidden window comes back to —
+is used only where the person can reach the window to move it: a grip of its
+top, **64 x 12 logical pixels** (or all of a narrower or shorter window),
+must be on the desktop somewhere in the window's top 24 pixels. The desktop is
+all the connected monitors together, so a window across two adjacent monitors
+is reachable; one whose title bar is above every monitor, or with only its
+bottom edge or a sliver of its side on one, is not, and the system places it.
+A position saved on a monitor that has since been unplugged therefore never
+opens the window out of reach. When the platform lists no monitors, the
+position is used.
 
 ### Fixed Overlays and Custom Chrome
 
@@ -835,7 +895,7 @@ fn app() -> NodeHandle {
 
 ## Window State Persistence
 
-For the app's main window, use [`current_window_position` / `current_window_size`](#reading-and-setting-the-windows-geometry).
+For the app's main window, use [`current_window_restore`](#bringing-the-window-back-as-it-was) (or [`current_window_position` / `current_window_size`](#reading-and-setting-the-windows-geometry)).
 
 > **Note:** the `WindowHandle` / `WindowState` API below belongs to the
 > programmatic window API (`open_window`, `WindowBuilder`), which the desktop

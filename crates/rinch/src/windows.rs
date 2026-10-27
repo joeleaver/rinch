@@ -476,14 +476,20 @@ pub fn current_window_size() -> Option<(f64, f64)> {
 /// it across runs: the position and size it has when it is neither maximized
 /// nor minimized (what an un-maximize returns to), and whether it is
 /// maximized. Give them back as `WindowProps::x`/`y`, `width`/`height` and
-/// `maximized`; a position no longer on a connected monitor is then left to
-/// the system.
+/// `maximized`; a position out of reach on the monitors connected then (one
+/// since unplugged) is left to the system.
+///
+/// Separate from [`WindowState`], which is the programmatic-window API's
+/// *current* geometry per [`WindowHandle`]: this is the main window's
+/// *normal* geometry, and its position is `None` where the platform gives
+/// none (Wayland).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WindowRestore {
     /// Outer top-left on the desktop, logical pixels; `None` on Wayland.
     pub position: Option<(f64, f64)>,
     /// Inner (content) size, logical pixels.
     pub size: (f64, f64),
+    /// Whether the window is maximized.
     pub maximized: bool,
 }
 
