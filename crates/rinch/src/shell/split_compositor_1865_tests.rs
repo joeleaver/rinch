@@ -806,6 +806,7 @@ fn run(case: &Case, fault: Fault) -> (Vec<[u8; 4]>, Split) {
             region: case.r,
             above_in: above_in_view.as_ref().filter(|_| !no_above),
             above_out: above_out_view.as_ref().filter(|_| !no_above),
+            base: None,
         }],
     );
     queue.submit(Some(encoder.finish()));
@@ -1267,6 +1268,7 @@ fn split_composite_cost_probe() {
                     region: (x, y, s.0, s.1),
                     above_in: above,
                     above_out: None,
+                    base: None,
                 }
             }
             let empty = time(Box::new(|| {
@@ -1506,6 +1508,7 @@ fn split_multi_video_cost_probe() {
                     region: (x, y, s.0, s.1),
                     above_in: None,
                     above_out: None,
+                    base: None,
                 })
                 .collect();
             let mut e = device.create_command_encoder(&Default::default());

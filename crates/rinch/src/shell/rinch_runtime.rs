@@ -480,6 +480,10 @@ impl Drop for ForgetCurrentPointer {
 /// The desktop runtime: thin winit `ApplicationHandler` that delegates to
 /// [`RinchApp`] for all platform-agnostic logic and uses [`WgpuRenderer`]
 /// + [`WinitWindow`] for the platform-specific parts.
+/// Frames the GPU window composites its `GameViewport`s as layers after a
+/// base split was refused, before it tries the split again (#1866).
+const BASE_FALLBACK_FRAMES: u32 = 120;
+
 pub struct RinchRuntime {
     /// Platform-agnostic application logic.
     app: RinchApp,
@@ -539,6 +543,11 @@ pub struct RinchRuntime {
     /// A layer surface was closed by the compositor with no output left: show
     /// it again when one appears (#1523).
     layer_awaiting_output: bool,
+    /// Frames left in which the GPU window composites its `GameViewport`s as
+    /// layers under the UI (cleared in the scene) rather than as split base
+    /// layers (#1866): a base split was refused, so the window falls back
+    /// for a while before it tries again.
+    base_fallback_frames: u32,
 
     // ── DevTools ─────────────────────────────────────────────────
     /// Shared DevTools store (persists across open/close cycles).
@@ -681,6 +690,7 @@ impl RinchRuntime {
             layer: None,
             output_override: None,
             layer_awaiting_output: false,
+            base_fallback_frames: 0,
             devtools_store: None,
             devtools_app: None,
             devtools_window: None,
@@ -1827,6 +1837,17 @@ impl RinchRuntime {
         // would show its last frame where the software backend shows none.
         let mut skipped_unready = false;
 
+        // `GameViewport`s as split base layers (#1866): what paint offers to
+        // the painter, the GPU textures and the CPU frames the compositor
+        // reads. The layers above are gathered too, for a frame that falls
+        // back to them.
+        let try_base = self.base_fallback_frames == 0;
+        self.base_fallback_frames = self.base_fallback_frames.saturating_sub(1);
+        let mut base_viewports: std::collections::HashMap<String, rinch_dom::paint::BaseViewport> =
+            std::collections::HashMap::new();
+        let mut base_views = std::collections::HashMap::new();
+        let mut base_pending: Vec<super::split_frame::PendingFrame> = Vec::new();
+
         // Collect compositor-path surface frames (video, GameViewport — not RenderSurface)
         {
             let surface_frames = crate::render_surface::collect_surface_frames();
@@ -1838,6 +1859,29 @@ impl RinchRuntime {
                 if let Some((viewport, radii)) = self.app.viewport_rect_with_radius(&viewport_name)
                 {
                     compositor_viewport_names.insert(viewport_name.clone());
+                    if let Some(id) = crate::render_surface::surface_id_for_viewport(&viewport_name)
+                        && surf_w > 0
+                        && surf_h > 0
+                    {
+                        base_viewports.insert(
+                            viewport_name.clone(),
+                            rinch_dom::paint::BaseViewport {
+                                surface_id: id,
+                                extents: (surf_w, surf_h),
+                                letterbox: true,
+                            },
+                        );
+                        base_pending.push((
+                            id,
+                            rinch_dom::paint::SurfacePixelData {
+                                data: std::sync::Arc::new(pixels.clone()),
+                                width: surf_w,
+                                height: surf_h,
+                                opaque: false,
+                            },
+                            true,
+                        ));
+                    }
                     // The whole box — what paint punched the hole over.
                     let box_viewport = (
                         viewport.0 * s,
@@ -1928,6 +1972,15 @@ impl RinchRuntime {
                         continue;
                     }
                     if let Some(ref ts) = *tex_source_arc.lock().unwrap() {
+                        base_viewports.insert(
+                            viewport_name.clone(),
+                            rinch_dom::paint::BaseViewport {
+                                surface_id,
+                                extents: (ts.width, ts.height),
+                                letterbox: false,
+                            },
+                        );
+                        base_views.insert(surface_id, ts.view.clone());
                         gpu_layers.push(super::desktop::GpuTextureLayer {
                             view: ts.view.clone(),
                             viewport,
@@ -1943,7 +1996,36 @@ impl RinchRuntime {
         // frames and GPU textures only). Video is drawn in the scene since
         // #1768, so the retention a loaded video needed between its frames
         // (the last cycle's layers kept, with their holes) is gone with it.
-        if !all_layers.is_empty() || !gpu_layers.is_empty() || skipped_unready {
+        //
+        // On the split path (#1866) the viewports are base layers and the
+        // renderer holds no layers: the UI is rendered over the window's base
+        // and the compositor replaces it inside each viewport with its game.
+        let use_base = try_base && !base_viewports.is_empty();
+        let mut fallback_layers = Some((all_layers, gpu_layers));
+        if use_base {
+            if renderer.has_composite_layers() {
+                renderer.set_composite_layers(vec![]);
+                renderer.set_gpu_layers(vec![]);
+            }
+            // A kept slice made for a frame of another size has a stale
+            // image transform: the viewport is painted, and split, again.
+            let stale: Vec<&str> = base_viewports
+                .iter()
+                .filter(|(_, b)| {
+                    renderer
+                        .split
+                        .kept_extents(b.surface_id)
+                        .is_some_and(|e| e != b.extents)
+                })
+                .map(|(name, _)| name.as_str())
+                .collect();
+            if !stale.is_empty() {
+                self.app.request_repaint();
+                self.app.mark_viewport_nodes_paint_dirty(&stale);
+            }
+        } else if let Some((all_layers, gpu_layers)) = fallback_layers.take()
+            && (!all_layers.is_empty() || !gpu_layers.is_empty() || skipped_unready)
+        {
             renderer.set_composite_layers(all_layers);
             renderer.set_gpu_layers(gpu_layers);
         } else if renderer.has_composite_layers() {
@@ -1971,23 +2053,62 @@ impl RinchRuntime {
         // Split GPU surfaces and video (#1865) while no `GameViewport` layer is
         // under the UI: the base-layer path and the split path do not compose
         // yet (a base layer under split slices is the design's next step).
-        let has_layers = renderer.has_composite_layers() || skipped_unready;
+        let has_layers = !use_base && (renderer.has_composite_layers() || skipped_unready);
         let mut viewport_frames = crate::render_surface::collect_viewport_frames_by_name();
-        let split_uploads = super::split_frame::prepare_split_viewports(
+        let mut split_uploads = super::split_frame::prepare_split_viewports(
             &mut viewport_frames,
             &mut renderer.split,
             !has_layers,
         );
         self.app
             .install_gpu_viewport_frames(viewport_frames, Some(compositor_viewport_names));
+        if use_base {
+            rinch_dom::paint::set_base_viewports(Some(base_viewports));
+            split_uploads.extend(base_pending);
+        }
+        renderer.split.set_base_views(if use_base {
+            base_views
+        } else {
+            Default::default()
+        });
+        let _ = rinch_dom::paint::take_base_refused();
 
         // Build the frame from the document — CPU surfaces paint inline via
         // draw_image(). Only what its damage reaches is encoded and rendered
         // while the renderer's UI texture holds the last frame (#1718).
         self.app.set_split_enabled(!has_layers);
-        let (frame, split_change) =
-            self.app
-                .build_gpu_frame_split(scale, size, renderer.ui_invalid_reason(transparent));
+        let mut split_change = self
+            .app
+            .build_gpu_frame_split(scale, size, renderer.ui_invalid_reason(transparent))
+            .1;
+        rinch_dom::paint::set_base_viewports(None);
+        if use_base && rinch_dom::paint::take_base_refused() {
+            // A base split was refused (a group effect, a rotation, an
+            // overlap, the memory cap, a taint): this frame, and the next
+            // while the fallback lasts, composites the games as layers under
+            // the UI, cleared in the scene (#1866, R1). The frame is painted
+            // again in full, with nothing split.
+            self.base_fallback_frames = BASE_FALLBACK_FRAMES;
+            #[cfg(debug_assertions)]
+            tracing::debug!(
+                "rinch: a GameViewport could not be split as the base layer; its game is \
+                 composited as a layer for {BASE_FALLBACK_FRAMES} frames (#1866)"
+            );
+            if let Some((all_layers, gpu_layers)) = fallback_layers.take() {
+                renderer.set_composite_layers(all_layers);
+                renderer.set_gpu_layers(gpu_layers);
+            }
+            renderer.split.set_base_views(Default::default());
+            split_uploads.clear();
+            self.app.set_split_enabled(false);
+            split_change = self
+                .app
+                .build_gpu_frame_split(scale, size, renderer.ui_invalid_reason(transparent))
+                .1;
+            let _ = rinch_dom::paint::take_base_refused();
+        }
+        let frame = self.app.last_gpu_frame();
+        let has_layers = renderer.has_composite_layers();
 
         RinchApp::clear_viewport_frames();
         rinch_dom::paint::set_surface_pixels(None);

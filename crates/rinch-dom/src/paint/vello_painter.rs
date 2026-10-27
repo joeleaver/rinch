@@ -319,6 +319,17 @@ macro_rules! dispatch_push_layer {
     };
 }
 
+/// Fill `shape` with `brush` into `scene`.
+pub(crate) fn fill_into(
+    scene: &mut Scene,
+    fill: Fill,
+    transform: Affine,
+    brush: &Brush,
+    shape: &PaintShape,
+) {
+    dispatch_fill!(scene, fill, transform, brush, shape);
+}
+
 /// Push `shape` as a clip into `scene`.
 pub(crate) fn push_clip_into(scene: &mut Scene, fill: Fill, transform: Affine, shape: &PaintShape) {
     dispatch_clip!(scene, fill, transform, shape);

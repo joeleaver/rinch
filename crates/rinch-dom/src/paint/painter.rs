@@ -233,6 +233,24 @@ pub struct SurfaceSplit {
     /// shadows and outline, transformed): where the paint cull reaches it,
     /// so where damage makes the frame paint it, and split it, again.
     pub ink: Rect,
+    /// Set for a `GameViewport`, the **base** layer (#1866): inside `clear`
+    /// the game replaces what was painted before it, instead of going over
+    /// it (`docs/design/split-layer-gpu-surfaces.md`, *How `GameViewport`
+    /// fits on the split path*). `None` for a surface or a video.
+    pub base: Option<BaseSplit>,
+}
+
+/// What makes a [`SurfaceSplit`] a base layer (#1866).
+#[derive(Clone, Debug)]
+pub struct BaseSplit {
+    /// The viewport's box under its own `border-radius`, in the element's
+    /// space (drawn with `node_transform`): where nothing painted beneath it
+    /// shows. The image (`image_transform`, `extents`) may cover less of it,
+    /// letterboxed.
+    pub clear: PaintShape,
+    /// Opaque black under the frame inside `clear`, so a letterbox is black
+    /// (#354): a CPU frame's. A GPU texture is stretched over the box.
+    pub black_backdrop: bool,
 }
 
 /// What a painter did with a [`SurfaceSplit`].

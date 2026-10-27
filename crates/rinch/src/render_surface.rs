@@ -1538,6 +1538,18 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
     })
 }
 
+/// The id of the surface registered under the `data-viewport` name `name`
+/// (a `GameViewport`'s, which the split path keys its base slice by, #1866).
+#[cfg(feature = "desktop")]
+pub fn surface_id_for_viewport(name: &str) -> Option<usize> {
+    SURFACE_REGISTRY.with(|reg| {
+        reg.borrow()
+            .iter()
+            .find(|s| s.viewport_name == name)
+            .map(|s| s.id)
+    })
+}
+
 /// Collect surface pixel data keyed by surface ID for inline painting.
 ///
 /// Returns a HashMap suitable for passing to `rinch_dom::paint::set_surface_pixels()`.

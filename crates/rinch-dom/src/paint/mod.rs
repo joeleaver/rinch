@@ -1233,6 +1233,15 @@ thread_local! {
     /// (#1865, video on the GPU window), by `data-viewport` name: the id the
     /// split slice is keyed by.
     static VIEWPORT_SPLIT_IDS: RefCell<Option<HashMap<String, usize>>> = const { RefCell::new(None) };
+    /// The `GameViewport`s this paint may split out of the scene as base
+    /// layers (#1866, the GPU window), by `data-viewport` name.
+    static BASE_VIEWPORTS: RefCell<Option<HashMap<String, BaseViewport>>> = const { RefCell::new(None) };
+    /// A base viewport in [`BASE_VIEWPORTS`] was cleared in the scene this
+    /// paint instead (its split refused): see [`take_base_refused`].
+    static BASE_REFUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Every punching viewport is a base layer with no game of its own: the
+    /// embed overlay, whose host draws the game (#1866).
+    static BASES_WITHOUT_GAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 
     /// GPU frames for inline painting, keyed by surface ID (#1768): a texture
     /// registered with the renderer that will render this scene, drawn as an
@@ -1590,6 +1599,7 @@ fn paint_surface_frame(
             extents: (image.width, image.height),
             straight_alpha: false,
             ink,
+            base: None,
         }) == painter::SplitVerdict::Split
     {
         return;
@@ -1635,6 +1645,48 @@ pub fn set_viewport_split_ids(ids: Option<HashMap<String, usize>>) {
     VIEWPORT_SPLIT_IDS.with(|v| *v.borrow_mut() = ids);
 }
 
+/// A `GameViewport`'s frame as the GPU window composites it under the UI
+/// (#1866): offered to the painter as a base layer
+/// ([`painter::BaseSplit`]) where paint reaches the viewport.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BaseViewport {
+    /// The id the split slice is keyed by.
+    pub surface_id: usize,
+    /// The frame's size in texels.
+    pub extents: (u32, u32),
+    /// A CPU frame: fitted `contain` in the box over black (#354). A GPU
+    /// texture is stretched over the box (`fill`), as the layer was.
+    pub letterbox: bool,
+}
+
+/// Hand this paint the `GameViewport`s it may split as base layers (#1866),
+/// by `data-viewport` name. A viewport that is in the map and whose split is
+/// refused is cleared in the scene instead, and [`take_base_refused`] says
+/// so. `None` clears.
+pub fn set_base_viewports(viewports: Option<HashMap<String, BaseViewport>>) {
+    BASE_VIEWPORTS.with(|v| *v.borrow_mut() = viewports);
+}
+
+/// Offer every punching `data-viewport` to the painter as a base layer with
+/// no game of its own (#1866): the embed overlay, whose texture the host
+/// composites over its game, is then transparent exactly inside each
+/// viewport's box, cut by the split compositor rather than erased in the
+/// scene. Its slices are keyed by `BASE_WITHOUT_GAME_IDS` plus the node id.
+pub fn set_bases_without_game(on: bool) {
+    BASES_WITHOUT_GAME.with(|b| b.set(on));
+}
+
+/// The ids [`set_bases_without_game`]'s slices are keyed by start here: the
+/// viewport's node id is added. Far from any surface id.
+pub const BASE_WITHOUT_GAME_IDS: usize = 1 << 40;
+
+/// Whether a base viewport's split was refused since the last call (and
+/// its box cleared in the scene instead): the GPU window then composites
+/// that frame with the game layers under the UI (#1866).
+pub fn take_base_refused() -> bool {
+    BASE_REFUSED.with(|r| r.replace(false))
+}
+
 /// Watch `nodes` (or stop, with `on` false) on the next paints: each time
 /// paint starts one, it tells the painter (`Painter::note_node_start`), which
 /// places it against the surfaces split so far (#1865 S4,
@@ -1653,6 +1705,7 @@ pub fn set_paint_order_watch(tree: &NodeTree, nodes: &[RawNodeId], on: bool) {
 pub fn has_surface_gpu_images() -> bool {
     SURFACE_GPU_IMAGES.with(|g| g.borrow().as_ref().is_some_and(|m| !m.is_empty()))
         || VIEWPORT_SPLIT_IDS.with(|v| v.borrow().as_ref().is_some_and(|m| !m.is_empty()))
+        || BASE_VIEWPORTS.with(|v| v.borrow().as_ref().is_some_and(|m| !m.is_empty()))
 }
 
 /// Hand this paint the `RenderSurface` GPU frames to draw in the scene, keyed
@@ -2473,6 +2526,68 @@ fn clear_viewport_box(
         node_transform,
         &border_radii(node, scale).shape(rect),
     );
+}
+
+/// Offer the `GameViewport` `node` (border box `rect`) to the painter as a
+/// base layer (#1866) when [`BASE_VIEWPORTS`] names it: true when the painter
+/// took it out of the scene. A refusal is recorded for [`take_base_refused`].
+#[allow(clippy::too_many_arguments)]
+fn offer_base_split(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    node: &Node,
+    painter: &mut dyn Painter,
+    scale: f64,
+    rect: Rect,
+    radii: BorderRadii,
+    node_transform: Affine,
+) -> bool {
+    let named = node.attributes.get("data-viewport").and_then(|name| {
+        BASE_VIEWPORTS.with(|v| v.borrow().as_ref()?.get(name).copied())
+    });
+    let Some(base) = named.or_else(|| {
+        BASES_WITHOUT_GAME.with(|b| b.get()).then_some(BaseViewport {
+            surface_id: BASE_WITHOUT_GAME_IDS + node_id,
+            // No texture: the compositor draws no image, only the clear.
+            extents: (1, 1),
+            letterbox: false,
+        })
+    }) else {
+        return false;
+    };
+    let (fw, fh) = base.extents;
+    let fit = if base.letterbox {
+        crate::computed_style::ObjectFitValue::Contain
+    } else {
+        crate::computed_style::ObjectFitValue::Fill
+    };
+    let clear = radii.shape(rect);
+    let fitted = (fw > 0 && fh > 0)
+        .then(|| image::fit_image(fw as f64, fh as f64, rect, fit, node_transform))
+        .flatten();
+    let taken = fitted.is_some_and(|(image_transform, clip_to_content)| {
+        let (x, y, w, h) = (rect.x0, rect.y0, rect.width(), rect.height());
+        painter.split_surface(&painter::SurfaceSplit {
+            surface_id: base.surface_id,
+            content: rect,
+            node_transform,
+            inner: (!radii.is_square()).then(|| clear.clone()),
+            clip_to_content,
+            image_transform,
+            extents: base.extents,
+            // Composited as the layer path did: texels as they are.
+            straight_alpha: false,
+            ink: node_transform.transform_rect_bbox(ink_rect(tree, node, x, y, w, h, scale)),
+            base: Some(painter::BaseSplit {
+                clear,
+                black_backdrop: base.letterbox,
+            }),
+        }) == painter::SplitVerdict::Split
+    });
+    if !taken {
+        BASE_REFUSED.with(|r| r.set(true));
+    }
+    taken
 }
 
 /// Draw the inline frame [`set_viewport_pixels`] holds for the `data-viewport`
@@ -4342,6 +4457,7 @@ fn paint_node_unmasked(
                             straight_alpha: true,
                             ink: node_transform
                                 .transform_rect_bbox(ink_rect(tree, node, x, y, w, h, scale)),
+                            base: None,
                         }),
                     )
                 });
@@ -4579,7 +4695,16 @@ fn paint_node_unmasked(
                 // The base-layer clear (#1866): over everything painted so far
                 // in this box, the viewport's own background and inset shadow
                 // included, which are beneath the game too.
-                if clears_for_viewport {
+                // On the GPU window the viewport is offered to the split path
+                // first, as a base layer (#1866): taken, the compositor puts
+                // the game under the UI and replaces what is beneath it
+                // inside the box, and nothing is cleared here (an erase in
+                // the scene does not reach what Vello saved under an open
+                // clip). Refused, the box is cleared in the scene and the
+                // runtime composites this frame's game as a layer.
+                let base_split = clears_for_viewport
+                    && offer_base_split(tree, node_id, node, painter, scale, rect, radii, node_transform);
+                if clears_for_viewport && !base_split {
                     clear_viewport_box(
                         tree,
                         node_id,

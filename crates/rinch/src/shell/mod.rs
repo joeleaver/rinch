@@ -24,13 +24,14 @@ pub mod rinch_runtime;
 pub mod screenshot;
 #[cfg(feature = "desktop")]
 pub mod softbuffer_renderer;
-// The split-layer compositor (#1865), used by `split_frame`.
+// The split-layer compositor (#1865), used by `split_frame`. Crate-level
+// modules since the embed overlay composites with them too (#1866).
 #[cfg(feature = "gpu")]
-pub(crate) mod split_compositor;
+pub(crate) use crate::split_compositor;
 #[cfg(all(test, feature = "gpu"))]
 mod split_compositor_1865_tests;
 #[cfg(feature = "gpu")]
-pub(crate) mod split_frame;
+pub(crate) use crate::split_frame;
 #[cfg(all(test, feature = "gpu"))]
 mod split_pages_1865_oracle;
 #[cfg(all(test, feature = "gpu"))]

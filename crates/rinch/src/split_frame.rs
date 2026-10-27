@@ -8,9 +8,12 @@
 //! coverage masks) into region-sized textures once, and keeps them: a frame
 //! in which only a surface drew renders nothing with Vello and composites
 //! from what is kept.
+// The embed overlay uses only slices and the composite (#1866).
+#![cfg_attr(not(feature = "gpu"), allow(dead_code))]
+
 use std::collections::HashMap;
 
-use rinch_dom::paint::slicing::{SliceCoverage, SurfaceSlice};
+use rinch_dom::paint::slicing::{BaseSlice, SliceCoverage, SurfaceSlice};
 use vello::peniko::Color;
 use vello::{AaConfig, RenderParams, Renderer, Scene};
 use wgpu::{
@@ -18,7 +21,7 @@ use wgpu::{
     TextureViewDescriptor,
 };
 
-use super::split_compositor::{Coverage, SplitCompositor, SurfaceDraw};
+use crate::split_compositor::{BaseDraw, Coverage, SplitCompositor, SurfaceDraw};
 
 /// What a painted frame changes in the window's split surfaces.
 #[derive(Default)]
@@ -51,6 +54,8 @@ struct Kept {
     ancestors: KeptCoverage,
     above_in: Option<Texture>,
     above_out: Option<Texture>,
+    /// A `GameViewport`'s base layer (#1866): its clear and backdrop.
+    base: Option<(KeptCoverage, bool)>,
 }
 
 impl Kept {
@@ -61,6 +66,7 @@ impl Kept {
             region: self.region,
             textures: mask(&self.own)
                 + mask(&self.ancestors)
+                + self.base.as_ref().map_or(0, |(c, _)| mask(c))
                 + u32::from(self.above_in.is_some())
                 + u32::from(self.above_out.is_some()),
             upload: 0,
@@ -77,6 +83,9 @@ pub struct SplitFrame {
     /// CPU frames uploaded for split viewports (video), by id: their
     /// textures, as a registered GPU frame's texture is for a surface.
     pixels: HashMap<usize, Texture>,
+    /// The `GameViewport` GPU textures composited as base layers this frame
+    /// (#1866), by id: the app's texture views, as the layer path read them.
+    base_views: HashMap<usize, TextureView>,
 }
 
 /// The scratch target slices are rendered into grows in steps of this, as
@@ -118,6 +127,7 @@ impl SliceCost {
             region: s.region,
             textures: mask(&s.own)
                 + mask(&s.ancestors)
+                + s.base.as_ref().map_or(0, |b| mask(&b.clear))
                 + u32::from(s.above_in.is_some())
                 + u32::from(s.above_out.is_some()),
             // A CPU frame is uploaded at its own size (`upload_split_frames`);
@@ -448,7 +458,22 @@ impl SplitFrame {
     pub fn clear(&mut self) {
         self.kept.clear();
         self.pixels.clear();
+        self.base_views.clear();
         self.scratch = None;
+    }
+
+    /// The `GameViewport` GPU textures to composite as base layers this frame
+    /// (#1866), by id.
+    pub fn set_base_views(&mut self, views: HashMap<usize, TextureView>) {
+        self.base_views = views;
+    }
+
+    /// The frame size a kept slice was made for, by id.
+    pub fn kept_extents(&self, id: usize) -> Option<(u32, u32)> {
+        self.kept
+            .iter()
+            .find(|k| k.surface_id == id)
+            .map(|k| k.extents)
     }
 
     /// The kept `RenderSurface`s whose texture is no longer the size the
@@ -511,6 +536,26 @@ impl SplitFrame {
             };
             let above_in = above(s.above_in)?;
             let above_out = above(s.above_out)?;
+            let base = match s.base {
+                Some(BaseSlice {
+                    clear,
+                    black_backdrop,
+                }) => Some((
+                    match clear {
+                        SliceCoverage::Rect(r) => KeptCoverage::Rect(r),
+                        SliceCoverage::Mask(scene) => KeptCoverage::Mask(render_slice(
+                            device,
+                            queue,
+                            renderer,
+                            &mut self.scratch,
+                            &scene,
+                            s.region,
+                        )?),
+                    },
+                    black_backdrop,
+                )),
+                None => None,
+            };
             self.kept.retain(|k| k.surface_id != s.surface_id);
             self.kept.push(Kept {
                 surface_id: s.surface_id,
@@ -522,6 +567,7 @@ impl SplitFrame {
                 ancestors,
                 above_in,
                 above_out,
+                base,
             });
         }
         // The scratch target is kept only at the size the kept slices need
@@ -553,6 +599,25 @@ impl SplitFrame {
         size: (u32, u32),
         textures: &HashMap<usize, Texture>,
     ) {
+        self.composite_with(
+            compositor, device, encoder, below, target, size, textures, false,
+        );
+    }
+
+    /// [`Self::composite`], into a `target` left in straight alpha when
+    /// `straight` (the embed overlay, #1866).
+    #[allow(clippy::too_many_arguments)]
+    pub fn composite_with(
+        &self,
+        compositor: &SplitCompositor,
+        device: &Device,
+        encoder: &mut CommandEncoder,
+        below: &TextureView,
+        target: &TextureView,
+        size: (u32, u32),
+        textures: &HashMap<usize, Texture>,
+        straight: bool,
+    ) {
         // The plain `Rgba8Unorm` view: a `RenderSurface` texture also carries
         // an `Rgba8UnormSrgb` view format, which would decode on load.
         let plain = |t: &Texture| {
@@ -573,11 +638,13 @@ impl SplitFrame {
                     textures
                         .get(&k.surface_id)
                         .or_else(|| self.pixels.get(&k.surface_id))
-                        .map(plain),
+                        .map(plain)
+                        .or_else(|| self.base_views.get(&k.surface_id).cloned()),
                     view(&k.own),
                     view(&k.ancestors),
                     k.above_in.as_ref().map(plain),
                     k.above_out.as_ref().map(plain),
+                    k.base.as_ref().and_then(|(c, _)| view(c)),
                 )
             })
             .collect();
@@ -585,7 +652,7 @@ impl SplitFrame {
             .kept
             .iter()
             .zip(&views)
-            .map(|(k, (texture, own, ancestors, above_in, above_out))| {
+            .map(|(k, (texture, own, ancestors, above_in, above_out, clear))| {
                 // A surface without a texture: nothing of it covers R.
                 let (texture, own) = match texture {
                     Some(t) => (t, coverage(&k.own, own.as_ref())),
@@ -606,10 +673,18 @@ impl SplitFrame {
                     region: k.region,
                     above_in: above_in.as_ref(),
                     above_out: above_out.as_ref(),
+                    base: k.base.as_ref().map(|(c, black)| BaseDraw {
+                        clear: coverage(c, clear.as_ref()),
+                        black_backdrop: *black,
+                    }),
                 }
             })
             .collect();
-        compositor.composite(device, encoder, below, target, size, &draws);
+        if straight {
+            compositor.composite_straight(device, encoder, below, target, size, &draws);
+        } else {
+            compositor.composite(device, encoder, below, target, size, &draws);
+        }
     }
 }
 
@@ -628,6 +703,7 @@ pub type PendingFrame = (usize, rinch_dom::paint::SurfacePixelData, bool);
 /// again (#1906 review: adaptive streaming changes the size mid-stream).
 /// Returns the frames to upload after paint, for the videos the frame keeps
 /// split. Without `enabled`, no viewport splits and the uploads are dropped.
+#[cfg(feature = "desktop")]
 pub fn prepare_split_viewports(
     frames: &mut crate::render_surface::ViewportFrames,
     split: &mut SplitFrame,
@@ -714,6 +790,7 @@ mod tests {
             straight_alpha: true,
             tainted: false,
             ink: peniko::kurbo::Rect::ZERO,
+            base: None,
         }
     }
 

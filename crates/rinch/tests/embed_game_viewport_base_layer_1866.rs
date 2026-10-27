@@ -98,7 +98,7 @@ fn render(ctx: &mut RinchContext) -> Vec<[u8; 4]> {
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
     let mut overlay =
         rinch::embed::RinchOverlayRenderer::new(&device, W, H, wgpu::TextureFormat::Rgba8Unorm);
-    let _view = overlay.render(&device, &queue, ctx.scene());
+    let _view = overlay.render(&device, &queue, ctx);
 
     let row = (W * 4).div_ceil(256) * 256;
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {

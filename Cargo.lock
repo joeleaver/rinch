@@ -5389,6 +5389,7 @@ dependencies = [
  "rinch",
  "rinch-core",
  "rinch-dom",
+ "vello",
  "wgpu",
 ]
 

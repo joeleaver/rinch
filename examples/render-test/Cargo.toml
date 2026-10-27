@@ -15,7 +15,8 @@ rinch-dom = { workspace = true, features = ["software-renderer"] }
 png = "0.17"
 wgpu = { workspace = true, optional = true }
 pollster = { version = "0.4", optional = true }
+vello = { workspace = true, optional = true }
 
 [features]
 default = ["gpu"]
-gpu = ["rinch/gpu", "dep:wgpu", "dep:pollster"]
+gpu = ["rinch/gpu", "dep:wgpu", "dep:pollster", "dep:vello"]

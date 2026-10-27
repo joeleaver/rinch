@@ -502,6 +502,8 @@ struct SplitPaint {
     /// Frames painted again for the cap, for the tests.
     #[cfg(test)]
     cap_repaints: u32,
+    /// The last frame built ([`RinchApp::last_gpu_frame`]).
+    last_kind: Option<GpuFrameKind>,
 }
 
 /// Frames splitting stays off after a slice is tainted (D5a): the frame is
@@ -545,6 +547,7 @@ fn subtract_px(r: (u32, u32, u32, u32), k: (u32, u32, u32, u32)) -> Vec<(u32, u3
 
 /// What [`RinchApp::build_gpu_frame`] painted, before it borrows the scene.
 #[cfg(all(feature = "gpu", software_shell))]
+#[derive(Clone)]
 enum GpuFrameKind {
     Unchanged,
     Full,
@@ -853,6 +856,10 @@ pub struct RinchApp {
     /// pruned encoding (#1718): `build_scene` re-encodes when it does not.
     #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
     pub(crate) scene_is_full: bool,
+    /// Whether `painter` holds a frame painted for the split compositor
+    /// (the embed overlay, #1866) rather than a plain scene.
+    #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+    pub(crate) scene_sliced: bool,
     /// The split-layer path (#1865, `docs/design/split-layer-gpu-surfaces.md`):
     /// whether this window splits GPU surfaces out of the scene this frame
     /// (the runtime decides, [`Self::set_split_enabled`]); the surfaces it
@@ -1196,6 +1203,8 @@ impl RinchApp {
             painter: VelloPainter::new(),
             #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
             scene_is_full: false,
+            #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+            scene_sliced: false,
             #[cfg(all(feature = "gpu", software_shell))]
             split: SplitPaint::default(),
             #[cfg(software_shell)]
@@ -2194,14 +2203,39 @@ impl RinchApp {
     /// underlying `vello::Scene` is returned for the GPU renderer.
     #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
     pub fn build_scene(&mut self, scale: f64, size: (u32, u32)) -> &Scene {
+        self.build_scene_with(scale, size, false);
+        self.painter.scene()
+    }
+
+    /// [`Self::build_scene`], with `sliced` set by the embed overlay
+    /// (`RinchOverlayRenderer::render`, #1866): every `GameViewport` is offered
+    /// to the painter as a base layer with no game of its own, and the frame
+    /// is painted for the split compositor. Returns the frame's slices when
+    /// it painted, `None` when the scene was cached (of the same kind).
+    #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+    pub(crate) fn build_scene_with(
+        &mut self,
+        scale: f64,
+        size: (u32, u32),
+        sliced: bool,
+    ) -> Option<Vec<rinch_dom::paint::slicing::SurfaceSlice>> {
         use rinch_dom::perf::{Counter, FullRepaintReason};
-        if !self.scene_dirty && self.scene_is_full {
+        if !self.scene_dirty && self.scene_is_full && self.scene_sliced == sliced {
             self.perf_add(Counter::PaintCachedFrames, 1);
-            return self.painter.scene();
+            return None;
         }
 
         let paint_start = Instant::now();
         self.painter.reset();
+        if sliced {
+            self.painter.begin_slicing(peniko::kurbo::Rect::new(
+                0.0,
+                0.0,
+                (size.0 as f64 * scale).round(),
+                (size.1 as f64 * scale).round(),
+            ));
+        }
+        rinch_dom::paint::set_bases_without_game(sliced);
         if let Some(doc) = &self.doc {
             let mut d = doc.borrow_mut();
             let d = &mut *d;
@@ -2227,9 +2261,14 @@ impl RinchApp {
                 // Logical anchor/cursor, device-pixel snapshot — see
                 // `ActiveDrag::ghost_translate` (#299).
                 let (tx, ty) = drag.ghost_translate(scale);
-                self.painter
-                    .scene_mut()
-                    .append(drag.snapshot.scene(), Some(Affine::translate((tx, ty))));
+                if sliced {
+                    self.painter
+                        .append_scene(&drag.snapshot, Affine::translate((tx, ty)));
+                } else {
+                    self.painter
+                        .scene_mut()
+                        .append(drag.snapshot.scene(), Some(Affine::translate((tx, ty))));
+                }
             }
         }
 
@@ -2239,6 +2278,9 @@ impl RinchApp {
         }
         // The `title` tooltip (#1646), over everything else.
         Self::paint_title_tooltip(self.title_tooltip.shown.as_ref(), &mut self.painter, scale);
+        rinch_dom::paint::set_bases_without_game(false);
+        let _ = rinch_dom::paint::take_base_refused();
+        let slices = self.painter.take_slices();
 
         // This path has no dirty region: every painted frame re-encodes the
         // whole scene (the desktop window uses `build_gpu_frame`, #1718).
@@ -2256,6 +2298,7 @@ impl RinchApp {
 
         self.scene_dirty = false;
         self.scene_is_full = true;
+        self.scene_sliced = sliced;
         self.repaint_unattributed = false;
         // This frame consumed the dirty lists, so the software pixmap — if a
         // window ever presents with software again after presenting with the
@@ -2265,7 +2308,7 @@ impl RinchApp {
         {
             self.has_previous_frame = false;
         }
-        self.painter.scene()
+        Some(slices)
     }
 
     /// Paint the frame's scene: the document (under `rects`, a partial
@@ -2385,6 +2428,7 @@ impl RinchApp {
     ) -> (GpuFrame<'_>, Option<crate::shell::split_frame::SplitChange>) {
         let kind = self.gpu_frame_kind(scale, size, target);
         let change = self.split.change.take();
+        self.split.last_kind = Some(kind.clone());
         let scene = self.painter.scene();
         let frame = match kind {
             GpuFrameKind::Unchanged => GpuFrame::Unchanged,
@@ -2392,6 +2436,19 @@ impl RinchApp {
             GpuFrameKind::Partial { size, rects } => GpuFrame::Partial { scene, size, rects },
         };
         (frame, change)
+    }
+
+    /// The frame the last [`Self::build_gpu_frame_split`] built, again: the
+    /// runtime builds a frame twice when a `GameViewport` base split is
+    /// refused (#1866), and presents the second.
+    #[cfg(all(feature = "gpu", software_shell))]
+    pub fn last_gpu_frame(&mut self) -> GpuFrame<'_> {
+        let scene = self.painter.scene();
+        match self.split.last_kind.take() {
+            Some(GpuFrameKind::Full) => GpuFrame::Full(scene),
+            Some(GpuFrameKind::Partial { size, rects }) => GpuFrame::Partial { scene, size, rects },
+            Some(GpuFrameKind::Unchanged) | None => GpuFrame::Unchanged,
+        }
     }
 
     /// The work of [`Self::build_gpu_frame`], the frame named, not borrowed.

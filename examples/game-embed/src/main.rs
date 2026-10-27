@@ -925,10 +925,8 @@ impl App {
         let ctx = self.rinch_ctx.as_mut().unwrap();
         let events = std::mem::take(&mut self.pending_events);
         let _actions = ctx.update(&events);
-        let scene = ctx.scene();
-
         let overlay = self.overlay.as_mut().unwrap();
-        let overlay_view = overlay.render(device, queue, scene);
+        let overlay_view = overlay.render(device, queue, ctx);
 
         // ── Pass 2: Blit (composite UI over cube) ───────────────────────────
 
