@@ -499,7 +499,7 @@ fn main() {
         }
 
         game.render(&device, &queue);
-        let ui_texture = overlay.render(&device, &queue, ctx.scene());
+        let ui_texture = overlay.render(&device, &queue, &mut ctx);
         composite(&device, &queue, &surface, game_texture, ui_texture);
     }
 }
@@ -754,9 +754,10 @@ if let Some(rect) = ctx.viewport_rect("main") {
 #### The viewport is the base layer
 
 **Nothing behind a `GameViewport` is ever visible.** Its box shows the game's
-pixels: when rinch paints the viewport it clears its box to transparent in the
-UI, erasing everything painted beneath it so far — ancestor backgrounds
-(whether or not they clip), earlier siblings, the window's base colour. What
+pixels: everything painted beneath the viewport — ancestor backgrounds
+(whether or not they clip), earlier siblings, the window's base colour — is
+replaced there by the game (or, in an embedded context, left transparent for
+yours). What
 is painted *after* it draws over the game as usual: its own border, its
 children, later siblings, an element with a higher `z-index`, popups, your
 HUD. So a full-window panel with a background around the viewport needs no
@@ -765,13 +766,24 @@ special treatment.
 The clear is the viewport's own shape — a `border-radius` on it rounds the
 game's corners, the UI covering them — and it is clipped by the viewport's
 clipping ancestors and moved by its transform, like any paint of the element.
-It holds on the desktop GPU window (the game is a layer under the UI) and in
-an embedded context (your host composites the game under rinch's
-`RinchOverlayRenderer` texture), and on the software window, which draws the
-frame in the scene right after the clear. A clipping ancestor with a
-background — an `overflow: hidden` panel, square or rounded, or a scroller
-the viewport is partly scrolled out of — is cleared under the viewport's
-visible part, edges included, on all three.
+It holds on the desktop GPU window, which composites the game under the UI and
+replaces what is beneath the viewport there; in an embedded context, where
+`RinchOverlayRenderer::render(&device, &queue, &mut ctx)` leaves the texture
+transparent inside the viewport for your host to composite the game under;
+and on the software window, which clears the box and draws the frame in the
+scene. A clipping ancestor with a background — an `overflow: hidden` panel,
+square or rounded, or a scroller the viewport is partly scrolled out of — is
+replaced under the viewport's visible part, edges included, on all three.
+
+> **Rendering `ctx.scene()` yourself.** A host that renders the scene with
+> its own Vello renderer, instead of `RinchOverlayRenderer`, gets the
+> viewport cleared *in the scene*, which is approximate inside a clip: along a
+> clipping ancestor's edges near the viewport (within one 16px tile), Vello
+> keeps what the clip saved, so a band of that ancestor's background can show
+> over the game. `RinchOverlayRenderer::render` cuts the viewport out after
+> Vello and has no band. The desktop GPU window falls back to the same
+> in-scene clear for a frame in which the viewport sits in a group effect or
+> under a rotation (below), which the debug warnings name.
 
 **The game fills the viewport's border box.** The viewport is a base layer,
 not a framed element: the game's layer (or, on the software window, its
@@ -785,15 +797,17 @@ Two things break the rule, and a **debug build warns once per viewport**,
 naming it and the element responsible:
 
 - **A group effect** on the viewport or an ancestor — `opacity` below 1,
-  `mask-image`, or `filter`. The clear happens inside the group, and the group
-  is then composited over what is beneath it, so that shows through over the
-  game. Put the effect on the viewport's siblings instead, or move the
+  `mask-image`, or `filter`. The viewport is cleared inside the group, and the
+  group is then composited over what is beneath it, so that shows through over
+  the game. Put the effect on the viewport's siblings instead, or move the
   viewport out of the element.
 - **A transform other than a translation** (a rotation, scale or skew) on the
   viewport or an ancestor: the clear turns with the element, but the game's
   layer is composited axis-aligned at the viewport's box. Keep the viewport's
   transforms to translations. (The software window draws the frame under the
-  same transform, so there only the group warning applies.)
+  same transform, so there only the group warning applies; the desktop GPU
+  window composites a translated or scaled viewport exactly, and warns only
+  for a rotation or skew.)
 
 > **A hole with nothing behind it: `data-viewport-ready`.** The clear removes
 > everything beneath the viewport, the window's base included, so on a
@@ -1064,7 +1078,7 @@ PlatformEvent::Resized { width: 1920, height: 1080 }
 | Method | Description |
 |--------|-------------|
 | `new(device, w, h, format)` | Create from game's wgpu device |
-| `render(device, queue, scene) -> TextureView` | Render scene to texture |
+| `render(device, queue, &mut ctx) -> TextureView` | Render the context's UI to a texture, transparent inside each `GameViewport` (straight alpha). Call it in place of `ctx.scene()`. Before #1866 it took `ctx.scene()` |
 | `resize(device, w, h)` | Resize render target |
 | `texture()` | Get the underlying wgpu Texture |
 

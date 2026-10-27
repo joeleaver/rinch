@@ -295,8 +295,11 @@ after the erase, and a rotate/scale/skew transform, whose erase is not the axis-
 layer is blitted at. The software window draws the frame in the scene right after the erase,
 under the same transform, so only the group warning applies there. The game fills the viewport's **border box** (its border and children paint over it, its
 padding shows it; `viewport_rect` reports that box), where a `RenderSurface` frame sits in its
-content box. On Vello the erase has to close and reopen the clips around it, which a clip
-renders as a layer in its edge tiles. Mechanism and pins:
+content box. On the GPU window and the embed overlay the viewport is not erased in the scene: it
+is split out as a **base** slice and the split compositor replaces what is beneath it inside its
+box (#1865's compositor with one term changed); a refused split falls back to the layered path
+with an in-scene erase, which is approximate inside clips. `RinchContext::scene()` erases in the
+scene too. Mechanism and pins:
 `paint-and-damage.md`, "Viewport holes". `RenderSurface` frames are drawn in the scene and erase
 nothing.
 
@@ -331,7 +334,7 @@ build with `"gpu"`.
 |------|---------|
 | `RinchContext` | Main handle — `new()`, `update()`, `scene()`. Multiple contexts can coexist on one thread (#134): each holds its own `subscribe_signal_change` guard, and bounds signals / editor registrations / focus requests are scoped per document via `DomDocument::doc_key()`. Stores/contexts are namespaced per context with a thread-global fallback (#136): `create_store` inside a context lands in that context's namespace (cleared on drop), its effects/handlers resolve it first, and lookups fall back to stores created outside any context. |
 | `RinchContextConfig` | Width, height, scale factor, optional theme |
-| `RinchOverlayRenderer` | Convenience Vello-to-texture renderer |
+| `RinchOverlayRenderer` | Renders a context's UI to a texture: `render(device, queue, &mut ctx)` (since #1866; it took `ctx.scene()` before). Its `GameViewport`s are cut out by the split compositor, exactly; a host rendering `ctx.scene()` with its own Vello gets an in-scene erase, approximate inside clips |
 | `GameViewport` | Component marking a transparent hole for game rendering. **Hittable by default** (#207): `wants_mouse` routes input by hit-testing the hole and walking up to `data-viewport`, so an unhittable hole makes the UI claim the mouse *everywhere*. `pointer-events: auto; background: transparent;` come from the UA stylesheet rule for `[data-viewport]` — not an inline style — so restyling the hole can't strip them, and a HUD root's inherited `pointer-events: none` can't reach it. Your own HUD controls under such a root still need `pointer-events: auto`. It also stamps **no** `data-viewport-ready`, and absence means ready, so its hole is unconditional (#186) — see the **Viewport holes** note under Rendering Backends. |
 | `LayoutRect` | `{x, y, width, height}` in logical pixels |
 
@@ -343,7 +346,7 @@ let mut overlay = RinchOverlayRenderer::new(&device, w, h, format);
 loop {
     let actions = ctx.update(&events);
     game.render();
-    let ui = overlay.render(&device, &queue, ctx.scene());
+    let ui = overlay.render(&device, &queue, &mut ctx);
     composite(game_texture, ui);
 }
 ```

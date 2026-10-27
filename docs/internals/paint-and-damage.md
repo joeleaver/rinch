@@ -210,26 +210,54 @@ whole of #416, with no opt-in. Only the polarity follows the palette, so a
 `background-color` because backgrounds are transparent by default.
 
 **Viewport holes: a `GameViewport` is the base layer (#1866).** Nothing painted beneath a
-punching `data-viewport` node in paint order shows inside its box: when paint reaches the
-node it **erases** its border box, rounded by its own `border-radius`, to transparent
-(`clear_viewport_box` → `Painter::erase`, in `crates/rinch-dom/src/paint/mod.rs`) — over its
-own background and inset shadow, under its border and children. Ancestor backgrounds,
-earlier siblings and the window base go; later siblings, a higher `z-index`, popups draw over
-it as usual. The erase is drawn at the node, so it goes through the node's own clip chain and
-transform, and it lies inside the node's painted box (the damage #349 names). `Painter::erase`
-is an opaque fill composited `destination-out`. **Vello** (`VelloPainter::erase`) renders a
-clip, in every 16px tile its outline crosses, as a layer — backdrop saved, content drawn from
-transparent, composited back (`fine.wgsl` `CMD_BEGIN_CLIP`/`END_CLIP`) — so an erase made inside
-the clip erased only the clip's own content and the clipping box's background came back in a
-band along its edges (review of #1883, D1: 12,960 of 93,600 px in a flush `overflow: hidden`
-panel). The painter keeps the stack of what it has open (`VelloPainter::open`), closes the clips
-above the innermost blend or opacity layer, erases with a `BlendMode::DestinationOut` layer whose
-content is the shape under those same clips (pushed again inside the eraser, whose own backdrop
-is transparent), and reopens them; reopening splits a clip's content into two composites, which
-differs only in pixels the clip partly covers. A group is not closed (its effect would change),
-so the erase stops there, as the warning says. Pins: the `#[ignore]`d
-`gpu_game_viewport_base_layer_under_clipping_ancestors_on_the_{desktop_window,embed_overlay}`
-(square, rounded, part-scrolled scroller). The **software** painter blends the fill in place;
+punching `data-viewport` node in paint order shows inside its box (its border box, rounded by
+its own `border-radius`); what paints after it (its border and children, later siblings, a
+higher `z-index`, popups) draws over it as usual. Where paint reaches the node (in the element
+arm of `crates/rinch-dom/src/paint/mod.rs`, after its own background and inset shadow, before
+its border), one of two things happens:
+
+- **The GPU window and the embed overlay split it** (`offer_base_split`): the node is offered to
+  the painter as a **base** surface (`SurfaceSplit::base`, `BaseSplit`), which #1865's slicing
+  takes out of the scene like a `RenderSurface` (region, `own` = the fitted image, `ancestors` =
+  the clips open around it, `above_in`/`above_out`) plus a `clear` coverage, the box under its
+  radius (`BaseSlice`). **Nothing is erased in the scene**: below keeps the viewport's own
+  background and everything beneath it, and the split compositor replaces it inside the clear
+  (`fs_surface`'s base term: `below · (1 − clear)`, black under a letterboxed CPU frame, #354, then
+  the game `· own` over that, then `above_in`, the ancestors' `mix`, `above_out`; *How
+  `GameViewport` fits on the split path* in `docs/design/split-layer-gpu-surfaces.md`). The
+  runtime hands paint the viewports it may split (`set_base_viewports`, name → id, frame size,
+  letterbox) and the GPU textures (`SplitFrame::set_base_views`) or uploaded CPU frames
+  (`upload_split_frames`) the compositor samples; the UI is then rendered over the window's own
+  base, not transparent. A new game frame is a recomposite from the kept slices, no repaint; a
+  frame of another size marks the node damaged. The embed overlay
+  (`RinchOverlayRenderer::render(device, queue, &mut ctx)`) paints with
+  `set_bases_without_game`: every punching viewport is a base with no texture, keyed
+  `BASE_WITHOUT_GAME_IDS + node id`, and `composite_straight` writes the overlay texture in
+  straight alpha.
+- **Otherwise it is erased in the scene** (`clear_viewport_box` → `Painter::erase`, an opaque fill
+  composited `destination-out`): the software painter always, `RinchContext::scene()` (a host
+  rendering the scene with its own Vello), and a GPU frame whose base split was **refused** (a
+  group effect around it, a rotation or skew, an overlap with an earlier split, the memory cap,
+  a taint). A refusal is reported (`take_base_refused`) and the runtime paints that frame again
+  with nothing split and the games composited as layers under the UI (`LayerCompositor`, the
+  pre-#1865 path), for `BASE_FALLBACK_FRAMES` (120) frames before it tries the split again (R1,
+  Joe 2026-10-27). On Vello the erase is a plain `BlendMode::DestinationOut` layer, and it is
+  **approximate inside a clip**: Vello renders a clip, in every 16px tile its outline crosses, as
+  a layer (backdrop saved, content drawn from transparent, composited back, `fine.wgsl`
+  `CMD_BEGIN_CLIP`/`END_CLIP`), so the erase clears only the clip's own content there and the
+  clipping box's background stays in a band along the clip's edges near the viewport (12,960 px
+  for a flush `overflow: hidden` panel; pinned on `scene()` by
+  `gpu_game_viewport_base_layer_under_clipping_ancestors_on_the_embed_overlay`'s control).
+  Closing the clips, erasing and reopening them (461d5e9e) removed that band but composited each
+  clip's content in two halves, a halo of up to 64/255 along every closed clip's whole ring and a
+  partial frame that differed from a full one (it culls the viewport, so it closes nothing); the
+  split replaced it. Pins: `gpu_game_viewport_base_layer_{no_halo_along_closed_clip_edges,
+  partial_frame_equals_full}` (both paths), `…_replaces_what_is_beneath`,
+  `…_under_clipping_ancestors_on_the_{desktop_window,embed_overlay}`
+  (square, rounded, part-scrolled scroller), and `game_viewport_base_split_1866_tests` (rinch-dom,
+  the painter's split and refusal, no GPU).
+
+The **software** painter blends the erase in place;
 a square box under no rotation, skew or clip mask where it lands is written `Source`
 transparent instead (the same pixels; 0.16 ms against 3.6–5.3 ms for a 1080p game frame),
 counted as `rect_erases`. On the **software window** a `GameViewport` with a frame no longer

@@ -52,7 +52,7 @@
 //!
 //! // In your game loop:
 //! let actions = ctx.update(&platform_events);
-//! let scene = ctx.scene();
+//! let ui = overlay.render(&device, &queue, &mut ctx);
 //! ```
 
 use std::sync::Arc;
@@ -352,8 +352,16 @@ impl RinchContext {
 
     /// Get the current Vello scene. Rebuilds only if dirty.
     ///
-    /// The returned scene contains the full rinch UI and can be rendered
-    /// to a texture via [`RinchOverlayRenderer`] or your own Vello setup.
+    /// The returned scene contains the full rinch UI, for a host that
+    /// renders it with its own Vello setup. [`RinchOverlayRenderer::render`]
+    /// takes the context instead, and does not use this.
+    ///
+    /// Each [`GameViewport`]'s box is cleared **in the scene** (#1866), which
+    /// is approximate inside a clip: along a clipping ancestor's edges near the
+    /// viewport (in each 16px tile the clip's outline crosses), Vello keeps
+    /// what the clip saved, so a band of that ancestor's background can show
+    /// over the game. `RinchOverlayRenderer::render` cuts the viewports out
+    /// after Vello instead, exactly.
     ///
     /// This context's mounted `RenderSurface`s are driven here, as the desktop
     /// paint drives them: each is told its layout size, its render callback
@@ -873,7 +881,7 @@ impl RinchContext {
 /// let mut overlay = RinchOverlayRenderer::new(&device, 1280, 720, TextureFormat::Rgba8Unorm);
 ///
 /// // Each frame:
-/// let view = overlay.render(&device, &queue, ctx.scene());
+/// let view = overlay.render(&device, &queue, &mut ctx);
 /// // composite `view` on top of your game scene
 /// ```
 pub struct RinchOverlayRenderer {
@@ -1089,11 +1097,13 @@ impl RinchOverlayRenderer {
 /// scene to show through. Use [`RinchContext::viewport_rect`] to query
 /// the computed layout rect and render your game into that region.
 ///
-/// The viewport is the **base layer** (#1866): paint clears its box (its own
-/// `border-radius`, clipped and transformed as the element is) to transparent
-/// when it reaches it, so nothing painted beneath it — ancestor backgrounds,
-/// earlier siblings — covers the game, and anything painted after it — its
-/// children, later siblings, popups — draws over it. A debug build warns once
+/// The viewport is the **base layer** (#1866): its box (its own
+/// `border-radius`, clipped and transformed as the element is) is
+/// transparent in [`RinchOverlayRenderer::render`]'s texture, so nothing
+/// painted beneath it — ancestor backgrounds, earlier siblings — covers the
+/// game, and anything painted after it — its children, later siblings,
+/// popups — draws over it. ([`RinchContext::scene`] clears it in the scene,
+/// approximate inside clips.) A debug build warns once
 /// where that cannot hold: the viewport inside an `opacity < 1`, `mask-image`
 /// or `filter` group, or under a rotation, scale or skew.
 ///
