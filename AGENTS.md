@@ -335,9 +335,16 @@ transitive `ashpd` that fails to build.)
 **System deps (Linux):** GTK3, GLib, ATK, Cairo, Pango, gdk-pixbuf, libxdo, libmpv
 development packages.
 
-**wgpu:** plain crates.io wgpu 30 (with Vello 0.11). The old `joeleaver/wgpu-fork`
-patch was removed in #1955, so downstream consumers no longer copy any wgpu
-`[patch.crates-io]` entries (the winit patch is separate and still applies).
+**wgpu and Vello: no `[patch]` lines.** rinch depends on crates.io wgpu 30
+and on Vello 0.11 from `joeleaver/vello-fork` at a pinned rev, as ordinary
+dependencies, so an app copies no patch for either; delete any old wgpu-fork
+lines (`wgpu`, `wgpu-core`, `wgpu-hal`, `wgpu-types`, `naga`) from your
+`[patch.crates-io]`. Use `rinch::wgpu` and `rinch::vello` rather than a
+`wgpu`/`vello` dependency of your own, so the versions never drift; add
+`wgpu = "30"` yourself only to turn on an extra feature (e.g. `webgpu`), and
+Cargo unifies it with rinch's. (The winit `[patch.crates-io]` lines in rinch's
+workspace `Cargo.toml` are a separate matter and still apply: rinch uses its
+winit fork's Wayland APIs.)
 
 ## Common Pitfalls
 

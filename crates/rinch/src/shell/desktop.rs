@@ -1358,7 +1358,7 @@ impl SurfaceImages {
         }
         // A dropped registration's atlas space is taken by the next render
         // that needs it: the patched `vello_encoding` evicts any image the
-        // current render does not draw (#1955, `Cargo.toml`'s Vello fork).
+        // current render does not draw (#1955, the Vello fork in `Cargo.toml`).
         for (_, (_, image)) in std::mem::replace(&mut self.by_surface, now) {
             renderer.unregister_texture(image);
         }

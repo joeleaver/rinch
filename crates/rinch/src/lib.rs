@@ -405,9 +405,20 @@ pub use window::{
 /// [`run_with_external_device`], [`gpu_handle`], and
 /// [`render_surface::GpuTextureRegistrar`]) must construct `wgpu` types from
 /// **this** `wgpu` (wgpu 30) so the types match rinch's. Use
-/// `rinch::wgpu::…` rather than a separate `wgpu` dependency.
+/// `rinch::wgpu::…` rather than a separate `wgpu` dependency; an app that
+/// needs an extra wgpu feature (e.g. `webgpu`) keeps `wgpu = "30"` with just
+/// that feature, and Cargo unifies it with rinch's.
 #[cfg(any(feature = "gpu", feature = "embed"))]
 pub use wgpu;
+
+/// Re-export of the exact `vello` rinch links against (#1955): Vello 0.11
+/// from `joeleaver/vello-fork` at a pinned commit, whose `vello_encoding`
+/// fixes two image-atlas bugs of stock Vello 0.11. Embedders that render
+/// rinch's scene (`embed::RinchContext::scene`) or build Vello types for it
+/// use `rinch::vello::…` (and `rinch::vello::peniko`, `rinch::vello::kurbo`),
+/// so they share rinch's copy and never link a second, unpatched Vello.
+#[cfg(any(feature = "gpu", feature = "embed", feature = "android-gpu"))]
+pub use vello;
 
 pub use rinch_core as core;
 /// Reactive primitives (Signal, Effect, Memo, Scope).

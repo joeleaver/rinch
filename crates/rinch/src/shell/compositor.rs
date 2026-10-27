@@ -1113,7 +1113,7 @@ mod gpu_alpha_tests {
     /// #1955: stock Vello 0.11 replaced its image atlas on a render whose
     /// scene had no image, gradient or glyph run (a solid-colour partial
     /// frame), and every image still resident then drew transparent on every
-    /// later render. The patched `vello_encoding` keeps the atlas.
+    /// later render. The forked `vello_encoding` rinch depends on keeps the atlas.
     #[test]
     #[ignore = "needs a GPU adapter"]
     fn gpu_alpha_vello_image_survives_a_solid_only_render() {
@@ -1166,7 +1166,7 @@ mod gpu_alpha_tests {
     /// Stock Vello 0.11 keeps an image resident for two renders after its
     /// last use and the 8192x8192 atlas cannot hold three repaints of these,
     /// so two of the six went undrawn every third repaint. The patched
-    /// `vello_encoding` (`Cargo.toml`) gives an image the current render does
+    /// `vello_encoding` (the Vello fork rinch depends on) gives an image the current render does
     /// not draw up to one that does not fit, and all six draw every time.
     #[test]
     #[ignore = "needs a GPU adapter"]

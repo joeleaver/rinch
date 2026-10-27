@@ -18,7 +18,7 @@ Load-bearing dependency facts (detail and history in `docs/internals/dependencie
 - **Taffy 0.14** is pinned in one place, `crates/rinch-dom/Cargo.toml`; its `[dependencies]` and `[dev-dependencies]` lines must agree, features included (the five default features stay off).
 - **parley 0.11.1** with `features = ["complex-scripts"]`, which must stay on (without it Thai/Lao/Khmer/Burmese text has no line breaks). `parley::Glyph::y` is Y-down.
 - **skrifa 0.44**, the version parley uses; move it with any parley bump.
-- **wgpu 30**, **Vello 0.11** (#1955): wgpu is unpatched; `vello_encoding` is patched from `joeleaver/vello-fork` (image-atlas fixes; apps copy the `[patch]` line). See `docs/internals/app-and-windows.md` "Vello Fork". Apps sharing rinch's `Device` use wgpu 30 via `rinch::wgpu`.
+- **wgpu 30** (crates.io) and **Vello 0.11 from `joeleaver/vello-fork` at a pinned rev** (#1955, image-atlas fixes; a dependency, not a patch). Apps use `rinch::wgpu` and `rinch::vello`. See `docs/internals/app-and-windows.md` "Vello Fork".
 
 ## Where the detail lives
 

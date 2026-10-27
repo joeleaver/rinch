@@ -558,16 +558,24 @@ Windows host after each upgrade.
 
 **Apps that share rinch's `Device`** (`App::gpu_config`, `App::external_gpu`,
 `gpu_handle`, `GpuTextureRegistrar`, the embed API) must build their wgpu
-types from `rinch::wgpu`, which is now wgpu 30. The migration from wgpu 27:
+types from `rinch::wgpu`, which is now wgpu 30, and Vello types from
+`rinch::vello`. The migration from wgpu 27:
 `docs/src/guide/game-engine.md#migrating-from-wgpu-27-to-30`.
 
 ### Vello Fork
 
-**Carried since #1955** (Vello 0.11). `[patch.crates-io]` in `Cargo.toml`
-patches `vello_encoding` from https://github.com/joeleaver/vello-fork, branch
-`rinch-patch`: one commit (`c6b2e61`) on the vello `v0.11.0` tag, touching only
-`research/vello_encoding/src/{image_cache,resolve}.rs`. `vello` and
-`vello_shaders` stay crates.io.
+**Carried since #1955** (Vello 0.11). The workspace depends on `vello` from
+https://github.com/joeleaver/vello-fork, pinned by rev
+(`c6b2e61558962d0074a98f46d55a435c06901865`, branch `rinch-patch`): one commit
+on the vello `v0.11.0` tag, touching only
+`research/vello_encoding/src/{image_cache,resolve}.rs`. The fork's `vello` takes
+`vello_encoding` and `vello_shaders` by path, so all three come from the fork.
+It is a dependency, not a `[patch.crates-io]` entry, so an app on rinch gets it
+with nothing to copy; apps build Vello types from `rinch::vello` (a second
+`vello` from crates.io would be an unpatched copy whose types do not match).
+Nothing in the graph may pull crates.io `vello`: `anyrender`/`anyrender_vello`
+did and were unused, so #1955 removed them. The rev is pinned so a push to the
+fork's branch never changes rinch; moving it is a commit here.
 
 Vello 0.9 made the image atlas persistent: an image stays resident across
 renders, keyed on its blob's id, and is uploaded again only when new or marked
@@ -597,9 +605,11 @@ just before the explicitly submitted commands" (`Queue::write_buffer` docs,
 wgpu 30), and a queue executes its submissions in order (WebGPU's queue
 timeline), with wgpu-core's resource tracking placing the barriers between a
 texture's uses. So the write for render N+1 runs after every command of
-render N, including render N's reads of the space being reused. So reusing
-the space of an image no earlier render will read again is the same hazard
-Vello 0.7 already took when it rebuilt the whole atlas every render.
+render N, including render N's reads of the space being reused. The same
+ordering is what stock Vello 0.11 already relies on when it re-uploads a
+resident image marked dirty: that write lands on the very region the previous
+render read, recorded and submitted the same way. (Vello 0.7 is no precedent:
+it created a new atlas texture every render.)
 
 Pins: `compositor::gpu_alpha_tests::gpu_alpha_vello_image_survives_a_solid_only_render`
 (1), `gpu_alpha_vello_repaints_keep_every_large_image` and
@@ -613,10 +623,10 @@ repainted unchanged stays resident and is not uploaded again, and keeps a
 `RenderSurface` texture it draws into in place fresh with
 `mark_override_image_dirty` (`SurfaceImages::sync`).
 
-**Downstream apps copy the `vello_encoding` patch line**, as they used to copy
-the wgpu one: Cargo patches are not transitive. On a Vello bump, rebase the
-commit onto the new tag (or drop it if upstream behaves the same) and rerun the
-three pins.
+**Downstream apps copy nothing for Vello**, and delete the five wgpu-fork
+patch lines they used to copy. On a Vello bump, rebase the commit onto the new
+tag (or go back to crates.io if upstream behaves the same), move the pinned rev,
+and rerun the three pins.
 
 ### Bounds signals on the web (#1781)
 
