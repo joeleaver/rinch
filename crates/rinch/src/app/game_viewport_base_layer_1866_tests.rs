@@ -750,42 +750,45 @@ mod gpu {
     }
 
     /// The second review of 461d5e9e: on the GPU a partial frame must give
-    /// the pixels a full one gives. The halo page's overlay changes colour
-    /// (damage across the viewport and the card's ring); the partial frame's
-    /// window equals a fresh window's full frame of the changed page, bit for
-    /// bit, on the split path and on the layered fallback.
+    /// the pixels a full one gives. On the halo page a small box at the
+    /// card's top-left corner, on its ring and far from the viewport, changes
+    /// colour: the partial frame paints neither the viewport nor its clear,
+    /// and its window equals a fresh window's full frame of the changed page,
+    /// bit for bit, on the split path and on the layered fallback. (The
+    /// closed-and-reopened clips put their halo in the full frame and not in
+    /// a partial one that culls the viewport.)
     #[test]
     #[ignore = "needs a GPU adapter"]
     fn gpu_game_viewport_base_layer_partial_frame_equals_full() {
         let mut failures = Vec::new();
         for mode in [Mode::Split, Mode::Layered] {
             let name = format!("desk-partial-{mode:?}");
-            // The overlay over the card's top-left corner and the viewport's
-            // top-left, small enough for a partial frame.
-            let small = |html: String| {
-                html.replace(
-                    "width: 320px; height: 220px; background: rgba",
-                    "width: 180px; height: 120px; background: rgba",
+            let with_box = |html: String, color: &str| {
+                let end = "</div></div>";
+                assert!(html.ends_with(end));
+                format!(
+                    "{}<div id=\"chg\" style=\"position: absolute; left: 0; top: 0; \
+                     width: 50px; height: 50px; background: {color}\"></div>{end}",
+                    &html[..html.len() - end.len()]
                 )
             };
-            let html = small(halo_page(&name, true));
-            assert!(html.contains("180px"), "positive control: the overlay is small");
+            let html = with_box(halo_page(&name, true), "rgb(0,200,0)");
             let over: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
             let keep = over.clone();
             let mut app = RinchApp::new(move |scope: &mut RenderScope| {
                 let root = scope.create_element("div");
                 root.set_inner_html(&html);
-                *keep.borrow_mut() = root.query_selector("#over");
+                *keep.borrow_mut() = root.query_selector("#chg");
                 root
             });
             app.mount_component(W as f32, H as f32);
             let mut window = Window::new(mode);
             let _ = window.frame(&mut app, &name);
-            let changed = "position: absolute; left: 0; top: 0; width: 180px; height: 120px; \
-                           background: rgba(0,160,255,0.6)";
+            let changed = "position: absolute; left: 0; top: 0; width: 50px; height: 50px; \
+                           background: rgb(200,200,0)";
             over.borrow()
                 .clone()
-                .expect("#over")
+                .expect("#chg")
                 .set_attribute("style", changed);
             app.resolve_and_repaint(W as f32, H as f32);
             let _ = app.end_perf_frame();
@@ -796,8 +799,7 @@ mod gpu {
                 failures.push(format!("{mode:?}: the second frame was not partial: {stats:?}"));
             }
 
-            let fresh_html =
-                small(halo_page(&name, true)).replace("rgba(255,0,0,0.5)", "rgba(0,160,255,0.6)");
+            let fresh_html = with_box(halo_page(&name, true), "rgb(200,200,0)");
             let mut fresh = app_with(fresh_html);
             let want = Window::new(mode).frame(&mut fresh, &name);
             let wrong: Vec<_> = (0..W * H)
