@@ -108,23 +108,22 @@ impl SavedGeometry {
 
     /// The attributes for a (re-)creation of the main window: the saved
     /// geometry where there is one, otherwise `requested` — the
-    /// `WindowProps::x`/`y` position, which only a first appearance takes
-    /// (`first`); a later show without a recorded position is placed by the
-    /// system, as before. A first appearance is maximized when
-    /// `WindowProps::maximized` asks (`requested_maximized`).
+    /// `WindowProps::x`/`y` position as [`place_requested`] resolved it, which
+    /// only a first appearance takes (`first`); a later show without a
+    /// recorded position is placed by the system, as before. A first
+    /// appearance is maximized when `WindowProps::maximized` asks
+    /// (`requested_maximized`).
     pub(crate) fn apply(
         &self,
         mut attrs: WindowAttributes,
-        requested: Option<(i32, i32)>,
+        requested: Option<Position>,
         requested_maximized: bool,
         first: bool,
     ) -> WindowAttributes {
         if let Some(size) = self.size {
             attrs = attrs.with_surface_size(size);
         }
-        let requested = requested
-            .filter(|_| first)
-            .map(|(x, y)| Position::Logical(LogicalPosition::new(x as f64, y as f64)));
+        let requested = requested.filter(|_| first);
         if let Some(position) = self.position.or(requested) {
             attrs = attrs.with_position(position);
         }
@@ -135,7 +134,10 @@ impl SavedGeometry {
     }
 }
 
-/// A connected monitor, in desktop pixels.
+/// A connected monitor, in the unit the platform positions windows in:
+/// desktop pixels on X11 and Windows, points on macOS (where
+/// `connected_monitors` gives every monitor scale 1, so a logical position is
+/// compared as the points it is).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct MonitorRect {
     pub position: PhysicalPosition<i32>,
@@ -143,36 +145,233 @@ pub(crate) struct MonitorRect {
     pub scale: f64,
 }
 
-/// How much of a window's top must be on a monitor for the person to reach
-/// it (to grab its title bar and move it): a strip this wide (or the whole
-/// width of a narrower window) and half this tall, logical pixels.
-const GRIP: (f64, f64) = (64.0, 24.0);
+/// The part of a window's top that must be on the desktop for the person to
+/// reach it (to grab its title bar and move it), logical pixels: this wide
+/// (or the whole width of a narrower window) and this tall (or the whole
+/// height of a shorter one), anywhere in the top [`GRIP_STRIP`] of the window.
+const GRIP: (f64, f64) = (64.0, 12.0);
+
+/// How far down the window's top the [`GRIP`] may sit, logical pixels: a
+/// frame a few pixels above the monitor (Windows' invisible outer border)
+/// leaves the title bar below it reachable.
+const GRIP_STRIP: f64 = 24.0;
 
 /// Whether a window at `position` (outer top-left) of `size` can be reached
-/// on one of `monitors`: its top strip is on it ([`GRIP`]). A window that
-/// merely overlaps a monitor with its bottom edge, or a sliver of its side,
-/// cannot be moved back by hand. `true` when the monitors are unknown (an
-/// empty list), so a platform that lists none keeps the position. A logical
-/// position (macOS points) is compared in each monitor's own scale.
+/// on `monitors`: its [`GRIP`] is on the desktop (the union of the monitors,
+/// so a window across two adjacent monitors counts). A window that merely
+/// overlaps a monitor with its bottom edge, or a sliver of its side, cannot
+/// be moved back by hand. `true` when the monitors are unknown (an empty
+/// list), so a platform that lists none keeps the position. See [`landing`]
+/// for a logical position.
 pub(crate) fn reachable(position: Position, size: Option<Size>, monitors: &[MonitorRect]) -> bool {
+    monitors.is_empty() || landing(position, size, monitors).is_some()
+}
+
+/// Where to create a window that `WindowProps::x`/`y` asks for at `logical`,
+/// or `None` when it would be out of reach there (the system places it).
+///
+/// A logical desktop position is the outer position over the scale of the
+/// monitor the window is on (what `current_window_position` publishes), so
+/// on a desktop whose monitors have different scales it is resolved here,
+/// against the monitors, into the desktop pixels it names, and winit gets
+/// those: winit itself converts a logical position with a *guessed* scale
+/// (X11: the monitor under the pointer; Windows: the scale the new window
+/// starts with), which can put it on no monitor at all. On macOS, where
+/// points are the desktop's own unit, the logical position is kept.
+pub(crate) fn place_requested(
+    logical: (f64, f64),
+    size: Size,
+    monitors: &[MonitorRect],
+) -> Option<Position> {
+    let position = Position::Logical(LogicalPosition::new(logical.0, logical.1));
     if monitors.is_empty() {
-        return true;
+        return Some(position);
     }
-    monitors.iter().any(|m| {
-        let p: PhysicalPosition<i32> = position.to_physical(m.scale);
-        let w = size
-            .map(|s| s.to_physical::<u32>(m.scale).width)
-            .unwrap_or(1)
-            .max(1) as i64;
-        let grip_w = ((GRIP.0 * m.scale) as i64).clamp(1, w);
-        let grip_h = ((GRIP.1 * m.scale) as i64).max(2);
-        let (mx, my) = (m.position.x as i64, m.position.y as i64);
-        let (mw, mh) = (m.size.width as i64, m.size.height as i64);
-        let (x, y) = (p.x as i64, p.y as i64);
-        let across = (x + w).min(mx + mw) - x.max(mx);
-        let down = (y + grip_h).min(my + mh) - y.max(my);
-        across >= grip_w && down >= grip_h / 2
+    let at = landing(position, Some(size), monitors)?;
+    Some(if cfg!(target_os = "macos") {
+        position
+    } else {
+        Position::Physical(at)
     })
+}
+
+/// The desktop pixels a window at `position` of `size` lands on, when its
+/// [`GRIP`] is on the desktop there. A logical position names a point in the
+/// scale of the monitor the window is on, so each monitor in turn is tried
+/// as that monitor: the position is converted with its scale and the window's
+/// top must then be on it. On a mixed-scale desktop a logical position can
+/// name a reachable point on two monitors; the first in the platform's
+/// monitor order wins. A physical position is the same on every monitor; the
+/// grip is sized in the scale of a monitor its top is on.
+fn landing(
+    position: Position,
+    size: Option<Size>,
+    monitors: &[MonitorRect],
+) -> Option<PhysicalPosition<i32>> {
+    monitors.iter().find_map(|m| {
+        let p: PhysicalPosition<i32> = position.to_physical(m.scale);
+        let (w, h) = match size {
+            Some(s) => {
+                let s: PhysicalSize<u32> = s.to_physical(m.scale);
+                (s.width.max(1) as i64, s.height.max(1) as i64)
+            }
+            // Unknown: one column, and as tall as anything.
+            None => (1, i64::MAX),
+        };
+        let grip_w = ((GRIP.0 * m.scale) as i64).clamp(1, w);
+        let grip_h = ((GRIP.1 * m.scale) as i64).clamp(1, h);
+        let strip_h = ((GRIP_STRIP * m.scale) as i64).clamp(grip_h, h);
+        let (x, y) = (p.x as i64, p.y as i64);
+        let strip = Span {
+            x0: x,
+            x1: x.saturating_add(w),
+            y0: y,
+            y1: y.saturating_add(strip_h),
+        };
+        (strip.overlaps(m) && grip_on_desktop(strip, grip_w, grip_h, monitors)).then_some(p)
+    })
+}
+
+/// A rectangle in desktop pixels, `[x0, x1) x [y0, y1)`.
+#[derive(Debug, Clone, Copy)]
+struct Span {
+    x0: i64,
+    x1: i64,
+    y0: i64,
+    y1: i64,
+}
+
+impl Span {
+    fn of(m: &MonitorRect) -> Span {
+        let (x, y) = (m.position.x as i64, m.position.y as i64);
+        Span {
+            x0: x,
+            x1: x + m.size.width as i64,
+            y0: y,
+            y1: y + m.size.height as i64,
+        }
+    }
+
+    fn overlaps(&self, m: &MonitorRect) -> bool {
+        let o = Span::of(m);
+        self.x0.max(o.x0) < self.x1.min(o.x1) && self.y0.max(o.y0) < self.y1.min(o.y1)
+    }
+}
+
+/// Whether a `w` x `h` rectangle inside `strip` is wholly covered by the
+/// union of `monitors`. Its top can be taken at the strip's top or at a
+/// monitor's top edge (moving a covered rectangle up keeps it covered until
+/// it meets one of those), and for each such row band the longest run of
+/// covered columns is measured over the slabs between monitor edges.
+fn grip_on_desktop(strip: Span, w: i64, h: i64, monitors: &[MonitorRect]) -> bool {
+    let rects: Vec<Span> = monitors.iter().map(Span::of).collect();
+    let mut xs: Vec<i64> = vec![strip.x0, strip.x1];
+    for r in &rects {
+        for x in [r.x0, r.x1] {
+            if x > strip.x0 && x < strip.x1 {
+                xs.push(x);
+            }
+        }
+    }
+    xs.sort_unstable();
+    xs.dedup();
+    let tops = std::iter::once(strip.y0).chain(
+        rects
+            .iter()
+            .map(|r| r.y0)
+            .filter(|&t| t > strip.y0 && t.saturating_add(h) <= strip.y1),
+    );
+    for top in tops {
+        let bottom = top.saturating_add(h);
+        if bottom > strip.y1 {
+            continue;
+        }
+        let mut run = 0;
+        for slab in xs.windows(2) {
+            let (a, b) = (slab[0], slab[1]);
+            let mut ys: Vec<(i64, i64)> = rects
+                .iter()
+                .filter(|r| r.x0 <= a && r.x1 >= b)
+                .map(|r| (r.y0, r.y1))
+                .collect();
+            ys.sort_unstable();
+            let mut reach = top;
+            for (y0, y1) in ys {
+                if y0 > reach {
+                    break;
+                }
+                reach = reach.max(y1);
+            }
+            if reach >= bottom {
+                run += b - a;
+                if run >= w {
+                    return true;
+                }
+            } else {
+                run = 0;
+            }
+        }
+    }
+    false
+}
+
+/// A window created maximized, until the platform says it is: the window
+/// manager of X11 maximizes it some time after the creation, and a resize
+/// can arrive while `is_maximized` still answers `false` (winit reads the
+/// `_NET_WM_STATE` property, and no event follows when it changes). Such a
+/// reading would record the full-screen size as the normal geometry and the
+/// window as not maximized. So until a reading says maximized, a reading
+/// that says otherwise is taken as maximized, except one back at the created
+/// size after one at another size: an un-maximize (to where it was created)
+/// that came before any reading saw the window maximized. Windows and macOS
+/// maximize at creation, so their first reading ends the wait.
+///
+/// A window manager that never maximizes the window leaves it waiting: its
+/// normal geometry stays the created one until it is resized back to it.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) enum MaximizeWait {
+    #[default]
+    Done,
+    /// Created maximized at this (normal) inner size, no reading at another
+    /// size yet.
+    Created(Size),
+    /// A reading at another size came (the maximize, not yet reported).
+    Resized(Size),
+}
+
+impl MaximizeWait {
+    /// For a window created with `attrs`.
+    pub(crate) fn after_create(attrs: &WindowAttributes) -> Self {
+        match attrs.surface_size {
+            Some(size) if attrs.maximized => MaximizeWait::Created(size),
+            _ => MaximizeWait::Done,
+        }
+    }
+
+    /// `r` as the geometry rules should take it.
+    pub(crate) fn filter(&mut self, mut r: WindowReading) -> WindowReading {
+        let size = match *self {
+            MaximizeWait::Done => return r,
+            MaximizeWait::Created(s) | MaximizeWait::Resized(s) => s,
+        };
+        if r.maximized {
+            *self = MaximizeWait::Done;
+            return r;
+        }
+        let created: PhysicalSize<u32> = size.to_physical(r.scale);
+        let at_created = created.width.abs_diff(r.surface.width) <= 1
+            && created.height.abs_diff(r.surface.height) <= 1;
+        match (*self, at_created) {
+            (MaximizeWait::Resized(_), true) => {
+                *self = MaximizeWait::Done;
+                return r;
+            }
+            (MaximizeWait::Created(s), false) => *self = MaximizeWait::Resized(s),
+            _ => {}
+        }
+        r.maximized = true;
+        r
+    }
 }
 
 /// The main window's geometry as an app reads it: logical pixels.
@@ -272,6 +471,16 @@ pub(crate) fn published() -> Option<PublishedGeometry> {
     *PUBLISHED.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+/// For a test that publishes: holds every other such test off and starts
+/// from nothing published.
+#[cfg(test)]
+pub(crate) fn published_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    let guard = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    *PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    guard
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,12 +490,16 @@ mod tests {
         WindowAttributes::default().with_surface_size(LogicalSize::new(560.0, 280.0))
     }
 
+    fn req() -> Option<Position> {
+        Some(Position::Logical(LogicalPosition::new(40.0, 50.0)))
+    }
+
     /// Nothing recorded: the configured size, the requested position on a
     /// first appearance only.
     #[test]
     fn with_nothing_saved_a_first_show_takes_the_requested_position_and_a_later_one_none() {
         let none = SavedGeometry::default();
-        let first = none.apply(attrs(), Some((40, 50)), false, true);
+        let first = none.apply(attrs(), req(), false, true);
         assert_eq!(
             first.position,
             Some(Position::Logical(LogicalPosition::new(40.0, 50.0)))
@@ -296,7 +509,7 @@ mod tests {
             Some(Size::Logical(LogicalSize::new(560.0, 280.0)))
         );
         assert_eq!(
-            none.apply(attrs(), Some((40, 50)), false, false).position,
+            none.apply(attrs(), req(), false, false).position,
             None
         );
         assert_eq!(none.apply(attrs(), None, false, true).position, None);
@@ -312,7 +525,7 @@ mod tests {
             maximized: false,
         };
         for first in [true, false] {
-            let a = saved.apply(attrs(), Some((40, 50)), false, first);
+            let a = saved.apply(attrs(), req(), false, first);
             assert_eq!(a.position, saved.position);
             assert_eq!(a.surface_size, saved.size);
             assert!(!a.maximized);
@@ -327,7 +540,7 @@ mod tests {
             size: Some(Size::Logical(LogicalSize::new(700.0, 200.0))),
             maximized: false,
         };
-        let a = saved.apply(attrs(), Some((40, 50)), false, false);
+        let a = saved.apply(attrs(), req(), false, false);
         assert_eq!(a.position, None);
         assert_eq!(a.surface_size, saved.size);
     }
@@ -470,5 +683,186 @@ mod tests {
             ..Default::default()
         };
         assert!(saved.apply(attrs(), None, false, false).maximized);
+    }
+
+    fn monitor(x: i32, y: i32, w: u32, h: u32, scale: f64) -> MonitorRect {
+        MonitorRect {
+            position: PhysicalPosition::new(x, y),
+            size: PhysicalSize::new(w, h),
+            scale,
+        }
+    }
+
+    fn at(x: i32, y: i32) -> Position {
+        Position::Physical(PhysicalPosition::new(x, y))
+    }
+
+    fn logical(w: f64, h: f64) -> Option<Size> {
+        Some(Size::Logical(LogicalSize::new(w, h)))
+    }
+
+    /// The grip is capped at the window's height as at its width: a 400x4
+    /// bar wholly on screen at the bottom edge is reachable, one half off it
+    /// is not.
+    #[test]
+    fn a_window_shorter_than_the_grip_needs_its_whole_height_on_screen() {
+        let one = [monitor(0, 0, 1920, 1080, 1.0)];
+        let bar = logical(400.0, 4.0);
+        assert!(reachable(at(300, 1076), bar, &one));
+        assert!(!reachable(at(300, 1078), bar, &one));
+    }
+
+    /// 12 logical pixels of the top must be on screen: 13 rows are, 9 are
+    /// not (a threshold of 6 would take them).
+    #[test]
+    fn twelve_rows_of_the_top_must_be_on_screen() {
+        let one = [monitor(0, 0, 1920, 1080, 1.0)];
+        let size = logical(400.0, 300.0);
+        assert!(reachable(at(300, 1080 - 13), size, &one));
+        assert!(!reachable(at(300, 1080 - 9), size, &one));
+        // Above the top, 24 pixels down the window: 13 rows on screen are
+        // enough, 9 are not.
+        assert!(reachable(at(300, -11), size, &one));
+        assert!(!reachable(at(300, -15), size, &one));
+    }
+
+    /// The grip is in the monitor's scale: at scale 2 it is 128 desktop
+    /// pixels wide, so 100 on screen is not enough (64 unscaled would be),
+    /// and 24 rows are not either (12 unscaled would be).
+    #[test]
+    fn the_grip_is_scaled_by_the_monitor() {
+        let hidpi = [monitor(0, 0, 3840, 2160, 2.0)];
+        let size = logical(400.0, 300.0);
+        assert!(!reachable(at(3840 - 100, 100), size, &hidpi));
+        assert!(reachable(at(3840 - 130, 100), size, &hidpi));
+        assert!(!reachable(at(300, 2160 - 20), size, &hidpi));
+        assert!(reachable(at(300, 2160 - 26), size, &hidpi));
+    }
+
+    /// The top only has to be on the desktop, not on one monitor: a 100 px
+    /// window split 40 / 60 over two adjacent monitors is reachable, and so
+    /// is one across two monitors stacked vertically. A gap between two
+    /// monitors is not desktop.
+    #[test]
+    fn a_window_across_adjacent_monitors_is_reachable() {
+        let side = [
+            monitor(0, 0, 1920, 1080, 1.0),
+            monitor(1920, 0, 1920, 1080, 1.0),
+        ];
+        let narrow = logical(100.0, 300.0);
+        assert!(reachable(at(1880, 100), narrow, &side));
+        let stacked = [
+            monitor(0, 0, 1920, 1080, 1.0),
+            monitor(0, 1080, 1920, 1080, 1.0),
+        ];
+        assert!(reachable(at(300, 1074), logical(400.0, 300.0), &stacked));
+        let apart = [
+            monitor(0, 0, 1920, 1080, 1.0),
+            monitor(1960, 0, 1920, 1080, 1.0),
+        ];
+        assert!(!reachable(at(1880, 100), narrow, &apart));
+        // 64 columns on one side of the gap are enough.
+        assert!(reachable(at(1880, 100), logical(200.0, 300.0), &apart));
+    }
+
+    /// A logical position on a mixed-scale desktop names the desktop pixels
+    /// of the monitor it is on: (5000, 100) next to a scale-2 primary is
+    /// (5000, 100) on the scale-1 monitor, which winit is given as such; X11
+    /// would convert it with the scale under the pointer (2) and put the
+    /// window at (10000, 200), on no monitor. Off every monitor in every
+    /// scale, it is left to the system.
+    #[test]
+    fn a_requested_position_is_resolved_in_the_scale_of_its_monitor() {
+        let mixed = [
+            monitor(0, 0, 3840, 2160, 2.0),
+            monitor(3840, 0, 1920, 1080, 1.0),
+        ];
+        let size = Size::Logical(LogicalSize::new(400.0, 300.0));
+        let expected = if cfg!(target_os = "macos") {
+            Position::Logical(LogicalPosition::new(5000.0, 100.0))
+        } else {
+            at(5000, 100)
+        };
+        assert_eq!(
+            place_requested((5000.0, 100.0), size, &mixed),
+            Some(expected)
+        );
+        // On the primary: its scale.
+        if !cfg!(target_os = "macos") {
+            assert_eq!(
+                place_requested((500.0, 100.0), size, &mixed),
+                Some(at(1000, 200))
+            );
+        }
+        assert_eq!(place_requested((9000.0, 100.0), size, &mixed), None);
+        assert_eq!(
+            place_requested((9000.0, 100.0), size, &[]),
+            Some(Position::Logical(LogicalPosition::new(9000.0, 100.0))),
+            "unknown monitors: kept"
+        );
+    }
+
+    fn maxed(size: (u32, u32)) -> WindowReading {
+        WindowReading {
+            maximized: true,
+            ..reading(1.0, (0, 0), size)
+        }
+    }
+
+    /// X11: the window manager maximizes after the creation, and the resize
+    /// can come before `is_maximized` says so. Until a reading says
+    /// maximized, the full-screen size is not taken as the normal geometry
+    /// and the window stays maximized.
+    #[test]
+    fn a_window_created_maximized_waits_for_the_platform_to_say_so() {
+        let created = attrs().with_maximized(true);
+        let mut wait = MaximizeWait::after_create(&created);
+        assert_eq!(
+            MaximizeWait::after_create(&attrs()),
+            MaximizeWait::Done,
+            "not created maximized: nothing to wait for"
+        );
+        let mut saved = SavedGeometry::default();
+        let mut g = created_into(
+            PublishedGeometry::default(),
+            Some((40.0, 50.0)),
+            (560.0, 280.0),
+            true,
+        );
+        for r in [
+            reading(1.0, (40, 50), (560, 280)),
+            reading(1.0, (0, 0), (1920, 1050)),
+        ] {
+            let r = wait.filter(r);
+            saved.note(&r);
+            g = read_into(g, &r);
+        }
+        assert!(g.maximized, "a reading before the property is not believed");
+        assert_eq!(g.normal_size, Some((560.0, 280.0)));
+        assert_eq!(saved.size, None, "no normal geometry recorded yet");
+        // The property arrives: from here on, readings are believed.
+        let r = wait.filter(maxed((1920, 1050)));
+        g = read_into(g, &r);
+        assert_eq!(wait, MaximizeWait::Done);
+        let r = wait.filter(reading(1.0, (40, 50), (560, 280)));
+        g = read_into(g, &r);
+        assert!(!g.maximized, "an un-maximize after it is believed");
+    }
+
+    /// Un-maximized (back to the created size) before any reading saw it
+    /// maximized: that is an un-maximize, and the wait ends.
+    #[test]
+    fn back_at_the_created_size_after_another_ends_the_wait() {
+        let mut wait = MaximizeWait::after_create(&attrs().with_maximized(true));
+        assert!(wait.filter(reading(1.0, (40, 50), (560, 280))).maximized);
+        assert!(wait.filter(reading(1.0, (0, 0), (1920, 1050))).maximized);
+        assert!(wait.filter(reading(1.0, (0, 0), (1920, 1050))).maximized);
+        let back = wait.filter(reading(1.0, (40, 50), (560, 280)));
+        assert!(!back.maximized);
+        assert_eq!(wait, MaximizeWait::Done);
+        // In logical pixels: the created size at scale 2.
+        let mut hidpi = MaximizeWait::after_create(&attrs().with_maximized(true));
+        assert!(hidpi.filter(reading(2.0, (0, 0), (3840, 2100))).maximized);
+        assert!(!hidpi.filter(reading(2.0, (80, 100), (1120, 560))).maximized);
     }
 }

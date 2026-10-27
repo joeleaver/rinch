@@ -533,6 +533,9 @@ pub struct RinchRuntime {
     /// The monitors connected when the main window was last (re-)created:
     /// a requested or saved position must be reachable on one of them.
     monitors: Vec<window_geometry::MonitorRect>,
+    /// A main window created maximized, until the platform says it is (the
+    /// X11 window manager maximizes it later).
+    maximize_wait: window_geometry::MaximizeWait,
     /// The live main window's layer-shell state, while it is a Wayland
     /// layer surface (#1523).
     layer: Option<LayerState>,
@@ -682,6 +685,7 @@ impl RinchRuntime {
             shown_once: false,
             saved_geometry: SavedGeometry::default(),
             monitors: Vec::new(),
+            maximize_wait: window_geometry::MaximizeWait::Done,
             layer: None,
             output_override: None,
             layer_awaiting_output: false,
@@ -1078,7 +1082,7 @@ impl RinchRuntime {
         // The geometry the window had when it was hidden (#1546), or the
         // requested `WindowProps::x`/`y` on its first appearance — a first
         // creation, or the first show after a hidden start (#1520).
-        let requested = self.requested_position();
+        let requested = self.requested_position().map(|r| r.at);
         let requested_maximized = self.app.window_props.as_ref().is_some_and(|p| p.maximized);
         let window_attrs = self.saved_geometry.apply(
             window_attrs,
@@ -1142,7 +1146,14 @@ impl RinchRuntime {
         if !self.shown_once {
             return;
         }
-        let reading = window_geometry::WindowReading::of(window);
+        self.take_reading(window_geometry::WindowReading::of(window));
+    }
+
+    /// [`Self::note_geometry`] past the window: a reading of the live main
+    /// window, through the wait for a maximize the platform has not reported
+    /// yet.
+    fn take_reading(&mut self, reading: window_geometry::WindowReading) {
+        let reading = self.maximize_wait.filter(reading);
         self.saved_geometry.note(&reading);
         window_geometry::publish_window(&reading);
         self.publish_layer_position();
@@ -1357,32 +1368,79 @@ impl RinchRuntime {
         }
     }
 
-    /// `WindowProps::x`/`y`, when the window's top would be reachable on a
-    /// monitor connected now (`self.monitors`); otherwise the system places
+    /// `WindowProps::x`/`y`, when the window's top would be reachable on the
+    /// monitors connected now (`self.monitors`); otherwise the system places
     /// the window, so a position saved on a monitor since unplugged never
-    /// opens it out of reach.
-    fn requested_position(&self) -> Option<(i32, i32)> {
+    /// opens it out of reach. `at` is where winit is asked to put it
+    /// ([`window_geometry::place_requested`]: desktop pixels, resolved in the
+    /// scale of the monitor the position is on).
+    fn requested_position(&self) -> Option<RequestedPosition> {
         let (x, y) = self
             .app
             .window_props
             .as_ref()
             .and_then(|p| Some((p.x?, p.y?)))?;
-        let position = Position::Logical(LogicalPosition::new(x as f64, y as f64));
         let size = Size::Logical(LogicalSize::new(self.width as f64, self.height as f64));
-        window_geometry::reachable(position, Some(size), &self.monitors).then_some((x, y))
+        let at = window_geometry::place_requested((x as f64, y as f64), size, &self.monitors)?;
+        Some(RequestedPosition {
+            logical: (x as f64, y as f64),
+            at,
+        })
+    }
+
+    /// The geometry half of putting the main window on screen, before winit
+    /// creates it: the monitors connected now (`monitors`), a saved position
+    /// out of reach on them dropped (one unplugged while the window was
+    /// hidden), and on its first appearance — a creation, or the first show
+    /// after a hidden start (#1520) — the geometry it is created with
+    /// published as the one an un-maximize returns to: a window that opens
+    /// maximized has had no normal geometry to read. `on_screen` is false for
+    /// a hidden start's sizing window. Returns whether this is the first
+    /// appearance.
+    fn begin_appearance(
+        &mut self,
+        monitors: Vec<window_geometry::MonitorRect>,
+        on_screen: bool,
+    ) -> bool {
+        self.monitors = monitors;
+        if !on_screen {
+            return false;
+        }
+        let first = !std::mem::replace(&mut self.shown_once, true);
+        if let Some(position) = self.saved_geometry.position {
+            let size = self
+                .saved_geometry
+                .size
+                .unwrap_or(Size::Logical(LogicalSize::new(
+                    self.width as f64,
+                    self.height as f64,
+                )));
+            if !window_geometry::reachable(position, Some(size), &self.monitors) {
+                self.saved_geometry.position = None;
+            }
+        }
+        if first {
+            window_geometry::publish_created(
+                self.requested_position().map(|r| r.logical),
+                (self.width as f64, self.height as f64),
+                self.app.window_props.as_ref().is_some_and(|p| p.maximized),
+            );
+        }
+        first
     }
 
     fn create_window(&mut self, event_loop: &dyn ActiveEventLoop) {
         // A title set before the loop started (#1770).
         self.take_stored_title();
-        self.monitors = connected_monitors(event_loop);
         let hidden = starts_hidden(self.app.window_props.as_ref());
+        self.begin_appearance(connected_monitors(event_loop), !hidden);
         let backend = Backend::of(event_loop);
         let steps = self.main_window_steps(backend, true);
         let window_attrs = hidden_start_attributes(
             self.main_window_attributes(steps, backend, true, true),
             hidden,
         );
+        self.maximize_wait = window_geometry::MaximizeWait::after_create(&window_attrs);
 
         let window = event_loop
             .create_window(window_attrs)
@@ -1392,15 +1450,7 @@ impl RinchRuntime {
         // window `show_window` creates instead.
         if !hidden {
             overlay_window::after_create(&*window, steps, self.main_window_always_on_top());
-            self.shown_once = true;
             self.note_surface_kind(&*window, true);
-            // What an un-maximize returns to, for a window that opens
-            // maximized and so has had no normal geometry to read yet.
-            window_geometry::publish_created(
-                self.requested_position().map(|(x, y)| (x as f64, y as f64)),
-                (self.width as f64, self.height as f64),
-                self.app.window_props.as_ref().is_some_and(|p| p.maximized),
-            );
             self.note_geometry(&*window);
         }
 
@@ -1473,7 +1523,9 @@ impl RinchRuntime {
             // start (#1520), which was never on screen and sits wherever the
             // system put it.
             if self.shown_once {
-                let reading = window_geometry::WindowReading::of(w.raw());
+                let reading = self
+                    .maximize_wait
+                    .filter(window_geometry::WindowReading::of(w.raw()));
                 self.saved_geometry.record(&reading);
                 window_geometry::publish_window(&reading);
                 self.publish_layer_position();
@@ -1518,16 +1570,9 @@ impl RinchRuntime {
         // appearance, so it takes the requested position as a first creation
         // does; a restore from the tray comes back where it was hidden
         // (#1546), with the size it had.
-        let first_show = !std::mem::replace(&mut self.shown_once, true);
-        // A position out of reach on the monitors connected now (one
-        // unplugged while the window was hidden) is left to the system.
-        self.monitors = connected_monitors(event_loop);
-        if let Some(position) = self.saved_geometry.position {
-            if !window_geometry::reachable(position, self.saved_geometry.size, &self.monitors) {
-                self.saved_geometry.position = None;
-            }
-        }
+        let first_show = self.begin_appearance(connected_monitors(event_loop), true);
         let window_attrs = self.main_window_attributes(steps, backend, false, first_show);
+        self.maximize_wait = window_geometry::MaximizeWait::after_create(&window_attrs);
 
         let window = event_loop
             .create_window(window_attrs)
@@ -5916,17 +5961,221 @@ mod layer_drag_tests {
     }
 }
 
-/// The monitors connected now, in desktop pixels.
+/// A `WindowProps::x`/`y` the window can be reached at.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RequestedPosition {
+    /// As asked, logical pixels: what an app reads back.
+    logical: (f64, f64),
+    /// What winit is given.
+    at: Position,
+}
+
+/// The monitors connected now, in the unit windows are positioned in:
+/// desktop pixels, or points on macOS (each monitor's rect over its own
+/// scale, given scale 1).
 fn connected_monitors(event_loop: &dyn ActiveEventLoop) -> Vec<window_geometry::MonitorRect> {
     event_loop
         .available_monitors()
         .filter_map(|m| {
             let size = m.current_video_mode()?.size();
-            Some(window_geometry::MonitorRect {
-                position: m.position()?,
-                size,
-                scale: m.scale_factor(),
+            let position = m.position()?;
+            let scale = m.scale_factor();
+            Some(if cfg!(target_os = "macos") {
+                let p = position.to_logical::<f64>(scale);
+                let s = size.to_logical::<f64>(scale);
+                window_geometry::MonitorRect {
+                    position: winit::dpi::PhysicalPosition::new(p.x.round() as i32, p.y.round() as i32),
+                    size: winit::dpi::PhysicalSize::new(s.width.round() as u32, s.height.round() as u32),
+                    scale: 1.0,
+                }
+            } else {
+                window_geometry::MonitorRect {
+                    position,
+                    size,
+                    scale,
+                }
             })
         })
         .collect()
+}
+
+/// #1884: the runtime's half of bringing a window back — the requested
+/// position filtered by reachability, a saved one dropped at a show, the
+/// creation geometry published on a first appearance (a hidden start's
+/// first show included), and readings taken through the maximize wait.
+#[cfg(test)]
+mod window_restore_tests {
+    use super::window_geometry::{MonitorRect, WindowReading, published_test_guard};
+    use super::*;
+    use crate::windows::{WindowRestore, current_window_restore};
+    use rinch_core::element::WindowProps;
+    use winit::dpi::{PhysicalPosition, PhysicalSize};
+
+    fn component(scope: &mut RenderScope) -> NodeHandle {
+        scope.create_element("div")
+    }
+
+    fn one_monitor() -> Vec<MonitorRect> {
+        vec![MonitorRect {
+            position: PhysicalPosition::new(0, 0),
+            size: PhysicalSize::new(1920, 1080),
+            scale: 1.0,
+        }]
+    }
+
+    fn runtime(props: WindowProps) -> RinchRuntime {
+        build_runtime(
+            component,
+            &WindowProps {
+                width: 800,
+                height: 600,
+                ..props
+            },
+            None,
+            &[],
+        )
+    }
+
+    fn attributes(runtime: &mut RinchRuntime, first_appearance: bool) -> WindowAttributes {
+        let steps = runtime.main_window_steps(Backend::X11, true);
+        runtime.main_window_attributes(steps, Backend::X11, false, first_appearance)
+    }
+
+    fn reading(maximized: bool, pos: (i32, i32), size: (u32, u32)) -> WindowReading {
+        WindowReading {
+            maximized,
+            minimized: false,
+            scale: 1.0,
+            position: Some(PhysicalPosition::new(pos.0, pos.1)),
+            surface: PhysicalSize::new(size.0, size.1),
+        }
+    }
+
+    /// The tray-app path: `visible: false` + `maximized: true`. The first
+    /// show is the first appearance, so it publishes the geometry the window
+    /// is created with; without it the restore answered the maximized size
+    /// and no position (Windows maximizes at creation, so the first reading
+    /// is already maximized).
+    #[test]
+    fn a_hidden_start_publishes_the_restore_geometry_at_its_first_show() {
+        let _guard = published_test_guard();
+        let mut rt = runtime(WindowProps {
+            visible: false,
+            maximized: true,
+            x: Some(100),
+            y: Some(80),
+            ..Default::default()
+        });
+        assert!(!rt.begin_appearance(one_monitor(), false), "the sizing window");
+        assert_eq!(current_window_restore(), None, "nothing on screen yet");
+        assert!(rt.begin_appearance(one_monitor(), true), "the first show");
+        let attrs = attributes(&mut rt, true);
+        assert!(attrs.maximized);
+        assert_eq!(
+            attrs.position,
+            Some(Position::Physical(PhysicalPosition::new(100, 80)))
+        );
+        rt.maximize_wait = window_geometry::MaximizeWait::after_create(&attrs);
+        rt.take_reading(reading(true, (0, 0), (1920, 1050)));
+        assert_eq!(
+            current_window_restore(),
+            Some(WindowRestore {
+                position: Some((100.0, 80.0)),
+                size: (800.0, 600.0),
+                maximized: true,
+            })
+        );
+        // A later show is no first appearance and publishes nothing new.
+        rt.shown_once = true;
+        assert!(!rt.begin_appearance(one_monitor(), true));
+    }
+
+    /// X11: the window manager maximizes later, and a resize can come while
+    /// the window does not say it is maximized yet. The restore keeps the
+    /// creation geometry and `maximized: true`.
+    #[test]
+    fn a_resize_before_the_maximize_is_reported_is_not_the_restore_geometry() {
+        let _guard = published_test_guard();
+        let mut rt = runtime(WindowProps {
+            maximized: true,
+            x: Some(100),
+            y: Some(80),
+            ..Default::default()
+        });
+        assert!(rt.begin_appearance(one_monitor(), true));
+        let attrs = attributes(&mut rt, true);
+        rt.maximize_wait = window_geometry::MaximizeWait::after_create(&attrs);
+        rt.take_reading(reading(false, (100, 80), (800, 600)));
+        rt.take_reading(reading(false, (0, 0), (1920, 1050)));
+        assert_eq!(
+            current_window_restore(),
+            Some(WindowRestore {
+                position: Some((100.0, 80.0)),
+                size: (800.0, 600.0),
+                maximized: true,
+            })
+        );
+        assert_eq!(rt.saved_geometry.size, None, "no normal geometry recorded");
+    }
+
+    /// `WindowProps::x`/`y` out of reach (a monitor unplugged since it was
+    /// saved) is not given to winit; in reach it is.
+    #[test]
+    fn a_requested_position_out_of_reach_is_left_to_the_system() {
+        let _guard = published_test_guard();
+        let mut gone = runtime(WindowProps {
+            x: Some(5000),
+            y: Some(100),
+            ..Default::default()
+        });
+        gone.begin_appearance(one_monitor(), true);
+        assert_eq!(gone.requested_position(), None);
+        assert_eq!(attributes(&mut gone, true).position, None);
+        assert_eq!(current_window_restore().and_then(|r| r.position), None);
+    }
+
+    /// And one in reach is, in desktop pixels, and is what the restore
+    /// answers.
+    #[test]
+    fn a_requested_position_in_reach_is_taken() {
+        let _guard = published_test_guard();
+        let mut here = runtime(WindowProps {
+            x: Some(300),
+            y: Some(200),
+            ..Default::default()
+        });
+        here.begin_appearance(one_monitor(), true);
+        assert_eq!(
+            attributes(&mut here, true).position,
+            Some(Position::Physical(PhysicalPosition::new(300, 200)))
+        );
+        assert_eq!(
+            current_window_restore().and_then(|r| r.position),
+            Some((300.0, 200.0))
+        );
+    }
+
+    /// A show after a hide drops a saved position out of reach on the
+    /// monitors connected now, and keeps one in reach.
+    #[test]
+    fn a_show_drops_a_saved_position_out_of_reach() {
+        let _guard = published_test_guard();
+        let mut rt = runtime(WindowProps::default());
+        rt.shown_once = true;
+        let gone = Position::Physical(PhysicalPosition::new(5000, 100));
+        rt.saved_geometry.position = Some(gone);
+        assert!(!rt.begin_appearance(one_monitor(), true));
+        assert_eq!(rt.saved_geometry.position, None);
+
+        let kept = Position::Physical(PhysicalPosition::new(300, 200));
+        rt.saved_geometry.position = Some(kept);
+        rt.begin_appearance(one_monitor(), true);
+        assert_eq!(rt.saved_geometry.position, Some(kept));
+        // With no saved size, the window's own size decides: 800 wide at
+        // x = 1880 leaves 40 columns on screen.
+        let sliver = Position::Physical(PhysicalPosition::new(1880, 200));
+        rt.saved_geometry.position = Some(sliver);
+        rt.begin_appearance(one_monitor(), true);
+        assert_eq!(rt.saved_geometry.position, None);
+    }
 }
